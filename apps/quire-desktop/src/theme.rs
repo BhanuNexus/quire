@@ -128,7 +128,8 @@ pub(crate) fn visuals(p: &Palette) -> Visuals {
     w.active.bg_fill = p.active_bg;
     w.active.weak_bg_fill = p.active_bg;
     w.active.bg_stroke = Stroke::new(1.0, p.accent);
-    w.active.fg_stroke = Stroke::new(1.5, p.accent);
+    // Also egui's "strong text" colour (headings in the preview, bold labels).
+    w.active.fg_stroke = Stroke::new(1.5, p.strong);
     w.active.corner_radius = r;
     w.active.expansion = 0.0;
     w.open.bg_fill = deeper;
