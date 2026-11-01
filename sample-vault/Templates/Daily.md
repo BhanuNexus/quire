@@ -1,0 +1,7 @@
+# {{title}}
+
+## Log
+- {{cursor}}
+
+## Tasks
+- [ ] 

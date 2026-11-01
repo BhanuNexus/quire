@@ -1,0 +1,24 @@
+[package]
+name = "quire-import"
+description = "Import notes from Logseq, Bear, Notion, Evernote and Markdown folders into a Quire vault"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+
+[dependencies]
+quire-vault.workspace = true
+quire-markdown.workspace = true
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
+htmd = "0.5"
+base64 = "0.23"
+md5 = "0.8"
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

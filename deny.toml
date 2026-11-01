@@ -1,0 +1,49 @@
+# cargo-deny: keeps dependencies AGPL-compatible, free of known
+# vulnerabilities, and from crates.io only. Run: cargo deny check
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "warn"
+ignore = [
+  # zvariant/zbus_names were merged into zbus 6 (not abandoned, no vulnerability).
+  # They come from eframe -> accesskit (Linux screen-reader bridge); this clears
+  # when accesskit moves to zbus 6. Dependabot will raise that upgrade.
+  { id = "RUSTSEC-2026-0370", reason = "merged into zbus 6; transitive via accesskit" },
+  { id = "RUSTSEC-2026-0371", reason = "merged into zbus 6; transitive via accesskit" },
+  { id = "RUSTSEC-2026-0372", reason = "merged into zbus 6; transitive via accesskit" },
+]
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+# Everything here is compatible with distributing Quire under AGPL-3.0-or-later.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "0BSD",
+  "Unlicense",
+  "BSL-1.0",
+  "CC0-1.0",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "CDLA-Permissive-2.0",
+  "OFL-1.1",
+  "Ubuntu-font-1.0",
+  "AGPL-3.0-or-later",
+]
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

@@ -1,0 +1,298 @@
+// SPDX-FileCopyrightText: 2026 The Quire contributors
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//! Inverted index with BM25 ranking, prefix search-as-you-type and snippets.
+
+use std::collections::{BTreeMap, HashMap};
+
+use quire_vault::NotePath;
+
+use crate::record::NoteRecord;
+use crate::tokenize::tokens;
+
+const K1: f32 = 1.2;
+const B: f32 = 0.75;
+const TITLE_WEIGHT: f32 = 3.0;
+const TAG_WEIGHT: f32 = 2.0;
+
+/// Parsed query: `rope "undo tree" #rust -draft`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Query {
+    pub terms: Vec<String>,
+    /// The last term when the user is still typing it.
+    pub prefix: Option<String>,
+    pub phrases: Vec<String>,
+    pub tags: Vec<String>,
+    pub exclude: Vec<String>,
+}
+
+impl Query {
+    pub fn parse(q: &str) -> Self {
+        let mut out = Query::default();
+        let mut rest = q;
+        while let Some(open) = rest.find('"') {
+            let before = &rest[..open];
+            out.push_words(before);
+            match rest[open + 1..].find('"') {
+                Some(close) => {
+                    let phrase = rest[open + 1..open + 1 + close].trim().to_lowercase();
+                    if !phrase.is_empty() {
+                        out.terms.extend(tokens(&phrase));
+                        out.phrases.push(phrase);
+                    }
+                    rest = &rest[open + close + 2..];
+                }
+                None => {
+                    rest = &rest[open + 1..];
+                }
+            }
+        }
+        out.push_words(rest);
+        if !q.ends_with(char::is_whitespace) && !q.ends_with('"') {
+            // Search-as-you-type: treat the trailing bare word as a prefix.
+            let last_word = rest.split_whitespace().last().unwrap_or("");
+            if !last_word.starts_with(['#', '-']) && !last_word.is_empty() {
+                let last_tok = tokens(last_word).last();
+                if let Some(t) = last_tok
+                    && out.terms.last() == Some(&t)
+                {
+                    out.terms.pop();
+                    out.prefix = Some(t);
+                }
+            }
+        }
+        out
+    }
+
+    fn push_words(&mut self, s: &str) {
+        for w in s.split_whitespace() {
+            if let Some(tag) = w.strip_prefix('#').filter(|t| !t.is_empty()) {
+                self.tags.push(tag.to_lowercase());
+            } else if let Some(ex) = w.strip_prefix('-').filter(|t| !t.is_empty()) {
+                self.exclude.extend(tokens(ex));
+            } else {
+                self.terms.extend(tokens(w));
+            }
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.terms.is_empty() && self.prefix.is_none() && self.phrases.is_empty() && self.tags.is_empty()
+    }
+
+    /// Every term to highlight in results.
+    pub fn highlight_terms(&self) -> Vec<String> {
+        let mut v = self.terms.clone();
+        v.extend(self.prefix.clone());
+        v
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SearchHit {
+    pub path: NotePath,
+    pub title: String,
+    pub score: f32,
+    pub snippet: String,
+    /// Byte ranges in `snippet` to emphasise.
+    pub highlights: Vec<std::ops::Range<usize>>,
+}
+
+/// Weighted term frequencies and length for BM25, computed when a note is
+/// parsed (outside the index lock) so inserting is cheap.
+pub fn search_terms(plain: &str, name: &str, title: &str, aliases: &[String], tags: &[String]) -> (Vec<(String, f32)>, f32) {
+    let mut tf: HashMap<String, f32> = HashMap::new();
+    let mut len = 0f32;
+    for t in tokens(plain) {
+        *tf.entry(t).or_default() += 1.0;
+        len += 1.0;
+    }
+    for t in tokens(name).chain(tokens(title)).chain(aliases.iter().flat_map(|a| tokens(a))) {
+        *tf.entry(t).or_default() += TITLE_WEIGHT;
+        len += 1.0;
+    }
+    for tag in tags {
+        for t in tokens(tag) {
+            *tf.entry(t).or_default() += TAG_WEIGHT;
+        }
+    }
+    (tf.into_iter().collect(), len)
+}
+
+#[derive(Debug, Default)]
+pub struct FullText {
+    postings: BTreeMap<String, HashMap<u32, f32>>,
+    doc_terms: HashMap<u32, Vec<String>>,
+    doc_len: HashMap<u32, f32>,
+    ids: HashMap<NotePath, u32>,
+    paths: HashMap<u32, NotePath>,
+    next_id: u32,
+    total_len: f64,
+}
+
+impl FullText {
+    pub fn upsert(&mut self, rec: &NoteRecord) {
+        self.remove(&rec.path);
+        let id = self.next_id;
+        self.next_id += 1;
+        let (tf, len) = (&rec.search_terms.0, rec.search_terms.1);
+        let mut terms = Vec::with_capacity(tf.len());
+        for (t, f) in tf {
+            self.postings.entry(t.clone()).or_default().insert(id, *f);
+            terms.push(t.clone());
+        }
+        self.doc_terms.insert(id, terms);
+        self.doc_len.insert(id, len.max(1.0));
+        self.total_len += f64::from(len.max(1.0));
+        self.ids.insert(rec.path.clone(), id);
+        self.paths.insert(id, rec.path.clone());
+    }
+
+    pub fn remove(&mut self, path: &NotePath) {
+        let Some(id) = self.ids.remove(path) else {
+            return;
+        };
+        self.paths.remove(&id);
+        if let Some(len) = self.doc_len.remove(&id) {
+            self.total_len -= f64::from(len);
+        }
+        for t in self.doc_terms.remove(&id).unwrap_or_default() {
+            if let Some(p) = self.postings.get_mut(&t) {
+                p.remove(&id);
+                if p.is_empty() {
+                    self.postings.remove(&t);
+                }
+            }
+        }
+    }
+
+    fn idf(&self, df: usize) -> f32 {
+        let n = self.ids.len() as f32;
+        ((n - df as f32 + 0.5) / (df as f32 + 0.5) + 1.0).ln()
+    }
+
+    fn score_term(&self, postings: &HashMap<u32, f32>, scores: &mut HashMap<u32, f32>, avg: f32) {
+        let idf = self.idf(postings.len());
+        for (&id, &tf) in postings {
+            let dl = self.doc_len.get(&id).copied().unwrap_or(1.0);
+            let s = idf * (tf * (K1 + 1.0)) / (tf + K1 * (1.0 - B + B * dl / avg));
+            *scores.entry(id).or_default() += s;
+        }
+    }
+
+    /// Ranked (path, score) for every term matching (AND semantics).
+    pub fn rank(&self, q: &Query) -> Vec<(NotePath, f32)> {
+        if self.ids.is_empty() {
+            return Vec::new();
+        }
+        let avg = (self.total_len / self.ids.len() as f64) as f32;
+        let mut scores: HashMap<u32, f32> = HashMap::new();
+        let mut required: Option<std::collections::HashSet<u32>> = None;
+        let mut intersect = |ids: std::collections::HashSet<u32>| {
+            required = Some(match required.take() {
+                None => ids,
+                Some(r) => r.intersection(&ids).copied().collect(),
+            });
+        };
+        for term in &q.terms {
+            match self.postings.get(term) {
+                Some(p) => {
+                    self.score_term(p, &mut scores, avg);
+                    intersect(p.keys().copied().collect());
+                }
+                None => return Vec::new(),
+            }
+        }
+        if let Some(prefix) = &q.prefix {
+            let mut any = std::collections::HashSet::new();
+            for (term, p) in self.postings.range(prefix.clone()..).take_while(|(t, _)| t.starts_with(prefix.as_str())).take(64) {
+                // Exact matches score fully, longer completions a little less.
+                let mut partial = HashMap::new();
+                self.score_term(p, &mut partial, avg);
+                let factor = if term == prefix { 1.0 } else { 0.8 };
+                for (id, s) in partial {
+                    *scores.entry(id).or_default() += s * factor;
+                    any.insert(id);
+                }
+            }
+            intersect(any);
+        }
+        let mut out: Vec<(NotePath, f32)> = match required {
+            Some(ids) => {
+                ids.into_iter().filter_map(|id| Some((self.paths.get(&id)?.clone(), scores.get(&id).copied().unwrap_or(0.0)))).collect()
+            }
+            // Tag-only queries: every doc is a candidate; filters narrow it down.
+            None => self.paths.values().map(|p| (p.clone(), 0.0)).collect(),
+        };
+        for term in &q.exclude {
+            if let Some(p) = self.postings.get(term) {
+                out.retain(|(path, _)| self.ids.get(path).is_none_or(|id| !p.contains_key(id)));
+            }
+        }
+        out
+    }
+}
+
+/// Build a short snippet around the first matching term.
+pub fn snippet(plain: &str, terms: &[String], width: usize) -> (String, Vec<std::ops::Range<usize>>) {
+    let lower = plain.to_lowercase();
+    // Lowercasing can change byte lengths for some scripts; fall back to start in that case.
+    let same_len = lower.len() == plain.len();
+    let first = if same_len { terms.iter().filter_map(|t| lower.find(t.as_str())).min() } else { None };
+    let center = first.unwrap_or(0);
+    let floor = |mut i: usize| {
+        while !plain.is_char_boundary(i) {
+            i -= 1;
+        }
+        i
+    };
+    let start = floor(center.saturating_sub(width / 3));
+    let end = floor((start + width).min(plain.len()));
+    let mut text: String = plain[start..end].replace('\n', " ");
+    let mut offset = 0;
+    if start > 0 {
+        text.insert(0, '…');
+        offset = '…'.len_utf8();
+    }
+    if end < plain.len() {
+        text.push('…');
+    }
+    let mut hl = Vec::new();
+    if same_len {
+        let lower_slice = &lower[start..end];
+        for t in terms.iter().filter(|t| !t.is_empty()) {
+            let mut from = 0;
+            while let Some(i) = lower_slice[from..].find(t.as_str()) {
+                let s = from + i;
+                hl.push(offset + s..offset + s + t.len());
+                from = s + t.len();
+            }
+        }
+    }
+    hl.sort_by_key(|r| r.start);
+    (text, hl)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_queries() {
+        let q = Query::parse(r#"rope "undo tree" #rust -draft edi"#);
+        assert_eq!(q.terms, vec!["rope", "undo", "tree"]);
+        assert_eq!(q.phrases, vec!["undo tree"]);
+        assert_eq!(q.tags, vec!["rust"]);
+        assert_eq!(q.exclude, vec!["draft"]);
+        assert_eq!(q.prefix.as_deref(), Some("edi"));
+        assert_eq!(Query::parse("rope ").prefix, None);
+    }
+
+    #[test]
+    fn snippet_highlights() {
+        let (s, hl) = snippet("A long intro. Then the rope appears here, rope again.", &["rope".into()], 30);
+        assert!(s.contains("rope"));
+        for r in &hl {
+            assert_eq!(&s[r.clone()], "rope");
+        }
+    }
+}

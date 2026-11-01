@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions & help
+    url: https://github.com/BhanuNexus/quire/discussions/categories/q-a
+    about: Ask how to do something
+  - name: Ideas
+    url: https://github.com/BhanuNexus/quire/discussions/categories/ideas
+    about: Open-ended ideas and feedback
+  - name: Security vulnerability
+    url: https://github.com/BhanuNexus/quire/security/advisories/new
+    about: Report privately, please don't open a public issue

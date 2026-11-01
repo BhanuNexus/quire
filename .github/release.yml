@@ -1,0 +1,16 @@
+# Categories for auto-generated release notes, by PR label.
+changelog:
+  exclude:
+    labels: ["skip-changelog"]
+    authors: ["dependabot[bot]"]
+  categories:
+    - title: ✨ New
+      labels: ["enhancement"]
+    - title: 🐛 Fixes
+      labels: ["bug"]
+    - title: ⚡ Performance
+      labels: ["performance"]
+    - title: 📚 Docs
+      labels: ["documentation"]
+    - title: Other changes
+      labels: ["*"]
