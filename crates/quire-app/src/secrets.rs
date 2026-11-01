@@ -83,6 +83,10 @@ impl SecretStore for FileSecrets {
 
 /// The best store on this machine.
 pub fn store() -> Box<dyn SecretStore> {
+    // Tests never touch the real keychain or the user's secrets file.
+    if cfg!(test) {
+        return Box::new(FileSecrets::new(std::env::temp_dir().join(format!("quire-test-secrets-{}.toml", std::process::id()))));
+    }
     if let Some(p) = std::env::var_os("QUIRE_SECRETS_FILE") {
         return Box::new(FileSecrets::new(p));
     }

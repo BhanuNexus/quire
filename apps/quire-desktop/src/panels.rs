@@ -711,8 +711,9 @@ pub(crate) fn status_bar(ui: &mut egui::Ui, ws: &Workspace, pal: &Palette) -> Pa
                 if *st != SyncStatus::Off {
                     let (color, hover) = match st {
                         SyncStatus::Synced(at) => (pal.muted, format!("Up to date (checked {}s ago)", at.elapsed().as_secs())),
-                        SyncStatus::Syncing => (pal.accent, "Syncing with the server".to_string()),
-                        SyncStatus::Offline(e) => (pal.warn, format!("Can't reach the sync server; will keep trying.\n{e}")),
+                        SyncStatus::Syncing => (pal.accent, "Syncing".to_string()),
+                        SyncStatus::Offline(e) => (pal.warn, format!("Can't sync right now; will keep trying.\n{e}")),
+                        SyncStatus::Waiting(e) => (pal.warn, e.clone()),
                         SyncStatus::Error(e) => (pal.danger, e.clone()),
                         SyncStatus::Off => (pal.muted, String::new()),
                     };

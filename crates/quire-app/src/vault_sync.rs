@@ -6,9 +6,12 @@
 //! writes notes like any other program would, so the editor's existing
 //! outside-change handling (merge into unsaved edits, or reload) applies.
 //!
-//! Per vault, `.quire/sync/config.json` holds the server address and ids, and
-//! `.quire/sync/state.json` the engine's state. The server token and the
-//! vault key live in the OS keychain (or the private secrets file).
+//! A vault syncs either through a folder that Dropbox, iCloud Drive and the
+//! like already sync (free, nothing to run), or through a Quire Sync server.
+//!
+//! Per vault, `.quire/sync/config.json` holds where it syncs and its ids, and
+//! `.quire/sync/state.json` the engine's state. The vault key (and a server's
+//! token) live in the OS keychain (or the private secrets file).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -18,7 +21,10 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
 pub use quire_sync::SpaceInfo;
-use quire_sync::{DeviceId, Engine, HttpTransport, KdfParams, LocalStore, RecoveryKey, Report, SpaceId, SyncState, VaultKey, WrappedKey};
+use quire_sync::folder::{self, FolderTransport};
+use quire_sync::{
+    DeviceId, Engine, HttpTransport, KdfParams, LocalStore, RecoveryKey, Report, SpaceId, SyncState, Transport, VaultKey, WrappedKey,
+};
 use quire_vault::{NotePath, Vault};
 use serde::{Deserialize, Serialize};
 
@@ -28,7 +34,12 @@ use crate::workspace::{NoticeLevel, Workspace};
 /// What's stored in `.quire/sync/config.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncConfig {
+    /// The server's address; empty when syncing through a folder.
+    #[serde(default)]
     pub server: String,
+    /// The `Quire Sync` folder inside a synced folder, when syncing that way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<PathBuf>,
     pub space: SpaceId,
     pub device: DeviceId,
     pub device_name: String,
@@ -43,8 +54,10 @@ pub enum SyncStatus {
     Syncing,
     /// Up to date as of this moment.
     Synced(Instant),
-    /// Can't reach the server; will keep trying.
+    /// Can't reach the server or the sync folder; will keep trying.
     Offline(String),
+    /// Synced, but the sync folder has files that haven't downloaded yet.
+    Waiting(String),
     /// Something needs the user (wrong token, missing key…).
     Error(String),
 }
@@ -56,6 +69,7 @@ impl SyncStatus {
             Self::Syncing => "Syncing…".into(),
             Self::Synced(_) => "Synced".into(),
             Self::Offline(_) => "Offline".into(),
+            Self::Waiting(_) => "Waiting for files".into(),
             Self::Error(_) => "Sync needs attention".into(),
         }
     }
@@ -65,12 +79,89 @@ fn sync_dir(root: &Path) -> PathBuf {
     root.join(".quire").join("sync")
 }
 
+/// How hard a passphrase is stretched (cheap in tests).
+const KDF: KdfParams = if cfg!(test) { KdfParams::TEST } else { KdfParams::DEFAULT };
+
 fn token_name(space: &SpaceId) -> String {
     format!("sync-token-{space}")
 }
 
 fn key_name(space: &SpaceId) -> String {
     format!("sync-key-{space}")
+}
+
+/// Where a vault syncs, as chosen in Settings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncTarget {
+    /// A folder another tool keeps the same on every device (the one the
+    /// user picked; Quire works in a `Quire Sync` folder inside it).
+    Folder(PathBuf),
+    Server {
+        url: String,
+        token: String,
+    },
+}
+
+/// A vault that a new device can join.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncVaultInfo {
+    pub space: SpaceId,
+    /// Unix seconds.
+    pub created: i64,
+    /// "3 devices", "120 changes".
+    pub detail: String,
+}
+
+/// Folders that a sync tool on this computer keeps in step, for one-click setup.
+pub fn suggested_sync_folders() -> Vec<(String, PathBuf)> {
+    let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()) else { return Vec::new() };
+    let mut out: Vec<(String, PathBuf)> = Vec::new();
+    let mut add = |label: &str, p: PathBuf| {
+        if p.is_dir() && !out.iter().any(|(l, q)| l == label || *q == p) {
+            out.push((label.to_string(), p));
+        }
+    };
+    add("iCloud Drive", home.join("Library/Mobile Documents/com~apple~CloudDocs"));
+    // macOS puts Dropbox, Google Drive and OneDrive under CloudStorage.
+    if let Ok(entries) = std::fs::read_dir(home.join("Library/CloudStorage")) {
+        let mut entries: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+        entries.sort();
+        for p in entries {
+            let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            if name.starts_with("Dropbox") {
+                add("Dropbox", p);
+            } else if name.starts_with("GoogleDrive") {
+                add("Google Drive", p.join("My Drive"));
+            } else if name.starts_with("OneDrive") {
+                add("OneDrive", p);
+            }
+        }
+    }
+    add("Dropbox", home.join("Dropbox"));
+    add("iCloud Drive", home.join("iCloudDrive"));
+    add("OneDrive", home.join("OneDrive"));
+    add("Google Drive", home.join("Google Drive"));
+    add("Syncthing", home.join("Sync"));
+    out
+}
+
+/// The `Quire Sync` folder for a picked folder, refusing ones that would
+/// sync the vault into itself.
+fn sync_folder_root(chosen: &Path, vault_root: &Path) -> Result<PathBuf, String> {
+    if !chosen.is_dir() {
+        return Err(format!("{} isn't a folder on this computer", chosen.display()));
+    }
+    let root = folder::sync_root(chosen);
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let (r, v) = (canon(&root), canon(vault_root));
+    let r = if root.exists() { r } else { canon(chosen).join(folder::FOLDER_NAME) };
+    if r.starts_with(&v) {
+        return Err("Pick a folder outside this notes folder".into());
+    }
+    if v.starts_with(&r) {
+        return Err("This notes folder is inside that sync folder; pick another one".into());
+    }
+    Ok(root)
 }
 
 impl SyncConfig {
@@ -170,6 +261,28 @@ enum Event {
     Report(Report),
 }
 
+/// How the worker reaches the other devices.
+enum Link {
+    Server(HttpTransport),
+    Folder(Box<FolderTransport>),
+}
+
+impl Link {
+    fn new(cfg: &SyncConfig, token: &str, state_dir: &Path) -> Self {
+        match &cfg.folder {
+            Some(root) => Self::Folder(Box::new(FolderTransport::new(root, &cfg.space, cfg.device.clone(), Some(state_dir)))),
+            None => Self::Server(HttpTransport::new(&cfg.server, cfg.space.clone(), token)),
+        }
+    }
+
+    fn transport(&self) -> &dyn Transport {
+        match self {
+            Self::Server(t) => t,
+            Self::Folder(t) => &**t,
+        }
+    }
+}
+
 /// The background sync thread for one vault.
 pub struct SyncWorker {
     tx: Sender<Msg>,
@@ -201,28 +314,43 @@ impl SyncWorker {
         let stop = Arc::new(AtomicBool::new(false));
         let known = Arc::new(AtomicU64::new(0));
 
-        // Long-poll thread: tells the worker when another device pushed.
+        // Watch thread: tells the worker when another device pushed.
         {
             let (tx, stop, known) = (tx.clone(), Arc::clone(&stop), Arc::clone(&known));
-            let http = HttpTransport::new(&cfg.server, cfg.space.clone(), &token);
-            std::thread::spawn(move || {
-                while !stop.load(Ordering::Relaxed) {
-                    match http.wait(known.load(Ordering::Relaxed), 25) {
-                        Ok(latest) if latest > known.load(Ordering::Relaxed) => {
-                            let _ = tx.send(Msg::Remote);
-                            std::thread::sleep(Duration::from_millis(300));
+            match Link::new(&cfg, &token, &sync_dir(&root)) {
+                // A server answers a long poll as soon as something changes.
+                Link::Server(http) => std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        match http.wait(known.load(Ordering::Relaxed), 25) {
+                            Ok(latest) if latest > known.load(Ordering::Relaxed) => {
+                                let _ = tx.send(Msg::Remote);
+                                std::thread::sleep(Duration::from_millis(300));
+                            }
+                            Ok(_) => {}
+                            Err(_) => std::thread::sleep(Duration::from_secs(15)),
                         }
-                        Ok(_) => {}
-                        Err(_) => std::thread::sleep(Duration::from_secs(15)),
                     }
-                }
-            });
+                }),
+                // A folder is checked every couple of seconds (sizes and
+                // times only, so it's cheap).
+                Link::Folder(dir) => std::thread::spawn(move || {
+                    let mut last = dir.fingerprint();
+                    while !stop.load(Ordering::Relaxed) {
+                        std::thread::sleep(Duration::from_secs(2));
+                        let now = dir.fingerprint();
+                        if now != last {
+                            last = now;
+                            let _ = tx.send(Msg::Remote);
+                        }
+                    }
+                }),
+            };
         }
 
         let worker_stop = Arc::clone(&stop);
         std::thread::spawn(move || {
             let stop = worker_stop;
-            let http = HttpTransport::new(&cfg.server, cfg.space.clone(), &token);
+            let link = Link::new(&cfg, &token, &sync_dir(&root));
             let mut engine = Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), key.keys(), load_state(&root));
             let mut store = VaultStore::new(vault);
             let mut wait = Duration::ZERO;
@@ -245,7 +373,7 @@ impl SyncWorker {
                 }
                 let _ = events.send(Event::Status(SyncStatus::Syncing));
                 snapshot_reads(&mut store);
-                let res = engine.sync(&mut store, &http, &today());
+                let res = engine.sync(&mut store, link.transport(), &today());
                 let _ = save_state(&root, &engine.state);
                 known.store(engine.state.cursor, Ordering::Relaxed);
                 let status = match res {
@@ -254,7 +382,14 @@ impl SyncWorker {
                             let _ = events.send(Event::Report(report));
                         }
                         wait = Duration::from_mins(2);
-                        SyncStatus::Synced(Instant::now())
+                        match &link {
+                            Link::Folder(dir) => match (dir.problem(), dir.waiting()) {
+                                (Some(p), _) => SyncStatus::Error(p),
+                                (None, Some(w)) => SyncStatus::Waiting(w),
+                                (None, None) => SyncStatus::Synced(Instant::now()),
+                            },
+                            Link::Server(_) => SyncStatus::Synced(Instant::now()),
+                        }
                     }
                     Err(quire_sync::SyncError::Transport(quire_sync::TransportError::Offline(e))) => {
                         wait = Duration::from_secs(30);
@@ -305,29 +440,59 @@ impl Workspace {
         Ok((root, vault))
     }
 
-    /// The vaults on a server, so a new device can pick the one to join.
-    pub fn sync_list_spaces(server: &str, token: &str) -> Result<Vec<SpaceInfo>, String> {
-        HttpTransport::list_spaces(server.trim(), token.trim()).map_err(|e| e.to_string())
+    /// The vaults a new device can join, in a sync folder or on a server.
+    pub fn sync_list(target: &SyncTarget) -> Result<Vec<SyncVaultInfo>, String> {
+        match target {
+            SyncTarget::Folder(chosen) => Ok(folder::list_spaces(&folder::sync_root(chosen))
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .map(|s| SyncVaultInfo {
+                    space: s.space,
+                    created: s.created,
+                    detail: if s.devices == 1 { "1 device".into() } else { format!("{} devices", s.devices) },
+                })
+                .collect()),
+            SyncTarget::Server { url, token } => Ok(HttpTransport::list_spaces(url.trim(), token.trim())
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .map(|s: SpaceInfo| SyncVaultInfo { space: s.space, created: s.created, detail: format!("{} changes", s.revisions) })
+                .collect()),
+        }
     }
 
-    /// Start syncing this vault to a new space on `server`. Returns the
-    /// recovery key, to show once.
-    pub fn sync_create(&mut self, server: &str, token: &str, passphrase: &str, device_name: &str) -> Result<RecoveryKey, String> {
+    fn sync_config_for(&self, target: &SyncTarget, space: SpaceId, device_name: &str) -> Result<SyncConfig, String> {
+        let (root, _) = self.sync_parts()?;
+        let (server, folder) = match target {
+            SyncTarget::Folder(chosen) => (String::new(), Some(sync_folder_root(chosen, &root)?)),
+            SyncTarget::Server { url, .. } => (url.trim().to_string(), None),
+        };
+        Ok(SyncConfig {
+            server,
+            folder,
+            space,
+            device: DeviceId::random().map_err(|e| e.to_string())?,
+            device_name: device_name.trim().to_string(),
+        })
+    }
+
+    /// Start syncing this vault as a new sync vault. Returns the recovery
+    /// key, to show once.
+    pub fn sync_create(&mut self, target: &SyncTarget, passphrase: &str, device_name: &str) -> Result<RecoveryKey, String> {
         let (root, _) = self.sync_parts()?;
         if passphrase.chars().count() < 8 {
             return Err("Use a passphrase of at least 8 characters".into());
         }
         let key = VaultKey::generate().map_err(|e| e.to_string())?;
-        let space = SpaceId::random().map_err(|e| e.to_string())?;
-        let wrapped = WrappedKey::wrap(&key, passphrase, KdfParams::DEFAULT).map_err(|e| e.to_string())?;
-        HttpTransport::new(server.trim(), space.clone(), token.trim()).create_space(&wrapped).map_err(|e| e.to_string())?;
-        let cfg = SyncConfig {
-            server: server.trim().to_string(),
-            space,
-            device: DeviceId::random().map_err(|e| e.to_string())?,
-            device_name: device_name.trim().to_string(),
-        };
-        Self::store_sync_secrets(&cfg, token.trim(), &key)?;
+        let cfg = self.sync_config_for(target, SpaceId::random().map_err(|e| e.to_string())?, device_name)?;
+        let wrapped = WrappedKey::wrap(&key, passphrase, KDF).map_err(|e| e.to_string())?;
+        match (target, &cfg.folder) {
+            (_, Some(dir)) => folder::create_space(dir, &cfg.space, &wrapped).map_err(|e| e.to_string())?,
+            (SyncTarget::Server { url, token }, None) => {
+                HttpTransport::new(url.trim(), cfg.space.clone(), token.trim()).create_space(&wrapped).map_err(|e| e.to_string())?;
+            }
+            (SyncTarget::Folder(_), None) => return Err("No sync folder".into()),
+        }
+        Self::store_sync_secrets(&cfg, target, &key)?;
         cfg.save(&root)?;
         let _ = save_state(&root, &SyncState::default());
         let rk = key.recovery_key();
@@ -335,30 +500,33 @@ impl Workspace {
         Ok(rk)
     }
 
-    /// Join an existing space with its passphrase (or recovery key).
-    pub fn sync_join(&mut self, server: &str, token: &str, space: &SpaceId, secret: &str, device_name: &str) -> Result<(), String> {
+    /// Join an existing sync vault with its passphrase (or recovery key).
+    pub fn sync_join(&mut self, target: &SyncTarget, space: &SpaceId, secret: &str, device_name: &str) -> Result<(), String> {
         let (root, _) = self.sync_parts()?;
-        let http = HttpTransport::new(server.trim(), space.clone(), token.trim());
-        let key = match VaultKey::from_recovery_key(secret) {
-            Ok(k) => k,
-            Err(_) => http.wrapped_key().map_err(|e| e.to_string())?.unwrap(secret).map_err(|e| e.to_string())?,
+        let cfg = self.sync_config_for(target, space.clone(), device_name)?;
+        let key = if let Ok(k) = VaultKey::from_recovery_key(secret) {
+            k
+        } else {
+            let wrapped = match (target, &cfg.folder) {
+                (_, Some(dir)) => folder::wrapped_key(dir, space),
+                (SyncTarget::Server { url, token }, None) => HttpTransport::new(url.trim(), space.clone(), token.trim()).wrapped_key(),
+                (SyncTarget::Folder(_), None) => return Err("No sync folder".into()),
+            };
+            wrapped.map_err(|e| e.to_string())?.unwrap(secret).map_err(|e| e.to_string())?
         };
-        let cfg = SyncConfig {
-            server: server.trim().to_string(),
-            space: space.clone(),
-            device: DeviceId::random().map_err(|e| e.to_string())?,
-            device_name: device_name.trim().to_string(),
-        };
-        Self::store_sync_secrets(&cfg, token.trim(), &key)?;
+        Self::store_sync_secrets(&cfg, target, &key)?;
         cfg.save(&root)?;
         let _ = save_state(&root, &SyncState::default());
+        let _ = std::fs::remove_file(sync_dir(&root).join("folder-seq"));
         self.start_sync();
         Ok(())
     }
 
-    fn store_sync_secrets(cfg: &SyncConfig, token: &str, key: &VaultKey) -> Result<(), String> {
+    fn store_sync_secrets(cfg: &SyncConfig, target: &SyncTarget, key: &VaultKey) -> Result<(), String> {
         let store = secrets::store();
-        store.set(&token_name(&cfg.space), token)?;
+        if let SyncTarget::Server { token, .. } = target {
+            store.set(&token_name(&cfg.space), token.trim())?;
+        }
         store.set(&key_name(&cfg.space), &key.recovery_key().to_string())
     }
 
@@ -374,7 +542,8 @@ impl Workspace {
             return;
         };
         let store = secrets::store();
-        let token = store.get(&token_name(&cfg.space));
+        // A folder needs no token.
+        let token = if cfg.folder.is_some() { Some(String::new()) } else { store.get(&token_name(&cfg.space)) };
         let key = store.get(&key_name(&cfg.space)).and_then(|k| VaultKey::from_recovery_key(&k).ok());
         let (Some(token), Some(key)) = (token, key) else {
             self.sync.config = Some(cfg);
@@ -398,6 +567,7 @@ impl Workspace {
         let dir = sync_dir(&root);
         let _ = std::fs::remove_file(dir.join("config.json"));
         let _ = std::fs::remove_file(dir.join("state.json"));
+        let _ = std::fs::remove_file(dir.join("folder-seq"));
         Ok(())
     }
 
@@ -466,11 +636,101 @@ mod tests {
         assert!(store.read("A.md").is_none());
     }
 
+    fn wait_for(ws: &mut [&mut Workspace], what: &str, mut done: impl FnMut(&[&mut Workspace]) -> bool) {
+        let start = Instant::now();
+        while !done(ws) {
+            assert!(start.elapsed() < Duration::from_secs(30), "timed out waiting for {what}");
+            for w in ws.iter_mut() {
+                w.tick(Instant::now());
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    #[test]
+    fn two_vaults_sync_through_a_shared_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let (va, vb, shared) = (dir.path().join("A"), dir.path().join("B"), dir.path().join("Dropbox"));
+        for d in [&va, &vb, &shared] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(va.join("Plan.md"), "# Plan\nShip it.\n").unwrap();
+        let target = SyncTarget::Folder(shared.clone());
+
+        let mut a = Workspace::new(crate::Settings::default());
+        a.open_vault(&va).unwrap();
+        a.sync_create(&target, "correct horse battery", "laptop").unwrap();
+        assert_eq!(a.sync.config.as_ref().and_then(|c| c.folder.clone()), Some(shared.join("Quire Sync")));
+
+        let mut b = Workspace::new(crate::Settings::default());
+        b.open_vault(&vb).unwrap();
+        let found = Workspace::sync_list(&target).unwrap();
+        assert_eq!(found.len(), 1);
+        assert!(b.sync_join(&target, &found[0].space, "wrong passphrase", "phone").is_err());
+        b.sync_join(&target, &found[0].space, "correct horse battery", "phone").unwrap();
+        wait_for(&mut [&mut a, &mut b], "the note to reach B", |_| {
+            std::fs::read_to_string(vb.join("Plan.md")).is_ok_and(|t| t.contains("Ship it."))
+        });
+
+        // An edit on B travels back to A; B's worker notices the save, A's notices the folder change.
+        std::fs::write(vb.join("Plan.md"), "# Plan\nShip it.\nFrom the phone.\n").unwrap();
+        b.sync_nudge();
+        wait_for(&mut [&mut a, &mut b], "the edit to reach A", |_| {
+            std::fs::read_to_string(va.join("Plan.md")).is_ok_and(|t| t.contains("From the phone."))
+        });
+        wait_for(&mut [&mut a, &mut b], "both to settle", |ws| ws.iter().all(|w| matches!(w.sync.status, SyncStatus::Synced(_))));
+        // The sync folder holds only encrypted logs.
+        let space_dir = shared.join("Quire Sync").join(&found[0].space.0);
+        let logs: String = walk(&space_dir).iter().map(|p| std::fs::read_to_string(p).unwrap_or_default()).collect();
+        assert!(!logs.contains("Plan") && !logs.contains("Ship it"));
+        b.stop_sync().unwrap();
+        assert_eq!(b.sync.status, SyncStatus::Off);
+    }
+
+    fn walk(dir: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for e in std::fs::read_dir(dir).unwrap().flatten() {
+            if e.path().is_dir() {
+                out.extend(walk(&e.path()));
+            } else {
+                out.push(e.path());
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_sync_folder_must_be_outside_the_vault_and_vice_versa() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = dir.path().join("Notes");
+        let dropbox = dir.path().join("Dropbox");
+        std::fs::create_dir_all(vault.join("inner")).unwrap();
+        std::fs::create_dir_all(&dropbox).unwrap();
+        assert_eq!(sync_folder_root(&dropbox, &vault).unwrap(), dropbox.join("Quire Sync"));
+        assert!(sync_folder_root(&vault.join("inner"), &vault).is_err());
+        assert!(sync_folder_root(dir.path(), &dir.path().join("Quire Sync").join("v")).is_err());
+        assert!(sync_folder_root(&dir.path().join("missing"), &vault).is_err());
+    }
+
+    #[test]
+    fn a_0_5_config_still_loads_and_folder_configs_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = r#"{"server":"https://s.example.com","space":"ab","device":"cd","device_name":"laptop"}"#;
+        std::fs::create_dir_all(sync_dir(dir.path())).unwrap();
+        std::fs::write(sync_dir(dir.path()).join("config.json"), old).unwrap();
+        let cfg = SyncConfig::load(dir.path()).unwrap();
+        assert_eq!((cfg.server.as_str(), cfg.folder.as_ref()), ("https://s.example.com", None));
+        let cfg = SyncConfig { server: String::new(), folder: Some(dir.path().join("Dropbox/Quire Sync")), ..cfg };
+        cfg.save(dir.path()).unwrap();
+        assert_eq!(SyncConfig::load(dir.path()), Some(cfg));
+    }
+
     #[test]
     fn config_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = SyncConfig {
             server: "https://sync.example.com".into(),
+            folder: None,
             space: SpaceId::random().unwrap(),
             device: DeviceId::random().unwrap(),
             device_name: "laptop".into(),

@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::protocol::{FileId, PushOutcome, Revision};
+use crate::protocol::{FileId, PushOutcome, RevId, Revision};
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum TransportError {
@@ -21,6 +21,19 @@ pub trait Transport {
     fn pull(&self, after: u64) -> Result<Vec<Revision>, TransportError>;
     /// Store `rev` if its first parent is still its file's head.
     fn push(&self, rev: &Revision) -> Result<PushOutcome, TransportError>;
+
+    /// For a pulled `theirs` that doesn't build on `ours` (this device's
+    /// last synced revision of `file`): the revision both share, if some
+    /// revision only `ours` has was written on this device. Those changes
+    /// never reached `theirs`, so this device merges them again from there.
+    ///
+    /// A server puts every note's revisions in one line, so this never
+    /// happens there. It does in a synced folder, when two devices build on
+    /// the same revision before seeing each other's.
+    fn fork_base(&self, file: &FileId, ours: &RevId, theirs: &Revision) -> Option<Revision> {
+        let _ = (file, ours, theirs);
+        None
+    }
 }
 
 #[derive(Debug, Default)]

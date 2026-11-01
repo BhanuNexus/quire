@@ -140,11 +140,11 @@ impl Engine {
     fn pull(&mut self, local: &mut dyn LocalStore, server: &dyn Transport, today: &str, report: &mut Report) -> Result<(), SyncError> {
         let revs = server.pull(self.state.cursor)?;
         for r in revs {
-            if self.state.files.get(&r.file).is_none_or(|t| t.head_seq < r.seq) {
+            if self.state.files.get(&r.file).is_none_or(|t| t.head_seq < r.seq && t.head != r.rev) {
                 let c = Content::open(&self.keys, &self.space, &r)?;
                 // If applying fails (say the file changed underneath us), the
                 // cursor stays put and this revision is applied next time.
-                self.apply(local, &r, &c, today, report)?;
+                self.apply(local, server, &r, &c, today, report)?;
                 report.pulled += 1;
             }
             self.state.cursor = self.state.cursor.max(r.seq);
@@ -152,14 +152,22 @@ impl Engine {
         Ok(())
     }
 
-    fn apply(&mut self, local: &mut dyn LocalStore, r: &Revision, c: &Content, today: &str, report: &mut Report) -> Result<(), SyncError> {
+    fn apply(
+        &mut self,
+        local: &mut dyn LocalStore,
+        server: &dyn Transport,
+        r: &Revision,
+        c: &Content,
+        today: &str,
+        report: &mut Report,
+    ) -> Result<(), SyncError> {
         let Some(t) = self.state.files.get(&r.file).cloned() else {
             // A note we haven't seen.
             let mut path = c.path.clone();
             if !c.deleted {
                 // The same name may have been created here too; that file
                 // keeps its name and this note takes the next free one.
-                path = self.free_path(local, &c.path, &r.file);
+                path = self.claim_path(local, &c.path, &r.file)?;
                 self.protect_unsynced(local, &path, &c.text)?;
                 write(local, &path, &c.text)?;
             }
@@ -167,16 +175,27 @@ impl Engine {
             return Ok(());
         };
 
+        // Normally the last synced text is the ancestor. If this device's
+        // last revision lost a tie in a synced folder, its changes aren't in
+        // `r`: merge from the revision both share instead, so they're kept.
+        let shared = if r.parents.first() == Some(&t.head) { None } else { server.fork_base(&r.file, &t.head, r) };
+        let (base, base_deleted) = match shared {
+            Some(shared) => {
+                let s = Content::open(&self.keys, &self.space, &shared)?;
+                (s.text, s.deleted)
+            }
+            None => (t.base.clone(), t.deleted),
+        };
         let here = local.read(&t.path);
-        let changed_here = match (&here, t.deleted) {
+        let changed_here = match (&here, base_deleted) {
             (None, deleted) => !deleted,
             (Some(_), true) => true,
-            (Some(x), false) => *x != t.base,
+            (Some(x), false) => *x != base,
         };
 
         if !changed_here {
             // Nothing to protect: take the remote version.
-            let to = if c.deleted { t.path.clone() } else { self.free_path(local, &c.path, &r.file) };
+            let to = if c.deleted { t.path.clone() } else { self.claim_path(local, &c.path, &r.file)? };
             if t.path != to || c.deleted {
                 remove(local, &t.path)?;
             }
@@ -196,7 +215,7 @@ impl Engine {
             }
             // Deleted here, edited there: the edit wins.
             (None, false) => {
-                let to = self.free_path(local, &c.path, &r.file);
+                let to = self.claim_path(local, &c.path, &r.file)?;
                 self.protect_unsynced(local, &to, &c.text)?;
                 write(local, &to, &c.text)?;
                 report.kept_over_delete.push(to.clone());
@@ -206,14 +225,14 @@ impl Engine {
             (None, true) => self.track_at(r, c, &t.path),
             // Edited on both sides.
             (Some(mine), false) => {
-                let to = self.free_path(local, &c.path, &r.file);
+                let to = self.claim_path(local, &c.path, &r.file)?;
                 if t.path != to {
                     remove(local, &t.path)?;
                 }
                 if t.path != to {
                     self.protect_unsynced(local, &to, &mine)?;
                 }
-                let m = merge::merge3(&t.base, &mine, &c.text);
+                let m = merge::merge3(&base, &mine, &c.text);
                 if m.is_clean() {
                     write(local, &to, &m.text)?;
                     report.merged.push(to.clone());
@@ -234,8 +253,28 @@ impl Engine {
         self.state.files.values().any(|t| !t.deleted && t.path == path)
     }
 
-    /// `wanted`, unless another synced note already lives there; then a
-    /// numbered name next to it.
+    /// Where an incoming note goes when it wants `wanted`. If another synced
+    /// note is there, the one with the smaller id keeps the name and the
+    /// other gets a numbered one, so every device files them the same way
+    /// whichever it saw first. Moving a note here is pushed like any rename.
+    fn claim_path(&mut self, local: &mut dyn LocalStore, wanted: &str, file: &FileId) -> Result<String, SyncError> {
+        let holder = self.state.files.iter().find(|(id, t)| *id != file && !t.deleted && t.path == wanted).map(|(id, _)| id.clone());
+        let Some(holder) = holder.filter(|h| file < h) else { return Ok(self.free_path(local, wanted, file)) };
+        let (stem, ext) = split_ext(wanted);
+        let aside = (2..10_000)
+            .map(|n| format!("{stem} ({n}){ext}"))
+            .find(|p| local.read(p).is_none() && !self.is_tracked_path(p))
+            .unwrap_or_else(|| format!("{stem} (moved){ext}"));
+        if let Some(text) = local.read(wanted) {
+            write(local, &aside, &text)?;
+            remove(local, wanted)?;
+        }
+        if let Some(t) = self.state.files.get_mut(&holder) {
+            t.path = aside;
+        }
+        Ok(wanted.to_string())
+    }
+
     /// Where a note may go: `wanted`, unless another synced note is already
     /// there; then a numbered name next to it.
     fn free_path(&self, local: &dyn LocalStore, wanted: &str, file: &FileId) -> String {

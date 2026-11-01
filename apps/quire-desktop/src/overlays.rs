@@ -26,7 +26,7 @@ pub(crate) enum Overlay {
     OpenVault { input: String },
     VaultReplace { focused: bool },
     Ask { focused: bool },
-    Settings(crate::dialogs::SettingsState),
+    Settings(Box<crate::dialogs::SettingsState>),
     History(crate::dialogs::HistoryState),
     Import(crate::dialogs::ImportState),
     NewProject(crate::dialogs::ProjectState),

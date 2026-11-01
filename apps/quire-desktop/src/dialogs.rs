@@ -55,16 +55,28 @@ enum SyncMode {
     Join,
 }
 
+/// How a new sync vault reaches the other devices.
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum SyncVia {
+    /// A folder Dropbox, iCloud Drive and the like already sync. Free.
+    #[default]
+    Folder,
+    Server,
+}
+
 #[derive(Default)]
 struct SyncForm {
     mode: SyncMode,
+    via: SyncVia,
+    folder: String,
+    suggested: Option<Vec<(String, std::path::PathBuf)>>,
     server: String,
     token: String,
     device: String,
     pass: String,
     pass2: String,
     secret: String,
-    spaces: Option<Result<Vec<quire_app::vault_sync::SpaceInfo>, String>>,
+    spaces: Option<Result<Vec<quire_app::vault_sync::SyncVaultInfo>, String>>,
     chosen: Option<usize>,
     error: Option<String>,
     /// Shown once after creating a vault.
@@ -141,7 +153,7 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
         ui.label(
             RichText::new(
                 "If you forget the passphrase, this key is the only way to get your synced notes onto a new device. \
-                 Nobody can reset it for you, not even the server's owner. Keep it in a password manager or on paper.",
+                 Nobody can reset it for you. Keep it in a password manager or on paper.",
             )
             .size(12.5)
             .color(pal.muted),
@@ -167,6 +179,7 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
             SyncStatus::Syncing => ("Syncing…".to_string(), String::new(), pal.accent),
             SyncStatus::Synced(at) => ("Up to date".to_string(), format!("checked {}s ago", at.elapsed().as_secs()), pal.accent),
             SyncStatus::Offline(e) => ("Offline, will keep trying".to_string(), e.clone(), pal.warn),
+            SyncStatus::Waiting(e) => ("Waiting for files".to_string(), e.clone(), pal.warn),
             SyncStatus::Error(e) => ("Needs attention".to_string(), e.clone(), pal.danger),
         };
         egui::Grid::new("sync-status").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
@@ -178,8 +191,13 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
                 }
             });
             ui.end_row();
-            ui.label("Server");
-            ui.label(&cfg.server);
+            if let Some(dir) = &cfg.folder {
+                ui.label("Sync folder");
+                ui.add(egui::Label::new(dir.display().to_string()).wrap());
+            } else {
+                ui.label("Server");
+                ui.label(&cfg.server);
+            }
             ui.end_row();
             ui.label("This device");
             ui.label(&cfg.device_name);
@@ -214,9 +232,13 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
             ui.add(egui::Label::new(RichText::new(k).monospace()).wrap());
         }
         ui.label(
-            RichText::new("Stopping leaves your notes here as they are, and the server copy for your other devices.")
-                .size(12.0)
-                .color(pal.muted),
+            RichText::new(if cfg.folder.is_some() {
+                "Stopping leaves your notes here as they are, and the sync folder for your other devices."
+            } else {
+                "Stopping leaves your notes here as they are, and the server copy for your other devices."
+            })
+            .size(12.0)
+            .color(pal.muted),
         );
         if let Some(e) = &f.error {
             ui.label(RichText::new(e).color(pal.danger));
@@ -226,24 +248,79 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
 
     ui.label(
         RichText::new(
-            "Keep this folder the same on all your devices through a Quire Sync server. Notes are encrypted on this device \
-             with your passphrase; the server can't read them or their names.",
+            "Keep this notes folder the same on all your devices. Notes are encrypted on this device with your passphrase \
+             before they go anywhere, so nothing in between can read them or their names.",
         )
         .size(12.5)
         .color(pal.muted),
     );
-    ui.hyperlink_to(RichText::new("Run your own server").size(12.5), format!("{SOURCE_URL}/blob/main/docs/self-hosting.md"));
+    ui.add_space(4.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.selectable_value(&mut f.via, SyncVia::Folder, "Through a folder you already sync (free)");
+        ui.selectable_value(&mut f.via, SyncVia::Server, "Through a Quire Sync server");
+    });
+    match f.via {
+        SyncVia::Folder => {
+            ui.label(
+                RichText::new(
+                    "Pick a folder that Dropbox, iCloud Drive, Google Drive, OneDrive or Syncthing keeps on all your devices. \
+                     Quire keeps an encrypted “Quire Sync” folder inside it.",
+                )
+                .size(12.0)
+                .color(pal.muted),
+            );
+        }
+        SyncVia::Server => {
+            ui.hyperlink_to(RichText::new("Run your own server").size(12.5), format!("{SOURCE_URL}/blob/main/docs/self-hosting.md"));
+        }
+    }
     ui.add_space(6.0);
     if f.device.is_empty() {
         f.device = quire_app::vault_sync::default_device_name();
     }
+    let suggested = f.suggested.get_or_insert_with(quire_app::vault_sync::suggested_sync_folders).clone();
     egui::Grid::new("sync-setup").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
-        ui.label("Server");
-        ui.add(egui::TextEdit::singleline(&mut f.server).hint_text("https://sync.example.com").desired_width(320.0));
-        ui.end_row();
-        ui.label("Server token");
-        ui.add(egui::TextEdit::singleline(&mut f.token).password(true).desired_width(320.0));
-        ui.end_row();
+        match f.via {
+            SyncVia::Folder => {
+                ui.label("Sync folder");
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(egui::TextEdit::singleline(&mut f.folder).hint_text("Choose a synced folder").desired_width(250.0))
+                            .changed()
+                        {
+                            f.spaces = None;
+                        }
+                        if ui.button("Choose…").clicked()
+                            && let Some(p) = rfd::FileDialog::new().pick_folder()
+                        {
+                            f.folder = p.display().to_string();
+                            f.spaces = None;
+                        }
+                    });
+                    if !suggested.is_empty() {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new("On this computer:").size(12.0).color(pal.muted));
+                            for (label, p) in &suggested {
+                                if ui.small_button(label).on_hover_text(p.display().to_string()).clicked() {
+                                    f.folder = p.display().to_string();
+                                    f.spaces = None;
+                                }
+                            }
+                        });
+                    }
+                });
+                ui.end_row();
+            }
+            SyncVia::Server => {
+                ui.label("Server");
+                ui.add(egui::TextEdit::singleline(&mut f.server).hint_text("https://sync.example.com").desired_width(320.0));
+                ui.end_row();
+                ui.label("Server token");
+                ui.add(egui::TextEdit::singleline(&mut f.token).password(true).desired_width(320.0));
+                ui.end_row();
+            }
+        }
         ui.label("This device");
         ui.add(egui::TextEdit::singleline(&mut f.device).desired_width(320.0));
         ui.end_row();
@@ -265,20 +342,26 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
             SyncMode::Join => {
                 ui.label("Vault");
                 ui.vertical(|ui| {
-                    if ui.button("Find vaults on the server").clicked() {
-                        f.spaces = Some(Workspace::sync_list_spaces(&f.server, &f.token));
+                    let find = if f.via == SyncVia::Folder { "Find vaults in the folder" } else { "Find vaults on the server" };
+                    if ui.button(find).clicked() {
+                        f.spaces = Some(Workspace::sync_list(&sync_target(f)));
                         f.chosen = f.spaces.as_ref().and_then(|s| s.as_ref().ok()).filter(|l| l.len() == 1).map(|_| 0);
                     }
                     match &f.spaces {
                         Some(Ok(list)) if list.is_empty() => {
-                            ui.label(RichText::new("No vaults on this server yet. Start one from another device.").color(pal.muted));
+                            let none = if f.via == SyncVia::Folder {
+                                "No Quire vaults in this folder yet. Start one from another device, and let the folder finish syncing."
+                            } else {
+                                "No vaults on this server yet. Start one from another device."
+                            };
+                            ui.label(RichText::new(none).color(pal.muted));
                         }
                         Some(Ok(list)) => {
                             for (i, s) in list.iter().enumerate() {
                                 let when = chrono::DateTime::from_timestamp(s.created, 0)
                                     .map(|d| d.format("%Y-%m-%d").to_string())
                                     .unwrap_or_default();
-                                let text = format!("Started {when} · {} changes · {}", s.revisions, &s.space.0[..8.min(s.space.0.len())]);
+                                let text = format!("Started {when} · {} · {}", s.detail, &s.space.0[..8.min(s.space.0.len())]);
                                 ui.radio_value(&mut f.chosen, Some(i), text);
                             }
                         }
@@ -296,13 +379,17 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
         }
     });
     ui.add_space(6.0);
-    let ready = !f.server.trim().is_empty() && !f.token.trim().is_empty() && !f.device.trim().is_empty();
+    let reachable = match f.via {
+        SyncVia::Folder => !f.folder.trim().is_empty(),
+        SyncVia::Server => !f.server.trim().is_empty() && !f.token.trim().is_empty(),
+    };
+    let ready = reachable && !f.device.trim().is_empty();
     match f.mode {
         SyncMode::Create => {
             if ui.add_enabled(ready && !f.pass.is_empty(), egui::Button::new("Start syncing")).clicked() {
                 f.error = None;
                 if f.pass == f.pass2 {
-                    match ws.sync_create(&f.server, &f.token, &f.pass, &f.device) {
+                    match ws.sync_create(&sync_target(f), &f.pass, &f.device) {
                         Ok(rk) => {
                             f.recovery = Some(rk.to_string());
                             f.pass.clear();
@@ -326,7 +413,7 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
                 && let Some(s) = chosen
             {
                 f.error = None;
-                match ws.sync_join(&f.server, &f.token, &s.space, &f.secret, &f.device) {
+                match ws.sync_join(&sync_target(f), &s.space, &f.secret, &f.device) {
                     Ok(()) => f.secret.clear(),
                     Err(e) => f.error = Some(e),
                 }
@@ -340,6 +427,14 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
     }
     if let Some(e) = &f.error {
         ui.label(RichText::new(e).color(pal.danger));
+    }
+}
+
+fn sync_target(f: &SyncForm) -> quire_app::vault_sync::SyncTarget {
+    use quire_app::vault_sync::SyncTarget;
+    match f.via {
+        SyncVia::Folder => SyncTarget::Folder(std::path::PathBuf::from(f.folder.trim())),
+        SyncVia::Server => SyncTarget::Server { url: f.server.trim().to_string(), token: f.token.trim().to_string() },
     }
 }
 

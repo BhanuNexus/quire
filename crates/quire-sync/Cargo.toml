@@ -28,5 +28,8 @@ getrandom = "0.4"
 zeroize = { version = "1", features = ["derive"] }
 ureq = { workspace = true, optional = true }
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true

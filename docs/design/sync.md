@@ -1,6 +1,6 @@
 # Quire Sync: design
 
-*Status: proposal, for review. Tracks [#14](https://github.com/BhanuNexus/quire/issues/14).*
+*Status: shipped as a beta in 0.5.0 (server); folder sync follows. Tracks [#14](https://github.com/BhanuNexus/quire/issues/14).*
 
 Quire Sync keeps a vault the same on every device. The server is open source (AGPL), runs as one binary anyone can host, and only ever stores encrypted data. The paid **managed sync** service runs the same server for people who don't want to host it.
 
@@ -77,11 +77,48 @@ Crypto comes from the RustCrypto crates (`chacha20poly1305`, `argon2`, `hkdf`, `
 
 The server can see: how many files a vault has, roughly how big each revision is (lengths are padded up to the next size bucket), when each device syncs, and which revisions belong to the same file. It can't see: text, file or folder names, tags, links, or which files are attachments. This is the same trade-off Obsidian Sync and Standard Notes make, and it's written down so users can judge it.
 
+## Sync through a folder (free)
+
+Most people already have Dropbox, iCloud Drive, Google Drive, OneDrive or Syncthing. Quire Sync can use a folder one of those keeps on every device instead of a server. It's the default in Settings → Sync, costs nothing and needs nothing running.
+
+Putting the vault itself in Dropbox already works, but a file sync tool can't merge: two devices editing one note produce a "conflicted copy", and Quire only cleans up afterwards. Folder sync keeps the merge in Quire, with the same encryption, by never letting two devices write the same file:
+
+```
+<chosen folder>/Quire Sync/<space>/
+  space.json                          the wrapped vault key (written once, by the first device)
+  devices/<device>/000001.jsonl       that device's revisions, one sealed revision per line
+```
+
+* **One writer per file.** A device only appends to its own log files. The sync tool copies them; it never sees two devices change one file, so it never makes conflicted copies.
+* **The same order everywhere, without a server.** Each device reads every log and works out each note's current revision: start at the note's first revision and keep following its child. When two devices built on the same revision before seeing each other's, the child with the smaller revision id wins. That rule doesn't depend on which files arrived first, so every device agrees once it has the same files.
+* **The losing device merges again.** The device whose revision lost hears about it when the winner's file arrives, which is like the server's `409 Conflict`, only later. It merges its changes onto the winner three-way, from the revision both share, and appends the result. Other devices just follow the winner. If two devices race to do this, the results are identical and the next round is a no-op. The engine change is one hook, `Transport::fork_base`, which servers don't need.
+* **Half-synced files are fine.** A line is read only once it ends in a newline, so a log that's still downloading, or was cut short by a crash, is read up to its last whole line. A revision whose earlier revision hasn't arrived yet waits for it. A damaged line is skipped.
+* **Changes are noticed by polling.** Every 2 seconds Quire checks the logs' sizes and times, which is cheap, and syncs when they change.
+
+### Drawbacks, and what Quire does about them
+
+| Drawback | Impact | Mitigation |
+|---|---|---|
+| **Slower.** Changes travel as fast as the sync tool: seconds for Dropbox and Syncthing, sometimes minutes for iCloud Drive, Google Drive and OneDrive | Concurrent edits are more likely, and other devices see changes later | Concurrent edits merge as they do with a server, so it's only a delay. A server stays available for near-instant sync |
+| **Races resolve later.** With a server, the second device to push finds out at once. Here it finds out when the other file arrives | A third device may briefly show the winning version without the losing device's edits, until that device merges them back | The losing device always merges again; text is never dropped. If that device is never online again after the race, its last edit stays in the encrypted log but not in the note (restoring from the log comes with history, milestone 4) |
+| **iCloud evicts files** to save space, leaving `.icloud` placeholders | Those logs can't be read until they download | Quire counts placeholders and shows *Waiting for files* with the fix: "Keep Downloaded" on the Quire Sync folder. Dropbox and OneDrive placeholders download when read |
+| **Logs grow.** Every saved change is a line, and nothing is deleted yet | Roughly the size of your edits over time, padded and encrypted | Logs roll over at 1 MiB, so tools that re-upload a changed file whole only re-send the newest. Compaction (a snapshot, then dropping lines every device has read) is planned with history |
+| **A copied vault** (including `.quire/`) on a second computer would make two computers write as one device | The two would append to the same log file | Quire notices lines it didn't write in its own log (or a sync tool's conflicted copy of it) and stops with "Another computer is syncing as this one". Turning sync off and on again on one of them fixes it |
+| **The wrapped key is in the folder.** With a server it sits behind the server token; here anyone who can read the folder can try passphrases offline | A weak passphrase is the weak point | Argon2id with 64 MiB and 3 passes makes each guess slow, and the passphrase must be 8 characters or more. Use a long one, as for the server |
+| **Same three-device race with overlapping edits** | Each of the two devices that merges may write a conflict copy, so the same copy can appear twice | Rare (it needs three devices and overlapping lines); both copies have the same text and the conflicts dialog merges them |
+| **Polling** | A small amount of work every 2 seconds while the app is open | Only file sizes and times are read, not contents |
+
+What doesn't apply: **clock skew** (nothing depends on time; order comes from the revision graph), **deletes** (a delete is a revision, so it merges like an edit, and an edit still beats a delete), and **name clashes** (when two notes want the same name, every device gives the numbered name to the note with the larger id, whichever it saw first).
+
+What the sync service learns is what a server would: how many notes, roughly how big each change is, when devices sync and how many devices there are. Not text, note or folder names.
+
+**Tests.** The same convergence checks as the server run against real folders, with a simulated sync tool that copies files late, out of order and half-written, across 3 devices: 150 seeds per test on every CI run and 3,000 checked locally, plus an end-to-end test of two app workspaces sharing a folder.
+
 ## Components
 
 | Piece | What it is |
 |---|---|
-| `quire-sync` crate | Protocol types, encryption, and the sync engine. No UI and no network code inside the engine: it talks to a `Transport` trait, so tests run many simulated devices against an in-memory server |
+| `quire-sync` crate | Protocol types, encryption, and the sync engine. No UI and no network code inside the engine: it talks to a `Transport` trait, so tests run many simulated devices against an in-memory server. `FolderTransport` syncs through a shared folder |
 | `quire-sync-server` | axum + tokio + SQLite (rusqlite). Blobs on disk, with S3-compatible storage as an option later. One binary and a Docker image. AGPL |
 | Desktop | **Settings → Sync**: server URL, create or join a vault, passphrase, recovery key, devices. A status-bar indicator (synced / syncing / offline / needs attention). It reuses the merge banner and the conflicts dialog |
 | Managed service | The same server, run by us, plus accounts, quotas and billing. Because the server is AGPL, any changes we make to it are published. Billing glue can be a separate service |
