@@ -51,6 +51,8 @@ pub struct Settings {
     pub editor: String,
     /// Show images under lines that embed them.
     pub inline_images: bool,
+    /// The first-run tour has been shown (or skipped).
+    pub tour_done: bool,
 }
 
 impl Default for Settings {
@@ -76,6 +78,7 @@ impl Default for Settings {
             embed_base_url: String::new(),
             editor: "fast".into(),
             inline_images: true,
+            tour_done: false,
         }
     }
 }

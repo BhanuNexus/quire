@@ -32,6 +32,7 @@ pub(crate) enum Overlay {
     NewProject(crate::dialogs::ProjectState),
     Folder(crate::dialogs::FolderState),
     Shortcuts { query: String, focused: bool },
+    Tour { step: usize },
 }
 
 impl Overlay {
@@ -162,6 +163,7 @@ pub(crate) fn show(ctx: &egui::Context, overlay: &mut Overlay, ws: &mut Workspac
         Overlay::NewProject(st) => (res.close, res.jumped) = crate::dialogs::new_project(ctx, st, ws, pal),
         Overlay::Folder(st) => (res.close, res.jumped) = crate::dialogs::folder_picker(ctx, st, ws, pal),
         Overlay::Shortcuts { query, focused } => res.close = shortcuts(ctx, query, focused, pal, mac),
+        Overlay::Tour { step } => res.close = crate::dialogs::tour(ctx, step, pal),
         Overlay::Palette { mode, query, selected, focused } => {
             let list = items(ws, *mode, query, mac);
             let (down, up, enter) = ctx.input_mut(|i| {

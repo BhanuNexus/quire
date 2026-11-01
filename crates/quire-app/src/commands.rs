@@ -29,6 +29,7 @@ pub enum Command {
     // Search & navigation
     CommandPalette,
     ShowShortcuts,
+    TakeTour,
     SearchVault,
     ShowTasks,
     // Formatting
@@ -172,6 +173,7 @@ commands! {
     OpenSettings,     "App",    "Settings…",                      [cmd("Comma")], false;
     CommandPalette,   "Go",     "Command palette…",               [cmd_shift("P"), cmd("K")], false;
     ShowShortcuts,    "Help",   "Keyboard shortcuts",             [cmd("Slash")], false;
+    TakeTour,         "Help",   "Take the tour",                  [], false;
     SearchVault,      "Go",     "Search all notes…",              [cmd_shift("F")], false;
     ShowTasks,        "Go",     "Show open tasks",                [alt("T")], false;
     Bold,             "Format", "Bold",                           [cmd("B")], true;

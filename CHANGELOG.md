@@ -6,6 +6,7 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ### Added
 - Keyboard shortcut cheat sheet (Ctrl+/ or the **?** button), generated from the command list.
+- A five-step first-run tour (Help: Take the tour to see it again).
 - Quick open (Ctrl+P) with an empty query lists your recently opened notes first. The list is remembered between sessions and follows renames and moves.
 
 ### Fixed

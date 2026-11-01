@@ -84,6 +84,7 @@ pub enum UiRequest {
     Import,
     NewProject,
     Shortcuts,
+    Tour,
     /// Pick a folder for a new note.
     NewInFolder,
     /// Pick a folder to move the active note to.
@@ -977,6 +978,7 @@ impl Workspace {
             }
             C::ShowHistory => return Some(UiRequest::History),
             C::ShowShortcuts => return Some(UiRequest::Shortcuts),
+            C::TakeTour => return Some(UiRequest::Tour),
             C::NewProject => return self.vault.is_some().then_some(UiRequest::NewProject),
             C::NewInFolder => return self.vault.is_some().then_some(UiRequest::NewInFolder),
             C::MoveNote => return self.active_doc().and_then(|d| d.path.as_ref()).map(|_| UiRequest::MoveNote),

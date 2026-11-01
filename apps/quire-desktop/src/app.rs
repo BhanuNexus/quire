@@ -176,6 +176,7 @@ impl QuireApp {
                 UiRequest::Settings => Overlay::Settings(crate::dialogs::SettingsState::default()),
                 UiRequest::NewProject => Overlay::NewProject(crate::dialogs::ProjectState::default()),
                 UiRequest::Shortcuts => Overlay::Shortcuts { query: String::new(), focused: false },
+                UiRequest::Tour => Overlay::Tour { step: 0 },
                 UiRequest::NewInFolder => Overlay::Folder(crate::dialogs::FolderState::new(&self.ws, crate::dialogs::FolderMode::NewNote)),
                 UiRequest::MoveNote => Overlay::Folder(crate::dialogs::FolderState::new(&self.ws, crate::dialogs::FolderMode::Move)),
                 UiRequest::History => Overlay::History(crate::dialogs::HistoryState::new(&self.ws)),
@@ -452,8 +453,18 @@ impl QuireApp {
             });
         }
 
+        // First run: a short tour once there's a vault to look at.
+        if self.overlay.is_none() && !self.ws.settings.tour_done && self.ws.vault().is_some() {
+            self.overlay = Some(Overlay::Tour { step: 0 });
+        }
         if let Some(ov) = self.overlay.as_mut() {
+            let was_tour = matches!(ov, Overlay::Tour { .. });
             let res = overlays::show(&ctx, ov, &mut self.ws, pal);
+            // However the tour closes (finish, skip, Escape), don't show it again.
+            if res.close && was_tour && !self.ws.settings.tour_done {
+                self.ws.settings.tour_done = true;
+                let _ = self.ws.settings.save();
+            }
             if res.close {
                 self.overlay = None;
                 self.focus_editor();

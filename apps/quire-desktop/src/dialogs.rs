@@ -608,3 +608,83 @@ pub(crate) fn folder_picker(ctx: &egui::Context, st: &mut FolderState, ws: &mut 
     }
     (close, false)
 }
+
+// ------------------------------------------------------------------ tour
+
+/// (title, body, keys to try). Short on purpose: one idea per card.
+const TOUR: [(&str, &str, &str); 5] = [
+    (
+        "Welcome to Quire",
+        "Your notes are plain Markdown files in a folder you choose. Quire styles them as you type and saves automatically. Nothing leaves your computer unless you turn on an AI provider.",
+        "Just start typing: the first line names the note",
+    ),
+    (
+        "Find anything",
+        "Jump to any note by name, run any command, or search every note by words and by meaning.",
+        "Ctrl+P quick open  ·  Ctrl+K commands  ·  Ctrl+Shift+F search",
+    ),
+    (
+        "Link your thinking",
+        "Type [[ to link notes. The Insights panel shows backlinks, related notes and mentions you haven't linked yet. Renaming a note updates every link to it.",
+        "[[  link  ·  Alt+Enter follow  ·  F2 or double-click a tab to rename",
+    ),
+    (
+        "Organise without a database",
+        "+ New → Project makes a project note with status and due date, and a board to drag projects across. Right-click any note or folder for more. Properties and views are still plain text.",
+        "Ctrl+Alt+N new project  ·  right-click a note  ·  Ctrl+Alt+H version history",
+    ),
+    (
+        "Your notes, your AI",
+        "Ask questions of your notes with cited answers, offline. Connect Ollama or Claude in Settings if you want a model to write the answer. The shortcut sheet lists everything else.",
+        "Ctrl+Shift+A ask  ·  Ctrl+, settings  ·  Ctrl+/ all shortcuts",
+    ),
+];
+
+/// Returns true when the tour should close (finished or skipped).
+pub(crate) fn tour(ctx: &egui::Context, step: &mut usize, pal: &Palette) -> bool {
+    let mut close = false;
+    let last = TOUR.len() - 1;
+    *step = (*step).min(last);
+    let (title, body, keys) = TOUR[*step];
+    let (left, right) =
+        ctx.input(|i| (i.key_pressed(egui::Key::ArrowLeft), i.key_pressed(egui::Key::ArrowRight) || i.key_pressed(egui::Key::Enter)));
+    modal(ctx, "quire-tour", pal).show(ctx, |ui| {
+        ui.set_width(modal_width(ctx, 480.0));
+        ui.add_space(4.0);
+        ui.label(RichText::new(format!("{} of {}", *step + 1, TOUR.len())).size(11.0).color(pal.muted));
+        ui.label(RichText::new(title).size(22.0).strong().color(pal.strong));
+        ui.add_space(6.0);
+        ui.label(RichText::new(body).size(15.0).color(pal.text));
+        ui.add_space(10.0);
+        egui::Frame::NONE.fill(pal.bg).corner_radius(6.0).inner_margin(10.0).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new(keys).monospace().size(12.5).color(pal.accent));
+        });
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            // Progress dots.
+            for i in 0..TOUR.len() {
+                let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                let c = if i == *step { pal.accent } else { pal.border };
+                ui.painter().circle_filled(r.center(), 3.5, c);
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let next = if *step == last { "Start writing" } else { "Next" };
+                if ui.button(RichText::new(next).strong()).clicked() || right {
+                    if *step == last {
+                        close = true;
+                    } else {
+                        *step += 1;
+                    }
+                }
+                if *step > 0 && (ui.button("Back").clicked() || left) {
+                    *step -= 1;
+                }
+                if *step < last && ui.button(RichText::new("Skip tour").color(pal.muted)).clicked() {
+                    close = true;
+                }
+            });
+        });
+    });
+    close
+}
