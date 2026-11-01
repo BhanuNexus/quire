@@ -26,8 +26,18 @@ Download from [Releases](https://github.com/BhanuNexus/quire/releases):
 
 - **Windows 10/11:** `Quire-<version>-windows-x64-setup.exe` (no admin needed), or the portable zip.
 - **macOS 11+:** `Quire-<version>-macos-universal.dmg` (Apple Silicon and Intel).
+- **Linux x86_64:** `Quire-<version>-linux-x86_64.tar.gz`. Extract it and run `./install.sh` (no root needed).
 
-Until code signing is set up, Windows shows a SmartScreen prompt (*More info → Run anyway*). On macOS, right-click the app and choose *Open* the first time. [RELEASING.md](RELEASING.md) explains how releases are built and signed.
+Until code signing is set up, Windows shows a SmartScreen prompt (*More info → Run anyway*). On macOS, right-click the app and choose *Open* the first time.
+
+Every release file is built by GitHub Actions from a tagged commit, listed in `SHA256SUMS` and covered by a build-provenance attestation. You can verify a download:
+
+```bash
+sha256sum -c SHA256SUMS --ignore-missing
+gh attestation verify Quire-<version>-linux-x86_64.tar.gz --repo BhanuNexus/quire
+```
+
+[RELEASING.md](RELEASING.md) explains how releases are built, attested and signed.
 
 ## Build and run
 

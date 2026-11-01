@@ -4,12 +4,10 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
-### Changed
-- Licensed under the GNU AGPL v3 or later. Settings → About links to the source; the installers include the licence.
-- Strict linting: clippy pedantic + nursery + selected restriction lints, rustdoc and typos checks in CI. The code base was updated to pass them.
-- Rust toolchain pinned to 1.97.0 for reproducible builds. GitHub Actions updated to their latest versions.
-
 ## [0.3.1] - 2026-11-01
+
+First public release.
+
 
 ### Added
 - New notes take their name from their first line until you rename them yourself.
@@ -19,7 +17,10 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 - Move notes between folders. Path-style links are rewritten.
 
 ### Changed
-- Built with Rust 1.99.1 (`rust-toolchain.toml`). Upgraded toml to 1.1 and png to 0.18.
+- Licensed under the GNU AGPL v3 or later. Settings → About links to the source; the installers include the licence.
+- Strict linting: clippy pedantic + nursery + selected restriction lints, rustdoc and typos checks in CI. The code base was updated to pass them.
+- Rust toolchain pinned to 1.97.0 for reproducible builds. GitHub Actions updated to their latest versions and pinned by commit SHA.
+- Upgraded toml to 1.1 and png to 0.18.
 
 ### Fixed
 - Notes sometimes reopened scrolled to another note's position.

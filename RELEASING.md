@@ -1,13 +1,83 @@
 # Releasing Quire
 
-Release builds come from one script per platform. CI runs the same scripts.
+Every release is built by GitHub Actions from a tag. It's published as an immutable GitHub release with checksums, build-provenance attestations and an SBOM.
 
-| Platform | Output | Script | Where it runs |
-|---|---|---|---|
-| macOS 11+ (Apple Silicon + Intel) | `Quire-<v>-macos-universal.dmg` with `Quire.app` | `packaging/macos/package.sh` | macOS only |
-| Windows 10/11 x64 | `Quire-<v>-windows-x64-setup.exe` (per-user installer, no admin) and `-portable.zip` | `packaging/windows/package.sh [gnu\|msvc]` | Windows (msvc), or Linux/macOS cross (gnu) |
+| Platform | Files | Built by |
+|---|---|---|
+| Windows 10/11 x64 | `Quire-<v>-windows-x64-setup.exe` (per-user installer, no admin), `Quire-<v>-windows-x64-portable.zip` | `packaging/windows/package.sh msvc` |
+| macOS 11+ (Apple Silicon + Intel) | `Quire-<v>-macos-universal.dmg` | `packaging/macos/package.sh` |
+| Linux x86_64 (glibc 2.35+) | `Quire-<v>-linux-x86_64.tar.gz` (reproducible; includes `install.sh` for a no-root install) | `packaging/linux/package.sh` |
+| All | `SHA256SUMS`, `Quire-<v>-sbom.spdx.json` | release workflow |
 
-Both apps include `quire-cli` (search, import, history and the MCP server). On macOS it's inside the bundle: `/Applications/Quire.app/Contents/MacOS/quire-cli`. On Windows it's next to `quire.exe` in `%LOCALAPPDATA%\Programs\Quire`.
+`quire-cli` (search, import, history and the MCP server) ships in every package.
+
+## Cutting a release
+
+1. Bump `version` in the root `Cargo.toml` and run `cargo check` to update `Cargo.lock`.
+2. In `CHANGELOG.md`, rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`, add a fresh empty `## [Unreleased]` above it, and update the compare links at the bottom.
+3. Commit, then tag and push:
+   ```bash
+   git tag -s vX.Y.Z -m "Quire X.Y.Z"   # -s signs the tag (recommended); -a works too
+   git push origin vX.Y.Z
+   ```
+4. `.github/workflows/release.yml` then:
+   1. checks that the tag matches `Cargo.toml` and that the changelog has a section for it, and runs the tests;
+   2. builds Linux, macOS and Windows in parallel, from clean (no build caches);
+   3. creates a build-provenance attestation for every file;
+   4. generates an SPDX SBOM and attests it against the binaries;
+   5. writes `SHA256SUMS`;
+   6. creates a **draft** release with the changelog section as notes and uploads every file;
+   7. publishes the release. With immutable releases on, the tag and assets are locked from this point.
+
+A tag with a suffix (e.g. `v0.4.0-rc.1`) is published as a pre-release. Running the workflow by hand from the Actions tab is a dry run: the same builds are uploaded as workflow artifacts, with no attestations and no release.
+
+**If a release goes wrong:** published releases can't be edited. Fix the problem and release the next patch version. Mark the bad release as such in its notes, or delete it, but never reuse its tag.
+
+## One-time repository settings (maintainers)
+
+These can only be changed in the GitHub UI:
+
+- **Settings → General → Releases → Enable release immutability.** Published releases can then never have their assets or tag changed.
+- **Settings → Rules → Rulesets → New tag ruleset** for `v*`: restrict creation, update and deletion to maintainers, so release tags can't be moved or deleted.
+- **Settings → Environments → `release`** (created by the first release run): add required reviewers to approve each publish. Optionally limit it to `v*` tags.
+- **Settings → Rules → Rulesets → New branch ruleset** for `main`: require a pull request, the `CI` checks (`lint`, `test (…)`, `deny`, `typos`, `workflows`) and `CodeQL`; block force-pushes.
+- **Settings → Code security:** private vulnerability reporting, Dependabot alerts and security updates, and secret scanning with push protection.
+- **Settings → General → Features:** turn on Discussions.
+
+## Verifying a download
+
+```bash
+sha256sum -c SHA256SUMS --ignore-missing                       # integrity
+gh attestation verify Quire-0.3.1-linux-x86_64.tar.gz --repo BhanuNexus/quire   # built by this repo's release workflow
+```
+
+`gh attestation verify` checks a signed statement from GitHub that names the exact workflow, commit and tag that produced the file.
+
+## Signing (recommended before 1.0)
+
+Unsigned builds work, but Windows SmartScreen shows "Windows protected your PC", and macOS Gatekeeper blocks the first launch until the user right-clicks → Open. Add these repository secrets to sign. Each platform is signed only when its secrets are present.
+
+**macOS** needs an Apple Developer Program membership.
+- `MACOS_CERTIFICATE`: a "Developer ID Application" certificate exported as .p12, base64-encoded (`base64 -i cert.p12 | pbcopy`).
+- `MACOS_CERTIFICATE_PASSWORD`: the .p12 password.
+- `MACOS_SIGNING_IDENTITY`: e.g. `Developer ID Application: Your Company (ABCDE12345)`.
+- `APPLE_ID`, `APPLE_TEAM_ID` and `APPLE_APP_PASSWORD` (an app-specific password) for notarization. The DMG is notarized and stapled.
+
+**Windows**
+- `WINDOWS_CERTIFICATE`: a code-signing certificate as .pfx, base64-encoded.
+- `WINDOWS_CERTIFICATE_PASSWORD`: its password.
+
+  Azure Trusted Signing or an EV certificate on an HSM gets SmartScreen reputation fastest. Neither exports as a .pfx; for those, replace `sign()` in `packaging/windows/package.sh` with the provider's tool.
+
+## Building locally
+
+```bash
+packaging/linux/package.sh                 # Linux
+packaging/windows/package.sh gnu           # Windows, cross from Linux (mingw-w64 + nsis + x86_64-pc-windows-gnu target)
+packaging/macos/package.sh                 # macOS (on a Mac)
+```
+
+Files land in `dist/`.
 
 ## Toolchain and lints
 
@@ -26,51 +96,13 @@ Lint policy lives in `Cargo.toml` (`[workspace.lints]`) and `clippy.toml`. CI ru
 
 Each lint that is switched off has its reason written next to it.
 
-## Cutting a release
-
-1. Bump `version` in the root `Cargo.toml` (`[workspace.package]`), run `cargo check` so `Cargo.lock` updates, and move the *Unreleased* entries in `CHANGELOG.md` under the new version.
-2. Commit, then tag and push: `git tag v0.3.0 && git push origin v0.3.0`.
-3. `.github/workflows/release.yml` runs tests, builds macOS and Windows in parallel, and attaches the files and `.sha256` checksums to a **draft** GitHub release.
-4. Check the draft, edit the notes and publish it.
-
-Running the workflow by hand from the Actions tab builds the same files as downloadable artifacts, without a release.
-
-## Signing (recommended before a public release)
-
-Unsigned builds work, but Windows SmartScreen shows "Windows protected your PC" and macOS Gatekeeper blocks the first launch until the user right-clicks → Open. Add these repository secrets to sign. Each platform is signed only when its secrets are present.
-
-**macOS** needs an Apple Developer Program membership.
-- `MACOS_CERTIFICATE`: a "Developer ID Application" certificate exported as .p12, base64-encoded (`base64 -i cert.p12 | pbcopy`).
-- `MACOS_CERTIFICATE_PASSWORD`: the .p12 password.
-- `MACOS_SIGNING_IDENTITY`: e.g. `Developer ID Application: Your Company (ABCDE12345)`.
-- `APPLE_ID`, `APPLE_TEAM_ID` and `APPLE_APP_PASSWORD` (an app-specific password from appleid.apple.com) for notarization. The DMG is notarized and stapled.
-
-**Windows**
-- `WINDOWS_CERTIFICATE`: a code-signing certificate as .pfx, base64-encoded.
-- `WINDOWS_CERTIFICATE_PASSWORD`: its password.
-
-  An EV or cloud-HSM certificate (e.g. Azure Trusted Signing) gets SmartScreen reputation fastest, but those can't be exported as a .pfx. For them, replace the `sign()` function in `packaging/windows/package.sh` with the provider's signing tool.
-
-## Building locally
-
-```bash
-# Windows, cross from Linux (needs: mingw-w64, nsis, the x86_64-pc-windows-gnu Rust target)
-rustup target add x86_64-pc-windows-gnu
-packaging/windows/package.sh gnu
-
-# macOS (on a Mac with Xcode command line tools)
-rustup target add aarch64-apple-darwin x86_64-apple-darwin
-packaging/macos/package.sh
-```
-
-Files land in `dist/`.
-
 ## What the installers do
 
 - **Windows:** installs to `%LOCALAPPDATA%\Programs\Quire` for the current user and adds a Start-menu shortcut (desktop shortcut optional). It registers an uninstaller under *Settings → Apps*, and `/S` installs or uninstalls silently. Uninstalling never touches vaults or settings.
 - **macOS:** drag `Quire.app` to Applications. Settings live in `~/Library/Application Support/dev.Quire.Quire/`.
+- **Linux:** extract, then run `./install.sh`. It installs to `~/.local/bin` with a menu entry and icon; `./install.sh --uninstall` removes it.
 
 ## Not done yet
 
 - **Auto-update:** users download new versions by hand. Planned as an opt-in check against GitHub Releases, in keeping with the offline-by-default promise.
-- **No Linux packages** (AppImage/.deb). The same approach works if wanted.
+- **Linux:** a tar.gz with a no-root installer for now. AppImage, .deb and Flatpak are tracked in the issues.
