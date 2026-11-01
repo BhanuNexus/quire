@@ -10,11 +10,13 @@ homepage.workspace = true
 publish.workspace = true
 
 [features]
-default = ["remote-llm", "keychain"]
+default = ["remote-llm", "keychain", "update-check"]
 # Network providers (Anthropic, OpenAI-compatible). Nothing connects unless configured.
 remote-llm = ["quire-intel/remote-llm"]
 # Store API keys in the OS keychain instead of a 0600 file.
 keychain = ["dep:keyring"]
+# Opt-in daily check for a newer release on GitHub (off until the user turns it on).
+update-check = ["dep:ureq"]
 
 [dependencies]
 quire-text.workspace = true
@@ -31,6 +33,7 @@ crossbeam-channel.workspace = true
 regex.workspace = true
 png.workspace = true
 keyring = { version = "4", optional = true }
+ureq = { workspace = true, optional = true }
 flate2 = "1"
 similar.workspace = true
 

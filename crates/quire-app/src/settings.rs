@@ -53,6 +53,12 @@ pub struct Settings {
     pub inline_images: bool,
     /// The first-run tour has been shown (or skipped).
     pub tour_done: bool,
+    /// Ask GitHub once a day whether a newer release exists (opt-in).
+    pub check_updates: bool,
+    /// Unix time of the last update check.
+    pub last_update_check: i64,
+    /// A release the user chose to skip.
+    pub skip_update_version: String,
 }
 
 impl Default for Settings {
@@ -79,6 +85,9 @@ impl Default for Settings {
             editor: "fast".into(),
             inline_images: true,
             tour_done: false,
+            check_updates: false,
+            last_update_check: 0,
+            skip_update_version: String::new(),
         }
     }
 }
@@ -88,7 +97,11 @@ pub fn config_dir() -> Option<PathBuf> {
 }
 
 impl Settings {
+    /// The settings file. Unit tests get none, so they never touch real settings.
     pub fn path() -> Option<PathBuf> {
+        if cfg!(test) {
+            return None;
+        }
         config_dir().map(|d| d.join("settings.toml"))
     }
 

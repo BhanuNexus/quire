@@ -68,7 +68,7 @@ pub(crate) fn settings(ctx: &egui::Context, st: &mut SettingsState, ws: &mut Wor
         match st.tab {
             SettingsTab::Editor => editor_settings(ui, ws),
             SettingsTab::Ai => ai_settings(ui, st, ws, pal),
-            SettingsTab::About => about(ui, pal),
+            SettingsTab::About => about(ui, ws, pal),
         }
         ui.separator();
         ui.horizontal(|ui| {
@@ -93,7 +93,7 @@ pub(crate) fn settings(ctx: &egui::Context, st: &mut SettingsState, ws: &mut Wor
 
 pub(crate) const SOURCE_URL: &str = "https://github.com/BhanuNexus/quire";
 
-fn about(ui: &mut Ui, pal: &Palette) {
+fn about(ui: &mut Ui, ws: &mut Workspace, pal: &Palette) {
     ui.label(RichText::new(format!("Quire {}", env!("CARGO_PKG_VERSION"))).strong().size(16.0));
     ui.label(RichText::new("A fast, local-first Markdown notepad.").color(pal.muted));
     ui.add_space(8.0);
@@ -110,6 +110,26 @@ fn about(ui: &mut Ui, pal: &Palette) {
         ui.hyperlink_to("Report a bug", format!("{SOURCE_URL}/issues/new/choose"));
         ui.label("·");
         ui.hyperlink_to("Discussions", format!("{SOURCE_URL}/discussions"));
+    });
+    ui.add_space(12.0);
+    ui.separator();
+    ui.label(RichText::new("Updates").strong());
+    ui.checkbox(&mut ws.settings.check_updates, "Check for a new version once a day");
+    ui.label(
+        RichText::new("Asks GitHub for the latest release. Nothing about you or your notes is sent, and nothing is installed for you.")
+            .size(12.0)
+            .color(pal.muted),
+    );
+    ui.horizontal(|ui| {
+        let checking = ws.updates.checking();
+        if ui.add_enabled(!checking, egui::Button::new(if checking { "Checking…" } else { "Check now" })).clicked() {
+            ws.check_for_updates(true);
+        }
+        if let Some(r) = ws.updates.available.clone() {
+            ui.hyperlink_to(format!("Get Quire {}", r.version), r.url);
+        } else if let Some(s) = &ws.updates.status {
+            ui.add(egui::Label::new(RichText::new(s).size(12.5).color(pal.muted)).wrap());
+        }
     });
 }
 
@@ -641,7 +661,7 @@ const TOUR: [(&str, &str, &str); 5] = [
 ];
 
 /// Returns true when the tour should close (finished or skipped).
-pub(crate) fn tour(ctx: &egui::Context, step: &mut usize, pal: &Palette) -> bool {
+pub(crate) fn tour(ctx: &egui::Context, step: &mut usize, ws: &mut Workspace, pal: &Palette) -> bool {
     let mut close = false;
     let last = TOUR.len() - 1;
     *step = (*step).min(last);
@@ -660,6 +680,12 @@ pub(crate) fn tour(ctx: &egui::Context, step: &mut usize, pal: &Palette) -> bool
             ui.set_width(ui.available_width());
             ui.label(RichText::new(keys).monospace().size(12.5).color(pal.accent));
         });
+        if *step == last {
+            ui.add_space(8.0);
+            if ui.checkbox(&mut ws.settings.check_updates, "Tell me when a new version is out (checks GitHub once a day)").changed() {
+                let _ = ws.settings.save();
+            }
+        }
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             // Progress dots.

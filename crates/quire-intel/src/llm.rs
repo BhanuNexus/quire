@@ -135,8 +135,14 @@ mod remote {
         OpenAiCompatible,
     }
 
+    /// Trust the operating system's certificate store, so company proxies and
+    /// self-signed local servers the user has trusted work as in a browser.
+    fn system_tls() -> ureq::tls::TlsConfig {
+        ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build()
+    }
+
     fn agent(timeout: Duration) -> ureq::Agent {
-        ureq::Agent::config_builder().timeout_global(Some(timeout)).http_status_as_error(false).build().into()
+        ureq::Agent::config_builder().timeout_global(Some(timeout)).http_status_as_error(false).tls_config(system_tls()).build().into()
     }
 
     fn err_from(status: u16, body: &serde_json::Value) -> LlmError {

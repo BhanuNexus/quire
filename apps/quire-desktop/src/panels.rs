@@ -42,6 +42,8 @@ pub(crate) struct PanelOut {
     pub jumped: bool,
     /// Scroll to the caret without taking focus.
     pub reveal_only: bool,
+    /// Hide the available update until a newer one appears.
+    pub skip_update: bool,
 }
 
 fn section(ui: &mut egui::Ui, pal: &Palette, title: &str) {
@@ -703,6 +705,25 @@ pub(crate) fn status_bar(ui: &mut egui::Ui, ws: &Workspace, pal: &Palette) -> Pa
             }
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if let Some(r) = &ws.updates.available {
+                let link = ui
+                    .add(
+                        egui::Label::new(RichText::new(format!("↑ Quire {} available", r.version)).size(12.0).color(pal.accent))
+                            .sense(egui::Sense::click()),
+                    )
+                    .on_hover_text("Open the release page. Right-click to skip this version.")
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                if link.clicked() {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(r.url.clone()));
+                }
+                link.context_menu(|ui| {
+                    if ui.button("Skip this version").clicked() {
+                        out.skip_update = true;
+                        ui.close();
+                    }
+                });
+                ui.separator();
+            }
             let conflicts = ws.conflict_copy_count();
             if conflicts > 0 {
                 let label = format!("⚠ {conflicts} sync conflict{}", if conflicts == 1 { "" } else { "s" });

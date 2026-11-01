@@ -17,6 +17,7 @@ pub mod secrets;
 pub mod session;
 pub mod settings;
 pub mod sync;
+pub mod updates;
 pub mod workspace;
 
 pub use ask_state::AskState;

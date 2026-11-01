@@ -124,7 +124,7 @@ pub struct Workspace {
     pub(crate) docs: Vec<Document>,
     pub(crate) active: Option<usize>,
     next_id: u64,
-    notices: Vec<Notice>,
+    pub(crate) notices: Vec<Notice>,
     pub(crate) assistant: Arc<dyn LanguageModel>,
     pending_assist: Option<PendingAssist>,
     pub assist_result: Option<AssistResult>,
@@ -136,6 +136,7 @@ pub struct Workspace {
     /// Recently active notes, most recent first.
     recent: Vec<NotePath>,
     pub(crate) conflict_count_cache: std::cell::Cell<Option<(u64, usize)>>,
+    pub updates: crate::updates::UpdateState,
 }
 
 impl Workspace {
@@ -162,6 +163,7 @@ impl Workspace {
             view_cache: crate::properties::ViewCache::default(),
             recent: Vec::new(),
             conflict_count_cache: std::cell::Cell::new(None),
+            updates: crate::updates::UpdateState::default(),
         }
     }
 
@@ -525,6 +527,8 @@ impl Workspace {
         changed |= self.process_vault_events();
         changed |= self.poll_assist();
         changed |= self.poll_ask();
+        self.maybe_check_updates();
+        changed |= self.poll_updates();
         changed
     }
 
@@ -1034,6 +1038,7 @@ impl Workspace {
             C::ShowShortcuts => return Some(UiRequest::Shortcuts),
             C::ResolveSyncConflicts => return Some(UiRequest::SyncConflicts),
             C::TakeTour => return Some(UiRequest::Tour),
+            C::CheckForUpdates => self.check_for_updates(true),
             C::NewProject => return self.vault.is_some().then_some(UiRequest::NewProject),
             C::NewInFolder => return self.vault.is_some().then_some(UiRequest::NewInFolder),
             C::MoveNote => return self.active_doc().and_then(|d| d.path.as_ref()).map(|_| UiRequest::MoveNote),

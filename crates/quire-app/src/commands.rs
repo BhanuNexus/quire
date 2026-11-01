@@ -31,6 +31,7 @@ pub enum Command {
     CommandPalette,
     ShowShortcuts,
     TakeTour,
+    CheckForUpdates,
     SearchVault,
     ShowTasks,
     // Formatting
@@ -176,6 +177,7 @@ commands! {
     CommandPalette,   "Go",     "Command palette…",               [cmd_shift("P"), cmd("K")], false;
     ShowShortcuts,    "Help",   "Keyboard shortcuts",             [cmd("Slash")], false;
     TakeTour,         "Help",   "Take the tour",                  [], false;
+    CheckForUpdates,  "Help",   "Check for updates",              [], false;
     SearchVault,      "Go",     "Search all notes…",              [cmd_shift("F")], false;
     ShowTasks,        "Go",     "Show open tasks",                [alt("T")], false;
     Bold,             "Format", "Bold",                           [cmd("B")], true;

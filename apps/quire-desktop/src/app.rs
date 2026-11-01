@@ -262,6 +262,9 @@ impl QuireApp {
     }
 
     fn after_panel(&mut self, out: &PanelOut) {
+        if out.skip_update {
+            self.ws.skip_update();
+        }
         if let Some(c) = out.run {
             self.run(c);
         }
@@ -299,7 +302,12 @@ impl eframe::App for QuireApp {
             self.last_version = v;
             ctx.request_repaint();
         }
-        if self.ws.index().status().busy || self.ws.assist_pending() || self.ws.ask.pending() || self.ws.index().semantic_busy() {
+        if self.ws.index().status().busy
+            || self.ws.assist_pending()
+            || self.ws.ask.pending()
+            || self.ws.index().semantic_busy()
+            || self.ws.updates.checking()
+        {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
         if let Some(t) = self.ws.next_deadline() {

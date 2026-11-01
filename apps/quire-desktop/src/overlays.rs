@@ -164,7 +164,7 @@ pub(crate) fn show(ctx: &egui::Context, overlay: &mut Overlay, ws: &mut Workspac
         Overlay::NewProject(st) => (res.close, res.jumped) = crate::dialogs::new_project(ctx, st, ws, pal),
         Overlay::Folder(st) => (res.close, res.jumped) = crate::dialogs::folder_picker(ctx, st, ws, pal),
         Overlay::Shortcuts { query, focused } => res.close = shortcuts(ctx, query, focused, pal, mac),
-        Overlay::Tour { step } => res.close = crate::dialogs::tour(ctx, step, pal),
+        Overlay::Tour { step } => res.close = crate::dialogs::tour(ctx, step, ws, pal),
         Overlay::SyncConflicts => (res.close, res.jumped) = crate::dialogs::sync_conflicts(ctx, ws, pal),
         Overlay::Palette { mode, query, selected, focused } => {
             let list = items(ws, *mode, query, mac);
