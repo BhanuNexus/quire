@@ -86,9 +86,9 @@ Settings live in `~/.config/quire/settings.toml` (Linux), `~/Library/Application
 | Writing | Live Markdown styling (heading sizes, bold, code, quotes, dimmed syntax), focus mode, preview pane, autosave with no save dialogs, scratchpad |
 | Find & replace | In-note bar (Ctrl+F / Ctrl+H) with match case, whole word, regex and `$1` captures; vault-wide replace (Ctrl+Shift+R) with a per-note preview you can untick |
 | Images & files | Paste a screenshot (Ctrl+V) or drop files: they're saved to `attachments/` and embedded; images show inline under the line and in the preview. Pasting a URL over selected text makes a link |
-| Smart editing | List/task/quote continuation on Enter, Tab/Shift-Tab list indent, toggle checklist, wrap selection, heading levels, table auto-format |
+| Smart editing | Type `/` for a menu of headings, lists, checklists, code, tables, views, dates and your templates; `#` suggests tags you already use. List/task/quote continuation on Enter, Tab/Shift-Tab list indent, toggle checklist, wrap selection, heading levels, table auto-format |
 | Inline intelligence | `12 * 4 =` + Enter → result (variables, `ans`, `%`, functions), `@tomorrow` / `@next friday` / `@in 3 days` → `[[2026-11-02]]` |
-| Linking | `[[wikilinks]]`, `[[note#heading|alias]]`, embeds, click/Alt+Enter to follow, unresolved links create notes, F2 rename rewrites every link |
+| Linking | Type `[[` for a list of notes to link (or a new one). `[[wikilinks]]`, `[[note#heading|alias]]`, embeds, click/Alt+Enter to follow, unresolved links create notes, F2 rename rewrites every link |
 | Knowledge | Backlinks with context, unlinked mentions, suggested links, related notes (TF-IDF), suggested tags, key sentences, nested `#tags`, tasks across the vault |
 | Finding | Ctrl+P fuzzy quick open, Ctrl+K command palette, search that combines exact words (BM25, `"phrases"`, `#tag`, `-exclude`) with meaning (≈ results) |
 | Ask your notes | Ctrl+Shift+A: answers from your own notes with `[[Note#Heading]]` citations. Offline it quotes the best sentences; with the optional Claude provider it writes an answer from the same sources |

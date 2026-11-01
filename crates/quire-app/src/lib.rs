@@ -16,6 +16,7 @@ pub mod properties;
 pub mod secrets;
 pub mod session;
 pub mod settings;
+pub mod suggest;
 pub mod sync;
 pub mod updates;
 pub mod vault_sync;

@@ -21,6 +21,7 @@ use egui::{Align, Color32, CursorIcon, Event, EventFilter, Galley, Id, ImeEvent,
 use quire_app::document::Document;
 use quire_app::index::views::{self as qviews, ViewBlock};
 use quire_app::markdown::{StyleRun, blocks};
+use quire_app::suggest::{SuggestKind, Suggestions};
 use quire_app::text::{Assoc, Buffer, EditKind, Selection, Transaction, motion, multi};
 use quire_app::{Command, DocId, Workspace};
 
@@ -72,6 +73,11 @@ struct DocView {
     scroll_key: Option<String>,
     /// Revision produced by this view's own last edit.
     own_rev: u64,
+    /// The suggestion list at the caret: which item is highlighted, for
+    /// which trigger, and a trigger the user dismissed with Escape.
+    suggest_pick: usize,
+    suggest_for: Option<(usize, SuggestKind, String)>,
+    suggest_dismissed: Option<(usize, SuggestKind)>,
 }
 
 impl DocView {
@@ -92,6 +98,9 @@ impl DocView {
             view_rects: Vec::new(),
             scroll_key: None,
             own_rev: u64::MAX,
+            suggest_pick: 0,
+            suggest_for: None,
+            suggest_dismissed: None,
         }
     }
 }
@@ -131,6 +140,7 @@ impl Cx<'_> {
 
 #[derive(Default)]
 pub(crate) struct FastEditor {
+    suggesting: bool,
     views: HashMap<DocId, DocView>,
     pub scroll_to_caret: bool,
     pub request_focus: bool,
@@ -184,6 +194,83 @@ impl FastEditor {
 
     pub(crate) fn has_extra_cursors(&self, doc: DocId) -> bool {
         self.views.get(&doc).is_some_and(|v| !v.extra.is_empty())
+    }
+
+    /// Whether the suggestion list was showing last frame (it owns Escape).
+    pub(crate) const fn suggesting(&self) -> bool {
+        self.suggesting
+    }
+
+    /// Suggestions at the caret, unless dismissed. Resets the highlight when
+    /// the trigger or its query changes.
+    fn current_suggestions(view: &mut DocView, ws: &Workspace) -> Option<Suggestions> {
+        if !view.extra.is_empty() {
+            return None;
+        }
+        let s = ws.suggestions();
+        let key = s.as_ref().map(|s| (s.context.start, s.context.kind));
+        if key != view.suggest_dismissed {
+            view.suggest_dismissed = None;
+        }
+        let s = s.filter(|_| view.suggest_dismissed.is_none())?;
+        let id = (s.context.start, s.context.kind, s.context.query.clone());
+        if view.suggest_for.as_ref() != Some(&id) {
+            view.suggest_for = Some(id);
+            view.suggest_pick = 0;
+        }
+        view.suggest_pick = view.suggest_pick.min(s.items.len() - 1);
+        Some(s)
+    }
+
+    /// The list under the caret. Returns the item clicked.
+    fn suggestion_popup(ctx: &egui::Context, id: Id, caret: Rect, s: &Suggestions, pick: usize, pal: &Palette) -> Option<usize> {
+        let mut clicked = None;
+        let screen = ctx.content_rect();
+        let width = 320.0_f32.min(screen.width() - 16.0);
+        let rows = s.items.len() as f32 * 26.0 + 12.0;
+        // Below the caret, or above it when there's no room.
+        let below = caret.bottom() + 4.0;
+        let y = if below + rows > screen.bottom() { (caret.top() - 4.0 - rows).max(screen.top()) } else { below };
+        let x = caret.left().min(screen.right() - width - 8.0).max(screen.left() + 8.0);
+        egui::Area::new(id.with("suggest")).order(egui::Order::Foreground).fixed_pos(Pos2::new(x, y)).show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).fill(pal.panel).stroke(Stroke::new(1.0, pal.border)).inner_margin(4.0).show(ui, |ui| {
+                ui.set_width(width);
+                for (i, item) in s.items.iter().enumerate() {
+                    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 24.0), Sense::click());
+                    if i == pick {
+                        ui.painter().rect_filled(rect, 4.0, pal.selection);
+                    } else if resp.hovered() {
+                        ui.painter().rect_filled(rect, 4.0, pal.selection.gamma_multiply(0.5));
+                    }
+                    let font = egui::FontId::proportional(13.5);
+                    let label = ui.painter().layout_no_wrap(item.label.clone(), font, pal.strong);
+                    let label_w = label.size().x;
+                    ui.painter().galley(Pos2::new(rect.left() + 8.0, rect.center().y - label.size().y / 2.0), label, pal.strong);
+                    if !item.detail.is_empty() {
+                        // Keep the end of long details (a folder path's last parts matter most).
+                        let room = ((rect.width() - label_w - 28.0) / 6.5).max(4.0) as usize;
+                        let n = item.detail.chars().count();
+                        let detail = if n > room {
+                            std::iter::once('…').chain(item.detail.chars().skip(n + 1 - room)).collect()
+                        } else {
+                            item.detail.clone()
+                        };
+                        let small = egui::FontId::proportional(12.0);
+                        ui.painter().text(
+                            Pos2::new(rect.right() - 8.0, rect.center().y),
+                            egui::Align2::RIGHT_CENTER,
+                            detail,
+                            small,
+                            pal.muted,
+                        );
+                    }
+                    if resp.clicked() {
+                        clicked = Some(i);
+                    }
+                }
+            });
+        });
+        clicked
     }
 
     // ------------------------------------------------------------ layout
@@ -531,6 +618,8 @@ impl FastEditor {
         Self::sync(&mut view, ws.active_doc().expect("checked"), &cx, inline_images);
         let total = view.heights.total() + TOP_MARGIN + BOTTOM_MARGIN;
         let mut view_action: Option<ViewAction> = None;
+        let mut clicked_suggestion: Option<(Suggestions, usize)> = None;
+        let mut suggesting = false;
 
         // Keyed by the note (tab ids restart each launch, and egui remembers
         // scroll offsets across launches), so a note reopens where you left it.
@@ -576,12 +665,12 @@ impl FastEditor {
                     });
                 }
                 let focused = resp.has_focus();
+                let mut sugg = if focused { Self::current_suggestions(&mut view, ws) } else { None };
                 if focused {
+                    // While the suggestion list is open, Escape closes it rather than leaving the editor.
+                    let escape = sugg.is_some();
                     ui.memory_mut(|m| {
-                        m.set_focus_lock_filter(
-                            id,
-                            EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: false },
-                        );
+                        m.set_focus_lock_filter(id, EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape });
                     });
                 }
                 let mut moved = false;
@@ -671,6 +760,28 @@ impl FastEditor {
                     for ev in events {
                         let Some(doc) = ws.active_doc() else { break };
                         let rev_before = doc.revision();
+                        // The suggestion list takes ↑ ↓ Enter Tab and Escape.
+                        if let (Some(s), Event::Key { key, pressed: true, modifiers, .. }) = (&sugg, &ev)
+                            && modifiers.is_none()
+                            && matches!(key, Key::ArrowUp | Key::ArrowDown | Key::Enter | Key::Tab | Key::Escape)
+                        {
+                            let n = s.items.len();
+                            match key {
+                                Key::ArrowDown => view.suggest_pick = (view.suggest_pick + 1) % n,
+                                Key::ArrowUp => view.suggest_pick = (view.suggest_pick + n - 1) % n,
+                                Key::Escape => view.suggest_dismissed = Some((s.context.start, s.context.kind)),
+                                _ => edited |= ws.accept_suggestion(s, view.suggest_pick),
+                            }
+                            sugg = Self::current_suggestions(&mut view, ws);
+                            moved = true;
+                            if let Some(doc) = ws.active_doc()
+                                && doc.revision() != rev_before
+                            {
+                                self.galleys.clear();
+                                Self::sync(&mut view, doc, &cx, inline_images);
+                            }
+                            continue;
+                        }
                         match ev {
                             Event::Text(t) => {
                                 if t == " " && view.extra.is_empty() && ws.smart_space() {
@@ -877,6 +988,7 @@ impl FastEditor {
                         {
                             self.galleys.clear();
                             Self::sync(&mut view, doc, &cx, inline_images);
+                            sugg = Self::current_suggestions(&mut view, ws);
                         }
                     }
                 }
@@ -1040,6 +1152,12 @@ impl FastEditor {
                     });
                     let phase = now.duration_since(view.blink_start).as_millis() % BLINK.as_millis();
                     ctx.request_repaint_after(Duration::from_millis((BLINK.as_millis() - phase) as u64 + 5));
+                    if let (Some(s), Some(caret)) = (&sugg, caret_rect_primary) {
+                        suggesting = true;
+                        if let Some(i) = Self::suggestion_popup(&ctx, id, caret, s, view.suggest_pick, pal) {
+                            clicked_suggestion = Some((s.clone(), i));
+                        }
+                    }
                 }
 
                 if anchor_shift.abs() > 0.5 {
@@ -1065,6 +1183,13 @@ impl FastEditor {
             },
         );
         self.views.insert(doc_id, view);
+        self.suggesting = suggesting;
+        if let Some((s, i)) = clicked_suggestion
+            && ws.accept_suggestion(&s, i)
+        {
+            self.request_focus = true;
+            ctx.request_repaint();
+        }
         match view_action {
             Some(ViewAction::Open(p)) => {
                 if ws.open_note(&p).is_some() {

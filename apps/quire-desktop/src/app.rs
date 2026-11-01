@@ -340,7 +340,7 @@ impl QuireApp {
             EditorState::handle_smart_keys(&ctx, &mut self.ws);
         }
         // Escape closes the find bar (unless it's clearing extra cursors).
-        let extra_cursors = self.ws.active_doc().is_some_and(|d| self.fast.has_extra_cursors(d.id));
+        let extra_cursors = self.ws.active_doc().is_some_and(|d| self.fast.has_extra_cursors(d.id)) || self.fast.suggesting();
         if self.overlay.is_none() && self.ws.find.open && !extra_cursors && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             self.ws.find.open = false;
             self.focus_editor();
