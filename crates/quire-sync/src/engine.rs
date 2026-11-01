@@ -106,7 +106,15 @@ impl std::fmt::Debug for Engine {
     }
 }
 
-const MAX_ROUNDS: usize = 8;
+const MAX_ROUNDS: usize = 16;
+
+/// Another device keeps winning the race for the same note: wait a little,
+/// with jitter so the devices stop colliding (5 ms, 10 ms … capped at 640 ms).
+fn backoff(round: usize) {
+    let cap = 5u64 << round.min(7);
+    let jitter = crate::crypto::random_bytes::<2>().map_or(0, |b| u64::from(u16::from_le_bytes(b)));
+    std::thread::sleep(std::time::Duration::from_millis(cap / 2 + jitter % (cap / 2 + 1)));
+}
 
 impl Engine {
     pub fn new(space: SpaceId, device: DeviceId, device_name: impl Into<String>, keys: Keys, state: SyncState) -> Self {
@@ -117,7 +125,10 @@ impl Engine {
     /// `today` (e.g. `2026-11-01`) goes into conflict copy names.
     pub fn sync(&mut self, local: &mut dyn LocalStore, server: &dyn Transport, today: &str) -> Result<Report, SyncError> {
         let mut report = Report::default();
-        for _ in 0..MAX_ROUNDS {
+        for round in 0..MAX_ROUNDS {
+            if round > 0 {
+                backoff(round);
+            }
             self.pull(local, server, today, &mut report)?;
             if self.push(&*local, server, &mut report)? {
                 return Ok(report);

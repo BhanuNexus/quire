@@ -107,7 +107,7 @@ impl Keys {
 
     /// A content id for an attachment that reveals nothing about its bytes.
     pub fn blob_id(&self, plain: &[u8]) -> String {
-        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&self.blob_id).unwrap_or_else(|_| unreachable!("HMAC takes any key length"));
+        let mut mac = Hmac::<Sha256>::new_from_slice(&self.blob_id).unwrap_or_else(|_| unreachable!("HMAC takes any key length"));
         mac.update(plain);
         hex(&mac.finalize().into_bytes())
     }
@@ -116,7 +116,7 @@ impl Keys {
 fn seal_with(key: &[u8; 32], plain: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let nonce: [u8; NONCE_LEN] = random_bytes()?;
     let cipher = XChaCha20Poly1305::new(key.into());
-    let ct = cipher.encrypt(XNonce::from_slice(&nonce), Payload { msg: plain, aad }).map_err(|_| CryptoError::Tampered)?;
+    let ct = cipher.encrypt(&XNonce::from(nonce), Payload { msg: plain, aad }).map_err(|_| CryptoError::Tampered)?;
     let mut out = Vec::with_capacity(1 + NONCE_LEN + ct.len());
     out.push(SEALED_V1);
     out.extend_from_slice(&nonce);
@@ -134,7 +134,8 @@ fn open_with(key: &[u8; 32], sealed: &[u8], aad: &[u8]) -> Result<Vec<u8>, Crypt
     }
     let (nonce, ct) = rest.split_at(NONCE_LEN);
     let cipher = XChaCha20Poly1305::new(key.into());
-    cipher.decrypt(XNonce::from_slice(nonce), Payload { msg: ct, aad }).map_err(|_| CryptoError::WrongPassphrase)
+    let nonce = XNonce::try_from(nonce).map_err(|_| CryptoError::Truncated)?;
+    cipher.decrypt(&nonce, Payload { msg: ct, aad }).map_err(|_| CryptoError::WrongPassphrase)
 }
 
 /// Argon2id settings for deriving a key from a passphrase. Stored next to the
@@ -381,6 +382,22 @@ mod tests {
         assert_eq!(VaultKey::from_recovery_key(&typo).unwrap_err(), CryptoError::BadRecoveryKey);
         assert!(VaultKey::from_recovery_key("ABCD").is_err());
         assert!(format!("{vk:?} {:?}", vk.recovery_key()).find(&rk[..8]).is_none(), "secrets don't print");
+    }
+
+    /// Data written by this version must stay readable by every later one.
+    #[test]
+    fn format_v1_vectors() {
+        let k = VaultKey::from_bytes([42; 32]);
+        let sealed =
+            unhex("01a5cb39c65a5e507654a7bf1ad0188f2139bdd04507ba67671d9d47e2b7ab3c8c96007bad38dfb84e01651ec04d160ac31772e963ac").unwrap();
+        assert_eq!(k.keys().open(&sealed, b"aad").unwrap(), b"quire sync v1");
+        assert_eq!(k.keys().blob_id(b"img"), "96e6836f6056f5aa0a9a3f01f25101b750df8a237cdb2d4b5b4c678ca9a95f91");
+        let wrapped: WrappedKey = serde_json::from_str(
+            r#"{"kdf":{"memory_kib":64,"iterations":1,"parallelism":1},"salt":"e9c8ff6dc2eaa5747f949be234a182db","sealed":"01bb651f7510434d487f3c5c83971a0b613e9e52d910adac9acf4192eb4f632706cd3b0cca5ff2641cf3b29c6eb1272aafd2fc188171b25b0caf11338fdaab7072e3e8395ad1d182c3"}"#,
+        )
+        .unwrap();
+        assert_eq!(wrapped.unwrap("pass").unwrap().0, [42; 32]);
+        assert_eq!(k.recovery_key().to_string(), "58N2-MAHA-58N2-MAHA-58N2-MAHA-58N2-MAHA-58N2-MAHA-58N2-MAHA-58N0-ME2E");
     }
 
     #[test]
