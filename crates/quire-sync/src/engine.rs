@@ -179,6 +179,7 @@ impl Engine {
         // last revision lost a tie in a synced folder, its changes aren't in
         // `r`: merge from the revision both share instead, so they're kept.
         let shared = if r.parents.first() == Some(&t.head) { None } else { server.fork_base(&r.file, &t.head, r) };
+        let lost_tie = shared.is_some();
         let (base, base_deleted) = match shared {
             Some(shared) => {
                 let s = Content::open(&self.keys, &self.space, &shared)?;
@@ -236,6 +237,15 @@ impl Engine {
                 if m.is_clean() {
                     write(local, &to, &m.text)?;
                     report.merged.push(to.clone());
+                } else if lost_tie {
+                    // This device's version lost a tie (a synced folder): the
+                    // winner stays, as on every other device, and this device's
+                    // text goes beside it. Each losing device keeps only its own
+                    // text, so the same version is never copied twice.
+                    write(local, &to, &c.text)?;
+                    let copy = self.conflict_copy_path(local, &to, &self.device_name, today);
+                    write(local, &copy, &mine)?;
+                    report.conflict_copies.push(copy);
                 } else {
                     // Keep ours in place; theirs goes beside it, and both sync.
                     write(local, &to, &mine)?;

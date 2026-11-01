@@ -2,14 +2,92 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Version history operations for the active note: list, diff, restore.
 
+use std::time::Duration;
+
+use crossbeam_channel::{Sender, bounded, unbounded};
 use quire_text::{EditKind, Selection, Transaction};
-use quire_vault::Snapshot;
+use quire_vault::{NotePath, Snapshot, Vault};
 use similar::{ChangeTag, TextDiff};
 
 use crate::workspace::{NoticeLevel, Workspace};
 
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
+}
+
+enum Job {
+    /// Keep `text` as a version.
+    Keep {
+        vault: Vault,
+        path: NotePath,
+        text: String,
+        at: i64,
+        force: bool,
+    },
+    /// Keep `text` only if the note has no versions yet (its original).
+    KeepFirst {
+        vault: Vault,
+        path: NotePath,
+        text: String,
+        at: i64,
+    },
+    Flush(Sender<()>),
+}
+
+/// Writes version history on its own thread, in order, so saving a big note
+/// never waits on compressing it. Readers call [`HistoryWriter::flush`] first.
+#[derive(Debug)]
+pub(crate) struct HistoryWriter {
+    tx: Sender<Job>,
+}
+
+impl std::fmt::Debug for Job {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("history job")
+    }
+}
+
+impl HistoryWriter {
+    pub(crate) fn spawn() -> Self {
+        let (tx, rx) = unbounded::<Job>();
+        std::thread::Builder::new()
+            .name("quire-history".into())
+            .spawn(move || {
+                for job in rx {
+                    match job {
+                        Job::Keep { vault, path, text, at, force } => {
+                            let _ = vault.snapshot(&path, &text, at, force);
+                        }
+                        Job::KeepFirst { vault, path, text, at } => {
+                            if vault.history(&path).is_empty() {
+                                let _ = vault.snapshot(&path, &text, at, true);
+                            }
+                        }
+                        Job::Flush(done) => {
+                            let _ = done.send(());
+                        }
+                    }
+                }
+            })
+            .expect("spawn history writer");
+        Self { tx }
+    }
+
+    pub(crate) fn keep(&self, vault: &Vault, path: &NotePath, text: &str, at: i64, force: bool) {
+        let _ = self.tx.send(Job::Keep { vault: vault.clone(), path: path.clone(), text: text.to_string(), at, force });
+    }
+
+    pub(crate) fn keep_first(&self, vault: &Vault, path: &NotePath, text: &str, at: i64) {
+        let _ = self.tx.send(Job::KeepFirst { vault: vault.clone(), path: path.clone(), text: text.to_string(), at });
+    }
+
+    /// Wait until every version asked for so far is written.
+    pub(crate) fn flush(&self) {
+        let (done, wait) = bounded(1);
+        if self.tx.send(Job::Flush(done)).is_ok() {
+            let _ = wait.recv_timeout(Duration::from_secs(10));
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +140,7 @@ pub fn diff_stats(old: &str, new: &str) -> (usize, usize) {
 impl Workspace {
     /// Saved versions of the active note, newest first.
     pub fn note_history(&self) -> Vec<Snapshot> {
+        self.history.flush();
         match (self.vault(), self.active_doc().and_then(|d| d.path.clone())) {
             (Some(v), Some(p)) => v.history(&p),
             _ => Vec::new(),
@@ -69,6 +148,7 @@ impl Workspace {
     }
 
     pub fn snapshot_text(&self, s: &Snapshot) -> Option<String> {
+        self.history.flush();
         self.vault()?.read_snapshot(s).ok()
     }
 

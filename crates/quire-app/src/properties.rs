@@ -110,10 +110,10 @@ impl Workspace {
         let Ok(src) = vault.read(path) else { return false };
         let out = frontmatter::set_field(&src, key, value).apply(&src);
         let now = crate::history_ops::now_ms();
-        let _ = vault.snapshot(path, &src, now - 1, true);
+        self.history.keep(&vault, path, &src, now - 1, true);
         match vault.write(path, &out) {
             Ok(()) => {
-                let _ = vault.snapshot(path, &out, now, true);
+                self.history.keep(&vault, path, &out, now, true);
                 self.index.upsert(path.clone(), out);
                 true
             }
@@ -188,6 +188,7 @@ mod tests {
         w.index().flush();
         let r = w.run_view(spec, None);
         assert!(r.as_ref().as_ref().unwrap().rows.iter().all(|x| x.group == "done"));
+        w.history.flush();
         let v = w.vault().unwrap();
         assert_eq!(v.read(&NotePath::new("Tasks/A.md")).unwrap(), "---\nstatus: done\n---\n# A\n");
         assert!(v.history(&NotePath::new("Tasks/A.md")).len() >= 2, "the move is reversible");

@@ -138,6 +138,8 @@ pub struct Workspace {
     pub assist_result: Option<AssistResult>,
     insights_cache: InsightsCache,
     insights_job: InsightsJob,
+    /// Version history, written off the UI thread.
+    pub(crate) history: crate::history_ops::HistoryWriter,
     pub find: crate::find_state::FindState,
     pub ask: crate::ask_state::AskState,
     pub(crate) file_cache: crate::attach::FileCache,
@@ -168,6 +170,7 @@ impl Workspace {
             assist_result: None,
             insights_cache: RefCell::new(None),
             insights_job: RefCell::new(None),
+            history: crate::history_ops::HistoryWriter::spawn(),
             find: crate::find_state::FindState::default(),
             ask: crate::ask_state::AskState::default(),
             file_cache: crate::attach::FileCache::default(),
@@ -450,15 +453,14 @@ impl Workspace {
         let text = self.docs[i].text();
         // First save of a note Quire hasn't seen change before: keep the original too.
         let now = crate::history_ops::now_ms();
-        if vault.history(&path).is_empty()
-            && let Some(orig) = self.docs[i].disk_text()
+        if let Some(orig) = self.docs[i].disk_text()
             && *orig != *text
         {
-            let _ = vault.snapshot(&path, &orig, now - 1, true);
+            self.history.keep_first(vault, &path, &orig, now - 1);
         }
         match vault.write(&path, &text) {
             Ok(()) => {
-                let _ = vault.snapshot(&path, &text, now, false);
+                self.history.keep(vault, &path, &text, now, false);
                 self.docs[i].mark_saved(&text);
                 self.index.upsert(path, text.to_string());
                 self.sync_nudge();
@@ -573,7 +575,7 @@ impl Workspace {
                         && let Some(v) = &self.vault
                     {
                         // Outside edits are versions too.
-                        let _ = v.snapshot(&p, &content, crate::history_ops::now_ms(), true);
+                        self.history.keep(v, &p, &content, crate::history_ops::now_ms(), true);
                     }
                     if self.absorb_external_change(&p, &content) {
                         continue; // our own save echoing back
@@ -1312,6 +1314,7 @@ impl Workspace {
 
     pub fn shutdown(&mut self) {
         self.save_all();
+        self.history.flush();
         if let Some(p) = Session::path() {
             let _ = self.session().save_to(&p);
         }

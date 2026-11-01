@@ -178,10 +178,10 @@ impl Workspace {
                 if n > 0 {
                     // Closed notes get history too, so a vault-wide replace is reversible.
                     let now = crate::history_ops::now_ms();
-                    let _ = vault.snapshot(&path, &src, now - 1, true);
+                    self.history.keep(&vault, &path, &src, now - 1, true);
                     match vault.write(&path, &out) {
                         Ok(()) => {
-                            let _ = vault.snapshot(&path, &out, now, true);
+                            self.history.keep(&vault, &path, &out, now, true);
                             self.index.upsert(path.clone(), out);
                             files += 1;
                             total += n;

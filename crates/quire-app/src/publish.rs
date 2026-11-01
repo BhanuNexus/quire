@@ -120,6 +120,95 @@ fn add_heading_ids(html: &str) -> String {
     out
 }
 
+/// Replace each `quire-view` code block with the view it describes, listing
+/// only published notes (a view never reveals a private note's title).
+fn render_views(html: &str, src: &str, ix: &Index, from: &NotePath, url: &HashMap<NotePath, String>) -> String {
+    use quire_index::views::{self, Layout};
+    let open = "<pre><code class=\"language-quire-view\">";
+    let blocks = views::find_blocks(src);
+    if blocks.is_empty() || !html.contains(open) {
+        return html.to_string();
+    }
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    for b in &blocks {
+        let Some(i) = rest.find(open) else { break };
+        let Some(len) = rest[i..].find("</code></pre>") else { break };
+        out.push_str(&rest[..i]);
+        rest = &rest[i + len + "</code></pre>".len()..];
+        let Ok(spec) = views::parse(&b.spec) else {
+            continue;
+        };
+        let mut r = views::run(&spec, ix, &today, Some(from));
+        r.rows.retain(|row| url.contains_key(&row.path));
+        let link = |row: &views::ViewRow| format!("<a href=\"{}\">{}</a>", url[&row.path], escape_html(&row.title));
+        out.push_str("<div class=\"view\">");
+        if r.rows.is_empty() {
+            out.push_str("<p class=\"muted\">Nothing here yet.</p>");
+        }
+        match spec.layout {
+            Layout::Table if !r.rows.is_empty() => {
+                out.push_str("<table><thead><tr><th>Note</th>");
+                let fields: Vec<&String> = spec.fields.iter().filter(|f| f.as_str() != "title").collect();
+                for f in &fields {
+                    let _ = write!(out, "<th>{}</th>", escape_html(f));
+                }
+                out.push_str("</tr></thead><tbody>");
+                for row in &r.rows {
+                    let _ = write!(out, "<tr><td>{}</td>", link(row));
+                    for (f, c) in spec.fields.iter().zip(&row.cells) {
+                        if f != "title" {
+                            let _ = write!(out, "<td>{}</td>", escape_html(c));
+                        }
+                    }
+                    out.push_str("</tr>");
+                }
+                out.push_str("</tbody></table>");
+            }
+            Layout::Kanban if !r.rows.is_empty() => {
+                out.push_str("<div class=\"board\">");
+                for g in &r.groups {
+                    let cards: Vec<_> = r.rows.iter().filter(|row| &row.group == g).collect();
+                    let name = if g.is_empty() { "(none)" } else { g };
+                    let _ = write!(out, "<section><h4>{} <span class=\"muted\">{}</span></h4>", escape_html(name), cards.len());
+                    for row in cards {
+                        let details: Vec<String> = spec
+                            .fields
+                            .iter()
+                            .zip(&row.cells)
+                            .filter(|(f, c)| f.as_str() != "title" && !c.is_empty())
+                            .map(|(_, c)| escape_html(c))
+                            .collect();
+                        let _ = write!(out, "<div class=\"card\">{}<small>{}</small></div>", link(row), details.join(" · "));
+                    }
+                    out.push_str("</section>");
+                }
+                out.push_str("</div>");
+            }
+            Layout::Calendar if !r.rows.is_empty() => {
+                let mut rows: Vec<_> = r.rows.iter().filter(|row| row.date.is_some()).collect();
+                rows.sort_by(|a, b| a.date.cmp(&b.date));
+                out.push_str("<ul class=\"dates\">");
+                for row in rows {
+                    let _ = write!(out, "<li><time>{}</time> {}</li>", escape_html(row.date.as_deref().unwrap_or_default()), link(row));
+                }
+                out.push_str("</ul>");
+            }
+            _ => {
+                out.push_str("<ul>");
+                for row in &r.rows {
+                    let _ = write!(out, "<li>{}</li>", link(row));
+                }
+                out.push_str("</ul>");
+            }
+        }
+        out.push_str("</div>");
+    }
+    out.push_str(rest);
+    out
+}
+
 fn tag_anchor(t: &str) -> String {
     t.chars().map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect()
 }
@@ -148,6 +237,10 @@ img{max-width:100%}
 aside{margin-top:3rem;border-top:1px solid var(--border);padding-top:1rem;color:var(--muted);font-size:.95em}
 aside ul{padding-left:1.2rem}aside li{margin:.3rem 0}aside .ctx{display:block;font-size:.9em}
 .pages li{margin:.25rem 0}.folder{color:var(--muted);font-size:.9em;margin-top:1.5rem}
+.view{margin:1rem 0}.view table{width:100%}.muted{color:var(--muted);font-weight:400}
+.board{display:flex;gap:.75rem;overflow-x:auto}.board section{flex:1;min-width:11rem;background:var(--code);border-radius:8px;padding:.5rem}
+.board h4{margin:.2rem .3rem .5rem;font-size:.9rem}.card{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:.45rem .6rem;margin-bottom:.4rem}
+.card small{display:block;color:var(--muted)}.dates{list-style:none;padding:0}.dates time{color:var(--muted);font-variant-numeric:tabular-nums;margin-right:.6rem}
 footer{max-width:46rem;margin:3rem auto 2rem;padding:0 1.25rem;color:var(--muted);font-size:.85em}
 "#;
 
@@ -230,6 +323,7 @@ pub fn publish(vault: &Vault, ix: &Index, out: &Path, site_title: &str, which: S
         });
         report.private_links += private.get();
         files.extend(embedded.into_inner());
+        let html = render_views(&html, src, ix, &rec.path, &url);
         // Tags link to the tags page.
         let mut body = add_heading_ids(&html);
         for t in &rec.tags {
@@ -380,6 +474,25 @@ mod tests {
         let r = publish(&vault, &ix, dir2.path(), "All", Selection::All).unwrap();
         assert_eq!(r.pages, 3);
         assert!(!dir2.path().join("templates-page.html").exists());
+    }
+
+    #[test]
+    fn views_render_as_html_and_never_list_private_notes() {
+        let files = [
+            (
+                "Board.md",
+                "---\npublish: true\n---\n# Board\n```quire-view\nfrom: \"#project\"\nlayout: kanban\ngroup: status\nfields: [title, owner]\n```\n",
+            ),
+            ("A.md", "---\npublish: true\nstatus: active\nowner: Asha\n---\n# Alpha #project\n"),
+            ("Secret.md", "---\nstatus: active\n---\n# Secret launch #project\n"),
+        ];
+        let vault = Vault::in_memory(&files);
+        let ix = index(&files);
+        let dir = tempfile::tempdir().unwrap();
+        publish(&vault, &ix, dir.path(), "Site", Selection::Marked).unwrap();
+        let board = std::fs::read_to_string(dir.path().join("board.html")).unwrap();
+        assert!(board.contains("class=\"board\"") && board.contains("href=\"a.html\">Alpha") && board.contains("Asha"), "{board}");
+        assert!(!board.contains("quire-view") && !board.contains("Secret"), "{board}");
     }
 
     #[test]

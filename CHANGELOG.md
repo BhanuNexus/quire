@@ -4,11 +4,17 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Changed
+- Saving no longer waits on version history: snapshots are compressed and written on a background thread, in order. Autosave of a 400 KB note took about 30 ms of the UI thread before.
+- Published websites show `quire-view` boards, tables, lists and calendars as real HTML, listing only notes that are published, instead of the raw code block.
+
+### Fixed
+- Folder sync: when three or more devices edited the same lines before seeing each other's changes, the winning text could be saved as a conflict copy twice. Now the winner stays in the note on every device and each other device keeps only its own version beside it.
+
 ## [0.6.0] - 2026-11-02
 
 ### Added
 - **Sync through a folder you already sync, free.** Quire Sync can now use a folder that Dropbox, iCloud Drive, Google Drive, OneDrive or Syncthing keeps on all your devices, with no server to run. It's the default in Settings → Sync, which offers the synced folders it finds on your computer. Notes are encrypted before they reach the folder, so the sync service can't read them or their names. Each device writes only to its own files there, so the sync tool never makes conflicted copies, and edits made on two devices before either saw the other merge as they do with a server.
-
 - **Suggestions as you type.** `[[` lists notes to link (recent ones first, then by name as you type, or a new note); `#` lists the tags you already use, most used first; `/` at the start of a word opens a menu of headings, lists, checklists, quotes, code blocks, tables, dividers, links, embeds, board/table/calendar views, today's date, the time and your templates (with `{{cursor}}` where the caret goes). ↑ ↓ to choose, Enter or Tab to insert, Escape to close. Nothing is suggested inside code blocks.
 - **Publish as a website, free.** The command palette's *Publish as a website…* (or `quire-cli publish <vault> <folder>`) turns the notes marked `publish: true`, or all notes, into a folder of web pages. Each page has its links, backlinks, tags and heading anchors, and the site has a home page, a tags page and search that runs in the browser. It works with GitHub Pages, Netlify, Cloudflare Pages or any web server. Links to notes you didn't publish become plain text, so the site never points at a private note.
 

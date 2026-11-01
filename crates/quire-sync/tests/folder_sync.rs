@@ -189,6 +189,25 @@ fn overlapping_edits_before_either_device_saw_the_other_keep_both() {
 }
 
 #[test]
+fn three_devices_racing_on_the_same_lines_keep_each_version_exactly_once() {
+    let mut c = Cloud::new(3);
+    c.put(0, "Plan.md", "# Plan\nShip it.\n");
+    c.settle();
+    for (i, v) in ["Friday", "Monday", "never"].iter().enumerate() {
+        c.put(i, "Plan.md", &format!("# Plan\nShip it {v}.\n"));
+        c.sync(i);
+    }
+    c.settle();
+    c.assert_agree();
+    let texts: Vec<&String> = c.devs[0].store.0.values().collect();
+    assert_eq!(texts.len(), 3, "the note and one copy per losing device: {:?}", c.devs[0].store);
+    for v in ["Friday", "Monday", "never"] {
+        let n = texts.iter().filter(|t| t.contains(&format!("Ship it {v}."))).count();
+        assert_eq!(n, 1, "{v} appears {n} times: {:?}", c.devs[0].store);
+    }
+}
+
+#[test]
 fn an_edit_beats_a_delete_made_at_the_same_time() {
     let mut c = Cloud::new(2);
     c.put(0, "Plan.md", "# Plan\n");

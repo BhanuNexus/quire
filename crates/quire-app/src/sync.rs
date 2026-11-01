@@ -125,6 +125,7 @@ impl Workspace {
         let vault = self.vault.as_ref()?;
         let mine = self.doc_text_or_file(&c.original)?;
         let theirs = vault.read(&c.copy).ok()?;
+        self.history.flush();
         let snapshots: Vec<String> = vault.history(&c.original).iter().take(50).filter_map(|s| vault.read_snapshot(s).ok()).collect();
         Some(merge::merge(best_base(&snapshots, &mine, &theirs), &mine, &theirs))
     }
@@ -169,9 +170,9 @@ impl Workspace {
         let vault = self.vault.clone().ok_or("no vault")?;
         let old = vault.read(p).map_err(|e| e.to_string())?;
         let now = crate::history_ops::now_ms();
-        let _ = vault.snapshot(p, &old, now - 1, true);
+        self.history.keep(&vault, p, &old, now - 1, true);
         vault.write(p, text).map_err(|e| e.to_string())?;
-        let _ = vault.snapshot(p, text, now, true);
+        self.history.keep(&vault, p, text, now, true);
         self.index.upsert(p.clone(), text.to_string());
         Ok(())
     }
