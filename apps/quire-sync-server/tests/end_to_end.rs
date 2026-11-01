@@ -169,3 +169,49 @@ fn concurrent_pushes_keep_one_linear_history_per_note() {
         assert_eq!(*s, s0);
     }
 }
+
+#[test]
+fn a_ten_megabyte_attachment_fits_through_the_server() {
+    use base64::Engine as _;
+    let base = serve(Store::in_memory().unwrap());
+    let space = SpaceId::random().unwrap();
+    let key = VaultKey::generate().unwrap();
+    let http = HttpTransport::new(&base, space.clone(), TOKEN);
+    http.create_space(&WrappedKey::wrap(&key, "pass phrase", KdfParams::TEST).unwrap()).unwrap();
+    let (mut a, mut sa) = device(&space, &key, "laptop");
+    let (mut b, mut sb) = device(&space, &key, "phone");
+    // The largest file the app syncs (10 MiB), as base64 like the app sends it.
+    let bytes: Vec<u8> = (0..10 * 1024 * 1024).map(|i: u32| (i.wrapping_mul(2_654_435_761) >> 13) as u8).collect();
+    let text = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    sa.write("video/clip.bin", &text).unwrap();
+    a.sync(&mut sa, &http, "2026-11-02").unwrap();
+    b.sync(&mut sb, &http, "2026-11-02").unwrap();
+    assert_eq!(sb.read("video/clip.bin").unwrap(), text);
+}
+
+#[test]
+fn a_big_attachment_that_loses_a_race_still_syncs() {
+    use base64::Engine as _;
+    let base = serve(Store::in_memory().unwrap());
+    let space = SpaceId::random().unwrap();
+    let key = VaultKey::generate().unwrap();
+    let http = HttpTransport::new(&base, space.clone(), TOKEN);
+    http.create_space(&WrappedKey::wrap(&key, "pass phrase", KdfParams::TEST).unwrap()).unwrap();
+    let (mut a, mut sa) = device(&space, &key, "laptop");
+    let (mut b, mut sb) = device(&space, &key, "phone");
+    let big = |seed: u32| {
+        let bytes: Vec<u8> = (0..6 * 1024 * 1024).map(|i: u32| (i.wrapping_mul(seed) >> 11) as u8).collect();
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    };
+    sa.write("scan.pdf", &big(2_654_435_761)).unwrap();
+    a.sync(&mut sa, &http, "2026-11-02").unwrap();
+    b.sync(&mut sb, &http, "2026-11-02").unwrap();
+    // Both change it; the second push gets a conflict reply carrying the 6 MB head.
+    sa.write("scan.pdf", &big(40_503)).unwrap();
+    sb.write("scan.pdf", &big(97)).unwrap();
+    a.sync(&mut sa, &http, "2026-11-02").unwrap();
+    let r = b.sync(&mut sb, &http, "2026-11-02").unwrap();
+    assert_eq!(r.conflict_copies.len(), 1, "{r:?}");
+    a.sync(&mut sa, &http, "2026-11-02").unwrap();
+    assert_eq!(sa, sb);
+}

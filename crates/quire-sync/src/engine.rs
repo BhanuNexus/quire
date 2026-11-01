@@ -29,12 +29,40 @@ use crate::protocol::{Content, DeviceId, FileId, PushOutcome, RevId, Revision, S
 use crate::transport::{Transport, TransportError};
 
 /// A folder of notes, as the engine sees it. Paths are vault-relative with `/`.
+///
+/// Notes are text. Other files (images, PDFs: see [`is_attachment`]) travel
+/// as base64 text, so `read` and `write` use that for them.
 pub trait LocalStore {
-    /// Every note that should sync.
+    /// Every file that should sync.
     fn list(&self) -> Vec<String>;
     fn read(&self, path: &str) -> Option<String>;
     fn write(&mut self, path: &str, text: &str) -> Result<(), String>;
     fn remove(&mut self, path: &str) -> Result<(), String>;
+    /// What [`fingerprint`] gives for the file, so an unchanged attachment
+    /// needn't be read in full on every pass. Stores can cache it.
+    fn digest(&self, path: &str) -> Option<String> {
+        self.read(path).map(|t| fingerprint(path, &t))
+    }
+}
+
+/// Files that aren't notes: they're never merged line by line, and the
+/// engine remembers them by hash rather than keeping their contents.
+pub fn is_attachment(path: &str) -> bool {
+    let ext = std::path::Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or_default();
+    !["md", "markdown", "txt"].iter().any(|t| ext.eq_ignore_ascii_case(t))
+}
+
+/// How the engine remembers a file's synced contents: notes in full (they're
+/// the ancestor for the next merge), attachments as a hash.
+pub fn fingerprint(path: &str, text: &str) -> String {
+    use sha2::Digest;
+    if is_attachment(path) { format!("sha256:{}", crate::crypto::hex(&sha2::Sha256::digest(text.as_bytes()))) } else { text.to_string() }
+}
+
+/// Whether `text` is what was last synced (`base`, a note's text or an
+/// attachment's [`fingerprint`]).
+fn same_as_base(path: &str, text: &str, base: &str) -> bool {
+    text == base || (is_attachment(path) && fingerprint(path, text) == base)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -59,7 +87,8 @@ pub struct Tracked {
     pub synced_path: String,
     pub head: RevId,
     pub head_seq: u64,
-    /// The text as of `head`: the common ancestor for the next merge.
+    /// The text as of `head`: the common ancestor for the next merge. For an
+    /// attachment, its [`fingerprint`].
     pub base: String,
     pub deleted: bool,
 }
@@ -191,7 +220,7 @@ impl Engine {
         let changed_here = match (&here, base_deleted) {
             (None, deleted) => !deleted,
             (Some(_), true) => true,
-            (Some(x), false) => *x != base,
+            (Some(x), false) => !same_as_base(&t.path, x, &base),
         };
 
         if !changed_here {
@@ -233,8 +262,9 @@ impl Engine {
                 if t.path != to {
                     self.protect_unsynced(local, &to, &mine)?;
                 }
-                let m = merge::merge3(&base, &mine, &c.text);
-                if m.is_clean() {
+                // Attachments can't be merged: both versions are kept.
+                let merged = (!is_attachment(&to)).then(|| merge::merge3(&base, &mine, &c.text)).filter(merge::MergeResult::is_clean);
+                if let Some(m) = merged {
                     write(local, &to, &m.text)?;
                     report.merged.push(to.clone());
                 } else if lost_tie {
@@ -321,7 +351,7 @@ impl Engine {
                 synced_path: c.path.clone(),
                 head: r.rev.clone(),
                 head_seq: r.seq,
-                base: c.text.clone(),
+                base: fingerprint(&c.path, &c.text),
                 deleted: c.deleted,
             },
         );
@@ -369,19 +399,26 @@ impl Engine {
         let ids: Vec<FileId> = self.state.files.keys().cloned().collect();
         for id in ids {
             let t = self.state.files[&id].clone();
-            let here = if present.contains(&t.path) { local.read(&t.path) } else { None };
+            // Compare fingerprints first, so unchanged attachments aren't read.
+            let here = if present.contains(&t.path) { local.digest(&t.path) } else { None };
+            let full = |p: &str| local.read(p);
             let content = match (here, t.deleted) {
                 (Some(_), true) if live.contains(&t.path) => continue,
-                (Some(x), true) => Content { path: t.path.clone(), deleted: false, text: x, from: String::new() },
+                (Some(_), true) => {
+                    let Some(x) = full(&t.path) else { continue };
+                    Content { path: t.path.clone(), deleted: false, text: x, from: String::new() }
+                }
                 (Some(x), false) if x != t.base || t.path != t.synced_path => {
+                    let Some(x) = (if x == t.base && !is_attachment(&t.path) { Some(x) } else { full(&t.path) }) else { continue };
                     Content { path: t.path.clone(), deleted: false, text: x, from: String::new() }
                 }
                 (Some(_), false) | (None, true) => continue,
                 (None, false) => {
-                    // Gone from its path: renamed (same text elsewhere) or deleted.
-                    if let Some(i) = untracked.iter().position(|p| local.read(p).as_deref() == Some(t.base.as_str())) {
+                    // Gone from its path: renamed (same contents elsewhere) or deleted.
+                    if let Some(i) = untracked.iter().position(|p| local.digest(p).as_deref() == Some(t.base.as_str())) {
                         let to = untracked.remove(i);
-                        Content { path: to, deleted: false, text: t.base.clone(), from: String::new() }
+                        let Some(text) = full(&to) else { continue };
+                        Content { path: to, deleted: false, text, from: String::new() }
                     } else {
                         Content { path: t.path.clone(), deleted: true, text: String::new(), from: String::new() }
                     }
@@ -431,7 +468,7 @@ impl Engine {
                         synced_path: content.path.clone(),
                         head: r.rev,
                         head_seq: seq,
-                        base: content.text.clone(),
+                        base: fingerprint(&content.path, &content.text),
                         deleted: content.deleted,
                     },
                 );

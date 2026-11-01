@@ -5,6 +5,7 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 ## [Unreleased]
 
 ### Added
+- **Images and files sync too.** Quire Sync now carries attachments (images, PDFs, any file in the vault up to 10 MB), encrypted like notes, through a synced folder or a server. Renames and deletes follow, and when two devices change the same file both versions are kept (files are never merged line by line). The sync state remembers attachments by hash, so it stays small.
 - **Split editor.** Two notes side by side: **Split editor** (Ctrl+Alt+\\) shows the last note you had open next to this one (or asks which note), and **Open to the side** in a note's right-click menu opens it in the other half. Each half has its own scroll position and cursor; click into a half (or its title) to work in it, and links, quick open and new notes go to the half you're in.
 - **Fold sections.** Hover a heading for an arrow beside it; click to fold everything up to the next heading of the same level, so long notes read like an outline. A folded heading shows a ⋯ pill (click it to unfold). **Fold or unfold this section** (Ctrl+Shift+[), **Fold all sections** (Ctrl+Alt+[) and **Unfold all** (Ctrl+Alt+]). Moving the cursor into a folded section opens it, and ↑/↓ skip over folded lines.
 
@@ -13,6 +14,7 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 - Published websites show `quire-view` boards, tables, lists and calendars as real HTML, listing only notes that are published, instead of the raw code block.
 
 ### Fixed
+- Sync server and client: replies are paged by size as well as count, and the client accepts replies up to 96 MB, so big revisions no longer fail with "response body is larger than request limit".
 - Folder sync: when three or more devices edited the same lines before seeing each other's changes, the winning text could be saved as a conflict copy twice. Now the winner stays in the note on every device and each other device keeps only its own version beside it.
 
 ## [0.6.0] - 2026-11-02

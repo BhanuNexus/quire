@@ -45,7 +45,7 @@ Revision {
 
 * **Renames** are a new revision of the same `file_id` with a new path inside the ciphertext. Links stay right because the client rewrites them (as it already does locally) and syncs those notes as edits.
 * **Deletes** are a revision with `deleted: true`. The server keeps them, so a deleted note can be restored from history on any device.
-* **Attachments** (images, PDFs) are stored as encrypted **blobs** in 4 MiB chunks. A revision lists its chunk ids. Chunk ids are `HMAC(blob_key, plaintext)`, so the same image added twice is stored once, without revealing its content.
+* **Attachments** (images, PDFs, any file that isn't a note) travel as revisions too, their bytes base64-encoded inside the sealed content, so they get the same encryption, padding, renames and deletes as notes. They're never merged: when two devices change one, both versions are kept. The engine remembers an attachment by its SHA-256 (not its bytes), so its state stays small, and a store can cache those hashes so unchanged files aren't re-read. Files over 10 MB stay local. Server pages stop at about 8 MB so big revisions don't make huge replies. *Later:* chunked, deduplicated blobs (`HMAC(blob_key, chunk)` ids) to send only what changed in big files.
 
 ### The sync loop
 
@@ -137,7 +137,7 @@ Data loss is the failure that matters, so the engine is tested hardest:
 1. **Engine:** `quire-sync` with crypto, the revision log, the merge on conflict and the in-memory transport, plus the convergence tests. Nothing user-visible yet.
 2. **Server:** `quire-sync-server` with SQLite, token auth, the long-poll, a Docker image and self-hosting docs.
 3. **Desktop:** Settings → Sync, status indicator, conflict handling wired to the existing UI. Ships as **beta** for self-hosters.
-4. **Hardening:** attachment chunks, history and restore from the server, device list and revocation, backpressure and quotas, and an export of a whole space.
+4. **Hardening:** chunked attachments, history and restore from the server, device list and revocation, backpressure and quotas, and an export of a whole space.
 5. **Managed service:** accounts, billing and the hosted deployment. The paid product launches here.
 
 The iOS app (#13) and the web clipper (#12) build on milestones 1–3.

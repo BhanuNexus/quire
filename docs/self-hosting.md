@@ -75,5 +75,5 @@ It can see how many notes a vault has, roughly how big each change is (sizes are
 ## Limits of this preview
 
 - One token per server, so the server is meant for one person or one household. Accounts come with the managed service.
-- Attachments (images, PDFs) don't sync yet. Notes do.
+- Attachments (images, PDFs and other files) sync up to 10 MB each; bigger files stay on the device they're on.
 - Version history stays on each device; restoring old versions from the server comes later.

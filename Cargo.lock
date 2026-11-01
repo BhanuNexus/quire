@@ -3515,6 +3515,7 @@ dependencies = [
 name = "quire-app"
 version = "0.6.0"
 dependencies = [
+ "base64",
  "chrono",
  "crossbeam-channel",
  "directories",
@@ -3638,6 +3639,7 @@ name = "quire-sync-server"
 version = "0.6.0"
 dependencies = [
  "axum",
+ "base64",
  "quire-sync",
  "rusqlite",
  "serde",

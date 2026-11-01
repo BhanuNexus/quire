@@ -24,6 +24,9 @@ pub enum StoreError {
     Corrupt(String),
 }
 
+/// Roughly how much sealed data one page of changes carries.
+const PAGE_BYTES: usize = 8 * 1024 * 1024;
+
 pub struct Store {
     db: Mutex<Connection>,
 }
@@ -138,7 +141,19 @@ impl Store {
             "SELECT seq, file, rev, parents, device, sealed FROM revisions WHERE space = ?1 AND seq > ?2 ORDER BY seq LIMIT ?3",
         )?;
         let rows = stmt.query_map(params![space.0, after.cast_signed(), limit], row_to_rev)?;
-        rows.map(|r| to_revision(r?)).collect()
+        // Pages also stop at about 8 MB (attachments make big revisions); the
+        // client keeps asking until it reaches `latest`.
+        let mut out = Vec::new();
+        let mut bytes = 0;
+        for r in rows {
+            let rev = to_revision(r?)?;
+            bytes += rev.sealed.len();
+            out.push(rev);
+            if bytes > PAGE_BYTES {
+                break;
+            }
+        }
+        Ok(out)
     }
 
     pub fn latest(&self, space: &SpaceId) -> Result<u64, StoreError> {

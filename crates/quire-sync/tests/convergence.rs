@@ -177,6 +177,45 @@ fn state_survives_a_restart() {
     assert_eq!(server.len(), before, "a restarted device doesn't re-upload what's already synced");
 }
 
+#[test]
+fn attachments_travel_rename_and_are_remembered_by_hash() {
+    let (server, mut devs) = devices(2);
+    let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+    put(&mut devs[0], "attachments/pixel.png", png);
+    put(&mut devs[0], "Note.md", "![[pixel.png]]\n");
+    settle(&mut devs, &server);
+    assert_eq!(devs[1].store.read("attachments/pixel.png").unwrap(), png);
+    // The engine keeps a hash, not the file.
+    let state = serde_json::to_string(&devs[1].engine.state).unwrap();
+    assert!(!state.contains(png) && state.contains("sha256:"));
+    // A rename is a rename, not a delete and a new file.
+    let before = server.len();
+    let t = devs[1].store.0.remove("attachments/pixel.png").unwrap();
+    put(&mut devs[1], "attachments/dot.png", &t);
+    settle(&mut devs, &server);
+    assert_eq!(server.len(), before + 1);
+    assert_eq!(devs[0].store.read("attachments/dot.png").unwrap(), png);
+    assert!(devs[0].store.read("attachments/pixel.png").is_none());
+}
+
+#[test]
+fn an_attachment_changed_on_two_devices_keeps_both_never_merged() {
+    let (server, mut devs) = devices(2);
+    put(&mut devs[0], "diagram.svg", "<svg>\nold\n</svg>\n");
+    settle(&mut devs, &server);
+    // Different lines, which a note would merge cleanly.
+    put(&mut devs[0], "diagram.svg", "<svg>\nold\n</svg>\n<!-- a -->\n");
+    put(&mut devs[1], "diagram.svg", "<!-- b -->\n<svg>\nold\n</svg>\n");
+    sync(&mut devs[0], &server);
+    let r = sync(&mut devs[1], &server);
+    assert!(r.merged.is_empty() && r.conflict_copies.len() == 1, "{r:?}");
+    settle(&mut devs, &server);
+    assert_eq!(devs[0].store, devs[1].store);
+    let all: Vec<&String> = devs[0].store.0.values().collect();
+    assert!(all.iter().any(|t| t.contains("<!-- a -->") && !t.contains("<!-- b -->")));
+    assert!(all.iter().any(|t| t.contains("<!-- b -->") && !t.contains("<!-- a -->")));
+}
+
 // ------------------------------------------------------------------ random simulations
 
 /// Small deterministic RNG so failures can be replayed by seed.
@@ -194,7 +233,7 @@ impl Rng {
     }
 }
 
-const NAMES: [&str; 5] = ["A.md", "B.md", "Notes/C.md", "Notes/D.md", "E.md"];
+const NAMES: [&str; 6] = ["A.md", "B.md", "Notes/C.md", "Notes/D.md", "E.md", "files/pic.png"];
 
 /// One random local change. `additive` changes only add text (no deletes or
 /// line rewrites), so every word written must survive.

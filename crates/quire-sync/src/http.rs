@@ -22,7 +22,14 @@ pub struct HttpTransport {
 #[derive(Deserialize)]
 struct Changes {
     revisions: Vec<Revision>,
+    /// The newest position in the log; paging stops there.
+    #[serde(default)]
+    latest: u64,
 }
+
+/// Replies can carry attachments: up to a page of about 8 MB plus one
+/// revision of a 10 MB file (base64, then hex).
+const MAX_REPLY: u64 = 96 * 1024 * 1024;
 
 #[derive(Deserialize)]
 struct Latest {
@@ -87,7 +94,7 @@ impl HttpTransport {
     fn get_json<T: for<'de> Deserialize<'de>>(&self, agent: &ureq::Agent, url: &str) -> Result<T, TransportError> {
         let mut res = agent.get(url).header("Authorization", &self.auth()).call().map_err(|e| TransportError::Offline(e.to_string()))?;
         let status = res.status().as_u16();
-        let body = res.body_mut().read_to_string().map_err(|e| TransportError::Offline(e.to_string()))?;
+        let body = res.body_mut().with_config().limit(MAX_REPLY).read_to_string().map_err(|e| TransportError::Offline(e.to_string()))?;
         if status != 200 {
             return Err(Self::fail(status, &body));
         }
@@ -142,7 +149,8 @@ impl Transport for HttpTransport {
                 cursor = last.seq;
             }
             out.extend(page.revisions);
-            if n < PAGE as usize {
+            // Pages can end early (big revisions), so keep going until the log's end.
+            if n == 0 || cursor >= page.latest {
                 return Ok(out);
             }
         }
@@ -158,7 +166,8 @@ impl Transport for HttpTransport {
             .send(body.as_str())
             .map_err(|e| TransportError::Offline(e.to_string()))?;
         let status = res.status().as_u16();
-        let text = res.body_mut().read_to_string().map_err(|e| TransportError::Offline(e.to_string()))?;
+        // A conflict reply carries the head revision, which can be an attachment.
+        let text = res.body_mut().with_config().limit(MAX_REPLY).read_to_string().map_err(|e| TransportError::Offline(e.to_string()))?;
         match status {
             200 | 409 => serde_json::from_str(&text).map_err(|e| TransportError::Refused(format!("unexpected reply: {e}"))),
             _ => Err(Self::fail(status, &text)),

@@ -207,7 +207,11 @@ fn save_state(root: &Path, state: &SyncState) -> Result<(), String> {
     std::fs::rename(&tmp, dir.join("state.json")).map_err(|e| e.to_string())
 }
 
-/// The vault folder as the engine sees it.
+/// Attachments bigger than this don't sync (each change is sent whole).
+pub const MAX_ATTACHMENT_BYTES: u64 = 10 * 1024 * 1024;
+
+/// The vault folder as the engine sees it: notes, and attachments (images,
+/// PDFs…) as base64.
 ///
 /// Writes check that the file is still what the engine last read, so a save
 /// from the editor in between is never overwritten (the engine retries on
@@ -215,35 +219,87 @@ fn save_state(root: &Path, state: &SyncState) -> Result<(), String> {
 pub struct VaultStore {
     vault: Vault,
     seen: HashMap<String, Option<String>>,
+    /// Attachment fingerprints by (size, modified time), so unchanged images
+    /// aren't read and hashed on every pass.
+    digests: std::cell::RefCell<HashMap<String, (u64, std::time::SystemTime, String)>>,
+}
+
+fn b64() -> base64::engine::GeneralPurpose {
+    base64::engine::general_purpose::STANDARD
 }
 
 impl VaultStore {
     pub fn new(vault: Vault) -> Self {
-        Self { vault, seen: HashMap::new() }
+        Self { vault, seen: HashMap::new(), digests: std::cell::RefCell::default() }
+    }
+
+    fn size_and_time(&self, path: &str) -> Option<(u64, std::time::SystemTime)> {
+        let abs = self.vault.storage().absolute(&NotePath::new(path))?;
+        let m = std::fs::metadata(abs).ok()?;
+        Some((m.len(), m.modified().ok()?))
     }
 
     fn current(&self, path: &str) -> Option<String> {
-        self.vault.read(&NotePath::new(path)).ok()
+        use base64::Engine as _;
+        if quire_sync::engine::is_attachment(path) {
+            self.vault.storage().read_bytes(&NotePath::new(path)).ok().map(|b| b64().encode(b))
+        } else {
+            self.vault.read(&NotePath::new(path)).ok()
+        }
     }
 
     fn unchanged_since_read(&self, path: &str) -> Result<(), String> {
         // A path the engine didn't see at the start of the pass must still not exist.
         let expected = self.seen.get(path).cloned().flatten();
-        if self.current(path) == expected { Ok(()) } else { Err("it changed while syncing".into()) }
+        let now = if quire_sync::engine::is_attachment(path) { self.digest(path) } else { self.current(path) };
+        if now == expected { Ok(()) } else { Err("it changed while syncing".into()) }
     }
 }
 
 impl LocalStore for VaultStore {
     fn list(&self) -> Vec<String> {
-        self.vault.storage().list().unwrap_or_default().into_iter().filter(NotePath::is_markdown).map(|p| p.as_str().to_string()).collect()
+        self.vault
+            .storage()
+            .list()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| {
+                p.is_markdown()
+                    || (quire_sync::engine::is_attachment(p.as_str())
+                        && self.size_and_time(p.as_str()).is_some_and(|(n, _)| n <= MAX_ATTACHMENT_BYTES))
+            })
+            .map(|p| p.as_str().to_string())
+            .collect()
     }
 
     fn read(&self, path: &str) -> Option<String> {
         self.current(path)
     }
 
+    fn digest(&self, path: &str) -> Option<String> {
+        if !quire_sync::engine::is_attachment(path) {
+            return self.current(path);
+        }
+        let stamp = self.size_and_time(path)?;
+        if let Some((n, t, d)) = self.digests.borrow().get(path)
+            && (*n, *t) == stamp
+        {
+            return Some(d.clone());
+        }
+        let d = quire_sync::engine::fingerprint(path, &self.current(path)?);
+        self.digests.borrow_mut().insert(path.to_string(), (stamp.0, stamp.1, d.clone()));
+        Some(d)
+    }
+
     fn write(&mut self, path: &str, text: &str) -> Result<(), String> {
+        use base64::Engine as _;
         self.unchanged_since_read(path)?;
+        if quire_sync::engine::is_attachment(path) {
+            let bytes = b64().decode(text).map_err(|e| format!("damaged attachment: {e}"))?;
+            self.vault.storage().write_bytes_atomic(&NotePath::new(path), &bytes).map_err(|e| e.to_string())?;
+            self.seen.insert(path.to_string(), Some(quire_sync::engine::fingerprint(path, text)));
+            return Ok(());
+        }
         self.vault.write(&NotePath::new(path), text).map_err(|e| e.to_string())?;
         self.seen.insert(path.to_string(), Some(text.to_string()));
         Ok(())
@@ -263,7 +319,8 @@ impl LocalStore for VaultStore {
 fn snapshot_reads(store: &mut VaultStore) {
     store.seen.clear();
     for p in store.list() {
-        let cur = store.current(&p);
+        // Attachments are checked by fingerprint (see `unchanged_since_read`).
+        let cur = if quire_sync::engine::is_attachment(&p) { store.digest(&p) } else { store.current(&p) };
         store.seen.insert(p, cur);
     }
 }
@@ -672,7 +729,8 @@ mod tests {
         for d in [&va, &vb, &shared] {
             std::fs::create_dir_all(d).unwrap();
         }
-        std::fs::write(va.join("Plan.md"), "# Plan\nShip it.\n").unwrap();
+        std::fs::write(va.join("Plan.md"), "# Plan\nShip it.\n![[logo.png]]\n").unwrap();
+        std::fs::write(va.join("logo.png"), [0x89u8, b'P', b'N', b'G', 7, 7]).unwrap();
         let target = SyncTarget::Folder(shared.clone());
 
         let mut a = Workspace::new(crate::Settings::default());
@@ -686,8 +744,9 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert!(b.sync_join(&target, &found[0].space, "wrong passphrase", "phone").is_err());
         b.sync_join(&target, &found[0].space, "correct horse battery", "phone").unwrap();
-        wait_for(&mut [&mut a, &mut b], "the note to reach B", |_| {
+        wait_for(&mut [&mut a, &mut b], "the note and its image to reach B", |_| {
             std::fs::read_to_string(vb.join("Plan.md")).is_ok_and(|t| t.contains("Ship it."))
+                && std::fs::read(vb.join("logo.png")).is_ok_and(|b| b == [0x89u8, b'P', b'N', b'G', 7, 7])
         });
 
         // An edit on B travels back to A; B's worker notices the save, A's notices the folder change.
@@ -715,6 +774,30 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn attachments_sync_as_bytes_and_big_ones_stay_local() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::open_local(dir.path()).unwrap();
+        std::fs::create_dir_all(dir.path().join("attachments")).unwrap();
+        let png = [0x89u8, b'P', b'N', b'G', 0, 1, 2, 255];
+        std::fs::write(dir.path().join("attachments/a.png"), png).unwrap();
+        std::fs::write(dir.path().join("huge.mov"), vec![0u8; usize::try_from(MAX_ATTACHMENT_BYTES).unwrap() + 1]).unwrap();
+        vault.write(&NotePath::new("N.md"), "![[a.png]]").unwrap();
+        let mut store = VaultStore::new(vault);
+        let mut listed = store.list();
+        listed.sort();
+        assert_eq!(listed, ["N.md", "attachments/a.png"], "too-big files stay out");
+        let text = store.read("attachments/a.png").unwrap();
+        snapshot_reads(&mut store);
+        store.write("attachments/b.png", &text).unwrap();
+        assert_eq!(std::fs::read(dir.path().join("attachments/b.png")).unwrap(), png);
+        assert_eq!(store.digest("attachments/b.png"), Some(quire_sync::engine::fingerprint("attachments/b.png", &text)));
+        // A change underneath is noticed for attachments too.
+        snapshot_reads(&mut store);
+        std::fs::write(dir.path().join("attachments/a.png"), [1u8, 2, 3]).unwrap();
+        assert!(store.write("attachments/a.png", &text).is_err());
     }
 
     #[test]

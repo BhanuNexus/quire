@@ -268,7 +268,7 @@ impl Rng {
     }
 }
 
-const NAMES: [&str; 4] = ["A.md", "B.md", "Notes/C.md", "D.md"];
+const NAMES: [&str; 5] = ["A.md", "B.md", "Notes/C.md", "D.md", "pic.png"];
 
 fn random_edit(store: &mut MemoryStore, rng: &mut Rng, token: &mut u64, additive: bool) -> Option<String> {
     *token += 1;
