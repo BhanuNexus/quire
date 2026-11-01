@@ -22,6 +22,58 @@ pub(crate) enum ViewAction {
         field: String,
         value: String,
     },
+    /// A table cell was edited: set `field` from what was typed.
+    Edit {
+        path: NotePath,
+        field: String,
+        text: String,
+    },
+}
+
+/// Fields computed from the note itself, shown read-only in tables.
+const COMPUTED: [&str; 11] = ["title", "name", "path", "file", "folder", "tags", "tasks", "open_tasks", "done_tasks", "words", "links"];
+
+/// A table cell that edits its property in place: click to type, Enter or
+/// clicking away saves, Escape cancels. Yes/no values are checkboxes.
+fn editable_cell(ui: &mut Ui, pal: &Palette, key: Id, path: &NotePath, field: &str, cell: &str, act: &mut Option<ViewAction>) {
+    let id = key.with(("cell", path.as_str(), field));
+    if matches!(cell, "true" | "false") {
+        let mut on = cell == "true";
+        if ui.checkbox(&mut on, "").on_hover_text(format!("{field} of {}", path.stem())).changed() {
+            *act = Some(ViewAction::Edit { path: path.clone(), field: field.to_string(), text: on.to_string() });
+        }
+        return;
+    }
+    let editing: Option<String> = ui.data(|d| d.get_temp::<String>(id));
+    match editing {
+        None => {
+            let shown = if cell.is_empty() { RichText::new("—").color(pal.faint) } else { RichText::new(cell).color(pal.text) };
+            let r = ui
+                .add(egui::Label::new(shown.size(13.0)).truncate().sense(Sense::click()))
+                .on_hover_cursor(egui::CursorIcon::Text)
+                .on_hover_text(format!("Click to edit {field}"));
+            if r.clicked() {
+                ui.data_mut(|d| d.insert_temp(id, cell.to_string()));
+                ui.memory_mut(|m| m.request_focus(id.with("edit")));
+            }
+        }
+        Some(mut draft) => {
+            let r = ui.add(
+                egui::TextEdit::singleline(&mut draft).id(id.with("edit")).desired_width(ui.available_width()).font(egui::TextStyle::Body),
+            );
+            let (enter, escape) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
+            if escape {
+                ui.data_mut(|d| d.remove::<String>(id));
+            } else if r.lost_focus() || enter {
+                ui.data_mut(|d| d.remove::<String>(id));
+                if draft.trim() != cell {
+                    *act = Some(ViewAction::Edit { path: path.clone(), field: field.to_string(), text: draft });
+                }
+            } else {
+                ui.data_mut(|d| d.insert_temp(id, draft));
+            }
+        }
+    }
 }
 
 const MAX_ROWS: usize = 200;
@@ -88,8 +140,11 @@ fn table(ui: &mut Ui, pal: &Palette, spec: &ViewSpec, r: &ViewResult, key: Id, a
                             ui.set_max_width(col_w.max(80.0));
                             if i == 0 || f == "title" {
                                 title_link(ui, pal, if cell.is_empty() { &row.title } else { cell }, &row.path, act);
+                            } else if COMPUTED.iter().any(|c| c.eq_ignore_ascii_case(f)) {
+                                ui.add(egui::Label::new(RichText::new(cell).size(13.0).color(pal.muted)).truncate())
+                                    .on_hover_text(format!("{f} is worked out from the note"));
                             } else {
-                                ui.add(egui::Label::new(RichText::new(cell).size(13.0).color(pal.text)).truncate());
+                                editable_cell(ui, pal, key, &row.path, f, cell, act);
                             }
                         });
                     }

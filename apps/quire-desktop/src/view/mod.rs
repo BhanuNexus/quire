@@ -1030,6 +1030,24 @@ impl FastEditor {
             {
                 ws.notify(quire_app::workspace::NoticeLevel::Info, format!("{} → {field}: {value}", path.stem()));
             }
+            Some(ViewAction::Edit { path, field, text }) => {
+                // Keep lists as lists.
+                let was_list = ws
+                    .index()
+                    .read()
+                    .get(&path)
+                    .and_then(|r| {
+                        r.properties
+                            .iter()
+                            .find(|(k, _)| k.eq_ignore_ascii_case(&field))
+                            .map(|(_, v)| matches!(v, quire_app::markdown::Value::List(_)))
+                    })
+                    .unwrap_or(false);
+                let value = quire_app::properties::parse_input(&text, was_list);
+                if !ws.set_note_property(&path, &field, &value) {
+                    ws.notify(quire_app::workspace::NoticeLevel::Warn, format!("Couldn't change {field} in “{}”", path.stem()));
+                }
+            }
             _ => {}
         }
     }
