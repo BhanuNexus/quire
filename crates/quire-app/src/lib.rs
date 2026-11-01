@@ -1,0 +1,41 @@
+// SPDX-FileCopyrightText: 2026 The Quire contributors
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//! Application layer. Frontends render [`Workspace`] state and send it
+//! [`Command`]s; nothing here knows which UI toolkit is in use.
+
+pub mod ai;
+mod ask_state;
+pub mod attach;
+pub mod commands;
+pub mod document;
+pub mod find;
+mod find_state;
+pub mod history_ops;
+pub mod projects;
+pub mod properties;
+pub mod secrets;
+pub mod session;
+pub mod settings;
+pub mod workspace;
+
+pub use ask_state::AskState;
+pub use commands::{COMMANDS, Command, CommandInfo, KeyCombo};
+pub use document::{DocId, Document};
+pub use find_state::FindState;
+pub use session::Session;
+pub use settings::{Settings, Theme};
+pub use workspace::{Notice, NoticeLevel, Workspace};
+
+// Re-export the layers below so frontends need one dependency.
+pub use quire_index as index;
+pub use quire_intel as intel;
+pub use quire_markdown as markdown;
+pub use quire_text as text;
+pub use quire_vault as vault;
+
+/// Local, human-readable time for a Unix-millisecond timestamp.
+pub fn chrono_fmt(ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms)
+        .map(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_default()
+}

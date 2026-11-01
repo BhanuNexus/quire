@@ -1,0 +1,6 @@
+target/
+target-check/
+dist/
+**/.quire/
+*.swp
+.DS_Store

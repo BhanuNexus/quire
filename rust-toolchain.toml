@@ -1,0 +1,6 @@
+# Builds use the latest stable Rust. rustup installs it automatically.
+# To build with another installed toolchain: RUSTUP_TOOLCHAIN=stable cargo build
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

@@ -1,0 +1,40 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for reporting! Please check [existing issues](https://github.com/BhanuNexus/quire/issues?q=is%3Aissue) first. Security problems go to [SECURITY.md](https://github.com/BhanuNexus/quire/blob/main/SECURITY.md), not here.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: "1. Open a note with a table\n2. Press Ctrl+Shift+T\n3. …"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Quire version
+      description: Settings → About, or `quire-cli --version`
+      placeholder: "0.3.1"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Windows 11, Windows 10, macOS (Apple Silicon), macOS (Intel), Linux (X11), Linux (Wayland), Other]
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options: [Editor, Search / Ask, Views / properties, Import, Version history, AI providers, MCP / CLI, Installer, Other]
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Screenshots, a small note that reproduces it, or output from running with `QUIRE_TRACE=1`. Remove anything private.

@@ -1,0 +1,22 @@
+[package]
+name = "quire-vault"
+description = "Storage port, local and in-memory adapters, notes, templates and refactors"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+
+[dependencies]
+quire-markdown.workspace = true
+chrono.workspace = true
+tempfile.workspace = true
+notify.workspace = true
+crossbeam-channel.workspace = true
+thiserror.workspace = true
+flate2 = "1"
+
+[lints]
+workspace = true

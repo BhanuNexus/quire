@@ -1,0 +1,19 @@
+[package]
+name = "quire-markdown"
+description = "Markdown syntax, extraction, rendering and smart edits for Quire"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+
+[dependencies]
+quire-text.workspace = true
+pulldown-cmark.workspace = true
+unicode-segmentation.workspace = true
+unicode-width = "0.2"
+
+[lints]
+workspace = true
