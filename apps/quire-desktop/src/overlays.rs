@@ -575,9 +575,11 @@ fn shortcuts(ctx: &egui::Context, query: &mut String, focused: &mut bool, pal: &
         );
         ui.separator();
         let q = query.trim().to_lowercase();
-        let col_w = (w - 24.0) / 2.0;
+        // Two columns when there's room for a title and its keys side by side.
+        let ncols = if w >= 720.0 { 2 } else { 1 };
+        let col_w = (w - 24.0) / ncols as f32;
         egui::ScrollArea::vertical().max_height(ctx.content_rect().height() * 0.7).show(ui, |ui| {
-            ui.columns(2, |cols| {
+            ui.columns(ncols, |cols| {
                 let mut shown = 0;
                 for cat in CATEGORIES {
                     let cmds: Vec<_> = COMMANDS
@@ -589,7 +591,7 @@ fn shortcuts(ctx: &egui::Context, query: &mut String, focused: &mut bool, pal: &
                         continue;
                     }
                     // Fill the shorter column so the two stay balanced.
-                    let col = &mut cols[shown % 2];
+                    let col = &mut cols[shown % ncols];
                     shown += 1;
                     col.set_max_width(col_w);
                     col.label(RichText::new(cat.to_uppercase()).size(11.0).color(pal.muted).strong());
@@ -599,7 +601,7 @@ fn shortcuts(ctx: &egui::Context, query: &mut String, focused: &mut bool, pal: &
                         for c in cmds {
                             ui.allocate_ui_with_layout(egui::vec2(label_w, 18.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                                 ui.set_min_width(label_w);
-                                ui.label(RichText::new(c.title.trim_end_matches('…')).color(pal.text));
+                                ui.add(egui::Label::new(RichText::new(c.title.trim_end_matches('…')).color(pal.text)).truncate());
                             });
                             let keys: Vec<String> = c.keys.iter().map(|k| k.label(mac)).collect();
                             ui.label(RichText::new(keys.join("  ·  ")).monospace().size(12.5).color(pal.accent));

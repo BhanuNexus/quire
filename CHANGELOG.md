@@ -16,6 +16,9 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 - Published websites show `quire-view` boards, tables, lists and calendars as real HTML, listing only notes that are published, instead of the raw code block.
 
 ### Fixed
+- **Version history no longer runs away when you scroll.** In 0.6.0 the dialog grew a little on every repaint, so scrolling the list pushed the title and buttons off screen and left an empty, endlessly scrolling panel. The dialog now has a fixed size that fits small windows, the version list and the changes scroll inside it, and long comparisons show every line (they used to stop silently after 2,000) and are computed once instead of on every frame.
+- The keyboard shortcuts sheet fits narrow windows (one column, long names shortened) instead of running off the side.
+- A new test opens every dialog on a normal and a small window, scrolls and moves the pointer for many frames, and fails if any dialog changes size or doesn't fit, so this kind of bug can't come back unnoticed.
 - Sync server and client: replies are paged by size as well as count, and the client accepts replies up to 96 MB, so big revisions no longer fail with "response body is larger than request limit".
 - Folder sync: a change another device wrote to the folder while Quire was starting sync could wait up to two minutes (until the next routine check) to arrive. It now arrives within a couple of seconds.
 - Folder sync: when three or more devices edited the same lines before seeing each other's changes, the winning text could be saved as a conflict copy twice. Now the winner stays in the note on every device and each other device keeps only its own version beside it.

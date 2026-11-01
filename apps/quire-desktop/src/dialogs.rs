@@ -17,6 +17,12 @@ fn modal_width(ctx: &egui::Context, want: f32) -> f32 {
     want.min(ctx.content_rect().width() - 48.0)
 }
 
+/// Height for a modal's scrolling body: `want`, or less on a short window so
+/// the `chrome` around it (title, notes, buttons) still fits on screen.
+fn modal_body_height(ctx: &egui::Context, want: f32, chrome: f32) -> f32 {
+    want.min(ctx.content_rect().height() - chrome).max(120.0)
+}
+
 /// A modal on the panel colour, so text fields (drawn on the page colour) stand out.
 fn modal(ctx: &egui::Context, name: &str, pal: &Palette) -> egui::Modal {
     egui::Modal::new(egui::Id::unique(name)).frame(egui::Frame::popup(&ctx.global_style()).fill(pal.panel))
@@ -36,6 +42,14 @@ pub(crate) struct SettingsState {
 impl SettingsState {
     pub(crate) fn sync_tab(_ws: &Workspace) -> Self {
         Self { tab: SettingsTab::Sync, ..Default::default() }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn every_tab() -> Vec<Self> {
+        [SettingsTab::Editor, SettingsTab::Ai, SettingsTab::Sync, SettingsTab::About]
+            .into_iter()
+            .map(|tab| Self { tab, ..Default::default() })
+            .collect()
     }
 }
 
@@ -633,9 +647,23 @@ pub(crate) struct HistoryState {
     /// Newest first.
     sync: Option<Result<Vec<quire_app::vault_sync::SyncVersion>, String>>,
     sync_selected: usize,
+    diffed: Option<Diffed>,
+}
+
+/// The diff on screen, kept until the texts it compares change.
+struct Diffed {
+    key: u64,
+    lines: Vec<quire_app::history_ops::DiffLine>,
+    stats: (usize, usize),
 }
 
 impl HistoryState {
+    /// The All devices view, already showing `versions` (newest first).
+    #[cfg(test)]
+    pub(crate) fn all_devices(ws: &Workspace, versions: Result<Vec<quire_app::vault_sync::SyncVersion>, String>) -> Self {
+        Self { all_devices: true, sync: Some(versions), ..Self::new(ws) }
+    }
+
     pub(crate) fn new(ws: &Workspace) -> Self {
         let snapshots = ws.note_history();
         // The newest snapshot is usually the text you're looking at; start
@@ -643,7 +671,7 @@ impl HistoryState {
         let current = ws.active_doc().map(|d| d.text().to_string());
         let same = snapshots.first().and_then(|s| ws.snapshot_text(s)) == current;
         let selected = usize::from(same && snapshots.len() > 1);
-        Self { snapshots, selected, loaded: None, all_devices: false, sync_rx: None, sync: None, sync_selected: 0 }
+        Self { snapshots, selected, loaded: None, all_devices: false, sync_rx: None, sync: None, sync_selected: 0, diffed: None }
     }
 }
 
@@ -692,6 +720,11 @@ pub(crate) fn history(ctx: &egui::Context, st: &mut HistoryState, ws: &mut Works
     };
     modal(ctx, "quire-history", pal).show(ctx, |ui| {
         let w = modal_width(ctx, 820.0);
+        // The lists scroll inside a body of fixed height that leaves room for
+        // the title and buttons on small windows. It must be fixed: a modal
+        // lays out in last frame's size, so anything sized by the space left
+        // (like the divider between the lists) would grow it every repaint.
+        let body_h = modal_body_height(ctx, 440.0, 170.0);
         ui.set_width(w);
         ui.set_max_width(w);
         ui.horizontal(|ui| {
@@ -712,12 +745,11 @@ pub(crate) fn history(ctx: &egui::Context, st: &mut HistoryState, ws: &mut Works
         if !st.all_devices && st.snapshots.is_empty() {
             ui.label(RichText::new("No earlier versions yet. Versions are kept as you edit and save.").color(pal.muted));
         }
-        ui.horizontal_top(|ui| {
-            // The lists scroll; the dialog itself never grows past this.
-            ui.set_max_height(440.0);
+        ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), body_h), egui::Layout::left_to_right(egui::Align::Min), |ui| {
+            ui.set_height(body_h);
             ui.vertical(|ui| {
                 ui.set_width(200.0);
-                egui::ScrollArea::vertical().id_salt("hist-list").max_height(420.0).show(ui, |ui| {
+                egui::ScrollArea::vertical().id_salt("hist-list").max_height(body_h).show(ui, |ui| {
                     if st.all_devices {
                         match &st.sync {
                             None => {
@@ -778,25 +810,50 @@ pub(crate) fn history(ctx: &egui::Context, st: &mut HistoryState, ws: &mut Works
                     ui.label(RichText::new("This version deleted the note.").color(pal.muted));
                 }
                 if let Some(old) = &shown {
-                    let (added, removed) = diff_stats(old, &current);
+                    // Diffing the whole note is too slow to redo every frame.
+                    let key = {
+                        use std::hash::{Hash, Hasher};
+                        let mut h = std::collections::hash_map::DefaultHasher::new();
+                        (old, &current).hash(&mut h);
+                        h.finish()
+                    };
+                    if st.diffed.as_ref().is_none_or(|d| d.key != key) {
+                        st.diffed = Some(Diffed { key, lines: diff(old, &current, 3), stats: diff_stats(old, &current) });
+                    }
+                    let d = st.diffed.as_ref().expect("just set");
+                    let (added, removed) = d.stats;
                     ui.label(RichText::new(format!("Changes since this version: +{added} −{removed} lines")).size(12.0).color(pal.muted));
-                    egui::ScrollArea::vertical().id_salt("hist-diff").max_height(390.0).auto_shrink([false, true]).show(ui, |ui| {
-                        let lines = diff(old, &current, 3);
-                        if lines.iter().all(|l| l.kind == DiffKind::Same) {
-                            ui.label(RichText::new("Identical to the current text.").color(pal.muted));
-                        }
-                        for l in lines.iter().take(2000) {
-                            let (prefix, color, bg) = match l.kind {
-                                DiffKind::Same => (" ", pal.text, egui::Color32::TRANSPARENT),
-                                DiffKind::Added => ("+", pal.text, pal.accent.gamma_multiply(0.18)),
-                                DiffKind::Removed => ("−", pal.text, pal.danger.gamma_multiply(0.18)),
-                                DiffKind::Gap => ("", pal.faint, egui::Color32::TRANSPARENT),
-                            };
-                            let text =
-                                RichText::new(format!("{prefix} {}", l.text)).monospace().size(12.5).color(color).background_color(bg);
-                            ui.add(egui::Label::new(text).truncate());
-                        }
-                    });
+                    if d.lines.iter().all(|l| l.kind == DiffKind::Same) {
+                        ui.label(RichText::new("Identical to the current text.").color(pal.muted));
+                    }
+                    // Every line, however long the diff, but only the visible rows are drawn.
+                    let font = egui::FontId::monospace(12.5);
+                    let row_h = 19.0;
+                    egui::ScrollArea::vertical().id_salt("hist-diff").max_height(body_h - 44.0).auto_shrink([false, true]).show_rows(
+                        ui,
+                        row_h,
+                        d.lines.len(),
+                        |ui, range| {
+                            for l in &d.lines[range] {
+                                let (prefix, color, bg) = match l.kind {
+                                    DiffKind::Same => (" ", pal.text, egui::Color32::TRANSPARENT),
+                                    DiffKind::Added => ("+", pal.text, pal.accent.gamma_multiply(0.18)),
+                                    DiffKind::Removed => ("−", pal.text, pal.danger.gamma_multiply(0.18)),
+                                    DiffKind::Gap => ("", pal.faint, egui::Color32::TRANSPARENT),
+                                };
+                                let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
+                                let painter = ui.painter_at(rect);
+                                painter.rect_filled(rect.shrink2(egui::vec2(0.0, 1.0)), 3.0, bg);
+                                painter.text(
+                                    egui::pos2(rect.left() + 4.0, rect.center().y),
+                                    egui::Align2::LEFT_CENTER,
+                                    format!("{prefix} {}", l.text),
+                                    font.clone(),
+                                    color,
+                                );
+                            }
+                        },
+                    );
                     ui.label(RichText::new("+ lines are in your current text, − lines only in this version.").size(11.0).color(pal.faint));
                 }
             });
@@ -1178,6 +1235,9 @@ pub(crate) fn folder_picker(ctx: &egui::Context, st: &mut FolderState, ws: &mut 
 // ------------------------------------------------------------------ tour
 
 /// (title, body, keys to try). Short on purpose: one idea per card.
+#[cfg(test)]
+pub(crate) const TOUR_STEPS: usize = TOUR.len();
+
 const TOUR: [(&str, &str, &str); 5] = [
     (
         "Welcome to Quire",

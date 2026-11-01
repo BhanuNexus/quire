@@ -24,6 +24,7 @@ pub use quire_sync::SpaceInfo;
 /// One version of a note from the sync log, for the history dialog.
 pub use quire_sync::Version as SyncVersion;
 use quire_sync::folder::{self, FolderTransport};
+pub use quire_sync::protocol::RevId as SyncRevId;
 use quire_sync::{
     DeviceId, Engine, HttpTransport, KdfParams, LocalStore, RecoveryKey, Report, SpaceId, SyncState, Transport, VaultKey, WrappedKey,
 };

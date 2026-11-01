@@ -11,6 +11,8 @@ mod dialogs;
 mod editor;
 mod graph_view;
 mod highlight;
+#[cfg(test)]
+mod layout_check;
 mod overlays;
 mod panels;
 mod theme;
