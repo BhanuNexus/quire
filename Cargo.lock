@@ -3265,7 +3265,7 @@ dependencies = [
 
 [[package]]
 name = "quire-app"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "chrono",
  "crossbeam-channel",
@@ -3289,7 +3289,7 @@ dependencies = [
 
 [[package]]
 name = "quire-cli"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "quire-app",
  "quire-import",
@@ -3299,7 +3299,7 @@ dependencies = [
 
 [[package]]
 name = "quire-desktop"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "chrono",
  "crossbeam-channel",
@@ -3317,7 +3317,7 @@ dependencies = [
 
 [[package]]
 name = "quire-import"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "base64",
  "htmd",
@@ -3330,7 +3330,7 @@ dependencies = [
 
 [[package]]
 name = "quire-index"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "crossbeam-channel",
  "nucleo-matcher",
@@ -3342,7 +3342,7 @@ dependencies = [
 
 [[package]]
 name = "quire-intel"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "chrono",
  "crossbeam-channel",
@@ -3357,7 +3357,7 @@ dependencies = [
 
 [[package]]
 name = "quire-markdown"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "pulldown-cmark",
  "quire-text",
@@ -3367,7 +3367,7 @@ dependencies = [
 
 [[package]]
 name = "quire-text"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "ropey",
  "similar",
@@ -3375,7 +3375,7 @@ dependencies = [
 
 [[package]]
 name = "quire-vault"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "chrono",
  "crossbeam-channel",

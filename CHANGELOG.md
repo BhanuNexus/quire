@@ -4,9 +4,10 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-01
+
 ### Added
 - Opt-in update check. Turn on "Check for a new version once a day" in Settings → About or on the last tour card, or run **Check for updates** any time. Quire asks GitHub for the latest release, sending nothing about you or your notes, and shows a link in the status bar when a newer version is out. Right-click the link to skip that version.
-
 - Linux: a `.deb` package for Debian and Ubuntu and an AppImage, alongside the `.tar.gz`. Both include AppStream metadata, so software centres show a proper description and screenshots.
 
 ### Changed
@@ -74,5 +75,6 @@ Downloads for Windows, macOS (universal) and Linux are attached to the release, 
 ### Added
 - First version: live Markdown styling, wikilinks with rename refactoring, backlinks, related notes, daily notes, templates, command palette, quick open, inline calculator and natural-language dates.
 
-[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/BhanuNexus/quire/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/BhanuNexus/quire/releases/tag/v0.4.0
