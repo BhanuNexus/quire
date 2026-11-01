@@ -1,8 +1,9 @@
 # Release pipeline: build → attest → publish an immutable GitHub release.
 #
-# Push a tag `vX.Y.Z` (matching Cargo.toml and a CHANGELOG.md section) to release.
-# Run it by hand from the Actions tab for a dry run: same builds, uploaded as
-# workflow artifacts only (no attestations, no release).
+# Push a tag `vX.Y.Z` (matching Cargo.toml and a CHANGELOG.md section) to
+# release, or run the "Tag release" workflow, which creates the tag and starts
+# this one on it. Run this by hand on a branch for a dry run: same builds,
+# uploaded as workflow artifacts only (no attestations, no release).
 #
 # Every published file gets:
 #   * a build-provenance attestation (`gh attestation verify <file> --repo BhanuNexus/quire`)

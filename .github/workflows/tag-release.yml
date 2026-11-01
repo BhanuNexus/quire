@@ -1,0 +1,86 @@
+# Start a release from the Actions tab (handy from a phone):
+# Actions → Tag release → Run workflow on main, and type the version.
+#
+# It checks the version against Cargo.toml and CHANGELOG.md, creates the
+# annotated tag `vX.Y.Z` on the current main commit, and starts the Release
+# workflow on that tag. (A tag created with the workflow token doesn't trigger
+# other workflows by itself, so Release is started explicitly.)
+#
+# The tagger is the author of the tagged commit, so the tag is credited to the
+# person who wrote the release commit rather than to whoever pressed the button.
+#
+# Pushing a tag yourself (`git tag -a vX.Y.Z && git push origin vX.Y.Z`) still
+# works and does the same thing.
+name: Tag release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, without the v (must match Cargo.toml), e.g. 0.4.0"
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: tag-release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the tag
+      actions: write # start the Release workflow
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'; then
+            echo "::error::The version must look like 1.2.3"
+            exit 1
+          fi
+          cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if [ "$cargo_version" != "$VERSION" ]; then
+            echo "::error::Cargo.toml says $cargo_version, not $VERSION"
+            exit 1
+          fi
+          packaging/release-notes.sh "$VERSION" > /dev/null
+      - name: Create the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          tag="v$VERSION"
+          if gh api "repos/$REPO/git/ref/tags/$tag" --silent 2>/dev/null; then
+            echo "::error::$tag already exists"
+            exit 1
+          fi
+          sha="$(git rev-parse HEAD)"
+          name="$(git log -1 --format=%an "$sha")"
+          email="$(git log -1 --format=%ae "$sha")"
+          date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          { echo "Quire $VERSION"; echo; packaging/release-notes.sh "$VERSION"; } > "$RUNNER_TEMP/message.txt"
+          jq -n --arg tag "$tag" --arg sha "$sha" --arg name "$name" --arg email "$email" --arg date "$date" \
+            --rawfile message "$RUNNER_TEMP/message.txt" \
+            '{tag: $tag, message: $message, object: $sha, type: "commit", tagger: {name: $name, email: $email, date: $date}}' \
+            > "$RUNNER_TEMP/tag.json"
+          tag_sha="$(gh api "repos/$REPO/git/tags" --input "$RUNNER_TEMP/tag.json" --jq .sha)"
+          gh api "repos/$REPO/git/refs" -f ref="refs/tags/$tag" -f sha="$tag_sha" --silent
+          echo "Tagged $sha as $tag (tagger: $name)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Start the Release workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh workflow run release.yml --repo "$REPO" --ref "v$VERSION"
+          echo "Started the Release workflow on v$VERSION." >> "$GITHUB_STEP_SUMMARY"

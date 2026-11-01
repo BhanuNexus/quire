@@ -20,6 +20,7 @@ Every release is built by GitHub Actions from a tag. It's published as an immuta
    git tag -s vX.Y.Z -m "Quire X.Y.Z"   # -s signs the tag (recommended); -a works too
    git push origin vX.Y.Z
    ```
+   Or, without a local clone (from a phone, say): **Actions → Tag release → Run workflow** on `main`, with the version. It checks the version and changelog, creates the annotated tag on the latest `main` commit (credited to that commit's author), and starts the Release workflow on it.
 4. `.github/workflows/release.yml` then:
    1. checks that the tag matches `Cargo.toml` and that the changelog has a section for it, and runs the tests;
    2. builds Linux, macOS and Windows in parallel, from clean (no build caches);
@@ -29,7 +30,7 @@ Every release is built by GitHub Actions from a tag. It's published as an immuta
    6. creates a **draft** release with the changelog section as notes and uploads every file;
    7. publishes the release. With immutable releases on, the tag and assets are locked from this point.
 
-A tag with a suffix (e.g. `v0.4.0-rc.1`) is published as a pre-release. Running the workflow by hand from the Actions tab is a dry run: the same builds are uploaded as workflow artifacts, with no attestations and no release.
+A tag with a suffix (e.g. `v0.4.0-rc.1`) is published as a pre-release. Running the Release workflow by hand on a branch is a dry run: the same builds are uploaded as workflow artifacts, with no attestations and no release.
 
 **If a release goes wrong:** published releases can't be edited. Fix the problem and release the next patch version. Mark the bad release as such in its notes, or delete it, but never reuse its tag.
 
