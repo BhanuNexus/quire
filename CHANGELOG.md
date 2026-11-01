@@ -4,9 +4,12 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-01
+
 ### Added
 - **Quire Sync (beta).** End-to-end encrypted sync between your devices through a server you run yourself (`quire-sync-server`, one binary or a Docker image; see `docs/self-hosting.md`). Set it up in **Settings → Sync**. The server never sees your notes or their names. Changes appear on your other devices within a second or two. Edits to the same note on two devices merge line by line; edits to the same lines keep both versions, and the other device's version is saved next to the note. A note edited on one device and deleted on another is kept. Notes deleted elsewhere go to the vault's trash. The status bar shows whether you're synced.
 - Edit table views in place: click a cell in a `quire-view` table to change that property in its note (Enter or clicking away saves, Escape cancels). Yes/no properties are checkboxes, list properties stay lists, and computed columns (title, tags, words…) stay read-only.
+- Linux: `quire-sync-server-<version>-linux-x86_64.tar.gz`, the self-hosted sync server, with the release's checksums and attestations.
 - Live preview: Markdown syntax (`**`, `#`, `[[ ]]`, backticks, link targets) is hidden except on the line you're editing, so notes read cleanly while staying plain Markdown. List bullets, checkboxes, quotes and code fences stay visible. Turn it off in Settings → Editor.
 
 ## [0.4.1] - 2026-11-01
@@ -80,6 +83,7 @@ Downloads for Windows, macOS (universal) and Linux are attached to the release, 
 ### Added
 - First version: live Markdown styling, wikilinks with rename refactoring, backlinks, related notes, daily notes, templates, command palette, quick open, inline calculator and natural-language dates.
 
-[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/BhanuNexus/quire/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/BhanuNexus/quire/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/BhanuNexus/quire/releases/tag/v0.4.0

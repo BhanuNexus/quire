@@ -33,6 +33,7 @@ Download from [Releases](https://github.com/BhanuNexus/quire/releases):
   - `Quire-<version>-linux-amd64.deb` for Debian and Ubuntu: `sudo apt install ./Quire-<version>-linux-amd64.deb`
   - `Quire-<version>-linux-x86_64.AppImage`: make it executable and run it (needs FUSE 2, or set `APPIMAGE_EXTRACT_AND_RUN=1`)
   - `Quire-<version>-linux-x86_64.tar.gz`: extract it and run `./install.sh` (no root needed)
+- **Sync server (optional, Linux x86_64):** `quire-sync-server-<version>-linux-x86_64.tar.gz`, to [run your own Quire Sync](docs/self-hosting.md).
 
 Until code signing is set up (planned for 1.0), your system will warn you the first time:
 

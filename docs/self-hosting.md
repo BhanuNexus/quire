@@ -29,9 +29,10 @@ docker run -d --name quire-sync --restart unless-stopped -p 127.0.0.1:8787:8787 
 
 ## 2b. Or run the binary
 
+Download `quire-sync-server-<version>-linux-x86_64.tar.gz` from [Releases](https://github.com/BhanuNexus/quire/releases) (or build it with `cargo build --release -p quire-sync-server`), then:
+
 ```bash
-cargo build --release -p quire-sync-server
-QUIRE_SYNC_TOKEN=<your token> QUIRE_SYNC_DB=/var/lib/quire/sync.sqlite ./target/release/quire-sync-server
+QUIRE_SYNC_TOKEN=<your token> QUIRE_SYNC_DB=/var/lib/quire/sync.sqlite ./quire-sync-server
 ```
 
 | Variable | Default | Meaning |

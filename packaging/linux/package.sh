@@ -5,6 +5,7 @@
 #   Quire-<v>-linux-amd64.deb        Debian/Ubuntu package (needs dpkg-deb)
 #   Quire-<v>-linux-x86_64.AppImage  single-file app (needs APPIMAGETOOL and
 #                                    APPIMAGE_RUNTIME; see fetch-appimagetool.sh)
+#   quire-sync-server-<v>-linux-x86_64.tar.gz  the self-hosted sync server
 #
 #   packaging/linux/package.sh
 #
@@ -23,7 +24,7 @@ export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct 2>/dev/
 release_date="$(date -u -d "@$SOURCE_DATE_EPOCH" +%Y-%m-%d)"
 bin="target/$target/release"
 
-cargo build --release --locked --target "$target" -p quire-desktop -p quire-cli
+cargo build --release --locked --target "$target" -p quire-desktop -p quire-cli -p quire-sync-server
 mkdir -p "$out"
 
 # ---------------------------------------------------------------- tar.gz
@@ -36,6 +37,17 @@ install -m 644 README.md LICENSE "$stage/"
 tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner \
   -C "$out" -cf - "$name" | gzip -9n > "$out/$name.tar.gz"
 rm -rf "$stage"
+
+# ---------------------------------------------------------------- sync server
+server="quire-sync-server-$version-linux-x86_64"
+sstage="$out/$server"
+rm -rf "$sstage" && mkdir -p "$sstage"
+install -m 755 "$bin/quire-sync-server" "$sstage/"
+install -m 644 docs/self-hosting.md "$sstage/README.md"
+install -m 644 LICENSE "$sstage/"
+tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner \
+  -C "$out" -cf - "$server" | gzip -9n > "$out/$server.tar.gz"
+rm -rf "$sstage"
 
 # Files every system-wide layout shares (.deb and AppImage).
 # $1 = root to install into (e.g. pkgroot or AppDir)
@@ -104,5 +116,5 @@ EOF
   rm -rf "$appdir"
 fi
 
-( cd "$out" && sha256sum Quire-"$version"-linux-* > "$name.sha256" )
-echo "Built:"; ls -la "$out"/Quire-"$version"-linux-*
+( cd "$out" && sha256sum Quire-"$version"-linux-* "$server.tar.gz" > "$name.sha256" )
+echo "Built:"; ls -la "$out"/Quire-"$version"-linux-* "$out/$server.tar.gz"
