@@ -102,6 +102,25 @@ struct Cx<'a> {
     fonts: FontSupport,
     size: f32,
     wrap: f32,
+    /// Live preview: hide Markdown syntax on lines outside these ranges.
+    live: Option<Vec<Range<usize>>>,
+}
+
+/// Should this syntax marker disappear in live preview? List bullets, task
+/// boxes, quote markers, HTML, rules and code fences stay visible.
+/// `line_start` is true when only whitespace comes before the marker.
+fn hideable_marker(text: &str, line_start: bool) -> bool {
+    let t = text.trim();
+    if t.is_empty() {
+        return true;
+    }
+    let bullet = line_start
+        && (matches!(t, "-" | "*" | "+")
+            || (t.ends_with(['.', ')']) && t.len() > 1 && t[..t.len() - 1].bytes().all(|b| b.is_ascii_digit())));
+    let task = matches!(t, "[ ]" | "[x]" | "[X]");
+    let html = t.starts_with('<') && t.len() > 2 && t.ends_with('>');
+    let rule = t.len() >= 3 && (t.bytes().all(|b| b == b'-') || t.bytes().all(|b| b == b'=') || t.bytes().all(|b| b == b'*'));
+    !(bullet || task || html || rule || t.starts_with('>') || t.starts_with("```") || t.starts_with("~~~"))
 }
 
 impl Cx<'_> {
@@ -282,6 +301,25 @@ impl FastEditor {
             _ => (std::borrow::Cow::Borrowed(text.as_str()), local, None),
         };
         let mut job = build_job(&text, &local, cx.pal, cx.size, cx.fonts);
+        if let Some(revealed) = &cx.live
+            && pre_range.is_none()
+            && !revealed.iter().any(|r| r.contains(&line))
+        {
+            for run in local.iter().filter(|r| r.style.marker && !r.style.code_block && !r.style.conflict) {
+                let line_start = text[..run.range.start].trim().is_empty();
+                if !hideable_marker(&text[run.range.clone()], line_start) {
+                    continue;
+                }
+                for sec in &mut job.sections {
+                    if sec.byte_range.start.0 >= run.range.start && sec.byte_range.end.0 <= run.range.end {
+                        sec.format.font_id.size = 0.5;
+                        sec.format.color = Color32::TRANSPARENT;
+                        sec.format.background = Color32::TRANSPARENT;
+                        sec.format.line_height = None;
+                    }
+                }
+            }
+        }
         if let Some(r) = pre_range {
             for sec in &mut job.sections {
                 if sec.byte_range.start.0 >= r.start && sec.byte_range.end.0 <= r.end {
@@ -481,7 +519,15 @@ impl FastEditor {
 
         let avail_w = ui.available_width();
         let wrap = (avail_w - 32.0).min(max_w).max(120.0);
-        let cx = Cx { pal, fonts, size, wrap };
+        let live = ws.settings.live_preview.then(|| {
+            let doc = ws.active_doc().expect("checked");
+            let buf = doc.buffer();
+            all_selections(doc.selection(), &view.extra)
+                .iter()
+                .map(|s| buf.char_to_line(s.start())..buf.char_to_line(s.end()) + 1)
+                .collect::<Vec<_>>()
+        });
+        let cx = Cx { pal, fonts, size, wrap, live };
         Self::sync(&mut view, ws.active_doc().expect("checked"), &cx, inline_images);
         let total = view.heights.total() + TOP_MARGIN + BOTTOM_MARGIN;
         let mut view_action: Option<ViewAction> = None;
@@ -1056,6 +1102,26 @@ impl FastEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_preview_hides_syntax_but_keeps_structure() {
+        for (m, start) in [("**", false), ("*", false), ("# ", true), ("[[", false), ("]](x)", false), ("`", false), ("==", false)] {
+            assert!(hideable_marker(m, start), "{m:?} should hide");
+        }
+        for (m, start) in [
+            ("-", true),
+            ("*", true),
+            ("12.", true),
+            ("[ ]", true),
+            ("[x]", true),
+            ("> ", true),
+            ("```rust", true),
+            ("---", true),
+            ("<br>", false),
+        ] {
+            assert!(!hideable_marker(m, start), "{m:?} should stay");
+        }
+    }
 
     #[test]
     fn primary_is_nearest_to_previous_head() {

@@ -51,6 +51,8 @@ pub struct Settings {
     pub editor: String,
     /// Show images under lines that embed them.
     pub inline_images: bool,
+    /// Hide Markdown syntax (`**`, `#`, `[[ ]]`…) except on the line being edited.
+    pub live_preview: bool,
     /// The first-run tour has been shown (or skipped).
     pub tour_done: bool,
     /// Ask GitHub once a day whether a newer release exists (opt-in).
@@ -84,6 +86,7 @@ impl Default for Settings {
             embed_base_url: String::new(),
             editor: "fast".into(),
             inline_images: true,
+            live_preview: true,
             tour_done: false,
             check_updates: false,
             last_update_check: 0,

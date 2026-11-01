@@ -421,6 +421,7 @@ fn editor_settings(ui: &mut Ui, ws: &mut Workspace) {
         ui.label("Show");
         ui.vertical(|ui| {
             ui.checkbox(&mut s.inline_images, "Images inline in the editor");
+            ui.checkbox(&mut s.live_preview, "Hide Markdown syntax except on the line you're editing");
             ui.checkbox(&mut s.dates_as_links, "Insert dates as [[links]]");
             ui.checkbox(&mut s.inline_calculator, "Inline calculator (Ctrl+Enter)");
         });
