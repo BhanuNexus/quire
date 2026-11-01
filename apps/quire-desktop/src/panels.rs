@@ -17,7 +17,7 @@ use quire_app::{Command, Workspace};
 use crate::theme::Palette;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SidebarTab {
+pub(crate) enum SidebarTab {
     #[default]
     Files,
     Search,
@@ -26,7 +26,7 @@ pub enum SidebarTab {
 }
 
 #[derive(Default)]
-pub struct SidebarState {
+pub(crate) struct SidebarState {
     pub tab: SidebarTab,
     pub query: String,
     pub focus_query: bool,
@@ -36,7 +36,7 @@ pub struct SidebarState {
 
 /// What a panel asks the app to do after drawing.
 #[derive(Default)]
-pub struct PanelOut {
+pub(crate) struct PanelOut {
     pub run: Option<Command>,
     /// Focus the editor and scroll to the caret.
     pub jumped: bool,
@@ -115,7 +115,7 @@ fn apply_note_action(ctx: &egui::Context, ws: &mut Workspace, path: &NotePath, a
 
 // ---------------------------------------------------------------- tab bar
 
-pub fn tab_bar(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> PanelOut {
+pub(crate) fn tab_bar(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> PanelOut {
     let mut out = PanelOut::default();
     ui.horizontal(|ui| {
         ui.label(RichText::new(format!("◆ {}", ws.vault_name())).strong().color(pal.strong));
@@ -212,7 +212,7 @@ fn highlighted(text: &str, ranges: &[std::ops::Range<usize>], pal: &Palette) -> 
     job
 }
 
-pub fn sidebar(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut SidebarState, pal: &Palette) -> PanelOut {
+pub(crate) fn sidebar(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut SidebarState, pal: &Palette) -> PanelOut {
     let mut out = PanelOut::default();
     ui.add_space(6.0);
     ui.horizontal(|ui| {
@@ -362,7 +362,8 @@ pub fn sidebar(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut SidebarState, pal
                         ui.label(RichText::new(count.to_string()).color(pal.muted).size(11.0));
                     });
                     if st.open_tag.as_deref() == Some(tag.as_str()) {
-                        for p in ws.index().read().notes_with_tag(tag) {
+                        let notes = ws.index().read().notes_with_tag(tag);
+                        for p in notes {
                             ui.horizontal(|ui| {
                                 ui.add_space(depth as f32 * 14.0 + 18.0);
                                 if ui.link(p.stem()).clicked() {
@@ -431,7 +432,7 @@ pub fn sidebar(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut SidebarState, pal
 
 // ---------------------------------------------------------------- insights
 
-pub fn insights(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> PanelOut {
+pub(crate) fn insights(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> PanelOut {
     let mut out = PanelOut::default();
     let Some(doc) = ws.active_doc() else {
         ui.label(RichText::new("Open a note to see its outline, backlinks and related notes.").color(pal.muted));
@@ -460,7 +461,7 @@ pub fn insights(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> PanelOu
             section(ui, pal, "Outline");
             for h in &outline {
                 ui.horizontal(|ui| {
-                    ui.add_space((h.level.saturating_sub(1)) as f32 * 12.0);
+                    ui.add_space(f32::from(h.level.saturating_sub(1)) * 12.0);
                     if ui.link(RichText::new(&h.text).color(pal.text)).clicked() {
                         jump_byte = Some(h.offset);
                     }
@@ -614,7 +615,7 @@ pub fn insights(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> PanelOu
         ws.apply_link_suggestion(&ins.link_suggestions[i]);
     }
     if let Some(t) = add_tag {
-        let at_end = ws.active_doc().map(|d| d.buffer().len_chars()).unwrap_or(0);
+        let at_end = ws.active_doc().map_or(0, |d| d.buffer().len_chars());
         if let Some(d) = ws.active_doc_mut() {
             d.set_selection(quire_app::text::Selection::cursor(at_end));
         }
@@ -637,7 +638,7 @@ pub fn insights(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> PanelOu
 
 // ---------------------------------------------------------------- status bar
 
-pub fn status_bar(ui: &mut egui::Ui, ws: &Workspace, pal: &Palette) {
+pub(crate) fn status_bar(ui: &mut egui::Ui, ws: &Workspace, pal: &Palette) {
     ui.horizontal(|ui| {
         let small = |s: String| RichText::new(s).size(12.0).color(pal.muted);
         if let Some(doc) = ws.active_doc() {
@@ -695,7 +696,7 @@ pub fn status_bar(ui: &mut egui::Ui, ws: &Workspace, pal: &Palette) {
 
 // ---------------------------------------------------------------- preview
 
-pub fn preview(ui: &mut egui::Ui, ws: &mut Workspace, cache: &mut CommonMarkCache, pal: &Palette) -> PanelOut {
+pub(crate) fn preview(ui: &mut egui::Ui, ws: &mut Workspace, cache: &mut CommonMarkCache, pal: &Palette) -> PanelOut {
     let mut out = PanelOut::default();
     let Some(doc) = ws.active_doc() else {
         return out;
@@ -730,13 +731,13 @@ pub fn preview(ui: &mut egui::Ui, ws: &mut Workspace, cache: &mut CommonMarkCach
 
 // ---------------------------------------------------------------- welcome
 
-pub enum WelcomeAction {
+pub(crate) enum WelcomeAction {
     None,
     Browse,
     Sample,
 }
 
-pub fn welcome(ui: &mut egui::Ui, pal: &Palette) -> WelcomeAction {
+pub(crate) fn welcome(ui: &mut egui::Ui, pal: &Palette) -> WelcomeAction {
     let mut act = WelcomeAction::None;
     ui.vertical_centered(|ui| {
         ui.add_space((ui.available_height() * 0.22).max(24.0));
@@ -772,7 +773,7 @@ fn toggle(ui: &mut egui::Ui, on: &mut bool, label: &str, tip: &str, pal: &Palett
 }
 
 /// In-note find & replace. Enter = next, Shift+Enter = previous, Esc closes.
-pub fn find_bar(ui: &mut egui::Ui, ws: &mut Workspace, focus: &mut bool, pal: &Palette) -> PanelOut {
+pub(crate) fn find_bar(ui: &mut egui::Ui, ws: &mut Workspace, focus: &mut bool, pal: &Palette) -> PanelOut {
     let mut out = PanelOut::default();
     let mut step: Option<bool> = None;
     ui.horizontal_wrapped(|ui| {

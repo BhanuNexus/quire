@@ -61,7 +61,7 @@ impl VectorCache {
                 if i + n * 4 > bytes.len() {
                     break;
                 }
-                let v = bytes[i..i + n * 4].chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().expect("4 bytes"))).collect();
+                let v = bytes[i..i + n * 4].as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect();
                 map.insert(key, v);
                 i += n * 4;
             }
@@ -117,14 +117,16 @@ pub struct SemanticIndex {
 
 impl std::fmt::Debug for SemanticIndex {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SemanticIndex").field("chunks", &self.chunks.len()).field("embedder", &self.embedder.name()).finish()
+        f.debug_struct("SemanticIndex").field("chunks", &self.chunks.len()).field("embedder", &self.embedder.name()).finish_non_exhaustive()
     }
 }
 
 fn normalize(v: &mut [f32]) {
     let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
     if n > 1e-9 {
-        v.iter_mut().for_each(|x| *x /= n);
+        for x in v.iter_mut() {
+            *x /= n;
+        }
     }
 }
 
@@ -256,7 +258,7 @@ const LEXICAL_WEIGHT: f32 = 0.7;
 pub struct Lsa {
     vocab: HashMap<String, usize>,
     idf: Vec<f32>,
-    /// Term → k-dimensional concept loading (rows of U_k).
+    /// Term → k-dimensional concept loading (rows of `U_k`).
     term_vecs: Vec<Vec<f32>>,
     dims: usize,
 }
@@ -278,20 +280,26 @@ fn orthonormalize(m: &mut [Vec<f32>], cols: usize) {
     for j in 0..cols {
         for p in 0..j {
             let d: f32 = m.iter().map(|r| r[j] * r[p]).sum();
-            m.iter_mut().for_each(|r| r[j] -= d * r[p]);
+            for r in m.iter_mut() {
+                r[j] -= d * r[p];
+            }
         }
         let n = m.iter().map(|r| r[j] * r[j]).sum::<f32>().sqrt();
         if n > 1e-8 {
-            m.iter_mut().for_each(|r| r[j] /= n);
+            for r in m.iter_mut() {
+                r[j] /= n;
+            }
         } else {
-            m.iter_mut().for_each(|r| r[j] = 0.0);
+            for r in m.iter_mut() {
+                r[j] = 0.0;
+            }
         }
     }
 }
 
 /// Eigen-decomposition of a small symmetric matrix by cyclic Jacobi rotations.
 /// Returns (eigenvalues, eigenvectors as columns).
-#[allow(clippy::needless_range_loop)] // index-based numeric code reads clearer here
+#[allow(clippy::needless_range_loop, reason = "index-based numeric code reads clearer here")]
 fn jacobi_eigen(mut a: Vec<Vec<f64>>) -> (Vec<f64>, Vec<Vec<f64>>) {
     let n = a.len();
     let mut v = vec![vec![0.0; n]; n];
@@ -323,7 +331,7 @@ fn jacobi_eigen(mut a: Vec<Vec<f64>>) -> (Vec<f64>, Vec<Vec<f64>>) {
                     a[p][k] = c * apk - s * aqk;
                     a[q][k] = s * apk + c * aqk;
                 }
-                for row in v.iter_mut() {
+                for row in &mut v {
                     let (vkp, vkq) = (row[p], row[q]);
                     row[p] = c * vkp - s * vkq;
                     row[q] = s * vkp + c * vkq;
@@ -336,7 +344,7 @@ fn jacobi_eigen(mut a: Vec<Vec<f64>>) -> (Vec<f64>, Vec<Vec<f64>>) {
 
 impl Lsa {
     /// Fit on passages. `max_dims` caps the latent dimensionality.
-    #[allow(clippy::needless_range_loop)]
+    #[allow(clippy::needless_range_loop, reason = "matrix indices read clearer than zipped iterators")]
     pub fn fit(texts: &[&str], max_dims: usize) -> Self {
         let docs: Vec<HashMap<String, u32>> = texts
             .iter()
@@ -370,7 +378,9 @@ impl Lsa {
                 let mut c: Vec<(usize, f32)> =
                     d.iter().filter_map(|(t, &f)| vocab.get(t).map(|&i| (i, (1.0 + (f as f32).ln()) * idf[i]))).collect();
                 let norm = c.iter().map(|(_, w)| w * w).sum::<f32>().sqrt().max(1e-9);
-                c.iter_mut().for_each(|(_, w)| *w /= norm);
+                for (_, w) in &mut c {
+                    *w /= norm;
+                }
                 c
             })
             .collect();
@@ -387,7 +397,9 @@ impl Lsa {
         let omega: Vec<Vec<f32>> = (0..n).map(|_| (0..l).map(|_| rng.next_f32()).collect()).collect();
         let mut y = vec![vec![0.0f32; l]; v];
         let a_times = |y: &mut Vec<Vec<f32>>, right: &[Vec<f32>]| {
-            y.iter_mut().for_each(|r| r.iter_mut().for_each(|x| *x = 0.0));
+            for r in y.iter_mut() {
+                r.fill(0.0);
+            }
             for (j, col) in cols.iter().enumerate() {
                 for &(t, w) in col {
                     let (row, rj) = (&mut y[t], &right[j]);
@@ -449,7 +461,7 @@ impl Lsa {
 }
 
 impl Embedder for Lsa {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "latent semantic index (on-device)"
     }
 
@@ -492,7 +504,7 @@ mod tests {
 
     struct CountingEmbedder(std::sync::Arc<std::sync::atomic::AtomicUsize>);
     impl Embedder for CountingEmbedder {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "counting"
         }
         fn embed(&self, text: &str) -> Vec<f32> {
@@ -509,22 +521,23 @@ mod tests {
         let chunks = corpus();
         let n = chunks.len();
         let mut cache = VectorCache::open(&path, "m1");
-        SemanticIndex::try_with_cache(chunks.clone(), Box::new(CountingEmbedder(count.clone())), &mut cache).unwrap();
+        SemanticIndex::try_with_cache(chunks.clone(), Box::new(CountingEmbedder(std::sync::Arc::clone(&count))), &mut cache).unwrap();
         assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), n);
         let mut cache = VectorCache::open(&path, "m1");
         assert_eq!(cache.len(), n);
-        let ix = SemanticIndex::try_with_cache(chunks.clone(), Box::new(CountingEmbedder(count.clone())), &mut cache).unwrap();
+        let ix =
+            SemanticIndex::try_with_cache(chunks.clone(), Box::new(CountingEmbedder(std::sync::Arc::clone(&count))), &mut cache).unwrap();
         assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), n, "second build is fully cached");
         assert_eq!(ix.len(), n);
         let mut other = VectorCache::open(&path, "m2");
-        SemanticIndex::try_with_cache(chunks, Box::new(CountingEmbedder(count.clone())), &mut other).unwrap();
+        SemanticIndex::try_with_cache(chunks, Box::new(CountingEmbedder(std::sync::Arc::clone(&count))), &mut other).unwrap();
         assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 2 * n, "a different model re-embeds");
     }
 
     #[test]
     fn jacobi_recovers_eigenvalues() {
         let (vals, vecs) = jacobi_eigen(vec![vec![2.0, 1.0], vec![1.0, 2.0]]);
-        let mut v = vals.clone();
+        let mut v = vals;
         v.sort_by(f64::total_cmp);
         assert!((v[0] - 1.0).abs() < 1e-9 && (v[1] - 3.0).abs() < 1e-9);
         let dotp: f64 = (0..2).map(|i| vecs[i][0] * vecs[i][1]).sum();

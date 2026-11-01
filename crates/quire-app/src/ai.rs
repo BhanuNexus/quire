@@ -69,6 +69,15 @@ pub(crate) fn make_assistant(settings: &Settings) -> Arc<dyn LanguageModel> {
     Arc::new(LocalModel)
 }
 
+/// Where API keys are stored on this machine.
+pub fn secret_store_kind() -> String {
+    secrets::store().kind()
+}
+
+pub fn has_api_key(provider: &str) -> bool {
+    secrets::api_key(secrets::store().as_ref(), provider).is_some()
+}
+
 impl Workspace {
     /// Re-read AI settings and keys: swap the assistant and the semantic embedder.
     pub fn apply_ai_settings(&mut self) {
@@ -76,7 +85,7 @@ impl Workspace {
         self.apply_embedder();
     }
 
-    pub(crate) fn apply_embedder(&mut self) {
+    pub(crate) fn apply_embedder(&self) {
         #[cfg(feature = "remote-llm")]
         if self.settings.embeddings == "endpoint" {
             use quire_index::semantic::{SemanticIndex, VectorCache};
@@ -96,15 +105,6 @@ impl Workspace {
             return;
         }
         self.index.set_semantic_builder(None);
-    }
-
-    /// Where keys are stored on this machine.
-    pub fn secret_store_kind(&self) -> String {
-        secrets::store().kind()
-    }
-
-    pub fn has_api_key(&self, provider: &str) -> bool {
-        secrets::api_key(secrets::store().as_ref(), provider).is_some()
     }
 
     pub fn save_api_key(&mut self, provider: &str, key: &str) -> Result<(), String> {

@@ -14,7 +14,7 @@ use quire_app::vault::NotePath;
 use crate::theme::Palette;
 
 /// What the user did inside a rendered view.
-pub enum ViewAction {
+pub(crate) enum ViewAction {
     Open(NotePath),
     /// Kanban drop: set `field` to `value` in the note.
     Move {
@@ -44,7 +44,7 @@ fn title_link(ui: &mut Ui, pal: &Palette, title: &str, path: &NotePath, act: &mu
 }
 
 /// Draw a view; returns the action, if any. `key` makes widget ids stable.
-pub fn show(ui: &mut Ui, ws: &Workspace, pal: &Palette, spec_src: &str, from: Option<&NotePath>, key: Id) -> Option<ViewAction> {
+pub(crate) fn show(ui: &mut Ui, ws: &Workspace, pal: &Palette, spec_src: &str, from: Option<&NotePath>, key: Id) -> Option<ViewAction> {
     let mut act = None;
     let frame = egui::Frame::NONE.fill(pal.panel).stroke(egui::Stroke::new(1.0, pal.border)).corner_radius(6.0).inner_margin(10.0);
     frame.show(ui, |ui| {
@@ -155,7 +155,6 @@ fn kanban(ui: &mut Ui, pal: &Palette, spec: &ViewSpec, r: &ViewResult, key: Id, 
     });
 }
 
-#[allow(clippy::too_many_arguments)]
 fn card(
     ui: &mut Ui,
     pal: &Palette,
@@ -276,7 +275,7 @@ fn calendar(ui: &mut Ui, pal: &Palette, r: &ViewResult, key: Id, act: &mut Optio
 // ------------------------------------------------------------ properties
 
 /// The "Properties" section of the insights panel for the active note.
-pub fn properties(ui: &mut Ui, ws: &mut Workspace, pal: &Palette, doc: DocId) {
+pub(crate) fn properties(ui: &mut Ui, ws: &mut Workspace, pal: &Palette, doc: DocId) {
     let props = ws.active_properties();
     let base = Id::unique(("quire-props", doc.0));
     let mut set: Option<(String, quire_app::markdown::Value)> = None;
@@ -288,26 +287,23 @@ pub fn properties(ui: &mut Ui, ws: &mut Workspace, pal: &Palette, doc: DocId) {
             let current = p.value.display();
             // Leave room for the × button and TextEdit margins, so the panel doesn't grow.
             let w = (ui.available_width() - 48.0).max(60.0);
-            match p.kind {
-                Kind::Bool => {
-                    let mut on = current == "true";
-                    if ui.checkbox(&mut on, "").changed() {
-                        set = Some((p.key.clone(), quire_app::markdown::Value::Str(on.to_string())));
-                    }
-                    ui.add_space(w - 24.0);
+            if p.kind == Kind::Bool {
+                let mut on = current == "true";
+                if ui.checkbox(&mut on, "").changed() {
+                    set = Some((p.key.clone(), quire_app::markdown::Value::Str(on.to_string())));
                 }
-                _ => {
-                    let id = base.with(("draft", &p.key));
-                    let mut draft = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_else(|| current.clone());
-                    let r = ui.add(egui::TextEdit::singleline(&mut draft).desired_width(w).hint_text(kind_name(p.kind)));
-                    if r.has_focus() {
-                        ui.data_mut(|d| d.insert_temp(id, draft.clone()));
-                    } else {
-                        ui.data_mut(|d| d.remove::<String>(id));
-                    }
-                    if r.lost_focus() && draft.trim() != current {
-                        set = Some((p.key.clone(), parse_input(&draft, p.kind == Kind::List)));
-                    }
+                ui.add_space(w - 24.0);
+            } else {
+                let id = base.with(("draft", &p.key));
+                let mut draft = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_else(|| current.clone());
+                let r = ui.add(egui::TextEdit::singleline(&mut draft).desired_width(w).hint_text(kind_name(p.kind)));
+                if r.has_focus() {
+                    ui.data_mut(|d| d.insert_temp(id, draft.clone()));
+                } else {
+                    ui.data_mut(|d| d.remove::<String>(id));
+                }
+                if r.lost_focus() && draft.trim() != current {
+                    set = Some((p.key.clone(), parse_input(&draft, p.kind == Kind::List)));
                 }
             }
             if ui.small_button("×").on_hover_text("Remove property").clicked() {
@@ -341,7 +337,7 @@ pub fn properties(ui: &mut Ui, ws: &mut Workspace, pal: &Palette, doc: DocId) {
         ui.label(RichText::new("Properties live in the note's front matter, so other apps can read them.").size(11.5).color(pal.faint));
     }
     if let Some((k, v)) = set {
-        ws.set_property(&k, v);
+        ws.set_property(&k, &v);
     }
     if let Some(k) = remove {
         ws.remove_property(&k);

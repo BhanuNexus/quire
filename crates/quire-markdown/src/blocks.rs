@@ -54,7 +54,7 @@ pub fn verbatim_blocks(src: &str) -> Vec<Range<usize>> {
                                 open = Some((pos, ch, n));
                             }
                         }
-                        Some((start, c, len)) if c == ch && n >= len && rest[n..].iter().all(|b| b.is_ascii_whitespace()) => {
+                        Some((start, c, len)) if c == ch && n >= len && rest[n..].iter().all(u8::is_ascii_whitespace) => {
                             out.push(start..end);
                             open = None;
                         }

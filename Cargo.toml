@@ -60,9 +60,63 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+unused_qualifications = "warn"
+unused_lifetimes = "warn"
+single_use_lifetimes = "warn"
+trivial_numeric_casts = "warn"
+redundant_lifetimes = "warn"
+unit_bindings = "warn"
+missing_unsafe_on_extern = "warn"
 
 [workspace.lints.clippy]
+# Groups: everything correctness/style/perf, plus the stricter pedantic and
+# nursery sets. CI runs with -D warnings, so all of these are hard errors.
 all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+
+# Hand-picked restriction lints.
+unwrap_used = "warn"                      # use `expect("why it can't fail")` or handle it (tests are exempt, see clippy.toml)
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+allow_attributes_without_reason = "warn"  # every #[allow] says why
+clone_on_ref_ptr = "warn"                 # Rc::clone(&x), not x.clone()
+if_then_some_else_none = "warn"
+get_unwrap = "warn"
+lossy_float_literal = "warn"
+mem_forget = "warn"
+rc_mutex = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+try_err = "warn"
+verbose_file_reads = "warn"
+empty_drop = "warn"
+fn_to_numeric_cast_any = "warn"
+large_include_file = "warn"
+mixed_read_write_in_expression = "warn"
+
+# Deliberately off, with reasons:
+must_use_candidate = "allow"         # would add #[must_use] to ~200 internal fns; we use it where ignoring a result is a real bug
+missing_errors_doc = "allow"         # internal crates, not published; errors are typed and self-describing
+missing_panics_doc = "allow"         # same; remaining expects carry their reason inline
+cast_precision_loss = "allow"        # UI and scoring math converts counts to f32 on purpose
+cast_possible_truncation = "allow"   # ditto (pixel sizes, timestamps); values are range-checked where it matters
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+too_many_lines = "allow"             # egui UI functions are long by nature; split when it helps reading, not for a count
+similar_names = "allow"
+many_single_char_names = "allow"     # linear algebra (LSA) reads best with math names
+struct_excessive_bools = "allow"     # Settings mirrors a TOML file of toggles
+missing_const_for_fn = "allow"       # nursery; churn without benefit for non-const callers
+option_if_let_else = "allow"         # nursery; map_or_else chains are often less readable
+significant_drop_tightening = "allow" # nursery; known false positives with RwLock guards
+suboptimal_flops = "allow"           # mul_add changes float results; not worth it in UI code
+redundant_pub_crate = "allow"        # conflicts with rustc's unreachable_pub, which we prefer
+future_not_send = "allow"            # no async here
+multiple_crate_versions = "allow"    # transitive duplicates come from upstream (winit/egui)
+suspicious_operation_groupings = "allow" # nursery; flags correct range/selection comparisons
 
 [profile.release]
 opt-level = 3

@@ -100,6 +100,7 @@ impl Transaction {
         Self::replace(start, end, "")
     }
 
+    #[must_use]
     pub fn with_selection(mut self, sel: Selection) -> Self {
         self.selection = Some(sel);
         self
@@ -137,7 +138,8 @@ impl Transaction {
 
     /// The transaction that undoes `self`, computed against the buffer state
     /// *before* `self` is applied.
-    pub fn invert(&self, before: &Buffer) -> Transaction {
+    #[must_use]
+    pub fn invert(&self, before: &Buffer) -> Self {
         let mut shift: isize = 0;
         let mut inverse = Vec::with_capacity(self.changes.len());
         for c in &self.changes {
@@ -146,7 +148,7 @@ impl Transaction {
             inverse.push(Change::new(new_start, new_end, before.slice(c.start..c.end)));
             shift += c.delta();
         }
-        Transaction { changes: inverse, selection: None }
+        Self { changes: inverse, selection: None }
     }
 
     /// Map a position in the old document to the new one.

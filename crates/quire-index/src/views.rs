@@ -210,7 +210,7 @@ pub fn parse(src: &str) -> Result<ViewSpec, String> {
         spec.group = Some("status".into());
     }
     if spec.layout == Layout::Calendar && spec.date.is_none() {
-        spec.date = Some(spec.sort.as_ref().map(|s| s.0.clone()).unwrap_or_else(|| "date".into()));
+        spec.date = Some(spec.sort.as_ref().map_or_else(|| "date".into(), |s| s.0.clone()));
     }
     Ok(spec)
 }
@@ -310,7 +310,7 @@ pub struct ViewResult {
 
 /// Resolve `./x` against the folder of the note holding the view.
 fn resolve_folder(f: &str, current: Option<&NotePath>) -> String {
-    match f.strip_prefix("./").or((f == ".").then_some("")) {
+    match f.strip_prefix("./").or_else(|| (f == ".").then_some("")) {
         Some(rest) => {
             let base = current.map_or("", |c| c.folder());
             let rest = rest.trim_end_matches('/');

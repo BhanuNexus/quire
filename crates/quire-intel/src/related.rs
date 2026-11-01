@@ -40,7 +40,9 @@ pub(crate) fn tfidf<'a>(rec: &'a NoteRecord, df: &HashMap<&str, u32>, n: f32) ->
         .collect();
     let norm = v.values().map(|x| x * x).sum::<f32>().sqrt();
     if norm > 0.0 {
-        v.values_mut().for_each(|x| *x /= norm);
+        for x in v.values_mut() {
+            *x /= norm;
+        }
     }
     v
 }
@@ -52,7 +54,7 @@ pub fn related_notes(index: &Index, path: &NotePath, limit: usize) -> Vec<Relate
 /// Related notes blending word overlap (TF-IDF) with meaning (semantic index)
 /// when one is available. `because` always lists the shared words.
 pub fn related_notes_with(index: &Index, semantic: Option<&SemanticIndex>, path: &NotePath, limit: usize) -> Vec<RelatedNote> {
-    let sem: std::collections::HashMap<NotePath, f32> = semantic.map(|s| s.related(path, 30).into_iter().collect()).unwrap_or_default();
+    let sem: HashMap<NotePath, f32> = semantic.map(|s| s.related(path, 30).into_iter().collect()).unwrap_or_default();
     let Some(me) = index.get(path) else {
         return Vec::new();
     };

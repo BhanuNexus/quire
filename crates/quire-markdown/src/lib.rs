@@ -3,8 +3,8 @@
 //! Pure Markdown intelligence: no I/O, no UI.
 //!
 //! * [`syntax`] — style runs for live highlighting
-//! * [`outline`] — heading tree
-//! * [`extract`] — links, wikilinks, tags, tasks, stats
+//! * [`outline`](mod@outline) — heading tree
+//! * [`extract`](mod@extract) — links, wikilinks, tags, tasks, stats
 //! * [`frontmatter`] — YAML-subset front matter
 //! * [`render`] — HTML for preview and export
 //! * [`editing`] / [`table`] — smart edits that return [`quire_text::Transaction`]s

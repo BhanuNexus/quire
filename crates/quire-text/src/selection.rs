@@ -36,6 +36,7 @@ impl Selection {
     }
 
     /// Clamp both ends to `len` (useful after external reloads).
+    #[must_use]
     pub fn clamp(self, len: usize) -> Self {
         Self::new(self.anchor.min(len), self.head.min(len))
     }

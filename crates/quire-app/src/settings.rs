@@ -47,7 +47,7 @@ pub struct Settings {
     pub embed_model: String,
     /// Empty means: the AI base URL for OpenAI-compatible providers, else local Ollama.
     pub embed_base_url: String,
-    /// `"fast"` (virtualized, multi-cursor) or `"classic"` (egui TextEdit).
+    /// `"fast"` (virtualized, multi-cursor) or `"classic"` (egui `TextEdit`).
     pub editor: String,
     /// Show images under lines that embed them.
     pub inline_images: bool,
@@ -114,6 +114,7 @@ impl Settings {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "values round-trip exactly through TOML")]
 mod tests {
     use super::*;
 

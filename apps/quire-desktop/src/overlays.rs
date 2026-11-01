@@ -12,14 +12,14 @@ use quire_app::{COMMANDS, Command, Workspace};
 use crate::theme::Palette;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
+pub(crate) enum Mode {
     Commands,
     Notes,
     Templates,
     Tasks,
 }
 
-pub enum Overlay {
+pub(crate) enum Overlay {
     Palette { mode: Mode, query: String, selected: usize, focused: bool },
     Rename { input: String, focused: bool },
     ConfirmDelete,
@@ -34,8 +34,8 @@ pub enum Overlay {
 }
 
 impl Overlay {
-    pub fn palette(mode: Mode) -> Self {
-        Overlay::Palette { mode, query: String::new(), selected: 0, focused: false }
+    pub(crate) fn palette(mode: Mode) -> Self {
+        Self::Palette { mode, query: String::new(), selected: 0, focused: false }
     }
 }
 
@@ -55,7 +55,7 @@ struct Item {
 }
 
 /// Subsequence match with bonuses for word starts and contiguity. `None` = no match.
-pub fn fuzzy_score(hay: &str, needle: &str) -> Option<i32> {
+pub(crate) fn fuzzy_score(hay: &str, needle: &str) -> Option<i32> {
     if needle.is_empty() {
         return Some(0);
     }
@@ -106,10 +106,10 @@ fn items(ws: &Workspace, mode: Mode, query: &str, mac: bool) -> Vec<Item> {
                 .into_iter()
                 .map(|h| Item {
                     label: h.path.stem().to_string(),
-                    detail: if h.title != h.path.stem() {
-                        format!("{} · {}", h.title, h.path.folder())
-                    } else {
+                    detail: if h.title == h.path.stem() {
                         h.path.folder().to_string()
+                    } else {
+                        format!("{} · {}", h.title, h.path.folder())
                     },
                     action: Action::Open(h.path),
                 })
@@ -137,7 +137,7 @@ fn items(ws: &Workspace, mode: Mode, query: &str, mac: bool) -> Vec<Item> {
     }
 }
 
-pub struct OverlayResult {
+pub(crate) struct OverlayResult {
     pub close: bool,
     pub run: Option<Command>,
     /// The editor should take focus / scroll to the caret.
@@ -145,7 +145,7 @@ pub struct OverlayResult {
 }
 
 /// Draw the active overlay. Returns what the app should do next.
-pub fn show(ctx: &egui::Context, overlay: &mut Overlay, ws: &mut Workspace, pal: &Palette) -> OverlayResult {
+pub(crate) fn show(ctx: &egui::Context, overlay: &mut Overlay, ws: &mut Workspace, pal: &Palette) -> OverlayResult {
     let mut res = OverlayResult { close: false, run: None, jumped: false };
     if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
         res.close = true;
@@ -275,7 +275,7 @@ pub fn show(ctx: &egui::Context, overlay: &mut Overlay, ws: &mut Workspace, pal:
             });
         }
         Overlay::ConfirmDelete => {
-            let name = ws.active_doc().map(|d| d.title()).unwrap_or_default();
+            let name = ws.active_doc().map(quire_app::Document::title).unwrap_or_default();
             egui::Modal::new(egui::Id::unique("quire-delete")).show(ctx, |ui| {
                 ui.set_width(360.0);
                 ui.heading(format!("Move “{name}” to trash?"));
@@ -503,7 +503,7 @@ pub fn show(ctx: &egui::Context, overlay: &mut Overlay, ws: &mut Workspace, pal:
 }
 
 /// Bottom-right toasts for recent notices.
-pub fn toasts(ctx: &egui::Context, ws: &Workspace, pal: &Palette) {
+pub(crate) fn toasts(ctx: &egui::Context, ws: &Workspace, pal: &Palette) {
     let notices: Vec<_> = ws.notices(Duration::from_secs(5)).cloned().collect();
     if notices.is_empty() {
         return;

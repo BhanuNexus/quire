@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Scanner for Obsidian-style extensions that CommonMark does not know about:
+//! Scanner for Obsidian-style extensions that `CommonMark` does not know about:
 //! `[[wikilinks]]`, `![[embeds]]`, `#nested/tags` and `==highlights==`.
 //!
 //! The scanner runs over the raw source but skips "verbatim" regions (code,
-//! math, HTML, front matter) reported by the CommonMark parser.
+//! math, HTML, front matter) reported by the `CommonMark` parser.
 
 use std::ops::Range;
 

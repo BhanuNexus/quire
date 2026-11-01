@@ -3,9 +3,10 @@
 //! HTML rendering for export and preview.
 //!
 //! Obsidian extensions are rewritten into plain CommonMark/inline HTML before
-//! the CommonMark renderer runs, so the renderer itself stays standard.
+//! the `CommonMark` renderer runs, so the renderer itself stays standard.
 
 use pulldown_cmark::{Parser, html};
+use std::fmt::Write as _;
 
 use crate::frontmatter;
 use crate::scan::{Inline, WikiLink, scan_inlines};
@@ -34,7 +35,9 @@ pub fn encode_url(s: &str) -> String {
     for b in s.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => out.push(b as char),
-            _ => out.push_str(&format!("%{b:02X}")),
+            _ => {
+                let _ = write!(out, "%{b:02X}");
+            }
         }
     }
     out
@@ -110,7 +113,7 @@ pub fn to_html_document(title: &str, src: &str, resolve: Resolver<'_>) -> String
 /// Scheme used for wikilinks in the in-app preview; the UI intercepts it.
 pub const NOTE_SCHEME: &str = "quire://note/";
 
-/// Markdown suitable for a plain CommonMark viewer: wikilinks become links
+/// Markdown suitable for a plain `CommonMark` viewer: wikilinks become links
 /// with the [`NOTE_SCHEME`], image embeds become images, highlights become bold.
 pub fn for_preview(src: &str, resolve_embed: &dyn Fn(&str) -> Option<String>) -> String {
     rewrite(src, |inline, raw| match inline {

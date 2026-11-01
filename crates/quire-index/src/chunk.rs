@@ -43,19 +43,19 @@ pub fn chunk_note(path: &NotePath, src: &str) -> Vec<Chunk> {
         for para in section.split_inclusive("\n\n") {
             let w = para.split_whitespace().count();
             if words > 0 && words + w > MAX_WORDS {
-                push(&mut out, path, title, heading, src, start + piece_start..start + pos);
+                push(&mut out, path, title, heading.as_ref(), src, start + piece_start..start + pos);
                 piece_start = pos;
                 words = 0;
             }
             words += w;
             pos += para.len();
         }
-        push(&mut out, path, title, heading, src, start + piece_start..end);
+        push(&mut out, path, title, heading.as_ref(), src, start + piece_start..end);
     }
     out
 }
 
-fn push(out: &mut Vec<Chunk>, path: &NotePath, title: &str, heading: &Option<String>, src: &str, range: Range<usize>) {
+fn push(out: &mut Vec<Chunk>, path: &NotePath, title: &str, heading: Option<&String>, src: &str, range: Range<usize>) {
     let plain = extract(&src[range.clone()]).plain;
     if plain.split_whitespace().count() < 3 {
         return;
@@ -64,16 +64,20 @@ fn push(out: &mut Vec<Chunk>, path: &NotePath, title: &str, heading: &Option<Str
         Some(h) if h != title => format!("{title} — {h}\n"),
         _ => format!("{title}\n"),
     };
-    out.push(Chunk { path: path.clone(), heading: heading.clone(), range, text: format!("{ctx}{}", plain.trim()) });
+    out.push(Chunk { path: path.clone(), heading: heading.cloned(), range, text: format!("{ctx}{}", plain.trim()) });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
 
     #[test]
     fn splits_by_heading_and_length() {
-        let long: String = (0..60).map(|i| format!("Paragraph {i} has exactly eight words here.\n\n")).collect();
+        let long: String = (0..60).fold(String::new(), |mut s, i| {
+            let _ = write!(s, "Paragraph {i} has exactly eight words here.\n\n");
+            s
+        });
         let src = format!("# Note\nIntro text about ropes.\n## Details\n{long}## Tiny\nok\n");
         let chunks = chunk_note(&NotePath::new("Note.md"), &src);
         assert_eq!(chunks[0].heading.as_deref(), Some("Note"));

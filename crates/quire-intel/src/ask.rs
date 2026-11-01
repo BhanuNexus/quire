@@ -8,6 +8,7 @@
 //! where each came from.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 
 use quire_index::Index;
 use quire_index::chunk::chunk_note;
@@ -137,7 +138,9 @@ pub fn extractive_answer(question: &str, sources: &[Source], semantic: Option<&S
                 (Some(qv), Some(sem)) => {
                     let mut v = sem.embed_query(sent);
                     let n = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-9);
-                    v.iter_mut().for_each(|x| *x /= n);
+                    for x in &mut v {
+                        *x /= n;
+                    }
                     v.iter().zip(qv).map(|(a, b)| a * b).sum::<f32>().max(0.0)
                 }
                 _ => 0.0,
@@ -162,7 +165,7 @@ pub fn extractive_answer(question: &str, sources: &[Source], semantic: Option<&S
 pub fn build_ask_request(question: &str, sources: &[Source]) -> LlmRequest {
     let mut ctx = String::new();
     for s in sources {
-        ctx.push_str(&format!("[{}] {}\n{}\n\n", s.n, s.citation(), s.body().chars().take(3000).collect::<String>()));
+        let _ = write!(ctx, "[{}] {}\n{}\n\n", s.n, s.citation(), s.body().chars().take(3000).collect::<String>());
     }
     LlmRequest {
         system: "You answer questions using only the user's notes provided as sources. After each claim, cite the source \

@@ -11,7 +11,7 @@ use quire_app::markdown::{Style, StyleRun, highlight};
 use crate::theme::{BOLD, FontSupport, Palette};
 
 #[derive(Default)]
-pub struct HighlightCache {
+pub(crate) struct HighlightCache {
     key: u64,
     job: Option<LayoutJob>,
 }
@@ -80,7 +80,7 @@ pub(crate) fn format_for(style: &Style, p: &Palette, size: f32, fonts: FontSuppo
     f
 }
 
-pub fn build_job(text: &str, runs: &[StyleRun], p: &Palette, size: f32, fonts: FontSupport) -> LayoutJob {
+pub(crate) fn build_job(text: &str, runs: &[StyleRun], p: &Palette, size: f32, fonts: FontSupport) -> LayoutJob {
     let plain = format_for(&Style::default(), p, size, fonts);
     let mut job = LayoutJob { text: text.to_owned(), ..Default::default() };
     let mut pos = 0;
@@ -107,7 +107,7 @@ pub fn build_job(text: &str, runs: &[StyleRun], p: &Palette, size: f32, fonts: F
 
 impl HighlightCache {
     /// Highlighted job for `text`; recomputed only when text or style inputs change.
-    pub fn job(&mut self, text: &str, plain_mode: bool, p: &Palette, size: f32, fonts: FontSupport) -> LayoutJob {
+    pub(crate) fn job(&mut self, text: &str, plain_mode: bool, p: &Palette, size: f32, fonts: FontSupport) -> LayoutJob {
         let mut h = std::hash::DefaultHasher::new();
         text.hash(&mut h);
         plain_mode.hash(&mut h);

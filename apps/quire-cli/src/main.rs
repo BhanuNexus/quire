@@ -5,6 +5,7 @@
 mod import_cmd;
 mod mcp;
 
+use std::fmt::Write as _;
 use std::process::ExitCode;
 use std::time::Instant;
 
@@ -116,7 +117,8 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         "open" => {
             let (_, svc, _) = load(arg(1)?)?;
-            for h in svc.read().quick_open(arg(2)?, 10) {
+            let hits = svc.read().quick_open(arg(2)?, 10);
+            for h in hits {
                 println!("{:>5}  {}", h.score, h.path);
             }
         }
@@ -152,7 +154,8 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         "tasks" => {
             let (_, svc, _) = load(arg(1)?)?;
-            for (p, t) in svc.read().tasks(false) {
+            let tasks = svc.read().tasks(false);
+            for (p, t) in tasks {
                 println!("[ ] {}  ({})", t.text, p.stem());
             }
         }
@@ -183,7 +186,7 @@ fn run(args: &[String]) -> Result<(), String> {
             let v = Vault::open_local(arg(1)?).map_err(|e| e.to_string())?;
             for s in v.history(&p) {
                 let when = quire_app::chrono_fmt(s.at_ms);
-                let len = v.read_snapshot(&s).map(|t| t.chars().count()).unwrap_or(0);
+                let len = v.read_snapshot(&s).map_or(0, |t| t.chars().count());
                 println!("{when}  {len:>7} chars");
             }
         }
@@ -207,7 +210,7 @@ fn synthetic(bytes: usize, seed: u64) -> String {
         "tag", "plain", "file", "sync",
     ];
     let mut s = String::with_capacity(bytes + 256);
-    let mut x = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+    let mut x = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
     let mut next = || {
         x ^= x << 13;
         x ^= x >> 7;
@@ -218,9 +221,13 @@ fn synthetic(bytes: usize, seed: u64) -> String {
     while s.len() < bytes {
         n += 1;
         match n % 12 {
-            0 => s.push_str(&format!("\n## Section {n}\n\n")),
+            0 => {
+                let _ = write!(s, "\n## Section {n}\n\n");
+            }
             5 => s.push_str("- [ ] follow up on **this** item with `code` #todo\n"),
-            7 => s.push_str(&format!("See [[Note {}]] and [[Note {}|alias]].\n", next() % 500, next() % 500)),
+            7 => {
+                let _ = writeln!(s, "See [[Note {}]] and [[Note {}|alias]].", next() % 500, next() % 500);
+            }
             _ => {
                 for _ in 0..14 {
                     s.push_str(words[(next() % words.len() as u64) as usize]);
@@ -242,13 +249,13 @@ fn time<T>(label: &str, f: impl FnOnce() -> T) -> T {
 
 fn bench(size_mb: f64) {
     let bytes = (size_mb * 1024.0 * 1024.0) as usize;
-    println!("Synthetic document: {:.1} MB\n", bytes as f64 / 1048576.0);
+    println!("Synthetic document: {:.1} MB\n", bytes as f64 / 1_048_576.0);
     let doc = synthetic(bytes, 7);
     let mut buf = time("rope: build from string", || Buffer::from(doc.as_str()));
     time("rope: 10,000 random inserts", || {
         let mut x: usize = 12345;
         for _ in 0..10_000 {
-            x = x.wrapping_mul(1103515245).wrapping_add(12345);
+            x = x.wrapping_mul(1_103_515_245).wrapping_add(12345);
             let pos = x % buf.len_chars().max(1);
             Transaction::insert(pos, "x").apply(&mut buf).expect("in bounds");
         }

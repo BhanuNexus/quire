@@ -35,8 +35,8 @@ impl NoteRecord {
     pub fn from_source(path: NotePath, src: &str) -> Self {
         let ex: Extracted = extract(src);
         let name = path.stem().to_string();
-        let title = ex.title().map(str::to_string).unwrap_or_else(|| name.clone());
-        let aliases = ex.front_matter.as_ref().map(|f| f.aliases()).unwrap_or_default();
+        let title = ex.title().map_or_else(|| name.clone(), str::to_string);
+        let aliases = ex.front_matter.as_ref().map(quire_markdown::FrontMatter::aliases).unwrap_or_default();
         let mut terms: HashMap<String, u32> = HashMap::new();
         for t in content_tokens(&ex.plain).chain(content_tokens(&name)) {
             *terms.entry(t).or_default() += 1;

@@ -136,6 +136,7 @@ pub fn indent(buf: &Buffer, sel: Selection, unit: &str, outdent: bool) -> Option
 }
 
 /// Cycle a line: plain → `- [ ] ` task → done `[x]` → open `[ ]`.
+#[allow(clippy::unnecessary_wraps, reason = "all smart edits return Option so callers can treat them uniformly")]
 pub fn toggle_task(buf: &Buffer, sel: Selection) -> Option<Transaction> {
     let line = buf.char_to_line(sel.head);
     let start = buf.line_to_char(line);

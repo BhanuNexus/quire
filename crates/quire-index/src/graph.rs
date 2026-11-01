@@ -19,6 +19,7 @@ pub struct Backlink {
 
 /// Name → path resolution tables built from the current records.
 #[derive(Debug, Default, Clone)]
+#[allow(clippy::struct_field_names, reason = "by_path / by_name / by_alias read as lookup tables")]
 pub struct Resolver {
     by_path: HashMap<String, NotePath>,
     by_name: HashMap<String, Vec<NotePath>>,
@@ -86,7 +87,7 @@ impl LinkGraph {
     /// `sources` provides raw text for backlink context lines.
     pub fn build<'a>(records: impl Iterator<Item = &'a NoteRecord> + Clone, source: &dyn Fn(&NotePath) -> Option<&'a str>) -> Self {
         let resolver = Resolver::build(records.clone());
-        let mut g = LinkGraph { resolver, ..Default::default() };
+        let mut g = Self { resolver, ..Default::default() };
         for rec in records {
             let src = source(&rec.path);
             let mut seen = HashSet::new();
@@ -100,7 +101,7 @@ impl LinkGraph {
                             g.outgoing.entry(rec.path.clone()).or_default().push(to.clone());
                         }
                         if to != rec.path {
-                            let context = src.map(|s| line_around(s, link)).unwrap_or_else(|| link.display.clone());
+                            let context = src.map_or_else(|| link.display.clone(), |s| line_around(s, link));
                             g.backlinks.entry(to).or_default().push(Backlink { from: rec.path.clone(), link: link.clone(), context });
                         }
                     }

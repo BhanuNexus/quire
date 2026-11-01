@@ -76,9 +76,9 @@ impl Workspace {
         }
         let sel = doc.selection();
         let next = if backwards {
-            m.iter().rev().find(|r| r.start < sel.start()).or(m.last())
+            m.iter().rev().find(|r| r.start < sel.start()).or_else(|| m.last())
         } else {
-            m.iter().find(|r| r.start > sel.start() || (r.start == sel.start() && sel.is_empty())).or(m.first())
+            m.iter().find(|r| r.start > sel.start() || (r.start == sel.start() && sel.is_empty())).or_else(|| m.first())
         };
         if let Some(r) = next {
             doc.set_selection(Selection::new(r.start, r.end));

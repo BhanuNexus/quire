@@ -3,6 +3,7 @@
 //! Evernote `.enex` exports (one or many notes per file).
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 
 use base64::Engine;
 use quire_vault::{NotePath, sanitize_title};
@@ -17,7 +18,7 @@ struct Resource {
     name: Option<String>,
 }
 
-pub fn plan(tree: &Tree) -> ImportPlan {
+pub(crate) fn plan(tree: &Tree) -> ImportPlan {
     let mut plan = ImportPlan::default();
     let mut taken_files = HashSet::new();
     let mut taken_notes = HashSet::new();
@@ -64,7 +65,7 @@ pub fn plan(tree: &Tree) -> ImportPlan {
             // Attachments not referenced in the body still belong to the note.
             for (h, e) in &by_hash {
                 if !used.contains(h) {
-                    body.push_str(&format!("\n{e}\n"));
+                    let _ = write!(body, "\n{e}\n");
                 }
             }
 

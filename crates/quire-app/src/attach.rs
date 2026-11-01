@@ -70,7 +70,7 @@ impl Workspace {
             Ok(p) => {
                 self.file_cache.0.borrow_mut().take();
                 self.insert_at_caret(&format!("![[{}]]\n", p.file_name()));
-                self.notify(NoticeLevel::Info, format!("Saved {}", p));
+                self.notify(NoticeLevel::Info, format!("Saved {p}"));
                 Some(p)
             }
             Err(e) => {
@@ -86,7 +86,7 @@ impl Workspace {
         let root = self.vault_root().map(Path::to_path_buf);
         let mut links = Vec::new();
         for f in files {
-            let name = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
+            let name = f.file_name().map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned());
             let inside =
                 root.as_ref().and_then(|r| f.canonicalize().ok()?.strip_prefix(r).ok().map(|p| p.to_string_lossy().replace('\\', "/")));
             let is_md = name.to_ascii_lowercase().ends_with(".md");

@@ -7,7 +7,9 @@
 //! without pulling a full HTML5 parser into the build.
 
 /// What to emit for an `<en-media hash=…>` element.
-pub type MediaFn<'a> = &'a mut dyn FnMut(&str) -> Option<String>;
+use std::fmt::Write as _;
+
+pub(crate) type MediaFn<'a> = &'a mut dyn FnMut(&str) -> Option<String>;
 
 struct List {
     ordered: bool,
@@ -242,7 +244,7 @@ impl Writer<'_> {
             }
             "a" => {
                 if let Some(Some(href)) = self.links.pop() {
-                    self.out.push_str(&format!("]({href})"));
+                    let _ = write!(self.out, "]({href})");
                 }
             }
             "td" | "th" => {
@@ -254,7 +256,7 @@ impl Writer<'_> {
                 self.out.push('\n');
                 if self.table_row == 0 {
                     self.first_row_cells = self.row_cells.max(1);
-                    self.out.push_str(&format!("|{}\n", " --- |".repeat(self.first_row_cells)));
+                    let _ = writeln!(self.out, "|{}", " --- |".repeat(self.first_row_cells));
                 }
                 self.table_row += 1;
             }
@@ -287,7 +289,7 @@ fn attr(attrs: &str, name: &str) -> Option<String> {
 }
 
 /// XML/HTML entities: named basics and numeric references.
-pub fn unescape(s: &str) -> String {
+pub(crate) fn unescape(s: &str) -> String {
     if !s.contains('&') {
         return s.to_string();
     }
@@ -311,21 +313,18 @@ pub fn unescape(s: &str) -> String {
                         .strip_prefix("#x")
                         .or_else(|| name.strip_prefix("#X"))
                         .map(|h| u32::from_str_radix(h, 16))
-                        .or_else(|| name.strip_prefix('#').map(|d| d.parse()))?;
+                        .or_else(|| name.strip_prefix('#').map(str::parse))?;
                     char::from_u32(n.ok()?)?
                 }
             };
             Some((c, e))
         });
-        match decoded {
-            Some((c, e)) => {
-                out.push(c);
-                rest = &after[e + 1..];
-            }
-            None => {
-                out.push('&');
-                rest = after;
-            }
+        if let Some((c, e)) = decoded {
+            out.push(c);
+            rest = &after[e + 1..];
+        } else {
+            out.push('&');
+            rest = after;
         }
     }
     out.push_str(rest);
@@ -333,7 +332,7 @@ pub fn unescape(s: &str) -> String {
 }
 
 /// Convert ENML/HTML to Markdown.
-pub fn to_markdown(html: &str, media: MediaFn<'_>) -> String {
+pub(crate) fn to_markdown(html: &str, media: MediaFn<'_>) -> String {
     let mut w = Writer {
         out: String::new(),
         lists: Vec::new(),

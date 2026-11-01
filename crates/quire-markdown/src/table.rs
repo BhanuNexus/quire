@@ -155,7 +155,7 @@ mod tests {
         let buf = Buffer::from(text);
         let caret = text.find("bb").unwrap();
         let tx = format_at(&buf, Selection::cursor(caret)).unwrap();
-        let mut b = buf.clone();
+        let mut b = buf;
         tx.apply(&mut b).unwrap();
         assert_eq!(b.to_string(), "intro\n| a   | bb  |\n| --- | --- |\n| ccc | d   |\nafter");
         let sel = tx.selection().unwrap();

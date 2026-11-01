@@ -8,6 +8,7 @@
 //! `quire-view` table over the rows.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 
 use quire_vault::NotePath;
 
@@ -15,7 +16,7 @@ use crate::yaml::{Field, front_matter};
 use crate::{ImportPlan, PlannedFile, PlannedNote, Tree, attachment, file_name, rewrite_links};
 
 /// Does any path segment end with a Notion id?
-pub fn has_id(path: &str) -> bool {
+pub(crate) fn has_id(path: &str) -> bool {
     path.split('/').any(|seg| split_id(seg).1.is_some())
 }
 
@@ -51,7 +52,7 @@ fn clean_segment(seg: &str) -> String {
     }
 }
 
-pub fn plan(tree: &Tree) -> ImportPlan {
+pub(crate) fn plan(tree: &Tree) -> ImportPlan {
     let mut plan = ImportPlan::default();
     // id → clean title, for links.
     let mut titles: HashMap<String, String> = HashMap::new();
@@ -65,7 +66,7 @@ pub fn plan(tree: &Tree) -> ImportPlan {
     let mut files: HashMap<String, String> = HashMap::new();
     for (p, bytes) in tree.iter() {
         let l = p.to_ascii_lowercase();
-        if Tree::is_markdown(p) || l.ends_with(".csv") {
+        if Tree::is_markdown(p) || std::path::Path::new(&l).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("csv")) {
             continue;
         }
         let target = attachment(&mut taken_files, &split_id(file_name(p)).0);
@@ -107,7 +108,6 @@ pub fn plan(tree: &Tree) -> ImportPlan {
         let db_path = clean_path(csv_path);
         let db_folder = db_path.trim_end_matches(".csv").trim_end_matches(".CSV").to_string();
         let db_name = file_name(&db_folder).to_string();
-        let mut row_titles = Vec::new();
         for row in rows {
             let title = row.first().map(|s| s.trim()).filter(|s| !s.is_empty()).unwrap_or("Untitled");
             let fields: Vec<(String, Field)> = header
@@ -133,7 +133,6 @@ pub fn plan(tree: &Tree) -> ImportPlan {
             } else {
                 notes.push((row_path, format!("{fm}# {title}\n")));
             }
-            row_titles.push(title.to_string());
         }
         let fields: Vec<String> = std::iter::once("title".to_string())
             .chain(header.iter().skip(1).take(4).map(|h| h.trim().to_lowercase().replace(' ', "_")))
@@ -142,7 +141,7 @@ pub fn plan(tree: &Tree) -> ImportPlan {
         // Relative, so the view still works when the import goes into a folder.
         let view = format!("```quire-view\nfrom: \"./{db_name}/\"\nlayout: table\nfields: [{}]\n```\n", fields.join(", "));
         if let Some(n) = notes.iter_mut().find(|(p, _)| p.eq_ignore_ascii_case(&index)) {
-            n.1.push_str(&format!("\n{view}"));
+            let _ = write!(n.1, "\n{view}");
         } else {
             notes.push((index, format!("# {db_name}\n\n{view}")));
         }
@@ -201,7 +200,8 @@ fn strip_property_lines(body: &str, header: &[String]) -> String {
 }
 
 /// Minimal RFC 4180 parser: quoted fields, doubled quotes, embedded newlines.
-pub fn parse_csv(text: &str) -> Vec<Vec<String>> {
+#[allow(clippy::match_same_arms, reason = "arm order matters: quoted and unquoted chars are pushed after the special cases")]
+pub(crate) fn parse_csv(text: &str) -> Vec<Vec<String>> {
     let mut rows = Vec::new();
     let mut row = Vec::new();
     let mut field = String::new();
@@ -268,8 +268,7 @@ mod tests {
             p.notes
                 .iter()
                 .find(|n| n.path.as_str() == path)
-                .map(|n| n.content.clone())
-                .unwrap_or_else(|| panic!("{path}: {:?}", p.notes.iter().map(|n| n.path.as_str()).collect::<Vec<_>>()))
+                .map_or_else(|| panic!("{path}: {:?}", p.notes.iter().map(|n| n.path.as_str()).collect::<Vec<_>>()), |n| n.content.clone())
         };
         assert_eq!(get("Home.md"), "# Home\n\nSee [[Roadmap]] and ![[chart.png]]\n[web](https://notion.so)\n");
         assert_eq!(get("Home/Roadmap.md"), "# Roadmap\n\nBack to [[Home]]\n");

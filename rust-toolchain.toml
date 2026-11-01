@@ -1,6 +1,7 @@
-# Builds use the latest stable Rust. rustup installs it automatically.
-# To build with another installed toolchain: RUSTUP_TOOLCHAIN=stable cargo build
+# Pinned so every machine and CI build with the same compiler and clippy.
+# 1.97.0 is the newest release the maintainers' build environment can run;
+# bump it (and fix any new lints) together with CI.
 [toolchain]
-channel = "1.99.1"
+channel = "1.97.0"
 components = ["rustfmt", "clippy"]
 profile = "minimal"

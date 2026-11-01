@@ -31,7 +31,7 @@ Until code signing is set up, Windows shows a SmartScreen prompt (*More info →
 
 ## Build and run
 
-Builds with Rust 1.99.1, pinned in `rust-toolchain.toml` (rustup installs it automatically). The code itself needs 1.97 or newer.
+Builds with Rust 1.97.0, pinned in `rust-toolchain.toml` (rustup installs it automatically).
 
 ```bash
 cargo run --release -p quire-desktop -- ./sample-vault      # desktop app

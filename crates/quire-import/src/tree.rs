@@ -21,7 +21,7 @@ impl Tree {
     }
 
     pub fn load(path: &Path) -> Result<Self, String> {
-        let mut t = Tree::default();
+        let mut t = Self::default();
         if path.is_dir() {
             t.add_dir(path, path)?;
         } else {
@@ -109,7 +109,7 @@ impl Tree {
 
     pub fn is_markdown(p: &str) -> bool {
         let l = p.to_ascii_lowercase();
-        l.ends_with(".md") || l.ends_with(".markdown")
+        Path::new(&l).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("md")) || l.ends_with(".markdown")
     }
 }
 

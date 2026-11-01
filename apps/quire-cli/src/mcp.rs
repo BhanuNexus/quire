@@ -7,6 +7,7 @@
 //! to their client. Writing is off unless started with `--allow-write`, and
 //! every write is snapshotted in version history first so it can be undone.
 
+use std::fmt::Write as _;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
@@ -15,11 +16,12 @@ use quire_app::history_ops::now_ms;
 use quire_app::index::IndexService;
 use quire_app::intel::{extractive_answer, retrieve};
 use quire_app::vault::{NotePath, Vault, VaultEvent, VaultWatcher};
+
 use serde_json::{Value, json};
 
 const SUPPORTED: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
-pub struct Server {
+pub(crate) struct Server {
     vault: Vault,
     index: IndexService,
     watcher: Option<VaultWatcher>,
@@ -34,12 +36,12 @@ fn tool_error(s: impl Into<String>) -> Value {
     json!({ "content": [{ "type": "text", "text": s.into() }], "isError": true })
 }
 
-fn schema(props: Value, required: &[&str]) -> Value {
+fn schema(props: &Value, required: &[&str]) -> Value {
     json!({ "type": "object", "properties": props, "required": required })
 }
 
 impl Server {
-    pub fn open(root: &str, allow_write: bool) -> Result<Self, String> {
+    pub(crate) fn open(root: &str, allow_write: bool) -> Result<Self, String> {
         let vault = Vault::open_local(root).map_err(|e| e.to_string())?;
         let index = IndexService::spawn();
         index.load(vault.clone());
@@ -79,24 +81,24 @@ impl Server {
     fn tools(&self) -> Vec<Value> {
         let mut v = vec![
             json!({"name": "search_notes", "description": "Search the user's notes by keywords and meaning. Supports \"phrases\", #tag filters and -exclusions. Returns note paths, sections and snippets.",
-                   "inputSchema": schema(json!({"query": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}), &["query"])}),
+                   "inputSchema": schema(&json!({"query": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}), &["query"])}),
             json!({"name": "read_note", "description": "Read a note's full Markdown by path (e.g. \"Projects/Plan.md\") or by title.",
-                   "inputSchema": schema(json!({"note": {"type": "string"}}), &["note"])}),
+                   "inputSchema": schema(&json!({"note": {"type": "string"}}), &["note"])}),
             json!({"name": "list_notes", "description": "List notes, optionally only in a folder or with a tag.",
-                   "inputSchema": schema(json!({"folder": {"type": "string"}, "tag": {"type": "string"}, "limit": {"type": "integer"}}), &[])}),
+                   "inputSchema": schema(&json!({"folder": {"type": "string"}, "tag": {"type": "string"}, "limit": {"type": "integer"}}), &[])}),
             json!({"name": "backlinks", "description": "Notes that link to a note, with the linking line.",
-                   "inputSchema": schema(json!({"note": {"type": "string"}}), &["note"])}),
+                   "inputSchema": schema(&json!({"note": {"type": "string"}}), &["note"])}),
             json!({"name": "ask_notes", "description": "Retrieve the passages most relevant to a question, with citations like [[Note#Heading]] and a short extractive answer. Use it to ground your own answer in the user's notes.",
-                   "inputSchema": schema(json!({"question": {"type": "string"}}), &["question"])}),
-            json!({"name": "list_tags", "description": "All tags with note counts.", "inputSchema": schema(json!({}), &[])}),
+                   "inputSchema": schema(&json!({"question": {"type": "string"}}), &["question"])}),
+            json!({"name": "list_tags", "description": "All tags with note counts.", "inputSchema": schema(&json!({}), &[])}),
         ];
         if self.allow_write {
             v.push(json!({"name": "create_note", "description": "Create a new note. Never overwrites: a unique name is chosen.",
-                          "inputSchema": schema(json!({"title": {"type": "string"}, "content": {"type": "string"}, "folder": {"type": "string"}}), &["title", "content"])}));
+                          "inputSchema": schema(&json!({"title": {"type": "string"}, "content": {"type": "string"}, "folder": {"type": "string"}}), &["title", "content"])}));
             v.push(json!({"name": "append_to_note", "description": "Append Markdown to the end of an existing note.",
-                          "inputSchema": schema(json!({"note": {"type": "string"}, "text": {"type": "string"}}), &["note", "text"])}));
+                          "inputSchema": schema(&json!({"note": {"type": "string"}, "text": {"type": "string"}}), &["note", "text"])}));
             v.push(json!({"name": "replace_in_note", "description": "Find and replace text in one note. Set regex=true for regular expressions with $1 captures.",
-                          "inputSchema": schema(json!({"note": {"type": "string"}, "find": {"type": "string"}, "replace": {"type": "string"}, "regex": {"type": "boolean"}}), &["note", "find", "replace"])}));
+                          "inputSchema": schema(&json!({"note": {"type": "string"}, "find": {"type": "string"}, "replace": {"type": "string"}, "regex": {"type": "boolean"}}), &["note", "find", "replace"])}));
         }
         v
     }
@@ -180,13 +182,8 @@ impl Server {
                 out.push_str("\n\nSources:\n");
                 for src in &sources {
                     let body = src.text.split_once('\n').map_or(src.text.as_str(), |(_, b)| b);
-                    out.push_str(&format!(
-                        "\n[{}] {} ({})\n{}\n",
-                        src.n,
-                        src.citation(),
-                        src.path,
-                        body.chars().take(1500).collect::<String>()
-                    ));
+                    let _ =
+                        write!(out, "\n[{}] {} ({})\n{}\n", src.n, src.citation(), src.path, body.chars().take(1500).collect::<String>());
                 }
                 text(out)
             }
@@ -247,7 +244,7 @@ impl Server {
     }
 
     /// Handle one JSON-RPC message; `None` for notifications.
-    pub fn handle(&self, msg: &Value) -> Option<Value> {
+    pub(crate) fn handle(&self, msg: &Value) -> Option<Value> {
         let id = msg.get("id").cloned();
         let method = msg.get("method").and_then(Value::as_str).unwrap_or_default();
         let params = msg.get("params").cloned().unwrap_or(Value::Null);
@@ -288,7 +285,7 @@ impl Server {
     }
 
     /// Serve newline-delimited JSON-RPC until the input closes.
-    pub fn serve(&self, input: impl BufRead, mut output: impl Write) -> std::io::Result<()> {
+    pub(crate) fn serve(&self, input: impl BufRead, mut output: impl Write) -> std::io::Result<()> {
         for line in input.lines() {
             let line = line?;
             if line.trim().is_empty() {
@@ -317,14 +314,14 @@ mod tests {
             ("Ideas.md", "# Ideas\nWrite about [[Rope Notes]].\n"),
         ]);
         let srv = Server::in_memory(vault.clone(), allow_write);
-        let input = lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        let input = lines.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
         let mut out = Vec::new();
         srv.serve(std::io::Cursor::new(input), &mut out).unwrap();
         let replies = String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
         (replies, vault)
     }
 
-    fn call(id: u64, name: &str, args: Value) -> Value {
+    fn call(id: u64, name: &str, args: &Value) -> Value {
         json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": name, "arguments": args}})
     }
 
@@ -340,11 +337,11 @@ mod tests {
                 json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}}),
                 json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
                 json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
-                call(3, "search_notes", json!({"query": "undo"})),
-                call(4, "read_note", json!({"note": "Rope Notes"})),
-                call(5, "backlinks", json!({"note": "Rope Notes.md"})),
-                call(6, "ask_notes", json!({"question": "why is undo cheap?"})),
-                call(7, "append_to_note", json!({"note": "Ideas", "text": "x"})),
+                call(3, "search_notes", &json!({"query": "undo"})),
+                call(4, "read_note", &json!({"note": "Rope Notes"})),
+                call(5, "backlinks", &json!({"note": "Rope Notes.md"})),
+                call(6, "ask_notes", &json!({"question": "why is undo cheap?"})),
+                call(7, "append_to_note", &json!({"note": "Ideas", "text": "x"})),
                 json!({"jsonrpc": "2.0", "id": 8, "method": "bogus"}),
             ],
         );
@@ -365,10 +362,10 @@ mod tests {
         let (r, vault) = session(
             true,
             &[
-                call(1, "create_note", json!({"title": "From AI", "content": "hello", "folder": "Inbox"})),
-                call(2, "append_to_note", json!({"note": "Ideas", "text": "- added by AI"})),
-                call(3, "replace_in_note", json!({"note": "Ideas", "find": "Write", "replace": "Draft"})),
-                call(4, "search_notes", json!({"query": "hello"})),
+                call(1, "create_note", &json!({"title": "From AI", "content": "hello", "folder": "Inbox"})),
+                call(2, "append_to_note", &json!({"note": "Ideas", "text": "- added by AI"})),
+                call(3, "replace_in_note", &json!({"note": "Ideas", "find": "Write", "replace": "Draft"})),
+                call(4, "search_notes", &json!({"query": "hello"})),
             ],
         );
         assert!(body(&r[0]).contains("Inbox/From AI.md"));

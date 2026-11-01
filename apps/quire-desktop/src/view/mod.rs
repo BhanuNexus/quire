@@ -38,7 +38,7 @@ const WINDOW_SLACK_LINES: usize = 120;
 const MAX_IMAGE_HEIGHT: f32 = 360.0;
 const BLINK: Duration = Duration::from_millis(530);
 
-pub fn editor_id(doc: DocId) -> Id {
+pub(crate) fn editor_id(doc: DocId) -> Id {
     Id::unique(("quire-editor", doc.0))
 }
 
@@ -111,7 +111,7 @@ impl Cx<'_> {
 }
 
 #[derive(Default)]
-pub struct FastEditor {
+pub(crate) struct FastEditor {
     views: HashMap<DocId, DocView>,
     pub scroll_to_caret: bool,
     pub request_focus: bool,
@@ -151,7 +151,7 @@ fn primary_index(all: &[Selection], primary: Selection) -> usize {
     all.iter()
         .position(|s| *s == primary)
         .or_else(|| all.iter().position(|s| s.range().contains(&primary.head) || s.head == primary.head))
-        .unwrap_or(all.len().saturating_sub(1))
+        .unwrap_or_else(|| all.len().saturating_sub(1))
 }
 
 fn row_start(g: &Galley, row: usize) -> usize {
@@ -159,11 +159,11 @@ fn row_start(g: &Galley, row: usize) -> usize {
 }
 
 impl FastEditor {
-    pub fn forget(&mut self, docs: &[DocId]) {
+    pub(crate) fn forget(&mut self, docs: &[DocId]) {
         self.views.retain(|k, _| docs.contains(k));
     }
 
-    pub fn has_extra_cursors(&self, doc: DocId) -> bool {
+    pub(crate) fn has_extra_cursors(&self, doc: DocId) -> bool {
         self.views.get(&doc).is_some_and(|v| !v.extra.is_empty())
     }
 
@@ -260,7 +260,7 @@ impl FastEditor {
             Some(pre) if buf.char_to_line(caret) == line => {
                 let off = buf.char_to_byte(caret) - b0;
                 let n = pre.len();
-                let mut t = text.to_string();
+                let mut t = text.clone();
                 t.insert_str(off, pre);
                 let shifted: Vec<StyleRun> = local
                     .into_iter()
@@ -326,7 +326,6 @@ impl FastEditor {
     // ------------------------------------------------------------ geometry
 
     /// Char index under a point in content coordinates.
-    #[allow(clippy::too_many_arguments)]
     fn hit(&mut self, ui: &Ui, view: &mut DocView, doc: &Document, cx: &Cx<'_>, origin: Pos2, x0: f32, pos: Pos2) -> usize {
         let buf = doc.buffer();
         let y = pos.y - origin.y - TOP_MARGIN;
@@ -342,7 +341,6 @@ impl FastEditor {
     }
 
     /// Caret rectangle in content coordinates.
-    #[allow(clippy::too_many_arguments)]
     fn caret_rect(&mut self, ui: &Ui, view: &mut DocView, doc: &Document, cx: &Cx<'_>, origin: Pos2, x0: f32, pos: usize) -> Rect {
         let buf = doc.buffer();
         let line = buf.char_to_line(pos);
@@ -353,7 +351,6 @@ impl FastEditor {
     }
 
     /// Move `pos` one visual row up (`dir < 0`) or down, keeping column `x`.
-    #[allow(clippy::too_many_arguments)]
     fn vertical(&mut self, ui: &Ui, view: &mut DocView, doc: &Document, cx: &Cx<'_>, pos: usize, dir: i32, x: Option<f32>) -> (usize, f32) {
         let buf = doc.buffer();
         let line = buf.char_to_line(pos);
@@ -427,7 +424,7 @@ impl FastEditor {
 
     // ------------------------------------------------------------ commands from the app
 
-    pub fn command(&mut self, cmd: Command, ws: &mut Workspace) {
+    pub(crate) fn command(&mut self, cmd: Command, ws: &mut Workspace) {
         let Some(doc) = ws.active_doc() else { return };
         let id = doc.id;
         let view = self.views.entry(id).or_insert_with(DocView::new);
@@ -465,7 +462,7 @@ impl FastEditor {
 
     // ------------------------------------------------------------ the widget
 
-    pub fn show(&mut self, ui: &mut Ui, ws: &mut Workspace, pal: &Palette, fonts: FontSupport) {
+    pub(crate) fn show(&mut self, ui: &mut Ui, ws: &mut Workspace, pal: &Palette, fonts: FontSupport) {
         let Some(doc) = ws.active_doc() else { return };
         let doc_id = doc.id;
         let id = editor_id(doc_id);
@@ -538,7 +535,7 @@ impl FastEditor {
                         m.set_focus_lock_filter(
                             id,
                             EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: false },
-                        )
+                        );
                     });
                 }
                 let mut moved = false;
@@ -691,7 +688,7 @@ impl FastEditor {
                                 }
                             }
                             Event::PasteImage(img) => {
-                                let rgba: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_srgba_unmultiplied()).collect();
+                                let rgba: Vec<u8> = img.pixels.iter().flat_map(Color32::to_srgba_unmultiplied).collect();
                                 edited |= ws.paste_image(img.size[0] as u32, img.size[1] as u32, &rgba).is_some();
                             }
                             Event::Key { key, pressed: true, modifiers: m, .. } => {
@@ -986,14 +983,14 @@ impl FastEditor {
                     );
                 }
                 if focused {
-                    let cr = caret_rect_primary.unwrap_or(Rect::from_min_size(origin, Vec2::new(2.0, cx.row_h())));
+                    let cr = caret_rect_primary.unwrap_or_else(|| Rect::from_min_size(origin, Vec2::new(2.0, cx.row_h())));
                     ctx.output_mut(|o| {
                         o.ime = Some(egui::output::IMEOutput {
-                            purpose: Default::default(),
+                            purpose: egui::viewport::IMEPurpose::default(),
                             rect: viewport.translate(origin.to_vec2()),
                             cursor_rect: cr,
                             should_interrupt_composition: false,
-                        })
+                        });
                     });
                     let phase = now.duration_since(view.blink_start).as_millis() % BLINK.as_millis();
                     ctx.request_repaint_after(Duration::from_millis((BLINK.as_millis() - phase) as u64 + 5));
@@ -1008,7 +1005,7 @@ impl FastEditor {
                         Some(r) => r,
                         None => self.caret_rect(ui, &mut view, doc, &cx, origin, x0, doc.selection().head),
                     };
-                    let align = if scroll_to_caret && caret_rect_primary.is_none() { Some(Align::Center) } else { None };
+                    let align = (scroll_to_caret && caret_rect_primary.is_none()).then_some(Align::Center);
                     ui.scroll_to_rect(r.expand2(Vec2::new(0.0, cx.row_h())), align);
                     if scroll_to_caret && caret_rect_primary.is_none() {
                         // Heights near the target were estimates; settle next frame.
@@ -1029,7 +1026,7 @@ impl FastEditor {
                 }
             }
             Some(ViewAction::Move { path, field, value })
-                if ws.set_note_property(&path, &field, quire_app::markdown::Value::Str(value.clone())) =>
+                if ws.set_note_property(&path, &field, &quire_app::markdown::Value::Str(value.clone())) =>
             {
                 ws.notify(quire_app::workspace::NoticeLevel::Info, format!("{} → {field}: {value}", path.stem()));
             }

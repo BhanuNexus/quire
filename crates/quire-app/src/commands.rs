@@ -4,6 +4,7 @@
 //! shortcuts are all generated from [`COMMANDS`], so nothing can drift.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(clippy::enum_variant_names, reason = "`CommandPalette` is the feature's name")]
 pub enum Command {
     // Notes
     NewNote,

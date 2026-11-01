@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Projects: a note in `Projects/` tagged `#project`, with `status`, `due`
-//! and `owner` properties, so it shows up on the project board (a
-//! `quire-view` kanban). There's no separate database: it's all Markdown.
+//! Projects: notes in `Projects/` tagged `#project`.
+//!
+//! A project has `status`, `due` and `owner` properties, so it shows up on
+//! the project board (a `quire-view` kanban). There's no separate database:
+//! it's all Markdown.
 
 use chrono::Local;
 use quire_markdown::frontmatter::{self, Value};
@@ -47,7 +49,7 @@ impl Workspace {
 
         // Properties go into the template before expansion, so {{cursor}} stays put.
         let fm = frontmatter::parse(&tpl);
-        let mut tags = fm.as_ref().map(|f| f.tags()).unwrap_or_default();
+        let mut tags = fm.as_ref().map(quire_markdown::FrontMatter::tags).unwrap_or_default();
         if !tags.iter().any(|t| t.eq_ignore_ascii_case("project")) {
             tags.push("project".into());
             tpl = frontmatter::set_field(&tpl, "tags", &Value::List(tags)).apply(&tpl);
@@ -62,7 +64,7 @@ impl Workspace {
         let (body, cursor) = expand_template(&tpl, &TemplateVars { title: name.into(), now: Local::now() });
         let path = vault.unique_path(PROJECTS_FOLDER, name).map_err(|e| e.to_string())?;
         vault.write(&path, &body).map_err(|e| e.to_string())?;
-        self.index.upsert(path.clone(), body.clone());
+        self.index.upsert(path.clone(), body);
 
         let board = self.ensure_project_board();
         let id = self.open_note(&path).ok_or("Couldn't open the new project")?;
@@ -76,7 +78,7 @@ impl Workspace {
 
     /// Create `Projects/Board.md` unless some note in Projects/ already has a
     /// view. Returns true if it was created.
-    fn ensure_project_board(&mut self) -> bool {
+    fn ensure_project_board(&self) -> bool {
         let Some(vault) = self.vault.clone() else { return false };
         let prefix = format!("{PROJECTS_FOLDER}/");
         let has_view = vault
@@ -117,7 +119,7 @@ impl Workspace {
 
     /// Folders for pickers (folders that contain notes).
     pub fn folders(&self) -> Vec<String> {
-        self.vault.as_ref().map(|v| v.folders()).unwrap_or_default()
+        self.vault.as_ref().map(quire_vault::Vault::folders).unwrap_or_default()
     }
 }
 

@@ -165,7 +165,7 @@ mod tests {
         assert_eq!(s, vec![Selection::new(0, 3)]);
         let s = add_next_occurrence(&b, &s);
         let s = add_next_occurrence(&b, &s);
-        assert_eq!(s.iter().map(|x| x.start()).collect::<Vec<_>>(), vec![0, 8, 16]);
+        assert_eq!(s.iter().map(Selection::start).collect::<Vec<_>>(), vec![0, 8, 16]);
         assert_eq!(all_occurrences(&b, Selection::cursor(9)).len(), 3);
         let b = Buffer::from("long line\nab\nthird line");
         assert_eq!(add_cursor_vertical(&b, Selection::cursor(7), 1), Some(Selection::cursor(12)));

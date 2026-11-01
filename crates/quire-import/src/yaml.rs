@@ -3,6 +3,7 @@
 //! Writing front matter for imported notes.
 
 pub use quire_markdown::frontmatter::yaml_scalar as scalar;
+use std::fmt::Write as _;
 
 pub enum Field {
     One(String),
@@ -18,10 +19,12 @@ pub fn front_matter(fields: &[(String, Field)]) -> String {
     for (k, v) in fields {
         let key = k.trim().to_lowercase().replace(' ', "_");
         match v {
-            Field::One(s) => out.push_str(&format!("{key}: {}\n", scalar(s))),
+            Field::One(s) => {
+                let _ = writeln!(out, "{key}: {}", scalar(s));
+            }
             Field::Many(items) => {
                 let list: Vec<String> = items.iter().filter(|i| !i.trim().is_empty()).map(|i| scalar(i)).collect();
-                out.push_str(&format!("{key}: [{}]\n", list.join(", ")));
+                let _ = writeln!(out, "{key}: [{}]", list.join(", "));
             }
         }
     }

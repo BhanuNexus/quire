@@ -3,6 +3,7 @@
 //! Logseq (Markdown graph): `pages/`, `journals/`, `assets/`.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 
 use quire_vault::NotePath;
 
@@ -17,7 +18,7 @@ struct Page {
     body: String,
 }
 
-pub fn plan(tree: &Tree) -> ImportPlan {
+pub(crate) fn plan(tree: &Tree) -> ImportPlan {
     let mut plan = ImportPlan::default();
     let mut pages = Vec::new();
     for path in tree.paths().filter(|p| Tree::is_markdown(p)) {
@@ -49,7 +50,7 @@ pub fn plan(tree: &Tree) -> ImportPlan {
                             target = format!("{named}.md");
                         }
                     }
-                    title = v.clone();
+                    title.clone_from(&v);
                 }
                 "tags" | "alias" | "aliases" => {
                     let key = if k == "tags" { "tags" } else { "aliases" };
@@ -115,11 +116,8 @@ pub fn plan(tree: &Tree) -> ImportPlan {
 /// `2026_11_01` → `2026-11-01`.
 fn journal_date(stem: &str) -> Option<String> {
     let parts: Vec<&str> = stem.split(['_', '-']).collect();
-    if parts.len() == 3 && parts[0].len() == 4 && parts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit())) {
-        Some(format!("{}-{:0>2}-{:0>2}", parts[0], parts[1], parts[2]))
-    } else {
-        None
-    }
+    (parts.len() == 3 && parts[0].len() == 4 && parts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit())))
+        .then(|| format!("{}-{:0>2}-{:0>2}", parts[0], parts[1], parts[2]))
 }
 
 /// File name → page path: `a___b` and `a%2Fb` are namespaces (`a/b`).
@@ -236,12 +234,11 @@ fn inline(line: &str, blocks: &HashMap<String, (String, String)>, unresolved: &m
         let Some(end) = s[i..].find("}}").map(|e| i + e + 2) else { break };
         let inner = s[i + 8..end - 2].trim();
         let rep = if let Some(uuid) = inner.strip_prefix("((").and_then(|x| x.strip_suffix("))")) {
-            match blocks.get(uuid) {
-                Some((text, page)) => format!("{text} ([[{page}]])"),
-                None => {
-                    *unresolved += 1;
-                    String::new()
-                }
+            if let Some((text, page)) = blocks.get(uuid) {
+                format!("{text} ([[{page}]])")
+            } else {
+                *unresolved += 1;
+                String::new()
             }
         } else if let Some(page) = inner.strip_prefix("[[").and_then(|x| x.strip_suffix("]]")) {
             format!("![[{page}]]")
@@ -262,12 +259,11 @@ fn inline(line: &str, blocks: &HashMap<String, (String, String)>, unresolved: &m
         let after = &rest[i + 2..];
         match after.find("))") {
             Some(e) if is_uuid(&after[..e]) => {
-                match blocks.get(&after[..e]) {
-                    Some((text, page)) => out.push_str(&format!("“{text}” ([[{page}]])")),
-                    None => {
-                        *unresolved += 1;
-                        out.push_str(&rest[i..i + 2 + e + 2]);
-                    }
+                if let Some((text, page)) = blocks.get(&after[..e]) {
+                    let _ = write!(out, "“{text}” ([[{page}]])");
+                } else {
+                    *unresolved += 1;
+                    out.push_str(&rest[i..i + 2 + e + 2]);
                 }
                 rest = &after[e + 2..];
             }
@@ -337,11 +333,10 @@ mod tests {
     fn converts_a_graph() {
         let p = plan(&graph());
         let get = |path: &str| {
-            p.notes
-                .iter()
-                .find(|n| n.path.as_str() == path)
-                .map(|n| n.content.clone())
-                .unwrap_or_else(|| panic!("{path} missing: {:?}", p.notes.iter().map(|n| n.path.as_str()).collect::<Vec<_>>()))
+            p.notes.iter().find(|n| n.path.as_str() == path).map_or_else(
+                || panic!("{path} missing: {:?}", p.notes.iter().map(|n| n.path.as_str()).collect::<Vec<_>>()),
+                |n| n.content.clone(),
+            )
         };
         let daily = get("Daily/2026-11-01.md");
         assert!(daily.contains("- [ ] ship importers"), "{daily}");

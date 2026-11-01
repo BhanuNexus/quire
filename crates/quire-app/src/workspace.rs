@@ -52,7 +52,12 @@ pub fn title_from_text(text: &str) -> Option<(String, usize)> {
     let mut title = quire_vault::sanitize_title(&plain);
     if title.chars().count() > 60 {
         let cut: String = title.chars().take(60).collect();
-        title = cut.rsplit_once(' ').map_or(cut.clone(), |(a, _)| a.to_string()).trim_end_matches([',', ';', ':', '-']).trim().to_string();
+        title = cut
+            .rsplit_once(' ')
+            .map_or_else(|| cut.clone(), |(a, _)| a.to_string())
+            .trim_end_matches([',', ';', ':', '-'])
+            .trim()
+            .to_string();
     }
     (!title.is_empty()).then_some((title, skipped_lines + n))
 }
@@ -145,10 +150,10 @@ impl Workspace {
             pending_assist: None,
             assist_result: None,
             insights_cache: RefCell::new(None),
-            find: Default::default(),
-            ask: Default::default(),
-            file_cache: Default::default(),
-            view_cache: Default::default(),
+            find: crate::find_state::FindState::default(),
+            ask: crate::ask_state::AskState::default(),
+            file_cache: crate::attach::FileCache::default(),
+            view_cache: crate::properties::ViewCache::default(),
         }
     }
 
@@ -213,7 +218,7 @@ impl Workspace {
     }
 
     /// Re-read every note (after a bulk change such as an import).
-    pub fn reload_index(&mut self) {
+    pub fn reload_index(&self) {
         if let Some(v) = self.vault.clone() {
             self.index.load(v);
         }
@@ -479,7 +484,7 @@ impl Workspace {
         let _ = self.rename_doc(id, &title, false);
     }
 
-    fn reindex(&mut self, id: DocId) {
+    fn reindex(&self, id: DocId) {
         if let Some(d) = self.doc(id)
             && let Some(p) = d.path.clone()
         {
@@ -517,7 +522,7 @@ impl Workspace {
     /// Earliest instant at which `tick` has autosave work to do.
     pub fn next_deadline(&self) -> Option<Instant> {
         let delay = Duration::from_millis(self.settings.autosave_ms);
-        self.docs.iter().filter(|d| d.path.is_some() && d.is_dirty()).filter_map(|d| d.last_edit()).map(|t| t + delay).min()
+        self.docs.iter().filter(|d| d.path.is_some() && d.is_dirty()).filter_map(Document::last_edit).map(|t| t + delay).min()
     }
 
     fn process_vault_events(&mut self) -> bool {
@@ -726,14 +731,15 @@ impl Workspace {
             }
         }
 
-        let mut handled = false;
-        if let Some(m) = trailing_date_phrase(&before, chrono::Local::now().date_naive()) {
+        let handled = if let Some(m) = trailing_date_phrase(&before, chrono::Local::now().date_naive()) {
             let iso = m.date.format("%Y-%m-%d").to_string();
             let rep = if as_link { format!("[[{iso}]]") } else { iso };
             let start = line_range.start + m.start_char;
             let caret = start + rep.chars().count();
-            handled = doc.apply(Transaction::replace(start, head, rep).with_selection(Selection::cursor(caret)), EditKind::Other).is_ok();
-        }
+            doc.apply(Transaction::replace(start, head, rep).with_selection(Selection::cursor(caret)), EditKind::Other).is_ok()
+        } else {
+            false
+        };
         let sel = doc.selection();
         if let Some(tx) = editing::on_enter(doc.buffer(), sel) {
             return doc.apply(tx, EditKind::Other).is_ok();
@@ -1072,7 +1078,7 @@ impl Workspace {
         let doc = &mut self.docs[i];
         let sel = res.selection.clamp(doc.buffer().len_chars());
         let tx = if replace && !sel.is_empty() {
-            Transaction::replace(sel.start(), sel.end(), text.clone())
+            Transaction::replace(sel.start(), sel.end(), text)
         } else {
             let at = if sel.is_empty() { doc.buffer().len_chars() } else { sel.end() };
             Transaction::insert(at, format!("\n\n{text}\n"))
@@ -1204,9 +1210,9 @@ mod tests {
         assert!(!v.exists(&NotePath::new("Untitled.md")));
         assert_eq!(v.read(&NotePath::new("Ideas 1.md")).unwrap(), "# Ideas\nbody");
         // The name follows later title edits until the user renames by hand.
-        w.active_doc_mut().unwrap().set_selection(quire_text::Selection::cursor(2));
+        w.active_doc_mut().unwrap().set_selection(Selection::cursor(2));
         w.insert_text("Big ");
-        w.active_doc_mut().unwrap().set_selection(quire_text::Selection::cursor(13));
+        w.active_doc_mut().unwrap().set_selection(Selection::cursor(13));
         w.save(id);
         w.auto_name(id, false);
         assert_eq!(w.active_doc().unwrap().path.as_ref().unwrap().as_str(), "Big Ideas.md");

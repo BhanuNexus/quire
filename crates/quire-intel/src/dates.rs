@@ -59,14 +59,14 @@ pub fn parse_natural_date(phrase: &str, today: NaiveDate) -> Option<NaiveDate> {
         ["yesterday"] => today.pred_opt(),
         [w] if weekday(w).is_some() => {
             let target = weekday(w)?;
-            let delta = (7 + target.num_days_from_monday() as i64 - today.weekday().num_days_from_monday() as i64) % 7;
+            let delta = (7 + i64::from(target.num_days_from_monday()) - i64::from(today.weekday().num_days_from_monday())) % 7;
             today.checked_add_signed(Duration::days(if delta == 0 { 7 } else { delta }))
         }
         ["next", w] if weekday(w).is_some() => {
             // "next friday" = the friday of next week.
             let target = weekday(w)?;
-            let monday_next = today + Duration::days(7 - today.weekday().num_days_from_monday() as i64);
-            Some(monday_next + Duration::days(target.num_days_from_monday() as i64))
+            let monday_next = today + Duration::days(7 - i64::from(today.weekday().num_days_from_monday()));
+            Some(monday_next + Duration::days(i64::from(target.num_days_from_monday())))
         }
         ["next", "week"] => Some(today + Duration::weeks(1)),
         ["next", "month"] => today.checked_add_months(Months::new(1)),

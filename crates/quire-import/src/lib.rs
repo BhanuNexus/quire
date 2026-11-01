@@ -34,11 +34,11 @@ pub enum Source {
 impl Source {
     pub fn label(self) -> &'static str {
         match self {
-            Source::Logseq => "Logseq",
-            Source::Bear => "Bear",
-            Source::Notion => "Notion",
-            Source::Evernote => "Evernote",
-            Source::Markdown => "Markdown folder",
+            Self::Logseq => "Logseq",
+            Self::Bear => "Bear",
+            Self::Notion => "Notion",
+            Self::Evernote => "Evernote",
+            Self::Markdown => "Markdown folder",
         }
     }
 }
@@ -168,7 +168,7 @@ pub(crate) struct Link<'a> {
 
 /// Replace `[text](dest)` and `![alt](dest)` wherever `map` returns a
 /// replacement. Destinations may contain balanced parentheses.
-pub(crate) fn rewrite_links(src: &str, mut map: impl FnMut(&Link) -> Option<String>) -> String {
+pub(crate) fn rewrite_links(src: &str, mut map: impl FnMut(&Link<'_>) -> Option<String>) -> String {
     let b = src.as_bytes();
     let mut out = String::with_capacity(src.len());
     let mut copied = 0;

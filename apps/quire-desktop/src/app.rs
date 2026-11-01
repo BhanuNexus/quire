@@ -30,7 +30,7 @@ const SAMPLE: &[(&str, &str)] = &[
     ("Templates/Meeting.md", include_str!("../../../sample-vault/Templates/Meeting.md")),
 ];
 
-pub struct QuireApp {
+pub(crate) struct QuireApp {
     ws: Workspace,
     editor: EditorState,
     fast: FastEditor,
@@ -46,8 +46,7 @@ pub struct QuireApp {
 
 fn sample_dir() -> PathBuf {
     directories::UserDirs::new()
-        .map(|u| u.document_dir().unwrap_or(u.home_dir()).to_path_buf())
-        .unwrap_or_else(std::env::temp_dir)
+        .map_or_else(std::env::temp_dir, |u| u.document_dir().unwrap_or_else(|| u.home_dir()).to_path_buf())
         .join("Quire Sample Vault")
 }
 
@@ -65,7 +64,7 @@ fn write_sample(dir: &Path) -> std::io::Result<()> {
 }
 
 impl QuireApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, vault_arg: Option<PathBuf>) -> Self {
+    pub(crate) fn new(cc: &eframe::CreationContext<'_>, vault_arg: Option<PathBuf>) -> Self {
         let fonts = theme::install_fonts(&cc.egui_ctx);
         let settings = Settings::load();
         let session = Session::path().map(|p| Session::load_from(&p)).unwrap_or_default();
@@ -174,8 +173,8 @@ impl QuireApp {
                     Overlay::VaultReplace { focused: false }
                 }
                 UiRequest::Ask => Overlay::Ask { focused: false },
-                UiRequest::Settings => Overlay::Settings(Default::default()),
-                UiRequest::NewProject => Overlay::NewProject(Default::default()),
+                UiRequest::Settings => Overlay::Settings(crate::dialogs::SettingsState::default()),
+                UiRequest::NewProject => Overlay::NewProject(crate::dialogs::ProjectState::default()),
                 UiRequest::NewInFolder => Overlay::Folder(crate::dialogs::FolderState::new(&self.ws, crate::dialogs::FolderMode::NewNote)),
                 UiRequest::MoveNote => Overlay::Folder(crate::dialogs::FolderState::new(&self.ws, crate::dialogs::FolderMode::Move)),
                 UiRequest::History => Overlay::History(crate::dialogs::HistoryState::new(&self.ws)),
@@ -184,7 +183,7 @@ impl QuireApp {
                         self.ws.notify(NoticeLevel::Info, "Open a vault first, then import into it");
                         return;
                     }
-                    Overlay::Import(Default::default())
+                    Overlay::Import(crate::dialogs::ImportState::default())
                 }
                 UiRequest::Editor(c) => {
                     if self.classic() {
@@ -221,7 +220,7 @@ impl QuireApp {
         // When a text field outside the note has focus (find bar, properties,
         // search), editing shortcuts like Ctrl+A or Ctrl+Z belong to that field.
         let editor = self.ws.active_doc().map(|d| crate::editor::editor_id(d.id));
-        let other_field_focused = ctx.memory(|m| m.focused()).is_some_and(|f| Some(f) != editor);
+        let other_field_focused = ctx.memory(egui::Memory::focused).is_some_and(|f| Some(f) != editor);
         // egui ignores extra Shift/Alt when matching, so try the most specific combos first.
         let mut combos: Vec<(u8, Command, KeyboardShortcut)> = Vec::new();
         for info in COMMANDS {
@@ -259,7 +258,7 @@ impl QuireApp {
         }
     }
 
-    fn after_panel(&mut self, out: PanelOut) {
+    fn after_panel(&mut self, out: &PanelOut) {
         if let Some(c) = out.run {
             self.run(c);
         }
@@ -326,7 +325,7 @@ impl QuireApp {
         let pal = self.palette(&ctx);
         self.handle_shortcuts(&ctx);
         if self.overlay.is_none() && self.classic() {
-            self.editor.handle_smart_keys(&ctx, &mut self.ws);
+            EditorState::handle_smart_keys(&ctx, &mut self.ws);
         }
         // Escape closes the find bar (unless it's clearing extra cursors).
         let extra_cursors = self.ws.active_doc().is_some_and(|d| self.fast.has_extra_cursors(d.id));
@@ -335,7 +334,7 @@ impl QuireApp {
             self.focus_editor();
         }
         // Files dropped on the window become attachments / notes.
-        let dropped: Vec<std::path::PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
+        let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
         if !dropped.is_empty() {
             if self.ws.active_doc().is_none() {
                 self.ws.new_note(None);
@@ -367,7 +366,7 @@ impl QuireApp {
                     .frame(egui::Frame::NONE.fill(pal.panel).inner_margin(egui::Margin::symmetric(10, 6)))
                     .show(ui, |ui| panels::tab_bar(ui, &mut self.ws, pal))
                     .inner;
-                self.after_panel(out);
+                self.after_panel(&out);
             }
             egui::Panel::bottom("quire-status")
                 .frame(egui::Frame::NONE.fill(if focus { pal.bg } else { pal.panel }).inner_margin(egui::Margin::symmetric(12, 4)))
@@ -380,7 +379,7 @@ impl QuireApp {
                     .frame(egui::Frame::NONE.fill(pal.panel).inner_margin(egui::Margin::symmetric(10, 4)))
                     .show(ui, |ui| panels::sidebar(ui, &mut self.ws, &mut self.sidebar, pal))
                     .inner;
-                self.after_panel(out);
+                self.after_panel(&out);
             }
             if self.ws.settings.show_insights && !focus {
                 let out = egui::Panel::right("quire-insights")
@@ -395,7 +394,7 @@ impl QuireApp {
                         out
                     })
                     .inner;
-                self.after_panel(out);
+                self.after_panel(&out);
             }
             let show_preview = self.ws.settings.show_preview && !focus;
             if show_preview && self.ws.active_doc().is_some() {
@@ -405,7 +404,7 @@ impl QuireApp {
                     .frame(egui::Frame::NONE.fill(pal.bg).stroke(egui::Stroke::new(1.0, pal.border)))
                     .show(ui, |ui| panels::preview(ui, &mut self.ws, &mut self.preview_cache, pal))
                     .inner;
-                self.after_panel(out);
+                self.after_panel(&out);
             }
             if self.ws.find.open && self.ws.active_doc().is_some() && !focus {
                 let out = egui::Panel::top("quire-find")
@@ -417,7 +416,7 @@ impl QuireApp {
                     )
                     .show(ui, |ui| panels::find_bar(ui, &mut self.ws, &mut self.focus_find, pal))
                     .inner;
-                self.after_panel(out);
+                self.after_panel(&out);
             }
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(pal.bg)).show(ui, |ui| {
                 if self.ws.active_doc().is_some() {
@@ -473,7 +472,7 @@ impl QuireApp {
     }
 }
 
-/// With QUIRE_TRACE set, report sections slower than 8 ms.
+/// With `QUIRE_TRACE` set, report sections slower than 8 ms.
 fn trace(what: &str, since: Instant) {
     let ms = since.elapsed().as_secs_f64() * 1000.0;
     if ms > 8.0 && std::env::var_os("QUIRE_TRACE").is_some() {

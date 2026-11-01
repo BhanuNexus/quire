@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Bear: `.bear2bk` backups and TextBundle folders.
+//! Bear: `.bear2bk` backups and `TextBundle` folders.
 
 use std::collections::{HashMap, HashSet};
 
@@ -8,7 +8,7 @@ use quire_vault::{NotePath, sanitize_title};
 
 use crate::{ImportPlan, PlannedFile, PlannedNote, Tree, attachment, file_name, rewrite_links};
 
-pub fn plan(tree: &Tree) -> ImportPlan {
+pub(crate) fn plan(tree: &Tree) -> ImportPlan {
     let mut plan = ImportPlan::default();
     let mut bundles: Vec<String> = tree
         .paths()
@@ -59,7 +59,7 @@ pub fn plan(tree: &Tree) -> ImportPlan {
 
 /// Bear's `#multi word tag#` → `#multi-word-tag`. Single-word and nested
 /// tags (`#work/q4`) are already valid Quire tags.
-pub fn normalize_tags(src: &str) -> String {
+pub(crate) fn normalize_tags(src: &str) -> String {
     let mut out = String::with_capacity(src.len());
     let mut in_fence = false;
     for line in src.split_inclusive('\n') {

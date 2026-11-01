@@ -45,6 +45,7 @@ impl NotePath {
     }
 
     /// Same folder, different stem.
+    #[must_use]
     pub fn with_stem(&self, stem: &str) -> Self {
         Self::join(self.folder(), &format!("{stem}.md"))
     }

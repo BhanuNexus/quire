@@ -152,11 +152,11 @@ impl Document {
     }
 
     pub fn undo(&mut self) -> bool {
-        self.replay(|h| h.undo())
+        self.replay(History::undo)
     }
 
     pub fn redo(&mut self) -> bool {
-        self.replay(|h| h.redo())
+        self.replay(History::redo)
     }
 
     pub fn can_undo(&self) -> bool {
@@ -286,7 +286,7 @@ impl Document {
     }
 }
 
-/// Common prefix/suffix diff in chars → (start, old_end, new_end).
+/// Common prefix/suffix diff in chars → (start, `old_end`, `new_end`).
 fn minimal_diff(old: &str, new: &str) -> (usize, usize, usize) {
     let prefix_bytes = old.bytes().zip(new.bytes()).take_while(|(a, b)| a == b).count();
     // Back up to a char boundary in both strings.

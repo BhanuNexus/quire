@@ -3,7 +3,7 @@
 //! Live-highlighting: turn Markdown source into flat, non-overlapping
 //! [`StyleRun`]s that a UI can paint directly.
 //!
-//! Spans from the CommonMark parser nest (a link inside bold inside a
+//! Spans from the `CommonMark` parser nest (a link inside bold inside a
 //! heading); a sweep over span boundaries flattens them into runs whose
 //! [`Style`] is the union of every span covering that byte range.
 
@@ -69,21 +69,21 @@ enum Kind {
 impl Kind {
     fn slot(self) -> usize {
         match self {
-            Kind::Heading(_) => 0,
-            Kind::Strong => 1,
-            Kind::Emphasis => 2,
-            Kind::Strike => 3,
-            Kind::Code => 4,
-            Kind::CodeBlock => 5,
-            Kind::Link => 6,
-            Kind::WikiLink => 7,
-            Kind::Tag => 8,
-            Kind::Highlight => 9,
-            Kind::Quote => 10,
-            Kind::TaskDone => 11,
-            Kind::Math => 12,
-            Kind::FrontMatter => 13,
-            Kind::Marker => 14,
+            Self::Heading(_) => 0,
+            Self::Strong => 1,
+            Self::Emphasis => 2,
+            Self::Strike => 3,
+            Self::Code => 4,
+            Self::CodeBlock => 5,
+            Self::Link => 6,
+            Self::WikiLink => 7,
+            Self::Tag => 8,
+            Self::Highlight => 9,
+            Self::Quote => 10,
+            Self::TaskDone => 11,
+            Self::Math => 12,
+            Self::FrontMatter => 13,
+            Self::Marker => 14,
         }
     }
 }
@@ -215,8 +215,7 @@ pub fn highlight(src: &str) -> Vec<StyleRun> {
             }
             Event::InlineMath(_) | Event::DisplayMath(_) => c.push(range, Kind::Math),
             Event::Start(Tag::MetadataBlock(_)) => c.push(range, Kind::FrontMatter),
-            Event::Rule => c.push(range, Kind::Marker),
-            Event::InlineHtml(_) | Event::Html(_) => c.push(range, Kind::Marker),
+            Event::Rule | Event::InlineHtml(_) | Event::Html(_) => c.push(range, Kind::Marker),
             Event::FootnoteReference(_) => c.push(range, Kind::Link),
             _ => {}
         }
@@ -337,7 +336,7 @@ mod tests {
         let src = "# T\n\n- [x] done *it*\n- [ ] todo `code` [[Link|alias]] #tag\n\n> quote ==hi==\n\n```rust\nfn x() {}\n```\n";
         let runs = highlight(src);
         for w in runs.windows(2) {
-            assert!(w[0].range.end <= w[1].range.start, "{:?}", w);
+            assert!(w[0].range.end <= w[1].range.start, "{w:?}");
         }
         assert!(style_at(&runs, src.find("done").unwrap()).task_done);
         assert!(!style_at(&runs, src.find("todo").unwrap()).task_done);

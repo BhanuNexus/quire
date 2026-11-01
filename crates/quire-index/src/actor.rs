@@ -94,7 +94,7 @@ impl IndexService {
             let sem_tx = sem_tx.clone();
             std::thread::Builder::new()
                 .name("quire-index".into())
-                .spawn(move || run(rx, index, shared, sem_tx))
+                .spawn(move || run(&rx, &index, &shared, &sem_tx))
                 .expect("spawn index worker")
         };
         let sem_worker = {
@@ -104,7 +104,7 @@ impl IndexService {
             let cfg = Arc::clone(&sem_config);
             std::thread::Builder::new()
                 .name("quire-semantic".into())
-                .spawn(move || run_semantic(sem_rx, index, shared, semantic, cfg))
+                .spawn(move || run_semantic(&sem_rx, &index, &shared, &semantic, &cfg))
                 .expect("spawn semantic worker")
         };
         Self { index, tx, shared, worker: Some(worker), semantic, sem_tx, sem_worker: Some(sem_worker), sem_config }
@@ -202,11 +202,11 @@ impl Drop for IndexService {
     }
 }
 
-fn parse_parallel(vault: &Vault, paths: Vec<NotePath>, shared: &Shared) -> Vec<(NoteRecord, String)> {
-    let threads = std::thread::available_parallelism().map_or(2, |n| n.get()).clamp(1, 8);
+fn parse_parallel(vault: &Vault, paths: &[NotePath], shared: &Shared) -> Vec<(NoteRecord, String)> {
+    let threads = std::thread::available_parallelism().map_or(2, std::num::NonZero::get).clamp(1, 8);
     let chunk = paths.len().div_ceil(threads).max(1);
     std::thread::scope(|s| {
-        let handles: Vec<_> = paths
+        paths
             .chunks(chunk)
             .map(|part| {
                 s.spawn(move || {
@@ -220,12 +220,12 @@ fn parse_parallel(vault: &Vault, paths: Vec<NotePath>, shared: &Shared) -> Vec<(
                         .collect::<Vec<_>>()
                 })
             })
-            .collect();
-        handles.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
+            .flat_map(|h| h.join().unwrap_or_default())
+            .collect()
     })
 }
 
-fn run(rx: Receiver<IndexMsg>, index: Arc<RwLock<Index>>, shared: Arc<Shared>, sem_tx: Sender<SemMsg>) {
+fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: &Sender<SemMsg>) {
     let write = || index.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     while let Ok(first) = rx.recv() {
         shared.busy.store(true, Ordering::Relaxed);
@@ -244,7 +244,7 @@ fn run(rx: Receiver<IndexMsg>, index: Arc<RwLock<Index>>, shared: Arc<Shared>, s
                     let paths = vault.notes().unwrap_or_default();
                     shared.total.store(paths.len(), Ordering::Relaxed);
                     shared.indexed.store(0, Ordering::Relaxed);
-                    reload = Some(parse_parallel(&vault, paths, &shared));
+                    reload = Some(parse_parallel(&vault, &paths, shared));
                     prepared.clear();
                 }
                 IndexMsg::Upsert { path, source } => {
@@ -289,13 +289,7 @@ fn run(rx: Receiver<IndexMsg>, index: Arc<RwLock<Index>>, shared: Arc<Shared>, s
     }
 }
 
-fn run_semantic(
-    rx: Receiver<SemMsg>,
-    index: Arc<RwLock<Index>>,
-    shared: Arc<Shared>,
-    out: SharedSemantic,
-    cfg: Arc<RwLock<SemanticConfig>>,
-) {
+fn run_semantic(rx: &Receiver<SemMsg>, index: &RwLock<Index>, shared: &Shared, out: &SharedSemantic, cfg: &RwLock<SemanticConfig>) {
     let mut waiters: Vec<Sender<()>> = Vec::new();
     while let Ok(msg) = rx.recv() {
         match msg {
@@ -342,7 +336,7 @@ fn run_semantic(
         *out.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(built);
         shared.semantic_busy.store(false, Ordering::Relaxed);
         shared.semantic_version.fetch_add(1, Ordering::Release);
-        for w in waiters.drain(..) {
+        for w in std::mem::take(&mut waiters) {
             let _ = w.send(());
         }
     }

@@ -6,7 +6,7 @@ use std::path::Path;
 
 use quire_app::vault::Vault;
 
-pub fn run(source: &str, vault: &str, folder: &str, write: bool) -> Result<(), String> {
+pub(crate) fn run(source: &str, vault: &str, folder: &str, write: bool) -> Result<(), String> {
     let plan = quire_import::plan(Path::new(source))?;
     println!("{}", plan.summary());
     for n in plan.notes.iter().take(20) {

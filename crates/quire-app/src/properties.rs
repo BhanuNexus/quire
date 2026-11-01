@@ -76,14 +76,14 @@ impl Workspace {
     }
 
     /// Set a property on the active note (an undoable edit).
-    pub fn set_property(&mut self, key: &str, value: Value) -> bool {
+    pub fn set_property(&mut self, key: &str, value: &Value) -> bool {
         let key = key.trim();
         if key.is_empty() || key.contains(':') {
             self.notify(NoticeLevel::Warn, "Property names can't be empty or contain “:”");
             return false;
         }
         let Some(doc) = self.active_doc() else { return false };
-        let edit = frontmatter::set_field(&doc.text(), key, &value);
+        let edit = frontmatter::set_field(&doc.text(), key, value);
         self.apply_fm_edit_active(edit)
     }
 
@@ -97,7 +97,7 @@ impl Workspace {
 
     /// Set a property on any note (kanban drag). Open notes get an undoable
     /// edit and save; closed notes are rewritten with history snapshots.
-    pub fn set_note_property(&mut self, path: &NotePath, key: &str, value: Value) -> bool {
+    pub fn set_note_property(&mut self, path: &NotePath, key: &str, value: &Value) -> bool {
         if let Some(i) = self.docs.iter().position(|d| d.path.as_ref() == Some(path)) {
             let prev = self.active;
             self.active = Some(i);
@@ -108,7 +108,7 @@ impl Workspace {
         }
         let Some(vault) = self.vault.clone() else { return false };
         let Ok(src) = vault.read(path) else { return false };
-        let out = frontmatter::set_field(&src, key, &value).apply(&src);
+        let out = frontmatter::set_field(&src, key, value).apply(&src);
         let now = crate::history_ops::now_ms();
         let _ = vault.snapshot(path, &src, now - 1, true);
         match vault.write(path, &out) {
@@ -166,8 +166,8 @@ mod tests {
     fn edit_properties_on_the_active_note() {
         let mut w = ws();
         w.open_note(&NotePath::new("Tasks/A.md")).unwrap();
-        assert!(w.set_property("due", Value::Str("2026-11-05".into())));
-        assert!(w.set_property("status", parse_input("doing", false)));
+        assert!(w.set_property("due", &Value::Str("2026-11-05".into())));
+        assert!(w.set_property("status", &parse_input("doing", false)));
         assert_eq!(&*w.active_doc().unwrap().text(), "---\nstatus: doing\ndue: 2026-11-05\n---\n# A\n");
         let props = w.active_properties();
         assert_eq!(props.iter().map(|p| (p.key.as_str(), p.kind)).collect::<Vec<_>>(), vec![("status", Kind::Text), ("due", Kind::Date)]);
@@ -184,7 +184,7 @@ mod tests {
         let r = w.run_view(spec, None);
         let r = r.as_ref().as_ref().unwrap();
         assert_eq!(r.groups, vec!["done", "todo"]);
-        assert!(w.set_note_property(&NotePath::new("Tasks/A.md"), "status", Value::Str("done".into())));
+        assert!(w.set_note_property(&NotePath::new("Tasks/A.md"), "status", &Value::Str("done".into())));
         w.index().flush();
         let r = w.run_view(spec, None);
         assert!(r.as_ref().as_ref().unwrap().rows.iter().all(|x| x.group == "done"));

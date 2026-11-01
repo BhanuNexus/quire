@@ -25,7 +25,7 @@ fn modal(ctx: &egui::Context, name: &str, pal: &Palette) -> egui::Modal {
 // ------------------------------------------------------------------ settings
 
 #[derive(Default)]
-pub struct SettingsState {
+pub(crate) struct SettingsState {
     key_input: String,
     test: Option<Receiver<Result<String, String>>>,
     test_result: Option<Result<String, String>>,
@@ -41,7 +41,7 @@ enum SettingsTab {
 }
 
 /// Returns true when the dialog should close.
-pub fn settings(ctx: &egui::Context, st: &mut SettingsState, ws: &mut Workspace, pal: &Palette) -> bool {
+pub(crate) fn settings(ctx: &egui::Context, st: &mut SettingsState, ws: &mut Workspace, pal: &Palette) -> bool {
     let mut close = false;
     if let Some(rx) = &st.test
         && let Ok(r) = rx.try_recv()
@@ -91,7 +91,7 @@ pub fn settings(ctx: &egui::Context, st: &mut SettingsState, ws: &mut Workspace,
     close
 }
 
-pub const SOURCE_URL: &str = "https://github.com/BhanuNexus/quire";
+pub(crate) const SOURCE_URL: &str = "https://github.com/BhanuNexus/quire";
 
 fn about(ui: &mut Ui, pal: &Palette) {
     ui.label(RichText::new(format!("Quire {}", env!("CARGO_PKG_VERSION"))).strong().size(16.0));
@@ -183,7 +183,7 @@ fn ai_settings(ui: &mut Ui, st: &mut SettingsState, ws: &mut Workspace, pal: &Pa
             ui.end_row();
             ui.label("API key");
             ui.vertical(|ui| {
-                let has = ws.has_api_key(&provider);
+                let has = ai::has_api_key(&provider);
                 ui.horizontal(|ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut st.key_input)
@@ -203,7 +203,7 @@ fn ai_settings(ui: &mut Ui, st: &mut SettingsState, ws: &mut Workspace, pal: &Pa
                     }
                 });
                 let note = if provider == "openai" { " · not needed for local servers" } else { "" };
-                ui.label(RichText::new(format!("Stored in {}{note}", ws.secret_store_kind())).size(11.5).color(pal.muted));
+                ui.label(RichText::new(format!("Stored in {}{note}", ai::secret_store_kind())).size(11.5).color(pal.muted));
             });
             ui.end_row();
         }
@@ -256,7 +256,7 @@ fn ai_settings(ui: &mut Ui, st: &mut SettingsState, ws: &mut Workspace, pal: &Pa
 
 // ------------------------------------------------------------------ history
 
-pub struct HistoryState {
+pub(crate) struct HistoryState {
     snapshots: Vec<Snapshot>,
     selected: usize,
     /// (index, text) of the loaded snapshot.
@@ -264,22 +264,22 @@ pub struct HistoryState {
 }
 
 impl HistoryState {
-    pub fn new(ws: &Workspace) -> Self {
+    pub(crate) fn new(ws: &Workspace) -> Self {
         let snapshots = ws.note_history();
         // The newest snapshot is usually the text you're looking at; start
         // on the one before it so the dialog opens on an actual change.
         let current = ws.active_doc().map(|d| d.text().to_string());
         let same = snapshots.first().and_then(|s| ws.snapshot_text(s)) == current;
-        let selected = if same && snapshots.len() > 1 { 1 } else { 0 };
+        let selected = usize::from(same && snapshots.len() > 1);
         Self { snapshots, selected, loaded: None }
     }
 }
 
-pub fn history(ctx: &egui::Context, st: &mut HistoryState, ws: &mut Workspace, pal: &Palette) -> bool {
+pub(crate) fn history(ctx: &egui::Context, st: &mut HistoryState, ws: &mut Workspace, pal: &Palette) -> bool {
     let mut close = false;
     let mut restore = None;
     let current = ws.active_doc().map(|d| d.text().to_string()).unwrap_or_default();
-    let title = ws.active_doc().map(|d| d.title()).unwrap_or_default();
+    let title = ws.active_doc().map(quire_app::Document::title).unwrap_or_default();
     if st.loaded.as_ref().is_none_or(|(i, _)| *i != st.selected)
         && let Some(s) = st.snapshots.get(st.selected)
     {
@@ -356,14 +356,14 @@ pub fn history(ctx: &egui::Context, st: &mut HistoryState, ws: &mut Workspace, p
 // ------------------------------------------------------------------ import
 
 #[derive(Default)]
-pub struct ImportState {
+pub(crate) struct ImportState {
     source: String,
     folder: String,
     plan: Option<Result<quire_import::ImportPlan, String>>,
     planned_for: String,
 }
 
-pub fn import(ctx: &egui::Context, st: &mut ImportState, ws: &mut Workspace, pal: &Palette) -> bool {
+pub(crate) fn import(ctx: &egui::Context, st: &mut ImportState, ws: &mut Workspace, pal: &Palette) -> bool {
     let mut close = false;
     let mut apply = false;
     if st.folder.is_empty() && st.plan.is_none() {
@@ -400,7 +400,7 @@ pub fn import(ctx: &egui::Context, st: &mut ImportState, ws: &mut Workspace, pal
             ui.add(egui::TextEdit::singleline(&mut st.folder).hint_text("vault root").desired_width(180.0));
         });
         if !st.source.trim().is_empty() && st.planned_for != st.source {
-            st.planned_for = st.source.clone();
+            st.planned_for.clone_from(&st.source);
             st.plan = Some(quire_import::plan(Path::new(st.source.trim())));
         }
         ui.separator();
@@ -460,14 +460,14 @@ pub fn import(ctx: &egui::Context, st: &mut ImportState, ws: &mut Workspace, pal
 // ------------------------------------------------------------------ projects
 
 #[derive(Default)]
-pub struct ProjectState {
+pub(crate) struct ProjectState {
     p: quire_app::projects::NewProject,
     focused: bool,
     error: Option<String>,
 }
 
 /// Returns (close, opened a note).
-pub fn new_project(ctx: &egui::Context, st: &mut ProjectState, ws: &mut Workspace, pal: &Palette) -> (bool, bool) {
+pub(crate) fn new_project(ctx: &egui::Context, st: &mut ProjectState, ws: &mut Workspace, pal: &Palette) -> (bool, bool) {
     let (mut close, mut create) = (false, false);
     if st.p.status.is_empty() {
         st.p.status = "planned".into();
@@ -528,12 +528,12 @@ pub fn new_project(ctx: &egui::Context, st: &mut ProjectState, ws: &mut Workspac
 // ------------------------------------------------------------------ folders
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum FolderMode {
+pub(crate) enum FolderMode {
     NewNote,
     Move,
 }
 
-pub struct FolderState {
+pub(crate) struct FolderState {
     mode: FolderMode,
     input: String,
     folders: Vec<String>,
@@ -542,7 +542,7 @@ pub struct FolderState {
 }
 
 impl FolderState {
-    pub fn new(ws: &Workspace, mode: FolderMode) -> Self {
+    pub(crate) fn new(ws: &Workspace, mode: FolderMode) -> Self {
         // New notes default to the current note's folder; moves start empty.
         let current = ws.active_doc().and_then(|d| d.path.as_ref()).map(|p| p.folder().to_string()).unwrap_or_default();
         let input = if mode == FolderMode::NewNote { current } else { String::new() };
@@ -551,9 +551,9 @@ impl FolderState {
 }
 
 /// Returns (close, opened/moved a note).
-pub fn folder_picker(ctx: &egui::Context, st: &mut FolderState, ws: &mut Workspace, pal: &Palette) -> (bool, bool) {
+pub(crate) fn folder_picker(ctx: &egui::Context, st: &mut FolderState, ws: &mut Workspace, pal: &Palette) -> (bool, bool) {
     let (mut close, mut go) = (false, false);
-    let title = ws.active_doc().map(|d| d.title()).unwrap_or_default();
+    let title = ws.active_doc().map(quire_app::Document::title).unwrap_or_default();
     modal(ctx, "quire-folder-picker", pal).show(ctx, |ui| {
         ui.set_width(modal_width(ctx, 440.0));
         ui.heading(match st.mode {
@@ -576,7 +576,7 @@ pub fn folder_picker(ctx: &egui::Context, st: &mut FolderState, ws: &mut Workspa
         egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
             for f in st.folders.iter().filter(|f| q.is_empty() || f.to_lowercase().contains(&q)) {
                 if ui.selectable_label(st.input.trim() == f, f).clicked() {
-                    st.input = f.clone();
+                    st.input.clone_from(f);
                 }
             }
         });

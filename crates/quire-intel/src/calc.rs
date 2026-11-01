@@ -137,16 +137,16 @@ impl Parser<'_> {
     }
 
     fn unary(&mut self) -> Option<f64> {
-        if let Some(Tok::Op('-')) = self.peek() {
+        if matches!(self.peek(), Some(Tok::Op('-'))) {
             self.next();
             return Some(-self.expr(3)?);
         }
-        if let Some(Tok::Op('+')) = self.peek() {
+        if matches!(self.peek(), Some(Tok::Op('+'))) {
             self.next();
             return self.expr(3);
         }
         let mut v = self.atom()?;
-        while let Some(Tok::Op('%')) = self.peek() {
+        while matches!(self.peek(), Some(Tok::Op('%'))) {
             self.next();
             v /= 100.0;
         }
@@ -161,10 +161,10 @@ impl Parser<'_> {
                 matches!(self.next()?, Tok::RParen).then_some(v)
             }
             Tok::Ident(name) => {
-                if let Some(Tok::LParen) = self.peek() {
+                if matches!(self.peek(), Some(Tok::LParen)) {
                     self.next();
                     let mut args = vec![self.expr(0)?];
-                    while let Some(Tok::Comma) = self.peek() {
+                    while matches!(self.peek(), Some(Tok::Comma)) {
                         self.next();
                         args.push(self.expr(0)?);
                     }
@@ -240,7 +240,7 @@ pub fn format_number(x: f64) -> String {
     if x.abs() >= 1e15 || (x != 0.0 && x.abs() < 1e-9) {
         return format!("{x:e}");
     }
-    let s = format!("{:.10}", x);
+    let s = format!("{x:.10}");
     let s = s.trim_end_matches('0').trim_end_matches('.');
     let (neg, s) = s.strip_prefix('-').map_or((false, s), |r| (true, r));
     let (int, frac) = s.split_once('.').unwrap_or((s, ""));
@@ -358,7 +358,7 @@ mod tests {
 
     #[test]
     fn formats() {
-        assert_eq!(format_number(1234567.5), "1,234,567.5");
+        assert_eq!(format_number(1_234_567.5), "1,234,567.5");
         assert_eq!(format_number(-0.25), "-0.25");
         assert_eq!(format_number(1.0 / 3.0), "0.3333333333");
         assert_eq!(format_number(100.0), "100");

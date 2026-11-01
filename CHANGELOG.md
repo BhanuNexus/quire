@@ -6,6 +6,8 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ### Changed
 - Licensed under the GNU AGPL v3 or later. Settings → About links to the source; the installers include the licence.
+- Strict linting: clippy pedantic + nursery + selected restriction lints, rustdoc and typos checks in CI. The code base was updated to pass them.
+- Rust toolchain pinned to 1.97.0 for reproducible builds. GitHub Actions updated to their latest versions.
 
 ## [0.3.1] - 2026-11-01
 

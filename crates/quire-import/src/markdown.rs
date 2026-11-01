@@ -7,7 +7,7 @@ use quire_vault::NotePath;
 
 use crate::{ImportPlan, PlannedFile, PlannedNote, Tree};
 
-pub fn plan(tree: &Tree) -> ImportPlan {
+pub(crate) fn plan(tree: &Tree) -> ImportPlan {
     let mut plan = ImportPlan::default();
     for (path, bytes) in tree.iter() {
         if Tree::is_markdown(path) {

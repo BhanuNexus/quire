@@ -9,9 +9,22 @@ Release builds come from one script per platform. CI runs the same scripts.
 
 Both apps include `quire-cli` (search, import, history and the MCP server). On macOS it's inside the bundle: `/Applications/Quire.app/Contents/MacOS/quire-cli`. On Windows it's next to `quire.exe` in `%LOCALAPPDATA%\Programs\Quire`.
 
-## Toolchain
+## Toolchain and lints
 
-`rust-toolchain.toml` pins the latest stable Rust (1.99.1 as of Nov 2026). rustup installs it on first build, locally and in CI. To bump it, change `channel` and run the tests. Libraries are kept on their latest stable releases: `cargo update` for minor versions, then check for new major versions with `cargo search <crate>`. As of 0.3.1, `notify` 9 and `ropey` 2 are still pre-releases, so they stay on 8 and 1.
+`rust-toolchain.toml` pins Rust **1.97.0**, so contributors, CI and release builds all use the same compiler and clippy. To move to a newer Rust, change `channel`, run `cargo clippy --workspace --all-targets -- -D warnings` and fix any new lints, then commit both changes together.
+
+Libraries stay on their latest stable releases. Dependabot opens weekly PRs for Cargo and GitHub Actions. As of 0.3.1, `notify` 9 and `ropey` 2 are still pre-releases, so they stay on 8 and 1.
+
+Lint policy lives in `Cargo.toml` (`[workspace.lints]`) and `clippy.toml`. CI runs:
+
+- `rustfmt`;
+- clippy with all, pedantic and nursery groups plus selected restriction lints, warnings as errors;
+- rustdoc with warnings as errors;
+- `typos` spell-checking;
+- `cargo-deny` for licences, advisories and sources;
+- CodeQL.
+
+Each lint that is switched off has its reason written next to it.
 
 ## Cutting a release
 

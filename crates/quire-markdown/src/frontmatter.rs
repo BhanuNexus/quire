@@ -18,16 +18,16 @@ pub enum Value {
 impl Value {
     pub fn as_str(&self) -> Option<&str> {
         match self {
-            Value::Str(s) => Some(s),
-            Value::List(_) => None,
+            Self::Str(s) => Some(s),
+            Self::List(_) => None,
         }
     }
 
     /// Strings are treated as one-element lists; comma-separated strings are split.
     pub fn as_list(&self) -> Vec<String> {
         match self {
-            Value::List(v) => v.clone(),
-            Value::Str(s) => s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect(),
+            Self::List(v) => v.clone(),
+            Self::Str(s) => s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect(),
         }
     }
 }
@@ -157,16 +157,16 @@ pub enum Kind {
 impl Value {
     pub fn kind(&self) -> Kind {
         match self {
-            Value::List(_) => Kind::List,
-            Value::Str(s) => kind_of(s),
+            Self::List(_) => Kind::List,
+            Self::Str(s) => kind_of(s),
         }
     }
 
     /// One-line display form: lists joined with ", ".
     pub fn display(&self) -> String {
         match self {
-            Value::Str(s) => s.clone(),
-            Value::List(v) => v.join(", "),
+            Self::Str(s) => s.clone(),
+            Self::List(v) => v.join(", "),
         }
     }
 }
@@ -264,19 +264,18 @@ pub fn set_field(src: &str, key: &str, value: &Value) -> Edit {
     let line = format_field(key, value);
     match parse(src) {
         None => Edit { range: 0..0, text: format!("---\n{line}---\n") },
-        Some(fm) => match field_lines(src, &fm, key) {
-            Some(r) => {
+        Some(fm) => {
+            if let Some(r) = field_lines(src, &fm, key) {
                 // Keep the file's line ending for the last replaced line.
                 let text = if src[r.clone()].ends_with('\n') { line } else { line.trim_end_matches('\n').to_string() };
                 Edit { range: r, text }
-            }
-            None => {
+            } else {
                 // Insert before the closing fence.
                 let close = src[..fm.range.end].trim_end_matches(['\n', '\r']);
                 let fence_start = close.rfind('\n').map_or(0, |i| i + 1);
                 Edit { range: fence_start..fence_start, text: line }
             }
-        },
+        }
     }
 }
 

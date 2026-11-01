@@ -15,7 +15,7 @@ const TITLE_WEIGHT: f32 = 3.0;
 const TAG_WEIGHT: f32 = 2.0;
 
 /// Parsed query: `rope "undo tree" #rust -draft`.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Query {
     pub terms: Vec<String>,
     /// The last term when the user is still typing it.
@@ -27,7 +27,7 @@ pub struct Query {
 
 impl Query {
     pub fn parse(q: &str) -> Self {
-        let mut out = Query::default();
+        let mut out = Self::default();
         let mut rest = q;
         while let Some(open) = rest.find('"') {
             let before = &rest[..open];
@@ -99,7 +99,7 @@ pub struct SearchHit {
 
 /// Weighted term frequencies and length for BM25, computed when a note is
 /// parsed (outside the index lock) so inserting is cheap.
-pub fn search_terms(plain: &str, name: &str, title: &str, aliases: &[String], tags: &[String]) -> (Vec<(String, f32)>, f32) {
+pub(crate) fn search_terms(plain: &str, name: &str, title: &str, aliases: &[String], tags: &[String]) -> (Vec<(String, f32)>, f32) {
     let mut tf: HashMap<String, f32> = HashMap::new();
     let mut len = 0f32;
     for t in tokens(plain) {
@@ -119,7 +119,7 @@ pub fn search_terms(plain: &str, name: &str, title: &str, aliases: &[String], ta
 }
 
 #[derive(Debug, Default)]
-pub struct FullText {
+pub(crate) struct FullText {
     postings: BTreeMap<String, HashMap<u32, f32>>,
     doc_terms: HashMap<u32, Vec<String>>,
     doc_len: HashMap<u32, f32>,
@@ -130,7 +130,7 @@ pub struct FullText {
 }
 
 impl FullText {
-    pub fn upsert(&mut self, rec: &NoteRecord) {
+    pub(crate) fn upsert(&mut self, rec: &NoteRecord) {
         self.remove(&rec.path);
         let id = self.next_id;
         self.next_id += 1;
@@ -147,7 +147,7 @@ impl FullText {
         self.paths.insert(id, rec.path.clone());
     }
 
-    pub fn remove(&mut self, path: &NotePath) {
+    pub(crate) fn remove(&mut self, path: &NotePath) {
         let Some(id) = self.ids.remove(path) else {
             return;
         };
@@ -167,7 +167,7 @@ impl FullText {
 
     fn idf(&self, df: usize) -> f32 {
         let n = self.ids.len() as f32;
-        ((n - df as f32 + 0.5) / (df as f32 + 0.5) + 1.0).ln()
+        ((n - df as f32 + 0.5) / (df as f32 + 0.5)).ln_1p()
     }
 
     fn score_term(&self, postings: &HashMap<u32, f32>, scores: &mut HashMap<u32, f32>, avg: f32) {
@@ -180,7 +180,7 @@ impl FullText {
     }
 
     /// Ranked (path, score) for every term matching (AND semantics).
-    pub fn rank(&self, q: &Query) -> Vec<(NotePath, f32)> {
+    pub(crate) fn rank(&self, q: &Query) -> Vec<(NotePath, f32)> {
         if self.ids.is_empty() {
             return Vec::new();
         }
@@ -233,7 +233,7 @@ impl FullText {
 }
 
 /// Build a short snippet around the first matching term.
-pub fn snippet(plain: &str, terms: &[String], width: usize) -> (String, Vec<std::ops::Range<usize>>) {
+pub(crate) fn snippet(plain: &str, terms: &[String], width: usize) -> (String, Vec<std::ops::Range<usize>>) {
     let lower = plain.to_lowercase();
     // Lowercasing can change byte lengths for some scripts; fall back to start in that case.
     let same_len = lower.len() == plain.len();
@@ -248,11 +248,12 @@ pub fn snippet(plain: &str, terms: &[String], width: usize) -> (String, Vec<std:
     let start = floor(center.saturating_sub(width / 3));
     let end = floor((start + width).min(plain.len()));
     let mut text: String = plain[start..end].replace('\n', " ");
-    let mut offset = 0;
-    if start > 0 {
+    let offset = if start > 0 {
         text.insert(0, '…');
-        offset = '…'.len_utf8();
-    }
+        '…'.len_utf8()
+    } else {
+        0
+    };
     if end < plain.len() {
         text.push('…');
     }

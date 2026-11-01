@@ -28,12 +28,12 @@ pub enum Assist {
 impl Assist {
     pub fn label(&self) -> &str {
         match self {
-            Assist::Summarize => "Summarize",
-            Assist::Rewrite { .. } => "Rewrite",
-            Assist::FixGrammar => "Fix grammar",
-            Assist::Continue => "Continue writing",
-            Assist::Outline => "Outline",
-            Assist::Ask { .. } => "Ask",
+            Self::Summarize => "Summarize",
+            Self::Rewrite { .. } => "Rewrite",
+            Self::FixGrammar => "Fix grammar",
+            Self::Continue => "Continue writing",
+            Self::Outline => "Outline",
+            Self::Ask { .. } => "Ask",
         }
     }
 }
@@ -86,7 +86,7 @@ pub fn build_request(task: &Assist, text: &str) -> LlmRequest {
 pub struct LocalModel;
 
 impl LanguageModel for LocalModel {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Local (offline)"
     }
 
@@ -131,7 +131,7 @@ mod remote {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum ProviderKind {
         Anthropic,
-        /// Any `/v1/chat/completions` server: OpenAI, Ollama, LM Studio, llama.cpp, vLLM…
+        /// Any `/v1/chat/completions` server: `OpenAI`, Ollama, LM Studio, llama.cpp, vLLM…
         OpenAiCompatible,
     }
 
@@ -166,6 +166,7 @@ mod remote {
             Self { api_key: api_key.into(), model: model.into(), base_url: "https://api.anthropic.com".into() }
         }
 
+        #[must_use]
         pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
             let u: String = url.into();
             if !u.trim().is_empty() {
@@ -187,7 +188,7 @@ mod remote {
                 "system": req.system,
                 "messages": [{ "role": "user", "content": req.prompt }],
             });
-            let mut resp = agent(Duration::from_secs(120))
+            let mut resp = agent(Duration::from_mins(2))
                 .post(format!("{}/v1/messages", trim(&self.base_url)))
                 .header("x-api-key", &self.api_key)
                 .header("anthropic-version", "2023-06-01")
@@ -234,13 +235,15 @@ mod remote {
 
         /// Embeddings for a batch of texts via `/v1/embeddings`.
         pub fn embed(&self, model: &str, texts: &[&str]) -> Result<Vec<Vec<f32>>, LlmError> {
-            let v = self.post("embeddings", &serde_json::json!({ "model": model, "input": texts }), Duration::from_secs(120))?;
+            let v = self.post("embeddings", &serde_json::json!({ "model": model, "input": texts }), Duration::from_mins(2))?;
             let data = v["data"].as_array().ok_or_else(|| LlmError::Request(format!("unexpected response: {v}")))?;
             let mut out = vec![Vec::new(); texts.len()];
             for (i, d) in data.iter().enumerate() {
                 let idx = d["index"].as_u64().map_or(i, |x| x as usize);
-                let vec: Vec<f32> =
-                    d["embedding"].as_array().map(|a| a.iter().filter_map(|x| x.as_f64()).map(|x| x as f32).collect()).unwrap_or_default();
+                let vec: Vec<f32> = d["embedding"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(serde_json::Value::as_f64).map(|x| x as f32).collect())
+                    .unwrap_or_default();
                 if let Some(slot) = out.get_mut(idx) {
                     *slot = vec;
                 }
@@ -266,7 +269,7 @@ mod remote {
                     { "role": "user", "content": req.prompt },
                 ],
             });
-            let v = self.post("chat/completions", &body, Duration::from_secs(180))?;
+            let v = self.post("chat/completions", &body, Duration::from_mins(3))?;
             let text = v["choices"][0]["message"]["content"].as_str().unwrap_or_default().to_string();
             if text.is_empty() { Err(LlmError::Request(format!("unexpected response: {v}"))) } else { Ok(text) }
         }
@@ -324,6 +327,7 @@ mod tests {
 }
 
 #[cfg(all(test, feature = "remote-llm"))]
+#[allow(clippy::unwrap_used, reason = "test-only mock server")]
 mod remote_tests {
     use super::*;
     use std::io::{BufRead, BufReader, Read, Write};

@@ -84,6 +84,7 @@ impl Vault {
     }
 
     /// First free `folder/Title.md`, then `Title 1.md`, `Title 2.md`…
+    #[allow(clippy::unnecessary_wraps, reason = "same Result signature as the other path-creating calls it is chained with")]
     pub fn unique_path(&self, folder: &str, title: &str) -> Result<NotePath> {
         let base = sanitize_title(title);
         let base = if base.is_empty() { "Untitled".to_string() } else { base };
@@ -137,7 +138,7 @@ impl Vault {
         let body = match self.storage.read(&tpl_path) {
             Ok(tpl) => {
                 let now = date.and_hms_opt(9, 0, 0).and_then(|d| d.and_local_timezone(Local).single()).unwrap_or_else(Local::now);
-                expand_template(&tpl, &TemplateVars { title: title.clone(), now }).0
+                expand_template(&tpl, &TemplateVars { title, now }).0
             }
             Err(_) => format!("# {title}\n\n"),
         };
@@ -359,7 +360,7 @@ mod tests {
         assert_eq!(b.as_str(), "attachments/Screen Shot 1.png");
         assert_eq!(v.storage().read_bytes(&b).unwrap(), b"y");
         assert_eq!(v.resolve_file("screen shot 1.png"), Some(b));
-        assert!(v.notes().unwrap().iter().all(|p| p.is_markdown()));
+        assert!(v.notes().unwrap().iter().all(NotePath::is_markdown));
     }
 
     #[test]

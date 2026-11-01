@@ -1,0 +1,7 @@
+# clippy configuration (lint levels live in Cargo.toml [workspace.lints]).
+msrv = "1.97"
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-print-in-tests = true
+avoid-breaking-exported-api = false
+too-many-arguments-threshold = 8

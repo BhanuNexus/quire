@@ -27,12 +27,14 @@ Linux needs the usual X11/Wayland and OpenGL libraries (`libxkbcommon`, Mesa). R
 
 ```bash
 cargo fmt --all
-cargo clippy --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 cargo deny check     # licences and advisories (cargo install cargo-deny)
+typos                # spelling (cargo install typos-cli, or pip install typos)
 ```
 
-CI runs the same checks on Linux, macOS and Windows.
+CI runs the same checks on Linux, macOS and Windows. The lints are strict: clippy's pedantic and nursery groups, no `unwrap()` outside tests, and every `#[allow]` must give a `reason = "…"`. If you think a lint is wrong for a piece of code, allow it locally with a reason, or propose switching it off in `Cargo.toml`.
 
 - Keep PRs focused, one change per PR. Add tests for behaviour changes.
 - Put user-visible changes under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md).

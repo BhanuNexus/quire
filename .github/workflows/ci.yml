@@ -26,6 +26,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Docs build without warnings (broken intra-doc links etc.)
+        run: cargo doc --workspace --no-deps --document-private-items --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  typos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: crate-ci/typos@v1.51.1
 
   test:
     strategy:

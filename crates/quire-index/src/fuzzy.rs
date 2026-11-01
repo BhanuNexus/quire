@@ -17,7 +17,7 @@ pub struct QuickOpenHit {
     pub indices: Vec<u32>,
 }
 
-pub fn quick_open<'a>(records: impl Iterator<Item = &'a NoteRecord>, query: &str, limit: usize) -> Vec<QuickOpenHit> {
+pub(crate) fn quick_open<'a>(records: impl Iterator<Item = &'a NoteRecord>, query: &str, limit: usize) -> Vec<QuickOpenHit> {
     let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
     let pattern = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
     let mut buf = Vec::new();

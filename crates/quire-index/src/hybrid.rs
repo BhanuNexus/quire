@@ -94,7 +94,7 @@ impl IndexService {
                 match fused.get_mut(&c.path) {
                     Some(hit) => {
                         hit.score += score;
-                        hit.heading = c.heading.clone();
+                        hit.heading.clone_from(&c.heading);
                         hit.offset = Some(c.range.start);
                     }
                     None if sim >= MEANING_THRESHOLD => {

@@ -117,7 +117,7 @@ impl Storage for LocalFs {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&abs).map(|m| m.permissions().mode()).unwrap_or(0o644);
+            let mode = std::fs::metadata(&abs).map_or(0o644, |m| m.permissions().mode());
             let _ = tmp.as_file().set_permissions(std::fs::Permissions::from_mode(mode));
         }
         tmp.persist(&abs).map_err(|e| io_err(path.to_string())(e.error))?;

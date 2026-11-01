@@ -22,7 +22,7 @@ struct Mirror {
 }
 
 #[derive(Default)]
-pub struct EditorState {
+pub(crate) struct EditorState {
     mirrors: HashMap<DocId, Mirror>,
     highlight: HashMap<DocId, HighlightCache>,
     /// Scroll the caret into view on the next frame (after jumps).
@@ -30,7 +30,7 @@ pub struct EditorState {
     pub request_focus: bool,
 }
 
-pub fn editor_id(doc: DocId) -> egui::Id {
+pub(crate) fn editor_id(doc: DocId) -> egui::Id {
     egui::Id::unique(("quire-editor", doc.0))
 }
 
@@ -41,14 +41,14 @@ fn store_selection(ctx: &egui::Context, id: egui::Id, sel: Selection) {
 }
 
 impl EditorState {
-    pub fn forget(&mut self, docs: &[DocId]) {
+    pub(crate) fn forget(&mut self, docs: &[DocId]) {
         self.mirrors.retain(|k, _| docs.contains(k));
         self.highlight.retain(|k, _| docs.contains(k));
     }
 
     /// Intercept keys the core handles better than a plain text widget.
     /// Must run before the `TextEdit` is shown this frame.
-    pub fn handle_smart_keys(&mut self, ctx: &egui::Context, ws: &mut Workspace) {
+    pub(crate) fn handle_smart_keys(ctx: &egui::Context, ws: &mut Workspace) {
         let Some(doc) = ws.active_doc() else { return };
         let id = editor_id(doc.id);
         if !ctx.memory(|m| m.has_focus(id)) {
@@ -60,8 +60,11 @@ impl EditorState {
             let mut texts = 0;
             for e in &i.events {
                 match e {
-                    Event::Text(_) | Event::Paste(_) | Event::Cut | Event::Ime(_) => texts += 1,
-                    Event::Key { key: Key::Backspace | Key::Delete, pressed: true, .. } => texts += 1,
+                    Event::Text(_)
+                    | Event::Paste(_)
+                    | Event::Cut
+                    | Event::Ime(_)
+                    | Event::Key { key: Key::Backspace | Key::Delete, pressed: true, .. } => texts += 1,
                     _ => {}
                 }
             }
@@ -93,7 +96,7 @@ impl EditorState {
     }
 
     /// Draw the editor for the active document.
-    pub fn show(&mut self, ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette, fonts: FontSupport) {
+    pub(crate) fn show(&mut self, ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette, fonts: FontSupport) {
         let ctx = ui.ctx().clone();
         let Some(doc) = ws.active_doc() else { return };
         let doc_id = doc.id;
