@@ -77,13 +77,16 @@ impl VaultKey {
     }
 
     pub fn keys(&self) -> Keys {
-        let hk = hkdf::Hkdf::<Sha256>::new(Some(b"quire-sync v1"), &self.0);
-        let mut content = [0u8; 32];
-        let mut blob_id = [0u8; 32];
-        // 32-byte outputs from HKDF-SHA256 can't fail.
-        let _ = hk.expand(b"content", &mut content);
-        let _ = hk.expand(b"blob-id", &mut blob_id);
-        Keys { content, blob_id }
+        // HKDF-SHA256 (RFC 5869). For a 32-byte output, Expand is one HMAC
+        // block, T(1) = HMAC(PRK, info || 0x01), so no output buffer is needed.
+        let (prk, _) = hkdf::Hkdf::<Sha256>::extract(Some(b"quire-sync v1"), &self.0);
+        let expand = |info: &[u8]| -> [u8; 32] {
+            let mut mac = Hmac::<Sha256>::new_from_slice(&prk).unwrap_or_else(|_| unreachable!("HMAC takes any key length"));
+            mac.update(info);
+            mac.update(&[1]);
+            mac.finalize().into_bytes().into()
+        };
+        Keys { content: expand(b"content"), blob_id: expand(b"blob-id") }
     }
 
     pub fn recovery_key(&self) -> RecoveryKey {
@@ -168,7 +171,8 @@ pub struct WrappedKey {
 fn passphrase_key(passphrase: &str, salt: &[u8], p: KdfParams) -> Result<[u8; 32], CryptoError> {
     let params = argon2::Params::new(p.memory_kib, p.iterations, p.parallelism, Some(32)).map_err(|_| CryptoError::WrongPassphrase)?;
     let argon = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
-    let mut out = [0u8; 32];
+    // Overwritten by Argon2; random rather than zero, so a key is never predictable.
+    let mut out: [u8; 32] = random_bytes()?;
     argon.hash_password_into(passphrase.as_bytes(), salt, &mut out).map_err(|_| CryptoError::WrongPassphrase)?;
     Ok(out)
 }
