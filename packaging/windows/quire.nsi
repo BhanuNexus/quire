@@ -48,7 +48,7 @@ VIAddVersionKey "LegalCopyright" "© 2026 Quire contributors · AGPL-3.0-or-late
 
 !insertmacro MUI_PAGE_WELCOME
 !define MUI_LICENSEPAGE_TEXT_TOP "Quire is free software under the GNU AGPL v3 or later."
-!insertmacro MUI_PAGE_LICENSE "${SRCDIR}/LICENSE.txt"
+!insertmacro MUI_PAGE_LICENSE "${SRCDIR}\LICENSE.txt"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_COMPONENTS
 !insertmacro MUI_PAGE_INSTFILES
@@ -62,10 +62,10 @@ Section "Quire" SecApp
   ; Close a running copy so files can be replaced on upgrade.
   nsExec::Exec 'taskkill /IM quire.exe /F'
   SetOutPath "$INSTDIR"
-  File "${SRCDIR}/quire.exe"
-  File "${SRCDIR}/quire-cli.exe"
-  File /oname=README.md "${SRCDIR}/README.md"
-  File "${SRCDIR}/LICENSE.txt"
+  File "${SRCDIR}\quire.exe"
+  File "${SRCDIR}\quire-cli.exe"
+  File /oname=README.md "${SRCDIR}\README.md"
+  File "${SRCDIR}\LICENSE.txt"
   WriteUninstaller "$INSTDIR\Uninstall Quire.exe"
 
   CreateShortcut "$SMPROGRAMS\Quire.lnk" "$INSTDIR\quire.exe"
