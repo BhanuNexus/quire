@@ -8,6 +8,7 @@ members = [
     "crates/quire-intel",
     "crates/quire-app",
     "crates/quire-import",
+    "crates/quire-sync",
     "apps/quire-desktop",
     "apps/quire-cli",
 ]
@@ -34,6 +35,7 @@ quire-index = { path = "crates/quire-index" }
 quire-intel = { path = "crates/quire-intel" }
 quire-app = { path = "crates/quire-app" }
 quire-import = { path = "crates/quire-import" }
+quire-sync = { path = "crates/quire-sync" }
 
 ropey = "1.6"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
