@@ -73,6 +73,10 @@ pub struct Content {
     /// Name of the device that wrote it ("Asha's laptop"), for conflict copies.
     #[serde(default)]
     pub from: String,
+    /// When it was written, Unix milliseconds (0 if unknown). Encrypted with
+    /// the rest, so only devices with the key see it.
+    #[serde(default)]
+    pub at: i64,
 }
 
 /// Padded lengths: 256 bytes, then powers of two up to 64 KiB, then 64 KiB steps.
@@ -130,7 +134,8 @@ mod tests {
         let keys = VaultKey::generate().unwrap().keys();
         let space = SpaceId::random().unwrap();
         let (file, rev) = (FileId::random().unwrap(), RevId::random().unwrap());
-        let c = Content { path: "Projects/Plan.md".into(), deleted: false, text: "# Plan\nShip it.\n".into(), from: "laptop".into() };
+        let c =
+            Content { path: "Projects/Plan.md".into(), deleted: false, text: "# Plan\nShip it.\n".into(), from: "laptop".into(), at: 1 };
         let sealed = c.seal(&keys, &space, &file, &rev).unwrap();
         // Short notes all look the same size.
         let other = Content { text: "x".into(), ..c.clone() }.seal(&keys, &space, &file, &rev).unwrap();

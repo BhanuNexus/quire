@@ -155,6 +155,15 @@ impl Workspace {
     /// Replace the active note with an old version (undoable, and saved as a new version).
     pub fn restore_snapshot(&mut self, s: &Snapshot) -> bool {
         let Some(text) = self.snapshot_text(s) else { return false };
+        let when = chrono::DateTime::from_timestamp_millis(s.at_ms)
+            .map(|d| d.with_timezone(&chrono::Local).format("%b %-d, %H:%M").to_string())
+            .unwrap_or_default();
+        self.restore_text(&text, &format!("the version from {when}"))
+    }
+
+    /// Replace the active note with `text` as one undoable edit and save it.
+    /// `what` names it in the notice ("the version from Nov 2, 14:03").
+    pub fn restore_text(&mut self, text: &str, what: &str) -> bool {
         let Some(doc) = self.active_doc_mut() else { return false };
         let id = doc.id;
         let len = doc.buffer().len_chars();
@@ -163,10 +172,7 @@ impl Workspace {
             return false;
         }
         self.save(id);
-        let when = chrono::DateTime::from_timestamp_millis(s.at_ms)
-            .map(|d| d.with_timezone(&chrono::Local).format("%b %-d, %H:%M").to_string())
-            .unwrap_or_default();
-        self.notify(NoticeLevel::Info, format!("Restored the version from {when} (Undo brings yours back)"));
+        self.notify(NoticeLevel::Info, format!("Restored {what} (Undo brings yours back)"));
         true
     }
 }

@@ -120,6 +120,21 @@ impl Report {
     }
 }
 
+/// One version of a note from the sync log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Version {
+    pub rev: RevId,
+    /// Position in a server's log (0 in a synced folder).
+    pub seq: u64,
+    /// When it was written (Unix ms; 0 for versions from before Quire 0.7).
+    pub at: i64,
+    /// The device that wrote it.
+    pub device: String,
+    pub path: String,
+    pub deleted: bool,
+    pub text: String,
+}
+
 pub struct Engine {
     pub space: SpaceId,
     pub device: DeviceId,
@@ -289,6 +304,26 @@ impl Engine {
         Ok(())
     }
 
+    /// Every version of the note at `path` that the server (or sync folder)
+    /// holds, from every device, oldest first. Includes versions that lost
+    /// a tie in a synced folder, so nothing written anywhere is out of reach.
+    pub fn history(&self, server: &dyn Transport, path: &str) -> Result<Vec<Version>, SyncError> {
+        let Some((file, _)) = self.state.files.iter().find(|(_, t)| t.path == path || t.synced_path == path) else {
+            return Ok(Vec::new());
+        };
+        let mut out: Vec<Version> = server
+            .history(file)?
+            .into_iter()
+            .map(|r| {
+                let c = Content::open(&self.keys, &self.space, &r)?;
+                Ok(Version { rev: r.rev, seq: r.seq, at: c.at, device: c.from, path: c.path, deleted: c.deleted, text: c.text })
+            })
+            .collect::<Result<_, CryptoError>>()?;
+        // Servers number versions; a synced folder can't, so it goes by when they were written.
+        out.sort_by(|a, b| (a.seq, a.at).cmp(&(b.seq, b.at)).then_with(|| a.rev.cmp(&b.rev)));
+        Ok(out)
+    }
+
     fn is_tracked_path(&self, path: &str) -> bool {
         self.state.files.values().any(|t| !t.deleted && t.path == path)
     }
@@ -406,11 +441,11 @@ impl Engine {
                 (Some(_), true) if live.contains(&t.path) => continue,
                 (Some(_), true) => {
                     let Some(x) = full(&t.path) else { continue };
-                    Content { path: t.path.clone(), deleted: false, text: x, from: String::new() }
+                    Content { path: t.path.clone(), deleted: false, text: x, from: String::new(), at: 0 }
                 }
                 (Some(x), false) if x != t.base || t.path != t.synced_path => {
                     let Some(x) = (if x == t.base && !is_attachment(&t.path) { Some(x) } else { full(&t.path) }) else { continue };
-                    Content { path: t.path.clone(), deleted: false, text: x, from: String::new() }
+                    Content { path: t.path.clone(), deleted: false, text: x, from: String::new(), at: 0 }
                 }
                 (Some(_), false) | (None, true) => continue,
                 (None, false) => {
@@ -418,9 +453,9 @@ impl Engine {
                     if let Some(i) = untracked.iter().position(|p| local.digest(p).as_deref() == Some(t.base.as_str())) {
                         let to = untracked.remove(i);
                         let Some(text) = full(&to) else { continue };
-                        Content { path: to, deleted: false, text, from: String::new() }
+                        Content { path: to, deleted: false, text, from: String::new(), at: 0 }
                     } else {
-                        Content { path: t.path.clone(), deleted: true, text: String::new(), from: String::new() }
+                        Content { path: t.path.clone(), deleted: true, text: String::new(), from: String::new(), at: 0 }
                     }
                 }
             };
@@ -432,7 +467,7 @@ impl Engine {
         for path in untracked {
             let Some(text) = local.read(&path) else { continue };
             let id = FileId::random()?;
-            let content = Content { path, deleted: false, text, from: String::new() };
+            let content = Content { path, deleted: false, text, from: String::new(), at: 0 };
             if !self.push_one(server, &id, None, &content, report)? {
                 return Ok(false);
             }
@@ -449,7 +484,9 @@ impl Engine {
         report: &mut Report,
     ) -> Result<bool, SyncError> {
         let rev = RevId::random()?;
-        let content = &Content { from: self.device_name.clone(), ..content.clone() };
+        let at =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(0));
+        let content = &Content { from: self.device_name.clone(), at, ..content.clone() };
         let sealed = content.seal(&self.keys, &self.space, file, &rev)?;
         let r = Revision {
             file: file.clone(),

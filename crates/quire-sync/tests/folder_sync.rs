@@ -364,3 +364,20 @@ fn random_edits_renames_and_deletes_through_a_slow_folder_converge() {
         simulate(seed, 3, 70, false);
     }
 }
+
+#[test]
+fn history_includes_the_version_that_lost_a_tie() {
+    let mut c = Cloud::new(2);
+    c.put(0, "Plan.md", "# Plan\nShip it.\n");
+    c.settle();
+    c.put(0, "Plan.md", "# Plan\nShip it Friday.\n");
+    c.put(1, "Plan.md", "# Plan\nShip it Monday.\n");
+    c.sync(0);
+    c.sync(1);
+    c.settle();
+    let d = &c.devs[0];
+    let h = d.engine.history(&d.transport, "Plan.md").unwrap();
+    for v in ["Ship it.", "Ship it Friday.", "Ship it Monday."] {
+        assert!(h.iter().any(|x| x.text.contains(v)), "{v} missing from history");
+    }
+}

@@ -139,6 +139,17 @@ impl HttpTransport {
 }
 
 impl Transport for HttpTransport {
+    fn history(&self, file: &crate::protocol::FileId) -> Result<Vec<Revision>, TransportError> {
+        match self.get_json::<Changes>(&self.agent, &self.url(&format!("/files/{file}"))) {
+            Ok(c) => Ok(c.revisions),
+            // Servers before 0.7 don't have this endpoint.
+            Err(TransportError::Refused(m)) if m.contains("isn't on the server") || m.contains("HTTP 404") => {
+                Err(TransportError::Refused("this sync server is too old to show history; update it".into()))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     fn pull(&self, after: u64) -> Result<Vec<Revision>, TransportError> {
         let mut out = Vec::new();
         let mut cursor = after;

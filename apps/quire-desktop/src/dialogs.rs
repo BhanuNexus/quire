@@ -627,6 +627,12 @@ pub(crate) struct HistoryState {
     selected: usize,
     /// (index, text) of the loaded snapshot.
     loaded: Option<(usize, String)>,
+    /// Showing versions from every device (the sync log) instead of this one's.
+    all_devices: bool,
+    sync_rx: Option<Receiver<Result<Vec<quire_app::vault_sync::SyncVersion>, String>>>,
+    /// Newest first.
+    sync: Option<Result<Vec<quire_app::vault_sync::SyncVersion>, String>>,
+    sync_selected: usize,
 }
 
 impl HistoryState {
@@ -637,47 +643,141 @@ impl HistoryState {
         let current = ws.active_doc().map(|d| d.text().to_string());
         let same = snapshots.first().and_then(|s| ws.snapshot_text(s)) == current;
         let selected = usize::from(same && snapshots.len() > 1);
-        Self { snapshots, selected, loaded: None }
+        Self { snapshots, selected, loaded: None, all_devices: false, sync_rx: None, sync: None, sync_selected: 0 }
     }
 }
 
 pub(crate) fn history(ctx: &egui::Context, st: &mut HistoryState, ws: &mut Workspace, pal: &Palette) -> bool {
     let mut close = false;
     let mut restore = None;
+    let mut restore_sync: Option<(String, String)> = None;
     let current = ws.active_doc().map(|d| d.text().to_string()).unwrap_or_default();
     let title = ws.active_doc().map(quire_app::Document::title).unwrap_or_default();
+    let syncing = ws.sync.config.is_some();
+    if let Some(rx) = &st.sync_rx {
+        match rx.try_recv() {
+            Ok(r) => {
+                st.sync = Some(r.map(|mut v| {
+                    v.reverse();
+                    v
+                }));
+                st.sync_rx = None;
+            }
+            Err(_) => ctx.request_repaint_after(std::time::Duration::from_millis(100)),
+        }
+    }
+    if st.all_devices
+        && st.sync.is_none()
+        && st.sync_rx.is_none()
+        && let Some(p) = ws.active_doc().and_then(|d| d.path.clone())
+    {
+        st.sync_rx = ws.fetch_sync_history(&p);
+    }
     if st.loaded.as_ref().is_none_or(|(i, _)| *i != st.selected)
         && let Some(s) = st.snapshots.get(st.selected)
     {
         st.loaded = ws.snapshot_text(s).map(|t| (st.selected, t));
     }
+    let when = |ms: i64, fmt: &str| {
+        chrono::DateTime::from_timestamp_millis(ms).map(|d| d.with_timezone(&chrono::Local).format(fmt).to_string()).unwrap_or_default()
+    };
+    // The text being compared: a local snapshot, or a version from the sync log.
+    let shown: Option<String> = if st.all_devices {
+        match &st.sync {
+            Some(Ok(v)) => v.get(st.sync_selected).filter(|x| !x.deleted).map(|x| x.text.clone()),
+            _ => None,
+        }
+    } else {
+        st.loaded.as_ref().map(|(_, t)| t.clone())
+    };
     modal(ctx, "quire-history", pal).show(ctx, |ui| {
         let w = modal_width(ctx, 820.0);
         ui.set_width(w);
         ui.set_max_width(w);
-        ui.heading(format!("Version history · {title}"));
-        ui.label(RichText::new("Saved automatically in the vault's .quire folder. Restoring is undoable.").size(12.0).color(pal.muted));
+        ui.horizontal(|ui| {
+            ui.heading(format!("Version history · {title}"));
+            if syncing {
+                ui.add_space(12.0);
+                ui.selectable_value(&mut st.all_devices, false, "This device");
+                ui.selectable_value(&mut st.all_devices, true, "All devices");
+            }
+        });
+        let note = if st.all_devices {
+            "Every version Quire Sync holds, from every device, including ones that lost a race. Restoring is undoable."
+        } else {
+            "Saved automatically in the vault's .quire folder. Restoring is undoable."
+        };
+        ui.label(RichText::new(note).size(12.0).color(pal.muted));
         ui.separator();
-        if st.snapshots.is_empty() {
+        if !st.all_devices && st.snapshots.is_empty() {
             ui.label(RichText::new("No earlier versions yet. Versions are kept as you edit and save.").color(pal.muted));
         }
         ui.horizontal_top(|ui| {
+            // The lists scroll; the dialog itself never grows past this.
+            ui.set_max_height(440.0);
             ui.vertical(|ui| {
                 ui.set_width(200.0);
                 egui::ScrollArea::vertical().id_salt("hist-list").max_height(420.0).show(ui, |ui| {
-                    for (i, s) in st.snapshots.iter().enumerate() {
-                        let label = chrono::DateTime::from_timestamp_millis(s.at_ms)
-                            .map(|d| d.with_timezone(&chrono::Local).format("%b %-d · %H:%M:%S").to_string())
-                            .unwrap_or_default();
-                        if ui.selectable_label(i == st.selected, label).clicked() {
-                            st.selected = i;
+                    if st.all_devices {
+                        match &st.sync {
+                            None => {
+                                ui.horizontal(|ui| {
+                                    ui.spinner();
+                                    ui.label(RichText::new("Fetching…").color(pal.muted));
+                                });
+                            }
+                            Some(Err(e)) => {
+                                ui.label(RichText::new(e).color(pal.danger).size(12.5));
+                            }
+                            Some(Ok(v)) if v.is_empty() => {
+                                ui.label(RichText::new("This note hasn't synced yet.").color(pal.muted));
+                            }
+                            Some(Ok(v)) => {
+                                for (i, x) in v.iter().enumerate() {
+                                    let date = if x.at > 0 { when(x.at, "%b %-d · %H:%M:%S") } else { "Earlier".to_string() };
+                                    let device = if x.deleted { format!("{} · deleted", x.device) } else { x.device.clone() };
+                                    let r = crate::theme::row(ui, i == st.sync_selected, 40.0, pal, |painter, rect| {
+                                        let left = rect.left() + 8.0;
+                                        painter.text(
+                                            egui::pos2(left, rect.top() + 12.0),
+                                            egui::Align2::LEFT_CENTER,
+                                            &date,
+                                            egui::FontId::proportional(13.0),
+                                            pal.text,
+                                        );
+                                        painter.text(
+                                            egui::pos2(left, rect.top() + 28.0),
+                                            egui::Align2::LEFT_CENTER,
+                                            &device,
+                                            egui::FontId::proportional(11.5),
+                                            pal.muted,
+                                        );
+                                    });
+                                    if r.clicked() {
+                                        st.sync_selected = i;
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        for (i, s) in st.snapshots.iter().enumerate() {
+                            let label = when(s.at_ms, "%b %-d · %H:%M:%S");
+                            if ui.selectable_label(i == st.selected, label).clicked() {
+                                st.selected = i;
+                            }
                         }
                     }
                 });
             });
             ui.separator();
             ui.vertical(|ui| {
-                if let Some((_, old)) = &st.loaded {
+                if st.all_devices
+                    && let Some(Ok(v)) = &st.sync
+                    && v.get(st.sync_selected).is_some_and(|x| x.deleted)
+                {
+                    ui.label(RichText::new("This version deleted the note.").color(pal.muted));
+                }
+                if let Some(old) = &shown {
                     let (added, removed) = diff_stats(old, &current);
                     ui.label(RichText::new(format!("Changes since this version: +{added} −{removed} lines")).size(12.0).color(pal.muted));
                     egui::ScrollArea::vertical().id_salt("hist-diff").max_height(390.0).auto_shrink([false, true]).show(ui, |ui| {
@@ -703,8 +803,21 @@ pub(crate) fn history(ctx: &egui::Context, st: &mut HistoryState, ws: &mut Works
         });
         ui.separator();
         ui.horizontal(|ui| {
-            if ui.add_enabled(st.loaded.is_some(), egui::Button::new("Restore this version")).clicked() {
-                restore = st.snapshots.get(st.selected).cloned();
+            if ui.add_enabled(shown.is_some(), egui::Button::new("Restore this version")).clicked() {
+                if st.all_devices {
+                    if let (Some(text), Some(Ok(v))) = (&shown, &st.sync)
+                        && let Some(x) = v.get(st.sync_selected)
+                    {
+                        let what = if x.at > 0 {
+                            format!("the version from {} on {}", when(x.at, "%b %-d, %H:%M"), x.device)
+                        } else {
+                            format!("an earlier version from {}", x.device)
+                        };
+                        restore_sync = Some((text.clone(), what));
+                    }
+                } else {
+                    restore = st.snapshots.get(st.selected).cloned();
+                }
             }
             if ui.button("Close").clicked() {
                 close = true;
@@ -713,6 +826,11 @@ pub(crate) fn history(ctx: &egui::Context, st: &mut HistoryState, ws: &mut Works
     });
     if let Some(s) = restore
         && ws.restore_snapshot(&s)
+    {
+        close = true;
+    }
+    if let Some((text, what)) = restore_sync
+        && ws.restore_text(&text, &what)
     {
         close = true;
     }

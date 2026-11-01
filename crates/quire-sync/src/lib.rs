@@ -20,7 +20,7 @@ pub mod protocol;
 pub mod transport;
 
 pub use crypto::{CryptoError, KdfParams, Keys, RecoveryKey, VaultKey, WrappedKey};
-pub use engine::{Engine, LocalStore, MemoryStore, Report, SyncError, SyncState, Tracked};
+pub use engine::{Engine, LocalStore, MemoryStore, Report, SyncError, SyncState, Tracked, Version};
 pub use folder::{FolderSpaceInfo, FolderTransport};
 #[cfg(feature = "http")]
 pub use http::{HttpTransport, SpaceInfo};

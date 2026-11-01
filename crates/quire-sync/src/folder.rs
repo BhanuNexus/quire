@@ -147,6 +147,7 @@ struct Loc {
 
 #[derive(Debug, Clone)]
 struct Meta {
+    file: FileId,
     parents: Vec<RevId>,
     device: DeviceId,
     loc: Loc,
@@ -325,7 +326,7 @@ impl FolderTransport {
             Some(p) => ix.children.entry(p.clone()).or_default().push(r.rev.clone()),
             None => ix.roots.entry(r.file.clone()).or_default().push(r.rev.clone()),
         }
-        ix.revs.insert(r.rev.clone(), Meta { parents: r.parents.clone(), device: r.device.clone(), loc });
+        ix.revs.insert(r.rev.clone(), Meta { file: r.file.clone(), parents: r.parents.clone(), device: r.device.clone(), loc });
     }
 
     /// A note's current revision: from its first revision, keep following
@@ -462,6 +463,13 @@ impl Transport for FolderTransport {
         let seq = self.next_seq(&mut ix);
         ix.delivered.insert(rev.file.clone(), (rev.rev.clone(), seq));
         Ok(PushOutcome::Accepted { seq })
+    }
+
+    fn history(&self, file: &FileId) -> Result<Vec<Revision>, TransportError> {
+        let mut ix = self.lock();
+        self.scan(&mut ix)?;
+        let mine: Vec<RevId> = ix.revs.iter().filter(|(_, m)| m.file == *file).map(|(r, _)| r.clone()).collect();
+        mine.iter().map(|r| Self::read_rev(&ix, r)).collect()
     }
 
     fn fork_base(&self, _file: &FileId, ours: &RevId, theirs: &Revision) -> Option<Revision> {

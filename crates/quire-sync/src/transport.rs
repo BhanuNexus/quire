@@ -34,6 +34,12 @@ pub trait Transport {
         let _ = (file, ours, theirs);
         None
     }
+
+    /// Every revision of `file` this server holds, in log order.
+    fn history(&self, file: &FileId) -> Result<Vec<Revision>, TransportError> {
+        let _ = file;
+        Err(TransportError::Refused("this sync server doesn't keep history; update it".into()))
+    }
 }
 
 #[derive(Debug, Default)]
@@ -104,5 +110,10 @@ impl Transport for MemoryServer {
         let at = log.revs.len() - 1;
         log.heads.insert(rev.file.clone(), at);
         Ok(PushOutcome::Accepted { seq })
+    }
+
+    fn history(&self, file: &FileId) -> Result<Vec<Revision>, TransportError> {
+        self.check_online()?;
+        Ok(self.log.lock().unwrap_or_else(PoisonError::into_inner).revs.iter().filter(|r| r.file == *file).cloned().collect())
     }
 }

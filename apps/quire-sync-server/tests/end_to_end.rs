@@ -215,3 +215,30 @@ fn a_big_attachment_that_loses_a_race_still_syncs() {
     a.sync(&mut sa, &http, "2026-11-02").unwrap();
     assert_eq!(sa, sb);
 }
+
+#[test]
+fn every_version_of_a_note_comes_back_from_the_server() {
+    let base = serve(Store::in_memory().unwrap());
+    let space = SpaceId::random().unwrap();
+    let key = VaultKey::generate().unwrap();
+    let http = HttpTransport::new(&base, space.clone(), TOKEN);
+    http.create_space(&WrappedKey::wrap(&key, "pass phrase", KdfParams::TEST).unwrap()).unwrap();
+    let (mut a, mut sa) = device(&space, &key, "laptop");
+    let (mut b, mut sb) = device(&space, &key, "phone");
+    sa.write("Plan.md", "one\n").unwrap();
+    sa.write("Other.md", "x\n").unwrap();
+    a.sync(&mut sa, &http, "2026-11-02").unwrap();
+    b.sync(&mut sb, &http, "2026-11-02").unwrap();
+    sb.write("Plan.md", "one\ntwo\n").unwrap();
+    b.sync(&mut sb, &http, "2026-11-02").unwrap();
+    a.sync(&mut sa, &http, "2026-11-02").unwrap();
+    sa.write("Plan.md", "one\ntwo\nthree\n").unwrap();
+    a.sync(&mut sa, &http, "2026-11-02").unwrap();
+
+    let h = b.history(&http, "Plan.md").unwrap();
+    let texts: Vec<&str> = h.iter().map(|v| v.text.as_str()).collect();
+    assert_eq!(texts, ["one\n", "one\ntwo\n", "one\ntwo\nthree\n"]);
+    assert_eq!(h.iter().map(|v| v.device.as_str()).collect::<Vec<_>>(), ["laptop", "phone", "laptop"]);
+    assert!(h.iter().all(|v| v.at > 1_700_000_000_000), "each version says when it was written");
+    assert!(b.history(&http, "Missing.md").unwrap().is_empty());
+}

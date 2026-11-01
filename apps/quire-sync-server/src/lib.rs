@@ -30,7 +30,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use quire_sync::{PushOutcome, Revision, SpaceId, WrappedKey};
+use quire_sync::{FileId, PushOutcome, Revision, SpaceId, WrappedKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -77,6 +77,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/spaces/{space}/changes", get(changes))
         .route("/spaces/{space}/revisions", post(push))
         .route("/spaces/{space}/wait", get(wait))
+        .route("/spaces/{space}/files/{file}", get(file_history))
         .route_layer(middleware::from_fn_with_state(Arc::clone(&state), require_token));
     Router::new().route("/health", get(|| async { "ok" })).nest("/v1", api).layer(DefaultBodyLimit::max(MAX_BODY)).with_state(state)
 }
@@ -191,6 +192,18 @@ async fn list_spaces(State(st): State<Arc<AppState>>) -> Result<Json<Vec<SpaceIn
 async fn get_key(State(st): State<Arc<AppState>>, Path(space): Path<String>) -> Result<Json<WrappedKey>, ApiError> {
     valid_id(&space)?;
     Ok(Json(db(&st, move |s| s.wrapped_key(&SpaceId(space))).await?))
+}
+
+/// Every version of one file, for history and restore.
+async fn file_history(State(st): State<Arc<AppState>>, Path((space, file)): Path<(String, String)>) -> Result<Json<Changes>, ApiError> {
+    valid_id(&space)?;
+    valid_id(&file)?;
+    let out = db(&st, move |s| {
+        let sp = SpaceId(space);
+        Ok(Changes { revisions: s.file_history(&sp, &FileId(file))?, latest: s.latest(&sp)? })
+    })
+    .await?;
+    Ok(Json(out))
 }
 
 async fn put_key(State(st): State<Arc<AppState>>, Path(space): Path<String>, Json(key): Json<WrappedKey>) -> Result<StatusCode, ApiError> {

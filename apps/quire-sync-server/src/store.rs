@@ -26,6 +26,8 @@ pub enum StoreError {
 
 /// Roughly how much sealed data one page of changes carries.
 const PAGE_BYTES: usize = 8 * 1024 * 1024;
+/// The most sealed data one history reply carries.
+const HISTORY_BYTES: usize = 64 * 1024 * 1024;
 
 pub struct Store {
     db: Mutex<Connection>,
@@ -63,6 +65,7 @@ CREATE TABLE IF NOT EXISTS heads (
     seq   INTEGER NOT NULL,
     PRIMARY KEY (space, file)
 );
+CREATE INDEX IF NOT EXISTS revisions_by_file ON revisions (space, file, seq);
 ";
 
 fn row_to_rev(r: &rusqlite::Row<'_>) -> rusqlite::Result<(u64, String, String, String, String, Vec<u8>)> {
@@ -153,6 +156,29 @@ impl Store {
                 break;
             }
         }
+        Ok(out)
+    }
+
+    /// A file's revisions, oldest first: the newest 500, and fewer if they'd
+    /// pass about 64 MB (big attachments).
+    pub fn file_history(&self, space: &SpaceId, file: &FileId) -> Result<Vec<Revision>, StoreError> {
+        let db = self.db();
+        Self::require_space(&db, space)?;
+        let mut stmt = db.prepare_cached(
+            "SELECT seq, file, rev, parents, device, sealed FROM revisions WHERE space = ?1 AND file = ?2 ORDER BY seq DESC LIMIT 500",
+        )?;
+        let rows = stmt.query_map(params![space.0, file.0], row_to_rev)?;
+        let mut out = Vec::new();
+        let mut bytes = 0;
+        for r in rows {
+            let rev = to_revision(r?)?;
+            bytes += rev.sealed.len();
+            if bytes > HISTORY_BYTES && !out.is_empty() {
+                break;
+            }
+            out.push(rev);
+        }
+        out.reverse();
         Ok(out)
     }
 

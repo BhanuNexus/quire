@@ -21,6 +21,8 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
 pub use quire_sync::SpaceInfo;
+/// One version of a note from the sync log, for the history dialog.
+pub use quire_sync::Version as SyncVersion;
 use quire_sync::folder::{self, FolderTransport};
 use quire_sync::{
     DeviceId, Engine, HttpTransport, KdfParams, LocalStore, RecoveryKey, Report, SpaceId, SyncState, Transport, VaultKey, WrappedKey,
@@ -343,9 +345,9 @@ enum Link {
 }
 
 impl Link {
-    fn new(cfg: &SyncConfig, token: &str, state_dir: &Path) -> Self {
+    fn new(cfg: &SyncConfig, token: &str, state_dir: Option<&Path>) -> Self {
         match &cfg.folder {
-            Some(root) => Self::Folder(Box::new(FolderTransport::new(root, &cfg.space, cfg.device.clone(), Some(state_dir)))),
+            Some(root) => Self::Folder(Box::new(FolderTransport::new(root, &cfg.space, cfg.device.clone(), state_dir))),
             None => Self::Server(HttpTransport::new(&cfg.server, cfg.space.clone(), token)),
         }
     }
@@ -392,7 +394,7 @@ impl SyncWorker {
         // Watch thread: tells the worker when another device pushed.
         {
             let (tx, stop, known) = (tx.clone(), Arc::clone(&stop), Arc::clone(&known));
-            match Link::new(&cfg, &token, &sync_dir(&root)) {
+            match Link::new(&cfg, &token, Some(&sync_dir(&root))) {
                 // A server answers a long poll as soon as something changes.
                 Link::Server(http) => std::thread::spawn(move || {
                     while !stop.load(Ordering::Relaxed) {
@@ -429,7 +431,7 @@ impl SyncWorker {
         let worker_stop = Arc::clone(&stop);
         std::thread::spawn(move || {
             let stop = worker_stop;
-            let link = Link::new(&cfg, &token, &sync_dir(&root));
+            let link = Link::new(&cfg, &token, Some(&sync_dir(&root)));
             let mut engine = Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), key.keys(), load_state(&root));
             let mut store = VaultStore::new(vault);
             let mut wait = Duration::ZERO;
@@ -650,6 +652,24 @@ impl Workspace {
         Ok(())
     }
 
+    /// Every version of `path` the sync server or folder holds, from every
+    /// device, worked out in the background. `None` when sync is off.
+    pub fn fetch_sync_history(&self, path: &NotePath) -> Option<Receiver<Result<Vec<SyncVersion>, String>>> {
+        let cfg = self.sync.config.clone()?;
+        let (root, _) = self.sync_parts().ok()?;
+        let store = secrets::store();
+        let key = store.get(&key_name(&cfg.space)).and_then(|k| VaultKey::from_recovery_key(&k).ok())?;
+        let token = store.get(&token_name(&cfg.space)).unwrap_or_default();
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let path = path.as_str().to_string();
+        std::thread::spawn(move || {
+            let link = Link::new(&cfg, &token, None);
+            let engine = Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), key.keys(), load_state(&root));
+            let _ = tx.send(engine.history(link.transport(), &path).map_err(|e| e.to_string()));
+        });
+        Some(rx)
+    }
+
     /// Ask the worker to sync soon (after a save, or "Sync now").
     pub fn sync_nudge(&self) {
         if let Some(w) = &self.sync.worker {
@@ -770,6 +790,11 @@ mod tests {
             std::fs::read_to_string(va.join("Plan.md")).is_ok_and(|t| t.contains("From the phone."))
         });
         wait_for(&mut [&mut a, &mut b], "both to settle", |ws| ws.iter().all(|w| matches!(w.sync.status, SyncStatus::Synced(_))));
+        // Every device's versions come back for the history dialog.
+        let rx = a.fetch_sync_history(&NotePath::new("Plan.md")).unwrap();
+        let versions = rx.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+        assert!(versions.iter().any(|v| v.device == "laptop" && !v.text.contains("phone")), "{versions:?}");
+        assert!(versions.iter().any(|v| v.device == "phone" && v.text.contains("From the phone.")), "{versions:?}");
         // The sync folder holds only encrypted logs.
         let space_dir = shared.join("Quire Sync").join(&found[0].space.0);
         let logs: String = walk(&space_dir).iter().map(|p| std::fs::read_to_string(p).unwrap_or_default()).collect();
