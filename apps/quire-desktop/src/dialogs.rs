@@ -891,6 +891,88 @@ pub(crate) fn new_project(ctx: &egui::Context, st: &mut ProjectState, ws: &mut W
     (close, false)
 }
 
+// ------------------------------------------------------------------ publish
+
+pub(crate) struct PublishState {
+    title: String,
+    out: String,
+    all: bool,
+    result: Option<Result<(quire_app::publish::PublishReport, std::path::PathBuf), String>>,
+}
+
+impl PublishState {
+    pub(crate) fn new(ws: &Workspace) -> Self {
+        let out = ws.vault_root().and_then(|r| r.parent().map(|p| p.join(format!("{} site", ws.vault_name()))));
+        Self { title: ws.vault_name(), out: out.map(|p| p.display().to_string()).unwrap_or_default(), all: false, result: None }
+    }
+}
+
+/// Returns true when the dialog should close.
+pub(crate) fn publish(ctx: &egui::Context, st: &mut PublishState, ws: &mut Workspace, pal: &Palette) -> bool {
+    use quire_app::publish::Selection;
+    let mut close = false;
+    modal(ctx, "quire-publish", pal).show(ctx, |ui| {
+        ui.set_width(modal_width(ctx, 500.0));
+        ui.heading("Publish as a website");
+        ui.label(
+            RichText::new(
+                "Turns notes into a folder of web pages with links, backlinks, tags and search. Put it on GitHub Pages, \
+                 Netlify, Cloudflare Pages or any web server. Links to notes you don't publish become plain text.",
+            )
+            .size(12.0)
+            .color(pal.muted),
+        );
+        ui.add_space(6.0);
+        egui::Grid::new("pub-grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+            ui.label("Site title");
+            ui.add(egui::TextEdit::singleline(&mut st.title).desired_width(300.0));
+            ui.end_row();
+            ui.label("Notes");
+            ui.vertical(|ui| {
+                ui.radio_value(&mut st.all, false, "Only notes with publish: true");
+                ui.radio_value(&mut st.all, true, "All notes (except publish: false and templates)");
+            });
+            ui.end_row();
+            ui.label("Into folder");
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut st.out).desired_width(230.0));
+                if ui.button("Choose…").clicked()
+                    && let Some(p) = rfd::FileDialog::new().pick_folder()
+                {
+                    st.out = p.display().to_string();
+                }
+            });
+            ui.end_row();
+        });
+        match &st.result {
+            Some(Ok((r, index))) => {
+                let more = if r.private_links > 0 {
+                    format!(", {} links to unpublished notes left as text", r.private_links)
+                } else {
+                    String::new()
+                };
+                ui.label(RichText::new(format!("Published {} pages and {} files{more}.", r.pages, r.files)).color(pal.accent));
+                ui.hyperlink_to("Open the site", format!("file://{}", index.display()));
+            }
+            Some(Err(e)) => {
+                ui.label(RichText::new(e).color(pal.danger).size(12.5));
+            }
+            None => {}
+        }
+        ui.separator();
+        ui.horizontal(|ui| {
+            let ready = !st.out.trim().is_empty() && !st.title.trim().is_empty();
+            if ui.add_enabled(ready, egui::Button::new("Publish")).clicked() {
+                let out = std::path::PathBuf::from(st.out.trim());
+                let which = if st.all { Selection::All } else { Selection::Marked };
+                st.result = Some(ws.publish_site(&out, st.title.trim(), which).map(|r| (r, out.join("index.html"))));
+            }
+            close |= ui.button("Close").clicked();
+        });
+    });
+    close
+}
+
 // ------------------------------------------------------------------ folders
 
 #[derive(Clone, Copy, PartialEq, Eq)]

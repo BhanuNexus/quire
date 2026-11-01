@@ -26,6 +26,7 @@ pub enum Command {
     ResolveSyncConflicts,
     MoveNote,
     ImportNotes,
+    PublishSite,
     OpenSettings,
     // Search & navigation
     CommandPalette,
@@ -175,6 +176,7 @@ commands! {
     ResolveSyncConflicts,"Note","Resolve sync conflicts…",        [], false;
     MoveNote,         "Note",   "Move to folder…",                [], true;
     ImportNotes,      "Note",   "Import notes (Logseq, Notion, Bear, Evernote)…", [], false;
+    PublishSite,      "Note",   "Publish as a website…",          [], false;
     OpenSettings,     "App",    "Settings…",                      [cmd("Comma")], false;
     SyncSettings,     "App",    "Sync settings…",                 [], false;
     SyncNow,          "App",    "Sync now",                       [], false;

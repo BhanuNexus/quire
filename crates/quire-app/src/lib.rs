@@ -13,6 +13,7 @@ mod find_state;
 pub mod history_ops;
 pub mod projects;
 pub mod properties;
+pub mod publish;
 pub mod secrets;
 pub mod session;
 pub mod settings;

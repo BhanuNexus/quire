@@ -82,6 +82,7 @@ pub enum UiRequest {
     Settings,
     History,
     Import,
+    Publish,
     NewProject,
     Shortcuts,
     Tour,
@@ -1057,6 +1058,7 @@ impl Workspace {
             C::NewInFolder => return self.vault.is_some().then_some(UiRequest::NewInFolder),
             C::MoveNote => return self.active_doc().and_then(|d| d.path.as_ref()).map(|_| UiRequest::MoveNote),
             C::ImportNotes => return Some(UiRequest::Import),
+            C::PublishSite => return self.vault.is_some().then_some(UiRequest::Publish),
             C::OpenSettings => return Some(UiRequest::Settings),
             C::InsertDate => {
                 let today = chrono::Local::now().format("%Y-%m-%d").to_string();

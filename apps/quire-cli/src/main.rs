@@ -31,6 +31,8 @@ USAGE:
   quire-cli suggest   <vault> <note>          unlinked note names inside a note
   quire-cli tasks     <vault>                 open tasks across the vault
   quire-cli export    <vault> <note> [out]    render a note to standalone HTML
+  quire-cli publish   <vault> <out> [--all] [--title T]
+                      publish notes marked `publish: true` (or --all) as a static website
   quire-cli mcp       <vault> [--allow-write] MCP server on stdio for AI assistants (read-only by default)
   quire-cli import    <source> <vault> [--into Folder] [--write]
                       import Logseq, Bear, Notion, Evernote or Markdown (folder, .zip, .enex, .bear2bk; dry run first)
@@ -173,6 +175,23 @@ fn run(args: &[String]) -> Result<(), String> {
             let out = args.get(3).cloned().unwrap_or_else(|| format!("{}.html", p.stem()));
             std::fs::write(&out, html).map_err(|e| e.to_string())?;
             println!("wrote {out}");
+        }
+        "publish" => {
+            let (v, svc, _) = load(arg(1)?)?;
+            let out = std::path::Path::new(arg(2)?);
+            let title = args.iter().position(|a| a == "--title").and_then(|i| args.get(i + 1)).cloned().unwrap_or_else(|| {
+                std::fs::canonicalize(arg(1).unwrap_or("."))
+                    .ok()
+                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                    .unwrap_or_else(|| "Notes".into())
+            });
+            let which =
+                if args.iter().any(|a| a == "--all") { quire_app::publish::Selection::All } else { quire_app::publish::Selection::Marked };
+            let r = quire_app::publish::publish(&v, &svc.read(), out, &title, which)?;
+            println!("published {} pages and {} files to {}", r.pages, r.files, out.display());
+            if r.private_links > 0 {
+                println!("{} links point at notes that aren't published; they're plain text on the site", r.private_links);
+            }
         }
         "mcp" => {
             let srv = mcp::Server::open(arg(1)?, args.iter().any(|a| a == "--allow-write"))?;
