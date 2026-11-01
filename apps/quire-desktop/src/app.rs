@@ -7,8 +7,9 @@ use std::time::{Duration, Instant};
 
 use egui::{Key, KeyboardShortcut, Modifiers};
 use egui_commonmark::CommonMarkCache;
+use quire_app::vault::NotePath;
 use quire_app::workspace::{NoticeLevel, UiRequest};
-use quire_app::{COMMANDS, Command, Session, Settings, Theme, Workspace};
+use quire_app::{COMMANDS, Command, DocId, Session, Settings, Theme, Workspace};
 
 use crate::editor::EditorState;
 use crate::overlays::{self, Mode, Overlay};
@@ -42,6 +43,13 @@ pub(crate) struct QuireApp {
     applied: Option<(bool, u32)>,
     last_title: String,
     last_version: u64,
+    /// Split editor: the note in the other half, and whether that half is on
+    /// the left (the active note is always in the other half).
+    split: Option<DocId>,
+    split_left: bool,
+    last_active: Option<DocId>,
+    /// Quick open was shown to pick the other half's note; this note stays.
+    pick_side: Option<DocId>,
 }
 
 fn sample_dir() -> PathBuf {
@@ -97,6 +105,10 @@ impl QuireApp {
             applied: None,
             last_title: String::new(),
             last_version: 0,
+            split: None,
+            split_left: false,
+            last_active: None,
+            pick_side: None,
         }
     }
 
@@ -180,6 +192,10 @@ impl QuireApp {
                 UiRequest::NewInFolder => Overlay::Folder(crate::dialogs::FolderState::new(&self.ws, crate::dialogs::FolderMode::NewNote)),
                 UiRequest::MoveNote => Overlay::Folder(crate::dialogs::FolderState::new(&self.ws, crate::dialogs::FolderMode::Move)),
                 UiRequest::History => Overlay::History(crate::dialogs::HistoryState::new(&self.ws)),
+                UiRequest::Split => {
+                    self.toggle_split();
+                    return;
+                }
                 UiRequest::Import => {
                     if self.ws.vault().is_none() {
                         self.ws.notify(NoticeLevel::Info, "Open a vault first, then import into it");
@@ -260,7 +276,70 @@ impl QuireApp {
         }
     }
 
+    /// Keep the split editor consistent with what's open and active.
+    fn settle_split(&mut self) {
+        let Some(other) = self.split else { return };
+        let active = self.ws.active_doc().map(|d| d.id);
+        let open = |id: DocId| self.ws.docs().iter().any(|d| d.id == id);
+        if !open(other) || active.is_none() || self.ws.settings.show_preview || self.classic() || self.ws.focus_mode {
+            self.split = None;
+            return;
+        }
+        if active == Some(other) {
+            // The other half's note was chosen (a tab, a link): the halves
+            // trade roles, each note staying where it is.
+            match self.last_active.filter(|a| open(*a) && Some(*a) != active) {
+                Some(prev) => {
+                    self.split = Some(prev);
+                    self.split_left = !self.split_left;
+                }
+                None => self.split = None,
+            }
+        }
+    }
+
+    /// Split the editor in two, or go back to one.
+    fn toggle_split(&mut self) {
+        if self.split.take().is_some() {
+            return;
+        }
+        if self.classic() {
+            self.ws.notify(NoticeLevel::Info, "Split view needs the fast editor (View: Switch editor)");
+            return;
+        }
+        let Some(active) = self.ws.active_doc().map(|d| d.id) else { return };
+        // The other half shows the most recently opened other note.
+        let other = self.ws.docs().iter().rev().map(|d| d.id).find(|id| *id != active);
+        if let Some(id) = other {
+            self.ws.settings.show_preview = false;
+            self.split = Some(id);
+            self.split_left = false;
+        } else {
+            // Nothing else open: pick the note for the other half.
+            self.pick_side = Some(active);
+            self.overlay = Some(Overlay::palette(Mode::Notes));
+        }
+    }
+
+    /// Open `p` in the other half of the editor (splitting it if needed).
+    fn open_side(&mut self, p: &NotePath) {
+        let Some(active) = self.ws.active_doc().map(|d| d.id) else {
+            self.ws.open_note(p);
+            return;
+        };
+        if self.ws.open_note(p).is_some_and(|id| id != active) {
+            self.ws.settings.show_preview = false;
+            self.split = Some(active);
+            self.split_left = true;
+            self.last_active = self.ws.active_doc().map(|d| d.id);
+            self.focus_editor();
+        }
+    }
+
     fn after_panel(&mut self, out: &PanelOut) {
+        if let Some(p) = &out.open_side {
+            self.open_side(p);
+        }
         if out.skip_update {
             self.ws.skip_update();
         }
@@ -273,6 +352,62 @@ impl QuireApp {
         }
         if out.reveal_only {
             self.reveal_caret();
+        }
+    }
+
+    /// Two notes side by side: the active one and `other`, each with a slim
+    /// title bar. Clicking into either makes it the active note.
+    fn split_panes(&mut self, ui: &mut egui::Ui, other: DocId, pal: &Palette) {
+        let full = ui.available_rect_before_wrap();
+        let mid = full.center().x;
+        let left = egui::Rect::from_min_max(full.min, egui::pos2(mid - 0.5, full.max.y));
+        let right = egui::Rect::from_min_max(egui::pos2(mid + 0.5, full.min.y), full.max);
+        ui.painter().line_segment([egui::pos2(mid, full.top()), egui::pos2(mid, full.bottom())], egui::Stroke::new(1.0, pal.border));
+        let (active_rect, other_rect) = if self.split_left { (right, left) } else { (left, right) };
+        let header = |ui: &mut egui::Ui, ws: &Workspace, id: DocId, active: bool| -> bool {
+            let title = ws.docs().iter().find(|d| d.id == id).map(quire_app::Document::title).unwrap_or_default();
+            let (r, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), egui::Sense::click());
+            let color = if active { pal.strong } else { pal.muted };
+            ui.painter().text(
+                egui::pos2(r.left() + 16.0, r.center().y),
+                egui::Align2::LEFT_CENTER,
+                title,
+                egui::FontId::proportional(12.5),
+                color,
+            );
+            if active {
+                ui.painter().line_segment(
+                    [egui::pos2(r.left() + 16.0, r.bottom() - 1.0), egui::pos2(r.right() - 16.0, r.bottom() - 1.0)],
+                    egui::Stroke::new(1.5, pal.accent.gamma_multiply(0.6)),
+                );
+            }
+            resp.clicked()
+        };
+        // The active note first: it gets this frame's keys, focus and scroll requests.
+        let mut a = ui.new_child(egui::UiBuilder::new().max_rect(active_rect).layout(egui::Layout::top_down(egui::Align::Min)));
+        let Some(active) = self.ws.active_doc().map(|d| d.id) else { return };
+        header(&mut a, &self.ws, active, true);
+        self.fast.show_pane(&mut a, &mut self.ws, pal, self.fonts, true);
+        // The active note may have changed (a followed link); the other half keeps its note.
+        let active = self.ws.active_doc().map_or(active, |d| d.id);
+        if !self.ws.activate(other) {
+            self.split = None;
+            return;
+        }
+        let mut b = ui.new_child(egui::UiBuilder::new().max_rect(other_rect).layout(egui::Layout::top_down(egui::Align::Min)));
+        let header_clicked = header(&mut b, &self.ws, other, false);
+        self.fast.show_pane(&mut b, &mut self.ws, pal, self.fonts, false);
+        let ctx = ui.ctx().clone();
+        if header_clicked {
+            ctx.memory_mut(|m| m.request_focus(crate::view::editor_id(other)));
+        }
+        if header_clicked || ctx.memory(|m| m.has_focus(crate::view::editor_id(other))) {
+            // The other half was clicked into: it becomes the active note.
+            self.split = Some(active);
+            self.split_left = !self.split_left;
+            self.last_active = Some(other);
+        } else {
+            self.ws.activate(active);
         }
     }
 
@@ -361,7 +496,7 @@ impl QuireApp {
                     let dir = sample_dir();
                     match write_sample(&dir).map_err(|e| e.to_string()).and_then(|()| self.ws.open_vault(&dir)) {
                         Ok(()) => {
-                            let welcome = quire_app::vault::NotePath::new("Welcome.md");
+                            let welcome = NotePath::new("Welcome.md");
                             self.ws.open_note(&welcome);
                             self.focus_editor();
                         }
@@ -440,7 +575,10 @@ impl QuireApp {
             }
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(pal.bg)).show(ui, |ui| {
                 if self.ws.active_doc().is_some() {
-                    if self.classic() {
+                    self.settle_split();
+                    if let Some(other) = self.split {
+                        self.split_panes(ui, other, pal);
+                    } else if self.classic() {
                         self.editor.show(ui, &mut self.ws, pal, self.fonts);
                     } else {
                         let t = Instant::now();
@@ -486,6 +624,14 @@ impl QuireApp {
             if res.close {
                 self.overlay = None;
                 self.focus_editor();
+                if let Some(keep) = self.pick_side.take()
+                    && self.ws.active_doc().is_some_and(|d| d.id != keep)
+                {
+                    self.ws.settings.show_preview = false;
+                    self.split = Some(keep);
+                    self.split_left = true;
+                    self.last_active = self.ws.active_doc().map(|d| d.id);
+                }
             }
             if res.jumped {
                 self.reveal_caret();
@@ -495,6 +641,7 @@ impl QuireApp {
             }
         }
         overlays::toasts(&ctx, &self.ws, pal);
+        self.last_active = self.ws.active_doc().map(|d| d.id);
         let ids: Vec<_> = self.ws.docs().iter().map(|d| d.id).collect();
         self.editor.forget(&ids);
         self.fast.forget(&ids);

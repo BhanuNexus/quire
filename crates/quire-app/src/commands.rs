@@ -62,6 +62,10 @@ pub enum Command {
     SelectAllOccurrences,
     AddCursorAbove,
     AddCursorBelow,
+    ToggleFold,
+    FoldAll,
+    UnfoldAll,
+    SplitEditor,
     Find,
     FindReplace,
     FindNext,
@@ -126,6 +130,8 @@ impl KeyCombo {
         }
         s.push_str(match self.key {
             "Backslash" => "\\",
+            "OpenBracket" => "[",
+            "CloseBracket" => "]",
             "Backtick" => "`",
             "Period" => ".",
             "Equals" => "=",
@@ -210,6 +216,10 @@ commands! {
     SelectAllOccurrences,"Edit","Select all occurrences",         [cmd_shift("L")], true;
     AddCursorAbove,   "Edit",   "Add cursor above",               [cmd_alt("ArrowUp")], true;
     AddCursorBelow,   "Edit",   "Add cursor below",               [cmd_alt("ArrowDown")], true;
+    ToggleFold,       "View",   "Fold or unfold this section",    [cmd_shift("OpenBracket")], true;
+    FoldAll,          "View",   "Fold all sections",              [cmd_alt("OpenBracket")], true;
+    UnfoldAll,        "View",   "Unfold all sections",            [cmd_alt("CloseBracket")], true;
+    SplitEditor,      "View",   "Split editor (two notes side by side)", [cmd_alt("Backslash")], true;
     Find,             "Find",   "Find in note",                   [cmd("F")], true;
     FindReplace,      "Find",   "Find and replace in note",       [cmd("H")], true;
     FindNext,         "Find",   "Find next",                      [bare("F3")], true;

@@ -81,6 +81,12 @@ struct DocView {
     /// Checkboxes drawn last frame (screen rect, char index of the box's
     /// inside), so a click toggles the task instead of moving the caret.
     task_boxes: Vec<(Rect, usize, bool)>,
+    /// Lines of folded headings, sorted.
+    folded: Vec<usize>,
+    /// Lines hidden by folds, worked out for one revision.
+    hidden: Option<HiddenLines>,
+    /// Fold arrows drawn last frame: (screen rect, heading line).
+    fold_toggles: Vec<(Rect, usize)>,
 }
 
 impl DocView {
@@ -105,6 +111,9 @@ impl DocView {
             suggest_for: None,
             suggest_dismissed: None,
             task_boxes: Vec::new(),
+            folded: Vec::new(),
+            hidden: None,
+            fold_toggles: Vec::new(),
         }
     }
 }
@@ -252,6 +261,9 @@ fn table_row_job(
     job
 }
 
+/// Lines hidden by folds, for a revision and a set of folded headings.
+type HiddenLines = (u64, Vec<usize>, Rc<Vec<Range<usize>>>);
+
 /// Lines drawn as one block: a background behind code and front matter, a
 /// bar beside quotes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -287,6 +299,30 @@ fn hideable_marker(text: &str, line_start: bool) -> bool {
     let html = t.starts_with('<') && t.len() > 2 && t.ends_with('>');
     let rule = t.len() >= 3 && (t.bytes().all(|b| b == b'-') || t.bytes().all(|b| b == b'=') || t.bytes().all(|b| b == b'*'));
     !(bullet || task || html || rule || t.starts_with('>') || t.starts_with("```") || t.starts_with("~~~"))
+}
+
+/// Heading lines and levels, from the note's outline (so headings inside
+/// code blocks don't count).
+fn heading_lines(doc: &Document) -> Vec<(usize, u8)> {
+    let buf = doc.buffer();
+    doc.outline().iter().map(|h| (buf.char_to_line(doc.byte_to_char(h.offset)), h.level)).collect()
+}
+
+/// The lines a folded heading hides: up to the next heading of the same or
+/// a higher level, keeping blank lines before it visible.
+fn fold_range(headings: &[(usize, u8)], line: usize, len_lines: usize, blank: impl Fn(usize) -> bool) -> Option<Range<usize>> {
+    let i = headings.iter().position(|(l, _)| *l == line)?;
+    let level = headings[i].1;
+    let mut end = headings[i + 1..].iter().find(|(_, lv)| *lv <= level).map_or(len_lines, |(l, _)| *l);
+    while end > line + 1 && blank(end - 1) {
+        end -= 1;
+    }
+    (line + 1 < end).then(|| line + 1..end)
+}
+
+/// Whether a line is empty or only whitespace.
+fn blank_line(buf: &Buffer, line: usize) -> bool {
+    buf.line(line).trim().is_empty()
 }
 
 /// `---`, `***` or `___` (three or more) on a line of its own.
@@ -456,6 +492,15 @@ impl FastEditor {
                 Some(ds) => {
                     for d in ds {
                         view.heights.splice(d.start_line, d.old_lines, d.new_lines, cx.row_h());
+                        // Folds move with their heading; an edited heading line keeps its fold.
+                        let shift = d.new_lines as isize - d.old_lines as isize;
+                        view.folded.retain(|&l| l < d.start_line + 1 || l >= d.start_line + d.old_lines);
+                        for l in &mut view.folded {
+                            if *l >= d.start_line + d.old_lines && d.old_lines + d.new_lines > 0 {
+                                *l = (*l as isize + shift).max(0) as usize;
+                            }
+                        }
+                        view.hidden = None;
                     }
                 }
                 None => reset = true,
@@ -507,6 +552,90 @@ impl FastEditor {
         let runs = Rc::new(blocks::highlight_window(&text, w.clone(), &bl));
         view.runs = Some((rev, w, Rc::clone(&runs)));
         runs
+    }
+
+    /// Line ranges hidden by folds (merged, sorted).
+    fn hidden(view: &mut DocView, doc: &Document) -> Rc<Vec<Range<usize>>> {
+        if view.folded.is_empty() {
+            return Rc::default();
+        }
+        if let Some((rev, folded, h)) = &view.hidden
+            && *rev == doc.revision()
+            && *folded == view.folded
+        {
+            return Rc::clone(h);
+        }
+        let headings = heading_lines(doc);
+        // Folds on lines that are no longer headings are dropped.
+        view.folded.retain(|l| headings.iter().any(|(h, _)| h == l));
+        let n = doc.buffer().len_lines();
+        let mut ranges: Vec<Range<usize>> =
+            view.folded.iter().filter_map(|&l| fold_range(&headings, l, n, |x| blank_line(doc.buffer(), x))).collect();
+        ranges.sort_by_key(|r| r.start);
+        let mut merged: Vec<Range<usize>> = Vec::new();
+        for r in ranges {
+            match merged.last_mut() {
+                Some(m) if r.start <= m.end => m.end = m.end.max(r.end),
+                _ => merged.push(r),
+            }
+        }
+        let h = Rc::new(merged);
+        view.hidden = Some((doc.revision(), view.folded.clone(), Rc::clone(&h)));
+        h
+    }
+
+    fn is_hidden(view: &mut DocView, doc: &Document, line: usize) -> bool {
+        Self::hidden(view, doc).iter().any(|r| r.contains(&line))
+    }
+
+    /// Fold or unfold the heading at `line`; lines it shows again get an
+    /// estimated height until they're drawn.
+    fn toggle_fold(view: &mut DocView, doc: &Document, line: usize, cx_row_h: f32) {
+        if let Some(i) = view.folded.iter().position(|l| *l == line) {
+            let range = fold_range(&heading_lines(doc), line, doc.buffer().len_lines(), |x| blank_line(doc.buffer(), x));
+            view.folded.remove(i);
+            for l in range.into_iter().flatten() {
+                view.heights.set(l, cx_row_h);
+            }
+        } else {
+            view.folded.push(line);
+            view.folded.sort_unstable();
+        }
+        view.hidden = None;
+    }
+
+    /// Make `line` visible by unfolding whatever hides it.
+    fn reveal_line(view: &mut DocView, doc: &Document, line: usize, row_h: f32) {
+        while Self::is_hidden(view, doc, line) {
+            let headings = heading_lines(doc);
+            let n = doc.buffer().len_lines();
+            let Some(&h) = view
+                .folded
+                .iter()
+                .find(|&&h| fold_range(&headings, h, n, |x| blank_line(doc.buffer(), x)).is_some_and(|r| r.contains(&line)))
+            else {
+                break;
+            };
+            Self::toggle_fold(view, doc, h, row_h);
+        }
+    }
+
+    /// The nearest visible line above (`dir < 0`) or below `line`.
+    fn visible_neighbor(view: &mut DocView, doc: &Document, line: usize, dir: i32) -> Option<usize> {
+        let hidden = Self::hidden(view, doc);
+        let n = doc.buffer().len_lines();
+        let mut l = line;
+        loop {
+            l = if dir < 0 { l.checked_sub(1)? } else { l + 1 };
+            if l >= n {
+                return None;
+            }
+            match hidden.iter().find(|r| r.contains(&l)) {
+                Some(r) if dir < 0 => l = r.start,
+                Some(r) => l = r.end - 1,
+                None => return Some(l),
+            }
+        }
     }
 
     /// A line's text and the style runs inside it (byte offsets in the line).
@@ -787,16 +916,16 @@ impl FastEditor {
         let (tline, trow) = if dir < 0 {
             if row > 0 {
                 (line, row - 1)
-            } else if line > 0 {
-                let g2 = self.galley(ui, view, doc, line - 1, cx);
-                (line - 1, g2.rows.len().saturating_sub(1))
+            } else if let Some(prev) = Self::visible_neighbor(view, doc, line, -1) {
+                let g2 = self.galley(ui, view, doc, prev, cx);
+                (prev, g2.rows.len().saturating_sub(1))
             } else {
                 return (0, x);
             }
         } else if row + 1 < g.rows.len() {
             (line, row + 1)
-        } else if line + 1 < buf.len_lines() {
-            (line + 1, 0)
+        } else if let Some(next) = Self::visible_neighbor(view, doc, line, 1) {
+            (next, 0)
         } else {
             return (buf.len_chars(), x);
         };
@@ -872,6 +1001,50 @@ impl FastEditor {
                 v.extend(multi::add_cursor_vertical(buf, bottom, 1));
                 v
             }
+            Command::ToggleFold | Command::FoldAll | Command::UnfoldAll => {
+                let headings = heading_lines(doc);
+                let caret_line = buf.char_to_line(head);
+                let row_h = ws.settings.font_size * 1.55;
+                match cmd {
+                    Command::ToggleFold => {
+                        // The heading the caret is under (or on).
+                        if let Some(&(h, _)) = headings.iter().rev().find(|(l, _)| *l <= caret_line) {
+                            Self::toggle_fold(view, doc, h, row_h);
+                            if h != caret_line {
+                                let at = buf.line_to_char(h);
+                                Self::set_selections(view, ws, vec![Selection::cursor(at)], at);
+                            }
+                        }
+                    }
+                    Command::FoldAll => {
+                        let n = buf.len_lines();
+                        view.folded = headings
+                            .iter()
+                            .filter(|(l, _)| fold_range(&headings, *l, n, |x| blank_line(buf, x)).is_some())
+                            .map(|(l, _)| *l)
+                            .collect();
+                        view.hidden = None;
+                        // The caret moves up to its heading if its line got hidden.
+                        if let Some(&(h, _)) = headings.iter().rev().find(|(l, _)| *l <= caret_line)
+                            && Self::is_hidden(view, doc, caret_line)
+                        {
+                            let at = buf.line_to_char(h);
+                            Self::set_selections(view, ws, vec![Selection::cursor(at)], at);
+                        }
+                    }
+                    _ => {
+                        for h in std::mem::take(&mut view.folded) {
+                            for l in fold_range(&headings, h, buf.len_lines(), |x| blank_line(buf, x)).into_iter().flatten() {
+                                view.heights.set(l, row_h);
+                            }
+                        }
+                        view.hidden = None;
+                    }
+                }
+                self.scroll_to_caret = true;
+                self.request_focus = true;
+                return;
+            }
             _ => return,
         };
         let prefer = match cmd {
@@ -889,6 +1062,12 @@ impl FastEditor {
     // ------------------------------------------------------------ the widget
 
     pub(crate) fn show(&mut self, ui: &mut Ui, ws: &mut Workspace, pal: &Palette, fonts: FontSupport) {
+        self.show_pane(ui, ws, pal, fonts, true);
+    }
+
+    /// Draw the active note. `primary` is false for the other half of a split
+    /// editor: it doesn't take pending focus or scroll requests.
+    pub(crate) fn show_pane(&mut self, ui: &mut Ui, ws: &mut Workspace, pal: &Palette, fonts: FontSupport, primary: bool) {
         let Some(doc) = ws.active_doc() else { return };
         let doc_id = doc.id;
         let id = editor_id(doc_id);
@@ -904,8 +1083,8 @@ impl FastEditor {
         self.decos.clear();
         self.tables.clear();
         let ctx = ui.ctx().clone();
-        let scroll_to_caret = std::mem::take(&mut self.scroll_to_caret);
-        let request_focus = std::mem::take(&mut self.request_focus);
+        let scroll_to_caret = primary && std::mem::take(&mut self.scroll_to_caret);
+        let request_focus = primary && std::mem::take(&mut self.request_focus);
 
         let avail_w = ui.available_width();
         let wrap = (avail_w - 96.0).min(max_w).max(120.0);
@@ -988,8 +1167,22 @@ impl FastEditor {
                 }
                 if let Some(p) = pointer.filter(|_| !over_view || view.drag.is_some()) {
                     let doc = ws.active_doc().expect("checked");
+                    let fold_hit = view.fold_toggles.iter().find(|(r, _)| r.contains(p)).map(|(_, l)| *l);
                     let task_hit = view.task_boxes.iter().find(|(r, _, _)| r.contains(p)).copied();
-                    if pressed && resp.contains_pointer() && !over_view && !mods.shift && !mods.alt && task_hit.is_some() {
+                    if pressed
+                        && resp.contains_pointer()
+                        && let Some(line) = fold_hit
+                    {
+                        resp.request_focus();
+                        Self::toggle_fold(&mut view, doc, line, cx.row_h());
+                        // Keep the caret out of what was just folded.
+                        let caret_line = doc.buffer().char_to_line(doc.selection().head);
+                        if Self::is_hidden(&mut view, doc, caret_line) {
+                            let at = doc.buffer().line_to_char(line);
+                            Self::set_selections(&mut view, ws, vec![Selection::cursor(at)], at);
+                        }
+                        moved = true;
+                    } else if pressed && resp.contains_pointer() && !over_view && !mods.shift && !mods.alt && task_hit.is_some() {
                         resp.request_focus();
                         if let Some((_, at, done)) = task_hit
                             && let Some(d) = ws.active_doc_mut()
@@ -1314,6 +1507,11 @@ impl FastEditor {
                 }
 
                 let Some(doc) = ws.active_doc() else { return };
+                // The caret never hides inside a fold: going there opens it.
+                if moved || edited || scroll_to_caret {
+                    let line = doc.buffer().char_to_line(doc.selection().head);
+                    Self::reveal_line(&mut view, doc, line, cx.row_h());
+                }
                 if edited {
                     Self::sync(&mut view, doc, &cx, inline_images);
                     view.preferred_x = None;
@@ -1357,9 +1555,55 @@ impl FastEditor {
                 let blink_on = focused
                     && (!window_focused || (now.duration_since(view.blink_start).as_millis() / BLINK.as_millis()).is_multiple_of(2));
 
+                let hidden = Self::hidden(&mut view, doc);
+                let headings = if doc.large { Vec::new() } else { heading_lines(doc) };
+                let mut fold_toggles = Vec::new();
+                let pointer = ui.input(|i| i.pointer.hover_pos());
                 for line in first..=last {
+                    if hidden.iter().any(|r| r.contains(&line)) {
+                        view.heights.set(line, 0.0);
+                        continue;
+                    }
                     let g = self.galley(ui, &mut view, doc, line, &cx);
                     let top = origin.y + TOP_MARGIN + view.heights.top(line);
+                    // Fold arrows beside headings: shown on hover, or while folded.
+                    if headings.iter().any(|(l, _)| *l == line) {
+                        let folded = view.folded.contains(&line);
+                        let row = Rect::from_min_size(Pos2::new(x0 - 40.0, top), Vec2::new(cx.wrap + 40.0, g.size().y));
+                        let hovered = pointer.is_some_and(|p| row.contains(p));
+                        let first_row = g.rows.first().map_or_else(|| cx.row_h(), |r| r.size.y);
+                        let arrow = Rect::from_center_size(Pos2::new(x0 - 26.0, top + first_row / 2.0), Vec2::splat(18.0));
+                        if folded || hovered {
+                            let over = pointer.is_some_and(|p| arrow.contains(p));
+                            if over {
+                                painter.rect_filled(arrow, 4.0, pal.hover);
+                                ctx.set_cursor_icon(CursorIcon::PointingHand);
+                            }
+                            let c = arrow.center();
+                            let s = 4.5;
+                            let pts = if folded {
+                                vec![Pos2::new(c.x - s * 0.6, c.y - s), Pos2::new(c.x + s * 0.8, c.y), Pos2::new(c.x - s * 0.6, c.y + s)]
+                            } else {
+                                vec![Pos2::new(c.x - s, c.y - s * 0.6), Pos2::new(c.x + s, c.y - s * 0.6), Pos2::new(c.x, c.y + s * 0.8)]
+                            };
+                            let color = if over || folded { pal.muted } else { pal.faint };
+                            painter.add(egui::Shape::convex_polygon(pts, color, Stroke::NONE));
+                            fold_toggles.push((arrow, line));
+                        }
+                        if folded {
+                            // A pill after the heading says there's more inside.
+                            let end = g
+                                .rows
+                                .last()
+                                .map_or_else(|| Pos2::new(x0, top), |r| Pos2::new(x0 + r.rect().right(), top + r.rect().center().y));
+                            let pill = Rect::from_min_size(Pos2::new(end.x + 10.0, end.y - 9.0), Vec2::new(30.0, 18.0));
+                            painter.rect_filled(pill, 9.0, pal.hover);
+                            for k in [-1.0, 0.0, 1.0] {
+                                painter.circle_filled(pill.center() + Vec2::new(k * 6.0, 0.0), 1.8, pal.muted);
+                            }
+                            fold_toggles.push((pill, line));
+                        }
+                    }
                     let lr = buf.line_range(line);
                     let (ls, le) = (lr.start, lr.end);
                     let pos = Pos2::new(x0, top);
@@ -1544,6 +1788,7 @@ impl FastEditor {
 
                 view.view_rects = new_view_rects;
                 view.task_boxes = task_boxes;
+                view.fold_toggles = fold_toggles;
                 // Empty new note: say how it gets its name.
                 if doc.auto_name && buf.len_chars() == 0 && view.preedit.is_none() {
                     painter.text(
@@ -1599,7 +1844,9 @@ impl FastEditor {
             },
         );
         self.views.insert(doc_id, view);
-        self.suggesting = suggesting;
+        if primary || suggesting {
+            self.suggesting = suggesting;
+        }
         if let Some((s, i)) = clicked_suggestion
             && ws.accept_suggestion(&s, i)
         {
@@ -1662,6 +1909,18 @@ mod tests {
         ] {
             assert!(!hideable_marker(m, start), "{m:?} should stay");
         }
+    }
+
+    #[test]
+    fn a_fold_hides_its_section_up_to_the_next_heading_of_its_level() {
+        let h = [(0, 1), (2, 2), (5, 2), (6, 2), (8, 1), (9, 2)];
+        assert_eq!(fold_range(&h, 0, 12, |_| false), Some(1..8), "an H1 hides its H2s too");
+        assert_eq!(fold_range(&h, 2, 12, |_| false), Some(3..5));
+        assert_eq!(fold_range(&h, 5, 12, |_| false), None, "nothing between it and the next H2");
+        assert_eq!(fold_range(&h, 8, 12, |_| false), Some(9..12), "the last section runs to the end");
+        assert_eq!(fold_range(&h, 4, 12, |_| false), None, "not a heading");
+        // Blank lines before the next heading stay visible, so sections keep their spacing.
+        assert_eq!(fold_range(&h, 2, 12, |l| l == 4), Some(3..4));
     }
 
     #[test]

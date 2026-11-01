@@ -44,6 +44,8 @@ pub(crate) struct PanelOut {
     pub reveal_only: bool,
     /// Hide the available update until a newer one appears.
     pub skip_update: bool,
+    /// Open this note in the other half of a split editor.
+    pub open_side: Option<NotePath>,
 }
 
 fn section(ui: &mut egui::Ui, pal: &Palette, title: &str) {
@@ -91,6 +93,7 @@ pub(crate) fn merge_banner(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette)
 
 #[derive(Clone, Copy)]
 enum NoteAction {
+    OpenSide,
     Rename,
     Move,
     History,
@@ -104,6 +107,7 @@ fn note_menu(resp: &egui::Response) -> Option<NoteAction> {
     let mut act = None;
     resp.context_menu(|ui| {
         for (label, a) in [
+            ("Open to the side", NoteAction::OpenSide),
             ("Rename…", NoteAction::Rename),
             ("Move to folder…", NoteAction::Move),
             ("Version history…", NoteAction::History),
@@ -126,6 +130,7 @@ fn note_menu(resp: &egui::Response) -> Option<NoteAction> {
 
 fn apply_note_action(ctx: &egui::Context, ws: &mut Workspace, path: &NotePath, act: NoteAction, out: &mut PanelOut) {
     match act {
+        NoteAction::OpenSide => out.open_side = Some(path.clone()),
         NoteAction::CopyLink => {
             ctx.copy_text(format!("[[{}]]", path.stem()));
             ws.notify(quire_app::workspace::NoticeLevel::Info, format!("Copied [[{}]]", path.stem()));

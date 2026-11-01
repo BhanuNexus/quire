@@ -92,6 +92,8 @@ pub enum UiRequest {
     NewInFolder,
     /// Pick a folder to move the active note to.
     MoveNote,
+    /// Show two notes side by side (or go back to one).
+    Split,
 }
 
 /// Everything the insights panel shows for the active note.
@@ -258,6 +260,17 @@ impl Workspace {
 
     pub fn active_index(&self) -> Option<usize> {
         self.active
+    }
+
+    /// Make the open note `id` the active one. False if it isn't open.
+    pub fn activate(&mut self, id: DocId) -> bool {
+        match self.doc_pos(id) {
+            Some(i) => {
+                self.active = Some(i);
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn set_active(&mut self, i: usize) {
@@ -985,7 +998,13 @@ impl Workspace {
                     d.set_selection(Selection::new(0, n));
                 }
             }
-            C::AddNextOccurrence | C::SelectAllOccurrences | C::AddCursorAbove | C::AddCursorBelow => {
+            C::AddNextOccurrence
+            | C::SelectAllOccurrences
+            | C::AddCursorAbove
+            | C::AddCursorBelow
+            | C::ToggleFold
+            | C::FoldAll
+            | C::UnfoldAll => {
                 return Some(UiRequest::Editor(cmd));
             }
             C::Scratchpad => {
@@ -1068,6 +1087,7 @@ impl Workspace {
             C::NewInFolder => return self.vault.is_some().then_some(UiRequest::NewInFolder),
             C::MoveNote => return self.active_doc().and_then(|d| d.path.as_ref()).map(|_| UiRequest::MoveNote),
             C::ImportNotes => return Some(UiRequest::Import),
+            C::SplitEditor => return Some(UiRequest::Split),
             C::PublishSite => return self.vault.is_some().then_some(UiRequest::Publish),
             C::OpenSettings => return Some(UiRequest::Settings),
             C::InsertDate => {

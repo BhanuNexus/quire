@@ -4,6 +4,10 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Added
+- **Split editor.** Two notes side by side: **Split editor** (Ctrl+Alt+\\) shows the last note you had open next to this one (or asks which note), and **Open to the side** in a note's right-click menu opens it in the other half. Each half has its own scroll position and cursor; click into a half (or its title) to work in it, and links, quick open and new notes go to the half you're in.
+- **Fold sections.** Hover a heading for an arrow beside it; click to fold everything up to the next heading of the same level, so long notes read like an outline. A folded heading shows a ⋯ pill (click it to unfold). **Fold or unfold this section** (Ctrl+Shift+[), **Fold all sections** (Ctrl+Alt+[) and **Unfold all** (Ctrl+Alt+]). Moving the cursor into a folded section opens it, and ↑/↓ skip over folded lines.
+
 ### Changed
 - Saving no longer waits on version history: snapshots are compressed and written on a background thread, in order. Autosave of a 400 KB note took about 30 ms of the UI thread before.
 - Published websites show `quire-view` boards, tables, lists and calendars as real HTML, listing only notes that are published, instead of the raw code block.
