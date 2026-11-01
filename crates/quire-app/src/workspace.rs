@@ -631,6 +631,7 @@ impl Workspace {
         let vault = self.vault.clone().ok_or("no vault")?;
         let report = vault.rename_note(&old, new_title).map_err(|e| e.to_string())?;
         let n = self.apply_path_change(&vault, &report);
+        self.retitle_front_matter(id, old.stem(), report.new_path.stem());
         if !notify {
             return Ok(());
         }
@@ -639,6 +640,27 @@ impl Workspace {
             format!("Renamed to “{}” · updated links in {n} note{}", report.new_path.stem(), if n == 1 { "" } else { "s" }),
         );
         Ok(())
+    }
+
+    /// A front-matter `title:` that repeated the old name follows a rename,
+    /// so search, boards and views show the new name (an undoable edit).
+    fn retitle_front_matter(&mut self, id: DocId, old_stem: &str, new_stem: &str) {
+        let Some(i) = self.doc_pos(id) else { return };
+        let text = self.docs[i].text().to_string();
+        let same = quire_markdown::frontmatter::parse(&text).and_then(|fm| fm.title().map(|t| t.trim() == old_stem)).unwrap_or(false);
+        if !same {
+            return;
+        }
+        let edit = quire_markdown::frontmatter::set_field(&text, "title", &quire_markdown::Value::Str(new_stem.to_string()));
+        let doc = &mut self.docs[i];
+        let buf = doc.buffer();
+        let (s, e) = (buf.byte_to_char(edit.range.start), buf.byte_to_char(edit.range.end));
+        let head = doc.selection().head;
+        let new_len = edit.text.chars().count();
+        let caret = if head >= e { head - (e - s) + new_len } else { head.min(s + new_len) };
+        if doc.apply(Transaction::replace(s, e, edit.text).with_selection(Selection::cursor(caret)), EditKind::Other).is_ok() {
+            self.save(id);
+        }
     }
 
     /// Move the active note to `folder` ("" = vault root).
@@ -1402,6 +1424,17 @@ mod tests {
         assert_eq!(w.active_doc().unwrap().path.as_ref().unwrap().as_str(), "Text Ropes.md");
         w.set_active(0);
         assert!(w.active_doc().unwrap().text().contains("[[Text Ropes]]"));
+
+        // A front-matter title that repeated the old name follows the rename.
+        w.open_note(&NotePath::new("Ideas.md")).unwrap();
+        let d = w.active_doc_mut().unwrap();
+        d.apply(Transaction::insert(0, "---\ntitle: Ideas\nstatus: draft\n---\n"), EditKind::Other).unwrap();
+        w.rename_active("Big Ideas").unwrap();
+        let t = w.active_doc().unwrap().text().to_string();
+        assert!(t.starts_with("---\ntitle: Big Ideas\nstatus: draft\n---\n"), "{t}");
+        w.open_note(&NotePath::new("Text Ropes.md")).unwrap();
+        w.rename_active("Ropes").unwrap();
+        assert!(!w.active_doc().unwrap().text().contains("title:"), "no title is added when there was none");
     }
 
     #[test]

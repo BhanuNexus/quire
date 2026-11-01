@@ -36,7 +36,8 @@ USAGE:
                       import Logseq, Bear, Notion, Evernote or Markdown (folder, .zip, .enex, .bear2bk; dry run first)
   quire-cli history   <vault> <note>          saved versions of a note
   quire-cli calc      <expr>                  inline calculator
-  quire-cli bench     [size_mb]               performance check on synthetic data";
+  quire-cli bench     [size_mb]               performance check on synthetic data
+  quire-cli --version                         print the version";
 
 fn load(vault: &str) -> Result<(Vault, IndexService, f64), String> {
     let v = Vault::open_local(vault).map_err(|e| e.to_string())?;
@@ -56,6 +57,8 @@ fn find_note(ix: &Index, name: &str) -> Result<NotePath, String> {
 fn run(args: &[String]) -> Result<(), String> {
     let arg = |i: usize| args.get(i).map(String::as_str).ok_or_else(|| USAGE.to_string());
     match arg(0)? {
+        "--version" | "-V" | "version" => println!("quire-cli {}", env!("CARGO_PKG_VERSION")),
+        "--help" | "-h" | "help" => println!("{USAGE}"),
         "index" => {
             let (_, svc, ms) = load(arg(1)?)?;
             let ix = svc.read();

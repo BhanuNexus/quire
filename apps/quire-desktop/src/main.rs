@@ -27,6 +27,10 @@ fn app_icon() -> Option<Arc<egui::IconData>> {
 }
 
 fn main() -> eframe::Result {
+    if std::env::args().nth(1).is_some_and(|a| a == "--version" || a == "-V") {
+        println!("Quire {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     let vault_arg: Option<PathBuf> = std::env::args_os().nth(1).map(PathBuf::from);
     let mut viewport =
         egui::ViewportBuilder::default().with_title("Quire").with_inner_size([1280.0, 820.0]).with_min_inner_size([520.0, 360.0]);
