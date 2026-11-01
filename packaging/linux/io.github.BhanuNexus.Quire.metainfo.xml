@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-FileCopyrightText: 2026 The Quire contributors -->
+<!-- SPDX-License-Identifier: CC0-1.0 -->
+<component type="desktop-application">
+  <id>io.github.BhanuNexus.Quire</id>
+  <name>Quire</name>
+  <summary>Fast, local-first Markdown notes</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-or-later</project_license>
+  <developer id="io.github.BhanuNexus">
+    <name>The Quire contributors</name>
+  </developer>
+  <description>
+    <p>
+      Quire is a notepad for plain Markdown files in a folder you choose. It styles notes as you type,
+      saves automatically and links them like a wiki, with backlinks, related notes and search by words
+      and by meaning. Nothing leaves your computer unless you turn on an AI provider.
+    </p>
+    <ul>
+      <li>A fast editor that stays smooth on very large files, with multiple cursors</li>
+      <li>Wikilinks that update when you rename a note, backlinks and unlinked mentions</li>
+      <li>Boards, tables and calendars built from note properties, still plain Markdown</li>
+      <li>Ask questions of your notes and get answers with sources, offline</li>
+      <li>Version history for every note, and safe merging when a sync tool changes a note you're editing</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.BhanuNexus.Quire.desktop</launchable>
+  <provides>
+    <binary>quire</binary>
+    <binary>quire-cli</binary>
+  </provides>
+  <categories>
+    <category>Office</category>
+    <category>TextEditor</category>
+  </categories>
+  <keywords>
+    <keyword>markdown</keyword>
+    <keyword>notes</keyword>
+    <keyword>wiki</keyword>
+    <keyword>journal</keyword>
+  </keywords>
+  <url type="homepage">https://github.com/BhanuNexus/quire</url>
+  <url type="bugtracker">https://github.com/BhanuNexus/quire/issues</url>
+  <url type="vcs-browser">https://github.com/BhanuNexus/quire</url>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/BhanuNexus/quire/main/docs/screenshots/editor-light.png</image>
+      <caption>Editing a note with backlinks and related notes</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/BhanuNexus/quire/main/docs/screenshots/board-dark.png</image>
+      <caption>A project board built from note properties</caption>
+    </screenshot>
+  </screenshots>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="@VERSION@" date="@DATE@"/>
+  </releases>
+</component>

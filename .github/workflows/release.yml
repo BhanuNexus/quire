@@ -82,15 +82,31 @@ jobs:
           persist-credentials: false
       - name: Install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
-      - run: packaging/linux/package.sh
+      - name: Build tar.gz, .deb and AppImage
+        run: |
+          eval "$(packaging/linux/fetch-appimagetool.sh "$RUNNER_TEMP/appimage")"
+          packaging/linux/package.sh
+      - name: Smoke-test the packages
+        run: |
+          sudo apt-get install -y --no-install-recommends ./dist/Quire-*-linux-amd64.deb
+          quire --version && quire-cli --version
+          APPIMAGE_EXTRACT_AND_RUN=1 ./dist/Quire-*-linux-x86_64.AppImage --version
+          tar -xzf dist/Quire-*-linux-x86_64.tar.gz -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP"/Quire-*-linux-x86_64/quire-cli --version
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         if: env.IS_RELEASE == 'true'
         with:
-          subject-path: dist/*.tar.gz
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.AppImage
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: quire-linux
-          path: dist/*.tar.gz
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.AppImage
           if-no-files-found: error
 
   macos:
@@ -244,6 +260,8 @@ jobs:
         with:
           subject-path: |
             dist/*.tar.gz
+            dist/*.deb
+            dist/*.AppImage
             dist/*.dmg
             dist/*.exe
             dist/*.zip
