@@ -68,6 +68,7 @@ fn rewrite(src: &str, mut f: impl FnMut(&Inline, &str) -> String) -> String {
 
 /// Render a note body to an HTML fragment.
 pub fn to_html(src: &str, resolve: Resolver<'_>) -> String {
+    let src = &*crate::display_source(src);
     let prepared = rewrite(src, |inline, raw| match inline {
         Inline::WikiLink { link, .. } => {
             let label = escape_html(link.display());
@@ -116,6 +117,7 @@ pub const NOTE_SCHEME: &str = "quire://note/";
 /// Markdown suitable for a plain `CommonMark` viewer: wikilinks become links
 /// with the [`NOTE_SCHEME`], image embeds become images, highlights become bold.
 pub fn for_preview(src: &str, resolve_embed: &dyn Fn(&str) -> Option<String>) -> String {
+    let src = &*crate::display_source(src);
     rewrite(src, |inline, raw| match inline {
         Inline::WikiLink { link, .. } if link.embed && is_image(&link.target) => match resolve_embed(&link.target) {
             Some(uri) => format!("![{}]({})", link.display(), uri),

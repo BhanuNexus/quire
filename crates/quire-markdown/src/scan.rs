@@ -49,7 +49,8 @@ impl Inline {
 pub fn verbatim_ranges(src: &str) -> Vec<Range<usize>> {
     let mut out = Vec::new();
     let mut open: Option<usize> = None;
-    for (ev, range) in Parser::new_ext(src, crate::options()).into_offset_iter() {
+    let parsed = crate::parse_source(src);
+    for (ev, range) in Parser::new_ext(&parsed, crate::options()).into_offset_iter() {
         match ev {
             Event::Start(Tag::CodeBlock(_) | Tag::MetadataBlock(_) | Tag::HtmlBlock) => open = Some(range.start),
             Event::End(TagEnd::CodeBlock | TagEnd::MetadataBlock(_) | TagEnd::HtmlBlock) => {

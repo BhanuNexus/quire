@@ -177,6 +177,7 @@ impl QuireApp {
                 UiRequest::NewProject => Overlay::NewProject(crate::dialogs::ProjectState::default()),
                 UiRequest::Shortcuts => Overlay::Shortcuts { query: String::new(), focused: false },
                 UiRequest::Tour => Overlay::Tour { step: 0 },
+                UiRequest::SyncConflicts => Overlay::SyncConflicts,
                 UiRequest::NewInFolder => Overlay::Folder(crate::dialogs::FolderState::new(&self.ws, crate::dialogs::FolderMode::NewNote)),
                 UiRequest::MoveNote => Overlay::Folder(crate::dialogs::FolderState::new(&self.ws, crate::dialogs::FolderMode::Move)),
                 UiRequest::History => Overlay::History(crate::dialogs::HistoryState::new(&self.ws)),
@@ -370,9 +371,11 @@ impl QuireApp {
                     .inner;
                 self.after_panel(&out);
             }
-            egui::Panel::bottom("quire-status")
+            let status = egui::Panel::bottom("quire-status")
                 .frame(egui::Frame::NONE.fill(if focus { pal.bg } else { pal.panel }).inner_margin(egui::Margin::symmetric(12, 4)))
-                .show(ui, |ui| panels::status_bar(ui, &self.ws, pal));
+                .show(ui, |ui| panels::status_bar(ui, &self.ws, pal))
+                .inner;
+            self.after_panel(&status);
             if self.ws.settings.show_sidebar && !focus {
                 let out = egui::Panel::left("quire-sidebar")
                     .resizable(true)
@@ -405,6 +408,13 @@ impl QuireApp {
                     .default_size(ui.available_width() / 2.0)
                     .frame(egui::Frame::NONE.fill(pal.bg).stroke(egui::Stroke::new(1.0, pal.border)))
                     .show(ui, |ui| panels::preview(ui, &mut self.ws, &mut self.preview_cache, pal))
+                    .inner;
+                self.after_panel(&out);
+            }
+            if self.ws.active_doc().is_some_and(|d| d.pending_merge.is_some()) {
+                let out = egui::Panel::top("quire-merge")
+                    .frame(egui::Frame::NONE.fill(pal.mark_bg).inner_margin(egui::Margin::symmetric(12, 8)))
+                    .show(ui, |ui| panels::merge_banner(ui, &mut self.ws, pal))
                     .inner;
                 self.after_panel(&out);
             }

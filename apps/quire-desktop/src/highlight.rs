@@ -77,6 +77,11 @@ pub(crate) fn format_for(style: &Style, p: &Palette, size: f32, fonts: FontSuppo
         }
         f.underline = Stroke::NONE;
     }
+    if style.conflict {
+        f.font_id = FontId::new(size * 0.9, FontFamily::Monospace);
+        f.color = p.warn;
+        f.background = p.mark_bg;
+    }
     f
 }
 

@@ -23,6 +23,7 @@ pub enum Command {
     ShowHistory,
     NewProject,
     NewInFolder,
+    ResolveSyncConflicts,
     MoveNote,
     ImportNotes,
     OpenSettings,
@@ -168,6 +169,7 @@ commands! {
     ShowHistory,      "Note",   "Version history…",               [cmd_alt("H")], true;
     NewProject,       "Note",   "New project…",                   [cmd_alt("N")], false;
     NewInFolder,      "Note",   "New note in folder…",            [], false;
+    ResolveSyncConflicts,"Note","Resolve sync conflicts…",        [], false;
     MoveNote,         "Note",   "Move to folder…",                [], true;
     ImportNotes,      "Note",   "Import notes (Logseq, Notion, Bear, Evernote)…", [], false;
     OpenSettings,     "App",    "Settings…",                      [cmd("Comma")], false;

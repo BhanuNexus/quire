@@ -141,7 +141,8 @@ pub fn extract(src: &str) -> Extracted {
     let mut in_code_block = false;
     let mut in_meta = false;
 
-    for (ev, range) in Parser::new_ext(src, crate::options()).into_offset_iter() {
+    let parsed = crate::parse_source(src);
+    for (ev, range) in Parser::new_ext(&parsed, crate::options()).into_offset_iter() {
         match ev {
             Event::Start(Tag::Link { link_type, dest_url, .. }) => {
                 let dest = if link_type == LinkType::Email { format!("mailto:{dest_url}") } else { dest_url.to_string() };

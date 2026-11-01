@@ -688,3 +688,92 @@ pub(crate) fn tour(ctx: &egui::Context, step: &mut usize, pal: &Palette) -> bool
     });
     close
 }
+
+// ------------------------------------------------------------------ sync conflicts
+
+/// Conflict copies left by sync tools, with a merge preview for each.
+/// Returns (close, opened a note).
+pub(crate) fn sync_conflicts(ctx: &egui::Context, ws: &mut Workspace, pal: &Palette) -> (bool, bool) {
+    let (mut close, mut opened) = (false, false);
+    let copies = ws.conflict_copies();
+    let mut action: Option<(usize, u8)> = None;
+    modal(ctx, "quire-sync-conflicts", pal).show(ctx, |ui| {
+        ui.set_width(modal_width(ctx, 620.0));
+        ui.heading("Sync conflicts");
+        ui.label(
+            RichText::new(
+                "Your sync tool saved these as separate copies because two devices changed the same note. \
+                 Merging combines both, using version history to find what changed on each side.",
+            )
+            .size(12.5)
+            .color(pal.muted),
+        );
+        ui.separator();
+        if copies.is_empty() {
+            ui.label(RichText::new("No conflicts left.").color(pal.muted));
+        }
+        egui::ScrollArea::vertical().max_height(380.0).show(ui, |ui| {
+            for (i, c) in copies.iter().enumerate() {
+                let preview = ws.preview_copy_merge(c);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(c.original.stem()).strong());
+                    ui.label(RichText::new(format!("· {} copy · {}", c.tool, c.copy.file_name())).size(12.0).color(pal.muted));
+                });
+                let summary = match &preview {
+                    Some(r) if r.is_clean() => ("Merges cleanly".to_string(), pal.accent),
+                    Some(r) => (
+                        format!(
+                            "{} conflicting change{} will be marked for you to edit",
+                            r.conflicts,
+                            if r.conflicts == 1 { "" } else { "s" }
+                        ),
+                        pal.warn,
+                    ),
+                    None => ("Couldn't read one of the files".to_string(), pal.danger),
+                };
+                ui.label(RichText::new(summary.0).size(12.5).color(summary.1));
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(preview.is_some(), egui::Button::new("Merge into original")).clicked() {
+                        action = Some((i, 0));
+                    }
+                    if ui.button("Keep original").on_hover_text("Move the copy to the vault's trash").clicked() {
+                        action = Some((i, 1));
+                    }
+                    if ui.button("Open both").clicked() {
+                        action = Some((i, 2));
+                    }
+                });
+                ui.separator();
+            }
+        });
+        if ui.button("Close").clicked() {
+            close = true;
+        }
+    });
+    if let Some((i, what)) = action
+        && let Some(c) = copies.get(i)
+    {
+        match what {
+            0 => match ws.merge_conflict_copy(c) {
+                Ok(0) => ws.notify(NoticeLevel::Info, format!("Merged the copy into “{}”", c.original.stem())),
+                Ok(n) => ws.notify(
+                    NoticeLevel::Warn,
+                    format!("Merged into “{}” with {n} marked conflict{}", c.original.stem(), if n == 1 { "" } else { "s" }),
+                ),
+                Err(e) => ws.notify(NoticeLevel::Error, e),
+            },
+            1 => {
+                if let Err(e) = ws.discard_conflict_copy(c) {
+                    ws.notify(NoticeLevel::Error, e);
+                }
+            }
+            _ => {
+                ws.open_note(&c.copy);
+                ws.open_note(&c.original);
+                close = true;
+                opened = true;
+            }
+        }
+    }
+    (close, opened)
+}

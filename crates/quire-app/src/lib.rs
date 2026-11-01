@@ -16,11 +16,12 @@ pub mod properties;
 pub mod secrets;
 pub mod session;
 pub mod settings;
+pub mod sync;
 pub mod workspace;
 
 pub use ask_state::AskState;
 pub use commands::{COMMANDS, Command, CommandInfo, KeyCombo};
-pub use document::{DocId, Document};
+pub use document::{DocId, Document, PendingMerge};
 pub use find_state::FindState;
 pub use session::Session;
 pub use settings::{Settings, Theme};

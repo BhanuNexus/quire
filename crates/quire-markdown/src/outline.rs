@@ -29,7 +29,8 @@ pub fn outline(src: &str) -> Vec<Heading> {
     let mut out = Vec::new();
     let mut cur: Option<Heading> = None;
     let mut seen = std::collections::HashMap::<String, usize>::new();
-    for (ev, range) in Parser::new_ext(src, crate::options()).into_offset_iter() {
+    let parsed = crate::parse_source(src);
+    for (ev, range) in Parser::new_ext(&parsed, crate::options()).into_offset_iter() {
         match ev {
             Event::Start(Tag::Heading { level, .. }) => {
                 cur = Some(Heading { level: level as u8, text: String::new(), offset: range.start, anchor: String::new() });

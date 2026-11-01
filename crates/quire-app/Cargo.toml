@@ -32,7 +32,7 @@ regex.workspace = true
 png.workspace = true
 keyring = { version = "4", optional = true }
 flate2 = "1"
-similar = "3"
+similar.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

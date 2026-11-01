@@ -33,6 +33,7 @@ pub(crate) enum Overlay {
     Folder(crate::dialogs::FolderState),
     Shortcuts { query: String, focused: bool },
     Tour { step: usize },
+    SyncConflicts,
 }
 
 impl Overlay {
@@ -164,6 +165,7 @@ pub(crate) fn show(ctx: &egui::Context, overlay: &mut Overlay, ws: &mut Workspac
         Overlay::Folder(st) => (res.close, res.jumped) = crate::dialogs::folder_picker(ctx, st, ws, pal),
         Overlay::Shortcuts { query, focused } => res.close = shortcuts(ctx, query, focused, pal, mac),
         Overlay::Tour { step } => res.close = crate::dialogs::tour(ctx, step, pal),
+        Overlay::SyncConflicts => (res.close, res.jumped) = crate::dialogs::sync_conflicts(ctx, ws, pal),
         Overlay::Palette { mode, query, selected, focused } => {
             let list = items(ws, *mode, query, mac);
             let (down, up, enter) = ctx.input_mut(|i| {

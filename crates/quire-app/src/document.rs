@@ -14,6 +14,16 @@ use quire_vault::NotePath;
 pub struct DocId(pub u64);
 
 /// Derived data, valid for exactly one revision.
+/// The other side of an unresolved merge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingMerge {
+    /// The file's content as changed elsewhere.
+    pub theirs: String,
+    /// Our text merged with theirs, with conflict markers.
+    pub merged: String,
+    pub conflicts: usize,
+}
+
 #[derive(Default)]
 struct Derived {
     rev: u64,
@@ -38,6 +48,8 @@ pub struct Document {
     pub large: bool,
     /// An external change arrived while we had unsaved edits.
     pub conflict: bool,
+    /// A change made elsewhere that conflicts with unsaved edits here.
+    pub pending_merge: Option<PendingMerge>,
     /// Created as "Untitled": the file takes its name from the first line
     /// until the user renames it themselves.
     pub auto_name: bool,
@@ -63,6 +75,7 @@ impl Document {
             large: text.len() > large_threshold_bytes,
             conflict: false,
             auto_name: false,
+            pending_merge: None,
             derived: RefCell::default(),
             line_log: Vec::new(),
         }
@@ -214,10 +227,26 @@ impl Document {
 
     /// Replace everything (external reload) as one undoable step.
     pub fn reload(&mut self, text: &str) {
-        let len = self.buffer.len_chars();
-        let tx = Transaction::replace(0, len, text).with_selection(self.selection.clamp(text.chars().count()));
-        let _ = self.apply(tx, EditKind::Other);
+        self.replace_minimally(text);
         self.mark_saved(text);
+    }
+
+    /// Change the text to `new` with the smallest line edits, so the caret
+    /// and undo history stay meaningful. Undoable.
+    pub fn replace_minimally(&mut self, new: &str) {
+        let old = self.text();
+        if *old == *new {
+            return;
+        }
+        let tx = Transaction::new(quire_text::merge::line_changes(&old, new))
+            .unwrap_or_else(|_| Transaction::replace(0, self.buffer.len_chars(), new));
+        let _ = self.apply(tx, EditKind::Other);
+    }
+
+    /// Record what is on disk now without marking our edits saved (after a
+    /// merge, our text still has to be written).
+    pub fn set_disk_base(&mut self, disk_text: &str) {
+        self.disk_text = Some(Rc::from(disk_text));
     }
 
     pub fn mark_saved(&mut self, disk_text: &str) {

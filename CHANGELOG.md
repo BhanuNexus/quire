@@ -8,6 +8,12 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 - Keyboard shortcut cheat sheet (Ctrl+/ or the **?** button), generated from the command list.
 - A five-step first-run tour (Help: Take the tour to see it again).
 - Quick open (Ctrl+P) with an empty query lists your recently opened notes first. The list is remembered between sessions and follows renames and moves.
+- Safer sync with Dropbox, iCloud, Syncthing, Nextcloud and similar tools. When a note you're editing also changes elsewhere, Quire merges the two line by line, keeping your caret, and Undo takes the merge back out. If both sides changed the same lines, autosave pauses and a banner lets you keep yours, take theirs, or keep both between conflict markers.
+- Conflict copies made by sync tools (`Note (… conflicted copy …).md`, `Note.sync-conflict-….md`) are detected. The status bar shows how many there are, and **Resolve sync conflicts…** merges each one back into its original, using version history to find what changed on each side.
+- Conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) are highlighted in the editor and shown as plain lines in the preview, rather than turning into a heading or a quote.
+
+### Changed
+- An open note that changes on disk is updated with only the lines that changed, so the caret, scroll position and undo history are kept.
 
 ### Fixed
 - Quick open could show only the first couple of results when a longer list followed a shorter one.

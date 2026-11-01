@@ -3363,6 +3363,7 @@ name = "quire-text"
 version = "0.3.1"
 dependencies = [
  "ropey",
+ "similar",
 ]
 
 [[package]]

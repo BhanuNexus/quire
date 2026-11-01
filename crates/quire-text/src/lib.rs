@@ -12,6 +12,7 @@
 mod buffer;
 mod change;
 mod history;
+pub mod merge;
 pub mod motion;
 pub mod multi;
 mod selection;

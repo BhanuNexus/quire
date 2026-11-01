@@ -33,6 +33,8 @@ pub struct Style {
     pub front_matter: bool,
     /// Syntax punctuation (`#`, `**`, `](url)`, list bullets…) — usually dimmed.
     pub marker: bool,
+    /// A merge-conflict marker line (`<<<<<<<`, `=======`, `>>>>>>>`).
+    pub conflict: bool,
 }
 
 impl Style {
@@ -64,6 +66,7 @@ enum Kind {
     Math,
     FrontMatter,
     Marker,
+    Conflict,
 }
 
 impl Kind {
@@ -84,11 +87,12 @@ impl Kind {
             Self::Math => 12,
             Self::FrontMatter => 13,
             Self::Marker => 14,
+            Self::Conflict => 15,
         }
     }
 }
 
-const SLOTS: usize = 15;
+const SLOTS: usize = 16;
 
 struct Collector<'a> {
     src: &'a str,
@@ -116,7 +120,8 @@ pub fn highlight(src: &str) -> Vec<StyleRun> {
     let mut c = Collector { src, spans: Vec::with_capacity(src.len() / 16) };
     let mut item_stack: Vec<Range<usize>> = Vec::new();
 
-    for (ev, range) in Parser::new_ext(src, crate::options()).into_offset_iter() {
+    let parsed = crate::parse_source(src);
+    for (ev, range) in Parser::new_ext(&parsed, crate::options()).into_offset_iter() {
         match ev {
             Event::Start(Tag::Heading { level, .. }) => {
                 let lvl = level as u8;
@@ -221,6 +226,10 @@ pub fn highlight(src: &str) -> Vec<StyleRun> {
         }
     }
 
+    for r in crate::conflict_marker_lines(src) {
+        c.push(r, Kind::Conflict);
+    }
+
     let verbatim = verbatim_ranges(src);
     for inline in scan_with(src, &verbatim) {
         match inline {
@@ -307,6 +316,7 @@ fn style_from(c: &[u32; SLOTS], headings: &[u8]) -> Style {
         math: c[12] > 0,
         front_matter: c[13] > 0,
         marker: c[14] > 0,
+        conflict: c[15] > 0,
     }
 }
 

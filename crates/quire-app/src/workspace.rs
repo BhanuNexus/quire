@@ -15,11 +15,11 @@ use quire_index::{Backlink, IndexService};
 use quire_intel::llm::{Assist, LanguageModel, LlmError, build_request};
 use quire_intel::{Calculator, LinkSuggestion, RelatedNote, UnlinkedMention, trailing_date_phrase};
 use quire_markdown::{LinkKind, editing, table};
-use quire_text::{Change, EditKind, Selection, Transaction};
+use quire_text::{Change, EditKind, Selection, Transaction, merge};
 use quire_vault::{NotePath, Vault, VaultEvent, VaultWatcher};
 
 use crate::commands::Command;
-use crate::document::{DocId, Document};
+use crate::document::{DocId, Document, PendingMerge};
 use crate::session::{OpenTab, Session};
 use crate::settings::{Settings, Theme};
 
@@ -85,6 +85,7 @@ pub enum UiRequest {
     NewProject,
     Shortcuts,
     Tour,
+    SyncConflicts,
     /// Pick a folder for a new note.
     NewInFolder,
     /// Pick a folder to move the active note to.
@@ -134,6 +135,7 @@ pub struct Workspace {
     pub(crate) view_cache: crate::properties::ViewCache,
     /// Recently active notes, most recent first.
     recent: Vec<NotePath>,
+    pub(crate) conflict_count_cache: std::cell::Cell<Option<(u64, usize)>>,
 }
 
 impl Workspace {
@@ -159,6 +161,7 @@ impl Workspace {
             file_cache: crate::attach::FileCache::default(),
             view_cache: crate::properties::ViewCache::default(),
             recent: Vec::new(),
+            conflict_count_cache: std::cell::Cell::new(None),
         }
     }
 
@@ -553,21 +556,8 @@ impl Workspace {
                         // Outside edits are versions too.
                         let _ = v.snapshot(&p, &content, crate::history_ops::now_ms(), true);
                     }
-                    if let Some(doc) = self.docs.iter_mut().find(|d| d.path.as_ref() == Some(&p)) {
-                        if doc.matches_disk(&content) {
-                            continue; // our own save echoing back
-                        }
-                        let title = doc.title();
-                        if doc.is_dirty() {
-                            doc.conflict = true;
-                            self.notify(
-                                NoticeLevel::Warn,
-                                format!("“{title}” changed on disk while you were editing. Your version is kept; save to overwrite."),
-                            );
-                        } else {
-                            doc.reload(&content);
-                            self.notify(NoticeLevel::Info, format!("Reloaded “{title}” (changed on disk)"));
-                        }
+                    if self.absorb_external_change(&p, &content) {
+                        continue; // our own save echoing back
                     }
                     self.index.upsert(p, content);
                 }
@@ -579,6 +569,48 @@ impl Workspace {
             }
         }
         true
+    }
+
+    /// Bring an open note up to date with a change made outside Quire.
+    /// Clean notes reload; notes with unsaved edits are merged three-way
+    /// (the text we last read or wrote is the common ancestor), or keep a
+    /// pending merge for the user when both sides changed the same lines.
+    /// Returns true when `content` is just our own save echoing back.
+    pub(crate) fn absorb_external_change(&mut self, p: &NotePath, content: &str) -> bool {
+        if let Some(doc) = self.docs.iter_mut().find(|d| d.path.as_ref() == Some(p)) {
+            if doc.matches_disk(content) {
+                return true;
+            }
+            let title = doc.title();
+            if doc.is_dirty() {
+                // Three-way merge: what we last read/wrote is the common ancestor.
+                let mine = doc.text().to_string();
+                let base = doc.disk_text();
+                let r = merge::merge(base.as_deref(), &mine, content);
+                if r.is_clean() {
+                    doc.replace_minimally(&r.text);
+                    doc.set_disk_base(content);
+                    doc.conflict = false;
+                    doc.pending_merge = None;
+                    self.notify(NoticeLevel::Info, format!("Merged changes made elsewhere into “{title}” (Undo to take them out)"));
+                } else {
+                    let n = r.conflicts;
+                    doc.conflict = true;
+                    doc.pending_merge = Some(PendingMerge { theirs: content.to_string(), merged: r.text, conflicts: n });
+                    self.notify(
+                        NoticeLevel::Warn,
+                        format!(
+                            "“{title}” also changed elsewhere: {n} conflicting change{}. Choose what to keep above the note.",
+                            if n == 1 { "" } else { "s" }
+                        ),
+                    );
+                }
+            } else {
+                doc.reload(content);
+                self.notify(NoticeLevel::Info, format!("Reloaded “{title}” (changed on disk)"));
+            }
+        }
+        false
     }
 
     // ------------------------------------------------------------------ refactors
@@ -978,6 +1010,7 @@ impl Workspace {
             }
             C::ShowHistory => return Some(UiRequest::History),
             C::ShowShortcuts => return Some(UiRequest::Shortcuts),
+            C::ResolveSyncConflicts => return Some(UiRequest::SyncConflicts),
             C::TakeTour => return Some(UiRequest::Tour),
             C::NewProject => return self.vault.is_some().then_some(UiRequest::NewProject),
             C::NewInFolder => return self.vault.is_some().then_some(UiRequest::NewInFolder),

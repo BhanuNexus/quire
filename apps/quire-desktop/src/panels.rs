@@ -50,6 +50,41 @@ fn section(ui: &mut egui::Ui, pal: &Palette, title: &str) {
     ui.add_space(2.0);
 }
 
+// ---------------------------------------------------------------- merge banner
+
+/// Shown above a note whose outside change conflicts with unsaved edits.
+pub(crate) fn merge_banner(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> PanelOut {
+    let mut out = PanelOut::default();
+    let Some(doc) = ws.active_doc() else { return out };
+    let Some(m) = &doc.pending_merge else { return out };
+    let (id, n) = (doc.id, m.conflicts);
+    let mut choice = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.label(
+            RichText::new(format!(
+                "⚠ This note was also changed elsewhere. {n} change{} conflict{} with your unsaved edits. Autosave is paused.",
+                if n == 1 { "" } else { "s" },
+                if n == 1 { "s" } else { "" }
+            ))
+            .color(pal.text),
+        );
+        if ui.button("Keep mine").on_hover_text("Save your version; the other one stays in version history").clicked() {
+            choice = Some(quire_app::sync::Resolution::KeepMine);
+        }
+        if ui.button("Take theirs").on_hover_text("Use the other version (Undo brings yours back)").clicked() {
+            choice = Some(quire_app::sync::Resolution::TakeTheirs);
+        }
+        if ui.button("Keep both").on_hover_text("Put both versions in the note between <<<<<<< and >>>>>>> lines").clicked() {
+            choice = Some(quire_app::sync::Resolution::MergeWithMarkers);
+        }
+    });
+    if let Some(how) = choice {
+        ws.resolve_merge(id, how);
+        out.jumped = true;
+    }
+    out
+}
+
 // ---------------------------------------------------------------- note menu
 
 #[derive(Clone, Copy)]
@@ -641,7 +676,8 @@ pub(crate) fn insights(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> 
 
 // ---------------------------------------------------------------- status bar
 
-pub(crate) fn status_bar(ui: &mut egui::Ui, ws: &Workspace, pal: &Palette) {
+pub(crate) fn status_bar(ui: &mut egui::Ui, ws: &Workspace, pal: &Palette) -> PanelOut {
+    let mut out = PanelOut::default();
     ui.horizontal(|ui| {
         let small = |s: String| RichText::new(s).size(12.0).color(pal.muted);
         if let Some(doc) = ws.active_doc() {
@@ -667,6 +703,19 @@ pub(crate) fn status_bar(ui: &mut egui::Ui, ws: &Workspace, pal: &Palette) {
             }
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let conflicts = ws.conflict_copy_count();
+            if conflicts > 0 {
+                let label = format!("⚠ {conflicts} sync conflict{}", if conflicts == 1 { "" } else { "s" });
+                if ui
+                    .add(egui::Label::new(RichText::new(label).size(12.0).color(pal.warn)).sense(egui::Sense::click()))
+                    .on_hover_text("A sync tool saved a conflicting copy of a note. Click to merge it back.")
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    out.run = Some(Command::ResolveSyncConflicts);
+                }
+                ui.separator();
+            }
             let s = ws.index().status();
             let n = ws.index().read().len();
             ui.label(small(if s.busy && s.total > 0 { format!("Indexing {}/{}", s.indexed, s.total) } else { format!("{n} notes") }));
@@ -695,6 +744,7 @@ pub(crate) fn status_bar(ui: &mut egui::Ui, ws: &Workspace, pal: &Palette) {
             }
         });
     });
+    out
 }
 
 // ---------------------------------------------------------------- preview
