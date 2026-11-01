@@ -4,6 +4,8 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-02
+
 ### Added
 - **Sync through a folder you already sync, free.** Quire Sync can now use a folder that Dropbox, iCloud Drive, Google Drive, OneDrive or Syncthing keeps on all your devices, with no server to run. It's the default in Settings → Sync, which offers the synced folders it finds on your computer. Notes are encrypted before they reach the folder, so the sync service can't read them or their names. Each device writes only to its own files there, so the sync tool never makes conflicted copies, and edits made on two devices before either saw the other merge as they do with a server.
 
@@ -110,7 +112,8 @@ Downloads for Windows, macOS (universal) and Linux are attached to the release, 
 ### Added
 - First version: live Markdown styling, wikilinks with rename refactoring, backlinks, related notes, daily notes, templates, command palette, quick open, inline calculator and natural-language dates.
 
-[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/BhanuNexus/quire/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/BhanuNexus/quire/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/BhanuNexus/quire/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/BhanuNexus/quire/releases/tag/v0.4.0
