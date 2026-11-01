@@ -145,6 +145,26 @@ pub fn suggested_sync_folders() -> Vec<(String, PathBuf)> {
     out
 }
 
+/// `p` with symlinks resolved (macOS's `/var` is `/private/var`), even when
+/// its last parts don't exist yet: the deepest existing folder is resolved
+/// and the rest appended, so two paths compare the same way.
+fn canonical(p: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut cur = p;
+    loop {
+        if let Ok(c) = std::fs::canonicalize(cur) {
+            return rest.iter().rev().fold(c, |acc, part| acc.join(part));
+        }
+        match (cur.parent(), cur.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_os_string());
+                cur = parent;
+            }
+            _ => return p.to_path_buf(),
+        }
+    }
+}
+
 /// The `Quire Sync` folder for a picked folder, refusing ones that would
 /// sync the vault into itself.
 fn sync_folder_root(chosen: &Path, vault_root: &Path) -> Result<PathBuf, String> {
@@ -152,9 +172,7 @@ fn sync_folder_root(chosen: &Path, vault_root: &Path) -> Result<PathBuf, String>
         return Err(format!("{} isn't a folder on this computer", chosen.display()));
     }
     let root = folder::sync_root(chosen);
-    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-    let (r, v) = (canon(&root), canon(vault_root));
-    let r = if root.exists() { r } else { canon(chosen).join(folder::FOLDER_NAME) };
+    let (r, v) = (canonical(&root), canonical(vault_root));
     if r.starts_with(&v) {
         return Err("Pick a folder outside this notes folder".into());
     }
@@ -710,6 +728,14 @@ mod tests {
         assert!(sync_folder_root(&vault.join("inner"), &vault).is_err());
         assert!(sync_folder_root(dir.path(), &dir.path().join("Quire Sync").join("v")).is_err());
         assert!(sync_folder_root(&dir.path().join("missing"), &vault).is_err());
+        // The same folder reached through a symlink (macOS's /var → /private/var).
+        #[cfg(unix)]
+        {
+            let link = dir.path().join("link");
+            std::os::unix::fs::symlink(dir.path(), &link).unwrap();
+            assert!(sync_folder_root(dir.path(), &link.join("Quire Sync").join("v")).is_err());
+            assert!(sync_folder_root(&link.join("Notes").join("inner"), &vault).is_err());
+        }
     }
 
     #[test]
