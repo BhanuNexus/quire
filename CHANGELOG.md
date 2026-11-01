@@ -4,6 +4,13 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Added
+- Keyboard shortcut cheat sheet (Ctrl+/ or the **?** button), generated from the command list.
+- Quick open (Ctrl+P) with an empty query lists your recently opened notes first. The list is remembered between sessions and follows renames and moves.
+
+### Fixed
+- Quick open could show only the first couple of results when a longer list followed a shorter one.
+
 ## [0.3.1] - 2026-11-01
 
 First public release.

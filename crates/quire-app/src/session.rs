@@ -19,6 +19,8 @@ pub struct Session {
     pub tabs: Vec<OpenTab>,
     pub active: usize,
     pub scratchpad: String,
+    /// Recently opened notes, most recent first.
+    pub recent: Vec<String>,
 }
 
 impl Session {

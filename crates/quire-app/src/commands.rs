@@ -28,6 +28,7 @@ pub enum Command {
     OpenSettings,
     // Search & navigation
     CommandPalette,
+    ShowShortcuts,
     SearchVault,
     ShowTasks,
     // Formatting
@@ -123,6 +124,7 @@ impl KeyCombo {
             "Period" => ".",
             "Equals" => "=",
             "Comma" => ",",
+            "Slash" => "/",
             "Minus" => "-",
             k => k,
         });
@@ -169,6 +171,7 @@ commands! {
     ImportNotes,      "Note",   "Import notes (Logseq, Notion, Bear, Evernote)…", [], false;
     OpenSettings,     "App",    "Settings…",                      [cmd("Comma")], false;
     CommandPalette,   "Go",     "Command palette…",               [cmd_shift("P"), cmd("K")], false;
+    ShowShortcuts,    "Help",   "Keyboard shortcuts",             [cmd("Slash")], false;
     SearchVault,      "Go",     "Search all notes…",              [cmd_shift("F")], false;
     ShowTasks,        "Go",     "Show open tasks",                [alt("T")], false;
     Bold,             "Format", "Bold",                           [cmd("B")], true;

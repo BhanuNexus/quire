@@ -83,6 +83,7 @@ pub enum UiRequest {
     History,
     Import,
     NewProject,
+    Shortcuts,
     /// Pick a folder for a new note.
     NewInFolder,
     /// Pick a folder to move the active note to.
@@ -130,6 +131,8 @@ pub struct Workspace {
     pub ask: crate::ask_state::AskState,
     pub(crate) file_cache: crate::attach::FileCache,
     pub(crate) view_cache: crate::properties::ViewCache,
+    /// Recently active notes, most recent first.
+    recent: Vec<NotePath>,
 }
 
 impl Workspace {
@@ -154,6 +157,7 @@ impl Workspace {
             ask: crate::ask_state::AskState::default(),
             file_cache: crate::attach::FileCache::default(),
             view_cache: crate::properties::ViewCache::default(),
+            recent: Vec::new(),
         }
     }
 
@@ -496,6 +500,7 @@ impl Workspace {
     /// Time-driven work. Returns true if the UI should repaint.
     pub fn tick(&mut self, now: Instant) -> bool {
         let mut changed = false;
+        self.track_recent();
         let delay = Duration::from_millis(self.settings.autosave_ms);
         let due: Vec<DocId> = self
             .docs
@@ -618,9 +623,34 @@ impl Workspace {
         Ok(())
     }
 
+    const RECENT_CAP: usize = 30;
+
+    /// Put the active note at the front of the recent list.
+    fn track_recent(&mut self) {
+        let Some(p) = self.active_doc().and_then(|d| d.path.clone()) else { return };
+        if self.recent.first() != Some(&p) {
+            self.recent.retain(|r| r != &p);
+            self.recent.insert(0, p);
+            self.recent.truncate(Self::RECENT_CAP);
+        }
+    }
+
+    /// Recently opened notes that still exist, most recent first, without
+    /// the one you're looking at.
+    pub fn recent_notes(&self, limit: usize) -> Vec<NotePath> {
+        let active = self.active_doc().and_then(|d| d.path.as_ref());
+        let ix = self.index.read();
+        self.recent.iter().filter(|p| Some(*p) != active && ix.get(p).is_some()).take(limit).cloned().collect()
+    }
+
     /// Re-index and re-point open documents after a rename or move.
     /// Returns how many other notes had links rewritten.
     fn apply_path_change(&mut self, vault: &Vault, report: &quire_vault::RenameReport) -> usize {
+        for r in &mut self.recent {
+            if *r == report.old_path {
+                r.clone_from(&report.new_path);
+            }
+        }
         self.index.remove(report.old_path.clone());
         for p in std::iter::once(&report.new_path).chain(report.updated.iter()) {
             if let Ok(content) = vault.read(p) {
@@ -946,6 +976,7 @@ impl Workspace {
                 self.insert_text(&format!("{lead}{}", crate::properties::VIEW_TEMPLATE));
             }
             C::ShowHistory => return Some(UiRequest::History),
+            C::ShowShortcuts => return Some(UiRequest::Shortcuts),
             C::NewProject => return self.vault.is_some().then_some(UiRequest::NewProject),
             C::NewInFolder => return self.vault.is_some().then_some(UiRequest::NewInFolder),
             C::MoveNote => return self.active_doc().and_then(|d| d.path.as_ref()).map(|_| UiRequest::MoveNote),
@@ -1146,10 +1177,12 @@ impl Workspace {
                 .collect(),
             active: self.active.unwrap_or(0),
             scratchpad: self.docs.iter().find(|d| d.path.is_none()).map(|d| d.text().to_string()).unwrap_or_default(),
+            recent: self.recent.iter().map(ToString::to_string).collect(),
         }
     }
 
     pub fn restore(&mut self, s: &Session) {
+        self.recent = s.recent.iter().map(NotePath::new).filter(|p| self.vault.as_ref().is_some_and(|v| v.exists(p))).collect();
         for tab in &s.tabs {
             let p = NotePath::new(&tab.path);
             if self.vault.as_ref().is_some_and(|v| v.exists(&p))
@@ -1179,6 +1212,31 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recent_notes_follow_activation_renames_and_sessions() {
+        let mut w = ws();
+        w.open_note(&NotePath::new("Ideas.md")).unwrap();
+        w.track_recent();
+        w.open_note(&NotePath::new("Rope Notes.md")).unwrap();
+        w.track_recent();
+        assert_eq!(w.recent_notes(5), vec![NotePath::new("Ideas.md")], "the active note is left out");
+        w.rename_active("Ropes").unwrap();
+        w.track_recent();
+        w.open_note(&NotePath::new("Ideas.md")).unwrap();
+        w.track_recent();
+        w.index().flush();
+        assert_eq!(w.recent_notes(5), vec![NotePath::new("Ropes.md")], "renames are followed");
+        let s = w.session();
+        assert_eq!(s.recent, vec!["Ideas.md", "Ropes.md"]);
+        let mut w2 = ws();
+        w2.vault().unwrap().write(&NotePath::new("Ropes.md"), "x").unwrap();
+        w2.index().upsert(NotePath::new("Ropes.md"), "x".into());
+        w2.index().flush();
+        w2.restore(&s);
+        w2.track_recent();
+        assert!(w2.recent_notes(5).contains(&NotePath::new("Ropes.md")));
+    }
 
     #[test]
     fn titles_from_first_lines() {

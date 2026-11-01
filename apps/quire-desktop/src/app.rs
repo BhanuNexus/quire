@@ -175,6 +175,7 @@ impl QuireApp {
                 UiRequest::Ask => Overlay::Ask { focused: false },
                 UiRequest::Settings => Overlay::Settings(crate::dialogs::SettingsState::default()),
                 UiRequest::NewProject => Overlay::NewProject(crate::dialogs::ProjectState::default()),
+                UiRequest::Shortcuts => Overlay::Shortcuts { query: String::new(), focused: false },
                 UiRequest::NewInFolder => Overlay::Folder(crate::dialogs::FolderState::new(&self.ws, crate::dialogs::FolderMode::NewNote)),
                 UiRequest::MoveNote => Overlay::Folder(crate::dialogs::FolderState::new(&self.ws, crate::dialogs::FolderMode::Move)),
                 UiRequest::History => Overlay::History(crate::dialogs::HistoryState::new(&self.ws)),

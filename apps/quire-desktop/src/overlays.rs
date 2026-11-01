@@ -31,6 +31,7 @@ pub(crate) enum Overlay {
     Import(crate::dialogs::ImportState),
     NewProject(crate::dialogs::ProjectState),
     Folder(crate::dialogs::FolderState),
+    Shortcuts { query: String, focused: bool },
 }
 
 impl Overlay {
@@ -100,20 +101,22 @@ fn items(ws: &Workspace, mode: Mode, query: &str, mac: bool) -> Vec<Item> {
             v.into_iter().map(|(_, i)| i).collect()
         }
         Mode::Notes => {
+            // Empty query: recently opened notes first.
+            let recent = if query.trim().is_empty() { ws.recent_notes(8) } else { Vec::new() };
             let ix = ws.index().read();
-            let mut v: Vec<Item> = ix
-                .quick_open(query, 40)
-                .into_iter()
-                .map(|h| Item {
-                    label: h.path.stem().to_string(),
-                    detail: if h.title == h.path.stem() {
-                        h.path.folder().to_string()
-                    } else {
-                        format!("{} · {}", h.title, h.path.folder())
-                    },
-                    action: Action::Open(h.path),
+            let mut v: Vec<Item> = recent
+                .iter()
+                .map(|p| Item {
+                    label: p.stem().to_string(),
+                    detail: if p.folder().is_empty() { "recent".into() } else { format!("recent · {}", p.folder()) },
+                    action: Action::Open(p.clone()),
                 })
                 .collect();
+            v.extend(ix.quick_open(query, 40).into_iter().filter(|h| !recent.contains(&h.path)).map(|h| Item {
+                label: h.path.stem().to_string(),
+                detail: if h.title == h.path.stem() { h.path.folder().to_string() } else { format!("{} · {}", h.title, h.path.folder()) },
+                action: Action::Open(h.path),
+            }));
             let q = query.trim();
             if !q.is_empty() && !v.iter().any(|i| i.label.eq_ignore_ascii_case(q)) {
                 v.push(Item { label: format!("Create “{q}”"), detail: "new note".into(), action: Action::Create(q.to_string()) });
@@ -158,6 +161,7 @@ pub(crate) fn show(ctx: &egui::Context, overlay: &mut Overlay, ws: &mut Workspac
         Overlay::Import(st) => res.close = crate::dialogs::import(ctx, st, ws, pal),
         Overlay::NewProject(st) => (res.close, res.jumped) = crate::dialogs::new_project(ctx, st, ws, pal),
         Overlay::Folder(st) => (res.close, res.jumped) = crate::dialogs::folder_picker(ctx, st, ws, pal),
+        Overlay::Shortcuts { query, focused } => res.close = shortcuts(ctx, query, focused, pal, mac),
         Overlay::Palette { mode, query, selected, focused } => {
             let list = items(ws, *mode, query, mac);
             let (down, up, enter) = ctx.input_mut(|i| {
@@ -198,7 +202,7 @@ pub(crate) fn show(ctx: &egui::Context, overlay: &mut Overlay, ws: &mut Workspac
                             *selected = 0;
                         }
                         ui.add_space(6.0);
-                        egui::ScrollArea::vertical().max_height(380.0).show(ui, |ui| {
+                        egui::ScrollArea::vertical().max_height(380.0).min_scrolled_height(380.0).show(ui, |ui| {
                             if list.is_empty() {
                                 ui.label(RichText::new("No matches").color(pal.muted));
                             }
@@ -502,6 +506,72 @@ pub(crate) fn show(ctx: &egui::Context, overlay: &mut Overlay, ws: &mut Workspac
     res
 }
 
+/// Categories in the order the cheat sheet shows them.
+const CATEGORIES: [&str; 9] = ["Note", "Go", "Edit", "Format", "Find", "View", "Assist", "App", "Help"];
+
+/// Ctrl+/ cheat sheet: every command, grouped, with its shortcuts. Generated
+/// from `COMMANDS`, so it can't drift from what the keys actually do.
+fn shortcuts(ctx: &egui::Context, query: &mut String, focused: &mut bool, pal: &Palette, mac: bool) -> bool {
+    let mut close = false;
+    egui::Modal::new(egui::Id::unique("quire-shortcuts")).show(ctx, |ui| {
+        let w = 760.0_f32.min(ctx.content_rect().width() - 48.0);
+        ui.set_width(w);
+        ui.set_max_width(w);
+        ui.horizontal(|ui| {
+            ui.heading("Keyboard shortcuts");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                close |= ui.button("Close").clicked();
+                let r = ui.add(egui::TextEdit::singleline(query).hint_text("Filter…").desired_width(200.0));
+                if !*focused {
+                    r.request_focus();
+                    *focused = true;
+                }
+            });
+        });
+        ui.label(
+            RichText::new("Everything is also in the command palette (Ctrl+K), including commands without a shortcut.")
+                .size(12.0)
+                .color(pal.muted),
+        );
+        ui.separator();
+        let q = query.trim().to_lowercase();
+        let col_w = (w - 24.0) / 2.0;
+        egui::ScrollArea::vertical().max_height(ctx.content_rect().height() * 0.7).show(ui, |ui| {
+            ui.columns(2, |cols| {
+                let mut shown = 0;
+                for cat in CATEGORIES {
+                    let cmds: Vec<_> = COMMANDS
+                        .iter()
+                        .filter(|c| c.category == cat && !c.keys.is_empty())
+                        .filter(|c| q.is_empty() || c.title.to_lowercase().contains(&q) || cat.to_lowercase().contains(&q))
+                        .collect();
+                    if cmds.is_empty() {
+                        continue;
+                    }
+                    // Fill the shorter column so the two stay balanced.
+                    let col = &mut cols[shown % 2];
+                    shown += 1;
+                    col.set_max_width(col_w);
+                    col.label(RichText::new(cat.to_uppercase()).size(11.0).color(pal.muted).strong());
+                    egui::Grid::new(("shortcuts", cat)).num_columns(2).spacing([12.0, 4.0]).show(col, |ui| {
+                        for c in cmds {
+                            ui.label(RichText::new(c.title.trim_end_matches('…')).color(pal.text));
+                            let keys: Vec<String> = c.keys.iter().map(|k| k.label(mac)).collect();
+                            ui.label(RichText::new(keys.join("  ·  ")).monospace().size(12.5).color(pal.accent));
+                            ui.end_row();
+                        }
+                    });
+                    col.add_space(10.0);
+                }
+                if shown == 0 {
+                    cols[0].label(RichText::new("No matching shortcuts").color(pal.muted));
+                }
+            });
+        });
+    });
+    close
+}
+
 /// Bottom-right toasts for recent notices.
 pub(crate) fn toasts(ctx: &egui::Context, ws: &Workspace, pal: &Palette) {
     let notices: Vec<_> = ws.notices(Duration::from_secs(5)).cloned().collect();
@@ -532,6 +602,20 @@ pub(crate) fn toasts(ctx: &egui::Context, ws: &Workspace, pal: &Palette) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_quick_open_lists_recent_then_everything_else() {
+        let mut ws = Workspace::new(quire_app::Settings::default());
+        ws.attach_vault(quire_app::vault::Vault::in_memory(&[("A.md", "a"), ("B.md", "b"), ("C.md", "c")]));
+        ws.index().flush();
+        ws.open_note(&NotePath::new("B.md")).unwrap();
+        ws.tick(std::time::Instant::now());
+        ws.open_note(&NotePath::new("C.md")).unwrap();
+        ws.tick(std::time::Instant::now());
+        let labels: Vec<String> = items(&ws, Mode::Notes, "", false).into_iter().map(|i| i.label).collect();
+        assert_eq!(labels[0], "B", "recent first");
+        assert_eq!(labels.len(), 3, "then every other note");
+    }
 
     #[test]
     fn fuzzy_prefers_word_starts_and_substrings() {

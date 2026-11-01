@@ -176,6 +176,9 @@ pub(crate) fn tab_bar(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> P
             if ui.button("⌘ Commands").on_hover_text("Ctrl+K").clicked() {
                 out.run = Some(Command::CommandPalette);
             }
+            if ui.button("?").on_hover_text("Keyboard shortcuts (Ctrl+/)").clicked() {
+                out.run = Some(Command::ShowShortcuts);
+            }
         });
     });
     out
