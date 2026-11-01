@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Print the CHANGELOG.md section for a version (used as GitHub release notes).
-#   packaging/release-notes.sh 0.3.1
+#   packaging/release-notes.sh 0.4.0
 set -euo pipefail
 version="${1:?usage: release-notes.sh <version>}"
 cd "$(dirname "$0")/.."

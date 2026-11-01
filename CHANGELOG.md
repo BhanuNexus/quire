@@ -4,42 +4,40 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-01
+
+First public release. Quire is a fast, local-first Markdown notepad: your notes are plain files in a folder you choose, and nothing leaves your computer unless you turn on an AI provider. Earlier versions were never published; CHANGELOG.md keeps their history.
+
+Downloads for Windows, macOS (universal) and Linux are attached to the release, with SHA-256 checksums, build provenance attestations and an SBOM. See the README for how to verify them.
+
 ### Added
-- Keyboard shortcut cheat sheet (Ctrl+/ or the **?** button), generated from the command list.
-- A five-step first-run tour (Help: Take the tour to see it again).
-- Quick open (Ctrl+P) with an empty query lists your recently opened notes first. The list is remembered between sessions and follows renames and moves.
 - Safer sync with Dropbox, iCloud, Syncthing, Nextcloud and similar tools. When a note you're editing also changes elsewhere, Quire merges the two line by line, keeping your caret, and Undo takes the merge back out. If both sides changed the same lines, autosave pauses and a banner lets you keep yours, take theirs, or keep both between conflict markers.
 - Conflict copies made by sync tools (`Note (… conflicted copy …).md`, `Note.sync-conflict-….md`) are detected. The status bar shows how many there are, and **Resolve sync conflicts…** merges each one back into its original, using version history to find what changed on each side.
 - Conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) are highlighted in the editor and shown as plain lines in the preview, rather than turning into a heading or a quote.
-
-### Changed
-- An open note that changes on disk is updated with only the lines that changed, so the caret, scroll position and undo history are kept.
-
-### Fixed
-- Quick open could show only the first couple of results when a longer list followed a shorter one.
-
-## [0.3.1] - 2026-11-01
-
-First public release.
-
-
-### Added
+- Keyboard shortcut cheat sheet (Ctrl+/ or the **?** button), generated from the command list.
+- A five-step first-run tour (Help: Take the tour to see it again).
+- Quick open (Ctrl+P) with an empty query lists your recently opened notes first. The list is remembered between sessions and follows renames and moves.
 - New notes take their name from their first line until you rename them yourself.
 - Right-click menu on notes in the sidebar and on tabs: Rename, Move to folder, Version history, Copy link, Show in folder, Move to trash. Double-click a tab to rename it.
 - **+ New** menu: Note, Project, Note in folder, From template. Right-click a folder for "New note here".
 - **New project** (Ctrl+Alt+N): creates `Projects/<name>.md` with status, due date and owner, and a project board on first use. Customise it with `Templates/Project.md`.
 - Move notes between folders. Path-style links are rewritten.
+- Linux build: a portable `tar.gz` with an install script and desktop entry.
+- `quire --version` and `quire-cli --version`.
 
 ### Changed
 - Licensed under the GNU AGPL v3 or later. Settings → About links to the source; the installers include the licence.
-- Strict linting: clippy pedantic + nursery + selected restriction lints, rustdoc and typos checks in CI. The code base was updated to pass them.
-- Rust toolchain pinned to 1.97.0 for reproducible builds. GitHub Actions updated to their latest versions and pinned by commit SHA.
+- An open note that changes on disk is updated with only the lines that changed, so the caret, scroll position and undo history are kept.
+- Strict linting: clippy pedantic + nursery + selected restriction lints, rustdoc and typos checks in CI.
+- Rust toolchain pinned to 1.97.0 for reproducible builds. GitHub Actions pinned by commit SHA.
 - Upgraded toml to 1.1 and png to 0.18.
 
 ### Fixed
+- Quick open could show only the first couple of results when a longer list followed a shorter one.
 - Notes sometimes reopened scrolled to another note's position.
+- Renaming a note whose front matter had `title:` set to its old name left search results and boards showing the old name. The title now follows the rename.
 
-## [0.3.0] - 2026-11-01
+## 0.3.0 - 2026-11-01 (not published)
 
 ### Added
 - Version history with diffs and undoable restore (Ctrl+Alt+H).
@@ -53,7 +51,7 @@ First public release.
 ### Fixed
 - Editing shortcuts (Ctrl+A, Ctrl+Z…) acted on the note while another text field had focus.
 
-## [0.2.0] - 2026-11-01
+## 0.2.0 - 2026-11-01 (not published)
 
 ### Added
 - Virtualized fast editor that stays smooth on 10 MB files, with multiple cursors.
@@ -61,13 +59,10 @@ First public release.
 - Image paste and file drop, with inline images.
 - Hybrid search (keywords and meaning) and Ask your notes with citations.
 
-## [0.1.0] - 2026-11-01
+## 0.1.0 - 2026-11-01 (not published)
 
 ### Added
 - First version: live Markdown styling, wikilinks with rename refactoring, backlinks, related notes, daily notes, templates, command palette, quick open, inline calculator and natural-language dates.
 
-[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.3.1...HEAD
-[0.3.1]: https://github.com/BhanuNexus/quire/releases/tag/v0.3.1
-[0.3.0]: https://github.com/BhanuNexus/quire/releases/tag/v0.3.0
-[0.2.0]: https://github.com/BhanuNexus/quire/releases/tag/v0.2.0
-[0.1.0]: https://github.com/BhanuNexus/quire/releases/tag/v0.1.0
+[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/BhanuNexus/quire/releases/tag/v0.4.0

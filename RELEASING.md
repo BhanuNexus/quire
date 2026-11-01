@@ -48,7 +48,7 @@ These can only be changed in the GitHub UI:
 
 ```bash
 sha256sum -c SHA256SUMS --ignore-missing                       # integrity
-gh attestation verify Quire-0.3.1-linux-x86_64.tar.gz --repo BhanuNexus/quire   # built by this repo's release workflow
+gh attestation verify Quire-0.4.0-linux-x86_64.tar.gz --repo BhanuNexus/quire   # built by this repo's release workflow
 ```
 
 `gh attestation verify` checks a signed statement from GitHub that names the exact workflow, commit and tag that produced the file.
@@ -83,7 +83,7 @@ Files land in `dist/`.
 
 `rust-toolchain.toml` pins Rust **1.97.0**, so contributors, CI and release builds all use the same compiler and clippy. To move to a newer Rust, change `channel`, run `cargo clippy --workspace --all-targets -- -D warnings` and fix any new lints, then commit both changes together.
 
-Libraries stay on their latest stable releases. Dependabot opens weekly PRs for Cargo and GitHub Actions. As of 0.3.1, `notify` 9 and `ropey` 2 are still pre-releases, so they stay on 8 and 1.
+Libraries stay on their latest stable releases. Dependabot opens weekly PRs for Cargo and GitHub Actions. As of 0.4.0, `notify` 9 and `ropey` 2 are still pre-releases, so they stay on 8 and 1.
 
 Lint policy lives in `Cargo.toml` (`[workspace.lints]`) and `clippy.toml`. CI runs:
 

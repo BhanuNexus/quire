@@ -1,6 +1,6 @@
 ; Quire installer (NSIS 3). Per-user install: no admin rights, no UAC prompt.
 ;
-;   makensis -DVERSION=0.3.0 -DSRCDIR=<folder with quire.exe and quire-cli.exe> -DOUTFILE=<installer.exe> quire.nsi
+;   makensis -DVERSION=0.4.0 -DSRCDIR=<folder with quire.exe and quire-cli.exe> -DOUTFILE=<installer.exe> quire.nsi
 ;
 ; Works with makensis on Windows (CI) and on Linux (cross builds).
 
