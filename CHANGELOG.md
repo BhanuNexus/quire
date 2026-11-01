@@ -15,6 +15,7 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ### Fixed
 - Sync server and client: replies are paged by size as well as count, and the client accepts replies up to 96 MB, so big revisions no longer fail with "response body is larger than request limit".
+- Folder sync: a change another device wrote to the folder while Quire was starting sync could wait up to two minutes (until the next routine check) to arrive. It now arrives within a couple of seconds.
 - Folder sync: when three or more devices edited the same lines before seeing each other's changes, the winning text could be saved as a conflict copy twice. Now the winner stays in the note on every device and each other device keeps only its own version beside it.
 
 ## [0.6.0] - 2026-11-02

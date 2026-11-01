@@ -410,6 +410,10 @@ impl SyncWorker {
                 // times only, so it's cheap).
                 Link::Folder(dir) => std::thread::spawn(move || {
                     let mut last = dir.fingerprint();
+                    // The worker's first pass may have read the folder before
+                    // `last` was taken; a write in between would never show up
+                    // as a change. One more pass after taking it closes that gap.
+                    let _ = tx.send(Msg::Remote);
                     while !stop.load(Ordering::Relaxed) {
                         std::thread::sleep(Duration::from_secs(2));
                         let now = dir.fingerprint();
