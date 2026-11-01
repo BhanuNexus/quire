@@ -11,6 +11,7 @@ members = [
     "crates/quire-sync",
     "apps/quire-desktop",
     "apps/quire-cli",
+    "apps/quire-sync-server",
 ]
 
 [workspace.package]
