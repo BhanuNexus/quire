@@ -32,10 +32,14 @@ fn sync(d: &mut Device, server: &MemoryServer) -> quire_sync::Report {
 
 /// Sync everyone until a full round changes nothing.
 fn settle(devs: &mut [Device], server: &MemoryServer) {
-    for _ in 0..10 {
+    for round in 0..10 {
         let mut changed = false;
-        for d in devs.iter_mut() {
-            changed |= sync(d, server).changed_anything();
+        for (i, d) in devs.iter_mut().enumerate() {
+            let r = sync(d, server);
+            if round >= 7 && std::env::var_os("SYNC_TRACE").is_some() {
+                eprintln!("round {round} dev {i}: {r:?}\n  {:?}", d.store.0);
+            }
+            changed |= r.changed_anything();
         }
         if !changed {
             return;
@@ -283,6 +287,10 @@ fn random_edits_never_lose_text() {
 
 #[test]
 fn random_edits_renames_and_deletes_converge() {
+    if let Some(seed) = std::env::var("SYNC_SEED").ok().and_then(|s| s.parse().ok()) {
+        simulate(seed, 4, 80, false);
+        return;
+    }
     for seed in 1..=300 {
         simulate(seed, 4, 80, false);
     }
@@ -327,4 +335,68 @@ fn a_push_that_loses_the_race_pulls_merges_and_retries() {
     settle(&mut devs, &server);
     assert_eq!(devs[0].store.read("Plan.md").unwrap(), "# Plan\nONE\ntwo\nTHREE\n");
     assert_eq!(devs[0].store, devs[1].store);
+}
+
+#[test]
+fn a_remote_rename_never_overwrites_an_unsynced_file() {
+    let (server, mut devs) = devices(2);
+    put(&mut devs[0], "Draft.md", "draft\n");
+    settle(&mut devs, &server);
+    // Device 1 writes Final.md but hasn't synced; device 0 renames Draft to Final.
+    put(&mut devs[1], "Final.md", "my unsynced final\n");
+    let t = devs[0].store.0.remove("Draft.md").unwrap();
+    put(&mut devs[0], "Final.md", &t);
+    sync(&mut devs[0], &server);
+    sync(&mut devs[1], &server);
+    settle(&mut devs, &server);
+    let all: String = devs[1].store.0.values().cloned().collect();
+    assert!(all.contains("my unsynced final") && all.contains("draft"), "{:?}", devs[1].store);
+    assert_eq!(devs[0].store, devs[1].store);
+}
+
+/// A folder whose files can change between a read and a write, like a real
+/// vault with the app saving in the background.
+#[derive(Default)]
+struct Guarded {
+    inner: MemoryStore,
+    seen: std::collections::HashMap<String, Option<String>>,
+}
+
+impl LocalStore for Guarded {
+    fn list(&self) -> Vec<String> {
+        self.inner.list()
+    }
+    fn read(&self, path: &str) -> Option<String> {
+        self.inner.read(path)
+    }
+    fn write(&mut self, path: &str, text: &str) -> Result<(), String> {
+        if let Some(expected) = self.seen.get(path)
+            && self.inner.read(path) != *expected
+        {
+            return Err("changed while syncing".into());
+        }
+        self.inner.write(path, text)
+    }
+    fn remove(&mut self, path: &str) -> Result<(), String> {
+        self.inner.remove(path)
+    }
+}
+
+#[test]
+fn a_failed_write_is_retried_not_skipped() {
+    let server = MemoryServer::new();
+    let key = VaultKey::generate().unwrap();
+    let space = SpaceId::random().unwrap();
+    let mut a = Engine::new(space.clone(), DeviceId::random().unwrap(), "a", key.keys(), SyncState::default());
+    let mut b = Engine::new(space, DeviceId::random().unwrap(), "b", key.keys(), SyncState::default());
+    let (mut sa, mut sb) = (MemoryStore::default(), Guarded::default());
+    sa.write("A.md", "one\n").unwrap();
+    a.sync(&mut sa, &server, TODAY).unwrap();
+    // B's write of A.md fails once (the file "changed" underneath).
+    sb.seen.insert("A.md".into(), Some("something else".into()));
+    assert!(b.sync(&mut sb, &server, TODAY).is_err());
+    assert_eq!(b.state.cursor, 0, "the unapplied revision isn't skipped");
+    sb.seen.clear();
+    b.sync(&mut sb, &server, TODAY).unwrap();
+    assert_eq!(sb.inner.read("A.md").unwrap(), "one\n");
 }

@@ -140,13 +140,14 @@ impl Engine {
     fn pull(&mut self, local: &mut dyn LocalStore, server: &dyn Transport, today: &str, report: &mut Report) -> Result<(), SyncError> {
         let revs = server.pull(self.state.cursor)?;
         for r in revs {
-            self.state.cursor = self.state.cursor.max(r.seq);
-            if self.state.files.get(&r.file).is_some_and(|t| t.head_seq >= r.seq) {
-                continue; // our own push, or already applied
+            if self.state.files.get(&r.file).is_none_or(|t| t.head_seq < r.seq) {
+                let c = Content::open(&self.keys, &self.space, &r)?;
+                // If applying fails (say the file changed underneath us), the
+                // cursor stays put and this revision is applied next time.
+                self.apply(local, &r, &c, today, report)?;
+                report.pulled += 1;
             }
-            let c = Content::open(&self.keys, &self.space, &r)?;
-            self.apply(local, &r, &c, today, report)?;
-            report.pulled += 1;
+            self.state.cursor = self.state.cursor.max(r.seq);
         }
         Ok(())
     }
@@ -156,17 +157,11 @@ impl Engine {
             // A note we haven't seen.
             let mut path = c.path.clone();
             if !c.deleted {
+                // The same name may have been created here too; that file
+                // keeps its name and this note takes the next free one.
                 path = self.free_path(local, &c.path, &r.file);
-                let text = match local.read(&path) {
-                    // The same name was created here too: keep both texts.
-                    Some(mine) if mine != c.text => {
-                        let m = merge::merge2(&mine, &c.text);
-                        report.merged.push(path.clone());
-                        m.text
-                    }
-                    _ => c.text.clone(),
-                };
-                write(local, &path, &text)?;
+                self.protect_unsynced(local, &path, &c.text)?;
+                write(local, &path, &c.text)?;
             }
             self.track_at(r, c, &path);
             return Ok(());
@@ -186,6 +181,7 @@ impl Engine {
                 remove(local, &t.path)?;
             }
             if !c.deleted {
+                self.protect_unsynced(local, &to, &c.text)?;
                 write(local, &to, &c.text)?;
             }
             self.track_at(r, c, &to);
@@ -201,6 +197,7 @@ impl Engine {
             // Deleted here, edited there: the edit wins.
             (None, false) => {
                 let to = self.free_path(local, &c.path, &r.file);
+                self.protect_unsynced(local, &to, &c.text)?;
                 write(local, &to, &c.text)?;
                 report.kept_over_delete.push(to.clone());
                 self.track_at(r, c, &to);
@@ -212,6 +209,9 @@ impl Engine {
                 let to = self.free_path(local, &c.path, &r.file);
                 if t.path != to {
                     remove(local, &t.path)?;
+                }
+                if t.path != to {
+                    self.protect_unsynced(local, &to, &mine)?;
                 }
                 let m = merge::merge3(&t.base, &mine, &c.text);
                 if m.is_clean() {
@@ -236,6 +236,8 @@ impl Engine {
 
     /// `wanted`, unless another synced note already lives there; then a
     /// numbered name next to it.
+    /// Where a note may go: `wanted`, unless another synced note is already
+    /// there; then a numbered name next to it.
     fn free_path(&self, local: &dyn LocalStore, wanted: &str, file: &FileId) -> String {
         let taken = |p: &str| self.state.files.iter().any(|(id, t)| id != file && !t.deleted && t.path == p);
         if !taken(wanted) {
@@ -246,6 +248,20 @@ impl Engine {
             .map(|n| format!("{stem} ({n}){ext}"))
             .find(|p| !taken(p) && local.read(p).is_none())
             .unwrap_or_else(|| wanted.to_string())
+    }
+
+    /// Before writing a note to `path`: a file there that hasn't synced yet
+    /// (and differs) moves to a free name, so it's never overwritten. It's
+    /// pushed later as a note of its own.
+    fn protect_unsynced(&self, local: &mut dyn LocalStore, path: &str, text: &str) -> Result<(), SyncError> {
+        let tracked = self.state.files.values().any(|t| t.path == path);
+        let Some(existing) = local.read(path).filter(|e| e != text && !tracked) else { return Ok(()) };
+        let (stem, ext) = split_ext(path);
+        let aside = (2..10_000)
+            .map(|n| format!("{stem} ({n}){ext}"))
+            .find(|p| local.read(p).is_none() && !self.is_tracked_path(p))
+            .unwrap_or_else(|| format!("{stem} (unsynced){ext}"));
+        write(local, &aside, &existing)
     }
 
     fn track_at(&mut self, r: &Revision, c: &Content, path: &str) {
