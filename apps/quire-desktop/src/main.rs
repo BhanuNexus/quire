@@ -9,6 +9,7 @@
 mod app;
 mod dialogs;
 mod editor;
+mod graph_view;
 mod highlight;
 mod overlays;
 mod panels;

@@ -82,6 +82,7 @@ Settings live in `~/.config/quire/settings.toml` (Linux), `~/Library/Application
 
 | Area | Features |
 |---|---|
+| Graph view | Your notes and links as a map, around the open note or the whole vault (Ctrl+G) |
 | Split & fold | Two notes side by side (Ctrl+Alt+\\, or right-click → Open to the side), and fold any section under its heading |
 | Editor | Fast virtualized editor: draws only visible lines, stays smooth on 10 MB / 100k-line files. Multiple cursors (Ctrl+D, Ctrl+Shift+L, Ctrl+Alt+↑/↓, Alt+click), word/line selection by double/triple click, IME input. Classic egui editor kept as a fallback |
 | Writing | Live Markdown styling (heading sizes, bold, code, quotes, dimmed syntax), focus mode, preview pane, autosave with no save dialogs, scratchpad |
@@ -125,6 +126,7 @@ Settings live in `~/.config/quire/settings.toml` (Linux), `~/Library/Application
 | Ctrl+Alt+H | Version history | Ctrl+, | Settings |
 | Ctrl+Alt+N | New project | F2 / double-click tab | Rename note |
 | Ctrl+Alt+\\ | Split editor | Ctrl+Shift+[ | Fold/unfold section |
+| Ctrl+G | Graph view | Ctrl+Alt+[ / ] | Fold / unfold all |
 
 ## Views
 

@@ -192,6 +192,7 @@ impl QuireApp {
                 UiRequest::NewInFolder => Overlay::Folder(crate::dialogs::FolderState::new(&self.ws, crate::dialogs::FolderMode::NewNote)),
                 UiRequest::MoveNote => Overlay::Folder(crate::dialogs::FolderState::new(&self.ws, crate::dialogs::FolderMode::Move)),
                 UiRequest::History => Overlay::History(crate::dialogs::HistoryState::new(&self.ws)),
+                UiRequest::Graph => Overlay::Graph(Box::new(crate::graph_view::GraphState::new(&self.ws))),
                 UiRequest::Split => {
                     self.toggle_split();
                     return;

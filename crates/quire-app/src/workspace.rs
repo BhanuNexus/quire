@@ -94,6 +94,7 @@ pub enum UiRequest {
     MoveNote,
     /// Show two notes side by side (or go back to one).
     Split,
+    Graph,
 }
 
 /// Everything the insights panel shows for the active note.
@@ -1088,6 +1089,7 @@ impl Workspace {
             C::MoveNote => return self.active_doc().and_then(|d| d.path.as_ref()).map(|_| UiRequest::MoveNote),
             C::ImportNotes => return Some(UiRequest::Import),
             C::SplitEditor => return Some(UiRequest::Split),
+            C::ShowGraph => return self.vault.is_some().then_some(UiRequest::Graph),
             C::PublishSite => return self.vault.is_some().then_some(UiRequest::Publish),
             C::OpenSettings => return Some(UiRequest::Settings),
             C::InsertDate => {

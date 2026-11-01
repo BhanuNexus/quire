@@ -36,6 +36,7 @@ pub enum Command {
     SyncSettings,
     SyncNow,
     SearchVault,
+    ShowGraph,
     ShowTasks,
     // Formatting
     Bold,
@@ -191,6 +192,7 @@ commands! {
     TakeTour,         "Help",   "Take the tour",                  [], false;
     CheckForUpdates,  "Help",   "Check for updates",              [], false;
     SearchVault,      "Go",     "Search all notes…",              [cmd_shift("F")], false;
+    ShowGraph,        "Go",     "Graph view",                     [cmd("G")], false;
     ShowTasks,        "Go",     "Show open tasks",                [alt("T")], false;
     Bold,             "Format", "Bold",                           [cmd("B")], true;
     Italic,           "Format", "Italic",                         [cmd("I")], true;

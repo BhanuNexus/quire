@@ -10,6 +10,7 @@ pub mod commands;
 pub mod document;
 pub mod find;
 mod find_state;
+pub mod graph;
 pub mod history_ops;
 pub mod projects;
 pub mod properties;
