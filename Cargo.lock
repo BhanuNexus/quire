@@ -3513,7 +3513,7 @@ dependencies = [
 
 [[package]]
 name = "quire-app"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "base64",
  "chrono",
@@ -3539,7 +3539,7 @@ dependencies = [
 
 [[package]]
 name = "quire-cli"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "quire-app",
  "quire-import",
@@ -3549,7 +3549,7 @@ dependencies = [
 
 [[package]]
 name = "quire-desktop"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "chrono",
  "crossbeam-channel",
@@ -3567,7 +3567,7 @@ dependencies = [
 
 [[package]]
 name = "quire-import"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "base64",
  "htmd",
@@ -3580,7 +3580,7 @@ dependencies = [
 
 [[package]]
 name = "quire-index"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "crossbeam-channel",
  "nucleo-matcher",
@@ -3592,7 +3592,7 @@ dependencies = [
 
 [[package]]
 name = "quire-intel"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "chrono",
  "crossbeam-channel",
@@ -3607,7 +3607,7 @@ dependencies = [
 
 [[package]]
 name = "quire-markdown"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "pulldown-cmark",
  "quire-text",
@@ -3617,7 +3617,7 @@ dependencies = [
 
 [[package]]
 name = "quire-sync"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -3636,7 +3636,7 @@ dependencies = [
 
 [[package]]
 name = "quire-sync-server"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "axum",
  "base64",
@@ -3653,7 +3653,7 @@ dependencies = [
 
 [[package]]
 name = "quire-text"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "ropey",
  "similar",
@@ -3661,7 +3661,7 @@ dependencies = [
 
 [[package]]
 name = "quire-vault"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "chrono",
  "crossbeam-channel",

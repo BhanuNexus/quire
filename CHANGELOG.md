@@ -4,6 +4,8 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-02
+
 ### Added
 - **History from every device.** With sync on, Version history has an **All devices** view: every version of the note that the sync folder or server holds, with which device wrote it and when, including a version that lost a race in a synced folder. Pick one to see what changed and restore it (undoable). Needs a sync server from this release or later; synced folders work as they are.
 - **Images and files sync too.** Quire Sync now carries attachments (images, PDFs, any file in the vault up to 10 MB), encrypted like notes, through a synced folder or a server. Renames and deletes follow, and when two devices change the same file both versions are kept (files are never merged line by line). The sync state remembers attachments by hash, so it stays small.
@@ -130,7 +132,8 @@ Downloads for Windows, macOS (universal) and Linux are attached to the release, 
 ### Added
 - First version: live Markdown styling, wikilinks with rename refactoring, backlinks, related notes, daily notes, templates, command palette, quick open, inline calculator and natural-language dates.
 
-[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/BhanuNexus/quire/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/BhanuNexus/quire/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/BhanuNexus/quire/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/BhanuNexus/quire/compare/v0.4.0...v0.4.1
