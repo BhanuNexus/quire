@@ -5,10 +5,10 @@
 use std::hash::{Hash, Hasher};
 
 use egui::text::{ByteIndex, LayoutJob, LayoutSection, TextFormat};
-use egui::{Color32, FontFamily, FontId, Stroke};
+use egui::{Align, Color32, FontFamily, FontId, Stroke};
 use quire_app::markdown::{Style, StyleRun, highlight};
 
-use crate::theme::{BOLD, FontSupport, Palette};
+use crate::theme::{BOLD, FontSupport, ITALIC, Palette};
 
 #[derive(Default)]
 pub(crate) struct HighlightCache {
@@ -37,15 +37,27 @@ pub(crate) fn format_for(style: &Style, p: &Palette, size: f32, fonts: FontSuppo
         }
         f.color = p.strong;
     }
-    if style.emphasis || style.quote {
-        f.italics = true;
+    if style.emphasis {
+        // A true italic face, not a slanted regular.
+        if fonts.bold && !style.strong && style.heading == 0 {
+            f.font_id.family = FontFamily::Name(ITALIC.into());
+        } else {
+            f.italics = true;
+        }
     }
     if style.quote {
+        // The editor draws a bar beside quotes; the text just recedes a little.
         f.color = p.muted;
     }
-    if style.code || style.code_block || style.front_matter || style.math {
-        f.font_id = FontId::new(size * 0.9, FontFamily::Monospace);
+    if style.code_block || style.front_matter {
+        // Blocks get one background behind the whole block (drawn by the editor).
+        f.font_id = FontId::new(size * 0.88, FontFamily::Monospace);
+    } else if style.code || style.math {
+        // Inline code: a tight chip around the text, not the whole line height.
+        f.font_id = FontId::new(size * 0.88, FontFamily::Monospace);
         f.background = p.code_bg;
+        f.line_height = None;
+        f.valign = Align::Center;
     }
     if style.front_matter {
         f.color = p.muted;
@@ -62,6 +74,8 @@ pub(crate) fn format_for(style: &Style, p: &Palette, size: f32, fonts: FontSuppo
     if style.tag {
         f.color = p.tag;
         f.background = p.tag_bg;
+        f.line_height = None;
+        f.valign = Align::Center;
     }
     if style.highlight {
         f.background = p.mark_bg;

@@ -155,12 +155,14 @@ fn apply_note_action(ctx: &egui::Context, ws: &mut Workspace, path: &NotePath, a
 pub(crate) fn tab_bar(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> PanelOut {
     let mut out = PanelOut::default();
     ui.horizontal(|ui| {
-        ui.label(RichText::new(format!("◆ {}", ws.vault_name())).strong().color(pal.strong));
+        ui.add_space(4.0);
+        ui.label(RichText::new(ws.vault_name()).strong().color(pal.strong));
+        ui.add_space(4.0);
         ui.separator();
         let mut close = None;
         let mut activate = None;
         let mut tab_action: Option<(usize, NotePath, NoteAction)> = None;
-        egui::ScrollArea::horizontal().id_salt("tabs").max_width(ui.available_width() - 250.0).show(ui, |ui| {
+        egui::ScrollArea::horizontal().id_salt("tabs").max_width(ui.available_width() - 440.0).show(ui, |ui| {
             ui.horizontal(|ui| {
                 for (i, d) in ws.docs().iter().enumerate() {
                     let active = ws.active_index() == Some(i);
@@ -210,10 +212,13 @@ pub(crate) fn tab_bar(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> P
             if ui.selectable_label(ws.settings.show_preview, "Preview").on_hover_text("Ctrl+E").clicked() {
                 out.run = Some(Command::TogglePreview);
             }
-            if ui.button("⌘ Commands").on_hover_text("Ctrl+K").clicked() {
+            let (palette_keys, help_keys) = if cfg!(target_os = "macos") { ("⌘K", "⌘/") } else { ("Ctrl+K", "Ctrl+/") };
+            let search = egui::Button::new(RichText::new(format!("Search or run a command   {palette_keys}")).color(pal.muted).size(12.5))
+                .min_size(egui::vec2(220.0, 24.0));
+            if ui.add(search).clicked() {
                 out.run = Some(Command::CommandPalette);
             }
-            if ui.button("?").on_hover_text("Keyboard shortcuts (Ctrl+/)").clicked() {
+            if ui.button("?").on_hover_text(format!("Keyboard shortcuts ({help_keys})")).clicked() {
                 out.run = Some(Command::ShowShortcuts);
             }
         });
@@ -299,9 +304,24 @@ pub(crate) fn sidebar(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut SidebarSta
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 for (folder, notes) in &tree {
                     let mut draw = |ui: &mut egui::Ui| {
+                        ui.spacing_mut().item_spacing.y = 1.0;
                         for p in notes {
                             let is_active = active_path.as_ref() == Some(p);
-                            let r = ui.selectable_label(is_active, p.stem());
+                            let r = crate::theme::row(ui, is_active, 26.0, pal, |painter, rect| {
+                                let color = if is_active { pal.strong } else { pal.text };
+                                let galley = painter.layout(p.stem().to_string(), FontId::proportional(13.5), color, rect.width() - 20.0);
+                                let galley = if galley.rows.len() > 1 {
+                                    // One line, ending in … when the name is long.
+                                    let mut job = LayoutJob::simple_singleline(p.stem().to_string(), FontId::proportional(13.5), color);
+                                    job.wrap = egui::text::TextWrapping::truncate_at_width(rect.width() - 20.0);
+                                    painter.layout_job(job)
+                                } else {
+                                    galley
+                                };
+                                let y = rect.center().y - galley.size().y / 2.0;
+                                painter.galley(egui::pos2(rect.left() + 10.0, y), galley, color);
+                            })
+                            .on_hover_text(p.as_str());
                             if r.clicked() {
                                 open = Some((p.clone(), None));
                             }
@@ -313,7 +333,7 @@ pub(crate) fn sidebar(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut SidebarSta
                     if folder.is_empty() {
                         draw(ui);
                     } else {
-                        let resp = egui::CollapsingHeader::new(RichText::new(folder.clone()).color(pal.muted))
+                        let resp = egui::CollapsingHeader::new(RichText::new(folder.clone()).color(pal.muted).size(12.5))
                             .id_salt(folder)
                             .default_open(true)
                             .show(ui, draw);

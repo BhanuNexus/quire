@@ -30,7 +30,7 @@ use crate::theme::{FontSupport, Palette};
 use crate::view_ui::{self, ViewAction};
 use heights::HeightIndex;
 
-const TOP_MARGIN: f32 = 28.0;
+const TOP_MARGIN: f32 = 36.0;
 const BOTTOM_MARGIN: f32 = 240.0;
 /// Notes up to this size are highlighted whole (exact); larger ones by window.
 const FULL_HIGHLIGHT_BYTES: usize = 256 * 1024;
@@ -78,6 +78,9 @@ struct DocView {
     suggest_pick: usize,
     suggest_for: Option<(usize, SuggestKind, String)>,
     suggest_dismissed: Option<(usize, SuggestKind)>,
+    /// Checkboxes drawn last frame (screen rect, char index of the box's
+    /// inside), so a click toggles the task instead of moving the caret.
+    task_boxes: Vec<(Rect, usize, bool)>,
 }
 
 impl DocView {
@@ -101,8 +104,162 @@ impl DocView {
             suggest_pick: 0,
             suggest_for: None,
             suggest_dismissed: None,
+            task_boxes: Vec::new(),
         }
     }
+}
+
+/// Something drawn in place of hidden Markdown syntax in live preview.
+/// Columns are char offsets within the line.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Deco {
+    /// `-`, `*` or `+` starting a list item: a dot.
+    Bullet(usize),
+    /// `[ ]` or `[x]`: a checkbox you can click. `col` is the `[`.
+    Task { col: usize, done: bool },
+    /// `---` on its own line: a thin rule.
+    Rule,
+    /// Under a table's header row, and between its rows: a line this wide.
+    TableLine { width: f32, strong: bool },
+}
+
+/// How a Markdown table is drawn in live preview: each column as wide as
+/// its widest cell. `widths[row][cell]` is each cell's own width.
+#[derive(Debug, Clone)]
+struct TableLayout {
+    first: usize,
+    last: usize,
+    separator: usize,
+    cols: Vec<f32>,
+    widths: Vec<Vec<f32>>,
+}
+
+impl TableLayout {
+    fn gap(size: f32) -> f32 {
+        size * 1.6
+    }
+
+    fn width(&self, size: f32) -> f32 {
+        self.cols.iter().sum::<f32>() + Self::gap(size) * self.cols.len().saturating_sub(1) as f32
+    }
+}
+
+/// The table `line` is in: (first, last, separator line). A table is a run
+/// of lines starting with `|` whose second line is `| --- |`.
+fn table_range(buf: &Buffer, line: usize) -> Option<(usize, usize, usize)> {
+    let is_row = |l: usize| buf.line(l).trim_start().starts_with('|');
+    if !is_row(line) {
+        return None;
+    }
+    let (mut a, mut b) = (line, line);
+    while a > 0 && is_row(a - 1) {
+        a -= 1;
+    }
+    while b + 1 < buf.len_lines() && is_row(b + 1) {
+        b += 1;
+    }
+    let sep = buf.line(a + 1);
+    let t = sep.trim();
+    let is_sep = a < b && t.contains("--") && t.chars().all(|c| matches!(c, '|' | '-' | ':' | ' ' | '\t'));
+    is_sep.then_some((a, b, a + 1))
+}
+
+/// Byte ranges of each cell's text (trimmed) in a table row.
+fn table_cells(text: &str) -> Vec<Range<usize>> {
+    let mut cells = Vec::new();
+    let mut start = None;
+    let bytes = text.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'|' && (i == 0 || bytes[i - 1] != b'\\') {
+            if let Some(s) = start {
+                cells.push(s..i);
+            }
+            start = Some(i + 1);
+        }
+    }
+    if let Some(s) = start
+        && !text[s..].trim().is_empty()
+    {
+        cells.push(s..text.len());
+    }
+    cells
+        .into_iter()
+        .map(|r| {
+            let inner = &text[r.clone()];
+            let lead = inner.len() - inner.trim_start().len();
+            let t = inner.trim();
+            r.start + lead..r.start + lead + t.len()
+        })
+        .collect()
+}
+
+/// Split sections so none crosses a byte in `cuts`.
+fn split_sections(job: &mut egui::text::LayoutJob, cuts: &[usize]) {
+    let mut out = Vec::with_capacity(job.sections.len() + cuts.len());
+    for sec in job.sections.drain(..) {
+        let (start, b) = (sec.byte_range.start.0, sec.byte_range.end.0);
+        let mut a = start;
+        for &c in cuts.iter().filter(|&&c| c > start && c < b) {
+            out.push(egui::text::LayoutSection { byte_range: egui::text::ByteIndex(a)..egui::text::ByteIndex(c), ..sec.clone() });
+            a = c;
+        }
+        out.push(egui::text::LayoutSection { byte_range: egui::text::ByteIndex(a)..egui::text::ByteIndex(b), ..sec });
+    }
+    job.sections = out;
+}
+
+/// Lay a table row out as cells: pipes and padding vanish, the header is
+/// bold, and with `place` each cell starts at its column (`place` holds the
+/// column widths and this row's own cell widths).
+fn table_row_job(
+    mut job: egui::text::LayoutJob,
+    text: &str,
+    header: bool,
+    cx: &Cx<'_>,
+    place: Option<(&[f32], &[f32])>,
+) -> egui::text::LayoutJob {
+    let cells = table_cells(text);
+    let cuts: Vec<usize> = cells.iter().flat_map(|r| [r.start, r.end]).collect();
+    split_sections(&mut job, &cuts);
+    let mut x_end = 0.0;
+    let gap = TableLayout::gap(cx.size);
+    for sec in &mut job.sections {
+        let (a, b) = (sec.byte_range.start.0, sec.byte_range.end.0);
+        match cells.iter().position(|c| c.start <= a && b <= c.end && a < b) {
+            None => {
+                sec.format.font_id.size = 0.5;
+                sec.format.color = Color32::TRANSPARENT;
+                sec.format.background = Color32::TRANSPARENT;
+                sec.format.line_height = None;
+            }
+            Some(i) => {
+                if header {
+                    if cx.fonts.bold {
+                        sec.format.font_id.family = egui::FontFamily::Name(crate::theme::BOLD.into());
+                    }
+                    sec.format.color = cx.pal.strong;
+                }
+                if let Some((cols, own)) = place
+                    && a == cells[i].start
+                {
+                    let target: f32 = cols.iter().take(i).map(|w| w + gap).sum();
+                    sec.leading_space = (target - x_end).max(0.0);
+                    x_end = target + own.get(i).copied().unwrap_or(0.0);
+                }
+            }
+        }
+    }
+    job
+}
+
+/// Lines drawn as one block: a background behind code and front matter, a
+/// bar beside quotes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Block {
+    None,
+    Code,
+    FrontMatter,
+    Quote,
 }
 
 /// Per-frame layout parameters.
@@ -132,6 +289,11 @@ fn hideable_marker(text: &str, line_start: bool) -> bool {
     !(bullet || task || html || rule || t.starts_with('>') || t.starts_with("```") || t.starts_with("~~~"))
 }
 
+/// `---`, `***` or `___` (three or more) on a line of its own.
+fn hideable_rule(t: &str) -> bool {
+    t.len() >= 3 && b"-*_".iter().any(|c| t.bytes().all(|b| b == *c))
+}
+
 impl Cx<'_> {
     fn row_h(&self) -> f32 {
         self.size * 1.55
@@ -145,6 +307,10 @@ pub(crate) struct FastEditor {
     pub scroll_to_caret: bool,
     pub request_focus: bool,
     galleys: HashMap<usize, Arc<Galley>>,
+    /// Live-preview decorations for the lines in `galleys`.
+    decos: HashMap<usize, Vec<Deco>>,
+    /// Tables laid out this frame, by first line.
+    tables: HashMap<usize, Rc<TableLayout>>,
 }
 
 fn all_selections(primary: Selection, extra: &[Selection]) -> Vec<Selection> {
@@ -343,6 +509,62 @@ impl FastEditor {
         runs
     }
 
+    /// A line's text and the style runs inside it (byte offsets in the line).
+    fn line_runs(view: &mut DocView, doc: &Document, line: usize) -> (String, Vec<StyleRun>) {
+        let buf = doc.buffer();
+        let lr = buf.line_range(line);
+        let text = buf.slice(lr.clone());
+        let b0 = buf.char_to_byte(lr.start);
+        let b1 = b0 + text.len();
+        let runs = Self::runs_for(view, doc, line..line + 1);
+        let i = runs.partition_point(|r| r.range.end <= b0);
+        let local = runs[i..]
+            .iter()
+            .take_while(|r| r.range.start < b1)
+            .map(|r| StyleRun { range: r.range.start.max(b0) - b0..r.range.end.min(b1) - b0, style: r.style })
+            .filter(|r| r.range.start < r.range.end)
+            .collect();
+        (text, local)
+    }
+
+    /// Column widths for the table in lines `first..=last`, measured once a frame.
+    fn table_layout(
+        &mut self,
+        ui: &Ui,
+        view: &mut DocView,
+        doc: &Document,
+        (first, last, separator): (usize, usize, usize),
+        cx: &Cx<'_>,
+    ) -> Rc<TableLayout> {
+        if let Some(t) = self.tables.get(&first) {
+            return Rc::clone(t);
+        }
+        let mut widths = Vec::new();
+        let mut cols: Vec<f32> = Vec::new();
+        for line in first..=last {
+            if line == separator {
+                widths.push(Vec::new());
+                continue;
+            }
+            let (text, local) = Self::line_runs(view, doc, line);
+            let mut job = table_row_job(build_job(&text, &local, cx.pal, cx.size, cx.fonts), &text, line == first, cx, None);
+            job.wrap.max_width = f32::INFINITY;
+            let g = ui.fonts_mut(|f| f.layout_job(job));
+            let x = |byte: usize| g.pos_from_cursor(CCursor::new(text[..byte].chars().count())).left();
+            let row: Vec<f32> = table_cells(&text).iter().map(|c| (x(c.end) - x(c.start)).max(0.0)).collect();
+            if cols.len() < row.len() {
+                cols.resize(row.len(), 0.0);
+            }
+            for (c, w) in cols.iter_mut().zip(&row) {
+                *c = c.max(*w);
+            }
+            widths.push(row);
+        }
+        let t = Rc::new(TableLayout { first, last, separator, cols, widths });
+        self.tables.insert(first, Rc::clone(&t));
+        t
+    }
+
     fn galley(&mut self, ui: &Ui, view: &mut DocView, doc: &Document, line: usize, cx: &Cx<'_>) -> Arc<Galley> {
         if let Some(g) = self.galleys.get(&line) {
             return Arc::clone(g);
@@ -388,25 +610,80 @@ impl FastEditor {
             _ => (std::borrow::Cow::Borrowed(text.as_str()), local, None),
         };
         let mut job = build_job(&text, &local, cx.pal, cx.size, cx.fonts);
-        if let Some(revealed) = &cx.live
+        let mut decos = Vec::new();
+        // Tables render as a grid unless the caret is somewhere in them.
+        let table = cx
+            .live
+            .as_ref()
+            .filter(|_| pre_range.is_none())
+            .and_then(|revealed| table_range(buf, line).filter(|(a, b, _)| !revealed.iter().any(|r| r.start <= *b && *a < r.end)));
+        if let Some(range) = table {
+            let t = self.table_layout(ui, view, doc, range, cx);
+            let width = t.width(cx.size).min(cx.wrap);
+            if line == t.separator {
+                for sec in &mut job.sections {
+                    sec.format.font_id.size = 0.5;
+                    sec.format.color = Color32::TRANSPARENT;
+                    sec.format.background = Color32::TRANSPARENT;
+                    sec.format.line_height = Some(cx.size * 0.5);
+                }
+                decos.push(Deco::TableLine { width, strong: true });
+            } else {
+                let own = &t.widths[line - t.first];
+                job = table_row_job(job, &text, line == t.first, cx, Some((&t.cols, own)));
+                if line != t.first && line != t.last {
+                    decos.push(Deco::TableLine { width, strong: false });
+                }
+            }
+        } else if let Some(revealed) = &cx.live
             && pre_range.is_none()
             && !revealed.iter().any(|r| r.contains(&line))
         {
-            for run in local.iter().filter(|r| r.style.marker && !r.style.code_block && !r.style.conflict) {
+            let is_task = local.iter().any(|r| r.style.marker && matches!(text[r.range.clone()].trim(), "[ ]" | "[x]" | "[X]"));
+            for run in local.iter().filter(|r| r.style.marker && !r.style.code_block && !r.style.conflict && !r.style.front_matter) {
+                let raw = &text[run.range.clone()];
+                let t = raw.trim();
                 let line_start = text[..run.range.start].trim().is_empty();
-                if !hideable_marker(&text[run.range.clone()], line_start) {
+                let col = text[..run.range.start + (raw.len() - raw.trim_start().len())].chars().count();
+                // Markers drawn as something else keep their width (so the text
+                // doesn't jump) but turn invisible.
+                let replaced = match t {
+                    "-" | "*" | "+" if line_start => {
+                        if !is_task {
+                            decos.push(Deco::Bullet(col));
+                        }
+                        true
+                    }
+                    "[ ]" | "[x]" | "[X]" => {
+                        decos.push(Deco::Task { col, done: t != "[ ]" });
+                        true
+                    }
+                    _ if line_start && text.trim() == t && hideable_rule(t) => {
+                        decos.push(Deco::Rule);
+                        true
+                    }
+                    _ => false,
+                };
+                // A quote's `>` gives way to the bar drawn beside the quote.
+                let hide = !replaced && (hideable_marker(raw, line_start) || (line_start && t == ">"));
+                if !replaced && !hide {
                     continue;
                 }
                 for sec in &mut job.sections {
                     if sec.byte_range.start.0 >= run.range.start && sec.byte_range.end.0 <= run.range.end {
-                        sec.format.font_id.size = 0.5;
                         sec.format.color = Color32::TRANSPARENT;
                         sec.format.background = Color32::TRANSPARENT;
-                        sec.format.line_height = None;
+                        sec.format.strikethrough = Stroke::NONE;
+                        sec.format.underline = Stroke::NONE;
+                        if hide {
+                            sec.format.font_id.size = 0.5;
+                            sec.format.line_height = None;
+                        }
                     }
                 }
             }
         }
+        self.decos.insert(line, decos);
         if let Some(r) = pre_range {
             for sec in &mut job.sections {
                 if sec.byte_range.start.0 >= r.start && sec.byte_range.end.0 <= r.end {
@@ -418,6 +695,30 @@ impl FastEditor {
         let g = ui.fonts_mut(|f| f.layout_job(job));
         self.galleys.insert(line, Arc::clone(&g));
         g
+    }
+
+    /// Which block a line belongs to, from its style runs.
+    fn block_of(view: &mut DocView, doc: &Document, line: usize) -> Block {
+        let buf = doc.buffer();
+        if line >= buf.len_lines() {
+            return Block::None;
+        }
+        let lr = buf.line_range(line);
+        let b0 = buf.char_to_byte(lr.start);
+        let b1 = buf.char_to_byte(lr.end).max(b0 + 1);
+        let runs = Self::runs_for(view, doc, line..line + 1);
+        let i = runs.partition_point(|r| r.range.end <= b0);
+        let mut quote = false;
+        for r in runs[i..].iter().take_while(|r| r.range.start < b1) {
+            if r.style.code_block {
+                return Block::Code;
+            }
+            if r.style.front_matter {
+                return Block::FrontMatter;
+            }
+            quote |= r.style.quote;
+        }
+        if quote { Block::Quote } else { Block::None }
     }
 
     /// Image shown under a line that only embeds an image.
@@ -600,12 +901,14 @@ impl FastEditor {
 
         let mut view = self.views.remove(&doc_id).unwrap_or_else(DocView::new);
         self.galleys.clear();
+        self.decos.clear();
+        self.tables.clear();
         let ctx = ui.ctx().clone();
         let scroll_to_caret = std::mem::take(&mut self.scroll_to_caret);
         let request_focus = std::mem::take(&mut self.request_focus);
 
         let avail_w = ui.available_width();
-        let wrap = (avail_w - 32.0).min(max_w).max(120.0);
+        let wrap = (avail_w - 96.0).min(max_w).max(120.0);
         let live = ws.settings.live_preview.then(|| {
             let doc = ws.active_doc().expect("checked");
             let buf = doc.buffer();
@@ -685,7 +988,18 @@ impl FastEditor {
                 }
                 if let Some(p) = pointer.filter(|_| !over_view || view.drag.is_some()) {
                     let doc = ws.active_doc().expect("checked");
-                    if pressed && resp.contains_pointer() && !over_view {
+                    let task_hit = view.task_boxes.iter().find(|(r, _, _)| r.contains(p)).copied();
+                    if pressed && resp.contains_pointer() && !over_view && !mods.shift && !mods.alt && task_hit.is_some() {
+                        resp.request_focus();
+                        if let Some((_, at, done)) = task_hit
+                            && let Some(d) = ws.active_doc_mut()
+                        {
+                            let sel = d.selection();
+                            let tx = Transaction::replace(at, at + 1, if done { " " } else { "x" }).with_selection(sel);
+                            let _ = d.apply(tx, EditKind::Other);
+                        }
+                        edited = true;
+                    } else if pressed && resp.contains_pointer() && !over_view {
                         resp.request_focus();
                         let at = self.hit(ui, &mut view, doc, &cx, origin, x0, p);
                         let now = Instant::now();
@@ -778,6 +1092,10 @@ impl FastEditor {
                                 && doc.revision() != rev_before
                             {
                                 self.galleys.clear();
+                                self.decos.clear();
+                                self.tables.clear();
+                                self.decos.clear();
+                                self.tables.clear();
                                 Self::sync(&mut view, doc, &cx, inline_images);
                             }
                             continue;
@@ -987,6 +1305,8 @@ impl FastEditor {
                             && doc.revision() != rev_before
                         {
                             self.galleys.clear();
+                            self.decos.clear();
+                            self.tables.clear();
                             Self::sync(&mut view, doc, &cx, inline_images);
                             sugg = Self::current_suggestions(&mut view, ws);
                         }
@@ -1029,8 +1349,13 @@ impl FastEditor {
                 let find_current_color = pal.mark_bg;
                 let mut anchor_shift = 0.0;
                 let mut caret_rect_primary = None;
+                let mut task_boxes = Vec::new();
                 let now = Instant::now();
-                let blink_on = focused && (now.duration_since(view.blink_start).as_millis() / BLINK.as_millis()).is_multiple_of(2);
+                // Only blink while the window has focus; in the background the
+                // caret stays still and the app stops repainting.
+                let window_focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
+                let blink_on = focused
+                    && (!window_focused || (now.duration_since(view.blink_start).as_millis() / BLINK.as_millis()).is_multiple_of(2));
 
                 for line in first..=last {
                     let g = self.galley(ui, &mut view, doc, line, &cx);
@@ -1073,8 +1398,96 @@ impl FastEditor {
                         paint_range(s.start(), s.end(), sel_color, s.end() > le);
                     }
 
+                    // Blocks: one background behind code and front matter, a bar beside quotes.
+                    let block = Self::block_of(&mut view, doc, line);
+                    if block != Block::None {
+                        let joined_above = line > 0 && Self::block_of(&mut view, doc, line - 1) == block;
+                        let joined_below = Self::block_of(&mut view, doc, line + 1) == block;
+                        let bottom = if joined_below {
+                            origin.y + TOP_MARGIN + view.heights.top(line + 1)
+                        } else {
+                            top + g.size().y.max(cx.row_h() * 0.9)
+                        };
+                        let pad = 14.0;
+                        if block == Block::Quote {
+                            let bar = Rect::from_min_max(Pos2::new(x0 - pad, top), Pos2::new(x0 - pad + 3.0, bottom));
+                            let r = egui::CornerRadius {
+                                nw: if joined_above { 0 } else { 2 },
+                                ne: if joined_above { 0 } else { 2 },
+                                sw: if joined_below { 0 } else { 2 },
+                                se: if joined_below { 0 } else { 2 },
+                            };
+                            painter.rect_filled(bar, r, pal.faint);
+                        } else {
+                            let extra_top = if joined_above { 0.0 } else { 4.0 };
+                            let extra_bottom = if joined_below { 0.0 } else { 4.0 };
+                            let bg = Rect::from_min_max(
+                                Pos2::new(x0 - pad, top - extra_top),
+                                Pos2::new(x0 + cx.wrap + pad, bottom + extra_bottom),
+                            );
+                            let c = |joined: bool| if joined { 0 } else { 8 };
+                            let r =
+                                egui::CornerRadius { nw: c(joined_above), ne: c(joined_above), sw: c(joined_below), se: c(joined_below) };
+                            let fill = if block == Block::FrontMatter { pal.code_bg.gamma_multiply(0.6) } else { pal.code_bg };
+                            painter.rect_filled(bg, r, fill);
+                        }
+                    }
+
                     painter.galley(pos, Arc::clone(&g), pal.text);
-                    let mut h = g.size().y.max(cx.row_h() * 0.9);
+                    // Live preview: bullets, checkboxes and rules drawn over hidden syntax.
+                    for d in self.decos.get(&line).map(Vec::as_slice).unwrap_or_default() {
+                        let at = |col: usize| g.pos_from_cursor(CCursor::new(col)).translate(pos.to_vec2());
+                        match *d {
+                            Deco::Bullet(col) => {
+                                let (a, b) = (at(col), at(col + 1));
+                                let c = Pos2::new(f32::midpoint(a.left(), b.left()), a.center().y);
+                                painter.circle_filled(c, (cx.size * 0.16).max(2.5), pal.muted);
+                            }
+                            Deco::Task { col, done } => {
+                                let (a, b) = (at(col), at(col + 3));
+                                let side = (cx.size * 0.95).round();
+                                let center = Pos2::new(f32::midpoint(a.left(), b.left()), a.center().y);
+                                let r = Rect::from_center_size(center, Vec2::splat(side));
+                                if done {
+                                    painter.rect_filled(r, 4.0, pal.accent);
+                                    let s = side;
+                                    let pts = [
+                                        Pos2::new(r.left() + s * 0.26, r.top() + s * 0.53),
+                                        Pos2::new(r.left() + s * 0.43, r.top() + s * 0.70),
+                                        Pos2::new(r.left() + s * 0.75, r.top() + s * 0.33),
+                                    ];
+                                    let st = Stroke::new(1.8, if pal.dark { pal.bg } else { Color32::WHITE });
+                                    painter.line_segment([pts[0], pts[1]], st);
+                                    painter.line_segment([pts[1], pts[2]], st);
+                                } else {
+                                    let hovered = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| r.contains(p));
+                                    painter.rect_stroke(
+                                        r,
+                                        4.0,
+                                        Stroke::new(1.5, if hovered { pal.accent } else { pal.muted }),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                    if hovered {
+                                        ctx.set_cursor_icon(CursorIcon::PointingHand);
+                                    }
+                                }
+                                task_boxes.push((r.expand(3.0), ls + col + 1, done));
+                            }
+                            Deco::Rule => {
+                                let y = at(0).center().y;
+                                painter.line_segment([Pos2::new(x0, y), Pos2::new(x0 + cx.wrap, y)], Stroke::new(1.0, pal.border));
+                            }
+                            Deco::TableLine { width, strong } => {
+                                // The separator row is a line; body rows get a hairline below.
+                                let y = if strong { top + g.size().y / 2.0 } else { top + g.size().y };
+                                let c = if strong { pal.faint } else { pal.border };
+                                painter.line_segment([Pos2::new(x0, y), Pos2::new(x0 + width, y)], Stroke::new(1.0, c));
+                            }
+                        }
+                    }
+                    // A table's `| --- |` row shrinks to the line drawn in it.
+                    let thin = self.decos.get(&line).is_some_and(|d| d.iter().any(|d| matches!(d, Deco::TableLine { strong: true, .. })));
+                    let mut h = if thin { g.size().y } else { g.size().y.max(cx.row_h() * 0.9) };
 
                     if let Some(uri) = Self::line_image(ws, doc, line)
                         && let Some(size) = Self::image_size(ui, &uri, cx.wrap)
@@ -1130,6 +1543,7 @@ impl FastEditor {
                 }
 
                 view.view_rects = new_view_rects;
+                view.task_boxes = task_boxes;
                 // Empty new note: say how it gets its name.
                 if doc.auto_name && buf.len_chars() == 0 && view.preedit.is_none() {
                     painter.text(
@@ -1150,8 +1564,10 @@ impl FastEditor {
                             should_interrupt_composition: false,
                         });
                     });
-                    let phase = now.duration_since(view.blink_start).as_millis() % BLINK.as_millis();
-                    ctx.request_repaint_after(Duration::from_millis((BLINK.as_millis() - phase) as u64 + 5));
+                    if window_focused {
+                        let phase = now.duration_since(view.blink_start).as_millis() % BLINK.as_millis();
+                        ctx.request_repaint_after(Duration::from_millis((BLINK.as_millis() - phase) as u64 + 5));
+                    }
                     if let (Some(s), Some(caret)) = (&sugg, caret_rect_primary) {
                         suggesting = true;
                         if let Some(i) = Self::suggestion_popup(&ctx, id, caret, s, view.suggest_pick, pal) {
@@ -1246,6 +1662,23 @@ mod tests {
         ] {
             assert!(!hideable_marker(m, start), "{m:?} should stay");
         }
+    }
+
+    #[test]
+    fn tables_are_found_and_split_into_cells() {
+        let text = "intro\n| Key | Action |\n| --- | :-: |\n| Ctrl+E | Preview |\n|a\\|b| c\nafter";
+        let buf = Buffer::from(text);
+        assert_eq!(table_range(&buf, 0), None);
+        assert_eq!(table_range(&buf, 3), Some((1, 4, 2)));
+        let row = "| Ctrl+E |  Preview |";
+        let cells: Vec<&str> = table_cells(row).into_iter().map(|r| &row[r]).collect();
+        assert_eq!(cells, ["Ctrl+E", "Preview"]);
+        let escaped = "|a\\|b| c";
+        let cells: Vec<&str> = table_cells(escaped).into_iter().map(|r| &escaped[r]).collect();
+        assert_eq!(cells, ["a\\|b", "c"]);
+        // Not a table without the | --- | line.
+        assert_eq!(table_range(&Buffer::from("| a |\n| b |"), 0), None);
+        assert!(hideable_rule("---") && hideable_rule("***") && !hideable_rule("--") && !hideable_rule("-*-"));
     }
 
     #[test]

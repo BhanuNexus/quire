@@ -193,3 +193,4 @@ Copyright © 2026 The Quire contributors.
 
 Quire is free software: you can redistribute it and/or modify it under the terms of the [GNU Affero General Public License](LICENSE), version 3 or (at your option) any later version. In short: you may use, study, change and share it. If you distribute it, or run a modified version as a network service, you must share the source under the same licence.
 
+The app bundles the [Inter](https://rsms.me/inter/) and [JetBrains Mono](https://www.jetbrains.com/lp/mono/) typefaces, both under the [SIL Open Font License 1.1](apps/quire-desktop/fonts/Inter-OFL.txt).

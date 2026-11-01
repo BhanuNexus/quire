@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use egui::{Align2, Key, Modifiers, RichText};
+use egui::{Align2, Key, Modifiers, Pos2, RichText};
 use quire_app::vault::NotePath;
 use quire_app::workspace::NoticeLevel;
 use quire_app::{COMMANDS, Command, Workspace};
@@ -117,7 +117,11 @@ fn items(ws: &Workspace, mode: Mode, query: &str, mac: bool) -> Vec<Item> {
                 .collect();
             v.extend(ix.quick_open(query, 40).into_iter().filter(|h| !recent.contains(&h.path)).map(|h| Item {
                 label: h.path.stem().to_string(),
-                detail: if h.title == h.path.stem() { h.path.folder().to_string() } else { format!("{} · {}", h.title, h.path.folder()) },
+                detail: match (h.title == h.path.stem(), h.path.folder()) {
+                    (true, f) => f.to_string(),
+                    (false, "") => h.title.clone(),
+                    (false, f) => format!("{} · {f}", h.title),
+                },
                 action: Action::Open(h.path),
             }));
             let q = query.trim();
@@ -212,17 +216,45 @@ pub(crate) fn show(ctx: &egui::Context, overlay: &mut Overlay, ws: &mut Workspac
                             if list.is_empty() {
                                 ui.label(RichText::new("No matches").color(pal.muted));
                             }
+                            ui.spacing_mut().item_spacing.y = 2.0;
+                            let commands = *mode == Mode::Commands;
                             for (i, item) in list.iter().enumerate() {
                                 let is_sel = i == *selected;
-                                let resp = ui
-                                    .horizontal(|ui| {
-                                        let r = ui.selectable_label(is_sel, RichText::new(&item.label).size(15.0));
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            ui.label(RichText::new(&item.detail).color(pal.muted).size(12.5));
-                                        });
-                                        r
-                                    })
-                                    .inner;
+                                // Commands read "Category: Title"; the category is shown quietly.
+                                let (group, title) = match item.label.split_once(": ") {
+                                    Some((g, t)) if commands => (g, t),
+                                    _ => ("", item.label.as_str()),
+                                };
+                                let resp = crate::theme::row(ui, is_sel, 32.0, pal, |painter, rect| {
+                                    let y = rect.center().y;
+                                    let title_color = if is_sel { pal.strong } else { pal.text };
+                                    let t = painter.text(
+                                        Pos2::new(rect.left() + 10.0, y),
+                                        Align2::LEFT_CENTER,
+                                        title,
+                                        egui::FontId::proportional(14.5),
+                                        title_color,
+                                    );
+                                    if !group.is_empty() {
+                                        painter.text(
+                                            Pos2::new(t.right() + 8.0, y),
+                                            Align2::LEFT_CENTER,
+                                            group,
+                                            egui::FontId::proportional(12.0),
+                                            pal.faint,
+                                        );
+                                    }
+                                    if !item.detail.is_empty() {
+                                        let font = if commands { egui::FontId::monospace(11.5) } else { egui::FontId::proportional(12.5) };
+                                        painter.text(
+                                            Pos2::new(rect.right() - 10.0, y),
+                                            Align2::RIGHT_CENTER,
+                                            &item.detail,
+                                            font,
+                                            pal.muted,
+                                        );
+                                    }
+                                });
                                 if is_sel && (down || up) {
                                     resp.scroll_to_me(None);
                                 }
@@ -559,9 +591,14 @@ fn shortcuts(ctx: &egui::Context, query: &mut String, focused: &mut bool, pal: &
                     shown += 1;
                     col.set_max_width(col_w);
                     col.label(RichText::new(cat.to_uppercase()).size(11.0).color(pal.muted).strong());
+                    // Same label width in every group, so the keys line up down the column.
+                    let label_w = (col_w * 0.52).max(150.0);
                     egui::Grid::new(("shortcuts", cat)).num_columns(2).spacing([12.0, 4.0]).show(col, |ui| {
                         for c in cmds {
-                            ui.label(RichText::new(c.title.trim_end_matches('…')).color(pal.text));
+                            ui.allocate_ui_with_layout(egui::vec2(label_w, 18.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                ui.set_min_width(label_w);
+                                ui.label(RichText::new(c.title.trim_end_matches('…')).color(pal.text));
+                            });
                             let keys: Vec<String> = c.keys.iter().map(|k| k.label(mac)).collect();
                             ui.label(RichText::new(keys.join("  ·  ")).monospace().size(12.5).color(pal.accent));
                             ui.end_row();

@@ -120,10 +120,7 @@ impl QuireApp {
         if self.ws.settings.theme != Theme::System {
             ctx.set_theme(if pal.dark { egui::Theme::Dark } else { egui::Theme::Light });
         }
-        ctx.global_style_mut(|s| {
-            s.spacing.item_spacing = egui::vec2(8.0, 5.0);
-            s.spacing.button_padding = egui::vec2(8.0, 3.0);
-        });
+        ctx.global_style_mut(theme::style);
     }
 
     fn classic(&self) -> bool {
@@ -309,6 +306,7 @@ impl eframe::App for QuireApp {
             || self.ws.ask.pending()
             || self.ws.index().semantic_busy()
             || self.ws.updates.checking()
+            || self.ws.insights_pending()
         {
             ctx.request_repaint_after(Duration::from_millis(100));
         }

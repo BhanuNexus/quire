@@ -126,6 +126,11 @@ impl IndexService {
     }
 
     /// The latest semantic index, if one has been built.
+    /// The index itself, for reading from another thread.
+    pub fn shared(&self) -> Arc<RwLock<Index>> {
+        Arc::clone(&self.index)
+    }
+
     pub fn semantic(&self) -> Option<Arc<SemanticIndex>> {
         self.semantic.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }

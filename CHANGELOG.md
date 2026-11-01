@@ -11,6 +11,24 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 - **Publish as a website, free.** The command palette's *Publish as a website…* (or `quire-cli publish <vault> <folder>`) turns the notes marked `publish: true`, or all notes, into a folder of web pages. Each page has its links, backlinks, tags and heading anchors, and the site has a home page, a tags page and search that runs in the browser. It works with GitHub Pages, Netlify, Cloudflare Pages or any web server. Links to notes you didn't publish become plain text, so the site never points at a private note.
 
 ### Changed
+- **A refreshed look:**
+  - **Fonts:** Inter and JetBrains Mono now ship with the app, so text looks the same on macOS, Windows and Linux (before, macOS and Linux fell back to whatever font was around), with a real italic face.
+  - **Notes in live preview:**
+    - Code blocks and front matter sit on one rounded background.
+    - Quotes get a bar.
+    - Inline code and tags are tight chips.
+    - List bullets are dots, `---` is a rule, and tables line up as a grid with a bold header.
+    - Checklists show real checkboxes that you can click to tick, without moving the caret.
+
+    The Markdown appears again on the line or table you're editing.
+  - **Lists and controls:**
+    - The sidebar, command palette and quick open have full-width rows with hover states.
+    - The command palette shows each command's group quietly and its shortcut in line.
+    - The top bar has a search box that opens the palette, labelled with this platform's shortcut (it said ⌘ on Windows and Linux).
+    - Buttons are softer and more rounded, scroll bars are thin and appear on hover, dialogs have softer shadows, and the editor has wider margins.
+  - **Shortcuts dialog:** the keyboard shortcuts line up across groups.
+- **Faster in big notes:** the Insights panel works out related notes and suggestions in the background for notes over 64 KB, so typing doesn't stutter while it does (about 50 ms per save on a 400 KB note before).
+- **Less battery in the background:** the caret stops blinking, and Quire stops redrawing, while you're in another app.
 - When the same note name arrives from two devices, every device now gives the numbered name to the same one, whichever it saw first.
 
 ## [0.5.0] - 2026-11-01

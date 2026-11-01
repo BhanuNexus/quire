@@ -114,7 +114,13 @@ pub struct AssistResult {
 }
 
 type PendingAssist = (DocId, Selection, Assist, Receiver<Result<String, LlmError>>);
-type InsightsCache = RefCell<Option<((DocId, u64, u64), Rc<Insights>)>>;
+type InsightsKey = (DocId, u64, u64);
+type InsightsCache = RefCell<Option<(InsightsKey, Rc<Insights>)>>;
+/// Insights for a big note, being worked out on another thread.
+type InsightsJob = RefCell<Option<(InsightsKey, Arc<std::sync::Mutex<Option<Insights>>>)>>;
+
+/// Notes bigger than this get their insights worked out off the UI thread.
+const INSIGHTS_SYNC_BYTES: usize = 64 * 1024;
 
 pub struct Workspace {
     pub settings: Settings,
@@ -131,6 +137,7 @@ pub struct Workspace {
     pending_assist: Option<PendingAssist>,
     pub assist_result: Option<AssistResult>,
     insights_cache: InsightsCache,
+    insights_job: InsightsJob,
     pub find: crate::find_state::FindState,
     pub ask: crate::ask_state::AskState,
     pub(crate) file_cache: crate::attach::FileCache,
@@ -160,6 +167,7 @@ impl Workspace {
             pending_assist: None,
             assist_result: None,
             insights_cache: RefCell::new(None),
+            insights_job: RefCell::new(None),
             find: crate::find_state::FindState::default(),
             ask: crate::ask_state::AskState::default(),
             file_cache: crate::attach::FileCache::default(),
@@ -1208,23 +1216,47 @@ impl Workspace {
         {
             return Rc::clone(v);
         }
-        let ix = self.index.read();
         let text = doc.text();
-        let mut ins = Insights::default();
-        if let Some(path) = &doc.path {
-            ins.backlinks = ix.backlinks(path).to_vec();
-            ins.unlinked = quire_intel::unlinked_mentions(&ix, path);
-            let sem = self.index.semantic();
-            ins.related = quire_intel::related_notes_with(&ix, sem.as_deref(), path, 6);
-            ins.tag_suggestions = quire_intel::suggest_tags(&ix, path, 5);
+        let path = doc.path.clone();
+        let large = doc.large;
+        let plain = doc.extracted().plain.clone();
+        if text.len() <= INSIGHTS_SYNC_BYTES {
+            let ix = self.index.read();
+            let rc = Rc::new(compute_insights(&ix, self.index.semantic().as_deref(), path.as_ref(), &text, &plain, large));
+            *self.insights_cache.borrow_mut() = Some((key, Rc::clone(&rc)));
+            return rc;
         }
-        if !doc.large {
-            ins.link_suggestions = quire_intel::suggest_links(&text, &ix, doc.path.as_ref()).into_iter().take(20).collect();
-            ins.summary = quire_intel::summarize(&doc.extracted().plain, 3);
+        // A big note: keep showing the last insights for it while new ones
+        // are worked out, so typing never waits on them.
+        let mut job = self.insights_job.borrow_mut();
+        let done = job.as_ref().filter(|(k, _)| *k == key).and_then(|(_, slot)| slot.lock().ok()?.take());
+        if let Some(ins) = done {
+            *job = None;
+            let rc = Rc::new(ins);
+            *self.insights_cache.borrow_mut() = Some((key, Rc::clone(&rc)));
+            return rc;
         }
-        let rc = Rc::new(ins);
-        *self.insights_cache.borrow_mut() = Some((key, Rc::clone(&rc)));
-        rc
+        if job.as_ref().is_none_or(|(k, _)| *k != key) {
+            let slot = Arc::new(std::sync::Mutex::new(None));
+            let (out, index, semantic, text) = (Arc::clone(&slot), self.index.shared(), self.index.semantic(), text.to_string());
+            std::thread::spawn(move || {
+                let ix = index.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let ins = compute_insights(&ix, semantic.as_deref(), path.as_ref(), &text, &plain, large);
+                if let Ok(mut o) = out.lock() {
+                    *o = Some(ins);
+                }
+            });
+            *job = Some((key, slot));
+        }
+        match &*self.insights_cache.borrow() {
+            Some((k, v)) if k.0 == key.0 => Rc::clone(v),
+            _ => Rc::default(),
+        }
+    }
+
+    /// True while insights for a big note are being worked out.
+    pub fn insights_pending(&self) -> bool {
+        self.insights_job.borrow().is_some()
     }
 
     /// Outgoing internal links of the active note, resolved.
@@ -1285,6 +1317,29 @@ impl Workspace {
         }
         let _ = self.settings.save();
     }
+}
+
+/// Backlinks, related notes and suggestions for one note.
+fn compute_insights(
+    ix: &quire_index::Index,
+    semantic: Option<&quire_index::semantic::SemanticIndex>,
+    path: Option<&NotePath>,
+    text: &str,
+    plain: &str,
+    large: bool,
+) -> Insights {
+    let mut ins = Insights::default();
+    if let Some(path) = path {
+        ins.backlinks = ix.backlinks(path).to_vec();
+        ins.unlinked = quire_intel::unlinked_mentions(ix, path);
+        ins.related = quire_intel::related_notes_with(ix, semantic, path, 6);
+        ins.tag_suggestions = quire_intel::suggest_tags(ix, path, 5);
+    }
+    if !large {
+        ins.link_suggestions = quire_intel::suggest_links(text, ix, path).into_iter().take(20).collect();
+        ins.summary = quire_intel::summarize(plain, 3);
+    }
+    ins
 }
 
 #[cfg(test)]
