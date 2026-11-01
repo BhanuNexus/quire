@@ -50,16 +50,16 @@ pub fn embed_base_url(settings: &Settings) -> String {
 pub(crate) fn make_assistant(settings: &Settings) -> Arc<dyn LanguageModel> {
     #[cfg(feature = "remote-llm")]
     {
-        let store = secrets::store();
+        // The secret store (OS keychain) is only touched when a provider is configured.
         let (base, model) = resolved(settings);
         match settings.ai_provider.as_str() {
             "anthropic" => {
-                if let Some(key) = secrets::api_key(store.as_ref(), "anthropic") {
+                if let Some(key) = secrets::api_key(secrets::store().as_ref(), "anthropic") {
                     return Arc::new(quire_intel::llm::AnthropicModel::new(key, model).with_base_url(base));
                 }
             }
             "openai" => {
-                let key = secrets::api_key(store.as_ref(), "openai");
+                let key = secrets::api_key(secrets::store().as_ref(), "openai");
                 return Arc::new(quire_intel::llm::OpenAiCompatible::new(base, model, key));
             }
             _ => {}

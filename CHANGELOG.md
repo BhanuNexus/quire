@@ -36,6 +36,7 @@ Downloads for Windows, macOS (universal) and Linux are attached to the release, 
 - Quick open could show only the first couple of results when a longer list followed a shorter one.
 - Notes sometimes reopened scrolled to another note's position.
 - Renaming a note whose front matter had `title:` set to its old name left search results and boards showing the old name. The title now follows the rename.
+- Quire no longer touches the OS keychain at startup. It's used only when an AI provider that needs a key is configured, and macOS and Windows no longer get a test entry written to check that the keychain works.
 
 ## 0.3.0 - 2026-11-01 (not published)
 

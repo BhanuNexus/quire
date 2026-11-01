@@ -87,19 +87,35 @@ pub fn store() -> Box<dyn SecretStore> {
         return Box::new(FileSecrets::new(p));
     }
     #[cfg(feature = "keychain")]
-    if keyring::Entry::store_status().is_ok() {
-        // Probe: some Linux sessions advertise a Secret Service that then fails.
-        let probe = keyring::Entry::new("Quire", "__probe__").and_then(|e| {
-            e.set_password("ok")?;
-            let _ = e.delete_credential();
-            Ok(())
-        });
-        if probe.is_ok() {
-            return Box::new(Keychain);
-        }
+    if keychain_usable() {
+        return Box::new(Keychain);
     }
     let dir = crate::settings::config_dir().unwrap_or_else(std::env::temp_dir);
     Box::new(FileSecrets::new(dir.join("secrets.toml")))
+}
+
+/// Whether the OS keychain works here, decided once per process.
+#[cfg(feature = "keychain")]
+fn keychain_usable() -> bool {
+    static USABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *USABLE.get_or_init(|| {
+        if keyring::Entry::store_status().is_err() {
+            return false;
+        }
+        // Some Linux sessions advertise a Secret Service that then fails, so
+        // try a write there. macOS and Windows keychains are always present,
+        // and a write can block on a locked keychain, so they skip the probe.
+        if !cfg!(target_os = "linux") {
+            return true;
+        }
+        keyring::Entry::new("Quire", "__probe__")
+            .and_then(|e| {
+                e.set_password("ok")?;
+                let _ = e.delete_credential();
+                Ok(())
+            })
+            .is_ok()
+    })
 }
 
 fn env_name(provider: &str) -> Option<&'static str> {
