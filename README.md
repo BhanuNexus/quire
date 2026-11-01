@@ -14,7 +14,10 @@ Plain <code>.md</code> files in a folder, styled as you type, linked like Obsidi
 <a href="https://github.com/BhanuNexus/quire/discussions"><img src="https://img.shields.io/github/discussions/BhanuNexus/quire" alt="Discussions"></a>
 </p>
 
-![Quire, light theme](docs/screenshot-light.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/editor-dark.png">
+  <img src="docs/screenshots/editor-light.png" alt="Quire editing a note, with the file list on the left and backlinks, related notes and the outline on the right">
+</picture>
 
 **Open source, all of it.** The app, the CLI, the importers and the future sync server are licensed under the [GNU AGPL v3 or later](LICENSE). Your notes are plain files you own. An optional, paid **managed sync** service will fund development later. You can always sync your folder with iCloud, Dropbox, Syncthing or Git instead, or run the sync server yourself.
 
@@ -28,7 +31,10 @@ Download from [Releases](https://github.com/BhanuNexus/quire/releases):
 - **macOS 11+:** `Quire-<version>-macos-universal.dmg` (Apple Silicon and Intel).
 - **Linux x86_64:** `Quire-<version>-linux-x86_64.tar.gz`. Extract it and run `./install.sh` (no root needed).
 
-Until code signing is set up, Windows shows a SmartScreen prompt (*More info → Run anyway*). On macOS, right-click the app and choose *Open* the first time.
+Until code signing is set up (planned for 1.0), your system will warn you the first time:
+
+- **Windows:** SmartScreen says it protected your PC. Click *More info → Run anyway*.
+- **macOS 15 and later:** macOS says it can't verify Quire. Click *Done*, open *System Settings → Privacy & Security*, scroll down and click *Open Anyway* next to Quire, then confirm. On macOS 14 and earlier, right-click the app and choose *Open* instead.
 
 Every release file is built by GitHub Actions from a tagged commit, listed in `SHA256SUMS` and covered by a build-provenance attestation. You can verify a download:
 
@@ -57,6 +63,19 @@ Settings live in `~/.config/quire/settings.toml` (Linux), `~/Library/Application
 
 ## What it does
 
+<table>
+<tr>
+<td><img src="docs/screenshots/board-dark.png" alt="A project board: notes as cards in planned, active and done columns"></td>
+<td><img src="docs/screenshots/ask-dark.png" alt="Ask your notes: an answer quoted from the vault with numbered sources"></td>
+<td><img src="docs/screenshots/preview-light.png" alt="The editor beside the rendered preview"></td>
+</tr>
+<tr>
+<td align="center">Boards and views from note properties</td>
+<td align="center">Ask your notes, with sources</td>
+<td align="center">Live styling and preview</td>
+</tr>
+</table>
+
 | Area | Features |
 |---|---|
 | Editor | Fast virtualized editor: draws only visible lines, stays smooth on 10 MB / 100k-line files. Multiple cursors (Ctrl+D, Ctrl+Shift+L, Ctrl+Alt+↑/↓, Alt+click), word/line selection by double/triple click, IME input. Classic egui editor kept as a fallback |
@@ -78,6 +97,8 @@ Settings live in `~/.config/quire/settings.toml` (Linux), `~/Library/Application
 | AI providers | Offline by default. Optional OpenAI-compatible (Ollama, LM Studio, OpenAI) or Anthropic, with *Test connection*. Optional neural embeddings from the same kind of endpoint, cached per passage, falling back to the built-in index |
 | MCP server | `quire-cli mcp <vault>` lets AI assistants search, read and ask your notes. Read-only unless started with `--allow-write`; every write is versioned |
 | History | Undo tree: undo, type something else, and the old branch is still reachable |
+| Sync safety | Works with any folder sync (iCloud, Dropbox, Syncthing, Nextcloud, Git). A note changed elsewhere while you edit is merged line by line; overlapping edits pause autosave and let you keep yours, take theirs or keep both. Conflict copies made by sync tools are found and merged back |
+| Updates | Optional daily check for a new release (Settings → About). Sends nothing about you; nothing installs itself |
 
 ## Keyboard
 
@@ -99,7 +120,7 @@ Settings live in `~/.config/quire/settings.toml` (Linux), `~/Library/Application
 
 ## Views
 
-![Kanban, table and calendar views](docs/screenshot-views.png)
+![A kanban board view built from project notes](docs/screenshots/board-light.png)
 
 ````markdown
 ```quire-view
