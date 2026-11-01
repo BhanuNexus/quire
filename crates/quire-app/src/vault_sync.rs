@@ -714,7 +714,17 @@ mod tests {
     fn wait_for(ws: &mut [&mut Workspace], what: &str, mut done: impl FnMut(&[&mut Workspace]) -> bool) {
         let start = Instant::now();
         while !done(ws) {
-            assert!(start.elapsed() < Duration::from_secs(30), "timed out waiting for {what}");
+            if start.elapsed() > Duration::from_secs(30) {
+                // Say what each side sees, so a failure on another OS can be diagnosed.
+                let report: Vec<String> = ws
+                    .iter()
+                    .map(|w| {
+                        let files = w.vault().and_then(|v| v.storage().list().ok()).unwrap_or_default();
+                        format!("{:?} files={files:?}", w.sync.status)
+                    })
+                    .collect();
+                panic!("timed out waiting for {what}: {report:#?}");
+            }
             for w in ws.iter_mut() {
                 w.tick(Instant::now());
             }
