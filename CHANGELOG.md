@@ -4,6 +4,9 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Added
+- **Quire Sync (beta).** End-to-end encrypted sync between your devices through a server you run yourself (`quire-sync-server`, one binary or a Docker image; see `docs/self-hosting.md`). Set it up in **Settings → Sync**. The server never sees your notes or their names. Changes appear on your other devices within a second or two. Edits to the same note on two devices merge line by line; edits to the same lines keep both versions, and the other device's version is saved next to the note. A note edited on one device and deleted on another is kept. Notes deleted elsewhere go to the vault's trash. The status bar shows whether you're synced.
+
 ## [0.4.1] - 2026-11-01
 
 ### Added

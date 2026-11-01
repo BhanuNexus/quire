@@ -40,6 +40,7 @@ pub struct ConflictCopy {
 /// * Dropbox: `Note (conflicted copy 2026-11-01).md`, `Note (Asha's conflicted copy 2026-11-01).md`
 /// * Nextcloud / ownCloud: `Note (conflicted copy 2026-11-01 101500).md`
 /// * Syncthing: `Note.sync-conflict-20261101-101500-ABCDEFG.md`
+/// * Quire Sync: `Note (conflict from laptop 2026-11-01).md`
 pub fn conflict_original(stem: &str) -> Option<(String, &'static str)> {
     if let Some(i) = stem.find(".sync-conflict-") {
         let tail = &stem[i + ".sync-conflict-".len()..];
@@ -48,6 +49,12 @@ pub fn conflict_original(stem: &str) -> Option<(String, &'static str)> {
     }
     let open = stem.rfind(" (")?;
     let inner = stem[open + 2..].strip_suffix(')')?;
+    if let Some(rest) = inner.strip_prefix("conflict from ") {
+        // Ends with a date, maybe followed by a counter: "laptop 2026-11-01 2".
+        let looks_dated =
+            rest.split_whitespace().rev().take(2).any(|w| w.len() == 10 && w.as_bytes()[4] == b'-' && w.as_bytes()[7] == b'-');
+        return looks_dated.then(|| (stem[..open].to_string(), "Quire Sync"));
+    }
     if inner.contains("conflicted copy") {
         let tool = if inner.chars().filter(char::is_ascii_digit).count() > 8 { "Nextcloud" } else { "Dropbox" };
         return Some((stem[..open].to_string(), tool));
@@ -182,6 +189,9 @@ mod tests {
         assert_eq!(conflict_original("Plan (Asha's conflicted copy 2026-11-01)"), Some(("Plan".into(), "Dropbox")));
         assert_eq!(conflict_original("Plan (conflicted copy 2026-11-01 101500)"), Some(("Plan".into(), "Nextcloud")));
         assert_eq!(conflict_original("Plan.sync-conflict-20261101-101500-ABCDEFG"), Some(("Plan".into(), "Syncthing")));
+        assert_eq!(conflict_original("Plan (conflict from Asha's laptop 2026-11-01)"), Some(("Plan".into(), "Quire Sync")));
+        assert_eq!(conflict_original("Plan (conflict from phone 2026-11-01 2)"), Some(("Plan".into(), "Quire Sync")));
+        assert_eq!(conflict_original("Plan (conflict from the past)"), None);
         assert_eq!(conflict_original("Plan (draft)"), None);
         assert_eq!(conflict_original("Plan.sync-conflict-later"), None);
         assert_eq!(conflict_original("Plan 2"), None, "iCloud-style names are ambiguous, not guessed");

@@ -86,6 +86,7 @@ pub enum UiRequest {
     Shortcuts,
     Tour,
     SyncConflicts,
+    SyncSettings,
     /// Pick a folder for a new note.
     NewInFolder,
     /// Pick a folder to move the active note to.
@@ -137,6 +138,7 @@ pub struct Workspace {
     recent: Vec<NotePath>,
     pub(crate) conflict_count_cache: std::cell::Cell<Option<(u64, usize)>>,
     pub updates: crate::updates::UpdateState,
+    pub sync: crate::vault_sync::SyncHandle,
 }
 
 impl Workspace {
@@ -164,6 +166,7 @@ impl Workspace {
             recent: Vec::new(),
             conflict_count_cache: std::cell::Cell::new(None),
             updates: crate::updates::UpdateState::default(),
+            sync: crate::vault_sync::SyncHandle::default(),
         }
     }
 
@@ -218,6 +221,7 @@ impl Workspace {
         self.settings.last_vault = self.vault_root.clone();
         // The neural embedding cache lives inside the vault.
         self.apply_embedder();
+        self.start_sync();
         Ok(())
     }
 
@@ -448,6 +452,7 @@ impl Workspace {
                 let _ = vault.snapshot(&path, &text, now, false);
                 self.docs[i].mark_saved(&text);
                 self.index.upsert(path, text.to_string());
+                self.sync_nudge();
                 true
             }
             Err(e) => {
@@ -529,6 +534,7 @@ impl Workspace {
         changed |= self.poll_ask();
         self.maybe_check_updates();
         changed |= self.poll_updates();
+        changed |= self.poll_sync();
         changed
     }
 
@@ -1039,6 +1045,14 @@ impl Workspace {
             C::ResolveSyncConflicts => return Some(UiRequest::SyncConflicts),
             C::TakeTour => return Some(UiRequest::Tour),
             C::CheckForUpdates => self.check_for_updates(true),
+            C::SyncSettings => return Some(UiRequest::SyncSettings),
+            C::SyncNow => {
+                if self.sync.config.is_some() {
+                    self.sync_nudge();
+                } else {
+                    return Some(UiRequest::SyncSettings);
+                }
+            }
             C::NewProject => return self.vault.is_some().then_some(UiRequest::NewProject),
             C::NewInFolder => return self.vault.is_some().then_some(UiRequest::NewInFolder),
             C::MoveNote => return self.active_doc().and_then(|d| d.path.as_ref()).map(|_| UiRequest::MoveNote),

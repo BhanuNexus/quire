@@ -1,6 +1,6 @@
 # Run your own Quire Sync server
 
-*Status: preview. The server and the sync engine are tested, but the desktop app can't connect to a server yet. That comes in the next release, as a beta.*
+*Status: beta. Your notes stay plain files on every device, so nothing is lost if sync misbehaves, but tell us about anything odd.*
 
 Quire Sync keeps your vault the same on every device. The server only ever stores encrypted data: it can't read your notes, their names or your folder names. The design is in [design/sync.md](design/sync.md).
 
@@ -52,6 +52,14 @@ sync.example.com {
 ```
 
 Check it: `curl https://sync.example.com/health` prints `ok`.
+
+## 4. Connect Quire
+
+On the first device: **Settings → Sync**, enter the server address and token, choose **Start a new sync vault** and pick a passphrase. Quire shows a recovery key once; keep it somewhere safe.
+
+On every other device: open the folder you want to sync (an empty one is fine), **Settings → Sync**, enter the address and token, choose **Join from another device**, **Find vaults on the server**, pick the vault and enter the passphrase (or the recovery key).
+
+The status bar shows *Synced*, *Syncing…*, *Offline* or *Sync needs attention*; click it to open Settings → Sync.
 
 ## Backups
 

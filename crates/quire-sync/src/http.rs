@@ -35,6 +35,15 @@ struct CreateSpace<'a> {
     wrapped_key: &'a WrappedKey,
 }
 
+/// A space as the server lists it (it knows nothing more about it).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SpaceInfo {
+    pub space: SpaceId,
+    /// Unix seconds.
+    pub created: i64,
+    pub revisions: u64,
+}
+
 #[derive(Deserialize)]
 struct ErrorBody {
     error: String,
@@ -83,6 +92,12 @@ impl HttpTransport {
             return Err(Self::fail(status, &body));
         }
         serde_json::from_str(&body).map_err(|e| TransportError::Refused(format!("unexpected reply: {e}")))
+    }
+
+    /// The spaces on a server, oldest first.
+    pub fn list_spaces(base: &str, token: &str) -> Result<Vec<SpaceInfo>, TransportError> {
+        let t = Self::new(base, SpaceId(String::new()), token);
+        t.get_json(&t.agent, &format!("{}/v1/spaces", t.base))
     }
 
     /// Put a new space and its wrapped key on the server.

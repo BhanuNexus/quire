@@ -36,6 +36,7 @@ keyring = { version = "4", optional = true }
 ureq = { workspace = true, optional = true }
 flate2 = "1"
 similar.workspace = true
+quire-sync = { workspace = true, features = ["http"] }
 
 [dev-dependencies]
 tempfile.workspace = true

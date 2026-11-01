@@ -108,6 +108,16 @@ impl Store {
         serde_json::from_str(&json).map_err(|e| StoreError::Corrupt(e.to_string()))
     }
 
+    /// Every space: id, creation time (unix seconds) and how many revisions it holds.
+    pub fn spaces(&self) -> Result<Vec<(SpaceId, i64, u64)>, StoreError> {
+        let db = self.db();
+        let mut stmt = db.prepare_cached(
+            "SELECT s.id, s.created, (SELECT COUNT(*) FROM revisions r WHERE r.space = s.id) FROM spaces s ORDER BY s.created, s.id",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((SpaceId(r.get(0)?), r.get(1)?, r.get::<_, i64>(2)?.cast_unsigned())))?;
+        rows.collect::<Result<_, _>>().map_err(StoreError::from)
+    }
+
     /// Replace the wrapped key (after a passphrase change).
     pub fn set_wrapped_key(&self, space: &SpaceId, key: &WrappedKey) -> Result<(), StoreError> {
         let json = serde_json::to_string(key).map_err(|e| StoreError::Corrupt(e.to_string()))?;

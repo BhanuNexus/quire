@@ -8,6 +8,7 @@
 //! | Method and path | What it does |
 //! |---|---|
 //! | `GET /health` | `ok` (no token needed) |
+//! | `GET /v1/spaces` | List spaces (id, created, revision count), so a new device can pick one |
 //! | `POST /v1/spaces` | Create a space with its wrapped key |
 //! | `GET /v1/spaces/{space}/key` | The wrapped key, so a new device can join |
 //! | `PUT /v1/spaces/{space}/key` | Replace it (passphrase change) |
@@ -71,7 +72,7 @@ impl AppState {
 /// The HTTP application, ready to serve.
 pub fn app(state: Arc<AppState>) -> Router {
     let api = Router::new()
-        .route("/spaces", post(create_space))
+        .route("/spaces", post(create_space).get(list_spaces))
         .route("/spaces/{space}/key", get(get_key).put(put_key))
         .route("/spaces/{space}/changes", get(changes))
         .route("/spaces/{space}/revisions", post(push))
@@ -100,6 +101,14 @@ pub struct ErrorBody {
 pub struct CreateSpace {
     pub space: SpaceId,
     pub wrapped_key: WrappedKey,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SpaceInfo {
+    pub space: SpaceId,
+    /// Unix seconds.
+    pub created: i64,
+    pub revisions: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -172,6 +181,11 @@ async fn create_space(State(st): State<Arc<AppState>>, Json(body): Json<CreateSp
     valid_id(&body.space.0)?;
     db(&st, move |s| s.create_space(&body.space, &body.wrapped_key)).await?;
     Ok(StatusCode::CREATED)
+}
+
+async fn list_spaces(State(st): State<Arc<AppState>>) -> Result<Json<Vec<SpaceInfo>>, ApiError> {
+    let list = db(&st, Store::spaces).await?;
+    Ok(Json(list.into_iter().map(|(space, created, revisions)| SpaceInfo { space, created, revisions }).collect()))
 }
 
 async fn get_key(State(st): State<Arc<AppState>>, Path(space): Path<String>) -> Result<Json<WrappedKey>, ApiError> {

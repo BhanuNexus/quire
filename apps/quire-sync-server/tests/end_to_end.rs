@@ -42,7 +42,10 @@ fn two_devices_sync_through_the_server() {
     http.create_space(&WrappedKey::wrap(&key, "pass phrase", KdfParams::TEST).unwrap()).unwrap();
     assert!(http.create_space(&WrappedKey::wrap(&key, "x", KdfParams::TEST).unwrap()).is_err(), "can't create twice");
 
-    // A second device joins with only the server address, token and passphrase.
+    // A second device finds the space on the server and joins with the passphrase.
+    let listed = HttpTransport::list_spaces(&base, TOKEN).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].space, space);
     let joined = HttpTransport::new(&base, space.clone(), TOKEN).wrapped_key().unwrap().unwrap("pass phrase").unwrap();
 
     let (mut a, mut sa) = device(&space, &key, "laptop");

@@ -3524,6 +3524,7 @@ dependencies = [
  "quire-index",
  "quire-intel",
  "quire-markdown",
+ "quire-sync",
  "quire-text",
  "quire-vault",
  "regex",

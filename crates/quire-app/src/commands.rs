@@ -32,6 +32,8 @@ pub enum Command {
     ShowShortcuts,
     TakeTour,
     CheckForUpdates,
+    SyncSettings,
+    SyncNow,
     SearchVault,
     ShowTasks,
     // Formatting
@@ -174,6 +176,8 @@ commands! {
     MoveNote,         "Note",   "Move to folder…",                [], true;
     ImportNotes,      "Note",   "Import notes (Logseq, Notion, Bear, Evernote)…", [], false;
     OpenSettings,     "App",    "Settings…",                      [cmd("Comma")], false;
+    SyncSettings,     "App",    "Sync settings…",                 [], false;
+    SyncNow,          "App",    "Sync now",                       [], false;
     CommandPalette,   "Go",     "Command palette…",               [cmd_shift("P"), cmd("K")], false;
     ShowShortcuts,    "Help",   "Keyboard shortcuts",             [cmd("Slash")], false;
     TakeTour,         "Help",   "Take the tour",                  [], false;

@@ -705,6 +705,28 @@ pub(crate) fn status_bar(ui: &mut egui::Ui, ws: &Workspace, pal: &Palette) -> Pa
             }
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            {
+                use quire_app::vault_sync::SyncStatus;
+                let st = &ws.sync.status;
+                if *st != SyncStatus::Off {
+                    let (color, hover) = match st {
+                        SyncStatus::Synced(at) => (pal.muted, format!("Up to date (checked {}s ago)", at.elapsed().as_secs())),
+                        SyncStatus::Syncing => (pal.accent, "Syncing with the server".to_string()),
+                        SyncStatus::Offline(e) => (pal.warn, format!("Can't reach the sync server; will keep trying.\n{e}")),
+                        SyncStatus::Error(e) => (pal.danger, e.clone()),
+                        SyncStatus::Off => (pal.muted, String::new()),
+                    };
+                    if ui
+                        .add(egui::Label::new(RichText::new(st.label()).size(12.0).color(color)).sense(egui::Sense::click()))
+                        .on_hover_text(hover)
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        out.run = Some(Command::SyncSettings);
+                    }
+                    ui.separator();
+                }
+            }
             if let Some(r) = &ws.updates.available {
                 let link = ui
                     .add(

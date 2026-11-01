@@ -174,6 +174,7 @@ impl QuireApp {
                 }
                 UiRequest::Ask => Overlay::Ask { focused: false },
                 UiRequest::Settings => Overlay::Settings(crate::dialogs::SettingsState::default()),
+                UiRequest::SyncSettings => Overlay::Settings(crate::dialogs::SettingsState::sync_tab(&self.ws)),
                 UiRequest::NewProject => Overlay::NewProject(crate::dialogs::ProjectState::default()),
                 UiRequest::Shortcuts => Overlay::Shortcuts { query: String::new(), focused: false },
                 UiRequest::Tour => Overlay::Tour { step: 0 },

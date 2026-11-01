@@ -100,6 +100,7 @@ Settings live in `~/.config/quire/settings.toml` (Linux), `~/Library/Application
 | AI providers | Offline by default. Optional OpenAI-compatible (Ollama, LM Studio, OpenAI) or Anthropic, with *Test connection*. Optional neural embeddings from the same kind of endpoint, cached per passage, falling back to the built-in index |
 | MCP server | `quire-cli mcp <vault>` lets AI assistants search, read and ask your notes. Read-only unless started with `--allow-write`; every write is versioned |
 | History | Undo tree: undo, type something else, and the old branch is still reachable |
+| Quire Sync (beta) | Optional end-to-end encrypted sync through a server you run yourself ([guide](docs/self-hosting.md)). The server stores only ciphertext; concurrent edits merge line by line and never overwrite each other. A managed service is planned |
 | Sync safety | Works with any folder sync (iCloud, Dropbox, Syncthing, Nextcloud, Git). A note changed elsewhere while you edit is merged line by line; overlapping edits pause autosave and let you keep yours, take theirs or keep both. Conflict copies made by sync tools are found and merged back |
 | Updates | Optional daily check for a new release (Settings → About). Sends nothing about you; nothing installs itself |
 

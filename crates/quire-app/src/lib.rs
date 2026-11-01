@@ -18,6 +18,7 @@ pub mod session;
 pub mod settings;
 pub mod sync;
 pub mod updates;
+pub mod vault_sync;
 pub mod workspace;
 
 pub use ask_state::AskState;
