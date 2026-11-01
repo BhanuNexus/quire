@@ -95,7 +95,7 @@ fn cmp_pre(a: &str, b: &str) -> std::cmp::Ordering {
     }
 }
 
-/// Is `candidate` a newer version than `current`? Unparseable input is never newer.
+/// Is `candidate` a newer version than `current`? Input that isn't a version is never newer.
 pub fn is_newer(candidate: &str, current: &str) -> bool {
     match (Version::parse(candidate), Version::parse(current)) {
         (Some(c), Some(cur)) => c > cur,
