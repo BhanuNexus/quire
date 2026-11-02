@@ -1,0 +1,5 @@
+# Models Quire can download for on-device AI (docs/formats/model-catalog.md).
+# Entries, with pinned URLs, sizes and SHA-256 values, are added by WS-D
+# together with the downloader. Until then the catalog is empty and
+# Settings → AI shows nothing to download.
+format = 1

@@ -14,6 +14,11 @@ name = "quire-ai-engine"
 path = "src/main.rs"
 
 [dependencies]
+quire-ai.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+quire-ai = { workspace = true, features = ["client"] }
 
 [lints]
 workspace = true
