@@ -1,0 +1,577 @@
+# Vim cases: text (| is the cursor), a tab, keys in Vim notation. record.py turns them into cases.tsv.
+|foo.bar baz qux	l
+|foo.bar baz qux	3l
+|foo.bar baz qux	20l
+|foo.bar baz qux	w
+|foo.bar baz qux	2w
+|foo.bar baz qux	3w
+|foo.bar baz qux	W
+|foo.bar baz qux	2W
+|foo.bar baz qux	e
+|foo.bar baz qux	2e
+|foo.bar baz qux	E
+|foo.bar baz qux	$
+|foo.bar baz qux	0
+|foo.bar baz qux	^
+|foo.bar baz qux	fa
+|foo.bar baz qux	2fa
+|foo.bar baz qux	fa;
+|foo.bar baz qux	fa;,
+|foo.bar baz qux	tq
+|foo.bar baz qux	ta;
+|foo.bar baz qux	Fb
+|foo.bar baz qux	Tb
+foo.bar baz qu|x	h
+foo.bar baz qu|x	3h
+foo.bar baz qu|x	20h
+foo.bar baz qu|x	b
+foo.bar baz qu|x	2b
+foo.bar baz qu|x	B
+foo.bar baz qu|x	ge
+foo.bar baz qu|x	gE
+foo.bar baz qu|x	0
+foo.bar baz qu|x	^
+foo.bar baz qu|x	Fb
+foo.bar baz qu|x	Tb
+foo.bar baz qu|x	Fo;
+foo.bar baz qu|x	F.
+foo.bar baz qu|x	b.
+one tw|o\nthree four\n  five six\n\nseven	j
+one tw|o\nthree four\n  five six\n\nseven	2j
+one tw|o\nthree four\n  five six\n\nseven	5j
+one tw|o\nthree four\n  five six\n\nseven	k
+one tw|o\nthree four\n  five six\n\nseven	G
+one tw|o\nthree four\n  five six\n\nseven	gg
+one tw|o\nthree four\n  five six\n\nseven	2G
+one tw|o\nthree four\n  five six\n\nseven	3gg
+one tw|o\nthree four\n  five six\n\nseven	+
+one tw|o\nthree four\n  five six\n\nseven	-
+one tw|o\nthree four\n  five six\n\nseven	_
+one tw|o\nthree four\n  five six\n\nseven	2_
+one tw|o\nthree four\n  five six\n\nseven	j$
+one tw|o\nthree four\n  five six\n\nseven	$j
+one tw|o\nthree four\n  five six\n\nseven	$jk
+one tw|o\nthree four\n  five six\n\nseven	w
+one tw|o\nthree four\n  five six\n\nseven	3w
+one tw|o\nthree four\n  five six\n\nseven	b
+one tw|o\nthree four\n  five six\n\nseven	e
+one tw|o\nthree four\n  five six\n\nseven	}
+one tw|o\nthree four\n  five six\n\nseven	{
+one tw|o\nthree four\n  five six\n\nseven	2}
+one two\nthree four\n  five six\n\nsev|en	k
+one two\nthree four\n  five six\n\nsev|en	2k
+one two\nthree four\n  five six\n\nsev|en	j
+one two\nthree four\n  five six\n\nsev|en	gg
+one two\nthree four\n  five six\n\nsev|en	G
+one two\nthree four\n  five six\n\nsev|en	-
+one two\nthree four\n  five six\n\nsev|en	2-
+one two\nthree four\n  five six\n\nsev|en	{
+one two\nthree four\n  five six\n\nsev|en	}
+one two\nthree four\n  five six\n\nsev|en	2{
+one two\nthree four\n  five six\n\nsev|en	3{
+|if (a[1] + b) {\n  call(x);\n}	%
+|if (a[1] + b) {\n  call(x);\n}	2%
+|if (a[1] + b) {\n  call(x);\n}	50%
+|if (a[1] + b) {\n  call(x);\n}	j%
+|if (a[1] + b) {\n  call(x);\n}	f]%
+|if (a[1] + b) {\n  call(x);\n}	$%
+a, b;  |c\n\n  d.e f	w
+a, b;  |c\n\n  d.e f	e
+a, b;  |c\n\n  d.e f	b
+a, b;  |c\n\n  d.e f	ge
+a, b;  |c\n\n  d.e f	W
+a, b;  |c\n\n  d.e f	3w
+a, b;  |c\n\n  d.e f	5w
+|x	l
+|x	h
+|	w
+|	j
+ab|c\nd	j
+a\nab|c	k
+abcdef|g\nab\nabcdefgh	jj
+abcdef|g\nab\nabcdefgh	jjk
+abcdef|g\nab\nabcdefgh	$jj
+|a\tb c	w
+|héllo wörld	w
+héllo wörl|d	b
+|héllo wörld	fö
+one two\nthr|ee four zap\nfive six\nseven	x
+one two\nthr|ee four zap\nfive six\nseven	3x
+one two\nthr|ee four zap\nfive six\nseven	10x
+one two\nthr|ee four zap\nfive six\nseven	X
+one two\nthr|ee four zap\nfive six\nseven	dw
+one two\nthr|ee four zap\nfive six\nseven	2dw
+one two\nthr|ee four zap\nfive six\nseven	d2w
+one two\nthr|ee four zap\nfive six\nseven	dW
+one two\nthr|ee four zap\nfive six\nseven	de
+one two\nthr|ee four zap\nfive six\nseven	dE
+one two\nthr|ee four zap\nfive six\nseven	db
+one two\nthr|ee four zap\nfive six\nseven	d0
+one two\nthr|ee four zap\nfive six\nseven	d^
+one two\nthr|ee four zap\nfive six\nseven	d$
+one two\nthr|ee four zap\nfive six\nseven	D
+one two\nthr|ee four zap\nfive six\nseven	2D
+one two\nthr|ee four zap\nfive six\nseven	dd
+one two\nthr|ee four zap\nfive six\nseven	2dd
+one two\nthr|ee four zap\nfive six\nseven	3dd
+one two\nthr|ee four zap\nfive six\nseven	dj
+one two\nthr|ee four zap\nfive six\nseven	dk
+one two\nthr|ee four zap\nfive six\nseven	dG
+one two\nthr|ee four zap\nfive six\nseven	dgg
+one two\nthr|ee four zap\nfive six\nseven	dfz
+one two\nthr|ee four zap\nfive six\nseven	dtz
+one two\nthr|ee four zap\nfive six\nseven	dFa
+one two\nthr|ee four zap\nfive six\nseven	dTa
+one two\nthr|ee four zap\nfive six\nseven	d;
+one two\nthr|ee four zap\nfive six\nseven	dl
+one two\nthr|ee four zap\nfive six\nseven	dh
+one two\nthr|ee four zap\nfive six\nseven	d3l
+one two\nthr|ee four zap\nfive six\nseven	diw
+one two\nthr|ee four zap\nfive six\nseven	daw
+one two\nthr|ee four zap\nfive six\nseven	diW
+one two\nthr|ee four zap\nfive six\nseven	daW
+one two\nthr|ee four zap\nfive six\nseven	d}
+one two\nthr|ee four zap\nfive six\nseven	d{
+one two\nthr|ee four zap\nfive six\nseven	dge
+one two\nthr|ee four zap\nfive six\nseven	x.
+one two\nthr|ee four zap\nfive six\nseven	dw.
+one two\nthr|ee four zap\nfive six\nseven	dd.
+one two\nthr|ee four zap\nfive six\nseven	2dd.
+one |two\n  three	dw
+one |two\n  three	dW
+one |two\n  three	de
+one |two\n  three	x
+one |two\n  three	D
+one |two\n  three	dd
+one |two\n  three	d$
+one |two\n  three	dw.
+one |two\n  three	cw!<Esc>
+one |two\n  three	daw
+one |two\n  three	diw
+one\ntwo\nth|ree	dd
+one\ntwo\nth|ree	dk
+one\ntwo\nth|ree	dj
+one\ntwo\nth|ree	2dd
+one\ntwo\nth|ree	d$
+one\ntwo\nth|ree	dG
+one\ntwo\nth|ree	x
+|	dd
+|	dj
+|	dG
+|	x
+|	X
+|	D
+|only	dd
+|only	p
+|only	ddp
+|only	yyP
+|only	dw
+|only	x
+|one\ntwo\n	dd
+one\ntwo\n|	dd
+one\n|two\n	dd
+one\n|two\n	dG
+a\n\n|\n\nb	dd
+a\n|\nb	dj
+  |first\n  second\n\nthird	d}
+x  fi|rst\n  second\n\nthird	d}
+first\nsec|ond\n\nthird	d{
+one tw|o\nthree	dw
+one two|\nthree	x
+|one two\nthree	d2w
+|one two\n  three four	3dw
+foo |bar	dtr
+foo |bar	dt;
+a(b)|c	d%
+|a(b)c	d%
+(a [b] |c)	d%
+one two\nthr|ee four zap\nfive	cwX<Esc>
+one two\nthr|ee four zap\nfive	cWX<Esc>
+one two\nthr|ee four zap\nfive	ceX<Esc>
+one two\nthr|ee four zap\nfive	cbX<Esc>
+one two\nthr|ee four zap\nfive	c$X<Esc>
+one two\nthr|ee four zap\nfive	CX<Esc>
+one two\nthr|ee four zap\nfive	ccX<Esc>
+one two\nthr|ee four zap\nfive	SX<Esc>
+one two\nthr|ee four zap\nfive	sX<Esc>
+one two\nthr|ee four zap\nfive	3sX<Esc>
+one two\nthr|ee four zap\nfive	ciwX<Esc>
+one two\nthr|ee four zap\nfive	cawX<Esc>
+one two\nthr|ee four zap\nfive	c2wX<Esc>
+one two\nthr|ee four zap\nfive	2cwX<Esc>
+one two\nthr|ee four zap\nfive	cjX<Esc>
+one two\nthr|ee four zap\nfive	ctzX<Esc>
+one two\nthr|ee four zap\nfive	cfzX<Esc>
+one two\nthr|ee four zap\nfive	c0X<Esc>
+one   |  two	cwX<Esc>
+one   |  two	cw<Esc>
+one   |  two	cWX<Esc>
+one   |  two	ceX<Esc>
+one tw|o three	cwX<Esc>
+one tw|o three	cwX<Esc>w.
+ab|c def	cwX<Esc>
+|a b	cwX<Esc>
+top\n  in|dented\nbottom	ccX<Esc>
+top\n  in|dented\nbottom	SX<Esc>
+top\n  in|dented\nbottom	cjX<Esc>
+top\n  in|dented\nbottom	oX<Esc>
+top\n  in|dented\nbottom	OX<Esc>
+top\n  in|dented\nbottom	2oX<Esc>
+top\n  in|dented\nbottom	3OX<Esc>
+  one t|wo\nthree	iX<Esc>
+  one t|wo\nthree	aX<Esc>
+  one t|wo\nthree	IX<Esc>
+  one t|wo\nthree	AX<Esc>
+  one t|wo\nthree	3iX<Esc>
+  one t|wo\nthree	2aXY<Esc>
+  one t|wo\nthree	3AZ<Esc>
+  one t|wo\nthree	iX<Esc>.
+  one t|wo\nthree	AX<Esc>j.
+  one t|wo\nthree	iab<BS>c<Esc>
+  one t|wo\nthree	oX<Esc>
+  one t|wo\nthree	OX<Esc>
+  one t|wo\nthree	oX<Esc>.
+  one t|wo\nthree	3oab<Esc>
+  one t|wo\nthree	Ox<Esc>u
+  one t|wo\nthree	iX<Esc>u
+  one t|wo\nthree	iXY<Esc>u<C-r>
+  one t|wo\nthree	A!<Esc>0.
+  one t|wo\nthree	i<Esc>
+  one t|wo\nthree	a<Esc>
+  one t|wo\nthree	A<Esc>
+|	iX<Esc>
+|	aX<Esc>
+|	oX<Esc>
+|	OX<Esc>
+ab|c	a<Esc>
+|abc	i<Esc>
+one Two\nthr|ee Four\nfive	rX
+one Two\nthr|ee Four\nfive	3rX
+one Two\nthr|ee Four\nfive	10rX
+one Two\nthr|ee Four\nfive	r<CR>
+one Two\nthr|ee Four\nfive	RXY<Esc>
+one Two\nthr|ee Four\nfive	RXYZW<Esc>
+one Two\nthr|ee Four\nfive	RX<BS><Esc>
+one Two\nthr|ee Four\nfive	RXY<Esc>.
+one Two\nthr|ee Four\nfive	2rX.
+one Two\nthr|ee Four\nfive	~
+one Two\nthr|ee Four\nfive	3~
+one Two\nthr|ee Four\nfive	10~
+one Two\nthr|ee Four\nfive	g~w
+one Two\nthr|ee Four\nfive	gUw
+one Two\nthr|ee Four\nfive	guw
+one Two\nthr|ee Four\nfive	gUU
+one Two\nthr|ee Four\nfive	guu
+one Two\nthr|ee Four\nfive	g~~
+one Two\nthr|ee Four\nfive	gUiw
+one Two\nthr|ee Four\nfive	gUgU
+on|e\n  two\nthree)\n\nfour	J
+on|e\n  two\nthree)\n\nfour	3J
+on|e\n  two\nthree)\n\nfour	5J
+on|e\n  two\nthree)\n\nfour	gJ
+on|e\n  two\nthree)\n\nfour	J.
+on|e\n  two\nthree)\n\nfour	2J
+on|e\n  two\nthree)\n\nfour	jJ
+a |\nb	J
+a\n|\nb	J
+|a\n)b	J
+|last	J
+a\n|last	J
+one two\nth|ree\nfour five	yyp
+one two\nth|ree\nfour five	yyP
+one two\nth|ree\nfour five	yy2p
+one two\nth|ree\nfour five	yyjp
+one two\nth|ree\nfour five	ywP
+one two\nth|ree\nfour five	ywp
+one two\nth|ree\nfour five	yiwP
+one two\nth|ree\nfour five	y$p
+one two\nth|ree\nfour five	yjp
+one two\nth|ree\nfour five	ykP
+one two\nth|ree\nfour five	yyGp
+one two\nth|ree\nfour five	ddp
+one two\nth|ree\nfour five	ddP
+one two\nth|ree\nfour five	dwp
+one two\nth|ree\nfour five	xp
+one two\nth|ree\nfour five	xP
+one two\nth|ree\nfour five	dd2p
+one two\nth|ree\nfour five	yeP
+one two\nth|ree\nfour five	2yyp
+one two\nth|ree\nfour five	yjjp
+one two\nth|ree\nfour five	Yp
+one two\nth|ree\nfour five	yy"ap"ap
+one two\nth|ree\nfour five	"ayy"byyj"ap"bp
+one two\nth|ree\nfour five	"ayyj"Ayy"ap
+one two\nth|ree\nfour five	dd"1p
+one two\nth|ree\nfour five	yy"0p
+one two\nth|ree\nfour five	dwdd"0p
+one two\nth|ree\nfour five	dd"_ddp
+one two\nth|ree\nfour five	dwww"-p
+one two\nth|ree\nfour five	ylp
+one two\nth|ree\nfour five	ylP
+one two\nth|ree\nfour five	yy3p
+one two\nth|ree\nfour five	yyu
+one two\nth|ree\nfour five	yyp.
+|ab	yl$p
+ab|c	yl0P
+|one\ntwo	yyGp
+one\n|two	yyGp
+one\n|two\n	yyGp
+one t|wo three\nfour five six\n  seven eight\nnine	xu
+one t|wo three\nfour five six\n  seven eight\nnine	xxu
+one t|wo three\nfour five six\n  seven eight\nnine	xxuu
+one t|wo three\nfour five six\n  seven eight\nnine	xxuu<C-r>
+one t|wo three\nfour five six\n  seven eight\nnine	dwu<C-r>
+one t|wo three\nfour five six\n  seven eight\nnine	ddu
+one t|wo three\nfour five six\n  seven eight\nnine	3xu
+one t|wo three\nfour five six\n  seven eight\nnine	cwX<Esc>u
+one t|wo three\nfour five six\n  seven eight\nnine	cwX<Esc>u<C-r>
+one t|wo three\nfour five six\n  seven eight\nnine	oX<Esc>u
+one t|wo three\nfour five six\n  seven eight\nnine	iX<Esc>iY<Esc>u
+one t|wo three\nfour five six\n  seven eight\nnine	x.
+one t|wo three\nfour five six\n  seven eight\nnine	x..u
+one t|wo three\nfour five six\n  seven eight\nnine	dw.
+one t|wo three\nfour five six\n  seven eight\nnine	3x.
+one t|wo three\nfour five six\n  seven eight\nnine	x3.
+one t|wo three\nfour five six\n  seven eight\nnine	dd.
+one t|wo three\nfour five six\n  seven eight\nnine	ddu.
+one t|wo three\nfour five six\n  seven eight\nnine	~.
+one t|wo three\nfour five six\n  seven eight\nnine	rX.
+one t|wo three\nfour five six\n  seven eight\nnine	J.
+one t|wo three\nfour five six\n  seven eight\nnine	iab<Esc>.
+one t|wo three\nfour five six\n  seven eight\nnine	AX<Esc>j0.
+one t|wo three\nfour five six\n  seven eight\nnine	cwX<Esc>j0.
+one t|wo three\nfour five six\n  seven eight\nnine	ciwX<Esc>w.
+one t|wo three\nfour five six\n  seven eight\nnine	daw.
+one t|wo three\nfour five six\n  seven eight\nnine	>>.
+one t|wo three\nfour five six\n  seven eight\nnine	<<.
+one t|wo three\nfour five six\n  seven eight\nnine	guiw.
+one t|wo three\nfour five six\n  seven eight\nnine	p.
+one t|wo three\nfour five six\n  seven eight\nnine	yyp.
+one t|wo three\nfour five six\n  seven eight\nnine	2x.
+one t|wo three\nfour five six\n  seven eight\nnine	x2..
+one\n  two\n    th|ree\nfour\n\nfive	>>
+one\n  two\n    th|ree\nfour\n\nfive	<<
+one\n  two\n    th|ree\nfour\n\nfive	3>>
+one\n  two\n    th|ree\nfour\n\nfive	>j
+one\n  two\n    th|ree\nfour\n\nfive	>G
+one\n  two\n    th|ree\nfour\n\nfive	2>>
+one\n  two\n    th|ree\nfour\n\nfive	><
+one\n  two\n    th|ree\nfour\n\nfive	>>.
+one\n  two\n    th|ree\nfour\n\nfive	>ip
+one\n  two\n    th|ree\nfour\n\nfive	<ip
+one\n  two\n    th|ree\nfour\n\nfive	>>j.
+one\n  two\n    th|ree\nfour\n\nfive	<<<<
+foo bar.b|az qux	diw
+foo bar.b|az qux	daw
+foo bar.b|az qux	ciwX<Esc>
+foo bar.b|az qux	yiwP
+foo bar.b|az qux	diW
+foo bar.b|az qux	daW
+foo bar.b|az qux	d2aw
+foo bar.b|az qux	d3iw
+foo bar.b|az qux	viwd
+foo bar.b|az qux	vawd
+  |foo bar	daw
+foo |bar	daw
+foo bar|	daw
+  |foo bar	diw
+foo |bar	diw
+foo bar|	diw
+  |foo bar	daW
+foo |bar	daW
+foo bar|	daW
+say "hel|lo world" 'x y' end	di"
+|say "hello" end	di"
+say "hel|lo world" 'x y' end	da"
+|say "hello" end	da"
+say "hel|lo world" 'x y' end	ci"X<Esc>
+|say "hello" end	ci"X<Esc>
+say "hel|lo world" 'x y' end	yi"P
+|say "hello" end	yi"P
+say "hel|lo world" 'x y' end	di'
+|say "hello" end	di'
+say "hel|lo world" 'x y' end	da'
+|say "hello" end	da'
+f(a, [b, {c|, d}], (e)) <t>	di(
+f(a, [b, {c|, d}], (e)) <t>	da(
+f(a, [b, {c|, d}], (e)) <t>	dib
+f(a, [b, {c|, d}], (e)) <t>	dab
+f(a, [b, {c|, d}], (e)) <t>	ci(X<Esc>
+f(a, [b, {c|, d}], (e)) <t>	di[
+f(a, [b, {c|, d}], (e)) <t>	da[
+f(a, [b, {c|, d}], (e)) <t>	di{
+f(a, [b, {c|, d}], (e)) <t>	da{
+f(a, [b, {c|, d}], (e)) <t>	diB
+f(a, [b, {c|, d}], (e)) <t>	2di(
+f(a, [b, {c|, d}], (e)) <t>	di<
+f(a, [b, {c|, d}], (e)) <t>	da<
+f(a, [b, {c|, d}], (e)) <t>	yi(P
+foo(\n  a,\n  |b\n)	di(
+foo(\n  a,\n  |b\n)	da(
+foo(\n  a,\n  |b\n)	ci(X<Esc>
+x |(a) y	di(
+(a) |x	di(
+first\nsec|ond\n\nthird\nfourth\n\n\nlast	dip
+first\nsec|ond\n\nthird\nfourth\n\n\nlast	dap
+first\nsec|ond\n\nthird\nfourth\n\n\nlast	yipP
+first\nsec|ond\n\nthird\nfourth\n\n\nlast	cipX<Esc>
+first\nsec|ond\n\nthird\nfourth\n\n\nlast	d2ap
+first\nsec|ond\n\nthird\nfourth\n\n\nlast	vipd
+first\nsec|ond\n\nthird\nfourth\n\n\nlast	vapd
+first\nsec|ond\n\nthird\nfourth\n\n\nlast	>ip
+first\nsecond\n\n|\nthird	dip
+first\nsecond\n\n|\nthird	dap
+first\n\nlas|t	dap
+<a><b>x|y</b> z</a>	dit
+<p>\n  <i>wo|rd</i>\n</p>	dit
+<a><b>x|y</b> z</a>	dat
+<p>\n  <i>wo|rd</i>\n</p>	dat
+<a><b>x|y</b> z</a>	citX<Esc>
+<p>\n  <i>wo|rd</i>\n</p>	citX<Esc>
+<a><b>x|y</b> z</a>	d2it
+<p>\n  <i>wo|rd</i>\n</p>	d2it
+one two\nthr|ee four zap\nfive six\nseven	vd
+one two\nthr|ee four zap\nfive six\nseven	vld
+one two\nthr|ee four zap\nfive six\nseven	vjd
+one two\nthr|ee four zap\nfive six\nseven	vex
+one two\nthr|ee four zap\nfive six\nseven	vey
+one two\nthr|ee four zap\nfive six\nseven	veyP
+one two\nthr|ee four zap\nfive six\nseven	vwd
+one two\nthr|ee four zap\nfive six\nseven	v$d
+one two\nthr|ee four zap\nfive six\nseven	vjjd
+one two\nthr|ee four zap\nfive six\nseven	vkd
+one two\nthr|ee four zap\nfive six\nseven	vbd
+one two\nthr|ee four zap\nfive six\nseven	v0d
+one two\nthr|ee four zap\nfive six\nseven	vlc!<Esc>
+one two\nthr|ee four zap\nfive six\nseven	vjc!<Esc>
+one two\nthr|ee four zap\nfive six\nseven	vlo<Esc>
+one two\nthr|ee four zap\nfive six\nseven	vlohd
+one two\nthr|ee four zap\nfive six\nseven	vllohd
+one two\nthr|ee four zap\nfive six\nseven	vjohd
+one two\nthr|ee four zap\nfive six\nseven	vU
+one two\nthr|ee four zap\nfive six\nseven	veU
+one two\nthr|ee four zap\nfive six\nseven	veu
+one two\nthr|ee four zap\nfive six\nseven	ve~
+one two\nthr|ee four zap\nfive six\nseven	vjJ
+one two\nthr|ee four zap\nfive six\nseven	vl>
+one two\nthr|ee four zap\nfive six\nseven	vl<
+one two\nthr|ee four zap\nfive six\nseven	vlrX
+one two\nthr|ee four zap\nfive six\nseven	vjrX
+one two\nthr|ee four zap\nfive six\nseven	vl<Esc>
+one two\nthr|ee four zap\nfive six\nseven	vlvx
+one two\nthr|ee four zap\nfive six\nseven	vlVd
+one two\nthr|ee four zap\nfive six\nseven	Vd
+one two\nthr|ee four zap\nfive six\nseven	Vjd
+one two\nthr|ee four zap\nfive six\nseven	VD
+one two\nthr|ee four zap\nfive six\nseven	Vy
+one two\nthr|ee four zap\nfive six\nseven	VyP
+one two\nthr|ee four zap\nfive six\nseven	Vjy
+one two\nthr|ee four zap\nfive six\nseven	Vc!<Esc>
+one two\nthr|ee four zap\nfive six\nseven	Vj>
+one two\nthr|ee four zap\nfive six\nseven	Vj<
+one two\nthr|ee four zap\nfive six\nseven	Vj>.
+one two\nthr|ee four zap\nfive six\nseven	VjJ
+one two\nthr|ee four zap\nfive six\nseven	VrX
+one two\nthr|ee four zap\nfive six\nseven	VU
+one two\nthr|ee four zap\nfive six\nseven	Vl<Esc>
+one two\nthr|ee four zap\nfive six\nseven	VvX
+one two\nthr|ee four zap\nfive six\nseven	vlx.
+one two\nthr|ee four zap\nfive six\nseven	Vd.
+one two\nthr|ee four zap\nfive six\nseven	vly$p
+one two\nthr|ee four zap\nfive six\nseven	viwy0vep
+one two\nthr|ee four zap\nfive six\nseven	yiwjVp
+one two\nthr|ee four zap\nfive six\nseven	yyjvlp
+one two\nthr|ee four zap\nfive six\nseven	vd$p
+one two\nthr|ee four zap\nfive six\nseven	vjyP
+one two\nthr|ee four zap\nfive six\nseven	v3ld
+one two\nthr|ee four zap\nfive six\nseven	v2ed
+one two\nthr|ee four zap\nfive six\nseven	Vjdp
+one two\nthr|ee four zap\nfive six\nseven	vgg
+one two\nthr|ee four zap\nfive six\nseven	vGd
+one two\nthr|ee four zap\nfive six\nseven	v{d
+one two\nthr|ee four zap\nfive six\nseven	v}d
+one two\nthr|ee four zap\nfive six\nseven	v%d
+one two\nthr|ee four zap\nfive six\nseven	vfzd
+one two\nthr|ee four zap\nfive six\nseven	vtzd
+aa (bb "c|c dd" ee) ff\ngg\n\nhh	viw
+aa (bb "c|c dd" ee) ff\ngg\n\nhh	vaw
+aa (bb "c|c dd" ee) ff\ngg\n\nhh	vi(
+aa (bb "c|c dd" ee) ff\ngg\n\nhh	va(
+aa (bb "c|c dd" ee) ff\ngg\n\nhh	vip
+aa (bb "c|c dd" ee) ff\ngg\n\nhh	vap
+aa (bb "c|c dd" ee) ff\ngg\n\nhh	viwo
+aa (bb "c|c dd" ee) ff\ngg\n\nhh	vapo
+aa (bb "c|c dd" ee) ff\ngg\n\nhh	vi"d
+aa (bb "c|c dd" ee) ff\ngg\n\nhh	viwd
+aa (bb "c|c dd" ee) ff\ngg\n\nhh	vawd
+aa (bb "c|c dd" ee) ff\ngg\n\nhh	vipd
+aa (bb "c|c dd" ee) ff\ngg\n\nhh	vi(d
+aa (bb "c|c dd" ee) ff\ngg\n\nhh	va(d
+aa (bb "c|c dd" ee) ff\ngg\n\nhh	viwc!<Esc>
+aa (bb "c|c dd" ee) ff\ngg\n\nhh	vapy
+one\ntwo|	vhd
+|	vd
+|	Vd
+a\n|\nb	vd
+a\n|\nb	Vd
+one\nt|wo	Vkd
+one two\nthr|ee four\nfive six\nseven	:2<CR>
+one two\nthr|ee four\nfive six\nseven	:$<CR>
+one two\nthr|ee four\nfive six\nseven	:1<CR>
+one two\nthr|ee four\nfive six\nseven	:9<CR>
+one two\nthr|ee four\nfive six\nseven	:2,3d<CR>
+one two\nthr|ee four\nfive six\nseven	:d<CR>
+one two\nthr|ee four\nfive six\nseven	:%d<CR>
+one two\nthr|ee four\nfive six\nseven	:2y<CR>P
+one two\nthr|ee four\nfive six\nseven	:1,2y<CR>Gp
+one two\nthr|ee four\nfive six\nseven	/four<CR>
+one two\nthr|ee four\nfive six\nseven	/f<CR>n
+one two\nthr|ee four\nfive six\nseven	/f<CR>nn
+one two\nthr|ee four\nfive six\nseven	/f<CR>N
+one two\nthr|ee four\nfive six\nseven	?o<CR>
+one two\nthr|ee four\nfive six\nseven	?o<CR>n
+one two\nthr|ee four\nfive six\nseven	?o<CR>N
+one two\nthr|ee four\nfive six\nseven	/zz<CR>
+one two\nthr|ee four\nfive six\nseven	/o<CR>dn
+one two\nthr|ee four\nfive six\nseven	/s<CR>x
+one two\nthr|ee four\nfive six\nseven	/e<CR>x.
+one two\nthr|ee four\nfive six\nseven	/ee<CR>
+a|bc abc abc	/abc<CR>
+abc abc a|bc	/abc<CR>
+abc a|bc abc	?abc<CR>
+abc a|bc abc	/abc<CR>N
+|one\ntwo\nthree	:2<CR>j
+|one\ntwo\nthree	:3<CR>k
+a b c d e\nf g |h i j\nk l m n o\np q r s t\nu v w x y	2d3w
+a b c d e\nf g |h i j\nk l m n o\np q r s t\nu v w x y	3dd
+a b c d e\nf g |h i j\nk l m n o\np q r s t\nu v w x y	d10j
+a b c d e\nf g |h i j\nk l m n o\np q r s t\nu v w x y	10x
+a b c d e\nf g |h i j\nk l m n o\np q r s t\nu v w x y	9999x
+a b c d e\nf g |h i j\nk l m n o\np q r s t\nu v w x y	2yyjp
+a b c d e\nf g |h i j\nk l m n o\np q r s t\nu v w x y	3J
+a b c d e\nf g |h i j\nk l m n o\np q r s t\nu v w x y	100l
+a b c d e\nf g |h i j\nk l m n o\np q r s t\nu v w x y	5w
+a b c d e\nf g |h i j\nk l m n o\np q r s t\nu v w x y	3e
+a b c d e\nf g |h i j\nk l m n o\np q r s t\nu v w x y	2b
+a b c d e\nf g |h i j\nk l m n o\np q r s t\nu v w x y	3gg
+a b c d e\nf g |h i j\nk l m n o\np q r s t\nu v w x y	d3l
+a b c d e\nf g |h i j\nk l m n o\np q r s t\nu v w x y	3dj
+a b c d e\nf g |h i j\nk l m n o\np q r s t\nu v w x y	c3wX<Esc>
+a b c d e\nf g |h i j\nk l m n o\np q r s t\nu v w x y	3cwX<Esc>
+a b c d e\nf g |h i j\nk l m n o\np q r s t\nu v w x y	4~
+a b c d e\nf g |h i j\nk l m n o\np q r s t\nu v w x y	3rX
+a b c d e\nf g |h i j\nk l m n o\np q r s t\nu v w x y	3>>
+|ab cd	dw<Esc>x
+|ab cd	d<Esc>x
+|ab cd	2<Esc>x
+|ab cd	"ax"ap
+\t|tab\tsep	w
+\t|tab\tsep	dw
+\ttab\t|sep	b
+x\t|y	X
+héllo |wörld ñ	dw
+héllo |wörld ñ	x
+héllo |wörld ñ	~
+héllo |wörld ñ	gUiw
+héllo |wörld ñ	fñ
+a|b\nc	x

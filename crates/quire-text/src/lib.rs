@@ -16,6 +16,7 @@ pub mod merge;
 pub mod motion;
 pub mod multi;
 mod selection;
+pub mod vim;
 
 pub use buffer::Buffer;
 pub use change::{Assoc, Change, LineDelta, Transaction, TransactionError};
