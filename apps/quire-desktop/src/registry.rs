@@ -9,10 +9,10 @@
 //! * [`RIGHT_TABS`] — tabs of the right panel (Insights is built in)
 //! * [`SIDEBAR_TABS`] — extra sidebar tabs (Files, Search, Tags, Tasks are built in)
 //! * [`SETTINGS_TABS`] — tabs of the Settings dialog
-//! * [`ui_command`] — what a feature command's `UiRequest::Feature` opens
+//! * [`ui_target`] — what a feature command's `UiRequest::Feature` opens
 //! * [`paint_widget`] — widgets a feature puts under a line of a note
 //! * [`open_surface`] — editors for non-Markdown files (`surfaces.rs`)
-//! * [`layout_samples`] — every feature overlay, for `layout_check`
+//! * `layout_samples` — every feature overlay, for `layout_check` (tests)
 //!
 //! Each table is in workstream order; add to your block only.
 

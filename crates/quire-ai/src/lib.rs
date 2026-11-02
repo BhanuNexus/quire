@@ -5,8 +5,8 @@
 //! [`protocol`] over stdio.
 //!
 //! * [`protocol`] — JSON-lines messages (shared with the engine)
-//! * [`catalog`] — the compiled-in list of downloadable models (`client`)
-//! * [`engine`] — finding and talking to the engine process (`client`)
+//! * `catalog` — the compiled-in list of downloadable models (`client`)
+//! * `engine` — finding and talking to the engine process (`client`)
 
 #[cfg(feature = "client")]
 pub mod catalog;
