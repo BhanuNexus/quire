@@ -34,6 +34,10 @@ pub(crate) struct SidebarState {
     pub focus_query: bool,
     cache: Option<(String, u64, u64, Vec<HybridHit>)>,
     open_tag: Option<String>,
+    /// Two-pane browser: the folder whose notes are listed.
+    browse_folder: Option<String>,
+    /// The two-pane setting last frame (turning it on shows the Files tab).
+    two_pane_seen: bool,
 }
 
 /// What a panel asks the app to do after drawing.
@@ -160,7 +164,24 @@ fn apply_note_action(ctx: &egui::Context, ws: &mut Workspace, path: &NotePath, a
 // ---------------------------------------------------------------- tab bar
 
 pub(crate) fn tab_bar(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> PanelOut {
+    crate::theme::sync(ui.ctx(), ws);
     let mut out = PanelOut::default();
+    // Names for the tabs: display titles and icons.
+    let names: Vec<String> = ws
+        .docs()
+        .iter()
+        .map(|d| match &d.path {
+            Some(p) => {
+                let name = quire_app::nav::display_name(ws, p);
+                match quire_app::themes::note_icon(ws, p) {
+                    Some(icon) => format!("{icon} {name}"),
+                    None => name,
+                }
+            }
+            None => d.title(),
+        })
+        .collect();
+    let preview = ws.features.nav.preview;
     ui.horizontal(|ui| {
         ui.add_space(4.0);
         ui.label(RichText::new(ws.vault_name()).strong().color(pal.strong));
@@ -168,6 +189,7 @@ pub(crate) fn tab_bar(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> P
         ui.separator();
         let mut close = None;
         let mut activate = None;
+        let mut pin = None;
         let mut tab_action: Option<(usize, NotePath, NoteAction)> = None;
         egui::ScrollArea::horizontal().id_salt("tabs").max_width(ui.available_width() - 440.0).show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -180,13 +202,26 @@ pub(crate) fn tab_bar(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> P
                     } else {
                         ""
                     };
-                    let r = ui.selectable_label(active, format!("{}{dot}", d.title()));
-                    let r = if d.path.is_some() { r.on_hover_text("Double-click to rename · right-click for more") } else { r };
+                    let label = format!("{}{dot}", names.get(i).cloned().unwrap_or_else(|| d.title()));
+                    // The preview tab (reuse mode) is in italics until it's kept.
+                    let is_preview = preview == Some(d.id);
+                    let text = if is_preview { RichText::new(label).italics() } else { RichText::new(label) };
+                    let r = ui.selectable_label(active, text);
+                    let r = match &d.path {
+                        Some(p) if is_preview => r.on_hover_text(format!(
+                            "{}\nPreview tab: the next note you open replaces it. Double-click or edit to keep it.",
+                            p.as_str()
+                        )),
+                        Some(p) => r.on_hover_text(format!("{}\nDouble-click to rename · right-click for more", p.as_str())),
+                        None => r,
+                    };
                     if r.clicked() {
                         activate = Some(i);
                     }
                     if let Some(p) = &d.path {
-                        if r.double_clicked() {
+                        if r.double_clicked() && is_preview {
+                            pin = Some(d.id);
+                        } else if r.double_clicked() {
                             tab_action = Some((i, p.clone(), NoteAction::Rename));
                         } else if let Some(a) = note_menu(&r) {
                             tab_action = Some((i, p.clone(), a));
@@ -204,6 +239,9 @@ pub(crate) fn tab_bar(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> P
         if let Some(i) = activate {
             ws.set_active(i);
             out.jumped = true;
+        }
+        if let Some(id) = pin {
+            quire_app::nav::pin(ws, id);
         }
         if let Some(id) = close {
             ws.close(id);
@@ -244,6 +282,293 @@ fn folder_tree(paths: &[NotePath]) -> BTreeMap<String, Vec<NotePath>> {
         v.sort_by_key(|p| p.stem().to_lowercase());
     }
     m
+}
+
+/// What the Files tab asks for after drawing.
+#[derive(Default)]
+struct FileEvents {
+    /// A note to open, and whether in a tab of its own (Ctrl+click, middle click).
+    open: Option<(NotePath, bool)>,
+    file_action: Option<(NotePath, NoteAction)>,
+    folder_action: Option<(String, Command)>,
+    /// Keep this tab (double-click on the preview tab's note).
+    pin: Option<quire_app::DocId>,
+    /// (folder, mode, the folder's notes as shown).
+    sort: Option<(String, quire_app::nav::SortMode, Vec<NotePath>)>,
+    /// Manual order: (folder, notes as shown, the note moved, the note it goes before).
+    reorder: Option<(String, Vec<NotePath>, NotePath, Option<NotePath>)>,
+    /// (folder, icon or "" to remove it).
+    icon: Option<(String, String)>,
+}
+
+/// Icons offered for folders.
+const FOLDER_ICONS: &[&str] = &["📁", "🗂", "📂", "📚", "📘", "📒", "📝", "🗒", "💡", "⭐", "🏠", "💼", "🧪", "🎯", "🗓", "📦"];
+
+/// A note's row label: its icon and its name (or title).
+fn note_label(ws: &Workspace, p: &NotePath) -> String {
+    let name = quire_app::nav::display_name(ws, p);
+    match quire_app::themes::note_icon(ws, p) {
+        Some(icon) => format!("{icon} {name}"),
+        None => name,
+    }
+}
+
+/// One note in the Files tab. In a manually ordered folder rows can be
+/// dragged; a drop puts the dragged note before this one.
+fn note_row(ui: &mut egui::Ui, ws: &Workspace, p: &NotePath, active: Option<&NotePath>, draggable: bool, pal: &Palette) -> egui::Response {
+    let is_active = active == Some(p);
+    let label = note_label(ws, p);
+    let r = crate::theme::row(ui, is_active, 26.0, pal, |painter, rect| {
+        let color = if is_active { pal.strong } else { pal.text };
+        let mut job = LayoutJob::simple_singleline(label.clone(), FontId::proportional(13.5), color);
+        job.wrap = egui::text::TextWrapping::truncate_at_width(rect.width() - 20.0);
+        let galley = painter.layout_job(job);
+        let y = rect.center().y - galley.size().y / 2.0;
+        painter.galley(egui::pos2(rect.left() + 10.0, y), galley, color);
+    });
+    let r = if draggable { ui.interact(r.rect, r.id, egui::Sense::click_and_drag()) } else { r };
+    if draggable && r.drag_started() {
+        egui::DragAndDrop::set_payload(ui.ctx(), p.clone());
+    }
+    if draggable && r.dnd_hover_payload::<NotePath>().is_some_and(|d| *d != *p) {
+        let y = r.rect.top();
+        ui.painter().line_segment([egui::pos2(r.rect.left(), y), egui::pos2(r.rect.right(), y)], egui::Stroke::new(2.0, pal.accent));
+    }
+    r.on_hover_text(p.as_str())
+}
+
+/// Clicks on a note row: open (in a tab of its own with Ctrl or the middle
+/// button), keep on double-click, the context menu.
+fn note_row_events(ui: &egui::Ui, ws: &Workspace, r: &egui::Response, p: &NotePath, ev: &mut FileEvents) {
+    let mods = ui.input(|i| i.modifiers);
+    if r.clicked() {
+        ev.open = Some((p.clone(), mods.command));
+    }
+    if r.middle_clicked() {
+        ev.open = Some((p.clone(), true));
+    }
+    if r.double_clicked()
+        && let Some(d) = ws.docs().iter().find(|d| d.path.as_ref() == Some(p))
+    {
+        ev.pin = Some(d.id);
+    }
+    if let Some(a) = note_menu(r) {
+        ev.file_action = Some((p.clone(), a));
+    }
+}
+
+/// The context menu of a folder: new note, sort order, icon.
+fn folder_menu(ui: &mut egui::Ui, ws: &Workspace, folder: &str, shown: &[NotePath], ev: &mut FileEvents) {
+    if ui.button("New note here").clicked() {
+        ev.folder_action = Some((folder.to_string(), Command::NewInFolder));
+        ui.close();
+    }
+    if ui.button("New project…").clicked() {
+        ev.folder_action = Some((folder.to_string(), Command::NewProject));
+        ui.close();
+    }
+    ui.separator();
+    let current = quire_app::nav::sort_mode(ws, folder);
+    ui.menu_button("Sort by", |ui| {
+        for m in quire_app::nav::SortMode::ALL {
+            if ui.selectable_label(m == current, m.label()).clicked() {
+                ev.sort = Some((folder.to_string(), m, shown.to_vec()));
+                ui.close();
+            }
+        }
+    });
+    if !folder.is_empty() {
+        ui.menu_button("Icon", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.set_max_width(200.0);
+                for icon in FOLDER_ICONS {
+                    if ui.button(*icon).clicked() {
+                        ev.icon = Some((folder.to_string(), (*icon).to_string()));
+                        ui.close();
+                    }
+                }
+            });
+            if ws.features.themes.folder_icon(folder).is_some() && ui.button("No icon").clicked() {
+                ev.icon = Some((folder.to_string(), String::new()));
+                ui.close();
+            }
+        });
+    }
+}
+
+/// A folder's name with its icon.
+fn folder_label(ws: &Workspace, folder: &str) -> String {
+    match ws.features.themes.folder_icon(folder) {
+        Some(icon) => format!("{icon} {folder}"),
+        None => folder.to_string(),
+    }
+}
+
+/// The notes of a folder in the folder's order.
+fn sorted_notes(ws: &mut Workspace, folder: &str, notes: &[NotePath]) -> Vec<NotePath> {
+    let mut v = notes.to_vec();
+    quire_app::nav::sorted(ws, folder, &mut v);
+    v
+}
+
+/// Folders and their notes, one tree.
+fn file_tree(
+    ui: &mut egui::Ui,
+    ws: &mut Workspace,
+    tree: &BTreeMap<String, Vec<NotePath>>,
+    active: Option<&NotePath>,
+    pal: &Palette,
+    ev: &mut FileEvents,
+) {
+    let reveal = ws.features.nav.reveal_folder.take();
+    let ordered: Vec<(String, Vec<NotePath>)> = tree.iter().map(|(f, n)| (f.clone(), sorted_notes(ws, f, n))).collect();
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        for (folder, notes) in &ordered {
+            let manual = quire_app::nav::sort_mode(ws, folder) == quire_app::nav::SortMode::Manual;
+            let mut draw = |ui: &mut egui::Ui| {
+                ui.spacing_mut().item_spacing.y = 1.0;
+                for (i, p) in notes.iter().enumerate() {
+                    let r = note_row(ui, ws, p, active, manual, pal);
+                    note_row_events(ui, ws, &r, p, ev);
+                    if manual && let Some(dragged) = r.dnd_release_payload::<NotePath>() {
+                        if dragged.folder() == p.folder() && *dragged != *p {
+                            ev.reorder = Some((folder.clone(), notes.clone(), (*dragged).clone(), Some(p.clone())));
+                        }
+                    } else if manual && i + 1 == notes.len() {
+                        // Below the last row: put the dragged note last.
+                        let (rest, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 10.0), egui::Sense::hover());
+                        if let Some(dragged) = resp.dnd_release_payload::<NotePath>()
+                            && dragged.folder() == p.folder()
+                        {
+                            ev.reorder = Some((folder.clone(), notes.clone(), (*dragged).clone(), None));
+                        }
+                        if resp.dnd_hover_payload::<NotePath>().is_some() {
+                            ui.painter().line_segment([rest.left_top(), rest.right_top()], egui::Stroke::new(2.0, pal.accent));
+                        }
+                    }
+                }
+            };
+            if folder.is_empty() {
+                draw(ui);
+                continue;
+            }
+            let revealing = reveal.as_deref().is_some_and(|r| r.eq_ignore_ascii_case(folder));
+            let mut header = egui::CollapsingHeader::new(RichText::new(folder_label(ws, folder)).color(pal.muted).size(12.5))
+                .id_salt(folder)
+                .default_open(true);
+            if revealing {
+                header = header.open(Some(true));
+            }
+            let resp = header.show(ui, draw);
+            if revealing {
+                let r = resp.header_response.rect;
+                ui.painter().rect_stroke(r.expand(2.0), 6.0, egui::Stroke::new(1.5, pal.accent), egui::StrokeKind::Outside);
+                ui.scroll_to_rect(r, Some(egui::Align::TOP));
+            }
+            resp.header_response.context_menu(|ui| folder_menu(ui, ws, folder, notes, ev));
+        }
+    });
+}
+
+/// The two-pane browser: folders on the left, the folder's notes on the
+/// right with their title, date and the start of their text.
+fn two_pane(
+    ui: &mut egui::Ui,
+    ws: &mut Workspace,
+    st: &mut SidebarState,
+    tree: &BTreeMap<String, Vec<NotePath>>,
+    active: Option<&NotePath>,
+    pal: &Palette,
+    ev: &mut FileEvents,
+) {
+    if let Some(f) = ws.features.nav.reveal_folder.take() {
+        st.browse_folder = Some(f);
+    }
+    let folder = st
+        .browse_folder
+        .clone()
+        .filter(|f| tree.contains_key(f))
+        .unwrap_or_else(|| active.map(|p| p.folder().to_string()).unwrap_or_default());
+    let notes = tree.get(&folder).map(|n| sorted_notes(ws, &folder, n)).unwrap_or_default();
+    let times = quire_app::nav::note_times(ws, &notes);
+    let full = ui.available_rect_before_wrap();
+    let left_w = (full.width() * 0.38).clamp(90.0, 180.0);
+    let left = egui::Rect::from_min_size(full.min, egui::vec2(left_w, full.height()));
+    let right = egui::Rect::from_min_max(egui::pos2(full.min.x + left_w + 8.0, full.min.y), full.max);
+    ui.painter().line_segment(
+        [egui::pos2(left.right() + 4.0, full.top()), egui::pos2(left.right() + 4.0, full.bottom())],
+        egui::Stroke::new(1.0, pal.border),
+    );
+    let mut l = ui.new_child(egui::UiBuilder::new().max_rect(left).layout(egui::Layout::top_down(egui::Align::Min)));
+    egui::ScrollArea::vertical().id_salt("quire-browse-folders").auto_shrink([false, false]).show(&mut l, |ui| {
+        ui.spacing_mut().item_spacing.y = 1.0;
+        for f in tree.keys() {
+            let depth = if f.is_empty() { 0 } else { f.matches('/').count() };
+            let name = if f.is_empty() { "Notes".to_string() } else { f.rsplit('/').next().unwrap_or(f).to_string() };
+            let label = match ws.features.themes.folder_icon(f) {
+                Some(icon) => format!("{icon} {name}"),
+                None => name,
+            };
+            let selected = *f == folder;
+            let r = crate::theme::row(ui, selected, 24.0, pal, |painter, rect| {
+                let mut job =
+                    LayoutJob::simple_singleline(label.clone(), FontId::proportional(12.5), if selected { pal.strong } else { pal.text });
+                job.wrap = egui::text::TextWrapping::truncate_at_width(rect.width() - 12.0 - depth as f32 * 10.0);
+                let g = painter.layout_job(job);
+                painter.galley(egui::pos2(rect.left() + 6.0 + depth as f32 * 10.0, rect.center().y - g.size().y / 2.0), g, pal.text);
+            });
+            if r.clicked() {
+                st.browse_folder = Some(f.clone());
+            }
+            let shown = tree.get(f).cloned().unwrap_or_default();
+            r.context_menu(|ui| folder_menu(ui, ws, f, &shown, ev));
+        }
+    });
+    let mut r = ui.new_child(egui::UiBuilder::new().max_rect(right).layout(egui::Layout::top_down(egui::Align::Min)));
+    egui::ScrollArea::vertical().id_salt(("quire-browse-notes", folder.as_str())).auto_shrink([false, false]).show(&mut r, |ui| {
+        ui.spacing_mut().item_spacing.y = 2.0;
+        let ix = ws.index().read();
+        let previews: Vec<String> = notes
+            .iter()
+            .map(|p| {
+                let plain = ix.get(p).map(|r| r.plain.trim().replace('\n', " ")).unwrap_or_default();
+                plain.chars().take(160).collect()
+            })
+            .collect();
+        drop(ix);
+        for (p, preview) in notes.iter().zip(&previews) {
+            let is_active = active == Some(p);
+            let title = note_label(ws, p);
+            let date =
+                times.get(p).map(|(m, _)| quire_app::chrono_fmt(*m).split(' ').next().unwrap_or_default().to_string()).unwrap_or_default();
+            let resp = crate::theme::row(ui, is_active, 64.0, pal, |painter, rect| {
+                let w = rect.width() - 16.0;
+                let mut job = LayoutJob::simple_singleline(title.clone(), FontId::proportional(13.0), pal.strong);
+                job.wrap = egui::text::TextWrapping::truncate_at_width(w);
+                let g = painter.layout_job(job);
+                painter.galley(egui::pos2(rect.left() + 8.0, rect.top() + 5.0), g, pal.strong);
+                painter.text(
+                    egui::pos2(rect.left() + 8.0, rect.top() + 23.0),
+                    egui::Align2::LEFT_TOP,
+                    &date,
+                    FontId::proportional(11.0),
+                    pal.muted,
+                );
+                let mut job = LayoutJob::simple(preview.clone(), FontId::proportional(11.5), pal.muted, w);
+                job.wrap.max_rows = 2;
+                job.wrap.break_anywhere = false;
+                job.wrap.overflow_character = Some('…');
+                let g = painter.layout_job(job);
+                painter.galley(egui::pos2(rect.left() + 8.0, rect.top() + 37.0), g, pal.muted);
+            });
+            let resp = resp.on_hover_text(p.as_str());
+            note_row_events(ui, ws, &resp, p, ev);
+        }
+        if notes.is_empty() {
+            ui.label(RichText::new("No notes in this folder.").color(pal.muted).size(12.0));
+        }
+    });
+    ui.allocate_rect(full, egui::Sense::hover());
 }
 
 fn highlighted(text: &str, ranges: &[std::ops::Range<usize>], pal: &Palette) -> LayoutJob {
@@ -292,6 +617,11 @@ pub(crate) fn sidebar(
         }
     });
     ui.separator();
+    // A followed `[[Folder/]]` link, or the two-pane browser just turned on: the Files tab.
+    if ws.features.nav.reveal_folder.is_some() || (ws.settings.editing.two_pane && !st.two_pane_seen) {
+        st.tab = SidebarTab::Files;
+    }
+    st.two_pane_seen = ws.settings.editing.two_pane;
     let active_path = ws.active_doc().and_then(|d| d.path.clone());
     let mut open: Option<(NotePath, Option<usize>)> = None;
     let mut file_action: Option<(NotePath, NoteAction)> = None;
@@ -328,58 +658,39 @@ pub(crate) fn sidebar(
             ui.add_space(4.0);
             let paths = ws.index().read().paths();
             let tree = folder_tree(&paths);
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                for (folder, notes) in &tree {
-                    let mut draw = |ui: &mut egui::Ui| {
-                        ui.spacing_mut().item_spacing.y = 1.0;
-                        for p in notes {
-                            let is_active = active_path.as_ref() == Some(p);
-                            let r = crate::theme::row(ui, is_active, 26.0, pal, |painter, rect| {
-                                let color = if is_active { pal.strong } else { pal.text };
-                                let galley = painter.layout(p.stem().to_string(), FontId::proportional(13.5), color, rect.width() - 20.0);
-                                let galley = if galley.rows.len() > 1 {
-                                    // One line, ending in … when the name is long.
-                                    let mut job = LayoutJob::simple_singleline(p.stem().to_string(), FontId::proportional(13.5), color);
-                                    job.wrap = egui::text::TextWrapping::truncate_at_width(rect.width() - 20.0);
-                                    painter.layout_job(job)
-                                } else {
-                                    galley
-                                };
-                                let y = rect.center().y - galley.size().y / 2.0;
-                                painter.galley(egui::pos2(rect.left() + 10.0, y), galley, color);
-                            })
-                            .on_hover_text(p.as_str());
-                            if r.clicked() {
-                                open = Some((p.clone(), None));
-                            }
-                            if let Some(a) = note_menu(&r) {
-                                file_action = Some((p.clone(), a));
-                            }
-                        }
-                    };
-                    if folder.is_empty() {
-                        draw(ui);
-                    } else {
-                        let resp = egui::CollapsingHeader::new(RichText::new(folder.clone()).color(pal.muted).size(12.5))
-                            .id_salt(folder)
-                            .default_open(true)
-                            .show(ui, draw);
-                        resp.header_response.context_menu(|ui| {
-                            if ui.button("New note here").clicked() {
-                                folder_action = Some((folder.clone(), Command::NewInFolder));
-                                ui.close();
-                            }
-                            if ui.button("New project…").clicked() {
-                                folder_action = Some((folder.clone(), Command::NewProject));
-                                ui.close();
-                            }
-                        });
-                    }
-                }
-                if paths.is_empty() {
-                    ui.label(RichText::new("No notes yet. Press Ctrl+N.").color(pal.muted));
-                }
+            let mut ev = FileEvents::default();
+            if ws.settings.editing.two_pane {
+                two_pane(ui, ws, st, &tree, active_path.as_ref(), pal, &mut ev);
+            } else {
+                file_tree(ui, ws, &tree, active_path.as_ref(), pal, &mut ev);
+            }
+            if paths.is_empty() {
+                ui.label(RichText::new("No notes yet. Press Ctrl+N.").color(pal.muted));
+            }
+            open = ev.open.map(|(p, pinned)| {
+                ws.features.nav.open_pinned |= pinned;
+                (p, None)
             });
+            file_action = ev.file_action;
+            folder_action = ev.folder_action;
+            if let Some(id) = ev.pin {
+                quire_app::nav::pin(ws, id);
+            }
+            if let Some((folder, mode, shown)) = ev.sort
+                && let Err(e) = quire_app::nav::set_sort_mode(ws, &folder, mode, &shown)
+            {
+                ws.notify(quire_app::workspace::NoticeLevel::Error, format!("Couldn't save the order: {e}"));
+            }
+            if let Some((folder, shown, note, before)) = ev.reorder
+                && let Err(e) = quire_app::nav::move_note_in_order(ws, &folder, &shown, &note, before.as_ref())
+            {
+                ws.notify(quire_app::workspace::NoticeLevel::Error, format!("Couldn't save the order: {e}"));
+            }
+            if let Some((folder, icon)) = ev.icon
+                && let Err(e) = quire_app::themes::set_folder_icon(ws, &folder, &icon)
+            {
+                ws.notify(quire_app::workspace::NoticeLevel::Error, format!("Couldn't save the icon: {e}"));
+            }
         }
         SidebarTab::Search => {
             let r =
@@ -436,6 +747,7 @@ pub(crate) fn sidebar(
         }
         SidebarTab::Tags => {
             let tags = ws.index().read().tags();
+            let mut tag_color: Option<(String, Option<quire_app::themes::Rgba>)> = None;
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 for (tag, count) in &tags {
                     let depth = tag.matches('/').count();
@@ -443,9 +755,29 @@ pub(crate) fn sidebar(
                     ui.horizontal(|ui| {
                         ui.add_space(depth as f32 * 14.0);
                         let selected = st.open_tag.as_deref() == Some(tag.as_str());
-                        if ui.selectable_label(selected, RichText::new(format!("#{leaf}")).color(pal.tag)).clicked() {
+                        let color = ws.features.themes.tag_color(tag).map_or(pal.tag, crate::theme::color);
+                        let r = ui.selectable_label(selected, RichText::new(format!("#{leaf}")).color(color));
+                        if r.clicked() {
                             st.open_tag = if selected { None } else { Some(tag.clone()) };
                         }
+                        r.context_menu(|ui| {
+                            ui.label(RichText::new("Colour").size(12.0).color(pal.muted));
+                            ui.horizontal_wrapped(|ui| {
+                                ui.set_max_width(190.0);
+                                for c in crate::theme_ui::TAG_COLORS {
+                                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
+                                    ui.painter().circle_filled(rect.center(), 7.0, egui::Color32::from_rgb(c[0], c[1], c[2]));
+                                    if resp.clicked() {
+                                        tag_color = Some((tag.clone(), Some([c[0], c[1], c[2], 255])));
+                                        ui.close();
+                                    }
+                                }
+                            });
+                            if ws.features.themes.tag_colors.contains_key(&tag.to_lowercase()) && ui.button("No colour").clicked() {
+                                tag_color = Some((tag.clone(), None));
+                                ui.close();
+                            }
+                        });
                         ui.label(RichText::new(count.to_string()).color(pal.muted).size(11.0));
                     });
                     if st.open_tag.as_deref() == Some(tag.as_str()) {
@@ -453,7 +785,7 @@ pub(crate) fn sidebar(
                         for p in notes {
                             ui.horizontal(|ui| {
                                 ui.add_space(depth as f32 * 14.0 + 18.0);
-                                if ui.link(p.stem()).clicked() {
+                                if ui.link(note_label(ws, &p)).clicked() {
                                     open = Some((p.clone(), None));
                                 }
                             });
@@ -464,6 +796,11 @@ pub(crate) fn sidebar(
                     ui.label(RichText::new("Tags like #idea or #area/topic show up here.").color(pal.muted));
                 }
             });
+            if let Some((tag, c)) = tag_color
+                && let Err(e) = quire_app::themes::set_tag_color(ws, &tag, c)
+            {
+                ws.notify(quire_app::workspace::NoticeLevel::Error, format!("Couldn't save the tag colour: {e}"));
+            }
         }
         SidebarTab::Tasks => {
             let tasks = ws.index().read().tasks(false);
@@ -513,6 +850,8 @@ pub(crate) fn sidebar(
             ws.jump_to_byte(b);
         }
         out.jumped = true;
+        // The preview tab is settled on the next frame.
+        ui.ctx().request_repaint();
     }
     out
 }

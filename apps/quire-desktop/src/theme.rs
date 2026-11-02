@@ -1,10 +1,18 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Colours, fonts and egui visuals.
+//!
+//! The palettes are built from the built-in colours, the chosen theme file
+//! and the accent colour (`quire_app::themes`). [`LIGHT`] and [`DARK`] always
+//! hold the palettes in use; [`apply`] swaps them when the theme changes.
 
-use std::sync::Arc;
+use std::ops::Deref;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use egui::{Color32, FontData, FontDefinitions, FontFamily, Stroke, Visuals};
+use quire_app::Workspace;
+use quire_app::themes::{Rgba, Theme};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Palette {
@@ -30,13 +38,22 @@ pub(crate) struct Palette {
     pub active_bg: Color32,
     /// Popups, menus and dialogs: one step above the panels.
     pub raised: Color32,
+    /// Links in notes.
+    pub link: Color32,
+    /// Quoted text.
+    pub quote: Color32,
+    /// Conflict markers.
+    pub conflict: Color32,
+    /// Headings, level 1 to 6.
+    pub h: [Color32; 6],
 }
 
 const fn hex(rgb: u32) -> Color32 {
     Color32::from_rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
 }
 
-pub(crate) const LIGHT: Palette = Palette {
+/// The built-in light colours.
+pub(crate) const BASE_LIGHT: Palette = Palette {
     dark: false,
     bg: hex(0x00FD_FCFA),
     panel: hex(0x00F6_F5F2),
@@ -56,9 +73,14 @@ pub(crate) const LIGHT: Palette = Palette {
     hover: hex(0x00EC_EAE6),
     active_bg: hex(0x00E2_EAFB),
     raised: hex(0x00FF_FFFF),
+    link: hex(0x002A_67E0),
+    quote: hex(0x0076_7B85),
+    conflict: hex(0x00B0_6F12),
+    h: [hex(0x0011_1318); 6],
 };
 
-pub(crate) const DARK: Palette = Palette {
+/// The built-in dark colours.
+pub(crate) const BASE_DARK: Palette = Palette {
     dark: true,
     bg: hex(0x0015_171B),
     panel: hex(0x001A_1C21),
@@ -78,7 +100,177 @@ pub(crate) const DARK: Palette = Palette {
     hover: hex(0x0024_272E),
     active_bg: hex(0x0022_3150),
     raised: hex(0x001F_2228),
+    link: hex(0x0078_A8FA),
+    quote: hex(0x0082_8994),
+    conflict: hex(0x00E0_B046),
+    h: [hex(0x00F3_F4F6); 6],
 };
+
+/// A palette that can change while the app runs. It reads like a
+/// `&'static Palette` (`&LIGHT` coerces to one); [`apply`] replaces it.
+pub(crate) struct Live(Mutex<&'static Palette>);
+
+impl Live {
+    const fn new(p: &'static Palette) -> Self {
+        Self(Mutex::new(p))
+    }
+
+    fn set(&self, p: Palette) {
+        // Palettes are tiny and change only when you pick another theme.
+        let leaked: &'static Palette = Box::leak(Box::new(p));
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = leaked;
+    }
+}
+
+impl Deref for Live {
+    type Target = Palette;
+
+    fn deref(&self) -> &Palette {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// The light palette in use.
+pub(crate) static LIGHT: Live = Live::new(&BASE_LIGHT);
+/// The dark palette in use.
+pub(crate) static DARK: Live = Live::new(&BASE_DARK);
+/// The theme generation (`ws.features.themes.generation`) last applied.
+static APPLIED: AtomicU64 = AtomicU64::new(0);
+/// The theme sets a font for note text (family [`TEXT`]).
+static TEXT_FONT: AtomicBool = AtomicBool::new(false);
+/// The family note text uses when the theme sets one.
+pub(crate) const TEXT: &str = "quire-text";
+
+pub(crate) fn color(c: Rgba) -> Color32 {
+    Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3])
+}
+
+pub(crate) fn rgba(c: Color32) -> Rgba {
+    c.to_srgba_unmultiplied()
+}
+
+/// A token of the palette by its theme-file name.
+pub(crate) fn token(p: &Palette, name: &str) -> Option<Color32> {
+    Some(match name {
+        "bg" => p.bg,
+        "panel" => p.panel,
+        "raised" => p.raised,
+        "text" => p.text,
+        "strong" => p.strong,
+        "muted" => p.muted,
+        "faint" => p.faint,
+        "accent" => p.accent,
+        "link" => p.link,
+        "tag" => p.tag,
+        "tag_bg" => p.tag_bg,
+        "border" => p.border,
+        "selection" => p.selection,
+        "hover" => p.hover,
+        "active_bg" => p.active_bg,
+        "mark_bg" => p.mark_bg,
+        "code_bg" => p.code_bg,
+        "quote" => p.quote,
+        "conflict" => p.conflict,
+        "warn" => p.warn,
+        "danger" => p.danger,
+        h if h.len() == 2 && h.starts_with('h') => p.h[h[1..].parse::<usize>().ok().filter(|n| (1..=6).contains(n))? - 1],
+        _ => return None,
+    })
+}
+
+fn set_token(p: &mut Palette, name: &str, c: Color32) {
+    let slot = match name {
+        "bg" => &mut p.bg,
+        "panel" => &mut p.panel,
+        "raised" => &mut p.raised,
+        "text" => &mut p.text,
+        "strong" => &mut p.strong,
+        "muted" => &mut p.muted,
+        "faint" => &mut p.faint,
+        "accent" => &mut p.accent,
+        "link" => &mut p.link,
+        "tag" => &mut p.tag,
+        "tag_bg" => &mut p.tag_bg,
+        "border" => &mut p.border,
+        "selection" => &mut p.selection,
+        "hover" => &mut p.hover,
+        "active_bg" => &mut p.active_bg,
+        "mark_bg" => &mut p.mark_bg,
+        "code_bg" => &mut p.code_bg,
+        "quote" => &mut p.quote,
+        "conflict" => &mut p.conflict,
+        "warn" => &mut p.warn,
+        "danger" => &mut p.danger,
+        h if h.len() == 2 && h.starts_with('h') => match h[1..].parse::<usize>() {
+            Ok(n @ 1..=6) => &mut p.h[n - 1],
+            _ => return,
+        },
+        _ => return,
+    };
+    *slot = c;
+}
+
+fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    let l = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round() as u8;
+    Color32::from_rgb(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
+}
+
+/// The palette for one side: the built-in colours, the theme's tokens on
+/// top, then the accent colour (which also tints selections).
+pub(crate) fn build(base: &Palette, theme: Option<&std::collections::BTreeMap<String, Rgba>>, accent: Option<Rgba>) -> Palette {
+    let mut p = *base;
+    if let Some(t) = theme {
+        // A theme that sets the accent but not links: links follow the accent.
+        if t.contains_key("accent") && !t.contains_key("link") {
+            p.link = color(t["accent"]);
+        }
+        for (k, v) in t {
+            set_token(&mut p, k, color(*v));
+        }
+    }
+    if let Some(a) = accent {
+        let a = color(a);
+        if p.link == p.accent {
+            p.link = a;
+        }
+        p.accent = a;
+        p.active_bg = mix(p.bg, a, if p.dark { 0.24 } else { 0.13 });
+        p.selection = mix(p.bg, a, if p.dark { 0.34 } else { 0.22 });
+    }
+    p
+}
+
+/// Use `theme` (or the built-in colours) and `accent` from now on.
+pub(crate) fn set_palettes(theme: Option<&Theme>, accent: &str) {
+    let accent = quire_app::themes::parse_color(accent);
+    LIGHT.set(build(&BASE_LIGHT, theme.map(|t| &t.light), accent));
+    DARK.set(build(&BASE_DARK, theme.map(|t| &t.dark), accent));
+}
+
+/// Make egui's widgets match the palettes in use.
+pub(crate) fn refresh_visuals(ctx: &egui::Context) {
+    ctx.set_visuals_of(egui::Theme::Light, visuals(&LIGHT));
+    ctx.set_visuals_of(egui::Theme::Dark, visuals(&DARK));
+    ctx.request_repaint();
+}
+
+/// Follow the theme the workspace loaded (`ws.features.themes`): rebuild
+/// the palettes and fonts when it changed. Cheap to call every frame.
+pub(crate) fn sync(ctx: &egui::Context, ws: &Workspace) {
+    let st = &ws.features.themes;
+    if APPLIED.swap(st.generation, Ordering::Relaxed) == st.generation {
+        return;
+    }
+    set_palettes(st.current.as_deref(), &ws.settings.appearance.accent);
+    let fonts = st.current.as_ref().map(|t| t.fonts.clone()).unwrap_or_default();
+    install_fonts_with(ctx, &fonts);
+    refresh_visuals(ctx);
+}
+
+/// Whether note text uses the theme's text font ([`TEXT`]).
+pub(crate) fn text_font() -> bool {
+    TEXT_FONT.load(Ordering::Relaxed)
+}
 
 pub(crate) fn visuals(p: &Palette) -> Visuals {
     use egui::{CornerRadius, Shadow};
@@ -216,8 +408,51 @@ const JETBRAINS_MONO: &[u8] = include_bytes!("../fonts/JetBrainsMonoNL-Regular.t
 pub(crate) const ITALIC: &str = "quire-italic";
 
 /// Inter for text, `JetBrains Mono` for code, a semibold and a true italic,
-/// plus system fallbacks for scripts they don't cover.
+/// plus system fallbacks for scripts they don't cover. At start-up this also
+/// puts the chosen theme's colours (and fonts) in place.
 pub(crate) fn install_fonts(ctx: &egui::Context) -> FontSupport {
+    let settings = quire_app::Settings::load();
+    let theme = quire_app::themes::load(&settings.appearance.theme_file).ok().flatten();
+    set_palettes(theme.as_ref(), &settings.appearance.accent);
+    let fonts = theme.map(|t| t.fonts).unwrap_or_default();
+    install_fonts_with(ctx, &fonts)
+}
+
+/// A font file from the fonts folder (`Inter.ttf`, or `Inter` with the
+/// extension left out).
+fn user_font(name: &str) -> Option<Vec<u8>> {
+    let name = name.trim();
+    if name.is_empty() || name.contains(['/', '\\']) {
+        return None;
+    }
+    let dir = quire_app::themes::fonts_dir()?;
+    [name.to_string(), format!("{name}.ttf"), format!("{name}.otf"), format!("{name}-Regular.ttf"), format!("{name}-Regular.otf")]
+        .iter()
+        .find_map(|f| std::fs::read(dir.join(f)).ok())
+        .filter(|b| b.len() < 32 * 1024 * 1024)
+}
+
+/// A monochrome emoji font for icons (`icon: 📘`, folder icons): one put in
+/// the fonts folder, or the system's. Colour-only emoji fonts can't be drawn.
+fn emoji_font() -> Option<Vec<u8>> {
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(dir) = quire_app::themes::fonts_dir() {
+        paths.push(dir.join("NotoEmoji-Regular.ttf"));
+    }
+    for p in [
+        "/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf",
+        "/usr/share/fonts/noto/NotoEmoji-Regular.ttf",
+        "/usr/share/fonts/google-noto-emoji/NotoEmoji-Regular.ttf",
+        "C:\\Windows\\Fonts\\seguiemj.ttf",
+        "C:\\Windows\\Fonts\\seguisym.ttf",
+        "/System/Library/Fonts/Apple Symbols.ttf",
+    ] {
+        paths.push(p.into());
+    }
+    paths.iter().find_map(|p| std::fs::read(p).ok()).filter(|b| b.len() < 24 * 1024 * 1024)
+}
+
+fn install_fonts_with(ctx: &egui::Context, theme_fonts: &quire_app::themes::ThemeFonts) -> FontSupport {
     let mut defs = FontDefinitions::default();
     let prop = FontFamily::Proportional;
     let add = |defs: &mut FontDefinitions, name: &str, bytes: &'static [u8]| {
@@ -239,6 +474,10 @@ pub(crate) fn install_fonts(ctx: &egui::Context) -> FontSupport {
     .filter_map(|c| first_existing(c))
     .filter(|b| b.len() < 24 * 1024 * 1024)
     .collect();
+    let mut fallbacks = fallbacks;
+    if let Some(e) = emoji_font() {
+        fallbacks.push(e);
+    }
     for (i, f) in fallbacks.into_iter().enumerate() {
         let name = format!("quire-fallback-{i}");
         defs.font_data.insert(name.clone(), Arc::new(FontData::from_owned(f)));
@@ -251,6 +490,57 @@ pub(crate) fn install_fonts(ctx: &egui::Context) -> FontSupport {
         chain.extend(rest.iter().cloned());
         defs.families.insert(FontFamily::Name(face.into()), chain);
     }
+    // The theme's fonts, when they can be read.
+    if let Some(b) = user_font(&theme_fonts.ui) {
+        defs.font_data.insert("theme-ui".into(), Arc::new(FontData::from_owned(b)));
+        defs.families.entry(prop.clone()).or_default().insert(0, "theme-ui".into());
+    }
+    if let Some(b) = user_font(&theme_fonts.mono) {
+        defs.font_data.insert("theme-mono".into(), Arc::new(FontData::from_owned(b)));
+        defs.families.entry(FontFamily::Monospace).or_default().insert(0, "theme-mono".into());
+    }
+    let mut text_chain = defs.families.get(&prop).cloned().unwrap_or_default();
+    let text = user_font(&theme_fonts.text);
+    TEXT_FONT.store(text.is_some(), Ordering::Relaxed);
+    if let Some(b) = text {
+        defs.font_data.insert("theme-text".into(), Arc::new(FontData::from_owned(b)));
+        text_chain.insert(0, "theme-text".into());
+    }
+    defs.families.insert(FontFamily::Name(TEXT.into()), text_chain);
     ctx.set_fonts(defs);
     FontSupport { bold: true }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_theme_switches_every_token() {
+        let (_, text) = quire_app::themes::BUNDLED.iter().find(|(n, _)| *n == "Nord").unwrap();
+        let t = quire_app::themes::parse("Nord", text).unwrap();
+        for (base, side) in [(&BASE_LIGHT, &t.light), (&BASE_DARK, &t.dark)] {
+            let p = build(base, Some(side), None);
+            for name in quire_app::themes::TOKENS {
+                assert_eq!(token(&p, name), Some(color(side[*name])), "{name}");
+            }
+        }
+        // Tokens a theme leaves out keep the built-in colour.
+        let mut partial = std::collections::BTreeMap::new();
+        partial.insert("bg".to_string(), [1, 2, 3, 255]);
+        let p = build(&BASE_DARK, Some(&partial), None);
+        assert_eq!((p.bg, p.text), (Color32::from_rgb(1, 2, 3), BASE_DARK.text));
+        // Every theme-file token is a palette token, both ways.
+        for name in quire_app::themes::TOKENS {
+            assert!(token(&BASE_LIGHT, name).is_some(), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_accent_tints_links_and_selections() {
+        let p = build(&BASE_LIGHT, None, Some([0xE0, 0x40, 0x10, 255]));
+        assert_eq!((p.accent, p.link), (Color32::from_rgb(0xE0, 0x40, 0x10), Color32::from_rgb(0xE0, 0x40, 0x10)));
+        assert_ne!(p.selection, BASE_LIGHT.selection);
+        assert_eq!(build(&BASE_LIGHT, None, None), BASE_LIGHT, "nothing chosen: the built-in colours");
+    }
 }
