@@ -4659,14 +4659,37 @@ dependencies = [
 [[package]]
 name = "quire-agent"
 version = "0.8.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "flate2",
+ "getrandom 0.4.3",
+ "quire-intel",
+ "quire-markdown",
+ "quire-vault",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "toml 1.1.8+spec-1.1.0",
+ "unicode-normalization",
+]
 
 [[package]]
 name = "quire-ai"
 version = "0.8.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "toml 1.1.8+spec-1.1.0",
+]
 
 [[package]]
 name = "quire-ai-engine"
 version = "0.8.0"
+dependencies = [
+ "quire-ai",
+ "serde_json",
+]
 
 [[package]]
 name = "quire-app"
@@ -4698,10 +4721,18 @@ dependencies = [
 [[package]]
 name = "quire-assistant"
 version = "0.8.0"
+dependencies = [
+ "quire-agent",
+ "quire-intel",
+]
 
 [[package]]
 name = "quire-canvas"
 version = "0.8.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "quire-cli"
@@ -4782,6 +4813,8 @@ version = "0.8.0"
 dependencies = [
  "pulldown-cmark",
  "quire-text",
+ "serde",
+ "serde_json",
  "unicode-segmentation",
  "unicode-width",
 ]
@@ -4793,10 +4826,23 @@ version = "0.8.0"
 [[package]]
 name = "quire-pdf"
 version = "0.8.0"
+dependencies = [
+ "quire-markdown",
+ "quire-vault",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "quire-plan"
 version = "0.8.0"
+dependencies = [
+ "chrono",
+ "quire-markdown",
+ "serde",
+ "serde_json",
+ "toml 1.1.8+spec-1.1.0",
+]
 
 [[package]]
 name = "quire-spell"

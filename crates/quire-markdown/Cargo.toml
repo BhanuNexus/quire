@@ -14,6 +14,10 @@ quire-text.workspace = true
 pulldown-cmark.workspace = true
 unicode-segmentation.workspace = true
 unicode-width = "0.2"
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [lints]
 workspace = true

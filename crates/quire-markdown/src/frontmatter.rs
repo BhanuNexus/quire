@@ -9,7 +9,10 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A front-matter value. In JSON (agent change sets, view queries) it is a
+/// string, an array of strings or an object.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
 pub enum Value {
     Str(String),
     List(Vec<String>),
@@ -387,6 +390,14 @@ mod tests {
         assert_eq!(Value::Str("true".into()).kind(), Kind::Bool);
         assert_eq!(Value::Str("hello".into()).kind(), Kind::Text);
         assert_eq!(Value::List(vec![]).kind(), Kind::List);
+    }
+
+    #[test]
+    fn values_as_json() {
+        let v = Value::Map(BTreeMap::from([("a".to_string(), Value::List(vec!["x".into()])), ("b".to_string(), Value::Str("y".into()))]));
+        let json = serde_json::to_string(&v).unwrap();
+        assert_eq!(json, r#"{"a":["x"],"b":"y"}"#);
+        assert_eq!(serde_json::from_str::<Value>(&json).unwrap(), v);
     }
 
     #[test]
