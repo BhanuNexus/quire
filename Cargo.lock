@@ -4702,6 +4702,7 @@ dependencies = [
  "flate2",
  "keyring",
  "png",
+ "quire-agent",
  "quire-index",
  "quire-intel",
  "quire-markdown",
@@ -4738,9 +4739,11 @@ dependencies = [
 name = "quire-cli"
 version = "0.8.0"
 dependencies = [
+ "quire-agent",
  "quire-app",
  "quire-import",
- "serde_json",
+ "quire-mcp",
+ "tempfile",
  "winresource",
 ]
 
@@ -4822,6 +4825,11 @@ dependencies = [
 [[package]]
 name = "quire-mcp"
 version = "0.8.0"
+dependencies = [
+ "quire-agent",
+ "quire-app",
+ "serde_json",
+]
 
 [[package]]
 name = "quire-pdf"

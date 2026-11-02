@@ -17,11 +17,22 @@ path = "src/main.rs"
 default = ["typeset"]
 # `quire-cli pdf`. Quire Lite is built without it.
 typeset = ["quire-app/typeset"]
+# `quire-cli eval` (design §B.6): development only, never in releases.
+eval = []
 
 [dependencies]
 quire-app = { workspace = true, features = ["remote-llm", "keychain", "update-check"] }
 quire-import = { path = "../../crates/quire-import" }
-serde_json.workspace = true
+quire-agent.workspace = true
+quire-mcp.workspace = true
+# 0.9 workstreams add their crates on their own line below its marker.
+# WS-D: quire-ai, quire-assistant
+#
+# WS-E: quire-plan
+#
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [build-dependencies]
 winresource = "0.1"

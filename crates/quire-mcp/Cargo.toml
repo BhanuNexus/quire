@@ -9,7 +9,15 @@ repository.workspace = true
 homepage.workspace = true
 publish.workspace = true
 
+[features]
+# Streamable HTTP and the OAuth authorization server (WS-B): axum and tokio
+# join here, created only when the HTTP server is turned on.
+http = []
+
 [dependencies]
+quire-app.workspace = true
+quire-agent.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

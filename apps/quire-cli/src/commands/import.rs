@@ -6,6 +6,21 @@ use std::path::Path;
 
 use quire_app::vault::Vault;
 
+use super::{CliCommand, arg};
+
+pub(crate) const COMMANDS: &[CliCommand] = &[CliCommand {
+    name: "import",
+    rank: 15,
+    usage: "  quire-cli import    <source> <vault> [--into Folder] [--write]
+                      import Logseq, Bear, Notion, Evernote or Markdown (folder, .zip, .enex, .bear2bk; dry run first)",
+    run: command,
+}];
+
+fn command(args: &[String]) -> Result<(), String> {
+    let into = args.iter().position(|a| a == "--into").and_then(|i| args.get(i + 1)).map_or("", String::as_str);
+    run(arg(args, 1)?, arg(args, 2)?, into, args.iter().any(|a| a == "--write"))
+}
+
 pub(crate) fn run(source: &str, vault: &str, folder: &str, write: bool) -> Result<(), String> {
     let plan = quire_import::plan(Path::new(source))?;
     println!("{}", plan.summary());
