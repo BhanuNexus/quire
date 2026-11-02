@@ -490,10 +490,8 @@ impl QuireApp {
         if want && self.capture_key.is_none() && !self.capture_key_failed {
             match crate::capture_key::CaptureKey::register(ctx) {
                 Ok(k) => self.capture_key = Some(k),
-                Err(e) => {
-                    self.capture_key_failed = true;
-                    self.ws.notify(NoticeLevel::Warn, format!("Quick capture shortcut unavailable: {e}"));
-                }
+                // Settings shows why (e.g. a Wayland session); no toast on every launch.
+                Err(_) => self.capture_key_failed = true,
             }
         } else if !want {
             self.capture_key = None;

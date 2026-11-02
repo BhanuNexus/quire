@@ -14,6 +14,13 @@ use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 
 static PRESSED: AtomicBool = AtomicBool::new(false);
+/// Why the shortcut couldn't be registered, for Settings to show.
+static UNAVAILABLE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Why the shortcut isn't working, if it isn't.
+pub(crate) fn unavailable() -> Option<String> {
+    UNAVAILABLE.lock().ok().and_then(|g| g.clone())
+}
 static WAKE: OnceLock<egui::Context> = OnceLock::new();
 
 /// The shortcut as people read it.
@@ -45,10 +52,15 @@ impl CaptureKey {
                 }
             }
         }));
-        let manager = GlobalHotKeyManager::new().map_err(|e| e.to_string())?;
-        let key = hotkey();
-        manager.register(key).map_err(|e| format!("{} is taken by another app ({e})", label()))?;
-        Ok(Self { manager, key })
+        let result = GlobalHotKeyManager::new().map_err(|e| e.to_string()).and_then(|manager| {
+            let key = hotkey();
+            manager.register(key).map_err(|e| format!("{} is taken by another app ({e})", label()))?;
+            Ok(Self { manager, key })
+        });
+        if let Ok(mut g) = UNAVAILABLE.lock() {
+            *g = result.as_ref().err().cloned();
+        }
+        result
     }
 
     /// Was the shortcut pressed since the last call? (Only while registered.)

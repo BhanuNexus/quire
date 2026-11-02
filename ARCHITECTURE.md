@@ -73,6 +73,8 @@ quire/
 │   │            chunk.rs  semantic.rs  hybrid.rs
 │   ├── quire-intel/           # local intelligence + optional LLM port
 │   │   └── src/ lib.rs  related.rs  mentions.rs  summary.rs  tags.rs  calc.rs  dates.rs  llm.rs  ask.rs
+│   ├── quire-typeset/         # Typst as a library: LaTeX math → SVG (MiTeX), Mermaid → SVG, Markdown → PDF
+│   ├── quire-spell/           # Markdown-aware spell checking (spellbook, bundled en_US/en_GB, system Hunspell)
 │   └── quire-app/             # application layer, UI‑agnostic
 │       └── src/ lib.rs  document.rs  workspace.rs  commands.rs  settings.rs  session.rs
 │                find.rs  find_state.rs  attach.rs  ask_state.rs
@@ -433,6 +435,10 @@ Scope comes from ROADMAP.md §5 (v3). Working assumption until the product decis
 | Neural embeddings | `quire-intel::embed`, `quire-index::semantic::VectorCache` | Batched `/v1/embeddings`; cache keyed by passage hash + model. In the UI test, editing one sentence re-embedded 1 of 17 passages. Any error falls back to LSA and shows a notice. |
 | Version history | `quire-vault::history`, `quire-app::history_ops`, `dialogs::history` | The first save also keeps the on-disk original. Closed-note writes (kanban moves, vault replace, MCP) snapshot before and after. |
 | MCP | `apps/quire-cli/src/mcp.rs` | Protocol versions 2025-11-25 back to 2024-11-05. Write tools are not even listed without `--allow-write`. |
+| Math, diagrams, PDF | `crates/quire-typeset`, `apps/quire-desktop/src/typeset_ui.rs`, `quire-app::export_pdf` | Pure Rust: MiTeX converts LaTeX math to Typst math, Typst lays it out, `typst-svg`/`typst-pdf` export; Mermaid via `mermaid-rs-renderer`. Fonts embedded (Inter, JetBrains Mono NL, STIX Two Math). The desktop renders on one worker thread to textures (resvg), cached per source/size/colour/scale; panics in a renderer are caught (release builds unwind). `blocks::figures` finds `$$` and ```` ```mermaid ```` blocks; live preview collapses them to their picture unless the caret is inside. |
+| Callouts & paragraph ids | `quire-markdown::callout`, `render::with_callouts`, `view/mod.rs` | One table of kinds/aliases/colours/glyphs used by the editor, preview (egui_commonmark alerts), HTML/site export and PDF. `^id` anchors: `callout::find_block` for jumps, `render::anchor_block_ids` for HTML. |
+| Spelling | `crates/quire-spell`, `apps/quire-desktop/src/spell_ui.rs` | Visible lines only, per-line cache in the speller; ranges overlapping code/math runs are dropped; the word at the caret isn't flagged. Dictionaries load on a background thread. |
+| Quick capture | `quire-app::capture`, `apps/quire-desktop/src/capture_key.rs` | `global-hotkey` (X11 on Linux); entries go under a Log/Inbox heading if the daily note has one, into the open document when it's open. |
 | Importers | `crates/quire-import` | `Tree` loads folder / zip (one level of nested zips, wrapper folder stripped) / single file. Detection order: Evernote, Bear, Logseq, Notion, Markdown. Notion database views use `from: ./DB/` so they survive importing into a subfolder. Hand-written ENML→Markdown converter (no HTML5 parser dependency). |
 | Properties | `quire-markdown::frontmatter::{set_field, remove_field}`, `quire-app::properties` | Edits replace only the field's own lines; quoting round-trips through the reader. Panel edits are undoable Transactions. |
 | Views | `quire-index::views`, `apps/quire-desktop/src/view_ui.rs` | Parsed + evaluated per index version (memoized). Rendered under the closing fence like inline images; the editor ignores presses over a view so its widgets get them. |

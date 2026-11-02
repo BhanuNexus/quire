@@ -577,7 +577,18 @@ fn editor_settings(ui: &mut Ui, ws: &mut Workspace) {
         });
         ui.end_row();
         ui.label("Quick capture");
-        ui.checkbox(&mut s.capture_shortcut, format!("{} adds a thought to today's note from any app", crate::capture_key::label()));
+        ui.vertical(|ui| {
+            ui.checkbox(&mut s.capture_shortcut, format!("{} adds a thought to today's note from any app", crate::capture_key::label()));
+            if s.capture_shortcut
+                && let Some(why) = crate::capture_key::unavailable()
+            {
+                ui.label(
+                    RichText::new(format!("The shortcut isn't available here ({why}). Quick capture is still in the command palette."))
+                        .size(12.0)
+                        .color(ui.visuals().weak_text_color()),
+                );
+            }
+        });
         ui.end_row();
     });
 }

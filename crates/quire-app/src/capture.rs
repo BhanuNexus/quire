@@ -22,14 +22,56 @@ pub fn capture_entry(text: &str, at: DateTime<Local>) -> String {
     out
 }
 
-/// `existing` with `entry` added at the end on its own line.
-pub fn append_entry(existing: &str, entry: &str) -> String {
-    let mut out = existing.to_string();
-    if !out.is_empty() && !out.ends_with('\n') {
-        out.push('\n');
+/// Where `entry` goes in `existing`: a byte range to replace and the text to
+/// put there. Under a `Log`, `Inbox`, `Captures` or `Journal` heading if the
+/// note has one (taking the place of an empty `- ` bullet the template left),
+/// otherwise at the end.
+pub fn placement(existing: &str, entry: &str) -> (std::ops::Range<usize>, String) {
+    const SECTIONS: [&str; 5] = ["log", "inbox", "captures", "capture", "journal"];
+    let mut lines: Vec<(usize, &str)> = Vec::new();
+    let mut at = 0;
+    for l in existing.split_inclusive('\n') {
+        lines.push((at, l));
+        at += l.len();
     }
-    out.push_str(entry);
-    out.push('\n');
+    let heading = |l: &str| -> Option<(usize, String)> {
+        let t = l.trim_end();
+        let level = t.bytes().take_while(|b| *b == b'#').count();
+        (level > 0 && level <= 6 && t[level..].starts_with(' ')).then(|| (level, t[level..].trim().to_lowercase()))
+    };
+    if let Some(h) = lines.iter().position(|(_, l)| heading(l).is_some_and(|(_, name)| SECTIONS.contains(&name.as_str()))) {
+        let level = heading(lines[h].1).map_or(1, |(lv, _)| lv);
+        let end = lines[h + 1..].iter().position(|(_, l)| heading(l).is_some_and(|(lv, _)| lv <= level)).map_or(lines.len(), |k| h + 1 + k);
+        let last = (h + 1..end).rev().find(|&k| !lines[k].1.trim().is_empty());
+        return match last {
+            // The template's empty bullet: fill it in.
+            Some(k) if lines[k].1.trim() == "-" => {
+                let (start, l) = lines[k];
+                let body = l.trim_end_matches(['\n', '\r']);
+                (start..start + body.len(), entry.to_string())
+            }
+            Some(k) => {
+                let (start, l) = lines[k];
+                let body = l.trim_end_matches(['\n', '\r']);
+                (start + body.len()..start + body.len(), format!("\n{entry}"))
+            }
+            None => {
+                let (start, l) = lines[h];
+                let body = l.trim_end_matches(['\n', '\r']);
+                (start + body.len()..start + body.len(), format!("\n{entry}"))
+            }
+        };
+    }
+    let end = existing.len();
+    let sep = if existing.is_empty() || existing.ends_with('\n') { "" } else { "\n" };
+    (end..end, format!("{sep}{entry}\n"))
+}
+
+/// `existing` with `entry` placed by [`placement`].
+pub fn append_entry(existing: &str, entry: &str) -> String {
+    let (range, text) = placement(existing, entry);
+    let mut out = existing.to_string();
+    out.replace_range(range, &text);
     out
 }
 
@@ -69,11 +111,10 @@ impl Workspace {
         };
         let entry = capture_entry(text, now);
         if let Some(doc) = self.docs.iter_mut().find(|d| d.path.as_ref() == Some(&path)) {
-            let end = doc.buffer().len_chars();
-            let needs_newline = end > 0 && !doc.text().ends_with('\n');
-            let insert = format!("{}{entry}\n", if needs_newline { "\n" } else { "" });
+            let (range, insert) = placement(&doc.text(), &entry);
+            let (a, b) = (doc.byte_to_char(range.start), doc.byte_to_char(range.end));
             let sel: Selection = doc.selection();
-            if doc.apply(Transaction::insert(end, insert).with_selection(sel), EditKind::Other).is_err() {
+            if doc.apply(Transaction::replace(a, b, insert).with_selection(sel), EditKind::Other).is_err() {
                 return None;
             }
             let text = doc.text().to_string();
@@ -107,6 +148,13 @@ mod tests {
         assert_eq!(append_entry("# Day", "- x"), "# Day\n- x\n");
         assert_eq!(append_entry("# Day\n", "- x"), "# Day\n- x\n");
         assert_eq!(append_entry("", "- x"), "- x\n");
+        // Into the Log section, filling the template's empty bullet.
+        let daily = "# 2026-11-02\n\n## Log\n- \n\n## Tasks\n- [ ] \n";
+        assert_eq!(append_entry(daily, "- 09:05 a"), "# 2026-11-02\n\n## Log\n- 09:05 a\n\n## Tasks\n- [ ] \n");
+        let once = append_entry(daily, "- 09:05 a");
+        assert_eq!(append_entry(&once, "- 09:06 b"), "# 2026-11-02\n\n## Log\n- 09:05 a\n- 09:06 b\n\n## Tasks\n- [ ] \n");
+        // A Log heading with nothing under it, at the end of the note.
+        assert_eq!(append_entry("# Day\n## Inbox", "- x"), "# Day\n## Inbox\n- x");
     }
 
     #[test]

@@ -95,7 +95,68 @@ fn parser_options() -> Options {
         | Options::ENABLE_WIKILINKS
 }
 
+/// Obsidian's paragraph ids aren't for print: drop a trailing ` ^id`, and
+/// show `[[Note#^id]]` as `Note` and `[[Note#Heading]]` as `Note › Heading`.
+/// Code blocks are left alone.
+fn tidy_links(markdown: &str) -> std::borrow::Cow<'_, str> {
+    if !markdown.contains('^') && !markdown.contains("[[") {
+        return std::borrow::Cow::Borrowed(markdown);
+    }
+    let mut out = String::with_capacity(markdown.len());
+    let mut fence: Option<String> = None;
+    for line in markdown.split_inclusive('\n') {
+        let body = line.trim_end_matches(['\n', '\r']);
+        let eol = &line[body.len()..];
+        let t = body.trim_start();
+        if let Some(f) = &fence {
+            if t.starts_with(f.as_str()) {
+                fence = None;
+            }
+            out.push_str(line);
+            continue;
+        }
+        if t.starts_with("```") || t.starts_with("~~~") {
+            fence = Some(t.chars().take_while(|c| *c == '`' || *c == '~').collect());
+            out.push_str(line);
+            continue;
+        }
+        let mut b = body;
+        // ` ^id` at the end (letters, digits and `-`), after a space or alone.
+        if let Some(caret) = b.trim_end().rfind('^') {
+            let id = &b.trim_end()[caret + 1..];
+            let before = &b[..caret];
+            if !id.is_empty() && id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-') && (before.is_empty() || before.ends_with(' '))
+            {
+                b = before.trim_end();
+            }
+        }
+        let mut rest = b;
+        while let Some(open) = rest.find("[[") {
+            let Some(close) = rest[open + 2..].find("]]") else { break };
+            out.push_str(&rest[..open + 2]);
+            let inner = &rest[open + 2..open + 2 + close];
+            let (target, alias) = inner.split_once('|').map_or((inner, None), |(t, a)| (t, Some(a)));
+            match (target.split_once('#'), alias) {
+                (Some((note, frag)), None) if !rest[..open].ends_with('!') => {
+                    if frag.starts_with('^') || frag.is_empty() {
+                        let _ = write!(out, "{note}|{note}");
+                    } else {
+                        let _ = write!(out, "{note}|{note} › {frag}");
+                    }
+                }
+                _ => out.push_str(inner),
+            }
+            out.push_str("]]");
+            rest = &rest[open + 2 + close + 2..];
+        }
+        out.push_str(rest);
+        out.push_str(eol);
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 pub(crate) fn to_typst(markdown: &str, opts: &PdfOptions<'_>) -> TypstDoc {
+    let markdown = &*tidy_links(markdown);
     let events: Vec<(Event<'_>, Range<usize>)> = Parser::new_ext(markdown, parser_options()).into_offset_iter().collect();
 
     let front_title = front_matter_title(&events);
@@ -874,6 +935,14 @@ mod tests {
 
     fn squash(s: &str) -> String {
         s.split_whitespace().collect()
+    }
+
+    #[test]
+    fn paragraph_ids_and_fragments_are_tidied_for_print() {
+        let md = "See [[Note#^abc]] and [[Other#Part two]] and ![[pic.png]]. ^para1\n\n```\ncode ^keep\n```\n";
+        let t = tidy_links(md);
+        assert!(t.contains("[[Note|Note]]") && t.contains("[[Other|Other › Part two]]") && t.contains("![[pic.png]]"), "{t}");
+        assert!(!t.contains("^para1") && t.contains("code ^keep"), "{t}");
     }
 
     #[test]
