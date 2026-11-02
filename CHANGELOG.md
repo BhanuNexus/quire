@@ -4,6 +4,8 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-02
+
 ### Added
 - **Math.** `$…$` inline and `$$ … $$` blocks render as real math (LaTeX, typeset with Typst and the STIX Two Math font): in live preview once the caret leaves the line (click a formula to edit it), in the preview pane, and in PDF export. Fractions, roots, sums and integrals with limits, matrices, `aligned` and `\mathbb` all work. A formula that doesn't parse stays as text, with the reason shown under a block. Rendering happens off the UI thread, so typing never waits on it.
 - **Diagrams.** ```` ```mermaid ```` blocks draw as diagrams (flowcharts, sequence diagrams and more, rendered in Quire itself with no browser or network) in live preview, the preview pane and PDFs, in light or dark.
@@ -152,7 +154,8 @@ Downloads for Windows, macOS (universal) and Linux are attached to the release, 
 ### Added
 - First version: live Markdown styling, wikilinks with rename refactoring, backlinks, related notes, daily notes, templates, command palette, quick open, inline calculator and natural-language dates.
 
-[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/BhanuNexus/quire/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/BhanuNexus/quire/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/BhanuNexus/quire/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/BhanuNexus/quire/compare/v0.4.1...v0.5.0
