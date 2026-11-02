@@ -13,7 +13,6 @@ pub const INTER_SEMIBOLD: &[u8] = include_bytes!("../../../apps/quire-desktop/fo
 pub const INTER_ITALIC: &[u8] = include_bytes!("../../../apps/quire-desktop/fonts/Inter-Italic.ttf");
 /// `JetBrains Mono NL` Regular (SIL OFL 1.1).
 pub const JETBRAINS_MONO_NL: &[u8] = include_bytes!("../../../apps/quire-desktop/fonts/JetBrainsMonoNL-Regular.ttf");
-/// New Computer Modern Math Regular (GUST Font License), Typst's default math
-/// font, copied from `typst-assets`; see `fonts/NewCMMath-GUST-FONT-LICENSE.txt`.
-#[allow(clippy::large_include_file, reason = "a complete OpenType math font is ~1.3 MB; embedding it is the point")]
-pub const NEW_CM_MATH: &[u8] = include_bytes!("../fonts/NewCMMath-Regular.otf");
+/// STIX Two Math 2.13 (SIL OFL 1.1), an OpenType math font; see
+/// `fonts/STIXTwoMath-OFL.txt`.
+pub const STIX_TWO_MATH: &[u8] = include_bytes!("../fonts/STIXTwoMath-Regular.otf");

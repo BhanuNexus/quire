@@ -17,11 +17,11 @@ use typst::{Library, LibraryExt, World};
 use typst_layout::PagedDocument;
 
 use crate::TypesetError;
-use crate::fonts::{INTER_ITALIC, INTER_REGULAR, INTER_SEMIBOLD, JETBRAINS_MONO_NL, NEW_CM_MATH};
+use crate::fonts::{INTER_ITALIC, INTER_REGULAR, INTER_SEMIBOLD, JETBRAINS_MONO_NL, STIX_TWO_MATH};
 
 /// The math font's family name as Typst sees it. (The `.typ` files name
 /// `Inter` and `JetBrains Mono NL` directly; a test checks all three.)
-pub(crate) const MATH_FONT: &str = "New Computer Modern Math";
+pub(crate) const MATH_FONT: &str = "STIX Two Math";
 
 /// The `MiTeX` support scope: Typst definitions for what `mitex` emits.
 const MITEX_DEFS: &str = include_str!("mitex-defs.typ");
@@ -55,7 +55,7 @@ fn system_fallbacks() -> Vec<Bytes> {
 fn shared() -> &'static Shared {
     static SHARED: OnceLock<Shared> = OnceLock::new();
     SHARED.get_or_init(|| {
-        let embedded = [INTER_REGULAR, INTER_SEMIBOLD, INTER_ITALIC, JETBRAINS_MONO_NL, NEW_CM_MATH].map(Bytes::new);
+        let embedded = [INTER_REGULAR, INTER_SEMIBOLD, INTER_ITALIC, JETBRAINS_MONO_NL, STIX_TWO_MATH].map(Bytes::new);
         let fonts: Vec<Font> = embedded.into_iter().chain(system_fallbacks()).flat_map(Font::iter).collect();
         Shared {
             library: LazyHash::new(Library::default()),

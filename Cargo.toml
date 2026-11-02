@@ -140,7 +140,10 @@ suspicious_operation_groupings = "allow" # nursery; flags correct range/selectio
 opt-level = 3
 lto = "thin"
 codegen-units = 1
-panic = "abort"
+# Unwind, not abort: math, diagram and PDF rendering run third-party layout
+# code on whatever the user typed, and catch its panics (quire-typeset) so a
+# bad formula shows an error instead of closing the app.
+panic = "unwind"
 strip = true
 
 [profile.dev.package."*"]

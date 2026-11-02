@@ -32,7 +32,7 @@
 #show heading.where(level: 2): it => block(width: 100%, stroke: (bottom: 0.6pt + hairline), inset: (bottom: 0.3em), it)
 
 // New Computer Modern has a smaller x-height than Inter; scale math to match.
-#show math.equation: set text(font: "New Computer Modern Math", size: 1.1em)
+#show math.equation: set text(font: "STIX Two Math", size: 1.1em)
 #show raw: set text(font: "JetBrains Mono NL", size: 1.12em)
 #show raw.where(block: false): it => box(fill: rgb("#eff1f3"), inset: (x: 3pt), outset: (y: 2.5pt), radius: 3pt, it)
 #show raw.where(block: true): it => block(

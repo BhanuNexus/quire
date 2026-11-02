@@ -9,7 +9,7 @@
 //! * [`markdown_pdf`] — a Markdown note to PDF (Markdown → Typst markup →
 //!   `typst-pdf`), with math, diagrams, callouts, tables and images.
 //!
-//! Fonts are embedded (Inter, `JetBrains Mono NL`, New Computer Modern Math)
+//! Fonts are embedded (Inter, `JetBrains Mono NL`, STIX Two Math)
 //! and parsed once per process. Math and diagram renders are cached.
 
 mod cache;
