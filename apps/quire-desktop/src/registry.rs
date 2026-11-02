@@ -57,6 +57,9 @@ pub(crate) struct FeatureUi {
     pub calendar: crate::calendar_ui::CalendarUi,
     pub refactor: crate::meta_refactor_ui::RefactorUi,
     pub review: crate::srs_ui::ReviewUi,
+    // ---- WS-F
+    pub themes: crate::theme_ui::ThemeUi,
+    pub git: crate::git_ui::GitUi,
 }
 
 /// The built-in right-panel tab.
@@ -97,6 +100,8 @@ pub(crate) const RIGHT_TABS: &[TabDef] = &[
         available: crate::agenda_ui::dialog_open,
         show: crate::agenda_ui::dialog_tab,
     },
+    // ---- WS-F
+    TabDef { id: "git", label: crate::git_ui::label, available: crate::git_ui::available, show: crate::git_ui::show },
 ];
 
 pub(crate) const SIDEBAR_TABS: &[TabDef] = &[
@@ -117,6 +122,8 @@ pub(crate) const SETTINGS_TABS: &[TabDef] = &[
     // ---- WS-E
     TabDef { id: "planning", label: label!("Planning"), available: crate::agenda_ui::available, show: crate::agenda_ui::settings_tab },
     // ---- WS-F
+    TabDef { id: "editing", label: label!("Editing"), available: crate::view::settings::available, show: crate::view::settings::show },
+    TabDef { id: "appearance", label: label!("Appearance"), available: crate::theme_ui::available, show: crate::theme_ui::show },
 ];
 
 /// The tabs of `table` that are offered now.
@@ -156,6 +163,8 @@ pub(crate) const fn ui_target(cmd: Command) -> Option<UiTarget> {
         Command::ShowAgenda => UiTarget::Sidebar("agenda"),
         Command::ShowCalendar => UiTarget::Sidebar("calendar"),
         Command::RenameTag | Command::RenameProperty | Command::StartReview | Command::ReviewThisNote => UiTarget::Right("plan"),
+        // ---- WS-F
+        Command::ChooseTheme => UiTarget::Settings("appearance"),
         _ => return None,
     })
 }

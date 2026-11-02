@@ -59,6 +59,9 @@ F0 is the foundation step, after which its files are frozen).
 | `<pdf> (annotations).md` | Markdown + `quire:pdf-anchor` | [pdf-annotations.md](pdf-annotations.md) | WS-G | format only |
 | `<config>/settings.toml` | TOML | [settings.md](settings.md) | F0 (each table: its feature) | read and written |
 | `<config>/device.toml` | TOML, format 1 | [settings.md](settings.md#devicetoml) | F0 | written |
+| `<config>/themes/*.toml`, `<config>/fonts/*` | TOML, format 1 | [themes.md](themes.md) | WS-F | read (and a template written on request) |
+| `<config>/session.json` (`positions`) | JSON | [editor-state.md](editor-state.md#sessionjson) | WS-F | written |
+| `.quire/shared/vault.toml` `[sort]`, `[order]`, `[icons]`, `[tags]`, `[git]` | TOML sections | [editor-state.md](editor-state.md#vaulttoml-sections) | WS-F | read and written |
 | `<data_dir>/models/…`, the catalog | TOML, format 1 | [model-catalog.md](model-catalog.md) | WS-D | format only |
 | engine stdio | JSON lines | [engine-protocol.md](engine-protocol.md) | WS-D | `hello` and `shutdown` |
 | `<config>/mcp/tokens.json`, `<config>/mcp/consent/<id>.json` | JSON, format 1 | [mcp.md](mcp.md) | WS-B | written |

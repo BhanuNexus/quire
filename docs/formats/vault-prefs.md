@@ -14,6 +14,7 @@ format = 1
 [periodic.weekly]
 folder = "Weekly"
 
+[sort]            # WS-F: sort mode per folder (editor-state.md)
 [order]           # WS-F: manual sort order per folder
 [icons]           # WS-F
 [tags.colors]     # WS-F

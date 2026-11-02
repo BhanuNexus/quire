@@ -28,6 +28,8 @@ pub(crate) struct EditorState {
     /// Scroll the caret into view on the next frame (after jumps).
     pub scroll_to_caret: bool,
     pub request_focus: bool,
+    /// The theme the highlighting was done with.
+    theme_generation: u64,
 }
 
 pub(crate) fn editor_id(doc: DocId) -> egui::Id {
@@ -98,6 +100,18 @@ impl EditorState {
     /// Draw the editor for the active document.
     pub(crate) fn show(&mut self, ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette, fonts: FontSupport) {
         let ctx = ui.ctx().clone();
+        crate::theme::sync(&ctx, ws);
+        if self.theme_generation != ws.features.themes.generation {
+            // New colours: highlight again.
+            self.theme_generation = ws.features.themes.generation;
+            self.highlight.clear();
+        }
+        if let Some(id) = ws.active_doc().map(|d| d.id)
+            && !self.mirrors.contains_key(&id)
+        {
+            // First time this note is shown: the caret goes back where you left it.
+            let _ = quire_app::nav::restore_position(ws, id);
+        }
         let Some(doc) = ws.active_doc() else { return };
         let doc_id = doc.id;
         let id = editor_id(doc_id);
@@ -167,6 +181,12 @@ impl EditorState {
         let Some(out) = output else { return };
         if request_focus {
             out.response.request_focus();
+        }
+        if let Some(r) = out.cursor_range {
+            let caret: usize = r.primary.index.into();
+            let line = ws.active_doc().map_or(0, |d| d.buffer().char_to_line(caret));
+            // The classic editor doesn't know its top line; the caret's is close.
+            quire_app::nav::remember_position(ws, doc_id, caret, line.saturating_sub(8) as f32);
         }
 
         // Widget → core.

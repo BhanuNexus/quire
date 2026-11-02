@@ -21,12 +21,21 @@ pub struct EditingSettings {
     pub display_titles: bool,
     /// Note to open when no session is restored.
     pub homepage: String,
+    /// The Files sidebar shows folders and notes side by side.
+    pub two_pane: bool,
     #[serde(flatten)]
     pub other: toml::Table,
 }
 
 impl Default for EditingSettings {
     fn default() -> Self {
-        Self { vim: false, tab_mode: "reuse".into(), display_titles: false, homepage: String::new(), other: toml::Table::new() }
+        Self {
+            vim: false,
+            tab_mode: "reuse".into(),
+            display_titles: false,
+            homepage: String::new(),
+            two_pane: false,
+            other: toml::Table::new(),
+        }
     }
 }

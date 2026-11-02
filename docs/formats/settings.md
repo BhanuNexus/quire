@@ -16,9 +16,9 @@ workstream; every key defaults to off or unchanged.
 | `[agent_panel]` | WS-D | `enabled`, `backend`, `max_steps`, `acp_command`, `acp_args`, `acp_risk_ack` |
 | `[trust]` | WS-C | `contradictions`, `claims_daily_cap`, `ask_before_tell`, `staleness`, `verify_citations` |
 | `[mcp_http]` | WS-B | `enabled`, `bind`, `port`, `public_url` |
-| `[editing]` | WS-F | `vim`, `tab_mode`, `display_titles`, `homepage` |
+| `[editing]` | WS-F | `vim`, `tab_mode` (`"reuse"` or `"new"`), `display_titles`, `homepage` (a note's name or path), `two_pane` |
 | `[tasks]` | WS-E | `reminders`, `new_occurrence`, `format` |
-| `[appearance]` | WS-F | `theme_file`, `accent` |
+| `[appearance]` | WS-F | `theme_file` (a bundled theme's name or a file in `<config>/themes/`, [themes.md](themes.md)), `accent` (`#RRGGBB`) |
 | `[jobs]` | F0 | `pause_on_typing_ms`, `max_threads` |
 
 * Keys and tables a version doesn't know are kept (`other` at the top level

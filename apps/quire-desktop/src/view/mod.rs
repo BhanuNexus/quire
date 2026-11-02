@@ -9,6 +9,8 @@
 //! so undo, autosave and indexing are unchanged.
 
 mod heights;
+pub(crate) mod settings;
+mod vim;
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -25,7 +27,7 @@ use quire_app::index::views::{self as qviews, ViewBlock};
 use quire_app::markdown::{StyleRun, blocks};
 use quire_app::suggest::{SuggestKind, Suggestions};
 use quire_app::text::{Assoc, Buffer, EditKind, Selection, Transaction, motion, multi};
-use quire_app::{Command, DocId, Workspace};
+use quire_app::{Command, DocId, Workspace, nav};
 
 use crate::highlight::build_job;
 use crate::theme::{FontSupport, Palette};
@@ -96,6 +98,10 @@ struct DocView {
     fold_toggles: Vec<(Rect, usize)>,
     /// Pictures of math and diagrams last frame: clicking one edits its source (first line).
     figure_boxes: Vec<(Rect, usize, usize)>,
+    /// `![[Note]]` lines (edited in place under the line), for a revision.
+    embeds: Option<(u64, EmbedLines)>,
+    /// Where you were in the note was put back (first frame only).
+    restored: bool,
 }
 
 impl DocView {
@@ -127,6 +133,8 @@ impl DocView {
             hidden: None,
             fold_toggles: Vec::new(),
             figure_boxes: Vec::new(),
+            embeds: None,
+            restored: false,
         }
     }
 }
@@ -296,6 +304,9 @@ fn table_row_job(
     job
 }
 
+/// `![[Note]]` lines of a note: (line, what it embeds).
+type EmbedLines = Rc<Vec<(usize, crate::embed_edit::Embed)>>;
+
 /// Lines hidden by folds, for a revision and a set of folded headings.
 type HiddenLines = (u64, Vec<usize>, Rc<Vec<Range<usize>>>);
 
@@ -319,6 +330,78 @@ struct Cx<'a> {
     wrap: f32,
     /// Live preview: hide Markdown syntax on lines outside these ranges.
     live: Option<Vec<Range<usize>>>,
+    /// Theme colours beyond the highlighter's (heading levels, links,
+    /// quotes, tag colours, a text font); `None` when they're all default.
+    theme: Option<ThemeCx>,
+}
+
+/// What [`recolor`] needs from the theme.
+struct ThemeCx {
+    tag_colors: Vec<(String, Color32)>,
+    text_font: bool,
+}
+
+/// Apply the theme's colours that the shared highlighter doesn't know:
+/// a colour per heading level, link, quote and conflict colours, tag
+/// colours from the vault, and the theme's font for note text.
+fn recolor(job: &mut egui::text::LayoutJob, text: &str, runs: &[StyleRun], cx: &Cx<'_>) {
+    let Some(t) = &cx.theme else { return };
+    let pal = cx.pal;
+    let mut i = 0;
+    for sec in &mut job.sections {
+        let a = sec.byte_range.start.0;
+        while i < runs.len() && runs[i].range.end <= a {
+            i += 1;
+        }
+        if t.text_font && sec.format.font_id.family == egui::FontFamily::Proportional {
+            sec.format.font_id.family = egui::FontFamily::Name(crate::theme::TEXT.into());
+        }
+        let Some(run) = runs.get(i).filter(|r| r.range.start <= a) else { continue };
+        let st = run.style;
+        if st.marker || st.code_block || st.front_matter {
+            continue;
+        }
+        if st.heading > 0 && !st.link && !st.wikilink && !st.tag {
+            sec.format.color = pal.h[(st.heading as usize - 1).min(5)];
+        }
+        if (st.link || st.wikilink) && sec.format.color == pal.accent {
+            sec.format.color = pal.link;
+        }
+        if st.quote && sec.format.color == pal.muted {
+            sec.format.color = pal.quote;
+        }
+        if st.conflict {
+            sec.format.color = pal.conflict;
+        }
+        if st.tag && !t.tag_colors.is_empty() {
+            let name = text.get(run.range.clone()).unwrap_or_default().trim_start_matches('#').to_lowercase();
+            let mut n = name.as_str();
+            let found = loop {
+                if let Some((_, c)) = t.tag_colors.iter().find(|(k, _)| k == n) {
+                    break Some(*c);
+                }
+                match n.rsplit_once('/') {
+                    Some((p, _)) => n = p,
+                    None => break None,
+                }
+            };
+            if let Some(c) = found {
+                sec.format.color = c;
+                sec.format.background = c.gamma_multiply(if pal.dark { 0.22 } else { 0.13 });
+            }
+        }
+    }
+}
+
+/// The theme colours `recolor` applies, or `None` when they change nothing.
+fn theme_cx(ws: &Workspace, pal: &Palette) -> Option<ThemeCx> {
+    let tags = &ws.features.themes.tag_colors;
+    let text_font = crate::theme::text_font();
+    let plain = pal.h.iter().all(|h| *h == pal.strong) && pal.link == pal.accent && pal.quote == pal.muted && pal.conflict == pal.warn;
+    if plain && tags.is_empty() && !text_font {
+        return None;
+    }
+    Some(ThemeCx { tag_colors: tags.iter().map(|(k, v)| (k.clone(), crate::theme::color(*v))).collect(), text_font })
 }
 
 /// Should this syntax marker disappear in live preview? List bullets, task
@@ -386,6 +469,10 @@ pub(crate) struct FastEditor {
     tables: HashMap<usize, Rc<TableLayout>>,
     /// The spell checker for this frame (`None` while off or loading).
     spell: Option<Arc<quire_spell::Speller>>,
+    /// Vim keys: what the adapter keeps between frames.
+    vim: vim::VimView,
+    /// Notes edited in place under `![[embed]]` lines.
+    embeds: crate::embed_edit::EmbedEditors,
 }
 
 /// Right-click on a misspelled word: its char range and what to offer.
@@ -400,6 +487,14 @@ fn all_selections(primary: Selection, extra: &[Selection]) -> Vec<Selection> {
     let mut v = extra.to_vec();
     v.push(primary);
     multi::normalize(v)
+}
+
+/// A scroll area that starts at `offset` (where you were in the note), if given.
+fn restored_scroll(area: egui::ScrollArea, offset: Option<f32>) -> egui::ScrollArea {
+    match offset {
+        Some(off) => area.vertical_scroll_offset(off),
+        None => area,
+    }
 }
 
 /// Pick the selection nearest `head` as primary; the rest become secondary.
@@ -439,6 +534,7 @@ fn row_start(g: &Galley, row: usize) -> usize {
 impl FastEditor {
     pub(crate) fn forget(&mut self, docs: &[DocId]) {
         self.views.retain(|k, _| docs.contains(k));
+        self.embeds.retain(|d, _| docs.contains(&d));
     }
 
     pub(crate) fn has_extra_cursors(&self, doc: DocId) -> bool {
@@ -723,7 +819,9 @@ impl FastEditor {
                 continue;
             }
             let (text, local) = Self::line_runs(view, doc, line);
-            let mut job = table_row_job(build_job(&text, &local, cx.pal, cx.size, cx.fonts), &text, line == first, cx, None);
+            let mut job = build_job(&text, &local, cx.pal, cx.size, cx.fonts);
+            recolor(&mut job, &text, &local, cx);
+            let mut job = table_row_job(job, &text, line == first, cx, None);
             job.wrap.max_width = f32::INFINITY;
             let g = ui.fonts_mut(|f| f.layout_job(job));
             let x = |byte: usize| g.pos_from_cursor(CCursor::new(text[..byte].chars().count())).left();
@@ -786,6 +884,7 @@ impl FastEditor {
             _ => (std::borrow::Cow::Borrowed(text.as_str()), local, None),
         };
         let mut job = build_job(&text, &local, cx.pal, cx.size, cx.fonts);
+        recolor(&mut job, &text, &local, cx);
         let mut decos = Vec::new();
         // Tables render as a grid unless the caret is somewhere in them.
         let table = cx
@@ -1021,6 +1120,37 @@ impl FastEditor {
                 f
             }
         }
+    }
+
+    /// `![[Note]]` lines to edit in place, cached per revision (none in
+    /// code blocks, none for very large notes).
+    fn embeds_of(view: &mut DocView, doc: &Document) -> EmbedLines {
+        if let Some((r, e)) = &view.embeds
+            && *r == doc.revision()
+        {
+            return Rc::clone(e);
+        }
+        let mut out = Vec::new();
+        if !doc.large {
+            let text = doc.text();
+            if text.contains("![[") {
+                let code = blocks::verbatim_blocks(&text);
+                let mut at = 0;
+                for (i, line) in text.split('\n').enumerate() {
+                    let start = at;
+                    at += line.len() + 1;
+                    if !line.contains("![[") || code.iter().any(|r| r.contains(&start)) {
+                        continue;
+                    }
+                    if let Some(e) = crate::embed_edit::embed_on_line(line) {
+                        out.push((i, e));
+                    }
+                }
+            }
+        }
+        let e = Rc::new(out);
+        view.embeds = Some((doc.revision(), Rc::clone(&e)));
+        e
     }
 
     /// Which block a line belongs to (memoized per revision).
@@ -1292,6 +1422,7 @@ impl FastEditor {
     /// Draw the active note. `primary` is false for the other half of a split
     /// editor: it doesn't take pending focus or scroll requests.
     pub(crate) fn show_pane(&mut self, ui: &mut Ui, ws: &mut Workspace, pal: &Palette, fonts: FontSupport, primary: bool) {
+        crate::theme::sync(ui.ctx(), ws);
         let Some(doc) = ws.active_doc() else { return };
         let doc_id = doc.id;
         let id = editor_id(doc_id);
@@ -1303,6 +1434,13 @@ impl FastEditor {
         let find_current = ws.find_current();
 
         let mut view = self.views.remove(&doc_id).unwrap_or_else(DocView::new);
+        // The note's first frame: the caret and the view go back where you left them.
+        let restore_line = if view.restored {
+            None
+        } else {
+            view.restored = true;
+            nav::restore_position(ws, doc_id)
+        };
         self.galleys.clear();
         self.decos.clear();
         self.tables.clear();
@@ -1320,11 +1458,12 @@ impl FastEditor {
                 .map(|s| buf.char_to_line(s.start())..buf.char_to_line(s.end()) + 1)
                 .collect::<Vec<_>>()
         });
-        let cx = Cx { pal, fonts, size, wrap, live };
+        let cx = Cx { pal, fonts, size, wrap, live, theme: theme_cx(ws, pal) };
         self.spell = (ws.settings.spell_check && !ws.active_doc().expect("checked").large)
             .then(|| crate::spell_ui::speller(&ws.settings.spell_language, &ctx))
             .flatten();
         Self::sync(&mut view, ws.active_doc().expect("checked"), &cx, inline_images);
+        let restore_offset = restore_line.map(|l| view.heights.top((l.max(0.0) as usize).min(view.heights.len().saturating_sub(1))));
         let total = view.heights.total() + TOP_MARGIN + BOTTOM_MARGIN;
         let mut view_action: Option<ViewAction> = None;
         // Clicks on feature decorations (handled after drawing).
@@ -1344,989 +1483,1080 @@ impl FastEditor {
                 state.store(&ctx, id_of(&scroll_key));
             }
         }
-        egui::ScrollArea::vertical().id_salt(("quire-fast-scroll", scroll_key)).auto_shrink([false, false]).show_viewport(
-            ui,
-            |ui, viewport| {
-                let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), total.max(viewport.height())), Sense::hover());
-                let resp = ui.interact(rect, id, Sense::click_and_drag());
-                let origin = rect.min;
-                let x0 = rect.min.x + ((rect.width() - wrap) / 2.0).max(0.0);
-                if request_focus {
-                    resp.request_focus();
-                }
-                if resp.hovered() {
-                    ctx.set_cursor_icon(CursorIcon::Text);
-                }
-                // Screen readers: a multi-line text input named after the note,
-                // whose value is the caret's line.
-                {
-                    let doc = ws.active_doc().expect("checked");
-                    let buf = doc.buffer();
-                    let head = doc.selection().head;
-                    let line_no = buf.char_to_line(head);
-                    let line_text = buf.line(line_no);
-                    let col = head - buf.line_to_char(line_no);
-                    let title = doc.title();
-                    resp.widget_info(|| egui::WidgetInfo::text_edit(true, &line_text, &line_text, ""));
-                    ctx.accesskit_node_builder(id, |node| {
-                        node.set_role(egui::accesskit::Role::MultilineTextInput);
-                        node.set_label(format!("{title}, line {}", line_no + 1));
-                        node.set_value(line_text.trim_end_matches('\n').to_string());
-                        node.set_description(format!("Line {} of {}, column {}", line_no + 1, buf.len_lines(), col + 1));
-                    });
-                }
-                let focused = resp.has_focus();
-                let mut sugg = if focused { Self::current_suggestions(&mut view, ws) } else { None };
-                if focused {
-                    // While the suggestion list is open, Escape closes it rather than leaving the editor.
-                    let escape = sugg.is_some();
-                    ui.memory_mut(|m| {
-                        m.set_focus_lock_filter(id, EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape });
-                    });
-                }
-                let mut moved = false;
-                let mut edited = false;
-
-                // ---------------- spelling: right-click a flagged word
-                if resp.secondary_clicked() {
-                    view.spell_menu = None;
-                    if let (Some(p), Some(sp)) = (resp.interact_pointer_pos(), self.spell.clone()) {
-                        let doc = ws.active_doc().expect("checked");
-                        let at = self.hit(ui, &mut view, doc, &cx, origin, x0, p);
-                        let buf = doc.buffer();
-                        let line = buf.char_to_line(at);
-                        let lr = buf.line_range(line);
-                        let col = at - lr.start;
-                        // The same words the underlines mark (code, math and front matter excluded).
-                        let flagged = self.decos.get(&line).and_then(|ds| {
-                            ds.iter().find_map(|d| match *d {
-                                Deco::Misspelled { start, end } if col >= start && col <= end => Some((start, end)),
-                                _ => None,
-                            })
-                        });
-                        if let Some((a, b)) = flagged {
-                            let word = buf.slice(lr.start + a..lr.start + b);
-                            view.spell_menu =
-                                Some(SpellMenu { range: lr.start + a..lr.start + b, suggestions: sp.suggest(&word, 6), word });
-                        }
-                    }
-                }
-                let mut spell_pick: Option<(Range<usize>, String)> = None;
-                let menu = view.spell_menu.clone();
-                resp.context_menu(|ui| {
-                    let Some(m) = &menu else {
-                        ui.close();
-                        return;
-                    };
-                    if m.suggestions.is_empty() {
-                        ui.label(RichText::new("No suggestions").color(pal.muted));
-                    }
-                    for s in &m.suggestions {
-                        if ui.button(RichText::new(s).strong()).clicked() {
-                            spell_pick = Some((m.range.clone(), s.clone()));
-                            ui.close();
-                        }
-                    }
-                    ui.separator();
-                    if ui.button(format!("Add “{}” to dictionary", m.word)).clicked() {
-                        crate::spell_ui::add_word(&m.word);
-                        ui.close();
-                    }
-                    if ui.button("Ignore this session").clicked() {
-                        crate::spell_ui::ignore_word(&m.word);
-                        ui.close();
-                    }
+        let vim_on = ws.settings.editing.vim;
+        let mut embed_open: Option<quire_app::vault::NotePath> = None;
+        let mut embeds_drawn: Vec<(usize, crate::embed_edit::Embed, Rect)> = Vec::new();
+        let mut top_line = None;
+        restored_scroll(
+            egui::ScrollArea::vertical().id_salt(("quire-fast-scroll", scroll_key)).auto_shrink([false, false]),
+            restore_offset,
+        )
+        .show_viewport(ui, |ui, viewport| {
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), total.max(viewport.height())), Sense::hover());
+            let resp = ui.interact(rect, id, Sense::click_and_drag());
+            let origin = rect.min;
+            let x0 = rect.min.x + ((rect.width() - wrap) / 2.0).max(0.0);
+            if request_focus {
+                resp.request_focus();
+            }
+            if resp.hovered() {
+                ctx.set_cursor_icon(CursorIcon::Text);
+            }
+            // Screen readers: a multi-line text input named after the note,
+            // whose value is the caret's line.
+            {
+                let doc = ws.active_doc().expect("checked");
+                let buf = doc.buffer();
+                let head = doc.selection().head;
+                let line_no = buf.char_to_line(head);
+                let line_text = buf.line(line_no);
+                let col = head - buf.line_to_char(line_no);
+                let title = doc.title();
+                resp.widget_info(|| egui::WidgetInfo::text_edit(true, &line_text, &line_text, ""));
+                ctx.accesskit_node_builder(id, |node| {
+                    node.set_role(egui::accesskit::Role::MultilineTextInput);
+                    node.set_label(format!("{title}, line {}", line_no + 1));
+                    node.set_value(line_text.trim_end_matches('\n').to_string());
+                    node.set_description(format!("Line {} of {}, column {}", line_no + 1, buf.len_lines(), col + 1));
                 });
-                if let Some((range, with)) = spell_pick
-                    && let Some(d) = ws.active_doc_mut()
-                    && view
-                        .spell_menu
-                        .as_ref()
-                        .is_some_and(|m| range.end <= d.buffer().len_chars() && d.buffer().slice(range.clone()) == m.word)
-                {
-                    let caret = range.start + with.chars().count();
-                    let _ = d.apply(
-                        Transaction::replace(range.start, range.end, with).with_selection(Selection::cursor(caret)),
-                        EditKind::Other,
-                    );
-                    view.spell_menu = None;
-                }
+            }
+            let focused = resp.has_focus();
+            if vim_on && focused {
+                Self::vim_observe(ws);
+            }
+            // Vim's Normal and Visual modes don't type, so nothing to suggest.
+            let typing = !vim_on || ws.features.nav.vim.typing();
+            let mut sugg = if focused && typing { Self::current_suggestions(&mut view, ws) } else { None };
+            if focused {
+                // While the suggestion list is open, Escape closes it rather than leaving the editor.
+                // With Vim keys, Escape always belongs to the editor.
+                let escape = sugg.is_some() || vim_on;
+                ui.memory_mut(|m| {
+                    m.set_focus_lock_filter(id, EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape });
+                });
+            }
+            let mut moved = false;
+            let mut edited = false;
 
-                // ---------------- mouse
-                let (pressed, pointer, mods, primary_down) =
-                    ui.input(|i| (i.pointer.primary_pressed(), i.pointer.interact_pos(), i.modifiers, i.pointer.primary_down()));
-                let over_view = pointer.is_some_and(|p| view.view_rects.iter().any(|r| r.contains(p)));
-                if over_view && !primary_down {
-                    ctx.set_cursor_icon(CursorIcon::Default);
-                }
-                if let Some(p) = pointer.filter(|_| !over_view || view.drag.is_some()) {
+            // ---------------- spelling: right-click a flagged word
+            if resp.secondary_clicked() {
+                view.spell_menu = None;
+                if let (Some(p), Some(sp)) = (resp.interact_pointer_pos(), self.spell.clone()) {
                     let doc = ws.active_doc().expect("checked");
-                    let fold_hit = view.fold_toggles.iter().find(|(r, _)| r.contains(p)).map(|(_, l)| *l);
-                    let task_hit = view.task_boxes.iter().find(|(r, _, _)| r.contains(p)).copied();
-                    let figure_hit = view.figure_boxes.iter().find(|(r, _, _)| r.contains(p)).map(|(_, a, b)| (*a, *b));
-                    if figure_hit.is_some() && !primary_down {
-                        ctx.set_cursor_icon(CursorIcon::PointingHand);
+                    let at = self.hit(ui, &mut view, doc, &cx, origin, x0, p);
+                    let buf = doc.buffer();
+                    let line = buf.char_to_line(at);
+                    let lr = buf.line_range(line);
+                    let col = at - lr.start;
+                    // The same words the underlines mark (code, math and front matter excluded).
+                    let flagged = self.decos.get(&line).and_then(|ds| {
+                        ds.iter().find_map(|d| match *d {
+                            Deco::Misspelled { start, end } if col >= start && col <= end => Some((start, end)),
+                            _ => None,
+                        })
+                    });
+                    if let Some((a, b)) = flagged {
+                        let word = buf.slice(lr.start + a..lr.start + b);
+                        view.spell_menu = Some(SpellMenu { range: lr.start + a..lr.start + b, suggestions: sp.suggest(&word, 6), word });
                     }
-                    if pressed
-                        && resp.contains_pointer()
-                        && !over_view
-                        && let Some((first, last)) = figure_hit
-                    {
-                        // Clicking a picture opens its source for editing: the first line
-                        // inside the block, or the line itself for `$$x$$`.
-                        resp.request_focus();
-                        let line = if first == last { first } else { first + 1 };
-                        let at = doc.buffer().line_to_char(line.min(doc.buffer().len_lines().saturating_sub(1)));
+                }
+            }
+            let mut spell_pick: Option<(Range<usize>, String)> = None;
+            let menu = view.spell_menu.clone();
+            resp.context_menu(|ui| {
+                let Some(m) = &menu else {
+                    ui.close();
+                    return;
+                };
+                if m.suggestions.is_empty() {
+                    ui.label(RichText::new("No suggestions").color(pal.muted));
+                }
+                for s in &m.suggestions {
+                    if ui.button(RichText::new(s).strong()).clicked() {
+                        spell_pick = Some((m.range.clone(), s.clone()));
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                if ui.button(format!("Add “{}” to dictionary", m.word)).clicked() {
+                    crate::spell_ui::add_word(&m.word);
+                    ui.close();
+                }
+                if ui.button("Ignore this session").clicked() {
+                    crate::spell_ui::ignore_word(&m.word);
+                    ui.close();
+                }
+            });
+            if let Some((range, with)) = spell_pick
+                && let Some(d) = ws.active_doc_mut()
+                && view
+                    .spell_menu
+                    .as_ref()
+                    .is_some_and(|m| range.end <= d.buffer().len_chars() && d.buffer().slice(range.clone()) == m.word)
+            {
+                let caret = range.start + with.chars().count();
+                let _ =
+                    d.apply(Transaction::replace(range.start, range.end, with).with_selection(Selection::cursor(caret)), EditKind::Other);
+                view.spell_menu = None;
+            }
+
+            // ---------------- mouse
+            let (pressed, pointer, mods, primary_down) =
+                ui.input(|i| (i.pointer.primary_pressed(), i.pointer.interact_pos(), i.modifiers, i.pointer.primary_down()));
+            let over_view = pointer.is_some_and(|p| view.view_rects.iter().any(|r| r.contains(p)));
+            if over_view && !primary_down {
+                ctx.set_cursor_icon(CursorIcon::Default);
+            }
+            if let Some(p) = pointer.filter(|_| !over_view || view.drag.is_some()) {
+                let doc = ws.active_doc().expect("checked");
+                let fold_hit = view.fold_toggles.iter().find(|(r, _)| r.contains(p)).map(|(_, l)| *l);
+                let task_hit = view.task_boxes.iter().find(|(r, _, _)| r.contains(p)).copied();
+                let figure_hit = view.figure_boxes.iter().find(|(r, _, _)| r.contains(p)).map(|(_, a, b)| (*a, *b));
+                if figure_hit.is_some() && !primary_down {
+                    ctx.set_cursor_icon(CursorIcon::PointingHand);
+                }
+                if pressed
+                    && resp.contains_pointer()
+                    && !over_view
+                    && let Some((first, last)) = figure_hit
+                {
+                    // Clicking a picture opens its source for editing: the first line
+                    // inside the block, or the line itself for `$$x$$`.
+                    resp.request_focus();
+                    let line = if first == last { first } else { first + 1 };
+                    let at = doc.buffer().line_to_char(line.min(doc.buffer().len_lines().saturating_sub(1)));
+                    Self::set_selections(&mut view, ws, vec![Selection::cursor(at)], at);
+                    moved = true;
+                } else if pressed
+                    && resp.contains_pointer()
+                    && let Some(line) = fold_hit
+                {
+                    resp.request_focus();
+                    Self::toggle_fold(&mut view, doc, line, cx.row_h());
+                    // Keep the caret out of what was just folded.
+                    let caret_line = doc.buffer().char_to_line(doc.selection().head);
+                    if Self::is_hidden(&mut view, doc, caret_line) {
+                        let at = doc.buffer().line_to_char(line);
                         Self::set_selections(&mut view, ws, vec![Selection::cursor(at)], at);
-                        moved = true;
-                    } else if pressed
-                        && resp.contains_pointer()
-                        && let Some(line) = fold_hit
+                    }
+                    moved = true;
+                } else if pressed && resp.contains_pointer() && !over_view && !mods.shift && !mods.alt && task_hit.is_some() {
+                    resp.request_focus();
+                    if let Some((_, at, done)) = task_hit
+                        && let Some(d) = ws.active_doc_mut()
                     {
-                        resp.request_focus();
-                        Self::toggle_fold(&mut view, doc, line, cx.row_h());
-                        // Keep the caret out of what was just folded.
-                        let caret_line = doc.buffer().char_to_line(doc.selection().head);
-                        if Self::is_hidden(&mut view, doc, caret_line) {
-                            let at = doc.buffer().line_to_char(line);
-                            Self::set_selections(&mut view, ws, vec![Selection::cursor(at)], at);
+                        let sel = d.selection();
+                        let tx = Transaction::replace(at, at + 1, if done { " " } else { "x" }).with_selection(sel);
+                        let _ = d.apply(tx, EditKind::Other);
+                    }
+                    edited = true;
+                } else if pressed && resp.contains_pointer() && !over_view {
+                    resp.request_focus();
+                    let at = self.hit(ui, &mut view, doc, &cx, origin, x0, p);
+                    let now = Instant::now();
+                    let count = match view.last_click {
+                        Some((t, lp, c)) if now.duration_since(t) < Duration::from_millis(420) && lp.distance(p) < 6.0 => c % 3 + 1,
+                        _ => 1,
+                    };
+                    view.last_click = Some((now, p, count));
+                    let buf = doc.buffer();
+                    let cur = doc.selection();
+                    let extra = view.extra.clone();
+                    let (sels, mode): (Vec<Selection>, DragMode) = match count {
+                        2 => {
+                            let w = motion::word_at(buf, at);
+                            (vec![Selection::new(w.start, w.end)], DragMode::Word(w.start, w.end))
                         }
-                        moved = true;
-                    } else if pressed && resp.contains_pointer() && !over_view && !mods.shift && !mods.alt && task_hit.is_some() {
-                        resp.request_focus();
-                        if let Some((_, at, done)) = task_hit
-                            && let Some(d) = ws.active_doc_mut()
-                        {
-                            let sel = d.selection();
-                            let tx = Transaction::replace(at, at + 1, if done { " " } else { "x" }).with_selection(sel);
-                            let _ = d.apply(tx, EditKind::Other);
+                        3 => {
+                            let l = motion::line_with_break(buf, at);
+                            (vec![Selection::new(l.start, l.end)], DragMode::Line(l.start, l.end))
                         }
-                        edited = true;
-                    } else if pressed && resp.contains_pointer() && !over_view {
-                        resp.request_focus();
-                        let at = self.hit(ui, &mut view, doc, &cx, origin, x0, p);
-                        let now = Instant::now();
-                        let count = match view.last_click {
-                            Some((t, lp, c)) if now.duration_since(t) < Duration::from_millis(420) && lp.distance(p) < 6.0 => c % 3 + 1,
-                            _ => 1,
+                        _ if mods.alt => {
+                            let mut v = extra;
+                            v.push(cur);
+                            v.push(Selection::cursor(at));
+                            (v, DragMode::Char(at))
+                        }
+                        _ if mods.shift => (vec![Selection::new(cur.anchor, at)], DragMode::Char(cur.anchor)),
+                        _ => (vec![Selection::cursor(at)], DragMode::Char(at)),
+                    };
+                    view.drag = Some(mode);
+                    view.preferred_x = None;
+                    Self::set_selections(&mut view, ws, sels, at);
+                    moved = true;
+                    if mods.command && count == 1 {
+                        // Ctrl+click: a link opens in a tab of its own; `[[Folder/]]` shows the folder.
+                        let folder = ws.link_at_caret().map(|(t, _)| t).filter(|t| t.trim_end().ends_with('/'));
+                        ws.features.nav.open_pinned = true;
+                        let followed = match folder {
+                            Some(t) => nav::folder_link(ws, &t).is_some(),
+                            None => ws.follow_link_at_caret(),
                         };
-                        view.last_click = Some((now, p, count));
-                        let buf = doc.buffer();
-                        let cur = doc.selection();
-                        let extra = view.extra.clone();
-                        let (sels, mode): (Vec<Selection>, DragMode) = match count {
-                            2 => {
-                                let w = motion::word_at(buf, at);
-                                (vec![Selection::new(w.start, w.end)], DragMode::Word(w.start, w.end))
-                            }
-                            3 => {
-                                let l = motion::line_with_break(buf, at);
-                                (vec![Selection::new(l.start, l.end)], DragMode::Line(l.start, l.end))
-                            }
-                            _ if mods.alt => {
-                                let mut v = extra;
-                                v.push(cur);
-                                v.push(Selection::cursor(at));
-                                (v, DragMode::Char(at))
-                            }
-                            _ if mods.shift => (vec![Selection::new(cur.anchor, at)], DragMode::Char(cur.anchor)),
-                            _ => (vec![Selection::cursor(at)], DragMode::Char(at)),
-                        };
-                        view.drag = Some(mode);
-                        view.preferred_x = None;
-                        Self::set_selections(&mut view, ws, sels, at);
-                        moved = true;
-                        if mods.command && count == 1 && ws.follow_link_at_caret() {
+                        if followed {
                             self.request_focus = true;
                             self.scroll_to_caret = true;
+                        } else {
+                            ws.features.nav.open_pinned = false;
                         }
-                    } else if primary_down && view.drag.is_some() && resp.dragged() {
-                        let at = self.hit(ui, &mut view, doc, &cx, origin, x0, p);
-                        let buf = doc.buffer();
-                        let sel = match view.drag.expect("checked") {
-                            DragMode::Char(a) => Selection::new(a, at),
-                            DragMode::Word(s, e) => {
-                                let w = motion::word_at(buf, at);
-                                if at < s { Selection::new(e, w.start) } else { Selection::new(s, w.end.max(e)) }
-                            }
-                            DragMode::Line(s, e) => {
-                                let l = motion::line_with_break(buf, at);
-                                if at < s { Selection::new(e, l.start) } else { Selection::new(s, l.end.max(e)) }
-                            }
-                        };
-                        if let Some(d) = ws.active_doc_mut() {
-                            d.set_selection(sel);
-                        }
-                        view.extra.clear();
-                        // Auto-scroll while dragging past the edges.
-                        let vis = viewport.translate(origin.to_vec2());
-                        if p.y < vis.top() + 8.0 || p.y > vis.bottom() - 8.0 {
-                            ui.scroll_to_rect(Rect::from_center_size(p, Vec2::splat(24.0)), None);
-                        }
-                        moved = true;
                     }
+                } else if primary_down && view.drag.is_some() && resp.dragged() {
+                    let at = self.hit(ui, &mut view, doc, &cx, origin, x0, p);
+                    let buf = doc.buffer();
+                    let sel = match view.drag.expect("checked") {
+                        DragMode::Char(a) => Selection::new(a, at),
+                        DragMode::Word(s, e) => {
+                            let w = motion::word_at(buf, at);
+                            if at < s { Selection::new(e, w.start) } else { Selection::new(s, w.end.max(e)) }
+                        }
+                        DragMode::Line(s, e) => {
+                            let l = motion::line_with_break(buf, at);
+                            if at < s { Selection::new(e, l.start) } else { Selection::new(s, l.end.max(e)) }
+                        }
+                    };
+                    if let Some(d) = ws.active_doc_mut() {
+                        d.set_selection(sel);
+                    }
+                    view.extra.clear();
+                    // Auto-scroll while dragging past the edges.
+                    let vis = viewport.translate(origin.to_vec2());
+                    if p.y < vis.top() + 8.0 || p.y > vis.bottom() - 8.0 {
+                        ui.scroll_to_rect(Rect::from_center_size(p, Vec2::splat(24.0)), None);
+                    }
+                    moved = true;
                 }
-                if !primary_down {
-                    view.drag = None;
-                }
+            }
+            if !primary_down {
+                view.drag = None;
+            }
 
-                // ---------------- keyboard & text
-                if focused {
-                    let events = ui.input(|i| i.events.clone());
-                    let mac = cfg!(target_os = "macos");
-                    for ev in events {
-                        let Some(doc) = ws.active_doc() else { break };
-                        let rev_before = doc.revision();
-                        // The suggestion list takes ↑ ↓ Enter Tab and Escape.
-                        if let (Some(s), Event::Key { key, pressed: true, modifiers, .. }) = (&sugg, &ev)
-                            && modifiers.is_none()
-                            && matches!(key, Key::ArrowUp | Key::ArrowDown | Key::Enter | Key::Tab | Key::Escape)
-                        {
-                            let n = s.items.len();
-                            match key {
-                                Key::ArrowDown => view.suggest_pick = (view.suggest_pick + 1) % n,
-                                Key::ArrowUp => view.suggest_pick = (view.suggest_pick + n - 1) % n,
-                                Key::Escape => view.suggest_dismissed = Some((s.context.start, s.context.kind)),
-                                _ => edited |= ws.accept_suggestion(s, view.suggest_pick),
-                            }
-                            sugg = Self::current_suggestions(&mut view, ws);
-                            moved = true;
+            // ---------------- keyboard & text
+            if focused {
+                let events = ui.input(|i| i.events.clone());
+                let mac = cfg!(target_os = "macos");
+                for ev in events {
+                    let Some(rev_before) = ws.active_doc().map(Document::revision) else { break };
+                    // Vim keys first; Insert mode's typing falls through.
+                    if vim_on {
+                        let page = (viewport.height() / cx.row_h()).max(1.0) as usize;
+                        if let Some((m, e)) = self.vim_event(&ev, ui, &mut view, ws, &cx, page) {
+                            moved |= m;
+                            edited |= e;
                             if let Some(doc) = ws.active_doc()
                                 && doc.revision() != rev_before
                             {
                                 self.galleys.clear();
                                 self.decos.clear();
                                 self.tables.clear();
-                                self.decos.clear();
-                                self.tables.clear();
                                 Self::sync(&mut view, doc, &cx, inline_images);
                             }
                             continue;
                         }
-                        match ev {
-                            Event::Text(t) => {
-                                if t == " " && view.extra.is_empty() && ws.smart_space() {
-                                    edited = true;
-                                    continue;
-                                }
-                                let single = t.chars().count() == 1;
-                                edited |=
-                                    Self::apply_multi(&mut view, ws, if single { EditKind::Insert } else { EditKind::Other }, |_, s| {
-                                        Some(multi::insert(s, &t))
-                                    });
-                            }
-                            Event::Ime(ImeEvent::Preedit { text, .. }) => {
-                                view.preedit = (!text.is_empty()).then_some(text);
-                            }
-                            Event::Ime(ImeEvent::Commit(t)) => {
-                                view.preedit = None;
-                                edited |= Self::apply_multi(&mut view, ws, EditKind::Other, |_, s| Some(multi::insert(s, &t)));
-                            }
-                            Event::Copy | Event::Cut => {
-                                let all = all_selections(doc.selection(), &view.extra);
-                                let whole_lines = all.iter().all(Selection::is_empty);
-                                let text = if whole_lines {
-                                    // VS Code style: copy/cut the current line(s) when nothing is selected.
-                                    all.iter()
-                                        .map(|s| doc.buffer().slice(motion::line_with_break(doc.buffer(), s.head)))
-                                        .collect::<String>()
-                                } else {
-                                    Self::selected_text(doc, &view.extra)
-                                };
-                                ctx.copy_text(text);
-                                if matches!(ev, Event::Cut) {
-                                    edited |= Self::apply_multi(&mut view, ws, EditKind::Other, |b, s| {
-                                        let ranges: Vec<Selection> = if whole_lines {
-                                            s.iter()
-                                                .map(|x| {
-                                                    let l = motion::line_with_break(b, x.head);
-                                                    Selection::new(l.start, l.end)
-                                                })
-                                                .collect()
-                                        } else {
-                                            s.to_vec()
-                                        };
-                                        Some(multi::insert(&ranges, ""))
-                                    });
-                                }
-                            }
-                            Event::Paste(text) => {
-                                let all = all_selections(doc.selection(), &view.extra);
-                                let is_url = text.starts_with("http://") || text.starts_with("https://");
-                                if is_url && all.len() == 1 && !all[0].is_empty() && !text.contains(char::is_whitespace) {
-                                    // Paste a URL over a selection → Markdown link.
-                                    let label = doc.buffer().slice(all[0].range());
-                                    let link = format!("[{label}]({text})");
-                                    edited |= Self::apply_multi(&mut view, ws, EditKind::Other, |_, s| Some(multi::insert(s, &link)));
-                                } else {
-                                    let lines: Vec<String> = text.lines().map(str::to_string).collect();
-                                    let texts = if all.len() > 1 && lines.len() == all.len() { lines } else { vec![text.clone()] };
-                                    edited |=
-                                        Self::apply_multi(&mut view, ws, EditKind::Other, |_, s| Some(multi::replace_each(s, &texts)));
-                                }
-                            }
-                            Event::PasteImage(img) => {
-                                let rgba: Vec<u8> = img.pixels.iter().flat_map(Color32::to_srgba_unmultiplied).collect();
-                                edited |= ws.paste_image(img.size[0] as u32, img.size[1] as u32, &rgba).is_some();
-                            }
-                            Event::Key { key, pressed: true, modifiers: m, .. } => {
-                                let word = if mac { m.alt } else { m.ctrl };
-                                let line_mod = mac && m.mac_cmd;
-                                match key {
-                                    Key::ArrowLeft | Key::ArrowRight => {
-                                        let right = key == Key::ArrowRight;
-                                        let buf = doc.buffer();
-                                        let all = all_selections(doc.selection(), &view.extra);
-                                        let new: Vec<Selection> = all
-                                            .iter()
-                                            .map(|s| {
-                                                if !s.is_empty() && !m.shift && !word && !line_mod {
-                                                    return Selection::cursor(if right { s.end() } else { s.start() });
-                                                }
-                                                let h = s.head;
-                                                let to = match (right, word, line_mod) {
-                                                    (_, _, true) if right => motion::line_end(buf, h),
-                                                    (_, _, true) => motion::smart_home(buf, h),
-                                                    (true, true, _) => motion::next_word_end(buf, h),
-                                                    (false, true, _) => motion::prev_word_start(buf, h),
-                                                    (true, false, _) => (h + 1).min(buf.len_chars()),
-                                                    (false, false, _) => h.saturating_sub(1),
-                                                };
-                                                if m.shift { Selection::new(s.anchor, to) } else { Selection::cursor(to) }
-                                            })
-                                            .collect();
-                                        let primary_head = new[primary_index(&all, doc.selection())].head;
-                                        Self::set_selections(&mut view, ws, new, primary_head);
-                                        view.preferred_x = None;
-                                        moved = true;
-                                    }
-                                    Key::ArrowUp | Key::ArrowDown => {
-                                        let dir = if key == Key::ArrowUp { -1 } else { 1 };
-                                        if line_mod || (!mac && m.ctrl) {
-                                            // Ctrl+Up/Down scrolls; ⌘+Up/Down jumps to the ends.
-                                            if line_mod {
-                                                let to = if dir < 0 { 0 } else { doc.buffer().len_chars() };
-                                                let a = if m.shift { doc.selection().anchor } else { to };
-                                                Self::set_selections(&mut view, ws, vec![Selection::new(a, to)], to);
-                                                moved = true;
-                                            } else {
-                                                ui.scroll_with_delta(Vec2::new(0.0, -dir as f32 * cx.row_h()));
-                                            }
-                                            continue;
-                                        }
-                                        let all = all_selections(doc.selection(), &view.extra);
-                                        let px = view.preferred_x;
-                                        let mut new = Vec::with_capacity(all.len());
-                                        let mut px_out = px;
-                                        for s in &all {
-                                            let (to, x) =
-                                                self.vertical(ui, &mut view, doc, &cx, s.head, dir, if all.len() == 1 { px } else { None });
-                                            if s.head == doc.selection().head {
-                                                px_out = Some(x);
-                                            }
-                                            new.push(if m.shift { Selection::new(s.anchor, to) } else { Selection::cursor(to) });
-                                        }
-                                        let ph = {
-                                            let p = doc.selection();
-                                            all.iter().position(|s| s.head == p.head).map_or(0, |i| new[i].head)
-                                        };
-                                        Self::set_selections(&mut view, ws, new, ph);
-                                        view.preferred_x = px_out;
-                                        moved = true;
-                                    }
-                                    Key::Home | Key::End => {
-                                        let buf = doc.buffer();
-                                        let all = all_selections(doc.selection(), &view.extra);
-                                        let doc_end = buf.len_chars();
-                                        let new: Vec<Selection> = all
-                                            .iter()
-                                            .map(|s| {
-                                                let to = match (key == Key::End, m.ctrl || m.mac_cmd) {
-                                                    (false, true) => 0,
-                                                    (true, true) => doc_end,
-                                                    (false, false) => motion::smart_home(buf, s.head),
-                                                    (true, false) => motion::line_end(buf, s.head),
-                                                };
-                                                if m.shift { Selection::new(s.anchor, to) } else { Selection::cursor(to) }
-                                            })
-                                            .collect();
-                                        let ph = new[primary_index(&all, doc.selection())].head;
-                                        Self::set_selections(&mut view, ws, new, ph);
-                                        view.preferred_x = None;
-                                        moved = true;
-                                    }
-                                    Key::PageUp | Key::PageDown => {
-                                        let page = viewport.height() * 0.9 * if key == Key::PageUp { -1.0 } else { 1.0 };
-                                        let sel = doc.selection();
-                                        let caret = self.caret_rect(ui, &mut view, doc, &cx, origin, x0, sel.head);
-                                        let target = Pos2::new(caret.left(), caret.center().y + page);
-                                        let to = self.hit(ui, &mut view, doc, &cx, origin, x0, target);
-                                        let a = if m.shift { sel.anchor } else { to };
-                                        Self::set_selections(&mut view, ws, vec![Selection::new(a, to)], to);
-                                        ui.scroll_with_delta(Vec2::new(0.0, -page));
-                                        moved = true;
-                                    }
-                                    Key::Backspace => {
-                                        edited |=
-                                            Self::apply_multi(&mut view, ws, EditKind::Delete, |b, s| multi::delete_backward(b, s, word));
-                                    }
-                                    Key::Delete => {
-                                        edited |=
-                                            Self::apply_multi(&mut view, ws, EditKind::Delete, |b, s| multi::delete_forward(b, s, word));
-                                    }
-                                    Key::Enter if m.is_none() || m.shift_only() => {
-                                        if m.is_none() && view.extra.is_empty() && ws.smart_enter() {
-                                            edited = true;
-                                        } else {
-                                            edited |=
-                                                Self::apply_multi(&mut view, ws, EditKind::Other, |_, s| Some(multi::insert(s, "\n")));
-                                        }
-                                    }
-                                    Key::Tab if m.is_none() => {
-                                        if view.extra.is_empty() && ws.smart_tab(false) {
-                                            edited = true;
-                                        } else {
-                                            edited |=
-                                                Self::apply_multi(&mut view, ws, EditKind::Other, |_, s| Some(multi::insert(s, &indent)));
-                                        }
-                                    }
-                                    Key::Tab if m.shift_only() => {
-                                        edited |= ws.smart_tab(true);
-                                    }
-                                    Key::Escape if !view.extra.is_empty() => {
-                                        view.extra.clear();
-                                        moved = true;
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            _ => {}
+                    }
+                    let Some(doc) = ws.active_doc() else { break };
+                    // The suggestion list takes ↑ ↓ Enter Tab and Escape.
+                    if let (Some(s), Event::Key { key, pressed: true, modifiers, .. }) = (&sugg, &ev)
+                        && modifiers.is_none()
+                        && matches!(key, Key::ArrowUp | Key::ArrowDown | Key::Enter | Key::Tab | Key::Escape)
+                    {
+                        let n = s.items.len();
+                        match key {
+                            Key::ArrowDown => view.suggest_pick = (view.suggest_pick + 1) % n,
+                            Key::ArrowUp => view.suggest_pick = (view.suggest_pick + n - 1) % n,
+                            Key::Escape => view.suggest_dismissed = Some((s.context.start, s.context.kind)),
+                            _ => edited |= ws.accept_suggestion(s, view.suggest_pick),
                         }
-                        // Keep geometry in step with each edit so later events in
-                        // the same frame (e.g. typing then ↓) see the new text.
+                        sugg = Self::current_suggestions(&mut view, ws);
+                        moved = true;
                         if let Some(doc) = ws.active_doc()
                             && doc.revision() != rev_before
                         {
                             self.galleys.clear();
                             self.decos.clear();
                             self.tables.clear();
+                            self.decos.clear();
+                            self.tables.clear();
                             Self::sync(&mut view, doc, &cx, inline_images);
-                            sugg = Self::current_suggestions(&mut view, ws);
                         }
-                    }
-                }
-
-                let Some(doc) = ws.active_doc() else { return };
-                // The caret never hides inside a fold: going there opens it.
-                if moved || edited || scroll_to_caret {
-                    let line = doc.buffer().char_to_line(doc.selection().head);
-                    Self::reveal_line(&mut view, doc, line, cx.row_h());
-                }
-                if edited {
-                    Self::sync(&mut view, doc, &cx, inline_images);
-                    view.preferred_x = None;
-                }
-                if edited || moved {
-                    view.blink_start = Instant::now();
-                }
-
-                // ---------------- paint visible lines
-                let buf = doc.buffer();
-                let vis_top = (viewport.min.y - TOP_MARGIN).max(0.0);
-                let vis_bot = viewport.max.y - TOP_MARGIN;
-                let first = view.heights.line_at(vis_top);
-                let last = view.heights.line_at(vis_bot.max(0.0)).min(buf.len_lines().saturating_sub(1));
-                // Make sure the highlight window covers what's on screen.
-                let _ = Self::runs_for(&mut view, doc, first..last + 1);
-
-                let view_blocks = match &view.view_blocks {
-                    Some((r, b)) if *r == doc.revision() => Rc::clone(b),
-                    _ => {
-                        let b = Rc::new(if doc.large { Vec::new() } else { qviews::find_blocks(&doc.text()) });
-                        view.view_blocks = Some((doc.revision(), Rc::clone(&b)));
-                        b
-                    }
-                };
-                let figures = Self::figures_of(&mut view, doc);
-                // In live preview a figure shows as its picture unless the caret is in
-                // it; while it's being edited (or with live preview off) it's source only,
-                // so nothing is rendered per keystroke.
-                let figure_at = |line: usize| -> Option<(blocks::Figure, bool)> {
-                    if !crate::typeset_ui::AVAILABLE {
-                        return None;
-                    }
-                    let f = figures.iter().find(|f| f.first_line <= line && line <= f.last_line)?;
-                    let revealed = cx.live.as_ref().is_none_or(|rv| rv.iter().any(|r| r.start <= f.last_line && f.first_line < r.end));
-                    (!revealed).then(|| (f.clone(), true))
-                };
-                let mut figure_clicks: Vec<(Rect, usize, usize)> = Vec::new();
-                let preedit_chars = view.preedit.as_ref().map_or(0, |p| p.chars().count());
-                let mut new_view_rects = Vec::new();
-                let all = all_selections(doc.selection(), &view.extra);
-                let primary = doc.selection();
-                let painter = ui.painter_at(viewport.translate(origin.to_vec2()).expand(2.0));
-                let sel_color = pal.selection;
-                let find_color = pal.mark_bg.gamma_multiply(0.7);
-                let find_current_color = pal.mark_bg;
-                let mut anchor_shift = 0.0;
-                let mut caret_rect_primary = None;
-                let mut task_boxes = Vec::new();
-                let now = Instant::now();
-                // Only blink while the window has focus; in the background the
-                // caret stays still and the app stops repainting.
-                let window_focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
-                let blink_on = focused
-                    && (!window_focused || (now.duration_since(view.blink_start).as_millis() / BLINK.as_millis()).is_multiple_of(2));
-
-                let hidden = Self::hidden(&mut view, doc);
-                // What features draw on this note (review hunks, drift markers…).
-                let feature_decos = ws.decorations(doc_id);
-                let headings = if doc.large { Vec::new() } else { heading_lines(doc) };
-                let mut fold_toggles = Vec::new();
-                let pointer = ui.input(|i| i.pointer.hover_pos());
-                for line in first..=last {
-                    if hidden.iter().any(|r| r.contains(&line)) {
-                        view.heights.set(line, 0.0);
                         continue;
                     }
-                    // A figure shown as a picture: its source lines collapse into the last one.
-                    let figure = figure_at(line).map(|(f, collapsed)| {
-                        let job = match f.kind {
-                            blocks::FigureKind::Math => crate::typeset_ui::Job::Math {
-                                latex: f.source.clone(),
-                                display: true,
-                                size: (cx.size * 1.1).round() as u32,
-                                color: crate::typeset_ui::rgba(pal.text),
-                            },
-                            blocks::FigureKind::Diagram => crate::typeset_ui::Job::Diagram { source: f.source.clone(), dark: pal.dark },
-                        };
-                        let out = crate::typeset_ui::request(&ctx, &job);
-                        (f, collapsed, out)
-                    });
-                    let collapsed_here = figure.as_ref().is_some_and(|(_, c, out)| *c && !matches!(out, crate::typeset_ui::Out::Failed(_)));
-                    if collapsed_here && figure.as_ref().is_some_and(|(f, _, _)| line < f.last_line) {
-                        view.heights.set(line, 0.0);
-                        continue;
-                    }
-                    let g = self.galley(ui, &mut view, doc, line, &cx);
-                    let top = origin.y + TOP_MARGIN + view.heights.top(line);
-                    // Fold arrows beside headings: shown on hover, or while folded.
-                    if headings.iter().any(|(l, _)| *l == line) {
-                        let folded = view.folded.contains(&line);
-                        let row = Rect::from_min_size(Pos2::new(x0 - 40.0, top), Vec2::new(cx.wrap + 40.0, g.size().y));
-                        let hovered = pointer.is_some_and(|p| row.contains(p));
-                        let first_row = g.rows.first().map_or_else(|| cx.row_h(), |r| r.size.y);
-                        let arrow = Rect::from_center_size(Pos2::new(x0 - 26.0, top + first_row / 2.0), Vec2::splat(18.0));
-                        if folded || hovered {
-                            let over = pointer.is_some_and(|p| arrow.contains(p));
-                            if over {
-                                painter.rect_filled(arrow, 4.0, pal.hover);
-                                ctx.set_cursor_icon(CursorIcon::PointingHand);
+                    match ev {
+                        Event::Text(t) => {
+                            if t == " " && view.extra.is_empty() && ws.smart_space() {
+                                edited = true;
+                                continue;
                             }
-                            let c = arrow.center();
-                            let s = 4.5;
-                            let pts = if folded {
-                                vec![Pos2::new(c.x - s * 0.6, c.y - s), Pos2::new(c.x + s * 0.8, c.y), Pos2::new(c.x - s * 0.6, c.y + s)]
+                            let single = t.chars().count() == 1;
+                            edited |= Self::apply_multi(&mut view, ws, if single { EditKind::Insert } else { EditKind::Other }, |_, s| {
+                                Some(multi::insert(s, &t))
+                            });
+                        }
+                        Event::Ime(ImeEvent::Preedit { text, .. }) => {
+                            view.preedit = (!text.is_empty()).then_some(text);
+                        }
+                        Event::Ime(ImeEvent::Commit(t)) => {
+                            view.preedit = None;
+                            edited |= Self::apply_multi(&mut view, ws, EditKind::Other, |_, s| Some(multi::insert(s, &t)));
+                        }
+                        Event::Copy | Event::Cut => {
+                            let all = all_selections(doc.selection(), &view.extra);
+                            let whole_lines = all.iter().all(Selection::is_empty);
+                            let text = if whole_lines {
+                                // VS Code style: copy/cut the current line(s) when nothing is selected.
+                                all.iter().map(|s| doc.buffer().slice(motion::line_with_break(doc.buffer(), s.head))).collect::<String>()
                             } else {
-                                vec![Pos2::new(c.x - s, c.y - s * 0.6), Pos2::new(c.x + s, c.y - s * 0.6), Pos2::new(c.x, c.y + s * 0.8)]
+                                Self::selected_text(doc, &view.extra)
                             };
-                            let color = if over || folded { pal.muted } else { pal.faint };
-                            painter.add(egui::Shape::convex_polygon(pts, color, Stroke::NONE));
-                            fold_toggles.push((arrow, line));
-                        }
-                        if folded {
-                            // A pill after the heading says there's more inside.
-                            let end = g
-                                .rows
-                                .last()
-                                .map_or_else(|| Pos2::new(x0, top), |r| Pos2::new(x0 + r.rect().right(), top + r.rect().center().y));
-                            let pill = Rect::from_min_size(Pos2::new(end.x + 10.0, end.y - 9.0), Vec2::new(30.0, 18.0));
-                            painter.rect_filled(pill, 9.0, pal.hover);
-                            for k in [-1.0, 0.0, 1.0] {
-                                painter.circle_filled(pill.center() + Vec2::new(k * 6.0, 0.0), 1.8, pal.muted);
+                            ctx.copy_text(text);
+                            if matches!(ev, Event::Cut) {
+                                edited |= Self::apply_multi(&mut view, ws, EditKind::Other, |b, s| {
+                                    let ranges: Vec<Selection> = if whole_lines {
+                                        s.iter()
+                                            .map(|x| {
+                                                let l = motion::line_with_break(b, x.head);
+                                                Selection::new(l.start, l.end)
+                                            })
+                                            .collect()
+                                    } else {
+                                        s.to_vec()
+                                    };
+                                    Some(multi::insert(&ranges, ""))
+                                });
                             }
-                            fold_toggles.push((pill, line));
                         }
-                    }
-                    let lr = buf.line_range(line);
-                    let (ls, le) = (lr.start, lr.end);
-                    let pos = Pos2::new(x0, top);
-                    if let Some(tone) = crate::decor::tint(&feature_decos, line) {
-                        painter.rect_filled(
-                            Rect::from_min_size(pos, Vec2::new(cx.wrap, g.size().y)),
-                            2.0,
-                            crate::decor::tone_color(tone, pal),
-                        );
-                    }
-
-                    // Range highlights: find matches, then selections.
-                    let paint_range = |s: usize, e: usize, color: Color32, eol: bool| {
-                        let (a, b) = (s.max(ls) - ls, e.min(le) - ls);
-                        let mut rs = 0;
-                        for (k, row) in g.rows.iter().enumerate() {
-                            let len = row.glyphs.len();
-                            let (ra, rb) = (rs, rs + len);
-                            let last_row = k + 1 == g.rows.len();
-                            if b >= ra && a <= rb && (a < rb || (a == rb && last_row)) {
-                                let xa = if a > ra { row.x_offset(CharIndex(a - ra)) } else { 0.0 };
-                                let mut xb = if b < rb { row.x_offset(CharIndex(b - ra)) } else { row.size.x };
-                                if last_row && eol {
-                                    xb += cx.size * 0.4;
+                        Event::Paste(text) => {
+                            let all = all_selections(doc.selection(), &view.extra);
+                            let is_url = text.starts_with("http://") || text.starts_with("https://");
+                            if is_url && all.len() == 1 && !all[0].is_empty() && !text.contains(char::is_whitespace) {
+                                // Paste a URL over a selection → Markdown link.
+                                let label = doc.buffer().slice(all[0].range());
+                                let link = format!("[{label}]({text})");
+                                edited |= Self::apply_multi(&mut view, ws, EditKind::Other, |_, s| Some(multi::insert(s, &link)));
+                            } else {
+                                let lines: Vec<String> = text.lines().map(str::to_string).collect();
+                                let texts = if all.len() > 1 && lines.len() == all.len() { lines } else { vec![text.clone()] };
+                                edited |= Self::apply_multi(&mut view, ws, EditKind::Other, |_, s| Some(multi::replace_each(s, &texts)));
+                            }
+                        }
+                        Event::PasteImage(img) => {
+                            let rgba: Vec<u8> = img.pixels.iter().flat_map(Color32::to_srgba_unmultiplied).collect();
+                            edited |= ws.paste_image(img.size[0] as u32, img.size[1] as u32, &rgba).is_some();
+                        }
+                        Event::Key { key, pressed: true, modifiers: m, .. } => {
+                            let word = if mac { m.alt } else { m.ctrl };
+                            let line_mod = mac && m.mac_cmd;
+                            match key {
+                                Key::ArrowLeft | Key::ArrowRight => {
+                                    let right = key == Key::ArrowRight;
+                                    let buf = doc.buffer();
+                                    let all = all_selections(doc.selection(), &view.extra);
+                                    let new: Vec<Selection> = all
+                                        .iter()
+                                        .map(|s| {
+                                            if !s.is_empty() && !m.shift && !word && !line_mod {
+                                                return Selection::cursor(if right { s.end() } else { s.start() });
+                                            }
+                                            let h = s.head;
+                                            let to = match (right, word, line_mod) {
+                                                (_, _, true) if right => motion::line_end(buf, h),
+                                                (_, _, true) => motion::smart_home(buf, h),
+                                                (true, true, _) => motion::next_word_end(buf, h),
+                                                (false, true, _) => motion::prev_word_start(buf, h),
+                                                (true, false, _) => (h + 1).min(buf.len_chars()),
+                                                (false, false, _) => h.saturating_sub(1),
+                                            };
+                                            if m.shift { Selection::new(s.anchor, to) } else { Selection::cursor(to) }
+                                        })
+                                        .collect();
+                                    let primary_head = new[primary_index(&all, doc.selection())].head;
+                                    Self::set_selections(&mut view, ws, new, primary_head);
+                                    view.preferred_x = None;
+                                    moved = true;
                                 }
-                                if xb > xa {
-                                    let r = Rect::from_min_max(
-                                        Pos2::new(pos.x + row.pos.x + xa, pos.y + row.pos.y),
-                                        Pos2::new(pos.x + row.pos.x + xb, pos.y + row.pos.y + row.size.y),
-                                    );
-                                    painter.rect_filled(r, 2.0, color);
-                                }
-                            }
-                            rs += len;
-                        }
-                    };
-                    let mi = find_matches.partition_point(|r| r.end <= ls);
-                    for (k, r) in find_matches[mi..].iter().enumerate().take_while(|(_, r)| r.start <= le) {
-                        let color = if find_current == Some(mi + k) { find_current_color } else { find_color };
-                        paint_range(r.start, r.end, color, false);
-                    }
-                    for s in all.iter().filter(|s| !s.is_empty() && s.end() >= ls && s.start() <= le) {
-                        paint_range(s.start(), s.end(), sel_color, s.end() > le);
-                    }
-
-                    // Blocks: one background behind code and front matter, a bar beside quotes.
-                    let block = if collapsed_here { Block::None } else { Self::block_of(&mut view, doc, line) };
-                    if block != Block::None {
-                        let joined_above = line > 0 && Self::block_of(&mut view, doc, line - 1) == block;
-                        let joined_below = Self::block_of(&mut view, doc, line + 1) == block;
-                        let bottom = if joined_below {
-                            origin.y + TOP_MARGIN + view.heights.top(line + 1)
-                        } else {
-                            top + g.size().y.max(cx.row_h() * 0.9)
-                        };
-                        let pad = 14.0;
-                        if let Block::Callout(k) = block {
-                            let kind = &quire_app::markdown::callout::KINDS[k.min(quire_app::markdown::callout::KINDS.len() - 1)];
-                            let color = callout_color(kind);
-                            let extra_top = if joined_above { 0.0 } else { 4.0 };
-                            let extra_bottom = if joined_below { 0.0 } else { 4.0 };
-                            let bg = Rect::from_min_max(
-                                Pos2::new(x0 - pad, top - extra_top),
-                                Pos2::new(x0 + cx.wrap + pad, bottom + extra_bottom),
-                            );
-                            let c = |joined: bool| if joined { 0 } else { 6 };
-                            let r =
-                                egui::CornerRadius { nw: c(joined_above), ne: c(joined_above), sw: c(joined_below), se: c(joined_below) };
-                            painter.rect_filled(bg, r, color.gamma_multiply(if pal.dark { 0.16 } else { 0.10 }));
-                            let bar = Rect::from_min_max(bg.left_top(), Pos2::new(bg.left() + 3.0, bg.bottom()));
-                            let rb = egui::CornerRadius { nw: c(joined_above), ne: 0, sw: c(joined_below), se: 0 };
-                            painter.rect_filled(bar, rb, color);
-                        } else if block == Block::Quote {
-                            let bar = Rect::from_min_max(Pos2::new(x0 - pad, top), Pos2::new(x0 - pad + 3.0, bottom));
-                            let r = egui::CornerRadius {
-                                nw: if joined_above { 0 } else { 2 },
-                                ne: if joined_above { 0 } else { 2 },
-                                sw: if joined_below { 0 } else { 2 },
-                                se: if joined_below { 0 } else { 2 },
-                            };
-                            painter.rect_filled(bar, r, pal.faint);
-                        } else {
-                            let extra_top = if joined_above { 0.0 } else { 4.0 };
-                            let extra_bottom = if joined_below { 0.0 } else { 4.0 };
-                            let bg = Rect::from_min_max(
-                                Pos2::new(x0 - pad, top - extra_top),
-                                Pos2::new(x0 + cx.wrap + pad, bottom + extra_bottom),
-                            );
-                            let c = |joined: bool| if joined { 0 } else { 8 };
-                            let r =
-                                egui::CornerRadius { nw: c(joined_above), ne: c(joined_above), sw: c(joined_below), se: c(joined_below) };
-                            let fill = if block == Block::FrontMatter { pal.code_bg.gamma_multiply(0.6) } else { pal.code_bg };
-                            painter.rect_filled(bg, r, fill);
-                        }
-                    }
-
-                    if !collapsed_here {
-                        painter.galley(pos, Arc::clone(&g), pal.text);
-                        if crate::decor::struck(&feature_decos, line) {
-                            crate::decor::paint_strike(&painter, &g, pos, pal);
-                        }
-                    }
-                    // Live preview: bullets, checkboxes and rules drawn over hidden syntax.
-                    let no_decos: &[Deco] = &[];
-                    for d in if collapsed_here { no_decos } else { self.decos.get(&line).map(Vec::as_slice).unwrap_or_default() } {
-                        let at = |col: usize| g.pos_from_cursor(CCursor::new(col)).translate(pos.to_vec2());
-                        match *d {
-                            Deco::Math { col, tex, w, h, baseline } => {
-                                let a = at(col);
-                                // Sit the formula's baseline on the text's.
-                                let text_baseline = a.center().y + cx.size * 0.33;
-                                let r = Rect::from_min_size(Pos2::new(a.left() - w - 1.0, text_baseline - baseline), Vec2::new(w, h));
-                                painter.image(tex, r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
-                            }
-                            Deco::Misspelled { start, end } => {
-                                // Per row, so a word wrapped onto the next row is underlined there.
-                                let mut rs = 0;
-                                for row in &g.rows {
-                                    let len = row.glyphs.len();
-                                    let (ra, rb) = (rs, rs + len);
-                                    rs += len;
-                                    if end <= ra || start >= rb {
+                                Key::ArrowUp | Key::ArrowDown => {
+                                    let dir = if key == Key::ArrowUp { -1 } else { 1 };
+                                    if line_mod || (!mac && m.ctrl) {
+                                        // Ctrl+Up/Down scrolls; ⌘+Up/Down jumps to the ends.
+                                        if line_mod {
+                                            let to = if dir < 0 { 0 } else { doc.buffer().len_chars() };
+                                            let a = if m.shift { doc.selection().anchor } else { to };
+                                            Self::set_selections(&mut view, ws, vec![Selection::new(a, to)], to);
+                                            moved = true;
+                                        } else {
+                                            ui.scroll_with_delta(Vec2::new(0.0, -dir as f32 * cx.row_h()));
+                                        }
                                         continue;
                                     }
-                                    let xa = row.x_offset(CharIndex(start.max(ra) - ra));
-                                    let xb = row.x_offset(CharIndex(end.min(rb) - ra));
-                                    let (x_a, x_b) = (pos.x + row.pos.x + xa, pos.x + row.pos.x + xb);
-                                    let y = pos.y + row.pos.y + row.size.y - 3.0;
-                                    let steps = ((x_b - x_a) / 2.5).floor().max(0.0) as usize;
-                                    let pts: Vec<Pos2> = (0..=steps)
-                                        .map(|k| Pos2::new(x_a + k as f32 * 2.5, if k % 2 == 1 { y - 1.6 } else { y + 0.4 }))
+                                    let all = all_selections(doc.selection(), &view.extra);
+                                    let px = view.preferred_x;
+                                    let mut new = Vec::with_capacity(all.len());
+                                    let mut px_out = px;
+                                    for s in &all {
+                                        let (to, x) =
+                                            self.vertical(ui, &mut view, doc, &cx, s.head, dir, if all.len() == 1 { px } else { None });
+                                        if s.head == doc.selection().head {
+                                            px_out = Some(x);
+                                        }
+                                        new.push(if m.shift { Selection::new(s.anchor, to) } else { Selection::cursor(to) });
+                                    }
+                                    let ph = {
+                                        let p = doc.selection();
+                                        all.iter().position(|s| s.head == p.head).map_or(0, |i| new[i].head)
+                                    };
+                                    Self::set_selections(&mut view, ws, new, ph);
+                                    view.preferred_x = px_out;
+                                    moved = true;
+                                }
+                                Key::Home | Key::End => {
+                                    let buf = doc.buffer();
+                                    let all = all_selections(doc.selection(), &view.extra);
+                                    let doc_end = buf.len_chars();
+                                    let new: Vec<Selection> = all
+                                        .iter()
+                                        .map(|s| {
+                                            let to = match (key == Key::End, m.ctrl || m.mac_cmd) {
+                                                (false, true) => 0,
+                                                (true, true) => doc_end,
+                                                (false, false) => motion::smart_home(buf, s.head),
+                                                (true, false) => motion::line_end(buf, s.head),
+                                            };
+                                            if m.shift { Selection::new(s.anchor, to) } else { Selection::cursor(to) }
+                                        })
                                         .collect();
-                                    if pts.len() > 1 {
-                                        painter.add(egui::Shape::line(pts, Stroke::new(1.1, pal.danger)));
+                                    let ph = new[primary_index(&all, doc.selection())].head;
+                                    Self::set_selections(&mut view, ws, new, ph);
+                                    view.preferred_x = None;
+                                    moved = true;
+                                }
+                                Key::PageUp | Key::PageDown => {
+                                    let page = viewport.height() * 0.9 * if key == Key::PageUp { -1.0 } else { 1.0 };
+                                    let sel = doc.selection();
+                                    let caret = self.caret_rect(ui, &mut view, doc, &cx, origin, x0, sel.head);
+                                    let target = Pos2::new(caret.left(), caret.center().y + page);
+                                    let to = self.hit(ui, &mut view, doc, &cx, origin, x0, target);
+                                    let a = if m.shift { sel.anchor } else { to };
+                                    Self::set_selections(&mut view, ws, vec![Selection::new(a, to)], to);
+                                    ui.scroll_with_delta(Vec2::new(0.0, -page));
+                                    moved = true;
+                                }
+                                Key::Backspace => {
+                                    edited |= Self::apply_multi(&mut view, ws, EditKind::Delete, |b, s| multi::delete_backward(b, s, word));
+                                }
+                                Key::Delete => {
+                                    edited |= Self::apply_multi(&mut view, ws, EditKind::Delete, |b, s| multi::delete_forward(b, s, word));
+                                }
+                                Key::Enter if m.is_none() || m.shift_only() => {
+                                    if m.is_none() && view.extra.is_empty() && ws.smart_enter() {
+                                        edited = true;
+                                    } else {
+                                        edited |= Self::apply_multi(&mut view, ws, EditKind::Other, |_, s| Some(multi::insert(s, "\n")));
                                     }
                                 }
-                            }
-                            Deco::Callout { kind, col, label } => {
-                                let kind = &quire_app::markdown::callout::KINDS[kind.min(quire_app::markdown::callout::KINDS.len() - 1)];
-                                let color = callout_color(kind);
-                                let a = at(col);
-                                let d = (cx.size * 1.05).round();
-                                let left = if label { a.left() } else { a.left() - callout_icon_width(cx.size) };
-                                let center = Pos2::new(left + d / 2.0, a.center().y);
-                                painter.circle_filled(center, d / 2.0, color);
-                                painter.text(
-                                    center,
-                                    egui::Align2::CENTER_CENTER,
-                                    kind.glyph,
-                                    egui::FontId::new((cx.size * 0.62).round(), egui::FontFamily::Name(crate::theme::BOLD.into())),
-                                    Color32::WHITE,
-                                );
-                                if label {
-                                    painter.text(
-                                        Pos2::new(left + callout_icon_width(cx.size), a.center().y),
-                                        egui::Align2::LEFT_CENTER,
-                                        kind.label,
-                                        egui::FontId::new(cx.size, egui::FontFamily::Name(crate::theme::BOLD.into())),
-                                        color,
-                                    );
-                                }
-                            }
-                            Deco::Bullet(col) => {
-                                let (a, b) = (at(col), at(col + 1));
-                                let c = Pos2::new(f32::midpoint(a.left(), b.left()), a.center().y);
-                                painter.circle_filled(c, (cx.size * 0.16).max(2.5), pal.muted);
-                            }
-                            Deco::Task { col, done } => {
-                                let (a, b) = (at(col), at(col + 3));
-                                let side = (cx.size * 0.95).round();
-                                let center = Pos2::new(f32::midpoint(a.left(), b.left()), a.center().y);
-                                let r = Rect::from_center_size(center, Vec2::splat(side));
-                                if done {
-                                    painter.rect_filled(r, 4.0, pal.accent);
-                                    let s = side;
-                                    let pts = [
-                                        Pos2::new(r.left() + s * 0.26, r.top() + s * 0.53),
-                                        Pos2::new(r.left() + s * 0.43, r.top() + s * 0.70),
-                                        Pos2::new(r.left() + s * 0.75, r.top() + s * 0.33),
-                                    ];
-                                    let st = Stroke::new(1.8, if pal.dark { pal.bg } else { Color32::WHITE });
-                                    painter.line_segment([pts[0], pts[1]], st);
-                                    painter.line_segment([pts[1], pts[2]], st);
-                                } else {
-                                    let hovered = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| r.contains(p));
-                                    painter.rect_stroke(
-                                        r,
-                                        4.0,
-                                        Stroke::new(1.5, if hovered { pal.accent } else { pal.muted }),
-                                        egui::StrokeKind::Inside,
-                                    );
-                                    if hovered {
-                                        ctx.set_cursor_icon(CursorIcon::PointingHand);
+                                Key::Tab if m.is_none() => {
+                                    if view.extra.is_empty() && ws.smart_tab(false) {
+                                        edited = true;
+                                    } else {
+                                        edited |= Self::apply_multi(&mut view, ws, EditKind::Other, |_, s| Some(multi::insert(s, &indent)));
                                     }
                                 }
-                                task_boxes.push((r.expand(3.0), ls + col + 1, done));
-                            }
-                            Deco::Rule => {
-                                let y = at(0).center().y;
-                                painter.line_segment([Pos2::new(x0, y), Pos2::new(x0 + cx.wrap, y)], Stroke::new(1.0, pal.border));
-                            }
-                            Deco::TableLine { width, strong } => {
-                                // The separator row is a line; body rows get a hairline below.
-                                let y = if strong { top + g.size().y / 2.0 } else { top + g.size().y };
-                                let c = if strong { pal.faint } else { pal.border };
-                                painter.line_segment([Pos2::new(x0, y), Pos2::new(x0 + width, y)], Stroke::new(1.0, c));
-                            }
-                        }
-                    }
-                    // A table's `| --- |` row shrinks to the line drawn in it.
-                    let thin = self.decos.get(&line).is_some_and(|d| d.iter().any(|d| matches!(d, Deco::TableLine { strong: true, .. })));
-                    let mut h = if thin { g.size().y } else { g.size().y.max(cx.row_h() * 0.9) };
-                    // The figure's picture (or why it couldn't be drawn), under its last line.
-                    if let Some((f, _, out)) = &figure
-                        && line == f.last_line
-                    {
-                        let base = if collapsed_here { top } else { top + h };
-                        match out {
-                            crate::typeset_ui::Out::Ready(p) => {
-                                let scale = (cx.wrap / p.size.x).min(1.0);
-                                let size = p.size * scale;
-                                let x = if f.kind == blocks::FigureKind::Math { x0 + (cx.wrap - size.x) / 2.0 } else { x0 };
-                                let r = Rect::from_min_size(Pos2::new(x, base + 8.0), size);
-                                painter.image(p.texture.id(), r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
-                                figure_clicks.push((r, f.first_line, f.last_line));
-                                h = if collapsed_here { size.y + 16.0 } else { h + size.y + 16.0 };
-                            }
-                            crate::typeset_ui::Out::Pending => {
-                                if collapsed_here {
-                                    painter.text(
-                                        Pos2::new(x0, base + cx.row_h() / 2.0),
-                                        egui::Align2::LEFT_CENTER,
-                                        if f.kind == blocks::FigureKind::Math { "Rendering math…" } else { "Drawing diagram…" },
-                                        egui::FontId::proportional(cx.size * 0.85),
-                                        pal.faint,
-                                    );
-                                    h = cx.row_h() * 1.2;
+                                Key::Tab if m.shift_only() => {
+                                    edited |= ws.smart_tab(true);
                                 }
-                            }
-                            crate::typeset_ui::Out::Failed(e) => {
-                                let what = if f.kind == blocks::FigureKind::Math { "Math" } else { "Diagram" };
-                                painter.text(
-                                    Pos2::new(x0, top + h + 4.0),
-                                    egui::Align2::LEFT_TOP,
-                                    format!("{what} not drawn: {e}"),
-                                    egui::FontId::proportional(cx.size * 0.8),
-                                    pal.danger,
-                                );
-                                h += cx.size * 1.4;
+                                Key::Escape if !view.extra.is_empty() => {
+                                    view.extra.clear();
+                                    moved = true;
+                                }
+                                _ => {}
                             }
                         }
+                        _ => {}
                     }
-
-                    if let Some(uri) = Self::line_image(ws, doc, line)
-                        && let Some(size) = Self::image_size(ui, &uri, cx.wrap)
+                    // Keep geometry in step with each edit so later events in
+                    // the same frame (e.g. typing then ↓) see the new text.
+                    if let Some(doc) = ws.active_doc()
+                        && doc.revision() != rev_before
                     {
-                        let r = Rect::from_min_size(Pos2::new(x0, top + h + 4.0), size);
-                        egui::Image::new(uri).corner_radius(4.0).paint_at(ui, r);
-                        h += size.y + 10.0;
-                    }
-
-                    if let Some(vb) = view_blocks.iter().find(|b| b.close_line == line) {
-                        let key = Id::unique(("quire-view", doc_id.0, vb.open_line));
-                        let prev_h = ui.data(|d| d.get_temp::<f32>(key)).unwrap_or(80.0);
-                        let r = Rect::from_min_size(Pos2::new(x0, top + h + 6.0), Vec2::new(cx.wrap, prev_h));
-                        // Cover the view so clicks on it don't move the caret.
-                        let _ = ui.interact(r, key.with("cover"), Sense::click());
-                        let mut child = ui.new_child(
-                            UiBuilder::new()
-                                .id_salt(key)
-                                .max_rect(Rect::from_min_size(r.min, Vec2::new(cx.wrap, 4000.0)))
-                                .layout(egui::Layout::top_down(Align::Min)),
-                        );
-                        if let Some(a) = view_ui::show(&mut child, ws, pal, &vb.spec, doc.path.as_ref(), key) {
-                            view_action = Some(a);
-                        }
-                        let used = child.min_rect().height();
-                        new_view_rects.push(Rect::from_min_size(r.min, Vec2::new(cx.wrap, used)));
-                        ui.data_mut(|d| d.insert_temp(key, used));
-                        if (used - prev_h).abs() > 0.5 {
-                            ctx.request_repaint();
-                        }
-                        h += used + 14.0;
-                    }
-
-                    // Feature ghost lines and widgets after this line.
-                    let (extra, action) = crate::decor::paint_after(
-                        ui,
-                        ws,
-                        &feature_decos,
-                        line,
-                        crate::decor::Place { x0, top: top + h, width: cx.wrap, size: cx.size },
-                        pal,
-                    );
-                    h += extra;
-                    if let Some(action) = action {
-                        decor_clicks.push(quire_app::decor::DecorationEvent { doc: doc_id, action, line });
-                    }
-
-                    let d = view.heights.set(line, h);
-                    if line < first + 1 && top < viewport.min.y + origin.y {
-                        anchor_shift += d;
-                    }
-
-                    // Carets.
-                    for s in all.iter().filter(|s| s.head >= ls && s.head <= le) {
-                        let is_primary_head = s.head == primary.head;
-                        let col = s.head - ls + if is_primary_head { preedit_chars } else { 0 };
-                        let r = g.pos_from_cursor(CCursor::new(col)).translate(pos.to_vec2());
-                        let is_primary = s.head == primary.head;
-                        if is_primary {
-                            caret_rect_primary = Some(r);
-                        }
-                        if blink_on {
-                            let c = if is_primary { pal.accent } else { pal.accent.gamma_multiply(0.7) };
-                            painter.line_segment([Pos2::new(r.left(), r.top()), Pos2::new(r.left(), r.bottom())], Stroke::new(2.0, c));
-                        }
+                        self.galleys.clear();
+                        self.decos.clear();
+                        self.tables.clear();
+                        Self::sync(&mut view, doc, &cx, inline_images);
+                        sugg = Self::current_suggestions(&mut view, ws);
                     }
                 }
+            }
 
-                view.view_rects = new_view_rects;
-                view.task_boxes = task_boxes;
-                view.figure_boxes = figure_clicks;
-                view.fold_toggles = fold_toggles;
-                // Empty new note: say how it gets its name.
-                if doc.auto_name && buf.len_chars() == 0 && view.preedit.is_none() {
-                    painter.text(
-                        Pos2::new(x0 + 4.0, origin.y + TOP_MARGIN),
-                        egui::Align2::LEFT_TOP,
-                        "Start with a title — the first line names the note",
-                        egui::FontId::proportional(cx.size),
-                        pal.faint,
-                    );
-                }
-                if focused {
-                    let cr = caret_rect_primary.unwrap_or_else(|| Rect::from_min_size(origin, Vec2::new(2.0, cx.row_h())));
-                    ctx.output_mut(|o| {
-                        o.ime = Some(egui::output::IMEOutput {
-                            purpose: egui::viewport::IMEPurpose::default(),
-                            rect: viewport.translate(origin.to_vec2()),
-                            cursor_rect: cr,
-                            should_interrupt_composition: false,
-                        });
-                    });
-                    if window_focused {
-                        let phase = now.duration_since(view.blink_start).as_millis() % BLINK.as_millis();
-                        ctx.request_repaint_after(Duration::from_millis((BLINK.as_millis() - phase) as u64 + 5));
-                    }
-                    if let (Some(s), Some(caret)) = (&sugg, caret_rect_primary) {
-                        suggesting = true;
-                        if let Some(i) = Self::suggestion_popup(&ctx, id, caret, s, view.suggest_pick, pal) {
-                            clicked_suggestion = Some((s.clone(), i));
-                        }
-                    }
-                }
+            let Some(doc) = ws.active_doc() else { return };
+            // The caret never hides inside a fold: going there opens it.
+            if moved || edited || scroll_to_caret {
+                let line = doc.buffer().char_to_line(doc.selection().head);
+                Self::reveal_line(&mut view, doc, line, cx.row_h());
+            }
+            if edited {
+                Self::sync(&mut view, doc, &cx, inline_images);
+                view.preferred_x = None;
+            }
+            if edited || moved {
+                view.blink_start = Instant::now();
+            }
 
-                if anchor_shift.abs() > 0.5 {
-                    ui.scroll_with_delta(Vec2::new(0.0, -anchor_shift));
+            // ---------------- paint visible lines
+            let buf = doc.buffer();
+            let vis_top = (viewport.min.y - TOP_MARGIN).max(0.0);
+            let vis_bot = viewport.max.y - TOP_MARGIN;
+            let first = view.heights.line_at(vis_top);
+            let last = view.heights.line_at(vis_bot.max(0.0)).min(buf.len_lines().saturating_sub(1));
+            // Make sure the highlight window covers what's on screen.
+            let _ = Self::runs_for(&mut view, doc, first..last + 1);
+
+            let view_blocks = match &view.view_blocks {
+                Some((r, b)) if *r == doc.revision() => Rc::clone(b),
+                _ => {
+                    let b = Rc::new(if doc.large { Vec::new() } else { qviews::find_blocks(&doc.text()) });
+                    view.view_blocks = Some((doc.revision(), Rc::clone(&b)));
+                    b
                 }
-                // Keep the caret visible after keyboard work; centre it for jumps.
-                if scroll_to_caret || moved || edited {
-                    let r = match caret_rect_primary {
-                        Some(r) => r,
-                        None => self.caret_rect(ui, &mut view, doc, &cx, origin, x0, doc.selection().head),
+            };
+            let figures = Self::figures_of(&mut view, doc);
+            let embeds = Self::embeds_of(&mut view, doc);
+            // Vim's cursor is a block on a character (Normal and Visual modes).
+            let vim_block = (vim_on && focused && !ws.features.nav.vim.typing()).then(|| {
+                let replace = ws.features.nav.vim.mode() == quire_app::text::vim::Mode::Replace;
+                (ws.features.nav.vim.cursor_pos(doc.buffer(), doc.selection()), replace)
+            });
+            // In live preview a figure shows as its picture unless the caret is in
+            // it; while it's being edited (or with live preview off) it's source only,
+            // so nothing is rendered per keystroke.
+            let figure_at = |line: usize| -> Option<(blocks::Figure, bool)> {
+                if !crate::typeset_ui::AVAILABLE {
+                    return None;
+                }
+                let f = figures.iter().find(|f| f.first_line <= line && line <= f.last_line)?;
+                let revealed = cx.live.as_ref().is_none_or(|rv| rv.iter().any(|r| r.start <= f.last_line && f.first_line < r.end));
+                (!revealed).then(|| (f.clone(), true))
+            };
+            let mut figure_clicks: Vec<(Rect, usize, usize)> = Vec::new();
+            let preedit_chars = view.preedit.as_ref().map_or(0, |p| p.chars().count());
+            let mut new_view_rects = Vec::new();
+            let all = all_selections(doc.selection(), &view.extra);
+            let primary = doc.selection();
+            let painter = ui.painter_at(viewport.translate(origin.to_vec2()).expand(2.0));
+            let sel_color = pal.selection;
+            let find_color = pal.mark_bg.gamma_multiply(0.7);
+            let find_current_color = pal.mark_bg;
+            let mut anchor_shift = 0.0;
+            let mut caret_rect_primary = None;
+            let mut task_boxes = Vec::new();
+            let now = Instant::now();
+            // Only blink while the window has focus; in the background the
+            // caret stays still and the app stops repainting.
+            let window_focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
+            let blink_on =
+                focused && (!window_focused || (now.duration_since(view.blink_start).as_millis() / BLINK.as_millis()).is_multiple_of(2));
+
+            let hidden = Self::hidden(&mut view, doc);
+            // What features draw on this note (review hunks, drift markers…).
+            let feature_decos = ws.decorations(doc_id);
+            let headings = if doc.large { Vec::new() } else { heading_lines(doc) };
+            let mut fold_toggles = Vec::new();
+            let pointer = ui.input(|i| i.pointer.hover_pos());
+            for line in first..=last {
+                if hidden.iter().any(|r| r.contains(&line)) {
+                    view.heights.set(line, 0.0);
+                    continue;
+                }
+                // A figure shown as a picture: its source lines collapse into the last one.
+                let figure = figure_at(line).map(|(f, collapsed)| {
+                    let job = match f.kind {
+                        blocks::FigureKind::Math => crate::typeset_ui::Job::Math {
+                            latex: f.source.clone(),
+                            display: true,
+                            size: (cx.size * 1.1).round() as u32,
+                            color: crate::typeset_ui::rgba(pal.text),
+                        },
+                        blocks::FigureKind::Diagram => crate::typeset_ui::Job::Diagram { source: f.source.clone(), dark: pal.dark },
                     };
-                    let align = (scroll_to_caret && caret_rect_primary.is_none()).then_some(Align::Center);
-                    ui.scroll_to_rect(r.expand2(Vec2::new(0.0, cx.row_h())), align);
-                    if scroll_to_caret && caret_rect_primary.is_none() {
-                        // Heights near the target were estimates; settle next frame.
-                        self.scroll_to_caret = true;
+                    let out = crate::typeset_ui::request(&ctx, &job);
+                    (f, collapsed, out)
+                });
+                let collapsed_here = figure.as_ref().is_some_and(|(_, c, out)| *c && !matches!(out, crate::typeset_ui::Out::Failed(_)));
+                if collapsed_here && figure.as_ref().is_some_and(|(f, _, _)| line < f.last_line) {
+                    view.heights.set(line, 0.0);
+                    continue;
+                }
+                let g = self.galley(ui, &mut view, doc, line, &cx);
+                let top = origin.y + TOP_MARGIN + view.heights.top(line);
+                // Fold arrows beside headings: shown on hover, or while folded.
+                if headings.iter().any(|(l, _)| *l == line) {
+                    let folded = view.folded.contains(&line);
+                    let row = Rect::from_min_size(Pos2::new(x0 - 40.0, top), Vec2::new(cx.wrap + 40.0, g.size().y));
+                    let hovered = pointer.is_some_and(|p| row.contains(p));
+                    let first_row = g.rows.first().map_or_else(|| cx.row_h(), |r| r.size.y);
+                    let arrow = Rect::from_center_size(Pos2::new(x0 - 26.0, top + first_row / 2.0), Vec2::splat(18.0));
+                    if folded || hovered {
+                        let over = pointer.is_some_and(|p| arrow.contains(p));
+                        if over {
+                            painter.rect_filled(arrow, 4.0, pal.hover);
+                            ctx.set_cursor_icon(CursorIcon::PointingHand);
+                        }
+                        let c = arrow.center();
+                        let s = 4.5;
+                        let pts = if folded {
+                            vec![Pos2::new(c.x - s * 0.6, c.y - s), Pos2::new(c.x + s * 0.8, c.y), Pos2::new(c.x - s * 0.6, c.y + s)]
+                        } else {
+                            vec![Pos2::new(c.x - s, c.y - s * 0.6), Pos2::new(c.x + s, c.y - s * 0.6), Pos2::new(c.x, c.y + s * 0.8)]
+                        };
+                        let color = if over || folded { pal.muted } else { pal.faint };
+                        painter.add(egui::Shape::convex_polygon(pts, color, Stroke::NONE));
+                        fold_toggles.push((arrow, line));
+                    }
+                    if folded {
+                        // A pill after the heading says there's more inside.
+                        let end = g
+                            .rows
+                            .last()
+                            .map_or_else(|| Pos2::new(x0, top), |r| Pos2::new(x0 + r.rect().right(), top + r.rect().center().y));
+                        let pill = Rect::from_min_size(Pos2::new(end.x + 10.0, end.y - 9.0), Vec2::new(30.0, 18.0));
+                        painter.rect_filled(pill, 9.0, pal.hover);
+                        for k in [-1.0, 0.0, 1.0] {
+                            painter.circle_filled(pill.center() + Vec2::new(k * 6.0, 0.0), 1.8, pal.muted);
+                        }
+                        fold_toggles.push((pill, line));
                     }
                 }
-                // Measurements changed the total: lay out again next frame.
-                if (view.heights.total() + TOP_MARGIN + BOTTOM_MARGIN - total).abs() > 0.5 {
+                let lr = buf.line_range(line);
+                let (ls, le) = (lr.start, lr.end);
+                let pos = Pos2::new(x0, top);
+                if let Some(tone) = crate::decor::tint(&feature_decos, line) {
+                    painter.rect_filled(Rect::from_min_size(pos, Vec2::new(cx.wrap, g.size().y)), 2.0, crate::decor::tone_color(tone, pal));
+                }
+
+                // Range highlights: find matches, then selections.
+                let paint_range = |s: usize, e: usize, color: Color32, eol: bool| {
+                    let (a, b) = (s.max(ls) - ls, e.min(le) - ls);
+                    let mut rs = 0;
+                    for (k, row) in g.rows.iter().enumerate() {
+                        let len = row.glyphs.len();
+                        let (ra, rb) = (rs, rs + len);
+                        let last_row = k + 1 == g.rows.len();
+                        if b >= ra && a <= rb && (a < rb || (a == rb && last_row)) {
+                            let xa = if a > ra { row.x_offset(CharIndex(a - ra)) } else { 0.0 };
+                            let mut xb = if b < rb { row.x_offset(CharIndex(b - ra)) } else { row.size.x };
+                            if last_row && eol {
+                                xb += cx.size * 0.4;
+                            }
+                            if xb > xa {
+                                let r = Rect::from_min_max(
+                                    Pos2::new(pos.x + row.pos.x + xa, pos.y + row.pos.y),
+                                    Pos2::new(pos.x + row.pos.x + xb, pos.y + row.pos.y + row.size.y),
+                                );
+                                painter.rect_filled(r, 2.0, color);
+                            }
+                        }
+                        rs += len;
+                    }
+                };
+                let mi = find_matches.partition_point(|r| r.end <= ls);
+                for (k, r) in find_matches[mi..].iter().enumerate().take_while(|(_, r)| r.start <= le) {
+                    let color = if find_current == Some(mi + k) { find_current_color } else { find_color };
+                    paint_range(r.start, r.end, color, false);
+                }
+                for s in all.iter().filter(|s| !s.is_empty() && s.end() >= ls && s.start() <= le) {
+                    paint_range(s.start(), s.end(), sel_color, s.end() > le);
+                }
+
+                // Blocks: one background behind code and front matter, a bar beside quotes.
+                let block = if collapsed_here { Block::None } else { Self::block_of(&mut view, doc, line) };
+                if block != Block::None {
+                    let joined_above = line > 0 && Self::block_of(&mut view, doc, line - 1) == block;
+                    let joined_below = Self::block_of(&mut view, doc, line + 1) == block;
+                    let bottom = if joined_below {
+                        origin.y + TOP_MARGIN + view.heights.top(line + 1)
+                    } else {
+                        top + g.size().y.max(cx.row_h() * 0.9)
+                    };
+                    let pad = 14.0;
+                    if let Block::Callout(k) = block {
+                        let kind = &quire_app::markdown::callout::KINDS[k.min(quire_app::markdown::callout::KINDS.len() - 1)];
+                        let color = callout_color(kind);
+                        let extra_top = if joined_above { 0.0 } else { 4.0 };
+                        let extra_bottom = if joined_below { 0.0 } else { 4.0 };
+                        let bg =
+                            Rect::from_min_max(Pos2::new(x0 - pad, top - extra_top), Pos2::new(x0 + cx.wrap + pad, bottom + extra_bottom));
+                        let c = |joined: bool| if joined { 0 } else { 6 };
+                        let r = egui::CornerRadius { nw: c(joined_above), ne: c(joined_above), sw: c(joined_below), se: c(joined_below) };
+                        painter.rect_filled(bg, r, color.gamma_multiply(if pal.dark { 0.16 } else { 0.10 }));
+                        let bar = Rect::from_min_max(bg.left_top(), Pos2::new(bg.left() + 3.0, bg.bottom()));
+                        let rb = egui::CornerRadius { nw: c(joined_above), ne: 0, sw: c(joined_below), se: 0 };
+                        painter.rect_filled(bar, rb, color);
+                    } else if block == Block::Quote {
+                        let bar = Rect::from_min_max(Pos2::new(x0 - pad, top), Pos2::new(x0 - pad + 3.0, bottom));
+                        let r = egui::CornerRadius {
+                            nw: if joined_above { 0 } else { 2 },
+                            ne: if joined_above { 0 } else { 2 },
+                            sw: if joined_below { 0 } else { 2 },
+                            se: if joined_below { 0 } else { 2 },
+                        };
+                        painter.rect_filled(bar, r, pal.faint);
+                    } else {
+                        let extra_top = if joined_above { 0.0 } else { 4.0 };
+                        let extra_bottom = if joined_below { 0.0 } else { 4.0 };
+                        let bg =
+                            Rect::from_min_max(Pos2::new(x0 - pad, top - extra_top), Pos2::new(x0 + cx.wrap + pad, bottom + extra_bottom));
+                        let c = |joined: bool| if joined { 0 } else { 8 };
+                        let r = egui::CornerRadius { nw: c(joined_above), ne: c(joined_above), sw: c(joined_below), se: c(joined_below) };
+                        let fill = if block == Block::FrontMatter { pal.code_bg.gamma_multiply(0.6) } else { pal.code_bg };
+                        painter.rect_filled(bg, r, fill);
+                    }
+                }
+
+                if !collapsed_here {
+                    painter.galley(pos, Arc::clone(&g), pal.text);
+                    if crate::decor::struck(&feature_decos, line) {
+                        crate::decor::paint_strike(&painter, &g, pos, pal);
+                    }
+                }
+                // Live preview: bullets, checkboxes and rules drawn over hidden syntax.
+                let no_decos: &[Deco] = &[];
+                for d in if collapsed_here { no_decos } else { self.decos.get(&line).map(Vec::as_slice).unwrap_or_default() } {
+                    let at = |col: usize| g.pos_from_cursor(CCursor::new(col)).translate(pos.to_vec2());
+                    match *d {
+                        Deco::Math { col, tex, w, h, baseline } => {
+                            let a = at(col);
+                            // Sit the formula's baseline on the text's.
+                            let text_baseline = a.center().y + cx.size * 0.33;
+                            let r = Rect::from_min_size(Pos2::new(a.left() - w - 1.0, text_baseline - baseline), Vec2::new(w, h));
+                            painter.image(tex, r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                        }
+                        Deco::Misspelled { start, end } => {
+                            // Per row, so a word wrapped onto the next row is underlined there.
+                            let mut rs = 0;
+                            for row in &g.rows {
+                                let len = row.glyphs.len();
+                                let (ra, rb) = (rs, rs + len);
+                                rs += len;
+                                if end <= ra || start >= rb {
+                                    continue;
+                                }
+                                let xa = row.x_offset(CharIndex(start.max(ra) - ra));
+                                let xb = row.x_offset(CharIndex(end.min(rb) - ra));
+                                let (x_a, x_b) = (pos.x + row.pos.x + xa, pos.x + row.pos.x + xb);
+                                let y = pos.y + row.pos.y + row.size.y - 3.0;
+                                let steps = ((x_b - x_a) / 2.5).floor().max(0.0) as usize;
+                                let pts: Vec<Pos2> = (0..=steps)
+                                    .map(|k| Pos2::new(x_a + k as f32 * 2.5, if k % 2 == 1 { y - 1.6 } else { y + 0.4 }))
+                                    .collect();
+                                if pts.len() > 1 {
+                                    painter.add(egui::Shape::line(pts, Stroke::new(1.1, pal.danger)));
+                                }
+                            }
+                        }
+                        Deco::Callout { kind, col, label } => {
+                            let kind = &quire_app::markdown::callout::KINDS[kind.min(quire_app::markdown::callout::KINDS.len() - 1)];
+                            let color = callout_color(kind);
+                            let a = at(col);
+                            let d = (cx.size * 1.05).round();
+                            let left = if label { a.left() } else { a.left() - callout_icon_width(cx.size) };
+                            let center = Pos2::new(left + d / 2.0, a.center().y);
+                            painter.circle_filled(center, d / 2.0, color);
+                            painter.text(
+                                center,
+                                egui::Align2::CENTER_CENTER,
+                                kind.glyph,
+                                egui::FontId::new((cx.size * 0.62).round(), egui::FontFamily::Name(crate::theme::BOLD.into())),
+                                Color32::WHITE,
+                            );
+                            if label {
+                                painter.text(
+                                    Pos2::new(left + callout_icon_width(cx.size), a.center().y),
+                                    egui::Align2::LEFT_CENTER,
+                                    kind.label,
+                                    egui::FontId::new(cx.size, egui::FontFamily::Name(crate::theme::BOLD.into())),
+                                    color,
+                                );
+                            }
+                        }
+                        Deco::Bullet(col) => {
+                            let (a, b) = (at(col), at(col + 1));
+                            let c = Pos2::new(f32::midpoint(a.left(), b.left()), a.center().y);
+                            painter.circle_filled(c, (cx.size * 0.16).max(2.5), pal.muted);
+                        }
+                        Deco::Task { col, done } => {
+                            let (a, b) = (at(col), at(col + 3));
+                            let side = (cx.size * 0.95).round();
+                            let center = Pos2::new(f32::midpoint(a.left(), b.left()), a.center().y);
+                            let r = Rect::from_center_size(center, Vec2::splat(side));
+                            if done {
+                                painter.rect_filled(r, 4.0, pal.accent);
+                                let s = side;
+                                let pts = [
+                                    Pos2::new(r.left() + s * 0.26, r.top() + s * 0.53),
+                                    Pos2::new(r.left() + s * 0.43, r.top() + s * 0.70),
+                                    Pos2::new(r.left() + s * 0.75, r.top() + s * 0.33),
+                                ];
+                                let st = Stroke::new(1.8, if pal.dark { pal.bg } else { Color32::WHITE });
+                                painter.line_segment([pts[0], pts[1]], st);
+                                painter.line_segment([pts[1], pts[2]], st);
+                            } else {
+                                let hovered = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| r.contains(p));
+                                painter.rect_stroke(
+                                    r,
+                                    4.0,
+                                    Stroke::new(1.5, if hovered { pal.accent } else { pal.muted }),
+                                    egui::StrokeKind::Inside,
+                                );
+                                if hovered {
+                                    ctx.set_cursor_icon(CursorIcon::PointingHand);
+                                }
+                            }
+                            task_boxes.push((r.expand(3.0), ls + col + 1, done));
+                        }
+                        Deco::Rule => {
+                            let y = at(0).center().y;
+                            painter.line_segment([Pos2::new(x0, y), Pos2::new(x0 + cx.wrap, y)], Stroke::new(1.0, pal.border));
+                        }
+                        Deco::TableLine { width, strong } => {
+                            // The separator row is a line; body rows get a hairline below.
+                            let y = if strong { top + g.size().y / 2.0 } else { top + g.size().y };
+                            let c = if strong { pal.faint } else { pal.border };
+                            painter.line_segment([Pos2::new(x0, y), Pos2::new(x0 + width, y)], Stroke::new(1.0, c));
+                        }
+                    }
+                }
+                // A table's `| --- |` row shrinks to the line drawn in it.
+                let thin = self.decos.get(&line).is_some_and(|d| d.iter().any(|d| matches!(d, Deco::TableLine { strong: true, .. })));
+                let mut h = if thin { g.size().y } else { g.size().y.max(cx.row_h() * 0.9) };
+                // The figure's picture (or why it couldn't be drawn), under its last line.
+                if let Some((f, _, out)) = &figure
+                    && line == f.last_line
+                {
+                    let base = if collapsed_here { top } else { top + h };
+                    match out {
+                        crate::typeset_ui::Out::Ready(p) => {
+                            let scale = (cx.wrap / p.size.x).min(1.0);
+                            let size = p.size * scale;
+                            let x = if f.kind == blocks::FigureKind::Math { x0 + (cx.wrap - size.x) / 2.0 } else { x0 };
+                            let r = Rect::from_min_size(Pos2::new(x, base + 8.0), size);
+                            painter.image(p.texture.id(), r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                            figure_clicks.push((r, f.first_line, f.last_line));
+                            h = if collapsed_here { size.y + 16.0 } else { h + size.y + 16.0 };
+                        }
+                        crate::typeset_ui::Out::Pending => {
+                            if collapsed_here {
+                                painter.text(
+                                    Pos2::new(x0, base + cx.row_h() / 2.0),
+                                    egui::Align2::LEFT_CENTER,
+                                    if f.kind == blocks::FigureKind::Math { "Rendering math…" } else { "Drawing diagram…" },
+                                    egui::FontId::proportional(cx.size * 0.85),
+                                    pal.faint,
+                                );
+                                h = cx.row_h() * 1.2;
+                            }
+                        }
+                        crate::typeset_ui::Out::Failed(e) => {
+                            let what = if f.kind == blocks::FigureKind::Math { "Math" } else { "Diagram" };
+                            painter.text(
+                                Pos2::new(x0, top + h + 4.0),
+                                egui::Align2::LEFT_TOP,
+                                format!("{what} not drawn: {e}"),
+                                egui::FontId::proportional(cx.size * 0.8),
+                                pal.danger,
+                            );
+                            h += cx.size * 1.4;
+                        }
+                    }
+                }
+
+                if let Some(uri) = Self::line_image(ws, doc, line)
+                    && let Some(size) = Self::image_size(ui, &uri, cx.wrap)
+                {
+                    let r = Rect::from_min_size(Pos2::new(x0, top + h + 4.0), size);
+                    egui::Image::new(uri).corner_radius(4.0).paint_at(ui, r);
+                    h += size.y + 10.0;
+                }
+
+                if let Some(vb) = view_blocks.iter().find(|b| b.close_line == line) {
+                    let key = Id::unique(("quire-view", doc_id.0, vb.open_line));
+                    let prev_h = ui.data(|d| d.get_temp::<f32>(key)).unwrap_or(80.0);
+                    let r = Rect::from_min_size(Pos2::new(x0, top + h + 6.0), Vec2::new(cx.wrap, prev_h));
+                    // Cover the view so clicks on it don't move the caret.
+                    let _ = ui.interact(r, key.with("cover"), Sense::click());
+                    let mut child = ui.new_child(
+                        UiBuilder::new()
+                            .id_salt(key)
+                            .max_rect(Rect::from_min_size(r.min, Vec2::new(cx.wrap, 4000.0)))
+                            .layout(egui::Layout::top_down(Align::Min)),
+                    );
+                    if let Some(a) = view_ui::show(&mut child, ws, pal, &vb.spec, doc.path.as_ref(), key) {
+                        view_action = Some(a);
+                    }
+                    let used = child.min_rect().height();
+                    new_view_rects.push(Rect::from_min_size(r.min, Vec2::new(cx.wrap, used)));
+                    ui.data_mut(|d| d.insert_temp(key, used));
+                    if (used - prev_h).abs() > 0.5 {
+                        ctx.request_repaint();
+                    }
+                    h += used + 14.0;
+                }
+
+                // A note embedded on this line, edited in place (drawn after the
+                // loop with last frame's height, which lays the lines out now).
+                if let Some((_, e)) = embeds.iter().find(|(l, _)| *l == line) {
+                    let key = Id::unique(("quire-embed-height", doc_id.0, line));
+                    let prev_h = ui.data(|d| d.get_temp::<f32>(key)).unwrap_or(96.0);
+                    let r = Rect::from_min_size(Pos2::new(x0, top + h + 4.0), Vec2::new(cx.wrap, prev_h));
+                    let _ = ui.interact(r, key.with("cover"), Sense::click());
+                    new_view_rects.push(r);
+                    embeds_drawn.push((line, e.clone(), r));
+                    h += prev_h + 12.0;
+                }
+
+                // Feature ghost lines and widgets after this line.
+                let (extra, action) = crate::decor::paint_after(
+                    ui,
+                    ws,
+                    &feature_decos,
+                    line,
+                    crate::decor::Place { x0, top: top + h, width: cx.wrap, size: cx.size },
+                    pal,
+                );
+                h += extra;
+                if let Some(action) = action {
+                    decor_clicks.push(quire_app::decor::DecorationEvent { doc: doc_id, action, line });
+                }
+
+                let d = view.heights.set(line, h);
+                if line < first + 1 && top < viewport.min.y + origin.y {
+                    anchor_shift += d;
+                }
+
+                // Vim's block cursor.
+                if let Some((at, replace)) = vim_block.filter(|(at, _)| *at >= ls && *at <= le) {
+                    let col = at - ls;
+                    let a = g.pos_from_cursor(CCursor::new(col)).translate(pos.to_vec2());
+                    let next = if at < le { g.pos_from_cursor(CCursor::new(col + 1)).translate(pos.to_vec2()) } else { a };
+                    let w =
+                        if next.left() > a.left() && (next.top() - a.top()).abs() < 1.0 { next.left() - a.left() } else { cx.size * 0.55 };
+                    let r = Rect::from_min_size(a.min, Vec2::new(w, a.height()));
+                    caret_rect_primary = Some(r);
+                    if blink_on || !window_focused {
+                        if replace {
+                            painter.rect_filled(Rect::from_min_max(Pos2::new(r.left(), r.bottom() - 2.5), r.max), 0.0, pal.accent);
+                        } else {
+                            painter.rect_filled(r, 1.5, pal.accent.gamma_multiply(0.45));
+                        }
+                    }
+                }
+                // Carets.
+                for s in all.iter().filter(|s| s.head >= ls && s.head <= le && (vim_block.is_none() || s.head != primary.head)) {
+                    let is_primary_head = s.head == primary.head;
+                    let col = s.head - ls + if is_primary_head { preedit_chars } else { 0 };
+                    let r = g.pos_from_cursor(CCursor::new(col)).translate(pos.to_vec2());
+                    let is_primary = s.head == primary.head;
+                    if is_primary {
+                        caret_rect_primary = Some(r);
+                    }
+                    if blink_on {
+                        let c = if is_primary { pal.accent } else { pal.accent.gamma_multiply(0.7) };
+                        painter.line_segment([Pos2::new(r.left(), r.top()), Pos2::new(r.left(), r.bottom())], Stroke::new(2.0, c));
+                    }
+                }
+            }
+
+            view.view_rects = new_view_rects;
+            view.task_boxes = task_boxes;
+            view.figure_boxes = figure_clicks;
+            view.fold_toggles = fold_toggles;
+            // Empty new note: say how it gets its name.
+            if doc.auto_name && buf.len_chars() == 0 && view.preedit.is_none() {
+                painter.text(
+                    Pos2::new(x0 + 4.0, origin.y + TOP_MARGIN),
+                    egui::Align2::LEFT_TOP,
+                    "Start with a title — the first line names the note",
+                    egui::FontId::proportional(cx.size),
+                    pal.faint,
+                );
+            }
+            // Where you are, for when the note is opened again.
+            top_line = Some((doc.selection().head, view.heights.line_at(vis_top)));
+            // Vim's Normal and Visual modes take keys, not text: no input method there.
+            if focused && vim_block.is_none() {
+                let cr = caret_rect_primary.unwrap_or_else(|| Rect::from_min_size(origin, Vec2::new(2.0, cx.row_h())));
+                ctx.output_mut(|o| {
+                    o.ime = Some(egui::output::IMEOutput {
+                        purpose: egui::viewport::IMEPurpose::default(),
+                        rect: viewport.translate(origin.to_vec2()),
+                        cursor_rect: cr,
+                        should_interrupt_composition: false,
+                    });
+                });
+            }
+            if focused {
+                if window_focused {
+                    let phase = now.duration_since(view.blink_start).as_millis() % BLINK.as_millis();
+                    ctx.request_repaint_after(Duration::from_millis((BLINK.as_millis() - phase) as u64 + 5));
+                }
+                if let (Some(s), Some(caret)) = (&sugg, caret_rect_primary) {
+                    suggesting = true;
+                    if let Some(i) = Self::suggestion_popup(&ctx, id, caret, s, view.suggest_pick, pal) {
+                        clicked_suggestion = Some((s.clone(), i));
+                    }
+                }
+            }
+
+            if anchor_shift.abs() > 0.5 {
+                ui.scroll_with_delta(Vec2::new(0.0, -anchor_shift));
+            }
+            // Keep the caret visible after keyboard work; centre it for jumps.
+            if scroll_to_caret || moved || edited {
+                let r = match caret_rect_primary {
+                    Some(r) => r,
+                    None => self.caret_rect(ui, &mut view, doc, &cx, origin, x0, doc.selection().head),
+                };
+                let align = (scroll_to_caret && caret_rect_primary.is_none()).then_some(Align::Center);
+                ui.scroll_to_rect(r.expand2(Vec2::new(0.0, cx.row_h())), align);
+                if scroll_to_caret && caret_rect_primary.is_none() {
+                    // Heights near the target were estimates; settle next frame.
+                    self.scroll_to_caret = true;
+                }
+            }
+            // Measurements changed the total: lay out again next frame.
+            if (view.heights.total() + TOP_MARGIN + BOTTOM_MARGIN - total).abs() > 0.5 {
+                ctx.request_repaint();
+            }
+            // Embedded notes, now that nothing borrows the note.
+            let host_path = ws.active_doc().and_then(|d| d.path.clone());
+            for (line, e, r) in std::mem::take(&mut embeds_drawn) {
+                let mut child = ui.new_child(
+                    UiBuilder::new()
+                        .id_salt(("quire-embed", doc_id.0, line))
+                        .max_rect(Rect::from_min_size(r.min, Vec2::new(cx.wrap, 4000.0)))
+                        .layout(egui::Layout::top_down(Align::Min)),
+                );
+                let at = crate::embed_edit::Place { host: doc_id, host_path: host_path.clone(), line, width: cx.wrap, size: cx.size };
+                let out = self.embeds.show(&mut child, ws, &e, &at, pal, fonts);
+                let key = Id::unique(("quire-embed-height", doc_id.0, line));
+                if (out.height - r.height()).abs() > 0.5 {
+                    ui.data_mut(|d| d.insert_temp(key, out.height));
                     ctx.request_repaint();
                 }
-            },
-        );
+                if let Some(p) = out.open {
+                    embed_open = Some(p);
+                }
+                if out.leave {
+                    self.request_focus = true;
+                }
+            }
+        });
+        if let Some((caret, line)) = top_line {
+            nav::remember_position(ws, doc_id, caret, line as f32);
+        }
         self.views.insert(doc_id, view);
+        if let Some(ex) = self.vim.take_ex() {
+            nav::vim_ex(ws, &ex);
+        }
+        if let Some(p) = embed_open {
+            ws.open_note(&p);
+            self.request_focus = true;
+        }
         for ev in decor_clicks {
             ws.decoration_event(&ev);
         }

@@ -5,6 +5,8 @@ extend-exclude = [
   "crates/quire-spell/dictionaries/",
   # Spell-checker tests are full of deliberate misspellings.
   "crates/quire-spell/tests/",
+  # Vim test cases: key sequences and words cut by the cursor marker.
+  "crates/quire-text/testdata/vim/",
 ]
 
 [default.extend-words]
