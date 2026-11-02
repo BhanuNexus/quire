@@ -56,6 +56,9 @@ F0 is the foundation step, after which its files are frozen).
 | `<config>/device.toml` | TOML, format 1 | [settings.md](settings.md#devicetoml) | F0 | written |
 | `<data_dir>/models/…`, the catalog | TOML, format 1 | [model-catalog.md](model-catalog.md) | WS-D | format only |
 | engine stdio | JSON lines | [engine-protocol.md](engine-protocol.md) | WS-D | `hello` and `shutdown` |
+| `<config>/mcp/tokens.json`, `<config>/mcp/consent/<id>.json` | JSON, format 1 | [mcp.md](mcp.md) | WS-B | written |
+| `<config>/vaults/<key>/mrtr.key` | 32 random bytes | [mcp.md](mcp.md#configvaultsvault-keymrtrkey) | WS-B | written |
+| Quire Sync: `/v1/info`, `actor`, `space.json` `min_reader`, `config.json` `shared_state` | protocol 2 | [sync-protocol.md](sync-protocol.md) | WS-B | in use |
 | `.quire/cache/**` | rebuildable; formats are private to their job | — | the job's owner | — |
 
 Planned and not yet written by any code (formats come with their

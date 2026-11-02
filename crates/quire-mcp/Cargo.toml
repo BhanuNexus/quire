@@ -10,14 +10,35 @@ homepage.workspace = true
 publish.workspace = true
 
 [features]
-# Streamable HTTP and the OAuth authorization server (WS-B): axum and tokio
-# join here, created only when the HTTP server is turned on.
-http = []
+default = ["http"]
+# Streamable HTTP and the OAuth authorization server (design §4.6): axum and
+# tokio join here; the runtime is created only when the server is turned on.
+http = ["dep:axum", "dep:tokio", "dep:futures-core"]
 
 [dependencies]
 quire-app.workspace = true
 quire-agent.workspace = true
+quire-import.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+toml.workspace = true
+chrono.workspace = true
+similar.workspace = true
+flate2.workspace = true
+sha2.workspace = true
+getrandom.workspace = true
+base64.workspace = true
+ureq.workspace = true
+# The same version quire-sync uses (in the lock already); MRTR request states.
+chacha20poly1305 = "0.11"
+axum = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
+# The `Stream` trait for event streams (in the lock already, through axum).
+futures-core = { version = "0.3", optional = true, default-features = false }
+
+[dev-dependencies]
+tempfile.workspace = true
+quire-agent.workspace = true
 
 [lints]
 workspace = true
