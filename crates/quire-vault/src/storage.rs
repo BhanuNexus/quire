@@ -196,7 +196,10 @@ impl Storage for LocalFs {
         if let Some(dir) = abs.parent() {
             std::fs::create_dir_all(dir).map_err(io_err(path.to_string()))?;
         }
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&abs).map_err(io_err(path.to_string()))?;
+        // Read access too: on Windows an append-only handle can't take a
+        // file lock (LockFileEx needs read or write access, and append is
+        // neither), so every append would fail there.
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).read(true).open(&abs).map_err(io_err(path.to_string()))?;
         f.lock().map_err(io_err(path.to_string()))?;
         let mut buf = String::with_capacity(line.len() + 1);
         buf.push_str(line);
