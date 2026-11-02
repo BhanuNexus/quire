@@ -1,0 +1,15 @@
+[package]
+name = "quire-agent"
+description = "Agent store: actors, provenance, policy and zones, the write pipeline, proposals, ledger and inbox"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

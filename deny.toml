@@ -16,10 +16,10 @@ ignore = [
   # quire-typeset: pinned by Typst 0.15 / MiTeX 0.2 / mermaid-rs-renderer 0.3,
   # no compatible upgrade exists. Revisit when those crates update.
   # quick-xml 0.38 (DoS) is only used by citationberg to parse CSL bibliography
-  # styles; quire-typeset never loads a bibliography and its Typst sandbox
-  # exposes no user files besides images.
-  { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.38 via typst -> hayagriva -> citationberg; CSL parsing is unreachable" },
-  { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.38 via typst -> hayagriva -> citationberg; CSL parsing is unreachable" },
+  # styles. Quire only ever parses the styles embedded at build time (APA,
+  # Chicago author-date, IEEE; design 0.9 §G.3) and never user-supplied CSL.
+  { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.38 via typst -> hayagriva -> citationberg; CSL parsing only of styles embedded at build time (APA/Chicago/IEEE)" },
+  { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.38 via typst -> hayagriva -> citationberg; CSL parsing only of styles embedded at build time (APA/Chicago/IEEE)" },
   # rkyv 0.7 only deserializes MiTeX's own command table, embedded at build time.
   { id = "RUSTSEC-2026-0235", reason = "rkyv 0.7 via mitex-spec; only reads trusted, embedded data" },
   # Unmaintained, no vulnerability.

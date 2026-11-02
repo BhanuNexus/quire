@@ -1,0 +1,15 @@
+[package]
+name = "quire-pdf"
+description = "PDF text with positions, page rendering and annotation notes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

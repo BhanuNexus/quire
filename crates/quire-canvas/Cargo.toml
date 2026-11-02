@@ -1,0 +1,15 @@
+[package]
+name = "quire-canvas"
+description = "JSON Canvas 1.0 model, canonical serializer and ink SVG codec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -4657,6 +4657,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "quire-agent"
+version = "0.8.0"
+
+[[package]]
+name = "quire-ai"
+version = "0.8.0"
+
+[[package]]
+name = "quire-ai-engine"
+version = "0.8.0"
+
+[[package]]
 name = "quire-app"
 version = "0.8.0"
 dependencies = [
@@ -4682,6 +4694,14 @@ dependencies = [
  "toml 1.1.8+spec-1.1.0",
  "ureq",
 ]
+
+[[package]]
+name = "quire-assistant"
+version = "0.8.0"
+
+[[package]]
+name = "quire-canvas"
+version = "0.8.0"
 
 [[package]]
 name = "quire-cli"
@@ -4749,6 +4769,7 @@ dependencies = [
  "quire-index",
  "quire-markdown",
  "quire-vault",
+ "serde",
  "serde_json",
  "thiserror 2.0.21",
  "unicode-segmentation",
@@ -4764,6 +4785,18 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
 ]
+
+[[package]]
+name = "quire-mcp"
+version = "0.8.0"
+
+[[package]]
+name = "quire-pdf"
+version = "0.8.0"
+
+[[package]]
+name = "quire-plan"
+version = "0.8.0"
 
 [[package]]
 name = "quire-spell"
@@ -4842,8 +4875,13 @@ dependencies = [
  "flate2",
  "notify",
  "quire-markdown",
+ "serde",
+ "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 2.0.21",
+ "toml 1.1.8+spec-1.1.0",
+ "toml_edit 0.25.17+spec-1.1.0",
 ]
 
 [[package]]
@@ -6251,6 +6289,7 @@ dependencies = [
  "indexmap",
  "toml_datetime 1.1.2+spec-1.1.0",
  "toml_parser",
+ "toml_writer",
  "winnow 1.0.4",
 ]
 

@@ -11,9 +11,17 @@ members = [
     "crates/quire-sync",
     "crates/quire-spell",
     "crates/quire-typeset",
+    "crates/quire-agent",
+    "crates/quire-plan",
+    "crates/quire-canvas",
+    "crates/quire-pdf",
+    "crates/quire-ai",
+    "crates/quire-mcp",
+    "crates/quire-assistant",
     "apps/quire-desktop",
     "apps/quire-cli",
     "apps/quire-sync-server",
+    "apps/quire-ai-engine",
 ]
 
 [workspace.package]
@@ -41,6 +49,15 @@ quire-import = { path = "crates/quire-import" }
 quire-sync = { path = "crates/quire-sync" }
 quire-spell = { path = "crates/quire-spell" }
 quire-typeset = { path = "crates/quire-typeset" }
+quire-agent = { path = "crates/quire-agent" }
+quire-plan = { path = "crates/quire-plan" }
+quire-canvas = { path = "crates/quire-canvas" }
+# `text` (both editions) is on by default; `render` comes with the full edition.
+quire-pdf = { path = "crates/quire-pdf" }
+# Consumers add `features = ["client"]`; the engine sidecar uses the protocol only.
+quire-ai = { path = "crates/quire-ai", default-features = false }
+quire-mcp = { path = "crates/quire-mcp" }
+quire-assistant = { path = "crates/quire-assistant" }
 
 ropey = "1.6"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
@@ -77,6 +94,40 @@ typst-svg = "0.15"
 typst-pdf = "0.15"
 mitex = "0.2"
 mermaid-rs-renderer = { version = "0.3", default-features = false }
+
+# Added for 0.9 (docs/design/0.9.md §5). Listed here once so workstreams never
+# edit this file; a crate depends on one only when it uses it.
+sha2 = "0.11"
+getrandom = "0.4"
+base64 = "0.23"
+axum = "0.8.9"
+tokio = { version = "1.54.1", default-features = false }
+toml_edit = "0.25"
+unicode-normalization = "0.1.26"
+strsim = "0.11.1"
+dom_smoothie = "0.19.0"
+htmd = "0.5.6"
+encoding_rs = "0.8.44"
+yaml-rust2 = "0.13.0"
+notify-rust = "4.18.2"
+# 0.7 is what Typst links; 0.8 exists, but two copies would cost size in the full build.
+hayro = "0.7"
+hayro-interpret = "0.7"
+biblatex = "0.12.0"
+agent-client-protocol-schema = "1.15.1"
+half = "2.7.1"
+# Engine sidecar only (apps/quire-ai-engine); the WS-D spike decides whether they are used.
+candle-core = "0.11.1"
+candle-nn = "0.11.1"
+candle-transformers = "0.11.1"
+tokenizers = { version = "0.23.2", default-features = false }
+ocrs = "0.13.1"
+# ocrs 0.13.1 is built on rten 0.26 (the design named 0.27); one copy, not two.
+rten = "0.26"
+# Dev-dependencies only (test oracles and interop clients).
+rrule = "0.14.0"
+fsrs = "6.6.2"
+rmcp = "3.8.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
