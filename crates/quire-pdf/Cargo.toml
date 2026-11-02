@@ -9,7 +9,18 @@ repository.workspace = true
 homepage.workspace = true
 publish.workspace = true
 
+[features]
+default = ["text"]
+# Text extraction with positions (both editions). hayro-interpret joins with WS-G.
+text = []
+# Page rendering (the full edition only, through the desktop's `typeset` feature).
+render = ["text"]
+
 [dependencies]
+quire-markdown.workspace = true
+quire-vault.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true
