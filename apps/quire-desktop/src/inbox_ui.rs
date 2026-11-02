@@ -377,8 +377,8 @@ fn apply_fix(ws: &mut Workspace, cs: quire_app::agent::ChangeSet, fingerprint: &
     match store.submit(&Actor::human(&store.device().id), cs) {
         Ok(_) => {
             let _ = store.inbox().resolve(fingerprint);
+            // The watcher brings the changed notes into the index; check again after.
             ws.features.agent.lint.now.store(true, std::sync::atomic::Ordering::Release);
-            ws.reload_index();
         }
         Err(e) => ws.notify(NoticeLevel::Error, format!("Couldn't fix it: {e}")),
     }

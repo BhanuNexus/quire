@@ -468,6 +468,8 @@ impl AgentStore {
             }
         }
         store.purge_archive(now - PURGE_AFTER_MS, now);
+        // Read events are kept for 30 days (design §A.1).
+        self.ledger().prune_reads(now - 30 * 86_400_000, now);
         n
     }
 

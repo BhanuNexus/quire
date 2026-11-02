@@ -118,6 +118,40 @@ impl Ledger {
         self.vault.storage().append_line(&file, &line).map_err(|e| e.to_string())
     }
 
+    /// Drop `read` events older than `before` (Unix ms) from the months
+    /// before the current one (nothing appends to those any more). Other
+    /// lines, including ones this version can't read, are kept as they are.
+    /// Returns how many lines were dropped.
+    pub fn prune_reads(&self, before: i64, now_ms: i64) -> usize {
+        let current = month_of(now_ms);
+        let mut dropped = 0;
+        for f in self.vault.storage().list_under(&self.folder()).unwrap_or_default() {
+            if f.file_name().strip_suffix(".jsonl").is_none_or(|m| m >= current.as_str()) {
+                continue;
+            }
+            let Ok(text) = self.vault.storage().read(&f) else { continue };
+            let old_read = |l: &str| {
+                serde_json::from_str::<serde_json::Value>(l).ok().is_some_and(|v| {
+                    v.get("op").and_then(|o| o.as_str()) == Some("read")
+                        && v.get("at").and_then(serde_json::Value::as_i64).is_some_and(|t| t < before)
+                })
+            };
+            let kept: Vec<&str> = text.lines().filter(|l| !old_read(l)).collect();
+            let n = text.lines().count() - kept.len();
+            if n == 0 {
+                continue;
+            }
+            let mut out = kept.join("\n");
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            if self.vault.storage().write_atomic(&f, &out).is_ok() {
+                dropped += n;
+            }
+        }
+        dropped
+    }
+
     /// The ledger files and when they last changed (to notice new entries
     /// from other processes).
     pub fn stamp(&self) -> Vec<(NotePath, Option<std::time::SystemTime>)> {
@@ -174,5 +208,11 @@ mod tests {
         assert_eq!(v.storage().list_under(&format!("{LEDGER_DIR}/d_1")).unwrap().len(), 2, "one file per month");
         let line = v.storage().read(&NotePath::new(format!("{LEDGER_DIR}/d_1/{}.jsonl", month_of(oct)))).unwrap();
         assert!(line.starts_with(r#"{"v":1,"at":1793000000000,"actor":{"kind":"agent""#), "{line}");
+        // Reads older than 30 days go; everything else stays.
+        let agent = Actor::agent("mcp:x", "X", crate::Via::McpStdio, "d_1");
+        l.append(&LedgerEntry::new(agent, Op::Read, oct + 1).path(&"A.md".into())).unwrap();
+        assert_eq!(l.prune_reads(oct + 2, nov + 40 * 86_400_000), 1);
+        assert_eq!(l.read(&LedgerQuery::default()).len(), 2);
+        assert_eq!(l.prune_reads(oct + 2, oct + 3), 0, "the current month is left alone");
     }
 }

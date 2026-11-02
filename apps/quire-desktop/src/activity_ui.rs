@@ -499,7 +499,6 @@ fn apply_revert(ws: &mut Workspace, a: &mut ActivityUi, plan: &RevertPlan, title
     }
     a.plan = None;
     a.revert_open = false;
-    ws.reload_index();
     load_activity(ws);
     ws.features.agent.reload_inbox_soon();
 }

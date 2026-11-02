@@ -126,9 +126,10 @@ pub fn item_path(item: &InboxItem) -> Option<&str> {
     }
 }
 
-/// The fingerprint a proposal is snoozed under.
+/// The fingerprint a proposal is snoozed under (as `InboxItem::fingerprint`
+/// gives for it, without building the summary).
 pub fn proposal_fingerprint(p: &Proposal) -> String {
-    InboxItem::Proposal(p.summary()).fingerprint()
+    quire_vault::ContentHash::of(&format!("proposal:{}", p.id)).hex()[..16].to_string()
 }
 
 impl InboxData {
@@ -356,6 +357,7 @@ mod tests {
         assert_eq!(data.findings(&all).len(), 1);
         assert_eq!(data.badge(&|_| true), 3, "orphan is a warning: not in the badge");
         assert_eq!(data.badge(&|_| false), 4);
+        assert_eq!(proposal_fingerprint(&data.pending[0]), InboxItem::Proposal(data.pending[0].summary()).fingerprint());
         // Snooze a proposal for a day.
         let fp = proposal_fingerprint(data.pending.iter().find(|p| p.actor.id == "mcp:other").unwrap());
         store
