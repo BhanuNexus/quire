@@ -9,9 +9,11 @@
 //! * [`reminders`] — when task reminders fire
 //! * [`periodic`] — daily, weekly, monthly and yearly notes
 //! * [`srs`] — flashcard review logs and the FSRS scheduler
+//! * [`tasks`] — completing tasks, recurring ones included
 
 pub mod agenda;
 pub mod periodic;
 pub mod recur;
 pub mod reminders;
 pub mod srs;
+pub mod tasks;

@@ -406,6 +406,7 @@ fn kind_name(k: Kind) -> &'static str {
         Kind::Bool => "yes/no",
         Kind::List => "list",
         Kind::Text => "text",
+        Kind::Map => "nested fields",
     }
 }
 

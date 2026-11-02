@@ -16,6 +16,8 @@ zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 htmd = "0.5"
 base64 = "0.23"
 md5 = "0.8"
+# WS-E: Obsidian Bases (.base YAML)
+yaml-rust2.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

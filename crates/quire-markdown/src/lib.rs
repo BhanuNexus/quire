@@ -8,7 +8,7 @@
 //! * [`frontmatter`] — YAML-subset front matter
 //! * [`render`] — HTML for preview and export
 //! * [`editing`] / [`table`] — smart edits that return [`quire_text::Transaction`]s
-//! * [`tasks`] — task metadata; [`comment`] — `<!-- quire:… -->` machine data
+//! * [`tasks`] — task metadata; [`srs`] — flashcards; [`comment`] — `<!-- quire:… -->` machine data
 //!
 //! All ranges in this crate are **byte** ranges into the source `&str`
 //! unless a function says otherwise; editing helpers convert to char indices.
@@ -22,6 +22,7 @@ pub mod frontmatter;
 pub mod outline;
 pub mod render;
 mod scan;
+pub mod srs;
 pub mod syntax;
 pub mod table;
 pub mod tasks;

@@ -13,6 +13,7 @@ mod html;
 mod logseq;
 mod markdown;
 mod notion;
+pub mod obsidian;
 mod tree;
 pub mod yaml;
 

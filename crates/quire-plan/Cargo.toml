@@ -16,5 +16,10 @@ serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 
+[dev-dependencies]
+# Oracles only: recurrence (RFC 5545) and FSRS are checked against these.
+rrule.workspace = true
+fsrs.workspace = true
+
 [lints]
 workspace = true
