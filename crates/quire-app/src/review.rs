@@ -717,6 +717,33 @@ The end.
         assert!(store.proposal(&id).is_none());
     }
 
+    /// Alt+] also types "]" on Linux and Windows: it must not stay in the note.
+    #[test]
+    fn the_character_an_alt_shortcut_types_is_taken_out() {
+        let mut ws = Workspace::new(Settings::default());
+        ws.attach_vault(Vault::in_memory(&[("N.md", "one\ntwo\nthree\n")]));
+        let doc = ws.open_note(&"N.md".into()).unwrap();
+        let store = ws.agent_store().unwrap().clone();
+        let agent = Actor::agent("mcp:x", "X", Via::McpStdio, "d");
+        let cs = ChangeSet::one(Change::Edit { path: "N.md".into(), new_text: "ONE\ntwo\nTHREE\n".into() });
+        let SubmitOutcome::Proposed { id, .. } = store.submit(&agent, cs).unwrap() else { panic!() };
+        assert!(ws.start_review(&id, None));
+        let _ = ws.run(crate::Command::NextHunk);
+        // The editor then gets the key's text, at the new caret.
+        let i = ws.docs.iter().position(|d| d.id == doc).unwrap();
+        let at = ws.docs[i].selection().head;
+        ws.docs[i].apply(quire_text::Transaction::insert(at, "]"), quire_text::EditKind::Insert).unwrap();
+        let _ = crate::agent_state::tick(&mut ws, Instant::now());
+        assert_eq!(&*ws.doc(doc).unwrap().text(), "one\ntwo\nthree\n");
+        assert_eq!(ws.features.agent.review.as_ref().unwrap().hunks.iter().filter(|h| h.conflict).count(), 0);
+        // Typing later is left alone.
+        let _ = crate::agent_state::tick(&mut ws, Instant::now());
+        let i = ws.docs.iter().position(|d| d.id == doc).unwrap();
+        ws.docs[i].apply(quire_text::Transaction::insert(0, "x"), quire_text::EditKind::Insert).unwrap();
+        let _ = crate::agent_state::tick(&mut ws, Instant::now());
+        assert!(ws.doc(doc).unwrap().text().starts_with('x'));
+    }
+
     #[test]
     fn action_ids_round_trip() {
         for act in HunkAct::ALL {

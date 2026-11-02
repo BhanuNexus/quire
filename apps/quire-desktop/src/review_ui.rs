@@ -6,7 +6,7 @@
 //!
 //! The lines a hunk replaces are tinted and struck through by the editor
 //! (decorations from `quire_app::agent_state`); this file draws what goes
-//! under them: the agent's lines, **✓ Accept · ✕ Reject · ✎ Edit**, the
+//! under them: the agent's lines, **✓ Accept · × Reject · Edit**, the
 //! conflict warning, and the inline editor. Owned by WS-A.
 
 use egui::{Align, Color32, Key, KeyboardShortcut, Layout, Modifiers, RichText, Stroke};
@@ -128,10 +128,10 @@ fn hunk_widget(ui: &mut egui::Ui, ws: &Workspace, r: &ReviewSession, gen_: u64, 
             let total = r.hunks.len();
             ui.label(RichText::new(format!("{} · {} of {total}", r.proposal.actor.label, k + 1)).size(11.5).color(pal.muted));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if tool_button(ui, "✎ Edit", pal.text, "Change the suggested text before accepting it") {
+                if tool_button(ui, "Edit", pal.text, "Change the suggested text before accepting it") {
                     clicked = Some(act(gen_, k, HunkAct::Edit));
                 }
-                if tool_button(ui, "✕ Reject", pal.danger, "Keep the note as it is (Ctrl+Alt+Backspace)") {
+                if tool_button(ui, "× Reject", pal.danger, "Keep the note as it is (Ctrl+Alt+Backspace)") {
                     clicked = Some(act(gen_, k, HunkAct::Reject));
                 }
                 let hint = if h.conflict {

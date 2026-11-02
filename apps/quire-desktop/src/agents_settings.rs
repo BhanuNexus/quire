@@ -152,7 +152,7 @@ pub(crate) fn show(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pa
                 ui,
                 &mut |ui| {
                     ui.add(egui::Label::new(RichText::new(&z.path).monospace()).truncate());
-                    if can_edit && ui.small_button("✕").on_hover_text("Remove this zone").clicked() {
+                    if can_edit && ui.small_button("×").on_hover_text("Remove this zone").clicked() {
                         remove = true;
                     }
                 },

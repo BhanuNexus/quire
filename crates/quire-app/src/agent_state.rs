@@ -188,6 +188,19 @@ pub struct AgentState {
     pub activity_loaded: Option<Instant>,
     /// "Undo an agent's changes…" asked the Activity tab to open its form.
     pub open_revert: bool,
+    /// An Alt shortcut just ran: the character its key types (Alt+] types
+    /// "]" on Linux and Windows, "‘" on macOS) must not land in the note.
+    key_guard: Option<KeyGuard>,
+}
+
+/// The note as it was when an Alt shortcut ran (see [`AgentState::key_guard`]).
+struct KeyGuard {
+    doc: DocId,
+    revision: u64,
+    len: usize,
+    hash: quire_vault::ContentHash,
+    /// Ticks seen since; the check happens on the first one after the key's frame.
+    ticks: u8,
 }
 
 impl AgentState {
@@ -208,6 +221,8 @@ pub(crate) fn tick(ws: &mut Workspace, now: Instant) -> bool {
         return false;
     }
     let mut changed = false;
+    // Before anything looks at the note: take out what an Alt shortcut typed.
+    drop_typed_key(ws);
     if !ws.features.agent.started {
         ws.features.agent.started = true;
         // After the first frame: nothing here reads the disk on the UI thread.
@@ -260,6 +275,46 @@ pub(crate) fn tick(ws: &mut Workspace, now: Instant) -> bool {
         changed = true;
     }
     changed
+}
+
+/// Remember the note before an Alt shortcut runs, so the character that
+/// key also types can be taken out again (the editor gets the key's text
+/// in the same frame).
+fn guard_typed_key(ws: &mut Workspace) {
+    ws.features.agent.key_guard = ws.active_doc().map(|d| {
+        let text = d.text();
+        KeyGuard { doc: d.id, revision: d.revision(), len: text.chars().count(), hash: quire_vault::ContentHash::of(&text), ticks: 0 }
+    });
+}
+
+/// If the frame of an Alt shortcut inserted exactly one character into the
+/// note, undo that insertion.
+fn drop_typed_key(ws: &mut Workspace) {
+    let Some(g) = ws.features.agent.key_guard.as_mut() else { return };
+    g.ticks += 1;
+    let (doc_id, rev, len, hash, ticks) = (g.doc, g.revision, g.len, g.hash.clone(), g.ticks);
+    let Some(i) = ws.docs.iter().position(|d| d.id == doc_id) else {
+        ws.features.agent.key_guard = None;
+        return;
+    };
+    let doc = &ws.docs[i];
+    if doc.revision() == rev {
+        // Nothing typed yet; the editor may still be on its way (one frame).
+        if ticks > 2 {
+            ws.features.agent.key_guard = None;
+        }
+        return;
+    }
+    ws.features.agent.key_guard = None;
+    let text = doc.text();
+    let caret = doc.selection().head;
+    if doc.revision() != rev + 1 || text.chars().count() != len + 1 || caret == 0 {
+        return;
+    }
+    let without: String = text.chars().enumerate().filter(|(k, _)| *k != caret - 1).map(|(_, c)| c).collect();
+    if quire_vault::ContentHash::of(&without) == hash && ws.docs[i].undo() {
+        ws.features.decor_generation += 1;
+    }
 }
 
 /// The person edited the agent instructions in Quire and saved them: that's
@@ -334,10 +389,12 @@ pub(crate) fn run(ws: &mut Workspace, cmd: Command) -> Option<UiRequest> {
             None
         }
         C::NextHunk => {
+            guard_typed_key(ws);
             ws.review_step(1);
             Some(UiRequest::Feature(cmd))
         }
         C::PrevHunk => {
+            guard_typed_key(ws);
             ws.review_step(-1);
             Some(UiRequest::Feature(cmd))
         }
@@ -355,6 +412,7 @@ pub(crate) fn run(ws: &mut Workspace, cmd: Command) -> Option<UiRequest> {
             Some(UiRequest::Feature(cmd))
         }
         C::OpenInbox => {
+            guard_typed_key(ws);
             ws.features.agent.loader.request(Duration::ZERO);
             Some(UiRequest::Feature(cmd))
         }

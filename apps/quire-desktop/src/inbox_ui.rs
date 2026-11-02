@@ -154,7 +154,7 @@ fn body(ui: &mut egui::Ui, ws: &Workspace, st: &mut InboxUi, pal: &Palette, act:
     }
     let groups = data.groups(&f);
     if !groups.is_empty() {
-        let n: usize = groups.iter().map(Group::changes).sum();
+        let n: usize = groups.iter().map(|g| g.proposals.len()).sum();
         heading(ui, pal, "Suggested changes", n);
         for g in &groups {
             group(ui, g, st, pal, act);

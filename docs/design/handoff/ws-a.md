@@ -30,7 +30,15 @@ worked around meanwhile, and what other workstreams can now use.
    file and `ws.features.agent.inbox.instructions` says whether it waits for
    approval (`!approved`), for a warning colour. Until then it is reached from
    Settings → Agents and the Inbox.
-5. **Overlay target for feature commands (F0, `registry::UiTarget`).**
+5. **Alt shortcuts also type their character (F0, `app.rs`).** egui sends
+   the key's text with Alt held (Alt+] gives "]" on Linux and Windows, "‘"
+   with Option on macOS), and `handle_shortcuts` leaves it for the editor,
+   so Alt+I, Alt+], Alt+[ (and 0.8's Alt+D/S/T) insert a character into the
+   note. WS-A works around it for its own keys (`agent_state::drop_typed_key`
+   undoes a one-character insertion made in the shortcut's frame).
+   Removing `Event::Text` from the input when an Alt-only shortcut fires
+   would fix it for every key.
+6. **Overlay target for feature commands (F0, `registry::UiTarget`).**
    "Undo an agent's changes…" would naturally be a dialog; with only tab
    targets it opens the Activity tab with its form expanded.
 

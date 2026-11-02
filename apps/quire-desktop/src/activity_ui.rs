@@ -136,7 +136,7 @@ pub(crate) fn show(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pa
             for r in [Range::Day, Range::Week, Range::Month] {
                 ui.selectable_value(&mut a.range, r, r.label());
             }
-            if ui.small_button("⟳").on_hover_text("Load again").clicked() {
+            if ui.small_button("Reload").on_hover_text("Read the activity log again").clicked() {
                 act = Some(Box::new(|ws: &mut Workspace, _, _| load_activity(ws)));
             }
         });

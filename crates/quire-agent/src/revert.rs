@@ -79,7 +79,7 @@ impl RevertStep {
             RevertAction::RenameBack { to } => format!("Rename “{name}” back to “{}”", to.stem()),
             RevertAction::Undelete { .. } => format!("Bring back “{name}”"),
             RevertAction::Propose { .. } => format!("“{name}” was edited since: suggest the undo for review"),
-            RevertAction::ProposeDelete => format!("“{name}” was edited since: suggest deleting it, for review"),
+            RevertAction::ProposeDelete => format!("Suggest deleting “{name}” (created by the agent and maybe edited since), for review"),
         }
     }
 }
