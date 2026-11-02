@@ -375,7 +375,7 @@ pub(crate) fn create_preview(ui: &mut egui::Ui, text: &str, pal: &Palette) {
 }
 
 /// How a group of suggestions is introduced: "Claude Code · 14:02".
-pub(crate) fn group_line(g: &inbox::Group) -> String {
+pub(crate) fn group_line(g: &inbox::Group<'_>) -> String {
     format!("{} · {}", g.actor_label, short_time(g.at_ms))
 }
 

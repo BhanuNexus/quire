@@ -161,8 +161,10 @@ fn body(ui: &mut egui::Ui, ws: &Workspace, st: &mut InboxUi, pal: &Palette, act:
         }
         shown += groups.len();
     }
+    let mut digest_seen = false;
     for (section, items) in data.findings(&f) {
         heading(ui, pal, section.title(), items.len());
+        digest_seen |= matches!(section, Section::Checks | Section::Stale);
         if section == Section::Checks {
             checks(ui, ws, &items, st, pal, act);
         } else {
@@ -174,6 +176,16 @@ fn body(ui: &mut egui::Ui, ws: &Workspace, st: &mut InboxUi, pal: &Palette, act:
     }
     if f.show_resolved {
         resolved(ui, ws, pal, act);
+    }
+    // Looking at checks resets the weekly digest.
+    if digest_seen && data.digest_due() && act.is_none() {
+        *act = Some(Box::new(|ws: &mut Workspace, _| {
+            if let Some(store) = ws.agent_store().cloned() {
+                let now = store.now_ms();
+                let _ = store.update_device_state(|s| s.digest_seen = now);
+            }
+            ws.features.agent.reload_inbox_soon();
+        }));
     }
     if shown == 0 {
         ui.add_space(16.0);
@@ -209,14 +221,14 @@ fn card<R>(ui: &mut egui::Ui, pal: &Palette, add: impl FnOnce(&mut egui::Ui) -> 
         .inner
 }
 
-fn group(ui: &mut egui::Ui, g: &Group, st: &mut InboxUi, pal: &Palette, act: &mut Option<Act>) {
+fn group(ui: &mut egui::Ui, g: &Group<'_>, st: &mut InboxUi, pal: &Palette, act: &mut Option<Act>) {
     let key = format!("g:{}", g.proposals[0].id);
     let open = st.expanded.contains(&key);
     card(ui, pal, |ui| {
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(review_ui::group_line(g)).size(12.0).color(pal.muted));
         });
-        let title = if g.proposals.len() > 1 { format!("{} (and {} more)", g.title, g.proposals.len() - 1) } else { g.title.clone() };
+        let title = if g.proposals.len() > 1 { format!("{} (and {} more)", g.title, g.proposals.len() - 1) } else { g.title.to_string() };
         ui.add(egui::Label::new(RichText::new(title).color(pal.strong)).wrap());
         let n = g.changes();
         ui.label(RichText::new(format!("{n} change{}", if n == 1 { "" } else { "s" })).size(12.0).color(pal.muted));
@@ -248,7 +260,7 @@ fn group(ui: &mut egui::Ui, g: &Group, st: &mut InboxUi, pal: &Palette, act: &mu
                     }
                 }));
             }
-            snooze_menu(ui, &proposal_fingerprint(&g.proposals[0]), act);
+            snooze_menu(ui, &proposal_fingerprint(g.proposals[0]), act);
             let toggle = if open { "Less" } else { "Details" };
             if ui.small_button(toggle).clicked() {
                 if open {

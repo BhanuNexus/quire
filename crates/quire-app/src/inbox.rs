@@ -20,6 +20,9 @@ use quire_agent::inbox::{InboxItem, LintCheck, StoredItem};
 use quire_agent::instructions::Instructions;
 use quire_agent::{AgentStore, PolicyState, Proposal, ProposalStatus, ProposalSummary};
 
+/// How often checks and staleness come back to the badge.
+pub const DIGEST_MS: i64 = 7 * 86_400_000;
+
 /// What the Inbox shows, as last loaded.
 #[derive(Clone, Default)]
 pub struct InboxData {
@@ -80,16 +83,16 @@ impl Section {
 
 /// Proposals that belong together: one agent run, or one proposal.
 #[derive(Debug, Clone)]
-pub struct Group {
-    pub actor_label: String,
-    pub actor_id: String,
+pub struct Group<'a> {
+    pub actor_label: &'a str,
+    pub actor_id: &'a str,
     /// When the first of them was made.
     pub at_ms: i64,
-    pub title: String,
-    pub proposals: Vec<Proposal>,
+    pub title: &'a str,
+    pub proposals: Vec<&'a Proposal>,
 }
 
-impl Group {
+impl Group<'_> {
     /// How many notes the group's waiting changes touch.
     pub fn changes(&self) -> usize {
         self.proposals.iter().map(|p| p.pending_changes().count()).sum()
@@ -138,11 +141,11 @@ impl InboxData {
     }
 
     /// Waiting proposals that pass `f`, grouped by run, oldest group first.
-    pub fn groups(&self, f: &Filters) -> Vec<Group> {
+    pub fn groups(&self, f: &Filters) -> Vec<Group<'_>> {
         if f.section.is_some_and(|s| s != Section::Suggested) {
             return Vec::new();
         }
-        let mut by_key: BTreeMap<String, Group> = BTreeMap::new();
+        let mut by_key: BTreeMap<String, Group<'_>> = BTreeMap::new();
         for p in &self.pending {
             if f.agent.as_ref().is_some_and(|a| *a != p.actor.id) || (!f.show_snoozed && self.snoozed(&proposal_fingerprint(p))) {
                 continue;
@@ -152,16 +155,16 @@ impl InboxData {
             }
             let key = p.run.as_ref().map_or_else(|| p.id.to_string(), |r| format!("{}|{r}", p.actor.id));
             let g = by_key.entry(key).or_insert_with(|| Group {
-                actor_label: p.actor.label.clone(),
-                actor_id: p.actor.id.clone(),
+                actor_label: &p.actor.label,
+                actor_id: &p.actor.id,
                 at_ms: p.created,
-                title: p.title.clone(),
+                title: &p.title,
                 proposals: Vec::new(),
             });
             g.at_ms = g.at_ms.min(p.created);
-            g.proposals.push(p.clone());
+            g.proposals.push(p);
         }
-        let mut v: Vec<Group> = by_key.into_values().collect();
+        let mut v: Vec<Group<'_>> = by_key.into_values().collect();
         v.sort_by_key(|g| g.at_ms);
         v
     }
@@ -194,15 +197,27 @@ impl InboxData {
             + usize::from(self.instructions.as_ref().is_some_and(|i| !i.approved))
     }
 
+    /// Checks and staleness reach the badge once a week (design §A.5's
+    /// weekly digest): when the person hasn't looked at them for 7 days.
+    pub const fn digest_due(&self) -> bool {
+        self.loaded_at_ms - self.device.digest_seen >= DIGEST_MS
+    }
+
     /// What the status-bar badge counts: waiting proposals (not snoozed),
-    /// findings at `on` level, and approvals.
+    /// other findings, approvals, and — as a weekly digest — checks at `on`
+    /// level and stale notes found since they were last looked at.
     pub fn badge(&self, warn_checks: &dyn Fn(LintCheck) -> bool) -> usize {
         let proposals = self.pending.iter().filter(|p| !self.snoozed(&proposal_fingerprint(p))).count();
+        let digest = self.digest_due();
         let findings = self
             .findings
             .iter()
             .filter(|s| !self.snoozed(&s.fingerprint))
-            .filter(|s| !matches!(&s.item, InboxItem::Lint { check, .. } if warn_checks(*check)))
+            .filter(|s| match &s.item {
+                InboxItem::Lint { check, .. } => digest && !warn_checks(*check) && s.created > self.device.digest_seen,
+                InboxItem::Stale { .. } => digest && s.created > self.device.digest_seen,
+                _ => true,
+            })
             .count();
         proposals + findings + self.permission_items()
     }
@@ -357,6 +372,12 @@ mod tests {
         assert_eq!(data.findings(&all).len(), 1);
         assert_eq!(data.badge(&|_| true), 3, "orphan is a warning: not in the badge");
         assert_eq!(data.badge(&|_| false), 4);
+        // Looked at the checks just now: they wait for next week's digest.
+        store.update_device_state(|s| s.digest_seen = 1_793_000_000_000).unwrap();
+        let seen = load(&store, false, false);
+        assert!(!seen.digest_due());
+        assert_eq!(seen.badge(&|_| false), 3);
+        store.update_device_state(|s| s.digest_seen = 0).unwrap();
         assert_eq!(proposal_fingerprint(&data.pending[0]), InboxItem::Proposal(data.pending[0].summary()).fingerprint());
         // Snooze a proposal for a day.
         let fp = proposal_fingerprint(data.pending.iter().find(|p| p.actor.id == "mcp:other").unwrap());

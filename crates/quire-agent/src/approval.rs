@@ -40,6 +40,10 @@ pub struct DeviceState {
     pub log_reads: bool,
     /// Inbox items hidden until a time: fingerprint → Unix ms.
     pub snoozed: BTreeMap<String, i64>,
+    /// When the person last looked at checks and staleness (Unix ms): those
+    /// count in the Inbox badge as a weekly digest.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub digest_seen: i64,
     #[serde(flatten)]
     pub other: toml::Table,
 }
@@ -52,9 +56,15 @@ impl Default for DeviceState {
             approved_instructions: None,
             log_reads: false,
             snoozed: BTreeMap::new(),
+            digest_seen: 0,
             other: toml::Table::new(),
         }
     }
+}
+
+#[expect(clippy::trivially_copy_pass_by_ref, reason = "serde's skip_serializing_if passes a reference")]
+const fn is_zero(v: &i64) -> bool {
+    *v == 0
 }
 
 /// The 16-hex FNV-1a of a vault's canonical root (the same function as the

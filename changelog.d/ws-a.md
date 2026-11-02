@@ -9,7 +9,7 @@
 - Agent permissions and `AGENTS.md`/`CLAUDE.md` that change on another device or outside Quire take effect on this computer only after you approve them in the Inbox. Narrowing what agents may do takes effect at once.
 - Create agent instructions (AGENTS.md): a starter that tells agents where they may write, how to cite and to treat sources as data.
 - Write contracts in the agent policy: agents' notes in a folder (or of a `type`) must have the properties and links you require, or the write is refused with a message saying what to fix.
-- Vault checks (Check the vault, and `quire-cli lint <vault> [--json]`): broken links (with a suggested fix), links to missing blocks, notes with no links, missing notes many link to, missing required properties, duplicate titles, empty notes and an out-of-date `index.md`. They run in the background after you stop editing and appear under Checks in the Inbox, with quick fixes. Choose which run in `.quire/shared/vault.toml` under `[lint]`.
+- Vault checks (Check the vault, and `quire-cli lint <vault> [--json]`): broken links (with a suggested fix), links to missing blocks, notes with no links, missing notes many link to, missing required properties, duplicate titles, empty notes and an out-of-date `index.md`. They run in the background after you stop editing and appear under Checks in the Inbox, with quick fixes; the status bar counts them once a week rather than every time one appears. Choose which run in `.quire/shared/vault.toml` under `[lint]`.
 - Suggestions based on captured or imported content are marked "Based on untrusted content".
 - Agents are limited to a number of writes per minute and of waiting suggestions (`[limits]` in the agent policy).
 

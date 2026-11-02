@@ -14,6 +14,8 @@ approved_policy = "sha256:…"        # hash of the approved .quire/shared/agent
 approved_instructions = "sha256:…"  # hash of the approved AGENTS.md / CLAUDE.md
 log_reads = false                   # log which notes agents read (ledger `read` events)
 
+digest_seen = 1793000000000         # when checks and staleness were last looked at (weekly digest)
+
 [snoozed]                           # inbox fingerprint → Unix ms
 3fa1c0d2b4e59a71 = 1793086400000
 ```
