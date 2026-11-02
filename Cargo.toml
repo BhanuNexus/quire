@@ -9,6 +9,7 @@ members = [
     "crates/quire-app",
     "crates/quire-import",
     "crates/quire-sync",
+    "crates/quire-spell",
     "apps/quire-desktop",
     "apps/quire-cli",
     "apps/quire-sync-server",
@@ -37,6 +38,7 @@ quire-intel = { path = "crates/quire-intel" }
 quire-app = { path = "crates/quire-app" }
 quire-import = { path = "crates/quire-import" }
 quire-sync = { path = "crates/quire-sync" }
+quire-spell = { path = "crates/quire-spell" }
 
 ropey = "1.6"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
@@ -60,6 +62,8 @@ rfd = "0.17"
 regex = "1"
 png = "0.18"
 egui_extras = { version = "0.37", default-features = false, features = ["file", "image", "gif", "webp"] }
+spellbook = "0.4"
+flate2 = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
 [workspace.lints.rust]

@@ -1,0 +1,8 @@
+# typos configuration. Run: typos
+[files]
+extend-exclude = [
+  # Hunspell affix rules and word lists: stems and fragments, not prose.
+  "crates/quire-spell/dictionaries/",
+  # Spell-checker tests are full of deliberate misspellings.
+  "crates/quire-spell/tests/",
+]
