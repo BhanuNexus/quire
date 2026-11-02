@@ -6,18 +6,28 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod activity_ui;
+mod agenda_ui;
+mod agent_panel_ui;
+mod agents_settings;
 mod app;
+mod calendar_ui;
 mod capture_key;
+mod decor;
 mod dialogs;
 mod editor;
 mod graph_view;
 mod highlight;
+mod inbox_ui;
 #[cfg(test)]
 mod layout_check;
 mod overlays;
 mod panels;
+mod registry;
 mod spell_ui;
+mod surfaces;
 mod theme;
+mod timeline_ui;
 mod typeset_ui;
 mod view;
 mod view_ui;

@@ -18,7 +18,7 @@ use quire_markdown::{LinkKind, editing, table};
 use quire_text::{Change, EditKind, Selection, Transaction, merge};
 use quire_vault::{NotePath, Vault, VaultEvent, VaultWatcher};
 
-use crate::commands::Command;
+use crate::commands::{Command, Owner};
 use crate::document::{DocId, Document, PendingMerge};
 use crate::session::{OpenTab, Session};
 use crate::settings::{Settings, Theme};
@@ -99,6 +99,9 @@ pub enum UiRequest {
     Copy(String),
     /// The quick-capture box.
     Capture,
+    /// A 0.9 feature's UI (a panel tab, a sidebar tab, a dialog); the
+    /// frontend's feature registry shows it.
+    Feature(Command),
 }
 
 /// Everything the insights panel shows for the active note.
@@ -158,6 +161,13 @@ pub struct Workspace {
     pub(crate) conflict_count_cache: std::cell::Cell<Option<(u64, usize)>>,
     pub updates: crate::updates::UpdateState,
     pub sync: crate::vault_sync::SyncHandle,
+    /// 0.9 features' state; see `features.rs`.
+    pub features: crate::features::Features,
+    /// Background jobs (design §9).
+    pub jobs: crate::jobs::JobRunner,
+    /// The agent store of the open vault.
+    pub(crate) agent: Option<quire_agent::AgentStore>,
+    device: quire_agent::DeviceInfo,
 }
 
 impl Workspace {
@@ -190,7 +200,37 @@ impl Workspace {
             conflict_count_cache: std::cell::Cell::new(None),
             updates: crate::updates::UpdateState::default(),
             sync: crate::vault_sync::SyncHandle::default(),
+            features: crate::features::Features::default(),
+            jobs: crate::jobs::JobRunner::new(),
+            agent: None,
+            device: crate::device::this_device(),
         }
+    }
+
+    /// This device (id and name, from `<config>/device.toml`).
+    pub const fn device(&self) -> &quire_agent::DeviceInfo {
+        &self.device
+    }
+
+    /// The open vault's agent store: proposals, ledger, inbox, policy.
+    pub const fn agent_store(&self) -> Option<&quire_agent::AgentStore> {
+        self.agent.as_ref()
+    }
+
+    /// Set up what 0.9 features need for a newly opened vault.
+    fn vault_attached(&mut self, vault: &Vault) {
+        let agent = quire_agent::AgentStore::open(vault, self.device.clone(), Arc::new(quire_agent::SystemClock));
+        self.jobs.set_context(Some(crate::jobs::JobCx {
+            vault: vault.clone(),
+            index: self.index.handle(),
+            agent: agent.clone(),
+            chat: None,
+            user_active: self.jobs.user_active_flag(),
+            cancel: quire_intel::chat::CancelFlag::new(),
+        }));
+        self.agent = Some(agent);
+        self.features.decor_generation += 1;
+        crate::features::vault_opened(self);
     }
 
     // ------------------------------------------------------------------ notices
@@ -240,6 +280,7 @@ impl Workspace {
             }
         };
         self.index.load(vault.clone());
+        self.vault_attached(&vault);
         self.vault = Some(vault);
         self.settings.last_vault = self.vault_root.clone();
         // The neural embedding cache lives inside the vault.
@@ -251,6 +292,7 @@ impl Workspace {
     /// Use an existing vault (tests, demos, in-memory scratch vaults).
     pub fn attach_vault(&mut self, vault: Vault) {
         self.index.load(vault.clone());
+        self.vault_attached(&vault);
         self.vault = Some(vault);
     }
 
@@ -562,9 +604,17 @@ impl Workspace {
         {
             self.history.keep_first(vault, &path, &orig, now - 1);
         }
+        let prov = self.docs[i].next_save_provenance.as_ref().map(|p| {
+            // The provenance describes exactly the text being saved.
+            let mut p = p.clone();
+            p.hash = quire_vault::ContentHash::of(&text);
+            p.at_ms = now;
+            p.to_json()
+        });
         match vault.write(&path, &text) {
             Ok(()) => {
-                self.history.keep(vault, &path, &text, now, false);
+                self.history.keep_with(vault, &path, &text, now, false, prov);
+                self.docs[i].next_save_provenance = None;
                 self.docs[i].mark_saved(&text);
                 self.index.upsert(path, text.to_string());
                 self.sync_nudge();
@@ -653,13 +703,19 @@ impl Workspace {
         self.maybe_check_updates();
         changed |= self.poll_updates();
         changed |= self.poll_sync();
+        // Background jobs wait while the person types.
+        let pause = Duration::from_millis(self.settings.jobs.pause_on_typing_ms);
+        self.jobs.set_user_active(self.docs.iter().filter_map(Document::last_edit).any(|t| now.saturating_duration_since(t) < pause));
+        changed |= crate::features::tick(self, now);
         changed
     }
 
-    /// Earliest instant at which `tick` has autosave work to do.
+    /// Earliest instant at which `tick` has work to do: autosave, or a feature's deadline.
     pub fn next_deadline(&self) -> Option<Instant> {
         let delay = Duration::from_millis(self.settings.autosave_ms);
-        self.docs.iter().filter(|d| d.path.is_some() && d.is_dirty()).filter_map(Document::last_edit).map(|t| t + delay).min()
+        let autosave =
+            self.docs.iter().filter(|d| d.path.is_some() && d.is_dirty()).filter_map(Document::last_edit).map(|t| t + delay).min();
+        autosave.into_iter().chain(crate::features::next_deadline(self)).min()
     }
 
     fn process_vault_events(&mut self) -> bool {
@@ -669,7 +725,7 @@ impl Workspace {
             return false;
         }
         let mut seen = std::collections::HashSet::new();
-        for ev in events.into_iter().rev() {
+        for ev in events.iter().rev().cloned() {
             match ev {
                 VaultEvent::Changed(p) => {
                     if !seen.insert(p.clone()) {
@@ -694,9 +750,12 @@ impl Workspace {
                         self.index.remove(p);
                     }
                 }
-                // PDFs, images and canvases: features that index them listen (0.9).
+                // PDFs, images and canvases: the features that use them listen below.
                 VaultEvent::AttachmentChanged(_) | VaultEvent::AttachmentRemoved(_) => {}
             }
+        }
+        for ev in &events {
+            crate::features::vault_event(self, ev);
         }
         true
     }
@@ -1055,6 +1114,9 @@ impl Workspace {
     /// Run a command. Returns a request when the frontend must show UI.
     pub fn run(&mut self, cmd: Command) -> Option<UiRequest> {
         use Command as C;
+        if cmd.owner() != Owner::Core {
+            return crate::features::run(self, cmd);
+        }
         match cmd {
             C::NewNote => {
                 self.new_note(None);
@@ -1246,6 +1308,53 @@ impl Workspace {
                 self.apply_link_suggestions(&s);
                 self.notify(NoticeLevel::Info, format!("Linked {n} mention{}", if n == 1 { "" } else { "s" }));
             }
+            // 0.9 commands are handled above (`features::run`).
+            C::OpenInbox
+            | C::NextHunk
+            | C::PrevHunk
+            | C::AcceptHunk
+            | C::AcceptAllInFile
+            | C::RejectHunk
+            | C::RejectAllInFile
+            | C::ShowAgentActivity
+            | C::UndoAgentChanges
+            | C::CreateAgentInstructions
+            | C::LintVault
+            | C::AgentSettings
+            | C::CaptureWebPage
+            | C::ConnectAgent
+            | C::CheckCitations
+            | C::ThinkingTimeline
+            | C::MarkReviewed
+            | C::ToggleAgentPanel
+            | C::IngestIntoWiki
+            | C::AiSetup
+            | C::ConnectExternalAgent
+            | C::ShowAgenda
+            | C::ShowCalendar
+            | C::OpenWeeklyNote
+            | C::OpenMonthlyNote
+            | C::OpenYearlyNote
+            | C::NextPeriod
+            | C::PrevPeriod
+            | C::StartReview
+            | C::ReviewThisNote
+            | C::AddCardIds
+            | C::RenameTag
+            | C::RenameProperty
+            | C::ConvertTaskToNote
+            | C::ConvertToView
+            | C::ToggleVim
+            | C::ChooseTheme
+            | C::GitCommitNow
+            | C::GitPull
+            | C::GitPush
+            | C::ToggleTwoPaneBrowser
+            | C::OpenHomepage
+            | C::NewCanvas
+            | C::InsertSketch
+            | C::InsertCitation
+            | C::ImportBibliography => return crate::features::run(self, cmd),
         }
         None
     }
@@ -1441,6 +1550,7 @@ impl Workspace {
     }
 
     pub fn shutdown(&mut self) {
+        self.jobs.set_context(None);
         self.save_all();
         self.history.flush();
         if let Some(p) = Session::path() {

@@ -89,6 +89,121 @@ pub enum Command {
     AskVault,
     EvaluateLine,
     LinkAllSuggestions,
+    // ---- 0.9. Every variant below dispatches to `features::run`; the
+    // workstream that owns it is noted. Handlers live in the owner's module.
+    // WS-A: agent store, review, inbox
+    OpenInbox,
+    NextHunk,
+    PrevHunk,
+    AcceptHunk,
+    AcceptAllInFile,
+    RejectHunk,
+    RejectAllInFile,
+    ShowAgentActivity,
+    UndoAgentChanges,
+    CreateAgentInstructions,
+    LintVault,
+    AgentSettings,
+    // WS-B: MCP, capture
+    CaptureWebPage,
+    ConnectAgent,
+    // WS-C: trust tools
+    CheckCitations,
+    ThinkingTimeline,
+    MarkReviewed,
+    // WS-D: on-device AI, agent panel
+    ToggleAgentPanel,
+    IngestIntoWiki,
+    AiSetup,
+    ConnectExternalAgent,
+    // WS-E: planning and metadata
+    ShowAgenda,
+    ShowCalendar,
+    OpenWeeklyNote,
+    OpenMonthlyNote,
+    OpenYearlyNote,
+    NextPeriod,
+    PrevPeriod,
+    StartReview,
+    ReviewThisNote,
+    AddCardIds,
+    RenameTag,
+    RenameProperty,
+    ConvertTaskToNote,
+    ConvertToView,
+    // WS-F: editor and UI
+    ToggleVim,
+    ChooseTheme,
+    GitCommitNow,
+    GitPull,
+    GitPush,
+    ToggleTwoPaneBrowser,
+    OpenHomepage,
+    // WS-G: canvas, PDF, citations
+    NewCanvas,
+    InsertSketch,
+    InsertCitation,
+    ImportBibliography,
+}
+
+/// Which workstream's module handles a 0.9 command (design §6.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Owner {
+    /// A 0.8 command, handled in `Workspace::run`.
+    Core,
+    Agent,
+    Mcp,
+    Trust,
+    Assistant,
+    Plan,
+    Editor,
+    Spatial,
+}
+
+impl Command {
+    /// The module that handles this command. 0.8 commands are `Core`.
+    pub const fn owner(self) -> Owner {
+        match self {
+            Self::OpenInbox
+            | Self::NextHunk
+            | Self::PrevHunk
+            | Self::AcceptHunk
+            | Self::AcceptAllInFile
+            | Self::RejectHunk
+            | Self::RejectAllInFile
+            | Self::ShowAgentActivity
+            | Self::UndoAgentChanges
+            | Self::CreateAgentInstructions
+            | Self::LintVault
+            | Self::AgentSettings => Owner::Agent,
+            Self::CaptureWebPage | Self::ConnectAgent => Owner::Mcp,
+            Self::CheckCitations | Self::ThinkingTimeline | Self::MarkReviewed => Owner::Trust,
+            Self::ToggleAgentPanel | Self::IngestIntoWiki | Self::AiSetup | Self::ConnectExternalAgent => Owner::Assistant,
+            Self::ShowAgenda
+            | Self::ShowCalendar
+            | Self::OpenWeeklyNote
+            | Self::OpenMonthlyNote
+            | Self::OpenYearlyNote
+            | Self::NextPeriod
+            | Self::PrevPeriod
+            | Self::StartReview
+            | Self::ReviewThisNote
+            | Self::AddCardIds
+            | Self::RenameTag
+            | Self::RenameProperty
+            | Self::ConvertTaskToNote
+            | Self::ConvertToView => Owner::Plan,
+            Self::ToggleVim
+            | Self::ChooseTheme
+            | Self::GitCommitNow
+            | Self::GitPull
+            | Self::GitPush
+            | Self::ToggleTwoPaneBrowser
+            | Self::OpenHomepage => Owner::Editor,
+            Self::NewCanvas | Self::InsertSketch | Self::InsertCitation | Self::ImportBibliography => Owner::Spatial,
+            _ => Owner::Core,
+        }
+    }
 }
 
 /// Platform-neutral shortcut. `cmd` means Ctrl on Windows/Linux and ⌘ on macOS.
@@ -112,6 +227,9 @@ const fn alt(key: &'static str) -> KeyCombo {
 }
 const fn cmd_alt(key: &'static str) -> KeyCombo {
     KeyCombo { cmd: true, shift: false, alt: true, key }
+}
+const fn cmd_alt_shift(key: &'static str) -> KeyCombo {
+    KeyCombo { cmd: true, shift: true, alt: true, key }
 }
 const fn shift(key: &'static str) -> KeyCombo {
     KeyCombo { cmd: false, shift: true, alt: false, key }
@@ -142,6 +260,9 @@ impl KeyCombo {
             "Comma" => ",",
             "Slash" => "/",
             "Minus" => "-",
+            "Backspace" => "Backspace",
+            "ArrowLeft" => "←",
+            "ArrowRight" => "→",
             k => k,
         });
         s
@@ -245,6 +366,56 @@ commands! {
     AskVault,         "Assist", "Ask your notes…",                [cmd_shift("A")], false;
     EvaluateLine,     "Assist", "Evaluate math on this line",     [cmd("Enter")], true;
     LinkAllSuggestions,"Assist","Link all suggested mentions",    [], true;
+    // ---- 0.9: keys are final (design §7.3; changes recorded in §6.1).
+    // Ctrl+Alt is AltGr on Windows: the desktop drops a Ctrl+Alt shortcut in
+    // a frame where text was typed, so AltGr+C still types ć on a Polish
+    // layout instead of making a canvas.
+    OpenInbox,        "Agent",  "Inbox",                          [alt("I")], false;
+    NextHunk,         "Review", "Next suggested change",          [alt("CloseBracket")], true;
+    PrevHunk,         "Review", "Previous suggested change",      [alt("OpenBracket")], true;
+    AcceptHunk,       "Review", "Accept suggested change",        [cmd_alt("Y")], true;
+    AcceptAllInFile,  "Review", "Accept all suggested changes in this note", [cmd_alt_shift("Y")], true;
+    RejectHunk,       "Review", "Reject suggested change",        [cmd_alt("Backspace")], true;
+    RejectAllInFile,  "Review", "Reject all suggested changes in this note", [], true;
+    ShowAgentActivity,"Agent",  "Agent activity",                 [], false;
+    UndoAgentChanges, "Agent",  "Undo an agent's changes…",       [], false;
+    CreateAgentInstructions,"Agent","Create agent instructions (AGENTS.md)", [], false;
+    LintVault,        "Agent",  "Check the vault (lint)",         [], false;
+    AgentSettings,    "Agent",  "Agent settings…",                [], false;
+    CaptureWebPage,   "Note",   "Capture web page…",              [], false;
+    ConnectAgent,     "Agent",  "Connect an AI agent (MCP)…",     [], false;
+    CheckCitations,   "Assist", "Check citations in this note",   [], true;
+    ThinkingTimeline, "Assist", "Thinking timeline…",             [], false;
+    MarkReviewed,     "Note",   "Mark note as reviewed",          [], true;
+    ToggleAgentPanel, "Agent",  "Agent panel",                    [cmd_shift("J")], false;
+    IngestIntoWiki,   "Agent",  "Ingest into wiki…",              [], false;
+    AiSetup,          "App",    "Set up AI…",                     [], false;
+    ConnectExternalAgent,"Agent","Connect an external agent (ACP)…", [], false;
+    ShowAgenda,       "Go",     "Agenda",                         [alt("A")], false;
+    ShowCalendar,     "Go",     "Calendar",                       [], false;
+    OpenWeeklyNote,   "Note",   "Open this week's note",          [], false;
+    OpenMonthlyNote,  "Note",   "Open this month's note",         [], false;
+    OpenYearlyNote,   "Note",   "Open this year's note",          [], false;
+    NextPeriod,       "Go",     "Next daily/weekly/monthly note", [], true;
+    PrevPeriod,       "Go",     "Previous daily/weekly/monthly note", [], true;
+    StartReview,      "Study",  "Review flashcards",              [cmd_alt("R")], false;
+    ReviewThisNote,   "Study",  "Review this note's flashcards",  [], true;
+    AddCardIds,       "Study",  "Add ids to this note's flashcards", [], true;
+    RenameTag,        "Note",   "Rename tag…",                    [], false;
+    RenameProperty,   "Note",   "Rename property…",               [], false;
+    ConvertTaskToNote,"Format", "Convert task to note",           [], true;
+    ConvertToView,    "Format", "Convert to quire-view",          [], true;
+    ToggleVim,        "Edit",   "Vim mode",                       [], false;
+    ChooseTheme,      "View",   "Theme…",                         [], false;
+    GitCommitNow,     "App",    "Commit now (git)",               [], false;
+    GitPull,          "App",    "Pull (git)",                     [], false;
+    GitPush,          "App",    "Push (git)",                     [], false;
+    ToggleTwoPaneBrowser,"View","Folders and notes side by side", [], false;
+    OpenHomepage,     "Go",     "Open homepage note",             [], false;
+    NewCanvas,        "Note",   "New canvas",                     [cmd_alt("C")], false;
+    InsertSketch,     "Format", "Insert sketch",                  [], true;
+    InsertCitation,   "Format", "Insert citation…",               [], true;
+    ImportBibliography,"Note",  "Import bibliography…",           [], false;
 }
 
 impl Command {
@@ -267,5 +438,40 @@ mod tests {
         }
         assert_eq!(Command::Bold.info().keys[0].label(false), "Ctrl+B");
         assert_eq!(Command::Quote.info().keys[0].label(true), "⌘⇧.");
+    }
+
+    #[test]
+    fn the_0_9_keys_are_the_documented_ones() {
+        let label = |c: Command| c.info().keys.first().map(|k| k.label(false)).unwrap_or_default();
+        for (c, keys) in [
+            (Command::NextHunk, "Alt+]"),
+            (Command::PrevHunk, "Alt+["),
+            (Command::AcceptHunk, "Ctrl+Alt+Y"),
+            (Command::AcceptAllInFile, "Ctrl+Alt+Shift+Y"),
+            (Command::RejectHunk, "Ctrl+Alt+Backspace"),
+            (Command::ToggleAgentPanel, "Ctrl+Shift+J"),
+            (Command::NewCanvas, "Ctrl+Alt+C"),
+            (Command::StartReview, "Ctrl+Alt+R"),
+            // Ctrl+Shift+I (insights) and Ctrl+Shift+D (insert date) were taken in 0.8.
+            (Command::OpenInbox, "Alt+I"),
+            (Command::ShowAgenda, "Alt+A"),
+        ] {
+            assert_eq!(label(c), keys, "{c:?}");
+        }
+        // 0.8 bindings are unchanged.
+        assert_eq!(label(Command::ToggleInsights), "Ctrl+Shift+I");
+        assert_eq!(label(Command::InsertDate), "Ctrl+Shift+D");
+    }
+
+    #[test]
+    fn every_command_is_registered_once_with_an_owner() {
+        let mut seen = std::collections::HashSet::new();
+        for c in COMMANDS {
+            assert!(seen.insert(c.command), "{:?} registered twice", c.command);
+            assert!(!c.title.is_empty());
+        }
+        assert_eq!(Command::OpenInbox.owner(), Owner::Agent);
+        assert_eq!(Command::Bold.owner(), Owner::Core);
+        assert!(COMMANDS.iter().filter(|c| c.command.owner() != Owner::Core).count() >= 40);
     }
 }

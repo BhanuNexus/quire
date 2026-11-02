@@ -82,13 +82,14 @@ fn overlays(ws: &Workspace) -> Vec<(&'static str, Overlay)> {
         ("publish", Overlay::Publish(PublishState::new(ws))),
         ("new note folder", Overlay::Folder(FolderState::new(ws, FolderMode::NewNote))),
         ("move", Overlay::Folder(FolderState::new(ws, FolderMode::Move))),
-        ("shortcuts", Overlay::Shortcuts { query: String::new(), focused: false }),
         ("conflicts", Overlay::SyncConflicts),
         ("graph", Overlay::Graph(Box::new(crate::graph_view::GraphState::new(ws)))),
     ];
-    for (i, st) in SettingsState::every_tab().into_iter().enumerate() {
-        v.push((["settings: editor", "settings: ai", "settings: sync", "settings: about"][i], Overlay::Settings(Box::new(st))));
+    for (name, st) in SettingsState::every_tab() {
+        v.push((name, Overlay::Settings(Box::new(st))));
     }
+    // Every feature dialog, from each workstream's block in the registry.
+    v.extend(crate::registry::layout_samples(ws));
     for step in 0..crate::dialogs::TOUR_STEPS {
         v.push(("tour", Overlay::Tour { step }));
     }
@@ -164,5 +165,42 @@ fn dialogs_keep_their_size_and_fit_the_window() {
         }
     }
     failures.dedup();
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Every registered panel tab (offered or not) draws without growing from
+/// frame to frame, in a narrow and a wide panel.
+#[test]
+fn feature_tabs_keep_their_size() {
+    let mut failures = Vec::new();
+    let tables =
+        [("right", crate::registry::RIGHT_TABS), ("sidebar", crate::registry::SIDEBAR_TABS), ("settings", crate::registry::SETTINGS_TABS)];
+    for (table, tabs) in tables {
+        for tab in tabs {
+            for width in [220.0_f32, 480.0] {
+                let mut ws = workspace();
+                let mut fui = crate::registry::FeatureUi::default();
+                let ctx = egui::Context::default();
+                theme::install_fonts(&ctx);
+                ctx.global_style_mut(theme::style);
+                let mut sizes = Vec::new();
+                for frame in 0..30 {
+                    let mut out = ctx.run_ui(input(Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 820.0)), frame), |ui| {
+                        let r = ui
+                            .allocate_ui(Vec2::new(width, 700.0), |ui| {
+                                let _ = (tab.show)(ui, &mut ws, &mut fui, &theme::LIGHT);
+                            })
+                            .response
+                            .rect;
+                        sizes.push(r.size());
+                    });
+                    out.textures_delta.clear();
+                }
+                if sizes[10..].iter().any(|s| (s.y - sizes[10].y).abs() > 0.5 || s.x > width + 0.5) {
+                    failures.push(format!("{table} tab {} at width {width}: {:?}", tab.id, &sizes[10..]));
+                }
+            }
+        }
+    }
     assert!(failures.is_empty(), "{failures:#?}");
 }

@@ -23,6 +23,8 @@ pub(crate) enum SidebarTab {
     Search,
     Tags,
     Tasks,
+    /// A tab registered in `registry::SIDEBAR_TABS`, by id.
+    Feature(&'static str),
 }
 
 #[derive(Default)]
@@ -262,16 +264,31 @@ fn highlighted(text: &str, ranges: &[std::ops::Range<usize>], pal: &Palette) -> 
     job
 }
 
-pub(crate) fn sidebar(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut SidebarState, pal: &Palette) -> PanelOut {
+pub(crate) fn sidebar(
+    ui: &mut egui::Ui,
+    ws: &mut Workspace,
+    st: &mut SidebarState,
+    features: &mut crate::registry::FeatureUi,
+    pal: &Palette,
+) -> PanelOut {
     let mut out = PanelOut::default();
     ui.add_space(6.0);
-    ui.horizontal(|ui| {
+    let feature_tabs = crate::registry::offered(crate::registry::SIDEBAR_TABS, ws);
+    if let SidebarTab::Feature(id) = st.tab
+        && !feature_tabs.iter().any(|t| t.id == id)
+    {
+        st.tab = SidebarTab::Files;
+    }
+    ui.horizontal_wrapped(|ui| {
         for (tab, label) in
             [(SidebarTab::Files, "Files"), (SidebarTab::Search, "Search"), (SidebarTab::Tags, "Tags"), (SidebarTab::Tasks, "Tasks")]
         {
             if ui.selectable_value(&mut st.tab, tab, label).clicked() && tab == SidebarTab::Search {
                 st.focus_query = true;
             }
+        }
+        for t in &feature_tabs {
+            ui.selectable_value(&mut st.tab, SidebarTab::Feature(t.id), (t.label)(ws));
         }
     });
     ui.separator();
@@ -281,6 +298,11 @@ pub(crate) fn sidebar(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut SidebarSta
     let mut folder_action: Option<(String, Command)> = None;
 
     match st.tab {
+        SidebarTab::Feature(id) => {
+            if let Some(t) = feature_tabs.iter().find(|t| t.id == id) {
+                out = (t.show)(ui, ws, features, pal);
+            }
+        }
         SidebarTab::Files => {
             ui.horizontal(|ui| {
                 ui.menu_button("+ New", |ui| {
@@ -730,6 +752,19 @@ pub(crate) fn status_bar(ui: &mut egui::Ui, ws: &Workspace, pal: &Palette) -> Pa
             }
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // Feature slots: the inbox badge, Vim mode, due cards, the engine.
+            for item in ws.status_items() {
+                let color = if item.warn { pal.warn } else { pal.muted };
+                let r = ui
+                    .add(egui::Label::new(RichText::new(&item.text).size(12.0).color(color)).sense(egui::Sense::click()))
+                    .on_hover_text(&item.tooltip);
+                if let Some(c) = item.command
+                    && r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+                {
+                    out.run = Some(c);
+                }
+                ui.separator();
+            }
             {
                 use quire_app::vault_sync::SyncStatus;
                 let st = &ws.sync.status;

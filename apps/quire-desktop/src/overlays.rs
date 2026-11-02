@@ -46,10 +46,6 @@ pub(crate) enum Overlay {
     NewProject(crate::dialogs::ProjectState),
     Publish(crate::dialogs::PublishState),
     Folder(crate::dialogs::FolderState),
-    Shortcuts {
-        query: String,
-        focused: bool,
-    },
     Tour {
         step: usize,
     },
@@ -62,6 +58,20 @@ pub(crate) enum Overlay {
         focused: bool,
         minimize: bool,
     },
+    /// A dialog that lives in its own file (every 0.9 feature dialog).
+    Feature(Box<dyn OverlayView>),
+}
+
+/// A dialog in its own file. Features implement this instead of adding a
+/// variant to [`Overlay`]; `registry::layout_samples` lists them for
+/// `layout_check`, which every dialog must pass.
+pub(crate) trait OverlayView {
+    /// Draw the dialog (usually an `egui::Modal`). Escape is handled by the caller.
+    fn show(&mut self, ctx: &egui::Context, ws: &mut Workspace, pal: &Palette) -> OverlayResult;
+    /// Lists and views give way to quick capture; dialogs with typing in them don't.
+    fn yields_to_capture(&self) -> bool {
+        false
+    }
 }
 
 impl Overlay {
@@ -120,6 +130,7 @@ fn items(ws: &Workspace, mode: Mode, query: &str, mac: bool) -> Vec<Item> {
             let mut v: Vec<(i32, Item)> = COMMANDS
                 .iter()
                 .filter(|c| has_doc || !c.needs_doc)
+                .filter(|c| ws.command_available(c.command))
                 .filter(|c| c.command != Command::CommandPalette)
                 .filter_map(|c| {
                     let s = fuzzy_score(&format!("{} {}", c.category, c.title), query)?;
@@ -174,6 +185,7 @@ fn items(ws: &Workspace, mode: Mode, query: &str, mac: bool) -> Vec<Item> {
     }
 }
 
+#[derive(Default)]
 pub(crate) struct OverlayResult {
     pub close: bool,
     pub run: Option<Command>,
@@ -196,7 +208,7 @@ pub(crate) fn show(ctx: &egui::Context, overlay: &mut Overlay, ws: &mut Workspac
         Overlay::NewProject(st) => (res.close, res.jumped) = crate::dialogs::new_project(ctx, st, ws, pal),
         Overlay::Publish(st) => res.close = crate::dialogs::publish(ctx, st, ws, pal),
         Overlay::Folder(st) => (res.close, res.jumped) = crate::dialogs::folder_picker(ctx, st, ws, pal),
-        Overlay::Shortcuts { query, focused } => res.close = shortcuts(ctx, query, focused, pal, mac),
+        Overlay::Feature(view) => res = view.show(ctx, ws, pal),
         Overlay::Tour { step } => res.close = crate::dialogs::tour(ctx, step, ws, pal),
         Overlay::SyncConflicts => (res.close, res.jumped) = crate::dialogs::sync_conflicts(ctx, ws, pal),
         Overlay::Graph(st) => (res.close, res.jumped) = crate::graph_view::show(ctx, st, ws, pal),
@@ -574,11 +586,31 @@ pub(crate) fn show(ctx: &egui::Context, overlay: &mut Overlay, ws: &mut Workspac
 }
 
 /// Categories in the order the cheat sheet shows them.
-const CATEGORIES: [&str; 9] = ["Note", "Go", "Edit", "Format", "Find", "View", "Assist", "App", "Help"];
+const CATEGORIES: [&str; 12] = ["Note", "Go", "Edit", "Format", "Find", "View", "Review", "Agent", "Assist", "Study", "App", "Help"];
+
+/// The Ctrl+/ cheat sheet.
+#[derive(Default)]
+pub(crate) struct ShortcutsOverlay {
+    query: String,
+    focused: bool,
+}
+
+impl OverlayView for ShortcutsOverlay {
+    fn show(&mut self, ctx: &egui::Context, ws: &mut Workspace, pal: &Palette) -> OverlayResult {
+        OverlayResult {
+            close: shortcuts(ctx, &mut self.query, &mut self.focused, ws, pal, cfg!(target_os = "macos")),
+            ..Default::default()
+        }
+    }
+
+    fn yields_to_capture(&self) -> bool {
+        true
+    }
+}
 
 /// Ctrl+/ cheat sheet: every command, grouped, with its shortcuts. Generated
 /// from `COMMANDS`, so it can't drift from what the keys actually do.
-fn shortcuts(ctx: &egui::Context, query: &mut String, focused: &mut bool, pal: &Palette, mac: bool) -> bool {
+fn shortcuts(ctx: &egui::Context, query: &mut String, focused: &mut bool, ws: &Workspace, pal: &Palette, mac: bool) -> bool {
     let mut close = false;
     egui::Modal::new(egui::Id::unique("quire-shortcuts")).show(ctx, |ui| {
         let w = 760.0_f32.min(ctx.content_rect().width() - 48.0);
@@ -611,7 +643,7 @@ fn shortcuts(ctx: &egui::Context, query: &mut String, focused: &mut bool, pal: &
                 for cat in CATEGORIES {
                     let cmds: Vec<_> = COMMANDS
                         .iter()
-                        .filter(|c| c.category == cat && !c.keys.is_empty())
+                        .filter(|c| c.category == cat && !c.keys.is_empty() && ws.command_available(c.command))
                         .filter(|c| q.is_empty() || c.title.to_lowercase().contains(&q) || cat.to_lowercase().contains(&q))
                         .collect();
                     if cmds.is_empty() {

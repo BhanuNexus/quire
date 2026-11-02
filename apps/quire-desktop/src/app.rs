@@ -56,6 +56,12 @@ pub(crate) struct QuireApp {
     last_active: Option<DocId>,
     /// Quick open was shown to pick the other half's note; this note stays.
     pick_side: Option<DocId>,
+    /// UI state of 0.9 feature panels (`registry.rs`).
+    features: crate::registry::FeatureUi,
+    /// The right panel's tab (`registry::RIGHT_TABS` id).
+    right_tab: &'static str,
+    /// Open non-Markdown files (canvas, PDF, `.base`).
+    surfaces: crate::surfaces::Surfaces,
 }
 
 fn sample_dir() -> PathBuf {
@@ -118,6 +124,30 @@ impl QuireApp {
             split_left: false,
             last_active: None,
             pick_side: None,
+            features: crate::registry::FeatureUi::default(),
+            right_tab: crate::registry::INSIGHTS,
+            surfaces: crate::surfaces::Surfaces::default(),
+        }
+    }
+
+    /// Show a feature's UI (`UiRequest::Feature`), or say it isn't there yet.
+    fn show_feature(&mut self, cmd: Command) {
+        use crate::registry::{RIGHT_TABS, SETTINGS_TABS, SIDEBAR_TABS, UiTarget, tab_offered, ui_target};
+        match ui_target(cmd) {
+            Some(UiTarget::Right(id)) if tab_offered(RIGHT_TABS, id, &self.ws) => {
+                self.ws.settings.show_insights = true;
+                self.ws.focus_mode = false;
+                self.right_tab = id;
+            }
+            Some(UiTarget::Sidebar(id)) if tab_offered(SIDEBAR_TABS, id, &self.ws) => {
+                self.ws.settings.show_sidebar = true;
+                self.ws.focus_mode = false;
+                self.sidebar.tab = SidebarTab::Feature(id);
+            }
+            Some(UiTarget::Settings(id)) if tab_offered(SETTINGS_TABS, id, &self.ws) => {
+                self.overlay = Some(Overlay::Settings(Box::new(crate::dialogs::SettingsState::feature_tab(id))));
+            }
+            _ => crate::registry::not_available(&mut self.ws, cmd),
         }
     }
 
@@ -195,7 +225,7 @@ impl QuireApp {
                 UiRequest::SyncSettings => Overlay::Settings(Box::new(crate::dialogs::SettingsState::sync_tab(&self.ws))),
                 UiRequest::NewProject => Overlay::NewProject(crate::dialogs::ProjectState::default()),
                 UiRequest::Publish => Overlay::Publish(crate::dialogs::PublishState::new(&self.ws)),
-                UiRequest::Shortcuts => Overlay::Shortcuts { query: String::new(), focused: false },
+                UiRequest::Shortcuts => Overlay::Feature(Box::new(overlays::ShortcutsOverlay::default())),
                 UiRequest::Tour => Overlay::Tour { step: 0 },
                 UiRequest::SyncConflicts => Overlay::SyncConflicts,
                 UiRequest::NewInFolder => Overlay::Folder(crate::dialogs::FolderState::new(&self.ws, crate::dialogs::FolderMode::NewNote)),
@@ -217,6 +247,10 @@ impl QuireApp {
                         return;
                     }
                     Overlay::Import(crate::dialogs::ImportState::default())
+                }
+                UiRequest::Feature(c) => {
+                    self.show_feature(c);
+                    return;
                 }
                 UiRequest::Editor(c) => {
                     if self.classic() {
@@ -257,7 +291,11 @@ impl QuireApp {
         // egui ignores extra Shift/Alt when matching, so try the most specific combos first.
         let mut combos: Vec<(u8, Command, KeyboardShortcut)> = Vec::new();
         for info in COMMANDS {
-            if other_field_focused && matches!(info.category, "Edit" | "Format") {
+            if other_field_focused && matches!(info.category, "Edit" | "Format" | "Review") {
+                continue;
+            }
+            // Features that aren't ready have no keys yet.
+            if !self.ws.command_available(info.command) {
                 continue;
             }
             for k in info.keys {
@@ -279,12 +317,10 @@ impl QuireApp {
         }
         combos.sort_by_key(|c| std::cmp::Reverse(c.0));
         let mut fired = Vec::new();
-        // On Windows AltGr arrives as Ctrl+Alt: when a character was typed this
-        // frame (é, ł, €…), a Ctrl+Alt "shortcut" is really that character.
         let typed = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(t) if !t.is_empty())));
         ctx.input_mut(|i| {
             for (_, cmd, sc) in &combos {
-                if typed && sc.modifiers.alt && sc.modifiers.command && !sc.modifiers.shift {
+                if altgr_typed(sc.modifiers, typed) {
                     continue;
                 }
                 if i.consume_shortcut(sc) {
@@ -432,6 +468,27 @@ impl QuireApp {
         }
     }
 
+    /// The right panel: Insights, plus any feature tabs that are offered.
+    fn right_panel(&mut self, ui: &mut egui::Ui, pal: &Palette) -> PanelOut {
+        let tabs = crate::registry::offered(crate::registry::RIGHT_TABS, &self.ws);
+        let tab = tabs.iter().find(|t| t.id == self.right_tab).or_else(|| tabs.first()).copied();
+        if tabs.len() > 1 {
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                for t in &tabs {
+                    if ui.selectable_label(tab.is_some_and(|c| c.id == t.id), (t.label)(&self.ws)).clicked() {
+                        self.right_tab = t.id;
+                    }
+                }
+            });
+            ui.separator();
+        }
+        match tab {
+            Some(t) => (t.show)(ui, &mut self.ws, &mut self.features, pal),
+            None => PanelOut::default(),
+        }
+    }
+
     fn update_title(&mut self, ctx: &egui::Context) {
         let title = match self.ws.active_doc() {
             Some(d) => format!("{}{} — {} — Quire", d.title(), if d.is_dirty() { " •" } else { "" }, self.ws.vault_name()),
@@ -515,7 +572,10 @@ impl QuireApp {
                     *minimize |= minimized;
                 }
                 // Lists and views can give way; a dialog with typing in it can't.
-                None | Some(Overlay::Palette { .. } | Overlay::Shortcuts { .. } | Overlay::Graph(_) | Overlay::Tour { .. }) => {
+                None | Some(Overlay::Palette { .. } | Overlay::Graph(_) | Overlay::Tour { .. }) => {
+                    self.overlay = Some(Overlay::Capture { text: String::new(), focused: false, minimize: minimized });
+                }
+                Some(Overlay::Feature(v)) if v.yields_to_capture() => {
                     self.overlay = Some(Overlay::Capture { text: String::new(), focused: false, minimize: minimized });
                 }
                 Some(_) => self.ws.notify(NoticeLevel::Info, "Close the open dialog to use quick capture"),
@@ -528,6 +588,8 @@ impl QuireApp {
         self.quick_capture_key(&ctx);
         self.apply_theme(&ctx);
         let pal = self.palette(&ctx);
+        // Background jobs wait while a dialog is open.
+        self.ws.jobs.set_modal_open(self.overlay.is_some());
         self.handle_shortcuts(&ctx);
         if self.overlay.is_none() && self.classic() {
             EditorState::handle_smart_keys(&ctx, &mut self.ws);
@@ -569,8 +631,16 @@ impl QuireApp {
             if !focus {
                 let out = egui::Panel::top("quire-tabs")
                     .frame(egui::Frame::NONE.fill(pal.panel).inner_margin(egui::Margin::symmetric(10, 6)))
-                    .show(ui, |ui| panels::tab_bar(ui, &mut self.ws, pal))
+                    .show(ui, |ui| {
+                        let out = panels::tab_bar(ui, &mut self.ws, pal);
+                        self.surfaces.tab_strip(ui, pal);
+                        out
+                    })
                     .inner;
+                if out.jumped {
+                    // A note tab was chosen: notes get the central panel again.
+                    self.surfaces.active = None;
+                }
                 self.after_panel(&out);
             }
             let status = egui::Panel::bottom("quire-status")
@@ -584,7 +654,7 @@ impl QuireApp {
                     .default_size(250.0)
                     .size_range(170.0..=480.0)
                     .frame(egui::Frame::NONE.fill(pal.panel).inner_margin(egui::Margin::symmetric(10, 4)))
-                    .show(ui, |ui| panels::sidebar(ui, &mut self.ws, &mut self.sidebar, pal))
+                    .show(ui, |ui| panels::sidebar(ui, &mut self.ws, &mut self.sidebar, &mut self.features, pal))
                     .inner;
                 self.after_panel(&out);
             }
@@ -596,7 +666,7 @@ impl QuireApp {
                     .frame(egui::Frame::NONE.fill(pal.panel).inner_margin(egui::Margin::symmetric(12, 4)))
                     .show(ui, |ui| {
                         let t = Instant::now();
-                        let out = panels::insights(ui, &mut self.ws, pal);
+                        let out = self.right_panel(ui, pal);
                         trace("insights", t);
                         out
                     })
@@ -633,7 +703,9 @@ impl QuireApp {
                 self.after_panel(&out);
             }
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(pal.bg)).show(ui, |ui| {
-                if self.ws.active_doc().is_some() {
+                if let Some(out) = self.surfaces.show_active(ui, &mut self.ws, pal) {
+                    self.after_panel(&out);
+                } else if self.ws.active_doc().is_some() {
                     self.settle_split();
                     if let Some(other) = self.split {
                         self.split_panes(ui, other, pal);
@@ -708,6 +780,13 @@ impl QuireApp {
     }
 }
 
+/// On Windows `AltGr` arrives as Ctrl+Alt (and `AltGr`+Shift as Ctrl+Alt+Shift):
+/// when a character was typed this frame (é, ł, €, Ü…), a Ctrl+Alt
+/// "shortcut" is really that character.
+fn altgr_typed(m: Modifiers, typed: bool) -> bool {
+    typed && m.alt && m.command
+}
+
 /// With `QUIRE_TRACE` set, report sections slower than 8 ms.
 fn trace(what: &str, since: Instant) {
     let ms = since.elapsed().as_secs_f64() * 1000.0;
@@ -719,5 +798,20 @@ fn trace(what: &str, since: Instant) {
 impl Drop for QuireApp {
     fn drop(&mut self) {
         self.ws.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn altgr_text_wins_over_ctrl_alt_shortcuts() {
+        let ctrl_alt = Modifiers::COMMAND | Modifiers::ALT;
+        assert!(altgr_typed(ctrl_alt, true), "AltGr+C types ć on a Polish layout");
+        assert!(altgr_typed(ctrl_alt | Modifiers::SHIFT, true), "AltGr+Shift+Y types Ü on US-International");
+        assert!(!altgr_typed(ctrl_alt, false), "no text: it's the shortcut");
+        assert!(!altgr_typed(Modifiers::ALT, true));
+        assert!(!altgr_typed(Modifiers::COMMAND | Modifiers::SHIFT, true));
     }
 }

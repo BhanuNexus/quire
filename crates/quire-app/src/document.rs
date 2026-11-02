@@ -56,6 +56,10 @@ pub struct Document {
     derived: RefCell<Derived>,
     /// (revision after the edit, line deltas) for views that keep per-line state.
     line_log: Vec<(u64, Vec<LineDelta>)>,
+    /// Who the next save's version is from, when it isn't plain typing (a
+    /// person accepting an agent's suggestion). `Workspace::save` takes it
+    /// and writes it next to the history snapshot.
+    pub next_save_provenance: Option<quire_agent::Provenance>,
 }
 
 const LINE_LOG_CAP: usize = 256;
@@ -78,6 +82,7 @@ impl Document {
             pending_merge: None,
             derived: RefCell::default(),
             line_log: Vec::new(),
+            next_save_provenance: None,
         }
     }
 

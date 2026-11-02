@@ -180,6 +180,12 @@ impl IndexService {
         self.send(IndexMsg::RemoveAttachment(path));
     }
 
+    /// The shared model, for background jobs that outlive a borrow of the
+    /// service. Hold the read lock briefly (design §9: at most 2 ms).
+    pub fn handle(&self) -> Arc<RwLock<Index>> {
+        Arc::clone(&self.index)
+    }
+
     /// Read access to the current model. Hold briefly.
     pub fn read(&self) -> RwLockReadGuard<'_, Index> {
         self.index.read().unwrap_or_else(std::sync::PoisonError::into_inner)

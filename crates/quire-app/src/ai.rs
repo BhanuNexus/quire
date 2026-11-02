@@ -173,3 +173,8 @@ mod tests {
         assert_eq!(embed_base_url(&s), "http://localhost:11434");
     }
 }
+
+/// On-device AI state (WS-D): engine status, downloads in progress. Kept in
+/// `ws.features.ai`; the settings are `ws.settings.ai_local`.
+#[derive(Debug, Default)]
+pub struct LocalAiState {}

@@ -37,6 +37,11 @@ pub(crate) struct SettingsState {
     test_result: Option<Result<String, String>>,
     tab: SettingsTab,
     sync: SyncForm,
+    /// Show `tab` even if its feature isn't offered (layout tests).
+    #[cfg(test)]
+    force_tab: bool,
+    /// State of feature tabs (`registry::SETTINGS_TABS`).
+    features: crate::registry::FeatureUi,
 }
 
 impl SettingsState {
@@ -44,11 +49,24 @@ impl SettingsState {
         Self { tab: SettingsTab::Sync, ..Default::default() }
     }
 
+    /// Open on a feature's tab (`registry::SETTINGS_TABS` id).
+    pub(crate) fn feature_tab(id: &'static str) -> Self {
+        Self { tab: SettingsTab::Feature(id), ..Default::default() }
+    }
+
+    /// Every tab, built in and registered (offered or not), for `layout_check`.
     #[cfg(test)]
-    pub(crate) fn every_tab() -> Vec<Self> {
-        [SettingsTab::Editor, SettingsTab::Ai, SettingsTab::Sync, SettingsTab::About]
+    pub(crate) fn every_tab() -> Vec<(&'static str, Self)> {
+        let builtin = [
+            ("settings: editor", SettingsTab::Editor),
+            ("settings: ai", SettingsTab::Ai),
+            ("settings: sync", SettingsTab::Sync),
+            ("settings: about", SettingsTab::About),
+        ];
+        builtin
             .into_iter()
-            .map(|tab| Self { tab, ..Default::default() })
+            .chain(crate::registry::SETTINGS_TABS.iter().map(|t| ("settings: feature tab", SettingsTab::Feature(t.id))))
+            .map(|(name, tab)| (name, Self { tab, force_tab: true, ..Default::default() }))
             .collect()
     }
 }
@@ -60,6 +78,9 @@ enum SettingsTab {
     Ai,
     Sync,
     About,
+    /// A tab registered in `registry::SETTINGS_TABS`, by id. A registered
+    /// `"ai"` tab replaces the built-in AI tab.
+    Feature(&'static str),
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -116,12 +137,32 @@ pub(crate) fn settings(ctx: &egui::Context, st: &mut SettingsState, ws: &mut Wor
         let w = modal_width(ctx, 560.0);
         ui.set_width(w);
         ui.set_max_width(w);
-        ui.horizontal(|ui| {
+        let feature_tabs = crate::registry::offered(crate::registry::SETTINGS_TABS, ws);
+        let ai_replaced = feature_tabs.iter().any(|t| t.id == "ai");
+        #[cfg(test)]
+        let forced = st.force_tab;
+        #[cfg(not(test))]
+        let forced = false;
+        if let SettingsTab::Feature(id) = st.tab
+            && !forced
+            && !feature_tabs.iter().any(|t| t.id == id)
+        {
+            st.tab = SettingsTab::Editor;
+        }
+        if st.tab == SettingsTab::Ai && ai_replaced {
+            st.tab = SettingsTab::Feature("ai");
+        }
+        ui.horizontal_wrapped(|ui| {
             ui.heading("Settings");
             ui.add_space(12.0);
             ui.selectable_value(&mut st.tab, SettingsTab::Editor, "Editor");
-            ui.selectable_value(&mut st.tab, SettingsTab::Ai, "AI & search");
+            if !ai_replaced {
+                ui.selectable_value(&mut st.tab, SettingsTab::Ai, "AI & search");
+            }
             ui.selectable_value(&mut st.tab, SettingsTab::Sync, "Sync");
+            for t in &feature_tabs {
+                ui.selectable_value(&mut st.tab, SettingsTab::Feature(t.id), (t.label)(ws));
+            }
             ui.selectable_value(&mut st.tab, SettingsTab::About, "About");
         });
         ui.separator();
@@ -130,6 +171,12 @@ pub(crate) fn settings(ctx: &egui::Context, st: &mut SettingsState, ws: &mut Wor
             SettingsTab::Ai => ai_settings(ui, st, ws, pal),
             SettingsTab::Sync => sync_settings(ui, &mut st.sync, ws, pal),
             SettingsTab::About => about(ui, ws, pal),
+            SettingsTab::Feature(id) => {
+                if let Some(t) = crate::registry::SETTINGS_TABS.iter().find(|t| t.id == id) {
+                    let out = (t.show)(ui, ws, &mut st.features, pal);
+                    let _ = out.run;
+                }
+            }
         }
         ui.separator();
         ui.horizontal(|ui| {

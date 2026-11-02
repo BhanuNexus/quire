@@ -23,6 +23,8 @@ enum Job {
         text: String,
         at: i64,
         force: bool,
+        /// Provenance JSON for a version that isn't plain typing.
+        prov: Option<serde_json::Value>,
     },
     /// Keep `text` only if the note has no versions yet (its original).
     KeepFirst {
@@ -55,8 +57,8 @@ impl HistoryWriter {
             .spawn(move || {
                 for job in rx {
                     match job {
-                        Job::Keep { vault, path, text, at, force } => {
-                            let _ = vault.snapshot(&path, &text, at, force);
+                        Job::Keep { vault, path, text, at, force, prov } => {
+                            let _ = vault.snapshot_with(&path, &text, at, force, prov.as_ref());
                         }
                         Job::KeepFirst { vault, path, text, at } => {
                             if vault.history(&path).is_empty() {
@@ -74,7 +76,12 @@ impl HistoryWriter {
     }
 
     pub(crate) fn keep(&self, vault: &Vault, path: &NotePath, text: &str, at: i64, force: bool) {
-        let _ = self.tx.send(Job::Keep { vault: vault.clone(), path: path.clone(), text: text.to_string(), at, force });
+        self.keep_with(vault, path, text, at, force, None);
+    }
+
+    /// [`HistoryWriter::keep`] with provenance written next to the snapshot.
+    pub(crate) fn keep_with(&self, vault: &Vault, path: &NotePath, text: &str, at: i64, force: bool, prov: Option<serde_json::Value>) {
+        let _ = self.tx.send(Job::Keep { vault: vault.clone(), path: path.clone(), text: text.to_string(), at, force, prov });
     }
 
     pub(crate) fn keep_first(&self, vault: &Vault, path: &NotePath, text: &str, at: i64) {
@@ -210,5 +217,34 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.path().join("N.md")).unwrap(), "original");
         w.run(crate::Command::Undo);
         assert_eq!(&*w.active_doc().unwrap().text(), "edited original");
+    }
+
+    #[test]
+    fn an_accepted_suggestion_saves_with_provenance_and_typing_after_it_keeps_it() {
+        use quire_agent::{Actor, Op, Provenance, Via};
+        let mut w = Workspace::new(Settings::default());
+        w.attach_vault(Vault::in_memory(&[("N.md", "one\n")]));
+        let id = w.open_note(&NotePath::new("N.md")).unwrap();
+        let device = w.device().id.clone();
+        // A person accepts an agent's hunk into the open note.
+        w.insert_text("from the agent\n");
+        let mut prov = Provenance::new(Actor::human(&device), Op::Accept, "", 0);
+        prov.accepted_from = Some(Actor::agent("mcp:claude-code", "Claude Code", Via::McpStdio, &device));
+        w.active_doc_mut().unwrap().next_save_provenance = Some(prov);
+        assert!(w.save(id));
+        assert!(w.active_doc().unwrap().next_save_provenance.is_none(), "used once");
+        // …and keeps typing; the saves land inside the two-minute window.
+        w.insert_text("typed ");
+        assert!(w.save(id));
+        w.insert_text("more ");
+        assert!(w.save(id));
+        let h = w.note_history();
+        let vault = w.vault().unwrap().clone();
+        let with_prov: Vec<Provenance> =
+            h.iter().filter_map(|s| vault.read_provenance(s)).filter_map(|v| Provenance::from_json(&v)).collect();
+        assert_eq!(with_prov.len(), 1, "{h:?}");
+        assert_eq!(with_prov[0].accepted_from.as_ref().map(|a| a.id.as_str()), Some("mcp:claude-code"));
+        assert_eq!(with_prov[0].hash, quire_vault::ContentHash::of("from the agent\none\n"));
+        assert_eq!(vault.read_snapshot(&h[0]).unwrap(), "from the agent\ntyped more one\n");
     }
 }

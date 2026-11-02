@@ -1327,6 +1327,8 @@ impl FastEditor {
         Self::sync(&mut view, ws.active_doc().expect("checked"), &cx, inline_images);
         let total = view.heights.total() + TOP_MARGIN + BOTTOM_MARGIN;
         let mut view_action: Option<ViewAction> = None;
+        // Clicks on feature decorations (handled after drawing).
+        let mut decor_clicks: Vec<quire_app::decor::DecorationEvent> = Vec::new();
         let mut clicked_suggestion: Option<(Suggestions, usize)> = None;
         let mut suggesting = false;
 
@@ -1877,6 +1879,8 @@ impl FastEditor {
                     && (!window_focused || (now.duration_since(view.blink_start).as_millis() / BLINK.as_millis()).is_multiple_of(2));
 
                 let hidden = Self::hidden(&mut view, doc);
+                // What features draw on this note (review hunks, drift markers…).
+                let feature_decos = ws.decorations(doc_id);
                 let headings = if doc.large { Vec::new() } else { heading_lines(doc) };
                 let mut fold_toggles = Vec::new();
                 let pointer = ui.input(|i| i.pointer.hover_pos());
@@ -1947,6 +1951,13 @@ impl FastEditor {
                     let lr = buf.line_range(line);
                     let (ls, le) = (lr.start, lr.end);
                     let pos = Pos2::new(x0, top);
+                    if let Some(tone) = crate::decor::tint(&feature_decos, line) {
+                        painter.rect_filled(
+                            Rect::from_min_size(pos, Vec2::new(cx.wrap, g.size().y)),
+                            2.0,
+                            crate::decor::tone_color(tone, pal),
+                        );
+                    }
 
                     // Range highlights: find matches, then selections.
                     let paint_range = |s: usize, e: usize, color: Color32, eol: bool| {
@@ -2035,6 +2046,9 @@ impl FastEditor {
 
                     if !collapsed_here {
                         painter.galley(pos, Arc::clone(&g), pal.text);
+                        if crate::decor::struck(&feature_decos, line) {
+                            crate::decor::paint_strike(&painter, &g, pos, pal);
+                        }
                     }
                     // Live preview: bullets, checkboxes and rules drawn over hidden syntax.
                     let no_decos: &[Deco] = &[];
@@ -2219,6 +2233,20 @@ impl FastEditor {
                         h += used + 14.0;
                     }
 
+                    // Feature ghost lines and widgets after this line.
+                    let (extra, action) = crate::decor::paint_after(
+                        ui,
+                        ws,
+                        &feature_decos,
+                        line,
+                        crate::decor::Place { x0, top: top + h, width: cx.wrap, size: cx.size },
+                        pal,
+                    );
+                    h += extra;
+                    if let Some(action) = action {
+                        decor_clicks.push(quire_app::decor::DecorationEvent { doc: doc_id, action, line });
+                    }
+
                     let d = view.heights.set(line, h);
                     if line < first + 1 && top < viewport.min.y + origin.y {
                         anchor_shift += d;
@@ -2299,6 +2327,9 @@ impl FastEditor {
             },
         );
         self.views.insert(doc_id, view);
+        for ev in decor_clicks {
+            ws.decoration_event(&ev);
+        }
         if primary || suggesting {
             self.suggesting = suggesting;
         }
