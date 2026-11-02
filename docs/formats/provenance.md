@@ -27,12 +27,17 @@ before 0.9. Owner: WS-A. Type: `quire_agent::Provenance`.
   Quire (`human`, `mcp:<key>`, `oauth:<client>`, `panel:<provider>`,
   `acp:<name>`, `job:<name>`, `import:<source>`), never taken from what a
   client says about itself; that goes in `client` with `self_reported`.
+  `actor.unverified: true` marks an id made from a client's own name
+  because it connected without a Quire-assigned key (policy can narrow it,
+  never widen it; see [policy.md](policy.md)).
 * `via`: `mcp-stdio`, `mcp-http`, `panel`, `acp`, `cli`, `app`,
   `client-approval`, `sync`.
 * `op`: `write`, `create`, `rename`, `delete`, `propose`, `accept`, `reject`,
   `revert`, `read`, `batch`.
 * `accepted_from` is set when a person accepted an agent's suggestion; then
-  `actor` is the person.
+  `actor` is the person, `op` is `accept`, and `proposal`, `run` and
+  `sources` come from the proposal. A revert by `job:revert` has `op:
+  revert` and its `batch` id in `batch`.
 * `trust` is `untrusted` for imports and for content derived from untrusted
   sources (design §A.3). Optional fields are left out when empty.
 

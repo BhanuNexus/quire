@@ -28,3 +28,17 @@ instructions), WS-C (contradictions, staleness, citations) and any job
 
 A dismissed finding stays hidden until its content (and so `subject`)
 changes.
+
+## What the Inbox shows
+
+Waiting proposals (grouped by `run`, or one group per proposal), the stored
+findings above, and two items worked out on the fly, never stored: a policy
+change waiting for approval (`policy_changed`) and agent instructions
+waiting for approval (`instructions_changed`, see
+[agent-state.md](agent-state.md)). Snoozes are per device (`snoozed` in
+`state.toml`); a proposal is snoozed under the fingerprint of
+`proposal:<id>`.
+
+Lint findings (`kind: lint`) are kept in step by the lint job: a run adds
+what it finds and removes the lint files it no longer finds. Checks set to
+`warn` in `vault.toml` `[lint]` are listed but not counted in the badge.

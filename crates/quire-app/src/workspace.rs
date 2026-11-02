@@ -912,6 +912,7 @@ impl Workspace {
         if let Some(doc) = self.docs.iter_mut().find(|d| d.path.as_ref() == Some(&report.old_path)) {
             doc.path = Some(report.new_path.clone());
         }
+        crate::agent_state::path_changed(self, &report.old_path, &report.new_path);
         report.updated.iter().filter(|p| **p != report.new_path).count()
     }
 

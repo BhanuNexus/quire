@@ -4662,15 +4662,21 @@ version = "0.8.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
+ "directories",
  "flate2",
  "getrandom 0.4.3",
+ "notify",
  "quire-intel",
  "quire-markdown",
+ "quire-text",
  "quire-vault",
  "serde",
  "serde_json",
+ "strsim",
+ "tempfile",
  "thiserror 2.0.21",
  "toml 1.1.8+spec-1.1.0",
+ "toml_edit 0.25.17+spec-1.1.0",
  "unicode-normalization",
 ]
 
@@ -5961,6 +5967,12 @@ dependencies = [
  "proc-macro2",
  "quote",
 ]
+
+[[package]]
+name = "strsim"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "strum"

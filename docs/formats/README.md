@@ -44,9 +44,11 @@ F0 is the foundation step, after which its files are frozen).
 | `.quire/history/<fnv>/<ms>.md.gz` | gzip of the note text | (0.8, unchanged) | — | in use |
 | `.quire/history/<fnv>/<ms>.prov.json` | JSON, format 1 | [provenance.md](provenance.md) | WS-A | written by agent writes and accepted suggestions |
 | `.quire/agent/ledger/<device>/<yyyy-mm>.jsonl` | JSONL, v 1 | [ledger.md](ledger.md) | WS-A | written |
-| `.quire/agent/proposals/<id>.json` | JSON, format 1 | [proposals.md](proposals.md) | WS-A | written; hunk review to come |
+| `.quire/agent/proposals/<id>.json`, `archive/<yyyy-mm>/<id>.json` | JSON, format 1 | [proposals.md](proposals.md) | WS-A | written |
 | `.quire/agent/inbox/<fingerprint>.json`, `dismissed.jsonl` | JSON format 1, JSONL v 1 | [inbox.md](inbox.md) | WS-A | written |
-| `.quire/shared/agent-policy.toml` | TOML, format 1 | [policy.md](policy.md) | WS-A | read |
+| `.quire/shared/agent-policy.toml` | TOML, format 1 | [policy.md](policy.md) | WS-A | read; written by Settings → Agents |
+| `.quire/agent/rate/<hash>.txt` | Unix ms per line (a counter) | [policy.md](policy.md#limits) | WS-A | written |
+| `<config>/vaults/<key>/state.toml` (+ approved copies) | TOML, format 1 | [agent-state.md](agent-state.md) | WS-A | written |
 | `.quire/shared/vault.toml` | TOML, format 1 | [vault-prefs.md](vault-prefs.md) | F0 (each section: its feature) | read and written |
 | `.quire/shared/srs/<device>.jsonl` | JSONL, v 1 | [srs.md](srs.md) | WS-E | format only |
 | `*.canvas` | JSON Canvas 1.0, one object per line | [canvas.md](canvas.md) | WS-G | format only |
@@ -61,6 +63,6 @@ F0 is the foundation step, after which its files are frozen).
 Planned and not yet written by any code (formats come with their
 workstream): `.quire/agent/runs/`, `.quire/agent/conversations/`,
 `.quire/cache/served/`, `cache/claims/`, `cache/contradict/`,
-`cache/pdf-text/`, `cache/ocr/`, `<config>/vaults/<key>/state.toml`,
+`cache/pdf-text/`, `cache/ocr/`,
 `<config>/mcp/tokens.json`, `<config>/themes/*.toml`. A workstream adds a
 `docs/formats/<name>.md` for each file it introduces and a row above.

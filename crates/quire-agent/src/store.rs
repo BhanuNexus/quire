@@ -6,37 +6,166 @@
 //!
 //! A change set is applied when every change in it may be applied directly
 //! (agent zones, new files in `raw/`); otherwise the whole set becomes one
-//! proposal and no file is touched. Applied changes keep a history snapshot
-//! before and after (the after one with provenance) and a ledger entry.
+//! proposal and no file is touched. A write by an agent to a path it already
+//! has a pending proposal for amends that proposal instead of adding one.
+//! Applied changes keep a history snapshot before and after (the after one
+//! with provenance) and a ledger entry.
+//!
+//! Reviewing and deciding proposals is in `ops.rs`; undoing in `revert.rs`.
 
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, RwLock};
 
 use quire_markdown::frontmatter;
 use quire_vault::{ContentHash, NotePath, Vault};
 use unicode_normalization::UnicodeNormalization;
 
-use crate::actor::{Actor, ActorKind, Clock, DeviceInfo, Op, Provenance};
-use crate::change::{Change, ChangeSet, SubmitOutcome, WriteError};
+use crate::actor::{Actor, ActorKind, Clock, DeviceInfo, Op, Provenance, SourceRef, Trust};
+use crate::approval::{APPROVED_INSTRUCTIONS_FILE, APPROVED_POLICY_FILE, DeviceState, StateDir};
+use crate::change::{Change, ChangeSet, SubmitOutcome, Violation, WriteError};
+use crate::contract::{Contract, parse_all};
 use crate::ids::{BatchId, ProposalId};
 use crate::inbox::InboxStore;
 use crate::ledger::{Ledger, LedgerEntry, LedgerQuery};
-use crate::policy::{Mode, OpKind, POLICY_PATH, Policy, Route, hard_rule};
-use crate::proposal::{
-    Decided, HunkDecision, Proposal, ProposalChange, ProposalFilter, ProposalStatus, ProposalStore, ProposalSummary, Review,
-};
-use crate::revert::{RevertPlan, RevertSelector};
+use crate::policy::{Mode, OpKind, POLICY_PATH, Policy, Route, Widening, ZoneRole, hard_rule, stricter_limits, strictest, widenings};
+use crate::proposal::{Proposal, ProposalChange, ProposalFilter, ProposalStatus, ProposalStore, ProposalSummary};
 
-/// The policy file as last read: (hash of its text, parsed policy or why not).
-type CachedPolicy = Option<(ContentHash, Result<Policy, String>)>;
+/// Where device approvals live: a folder, or memory (in-memory vaults, tests).
+enum StateStore {
+    Dir(StateDir),
+    Memory(RwLock<(DeviceState, HashMap<String, String>)>),
+}
+
+impl StateStore {
+    fn load(&self) -> DeviceState {
+        match self {
+            Self::Dir(d) => d.load(),
+            Self::Memory(m) => m.read().unwrap_or_else(std::sync::PoisonError::into_inner).0.clone(),
+        }
+    }
+
+    fn update(&self, f: impl FnOnce(&mut DeviceState)) -> Result<(), String> {
+        match self {
+            Self::Dir(d) => d.update(f).map(|_| ()),
+            Self::Memory(m) => {
+                f(&mut m.write().unwrap_or_else(std::sync::PoisonError::into_inner).0);
+                Ok(())
+            }
+        }
+    }
+
+    fn read_copy(&self, name: &str) -> Option<String> {
+        match self {
+            Self::Dir(d) => d.read_copy(name),
+            Self::Memory(m) => m.read().unwrap_or_else(std::sync::PoisonError::into_inner).1.get(name).cloned(),
+        }
+    }
+
+    fn write_copy(&self, name: &str, text: &str) -> Result<(), String> {
+        match self {
+            Self::Dir(d) => d.write_copy(name, text),
+            Self::Memory(m) => {
+                m.write().unwrap_or_else(std::sync::PoisonError::into_inner).1.insert(name.into(), text.into());
+                Ok(())
+            }
+        }
+    }
+
+    fn stamp(&self) -> Option<std::time::SystemTime> {
+        match self {
+            Self::Dir(d) => d.stamp(),
+            Self::Memory(_) => None,
+        }
+    }
+}
+
+/// The vault's agent policy as this device sees it.
+#[derive(Debug, Clone)]
+pub struct PolicyState {
+    /// The policy file's text, if there is one.
+    pub file_text: Option<String>,
+    /// The file parsed, or why it can't be (`None` without a file).
+    pub file: Option<Result<Policy, String>>,
+    /// This device approved exactly this file (or there is no file and
+    /// nothing was ever approved: the defaults).
+    pub approved: bool,
+    /// What agents get when the file isn't approved: the last approved
+    /// policy, or the defaults.
+    pub baseline: Policy,
+    /// The baseline as text (the approved file, or the default file).
+    pub baseline_text: String,
+    /// How the file gives agents more than the baseline (empty when approved).
+    pub widenings: Vec<Widening>,
+    /// Contracts in the file that can't be read.
+    pub contract_errors: Vec<String>,
+}
+
+impl PolicyState {
+    pub fn file_hash(&self) -> Option<ContentHash> {
+        self.file_text.as_deref().map(ContentHash::of)
+    }
+
+    /// The file as parsed, if it can be.
+    pub fn file_policy(&self) -> Option<&Policy> {
+        self.file.as_ref().and_then(|r| r.as_ref().ok())
+    }
+
+    /// The policies that all limit agents (the most restrictive answer wins).
+    pub fn active(&self) -> Vec<&Policy> {
+        match (self.file_policy(), self.approved) {
+            (Some(f), true) => vec![f],
+            (Some(f), false) => vec![f, &self.baseline],
+            (None, _) => vec![&self.baseline],
+        }
+    }
+
+    /// The person should look at the file: it widens what was approved.
+    pub fn needs_review(&self) -> bool {
+        !self.approved && !self.widenings.is_empty()
+    }
+
+    /// The policy whose limits and contracts apply: the stricter limits and
+    /// every contract of the active policies.
+    pub fn in_force(&self) -> Policy {
+        let active = self.active();
+        let mut p = active[0].clone();
+        for other in &active[1..] {
+            p.limits = stricter_limits(&p.limits, &other.limits);
+            for c in &other.contracts {
+                if !p.contracts.contains(c) {
+                    p.contracts.push(c.clone());
+                }
+            }
+        }
+        p
+    }
+}
+
+/// Who last wrote each note, from the ledger (design §C.1 `last_actor`).
+#[derive(Default)]
+struct LastActors {
+    stamp: Vec<(NotePath, Option<std::time::SystemTime>)>,
+    map: HashMap<NotePath, (Actor, i64)>,
+    imported: HashSet<NotePath>,
+}
+
+type CachedPolicy = Option<((Option<ContentHash>, Option<std::time::SystemTime>, u64), Arc<PolicyState>)>;
 
 struct Inner {
     vault: Vault,
     device: DeviceInfo,
     clock: Arc<dyn Clock>,
     policy: RwLock<CachedPolicy>,
+    /// Bumped when approvals change in this process (the cache key for memory state).
+    approvals_gen: std::sync::atomic::AtomicU64,
     /// Grant caps per actor id (stdio without `--allow-write` is `Read`).
     caps: RwLock<HashMap<String, Mode>>,
+    state: RwLock<Arc<StateStore>>,
+    /// Held while a rate counter file is read and rewritten.
+    rate: Mutex<()>,
+    last: RwLock<LastActors>,
 }
 
 /// Agent state of one vault on this device. Cheap to clone.
@@ -45,24 +174,19 @@ pub struct AgentStore {
     inner: Arc<Inner>,
 }
 
-/// A change with its paths checked and its resulting text worked out.
-struct Planned {
-    change: Change,
-    route: Route,
-    /// Text before (edits, deletes, renames).
-    before: Option<String>,
-    /// Text after (creates and edits).
-    after: Option<String>,
-}
+/// Properties set and removed by a `SetProperties` change.
+pub(crate) type PropertyOps = (Vec<(String, quire_markdown::Value)>, Vec<String>);
 
-const fn rank(m: Mode) -> u8 {
-    match m {
-        Mode::Deny => 0,
-        Mode::Read => 1,
-        Mode::Propose => 2,
-        Mode::CreateOnly => 3,
-        Mode::Direct => 4,
-    }
+/// A change with its paths checked and its resulting text worked out.
+pub(crate) struct Planned {
+    pub change: Change,
+    pub route: Route,
+    /// Text before (edits, deletes, renames).
+    pub before: Option<String>,
+    /// Text after (creates and edits).
+    pub after: Option<String>,
+    /// For property changes: what was set and removed (to amend precisely).
+    pub props: Option<PropertyOps>,
 }
 
 /// A vault path an agent may name: NFC, relative, no `..`, no hidden
@@ -76,7 +200,7 @@ pub fn canonical_path(p: &NotePath) -> Result<NotePath, WriteError> {
     if s.chars().any(char::is_control) {
         return bad("contains control characters");
     }
-    if s.starts_with('/') || s.contains(':') {
+    if s.starts_with('/') || s.contains(':') || s.contains('\\') {
         return bad("must be relative to the vault");
     }
     for seg in s.split('/') {
@@ -92,8 +216,24 @@ pub fn canonical_path(p: &NotePath) -> Result<NotePath, WriteError> {
 
 impl AgentStore {
     pub fn open(vault: &Vault, device: DeviceInfo, clock: Arc<dyn Clock>) -> Self {
+        let dir = if cfg!(test) {
+            None
+        } else {
+            vault.storage().absolute(&NotePath::new("")).and_then(|root| crate::approval::default_state_dir(&root))
+        };
+        let state = dir.map_or_else(|| StateStore::Memory(RwLock::default()), |d| StateStore::Dir(StateDir::new(d)));
         Self {
-            inner: Arc::new(Inner { vault: vault.clone(), device, clock, policy: RwLock::new(None), caps: RwLock::new(HashMap::new()) }),
+            inner: Arc::new(Inner {
+                vault: vault.clone(),
+                device,
+                clock,
+                policy: RwLock::new(None),
+                approvals_gen: std::sync::atomic::AtomicU64::new(0),
+                caps: RwLock::new(HashMap::new()),
+                state: RwLock::new(Arc::new(state)),
+                rate: Mutex::new(()),
+                last: RwLock::new(LastActors::default()),
+            }),
         }
     }
 
@@ -113,55 +253,131 @@ impl AgentStore {
         Arc::clone(&self.inner.clock)
     }
 
+    /// Keep this device's approvals in `dir` (`<config>/vaults/<key>/`), or
+    /// in memory with `None`. `open` picks Quire's config folder for vaults
+    /// on disk; tests point it elsewhere.
+    pub fn set_state_dir(&self, dir: Option<PathBuf>) {
+        let st = dir.map_or_else(|| StateStore::Memory(RwLock::default()), |d| StateStore::Dir(StateDir::new(d)));
+        *self.inner.state.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(st);
+        self.approvals_changed();
+    }
+
+    fn state(&self) -> Arc<StateStore> {
+        Arc::clone(&self.inner.state.read().unwrap_or_else(std::sync::PoisonError::into_inner))
+    }
+
+    fn approvals_changed(&self) {
+        self.inner.approvals_gen.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        *self.inner.policy.write().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+
+    /// This vault's state on this device (approvals, read logging, snoozes).
+    pub fn device_state(&self) -> DeviceState {
+        self.state().load()
+    }
+
+    /// Change this vault's device state.
+    pub fn update_device_state(&self, f: impl FnOnce(&mut DeviceState)) -> Result<(), String> {
+        self.state().update(f)?;
+        self.approvals_changed();
+        Ok(())
+    }
+
     /// Limit what `actor_id` may do whatever the zones say (a client's grant).
     pub fn set_cap(&self, actor_id: &str, cap: Mode) {
         self.inner.caps.write().unwrap_or_else(std::sync::PoisonError::into_inner).insert(actor_id.to_string(), cap);
     }
 
-    /// The vault's policy file, re-read when it changes. `None` when there
-    /// is none (or it can't be read): then the defaults apply.
+    // ------------------------------------------------------------ policy
+
+    /// The policy file as it is on disk, if it can be read.
     pub fn file_policy(&self) -> Option<Policy> {
-        let text = self.inner.vault.storage().read(&NotePath::new(POLICY_PATH)).ok()?;
-        let hash = ContentHash::of(&text);
-        if let Some((h, p)) = self.inner.policy.read().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref()
-            && *h == hash
-        {
-            return p.as_ref().ok().cloned();
-        }
-        let parsed = Policy::parse(&text);
-        let out = parsed.as_ref().ok().cloned();
-        *self.inner.policy.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((hash, parsed));
-        out
+        self.policy_state().file_policy().cloned()
     }
 
-    /// The policy in force: the file's, or the defaults. Limits come from here.
+    /// The policy in force: limits and contracts of every active policy.
     pub fn policy(&self) -> Policy {
-        self.file_policy().unwrap_or_default()
+        self.policy_state().in_force()
+    }
+
+    /// The policy file, its approval on this device and what it widens.
+    pub fn policy_state(&self) -> Arc<PolicyState> {
+        let text = self.inner.vault.storage().read(&NotePath::new(POLICY_PATH)).ok();
+        let state = self.state();
+        let key =
+            (text.as_deref().map(ContentHash::of), state.stamp(), self.inner.approvals_gen.load(std::sync::atomic::Ordering::Acquire));
+        if let Some((k, p)) = self.inner.policy.read().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref()
+            && *k == key
+        {
+            return Arc::clone(p);
+        }
+        let dev = state.load();
+        let approved_copy = state
+            .read_copy(APPROVED_POLICY_FILE)
+            .filter(|t| dev.approved_policy.as_ref() == Some(&ContentHash::of(t)))
+            .and_then(|t| Policy::parse(&t).ok().map(|p| (p, t)));
+        let (baseline, baseline_text) = approved_copy.unwrap_or_else(|| (Policy::default(), crate::policy_edit::STARTER.to_string()));
+        let (file, approved) = match &text {
+            Some(t) => (Some(Policy::parse(t)), dev.approved_policy.as_ref() == Some(&ContentHash::of(t))),
+            // No file: the defaults, approved unless something else was approved before.
+            None => (dev.approved_policy.is_some().then(|| Ok(Policy::default())), dev.approved_policy.is_none()),
+        };
+        let wid = match file.as_ref().and_then(|f| f.as_ref().ok()) {
+            Some(f) if !approved => widenings(&baseline, f),
+            _ => Vec::new(),
+        };
+        let contract_errors = file.as_ref().and_then(|f| f.as_ref().ok()).map(|f| parse_all(&f.contracts).1).unwrap_or_default();
+        let st = Arc::new(PolicyState { file_text: text, file, approved, baseline, baseline_text, widenings: wid, contract_errors });
+        *self.inner.policy.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((key, Arc::clone(&st)));
+        st
+    }
+
+    /// Approve the policy file as it is now on this device (or, with no
+    /// file, go back to the defaults).
+    pub fn approve_policy(&self) -> Result<(), String> {
+        let text = self.inner.vault.storage().read(&NotePath::new(POLICY_PATH)).ok();
+        let state = self.state();
+        if let Some(t) = &text {
+            if Policy::parse(t).is_err() {
+                return Err("The policy file can't be read; fix it before approving it".into());
+            }
+            state.write_copy(APPROVED_POLICY_FILE, t)?;
+        }
+        state.update(|s| s.approved_policy = text.as_deref().map(ContentHash::of))?;
+        self.approvals_changed();
+        Ok(())
+    }
+
+    /// Write a new policy file (Settings → Agents) and approve it here.
+    /// The person made it on this device, so it takes effect at once.
+    pub fn write_policy(&self, text: &str) -> Result<(), String> {
+        let p = Policy::parse(text).map_err(|e| format!("That policy can't be read: {e}"))?;
+        if self.policy_state().file_policy().is_some_and(Policy::is_newer) || p.is_newer() {
+            return Err("This vault's agent policy was made by a newer Quire; update Quire to change it".into());
+        }
+        self.inner.vault.storage().write_atomic(&NotePath::new(POLICY_PATH), text).map_err(|e| format!("Couldn't save the policy: {e}"))?;
+        self.approve_policy()
     }
 
     /// What `actor` may do to `path` for `op`. People are never limited.
-    /// For anyone else the most restrictive of these applies: the vault's
-    /// zones, the default zones (a policy file can only narrow them until
-    /// device approval exists), the hard rules, and the actor's grant.
+    /// For anyone else the most restrictive of these applies: the zones of
+    /// every active policy (with the client's entry), the hard rules, and
+    /// the actor's grant.
     pub fn effective_mode(&self, actor: &Actor, path: &NotePath, op: OpKind) -> Mode {
         self.effective(actor, path, op).0
     }
 
     /// The mode and the zone (folder prefix, or `default`) it came from.
-    fn effective(&self, actor: &Actor, path: &NotePath, op: OpKind) -> (Mode, String) {
+    pub fn effective(&self, actor: &Actor, path: &NotePath, op: OpKind) -> (Mode, String) {
         if actor.is_human() {
             return (Mode::Direct, String::new());
         }
         let p = path.as_str();
-        let defaults = Policy::default();
-        let file = self.file_policy();
-        let zone_of = |pol: &Policy| pol.zone_for(p).map_or_else(|| "default".to_string(), |z| z.path.clone());
         let mut candidates: Vec<(Mode, String)> = Vec::new();
         if actor.kind == ActorKind::Agent {
-            if let Some(f) = &file {
-                candidates.push((f.zone_mode(p), zone_of(f)));
+            for pol in self.policy_state().active() {
+                candidates.extend(pol.modes_for(Some(&actor.id), actor.unverified, p));
             }
-            candidates.push((defaults.zone_mode(p), zone_of(&defaults)));
         } else {
             candidates.push((Mode::Direct, String::new()));
         }
@@ -171,45 +387,175 @@ impl AgentStore {
         if let Some(cap) = self.inner.caps.read().unwrap_or_else(std::sync::PoisonError::into_inner).get(&actor.id) {
             candidates.push((*cap, "grant".into()));
         }
-        // At equal outcome, report the narrower mode (a read-only grant reads as `read`).
-        candidates.into_iter().min_by_key(|(m, _)| (m.route(op), rank(*m))).unwrap_or((Mode::Deny, String::new()))
+        strictest(candidates, op)
     }
 
-    fn plan_one(&self, actor: &Actor, change: Change, limit: u64) -> Result<Planned, WriteError> {
+    /// The contracts that apply to an agent's write.
+    pub fn contracts(&self) -> Vec<Contract> {
+        parse_all(&self.policy().contracts).0
+    }
+
+    // ------------------------------------------------------------ trust
+
+    /// Whether `path` is untrusted content (design §A.3): in a `raw` zone,
+    /// brought in by an importer, or marked `trust: untrusted`. `text` is
+    /// its text when the caller has it (front matter can only lower trust).
+    pub fn trust_of(&self, path: &NotePath, text: Option<&str>) -> Trust {
+        let st = self.policy_state();
+        let raw = st.active().iter().chain([&&Policy::default()]).any(|p| p.role_of(path.as_str()) == Some(ZoneRole::Raw));
+        if raw || self.imported(path) {
+            return Trust::Untrusted;
+        }
+        let owned = if text.is_none() { self.inner.vault.storage().read(path).ok() } else { None };
+        let text = text.or(owned.as_deref());
+        let marked = text
+            .and_then(frontmatter::parse)
+            .and_then(|fm| fm.get("trust").and_then(|v| v.as_str().map(|s| s.trim().eq_ignore_ascii_case("untrusted"))))
+            .unwrap_or(false);
+        if marked { Trust::Untrusted } else { Trust::Trusted }
+    }
+
+    /// The first untrusted source of a change, in words ("raw/paper.md",
+    /// a URL), if any.
+    pub fn untrusted_source(&self, sources: &[SourceRef]) -> Option<String> {
+        sources.iter().find_map(|s| {
+            let uri = s.uri.trim();
+            if let Some(rest) = uri.strip_prefix("quire://note/") {
+                let path = NotePath::new(percent_decode(rest));
+                (self.trust_of(&path, None) == Trust::Untrusted).then(|| path.to_string())
+            } else if uri.starts_with("http://") || uri.starts_with("https://") {
+                Some(uri.to_string())
+            } else {
+                None
+            }
+        })
+    }
+
+    // ------------------------------------------------------------ last actors
+
+    fn refresh_last(&self) {
+        let ledger = self.ledger();
+        let stamp = ledger.stamp();
+        if self.inner.last.read().unwrap_or_else(std::sync::PoisonError::into_inner).stamp == stamp && !stamp.is_empty() {
+            return;
+        }
+        let since = self.now_ms() - 90 * 86_400_000;
+        let mut map: HashMap<NotePath, (Actor, i64)> = HashMap::new();
+        let mut imported = HashSet::new();
+        for e in ledger.read(&LedgerQuery { since: Some(since), ..LedgerQuery::default() }) {
+            let Some(path) = e.path.clone() else { continue };
+            match e.op {
+                Op::Write | Op::Create | Op::Delete | Op::Revert | Op::Accept => {
+                    if e.op == Op::Create && e.actor.kind == ActorKind::Import {
+                        imported.insert(path.clone());
+                    }
+                    map.insert(path, (e.actor, e.at));
+                }
+                Op::Rename => {
+                    if let Some(to) = e.to.clone() {
+                        map.remove(&path);
+                        if imported.remove(&path) {
+                            imported.insert(to.clone());
+                        }
+                        map.insert(to, (e.actor, e.at));
+                    }
+                }
+                Op::Propose | Op::Reject | Op::Read | Op::Batch => {}
+            }
+        }
+        *self.inner.last.write().unwrap_or_else(std::sync::PoisonError::into_inner) = LastActors { stamp, map, imported };
+    }
+
+    /// Who last wrote `path` according to the ledger (last 90 days), and
+    /// when. Edits the person typed aren't in the ledger: compare with the
+    /// file's modification time.
+    pub fn last_actor(&self, path: &NotePath) -> Option<(Actor, i64)> {
+        self.refresh_last();
+        self.inner.last.read().unwrap_or_else(std::sync::PoisonError::into_inner).map.get(path).cloned()
+    }
+
+    fn imported(&self, path: &NotePath) -> bool {
+        self.refresh_last();
+        self.inner.last.read().unwrap_or_else(std::sync::PoisonError::into_inner).imported.contains(path)
+    }
+
+    // ------------------------------------------------------------ submit
+
+    /// A path an agent may create (or rename to): the canonical form, not
+    /// through a link out of the vault, not differing only in case from an
+    /// existing file.
+    fn check_new_path(&self, path: &NotePath) -> Result<(), WriteError> {
+        let storage = self.inner.vault.storage();
+        if let (Some(root), Some(abs)) = (storage.absolute(&NotePath::new("")), storage.absolute(path)) {
+            let root = root.canonicalize().unwrap_or(root);
+            let mut probe = abs.parent().map(std::path::Path::to_path_buf);
+            while let Some(p) = probe {
+                if p.exists() {
+                    if !p.canonicalize().is_ok_and(|c| c.starts_with(&root)) {
+                        return Err(WriteError::InvalidPath { reason: format!("{path}: leads outside the vault") });
+                    }
+                    break;
+                }
+                probe = p.parent().map(std::path::Path::to_path_buf);
+            }
+        }
+        let lower = path.as_str().to_lowercase();
+        if let Some(other) = storage.list().unwrap_or_default().into_iter().find(|p| p.as_str().to_lowercase() == lower && p != path) {
+            return Err(WriteError::InvalidPath { reason: format!("{path}: differs only in case from {other}") });
+        }
+        Ok(())
+    }
+
+    /// An existing file must not be reached through a link out of the vault.
+    fn check_existing_path(&self, path: &NotePath) -> Result<(), WriteError> {
+        let storage = self.inner.vault.storage();
+        if let (Some(root), Some(abs)) = (storage.absolute(&NotePath::new("")), storage.absolute(path))
+            && abs.exists()
+        {
+            let root = root.canonicalize().unwrap_or(root);
+            if !abs.canonicalize().is_ok_and(|c| c.starts_with(&root)) {
+                return Err(WriteError::InvalidPath { reason: format!("{path}: leads outside the vault") });
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn plan_one(&self, actor: &Actor, change: Change, limit: u64) -> Result<Planned, WriteError> {
         let vault = &self.inner.vault;
         let read = |p: &NotePath| vault.storage().read(p).map_err(|_| WriteError::NotFound { path: p.clone() });
+        let mut props = None;
         let (change, op, before, after) = match change {
             Change::Create { path, text } => {
                 let path = canonical_path(&path)?;
                 if vault.exists(&path) {
                     return Err(WriteError::AlreadyExists { path });
                 }
+                self.check_new_path(&path)?;
                 (Change::Create { path, text: text.clone() }, OpKind::Create, None, Some(text))
             }
             Change::Edit { path, new_text } => {
                 let path = canonical_path(&path)?;
+                self.check_existing_path(&path)?;
                 let before = read(&path)?;
                 (Change::Edit { path, new_text: new_text.clone() }, OpKind::Edit, Some(before), Some(new_text))
             }
             Change::SetProperties { path, set, remove } => {
                 let path = canonical_path(&path)?;
+                self.check_existing_path(&path)?;
                 let before = read(&path)?;
-                let mut text = before.clone();
-                for (k, v) in &set {
-                    text = frontmatter::set_field(&text, k, v).apply(&text);
-                }
-                for k in &remove {
-                    if let Some(e) = frontmatter::remove_field(&text, k) {
-                        text = e.apply(&text);
-                    }
-                }
+                let text = set_props(&before, &set, &remove);
+                props = Some((set, remove));
                 (Change::Edit { path, new_text: text.clone() }, OpKind::Edit, Some(before), Some(text))
             }
             Change::Rename { from, to, update_links } => {
                 let (from, to) = (canonical_path(&from)?, canonical_path(&to)?);
+                self.check_existing_path(&from)?;
                 let before = read(&from)?;
-                if vault.exists(&to) {
+                if vault.exists(&to) && !to.as_str().eq_ignore_ascii_case(from.as_str()) {
                     return Err(WriteError::AlreadyExists { path: to });
+                }
+                if !to.as_str().eq_ignore_ascii_case(from.as_str()) {
+                    self.check_new_path(&to)?;
                 }
                 // Renaming needs both: leaving the old place and arriving at the new one.
                 let (to_mode, to_zone) = self.effective(actor, &to, OpKind::Create);
@@ -220,6 +566,7 @@ impl AgentStore {
             }
             Change::Delete { path } => {
                 let path = canonical_path(&path)?;
+                self.check_existing_path(&path)?;
                 let before = read(&path)?;
                 (Change::Delete { path }, OpKind::Delete, Some(before), None)
             }
@@ -232,14 +579,131 @@ impl AgentStore {
         let path = change.path().clone();
         let (mode, zone) = self.effective(actor, &path, op);
         let mut route = mode.route(op);
-        if let Change::Rename { to, .. } = &change {
+        if let Change::Rename { from, to, update_links } = &change {
             route = route.min(self.effective(actor, to, OpKind::Create).0.route(OpKind::Create));
+            // Rewriting links in notes the agent may only suggest changes to
+            // makes the rename a suggestion too.
+            if *update_links && route == Route::Apply && self.links_need_review(actor, from, to) {
+                route = Route::Propose;
+            }
         }
         match route {
             Route::Deny => Err(WriteError::PermissionDenied { path, zone, mode }),
             Route::Immutable => Err(WriteError::RawIsImmutable { path }),
-            Route::Propose | Route::Apply => Ok(Planned { change, route, before, after }),
+            Route::Propose | Route::Apply => Ok(Planned { change, route, before, after, props }),
         }
+    }
+
+    /// Whether renaming `from` to `to` would rewrite links in a note that
+    /// `actor` may not edit directly.
+    fn links_need_review(&self, actor: &Actor, from: &NotePath, to: &NotePath) -> bool {
+        let vault = &self.inner.vault;
+        let by_name = quire_vault::LinkRewrite {
+            old_stem: from.stem(),
+            old_path: from.without_ext(),
+            new_stem: to.stem(),
+            resolves: None,
+            new_path: None,
+        };
+        let by_path = quire_vault::LinkRewrite { new_path: Some(to.without_ext()), ..by_name.clone() };
+        vault.notes().unwrap_or_default().iter().filter(|p| *p != from).any(|p| {
+            let Ok(src) = vault.read(p) else { return false };
+            let touched = quire_vault::rewrite_links(&src, &by_name).is_some() || quire_vault::rewrite_links(&src, &by_path).is_some();
+            touched && self.effective(actor, p, OpKind::Edit).0.route(OpKind::Edit) != Route::Apply
+        })
+    }
+
+    /// Check the agent's resulting text against the contracts in force.
+    fn check_contracts(&self, actor: &Actor, planned: &[Planned]) -> Result<(), WriteError> {
+        if actor.kind != ActorKind::Agent {
+            return Ok(());
+        }
+        let contracts = self.contracts();
+        if contracts.is_empty() {
+            return Ok(());
+        }
+        let notes = self.inner.vault.notes().unwrap_or_default();
+        // Notes created in the same change set count as existing.
+        let created: Vec<NotePath> =
+            planned.iter().filter(|p| matches!(p.change, Change::Create { .. })).map(|p| p.change.path().clone()).collect();
+        for p in planned {
+            let (path, text) = match &p.change {
+                Change::Create { path, text } => (path, text.as_str()),
+                Change::Edit { path, .. } => (path, p.after.as_deref().unwrap_or_default()),
+                Change::Rename { to, .. } => (to, p.before.as_deref().unwrap_or_default()),
+                Change::Delete { .. } | Change::SetProperties { .. } => continue,
+            };
+            let kind = frontmatter::parse(text).and_then(|fm| fm.get("type").and_then(|v| v.as_str().map(str::to_string)));
+            for c in contracts.iter().filter(|c| c.applies_to(path.as_str(), kind.as_deref())) {
+                let resolves = |t: &str| {
+                    Vault::resolve_among(&notes, t, Some(path)).is_some() || Vault::resolve_among(&created, t, Some(path)).is_some()
+                };
+                let violations: Vec<Violation> = c.check(text, &resolves);
+                if !violations.is_empty() {
+                    return Err(WriteError::ContractViolation { contract: c.name.clone(), violations });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Writes by `actor` in the last minute, across processes: a small file
+    /// per client under `.quire/agent/rate/` plus this process's own count.
+    fn rate_check(&self, actor: &Actor, per_minute: u32, record: bool) -> Result<(), WriteError> {
+        if actor.kind != ActorKind::Agent || per_minute == 0 {
+            return Ok(());
+        }
+        let now = self.now_ms();
+        let file = NotePath::new(format!(".quire/agent/rate/{}.txt", &ContentHash::of(&actor.id).hex()[..16]));
+        let storage = self.inner.vault.storage();
+        // One process at a time in this process; across processes the file is
+        // rewritten atomically, so at worst a racing write goes uncounted.
+        let _guard = self.inner.rate.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut times: Vec<i64> =
+            storage.read(&file).map(|t| t.lines().filter_map(|l| l.split_whitespace().next()?.parse().ok()).collect()).unwrap_or_default();
+        times.retain(|t| now - t < 60_000 && *t <= now);
+        times.sort_unstable();
+        if times.len() >= per_minute as usize {
+            let oldest = times.first().copied().unwrap_or(now);
+            let wait = u64::try_from((oldest + 60_000 - now).max(1)).unwrap_or(1);
+            return Err(WriteError::RateLimited { retry_after_ms: wait });
+        }
+        if record {
+            times.push(now);
+            let text = times.iter().fold(String::new(), |mut s, t| {
+                let _ = writeln!(s, "{t}");
+                s
+            });
+            let _ = storage.write_atomic(&file, &text);
+        }
+        Ok(())
+    }
+
+    /// An edit of a file that doesn't exist yet, but that `actor` proposed
+    /// creating: the edit amends the proposed create.
+    fn edits_to_own_creates(&self, actor: &Actor, changes: Vec<Change>) -> Vec<Change> {
+        let vault = &self.inner.vault;
+        let cell = std::cell::OnceCell::new();
+        let pending = || cell.get_or_init(|| self.own_pending(actor));
+        changes
+            .into_iter()
+            .map(|c| match c {
+                Change::Edit { path, new_text } if !vault.exists(&path) => {
+                    let proposed = pending().iter().any(|p| p.changes.iter().any(|ch| ch.is_pending_create_of(&path)));
+                    if proposed { Change::Create { path, text: new_text } } else { Change::Edit { path, new_text } }
+                }
+                Change::SetProperties { path, set, remove } if !vault.exists(&path) => {
+                    let text = pending()
+                        .iter()
+                        .find_map(|p| p.changes.iter().find(|ch| ch.is_pending_create_of(&path)).and_then(|ch| ch.text.clone()));
+                    match text {
+                        Some(t) => Change::Create { text: set_props(&t, &set, &remove), path },
+                        None => Change::SetProperties { path, set, remove },
+                    }
+                }
+                other => other,
+            })
+            .collect()
     }
 
     /// Apply or propose `cs` as `actor`. Nothing is written when an error is returned.
@@ -249,16 +713,33 @@ impl AgentStore {
         if changes.len() as u64 > u64::from(policy.limits.max_files_per_change) {
             return Err(WriteError::TooLarge { limit: u64::from(policy.limits.max_files_per_change) });
         }
+        self.rate_check(actor, policy.limits.writes_per_minute, false)?;
+        let changes = if actor.kind == ActorKind::Agent { self.edits_to_own_creates(actor, changes) } else { changes };
         let mut planned = Vec::with_capacity(changes.len());
         for change in changes {
             planned.push(self.plan_one(actor, change, policy.limits.max_write_bytes)?);
         }
+        if actor.kind == ActorKind::Agent {
+            // Creating again what it proposed to create amends that proposal.
+            let own = self.own_pending(actor);
+            for p in &mut planned {
+                if let Change::Create { path, .. } = &p.change
+                    && own.iter().any(|o| o.changes.iter().any(|c| c.is_pending_create_of(path)))
+                {
+                    p.route = Route::Propose;
+                }
+            }
+        }
         for (path, expected) in &cs.expected {
             let path = canonical_path(path)?;
+            // A version of the agent's own pending text is what it saw with `include_pending`.
+            if self.pending_text(actor, &path).is_some_and(|(_, h)| h == *expected) {
+                continue;
+            }
             if let Ok(text) = self.inner.vault.storage().read(&path) {
                 let current = ContentHash::of(&text);
                 if current != *expected {
-                    // The served-version cache (WS-B) will fill in the diff and a merged preview.
+                    // The served-version cache (WS-B) fills in the diff and a merged preview.
                     return Err(WriteError::VersionConflict {
                         path,
                         expected: expected.clone(),
@@ -269,22 +750,32 @@ impl AgentStore {
                 }
             }
         }
-        if planned.iter().all(|p| p.route == Route::Apply) { self.apply(actor, &cs, planned) } else { self.propose(actor, &cs, &planned) }
+        self.check_contracts(actor, &planned)?;
+        let out = if planned.iter().all(|p| p.route == Route::Apply) {
+            self.apply(actor, &cs, planned)
+        } else {
+            self.propose(actor, &cs, &planned, policy.limits.max_pending_per_client)
+        }?;
+        let _ = self.rate_check(actor, policy.limits.writes_per_minute, true);
+        Ok(out)
     }
 
-    fn ledger(&self) -> Ledger {
+    pub(crate) fn ledger(&self) -> Ledger {
         Ledger::new(self.inner.vault.clone(), &self.inner.device.id)
     }
 
-    fn provenance(&self, actor: &Actor, cs: &ChangeSet, op: Op, text: &str) -> serde_json::Value {
+    pub(crate) fn provenance(&self, actor: &Actor, cs: &ChangeSet, op: Op, text: &str) -> serde_json::Value {
         let mut p = Provenance::new(actor.clone(), op, text, self.now_ms());
         p.run.clone_from(&cs.run);
         p.sources.clone_from(&cs.sources);
+        if self.untrusted_source(&cs.sources).is_some() {
+            p.trust = Trust::Untrusted;
+        }
         p.to_json()
     }
 
     /// Newest snapshot time of `path`, after a write.
-    fn newest_snapshot(&self, path: &NotePath) -> Option<i64> {
+    pub(crate) fn newest_snapshot(&self, path: &NotePath) -> Option<i64> {
         self.inner.vault.history(path).first().map(|s| s.at_ms)
     }
 
@@ -325,23 +816,27 @@ impl AgentStore {
                     entry.path = Some(path);
                 }
                 Change::Rename { from, to, update_links } => {
-                    if update_links {
-                        // Link rewrites in other notes are part of the rename (WS-A records them in the batch).
-                        if from.folder() == to.folder() {
-                            vault.rename_note(&from, to.stem())?;
-                        } else {
-                            let moved = vault.move_note(&from, to.folder())?;
-                            if moved.new_path != to {
-                                vault.rename_note(&moved.new_path, to.stem())?;
-                            }
-                        }
-                    } else {
-                        vault.storage().rename(&from, &to)?;
-                        vault.move_history(&from, &to)?;
-                    }
                     let text = p.before.unwrap_or_default();
+                    let updated = self.rename_file(&from, &to, update_links)?;
+                    // Links rewritten in other notes are part of the same batch.
+                    let batch = batch.clone().or_else(|| (!updated.is_empty()).then(|| BatchId::new(now).to_string()));
+                    entry.batch.clone_from(&batch);
+                    for (other, old_text, new_text) in updated {
+                        let mut e = LedgerEntry::new(actor.clone(), Op::Write, now).path(&other);
+                        e.run.clone_from(&cs.run);
+                        e.batch.clone_from(&batch);
+                        let _ = vault.snapshot(&other, &old_text, now - 1, true);
+                        e.snap_before = self.newest_snapshot(&other);
+                        let _ = vault.snapshot_with(&other, &new_text, now, true, Some(&self.provenance(actor, cs, Op::Write, &new_text)));
+                        e.snap_after = self.newest_snapshot(&other);
+                        e.before = Some(ContentHash::of(&old_text));
+                        e.after = Some(ContentHash::of(&new_text));
+                        let _ = self.ledger().append(&e);
+                    }
+                    self.rename_hook(&from, &to);
                     entry.op = Op::Rename;
                     entry.before = Some(ContentHash::of(&text));
+                    entry.after = Some(ContentHash::of(&text));
                     entry.to = Some(to.clone());
                     versions.push((to, ContentHash::of(&text)));
                     entry.path = Some(from);
@@ -363,51 +858,189 @@ impl AgentStore {
         Ok(SubmitOutcome::Applied { versions })
     }
 
-    fn propose(&self, actor: &Actor, cs: &ChangeSet, planned: &[Planned]) -> Result<SubmitOutcome, WriteError> {
-        let now = self.now_ms();
-        let id = ProposalId::new(now);
-        let changes = planned
-            .iter()
-            .map(|p| match &p.change {
-                Change::Create { path, text } => ProposalChange::create(path, text),
-                Change::Edit { path, new_text } => ProposalChange::edit(path, p.before.as_deref().unwrap_or_default(), new_text),
-                Change::Rename { from, to, update_links } => ProposalChange::rename(from, to, *update_links),
-                Change::Delete { path } => ProposalChange::delete(path),
-                Change::SetProperties { path, .. } => {
-                    ProposalChange::edit(path, p.before.as_deref().unwrap_or_default(), p.after.as_deref().unwrap_or_default())
-                }
-            })
-            .collect();
-        let title = if cs.title.trim().is_empty() {
-            format!("Changes to {}", planned.first().map(|p| p.change.path().stem().to_string()).unwrap_or_default())
+    /// Rename (or move) a file; with `update_links`, rewrite links to it in
+    /// other notes. Returns the other notes rewritten, with their text
+    /// before and after.
+    pub(crate) fn rename_file(
+        &self,
+        from: &NotePath,
+        to: &NotePath,
+        update_links: bool,
+    ) -> Result<Vec<(NotePath, String, String)>, WriteError> {
+        let vault = &self.inner.vault;
+        if !update_links {
+            vault.storage().rename(from, to)?;
+            vault.move_history(from, to)?;
+            return Ok(Vec::new());
+        }
+        let notes = vault.notes().unwrap_or_default();
+        let before: HashMap<NotePath, String> =
+            notes.iter().filter(|p| *p != from).filter_map(|p| Some((p.clone(), vault.read(p).ok()?))).collect();
+        let mut updated = Vec::new();
+        let mut report = if from.folder() == to.folder() {
+            vault.rename_note(from, to.stem())?
         } else {
-            cs.title.clone()
+            let moved = vault.move_note(from, to.folder())?;
+            if moved.new_path == *to {
+                moved
+            } else {
+                let mut r = vault.rename_note(&moved.new_path, to.stem())?;
+                r.updated.extend(moved.updated);
+                r
+            }
         };
-        let proposal = Proposal {
-            format: crate::proposal::PROPOSAL_FORMAT,
-            id: id.clone(),
-            created: now,
-            updated: now,
-            status: ProposalStatus::Pending,
-            actor: actor.clone(),
-            run: cs.run.clone(),
-            title,
-            rationale: cs.rationale.clone(),
-            sources: cs.sources.clone(),
-            changes,
-            other: crate::actor::Other::new(),
+        report.updated.sort();
+        report.updated.dedup();
+        for p in report.updated.iter().filter(|p| *p != to) {
+            if let (Some(old), Ok(new)) = (before.get(p), vault.read(p)) {
+                updated.push((p.clone(), old.clone(), new));
+            }
+        }
+        Ok(updated)
+    }
+
+    /// Proposals of `actor` still waiting, newest first.
+    pub(crate) fn own_pending(&self, actor: &Actor) -> Vec<Proposal> {
+        let mut v: Vec<Proposal> = ProposalStore::new(self.inner.vault.clone())
+            .list()
+            .into_iter()
+            .filter(|p| p.status == ProposalStatus::Pending && p.actor.id == actor.id)
+            .collect();
+        v.sort_by_key(|p| std::cmp::Reverse((p.updated, p.created)));
+        v
+    }
+
+    /// The text of `path` with `actor`'s own pending proposal applied, and
+    /// its version: what `view` with `include_pending` shows the agent.
+    pub fn pending_text(&self, actor: &Actor, path: &NotePath) -> Option<(String, ContentHash)> {
+        self.own_pending(actor).into_iter().find_map(|p| {
+            p.changes.iter().find_map(|c| {
+                if c.state.is_some() || c.path.as_ref() != Some(path) {
+                    return None;
+                }
+                let t = c.new_text.clone().or_else(|| c.text.clone())?;
+                let h = ContentHash::of(&t);
+                Some((t, h))
+            })
+        })
+    }
+
+    fn proposal_change(p: &Planned) -> ProposalChange {
+        match &p.change {
+            Change::Create { path, text } => ProposalChange::create(path, text),
+            Change::Edit { path, new_text } => ProposalChange::edit(path, p.before.as_deref().unwrap_or_default(), new_text),
+            Change::Rename { from, to, update_links } => ProposalChange::rename(from, to, *update_links),
+            Change::Delete { path } => ProposalChange::delete(path),
+            Change::SetProperties { path, .. } => {
+                ProposalChange::edit(path, p.before.as_deref().unwrap_or_default(), p.after.as_deref().unwrap_or_default())
+            }
+        }
+    }
+
+    /// Fold `planned` into `prop` (the same agent's pending proposal).
+    fn amend(prop: &mut Proposal, planned: &[Planned], expected: &[(NotePath, ContentHash)]) {
+        for p in planned {
+            let path = p.change.path().clone();
+            let existing = prop.changes.iter_mut().find(|c| c.state.is_none() && c.paths().contains(&path));
+            match (existing, &p.change) {
+                (Some(c), Change::Edit { new_text, .. }) if c.op == crate::proposal::ChangeOp::Edit => {
+                    let pending = c.new_text.clone().unwrap_or_default();
+                    let merged = if let Some((set, remove)) = &p.props {
+                        // A property change applies to the pending text as an operation.
+                        set_props(&pending, set, remove)
+                    } else if expected.iter().any(|(ep, h)| *ep == path && *h == ContentHash::of(&pending)) {
+                        // Written on top of what it proposed (read with `include_pending`).
+                        new_text.clone()
+                    } else {
+                        // Written on top of the file: keep both its changes when they don't overlap.
+                        let disk = p.before.as_deref().unwrap_or_default();
+                        let r = quire_text::merge::merge3(disk, &pending, new_text);
+                        if r.is_clean() { r.text } else { new_text.clone() }
+                    };
+                    c.new_text = Some(merged);
+                    c.review = None;
+                    c.decisions.clear();
+                }
+                (Some(c), Change::Create { text, .. }) if c.op == crate::proposal::ChangeOp::Create => {
+                    c.text = Some(text.clone());
+                }
+                (Some(c), Change::Delete { .. }) => {
+                    // Deleting what it proposed to change: the delete replaces the edit.
+                    *c = Self::proposal_change(p);
+                }
+                _ => prop.changes.push(Self::proposal_change(p)),
+            }
+        }
+    }
+
+    fn propose(&self, actor: &Actor, cs: &ChangeSet, planned: &[Planned], max_pending: u32) -> Result<SubmitOutcome, WriteError> {
+        let now = self.now_ms();
+        let store = ProposalStore::new(self.inner.vault.clone());
+        let paths: Vec<NotePath> = planned.iter().map(|p| p.change.path().clone()).collect();
+        let own = self.own_pending(actor);
+        let target = own.into_iter().find(|p| p.changes.iter().any(|c| c.state.is_none() && c.paths().iter().any(|x| paths.contains(x))));
+        let untrusted = self.untrusted_source(&cs.sources);
+        let (proposal, amended) = if let Some(mut prop) = target {
+            Self::amend(&mut prop, planned, &cs.expected);
+            prop.updated = now;
+            if !cs.rationale.trim().is_empty() && !prop.rationale.contains(cs.rationale.trim()) {
+                if !prop.rationale.is_empty() {
+                    prop.rationale.push_str("\n\n");
+                }
+                prop.rationale.push_str(cs.rationale.trim());
+            }
+            for s in &cs.sources {
+                if !prop.sources.contains(s) {
+                    prop.sources.push(s.clone());
+                }
+            }
+            if untrusted.is_some() {
+                prop.trust = Trust::Untrusted;
+                prop.untrusted_source = prop.untrusted_source.clone().or_else(|| untrusted.clone());
+            }
+            (prop, true)
+        } else {
+            let pending =
+                self.proposals(&ProposalFilter { status: Some(ProposalStatus::Pending), actor: Some(actor.id.clone()), path: None }).len();
+            if actor.kind == ActorKind::Agent && max_pending > 0 && pending >= max_pending as usize {
+                return Err(WriteError::InboxFull);
+            }
+            let title = if cs.title.trim().is_empty() {
+                match planned {
+                    [one] => format!("Changes to {}", one.change.path().stem()),
+                    many => format!("Changes to {} notes", many.len()),
+                }
+            } else {
+                cs.title.trim().to_string()
+            };
+            let prop = Proposal {
+                format: crate::proposal::PROPOSAL_FORMAT,
+                id: ProposalId::new(now),
+                created: now,
+                updated: now,
+                status: ProposalStatus::Pending,
+                actor: actor.clone(),
+                run: cs.run.clone(),
+                title,
+                rationale: cs.rationale.clone(),
+                sources: cs.sources.clone(),
+                trust: if untrusted.is_some() { Trust::Untrusted } else { Trust::Trusted },
+                untrusted_source: untrusted,
+                changes: planned.iter().map(Self::proposal_change).collect(),
+                other: crate::actor::Other::new(),
+            };
+            (prop, false)
         };
-        ProposalStore::new(self.inner.vault.clone()).save(&proposal)?;
+        store.save(&proposal)?;
         for p in planned {
             let mut e = LedgerEntry::new(actor.clone(), Op::Propose, now).path(p.change.path());
-            e.proposal = Some(id.clone());
+            e.proposal = Some(proposal.id.clone());
             e.run.clone_from(&cs.run);
             e.before = p.before.as_deref().map(ContentHash::of);
             e.after = p.after.as_deref().map(ContentHash::of);
             let _ = self.ledger().append(&e);
         }
-        // Amending the same actor's pending proposal instead is WS-A's (design §A.4).
-        Ok(SubmitOutcome::Proposed { id, amended: false })
+        Ok(SubmitOutcome::Proposed { id: proposal.id, amended })
     }
 
     pub fn proposals(&self, filter: &ProposalFilter) -> Vec<ProposalSummary> {
@@ -416,22 +1049,6 @@ impl AgentStore {
 
     pub fn proposal(&self, id: &ProposalId) -> Option<Proposal> {
         ProposalStore::new(self.inner.vault.clone()).load(id)
-    }
-
-    /// The hunks of `path`'s change in proposal `id`, rebased on `current`
-    /// (the open note's buffer, or the file). Not available yet (WS-A).
-    #[expect(clippy::unused_self, reason = "WS-A implements this against the store's proposal files")]
-    pub fn review(&self, id: &ProposalId, path: &NotePath, current: &str) -> Review {
-        let _ = (id, path, current);
-        Review::default()
-    }
-
-    /// Apply `decisions` to `current`. Until hunk review exists this
-    /// changes nothing and leaves the proposal pending (WS-A).
-    #[expect(clippy::unused_self, reason = "WS-A implements this against the store's proposal files")]
-    pub fn decide(&self, id: &ProposalId, path: &NotePath, decisions: &[HunkDecision], current: &str) -> Decided {
-        let _ = (id, path, decisions);
-        Decided { text: current.to_string(), status: ProposalStatus::Pending, pending: 0 }
     }
 
     /// Append to this device's ledger.
@@ -444,24 +1061,72 @@ impl AgentStore {
         self.ledger().read(q)
     }
 
-    /// A dry run of undoing the selected events. Lists the events; the
-    /// steps arrive with WS-A.
-    pub fn revert_plan(&self, sel: &RevertSelector) -> RevertPlan {
-        let q = LedgerQuery { since: sel.since, actor: sel.actor.clone(), run: sel.run.clone() };
-        let events: Vec<LedgerEntry> = self
-            .log(&q)
-            .into_iter()
-            .filter(|e| matches!(e.op, Op::Write | Op::Create | Op::Rename | Op::Delete))
-            .filter(|e| sel.paths.as_ref().is_none_or(|ps| e.path.as_ref().is_some_and(|p| ps.contains(p))))
-            .collect();
-        RevertPlan {
-            events,
-            steps: Vec::new(),
-            note: Some("Undoing agent changes isn't available yet; use Version history for each note.".into()),
+    /// Record that `actor` read `path`, if this device logs reads.
+    pub fn record_read(&self, actor: &Actor, path: &NotePath) {
+        if actor.kind == ActorKind::Agent && self.device_state().log_reads {
+            self.record(&LedgerEntry::new(actor.clone(), Op::Read, self.now_ms()).path(path));
         }
     }
 
     pub fn inbox(&self) -> InboxStore {
         InboxStore::new(self.inner.vault.clone(), Arc::clone(&self.inner.clock))
     }
+
+    // ------------------------------------------------------------ instructions
+
+    /// Approve the vault's agent instructions as they are now.
+    pub fn approve_instructions(&self) -> Result<(), String> {
+        let Some(i) = crate::instructions::find(&self.inner.vault) else { return Ok(()) };
+        let text = self.inner.vault.read(&i).map_err(|e| e.to_string())?;
+        let state = self.state();
+        state.write_copy(APPROVED_INSTRUCTIONS_FILE, &text)?;
+        state.update(|s| s.approved_instructions = Some(ContentHash::of(&text)))?;
+        self.approvals_changed();
+        Ok(())
+    }
+
+    pub(crate) fn approved_instructions_text(&self) -> Option<String> {
+        let st = self.state();
+        let h = st.load().approved_instructions?;
+        st.read_copy(APPROVED_INSTRUCTIONS_FILE).filter(|t| ContentHash::of(t) == h)
+    }
+
+    /// A `.quire/agent/` folder's notes changed outside this process: forget caches.
+    pub fn refresh(&self) {
+        *self.inner.policy.write().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+}
+
+/// Set and remove front-matter properties.
+pub(crate) fn set_props(text: &str, set: &[(String, quire_markdown::Value)], remove: &[String]) -> String {
+    let mut text = text.to_string();
+    for (k, v) in set {
+        text = frontmatter::set_field(&text, k, v).apply(&text);
+    }
+    for k in remove {
+        if let Some(e) = frontmatter::remove_field(&text, k) {
+            text = e.apply(&text);
+        }
+    }
+    text
+}
+
+/// `%20` → space, per byte; invalid sequences are kept as written.
+pub(crate) fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && let Some(v) = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            out.push(v);
+            i += 3;
+            continue;
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }

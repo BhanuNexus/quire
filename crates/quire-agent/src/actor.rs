@@ -74,6 +74,11 @@ pub struct Actor {
     /// W3C `traceparent` from MCP `_meta`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace: Option<String>,
+    /// The id was made from what the client says about itself (no
+    /// Quire-assigned key): its `[clients]` entry can narrow what it may
+    /// do but never widen it (design §A.2).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unverified: bool,
     #[serde(flatten)]
     pub other: Other,
 }
@@ -89,6 +94,7 @@ impl Actor {
             device: device.to_string(),
             model: None,
             trace: None,
+            unverified: false,
             other: Other::new(),
         }
     }
