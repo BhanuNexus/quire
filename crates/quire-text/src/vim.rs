@@ -287,13 +287,17 @@ enum Kind {
 /// the column it had before the change (`uh`, line and column) when that is
 /// the line, else to its first non-blank.
 pub fn undo_cursor(before: &Buffer, after: &Buffer, uh: (usize, usize)) -> usize {
-    let n = before.len_lines().max(after.len_lines());
-    let same = |i: usize| {
-        i < before.len_lines()
-            && i < after.len_lines()
-            && before.rope().slice(before.line_range(i)) == after.rope().slice(after.line_range(i))
-    };
-    let mut l = (0..n).find(|&i| !same(i)).unwrap_or(0).min(m::last_line(after));
+    let (p, end_before, end_after) = diff_span(before, after);
+    let mut l = if p == end_before && p == end_after {
+        0
+    } else {
+        // Lines before the one holding the first difference are the same,
+        // and so is that line when the difference starts at its line break.
+        let l = after.char_to_line(p);
+        let ends_here = |b: &Buffer| l < b.len_lines() && b.line_range(l).end == p;
+        if ends_here(before) && ends_here(after) { l + 1 } else { l }
+    }
+    .min(m::last_line(after));
     if uh.0 + 1 == l && l > 0 {
         l -= 1;
     }
@@ -355,17 +359,67 @@ fn leading_ws(buf: &Buffer, line: usize) -> String {
 /// The text typed in an insert session: what `cur` has that `base` didn't,
 /// found by trimming the common start and end.
 fn typed_text(base: &Buffer, cur: &Buffer) -> String {
-    let p = base.rope().chars().zip(cur.rope().chars()).take_while(|(a, b)| a == b).count();
-    let max = base.len_chars().min(cur.len_chars()) - p;
-    let s = base
-        .rope()
-        .chars_at(base.len_chars())
-        .reversed()
-        .zip(cur.rope().chars_at(cur.len_chars()).reversed())
-        .take(max)
-        .take_while(|(a, b)| a == b)
-        .count();
-    cur.slice(p..cur.len_chars() - s)
+    let (p, _, end) = diff_span(base, cur);
+    cur.slice(p..end)
+}
+
+/// Bytes `x` and `y` have in common, from the start (or from the end with
+/// `rev`), comparing whole chunks where they line up.
+fn common_bytes<'a>(mut x: impl Iterator<Item = &'a str>, mut y: impl Iterator<Item = &'a str>, rev: bool) -> usize {
+    let (mut xa, mut ya): (&[u8], &[u8]) = (b"", b"");
+    let mut n = 0;
+    loop {
+        if xa.is_empty() {
+            match x.next() {
+                Some(c) => xa = c.as_bytes(),
+                None => return n,
+            }
+            continue;
+        }
+        if ya.is_empty() {
+            match y.next() {
+                Some(c) => ya = c.as_bytes(),
+                None => return n,
+            }
+            continue;
+        }
+        let k = xa.len().min(ya.len());
+        let (xs, ys) = if rev { (&xa[xa.len() - k..], &ya[ya.len() - k..]) } else { (&xa[..k], &ya[..k]) };
+        if xs != ys {
+            let same = if rev {
+                xs.iter().rev().zip(ys.iter().rev()).take_while(|(a, b)| a == b).count()
+            } else {
+                xs.iter().zip(ys).take_while(|(a, b)| a == b).count()
+            };
+            return n + same;
+        }
+        n += k;
+        if rev {
+            xa = &xa[..xa.len() - k];
+            ya = &ya[..ya.len() - k];
+        } else {
+            xa = &xa[k..];
+            ya = &ya[k..];
+        }
+    }
+}
+
+/// Where two texts differ: `(start, end in a, end in b)` in chars, after
+/// trimming what they share at the start and the end.
+pub fn diff_span(a: &Buffer, b: &Buffer) -> (usize, usize, usize) {
+    let (ra, rb) = (a.rope(), b.rope());
+    // The char holding the first differing byte starts the difference.
+    let pb = common_bytes(ra.chunks(), rb.chunks(), false);
+    let p = a.byte_to_char(pb.min(a.len_bytes()));
+    let p_byte = a.char_to_byte(p);
+    let room = a.len_bytes().min(b.len_bytes()) - p_byte;
+    let sb = common_bytes(ra.chunks_at_byte(ra.len_bytes()).0.reversed(), rb.chunks_at_byte(rb.len_bytes()).0.reversed(), true).min(room);
+    // The shared end starts at a char boundary at or after the cut.
+    let boundary = |buf: &Buffer, at: usize| {
+        let c = buf.byte_to_char(at);
+        if buf.char_to_byte(c) < at { c + 1 } else { c }
+    };
+    (p, boundary(a, a.len_bytes() - sb), boundary(b, b.len_bytes() - sb))
 }
 
 impl VimState {

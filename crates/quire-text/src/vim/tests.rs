@@ -356,3 +356,36 @@ fn counts_are_capped_and_nonsense_is_dropped() {
     assert_eq!(s.run("dqx"), "|b", "an invalid command is dropped whole");
     assert_eq!(s.vim.pending(), "");
 }
+
+#[test]
+fn diff_span_matches_a_char_by_char_diff() {
+    fn naive(a: &str, b: &str) -> (usize, usize, usize) {
+        let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+        let p = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+        let max = a.len().min(b.len()) - p;
+        let s = a.iter().rev().zip(b.iter().rev()).take(max).take_while(|(x, y)| x == y).count();
+        (p, a.len() - s, b.len() - s)
+    }
+    // A small generator, so the cases are the same every run.
+    let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+    let mut next = move |n: usize| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        usize::try_from(seed % n as u64).unwrap_or(0)
+    };
+    let pieces = ["a", "b", "é", "€", "😀", "\n", "line of text ", "日本"];
+    for round in 0..300 {
+        // Some texts span many rope chunks.
+        let len = if round % 10 == 0 { 3000 } else { 1 + next(40) };
+        let a: String = (0..len).map(|_| pieces[next(pieces.len())]).collect();
+        let at = a.char_indices().map(|(i, _)| i).nth(next(a.chars().count().max(1))).unwrap_or(a.len());
+        let cut = a[at..].char_indices().map(|(i, _)| i).nth(next(4)).map_or(a.len(), |i| at + i);
+        let b = format!("{}{}{}", &a[..at], (0..next(4)).map(|_| pieces[next(pieces.len())]).collect::<String>(), &a[cut..]);
+        for (x, y) in [(&a, &b), (&b, &a), (&a, &a)] {
+            assert_eq!(diff_span(&Buffer::from(x.as_str()), &Buffer::from(y.as_str())), naive(x, y), "{x:?} → {y:?}");
+        }
+    }
+    assert_eq!(diff_span(&Buffer::from(""), &Buffer::from("€")), (0, 0, 1));
+    assert_eq!(diff_span(&Buffer::from("a€b"), &Buffer::from("a😀b")), (1, 2, 2));
+}
