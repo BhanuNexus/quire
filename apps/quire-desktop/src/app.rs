@@ -279,8 +279,14 @@ impl QuireApp {
         }
         combos.sort_by_key(|c| std::cmp::Reverse(c.0));
         let mut fired = Vec::new();
+        // On Windows AltGr arrives as Ctrl+Alt: when a character was typed this
+        // frame (é, ł, €…), a Ctrl+Alt "shortcut" is really that character.
+        let typed = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(t) if !t.is_empty())));
         ctx.input_mut(|i| {
             for (_, cmd, sc) in &combos {
+                if typed && sc.modifiers.alt && sc.modifiers.command && !sc.modifiers.shift {
+                    continue;
+                }
                 if i.consume_shortcut(sc) {
                     fired.push(*cmd);
                 }
@@ -502,7 +508,18 @@ impl QuireApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            self.overlay = Some(Overlay::Capture { text: String::new(), focused: false, minimize: minimized });
+            match &mut self.overlay {
+                // Already capturing: keep the draft, just give it the keyboard again.
+                Some(Overlay::Capture { focused, minimize, .. }) => {
+                    *focused = false;
+                    *minimize |= minimized;
+                }
+                // Lists and views can give way; a dialog with typing in it can't.
+                None | Some(Overlay::Palette { .. } | Overlay::Shortcuts { .. } | Overlay::Graph(_) | Overlay::Tour { .. }) => {
+                    self.overlay = Some(Overlay::Capture { text: String::new(), focused: false, minimize: minimized });
+                }
+                Some(_) => self.ws.notify(NoticeLevel::Info, "Close the open dialog to use quick capture"),
+            }
         }
     }
 

@@ -104,6 +104,7 @@ fn tidy_links(markdown: &str) -> std::borrow::Cow<'_, str> {
     }
     let mut out = String::with_capacity(markdown.len());
     let mut fence: Option<String> = None;
+    let mut in_math = false;
     for line in markdown.split_inclusive('\n') {
         let body = line.trim_end_matches(['\n', '\r']);
         let eol = &line[body.len()..];
@@ -117,6 +118,15 @@ fn tidy_links(markdown: &str) -> std::borrow::Cow<'_, str> {
         }
         if t.starts_with("```") || t.starts_with("~~~") {
             fence = Some(t.chars().take_while(|c| *c == '`' || *c == '~').collect());
+            out.push_str(line);
+            continue;
+        }
+        // Display math (`$$` … `$$`) keeps its `^`.
+        let dollars = t.matches("$$").count();
+        if in_math || dollars % 2 == 1 {
+            if dollars % 2 == 1 {
+                in_math = !in_math;
+            }
             out.push_str(line);
             continue;
         }
@@ -943,6 +953,8 @@ mod tests {
         let t = tidy_links(md);
         assert!(t.contains("[[Note|Note]]") && t.contains("[[Other|Other › Part two]]") && t.contains("![[pic.png]]"), "{t}");
         assert!(!t.contains("^para1") && t.contains("code ^keep"), "{t}");
+        let m = tidy_links("$$\nx = y ^2\n$$\nafter ^id\n");
+        assert!(m.contains("y ^2") && !m.contains("^id"), "{m}");
     }
 
     #[test]

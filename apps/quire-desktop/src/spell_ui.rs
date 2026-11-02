@@ -112,7 +112,7 @@ fn user_dictionary_path() -> Option<std::path::PathBuf> {
 /// The speller for `lang`, or `None` while it loads (the UI is woken when
 /// it's ready) or if that language isn't available.
 pub(crate) fn speller(lang: &str, ctx: &egui::Context) -> Option<Arc<Speller>> {
-    let mut slots = registry().lock().ok()?;
+    let mut slots = registry().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     match slots.get(lang) {
         Some(Slot::Ready(s)) => return Some(Arc::clone(s)),
         Some(Slot::Loading | Slot::Failed) => return None,
@@ -121,7 +121,10 @@ pub(crate) fn speller(lang: &str, ctx: &egui::Context) -> Option<Arc<Speller>> {
     slots.insert(lang.to_string(), Slot::Loading);
     let (lang, ctx) = (lang.to_string(), ctx.clone());
     std::thread::spawn(move || {
-        let slot = match Speller::load(&lang) {
+        // A bad dictionary file on the system mustn't leave spelling stuck "loading".
+        let loaded = std::panic::catch_unwind(|| Speller::load(&lang))
+            .unwrap_or_else(|_| Err(quire_spell::SpellError::UnknownLanguage(lang.clone())));
+        let slot = match loaded {
             Ok(s) => {
                 if let Some(path) = user_dictionary_path()
                     && path.parent().is_none_or(|d| std::fs::create_dir_all(d).is_ok())
@@ -136,9 +139,7 @@ pub(crate) fn speller(lang: &str, ctx: &egui::Context) -> Option<Arc<Speller>> {
             }
             Err(_) => Slot::Failed,
         };
-        if let Ok(mut slots) = registry().lock() {
-            slots.insert(lang, slot);
-        }
+        registry().lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(lang, slot);
         ctx.request_repaint();
     });
     None
@@ -153,7 +154,7 @@ pub(crate) fn languages() -> Vec<String> {
 
 /// Add `word` to the personal list (saved), in every loaded language.
 pub(crate) fn add_word(word: &str) {
-    let Ok(slots) = registry().lock() else { return };
+    let slots = registry().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     for slot in slots.values() {
         if let Slot::Ready(s) = slot {
             let _ = s.add_user_word(word);
@@ -163,7 +164,7 @@ pub(crate) fn add_word(word: &str) {
 
 /// Stop flagging `word` until Quire restarts.
 pub(crate) fn ignore_word(word: &str) {
-    let Ok(slots) = registry().lock() else { return };
+    let slots = registry().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     for slot in slots.values() {
         if let Slot::Ready(s) = slot {
             s.ignore(word);

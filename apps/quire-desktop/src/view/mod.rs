@@ -70,6 +70,8 @@ struct DocView {
     /// Display math and diagrams, for a revision.
     figures: Option<(u64, Rc<Vec<blocks::Figure>>)>,
     spell_menu: Option<SpellMenu>,
+    /// `block_of` answers for a revision (it walks up through quotes).
+    block_memo: (u64, HashMap<usize, Block>),
     /// Where views were drawn last frame (screen space); the editor
     /// ignores presses there so the view's own widgets get them.
     view_rects: Vec<Rect>,
@@ -93,7 +95,7 @@ struct DocView {
     /// Fold arrows drawn last frame: (screen rect, heading line).
     fold_toggles: Vec<(Rect, usize)>,
     /// Pictures of math and diagrams last frame: clicking one edits its source (first line).
-    figure_boxes: Vec<(Rect, usize)>,
+    figure_boxes: Vec<(Rect, usize, usize)>,
 }
 
 impl DocView {
@@ -113,6 +115,7 @@ impl DocView {
             view_blocks: None,
             figures: None,
             spell_menu: None,
+            block_memo: (u64::MAX, HashMap::new()),
             view_rects: Vec::new(),
             scroll_key: None,
             own_rev: u64::MAX,
@@ -875,9 +878,15 @@ impl FastEditor {
         }
         // Live preview: inline `$math$` drawn as math once it's rendered.
         let revealed_line = cx.live.as_ref().is_none_or(|revealed| revealed.iter().any(|r| r.contains(&line)));
+        // Math that starts or ends on another line belongs to a display block, drawn whole or not at all.
+        let math_crosses_lines =
+            runs[i..].iter().take_while(|r| r.range.start < b1).any(|r| r.style.math && (r.range.start < b0 || r.range.end > b1));
+        let in_figure = Self::figures_of(view, doc).iter().any(|f| f.first_line <= line && line <= f.last_line);
         if !revealed_line
             && pre_range.is_none()
             && table.is_none()
+            && !math_crosses_lines
+            && !in_figure
             && local.iter().any(|r| r.style.math)
             && !text.trim_start().starts_with("$$")
         {
@@ -1001,8 +1010,32 @@ impl FastEditor {
         g
     }
 
-    /// Which block a line belongs to, from its style runs.
+    /// Display math and diagram blocks, cached per revision.
+    fn figures_of(view: &mut DocView, doc: &Document) -> Rc<Vec<blocks::Figure>> {
+        match &view.figures {
+            Some((r, f)) if *r == doc.revision() => Rc::clone(f),
+            _ => {
+                let f = Rc::new(if doc.large { Vec::new() } else { blocks::figures(&doc.text()) });
+                view.figures = Some((doc.revision(), Rc::clone(&f)));
+                f
+            }
+        }
+    }
+
+    /// Which block a line belongs to (memoized per revision).
     fn block_of(view: &mut DocView, doc: &Document, line: usize) -> Block {
+        if view.block_memo.0 != doc.revision() {
+            view.block_memo = (doc.revision(), HashMap::new());
+        }
+        if let Some(b) = view.block_memo.1.get(&line) {
+            return *b;
+        }
+        let b = Self::block_of_uncached(view, doc, line);
+        view.block_memo.1.insert(line, b);
+        b
+    }
+
+    fn block_of_uncached(view: &mut DocView, doc: &Document, line: usize) -> Block {
         let buf = doc.buffer();
         if line >= buf.len_lines() {
             return Block::None;
@@ -1352,23 +1385,28 @@ impl FastEditor {
                 let mut edited = false;
 
                 // ---------------- spelling: right-click a flagged word
-                if resp.secondary_clicked()
-                    && let (Some(p), Some(sp)) = (resp.interact_pointer_pos(), self.spell.clone())
-                {
-                    let doc = ws.active_doc().expect("checked");
-                    let at = self.hit(ui, &mut view, doc, &cx, origin, x0, p);
-                    let buf = doc.buffer();
-                    let line = buf.char_to_line(at);
-                    let lr = buf.line_range(line);
-                    let text = buf.line(line);
-                    let col = at - lr.start;
-                    view.spell_menu = sp.misspellings(&text, &mut quire_spell::LineContext::new()).into_iter().find_map(|r| {
-                        let (a, b) = (text[..r.start].chars().count(), text[..r.end].chars().count());
-                        (col >= a && col <= b).then(|| {
-                            let word = text[r].to_string();
-                            SpellMenu { range: lr.start + a..lr.start + b, suggestions: sp.suggest(&word, 6), word }
-                        })
-                    });
+                if resp.secondary_clicked() {
+                    view.spell_menu = None;
+                    if let (Some(p), Some(sp)) = (resp.interact_pointer_pos(), self.spell.clone()) {
+                        let doc = ws.active_doc().expect("checked");
+                        let at = self.hit(ui, &mut view, doc, &cx, origin, x0, p);
+                        let buf = doc.buffer();
+                        let line = buf.char_to_line(at);
+                        let lr = buf.line_range(line);
+                        let col = at - lr.start;
+                        // The same words the underlines mark (code, math and front matter excluded).
+                        let flagged = self.decos.get(&line).and_then(|ds| {
+                            ds.iter().find_map(|d| match *d {
+                                Deco::Misspelled { start, end } if col >= start && col <= end => Some((start, end)),
+                                _ => None,
+                            })
+                        });
+                        if let Some((a, b)) = flagged {
+                            let word = buf.slice(lr.start + a..lr.start + b);
+                            view.spell_menu =
+                                Some(SpellMenu { range: lr.start + a..lr.start + b, suggestions: sp.suggest(&word, 6), word });
+                        }
+                    }
                 }
                 let mut spell_pick: Option<(Range<usize>, String)> = None;
                 let menu = view.spell_menu.clone();
@@ -1398,6 +1436,10 @@ impl FastEditor {
                 });
                 if let Some((range, with)) = spell_pick
                     && let Some(d) = ws.active_doc_mut()
+                    && view
+                        .spell_menu
+                        .as_ref()
+                        .is_some_and(|m| range.end <= d.buffer().len_chars() && d.buffer().slice(range.clone()) == m.word)
                 {
                     let caret = range.start + with.chars().count();
                     let _ = d.apply(
@@ -1418,18 +1460,20 @@ impl FastEditor {
                     let doc = ws.active_doc().expect("checked");
                     let fold_hit = view.fold_toggles.iter().find(|(r, _)| r.contains(p)).map(|(_, l)| *l);
                     let task_hit = view.task_boxes.iter().find(|(r, _, _)| r.contains(p)).copied();
-                    let figure_hit = view.figure_boxes.iter().find(|(r, _)| r.contains(p)).map(|(_, l)| *l);
+                    let figure_hit = view.figure_boxes.iter().find(|(r, _, _)| r.contains(p)).map(|(_, a, b)| (*a, *b));
                     if figure_hit.is_some() && !primary_down {
                         ctx.set_cursor_icon(CursorIcon::PointingHand);
                     }
                     if pressed
                         && resp.contains_pointer()
                         && !over_view
-                        && let Some(line) = figure_hit
+                        && let Some((first, last)) = figure_hit
                     {
-                        // Clicking a picture opens its source for editing.
+                        // Clicking a picture opens its source for editing: the first line
+                        // inside the block, or the line itself for `$$x$$`.
                         resp.request_focus();
-                        let at = doc.buffer().line_to_char((line + 1).min(doc.buffer().len_lines().saturating_sub(1)));
+                        let line = if first == last { first } else { first + 1 };
+                        let at = doc.buffer().line_to_char(line.min(doc.buffer().len_lines().saturating_sub(1)));
                         Self::set_selections(&mut view, ws, vec![Selection::cursor(at)], at);
                         moved = true;
                     } else if pressed
@@ -1800,21 +1844,16 @@ impl FastEditor {
                         b
                     }
                 };
-                let figures = match &view.figures {
-                    Some((r, f)) if *r == doc.revision() => Rc::clone(f),
-                    _ => {
-                        let f = Rc::new(if doc.large { Vec::new() } else { blocks::figures(&doc.text()) });
-                        view.figures = Some((doc.revision(), Rc::clone(&f)));
-                        f
-                    }
-                };
-                // A figure shows as its picture unless the caret is in it.
+                let figures = Self::figures_of(&mut view, doc);
+                // In live preview a figure shows as its picture unless the caret is in
+                // it; while it's being edited (or with live preview off) it's source only,
+                // so nothing is rendered per keystroke.
                 let figure_at = |line: usize| -> Option<(blocks::Figure, bool)> {
                     let f = figures.iter().find(|f| f.first_line <= line && line <= f.last_line)?;
                     let revealed = cx.live.as_ref().is_none_or(|rv| rv.iter().any(|r| r.start <= f.last_line && f.first_line < r.end));
-                    Some((f.clone(), !revealed))
+                    (!revealed).then(|| (f.clone(), true))
                 };
-                let mut figure_clicks: Vec<(Rect, usize)> = Vec::new();
+                let mut figure_clicks: Vec<(Rect, usize, usize)> = Vec::new();
                 let preedit_chars = view.preedit.as_ref().map_or(0, |p| p.chars().count());
                 let mut new_view_rects = Vec::new();
                 let all = all_selections(doc.selection(), &view.extra);
@@ -1994,7 +2033,8 @@ impl FastEditor {
                         painter.galley(pos, Arc::clone(&g), pal.text);
                     }
                     // Live preview: bullets, checkboxes and rules drawn over hidden syntax.
-                    for d in self.decos.get(&line).map(Vec::as_slice).unwrap_or_default() {
+                    let no_decos: &[Deco] = &[];
+                    for d in if collapsed_here { no_decos } else { self.decos.get(&line).map(Vec::as_slice).unwrap_or_default() } {
                         let at = |col: usize| g.pos_from_cursor(CCursor::new(col)).translate(pos.to_vec2());
                         match *d {
                             Deco::Math { col, tex, w, h, baseline } => {
@@ -2114,7 +2154,7 @@ impl FastEditor {
                                 let x = if f.kind == blocks::FigureKind::Math { x0 + (cx.wrap - size.x) / 2.0 } else { x0 };
                                 let r = Rect::from_min_size(Pos2::new(x, base + 8.0), size);
                                 painter.image(p.texture.id(), r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
-                                figure_clicks.push((r, f.first_line));
+                                figure_clicks.push((r, f.first_line, f.last_line));
                                 h = if collapsed_here { size.y + 16.0 } else { h + size.y + 16.0 };
                             }
                             crate::typeset_ui::Out::Pending => {

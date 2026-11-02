@@ -20,6 +20,9 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 ### Changed
 - Release builds unwind on a panic instead of aborting, so a bug in a math, diagram or PDF renderer reports an error instead of closing the app.
 
+### Fixed
+- On Windows, typing a character with AltGr (é, ł, ń, €…) no longer triggers a Ctrl+Alt shortcut such as Version history (Ctrl+Alt+H) or New project (Ctrl+Alt+N): AltGr arrives as Ctrl+Alt there.
+
 
 ## [0.7.0] - 2026-11-02
 

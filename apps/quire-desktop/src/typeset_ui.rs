@@ -48,17 +48,29 @@ struct Done {
     result: Result<(ColorImage, Vec2, f32), String>,
 }
 
+struct Entry {
+    out: Out,
+    /// Texture memory, bytes.
+    bytes: usize,
+    /// When it was last asked for (a counter), for least-recently-used eviction.
+    used: u64,
+}
+
 pub(crate) struct Typesetter {
     ctx: egui::Context,
-    cache: HashMap<u64, Out>,
+    cache: HashMap<u64, Entry>,
+    clock: u64,
+    bytes: usize,
     jobs: Sender<(u64, Job, f32)>,
     done: Receiver<Done>,
 }
 
 /// Biggest picture side in pixels (a huge diagram is scaled down to this).
 const MAX_PIXELS: f32 = 4096.0;
-/// Pictures kept before the cache starts over.
+/// Pictures kept, at most, and the texture memory they may use; past either,
+/// the least recently used go.
 const MAX_CACHED: usize = 600;
+const MAX_BYTES: usize = 256 * 1024 * 1024;
 
 fn fontdb() -> Arc<usvg::fontdb::Database> {
     static DB: OnceLock<Arc<usvg::fontdb::Database>> = OnceLock::new();
@@ -129,20 +141,46 @@ impl Typesetter {
                 }
             })
             .expect("spawn the typesetting thread");
-        Self { ctx: ctx.clone(), cache: HashMap::new(), jobs, done }
+        Self { ctx: ctx.clone(), cache: HashMap::new(), clock: 0, bytes: 0, jobs, done }
     }
 
     /// Collect finished pictures. Call once per frame.
     pub(crate) fn poll(&mut self) {
         while let Ok(d) = self.done.try_recv() {
-            let out = match d.result {
+            let (out, bytes) = match d.result {
                 Ok((image, size, baseline)) => {
+                    let bytes = image.width() * image.height() * 4;
                     let texture = self.ctx.load_texture(format!("quire-typeset-{}", d.key), image, TextureOptions::LINEAR);
-                    Out::Ready(Picture { texture, size, baseline })
+                    (Out::Ready(Picture { texture, size, baseline }), bytes)
                 }
-                Err(e) => Out::Failed(e),
+                Err(e) => (Out::Failed(e), 0),
             };
-            self.cache.insert(d.key, out);
+            // Only if still wanted (it may have been evicted while rendering).
+            if let Some(e) = self.cache.get_mut(&d.key) {
+                self.bytes = self.bytes - e.bytes + bytes;
+                e.out = out;
+                e.bytes = bytes;
+            }
+        }
+        self.evict();
+    }
+
+    /// Drop the least recently used pictures until under both limits.
+    /// Pending ones stay (their results are on the way).
+    fn evict(&mut self) {
+        if self.cache.len() <= MAX_CACHED && self.bytes <= MAX_BYTES {
+            return;
+        }
+        let mut done: Vec<(u64, u64)> =
+            self.cache.iter().filter(|(_, e)| !matches!(e.out, Out::Pending)).map(|(k, e)| (e.used, *k)).collect();
+        done.sort_unstable();
+        for (_, k) in done {
+            if self.cache.len() <= MAX_CACHED * 3 / 4 && self.bytes <= MAX_BYTES * 3 / 4 {
+                break;
+            }
+            if let Some(e) = self.cache.remove(&k) {
+                self.bytes -= e.bytes;
+            }
         }
     }
 
@@ -155,13 +193,12 @@ impl Typesetter {
             scale.to_bits().hash(&mut h);
             h.finish()
         };
-        if let Some(out) = self.cache.get(&key) {
-            return out.clone();
+        self.clock += 1;
+        if let Some(e) = self.cache.get_mut(&key) {
+            e.used = self.clock;
+            return e.out.clone();
         }
-        if self.cache.len() >= MAX_CACHED {
-            self.cache.retain(|_, o| matches!(o, Out::Pending));
-        }
-        self.cache.insert(key, Out::Pending);
+        self.cache.insert(key, Entry { out: Out::Pending, bytes: 0, used: self.clock });
         let _ = self.jobs.send((key, job.clone(), scale));
         Out::Pending
     }
@@ -175,7 +212,8 @@ fn shared() -> &'static std::sync::Mutex<Option<Typesetter>> {
 /// The picture for `job` from the app's one typesetter (editor and preview
 /// share it), collecting anything finished since the last call.
 pub(crate) fn request(ctx: &egui::Context, job: &Job) -> Out {
-    let Ok(mut slot) = shared().lock() else { return Out::Pending };
+    // A panic elsewhere while holding the lock doesn't stop rendering for good.
+    let mut slot = shared().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let t = slot.get_or_insert_with(|| Typesetter::new(ctx));
     t.poll();
     t.get(job)
@@ -190,6 +228,29 @@ pub(crate) fn rgba(c: Color32) -> [u8; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cache_forgets_the_least_recently_used() {
+        let ctx = egui::Context::default();
+        let mut t = Typesetter::new(&ctx);
+        let job = |i: usize| Job::Math { latex: format!("x_{{{i}}}"), display: false, size: 14, color: [0, 0, 0, 255] };
+        for i in 0..MAX_CACHED + 50 {
+            let _ = t.get(&job(i));
+        }
+        // Everything still pending stays; once rendered, the oldest go first.
+        let start = std::time::Instant::now();
+        while t.cache.values().any(|e| matches!(e.out, Out::Pending)) {
+            t.poll();
+            assert!(start.elapsed().as_secs() < 120, "rendering took too long");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        t.poll();
+        let _ = t.get(&job(MAX_CACHED + 49));
+        t.evict();
+        assert!(t.cache.len() <= MAX_CACHED, "{}", t.cache.len());
+        assert_eq!(t.cache.values().map(|e| e.bytes).sum::<usize>(), t.bytes);
+        assert!(!matches!(t.get(&job(MAX_CACHED + 49)), Out::Pending), "the most recent survives");
+    }
 
     #[test]
     fn math_and_diagrams_come_back_as_textures() {

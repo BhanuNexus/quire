@@ -154,10 +154,33 @@ pub fn block_id(line: &str) -> Option<(Range<usize>, &str)> {
     Some((start..t.len(), id))
 }
 
+/// Byte ranges where a trailing `^x` isn't a paragraph id: fenced and
+/// indented code, front matter and display math (`$$ x ^2 $$`).
+pub fn non_prose(src: &str) -> Vec<Range<usize>> {
+    use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
+    let mut out = crate::blocks::verbatim_blocks(src);
+    if src.contains("$$") || src.contains("\n    ") || src.contains("\n\t") {
+        let mut indented: Option<usize> = None;
+        for (e, r) in Parser::new_ext(src, crate::options()).into_offset_iter() {
+            match e {
+                Event::DisplayMath(_) => out.push(r),
+                Event::Start(Tag::CodeBlock(CodeBlockKind::Indented)) => indented = Some(r.start),
+                Event::End(TagEnd::CodeBlock) => {
+                    if let Some(s) = indented.take() {
+                        out.push(s..r.end);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
 /// Where paragraph `id` is in `src`: the byte range of its block (the
-/// paragraph or list item that ends with ` ^id`), outside code and front matter.
+/// paragraph or list item that ends with ` ^id`), outside code, math and front matter.
 pub fn find_block(src: &str, id: &str) -> Option<Range<usize>> {
-    let verbatim = crate::blocks::verbatim_blocks(src);
+    let verbatim = non_prose(src);
     let mut at = 0;
     let mut para_start = 0;
     for line in src.split_inclusive('\n') {
@@ -168,7 +191,7 @@ pub fn find_block(src: &str, id: &str) -> Option<Range<usize>> {
             para_start = at;
             continue;
         }
-        if verbatim.iter().any(|r| r.contains(&start)) {
+        if verbatim.iter().any(|r| r.start < start + text.len() && start < r.end) {
             para_start = at;
             continue;
         }
@@ -193,11 +216,28 @@ pub fn find_block(src: &str, id: &str) -> Option<Range<usize>> {
     None
 }
 
-/// Start of the non-blank block that ends just before `line_start`.
+/// Start of the non-blank block that ends just before `line_start`
+/// (blank lines may hold spaces; line ends may be `\r\n`).
 fn prev_block_start(src: &str, line_start: usize) -> usize {
-    let before = &src[..line_start];
-    let trimmed = before.trim_end_matches(['\n', '\r']);
-    trimmed.rfind("\n\n").map_or(0, |i| i + 2)
+    let mut starts: Vec<usize> = Vec::new();
+    let mut at = 0;
+    for l in src[..line_start].split_inclusive('\n') {
+        starts.push(at);
+        at += l.len();
+    }
+    let blank = |i: usize| {
+        let end = starts.get(i + 1).copied().unwrap_or(line_start);
+        src[starts[i]..end].trim().is_empty()
+    };
+    // Skip the blank lines right above, then take the block above them.
+    let mut i = starts.len();
+    while i > 0 && blank(i - 1) {
+        i -= 1;
+    }
+    while i > 0 && !blank(i - 1) {
+        i -= 1;
+    }
+    starts.get(i).copied().unwrap_or(0)
 }
 
 /// A new paragraph id: six lowercase letters and digits, not already in `src`.
@@ -253,6 +293,11 @@ mod tests {
         assert_eq!(&src[find_block(src, "li").unwrap()], "- item one ^li");
         assert_eq!(&src[find_block(src, "after").unwrap()], "Para\n\n^after");
         assert!(find_block(src, "nope").is_none());
+        // Windows line ends and a blank line with spaces in it.
+        let crlf = "# T\r\n\r\nPara one\r\n  \r\nPara two\r\n^after";
+        assert_eq!(&crlf[find_block(crlf, "after").unwrap()], "Para two\r\n^after");
+        // Display math isn't a paragraph.
+        assert!(find_block("$$\nx = y ^2\n$$\n", "2").is_none());
         assert!(find_block(src, "missing").is_none());
         let id = new_block_id(src, 42);
         assert_eq!(id.len(), 6);

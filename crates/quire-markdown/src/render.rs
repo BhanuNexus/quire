@@ -95,14 +95,15 @@ fn anchor_block_ids(src: &str) -> String {
     if !src.contains('^') {
         return src.to_string();
     }
-    let verbatim = crate::blocks::verbatim_blocks(src);
+    let verbatim = crate::callout::non_prose(src);
     let mut out = String::with_capacity(src.len() + 32);
     let mut at = 0;
     for line in src.split_inclusive('\n') {
         let start = at;
         at += line.len();
         let body = line.trim_end_matches(['\n', '\r']);
-        match crate::callout::block_id(body).filter(|_| !verbatim.iter().any(|r| r.contains(&start))) {
+        let in_code = verbatim.iter().any(|r| r.start < start + body.len().max(1) && start < r.end);
+        match crate::callout::block_id(body).filter(|_| !in_code) {
             Some((range, id)) => {
                 out.push_str(&body[..range.start]);
                 let _ = write!(out, "<a class=\"block-id\" id=\"^{}\"></a>", escape_html(id));
@@ -169,7 +170,13 @@ fn with_callouts<'a>(events: impl Iterator<Item = Event<'a>>) -> impl Iterator<I
                     })
                     .collect();
                 let line = format!("> {plain}");
-                if let Some(h) = crate::callout::parse_header(&line) {
+                // Formatting that runs past the first line can't become a title.
+                let depth = header.iter().fold(0_i32, |d, e| match e {
+                    Event::Start(_) => d + 1,
+                    Event::End(_) => d - 1,
+                    _ => d,
+                });
+                if let Some(h) = crate::callout::parse_header(&line).filter(|_| depth == 0) {
                     quotes.push(true);
                     let fold_attr = match h.fold {
                         Some(true) => " data-callout-fold=\"+\"",
@@ -181,11 +188,19 @@ fn with_callouts<'a>(events: impl Iterator<Item = Event<'a>>) -> impl Iterator<I
                     let mut title_events = Vec::new();
                     for e in header {
                         match e {
-                            Event::Text(t) if skip > 0 => {
-                                let n = skip.min(t.len());
-                                skip -= n;
-                                if n < t.len() {
-                                    title_events.push(Event::Text(CowStr::from(t[n..].to_string())));
+                            // `plain` was built from text and code alike, so both use up the marker.
+                            Event::Text(t) | Event::Code(t) if skip > 0 => {
+                                let mut n = skip.min(t.len());
+                                while !t.is_char_boundary(n) {
+                                    n += 1;
+                                }
+                                skip -= n.min(skip);
+                                if let Some(rest) = t.get(n..).filter(|r| !r.is_empty()) {
+                                    title_events.push(if matches!(e, Event::Code(_)) {
+                                        Event::Code(CowStr::from(rest.to_string()))
+                                    } else {
+                                        Event::Text(CowStr::from(rest.to_string()))
+                                    });
                                 }
                             }
                             e => title_events.push(e.clone()),
@@ -301,7 +316,7 @@ fn preview_callouts(src: &str) -> std::borrow::Cow<'_, str> {
     if !src.contains("[!") && !src.contains('^') {
         return std::borrow::Cow::Borrowed(src);
     }
-    let verbatim = crate::blocks::verbatim_blocks(src);
+    let verbatim = crate::callout::non_prose(src);
     let mut out = String::with_capacity(src.len() + 64);
     let mut at = 0;
     for line in src.split_inclusive('\n') {
@@ -309,7 +324,7 @@ fn preview_callouts(src: &str) -> std::borrow::Cow<'_, str> {
         at += line.len();
         let body = line.trim_end_matches(['\n', '\r']);
         let eol = &line[body.len()..];
-        if verbatim.iter().any(|r| r.contains(&start)) {
+        if verbatim.iter().any(|r| r.start < start + body.len().max(1) && start < r.end) {
             out.push_str(line);
             continue;
         }
@@ -377,6 +392,15 @@ mod tests {
         let html = to_html("> [!tip] Outer\n> > [!bug] Inner\n> > deep\n> back\n", &none);
         assert_eq!(html.matches("<div class=\"callout\"").count(), 2, "{html}");
         assert_eq!(html.matches("<div").count(), html.matches("</div>").count(), "{html}");
+        // Odd headers don't panic: code in the marker, multibyte titles, formatting across lines.
+        let html = to_html("> [!`abc`] éé\n> body\n", &none);
+        assert!(html.contains("éé"), "{html}");
+        let html = to_html("> [!note] **bold\n> more** after\n", &none);
+        assert_eq!(html.matches("<strong>").count(), html.matches("</strong>").count(), "{html}");
+        // `^2` inside display math is math, not a paragraph id.
+        let html = to_html("$$\nx = y ^2\n$$\n", &none);
+        assert!(!html.contains("block-id"), "{html}");
+        assert!(for_preview("$$\nx = y ^2\n$$\n", &|_| None).contains("y ^2"));
         // Paragraph ids become anchors, not text; code keeps them.
         let html = to_html("Some idea ^idea-1\n\n```\nx ^code\n```\n", &none);
         assert!(html.contains("<a class=\"block-id\" id=\"^idea-1\"></a>"), "{html}");

@@ -3,7 +3,7 @@
 //! Quick capture: a thought, appended to today's daily note with the time.
 
 use chrono::{DateTime, Local};
-use quire_text::{EditKind, Selection, Transaction};
+use quire_text::{EditKind, Transaction};
 use quire_vault::{NotePath, Vault};
 
 use crate::Workspace;
@@ -22,9 +22,10 @@ pub fn capture_entry(text: &str, at: DateTime<Local>) -> String {
     out
 }
 
-/// Where `entry` goes in `existing`: a byte range to replace and the text to
-/// put there. Under a `Log`, `Inbox`, `Captures` or `Journal` heading if the
-/// note has one (taking the place of an empty `- ` bullet the template left),
+/// Where `entry` goes in `existing`: a byte range to replace and the text to put there.
+///
+/// Under a `Log`, `Inbox`, `Captures` or `Journal` heading if the note has
+/// one (taking the place of an empty `- ` bullet the template left),
 /// otherwise at the end.
 pub fn placement(existing: &str, entry: &str) -> (std::ops::Range<usize>, String) {
     const SECTIONS: [&str; 5] = ["log", "inbox", "captures", "capture", "journal"];
@@ -113,8 +114,8 @@ impl Workspace {
         if let Some(doc) = self.docs.iter_mut().find(|d| d.path.as_ref() == Some(&path)) {
             let (range, insert) = placement(&doc.text(), &entry);
             let (a, b) = (doc.byte_to_char(range.start), doc.byte_to_char(range.end));
-            let sel: Selection = doc.selection();
-            if doc.apply(Transaction::replace(a, b, insert).with_selection(sel), EditKind::Other).is_err() {
+            // No explicit selection: the caret moves with the text around it.
+            if doc.apply(Transaction::replace(a, b, insert), EditKind::Other).is_err() {
                 return None;
             }
             let text = doc.text().to_string();
@@ -174,6 +175,15 @@ mod tests {
         ws.capture("second thought").unwrap();
         let text = ws.active_doc().unwrap().text().to_string();
         assert!(text.contains("typed\n") && text.contains("second thought") && text.contains("first thought"), "{text}");
+        // The caret stays with the text it was in, even when the entry lands above it.
+        let doc = ws.active_doc_mut().unwrap();
+        let typed_at = doc.text().find("typed").unwrap();
+        let c = doc.byte_to_char(typed_at);
+        doc.set_selection(quire_text::Selection::cursor(c));
+        ws.capture("third thought").unwrap();
+        let doc = ws.active_doc().unwrap();
+        let caret_byte = doc.buffer().char_to_byte(doc.selection().head);
+        assert_eq!(&doc.text()[caret_byte..caret_byte + 5], "typed");
         assert!(ws.capture("   ").is_none());
         // Command line path.
         let p2 = capture_to_vault(ws.vault().unwrap(), "from the terminal", Local::now()).unwrap();

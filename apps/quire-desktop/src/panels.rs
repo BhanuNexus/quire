@@ -852,7 +852,9 @@ pub(crate) fn preview(ui: &mut egui::Ui, ws: &mut Workspace, cache: &mut CommonM
         let mut i = 0;
         while i < lines.len() {
             if let Some(f) = figures.iter().find(|f| f.first_line == i && f.kind == quire_app::markdown::blocks::FigureKind::Diagram) {
-                out.push(format!("$$quire-diagram:{}$$", diagrams.len()));
+                // Keep the block's indent so a diagram inside a list stays in it.
+                let indent: String = lines[i].chars().take_while(|c| c.is_whitespace()).collect();
+                out.push(format!("{indent}$$quire-diagram:{}$$", diagrams.len()));
                 diagrams.push(f.source.clone());
                 i = f.last_line + 1;
             } else {

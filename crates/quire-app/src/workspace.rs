@@ -479,15 +479,32 @@ impl Workspace {
                 || t.starts_with("+ ")
                 || t.split_once(". ").is_some_and(|(n, _)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
         };
+        // Where another kind of block starts, the paragraph has ended (an id
+        // on a fence or `$$` line would break that block).
+        let quote = line_text.trim_start().starts_with('>');
+        let starts_block = |t: &str| {
+            let t = t.trim_start();
+            t.starts_with('#')
+                || t.starts_with("```")
+                || t.starts_with("~~~")
+                || t.starts_with("$$")
+                || t.starts_with('|')
+                || t.starts_with('<')
+                || t.starts_with("---")
+                || (t.starts_with('>') != quote)
+        };
         let mut last = line;
-        if !is_item(&line_text) {
-            while last + 1 < buf.len_lines() {
-                let next = buf.line(last + 1);
-                if next.trim().is_empty() || is_item(&next) || next.trim_start().starts_with('#') || next.trim_start().starts_with("```") {
-                    break;
-                }
-                last += 1;
+        let item = is_item(&line_text);
+        while last + 1 < buf.len_lines() {
+            let next = buf.line(last + 1);
+            if next.trim().is_empty() || is_item(&next) || starts_block(&next) {
+                break;
             }
+            // A list item goes on through its indented continuation lines only.
+            if item && !next.starts_with([' ', '\t']) {
+                break;
+            }
+            last += 1;
         }
         let last_text = buf.line(last);
         if let Some((_, id)) = quire_markdown::callout::block_id(&last_text) {
@@ -1449,6 +1466,35 @@ fn compute_insights(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paragraph_links_put_ids_where_they_belong() {
+        let mut w = ws();
+        let p = NotePath::new("Para.md");
+        let src = "Some text\n~~~\ncode\n~~~\n\nThe energy is\n$$\nE=mc^2\n$$\n\n- item\n  more of it\n- next\n\n# Head\n";
+        w.vault().unwrap().write(&p, src).unwrap();
+        w.open_note(&p).unwrap();
+        let link_at = |w: &mut Workspace, needle: &str| {
+            let d = w.active_doc_mut().unwrap();
+            let at = d.text().find(needle).unwrap();
+            let c = d.byte_to_char(at);
+            d.set_selection(Selection::cursor(c));
+            w.paragraph_link().unwrap()
+        };
+        let l1 = link_at(&mut w, "Some text");
+        let l2 = link_at(&mut w, "The energy");
+        let l3 = link_at(&mut w, "item");
+        assert_eq!(link_at(&mut w, "Head"), "[[Para#Head]]");
+        let text = w.active_doc().unwrap().text().to_string();
+        let id = |l: &str| l.trim_end_matches("]]").rsplit('^').next().unwrap().to_string();
+        assert!(text.contains(&format!("Some text ^{}\n~~~", id(&l1))), "{text}");
+        assert!(text.contains(&format!("The energy is ^{}\n$$", id(&l2))), "{text}");
+        assert!(text.contains(&format!("  more of it ^{}\n- next", id(&l3))), "{text}");
+        // The fence and the math still close.
+        assert_eq!(quire_markdown::blocks::figures(&text).len(), 1);
+        // Asking again reuses the id.
+        assert_eq!(link_at(&mut w, "The energy"), l2);
+    }
 
     #[test]
     fn recent_notes_follow_activation_renames_and_sessions() {
