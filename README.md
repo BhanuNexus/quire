@@ -65,6 +65,13 @@ Quire is **offline by default**. To use a model, open Settings (Ctrl+,) → *AI 
 
 Settings live in `~/.config/quire/settings.toml` (Linux), `~/Library/Application Support/dev.Quire.Quire/` (macOS) or `%APPDATA%\Quire\Quire\config\` (Windows).
 
+
+**Quire Lite.** Math, Mermaid diagrams and PDF export use Typst, which is about 40 MB of the app. To build without them (they show as their Markdown source instead; everything else is the same), add `--no-default-features`:
+
+```sh
+cargo build --release -p quire-desktop --no-default-features   # ~28 MB instead of ~68 MB
+```
+
 ## What it does
 
 <table>

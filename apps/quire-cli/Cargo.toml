@@ -14,7 +14,7 @@ name = "quire-cli"
 path = "src/main.rs"
 
 [dependencies]
-quire-app.workspace = true
+quire-app = { workspace = true, features = ["remote-llm", "keychain", "update-check", "typeset"] }
 quire-import = { path = "../../crates/quire-import" }
 serde_json.workspace = true
 

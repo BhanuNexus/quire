@@ -9,6 +9,7 @@ pub mod attach;
 pub mod capture;
 pub mod commands;
 pub mod document;
+#[cfg(feature = "typeset")]
 pub mod export_pdf;
 pub mod find;
 mod find_state;

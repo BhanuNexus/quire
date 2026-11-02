@@ -899,7 +899,11 @@ pub(crate) fn preview(ui: &mut egui::Ui, ws: &mut Workspace, cache: &mut CommonM
                     }
                 }
             };
-            CommonMarkViewer::new().alerts(callout_alerts()).render_math_fn(Some(&math)).show(ui, cache, &md);
+            // Quire Lite has no typesetter: math stays as its source.
+            CommonMarkViewer::new()
+                .alerts(callout_alerts())
+                .render_math_fn(crate::typeset_ui::AVAILABLE.then_some(&math as &egui_commonmark::RenderMathFn))
+                .show(ui, cache, &md);
         });
     });
     let mut target = None;

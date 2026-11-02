@@ -14,17 +14,20 @@ name = "quire"
 path = "src/main.rs"
 
 [features]
+default = ["typeset"]
 remote-llm = ["quire-app/remote-llm"]
+# Math, diagrams and PDF export. `--no-default-features` builds Quire Lite.
+typeset = ["quire-app/typeset", "dep:quire-typeset", "dep:resvg"]
 
 [dependencies]
-quire-app.workspace = true
+quire-app = { workspace = true, features = ["remote-llm", "keychain", "update-check"] }
 quire-import.workspace = true
 crossbeam-channel.workspace = true
 eframe.workspace = true
 global-hotkey.workspace = true
-resvg.workspace = true
+resvg = { workspace = true, optional = true }
 quire-spell.workspace = true
-quire-typeset.workspace = true
+quire-typeset = { workspace = true, optional = true }
 egui.workspace = true
 egui_commonmark.workspace = true
 rfd.workspace = true

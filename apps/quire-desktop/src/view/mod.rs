@@ -882,7 +882,8 @@ impl FastEditor {
         let math_crosses_lines =
             runs[i..].iter().take_while(|r| r.range.start < b1).any(|r| r.style.math && (r.range.start < b0 || r.range.end > b1));
         let in_figure = Self::figures_of(view, doc).iter().any(|f| f.first_line <= line && line <= f.last_line);
-        if !revealed_line
+        if crate::typeset_ui::AVAILABLE
+            && !revealed_line
             && pre_range.is_none()
             && table.is_none()
             && !math_crosses_lines
@@ -1849,6 +1850,9 @@ impl FastEditor {
                 // it; while it's being edited (or with live preview off) it's source only,
                 // so nothing is rendered per keystroke.
                 let figure_at = |line: usize| -> Option<(blocks::Figure, bool)> {
+                    if !crate::typeset_ui::AVAILABLE {
+                        return None;
+                    }
                     let f = figures.iter().find(|f| f.first_line <= line && line <= f.last_line)?;
                     let revealed = cx.live.as_ref().is_none_or(|rv| rv.iter().any(|r| r.start <= f.last_line && f.first_line < r.end));
                     (!revealed).then(|| (f.clone(), true))

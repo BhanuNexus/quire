@@ -10,13 +10,16 @@ homepage.workspace = true
 publish.workspace = true
 
 [features]
-default = ["remote-llm", "keychain", "update-check"]
+default = ["remote-llm", "keychain", "update-check", "typeset"]
 # Network providers (Anthropic, OpenAI-compatible). Nothing connects unless configured.
 remote-llm = ["quire-intel/remote-llm"]
 # Store API keys in the OS keychain instead of a 0600 file.
 keychain = ["dep:keyring"]
 # Opt-in daily check for a newer release on GitHub (off until the user turns it on).
 update-check = ["dep:ureq"]
+# Math, Mermaid diagrams and PDF export (Typst). About 40 MB of the full app;
+# Quire Lite is built without it.
+typeset = ["dep:quire-typeset"]
 
 [dependencies]
 quire-text.workspace = true
@@ -24,7 +27,7 @@ quire-markdown.workspace = true
 quire-vault.workspace = true
 quire-index.workspace = true
 quire-intel.workspace = true
-quire-typeset.workspace = true
+quire-typeset = { workspace = true, optional = true }
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -452,8 +452,24 @@ fn sync_target(f: &SyncForm) -> quire_app::vault_sync::SyncTarget {
     }
 }
 
+/// The math font's licence, in builds that include it.
+const MATH_FONT_NOTICE: &[(&str, &str)] = &[
+    #[cfg(feature = "typeset")]
+    ("STIX Two Math", quire_typeset::fonts::STIX_TWO_MATH_LICENSE),
+];
+
 fn about(ui: &mut Ui, ws: &mut Workspace, pal: &Palette) {
-    ui.label(RichText::new(format!("Quire {}", env!("CARGO_PKG_VERSION"))).strong().size(16.0));
+    let edition = if crate::typeset_ui::AVAILABLE { "" } else { " Lite" };
+    ui.label(RichText::new(format!("Quire{edition} {}", env!("CARGO_PKG_VERSION"))).strong().size(16.0));
+    if !crate::typeset_ui::AVAILABLE {
+        ui.label(
+            RichText::new(
+                "This is the smaller edition: math, diagrams and PDF export come with the full download. Everything else is the same.",
+            )
+            .size(12.0)
+            .color(pal.muted),
+        );
+    }
     ui.label(RichText::new("A fast, local-first Markdown notepad.").color(pal.muted));
     ui.add_space(8.0);
     ui.label(
@@ -475,7 +491,7 @@ fn about(ui: &mut Ui, ws: &mut Workspace, pal: &Palette) {
     ui.collapsing("Third-party notices", |ui| {
         ui.label(
             RichText::new(
-                "Quire includes the Inter, JetBrains Mono and STIX Two Math fonts (SIL Open Font License 1.1) and English \
+                "Quire includes the Inter and JetBrains Mono fonts (and STIX Two Math in the full edition), under the SIL Open Font License 1.1, and English \
                  word lists for spell checking from SCOWL by Kevin Atkinson and the sources it draws on, including the UK \
                  Advanced Cryptics Dictionary. Their notices follow.",
             )
@@ -488,8 +504,8 @@ fn about(ui: &mut Ui, ws: &mut Workspace, pal: &Palette) {
             .chain([
                 ("Inter", include_str!("../fonts/Inter-OFL.txt")),
                 ("JetBrains Mono", include_str!("../fonts/JetBrainsMono-OFL.txt")),
-                ("STIX Two Math", quire_typeset::fonts::STIX_TWO_MATH_LICENSE),
             ])
+            .chain(MATH_FONT_NOTICE.iter().copied())
             .collect();
         for (name, text) in notices {
             ui.collapsing(name, |ui| {

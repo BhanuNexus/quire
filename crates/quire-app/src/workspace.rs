@@ -145,6 +145,7 @@ pub struct Workspace {
     pub assist_result: Option<AssistResult>,
     insights_cache: InsightsCache,
     insights_job: InsightsJob,
+    #[cfg(feature = "typeset")]
     pub(crate) pdf_job: crate::export_pdf::PdfJob,
     /// Version history, written off the UI thread.
     pub(crate) history: crate::history_ops::HistoryWriter,
@@ -178,6 +179,7 @@ impl Workspace {
             assist_result: None,
             insights_cache: RefCell::new(None),
             insights_job: RefCell::new(None),
+            #[cfg(feature = "typeset")]
             pdf_job: None,
             history: crate::history_ops::HistoryWriter::spawn(),
             find: crate::find_state::FindState::default(),
@@ -623,7 +625,10 @@ impl Workspace {
 
     /// Time-driven work. Returns true if the UI should repaint.
     pub fn tick(&mut self, now: Instant) -> bool {
+        #[cfg(feature = "typeset")]
         let mut changed = self.poll_pdf_job();
+        #[cfg(not(feature = "typeset"))]
+        let mut changed = false;
         self.track_recent();
         let delay = Duration::from_millis(self.settings.autosave_ms);
         let due: Vec<DocId> = self
@@ -1118,7 +1123,10 @@ impl Workspace {
             C::ExportHtml => {
                 self.export_active_html();
             }
+            #[cfg(feature = "typeset")]
             C::ExportPdf => self.export_active_pdf(),
+            #[cfg(not(feature = "typeset"))]
+            C::ExportPdf => self.notify(NoticeLevel::Info, "PDF export comes with the full edition of Quire (this is Quire Lite)."),
             C::Bold => self.wrap("**"),
             C::Italic => self.wrap("_"),
             C::InlineCode => self.wrap("`"),

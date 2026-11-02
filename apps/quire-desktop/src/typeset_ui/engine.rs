@@ -1,13 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Math and diagrams as textures, rendered off the UI thread.
-//!
-//! The editor and preview ask for a formula or a Mermaid diagram every frame;
-//! the first ask queues it for a worker thread (Typst for math, the Mermaid
-//! renderer for diagrams, then resvg to pixels) and returns `Pending`. When
-//! the picture is ready the UI repaints and gets `Ready`. A formula that
-//! doesn't parse comes back `Failed` with the reason. Results are kept per
-//! (source, size, colour, scale) and dropped when there are too many.
+//! The renderer behind [`super::request`]: Typst and the Mermaid renderer
+//! on a worker thread, resvg to pixels, textures cached by recency.
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -15,33 +9,10 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, OnceLock};
 
 use crossbeam_channel::{Receiver, Sender};
-use egui::{Color32, ColorImage, TextureHandle, TextureOptions, Vec2};
+use egui::{ColorImage, TextureOptions, Vec2};
 use resvg::{tiny_skia, usvg};
 
-/// What to draw.
-#[derive(Debug, Clone, PartialEq, Hash)]
-pub(crate) enum Job {
-    /// LaTeX math at `size` points in `color`; `display` for `$$ $$` blocks.
-    Math { latex: String, display: bool, size: u32, color: [u8; 4] },
-    /// A Mermaid diagram.
-    Diagram { source: String, dark: bool },
-}
-
-/// A finished picture: its texture and size in points; `baseline` is the
-/// distance from the top to the text baseline (math only).
-#[derive(Clone)]
-pub(crate) struct Picture {
-    pub texture: TextureHandle,
-    pub size: Vec2,
-    pub baseline: f32,
-}
-
-#[derive(Clone)]
-pub(crate) enum Out {
-    Pending,
-    Ready(Picture),
-    Failed(String),
-}
+use super::{Job, Out, Picture};
 
 struct Done {
     key: u64,
@@ -219,15 +190,10 @@ pub(crate) fn request(ctx: &egui::Context, job: &Job) -> Out {
     t.get(job)
 }
 
-/// Text colour as RGBA for math.
-pub(crate) fn rgba(c: Color32) -> [u8; 4] {
-    let [r, g, b, a] = c.to_srgba_unmultiplied();
-    [r, g, b, a]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::typeset_ui::{Job, Out};
 
     #[test]
     fn the_cache_forgets_the_least_recently_used() {

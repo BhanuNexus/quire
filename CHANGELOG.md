@@ -4,6 +4,9 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Added
+- **Quire Lite** can be built with `cargo build -p quire-desktop --no-default-features`: the same app without math, diagrams and PDF export (which show as their source), at about 28 MB instead of 68 MB. Settings → About says which edition you're running.
+
 ## [0.8.0] - 2026-11-02
 
 ### Added

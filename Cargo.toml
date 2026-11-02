@@ -36,7 +36,7 @@ quire-markdown = { path = "crates/quire-markdown" }
 quire-vault = { path = "crates/quire-vault" }
 quire-index = { path = "crates/quire-index" }
 quire-intel = { path = "crates/quire-intel" }
-quire-app = { path = "crates/quire-app" }
+quire-app = { path = "crates/quire-app", default-features = false }
 quire-import = { path = "crates/quire-import" }
 quire-sync = { path = "crates/quire-sync" }
 quire-spell = { path = "crates/quire-spell" }
