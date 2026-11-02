@@ -43,6 +43,17 @@ pub trait LocalStore {
     fn digest(&self, path: &str) -> Option<String> {
         self.read(path).map(|t| fingerprint(path, &t))
     }
+    /// Who wrote the current version of `path`, if not the person (sent
+    /// with it, protocol 2).
+    fn actor(&self, path: &str) -> Option<crate::protocol::ActorRef> {
+        let _ = path;
+        None
+    }
+    /// A revision from another device is about to be applied (its text may be
+    /// written as is, or merged); stores can keep its `actor`.
+    fn incoming(&mut self, content: &Content) {
+        let _ = content;
+    }
 }
 
 /// Files that aren't notes: they're never merged line by line, and the
@@ -205,6 +216,7 @@ impl Engine {
         today: &str,
         report: &mut Report,
     ) -> Result<(), SyncError> {
+        local.incoming(c);
         let Some(t) = self.state.files.get(&r.file).cloned() else {
             // A note we haven't seen.
             let mut path = c.path.clone();
@@ -441,11 +453,11 @@ impl Engine {
                 (Some(_), true) if live.contains(&t.path) => continue,
                 (Some(_), true) => {
                     let Some(x) = full(&t.path) else { continue };
-                    Content { path: t.path.clone(), deleted: false, text: x, from: String::new(), at: 0 }
+                    Content { actor: local.actor(&t.path), path: t.path.clone(), deleted: false, text: x, from: String::new(), at: 0 }
                 }
                 (Some(x), false) if x != t.base || t.path != t.synced_path => {
                     let Some(x) = (if x == t.base && !is_attachment(&t.path) { Some(x) } else { full(&t.path) }) else { continue };
-                    Content { path: t.path.clone(), deleted: false, text: x, from: String::new(), at: 0 }
+                    Content { actor: local.actor(&t.path), path: t.path.clone(), deleted: false, text: x, from: String::new(), at: 0 }
                 }
                 (Some(_), false) | (None, true) => continue,
                 (None, false) => {
@@ -453,9 +465,9 @@ impl Engine {
                     if let Some(i) = untracked.iter().position(|p| local.digest(p).as_deref() == Some(t.base.as_str())) {
                         let to = untracked.remove(i);
                         let Some(text) = full(&to) else { continue };
-                        Content { path: to, deleted: false, text, from: String::new(), at: 0 }
+                        Content { actor: local.actor(&to), path: to, deleted: false, text, from: String::new(), at: 0 }
                     } else {
-                        Content { path: t.path.clone(), deleted: true, text: String::new(), from: String::new(), at: 0 }
+                        Content { path: t.path.clone(), deleted: true, text: String::new(), from: String::new(), at: 0, actor: None }
                     }
                 }
             };
@@ -467,7 +479,7 @@ impl Engine {
         for path in untracked {
             let Some(text) = local.read(&path) else { continue };
             let id = FileId::random()?;
-            let content = Content { path, deleted: false, text, from: String::new(), at: 0 };
+            let content = Content { actor: local.actor(&path), path, deleted: false, text, from: String::new(), at: 0 };
             if !self.push_one(server, &id, None, &content, report)? {
                 return Ok(false);
             }

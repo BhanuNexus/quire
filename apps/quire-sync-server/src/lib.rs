@@ -8,6 +8,7 @@
 //! | Method and path | What it does |
 //! |---|---|
 //! | `GET /health` | `ok` (no token needed) |
+//! | `GET /v1/info` | `{"protocol":{"min":1,"max":2},"server":"0.9.0"}` (no token needed) |
 //! | `GET /v1/spaces` | List spaces (id, created, revision count), so a new device can pick one |
 //! | `POST /v1/spaces` | Create a space with its wrapped key |
 //! | `GET /v1/spaces/{space}/key` | The wrapped key, so a new device can join |
@@ -15,8 +16,12 @@
 //! | `GET /v1/spaces/{space}/changes?after=N&limit=M` | Revisions after `N` |
 //! | `POST /v1/spaces/{space}/revisions` | Push one revision: 200 accepted, 409 with the current head |
 //! | `GET /v1/spaces/{space}/wait?after=N&timeout=S` | Long-poll until the log passes `N` |
+//! | `PUT /v1/spaces/{space}/min_protocol` | `{"min": 2}`: refuse older clients for this space (never lowered) |
 //!
-//! Every `/v1` request needs `Authorization: Bearer <token>`.
+//! Every `/v1` request except `info` needs `Authorization: Bearer <token>`.
+//! Clients name their protocol in `Quire-Sync-Protocol` (absent: 1, Quire
+//! 0.8). A client older than its space's minimum gets `426` with
+//! `{"error": …, "min": N}`.
 
 pub mod store;
 
@@ -30,6 +35,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use quire_sync::protocol::{MIN_PROTOCOL, PROTOCOL, PROTOCOL_HEADER, ProtocolRange, ServerInfo};
 use quire_sync::{FileId, PushOutcome, Revision, SpaceId, WrappedKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -71,15 +77,70 @@ impl AppState {
 
 /// The HTTP application, ready to serve.
 pub fn app(state: Arc<AppState>) -> Router {
-    let api = Router::new()
+    let api = routes_0_8()
+        .route("/spaces/{space}/min_protocol", axum::routing::put(set_min_protocol))
+        .route_layer(middleware::from_fn_with_state(Arc::clone(&state), require_protocol))
+        .route_layer(middleware::from_fn_with_state(Arc::clone(&state), require_token))
+        .route("/info", get(info));
+    Router::new().route("/health", get(|| async { "ok" })).nest("/v1", api).layer(DefaultBodyLimit::max(MAX_BODY)).with_state(state)
+}
+
+fn routes_0_8() -> Router<Arc<AppState>> {
+    Router::new()
         .route("/spaces", post(create_space).get(list_spaces))
         .route("/spaces/{space}/key", get(get_key).put(put_key))
         .route("/spaces/{space}/changes", get(changes))
         .route("/spaces/{space}/revisions", post(push))
         .route("/spaces/{space}/wait", get(wait))
         .route("/spaces/{space}/files/{file}", get(file_history))
-        .route_layer(middleware::from_fn_with_state(Arc::clone(&state), require_token));
+}
+
+/// The application as Quire 0.8 served it (no `/v1/info`, no minimums):
+/// for tests of mixed fleets.
+#[doc(hidden)]
+pub fn app_0_8(state: Arc<AppState>) -> Router {
+    let api = routes_0_8().route_layer(middleware::from_fn_with_state(Arc::clone(&state), require_token));
     Router::new().route("/health", get(|| async { "ok" })).nest("/v1", api).layer(DefaultBodyLimit::max(MAX_BODY)).with_state(state)
+}
+
+async fn info() -> Json<ServerInfo> {
+    Json(ServerInfo { protocol: ProtocolRange { min: MIN_PROTOCOL, max: PROTOCOL }, server: env!("CARGO_PKG_VERSION").to_string() })
+}
+
+/// The client's protocol: the header, or 1 (Quire 0.8 sends none).
+fn client_protocol(headers: &HeaderMap) -> u32 {
+    headers.get(PROTOCOL_HEADER).and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse().ok()).unwrap_or(1)
+}
+
+/// Refuse clients older than the space's minimum with `426`.
+async fn require_protocol(State(st): State<Arc<AppState>>, headers: HeaderMap, req: Request, next: Next) -> Response {
+    let space = req.uri().path().strip_prefix("/spaces/").and_then(|r| r.split('/').next()).map(str::to_string);
+    if let Some(space) = space.filter(|s| valid_id(s).is_ok()) {
+        let min = db(&st, move |s| s.min_protocol(&SpaceId(space))).await.unwrap_or(1);
+        if client_protocol(&headers) < min {
+            let body = serde_json::json!({ "error": "This vault now needs Quire 0.9 or later on every device.", "min": min });
+            return (StatusCode::UPGRADE_REQUIRED, Json(body)).into_response();
+        }
+    }
+    next.run(req).await
+}
+
+#[derive(Debug, Deserialize)]
+struct MinProtocol {
+    min: u32,
+}
+
+async fn set_min_protocol(
+    State(st): State<Arc<AppState>>,
+    Path(space): Path<String>,
+    Json(body): Json<MinProtocol>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    valid_id(&space)?;
+    if body.min == 0 || body.min > PROTOCOL {
+        return Err(ApiError(StatusCode::BAD_REQUEST, format!("min must be between 1 and {PROTOCOL}")));
+    }
+    let now = db(&st, move |s| s.raise_min_protocol(&SpaceId(space), body.min)).await?;
+    Ok(Json(serde_json::json!({ "min": now })))
 }
 
 async fn require_token(State(st): State<Arc<AppState>>, headers: HeaderMap, req: Request, next: Next) -> Response {

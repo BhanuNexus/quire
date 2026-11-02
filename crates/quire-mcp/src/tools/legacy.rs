@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The tools of Quire 0.8, moved here unchanged.
 //!
-//! Names, schemas, texts and behaviour are 0.8's. `--allow-write` still
-//! writes directly (WS-B moves writes to the policy pipeline, design §B.4),
-//! now with provenance and a ledger entry for each write, and never under
-//! `.quire/`.
+//! Names, schemas and texts are 0.8's. Since 0.9 `--allow-write` writes
+//! *per policy* (design §B.4): directly in agent zones (`wiki/`), and as
+//! suggestions the person reviews everywhere else, never under `.quire/`.
+//! Every applied write has provenance and a ledger entry.
 
 use std::fmt::Write as _;
 
-use quire_agent::{LedgerEntry, Op, Provenance};
+use quire_agent::{Change, ChangeSet, SubmitOutcome};
 use quire_app::find::{FindOptions, compile, replace_in_string};
 use quire_app::intel::{extractive_answer, retrieve};
 use quire_app::vault::{ContentHash, NotePath};
@@ -17,7 +17,11 @@ use serde_json::{Value, json};
 
 use super::{Access, Annotations, FnTool, Tool, ToolCx, ToolOutput, ToolSpec, schema};
 
-const READ_ONLY: &str = "This vault is read-only for AI tools. Start the server with --allow-write to permit edits.";
+/// Names of the 0.8 tools.
+pub const NAMES: &[&str] =
+    &["search_notes", "read_note", "list_notes", "backlinks", "ask_notes", "list_tags", "create_note", "append_to_note", "replace_in_note"];
+
+pub const READ_ONLY: &str = "This vault is read-only for AI tools. Start the server with --allow-write to permit edits.";
 
 fn spec(name: &'static str, title: &'static str, description: &'static str, input_schema: Value, access: Access) -> ToolSpec {
     let annotations = if access == Access::Write { Annotations::WRITE } else { Annotations::READ };
@@ -207,31 +211,29 @@ fn list_tags(cx: &ToolCx<'_>, _a: &Value) -> ToolOutput {
     ToolOutput::text(if tags.is_empty() { "No tags.".into() } else { tags.join(", ") })
 }
 
-/// Write `content` as the caller: the old text and the new one are kept in
-/// version history (the new one with provenance), and the ledger records it.
-fn write_note(cx: &ToolCx<'_>, path: &NotePath, content: &str, op: Op) -> Result<(), String> {
-    if quire_agent::policy::hard_rule(path.as_str(), &cx.vault.config.templates_folder) == Some(quire_agent::policy::HardRule::AppData) {
-        return Err(format!("{path} is Quire's own data and can't be written by AI tools."));
+/// Submit one change as the caller (design §B.4: `--allow-write` writes
+/// per policy since 0.9): applied in agent zones, a suggestion elsewhere.
+/// Returns 0.8's message when applied, or says it awaits review.
+fn submit(cx: &ToolCx<'_>, path: &NotePath, change: Change, expected: Option<ContentHash>, done: String) -> ToolOutput {
+    let cs = ChangeSet {
+        changes: vec![change],
+        expected: expected.map(|h| vec![(path.clone(), h)]).unwrap_or_default(),
+        ..ChangeSet::default()
     }
-    let now = cx.agent.now_ms();
-    let old = cx.vault.read(path).ok();
-    if let Some(old) = &old {
-        let _ = cx.vault.snapshot(path, old, now - 1, true);
+    .titled(format!("Changes to {}", path.stem()));
+    match cx.agent.submit(cx.actor, cs) {
+        Ok(SubmitOutcome::Applied { .. }) => {
+            if let Ok(t) = cx.vault.read(path) {
+                cx.index.upsert(path.clone(), t);
+                cx.index.flush();
+            }
+            ToolOutput::text(done)
+        }
+        Ok(SubmitOutcome::Proposed { id, .. }) => ToolOutput::text(format!(
+            "Suggested this change to {path} for review in Quire ({id}). The note is unchanged until the person accepts it there."
+        )),
+        Err(e) => ToolOutput::error(e.code(), e.to_string()),
     }
-    let snap_before = old.as_ref().and_then(|_| cx.vault.history(path).first().map(|s| s.at_ms));
-    cx.vault.write(path, content).map_err(|e| e.to_string())?;
-    let prov = Provenance::new(cx.actor.clone(), op, content, now);
-    let _ = cx.vault.snapshot_with(path, content, now, true, Some(&prov.to_json()));
-    let mut e = LedgerEntry::new(cx.actor.clone(), op, now).path(path);
-    e.before = old.as_deref().map(ContentHash::of);
-    e.after = Some(ContentHash::of(content));
-    e.snap_before = snap_before;
-    e.snap_after = cx.vault.history(path).first().map(|s| s.at_ms);
-    e.bytes = Some(content.len() as u64);
-    cx.agent.record(&e);
-    cx.index.upsert(path.clone(), content.to_string());
-    cx.index.flush();
-    Ok(())
 }
 
 fn create_note(cx: &ToolCx<'_>, a: &Value) -> ToolOutput {
@@ -239,10 +241,7 @@ fn create_note(cx: &ToolCx<'_>, a: &Value) -> ToolOutput {
         return ToolOutput::error("denied_by_policy", READ_ONLY);
     }
     match cx.vault.unique_path(&s(a, "folder"), &s(a, "title")) {
-        Ok(p) => match write_note(cx, &p, &s(a, "content"), Op::Create) {
-            Ok(()) => ToolOutput::text(format!("Created {p}")),
-            Err(e) => ToolOutput::error("io", e),
-        },
+        Ok(p) => submit(cx, &p, Change::Create { path: p.clone(), text: s(a, "content") }, None, format!("Created {p}")),
         Err(e) => ToolOutput::error("invalid_args", e.to_string()),
     }
 }
@@ -253,7 +252,8 @@ fn append_to_note(cx: &ToolCx<'_>, a: &Value) -> ToolOutput {
     }
     match resolve(cx, &s(a, "note")) {
         Ok(p) => {
-            let mut src = cx.vault.read(&p).unwrap_or_default();
+            let old = cx.vault.read(&p).unwrap_or_default();
+            let mut src = old.clone();
             if !src.is_empty() && !src.ends_with('\n') {
                 src.push('\n');
             }
@@ -261,10 +261,7 @@ fn append_to_note(cx: &ToolCx<'_>, a: &Value) -> ToolOutput {
             if !src.ends_with('\n') {
                 src.push('\n');
             }
-            match write_note(cx, &p, &src, Op::Write) {
-                Ok(()) => ToolOutput::text(format!("Appended to {p}")),
-                Err(e) => ToolOutput::error("io", e),
-            }
+            submit(cx, &p, Change::Edit { path: p.clone(), new_text: src }, Some(ContentHash::of(&old)), format!("Appended to {p}"))
         }
         Err(e) => ToolOutput::error("not_found", e),
     }
@@ -286,10 +283,8 @@ fn replace_in_note(cx: &ToolCx<'_>, a: &Value) -> ToolOutput {
             if n == 0 {
                 return ToolOutput::text(format!("No matches in {p}."));
             }
-            match write_note(cx, &p, &out, Op::Write) {
-                Ok(()) => ToolOutput::text(format!("Replaced {n} match{} in {p}", if n == 1 { "" } else { "es" })),
-                Err(e) => ToolOutput::error("io", e),
-            }
+            let done = format!("Replaced {n} match{} in {p}", if n == 1 { "" } else { "es" });
+            submit(cx, &p, Change::Edit { path: p.clone(), new_text: out }, Some(ContentHash::of(&src)), done)
         }
         Err(e) => ToolOutput::error("not_found", e),
     }

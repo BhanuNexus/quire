@@ -21,6 +21,7 @@ mod highlight;
 mod inbox_ui;
 #[cfg(test)]
 mod layout_check;
+mod mcp_ui;
 mod overlays;
 mod panels;
 mod registry;

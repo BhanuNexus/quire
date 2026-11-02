@@ -46,6 +46,8 @@ pub(crate) struct FeatureUi {
     pub inbox: crate::inbox_ui::InboxUi,
     pub activity: crate::activity_ui::ActivityUi,
     pub agents_settings: crate::agents_settings::AgentsSettingsUi,
+    // ---- WS-B
+    pub mcp: crate::mcp_ui::McpUi,
     // ---- WS-C
     pub timeline: crate::timeline_ui::TimelineUi,
     // ---- WS-D
@@ -102,6 +104,7 @@ pub(crate) const SETTINGS_TABS: &[TabDef] = &[
     // ---- WS-A
     TabDef { id: "agents", label: label!("Agents"), available: crate::agents_settings::available, show: crate::agents_settings::show },
     // ---- WS-B (HTTP MCP and tokens: a section of the Agents tab, or a tab here)
+    TabDef { id: "mcp", label: label!("Connections"), available: crate::mcp_ui::available, show: crate::mcp_ui::show },
     // ---- WS-D
     // ---- WS-F
 ];
@@ -132,6 +135,8 @@ pub(crate) const fn ui_target(cmd: Command) -> Option<UiTarget> {
         | Command::LintVault => UiTarget::Right("inbox"),
         Command::ShowAgentActivity | Command::UndoAgentChanges => UiTarget::Right("activity"),
         Command::AgentSettings => UiTarget::Settings("agents"),
+        // ---- WS-B
+        Command::ConnectAgent | Command::CaptureWebPage => UiTarget::Settings("mcp"),
         // ---- WS-C
         Command::ThinkingTimeline => UiTarget::Right("timeline"),
         // ---- WS-D
@@ -196,6 +201,10 @@ pub(crate) fn layout_samples(ws: &Workspace) -> Vec<(&'static str, crate::overla
         ("shortcuts (feature overlay)", Overlay::Feature(Box::new(crate::overlays::ShortcutsOverlay::default()))),
         // ---- WS-A
         // ---- WS-B
+        ("mcp: consent", crate::mcp_ui::layout_sample(0)),
+        ("mcp: consent, error", crate::mcp_ui::layout_sample(1)),
+        ("capture web page", crate::mcp_ui::layout_sample(2)),
+        ("capture web page, error", crate::mcp_ui::layout_sample(3)),
         // ---- WS-C
         // ---- WS-D
         // ---- WS-E

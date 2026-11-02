@@ -38,7 +38,7 @@ image.workspace = true
 # 0.9 workstreams add their crates on their own line below its marker, so
 # parallel branches don't edit the same lines (docs/design/F0-notes.md).
 # WS-B: quire-mcp (with features = ["http"] for the HTTP server)
-#
+quire-mcp.workspace = true
 # WS-D: quire-ai, quire-assistant
 #
 # WS-G: quire-canvas, quire-pdf (and "quire-pdf/render" in `typeset` above)

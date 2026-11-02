@@ -7,7 +7,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::crypto::WrappedKey;
-use crate::protocol::{PushOutcome, Revision, SpaceId};
+use crate::protocol::{MIN_PROTOCOL, PROTOCOL, PROTOCOL_HEADER, PushOutcome, Revision, ServerInfo, SpaceId};
 use crate::transport::{Transport, TransportError};
 
 /// A space on a sync server.
@@ -17,6 +17,30 @@ pub struct HttpTransport {
     space: SpaceId,
     token: String,
     agent: ureq::Agent,
+    /// The protocol sent in `Quire-Sync-Protocol` (tests act as older clients).
+    protocol: u32,
+}
+
+/// What a server speaks, from `GET /v1/info` (design §B.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Negotiated {
+    /// Both speak this version.
+    Version(u32),
+    /// The server needs a newer Quire than this one.
+    TooOld { min: u32 },
+}
+
+impl Negotiated {
+    /// What to tell the person, if anything.
+    pub fn notice(self) -> Option<String> {
+        match self {
+            Self::Version(v) if v < PROTOCOL => {
+                Some("This sync server is older; some features (sharing vault settings across devices) are off until it's updated.".into())
+            }
+            Self::Version(_) => None,
+            Self::TooOld { min } => Some(format!("This sync server needs a newer Quire (protocol {min}); update Quire on this device.")),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -71,7 +95,61 @@ fn agent(timeout: Duration) -> ureq::Agent {
 impl HttpTransport {
     /// `base` is the server's address, e.g. `https://sync.example.com`.
     pub fn new(base: &str, space: SpaceId, token: &str) -> Self {
-        Self { base: base.trim_end_matches('/').to_string(), space, token: token.to_string(), agent: agent(Duration::from_mins(1)) }
+        Self {
+            base: base.trim_end_matches('/').to_string(),
+            space,
+            token: token.to_string(),
+            agent: agent(Duration::from_mins(1)),
+            protocol: PROTOCOL,
+        }
+    }
+
+    /// Act as a client of protocol `v` (tests of mixed fleets).
+    #[must_use]
+    pub const fn with_protocol(mut self, v: u32) -> Self {
+        self.protocol = v;
+        self
+    }
+
+    /// `GET /v1/info`: what the server speaks. A 404 is a 0.8 server (protocol 1).
+    pub fn negotiate(base: &str) -> Result<Negotiated, TransportError> {
+        let a = agent(Duration::from_secs(20));
+        let mut res =
+            a.get(format!("{}/v1/info", base.trim_end_matches('/'))).call().map_err(|e| TransportError::Offline(e.to_string()))?;
+        let status = res.status().as_u16();
+        let body = res.body_mut().with_config().limit(64 * 1024).read_to_string().map_err(|e| TransportError::Offline(e.to_string()))?;
+        if status == 404 {
+            return Ok(Negotiated::Version(1));
+        }
+        if status != 200 {
+            return Err(Self::fail(status, &body));
+        }
+        let info: ServerInfo = serde_json::from_str(&body).map_err(|e| TransportError::Refused(format!("unexpected reply: {e}")))?;
+        if info.protocol.min > PROTOCOL {
+            return Ok(Negotiated::TooOld { min: info.protocol.min });
+        }
+        Ok(Negotiated::Version(info.protocol.max.clamp(MIN_PROTOCOL, PROTOCOL)))
+    }
+
+    /// Keep clients older than protocol `min` out of this space (they get
+    /// `426`). Needs a 0.9 server.
+    pub fn set_min_protocol(&self, min: u32) -> Result<(), TransportError> {
+        let body = serde_json::json!({ "min": min }).to_string();
+        let mut res = self
+            .agent
+            .put(self.url("/min_protocol"))
+            .header("Authorization", &self.auth())
+            .header(PROTOCOL_HEADER, &self.protocol.to_string())
+            .header("Content-Type", "application/json")
+            .send(body.as_str())
+            .map_err(|e| TransportError::Offline(e.to_string()))?;
+        let status = res.status().as_u16();
+        let text = res.body_mut().read_to_string().unwrap_or_default();
+        match status {
+            200 | 204 => Ok(()),
+            404 if !text.contains("vault") => Err(TransportError::Refused("Update your sync server first.".into())),
+            _ => Err(Self::fail(status, &text)),
+        }
     }
 
     fn url(&self, path: &str) -> String {
@@ -87,12 +165,25 @@ impl HttpTransport {
         match status {
             401 => TransportError::Refused("the server token is wrong".into()),
             404 => TransportError::Refused("this vault isn't on the server".into()),
+            426 => {
+                let min = serde_json::from_str::<serde_json::Value>(body).ok().and_then(|v| v.get("min")?.as_u64()).unwrap_or(0);
+                TransportError::Refused(if min >= 2 {
+                    "This vault now needs Quire 0.9 or later on every device; update Quire.".into()
+                } else {
+                    format!("This server needs a newer Quire: {msg}")
+                })
+            }
             _ => TransportError::Refused(msg),
         }
     }
 
     fn get_json<T: for<'de> Deserialize<'de>>(&self, agent: &ureq::Agent, url: &str) -> Result<T, TransportError> {
-        let mut res = agent.get(url).header("Authorization", &self.auth()).call().map_err(|e| TransportError::Offline(e.to_string()))?;
+        let mut res = agent
+            .get(url)
+            .header("Authorization", &self.auth())
+            .header(PROTOCOL_HEADER, &self.protocol.to_string())
+            .call()
+            .map_err(|e| TransportError::Offline(e.to_string()))?;
         let status = res.status().as_u16();
         let body = res.body_mut().with_config().limit(MAX_REPLY).read_to_string().map_err(|e| TransportError::Offline(e.to_string()))?;
         if status != 200 {
@@ -114,6 +205,7 @@ impl HttpTransport {
             .agent
             .post(format!("{}/v1/spaces", self.base))
             .header("Authorization", &self.auth())
+            .header(PROTOCOL_HEADER, &self.protocol.to_string())
             .header("Content-Type", "application/json")
             .send(body.as_str())
             .map_err(|e| TransportError::Offline(e.to_string()))?;
@@ -173,6 +265,7 @@ impl Transport for HttpTransport {
             .agent
             .post(self.url("/revisions"))
             .header("Authorization", &self.auth())
+            .header(PROTOCOL_HEADER, &self.protocol.to_string())
             .header("Content-Type", "application/json")
             .send(body.as_str())
             .map_err(|e| TransportError::Offline(e.to_string()))?;

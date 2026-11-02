@@ -46,7 +46,17 @@ pub struct SyncConfig {
     pub space: SpaceId,
     pub device: DeviceId,
     pub device_name: String,
+    /// Also sync `.quire/shared/` (vault settings, agent policy, review
+    /// logs). Needs Quire 0.9 on every device; turning it on raises the
+    /// space's minimum (design §B.5).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shared_state: bool,
 }
+
+/// The vault-settings folder that travels with Quire Sync when allowed.
+pub const SHARED_PREFIX: &str = ".quire/shared/";
+/// The largest file synced from it.
+const MAX_SHARED_BYTES: u64 = 10 * 1024 * 1024;
 
 /// Shown in the status bar and Settings.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -224,6 +234,11 @@ pub struct VaultStore {
     /// Attachment fingerprints by (size, modified time), so unchanged images
     /// aren't read and hashed on every pass.
     digests: std::cell::RefCell<HashMap<String, (u64, std::time::SystemTime, String)>>,
+    /// Sync `.quire/shared/` too.
+    shared: bool,
+    /// The revision being applied, when another device's agent wrote it:
+    /// its text's hash, who, and the device's name.
+    incoming: Option<(quire_vault::ContentHash, quire_sync::ActorRef, String)>,
 }
 
 fn b64() -> base64::engine::GeneralPurpose {
@@ -232,7 +247,34 @@ fn b64() -> base64::engine::GeneralPurpose {
 
 impl VaultStore {
     pub fn new(vault: Vault) -> Self {
-        Self { vault, seen: HashMap::new(), digests: std::cell::RefCell::default() }
+        Self { vault, seen: HashMap::new(), digests: std::cell::RefCell::default(), shared: false, incoming: None }
+    }
+
+    /// Also sync `.quire/shared/` (only once every device runs 0.9).
+    #[must_use]
+    pub const fn with_shared_state(mut self, on: bool) -> Self {
+        self.shared = on;
+        self
+    }
+
+    /// Record who wrote an incoming version as its history provenance.
+    fn keep_provenance(&self, path: &str, text: &str) {
+        let Some((hash, actor, from)) = &self.incoming else { return };
+        if *hash != quire_vault::ContentHash::of(text) {
+            // Merged with local edits: no longer only theirs.
+            return;
+        }
+        let kind = match actor.kind.as_str() {
+            "agent" => quire_agent::ActorKind::Agent,
+            "job" => quire_agent::ActorKind::Job,
+            "import" => quire_agent::ActorKind::Import,
+            _ => return,
+        };
+        let mut a = quire_agent::Actor::agent(actor.id.clone(), actor.label.clone(), quire_agent::Via::Sync, from);
+        a.kind = kind;
+        let now = crate::history_ops::now_ms();
+        let prov = quire_agent::Provenance::new(a, quire_agent::Op::Write, text, now);
+        let _ = self.vault.snapshot_with(&NotePath::new(path), text, now, true, Some(&prov.to_json()));
     }
 
     fn size_and_time(&self, path: &str) -> Option<(u64, std::time::SystemTime)> {
@@ -260,7 +302,8 @@ impl VaultStore {
 
 impl LocalStore for VaultStore {
     fn list(&self) -> Vec<String> {
-        self.vault
+        let mut out: Vec<String> = self
+            .vault
             .storage()
             .list()
             .unwrap_or_default()
@@ -271,7 +314,40 @@ impl LocalStore for VaultStore {
                         && self.size_and_time(p.as_str()).is_some_and(|(n, _)| n <= MAX_ATTACHMENT_BYTES))
             })
             .map(|p| p.as_str().to_string())
-            .collect()
+            .collect();
+        if self.shared {
+            let shared = self.vault.storage().list_under(SHARED_PREFIX.trim_end_matches('/')).unwrap_or_default();
+            out.extend(
+                shared
+                    .into_iter()
+                    .filter(|p| p.as_str().starts_with(SHARED_PREFIX) && !p.as_str().contains("/."))
+                    .filter(|p| self.vault.storage().read_bytes(p).is_ok_and(|b| b.len() as u64 <= MAX_SHARED_BYTES))
+                    .map(|p| p.as_str().to_string()),
+            );
+        }
+        out
+    }
+
+    fn actor(&self, path: &str) -> Option<quire_sync::ActorRef> {
+        let p = NotePath::new(path);
+        if !p.is_markdown() {
+            return None;
+        }
+        let snap = self.vault.history(&p).into_iter().next()?;
+        let prov = quire_agent::Provenance::from_json(&self.vault.read_provenance(&snap)?)?;
+        // Only when the file is still exactly what that actor wrote.
+        if prov.actor.is_human() || prov.hash != quire_vault::ContentHash::of(&self.current(path)?) {
+            return None;
+        }
+        let kind = serde_json::to_value(prov.actor.kind).ok()?.as_str()?.to_string();
+        Some(quire_sync::ActorRef { id: prov.actor.id, label: prov.actor.label, kind })
+    }
+
+    fn incoming(&mut self, content: &quire_sync::Content) {
+        if content.path.starts_with(SHARED_PREFIX) {
+            self.shared = true;
+        }
+        self.incoming = content.actor.clone().map(|a| (quire_vault::ContentHash::of(&content.text), a, content.from.clone()));
     }
 
     fn read(&self, path: &str) -> Option<String> {
@@ -296,13 +372,26 @@ impl LocalStore for VaultStore {
     fn write(&mut self, path: &str, text: &str) -> Result<(), String> {
         use base64::Engine as _;
         self.unchanged_since_read(path)?;
+        if path.starts_with(SHARED_PREFIX) {
+            if path.contains("/.") || path.contains("..") {
+                return Err("not a vault settings file".into());
+            }
+            // Another device shares vault settings through this space, so
+            // this one must list them too, or it would pass on deletions.
+            self.shared = true;
+        }
         if quire_sync::engine::is_attachment(path) {
             let bytes = b64().decode(text).map_err(|e| format!("damaged attachment: {e}"))?;
             self.vault.storage().write_bytes_atomic(&NotePath::new(path), &bytes).map_err(|e| e.to_string())?;
             self.seen.insert(path.to_string(), Some(quire_sync::engine::fingerprint(path, text)));
             return Ok(());
         }
-        self.vault.write(&NotePath::new(path), text).map_err(|e| e.to_string())?;
+        if path.starts_with(SHARED_PREFIX) {
+            self.vault.storage().write_atomic(&NotePath::new(path), text).map_err(|e| e.to_string())?;
+        } else {
+            self.vault.write(&NotePath::new(path), text).map_err(|e| e.to_string())?;
+            self.keep_provenance(path, text);
+        }
         self.seen.insert(path.to_string(), Some(text.to_string()));
         Ok(())
     }
@@ -433,7 +522,14 @@ impl SyncWorker {
             let stop = worker_stop;
             let link = Link::new(&cfg, &token, Some(&sync_dir(&root)));
             let mut engine = Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), key.keys(), load_state(&root));
-            let mut store = VaultStore::new(vault);
+            let mut store = VaultStore::new(vault).with_shared_state(cfg.shared_state);
+            // A server that needs a newer Quire says so plainly instead of failing each pass.
+            if let Link::Server(_) = &link
+                && let Ok(n @ quire_sync::Negotiated::TooOld { .. }) = HttpTransport::negotiate(&cfg.server)
+            {
+                let _ = events.send(Event::Status(SyncStatus::Error(n.notice().unwrap_or_default())));
+                return;
+            }
             let mut wait = Duration::ZERO;
             loop {
                 match msgs.recv_timeout(wait) {
@@ -456,6 +552,12 @@ impl SyncWorker {
                 snapshot_reads(&mut store);
                 let res = engine.sync(&mut store, link.transport(), &today());
                 let _ = save_state(&root, &engine.state);
+                // Another device turned on sharing vault settings: remember it here.
+                if store.shared && !cfg.shared_state {
+                    let mut c = cfg.clone();
+                    c.shared_state = true;
+                    let _ = c.save(&root);
+                }
                 known.store(engine.state.cursor, Ordering::Relaxed);
                 let status = match res {
                     Ok(report) => {
@@ -553,6 +655,7 @@ impl Workspace {
             space,
             device: DeviceId::random().map_err(|e| e.to_string())?,
             device_name: device_name.trim().to_string(),
+            shared_state: false,
         })
     }
 
@@ -634,6 +737,31 @@ impl Workspace {
         self.sync.worker = Some(SyncWorker::start(root, vault, cfg.clone(), token, key));
         self.sync.config = Some(cfg);
         self.sync.status = SyncStatus::Syncing;
+    }
+
+    /// "Also sync vault settings and review history" (design §B.5). Turning
+    /// it on first keeps Quire 0.8 out of the space (a 0.9 server answers
+    /// older clients `426`; a sync folder gets `min_reader = 2`), because a
+    /// 0.8 device would see the settings files as deleted and pass that on.
+    pub fn sync_share_vault_settings(&mut self, on: bool) -> Result<(), String> {
+        let (root, _) = self.sync_parts()?;
+        let mut cfg = SyncConfig::load(&root).ok_or("Sync isn't set up for this vault")?;
+        if on && !cfg.shared_state {
+            if let Some(dir) = &cfg.folder {
+                folder::raise_min_reader(dir, &cfg.space, 2).map_err(|e| e.to_string())?;
+            } else {
+                let negotiated = HttpTransport::negotiate(&cfg.server).map_err(|e| e.to_string())?;
+                if !matches!(negotiated, quire_sync::Negotiated::Version(v) if v >= 2) {
+                    return Err("Update your sync server first: it needs Quire Sync Server 0.9 or later.".into());
+                }
+                let token = secrets::store().get(&token_name(&cfg.space)).ok_or("This device is missing the sync token")?;
+                HttpTransport::new(&cfg.server, cfg.space.clone(), &token).set_min_protocol(2).map_err(|e| e.to_string())?;
+            }
+        }
+        cfg.shared_state = on;
+        cfg.save(&root)?;
+        self.start_sync();
+        Ok(())
     }
 
     /// Stop syncing on this device. Notes stay as they are; the server copy is untouched.
@@ -882,9 +1010,112 @@ mod tests {
             space: SpaceId::random().unwrap(),
             device: DeviceId::random().unwrap(),
             device_name: "laptop".into(),
+            shared_state: false,
         };
         cfg.save(dir.path()).unwrap();
+        assert!(!std::fs::read_to_string(sync_dir(dir.path()).join("config.json")).unwrap().contains("shared_state"), "unchanged for 0.8");
         assert_eq!(SyncConfig::load(dir.path()), Some(cfg));
         assert_eq!(load_state(dir.path()), SyncState::default());
+    }
+
+    #[test]
+    fn vault_settings_sync_only_when_turned_on() {
+        use base64::Engine as _;
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::open_local(dir.path()).unwrap();
+        vault.write(&NotePath::new("A.md"), "a").unwrap();
+        vault.storage().write_atomic(&NotePath::new(".quire/shared/vault.toml"), "format = 1\n").unwrap();
+        vault.storage().write_atomic(&NotePath::new(".quire/agent/ledger/x.jsonl"), "{}\n").unwrap();
+        let off = VaultStore::new(vault.clone());
+        assert_eq!(off.list(), vec!["A.md".to_string()], "never .quire/ by default");
+        let mut on = VaultStore::new(vault.clone()).with_shared_state(true);
+        assert_eq!(on.list(), vec!["A.md".to_string(), ".quire/shared/vault.toml".to_string()], "only the shared folder");
+        snapshot_reads(&mut on);
+        on.write(".quire/shared/agent-policy.toml", &b64().encode("format = 1\n")).unwrap();
+        assert_eq!(vault.storage().read(&NotePath::new(".quire/shared/agent-policy.toml")).unwrap(), "format = 1\n");
+        assert!(on.write(".quire/shared/../x.toml", "").is_err());
+        // A device that hasn't turned it on joins in as soon as another device's settings arrive.
+        let mut joined = VaultStore::new(vault);
+        snapshot_reads(&mut joined);
+        joined.incoming(&quire_sync::Content {
+            path: ".quire/shared/srs/d1.jsonl".into(),
+            deleted: false,
+            text: String::new(),
+            from: "x".into(),
+            at: 0,
+            actor: None,
+        });
+        assert!(joined.list().contains(&".quire/shared/vault.toml".to_string()));
+    }
+
+    #[test]
+    fn agent_attribution_travels_with_versions() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::open_local(dir.path()).unwrap();
+        let store = quire_agent::AgentStore::open(
+            &vault,
+            quire_agent::DeviceInfo { id: "d1".into(), name: "laptop".into() },
+            Arc::new(quire_agent::SystemClock),
+        );
+        let agent = quire_agent::Actor::agent("mcp:claude-code", "Claude Code", quire_agent::Via::McpStdio, "d1");
+        store
+            .submit(
+                &agent,
+                quire_agent::ChangeSet::one(quire_agent::Change::Create { path: NotePath::new("wiki/A.md"), text: "by agent\n".into() }),
+            )
+            .unwrap();
+        vault.write(&NotePath::new("Mine.md"), "by me\n").unwrap();
+        let mut vs = VaultStore::new(vault.clone());
+        let a = vs.actor("wiki/A.md").unwrap();
+        assert_eq!((a.id.as_str(), a.label.as_str(), a.kind.as_str()), ("mcp:claude-code", "Claude Code", "agent"));
+        assert_eq!(vs.actor("Mine.md"), None, "the person's own edits carry nothing");
+        vault.write(&NotePath::new("wiki/A.md"), "edited by me since\n").unwrap();
+        assert_eq!(vs.actor("wiki/A.md"), None, "only while the file is what the agent wrote");
+        // Receiving: the version is kept with the sender's actor.
+        let content = quire_sync::Content {
+            path: "wiki/B.md".into(),
+            deleted: false,
+            text: "from the other laptop\n".into(),
+            from: "desktop".into(),
+            at: 1,
+            actor: Some(a),
+        };
+        snapshot_reads(&mut vs);
+        vs.incoming(&content);
+        vs.write("wiki/B.md", &content.text).unwrap();
+        let snap = vault.history(&NotePath::new("wiki/B.md")).remove(0);
+        let prov = quire_agent::Provenance::from_json(&vault.read_provenance(&snap).unwrap()).unwrap();
+        assert_eq!(
+            (prov.actor.id.as_str(), prov.actor.via, prov.actor.device.as_str()),
+            ("mcp:claude-code", quire_agent::Via::Sync, "desktop")
+        );
+    }
+
+    #[test]
+    fn sharing_vault_settings_raises_the_folder_minimum() {
+        let vault_dir = tempfile::tempdir().unwrap();
+        let sync_dir_root = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::new(crate::Settings::default());
+        ws.open_vault(vault_dir.path()).unwrap();
+        let root = folder::sync_root(sync_dir_root.path());
+        let space = SpaceId::random().unwrap();
+        let key = VaultKey::generate().unwrap();
+        folder::create_space(&root, &space, &WrappedKey::wrap(&key, "passphrase", KDF).unwrap()).unwrap();
+        let cfg = SyncConfig {
+            server: String::new(),
+            folder: Some(root.clone()),
+            space: space.clone(),
+            device: DeviceId::random().unwrap(),
+            device_name: "x".into(),
+            shared_state: false,
+        };
+        cfg.save(vault_dir.path()).unwrap();
+        assert_eq!(folder::min_reader(&root, &space).unwrap(), 1);
+        ws.sync_share_vault_settings(true).unwrap();
+        assert_eq!(folder::min_reader(&root, &space).unwrap(), 2);
+        assert!(SyncConfig::load(vault_dir.path()).unwrap().shared_state);
+        ws.sync_share_vault_settings(false).unwrap();
+        assert!(!SyncConfig::load(vault_dir.path()).unwrap().shared_state);
+        assert_eq!(folder::min_reader(&root, &space).unwrap(), 2, "the minimum stays");
     }
 }
