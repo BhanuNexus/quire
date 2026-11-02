@@ -13,21 +13,41 @@ use std::ops::Range;
 pub enum Value {
     Str(String),
     List(Vec<String>),
+    /// A nested map (`author:` then indented `name: Ada`). The parser doesn't
+    /// produce it yet (nested blocks are skipped); writers and views accept it.
+    Map(BTreeMap<String, Self>),
 }
 
 impl Value {
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Self::Str(s) => Some(s),
-            Self::List(_) => None,
+            Self::List(_) | Self::Map(_) => None,
         }
     }
 
     /// Strings are treated as one-element lists; comma-separated strings are split.
+    /// A map is not a list (empty).
     pub fn as_list(&self) -> Vec<String> {
         match self {
             Self::List(v) => v.clone(),
             Self::Str(s) => s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect(),
+            Self::Map(_) => Vec::new(),
+        }
+    }
+
+    pub const fn as_map(&self) -> Option<&BTreeMap<String, Self>> {
+        match self {
+            Self::Map(m) => Some(m),
+            Self::Str(_) | Self::List(_) => None,
+        }
+    }
+
+    /// The value at a dotted path inside nested maps (`["author", "name"]`).
+    pub fn at_path(&self, path: &[&str]) -> Option<&Self> {
+        match path.split_first() {
+            None => Some(self),
+            Some((head, rest)) => self.as_map()?.get(*head)?.at_path(rest),
         }
     }
 }
@@ -159,14 +179,29 @@ impl Value {
         match self {
             Self::List(_) => Kind::List,
             Self::Str(s) => kind_of(s),
+            // Shown as text (its flow form) until the properties panel has a tree.
+            Self::Map(_) => Kind::Text,
         }
     }
 
-    /// One-line display form: lists joined with ", ".
+    /// One-line display form: lists joined with ", ", maps in YAML flow form.
     pub fn display(&self) -> String {
         match self {
             Self::Str(s) => s.clone(),
             Self::List(v) => v.join(", "),
+            Self::Map(_) => self.flow(),
+        }
+    }
+
+    /// YAML flow form: `a`, `[a, b]`, `{k: v, n: [x]}`.
+    pub fn flow(&self) -> String {
+        match self {
+            Self::Str(s) => yaml_scalar(s),
+            Self::List(items) => format!("[{}]", flow_items(items)),
+            Self::Map(m) => {
+                let parts: Vec<String> = m.iter().map(|(k, v)| format!("{}: {}", yaml_scalar(k), v.flow())).collect();
+                format!("{{{}}}", parts.join(", "))
+            }
         }
     }
 }
@@ -212,17 +247,21 @@ pub fn yaml_scalar(s: &str) -> String {
 pub fn format_field(key: &str, value: &Value) -> String {
     match value {
         Value::Str(s) => format!("{key}: {}\n", yaml_scalar(s)),
-        Value::List(items) => {
-            let quoted: Vec<String> = items
-                .iter()
-                .map(|i| {
-                    let q = yaml_scalar(i);
-                    if q.contains(',') && !q.starts_with('"') { format!("\"{q}\"") } else { q }
-                })
-                .collect();
-            format!("{key}: [{}]\n", quoted.join(", "))
-        }
+        Value::List(items) => format!("{key}: [{}]\n", flow_items(items)),
+        Value::Map(_) => format!("{key}: {}\n", value.flow()),
     }
+}
+
+/// List items for a flow list, quoting any that contain a comma.
+fn flow_items(items: &[String]) -> String {
+    let quoted: Vec<String> = items
+        .iter()
+        .map(|i| {
+            let q = yaml_scalar(i);
+            if q.contains(',') && !q.starts_with('"') { format!("\"{q}\"") } else { q }
+        })
+        .collect();
+    quoted.join(", ")
 }
 
 /// Byte range of a top-level field's line(s), including block-list items.
@@ -348,5 +387,21 @@ mod tests {
         assert_eq!(Value::Str("true".into()).kind(), Kind::Bool);
         assert_eq!(Value::Str("hello".into()).kind(), Kind::Text);
         assert_eq!(Value::List(vec![]).kind(), Kind::List);
+    }
+
+    #[test]
+    fn nested_maps_write_in_flow_form() {
+        let author = Value::Map(BTreeMap::from([
+            ("name".to_string(), Value::Str("Ada".into())),
+            ("tags".to_string(), Value::List(vec!["x".into(), "y, z".into()])),
+        ]));
+        assert_eq!(format_field("author", &author), "author: {name: Ada, tags: [x, \"y, z\"]}\n");
+        assert_eq!(author.at_path(&["name"]).and_then(Value::as_str), Some("Ada"));
+        assert_eq!(author.at_path(&[]), Some(&author));
+        assert!(author.at_path(&["nope"]).is_none());
+        assert!(author.as_list().is_empty() && author.as_str().is_none());
+        // Today's parser skips nested blocks (WS-E adds them); the rest is unchanged.
+        let fm = parse("---\nauthor:\n  name: Ada\ntitle: T\n---\n").unwrap();
+        assert_eq!(fm.title(), Some("T"));
     }
 }

@@ -39,12 +39,35 @@ impl Link {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A checklist item. The metadata fields come from the text after the task
+/// (`📅 2026-12-01`, `[due:: …]`); see [`crate::tasks`]. Dates are kept as
+/// written (`YYYY-MM-DD`); `quire-plan` interprets them.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Task {
     pub done: bool,
     pub text: String,
     /// Byte offset of the `[ ]` marker.
     pub offset: usize,
+    /// 📅 / `[due:: …]`
+    pub due: Option<String>,
+    /// ⏳ / `[scheduled:: …]`
+    pub scheduled: Option<String>,
+    /// 🛫 / `[start:: …]`
+    pub start: Option<String>,
+    /// ✅ / `[completion:: …]`
+    pub done_on: Option<String>,
+    /// ➕ / `[created:: …]`
+    pub created: Option<String>,
+    /// 🔁 rule as written (`every month on the 1st`).
+    pub recurrence: Option<String>,
+    /// 0 = highest (⏫) … 4 = lowest (⏬); `None` = normal.
+    pub priority: Option<u8>,
+    /// ⏰ date and time as written.
+    pub reminder: Option<String>,
+    /// Day-planner block `14:00 - 15:30` (start, end).
+    pub time_block: Option<(String, String)>,
+    /// Byte range (in the source) of the trailing metadata fields.
+    pub meta_range: Option<Range<usize>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -166,7 +189,11 @@ pub fn extract(src: &str) -> Extracted {
             Event::TaskListMarker(done) => in_task = Some((done, range.start, String::new())),
             Event::End(TagEnd::Paragraph | TagEnd::Item) => {
                 if let Some((done, offset, text)) = in_task.take() {
-                    out.tasks.push(Task { done, text: text.trim().to_string(), offset });
+                    let mut task = Task { done, text: text.trim().to_string(), offset, ..Task::default() };
+                    let line_start = src[..offset.min(src.len())].rfind('\n').map_or(0, |i| i + 1);
+                    let line_end = src[offset.min(src.len())..].find('\n').map_or(src.len(), |i| offset + i);
+                    crate::tasks::parse_meta(&src[line_start..line_end], offset - line_start, &mut task);
+                    out.tasks.push(task);
                 }
                 out.plain.push('\n');
             }

@@ -43,6 +43,8 @@ pub const KINDS: &[CalloutKind] = &[
     CalloutKind { id: "bug", label: "Bug", color: [0xe5, 0x48, 0x4d], glyph: '●', aliases: &[] },
     CalloutKind { id: "example", label: "Example", color: [0x8b, 0x5c, 0xf6], glyph: '◆', aliases: &[] },
     CalloutKind { id: "quote", label: "Quote", color: [0x8a, 0x8f, 0x98], glyph: '“', aliases: &["cite"] },
+    // Quire's own: marks text an AI wrote (saved answers, ingest summaries).
+    CalloutKind { id: "ai", label: "AI", color: [0x7c, 0x5c, 0xd6], glyph: '✦', aliases: &[] },
 ];
 
 /// The kind for a type name; unknown names look like a note.
@@ -262,6 +264,13 @@ pub fn new_block_id(src: &str, seed: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ai_callout_kind() {
+        let h = parse_header("> [!ai] Written by Claude from 3 notes").unwrap();
+        assert_eq!(h.kind.id, "ai");
+        assert_eq!(h.kind.label, "AI");
+    }
 
     #[test]
     fn parses_callout_headers() {
