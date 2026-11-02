@@ -5,6 +5,7 @@
 
 pub mod ai;
 mod ask_state;
+pub mod atomic;
 pub mod attach;
 pub mod capture;
 pub mod commands;

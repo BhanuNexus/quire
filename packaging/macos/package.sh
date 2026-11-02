@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Build Quire.app (universal: Apple Silicon + Intel) and a .dmg. Runs on macOS.
 #
-#   packaging/macos/package.sh
+#   packaging/macos/package.sh             the full edition
+#   EDITION=lite packaging/macos/package.sh  Quire Lite (Quire-Lite-<v>-macos-universal.dmg)
+#
+# Both editions are Quire.app with the same bundle id, so dragging either
+# into Applications replaces the other and keeps all settings.
 #
 # Signing and notarization are optional and driven by environment variables:
 #   MACOS_SIGNING_IDENTITY   e.g. "Developer ID Application: Your Name (TEAMID)"
@@ -16,11 +20,17 @@ cd "$(dirname "$0")/../.."
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
 export MACOSX_DEPLOYMENT_TARGET=11.0
 out="dist"
-name="Quire-$version-macos-universal"
+edition="${EDITION:-full}"
+case "$edition" in
+  full) prefix="Quire"; volume="Quire $version"; features=() ;;
+  lite) prefix="Quire-Lite"; volume="Quire Lite $version"; features=(--no-default-features) ;;
+  *) echo "EDITION must be full or lite" >&2; exit 1 ;;
+esac
+name="$prefix-$version-macos-universal"
 app="$out/Quire.app"
 
 for t in aarch64-apple-darwin x86_64-apple-darwin; do
-  cargo build --release --locked --target "$t" -p quire-desktop -p quire-cli
+  cargo build --release --locked --target "$t" -p quire-desktop -p quire-cli "${features[@]}"
 done
 
 rm -rf "$app" && mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
@@ -47,7 +57,7 @@ staging="$(mktemp -d)"
 cp -R "$app" "$staging/"
 ln -s /Applications "$staging/Applications"
 rm -f "$dmg"
-hdiutil create -volname "Quire $version" -srcfolder "$staging" -ov -format UDZO "$dmg"
+hdiutil create -volname "$volume" -srcfolder "$staging" -ov -format UDZO "$dmg"
 rm -rf "$staging"
 [[ "$identity" != "-" ]] && codesign --force --timestamp --sign "$identity" "$dmg"
 

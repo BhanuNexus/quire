@@ -25,7 +25,18 @@ Plain <code>.md</code> files in a folder, styled as you type, linked like Obsidi
 
 ## Install
 
-Download from [Releases](https://github.com/BhanuNexus/quire/releases):
+Download from [Releases](https://github.com/BhanuNexus/quire/releases). Each release comes in two editions:
+
+| | **Quire** | **Quire Lite** |
+|---|---|---|
+| Editor, links, search, sync, graph, callouts, spelling, capture… | ✓ | ✓ |
+| Math and Mermaid diagrams drawn in place | ✓ | shown as their source |
+| Export as PDF | ✓ | — |
+| App size | ~68 MB | ~28 MB |
+| File names | `Quire-<version>-…` | `Quire-Lite-<version>-…` |
+
+They're the same app working on the same files and settings. Installing one replaces the other, so you can switch either way at any time and your notes, settings and sync carry over. Settings → About says which one you have. Not sure which to take? Take **Quire**.
+
 
 - **Windows 10/11:** `Quire-<version>-windows-x64-setup.exe` (no admin needed), or the portable zip.
 - **macOS 11+:** `Quire-<version>-macos-universal.dmg` (Apple Silicon and Intel).
@@ -33,6 +44,7 @@ Download from [Releases](https://github.com/BhanuNexus/quire/releases):
   - `Quire-<version>-linux-amd64.deb` for Debian and Ubuntu: `sudo apt install ./Quire-<version>-linux-amd64.deb`
   - `Quire-<version>-linux-x86_64.AppImage`: make it executable and run it (needs FUSE 2, or set `APPIMAGE_EXTRACT_AND_RUN=1`)
   - `Quire-<version>-linux-x86_64.tar.gz`: extract it and run `./install.sh` (no root needed)
+- **Quire Lite:** the same files with `Quire-Lite-` in front (on Debian and Ubuntu the package is `quire-lite`, which replaces `quire` and the other way round).
 - **Sync server (optional, Linux x86_64):** `quire-sync-server-<version>-linux-x86_64.tar.gz`, to [run your own Quire Sync](docs/self-hosting.md).
 
 Until code signing is set up (planned for 1.0), your system will warn you the first time:

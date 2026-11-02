@@ -1126,7 +1126,7 @@ impl Workspace {
             #[cfg(feature = "typeset")]
             C::ExportPdf => self.export_active_pdf(),
             #[cfg(not(feature = "typeset"))]
-            C::ExportPdf => self.notify(NoticeLevel::Info, "PDF export comes with the full edition of Quire (this is Quire Lite)."),
+            C::ExportPdf => self.notify(NoticeLevel::Info, "PDF export comes with the full edition of Quire (this is Quire Lite). Settings → About has the download; switching keeps your notes and settings."),
             C::Bold => self.wrap("**"),
             C::Italic => self.wrap("_"),
             C::InlineCode => self.wrap("`"),

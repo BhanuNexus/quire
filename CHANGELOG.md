@@ -5,7 +5,13 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 ## [Unreleased]
 
 ### Added
-- **Quire Lite** can be built with `cargo build -p quire-desktop --no-default-features`: the same app without math, diagrams and PDF export (which show as their source), at about 28 MB instead of 68 MB. Settings → About says which edition you're running.
+- **Quire Lite.** Every release now comes in two editions: **Quire**, and **Quire Lite**, the same app without drawn math, diagrams and PDF export (math and diagrams show as their source), at about a third of the size (a 10 MB `.deb` instead of 33 MB). Lite files start with `Quire-Lite-`; the release notes have a table of which download is which. Settings → About says which edition you're running and links to the full one. To build Lite yourself: `cargo build -p quire-desktop --no-default-features`.
+- **Switch editions freely.** Both editions read and write the same notes, settings, session, dictionary and sync setup, and installing one replaces the other (the `quire-lite` package replaces `quire` and the other way round; on Windows and macOS they install over each other). Going from Quire to Lite and back loses nothing: in Lite, PDF export says it's in the full edition instead of failing, and math and diagrams draw again when you go back.
+
+### Fixed
+- Settings written by a newer version or the other edition are kept: a setting this version doesn't know about is saved back unchanged instead of being dropped.
+- A settings or stored-secrets file that can't be read is kept next to the original as `<name>.unreadable` before Quire starts with defaults, instead of being overwritten on the next save.
+- Settings, the open-tabs session, the sync setup and the stored-secrets file are written to a temporary file and moved into place, so a crash or full disk mid-save can't leave a half-written file. The secrets file is created readable by you only.
 
 ## [0.8.0] - 2026-11-02
 

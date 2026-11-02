@@ -192,9 +192,8 @@ impl SyncConfig {
     }
 
     fn save(&self, root: &Path) -> Result<(), String> {
-        let dir = sync_dir(root);
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        std::fs::write(dir.join("config.json"), serde_json::to_string_pretty(self).unwrap_or_default()).map_err(|e| e.to_string())
+        let text = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        crate::atomic::write(&sync_dir(root).join("config.json"), text.as_bytes(), false).map_err(|e| e.to_string())
     }
 }
 

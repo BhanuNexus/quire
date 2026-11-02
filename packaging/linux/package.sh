@@ -7,7 +7,13 @@
 #                                    APPIMAGE_RUNTIME; see fetch-appimagetool.sh)
 #   quire-sync-server-<v>-linux-x86_64.tar.gz  the self-hosted sync server
 #
-#   packaging/linux/package.sh
+#   packaging/linux/package.sh             the full edition (and the sync server)
+#   EDITION=lite packaging/linux/package.sh  Quire Lite: no math, diagrams or PDF
+#                                            (Quire-Lite-<v>-…; the .deb is
+#                                            quire-lite, which replaces quire)
+#
+# Both editions are the same program over the same files and settings, so
+# people can switch either way at any time.
 #
 # Archives are reproducible where the tools allow: fixed file order, owner
 # and timestamps (SOURCE_DATE_EPOCH, defaulting to the last commit time).
@@ -16,7 +22,13 @@ cd "$(dirname "$0")/../.."
 
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
 target="x86_64-unknown-linux-gnu"
-name="Quire-$version-linux-x86_64"
+edition="${EDITION:-full}"
+case "$edition" in
+  full) prefix="Quire"; pkg_name="quire"; other_pkg="quire-lite"; features=() ;;
+  lite) prefix="Quire-Lite"; pkg_name="quire-lite"; other_pkg="quire"; features=(--no-default-features) ;;
+  *) echo "EDITION must be full or lite" >&2; exit 1 ;;
+esac
+name="$prefix-$version-linux-x86_64"
 app_id="io.github.BhanuNexus.Quire"
 out="dist"
 stage="$out/$name"
@@ -24,7 +36,8 @@ export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct 2>/dev/
 release_date="$(date -u -d "@$SOURCE_DATE_EPOCH" +%Y-%m-%d)"
 bin="target/$target/release"
 
-cargo build --release --locked --target "$target" -p quire-desktop -p quire-cli -p quire-sync-server
+cargo build --release --locked --target "$target" -p quire-desktop -p quire-cli "${features[@]}"
+[[ "$edition" == full ]] && cargo build --release --locked --target "$target" -p quire-sync-server
 mkdir -p "$out"
 
 # ---------------------------------------------------------------- tar.gz
@@ -39,15 +52,18 @@ tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owne
 rm -rf "$stage"
 
 # ---------------------------------------------------------------- sync server
+# Once per release, with the full edition.
 server="quire-sync-server-$version-linux-x86_64"
-sstage="$out/$server"
-rm -rf "$sstage" && mkdir -p "$sstage"
-install -m 755 "$bin/quire-sync-server" "$sstage/"
-install -m 644 docs/self-hosting.md "$sstage/README.md"
-install -m 644 LICENSE "$sstage/"
-tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner \
-  -C "$out" -cf - "$server" | gzip -9n > "$out/$server.tar.gz"
-rm -rf "$sstage"
+if [[ "$edition" == full ]]; then
+  sstage="$out/$server"
+  rm -rf "$sstage" && mkdir -p "$sstage"
+  install -m 755 "$bin/quire-sync-server" "$sstage/"
+  install -m 644 docs/self-hosting.md "$sstage/README.md"
+  install -m 644 LICENSE "$sstage/"
+  tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner \
+    -C "$out" -cf - "$server" | gzip -9n > "$out/$server.tar.gz"
+  rm -rf "$sstage"
+fi
 
 # Files every system-wide layout shares (.deb and AppImage).
 # $1 = root to install into (e.g. pkgroot or AppDir)
@@ -64,17 +80,20 @@ install_tree() {
 
 # ---------------------------------------------------------------- .deb
 if command -v dpkg-deb > /dev/null; then
-  deb="Quire-$version-linux-amd64.deb"
+  deb="$prefix-$version-linux-amd64.deb"
   pkg="$out/deb-root"
   rm -rf "$pkg" && mkdir -p "$pkg/DEBIAN"
   install_tree "$pkg"
-  install -Dm 644 LICENSE "$pkg/usr/share/doc/quire/copyright"
+  install -Dm 644 LICENSE "$pkg/usr/share/doc/$pkg_name/copyright"
   size_kb="$(du -sk --exclude=DEBIAN "$pkg" | cut -f1)"
   # The binary links only libc; windowing and GL libraries are loaded at run
   # time, so they're listed here for the package manager to install.
   cat > "$pkg/DEBIAN/control" <<EOF
-Package: quire
+Package: $pkg_name
 Version: ${version//-/\~}
+Conflicts: $other_pkg
+Replaces: $other_pkg
+Provides: quire-editor
 Architecture: amd64
 Maintainer: The Quire contributors <https://github.com/BhanuNexus/quire/issues>
 Installed-Size: $size_kb
@@ -83,7 +102,7 @@ Recommends: libegl1, libwayland-egl1, libx11-xcb1, libxcursor1, libxi6, libxrend
 Section: editors
 Priority: optional
 Homepage: https://github.com/BhanuNexus/quire
-Description: Fast, local-first Markdown notes
+Description: Fast, local-first Markdown notes$([[ "$edition" == lite ]] && echo " (Lite edition)")
  Quire is a notepad for plain Markdown files in a folder you choose. It
  styles notes as you type, saves automatically and links them like a wiki,
  with backlinks, related notes and search by words and by meaning.
@@ -116,5 +135,9 @@ EOF
   rm -rf "$appdir"
 fi
 
-( cd "$out" && sha256sum Quire-"$version"-linux-* "$server.tar.gz" > "$name.sha256" )
-echo "Built:"; ls -la "$out"/Quire-"$version"-linux-* "$out/$server.tar.gz"
+if [[ "$edition" == lite ]]; then
+  ( cd "$out" && sha256sum "$prefix-$version"-linux-* > "$name.sha256" )
+else
+  ( cd "$out" && sha256sum "$prefix-$version"-linux-* "$server.tar.gz" > "$name.sha256" )
+fi
+echo "Built:"; ls -la "$out/$prefix-$version"-linux-*

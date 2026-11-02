@@ -67,6 +67,10 @@ pub struct Settings {
     pub spell_check: bool,
     /// Dictionary for spell checking (`en_US`, `en_GB`, or one installed on the system).
     pub spell_language: String,
+    /// Settings this version doesn't know (written by a newer version, or
+    /// the other edition), kept as they are so saving doesn't drop them.
+    #[serde(flatten)]
+    pub other: toml::Table,
 }
 
 impl Default for Settings {
@@ -100,6 +104,7 @@ impl Default for Settings {
             capture_shortcut: true,
             spell_check: true,
             spell_language: "en_US".into(),
+            other: toml::Table::new(),
         }
     }
 }
@@ -117,8 +122,16 @@ impl Settings {
         config_dir().map(|d| d.join("settings.toml"))
     }
 
+    /// Settings from `path`; defaults if it's missing. A file that can't be
+    /// read as settings is copied to `settings.toml.unreadable` first, so the
+    /// next save doesn't silently replace what was in it.
     pub fn load_from(path: &Path) -> Self {
-        std::fs::read_to_string(path).ok().and_then(|s| toml::from_str(&s).ok()).unwrap_or_default()
+        let Ok(text) = std::fs::read_to_string(path) else { return Self::default() };
+        toml::from_str(&text).unwrap_or_else(|e| {
+            let kept = crate::atomic::keep_unreadable(path);
+            eprintln!("quire: couldn't read {} ({e}); using defaults, a copy is at {kept:?}", path.display());
+            Self::default()
+        })
     }
 
     pub fn load() -> Self {
@@ -126,11 +139,8 @@ impl Settings {
     }
 
     pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
         let s = toml::to_string_pretty(self).map_err(std::io::Error::other)?;
-        std::fs::write(path, s)
+        crate::atomic::write(path, s.as_bytes(), false)
     }
 
     pub fn save(&self) -> std::io::Result<()> {
@@ -145,6 +155,33 @@ impl Settings {
 #[allow(clippy::float_cmp, reason = "values round-trip exactly through TOML")]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_from_another_version_or_edition_survive_a_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.toml");
+        // Written by a newer Quire: a key and a table this one doesn't know.
+        std::fs::write(&p, "font_size = 18.0\nfuture_option = true\n\n[future_section]\nlevel = 3\n").unwrap();
+        let mut s = Settings::load_from(&p);
+        assert_eq!(s.font_size, 18.0);
+        s.font_size = 19.0;
+        s.save_to(&p).unwrap();
+        let back = std::fs::read_to_string(&p).unwrap();
+        assert!(back.contains("future_option = true") && back.contains("[future_section]") && back.contains("level = 3"), "{back}");
+        assert_eq!(Settings::load_from(&p).font_size, 19.0);
+    }
+
+    #[test]
+    fn an_unreadable_settings_file_is_kept_not_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.toml");
+        std::fs::write(&p, "font_size = \"not a number\"\n").unwrap();
+        let s = Settings::load_from(&p);
+        assert_eq!(s.font_size, Settings::default().font_size);
+        s.save_to(&p).unwrap();
+        let kept = std::fs::read_to_string(dir.path().join("settings.toml.unreadable")).unwrap();
+        assert!(kept.contains("not a number"));
+    }
 
     #[test]
     fn round_trips_and_tolerates_missing_keys() {

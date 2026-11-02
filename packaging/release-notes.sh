@@ -20,5 +20,24 @@ cat <<FOOT
 
 ---
 
-**Downloads:** Windows (installer or portable zip), macOS (universal .dmg), Linux (x86_64 tar.gz). Check a download with \`sha256sum -c SHA256SUMS --ignore-missing\`, and verify it was built by this repository's release workflow with \`gh attestation verify <file> --repo BhanuNexus/quire\`.
+## Which download?
+
+Every release comes in two editions. They're the same app working on the same files and settings, so you can switch between them in either direction at any time. Installing one replaces the other, and your notes, settings and sync carry over.
+
+| | **Quire** | **Quire Lite** |
+|---|---|---|
+| Everything else (editor, links, search, sync, graph, callouts, spelling…) | ✓ | ✓ |
+| Math and Mermaid diagrams drawn in place | ✓ | shown as their source |
+| Export as PDF | ✓ | — |
+| Size | larger | about a third |
+
+| | Quire | Quire Lite |
+|---|---|---|
+| **Windows** | \`Quire-$version-windows-x64-setup.exe\` (or \`-portable.zip\`) | \`Quire-Lite-$version-windows-x64-setup.exe\` (or \`-portable.zip\`) |
+| **macOS** (Apple Silicon and Intel) | \`Quire-$version-macos-universal.dmg\` | \`Quire-Lite-$version-macos-universal.dmg\` |
+| **Linux** | \`.deb\`, \`.AppImage\` or \`.tar.gz\` named \`Quire-$version-…\` | the same, named \`Quire-Lite-$version-…\` |
+
+Not sure? Take **Quire**. Take **Quire Lite** if download size matters more to you than math and PDF export.
+
+Check a download with \`sha256sum -c SHA256SUMS --ignore-missing\`, and verify it was built by this repository's release workflow with \`gh attestation verify <file> --repo BhanuNexus/quire\`.
 FOOT

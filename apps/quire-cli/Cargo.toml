@@ -13,8 +13,13 @@ publish.workspace = true
 name = "quire-cli"
 path = "src/main.rs"
 
+[features]
+default = ["typeset"]
+# `quire-cli pdf`. Quire Lite is built without it.
+typeset = ["quire-app/typeset"]
+
 [dependencies]
-quire-app = { workspace = true, features = ["remote-llm", "keychain", "update-check", "typeset"] }
+quire-app = { workspace = true, features = ["remote-llm", "keychain", "update-check"] }
 quire-import = { path = "../../crates/quire-import" }
 serde_json.workspace = true
 

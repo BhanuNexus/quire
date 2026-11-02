@@ -24,13 +24,18 @@ RequestExecutionLevel user
 !endif
 
 !define APP "Quire"
+; "Quire" or "Quire Lite": shown in the installer; the app installs to the same
+; place either way, so one edition replaces the other.
+!ifndef BRAND
+  !define BRAND "Quire"
+!endif
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Quire"
 
-Name "${APP}"
+Name "${BRAND}"
 OutFile "${OUTFILE}"
 InstallDir "$LOCALAPPDATA\Programs\Quire"
 InstallDirRegKey HKCU "Software\Quire" "InstallDir"
-BrandingText "${APP} ${VERSION}"
+BrandingText "${BRAND} ${VERSION}"
 
 VIProductVersion "${VERSION}.0"
 VIAddVersionKey "ProductName" "${APP}"
@@ -71,7 +76,7 @@ Section "Quire" SecApp
   CreateShortcut "$SMPROGRAMS\Quire.lnk" "$INSTDIR\quire.exe"
 
   WriteRegStr HKCU "Software\Quire" "InstallDir" "$INSTDIR"
-  WriteRegStr HKCU "${UNINST_KEY}" "DisplayName" "${APP}"
+  WriteRegStr HKCU "${UNINST_KEY}" "DisplayName" "${BRAND}"
   WriteRegStr HKCU "${UNINST_KEY}" "DisplayVersion" "${VERSION}"
   WriteRegStr HKCU "${UNINST_KEY}" "Publisher" "Quire"
   WriteRegStr HKCU "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\quire.exe"

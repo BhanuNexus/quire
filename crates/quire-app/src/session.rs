@@ -33,9 +33,6 @@ impl Session {
     }
 
     pub fn save_to(&self, p: &Path) -> std::io::Result<()> {
-        if let Some(d) = p.parent() {
-            std::fs::create_dir_all(d)?;
-        }
-        std::fs::write(p, serde_json::to_string_pretty(self).map_err(std::io::Error::other)?)
+        crate::atomic::write(p, serde_json::to_string_pretty(self).map_err(std::io::Error::other)?.as_bytes(), false)
     }
 }

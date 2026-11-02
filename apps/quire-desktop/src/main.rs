@@ -34,7 +34,7 @@ fn app_icon() -> Option<Arc<egui::IconData>> {
 
 fn main() -> eframe::Result {
     if std::env::args().nth(1).is_some_and(|a| a == "--version" || a == "-V") {
-        println!("Quire {}", env!("CARGO_PKG_VERSION"));
+        println!("Quire {}{}", env!("CARGO_PKG_VERSION"), if cfg!(feature = "typeset") { "" } else { " (Lite)" });
         return Ok(());
     }
     let vault_arg: Option<PathBuf> = std::env::args_os().nth(1).map(PathBuf::from);

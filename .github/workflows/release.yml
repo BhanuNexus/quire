@@ -72,6 +72,14 @@ jobs:
     # Oldest supported runner, so the binary runs on older glibc (2.35+).
     runs-on: ubuntu-22.04
     timeout-minutes: 60
+    strategy:
+      # Every release has both editions: Quire (full) and Quire Lite (no
+      # math, diagrams or PDF export). Built side by side.
+      fail-fast: true
+      matrix:
+        edition: [full, lite]
+    env:
+      EDITION: ${{ matrix.edition }}
     permissions:
       contents: read
       id-token: write
@@ -92,11 +100,15 @@ jobs:
         run: |
           sudo apt-get install -y --no-install-recommends ./dist/Quire-*-linux-amd64.deb
           quire --version && quire-cli --version
+          # Each edition says which it is.
+          if [ "$EDITION" = lite ]; then quire --version | grep -q "(Lite)"; elif quire --version | grep -q Lite; then exit 1; fi
           APPIMAGE_EXTRACT_AND_RUN=1 ./dist/Quire-*-linux-x86_64.AppImage --version
           tar -xzf dist/Quire-*-linux-x86_64.tar.gz -C "$RUNNER_TEMP"
           "$RUNNER_TEMP"/Quire-*-linux-x86_64/quire-cli --version
-          tar -xzf dist/quire-sync-server-*-linux-x86_64.tar.gz -C "$RUNNER_TEMP"
-          "$RUNNER_TEMP"/quire-sync-server-*-linux-x86_64/quire-sync-server --version
+          if [ "$EDITION" = full ]; then
+            tar -xzf dist/quire-sync-server-*-linux-x86_64.tar.gz -C "$RUNNER_TEMP"
+            "$RUNNER_TEMP"/quire-sync-server-*-linux-x86_64/quire-sync-server --version
+          fi
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         if: env.IS_RELEASE == 'true'
         with:
@@ -106,7 +118,7 @@ jobs:
             dist/*.AppImage
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: quire-linux
+          name: quire-linux-${{ matrix.edition }}
           path: |
             dist/*.tar.gz
             dist/*.deb
@@ -121,7 +133,12 @@ jobs:
       contents: read
       id-token: write
       attestations: write
+    strategy:
+      fail-fast: true
+      matrix:
+        edition: [full, lite]
     env:
+      EDITION: ${{ matrix.edition }}
       MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
       MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
       MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
@@ -155,7 +172,7 @@ jobs:
           subject-path: dist/*.dmg
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: quire-macos
+          name: quire-macos-${{ matrix.edition }}
           path: dist/*.dmg
           if-no-files-found: error
 
@@ -167,7 +184,12 @@ jobs:
       contents: read
       id-token: write
       attestations: write
+    strategy:
+      fail-fast: true
+      matrix:
+        edition: [full, lite]
     env:
+      EDITION: ${{ matrix.edition }}
       WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
       WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
     defaults:
@@ -203,7 +225,7 @@ jobs:
             dist/*.zip
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: quire-windows
+          name: quire-windows-${{ matrix.edition }}
           path: |
             dist/*.exe
             dist/*.zip

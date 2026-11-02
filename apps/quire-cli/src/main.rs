@@ -61,7 +61,9 @@ fn find_note(ix: &Index, name: &str) -> Result<NotePath, String> {
 fn run(args: &[String]) -> Result<(), String> {
     let arg = |i: usize| args.get(i).map(String::as_str).ok_or_else(|| USAGE.to_string());
     match arg(0)? {
-        "--version" | "-V" | "version" => println!("quire-cli {}", env!("CARGO_PKG_VERSION")),
+        "--version" | "-V" | "version" => {
+            println!("quire-cli {}{}", env!("CARGO_PKG_VERSION"), if cfg!(feature = "typeset") { "" } else { " (Lite)" });
+        }
         "--help" | "-h" | "help" => println!("{USAGE}"),
         "index" => {
             let (_, svc, ms) = load(arg(1)?)?;
@@ -188,6 +190,9 @@ fn run(args: &[String]) -> Result<(), String> {
             std::fs::write(&out, html).map_err(|e| e.to_string())?;
             println!("wrote {out}");
         }
+        #[cfg(not(feature = "typeset"))]
+        "pdf" => return Err("PDF export comes with the full edition of Quire (this is Quire Lite)".into()),
+        #[cfg(feature = "typeset")]
         "pdf" => {
             let (v, svc, _) = load(arg(1)?)?;
             let ix = svc.read();

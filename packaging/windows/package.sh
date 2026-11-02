@@ -2,6 +2,10 @@
 # Build the Windows x64 installer and portable zip.
 #
 #   packaging/windows/package.sh [gnu|msvc]
+#   EDITION=lite packaging/windows/package.sh …   Quire Lite (Quire-Lite-<v>-windows-x64-…)
+#
+# Both editions install to the same place under the same name, so running
+# either installer replaces the other and keeps all settings.
 #
 # gnu  (default): cross-compile from Linux/macOS with mingw-w64 + makensis.
 # msvc: on Windows (CI, Git Bash), with the MSVC toolchain and NSIS installed.
@@ -16,9 +20,15 @@ target="x86_64-pc-windows-$flavor"
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
 out="dist"
 stage="$out/windows-stage"
-name="Quire-$version-windows-x64"
+edition="${EDITION:-full}"
+case "$edition" in
+  full) prefix="Quire"; brand="Quire"; features=() ;;
+  lite) prefix="Quire-Lite"; brand="Quire Lite"; features=(--no-default-features) ;;
+  *) echo "EDITION must be full or lite" >&2; exit 1 ;;
+esac
+name="$prefix-$version-windows-x64"
 
-cargo build --release --locked --target "$target" -p quire-desktop -p quire-cli
+cargo build --release --locked --target "$target" -p quire-desktop -p quire-cli "${features[@]}"
 
 rm -rf "$stage" && mkdir -p "$stage"
 cp "target/$target/release/quire.exe" "target/$target/release/quire-cli.exe" "$stage/"
@@ -52,7 +62,7 @@ if command -v cygpath >/dev/null 2>&1; then
 else
   setup_native="$(pwd)/$setup"; src="$(pwd)/$stage"; nsi="$(pwd)/$nsi"
 fi
-makensis -V2 -DVERSION="$version" -DSRCDIR="$src" -DOUTFILE="$setup_native" "$nsi"
+makensis -V2 -DVERSION="$version" -DBRAND="$brand" -DSRCDIR="$src" -DOUTFILE="$setup_native" "$nsi"
 sign "$setup"
 
 ( cd "$stage" && rm -f "../$name-portable.zip" && \

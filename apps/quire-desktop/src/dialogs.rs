@@ -464,11 +464,13 @@ fn about(ui: &mut Ui, ws: &mut Workspace, pal: &Palette) {
     if !crate::typeset_ui::AVAILABLE {
         ui.label(
             RichText::new(
-                "This is the smaller edition: math, diagrams and PDF export come with the full download. Everything else is the same.",
+                "This is the smaller edition: math, diagrams and PDF export come with the full download. Everything else is the \
+                 same, and switching keeps your notes and settings.",
             )
             .size(12.0)
             .color(pal.muted),
         );
+        ui.hyperlink_to("Get the full edition", format!("{SOURCE_URL}/releases/latest"));
     }
     ui.label(RichText::new("A fast, local-first Markdown notepad.").color(pal.muted));
     ui.add_space(8.0);

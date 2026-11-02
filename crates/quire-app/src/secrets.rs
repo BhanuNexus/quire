@@ -44,21 +44,18 @@ impl FileSecrets {
     }
 
     fn load(&self) -> BTreeMap<String, String> {
-        std::fs::read_to_string(&self.path).ok().and_then(|s| toml::from_str(&s).ok()).unwrap_or_default()
+        let Ok(text) = std::fs::read_to_string(&self.path) else { return BTreeMap::new() };
+        toml::from_str(&text).unwrap_or_else(|_| {
+            // Keep the unreadable file rather than overwrite it with one key.
+            let _ = crate::atomic::keep_unreadable(&self.path);
+            BTreeMap::new()
+        })
     }
 
     fn store(&self, m: &BTreeMap<String, String>) -> Result<(), String> {
-        if let Some(d) = self.path.parent() {
-            std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
-        }
         let s = toml::to_string(m).map_err(|e| e.to_string())?;
-        std::fs::write(&self.path, s).map_err(|e| e.to_string())?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
-        }
-        Ok(())
+        // Owner-only from the moment the file exists (it holds API keys).
+        crate::atomic::write(&self.path, s.as_bytes(), true).map_err(|e| e.to_string())
     }
 }
 
