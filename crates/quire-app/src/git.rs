@@ -672,7 +672,8 @@ mod tests {
         for args in [
             &["init", "-q", "-b", "main"][..],
             &["config", "user.name", "Quire Test"],
-            &["config", "user.email", "test@example.invalid"],
+            // An empty address: git accepts it, and no address lands in the code.
+            &["config", "user.email", ""],
             &["config", "commit.gpgsign", "false"],
         ] {
             git(p, args).unwrap();
