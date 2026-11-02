@@ -13,6 +13,23 @@ ignore = [
   { id = "RUSTSEC-2026-0370", reason = "merged into zbus 6; transitive via accesskit" },
   { id = "RUSTSEC-2026-0371", reason = "merged into zbus 6; transitive via accesskit" },
   { id = "RUSTSEC-2026-0372", reason = "merged into zbus 6; transitive via accesskit" },
+  # quire-typeset: pinned by Typst 0.15 / MiTeX 0.2 / mermaid-rs-renderer 0.3,
+  # no compatible upgrade exists. Revisit when those crates update.
+  # quick-xml 0.38 (DoS) is only used by citationberg to parse CSL bibliography
+  # styles; quire-typeset never loads a bibliography and its Typst sandbox
+  # exposes no user files besides images.
+  { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.38 via typst -> hayagriva -> citationberg; CSL parsing is unreachable" },
+  { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.38 via typst -> hayagriva -> citationberg; CSL parsing is unreachable" },
+  # rkyv 0.7 only deserializes MiTeX's own command table, embedded at build time.
+  { id = "RUSTSEC-2026-0235", reason = "rkyv 0.7 via mitex-spec; only reads trusted, embedded data" },
+  # Unmaintained, no vulnerability.
+  { id = "RUSTSEC-2025-0141", reason = "bincode 1 unmaintained; via typst -> syntect" },
+  { id = "RUSTSEC-2025-0057", reason = "fxhash unmaintained; via mitex" },
+  { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; via typst -> hayagriva -> biblatex" },
+  { id = "RUSTSEC-2026-0206", reason = "rustybuzz unmaintained; via typst-layout and krilla" },
+  { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained; via typst, fontdb and mermaid-rs-renderer" },
+  { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml unmaintained; via typst -> hayagriva -> serde_yaml" },
+  { id = "RUSTSEC-2024-0320", reason = "yaml-rust unmaintained; via typst -> syntect" },
 ]
 
 [licenses]

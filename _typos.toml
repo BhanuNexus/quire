@@ -1,0 +1,6 @@
+# Spell checker (https://github.com/crate-ci/typos) exceptions.
+
+[default.extend-words]
+# Dirac bra-ket notation: LaTeX's \ket and \braket in crates/quire-typeset.
+ket = "ket"
+braket = "braket"
