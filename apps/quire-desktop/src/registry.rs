@@ -79,7 +79,7 @@ pub(crate) const RIGHT_TABS: &[TabDef] = &[
     // ---- F0 (built in)
     TabDef { id: INSIGHTS, label: label!("Insights"), available: always, show: insights_tab },
     // ---- WS-A
-    TabDef { id: "inbox", label: label!("Inbox"), available: crate::inbox_ui::available, show: crate::inbox_ui::show },
+    TabDef { id: "inbox", label: crate::inbox_ui::label, available: crate::inbox_ui::available, show: crate::inbox_ui::show },
     TabDef { id: "activity", label: label!("Activity"), available: crate::activity_ui::available, show: crate::activity_ui::show },
     // ---- WS-C
     TabDef { id: "timeline", label: label!("Timeline"), available: crate::timeline_ui::available, show: crate::timeline_ui::show },
@@ -122,8 +122,15 @@ pub(crate) enum UiTarget {
 pub(crate) const fn ui_target(cmd: Command) -> Option<UiTarget> {
     Some(match cmd {
         // ---- WS-A
-        Command::OpenInbox => UiTarget::Right("inbox"),
-        Command::ShowAgentActivity => UiTarget::Right("activity"),
+        Command::OpenInbox
+        | Command::NextHunk
+        | Command::PrevHunk
+        | Command::AcceptHunk
+        | Command::RejectHunk
+        | Command::AcceptAllInFile
+        | Command::RejectAllInFile
+        | Command::LintVault => UiTarget::Right("inbox"),
+        Command::ShowAgentActivity | Command::UndoAgentChanges => UiTarget::Right("activity"),
         Command::AgentSettings => UiTarget::Settings("agents"),
         // ---- WS-C
         Command::ThinkingTimeline => UiTarget::Right("timeline"),
@@ -153,8 +160,15 @@ pub(crate) fn paint_widget(ui: &mut egui::Ui, ws: &Workspace, id: WidgetId, pal:
     // Route by `id.owner` to the owner's painter, one arm per workstream:
     // ---- WS-A review toolbars · WS-C citation drift · WS-E task widgets
     // ---- WS-F embedded editors · WS-G canvas and PDF previews
-    let _ = (ui, ws, id, pal);
-    (0.0, None)
+    match id.owner {
+        // ---- WS-A
+        quire_app::Owner::Agent => crate::inbox_ui::review_ui::paint_widget(ui, ws, id, pal),
+        quire_app::Owner::Core => (0.0, None),
+        _ => {
+            let _ = (ui, ws, id, pal);
+            (0.0, None)
+        }
+    }
 }
 
 /// An editor for a non-Markdown file, by extension.
