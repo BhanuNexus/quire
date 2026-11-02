@@ -20,4 +20,5 @@ mod selection;
 pub use buffer::Buffer;
 pub use change::{Assoc, Change, LineDelta, Transaction, TransactionError};
 pub use history::{EditKind, History, UndoStep};
+pub use merge::Region;
 pub use selection::Selection;

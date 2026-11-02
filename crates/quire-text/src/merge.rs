@@ -112,25 +112,75 @@ fn push_block(out: &mut String, lines: &[&str]) {
     }
 }
 
-/// Merge `mine` and `theirs`, both derived from `base`.
-pub fn merge3(base: &str, mine: &str, theirs: &str) -> MergeResult {
-    if mine == theirs {
-        return MergeResult { text: mine.to_string(), conflicts: 0 };
+/// One stretch of a three-way merge, in document order.
+///
+/// Lines keep their trailing `\n` (the last line of a text may lack one), so
+/// concatenating a side's lines rebuilds that side exactly. `base` is the
+/// ancestor's lines for that stretch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Region {
+    /// Unchanged on both sides.
+    Same(Vec<String>),
+    /// Only `mine` changed these lines (or added lines here).
+    Mine { base: Vec<String>, mine: Vec<String> },
+    /// Only `theirs` changed these lines (or added lines here).
+    Theirs { base: Vec<String>, theirs: Vec<String> },
+    /// Both sides made the same change; these are the resulting lines.
+    Both(Vec<String>),
+    /// Both sides changed the same lines differently.
+    Conflict { base: Vec<String>, mine: Vec<String>, theirs: Vec<String> },
+}
+
+impl Region {
+    /// This region's lines as `mine` has them.
+    pub fn mine_lines(&self) -> &[String] {
+        match self {
+            Self::Same(l) | Self::Both(l) => l,
+            Self::Mine { mine, .. } | Self::Conflict { mine, .. } => mine,
+            Self::Theirs { base, .. } => base,
+        }
     }
-    if base == mine {
-        return MergeResult { text: theirs.to_string(), conflicts: 0 };
+
+    /// This region's lines as `theirs` has them.
+    pub fn theirs_lines(&self) -> &[String] {
+        match self {
+            Self::Same(l) | Self::Both(l) => l,
+            Self::Theirs { theirs, .. } | Self::Conflict { theirs, .. } => theirs,
+            Self::Mine { base, .. } => base,
+        }
     }
-    if base == theirs {
-        return MergeResult { text: mine.to_string(), conflicts: 0 };
+}
+
+fn owned(lines: &[&str]) -> Vec<String> {
+    lines.iter().map(|l| (*l).to_string()).collect()
+}
+
+/// Push a `Same` region, joining it to a `Same` region before it.
+fn push_same(out: &mut Vec<Region>, lines: &[&str]) {
+    if lines.is_empty() {
+        return;
     }
+    if let Some(Region::Same(prev)) = out.last_mut() {
+        prev.extend(lines.iter().map(|l| (*l).to_string()));
+    } else {
+        out.push(Region::Same(owned(lines)));
+    }
+}
+
+/// The regions of a three-way merge of `mine` and `theirs`, both derived
+/// from `base`, by the same rules as [`merge3`] (which is built on this).
+///
+/// Both sides adding different lines at the same place gives a `Mine`
+/// region followed by a `Theirs` region, both with an empty `base`: they
+/// don't conflict, and `merge3` keeps both, mine first.
+pub fn merge3_regions(base: &str, mine: &str, theirs: &str) -> Vec<Region> {
     let (b, m, t) = (lines(base), lines(mine), lines(theirs));
     let mut all: Vec<Hunk<'_>> = hunks(&b, &m, Side::Mine);
     all.extend(hunks(&b, &t, Side::Theirs));
     // Insertions sort before replacements starting at the same line.
     all.sort_by_key(|h| (h.start, h.end));
 
-    let mut out = String::with_capacity(mine.len().max(theirs.len()));
-    let mut conflicts = 0;
+    let mut out = Vec::new();
     let mut pos = 0;
     let mut i = 0;
     while i < all.len() {
@@ -142,34 +192,81 @@ pub fn merge3(base: &str, mine: &str, theirs: &str) -> MergeResult {
             j += 1;
         }
         let group = &all[i..j];
-        push_all(&mut out, &b[pos..gs]);
+        push_same(&mut out, &b[pos..gs]);
         let has_mine = group.iter().any(|h| h.side == Side::Mine);
         let has_theirs = group.iter().any(|h| h.side == Side::Theirs);
         let vm = side_version(&b, gs, ge, group, Side::Mine);
         let vt = side_version(&b, gs, ge, group, Side::Theirs);
-        if !has_theirs || vm == vt {
-            push_all(&mut out, &vm);
+        let base_lines = owned(&b[gs..ge]);
+        if !has_theirs {
+            out.push(Region::Mine { base: base_lines, mine: owned(&vm) });
+        } else if vm == vt {
+            out.push(Region::Both(owned(&vm)));
         } else if !has_mine {
-            push_all(&mut out, &vt);
+            out.push(Region::Theirs { base: base_lines, theirs: owned(&vt) });
         } else if gs == ge {
-            // Both added lines at the same place: keep both, mine first.
-            push_block(&mut out, &vm);
-            push_all(&mut out, &vt);
+            out.push(Region::Mine { base: Vec::new(), mine: owned(&vm) });
+            out.push(Region::Theirs { base: Vec::new(), theirs: owned(&vt) });
         } else {
-            conflicts += 1;
-            out.push_str(MINE);
-            out.push('\n');
-            push_block(&mut out, &vm);
-            out.push_str(SEPARATOR);
-            out.push('\n');
-            push_block(&mut out, &vt);
-            out.push_str(THEIRS);
-            out.push('\n');
+            out.push(Region::Conflict { base: base_lines, mine: owned(&vm), theirs: owned(&vt) });
         }
         pos = ge;
         i = j;
     }
-    push_all(&mut out, &b[pos..]);
+    push_same(&mut out, &b[pos..]);
+    out
+}
+
+fn push_owned(out: &mut String, lines: &[String]) {
+    for l in lines {
+        out.push_str(l);
+    }
+}
+
+/// Ensure a block written between markers ends with a newline.
+fn push_owned_block(out: &mut String, lines: &[String]) {
+    push_owned(out, lines);
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+}
+
+/// Merge `mine` and `theirs`, both derived from `base`.
+pub fn merge3(base: &str, mine: &str, theirs: &str) -> MergeResult {
+    if mine == theirs {
+        return MergeResult { text: mine.to_string(), conflicts: 0 };
+    }
+    if base == mine {
+        return MergeResult { text: theirs.to_string(), conflicts: 0 };
+    }
+    if base == theirs {
+        return MergeResult { text: mine.to_string(), conflicts: 0 };
+    }
+    let regions = merge3_regions(base, mine, theirs);
+    let mut out = String::with_capacity(mine.len().max(theirs.len()));
+    let mut conflicts = 0;
+    for (k, r) in regions.iter().enumerate() {
+        match r {
+            Region::Same(l) | Region::Both(l) => push_owned(&mut out, l),
+            Region::Mine { base, mine } => {
+                // Both sides added here: keep mine on its own lines before theirs.
+                let both_added = base.is_empty() && matches!(regions.get(k + 1), Some(Region::Theirs { base, .. }) if base.is_empty());
+                if both_added { push_owned_block(&mut out, mine) } else { push_owned(&mut out, mine) }
+            }
+            Region::Theirs { theirs, .. } => push_owned(&mut out, theirs),
+            Region::Conflict { mine, theirs, .. } => {
+                conflicts += 1;
+                out.push_str(MINE);
+                out.push('\n');
+                push_owned_block(&mut out, mine);
+                out.push_str(SEPARATOR);
+                out.push('\n');
+                push_owned_block(&mut out, theirs);
+                out.push_str(THEIRS);
+                out.push('\n');
+            }
+        }
+    }
     MergeResult { text: out, conflicts }
 }
 
@@ -408,6 +505,53 @@ mod tests {
                 assert!(r.text.contains(l), "round {round}: lost {l:?}\n{}", r.text);
             }
         }
+    }
+
+    #[test]
+    fn regions_rebuild_both_sides() {
+        let mut rng = Lcg(99);
+        for round in 0..400 {
+            let n = 3 + rng.next(14);
+            let base: Vec<String> = (0..n).map(|i| format!("line {i}\n")).collect();
+            let mine = mutate(&base, 0, n, "m", &mut rng).concat();
+            let theirs = mutate(&base, rng.next(n), n, "t", &mut rng).concat();
+            let regions = merge3_regions(&base.concat(), &mine, &theirs);
+            let m: String = regions.iter().flat_map(Region::mine_lines).map(String::as_str).collect();
+            let t: String = regions.iter().flat_map(Region::theirs_lines).map(String::as_str).collect();
+            assert_eq!(m, mine, "round {round}");
+            assert_eq!(t, theirs, "round {round}");
+            for w in regions.windows(2) {
+                assert!(!matches!(w, [Region::Same(_), Region::Same(_)]), "round {round}: same regions are joined");
+            }
+        }
+    }
+
+    #[test]
+    fn regions_name_who_changed_what() {
+        let base = "a\nb\nc\nd\n";
+        let r = merge3_regions(base, "a\nB\nc\nd\n", "a\nb\nc\nD\n");
+        assert_eq!(
+            r,
+            vec![
+                Region::Same(vec!["a\n".into()]),
+                Region::Mine { base: vec!["b\n".into()], mine: vec!["B\n".into()] },
+                Region::Same(vec!["c\n".into()]),
+                Region::Theirs { base: vec!["d\n".into()], theirs: vec!["D\n".into()] },
+            ]
+        );
+        let r = merge3_regions(base, "a\nX\nc\nd\n", "a\nY\nc\nd\n");
+        assert_eq!(r[1], Region::Conflict { base: vec!["b\n".into()], mine: vec!["X\n".into()], theirs: vec!["Y\n".into()] });
+        let r = merge3_regions(base, "a\nZ\nc\nd\n", "a\nZ\nc\nd\n");
+        assert_eq!(r[1], Region::Both(vec!["Z\n".into()]));
+        let r = merge3_regions("a\n", "a\nm\n", "a\nt\n");
+        assert_eq!(
+            r,
+            vec![
+                Region::Same(vec!["a\n".into()]),
+                Region::Mine { base: vec![], mine: vec!["m\n".into()] },
+                Region::Theirs { base: vec![], theirs: vec!["t\n".into()] },
+            ]
+        );
     }
 
     #[test]
