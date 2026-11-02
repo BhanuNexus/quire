@@ -579,14 +579,38 @@ impl AgentStore {
         let path = change.path().clone();
         let (mode, zone) = self.effective(actor, &path, op);
         let mut route = mode.route(op);
-        if let Change::Rename { to, .. } = &change {
+        if let Change::Rename { from, to, update_links } = &change {
             route = route.min(self.effective(actor, to, OpKind::Create).0.route(OpKind::Create));
+            // Rewriting links in notes the agent may only suggest changes to
+            // makes the rename a suggestion too.
+            if *update_links && route == Route::Apply && self.links_need_review(actor, from, to) {
+                route = Route::Propose;
+            }
         }
         match route {
             Route::Deny => Err(WriteError::PermissionDenied { path, zone, mode }),
             Route::Immutable => Err(WriteError::RawIsImmutable { path }),
             Route::Propose | Route::Apply => Ok(Planned { change, route, before, after, props }),
         }
+    }
+
+    /// Whether renaming `from` to `to` would rewrite links in a note that
+    /// `actor` may not edit directly.
+    fn links_need_review(&self, actor: &Actor, from: &NotePath, to: &NotePath) -> bool {
+        let vault = &self.inner.vault;
+        let by_name = quire_vault::LinkRewrite {
+            old_stem: from.stem(),
+            old_path: from.without_ext(),
+            new_stem: to.stem(),
+            resolves: None,
+            new_path: None,
+        };
+        let by_path = quire_vault::LinkRewrite { new_path: Some(to.without_ext()), ..by_name.clone() };
+        vault.notes().unwrap_or_default().iter().filter(|p| *p != from).any(|p| {
+            let Ok(src) = vault.read(p) else { return false };
+            let touched = quire_vault::rewrite_links(&src, &by_name).is_some() || quire_vault::rewrite_links(&src, &by_path).is_some();
+            touched && self.effective(actor, p, OpKind::Edit).0.route(OpKind::Edit) != Route::Apply
+        })
     }
 
     /// Check the agent's resulting text against the contracts in force.
@@ -659,7 +683,8 @@ impl AgentStore {
     /// creating: the edit amends the proposed create.
     fn edits_to_own_creates(&self, actor: &Actor, changes: Vec<Change>) -> Vec<Change> {
         let vault = &self.inner.vault;
-        let pending = || self.own_pending(actor);
+        let cell = std::cell::OnceCell::new();
+        let pending = || cell.get_or_init(|| self.own_pending(actor));
         changes
             .into_iter()
             .map(|c| match c {

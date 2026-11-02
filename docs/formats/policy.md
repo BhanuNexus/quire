@@ -62,7 +62,9 @@ know survive) and approves the result on that device.
 
 `create-only` lets agents add files; editing, renaming or deleting one is
 refused with `raw_is_immutable`. A rename needs both leaving the old place
-and creating at the new one.
+and creating at the new one; with `update_links`, a rename that would
+rewrite links in a note the agent may not edit directly becomes a
+suggestion (accepting it rewrites them).
 
 ## Approval on each device
 

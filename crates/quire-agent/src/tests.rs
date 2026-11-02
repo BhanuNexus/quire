@@ -195,6 +195,19 @@ fn properties_renames_and_deletes() {
 }
 
 #[test]
+fn a_rename_that_rewrites_links_in_the_persons_notes_is_a_suggestion() {
+    let (v, store, _, agent) = setup(&[("wiki/A.md", "a"), ("wiki/B.md", "[[A]]"), ("Mine.md", "see [[A]]")]);
+    let cs = ChangeSet::one(Change::Rename { from: "wiki/A.md".into(), to: "wiki/Alpha.md".into(), update_links: true });
+    assert!(matches!(store.submit(&agent, cs).unwrap(), SubmitOutcome::Proposed { .. }), "Mine.md links to it");
+    assert!(v.exists(&NotePath::new("wiki/A.md")));
+    // Only agent-owned notes link to it: applied directly.
+    let (v, store, _, agent) = setup(&[("wiki/A.md", "a"), ("wiki/B.md", "[[A]]"), ("Mine.md", "nothing")]);
+    let cs = ChangeSet::one(Change::Rename { from: "wiki/A.md".into(), to: "wiki/Alpha.md".into(), update_links: true });
+    assert!(matches!(store.submit(&agent, cs).unwrap(), SubmitOutcome::Applied { .. }));
+    assert_eq!(read(&v, "wiki/B.md"), "[[Alpha]]");
+}
+
+#[test]
 fn several_changes_share_a_batch() {
     let (_, store, _, agent) = setup(&[]);
     let cs = ChangeSet {
