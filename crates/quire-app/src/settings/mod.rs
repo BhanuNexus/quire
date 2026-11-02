@@ -1,8 +1,36 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
+//! Device-local settings: `<config>/settings.toml`.
+//!
+//! [`Settings`] holds the 0.8 keys at the top level. Each 0.9 feature area
+//! has its own table in its own file (`[onboarding]` in `onboarding.rs`, and
+//! so on), so features never edit a shared struct. Table names must not
+//! collide with top-level keys or their aliases (`editor`, `assistant`): a
+//! collision would make the file unreadable to older versions. Keys a
+//! version doesn't know are kept (`other`), so 0.8 and 0.9 can share one file.
+
+mod agent_panel;
+mod ai_local;
+mod appearance;
+mod editing;
+mod jobs;
+mod mcp_http;
+mod onboarding;
+mod tasks;
+mod trust;
+
 use std::path::{Path, PathBuf};
 
+pub use agent_panel::AgentPanelSettings;
+pub use ai_local::AiLocalSettings;
+pub use appearance::AppearanceSettings;
+pub use editing::EditingSettings;
+pub use jobs::JobSettings;
+pub use mcp_http::McpHttpSettings;
+pub use onboarding::OnboardingSettings;
 use serde::{Deserialize, Serialize};
+pub use tasks::TaskSettings;
+pub use trust::TrustSettings;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -67,6 +95,16 @@ pub struct Settings {
     pub spell_check: bool,
     /// Dictionary for spell checking (`en_US`, `en_GB`, or one installed on the system).
     pub spell_language: String,
+    // ---- 0.9 tables, one per feature area (see the module docs).
+    pub onboarding: OnboardingSettings,
+    pub ai_local: AiLocalSettings,
+    pub agent_panel: AgentPanelSettings,
+    pub trust: TrustSettings,
+    pub mcp_http: McpHttpSettings,
+    pub editing: EditingSettings,
+    pub tasks: TaskSettings,
+    pub appearance: AppearanceSettings,
+    pub jobs: JobSettings,
     /// Settings this version doesn't know (written by a newer version, or
     /// the other edition), kept as they are so saving doesn't drop them.
     #[serde(flatten)]
@@ -104,6 +142,15 @@ impl Default for Settings {
             capture_shortcut: true,
             spell_check: true,
             spell_language: "en_US".into(),
+            onboarding: OnboardingSettings::default(),
+            ai_local: AiLocalSettings::default(),
+            agent_panel: AgentPanelSettings::default(),
+            trust: TrustSettings::default(),
+            mcp_http: McpHttpSettings::default(),
+            editing: EditingSettings::default(),
+            tasks: TaskSettings::default(),
+            appearance: AppearanceSettings::default(),
+            jobs: JobSettings::default(),
             other: toml::Table::new(),
         }
     }
@@ -150,6 +197,9 @@ impl Settings {
         }
     }
 }
+
+#[cfg(test)]
+mod compat;
 
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "values round-trip exactly through TOML")]

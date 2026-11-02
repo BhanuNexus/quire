@@ -1,0 +1,88 @@
+theme = "light"
+font_size = 16.0
+line_width = 84
+indent_unit = "\t"
+autosave_ms = 800
+large_file_kb = 512
+show_preview = false
+show_sidebar = true
+show_insights = true
+dates_as_links = true
+inline_calculator = true
+ai_provider = "openai"
+ai_base_url = "http://localhost:1234/v1"
+ai_model = "qwen3"
+embeddings = "local"
+embed_model = "nomic-embed-text"
+embed_base_url = ""
+editor = "fast"
+inline_images = true
+live_preview = true
+tour_done = true
+check_updates = false
+last_update_check = 0
+skip_update_version = ""
+capture_shortcut = true
+spell_check = true
+spell_language = "en_US"
+future_flag = 3
+
+[onboarding]
+ai_done = true
+ai_choice = "both"
+
+[ai_local]
+engine = true
+embeddings = true
+llm = false
+ocr = true
+embed_model = "multilingual-e5-small"
+llm_model = "qwen3-1.7b-q4km"
+threads = 4
+gpu = "off"
+idle_unload_s = 600
+mirror_url = ""
+
+[agent_panel]
+enabled = true
+backend = "acp"
+max_steps = 12
+acp_command = "claude-code-acp"
+acp_args = ["--verbose"]
+acp_risk_ack = true
+
+[trust]
+contradictions = true
+claims_daily_cap = 50
+ask_before_tell = true
+staleness = false
+verify_citations = true
+
+[mcp_http]
+enabled = true
+bind = "127.0.0.1"
+port = 7400
+public_url = "https://notes.example.org/mcp"
+
+[editing]
+vim = true
+tab_mode = "new"
+display_titles = true
+homepage = "Home.md"
+future_editing_key = true
+
+[tasks]
+reminders = false
+new_occurrence = "below"
+format = "dataview"
+
+[appearance]
+theme_file = "solarized.toml"
+accent = "#4C8BF5"
+
+[jobs]
+pause_on_typing_ms = 2000
+max_threads = 2
+
+[future_table]
+level = 3
