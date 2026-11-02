@@ -6,8 +6,10 @@
 pub mod ai;
 mod ask_state;
 pub mod attach;
+pub mod capture;
 pub mod commands;
 pub mod document;
+pub mod export_pdf;
 pub mod find;
 mod find_state;
 pub mod graph;

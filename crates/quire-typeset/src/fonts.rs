@@ -16,3 +16,6 @@ pub const JETBRAINS_MONO_NL: &[u8] = include_bytes!("../../../apps/quire-desktop
 /// STIX Two Math 2.13 (SIL OFL 1.1), an OpenType math font; see
 /// `fonts/STIXTwoMath-OFL.txt`.
 pub const STIX_TWO_MATH: &[u8] = include_bytes!("../fonts/STIXTwoMath-Regular.otf");
+
+/// Licence of the math font, to show to users.
+pub const STIX_TWO_MATH_LICENSE: &str = include_str!("../fonts/STIXTwoMath-OFL.txt");

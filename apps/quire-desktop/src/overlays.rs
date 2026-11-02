@@ -20,22 +20,48 @@ pub(crate) enum Mode {
 }
 
 pub(crate) enum Overlay {
-    Palette { mode: Mode, query: String, selected: usize, focused: bool },
-    Rename { input: String, focused: bool },
+    Palette {
+        mode: Mode,
+        query: String,
+        selected: usize,
+        focused: bool,
+    },
+    Rename {
+        input: String,
+        focused: bool,
+    },
     ConfirmDelete,
-    OpenVault { input: String },
-    VaultReplace { focused: bool },
-    Ask { focused: bool },
+    OpenVault {
+        input: String,
+    },
+    VaultReplace {
+        focused: bool,
+    },
+    Ask {
+        focused: bool,
+    },
     Settings(Box<crate::dialogs::SettingsState>),
     History(crate::dialogs::HistoryState),
     Import(crate::dialogs::ImportState),
     NewProject(crate::dialogs::ProjectState),
     Publish(crate::dialogs::PublishState),
     Folder(crate::dialogs::FolderState),
-    Shortcuts { query: String, focused: bool },
-    Tour { step: usize },
+    Shortcuts {
+        query: String,
+        focused: bool,
+    },
+    Tour {
+        step: usize,
+    },
     SyncConflicts,
     Graph(Box<crate::graph_view::GraphState>),
+    /// Quick capture: `minimize` puts the window back down after adding
+    /// (it was minimized when the global shortcut brought it up).
+    Capture {
+        text: String,
+        focused: bool,
+        minimize: bool,
+    },
 }
 
 impl Overlay {
@@ -174,6 +200,7 @@ pub(crate) fn show(ctx: &egui::Context, overlay: &mut Overlay, ws: &mut Workspac
         Overlay::Tour { step } => res.close = crate::dialogs::tour(ctx, step, ws, pal),
         Overlay::SyncConflicts => (res.close, res.jumped) = crate::dialogs::sync_conflicts(ctx, ws, pal),
         Overlay::Graph(st) => (res.close, res.jumped) = crate::graph_view::show(ctx, st, ws, pal),
+        Overlay::Capture { text, focused, minimize } => res.close = capture(ctx, text, focused, *minimize, ws, pal),
         Overlay::Palette { mode, query, selected, focused } => {
             let list = items(ws, *mode, query, mac);
             let (down, up, enter) = ctx.input_mut(|i| {
@@ -616,6 +643,41 @@ fn shortcuts(ctx: &egui::Context, query: &mut String, focused: &mut bool, pal: &
             });
         });
     });
+    close
+}
+
+/// The quick-capture box: Enter adds to today's note, Shift+Enter is a new line.
+fn capture(ctx: &egui::Context, text: &mut String, focused: &mut bool, minimize: bool, ws: &mut Workspace, pal: &Palette) -> bool {
+    let mut add = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter));
+    let mut close = false;
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    egui::Modal::new(egui::Id::unique("quire-capture")).show(ctx, |ui| {
+        ui.set_width(520.0_f32.min(ctx.content_rect().width() - 48.0));
+        ui.heading("Quick capture");
+        ui.label(
+            RichText::new(format!("Adds a line with the time to today's note ({today}). Enter to add, Shift+Enter for a new line."))
+                .size(12.0)
+                .color(pal.muted),
+        );
+        ui.add_space(6.0);
+        let r = ui.add(egui::TextEdit::multiline(text).desired_rows(3).desired_width(f32::INFINITY).hint_text("What's on your mind?"));
+        if !*focused {
+            r.request_focus();
+            *focused = true;
+        }
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            add |= ui.add_enabled(!text.trim().is_empty(), egui::Button::new("Add")).clicked();
+            close |= ui.button("Cancel").clicked();
+            ui.label(RichText::new(format!("From any app: {}", crate::capture_key::label())).size(11.5).color(pal.faint));
+        });
+    });
+    if add && !text.trim().is_empty() && ws.capture(text).is_some() {
+        close = true;
+        if minimize {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
+    }
     close
 }
 

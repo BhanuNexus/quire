@@ -61,6 +61,12 @@ pub struct Settings {
     pub last_update_check: i64,
     /// A release the user chose to skip.
     pub skip_update_version: String,
+    /// The quick-capture shortcut works from any app while Quire runs.
+    pub capture_shortcut: bool,
+    /// Underline misspelled words.
+    pub spell_check: bool,
+    /// Dictionary for spell checking (`en_US`, `en_GB`, or one installed on the system).
+    pub spell_language: String,
 }
 
 impl Default for Settings {
@@ -91,6 +97,9 @@ impl Default for Settings {
             check_updates: false,
             last_update_check: 0,
             skip_update_version: String::new(),
+            capture_shortcut: true,
+            spell_check: true,
+            spell_language: "en_US".into(),
         }
     }
 }

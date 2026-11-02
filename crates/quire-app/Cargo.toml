@@ -24,6 +24,7 @@ quire-markdown.workspace = true
 quire-vault.workspace = true
 quire-index.workspace = true
 quire-intel.workspace = true
+quire-typeset.workspace = true
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true

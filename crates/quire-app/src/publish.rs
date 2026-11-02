@@ -74,8 +74,12 @@ fn slug(p: &NotePath, taken: &mut BTreeSet<String>) -> String {
     out
 }
 
-/// A heading's `id`: lowercase words joined by `-`.
+/// A heading's `id`: lowercase words joined by `-`. A paragraph id (`^id`)
+/// stays as written, matching the anchor the renderer gives it.
 fn anchor(text: &str) -> String {
+    if let Some(id) = text.strip_prefix('^') {
+        return format!("^{}", render::encode_url(id));
+    }
     let mut out = String::new();
     for w in text.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()) {
         if !out.is_empty() {
@@ -396,7 +400,7 @@ pub fn publish(vault: &Vault, ix: &Index, out: &Path, site_title: &str, which: S
         body.push_str("<p>No tags yet.</p>");
     }
     write("tags.html", &page(site_title, "Tags", &body))?;
-    write("style.css", CSS)?;
+    write("style.css", &format!("{CSS}{}", render::CALLOUT_CSS))?;
     write("search.js", &format!("var PAGES=[{}];\n{SEARCH_JS}\n", search.join(",\n")))?;
 
     for f in &files {

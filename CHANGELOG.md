@@ -4,6 +4,23 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Added
+- **Math.** `$…$` inline and `$$ … $$` blocks render as real math (LaTeX, typeset with Typst and the STIX Two Math font): in live preview once the caret leaves the line (click a formula to edit it), in the preview pane, and in PDF export. Fractions, roots, sums and integrals with limits, matrices, `aligned` and `\mathbb` all work. A formula that doesn't parse stays as text, with the reason shown under a block. Rendering happens off the UI thread, so typing never waits on it.
+- **Diagrams.** ```` ```mermaid ```` blocks draw as diagrams (flowcharts, sequence diagrams and more, rendered in Quire itself with no browser or network) in live preview, the preview pane and PDFs, in light or dark.
+- **Callouts.** Obsidian's `> [!note]`, `[!tip]`, `[!warning]`, `[!bug]` and the other types (with their aliases, custom titles and `+`/`-` fold signs) show as coloured boxes with an icon. This works in live preview, the preview pane, HTML export, published websites and PDFs. GitHub's `> [!NOTE]` works too.
+- **Links to a paragraph.** `[[Note#^id]]` jumps to the paragraph or list item ending in `^id`, as in Obsidian; the `^id` is dimmed in live preview and becomes an anchor on published sites. **Copy link to this paragraph** (Ctrl+Alt+L) adds an id if needed and copies the link.
+- **Spell checking.** Misspelled words get a red wavy underline (not in code, math, links' addresses, tags or front matter, and not the word you're still typing). Right-click one for suggestions, **Add to dictionary** (kept in `dictionary.txt` in Quire's settings folder) or **Ignore this session**. English (US and UK) is built in; Hunspell dictionaries already on your computer show up as more languages. Settings → Editor → Spelling.
+- **Export as PDF** (Ctrl+Alt+E, or `quire-cli pdf <vault> <note>`): a typeset PDF in `Exports/` with headings, callouts, code, tables, task lists, images, math and diagrams. It's made in the background.
+- **Quick capture.**
+  - From any app, **Ctrl+Alt+Space** (**⌘⇧Space** on macOS) brings up a small box; what you type is added to today's daily note as `- 14:05 your text`, and Quire goes back to the background if it was minimized. It's also in the command palette, and `quire-cli capture <vault> <text>` does the same from scripts.
+  - Text goes into the daily note even when that note is open with unsaved typing, without overwriting anything.
+  - It can be turned off in Settings → Editor. On Linux the shortcut needs X11 or XWayland.
+- **Third-party notices** in Settings → About, with the font and word-list licences.
+
+### Changed
+- Release builds unwind on a panic instead of aborting, so a bug in a math, diagram or PDF renderer reports an error instead of closing the app.
+
+
 ## [0.7.0] - 2026-11-02
 
 ### Added

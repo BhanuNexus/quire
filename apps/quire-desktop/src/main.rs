@@ -7,6 +7,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod capture_key;
 mod dialogs;
 mod editor;
 mod graph_view;
@@ -15,7 +16,9 @@ mod highlight;
 mod layout_check;
 mod overlays;
 mod panels;
+mod spell_ui;
 mod theme;
+mod typeset_ui;
 mod view;
 mod view_ui;
 

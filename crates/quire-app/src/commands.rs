@@ -10,6 +10,7 @@ pub enum Command {
     NewNote,
     NewFromTemplate,
     DailyNote,
+    QuickCapture,
     QuickOpen,
     Save,
     CloseTab,
@@ -18,6 +19,7 @@ pub enum Command {
     RenameNote,
     DeleteNote,
     ExportHtml,
+    ExportPdf,
     OpenVault,
     Scratchpad,
     ShowHistory,
@@ -52,6 +54,7 @@ pub enum Command {
     Quote,
     FormatTable,
     InsertLink,
+    CopyParagraphLink,
     FollowLink,
     InsertDate,
     InsertView,
@@ -167,6 +170,7 @@ commands! {
     NewNote,          "Note",   "New note",                       [cmd("N")], false;
     NewFromTemplate,  "Note",   "New note from template…",        [cmd_shift("N")], false;
     DailyNote,        "Note",   "Open today's daily note",        [alt("D")], false;
+    QuickCapture,     "Note",   "Quick capture to today's note…", [], false;
     QuickOpen,        "Note",   "Quick open…",                    [cmd("P"), cmd("O")], false;
     Save,             "Note",   "Save",                           [cmd("S")], true;
     CloseTab,         "Note",   "Close tab",                      [cmd("W")], true;
@@ -175,6 +179,7 @@ commands! {
     RenameNote,       "Note",   "Rename note (updates links)…",   [bare("F2")], true;
     DeleteNote,       "Note",   "Move note to trash",             [], true;
     ExportHtml,       "Note",   "Export as HTML",                 [cmd_shift("E")], true;
+    ExportPdf,        "Note",   "Export as PDF",                  [cmd_alt("E")], true;
     OpenVault,        "Note",   "Open vault folder…",             [cmd_shift("O")], false;
     Scratchpad,       "Note",   "Open scratchpad",                [alt("S")], false;
     ShowHistory,      "Note",   "Version history…",               [cmd_alt("H")], true;
@@ -207,6 +212,7 @@ commands! {
     Quote,            "Format", "Toggle quote",                   [cmd_shift("Period")], true;
     FormatTable,      "Format", "Format table",                   [cmd_shift("T")], true;
     InsertLink,       "Format", "Insert [[link]]",                [cmd("Backslash")], true;
+    CopyParagraphLink,"Note",   "Copy link to this paragraph",    [cmd_alt("L")], true;
     FollowLink,       "Go",     "Follow link under caret",        [alt("Enter")], true;
     InsertDate,       "Format", "Insert today's date",            [cmd_shift("D")], true;
     InsertView,       "Format", "Insert view (table, board, calendar)", [], true;

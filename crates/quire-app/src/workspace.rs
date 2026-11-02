@@ -63,7 +63,7 @@ pub fn title_from_text(text: &str) -> Option<(String, usize)> {
 }
 
 /// Commands that need the frontend to show something (a picker or dialog).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiRequest {
     QuickOpen,
     CommandPalette,
@@ -95,6 +95,10 @@ pub enum UiRequest {
     /// Show two notes side by side (or go back to one).
     Split,
     Graph,
+    /// Put this text on the clipboard.
+    Copy(String),
+    /// The quick-capture box.
+    Capture,
 }
 
 /// Everything the insights panel shows for the active note.
@@ -141,6 +145,7 @@ pub struct Workspace {
     pub assist_result: Option<AssistResult>,
     insights_cache: InsightsCache,
     insights_job: InsightsJob,
+    pub(crate) pdf_job: crate::export_pdf::PdfJob,
     /// Version history, written off the UI thread.
     pub(crate) history: crate::history_ops::HistoryWriter,
     pub find: crate::find_state::FindState,
@@ -173,6 +178,7 @@ impl Workspace {
             assist_result: None,
             insights_cache: RefCell::new(None),
             insights_job: RefCell::new(None),
+            pdf_job: None,
             history: crate::history_ops::HistoryWriter::spawn(),
             find: crate::find_state::FindState::default(),
             ask: crate::ask_state::AskState::default(),
@@ -425,11 +431,76 @@ impl Workspace {
         let Some(doc) = self.active_doc_mut() else {
             return;
         };
+        // `[[Note#^id]]`: a paragraph, not a heading.
+        if let Some(id) = heading.strip_prefix('^') {
+            let text = doc.text();
+            if let Some(r) = quire_markdown::callout::find_block(&text, id) {
+                let c = doc.byte_to_char(r.start);
+                doc.set_selection(Selection::cursor(c));
+            } else {
+                self.notify(NoticeLevel::Warn, format!("No paragraph with id ^{id} in this note"));
+            }
+            return;
+        }
         let target = quire_markdown::outline::slugify(heading);
         if let Some(h) = doc.outline().into_iter().find(|h| h.anchor == target || h.text.eq_ignore_ascii_case(heading)) {
             let c = doc.byte_to_char(h.offset);
             doc.set_selection(Selection::cursor(c));
         }
+    }
+
+    /// A `[[link]]` to the paragraph (or heading) under the caret. A
+    /// paragraph without an id gets one (` ^abc123` at its end, undoable).
+    pub fn paragraph_link(&mut self) -> Option<String> {
+        let doc = self.active_doc()?;
+        let Some(stem) = doc.path.as_ref().map(|p| p.stem().to_string()) else {
+            self.notify(NoticeLevel::Warn, "Save the note first to link to it");
+            return None;
+        };
+        let buf = doc.buffer();
+        let line = buf.char_to_line(doc.selection().head);
+        let text = doc.text();
+        let line_text = buf.line(line);
+        let caret_byte = buf.char_to_byte(buf.line_range(line).start);
+        if quire_markdown::blocks::verbatim_blocks(&text).iter().any(|r| r.contains(&caret_byte)) || line_text.trim().is_empty() {
+            self.notify(NoticeLevel::Warn, "Put the caret in a paragraph or list item to link to it");
+            return None;
+        }
+        // A heading links by its text.
+        let trimmed = line_text.trim_start();
+        if trimmed.starts_with('#') && trimmed.trim_start_matches('#').starts_with(' ') {
+            return Some(format!("[[{stem}#{}]]", trimmed.trim_start_matches('#').trim()));
+        }
+        // The block's last line: a list item is one line; a paragraph runs to the next blank line.
+        let is_item = |t: &str| {
+            let t = t.trim_start();
+            t.starts_with("- ")
+                || t.starts_with("* ")
+                || t.starts_with("+ ")
+                || t.split_once(". ").is_some_and(|(n, _)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        };
+        let mut last = line;
+        if !is_item(&line_text) {
+            while last + 1 < buf.len_lines() {
+                let next = buf.line(last + 1);
+                if next.trim().is_empty() || is_item(&next) || next.trim_start().starts_with('#') || next.trim_start().starts_with("```") {
+                    break;
+                }
+                last += 1;
+            }
+        }
+        let last_text = buf.line(last);
+        if let Some((_, id)) = quire_markdown::callout::block_id(&last_text) {
+            return Some(format!("[[{stem}#^{id}]]"));
+        }
+        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(7, |d| d.as_nanos() as u64);
+        let id = quire_markdown::callout::new_block_id(&text, seed);
+        let end = buf.line_range(last).end;
+        let sel = doc.selection();
+        let doc = self.active_doc_mut()?;
+        let tx = Transaction::insert(end, format!(" ^{id}")).with_selection(sel);
+        doc.apply(tx, EditKind::Other).ok()?;
+        Some(format!("[[{stem}#^{id}]]"))
     }
 
     pub fn jump_to_byte(&mut self, byte: usize) {
@@ -535,7 +606,7 @@ impl Workspace {
 
     /// Time-driven work. Returns true if the UI should repaint.
     pub fn tick(&mut self, now: Instant) -> bool {
-        let mut changed = false;
+        let mut changed = self.poll_pdf_job();
         self.track_recent();
         let delay = Duration::from_millis(self.settings.autosave_ms);
         let due: Vec<DocId> = self
@@ -1030,6 +1101,7 @@ impl Workspace {
             C::ExportHtml => {
                 self.export_active_html();
             }
+            C::ExportPdf => self.export_active_pdf(),
             C::Bold => self.wrap("**"),
             C::Italic => self.wrap("_"),
             C::InlineCode => self.wrap("`"),
@@ -1089,6 +1161,13 @@ impl Workspace {
             C::MoveNote => return self.active_doc().and_then(|d| d.path.as_ref()).map(|_| UiRequest::MoveNote),
             C::ImportNotes => return Some(UiRequest::Import),
             C::SplitEditor => return Some(UiRequest::Split),
+            C::QuickCapture => return self.vault.is_some().then_some(UiRequest::Capture),
+            C::CopyParagraphLink => {
+                if let Some(link) = self.paragraph_link() {
+                    self.notify(NoticeLevel::Info, format!("Copied {link}"));
+                    return Some(UiRequest::Copy(link));
+                }
+            }
             C::ShowGraph => return self.vault.is_some().then_some(UiRequest::Graph),
             C::PublishSite => return self.vault.is_some().then_some(UiRequest::Publish),
             C::OpenSettings => return Some(UiRequest::Settings),

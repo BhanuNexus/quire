@@ -82,6 +82,11 @@ Settings live in `~/.config/quire/settings.toml` (Linux), `~/Library/Application
 
 | Area | Features |
 |---|---|
+| Math & diagrams | `$x^2$`, `$$ … $$` and ```` ```mermaid ```` render in place (Typst + a pure-Rust Mermaid renderer, no browser), in the preview and in PDFs |
+| Callouts & paragraph links | Obsidian callouts (`> [!tip] Title`) as coloured boxes everywhere; `[[Note#^id]]` links to a paragraph; Ctrl+Alt+L copies one |
+| Spelling | Red underlines, suggestions on right-click, a personal dictionary; English built in, other Hunspell dictionaries picked up from your system |
+| Quick capture | Ctrl+Alt+Space (⌘⇧Space) from any app adds a timestamped line to today's note; `quire-cli capture` too |
+| PDF export | Ctrl+Alt+E or `quire-cli pdf`: a typeset PDF with callouts, code, tables, images, math and diagrams |
 | Graph view | Your notes and links as a map, around the open note or the whole vault (Ctrl+G) |
 | Split & fold | Two notes side by side (Ctrl+Alt+\\, or right-click → Open to the side), and fold any section under its heading |
 | Editor | Fast virtualized editor: draws only visible lines, stays smooth on 10 MB / 100k-line files. Multiple cursors (Ctrl+D, Ctrl+Shift+L, Ctrl+Alt+↑/↓, Alt+click), word/line selection by double/triple click, IME input. Classic egui editor kept as a fallback |
@@ -127,6 +132,8 @@ Settings live in `~/.config/quire/settings.toml` (Linux), `~/Library/Application
 | Ctrl+Alt+N | New project | F2 / double-click tab | Rename note |
 | Ctrl+Alt+\\ | Split editor | Ctrl+Shift+[ | Fold/unfold section |
 | Ctrl+G | Graph view | Ctrl+Alt+[ / ] | Fold / unfold all |
+| Ctrl+Alt+E | Export as PDF | Ctrl+Alt+L | Copy link to paragraph |
+| Ctrl+Alt+Space (⌘⇧Space) | Quick capture, from any app | | |
 
 ## Views
 
@@ -197,4 +204,7 @@ Copyright © 2026 The Quire contributors.
 
 Quire is free software: you can redistribute it and/or modify it under the terms of the [GNU Affero General Public License](LICENSE), version 3 or (at your option) any later version. In short: you may use, study, change and share it. If you distribute it, or run a modified version as a network service, you must share the source under the same licence.
 
-The app bundles the [Inter](https://rsms.me/inter/) and [JetBrains Mono](https://www.jetbrains.com/lp/mono/) typefaces, both under the [SIL Open Font License 1.1](apps/quire-desktop/fonts/Inter-OFL.txt).
+The app bundles:
+
+- **Fonts:** the [Inter](https://rsms.me/inter/), [JetBrains Mono](https://www.jetbrains.com/lp/mono/) and [STIX Two Math](https://github.com/stipub/stixfonts) typefaces, under the [SIL Open Font License 1.1](apps/quire-desktop/fonts/Inter-OFL.txt).
+- **Word lists:** the English word lists used for spell checking, from [SCOWL](http://wordlist.aspell.net/) by Kevin Atkinson. Their copyright and permission notices are in [`crates/quire-spell/dictionaries/`](crates/quire-spell/dictionaries/) and under **Settings → About → Third-party notices**.

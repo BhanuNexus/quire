@@ -818,6 +818,21 @@ pub(crate) fn status_bar(ui: &mut egui::Ui, ws: &Workspace, pal: &Palette) -> Pa
 
 // ---------------------------------------------------------------- preview
 
+/// Obsidian's callout types as the preview's alert boxes.
+fn callout_alerts() -> egui_commonmark::AlertBundle {
+    egui_commonmark::AlertBundle::from_alerts(
+        quire_app::markdown::callout::KINDS
+            .iter()
+            .map(|k| egui_commonmark::Alert {
+                accent_color: egui::Color32::from_rgb(k.color[0], k.color[1], k.color[2]),
+                icon: k.glyph,
+                identifier: k.id.to_uppercase(),
+                identifier_rendered: k.label.to_string(),
+            })
+            .collect(),
+    )
+}
+
 pub(crate) fn preview(ui: &mut egui::Ui, ws: &mut Workspace, cache: &mut CommonMarkCache, pal: &Palette) -> PanelOut {
     let mut out = PanelOut::default();
     let Some(doc) = ws.active_doc() else {
@@ -827,7 +842,29 @@ pub(crate) fn preview(ui: &mut egui::Ui, ws: &mut Workspace, cache: &mut CommonM
         ui.label(RichText::new("Preview is off for very large files.").color(pal.muted));
         return out;
     }
-    let md = for_preview(&doc.text(), &|t| ws.attachment_path(t).map(|p| format!("file://{}", p.display())));
+    // Mermaid blocks become display math holding a marker; the math hook draws the diagram.
+    let text = doc.text().to_string();
+    let figures = quire_app::markdown::blocks::figures(&text);
+    let mut diagrams: Vec<String> = Vec::new();
+    let text = if figures.iter().any(|f| f.kind == quire_app::markdown::blocks::FigureKind::Diagram) {
+        let lines: Vec<&str> = text.split('\n').collect();
+        let mut out = Vec::with_capacity(lines.len());
+        let mut i = 0;
+        while i < lines.len() {
+            if let Some(f) = figures.iter().find(|f| f.first_line == i && f.kind == quire_app::markdown::blocks::FigureKind::Diagram) {
+                out.push(format!("$$quire-diagram:{}$$", diagrams.len()));
+                diagrams.push(f.source.clone());
+                i = f.last_line + 1;
+            } else {
+                out.push(lines[i].to_string());
+                i += 1;
+            }
+        }
+        out.join("\n")
+    } else {
+        text
+    };
+    let md = for_preview(&text, &|t| ws.attachment_path(t).map(|p| format!("file://{}", p.display())));
     let urls: Vec<String> =
         md.match_indices("(quire://note/").filter_map(|(i, _)| md[i + 1..].find(')').map(|e| md[i + 1..i + 1 + e].to_string())).collect();
     for u in &urls {
@@ -835,7 +872,32 @@ pub(crate) fn preview(ui: &mut egui::Ui, ws: &mut Workspace, cache: &mut CommonM
     }
     egui::ScrollArea::vertical().id_salt("preview").auto_shrink([false, false]).show(ui, |ui| {
         egui::Frame::NONE.inner_margin(egui::Margin::symmetric(18, 22)).show(ui, |ui| {
-            CommonMarkViewer::new().show(ui, cache, &md);
+            let (text_color, dark, size) = (pal.text, pal.dark, ui.style().text_styles[&egui::TextStyle::Body].size);
+            let math = move |ui: &mut egui::Ui, src: &str, inline: bool| {
+                let job =
+                    match src.trim().strip_prefix("quire-diagram:").and_then(|n| n.parse::<usize>().ok()).and_then(|n| diagrams.get(n)) {
+                        Some(source) => crate::typeset_ui::Job::Diagram { source: source.clone(), dark },
+                        None => crate::typeset_ui::Job::Math {
+                            latex: src.trim().to_string(),
+                            display: !inline,
+                            size: size.round() as u32,
+                            color: crate::typeset_ui::rgba(text_color),
+                        },
+                    };
+                match crate::typeset_ui::request(ui.ctx(), &job) {
+                    crate::typeset_ui::Out::Ready(p) => {
+                        let scale = (ui.available_width() / p.size.x).min(1.0);
+                        ui.image((p.texture.id(), p.size * scale));
+                    }
+                    crate::typeset_ui::Out::Pending => {
+                        ui.label(RichText::new("…").weak());
+                    }
+                    crate::typeset_ui::Out::Failed(e) => {
+                        ui.label(RichText::new(if inline { src.to_string() } else { format!("{src}\n({e})") }).monospace().weak());
+                    }
+                }
+            };
+            CommonMarkViewer::new().alerts(callout_alerts()).render_math_fn(Some(&math)).show(ui, cache, &md);
         });
     });
     let mut target = None;

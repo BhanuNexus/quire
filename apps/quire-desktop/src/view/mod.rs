@@ -17,7 +17,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use egui::text::{CCursor, CharIndex};
-use egui::{Align, Color32, CursorIcon, Event, EventFilter, Galley, Id, ImeEvent, Key, Pos2, Rect, Sense, Stroke, Ui, UiBuilder, Vec2};
+use egui::{
+    Align, Color32, CursorIcon, Event, EventFilter, Galley, Id, ImeEvent, Key, Pos2, Rect, RichText, Sense, Stroke, Ui, UiBuilder, Vec2,
+};
 use quire_app::document::Document;
 use quire_app::index::views::{self as qviews, ViewBlock};
 use quire_app::markdown::{StyleRun, blocks};
@@ -65,6 +67,9 @@ struct DocView {
     blocks: Option<(u64, Rc<Vec<Range<usize>>>)>,
     /// `quire-view` blocks, rendered under their closing fence.
     view_blocks: Option<(u64, Rc<Vec<ViewBlock>>)>,
+    /// Display math and diagrams, for a revision.
+    figures: Option<(u64, Rc<Vec<blocks::Figure>>)>,
+    spell_menu: Option<SpellMenu>,
     /// Where views were drawn last frame (screen space); the editor
     /// ignores presses there so the view's own widgets get them.
     view_rects: Vec<Rect>,
@@ -87,6 +92,8 @@ struct DocView {
     hidden: Option<HiddenLines>,
     /// Fold arrows drawn last frame: (screen rect, heading line).
     fold_toggles: Vec<(Rect, usize)>,
+    /// Pictures of math and diagrams last frame: clicking one edits its source (first line).
+    figure_boxes: Vec<(Rect, usize)>,
 }
 
 impl DocView {
@@ -104,6 +111,8 @@ impl DocView {
             runs: None,
             blocks: None,
             view_blocks: None,
+            figures: None,
+            spell_menu: None,
             view_rects: Vec::new(),
             scroll_key: None,
             own_rev: u64::MAX,
@@ -114,6 +123,7 @@ impl DocView {
             folded: Vec::new(),
             hidden: None,
             fold_toggles: Vec::new(),
+            figure_boxes: Vec::new(),
         }
     }
 }
@@ -130,6 +140,28 @@ enum Deco {
     Rule,
     /// Under a table's header row, and between its rows: a line this wide.
     TableLine { width: f32, strong: bool },
+    /// A callout's icon (index into `callout::KINDS`) left of the title at
+    /// `col`; with `label`, the kind's name is drawn too (no title written).
+    Callout { kind: usize, col: usize, label: bool },
+    /// Inline math drawn in place of `$…$`, whose first (hidden) char is at `col`.
+    Math { col: usize, tex: egui::TextureId, w: f32, h: f32, baseline: f32 },
+    /// A misspelled word, chars `start..end`: a wavy underline.
+    Misspelled { start: usize, end: usize },
+}
+
+/// Width kept free for a callout's icon.
+fn callout_icon_width(size: f32) -> f32 {
+    (size * 1.55).round()
+}
+
+fn callout_color(kind: &quire_app::markdown::callout::CalloutKind) -> Color32 {
+    Color32::from_rgb(kind.color[0], kind.color[1], kind.color[2])
+}
+
+/// A quote line: up to three spaces, then `>`.
+fn is_quote_line(t: &str) -> bool {
+    let trimmed = t.trim_start_matches(' ');
+    t.len() - trimmed.len() <= 3 && trimmed.starts_with('>')
 }
 
 /// How a Markdown table is drawn in live preview: each column as wide as
@@ -272,6 +304,8 @@ enum Block {
     Code,
     FrontMatter,
     Quote,
+    /// A quote that starts with `[!type]`: index into `callout::KINDS`.
+    Callout(usize),
 }
 
 /// Per-frame layout parameters.
@@ -347,6 +381,16 @@ pub(crate) struct FastEditor {
     decos: HashMap<usize, Vec<Deco>>,
     /// Tables laid out this frame, by first line.
     tables: HashMap<usize, Rc<TableLayout>>,
+    /// The spell checker for this frame (`None` while off or loading).
+    spell: Option<Arc<quire_spell::Speller>>,
+}
+
+/// Right-click on a misspelled word: its char range and what to offer.
+#[derive(Debug, Clone)]
+struct SpellMenu {
+    range: Range<usize>,
+    word: String,
+    suggestions: Vec<String>,
 }
 
 fn all_selections(primary: Selection, extra: &[Selection]) -> Vec<Selection> {
@@ -812,6 +856,137 @@ impl FastEditor {
                 }
             }
         }
+        // Spelling: words in prose only (not code, math or front matter), and
+        // not the word the caret is in while it's being typed.
+        if let Some(sp) = &self.spell
+            && pre_range.is_none()
+            && !local.iter().any(|r| r.style.code_block || r.style.front_matter || r.style.conflict)
+        {
+            let caret_col = (buf.char_to_line(caret) == line).then(|| caret - lr.start);
+            let mut lc = quire_spell::LineContext::new();
+            for r in sp.misspellings(&text, &mut lc) {
+                let skip = local.iter().any(|run| (run.style.code || run.style.math) && run.range.start < r.end && r.start < run.range.end);
+                let (a, b) = (text[..r.start].chars().count(), text[..r.end].chars().count());
+                if skip || caret_col.is_some_and(|c| c >= a && c <= b) {
+                    continue;
+                }
+                decos.push(Deco::Misspelled { start: a, end: b });
+            }
+        }
+        // Live preview: inline `$math$` drawn as math once it's rendered.
+        let revealed_line = cx.live.as_ref().is_none_or(|revealed| revealed.iter().any(|r| r.contains(&line)));
+        if !revealed_line
+            && pre_range.is_none()
+            && table.is_none()
+            && local.iter().any(|r| r.style.math)
+            && !text.trim_start().starts_with("$$")
+        {
+            let mut spans: Vec<Range<usize>> = Vec::new();
+            for r in local.iter().filter(|r| r.style.math && !r.style.code_block) {
+                match spans.last_mut() {
+                    Some(last) if last.end >= r.range.start => last.end = last.end.max(r.range.end),
+                    _ => spans.push(r.range.clone()),
+                }
+            }
+            for sp in &mut spans {
+                while sp.start > 0 && text.as_bytes()[sp.start - 1] == b'$' {
+                    sp.start -= 1;
+                }
+                while sp.end < text.len() && text.as_bytes()[sp.end] == b'$' {
+                    sp.end += 1;
+                }
+            }
+            for sp in spans {
+                let latex = text[sp.clone()].trim_matches('$').trim();
+                if latex.is_empty() {
+                    continue;
+                }
+                let math_job = crate::typeset_ui::Job::Math {
+                    latex: latex.to_string(),
+                    display: text[sp.clone()].starts_with("$$"),
+                    size: cx.size.round() as u32,
+                    color: crate::typeset_ui::rgba(cx.pal.text),
+                };
+                let out = crate::typeset_ui::request(ui.ctx(), &math_job);
+                match out {
+                    crate::typeset_ui::Out::Ready(p) => {
+                        split_sections(&mut job, &[sp.start, sp.end]);
+                        let row_h = (cx.size * 1.45).max(p.size.y + 4.0);
+                        let mut first = true;
+                        for sec in &mut job.sections {
+                            if sec.byte_range.start.0 >= sp.start && sec.byte_range.end.0 <= sp.end {
+                                sec.format.color = Color32::TRANSPARENT;
+                                sec.format.background = Color32::TRANSPARENT;
+                                sec.format.font_id.size = 0.5;
+                                sec.format.line_height = Some(row_h);
+                                if first {
+                                    sec.leading_space = p.size.x + 2.0;
+                                    first = false;
+                                }
+                            }
+                        }
+                        let col = text[..sp.start].chars().count();
+                        decos.push(Deco::Math { col, tex: p.texture.id(), w: p.size.x, h: p.size.y, baseline: p.baseline });
+                    }
+                    crate::typeset_ui::Out::Failed(_) => {
+                        split_sections(&mut job, &[sp.start, sp.end]);
+                        for sec in &mut job.sections {
+                            if sec.byte_range.start.0 >= sp.start && sec.byte_range.end.0 <= sp.end {
+                                sec.format.color = cx.pal.warn;
+                            }
+                        }
+                    }
+                    crate::typeset_ui::Out::Pending => {}
+                }
+            }
+        }
+        // Live preview, outside the lines being edited: callout titles and paragraph ids.
+        let revealed_here = cx.live.as_ref().is_none_or(|revealed| revealed.iter().any(|r| r.contains(&line)));
+        if !revealed_here && pre_range.is_none() && table.is_none() && !local.iter().any(|r| r.style.code_block || r.style.front_matter) {
+            if let Some(h) = quire_app::markdown::callout::parse_header(&text) {
+                let kind = quire_app::markdown::callout::KINDS.iter().position(|k| k.id == h.kind.id).unwrap_or(0);
+                let color = callout_color(h.kind);
+                split_sections(&mut job, &[h.marker.end, h.title_range.end]);
+                let mut first = true;
+                for sec in &mut job.sections {
+                    let (a, b) = (sec.byte_range.start.0, sec.byte_range.end.0);
+                    if b <= h.marker.end {
+                        sec.format.color = Color32::TRANSPARENT;
+                        sec.format.background = Color32::TRANSPARENT;
+                        sec.format.font_id.size = 0.5;
+                        sec.format.line_height = None;
+                    } else if a >= h.title_range.start && b <= h.title_range.end && a < b {
+                        sec.format.color = color;
+                        if cx.fonts.bold {
+                            sec.format.font_id.family = egui::FontFamily::Name(crate::theme::BOLD.into());
+                        }
+                        if first {
+                            sec.leading_space = callout_icon_width(cx.size);
+                            first = false;
+                        }
+                    }
+                }
+                let col = text[..h.title_range.start].chars().count();
+                decos.push(Deco::Callout { kind, col, label: h.title.is_empty() });
+            }
+            if local.iter().any(|r| r.style.quote) && matches!(Self::block_of(view, doc, line), Block::Callout(_)) {
+                for sec in &mut job.sections {
+                    if sec.format.color == cx.pal.muted {
+                        sec.format.color = cx.pal.text;
+                    }
+                }
+            }
+            if let Some((r, _)) = quire_app::markdown::callout::block_id(&text) {
+                split_sections(&mut job, &[r.start, r.end]);
+                for sec in &mut job.sections {
+                    if sec.byte_range.start.0 >= r.start && sec.byte_range.end.0 <= r.end {
+                        sec.format.color = cx.pal.faint;
+                        sec.format.font_id.size = (cx.size * 0.78).round();
+                        sec.format.valign = Align::Center;
+                    }
+                }
+            }
+        }
         self.decos.insert(line, decos);
         if let Some(r) = pre_range {
             for sec in &mut job.sections {
@@ -847,7 +1022,22 @@ impl FastEditor {
             }
             quote |= r.style.quote;
         }
-        if quote { Block::Quote } else { Block::None }
+        if !quote {
+            return Block::None;
+        }
+        // Walk up to the quote's first line: is it a callout?
+        let mut l = line;
+        loop {
+            let t = buf.line(l);
+            if let Some(h) = quire_app::markdown::callout::parse_header(&t) {
+                let k = quire_app::markdown::callout::KINDS.iter().position(|k| k.id == h.kind.id).unwrap_or(0);
+                return Block::Callout(k);
+            }
+            if l == 0 || line - l > 400 || !is_quote_line(&buf.line(l - 1)) {
+                return Block::Quote;
+            }
+            l -= 1;
+        }
     }
 
     /// Image shown under a line that only embeds an image.
@@ -1097,6 +1287,9 @@ impl FastEditor {
                 .collect::<Vec<_>>()
         });
         let cx = Cx { pal, fonts, size, wrap, live };
+        self.spell = (ws.settings.spell_check && !ws.active_doc().expect("checked").large)
+            .then(|| crate::spell_ui::speller(&ws.settings.spell_language, &ctx))
+            .flatten();
         Self::sync(&mut view, ws.active_doc().expect("checked"), &cx, inline_images);
         let total = view.heights.total() + TOP_MARGIN + BOTTOM_MARGIN;
         let mut view_action: Option<ViewAction> = None;
@@ -1158,6 +1351,62 @@ impl FastEditor {
                 let mut moved = false;
                 let mut edited = false;
 
+                // ---------------- spelling: right-click a flagged word
+                if resp.secondary_clicked()
+                    && let (Some(p), Some(sp)) = (resp.interact_pointer_pos(), self.spell.clone())
+                {
+                    let doc = ws.active_doc().expect("checked");
+                    let at = self.hit(ui, &mut view, doc, &cx, origin, x0, p);
+                    let buf = doc.buffer();
+                    let line = buf.char_to_line(at);
+                    let lr = buf.line_range(line);
+                    let text = buf.line(line);
+                    let col = at - lr.start;
+                    view.spell_menu = sp.misspellings(&text, &mut quire_spell::LineContext::new()).into_iter().find_map(|r| {
+                        let (a, b) = (text[..r.start].chars().count(), text[..r.end].chars().count());
+                        (col >= a && col <= b).then(|| {
+                            let word = text[r].to_string();
+                            SpellMenu { range: lr.start + a..lr.start + b, suggestions: sp.suggest(&word, 6), word }
+                        })
+                    });
+                }
+                let mut spell_pick: Option<(Range<usize>, String)> = None;
+                let menu = view.spell_menu.clone();
+                resp.context_menu(|ui| {
+                    let Some(m) = &menu else {
+                        ui.close();
+                        return;
+                    };
+                    if m.suggestions.is_empty() {
+                        ui.label(RichText::new("No suggestions").color(pal.muted));
+                    }
+                    for s in &m.suggestions {
+                        if ui.button(RichText::new(s).strong()).clicked() {
+                            spell_pick = Some((m.range.clone(), s.clone()));
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    if ui.button(format!("Add “{}” to dictionary", m.word)).clicked() {
+                        crate::spell_ui::add_word(&m.word);
+                        ui.close();
+                    }
+                    if ui.button("Ignore this session").clicked() {
+                        crate::spell_ui::ignore_word(&m.word);
+                        ui.close();
+                    }
+                });
+                if let Some((range, with)) = spell_pick
+                    && let Some(d) = ws.active_doc_mut()
+                {
+                    let caret = range.start + with.chars().count();
+                    let _ = d.apply(
+                        Transaction::replace(range.start, range.end, with).with_selection(Selection::cursor(caret)),
+                        EditKind::Other,
+                    );
+                    view.spell_menu = None;
+                }
+
                 // ---------------- mouse
                 let (pressed, pointer, mods, primary_down) =
                     ui.input(|i| (i.pointer.primary_pressed(), i.pointer.interact_pos(), i.modifiers, i.pointer.primary_down()));
@@ -1169,7 +1418,21 @@ impl FastEditor {
                     let doc = ws.active_doc().expect("checked");
                     let fold_hit = view.fold_toggles.iter().find(|(r, _)| r.contains(p)).map(|(_, l)| *l);
                     let task_hit = view.task_boxes.iter().find(|(r, _, _)| r.contains(p)).copied();
+                    let figure_hit = view.figure_boxes.iter().find(|(r, _)| r.contains(p)).map(|(_, l)| *l);
+                    if figure_hit.is_some() && !primary_down {
+                        ctx.set_cursor_icon(CursorIcon::PointingHand);
+                    }
                     if pressed
+                        && resp.contains_pointer()
+                        && !over_view
+                        && let Some(line) = figure_hit
+                    {
+                        // Clicking a picture opens its source for editing.
+                        resp.request_focus();
+                        let at = doc.buffer().line_to_char((line + 1).min(doc.buffer().len_lines().saturating_sub(1)));
+                        Self::set_selections(&mut view, ws, vec![Selection::cursor(at)], at);
+                        moved = true;
+                    } else if pressed
                         && resp.contains_pointer()
                         && let Some(line) = fold_hit
                     {
@@ -1537,6 +1800,21 @@ impl FastEditor {
                         b
                     }
                 };
+                let figures = match &view.figures {
+                    Some((r, f)) if *r == doc.revision() => Rc::clone(f),
+                    _ => {
+                        let f = Rc::new(if doc.large { Vec::new() } else { blocks::figures(&doc.text()) });
+                        view.figures = Some((doc.revision(), Rc::clone(&f)));
+                        f
+                    }
+                };
+                // A figure shows as its picture unless the caret is in it.
+                let figure_at = |line: usize| -> Option<(blocks::Figure, bool)> {
+                    let f = figures.iter().find(|f| f.first_line <= line && line <= f.last_line)?;
+                    let revealed = cx.live.as_ref().is_none_or(|rv| rv.iter().any(|r| r.start <= f.last_line && f.first_line < r.end));
+                    Some((f.clone(), !revealed))
+                };
+                let mut figure_clicks: Vec<(Rect, usize)> = Vec::new();
                 let preedit_chars = view.preedit.as_ref().map_or(0, |p| p.chars().count());
                 let mut new_view_rects = Vec::new();
                 let all = all_selections(doc.selection(), &view.extra);
@@ -1561,6 +1839,25 @@ impl FastEditor {
                 let pointer = ui.input(|i| i.pointer.hover_pos());
                 for line in first..=last {
                     if hidden.iter().any(|r| r.contains(&line)) {
+                        view.heights.set(line, 0.0);
+                        continue;
+                    }
+                    // A figure shown as a picture: its source lines collapse into the last one.
+                    let figure = figure_at(line).map(|(f, collapsed)| {
+                        let job = match f.kind {
+                            blocks::FigureKind::Math => crate::typeset_ui::Job::Math {
+                                latex: f.source.clone(),
+                                display: true,
+                                size: (cx.size * 1.1).round() as u32,
+                                color: crate::typeset_ui::rgba(pal.text),
+                            },
+                            blocks::FigureKind::Diagram => crate::typeset_ui::Job::Diagram { source: f.source.clone(), dark: pal.dark },
+                        };
+                        let out = crate::typeset_ui::request(&ctx, &job);
+                        (f, collapsed, out)
+                    });
+                    let collapsed_here = figure.as_ref().is_some_and(|(_, c, out)| *c && !matches!(out, crate::typeset_ui::Out::Failed(_)));
+                    if collapsed_here && figure.as_ref().is_some_and(|(f, _, _)| line < f.last_line) {
                         view.heights.set(line, 0.0);
                         continue;
                     }
@@ -1643,7 +1940,7 @@ impl FastEditor {
                     }
 
                     // Blocks: one background behind code and front matter, a bar beside quotes.
-                    let block = Self::block_of(&mut view, doc, line);
+                    let block = if collapsed_here { Block::None } else { Self::block_of(&mut view, doc, line) };
                     if block != Block::None {
                         let joined_above = line > 0 && Self::block_of(&mut view, doc, line - 1) == block;
                         let joined_below = Self::block_of(&mut view, doc, line + 1) == block;
@@ -1653,7 +1950,23 @@ impl FastEditor {
                             top + g.size().y.max(cx.row_h() * 0.9)
                         };
                         let pad = 14.0;
-                        if block == Block::Quote {
+                        if let Block::Callout(k) = block {
+                            let kind = &quire_app::markdown::callout::KINDS[k.min(quire_app::markdown::callout::KINDS.len() - 1)];
+                            let color = callout_color(kind);
+                            let extra_top = if joined_above { 0.0 } else { 4.0 };
+                            let extra_bottom = if joined_below { 0.0 } else { 4.0 };
+                            let bg = Rect::from_min_max(
+                                Pos2::new(x0 - pad, top - extra_top),
+                                Pos2::new(x0 + cx.wrap + pad, bottom + extra_bottom),
+                            );
+                            let c = |joined: bool| if joined { 0 } else { 6 };
+                            let r =
+                                egui::CornerRadius { nw: c(joined_above), ne: c(joined_above), sw: c(joined_below), se: c(joined_below) };
+                            painter.rect_filled(bg, r, color.gamma_multiply(if pal.dark { 0.16 } else { 0.10 }));
+                            let bar = Rect::from_min_max(bg.left_top(), Pos2::new(bg.left() + 3.0, bg.bottom()));
+                            let rb = egui::CornerRadius { nw: c(joined_above), ne: 0, sw: c(joined_below), se: 0 };
+                            painter.rect_filled(bar, rb, color);
+                        } else if block == Block::Quote {
                             let bar = Rect::from_min_max(Pos2::new(x0 - pad, top), Pos2::new(x0 - pad + 3.0, bottom));
                             let r = egui::CornerRadius {
                                 nw: if joined_above { 0 } else { 2 },
@@ -1677,11 +1990,68 @@ impl FastEditor {
                         }
                     }
 
-                    painter.galley(pos, Arc::clone(&g), pal.text);
+                    if !collapsed_here {
+                        painter.galley(pos, Arc::clone(&g), pal.text);
+                    }
                     // Live preview: bullets, checkboxes and rules drawn over hidden syntax.
                     for d in self.decos.get(&line).map(Vec::as_slice).unwrap_or_default() {
                         let at = |col: usize| g.pos_from_cursor(CCursor::new(col)).translate(pos.to_vec2());
                         match *d {
+                            Deco::Math { col, tex, w, h, baseline } => {
+                                let a = at(col);
+                                // Sit the formula's baseline on the text's.
+                                let text_baseline = a.center().y + cx.size * 0.33;
+                                let r = Rect::from_min_size(Pos2::new(a.left() - w - 1.0, text_baseline - baseline), Vec2::new(w, h));
+                                painter.image(tex, r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                            }
+                            Deco::Misspelled { start, end } => {
+                                // Per row, so a word wrapped onto the next row is underlined there.
+                                let mut rs = 0;
+                                for row in &g.rows {
+                                    let len = row.glyphs.len();
+                                    let (ra, rb) = (rs, rs + len);
+                                    rs += len;
+                                    if end <= ra || start >= rb {
+                                        continue;
+                                    }
+                                    let xa = row.x_offset(CharIndex(start.max(ra) - ra));
+                                    let xb = row.x_offset(CharIndex(end.min(rb) - ra));
+                                    let (x_a, x_b) = (pos.x + row.pos.x + xa, pos.x + row.pos.x + xb);
+                                    let y = pos.y + row.pos.y + row.size.y - 3.0;
+                                    let steps = ((x_b - x_a) / 2.5).floor().max(0.0) as usize;
+                                    let pts: Vec<Pos2> = (0..=steps)
+                                        .map(|k| Pos2::new(x_a + k as f32 * 2.5, if k % 2 == 1 { y - 1.6 } else { y + 0.4 }))
+                                        .collect();
+                                    if pts.len() > 1 {
+                                        painter.add(egui::Shape::line(pts, Stroke::new(1.1, pal.danger)));
+                                    }
+                                }
+                            }
+                            Deco::Callout { kind, col, label } => {
+                                let kind = &quire_app::markdown::callout::KINDS[kind.min(quire_app::markdown::callout::KINDS.len() - 1)];
+                                let color = callout_color(kind);
+                                let a = at(col);
+                                let d = (cx.size * 1.05).round();
+                                let left = if label { a.left() } else { a.left() - callout_icon_width(cx.size) };
+                                let center = Pos2::new(left + d / 2.0, a.center().y);
+                                painter.circle_filled(center, d / 2.0, color);
+                                painter.text(
+                                    center,
+                                    egui::Align2::CENTER_CENTER,
+                                    kind.glyph,
+                                    egui::FontId::new((cx.size * 0.62).round(), egui::FontFamily::Name(crate::theme::BOLD.into())),
+                                    Color32::WHITE,
+                                );
+                                if label {
+                                    painter.text(
+                                        Pos2::new(left + callout_icon_width(cx.size), a.center().y),
+                                        egui::Align2::LEFT_CENTER,
+                                        kind.label,
+                                        egui::FontId::new(cx.size, egui::FontFamily::Name(crate::theme::BOLD.into())),
+                                        color,
+                                    );
+                                }
+                            }
                             Deco::Bullet(col) => {
                                 let (a, b) = (at(col), at(col + 1));
                                 let c = Pos2::new(f32::midpoint(a.left(), b.left()), a.center().y);
@@ -1732,6 +2102,46 @@ impl FastEditor {
                     // A table's `| --- |` row shrinks to the line drawn in it.
                     let thin = self.decos.get(&line).is_some_and(|d| d.iter().any(|d| matches!(d, Deco::TableLine { strong: true, .. })));
                     let mut h = if thin { g.size().y } else { g.size().y.max(cx.row_h() * 0.9) };
+                    // The figure's picture (or why it couldn't be drawn), under its last line.
+                    if let Some((f, _, out)) = &figure
+                        && line == f.last_line
+                    {
+                        let base = if collapsed_here { top } else { top + h };
+                        match out {
+                            crate::typeset_ui::Out::Ready(p) => {
+                                let scale = (cx.wrap / p.size.x).min(1.0);
+                                let size = p.size * scale;
+                                let x = if f.kind == blocks::FigureKind::Math { x0 + (cx.wrap - size.x) / 2.0 } else { x0 };
+                                let r = Rect::from_min_size(Pos2::new(x, base + 8.0), size);
+                                painter.image(p.texture.id(), r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                                figure_clicks.push((r, f.first_line));
+                                h = if collapsed_here { size.y + 16.0 } else { h + size.y + 16.0 };
+                            }
+                            crate::typeset_ui::Out::Pending => {
+                                if collapsed_here {
+                                    painter.text(
+                                        Pos2::new(x0, base + cx.row_h() / 2.0),
+                                        egui::Align2::LEFT_CENTER,
+                                        if f.kind == blocks::FigureKind::Math { "Rendering math…" } else { "Drawing diagram…" },
+                                        egui::FontId::proportional(cx.size * 0.85),
+                                        pal.faint,
+                                    );
+                                    h = cx.row_h() * 1.2;
+                                }
+                            }
+                            crate::typeset_ui::Out::Failed(e) => {
+                                let what = if f.kind == blocks::FigureKind::Math { "Math" } else { "Diagram" };
+                                painter.text(
+                                    Pos2::new(x0, top + h + 4.0),
+                                    egui::Align2::LEFT_TOP,
+                                    format!("{what} not drawn: {e}"),
+                                    egui::FontId::proportional(cx.size * 0.8),
+                                    pal.danger,
+                                );
+                                h += cx.size * 1.4;
+                            }
+                        }
+                    }
 
                     if let Some(uri) = Self::line_image(ws, doc, line)
                         && let Some(size) = Self::image_size(ui, &uri, cx.wrap)
@@ -1788,6 +2198,7 @@ impl FastEditor {
 
                 view.view_rects = new_view_rects;
                 view.task_boxes = task_boxes;
+                view.figure_boxes = figure_clicks;
                 view.fold_toggles = fold_toggles;
                 // Empty new note: say how it gets its name.
                 if doc.auto_name && buf.len_chars() == 0 && view.preedit.is_none() {

@@ -29,6 +29,13 @@ mod user_dict;
 
 use std::path::PathBuf;
 
+/// Copyright and licence notices of the bundled word lists (SCOWL and the
+/// sources it draws on), to show to users as their licences ask.
+pub const DICTIONARY_NOTICES: &[(&str, &str)] = &[
+    ("English (US) word list", include_str!("../dictionaries/en_US.LICENSE")),
+    ("English (UK) word list", include_str!("../dictionaries/en_GB.LICENSE")),
+];
+
 pub use scan::LineContext;
 pub use speller::Speller;
 pub use system::{BUNDLED_LANGUAGES, DictionaryInfo, DictionarySource, available_dictionaries, bundled_dictionaries, system_dictionaries};

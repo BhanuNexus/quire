@@ -195,6 +195,18 @@ pub fn extract(src: &str) -> Extracted {
         }
     }
 
+    // Callout markers (`[!tip]-`) and paragraph ids (`^id`) aren't prose.
+    if out.plain.contains("[!") || out.plain.contains('^') {
+        out.plain = out
+            .plain
+            .split('\n')
+            .map(|line| {
+                let line = crate::callout::parse_header(&format!("> {line}")).map_or(line, |h| &line[h.marker.end - 2..]);
+                crate::callout::block_id(line).map_or_else(|| line.to_string(), |(r, _)| line[..r.start].to_string())
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
     let verbatim = verbatim_ranges(src);
     let mut tags: Vec<String> = out.front_matter.as_ref().map(FrontMatter::tags).unwrap_or_default();
     for inline in scan_with(src, &verbatim) {

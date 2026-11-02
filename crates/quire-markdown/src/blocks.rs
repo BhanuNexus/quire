@@ -163,3 +163,120 @@ mod tests {
         }
     }
 }
+
+/// A block drawn as a picture in live preview: display math (`$$ … $$`) or
+/// a ```` ```mermaid ```` diagram. Lines are zero-based and inclusive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Figure {
+    pub first_line: usize,
+    pub last_line: usize,
+    pub kind: FigureKind,
+    /// The math or diagram source, without delimiters.
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FigureKind {
+    Math,
+    Diagram,
+}
+
+/// Display math and Mermaid blocks in `src`, outside other code blocks and
+/// front matter. An unclosed block (still being typed) isn't one.
+pub fn figures(src: &str) -> Vec<Figure> {
+    let mut out = Vec::new();
+    if !src.contains("$$") && !src.contains("mermaid") {
+        return out;
+    }
+    let verbatim = verbatim_blocks(src);
+    let lines: Vec<(usize, &str)> = {
+        let mut at = 0;
+        src.split_inclusive('\n')
+            .map(|l| {
+                let start = at;
+                at += l.len();
+                (start, l.trim_end_matches(['\n', '\r']))
+            })
+            .collect()
+    };
+    let mut i = 0;
+    while i < lines.len() {
+        let (start, text) = lines[i];
+        let t = text.trim();
+        // A fenced block: mermaid, or skipped whole.
+        if let Some(block) = verbatim.iter().find(|r| r.start == start) {
+            let mut j = i;
+            while j + 1 < lines.len() && lines[j + 1].0 < block.end {
+                j += 1;
+            }
+            let fence = t.trim_start_matches(['`', '~']);
+            let closed = j > i && {
+                let last = lines[j].1.trim();
+                !last.is_empty() && last.chars().all(|c| c == '`' || c == '~')
+            };
+            if closed && fence.trim().eq_ignore_ascii_case("mermaid") {
+                let source = lines[i + 1..j].iter().map(|(_, l)| *l).collect::<Vec<_>>().join("\n");
+                out.push(Figure { first_line: i, last_line: j, kind: FigureKind::Diagram, source });
+            }
+            i = j + 1;
+            continue;
+        }
+        if let Some(rest) = t.strip_prefix("$$") {
+            // `$$x$$` on one line.
+            if let Some(inner) = rest.strip_suffix("$$")
+                && !inner.trim().is_empty()
+            {
+                out.push(Figure { first_line: i, last_line: i, kind: FigureKind::Math, source: inner.trim().to_string() });
+                i += 1;
+                continue;
+            }
+            // Over several lines, closed by a line ending in `$$` (within 200 lines).
+            let mut body = vec![rest];
+            let mut j = i + 1;
+            let mut closed = false;
+            while j < lines.len() && j - i <= 200 {
+                let l = lines[j].1.trim_end();
+                if let Some(before) = l.strip_suffix("$$") {
+                    body.push(before);
+                    closed = true;
+                    break;
+                }
+                if l.trim().is_empty() {
+                    break;
+                }
+                body.push(l);
+                j += 1;
+            }
+            if closed {
+                let source = body.join("\n").trim().to_string();
+                if !source.is_empty() {
+                    out.push(Figure { first_line: i, last_line: j, kind: FigureKind::Math, source });
+                }
+                i = j + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+#[cfg(test)]
+mod figure_tests {
+    use super::*;
+
+    #[test]
+    fn finds_math_and_diagrams() {
+        let src = "---\nmath: $$x$$\n---\n# T\n\n$$\n\\frac{a}{b}\n$$\n\nInline $x$ only.\n\n$$E = mc^2$$\n\n```mermaid\ngraph TD\n  A --> B\n```\n\n```\n$$ not math $$\n```\n\n$$\nunclosed\n\nmore\n";
+        let f = figures(src);
+        assert_eq!(f.len(), 3, "{f:#?}");
+        assert_eq!((f[0].first_line, f[0].last_line, f[0].kind, f[0].source.as_str()), (5, 7, FigureKind::Math, "\\frac{a}{b}"));
+        assert_eq!((f[1].first_line, f[1].last_line, f[1].source.as_str()), (11, 11, "E = mc^2"));
+        assert_eq!(
+            (f[2].first_line, f[2].last_line, f[2].kind, f[2].source.as_str()),
+            (13, 16, FigureKind::Diagram, "graph TD\n  A --> B")
+        );
+        // Still typing: no closing fence yet.
+        assert!(figures("```mermaid\ngraph TD\n").is_empty());
+    }
+}

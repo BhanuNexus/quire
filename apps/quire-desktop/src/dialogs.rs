@@ -472,6 +472,34 @@ fn about(ui: &mut Ui, ws: &mut Workspace, pal: &Palette) {
     });
     ui.add_space(12.0);
     ui.separator();
+    ui.collapsing("Third-party notices", |ui| {
+        ui.label(
+            RichText::new(
+                "Quire includes the Inter, JetBrains Mono and STIX Two Math fonts (SIL Open Font License 1.1) and English \
+                 word lists for spell checking from SCOWL by Kevin Atkinson and the sources it draws on, including the UK \
+                 Advanced Cryptics Dictionary. Their notices follow.",
+            )
+            .size(12.0)
+            .color(pal.muted),
+        );
+        let notices: Vec<(&str, &str)> = quire_spell::DICTIONARY_NOTICES
+            .iter()
+            .copied()
+            .chain([
+                ("Inter", include_str!("../fonts/Inter-OFL.txt")),
+                ("JetBrains Mono", include_str!("../fonts/JetBrainsMono-OFL.txt")),
+                ("STIX Two Math", quire_typeset::fonts::STIX_TWO_MATH_LICENSE),
+            ])
+            .collect();
+        for (name, text) in notices {
+            ui.collapsing(name, |ui| {
+                egui::ScrollArea::vertical().id_salt(("notice", name)).max_height(220.0).show(ui, |ui| {
+                    ui.label(RichText::new(text).monospace().size(11.0));
+                });
+            });
+        }
+    });
+    ui.separator();
     ui.label(RichText::new("Updates").strong());
     ui.checkbox(&mut ws.settings.check_updates, "Check for a new version once a day");
     ui.label(
@@ -534,6 +562,22 @@ fn editor_settings(ui: &mut Ui, ws: &mut Workspace) {
             ui.checkbox(&mut s.dates_as_links, "Insert dates as [[links]]");
             ui.checkbox(&mut s.inline_calculator, "Inline calculator (Ctrl+Enter)");
         });
+        ui.end_row();
+        ui.label("Spelling");
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut s.spell_check, "Underline misspelled words");
+            ui.add_enabled_ui(s.spell_check, |ui| {
+                egui::ComboBox::from_id_salt("spell-lang").selected_text(s.spell_language.replace('_', "-")).show_ui(ui, |ui| {
+                    for lang in crate::spell_ui::languages() {
+                        let label = lang.replace('_', "-");
+                        ui.selectable_value(&mut s.spell_language, lang, label);
+                    }
+                });
+            });
+        });
+        ui.end_row();
+        ui.label("Quick capture");
+        ui.checkbox(&mut s.capture_shortcut, format!("{} adds a thought to today's note from any app", crate::capture_key::label()));
         ui.end_row();
     });
 }

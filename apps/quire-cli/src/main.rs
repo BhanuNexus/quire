@@ -30,7 +30,9 @@ USAGE:
   quire-cli related   <vault> <note>          notes related by content
   quire-cli suggest   <vault> <note>          unlinked note names inside a note
   quire-cli tasks     <vault>                 open tasks across the vault
+  quire-cli capture   <vault> <text…>         add a timestamped line to today's daily note (\"-\" reads stdin)
   quire-cli export    <vault> <note> [out]    render a note to standalone HTML
+  quire-cli pdf       <vault> <note> [out]    typeset a note as a PDF (math, diagrams, callouts, images)
   quire-cli publish   <vault> <out> [--all] [--title T]
                       publish notes marked `publish: true` (or --all) as a static website
   quire-cli mcp       <vault> [--allow-write] MCP server on stdio for AI assistants (read-only by default)
@@ -157,6 +159,16 @@ fn run(args: &[String]) -> Result<(), String> {
                 println!("“{}” → [[{}]]", s.text, s.target.stem());
             }
         }
+        "capture" => {
+            let v = Vault::open_local(arg(1)?).map_err(|e| e.to_string())?;
+            let mut text = args.get(2..).map(|a| a.join(" ")).unwrap_or_default();
+            if text == "-" {
+                text.clear();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut text).map_err(|e| e.to_string())?;
+            }
+            let p = quire_app::capture::capture_now(&v, &text)?;
+            println!("added to {p}");
+        }
         "tasks" => {
             let (_, svc, _) = load(arg(1)?)?;
             let tasks = svc.read().tasks(false);
@@ -174,6 +186,20 @@ fn run(args: &[String]) -> Result<(), String> {
             });
             let out = args.get(3).cloned().unwrap_or_else(|| format!("{}.html", p.stem()));
             std::fs::write(&out, html).map_err(|e| e.to_string())?;
+            println!("wrote {out}");
+        }
+        "pdf" => {
+            let (v, svc, _) = load(arg(1)?)?;
+            let ix = svc.read();
+            let p = find_note(&ix, arg(2)?)?;
+            let src = ix.source(&p).unwrap_or_default().to_string();
+            let out = args.get(3).cloned().unwrap_or_else(|| format!("{}.pdf", p.stem()));
+            // Written into the vault first (so images resolve the same way), then moved.
+            let tmp = NotePath::new(format!(".quire/export-{}.pdf", std::process::id()));
+            let written = quire_app::export_pdf::export_pdf(&v, p.stem(), &src, &tmp)?;
+            std::fs::rename(&written, &out)
+                .or_else(|_| std::fs::copy(&written, &out).map(|_| ()).and_then(|()| std::fs::remove_file(&written)))
+                .map_err(|e| e.to_string())?;
             println!("wrote {out}");
         }
         "publish" => {

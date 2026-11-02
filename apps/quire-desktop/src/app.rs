@@ -36,6 +36,12 @@ pub(crate) struct QuireApp {
     editor: EditorState,
     fast: FastEditor,
     focus_find: bool,
+    /// Text a command wants on the clipboard (copied at the end of the frame).
+    clipboard: Option<String>,
+    /// The global quick-capture shortcut while it's registered; `capture_key_failed`
+    /// stops retrying after it couldn't be.
+    capture_key: Option<crate::capture_key::CaptureKey>,
+    capture_key_failed: bool,
     sidebar: SidebarState,
     preview_cache: CommonMarkCache,
     overlay: Option<Overlay>,
@@ -98,6 +104,9 @@ impl QuireApp {
             editor,
             fast,
             focus_find: false,
+            clipboard: None,
+            capture_key: None,
+            capture_key_failed: false,
             sidebar: SidebarState::default(),
             preview_cache: CommonMarkCache::default(),
             overlay: None,
@@ -197,6 +206,11 @@ impl QuireApp {
                     self.toggle_split();
                     return;
                 }
+                UiRequest::Copy(text) => {
+                    self.clipboard = Some(text);
+                    return;
+                }
+                UiRequest::Capture => Overlay::Capture { text: String::new(), focused: false, minimize: false },
                 UiRequest::Import => {
                     if self.ws.vault().is_none() {
                         self.ws.notify(NoticeLevel::Info, "Open a vault first, then import into it");
@@ -456,6 +470,9 @@ impl eframe::App for QuireApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let started = Instant::now();
         self.ui_inner(ui, frame);
+        if let Some(text) = self.clipboard.take() {
+            ui.ctx().copy_text(text);
+        }
         // QUIRE_TRACE=1 prints how long each frame's UI work took.
         if std::env::var_os("QUIRE_TRACE").is_some() {
             let ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -466,8 +483,34 @@ impl eframe::App for QuireApp {
 }
 
 impl QuireApp {
+    /// Keep the global shortcut registered as the setting says, and answer it:
+    /// bring the window up with the capture box.
+    fn quick_capture_key(&mut self, ctx: &egui::Context) {
+        let want = self.ws.settings.capture_shortcut && self.ws.vault().is_some();
+        if want && self.capture_key.is_none() && !self.capture_key_failed {
+            match crate::capture_key::CaptureKey::register(ctx) {
+                Ok(k) => self.capture_key = Some(k),
+                Err(e) => {
+                    self.capture_key_failed = true;
+                    self.ws.notify(NoticeLevel::Warn, format!("Quick capture shortcut unavailable: {e}"));
+                }
+            }
+        } else if !want {
+            self.capture_key = None;
+            self.capture_key_failed = false;
+        }
+        if self.capture_key.as_ref().is_some_and(crate::capture_key::CaptureKey::take) {
+            let minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            self.overlay = Some(Overlay::Capture { text: String::new(), focused: false, minimize: minimized });
+        }
+    }
+
     fn ui_inner(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.quick_capture_key(&ctx);
         self.apply_theme(&ctx);
         let pal = self.palette(&ctx);
         self.handle_shortcuts(&ctx);

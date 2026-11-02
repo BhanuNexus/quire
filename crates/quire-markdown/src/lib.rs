@@ -13,6 +13,7 @@
 //! unless a function says otherwise; editing helpers convert to char indices.
 
 pub mod blocks;
+pub mod callout;
 pub mod editing;
 pub mod extract;
 pub mod frontmatter;
