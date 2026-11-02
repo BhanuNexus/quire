@@ -45,6 +45,9 @@ pub struct LedgerEntry {
     /// Shared by every entry of one batch (undone together).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub batch: Option<String>,
+    /// For `accept` and `reject`: the actor id of the agent whose suggestion it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
     #[serde(flatten)]
     pub other: Other,
 }
@@ -66,6 +69,7 @@ impl LedgerEntry {
             run: None,
             bytes: None,
             batch: None,
+            from: None,
             other: Other::new(),
         }
     }
@@ -112,6 +116,14 @@ impl Ledger {
         let line = serde_json::to_string(entry).map_err(|e| e.to_string())?;
         let file = NotePath::new(format!("{}/{}.jsonl", self.folder(), month_of(entry.at)));
         self.vault.storage().append_line(&file, &line).map_err(|e| e.to_string())
+    }
+
+    /// The ledger files and when they last changed (to notice new entries
+    /// from other processes).
+    pub fn stamp(&self) -> Vec<(NotePath, Option<std::time::SystemTime>)> {
+        let mut files = self.vault.storage().list_under(&self.folder()).unwrap_or_default();
+        files.sort();
+        files.into_iter().map(|f| (f.clone(), self.vault.storage().modified(&f).ok())).collect()
     }
 
     /// Matching entries, oldest first. Unreadable lines and lines from a

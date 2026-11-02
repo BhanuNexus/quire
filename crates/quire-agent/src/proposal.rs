@@ -14,7 +14,7 @@ use base64::Engine as _;
 use quire_vault::{ContentHash, NotePath, Vault};
 use serde::{Deserialize, Serialize};
 
-use crate::actor::{Actor, Other, SourceRef};
+use crate::actor::{Actor, Other, SourceRef, Trust};
 use crate::change::WriteError;
 use crate::ids::{ProposalId, RunId};
 
@@ -50,6 +50,18 @@ pub enum HunkAction {
     Rejected,
     /// Accepted with the person's own text.
     Edited,
+}
+
+/// What became of one change of a proposal (absent while it waits).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeState {
+    Applied,
+    /// Some hunks accepted, some rejected.
+    PartiallyApplied,
+    Rejected,
+    /// The note was deleted, or the change no longer applies.
+    Superseded,
 }
 
 /// A decision on one hunk. Hunk ids depend only on content, so decisions
@@ -95,6 +107,12 @@ pub struct ProposalChange {
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub decisions: Vec<HunkDecision>,
+    /// Set once the change is decided; absent while it waits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<ChangeState>,
+    /// The hunks still waiting, for the text the last decision produced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<crate::review::ReviewCache>,
     #[serde(flatten)]
     pub other: Other,
 }
@@ -113,6 +131,8 @@ impl ProposalChange {
             new_text: None,
             text: None,
             decisions: Vec::new(),
+            state: None,
+            review: None,
             other: Other::new(),
         }
     }
@@ -172,6 +192,16 @@ impl ProposalChange {
         Some(out)
     }
 
+    /// A create of `path` that is still waiting.
+    pub fn is_pending_create_of(&self, path: &NotePath) -> bool {
+        self.state.is_none() && self.op == ChangeOp::Create && self.path.as_ref() == Some(path)
+    }
+
+    /// The path the change is about (the old path of a rename).
+    pub fn subject(&self) -> Option<&NotePath> {
+        self.path.as_ref().or(self.from.as_ref())
+    }
+
     /// Every path this change touches.
     pub fn paths(&self) -> Vec<NotePath> {
         [&self.path, &self.from, &self.to].into_iter().flatten().cloned().collect()
@@ -194,12 +224,50 @@ pub struct Proposal {
     pub rationale: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<SourceRef>,
+    /// `untrusted` when a source is untrusted content (design §A.3).
+    #[serde(default, skip_serializing_if = "is_trusted")]
+    pub trust: Trust,
+    /// The first untrusted source, for the "Based on untrusted content" chip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub untrusted_source: Option<String>,
     pub changes: Vec<ProposalChange>,
     #[serde(flatten)]
     pub other: Other,
 }
 
+#[expect(clippy::trivially_copy_pass_by_ref, reason = "serde's skip_serializing_if passes a reference")]
+fn is_trusted(t: &Trust) -> bool {
+    *t == Trust::Trusted
+}
+
 impl Proposal {
+    /// Changes still waiting for a decision.
+    pub fn pending_changes(&self) -> impl Iterator<Item = &ProposalChange> {
+        self.changes.iter().filter(|c| c.state.is_none())
+    }
+
+    /// The overall status once every change is decided (`None` while some wait).
+    pub fn settled_status(&self) -> Option<ProposalStatus> {
+        if self.changes.iter().any(|c| c.state.is_none()) {
+            return None;
+        }
+        let has = |s: ChangeState| self.changes.iter().any(|c| c.state == Some(s));
+        let all = |s: ChangeState| self.changes.iter().all(|c| c.state == Some(s));
+        Some(if self.changes.is_empty() || all(ChangeState::Rejected) {
+            ProposalStatus::Rejected
+        } else if all(ChangeState::Applied) {
+            ProposalStatus::Applied
+        } else if all(ChangeState::Superseded) {
+            ProposalStatus::Superseded
+        } else if has(ChangeState::Applied) || has(ChangeState::PartiallyApplied) {
+            ProposalStatus::PartiallyApplied
+        } else if has(ChangeState::Rejected) {
+            ProposalStatus::Rejected
+        } else {
+            ProposalStatus::Superseded
+        })
+    }
+
     pub fn summary(&self) -> ProposalSummary {
         ProposalSummary {
             id: self.id.clone(),
@@ -211,6 +279,8 @@ impl Proposal {
             created: self.created,
             updated: self.updated,
             decided_hunks: self.changes.iter().map(|c| c.decisions.len()).sum(),
+            pending_files: self.pending_changes().filter_map(ProposalChange::subject).cloned().collect(),
+            untrusted_source: self.untrusted_source.clone(),
         }
     }
 }
@@ -228,6 +298,12 @@ pub struct ProposalSummary {
     pub created: i64,
     pub updated: i64,
     pub decided_hunks: usize,
+    /// The files whose changes still wait for a decision.
+    #[serde(default)]
+    pub pending_files: Vec<NotePath>,
+    /// The first untrusted source, if the proposal is based on untrusted content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub untrusted_source: Option<String>,
 }
 
 /// Which proposals to list; empty fields match everything.
@@ -258,8 +334,12 @@ pub struct Hunk {
     pub id: String,
     /// 0-based line range in the current text that the hunk replaces.
     pub range_in_current: Range<u32>,
+    /// The current lines it replaces, each with its line ending.
     pub old_lines: Vec<String>,
+    /// The agent's lines.
     pub new_lines: Vec<String>,
+    /// What the agent read there (equal to `old_lines` unless `conflict`).
+    pub base_lines: Vec<String>,
     /// The person changed these lines after the agent read them.
     pub conflict: bool,
 }
@@ -279,6 +359,11 @@ pub struct Decided {
     pub status: ProposalStatus,
     /// Hunks still waiting for a decision.
     pub pending: usize,
+    /// Hunks accepted (or edited) and rejected by this decision.
+    pub accepted: usize,
+    pub rejected: usize,
+    /// The proposal's `updated` after the decision (to check the next one against).
+    pub updated: i64,
 }
 
 /// Proposal files on disk. Each file is written atomically; a file made by
@@ -333,15 +418,107 @@ impl ProposalStore {
         v
     }
 
+    /// Save `p` only if the file still has `updated == seen` (nobody else
+    /// decided in between). `Ok(false)` when it changed underneath.
+    pub fn save_if(&self, p: &Proposal, seen: i64) -> Result<bool, WriteError> {
+        match self.load(&p.id) {
+            Some(on_disk) if on_disk.updated != seen => Ok(false),
+            None if self.vault.storage().exists(&Self::file(&p.id)) => Err(WriteError::Io(format!("proposal {} can't be read", p.id))),
+            _ => self.save(p).map(|()| true),
+        }
+    }
+
+    fn archive_file(id: &ProposalId, updated: i64) -> NotePath {
+        let month = chrono::DateTime::from_timestamp_millis(updated).map_or_else(|| "1970-01".into(), |d| d.format("%Y-%m").to_string());
+        NotePath::new(format!("{PROPOSALS_DIR}/archive/{month}/{id}.json"))
+    }
+
     /// Move a resolved proposal to `archive/<yyyy-mm>/` (by its `updated` time).
     pub fn archive(&self, id: &ProposalId) -> Result<(), WriteError> {
         let Some(p) = self.load(id) else { return Err(WriteError::NotFound { path: Self::file(id) }) };
-        let month = chrono::DateTime::from_timestamp_millis(p.updated).map_or_else(|| "1970-01".into(), |d| d.format("%Y-%m").to_string());
-        let dest = NotePath::new(format!("{PROPOSALS_DIR}/archive/{month}/{id}.json"));
+        let dest = Self::archive_file(id, p.updated);
         let bytes = self.vault.storage().read_bytes(&Self::file(id))?;
         self.vault.storage().write_bytes_atomic(&dest, &bytes)?;
         self.vault.storage().remove(&Self::file(id))?;
         Ok(())
+    }
+
+    /// The archive's month folders that can hold anything: archived
+    /// proposals are deleted after 90 days, so the last 15 months is ample
+    /// (storage can list files, not folders).
+    fn archive_files(&self, now_ms: i64) -> Vec<NotePath> {
+        // A month ahead too, for clocks that disagree a little.
+        let now = chrono::DateTime::from_timestamp_millis(now_ms.saturating_add(31 * 86_400_000)).unwrap_or_default();
+        let mut out = Vec::new();
+        let (mut y, mut m) = (chrono::Datelike::year(&now), chrono::Datelike::month(&now));
+        for _ in 0..16 {
+            out.extend(self.vault.storage().list_under(&format!("{PROPOSALS_DIR}/archive/{y:04}-{m:02}")).unwrap_or_default());
+            if m == 1 {
+                (y, m) = (y - 1, 12);
+            } else {
+                m -= 1;
+            }
+        }
+        out
+    }
+
+    /// Archived proposals (readable ones), newest first. `now_ms` is the
+    /// current time.
+    pub fn archived(&self, now_ms: i64) -> Vec<Proposal> {
+        let mut v: Vec<Proposal> = self
+            .archive_files(now_ms)
+            .iter()
+            .filter_map(|f| {
+                let bytes = self.vault.storage().read_bytes(f).ok()?;
+                let p: Proposal = serde_json::from_slice(&bytes).ok()?;
+                (p.format <= PROPOSAL_FORMAT).then_some(p)
+            })
+            .collect();
+        v.sort_by_key(|p| std::cmp::Reverse((p.updated, p.created)));
+        v
+    }
+
+    /// Delete the archived copy of `p`.
+    pub fn remove_archived(&self, p: &Proposal) {
+        let _ = self.vault.storage().remove(&Self::archive_file(&p.id, p.updated));
+    }
+
+    /// Bring an archived proposal back as pending (an expired one, say).
+    pub fn restore(&self, id: &ProposalId, now: i64) -> Result<(), WriteError> {
+        let Some(mut p) = self.archived(now).into_iter().find(|p| &p.id == id) else {
+            return Err(WriteError::NotFound { path: Self::file(id) });
+        };
+        let old = Self::archive_file(id, p.updated);
+        p.status = ProposalStatus::Pending;
+        p.updated = now;
+        for c in &mut p.changes {
+            if c.state == Some(ChangeState::Superseded) {
+                c.state = None;
+            }
+        }
+        self.save(&p)?;
+        let _ = self.vault.storage().remove(&old);
+        Ok(())
+    }
+
+    /// Delete archived proposals last changed before `before` (Unix ms);
+    /// `now_ms` is the current time.
+    pub fn purge_archive(&self, before: i64, now_ms: i64) -> usize {
+        let mut n = 0;
+        for f in self.archive_files(now_ms) {
+            let old = self
+                .vault
+                .storage()
+                .read_bytes(&f)
+                .ok()
+                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+                .and_then(|v| Some((v.get("updated")?.as_i64()?, v.get("format")?.as_u64()?)))
+                .is_some_and(|(u, fmt)| u < before && fmt <= u64::from(PROPOSAL_FORMAT));
+            if old && self.vault.storage().remove(&f).is_ok() {
+                n += 1;
+            }
+        }
+        n
     }
 }
 
@@ -362,6 +539,8 @@ mod tests {
             title: "Add undo details".into(),
             rationale: "because".into(),
             sources: vec![SourceRef::uri("quire://note/raw/paper.md")],
+            trust: Trust::Trusted,
+            untrusted_source: None,
             changes: vec![
                 ProposalChange::edit(&"Rope Notes.md".into(), "# Rope\n", "# Rope\nUndo is cheap.\n"),
                 ProposalChange::create(&"wiki/Ropes.md".into(), "# Ropes\n"),

@@ -8,8 +8,11 @@
 //! agent instructions, skills and templates are suggestions only), then the
 //! client's grant (stdio without `--allow-write` reads only).
 //!
-//! Per-client overrides are parsed but not applied yet, and a policy file
-//! can only narrow the defaults until device approval lands (both WS-A).
+//! A client's entry in `[clients]` can cap its mode (`default`) and give it
+//! its own zones; a client that only reported its name (no Quire-assigned
+//! key) can be narrowed by its entry but never widened. A policy file changed
+//! outside Quire on this device only narrows what was approved before
+//! (`AgentStore` and [`crate::approval`]).
 
 use std::collections::BTreeMap;
 
@@ -76,6 +79,35 @@ pub enum Route {
 }
 
 impl Mode {
+    /// Every mode, from most to least restrictive.
+    pub const ALL: [Self; 5] = [Self::Deny, Self::Read, Self::Propose, Self::CreateOnly, Self::Direct];
+
+    /// The word used in the policy file.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Deny => "deny",
+            Self::Read => "read",
+            Self::Propose => "propose",
+            Self::CreateOnly => "create-only",
+            Self::Direct => "direct",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|m| m.as_str() == s)
+    }
+
+    /// Plain words for the UI: "suggest changes".
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::Deny => "not see it",
+            Self::Read => "only read",
+            Self::Propose => "suggest changes",
+            Self::CreateOnly => "add new notes",
+            Self::Direct => "write directly",
+        }
+    }
+
     pub const fn route(self, op: OpKind) -> Route {
         match (self, op) {
             (Self::Deny, _) => Route::Deny,
@@ -83,6 +115,39 @@ impl Mode {
             (Self::Read, _) => Route::Deny,
             (Self::Propose, _) => Route::Propose,
             (Self::CreateOnly, _) => Route::Immutable,
+        }
+    }
+}
+
+impl ZoneRole {
+    pub const ALL: [Self; 4] = [Self::Agent, Self::Raw, Self::Human, Self::Private];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Raw => "raw",
+            Self::Human => "human",
+            Self::Private => "private",
+        }
+    }
+
+    /// The UI's name for the role (Settings → Agents).
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Agent => "Agent-owned",
+            Self::Raw => "Sources (raw)",
+            Self::Human => "Your notes (suggestions only)",
+            Self::Private => "Private (hidden from agents)",
+        }
+    }
+
+    /// The mode a zone of this role gets unless the file says otherwise.
+    pub const fn default_mode(self) -> Mode {
+        match self {
+            Self::Agent => Mode::Direct,
+            Self::Raw => Mode::CreateOnly,
+            Self::Human => Mode::Propose,
+            Self::Private => Mode::Deny,
         }
     }
 }
@@ -222,6 +287,199 @@ impl Policy {
     pub fn zone_mode(&self, path: &str) -> Mode {
         self.zone_for(path).map_or(self.default, |z| z.mode)
     }
+
+    /// The zone role of `path` (`None`: the vault default, the person's notes).
+    pub fn role_of(&self, path: &str) -> Option<ZoneRole> {
+        self.zone_for(path).map(|z| z.role)
+    }
+
+    /// The modes that limit `client` on `path`, with where each comes from
+    /// (a zone's path, `default`, or `<key> (client)`). The most restrictive
+    /// one for the operation applies.
+    ///
+    /// A client entry's own zone wins over the vault's zone when it is at
+    /// least as specific; otherwise the vault's zone applies, capped by the
+    /// entry's `default`. For an `unverified` client (it only reported its
+    /// name) the entry can narrow but never widen.
+    pub fn modes_for(&self, client: Option<&str>, unverified: bool, path: &str) -> Vec<(Mode, String)> {
+        let vault_zone = self.zone_for(path);
+        let vault = vault_zone.map_or_else(|| (self.default, "default".to_string()), |z| (z.mode, z.path.clone()));
+        let Some((key, c)) = client.and_then(|k| self.clients.get_key_value(k)) else { return vec![vault] };
+        let client_zone = c.zones.iter().filter(|(p, _)| zone_matches(p, path)).max_by_key(|(p, _)| specificity(p));
+        let label = |what: &str| format!("{what} ({key})");
+        let mut out = Vec::new();
+        match client_zone {
+            Some((p, m)) if !unverified && vault_zone.is_none_or(|z| specificity(p) >= specificity(&z.path)) => {
+                out.push((*m, label(p)));
+            }
+            other => {
+                out.push(vault);
+                if let Some(d) = c.default {
+                    out.push((d, label("default")));
+                }
+                if let Some((p, m)) = other.filter(|_| unverified) {
+                    out.push((*m, label(p)));
+                }
+            }
+        }
+        out
+    }
+
+    /// One sentence for Settings → Agents: "Agents can write directly in
+    /// wiki/ and add new notes in raw/; elsewhere they can suggest changes."
+    pub fn sentence(&self) -> String {
+        let mut by_mode: Vec<(Mode, Vec<String>)> = Vec::new();
+        for z in &self.zones {
+            if z.mode == self.default {
+                continue;
+            }
+            match by_mode.iter_mut().find(|(m, _)| *m == z.mode) {
+                Some((_, v)) => v.push(z.path.clone()),
+                None => by_mode.push((z.mode, vec![z.path.clone()])),
+            }
+        }
+        by_mode.sort_by_key(|(m, _)| std::cmp::Reverse(rank(*m)));
+        let list = |v: &[String]| match v {
+            [one] => one.clone(),
+            [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+            [] => String::new(),
+        };
+        let parts: Vec<String> = by_mode
+            .iter()
+            .map(|(m, paths)| match m {
+                Mode::Deny => format!("can't see {}", list(paths)),
+                Mode::Read => format!("can only read {}", list(paths)),
+                Mode::Propose => format!("can only suggest changes in {}", list(paths)),
+                Mode::CreateOnly => format!("can add new notes to {} but not change them", list(paths)),
+                Mode::Direct => format!("can write directly in {}", list(paths)),
+            })
+            .collect();
+        let elsewhere = match self.default {
+            Mode::Deny => "they can't see anything else",
+            Mode::Read => "everything else they can only read",
+            Mode::Propose => "everywhere else they can only suggest changes",
+            Mode::CreateOnly => "everywhere else they can add notes but not change them",
+            Mode::Direct => "everywhere else they write directly",
+        };
+        if parts.is_empty() {
+            return match self.default {
+                Mode::Deny => "Agents can't see any notes.",
+                Mode::Read => "Agents can only read notes.",
+                Mode::Propose => "Agents can only suggest changes, everywhere.",
+                Mode::CreateOnly => "Agents can add new notes but not change any.",
+                Mode::Direct => "Agents can write directly everywhere.",
+            }
+            .to_string();
+        }
+        format!("Agents {}; {elsewhere}.", parts.join("; "))
+    }
+}
+
+/// Restrictiveness order of modes, least first.
+pub const fn rank(m: Mode) -> u8 {
+    match m {
+        Mode::Deny => 0,
+        Mode::Read => 1,
+        Mode::Propose => 2,
+        Mode::CreateOnly => 3,
+        Mode::Direct => 4,
+    }
+}
+
+/// The most restrictive of `modes` for `op`; at equal outcome the narrower
+/// mode is reported (a read-only grant reads as `read`).
+pub fn strictest(modes: impl IntoIterator<Item = (Mode, String)>, op: OpKind) -> (Mode, String) {
+    modes.into_iter().min_by_key(|(m, _)| (m.route(op), rank(*m))).unwrap_or((Mode::Deny, String::new()))
+}
+
+/// A way `new` gives agents more than `old`, in words.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Widening {
+    pub what: String,
+}
+
+/// A path inside what `pattern` covers, for comparing policies.
+fn probe_path(pattern: &str) -> String {
+    let p = pattern.trim_start_matches("./");
+    let p = p.replace("**", "a").replace(['*', '?'], "x");
+    let is_note = std::path::Path::new(&p).extension().is_some_and(|e| e.eq_ignore_ascii_case("md"));
+    if p.ends_with('/') {
+        format!("{p}x.md")
+    } else if is_note {
+        p
+    } else {
+        format!("{p}/x.md")
+    }
+}
+
+/// Every way `new` lets an agent (any client) do more than `old`: modes per
+/// zone and operation, limits, and approval in the agent's app.
+pub fn widenings(old: &Policy, new: &Policy) -> Vec<Widening> {
+    let mut paths: Vec<String> = vec!["Note.md".into()];
+    for z in old.zones.iter().chain(&new.zones) {
+        paths.push(probe_path(&z.path));
+    }
+    let mut clients: Vec<Option<&str>> = vec![None];
+    for (k, c) in old.clients.iter().chain(&new.clients) {
+        clients.push(Some(k.as_str()));
+        paths.extend(c.zones.keys().map(|p| probe_path(p)));
+    }
+    paths.sort();
+    paths.dedup();
+    clients.dedup();
+    let mut out: Vec<Widening> = Vec::new();
+    let ops = [OpKind::Read, OpKind::Create, OpKind::Edit, OpKind::Delete];
+    for client in &clients {
+        for path in &paths {
+            let o = ops.iter().map(|op| strictest(old.modes_for(*client, false, path), *op)).collect::<Vec<_>>();
+            let n = ops.iter().map(|op| strictest(new.modes_for(*client, false, path), *op)).collect::<Vec<_>>();
+            let wider = ops.iter().zip(o.iter().zip(&n)).any(|(op, (a, b))| b.0.route(*op) > a.0.route(*op));
+            if wider {
+                let who = client.map_or_else(|| "Agents".to_string(), |k| format!("Agent {k}"));
+                let place =
+                    if path == "Note.md" { "notes outside any zone".to_string() } else { path.trim_end_matches("x.md").to_string() };
+                let (was, now) = (o.iter().map(|x| x.0).min_by_key(|m| rank(*m)), n.iter().map(|x| x.0).min_by_key(|m| rank(*m)));
+                let (was, now) = (was.map_or(Mode::Deny, |m| m), now.map_or(Mode::Deny, |m| m));
+                let what = format!("{who} could {} in {place} (before: {})", now.describe(), was.describe());
+                if !out.iter().any(|w| w.what == what) {
+                    out.push(Widening { what });
+                }
+            }
+        }
+    }
+    let (ol, nl) = (&old.limits, &new.limits);
+    for (name, a, b) in [
+        ("writes per minute", u64::from(ol.writes_per_minute), u64::from(nl.writes_per_minute)),
+        ("bytes per write", ol.max_write_bytes, nl.max_write_bytes),
+        ("files per change", u64::from(ol.max_files_per_change), u64::from(nl.max_files_per_change)),
+        ("waiting suggestions per agent", u64::from(ol.max_pending_per_client), u64::from(nl.max_pending_per_client)),
+    ] {
+        if b > a {
+            out.push(Widening { what: format!("The limit on {name} went up from {a} to {b}") });
+        }
+    }
+    for (k, c) in &new.clients {
+        if c.approve_in_client && !old.clients.get(k).is_some_and(|o| o.approve_in_client) {
+            out.push(Widening { what: format!("Agent {k} could apply changes after approval in its own app") });
+        }
+    }
+    out
+}
+
+/// The stricter of two policies' limits.
+pub fn stricter_limits(a: &Limits, b: &Limits) -> Limits {
+    Limits {
+        writes_per_minute: a.writes_per_minute.min(b.writes_per_minute),
+        max_write_bytes: a.max_write_bytes.min(b.max_write_bytes),
+        max_files_per_change: a.max_files_per_change.min(b.max_files_per_change),
+        max_pending_per_client: a.max_pending_per_client.min(b.max_pending_per_client),
+        other: a.other.clone(),
+    }
+}
+
+/// Whether `path` is inside the zone (or contract folder) `pattern`.
+pub fn path_in_zone(pattern: &str, path: &str) -> bool {
+    zone_matches(pattern, path)
 }
 
 const fn is_glob(c: char) -> bool {
@@ -325,6 +583,68 @@ required = ["type"]
         assert_eq!(p.contracts.len(), 1);
         assert!(Policy::parse("default = \"sometimes\"").is_err());
         assert!(Policy::parse("format = 2").unwrap().is_newer());
+    }
+
+    #[test]
+    fn client_entries_cap_and_add_zones() {
+        let p = Policy::parse(
+            r#"
+default = "propose"
+[[zone]]
+path = "wiki/"
+role = "agent"
+mode = "direct"
+[[zone]]
+path = "Private/"
+role = "private"
+mode = "deny"
+[clients."mcp:reader"]
+default = "read"
+[clients."mcp:claude-code"]
+default = "propose"
+zones = { "wiki/" = "direct", "notes/" = "direct" }
+"#,
+        )
+        .unwrap();
+        let m = |c: Option<&str>, unverified: bool, path: &str, op: OpKind| strictest(p.modes_for(c, unverified, path), op).0;
+        assert_eq!(m(Some("mcp:reader"), false, "wiki/a.md", OpKind::Edit), Mode::Read, "a client default caps zones");
+        assert_eq!(m(Some("mcp:reader"), false, "Private/a.md", OpKind::Read), Mode::Deny);
+        assert_eq!(m(Some("mcp:claude-code"), false, "notes/a.md", OpKind::Edit), Mode::Direct, "its own zone");
+        assert_eq!(m(Some("mcp:claude-code"), false, "Other.md", OpKind::Edit), Mode::Propose);
+        assert_eq!(m(Some("mcp:claude-code"), true, "notes/a.md", OpKind::Edit), Mode::Propose, "unverified: no widening");
+        assert_eq!(m(Some("mcp:reader"), true, "wiki/a.md", OpKind::Edit), Mode::Read, "unverified: narrowing still applies");
+        assert_eq!(m(None, false, "wiki/a.md", OpKind::Edit), Mode::Direct);
+    }
+
+    #[test]
+    fn widening_is_found_and_narrowing_is_not() {
+        let d = Policy::default();
+        let mut narrower = Policy::default();
+        narrower.zones[0].mode = Mode::Read;
+        narrower.limits.writes_per_minute = 5;
+        assert!(widenings(&d, &narrower).is_empty());
+        let wider = Policy { default: Mode::Direct, ..Policy::default() };
+        let w = widenings(&d, &wider);
+        assert!(w.iter().any(|w| w.what.contains("notes outside any zone") && w.what.contains("write directly")), "{w:?}");
+        let mut client = Policy::default();
+        client.clients.insert("mcp:x".into(), ClientPolicy { zones: [("raw/".into(), Mode::Direct)].into(), ..Default::default() });
+        assert!(widenings(&d, &client).iter().any(|w| w.what.starts_with("Agent mcp:x could write directly in raw/")));
+        let mut limits = Policy::default();
+        limits.limits.max_write_bytes = 10_000_000;
+        assert_eq!(widenings(&d, &limits).len(), 1);
+    }
+
+    #[test]
+    fn sentences() {
+        assert_eq!(
+            Policy::default().sentence(),
+            "Agents can write directly in wiki/; can add new notes to raw/ but not change them; everywhere else they can only suggest changes."
+        );
+        let mut p = Policy::default();
+        p.zones.push(Zone { path: "Private/".into(), role: ZoneRole::Private, mode: Mode::Deny, other: toml::Table::new() });
+        assert!(p.sentence().contains("can't see Private/"));
+        let bare = Policy { zones: Vec::new(), ..Policy::default() };
+        assert_eq!(bare.sentence(), "Agents can only suggest changes, everywhere.");
     }
 
     #[test]
