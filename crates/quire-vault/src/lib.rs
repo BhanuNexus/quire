@@ -11,7 +11,7 @@ mod note;
 pub mod prefs;
 mod refactor;
 mod storage;
-mod templates;
+pub mod templates;
 mod vault;
 mod watch;
 

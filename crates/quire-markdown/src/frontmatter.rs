@@ -1,12 +1,19 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! A deliberately small YAML-subset front-matter reader.
+//! A deliberately small YAML-subset front-matter reader and writer.
 //!
 //! Supports what note apps actually write: `key: value`, quoted strings,
-//! inline lists `key: [a, b]`, and block lists (`key:` then `- item` lines).
-//! Anything fancier is kept as a raw string rather than rejected.
+//! inline lists `key: [a, b]` and maps `key: {a: 1}`, block lists (`key:`
+//! then `- item` lines), nested maps (`author:` then indented `name: Ada`)
+//! and block scalars (`key: |`). Lists of maps and other shapes are kept as
+//! their raw text (shown read-only) rather than rejected.
+//!
+//! Writers change only the lines of the field they touch:
+//! [`set_field_path`], [`remove_field_path`], [`rename_field_path`] and
+//! [`edit_list_items`] leave every other byte of the note as it was.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::ops::Range;
 
 /// A front-matter value. In JSON (agent change sets, view queries) it is a
@@ -16,8 +23,7 @@ use std::ops::Range;
 pub enum Value {
     Str(String),
     List(Vec<String>),
-    /// A nested map (`author:` then indented `name: Ada`). The parser doesn't
-    /// produce it yet (nested blocks are skipped); writers and views accept it.
+    /// A nested map (`author:` then indented `name: Ada`, or `{name: Ada}`).
     Map(BTreeMap<String, Self>),
 }
 
@@ -53,6 +59,26 @@ impl Value {
             Some((head, rest)) => self.as_map()?.get(*head)?.at_path(rest),
         }
     }
+
+    /// Every leaf under this value with its dotted path relative to it
+    /// (`("name", "Ada")`); a non-map is one leaf with an empty path.
+    pub fn leaves(&self) -> Vec<(String, &Self)> {
+        let mut out = Vec::new();
+        walk_leaves("", self, &mut out);
+        out
+    }
+}
+
+fn walk_leaves<'a>(prefix: &str, v: &'a Value, out: &mut Vec<(String, &'a Value)>) {
+    match v {
+        Value::Map(m) if !m.is_empty() => {
+            for (k, child) in m {
+                let p = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
+                walk_leaves(&p, child, out);
+            }
+        }
+        _ => out.push((prefix.to_string(), v)),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -65,6 +91,16 @@ pub struct FrontMatter {
 impl FrontMatter {
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.fields.get(key)
+    }
+
+    /// A value by dotted path: `get_path("author.name")`.
+    pub fn get_path(&self, dotted: &str) -> Option<&Value> {
+        if let Some(v) = self.fields.get(dotted) {
+            return Some(v);
+        }
+        let parts: Vec<&str> = dotted.split('.').collect();
+        let (head, rest) = parts.split_first()?;
+        self.fields.get(*head)?.at_path(rest)
     }
 
     pub fn title(&self) -> Option<&str> {
@@ -97,65 +133,317 @@ fn unquote(s: &str) -> String {
     }
 }
 
-/// Parse front matter at the very start of `src`, if present.
-pub fn parse(src: &str) -> Option<FrontMatter> {
-    let body_start = if src.starts_with("---\n") {
-        4
+// ------------------------------------------------------------------ reader
+
+/// One line of the front-matter body.
+#[derive(Debug, Clone, Copy)]
+struct Line<'a> {
+    /// Byte offset of the line in the source.
+    start: usize,
+    /// Byte offset just after the line, its newline included.
+    end: usize,
+    /// Leading spaces (and tabs, which YAML forbids but people type).
+    indent: usize,
+    /// The line without indentation, trailing whitespace or newline.
+    text: &'a str,
+    /// The line without its newline.
+    full: &'a str,
+}
+
+impl Line<'_> {
+    fn is_blank_or_comment(&self) -> bool {
+        self.text.is_empty() || self.text.starts_with('#')
+    }
+
+    fn is_item(&self) -> bool {
+        self.text == "-" || self.text.starts_with("- ")
+    }
+
+    fn item_text(&self) -> &str {
+        self.text.strip_prefix('-').unwrap_or(self.text).trim()
+    }
+}
+
+/// How a field is written, so writers can keep its style.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    /// `key: value`
+    Scalar,
+    /// `key: [a, b]`
+    FlowList,
+    /// `key: {a: 1}`
+    FlowMap,
+    /// `key:` then `- a` lines
+    BlockList,
+    /// `key:` then indented `k: v` lines
+    BlockMap,
+    /// `key: |` then text
+    BlockScalar,
+    /// A list of maps or deeper nesting, kept as text
+    Raw,
+    /// `key:` with nothing under it
+    Empty,
+}
+
+#[derive(Debug, Clone)]
+struct Entry {
+    key: String,
+    /// Index of the key's line.
+    line: usize,
+    /// One past the last line that belongs to the field.
+    end: usize,
+    indent: usize,
+    value: Value,
+    shape: Shape,
+    /// The fields of a block map.
+    children: Vec<Self>,
+}
+
+/// The parsed block with positions, for writers.
+#[derive(Debug)]
+struct Doc<'a> {
+    lines: Vec<Line<'a>>,
+    entries: Vec<Entry>,
+    /// Byte offset of the closing fence line.
+    close: usize,
+    /// End of the block (after the closing fence and its newline).
+    block_end: usize,
+    nl: &'static str,
+    /// Indentation step of nested maps (2 unless the file says otherwise).
+    unit: usize,
+}
+
+/// Split `key: value`. `strict` requires `: ` or a trailing `:` (YAML);
+/// otherwise a bare `key:value` also counts, as Quire has always read it.
+fn split_key(text: &str, strict: bool) -> Option<(String, &str)> {
+    if let Some(q) = text.chars().next().filter(|c| *c == '"' || *c == '\'') {
+        let close = text[1..].find(q)? + 1;
+        let rest = text[close + 1..].trim_start();
+        let val = rest.strip_prefix(':')?;
+        return Some((unquote(&text[..=close]), val.trim()));
+    }
+    let at =
+        text.find(": ").or_else(|| text.ends_with(':').then(|| text.len() - 1)).or_else(|| if strict { None } else { text.find(':') })?;
+    let key = text[..at].trim();
+    if key.is_empty() {
+        return None;
+    }
+    Some((key.to_string(), text[at + 1..].trim()))
+}
+
+/// Split a flow collection's inside at top-level commas, respecting quotes
+/// and nested brackets. Returns trimmed parts with their byte ranges in `s`.
+fn split_flow(s: &str) -> Vec<(Range<usize>, &str)> {
+    fn push<'a>(s: &'a str, a: usize, b: usize, out: &mut Vec<(Range<usize>, &'a str)>) {
+        let part = &s[a..b];
+        let lead = part.len() - part.trim_start().len();
+        let t = part.trim();
+        if !t.is_empty() {
+            out.push((a + lead..a + lead + t.len(), t));
+        }
+    }
+    let mut out = Vec::new();
+    let (mut depth, mut quote, mut start) = (0i32, None::<char>, 0);
+    for (i, c) in s.char_indices() {
+        match c {
+            '"' | '\'' if quote == Some(c) => quote = None,
+            '"' | '\'' if quote.is_none() => quote = Some(c),
+            '[' | '{' if quote.is_none() => depth += 1,
+            ']' | '}' if quote.is_none() => depth -= 1,
+            ',' if quote.is_none() && depth == 0 => {
+                push(s, start, i, &mut out);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    push(s, start, s.len(), &mut out);
+    out
+}
+
+/// A value written on one line.
+fn parse_inline(v: &str) -> (Value, Shape) {
+    let v = v.trim();
+    if v.len() >= 2 && v.starts_with('[') && v.ends_with(']') {
+        let items = split_flow(&v[1..v.len() - 1]).into_iter().map(|(_, s)| unquote(s)).filter(|s| !s.is_empty()).collect();
+        return (Value::List(items), Shape::FlowList);
+    }
+    if v.len() >= 2 && v.starts_with('{') && v.ends_with('}') {
+        let mut m = BTreeMap::new();
+        for (_, part) in split_flow(&v[1..v.len() - 1]) {
+            match split_key(part, false) {
+                Some((k, val)) => {
+                    m.insert(k, parse_inline(val).0);
+                }
+                None => {
+                    m.insert(unquote(part), Value::Str(String::new()));
+                }
+            }
+        }
+        return (Value::Map(m), Shape::FlowMap);
+    }
+    (Value::Str(unquote(v)), Shape::Scalar)
+}
+
+fn next_content(lines: &[Line<'_>], mut i: usize) -> Option<usize> {
+    while i < lines.len() {
+        if !lines[i].is_blank_or_comment() {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// A block list starting at `j`: plain items give a list; maps or nesting
+/// keep the block's text. Returns the value, its shape and the end line.
+fn parse_seq(lines: &[Line<'_>], j: usize) -> (Value, Shape, usize) {
+    let item_indent = lines[j].indent;
+    let (mut items, mut complex, mut k, mut last) = (Vec::new(), false, j, j);
+    while k < lines.len() {
+        let l = &lines[k];
+        if l.is_blank_or_comment() {
+            k += 1;
+            continue;
+        }
+        if l.indent < item_indent || (l.indent == item_indent && !l.is_item()) {
+            break;
+        }
+        if l.indent == item_indent {
+            let t = l.item_text();
+            let quoted = t.starts_with(['"', '\'']);
+            if !quoted && (split_key(t, true).is_some() || t.starts_with(['[', '{', '|', '>', '-'])) {
+                complex = true;
+            }
+            items.push(unquote(t));
+        } else {
+            complex = true;
+        }
+        last = k;
+        k += 1;
+    }
+    if complex {
+        let raw: Vec<&str> = lines[j..=last].iter().map(|l| l.full).collect();
+        (Value::Str(raw.join("\n")), Shape::Raw, last + 1)
+    } else {
+        (Value::List(items), Shape::BlockList, last + 1)
+    }
+}
+
+/// The fields at `indent` starting at line `i`. Returns them and the line
+/// where the block ended.
+fn parse_entries(lines: &[Line<'_>], mut i: usize, indent: usize) -> (Vec<Entry>, usize) {
+    let mut out = Vec::new();
+    while i < lines.len() {
+        let l = &lines[i];
+        if l.is_blank_or_comment() {
+            i += 1;
+            continue;
+        }
+        if l.indent < indent {
+            break;
+        }
+        let split = (l.indent == indent && !l.is_item()).then(|| split_key(l.text, false)).flatten();
+        let Some((key, val)) = split else {
+            // A stray deeper line or an item without a key: belongs to the field above.
+            if let Some(prev) = out.last_mut() {
+                let prev: &mut Entry = prev;
+                prev.end = i + 1;
+            }
+            i += 1;
+            continue;
+        };
+        let mut e =
+            Entry { key, line: i, end: i + 1, indent, value: Value::Str(String::new()), shape: Shape::Scalar, children: Vec::new() };
+        let block_scalar = matches!(val.trim_end_matches(|c: char| c.is_ascii_digit()), "|" | "|-" | "|+" | ">" | ">-" | ">+");
+        if block_scalar {
+            let (mut j, mut last) = (i + 1, i);
+            while j < lines.len() && (lines[j].text.is_empty() || lines[j].indent > indent) {
+                if !lines[j].text.is_empty() {
+                    last = j;
+                }
+                j += 1;
+            }
+            let body = &lines[i + 1..=last.max(i)];
+            let body = if last > i { body } else { &[] };
+            let min = body.iter().filter(|l| !l.text.is_empty()).map(|l| l.indent).min().unwrap_or(0);
+            let parts: Vec<&str> =
+                body.iter().map(|l| if l.text.is_empty() { "" } else { l.full.get(min..).unwrap_or("").trim_end() }).collect();
+            let joined = if val.starts_with('>') { parts.join(" ") } else { parts.join("\n") };
+            e.value = Value::Str(joined.trim_end().to_string());
+            e.shape = Shape::BlockScalar;
+            e.end = last + 1;
+            i = last + 1;
+        } else if !val.is_empty() {
+            (e.value, e.shape) = parse_inline(val);
+            i += 1;
+        } else {
+            match next_content(lines, i + 1) {
+                Some(j) if lines[j].is_item() && lines[j].indent >= indent => {
+                    let (v, shape, end) = parse_seq(lines, j);
+                    (e.value, e.shape, e.end) = (v, shape, end);
+                    i = end;
+                }
+                Some(j) if lines[j].indent > indent => {
+                    let (children, next) = parse_entries(lines, j, lines[j].indent);
+                    e.end = children.iter().map(|c| c.end).max().unwrap_or(j + 1);
+                    let mut m = BTreeMap::new();
+                    for c in &children {
+                        m.insert(c.key.clone(), c.value.clone());
+                    }
+                    e.value = Value::Map(m);
+                    e.shape = Shape::BlockMap;
+                    e.children = children;
+                    i = next.max(e.end);
+                }
+                _ => {
+                    e.value = Value::List(Vec::new());
+                    e.shape = Shape::Empty;
+                    i += 1;
+                }
+            }
+        }
+        out.push(e);
+    }
+    (out, i)
+}
+
+fn parse_doc(src: &str) -> Option<Doc<'_>> {
+    let (body_start, nl) = if src.starts_with("---\n") {
+        (4, "\n")
     } else if src.starts_with("---\r\n") {
-        5
+        (5, "\r\n")
     } else {
         return None;
     };
     let mut pos = body_start;
-    let mut end = None;
-    for line in src[body_start..].split_inclusive('\n') {
-        let t = line.trim_end();
+    let mut lines = Vec::new();
+    let mut close = None;
+    for raw in src[body_start..].split_inclusive('\n') {
+        let full = raw.trim_end_matches(['\n', '\r']);
+        let t = full.trim_end();
         if t == "---" || t == "..." {
-            end = Some((pos, pos + line.len()));
+            close = Some((pos, pos + raw.len()));
             break;
         }
-        pos += line.len();
+        let indent = full.len() - full.trim_start_matches([' ', '\t']).len();
+        lines.push(Line { start: pos, end: pos + raw.len(), indent, text: t.trim_start(), full });
+        pos += raw.len();
     }
-    let (body_end, block_end) = end?;
-    let body = &src[body_start..body_end];
+    let (close, block_end) = close?;
+    let (entries, _) = parse_entries(&lines, 0, 0);
+    let unit = entries.iter().find_map(|e| e.children.first().map(|c| c.indent - e.indent)).filter(|u| *u > 0).unwrap_or(2);
+    Some(Doc { lines, entries, close, block_end, nl, unit })
+}
 
+/// Parse front matter at the very start of `src`, if present.
+pub fn parse(src: &str) -> Option<FrontMatter> {
+    let doc = parse_doc(src)?;
     let mut fields = BTreeMap::new();
-    let mut pending_list: Option<(String, Vec<String>)> = None;
-    for line in body.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        if let Some(item) = trimmed.strip_prefix("- ")
-            && let Some((_, items)) = pending_list.as_mut()
-        {
-            items.push(unquote(item));
-            continue;
-        }
-        if let Some((k, items)) = pending_list.take() {
-            fields.insert(k, Value::List(items));
-        }
-        let Some((key, val)) = line.split_once(':') else {
-            continue;
-        };
-        if line.starts_with([' ', '\t']) {
-            continue; // nested maps are out of scope
-        }
-        let key = key.trim().to_string();
-        let val = val.trim();
-        if val.is_empty() {
-            pending_list = Some((key, Vec::new()));
-        } else if val.starts_with('[') && val.ends_with(']') {
-            let items = val[1..val.len() - 1].split(',').map(unquote).filter(|s| !s.is_empty()).collect();
-            fields.insert(key, Value::List(items));
-        } else {
-            fields.insert(key, Value::Str(unquote(val)));
-        }
+    for e in doc.entries {
+        fields.insert(e.key, e.value);
     }
-    if let Some((k, items)) = pending_list {
-        fields.insert(k, Value::List(items));
-    }
-    Some(FrontMatter { fields, range: 0..block_end })
+    Some(FrontMatter { fields, range: 0..doc.block_end })
 }
 
 // ------------------------------------------------------------------ writer
@@ -175,6 +463,8 @@ pub enum Kind {
     Bool,
     List,
     Text,
+    /// Nested fields (`author.name`).
+    Map,
 }
 
 impl Value {
@@ -182,8 +472,7 @@ impl Value {
         match self {
             Self::List(_) => Kind::List,
             Self::Str(s) => kind_of(s),
-            // Shown as text (its flow form) until the properties panel has a tree.
-            Self::Map(_) => Kind::Text,
+            Self::Map(_) => Kind::Map,
         }
     }
 
@@ -255,81 +544,379 @@ pub fn format_field(key: &str, value: &Value) -> String {
     }
 }
 
+/// A field at `indent` with nested maps in block form.
+fn format_entry(key: &str, value: &Value, indent: usize, unit: usize, nl: &str) -> String {
+    let pad = " ".repeat(indent);
+    let key = yaml_scalar(key);
+    match value {
+        Value::Map(m) if !m.is_empty() => {
+            let mut s = format!("{pad}{key}:{nl}");
+            for (k, v) in m {
+                s.push_str(&format_entry(k, v, indent + unit, unit, nl));
+            }
+            s
+        }
+        _ => format!("{pad}{}{nl}", format_field(&key, value).trim_end_matches('\n')),
+    }
+}
+
+/// `a:` / `  b:` / `    c: value` for a path that doesn't exist yet.
+fn format_chain(path: &[&str], value: &Value, indent: usize, unit: usize, nl: &str) -> String {
+    match path {
+        [] => String::new(),
+        [leaf] => format_entry(leaf, value, indent, unit, nl),
+        [head, rest @ ..] => {
+            format!("{}{}:{nl}{}", " ".repeat(indent), yaml_scalar(head), format_chain(rest, value, indent + unit, unit, nl))
+        }
+    }
+}
+
 /// List items for a flow list, quoting any that contain a comma.
 fn flow_items(items: &[String]) -> String {
-    let quoted: Vec<String> = items
-        .iter()
-        .map(|i| {
-            let q = yaml_scalar(i);
-            if q.contains(',') && !q.starts_with('"') { format!("\"{q}\"") } else { q }
-        })
-        .collect();
-    quoted.join(", ")
+    items.iter().map(|i| flow_item(i)).collect::<Vec<_>>().join(", ")
 }
 
-/// Byte range of a top-level field's line(s), including block-list items.
-fn field_lines(src: &str, fm: &FrontMatter, key: &str) -> Option<Range<usize>> {
-    let body_start = if src.starts_with("---\r\n") { 5 } else { 4 };
-    let mut pos = body_start;
-    let mut found: Option<Range<usize>> = None;
-    for line in src[body_start..fm.range.end].split_inclusive('\n') {
-        let t = line.trim_end();
-        if t == "---" || t == "..." {
-            break;
-        }
-        match &mut found {
-            Some(r) => {
-                let cont = line.starts_with([' ', '\t']) || t.trim_start().starts_with("- ");
-                if cont && !t.is_empty() {
-                    r.end = pos + line.len();
-                } else {
-                    break;
-                }
+fn flow_item(i: &str) -> String {
+    let q = yaml_scalar(i);
+    if (q.contains(',') || q.contains(['[', ']', '{', '}'])) && !q.starts_with('"') { format!("\"{q}\"") } else { q }
+}
+
+/// Bytes of an entry's lines.
+fn entry_range(doc: &Doc<'_>, e: &Entry) -> Range<usize> {
+    doc.lines[e.line].start..doc.lines[e.end - 1].end
+}
+
+/// Follow `path` down the block. Returns the entries on the way (the last is the leaf).
+fn find_path<'d>(doc: &'d Doc<'_>, path: &[&str]) -> Option<Vec<&'d Entry>> {
+    let mut entries = &doc.entries;
+    let mut chain = Vec::new();
+    for (depth, key) in path.iter().enumerate() {
+        let e = entries.iter().rev().find(|e| e.key == *key)?;
+        chain.push(e);
+        if depth + 1 < path.len() {
+            if e.shape != Shape::BlockMap {
+                return None;
             }
-            None => {
-                if !line.starts_with([' ', '\t'])
-                    && let Some((k, _)) = line.split_once(':')
-                    && k.trim() == key
-                {
-                    found = Some(pos..pos + line.len());
-                }
-            }
+            entries = &e.children;
         }
-        pos += line.len();
     }
-    found
+    Some(chain)
 }
 
-/// Set (add or replace) a field, preserving everything else in the block.
+/// Replace `range` with `text`, keeping a missing final newline missing.
+fn replace_lines(src: &str, range: Range<usize>, text: String, nl: &str) -> Edit {
+    let text = if src[range.clone()].ends_with('\n') { text } else { text.trim_end_matches(nl).to_string() };
+    Edit { range, text }
+}
+
+/// Set (add or replace) a top-level field, preserving everything else in the block.
 pub fn set_field(src: &str, key: &str, value: &Value) -> Edit {
     let key = key.trim();
-    let line = format_field(key, value);
-    match parse(src) {
-        None => Edit { range: 0..0, text: format!("---\n{line}---\n") },
-        Some(fm) => {
-            if let Some(r) = field_lines(src, &fm, key) {
-                // Keep the file's line ending for the last replaced line.
-                let text = if src[r.clone()].ends_with('\n') { line } else { line.trim_end_matches('\n').to_string() };
-                Edit { range: r, text }
-            } else {
-                // Insert before the closing fence.
-                let close = src[..fm.range.end].trim_end_matches(['\n', '\r']);
-                let fence_start = close.rfind('\n').map_or(0, |i| i + 1);
-                Edit { range: fence_start..fence_start, text: line }
+    match parse_doc(src) {
+        None => Edit { range: 0..0, text: format!("---\n{}---\n", format_field(key, value)) },
+        Some(doc) => match doc.entries.iter().rev().find(|e| e.key == key) {
+            Some(e) => {
+                let line = format_field(key, value).replace('\n', doc.nl);
+                replace_lines(src, entry_range(&doc, e), line, doc.nl)
+            }
+            None => Edit { range: doc.close..doc.close, text: format_field(key, value).replace('\n', doc.nl) },
+        },
+    }
+}
+
+/// Insert `key: value` into a map in place.
+fn set_in_map(m: &mut BTreeMap<String, Value>, path: &[&str], value: Value) {
+    match path {
+        [] => {}
+        [leaf] => {
+            m.insert((*leaf).to_string(), value);
+        }
+        [head, rest @ ..] => {
+            let child = m.entry((*head).to_string()).or_insert_with(|| Value::Map(BTreeMap::new()));
+            if !matches!(child, Value::Map(_)) {
+                *child = Value::Map(BTreeMap::new());
+            }
+            if let Value::Map(cm) = child {
+                set_in_map(cm, rest, value);
             }
         }
     }
 }
 
-/// Remove a field; `None` when it isn't there. Removing the last field
-/// removes the whole block.
-pub fn remove_field(src: &str, key: &str) -> Option<Edit> {
-    let fm = parse(src)?;
-    let r = field_lines(src, &fm, key.trim())?;
-    if fm.fields.len() == 1 && fm.fields.contains_key(key.trim()) {
-        return Some(Edit { range: fm.range, text: String::new() });
+/// Set a field at a path (`["author", "name"]`), creating missing parents.
+/// Only the leaf's line or lines change (or, when a parent is written
+/// inline as `{…}`, that parent's line); every other byte stays.
+pub fn set_field_path(src: &str, path: &[&str], value: &Value) -> Edit {
+    if path.len() <= 1 {
+        return set_field(src, path.first().copied().unwrap_or_default(), value);
     }
-    Some(Edit { range: r, text: String::new() })
+    let Some(doc) = parse_doc(src) else {
+        return Edit { range: 0..0, text: format!("---\n{}---\n", format_chain(path, value, 0, 2, "\n")) };
+    };
+    let (nl, unit) = (doc.nl, doc.unit);
+    let mut entries = &doc.entries;
+    let (mut insert_at, mut indent) = (doc.close, 0);
+    for (depth, key) in path.iter().enumerate() {
+        let last = depth + 1 == path.len();
+        let Some(e) = entries.iter().rev().find(|e| e.key == *key) else {
+            return Edit { range: insert_at..insert_at, text: format_chain(&path[depth..], value, indent, unit, nl) };
+        };
+        if last {
+            return replace_lines(src, entry_range(&doc, e), format_entry(key, value, e.indent, unit, nl), nl);
+        }
+        if e.shape == Shape::BlockMap {
+            indent = e.children.first().map_or(e.indent + unit, |c| c.indent);
+            insert_at = doc.lines[e.end - 1].end;
+            entries = &e.children;
+            continue;
+        }
+        // The parent is written inline or isn't a map yet: rewrite it whole.
+        let mut merged = match &e.value {
+            Value::Map(m) => m.clone(),
+            _ => BTreeMap::new(),
+        };
+        set_in_map(&mut merged, &path[depth + 1..], value.clone());
+        let merged = Value::Map(merged);
+        let text = if e.shape == Shape::FlowMap {
+            format!("{}{}: {}{nl}", " ".repeat(e.indent), yaml_scalar(key), merged.flow())
+        } else {
+            format_entry(key, &merged, e.indent, unit, nl)
+        };
+        return replace_lines(src, entry_range(&doc, e), text, nl);
+    }
+    Edit { range: insert_at..insert_at, text: String::new() }
+}
+
+/// Remove a top-level field; `None` when it isn't there. Removing the last
+/// field removes the whole block.
+pub fn remove_field(src: &str, key: &str) -> Option<Edit> {
+    remove_field_path(src, &[key.trim()])
+}
+
+/// Remove a field at a path; `None` when it isn't there. A nested map left
+/// empty is written `key: {}`; removing the last top-level field removes the
+/// whole block.
+pub fn remove_field_path(src: &str, path: &[&str]) -> Option<Edit> {
+    let doc = parse_doc(src)?;
+    let (nl, unit) = (doc.nl, doc.unit);
+    // Inside an inline map: rewrite that line.
+    for depth in 0..path.len() {
+        let chain = find_path(&doc, &path[..=depth])?;
+        let e = chain[depth];
+        if depth + 1 < path.len() && e.shape != Shape::BlockMap {
+            let Value::Map(mut m) = e.value.clone() else { return None };
+            remove_in_map(&mut m, &path[depth + 1..])?;
+            let v = Value::Map(m);
+            let text = if e.shape == Shape::FlowMap {
+                format!("{}{}: {}{nl}", " ".repeat(e.indent), yaml_scalar(&e.key), v.flow())
+            } else {
+                format_entry(&e.key, &v, e.indent, unit, nl)
+            };
+            return Some(replace_lines(src, entry_range(&doc, e), text, nl));
+        }
+    }
+    let chain = find_path(&doc, path)?;
+    let leaf = *chain.last()?;
+    if chain.len() == 1 {
+        let distinct: std::collections::BTreeSet<&str> = doc.entries.iter().map(|e| e.key.as_str()).collect();
+        if distinct.len() == 1 {
+            return Some(Edit { range: 0..doc.block_end, text: String::new() });
+        }
+        return Some(Edit { range: entry_range(&doc, leaf), text: String::new() });
+    }
+    let parent = chain[chain.len() - 2];
+    if parent.children.iter().all(|c| c.key == leaf.key) {
+        let text = format!("{}{}: {{}}{nl}", " ".repeat(parent.indent), yaml_scalar(&parent.key));
+        return Some(replace_lines(src, entry_range(&doc, parent), text, nl));
+    }
+    Some(Edit { range: entry_range(&doc, leaf), text: String::new() })
+}
+
+fn remove_in_map(m: &mut BTreeMap<String, Value>, path: &[&str]) -> Option<()> {
+    match path {
+        [] => None,
+        [leaf] => m.remove(*leaf).map(|_| ()),
+        [head, rest @ ..] => match m.get_mut(*head)? {
+            Value::Map(cm) => remove_in_map(cm, rest),
+            _ => None,
+        },
+    }
+}
+
+/// Rename the key at `path` to `new_key`, keeping its value's bytes.
+/// `None` when the field isn't there.
+pub fn rename_field_path(src: &str, path: &[&str], new_key: &str) -> Option<Edit> {
+    let doc = parse_doc(src)?;
+    let new_key = new_key.trim();
+    for depth in 0..path.len() {
+        let chain = find_path(&doc, &path[..=depth])?;
+        let e = chain[depth];
+        if depth + 1 < path.len() && e.shape != Shape::BlockMap {
+            // Inside an inline map: rewrite its line.
+            let Value::Map(mut m) = e.value.clone() else { return None };
+            rename_in_map(&mut m, &path[depth + 1..], new_key)?;
+            let text = format!("{}{}: {}{}", " ".repeat(e.indent), yaml_scalar(&e.key), Value::Map(m).flow(), doc.nl);
+            return Some(replace_lines(src, entry_range(&doc, e), text, doc.nl));
+        }
+    }
+    let leaf = *find_path(&doc, path)?.last()?;
+    let line = &doc.lines[leaf.line];
+    let key_start = line.start + leaf.indent;
+    let body = &src[key_start..line.end];
+    let key_len = if body.starts_with(['"', '\'']) {
+        let q = body.chars().next().unwrap_or('"');
+        body[1..].find(q).map_or(0, |i| i + 2)
+    } else {
+        body.find(": ").or_else(|| body.trim_end().ends_with(':').then(|| body.trim_end().len() - 1)).or_else(|| body.find(':'))?
+    };
+    let key_text = &src[key_start..key_start + key_len];
+    let trailing = &key_text[key_text.trim_end().len()..];
+    Some(Edit { range: key_start..key_start + key_len, text: format!("{}{trailing}", yaml_scalar(new_key)) })
+}
+
+fn rename_in_map(m: &mut BTreeMap<String, Value>, path: &[&str], new_key: &str) -> Option<()> {
+    match path {
+        [] => None,
+        [leaf] => {
+            let v = m.remove(*leaf)?;
+            m.insert(new_key.to_string(), v);
+            Some(())
+        }
+        [head, rest @ ..] => match m.get_mut(*head)? {
+            Value::Map(cm) => rename_in_map(cm, rest, new_key),
+            _ => None,
+        },
+    }
+}
+
+/// What to do with one list item in [`edit_list_items`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ItemChange {
+    Keep,
+    Replace(String),
+    Remove,
+}
+
+/// Change the items of a list field (block list, `[a, b]`, or `a, b`)
+/// without touching other items' bytes. `f` sees each item unquoted.
+/// `None` when the field isn't there or nothing changed.
+pub fn edit_list_items(src: &str, path: &[&str], mut f: impl FnMut(&str) -> ItemChange) -> Option<Edit> {
+    let doc = parse_doc(src)?;
+    let e = *find_path(&doc, path)?.last()?;
+    let nl = doc.nl;
+    let mut changed = false;
+    match e.shape {
+        Shape::BlockList => {
+            let mut out = String::new();
+            let mut kept = 0;
+            let item_indent = doc.lines[e.line + 1..e.end].iter().find(|l| l.is_item()).map_or(e.indent, |l| l.indent);
+            for (i, l) in doc.lines[e.line..e.end].iter().enumerate() {
+                let raw = &src[l.start..l.end];
+                if i == 0 || !l.is_item() || l.indent != item_indent {
+                    out.push_str(raw);
+                    continue;
+                }
+                match f(&unquote(l.item_text())) {
+                    ItemChange::Keep => {
+                        kept += 1;
+                        out.push_str(raw);
+                    }
+                    ItemChange::Replace(s) => {
+                        changed = true;
+                        kept += 1;
+                        let ending = &raw[l.full.len()..];
+                        let dash = l.full.find('-').unwrap_or(0);
+                        let _ = write!(out, "{}- {}{ending}", &l.full[..dash], yaml_scalar(&s));
+                    }
+                    ItemChange::Remove => changed = true,
+                }
+            }
+            if !changed {
+                return None;
+            }
+            if kept == 0 {
+                let text = format!("{}{}: []{nl}", " ".repeat(e.indent), yaml_scalar(&e.key));
+                return Some(replace_lines(src, entry_range(&doc, e), text, nl));
+            }
+            Some(Edit { range: entry_range(&doc, e), text: out })
+        }
+        Shape::FlowList | Shape::Scalar => {
+            let line = &doc.lines[e.line];
+            let text = line.full;
+            let colon = split_key_offset(text)?;
+            let after = &text[colon + 1..];
+            let value_off = colon + 1 + (after.len() - after.trim_start().len());
+            let value = text[value_off..].trim_end();
+            let (inner_off, inner) =
+                if e.shape == Shape::FlowList { (value_off + 1, &value[1..value.len() - 1]) } else { (value_off, value) };
+            let parts: Vec<(Range<usize>, &str)> = if e.shape == Shape::FlowList {
+                split_flow(inner)
+            } else {
+                let mut v = Vec::new();
+                let mut at = 0;
+                for p in inner.split(',') {
+                    let lead = p.len() - p.trim_start().len();
+                    let t = p.trim();
+                    if !t.is_empty() {
+                        v.push((at + lead..at + lead + t.len(), t));
+                    }
+                    at += p.len() + 1;
+                }
+                v
+            };
+            let mut items: Vec<String> = Vec::new();
+            for (_, p) in &parts {
+                match f(&unquote(p)) {
+                    ItemChange::Keep => items.push((*p).to_string()),
+                    ItemChange::Replace(s) => {
+                        changed = true;
+                        items.push(if e.shape == Shape::FlowList { flow_item(&s) } else { yaml_scalar(&s) });
+                    }
+                    ItemChange::Remove => changed = true,
+                }
+            }
+            if !changed {
+                return None;
+            }
+            let new_inner = items.join(", ");
+            let (from, to) = (line.start + inner_off, line.start + inner_off + inner.len());
+            if e.shape == Shape::Scalar && items.is_empty() {
+                let text = format!("{}{}: []{nl}", " ".repeat(e.indent), yaml_scalar(&e.key));
+                return Some(replace_lines(src, entry_range(&doc, e), text, nl));
+            }
+            Some(Edit { range: from..to, text: new_inner })
+        }
+        _ => None,
+    }
+}
+
+/// Byte offset of the `:` after a line's key.
+fn split_key_offset(text: &str) -> Option<usize> {
+    let t = text.trim_start();
+    let lead = text.len() - t.len();
+    if t.starts_with(['"', '\'']) {
+        let q = t.chars().next()?;
+        let close = t[1..].find(q)? + 1;
+        return t[close + 1..].find(':').map(|i| lead + close + 1 + i);
+    }
+    t.find(": ").or_else(|| t.ends_with(':').then(|| t.len() - 1)).or_else(|| t.find(':')).map(|i| lead + i)
+}
+
+/// Every key path in the block, depth first (`["author"]`, `["author", "name"]`).
+pub fn key_paths(src: &str) -> Vec<Vec<String>> {
+    fn walk(prefix: &[String], entries: &[Entry], out: &mut Vec<Vec<String>>) {
+        for e in entries {
+            let mut p = prefix.to_vec();
+            p.push(e.key.clone());
+            out.push(p.clone());
+            walk(&p, &e.children, out);
+        }
+    }
+    let mut out = Vec::new();
+    if let Some(doc) = parse_doc(src) {
+        walk(&[], &doc.entries, &mut out);
+    }
+    out
 }
 
 impl Edit {
@@ -390,6 +977,7 @@ mod tests {
         assert_eq!(Value::Str("true".into()).kind(), Kind::Bool);
         assert_eq!(Value::Str("hello".into()).kind(), Kind::Text);
         assert_eq!(Value::List(vec![]).kind(), Kind::List);
+        assert_eq!(Value::Map(BTreeMap::new()).kind(), Kind::Map);
     }
 
     #[test]
@@ -400,19 +988,157 @@ mod tests {
         assert_eq!(serde_json::from_str::<Value>(&json).unwrap(), v);
     }
 
+    fn map(pairs: &[(&str, Value)]) -> Value {
+        Value::Map(pairs.iter().map(|(k, v)| ((*k).to_string(), v.clone())).collect())
+    }
+
+    fn s(v: &str) -> Value {
+        Value::Str(v.into())
+    }
+
     #[test]
     fn nested_maps_write_in_flow_form() {
-        let author = Value::Map(BTreeMap::from([
-            ("name".to_string(), Value::Str("Ada".into())),
-            ("tags".to_string(), Value::List(vec!["x".into(), "y, z".into()])),
-        ]));
+        let author = map(&[("name", s("Ada")), ("tags", Value::List(vec!["x".into(), "y, z".into()]))]);
         assert_eq!(format_field("author", &author), "author: {name: Ada, tags: [x, \"y, z\"]}\n");
         assert_eq!(author.at_path(&["name"]).and_then(Value::as_str), Some("Ada"));
         assert_eq!(author.at_path(&[]), Some(&author));
         assert!(author.at_path(&["nope"]).is_none());
         assert!(author.as_list().is_empty() && author.as_str().is_none());
-        // Today's parser skips nested blocks (WS-E adds them); the rest is unchanged.
-        let fm = parse("---\nauthor:\n  name: Ada\ntitle: T\n---\n").unwrap();
+    }
+
+    const NESTED: &str = "---\n# who wrote it\nauthor:\n  name: Ada\n  orcid: 0000-0001\n  address:\n    city: London\n\ntags:\n- a\n- b\nmeta: {rev: 2, by: [x, y]}\nabstract: |\n  Line one\n  line two\nrefs:\n  - title: A\n    year: 1999\n  - title: B\ntitle: T\n---\nbody\n";
+
+    #[test]
+    fn parses_nested_yaml() {
+        let fm = parse(NESTED).unwrap();
+        assert_eq!(fm.get_path("author.name"), Some(&s("Ada")));
+        assert_eq!(fm.get_path("author.address.city"), Some(&s("London")));
+        assert_eq!(fm.get_path("author.orcid"), Some(&s("0000-0001")));
+        assert_eq!(fm.tags(), vec!["a", "b"], "items at the key's indent");
+        assert_eq!(fm.get_path("meta.rev"), Some(&s("2")));
+        assert_eq!(fm.get_path("meta.by"), Some(&Value::List(vec!["x".into(), "y".into()])));
+        assert_eq!(fm.get("abstract"), Some(&s("Line one\nline two")));
+        assert_eq!(fm.get("refs"), Some(&s("  - title: A\n    year: 1999\n  - title: B")), "lists of maps stay raw");
         assert_eq!(fm.title(), Some("T"));
+        let leaves: Vec<String> = fm.get("author").unwrap().leaves().into_iter().map(|(p, _)| p).collect();
+        assert_eq!(leaves, ["address.city", "name", "orcid"]);
+        assert_eq!(key_paths(NESTED).len(), 10);
+    }
+
+    /// Lines of `after` that aren't in `before`, and vice versa.
+    fn changed_lines(before: &str, after: &str) -> (Vec<String>, Vec<String>) {
+        let b: Vec<&str> = before.split_inclusive('\n').collect();
+        let a: Vec<&str> = after.split_inclusive('\n').collect();
+        let gone = b.iter().filter(|l| !a.contains(l)).map(|l| (*l).to_string()).collect();
+        let new = a.iter().filter(|l| !b.contains(l)).map(|l| (*l).to_string()).collect();
+        (gone, new)
+    }
+
+    #[test]
+    fn path_edits_touch_only_their_lines() {
+        let e = set_field_path(NESTED, &["author", "name"], &s("Ada Lovelace"));
+        let out = e.apply(NESTED);
+        assert_eq!(changed_lines(NESTED, &out), (vec!["  name: Ada\n".into()], vec!["  name: Ada Lovelace\n".into()]));
+        assert_eq!(parse(&out).unwrap().get_path("author.name"), Some(&s("Ada Lovelace")));
+
+        // A new leaf goes at the end of its map, at its siblings' indent.
+        let out = set_field_path(NESTED, &["author", "address", "zip"], &s("N1")).apply(NESTED);
+        assert!(out.contains("    city: London\n    zip: N1\n\ntags:"), "{out}");
+        // Missing parents are created.
+        let out = set_field_path(NESTED, &["review", "by", "name"], &s("Bo")).apply(NESTED);
+        assert!(out.contains("title: T\nreview:\n  by:\n    name: Bo\n---\n"), "{out}");
+        assert_eq!(parse(&out).unwrap().get_path("review.by.name"), Some(&s("Bo")));
+        // An inline map keeps its line and form.
+        let out = set_field_path(NESTED, &["meta", "rev"], &s("3")).apply(NESTED);
+        assert_eq!(changed_lines(NESTED, &out).1, vec!["meta: {by: [x, y], rev: 3}\n".to_string()]);
+        // A scalar parent becomes a map.
+        let out = set_field_path(NESTED, &["title", "main"], &s("T")).apply(NESTED);
+        assert_eq!(parse(&out).unwrap().get_path("title.main"), Some(&s("T")));
+        // No front matter yet.
+        assert_eq!(set_field_path("body", &["a", "b"], &s("c")).apply("body"), "---\na:\n  b: c\n---\nbody");
+        // A map value is written as a block.
+        let out = set_field_path(NESTED, &["author", "address"], &map(&[("city", s("Paris")), ("cc", s("FR"))])).apply(NESTED);
+        assert!(out.contains("  address:\n    cc: FR\n    city: Paris\n\n"), "{out}");
+    }
+
+    #[test]
+    fn remove_and_rename_by_path() {
+        let out = remove_field_path(NESTED, &["author", "orcid"]).unwrap().apply(NESTED);
+        assert_eq!(changed_lines(NESTED, &out), (vec!["  orcid: 0000-0001\n".into()], vec![]));
+        let out = remove_field_path(NESTED, &["author", "address", "city"]).unwrap().apply(NESTED);
+        assert!(out.contains("  address: {}\n"), "{out}");
+        let out = remove_field_path(NESTED, &["meta", "by"]).unwrap().apply(NESTED);
+        assert!(out.contains("meta: {rev: 2}\n"));
+        assert!(remove_field_path(NESTED, &["author", "nope"]).is_none());
+        let out = remove_field_path(NESTED, &["author"]).unwrap().apply(NESTED);
+        assert!(!out.contains("Ada") && !out.contains("London") && out.contains("# who wrote it\n\ntags:"), "{out}");
+
+        let out = rename_field_path(NESTED, &["author", "name"], "full name").unwrap().apply(NESTED);
+        assert_eq!(changed_lines(NESTED, &out), (vec!["  name: Ada\n".into()], vec!["  full name: Ada\n".into()]));
+        let out = rename_field_path(NESTED, &["abstract"], "summary").unwrap().apply(NESTED);
+        assert_eq!(parse(&out).unwrap().get("summary"), Some(&s("Line one\nline two")));
+        let out = rename_field_path(NESTED, &["meta", "rev"], "version").unwrap().apply(NESTED);
+        assert!(out.contains("meta: {by: [x, y], version: 2}\n"));
+        let src = "---\n\"odd key\": 1\nk2:v\n---\n";
+        assert_eq!(rename_field_path(src, &["odd key"], "even").unwrap().apply(src), "---\neven: 1\nk2:v\n---\n");
+        assert_eq!(rename_field_path(src, &["k2"], "k3").unwrap().apply(src), "---\n\"odd key\": 1\nk3:v\n---\n");
+    }
+
+    #[test]
+    fn list_items_change_in_place() {
+        let rename = |t: &str| if t == "a" { ItemChange::Replace("z/a".into()) } else { ItemChange::Keep };
+        let out = edit_list_items(NESTED, &["tags"], rename).unwrap().apply(NESTED);
+        assert_eq!(changed_lines(NESTED, &out), (vec!["- a\n".into()], vec!["- z/a\n".into()]));
+        let src = "---\ntags: [a,  \"b, c\", d]\ntag: a, d\n---\n";
+        let out = edit_list_items(src, &["tags"], |t| if t == "d" { ItemChange::Remove } else { ItemChange::Keep }).unwrap().apply(src);
+        assert_eq!(out, "---\ntags: [a, \"b, c\"]\ntag: a, d\n---\n");
+        let out = edit_list_items(src, &["tag"], |t| if t == "a" { ItemChange::Replace("x".into()) } else { ItemChange::Keep })
+            .unwrap()
+            .apply(src);
+        assert_eq!(out, "---\ntags: [a,  \"b, c\", d]\ntag: x, d\n---\n");
+        assert!(edit_list_items(src, &["tags"], |_| ItemChange::Keep).is_none());
+        let out = edit_list_items(NESTED, &["tags"], |_| ItemChange::Remove).unwrap().apply(NESTED);
+        assert!(out.contains("\ntags: []\nmeta:"), "{out}");
+    }
+
+    #[test]
+    fn crlf_and_missing_final_newline() {
+        let src = "---\r\na:\r\n  b: 1\r\n---\r\nx";
+        let out = set_field_path(src, &["a", "c"], &s("2")).apply(src);
+        assert_eq!(out, "---\r\na:\r\n  b: 1\r\n  c: 2\r\n---\r\nx");
+        assert_eq!(parse(&out).unwrap().get_path("a.c"), Some(&s("2")));
+    }
+
+    /// Seeded random edits never change lines outside the edited field.
+    #[test]
+    fn random_path_edits_keep_other_lines() {
+        let mut seed = 0x9e37_79b9_u64;
+        let mut rnd = |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        let keys = ["author", "name", "city", "x", "tags", "meta"];
+        let mut src = NESTED.to_string();
+        for _ in 0..300 {
+            let depth = 1 + rnd(3);
+            let path: Vec<&str> = (0..depth).map(|_| keys[rnd(keys.len())]).collect();
+            let before = src.clone();
+            let value = s(&format!("v{}", rnd(100)));
+            let edit = match rnd(3) {
+                0 => Some(set_field_path(&src, &path, &value)),
+                1 => remove_field_path(&src, &path),
+                _ => rename_field_path(&src, &path, keys[rnd(keys.len())]),
+            };
+            let Some(edit) = edit else { continue };
+            src = edit.apply(&src);
+            let fm = parse(&src).expect("still front matter");
+            // Bytes outside the edit are unchanged.
+            assert_eq!(&src[..edit.range.start], &before[..edit.range.start]);
+            assert_eq!(&src[edit.range.start + edit.text.len()..], &before[edit.range.end..]);
+            assert!(src.ends_with("---\nbody\n"));
+            let _ = fm;
+        }
     }
 }

@@ -55,6 +55,8 @@ pub(crate) struct FeatureUi {
     // ---- WS-E
     pub agenda: crate::agenda_ui::AgendaUi,
     pub calendar: crate::calendar_ui::CalendarUi,
+    pub refactor: crate::meta_refactor_ui::RefactorUi,
+    pub review: crate::srs_ui::ReviewUi,
 }
 
 /// The built-in right-panel tab.
@@ -89,6 +91,12 @@ pub(crate) const RIGHT_TABS: &[TabDef] = &[
     TabDef { id: "agent", label: label!("Agent"), available: crate::agent_panel_ui::available, show: crate::agent_panel_ui::show },
     // ---- WS-E
     TabDef { id: "agenda", label: label!("Agenda"), available: crate::agenda_ui::available, show: crate::agenda_ui::show },
+    TabDef {
+        id: "plan",
+        label: crate::agenda_ui::dialog_label,
+        available: crate::agenda_ui::dialog_open,
+        show: crate::agenda_ui::dialog_tab,
+    },
 ];
 
 pub(crate) const SIDEBAR_TABS: &[TabDef] = &[
@@ -106,6 +114,8 @@ pub(crate) const SETTINGS_TABS: &[TabDef] = &[
     // ---- WS-B (HTTP MCP and tokens: a section of the Agents tab, or a tab here)
     TabDef { id: "mcp", label: label!("Connections"), available: crate::mcp_ui::available, show: crate::mcp_ui::show },
     // ---- WS-D
+    // ---- WS-E
+    TabDef { id: "planning", label: label!("Planning"), available: crate::agenda_ui::available, show: crate::agenda_ui::settings_tab },
     // ---- WS-F
 ];
 
@@ -145,6 +155,7 @@ pub(crate) const fn ui_target(cmd: Command) -> Option<UiTarget> {
         // ---- WS-E
         Command::ShowAgenda => UiTarget::Sidebar("agenda"),
         Command::ShowCalendar => UiTarget::Sidebar("calendar"),
+        Command::RenameTag | Command::RenameProperty | Command::StartReview | Command::ReviewThisNote => UiTarget::Right("plan"),
         _ => return None,
     })
 }
@@ -168,6 +179,8 @@ pub(crate) fn paint_widget(ui: &mut egui::Ui, ws: &Workspace, id: WidgetId, pal:
     match id.owner {
         // ---- WS-A
         quire_app::Owner::Agent => crate::inbox_ui::review_ui::paint_widget(ui, ws, id, pal),
+        // ---- WS-E: Dataview/Tasks results, Kanban boards, template fields
+        quire_app::Owner::Plan => crate::agenda_ui::paint_widget(ui, ws, id, pal),
         quire_app::Owner::Core => (0.0, None),
         _ => {
             let _ = (ui, ws, id, pal);
@@ -182,7 +195,7 @@ pub(crate) fn open_surface(path: &NotePath) -> Option<Box<dyn crate::surfaces::S
     let ext = path.as_str().rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
     match ext.as_str() {
         // ---- WS-E: `.base` (Obsidian Bases)
-        "base" => Some(Box::new(crate::surfaces::SystemViewer::new(path, "Bases views"))),
+        "base" => Some(Box::new(crate::base_surface::BaseSurface::new(path))),
         // ---- WS-G: `.canvas`, `.pdf`
         "canvas" => Some(Box::new(crate::surfaces::SystemViewer::new(path, "Canvas editing"))),
         "pdf" => Some(Box::new(crate::surfaces::SystemViewer::new(path, "The PDF viewer"))),
@@ -208,6 +221,12 @@ pub(crate) fn layout_samples(ws: &Workspace) -> Vec<(&'static str, crate::overla
         // ---- WS-C
         // ---- WS-D
         // ---- WS-E
+        ("rename tag", Overlay::Feature(Box::new(crate::meta_refactor_ui::RefactorOverlay::sample(false, false)))),
+        ("rename tag: preview", Overlay::Feature(Box::new(crate::meta_refactor_ui::RefactorOverlay::sample(false, true)))),
+        ("change a property value: preview", Overlay::Feature(Box::new(crate::meta_refactor_ui::RefactorOverlay::sample(true, true)))),
+        ("review: question", Overlay::Feature(Box::new(crate::srs_ui::ReviewOverlay::sample(false, false)))),
+        ("review: answer", Overlay::Feature(Box::new(crate::srs_ui::ReviewOverlay::sample(true, false)))),
+        ("review: done", Overlay::Feature(Box::new(crate::srs_ui::ReviewOverlay::sample(false, true)))),
         // ---- WS-F
         // ---- WS-G
     ]

@@ -23,6 +23,22 @@ folder = "Weekly"
 [citations]       # WS-G
 ```
 
+## `[periodic]` (WS-E)
+
+```toml
+[periodic.daily]          # also where "Open today's daily note" goes
+folder = "Daily"          # default
+format = "%Y-%m-%d"       # strftime; default
+template = "Daily.md"     # in the templates folder; default
+[periodic.weekly]         # defaults: Weekly, %G-W%V (ISO week), no template
+[periodic.monthly]        # defaults: Monthly, %Y-%m
+[periodic.yearly]         # defaults: Yearly, %Y
+```
+
+Every key is optional. A format chrono can't print falls back to the
+default. A note's period is found from its folder and name (formats chrono
+can't parse back are matched against the 30 years around today).
+
 * Read and write a section with `VaultPrefs::section::<T>("name")` and
   `VaultPrefs::set_section("name", &value)`, where `T` is the feature's own
   serde type with `#[serde(default)]` and `#[serde(flatten)] other:

@@ -21,6 +21,8 @@ ureq.workspace = true
 dom_smoothie.workspace = true
 encoding_rs.workspace = true
 sha2.workspace = true
+# WS-E: Obsidian Bases (.base YAML)
+yaml-rust2.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -50,7 +50,10 @@ F0 is the foundation step, after which its files are frozen).
 | `.quire/agent/rate/<hash>.txt` | Unix ms per line (a counter) | [policy.md](policy.md#limits) | WS-A | written |
 | `<config>/vaults/<key>/state.toml` (+ approved copies) | TOML, format 1 | [agent-state.md](agent-state.md) | WS-A | written |
 | `.quire/shared/vault.toml` | TOML, format 1 | [vault-prefs.md](vault-prefs.md) | F0 (each section: its feature) | read and written |
-| `.quire/shared/srs/<device>.jsonl` | JSONL, v 1 | [srs.md](srs.md) | WS-E | format only |
+| `.quire/shared/srs/<device>.jsonl` | JSONL, v 1 | [srs.md](srs.md) | WS-E | written and replayed |
+| task fields in notes (`📅`, `[due:: …]`, `🔁`) | Markdown | [tasks.md](tasks.md) | WS-E | read and written |
+| `Templates/*.md` (`{{…}}`, `quire-template:`) | Markdown | [templates.md](templates.md) | WS-E | read |
+| flashcards in notes (`::`, `?`, `==cloze==`) | Markdown | [srs.md](srs.md#cards-in-notes) | WS-E | read; `^k-` ids written on request |
 | `*.canvas` | JSON Canvas 1.0, one object per line | [canvas.md](canvas.md) | WS-G | format only |
 | `attachments/<canvas>-ink-<n>.svg` | SVG with `data-quire-*` attributes | [canvas.md](canvas.md) | WS-G | format only |
 | `<pdf> (annotations).md` | Markdown + `quire:pdf-anchor` | [pdf-annotations.md](pdf-annotations.md) | WS-G | format only |
