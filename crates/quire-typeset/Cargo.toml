@@ -1,0 +1,23 @@
+[package]
+name = "quire-typeset"
+description = "Math, diagram and PDF typesetting for Quire (pure Rust, via Typst)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+
+[dependencies]
+pulldown-cmark.workspace = true
+thiserror.workspace = true
+typst.workspace = true
+typst-layout.workspace = true
+typst-svg.workspace = true
+typst-pdf.workspace = true
+mitex.workspace = true
+mermaid-rs-renderer.workspace = true
+
+[lints]
+workspace = true

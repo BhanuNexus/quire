@@ -6,3 +6,8 @@ extend-exclude = [
   # Spell-checker tests are full of deliberate misspellings.
   "crates/quire-spell/tests/",
 ]
+
+[default.extend-words]
+# Dirac bra-ket notation: LaTeX's \ket and \braket in crates/quire-typeset.
+ket = "ket"
+braket = "braket"
