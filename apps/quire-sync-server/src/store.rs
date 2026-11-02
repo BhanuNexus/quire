@@ -66,6 +66,11 @@ CREATE TABLE IF NOT EXISTS heads (
     PRIMARY KEY (space, file)
 );
 CREATE INDEX IF NOT EXISTS revisions_by_file ON revisions (space, file, seq);
+-- 0.9: the oldest sync protocol a space accepts (design §B.5).
+CREATE TABLE IF NOT EXISTS space_settings (
+    space        TEXT PRIMARY KEY REFERENCES spaces(id),
+    min_protocol INTEGER NOT NULL DEFAULT 1
+);
 ";
 
 fn row_to_rev(r: &rusqlite::Row<'_>) -> rusqlite::Result<(u64, String, String, String, String, Vec<u8>)> {
@@ -180,6 +185,28 @@ impl Store {
         }
         out.reverse();
         Ok(out)
+    }
+
+    /// The oldest protocol `space` accepts (1 unless raised).
+    pub fn min_protocol(&self, space: &SpaceId) -> Result<u32, StoreError> {
+        let db = self.db();
+        let v: Option<i64> =
+            db.query_row("SELECT min_protocol FROM space_settings WHERE space = ?1", params![space.0], |r| r.get(0)).optional()?;
+        Ok(v.map_or(1, |n| u32::try_from(n).unwrap_or(1)))
+    }
+
+    /// Raise the oldest protocol `space` accepts; never lowers it. Returns
+    /// the value in force.
+    pub fn raise_min_protocol(&self, space: &SpaceId, min: u32) -> Result<u32, StoreError> {
+        let db = self.db();
+        Self::require_space(&db, space)?;
+        db.execute(
+            "INSERT INTO space_settings (space, min_protocol) VALUES (?1, ?2)
+             ON CONFLICT(space) DO UPDATE SET min_protocol = max(min_protocol, excluded.min_protocol)",
+            params![space.0, i64::from(min)],
+        )?;
+        let v: i64 = db.query_row("SELECT min_protocol FROM space_settings WHERE space = ?1", params![space.0], |r| r.get(0))?;
+        Ok(u32::try_from(v).unwrap_or(1))
     }
 
     pub fn latest(&self, space: &SpaceId) -> Result<u64, StoreError> {

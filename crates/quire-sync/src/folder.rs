@@ -48,8 +48,14 @@ pub const FOLDER_NAME: &str = "Quire Sync";
 /// A device starts a new log file past this size, so tools that upload whole
 /// files on every change don't re-send a growing log.
 const SEGMENT_LIMIT: u64 = 1 << 20;
+/// The format new spaces are written in; 0.8 reads it.
 const FORMAT: u32 = 1;
+/// The newest format this build understands (0.9: `min_reader` exists).
+pub const READER_FORMAT: u32 = 2;
 
+/// `space.json`. From 0.9 on a reader refuses a space only when
+/// `min_reader` is above what it reads, and otherwise ignores a newer
+/// `format`; 0.8 refuses any `format` above 1 (design §B.5).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SpaceFile {
     format: u32,
@@ -57,6 +63,11 @@ struct SpaceFile {
     /// Unix seconds.
     created: i64,
     wrapped_key: WrappedKey,
+    /// The oldest reader that may use this space.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    min_reader: Option<u32>,
+    #[serde(flatten)]
+    other: serde_json::Map<String, serde_json::Value>,
 }
 
 /// A vault found in a sync folder.
@@ -98,7 +109,14 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 pub fn create_space(root: &Path, space: &SpaceId, key: &WrappedKey) -> Result<(), TransportError> {
     let dir = root.join(&space.0);
     fs::create_dir_all(dir.join("devices")).map_err(|e| io_err("can't create the sync folder", &e))?;
-    let file = SpaceFile { format: FORMAT, space: space.clone(), created: unix_now(), wrapped_key: key.clone() };
+    let file = SpaceFile {
+        format: FORMAT,
+        space: space.clone(),
+        created: unix_now(),
+        wrapped_key: key.clone(),
+        min_reader: None,
+        other: serde_json::Map::new(),
+    };
     let json = serde_json::to_vec_pretty(&file).unwrap_or_default();
     write_atomically(&dir.join("space.json"), &json).map_err(|e| io_err("can't write to the sync folder", &e))
 }
@@ -107,10 +125,28 @@ fn read_space(dir: &Path) -> Result<SpaceFile, TransportError> {
     let bytes = fs::read(dir.join("space.json")).map_err(|e| io_err("can't read the vault in the sync folder", &e))?;
     let f: SpaceFile = serde_json::from_slice(&bytes)
         .map_err(|_| TransportError::Refused("the vault's space.json is damaged or still downloading".into()))?;
-    if f.format > FORMAT {
+    if f.min_reader.is_some_and(|m| m > READER_FORMAT) {
         return Err(TransportError::Refused("this vault was made by a newer Quire; update Quire on this device".into()));
     }
     Ok(f)
+}
+
+/// The oldest Quire format that may read this space (1 unless raised).
+pub fn min_reader(root: &Path, space: &SpaceId) -> Result<u32, TransportError> {
+    let f = read_space(&root.join(&space.0))?;
+    Ok(f.min_reader.unwrap_or(1))
+}
+
+/// Keep readers older than `min` out of this space: `format` and
+/// `min_reader` become `min`, so Quire 0.8 refuses it (design §B.5). Other
+/// fields are kept. It never lowers either.
+pub fn raise_min_reader(root: &Path, space: &SpaceId, min: u32) -> Result<(), TransportError> {
+    let dir = root.join(&space.0);
+    let mut f = read_space(&dir)?;
+    f.format = f.format.max(min);
+    f.min_reader = Some(f.min_reader.unwrap_or(1).max(min));
+    let json = serde_json::to_vec_pretty(&f).unwrap_or_default();
+    write_atomically(&dir.join("space.json"), &json).map_err(|e| io_err("can't write to the sync folder", &e))
 }
 
 /// The vaults in `root`, oldest first.
@@ -514,6 +550,44 @@ mod tests {
             device: device.clone(),
             sealed: vec![1, 2, 3],
         }
+    }
+
+    /// Quire 0.8's check of `space.json`, as shipped.
+    fn readable_by_0_8(dir: &Path) -> bool {
+        let v: serde_json::Value = serde_json::from_slice(&fs::read(dir.join("space.json")).unwrap()).unwrap();
+        v["format"].as_u64().unwrap() <= 1
+    }
+
+    #[test]
+    fn format_fields_let_old_and_new_readers_choose() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = sync_root(dir.path());
+        let space = SpaceId::random().unwrap();
+        let key = WrappedKey::wrap(&VaultKey::generate().unwrap(), "pw", KdfParams::TEST).unwrap();
+        create_space(&root, &space, &key).unwrap();
+        let sdir = root.join(&space.0);
+        assert!(readable_by_0_8(&sdir), "0.9 keeps writing format 1");
+        assert_eq!(min_reader(&root, &space).unwrap(), 1);
+        // Unknown fields from a newer Quire survive a rewrite.
+        let mut v: serde_json::Value = serde_json::from_slice(&fs::read(sdir.join("space.json")).unwrap()).unwrap();
+        v["future"] = serde_json::json!({"x": 1});
+        fs::write(sdir.join("space.json"), serde_json::to_vec(&v).unwrap()).unwrap();
+        raise_min_reader(&root, &space, 2).unwrap();
+        assert!(!readable_by_0_8(&sdir), "0.8 stops at a min-2 space");
+        assert_eq!(min_reader(&root, &space).unwrap(), 2);
+        let v: serde_json::Value = serde_json::from_slice(&fs::read(sdir.join("space.json")).unwrap()).unwrap();
+        assert_eq!((v["format"].clone(), v["min_reader"].clone(), v["future"]["x"].clone()), (2.into(), 2.into(), 1.into()));
+        assert!(wrapped_key(&root, &space).is_ok());
+        raise_min_reader(&root, &space, 1).unwrap();
+        assert_eq!(min_reader(&root, &space).unwrap(), 2, "never lowered");
+        // A future format that 0.9 may still read, and one it may not.
+        let mut v = v;
+        v["format"] = 3.into();
+        fs::write(sdir.join("space.json"), serde_json::to_vec(&v).unwrap()).unwrap();
+        assert!(wrapped_key(&root, &space).is_ok(), "format 3 / min_reader 2: readable by 0.9");
+        v["min_reader"] = 3.into();
+        fs::write(sdir.join("space.json"), serde_json::to_vec(&v).unwrap()).unwrap();
+        assert!(wrapped_key(&root, &space).unwrap_err().to_string().contains("newer Quire"));
     }
 
     #[test]
