@@ -63,6 +63,19 @@ impl From<&str> for NotePath {
     }
 }
 
+/// Serialized as the plain vault-relative string, as every format writes paths.
+impl serde::Serialize for NotePath {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.0)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for NotePath {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        String::deserialize(d).map(Self::new)
+    }
+}
+
 /// Strip characters that are invalid in file names on any major OS or that
 /// would break wikilinks (`[]#|^`).
 pub fn sanitize_title(title: &str) -> String {

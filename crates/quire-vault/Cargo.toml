@@ -17,6 +17,11 @@ notify.workspace = true
 crossbeam-channel.workspace = true
 thiserror.workspace = true
 flate2 = "1"
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+toml_edit.workspace = true
+sha2.workspace = true
 
 [lints]
 workspace = true

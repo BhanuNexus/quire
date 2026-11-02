@@ -71,6 +71,7 @@ impl Server {
                     }
                 }
                 VaultEvent::Removed(p) => self.index.remove(p),
+                VaultEvent::AttachmentChanged(_) | VaultEvent::AttachmentRemoved(_) => {}
             }
         }
         if changed {

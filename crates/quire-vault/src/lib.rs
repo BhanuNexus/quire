@@ -5,16 +5,20 @@
 //! [`Storage`] is the port; [`LocalFs`] and [`MemFs`] are adapters. [`Vault`]
 //! is the repository that knows about notes, names, templates and refactors.
 
+mod hash;
 mod history;
 mod note;
+pub mod prefs;
 mod refactor;
 mod storage;
 mod templates;
 mod vault;
 mod watch;
 
+pub use hash::ContentHash;
 pub use history::{Snapshot, retained};
 pub use note::{NotePath, sanitize_title};
+pub use prefs::{PrefsError, VaultPrefs};
 pub use refactor::{LinkRewrite, rewrite_links};
 pub use storage::{LocalFs, MemFs, Storage};
 pub use templates::{TemplateVars, expand_template};

@@ -40,6 +40,23 @@ pub trait Storage: Send + Sync {
     fn list_under(&self, folder: &str) -> Result<Vec<NotePath>>;
     /// Permanently delete (used for app data such as pruned history, never notes).
     fn remove(&self, path: &NotePath) -> Result<()>;
+    /// Append one line (a `\n` is added) to an app-data log such as a
+    /// `.jsonl` file, creating it. `line` must not contain a newline.
+    /// [`LocalFs`] locks the file around a single write, so lines written by
+    /// several processes never interleave.
+    fn append_line(&self, path: &NotePath, line: &str) -> Result<()> {
+        let mut bytes = match self.read_bytes(path) {
+            Ok(b) => b,
+            Err(VaultError::NotFound(_)) => Vec::new(),
+            Err(e) => return Err(e),
+        };
+        if !bytes.is_empty() && !bytes.ends_with(b"\n") {
+            bytes.push(b'\n');
+        }
+        bytes.extend_from_slice(line.as_bytes());
+        bytes.push(b'\n');
+        self.write_bytes_atomic(path, &bytes)
+    }
 }
 
 // ---------------------------------------------------------------- LocalFs
@@ -173,6 +190,21 @@ impl Storage for LocalFs {
         let abs = self.abs(path)?;
         std::fs::remove_file(&abs).map_err(io_err(path.to_string()))
     }
+
+    fn append_line(&self, path: &NotePath, line: &str) -> Result<()> {
+        let abs = self.abs(path)?;
+        if let Some(dir) = abs.parent() {
+            std::fs::create_dir_all(dir).map_err(io_err(path.to_string()))?;
+        }
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&abs).map_err(io_err(path.to_string()))?;
+        f.lock().map_err(io_err(path.to_string()))?;
+        let mut buf = String::with_capacity(line.len() + 1);
+        buf.push_str(line);
+        buf.push('\n');
+        let written = f.write_all(buf.as_bytes()).map_err(io_err(path.to_string()));
+        let _ = f.unlock();
+        written
+    }
 }
 
 // ---------------------------------------------------------------- MemFs
@@ -280,6 +312,14 @@ mod tests {
         fs.trash(&q).unwrap();
         assert!(fs.list().unwrap().is_empty());
         assert!(fs.read(&NotePath::new("../escape.md")).is_err());
+        let log = NotePath::new(".quire/agent/log.jsonl");
+        fs.append_line(&log, "{\"v\":1}").unwrap();
+        fs.append_line(&log, "{\"v\":2}").unwrap();
+        assert_eq!(fs.read(&log).unwrap(), "{\"v\":1}\n{\"v\":2}\n");
+        let mem = MemFs::new();
+        mem.append_line(&log, "a").unwrap();
+        mem.append_line(&log, "b").unwrap();
+        assert_eq!(mem.read(&log).unwrap(), "a\nb\n");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

@@ -694,6 +694,8 @@ impl Workspace {
                         self.index.remove(p);
                     }
                 }
+                // PDFs, images and canvases: features that index them listen (0.9).
+                VaultEvent::AttachmentChanged(_) | VaultEvent::AttachmentRemoved(_) => {}
             }
         }
         true
