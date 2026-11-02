@@ -36,6 +36,9 @@ pub enum IndexMsg {
         source: String,
     },
     Remove(NotePath),
+    /// The text of a PDF or image (from the PDF-text or OCR job).
+    UpsertAttachment(crate::attach::AttachmentText),
+    RemoveAttachment(NotePath),
     /// Replies once everything queued before it has been applied.
     Flush(Sender<()>),
     Shutdown,
@@ -168,6 +171,15 @@ impl IndexService {
         self.send(IndexMsg::Remove(path));
     }
 
+    /// Store the extracted text of a PDF or image (replacing older text).
+    pub fn upsert_attachment(&self, text: crate::attach::AttachmentText) {
+        self.send(IndexMsg::UpsertAttachment(text));
+    }
+
+    pub fn remove_attachment(&self, path: NotePath) {
+        self.send(IndexMsg::RemoveAttachment(path));
+    }
+
     /// Read access to the current model. Hold briefly.
     pub fn read(&self) -> RwLockReadGuard<'_, Index> {
         self.index.read().unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -230,6 +242,14 @@ fn parse_parallel(vault: &Vault, paths: &[NotePath], shared: &Shared) -> Vec<(No
     })
 }
 
+/// A message's work, done before taking the write lock.
+enum Prepared {
+    Note(Box<(NoteRecord, String)>),
+    Remove(NotePath),
+    Attachment(crate::attach::AttachmentText),
+    RemoveAttachment(NotePath),
+}
+
 fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: &Sender<SemMsg>) {
     let write = || index.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     while let Ok(first) = rx.recv() {
@@ -237,7 +257,7 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
         // Drain whatever else is queued so a burst of saves costs one graph rebuild.
         let mut batch = vec![first];
         batch.extend(rx.try_iter());
-        let mut prepared: Vec<Result<(NoteRecord, String), NotePath>> = Vec::new();
+        let mut prepared: Vec<Prepared> = Vec::new();
         let mut reload: Option<Vec<(NoteRecord, String)>> = None;
         let mut shutdown = false;
         let mut waiters = Vec::new();
@@ -254,12 +274,15 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                 }
                 IndexMsg::Upsert { path, source } => {
                     changed = true;
-                    prepared.push(Ok((NoteRecord::from_source(path, &source), source)));
+                    prepared.push(Prepared::Note(Box::new((NoteRecord::from_source(path, &source), source))));
                 }
                 IndexMsg::Remove(path) => {
                     changed = true;
-                    prepared.push(Err(path));
+                    prepared.push(Prepared::Remove(path));
                 }
+                // Attachment text isn't in the semantic index yet: no rebuild.
+                IndexMsg::UpsertAttachment(text) => prepared.push(Prepared::Attachment(text)),
+                IndexMsg::RemoveAttachment(path) => prepared.push(Prepared::RemoveAttachment(path)),
                 IndexMsg::Flush(reply) => waiters.push(reply),
                 IndexMsg::Shutdown => shutdown = true,
             }
@@ -274,8 +297,13 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
             }
             for item in prepared {
                 match item {
-                    Ok((rec, src)) => ix.insert_record(rec, src),
-                    Err(path) => ix.remove_no_refresh(&path),
+                    Prepared::Note(note) => {
+                        let (rec, src) = *note;
+                        ix.insert_record(rec, src);
+                    }
+                    Prepared::Remove(path) => ix.remove_no_refresh(&path),
+                    Prepared::Attachment(text) => ix.upsert_attachment(text),
+                    Prepared::RemoveAttachment(path) => ix.remove_attachment(&path),
                 }
             }
             ix.refresh();
@@ -371,5 +399,25 @@ mod tests {
         let sem = svc.semantic().expect("semantic index built");
         assert!(sem.chunks.iter().all(|c| c.path.as_str() != "A.md"));
         assert_eq!(svc.semantic_version(), 1);
+    }
+
+    #[test]
+    fn attachment_text_is_stored_and_removed() {
+        use crate::attach::{AttachmentKind, AttachmentText, TextSource};
+        let svc = IndexService::spawn();
+        let p = NotePath::new("papers/rope.pdf");
+        svc.upsert_attachment(AttachmentText {
+            path: p.clone(),
+            kind: AttachmentKind::Pdf,
+            pages: vec!["page one".into(), "page two".into()],
+            source_hash: "ab".into(),
+            by: TextSource::Embedded,
+        });
+        svc.flush();
+        assert_eq!(svc.read().attachment(&p).map(|a| a.pages.len()), Some(2));
+        assert_eq!(svc.read().len(), 0, "attachments aren't notes");
+        svc.remove_attachment(p.clone());
+        svc.flush();
+        assert!(svc.read().attachment(&p).is_none());
     }
 }

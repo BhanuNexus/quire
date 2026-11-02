@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use quire_markdown::Task;
 use quire_vault::NotePath;
 
+use crate::attach::AttachmentText;
 use crate::fulltext::{FullText, Query, SearchHit, snippet};
 use crate::fuzzy::{QuickOpenHit, quick_open};
 use crate::graph::{Backlink, LinkGraph};
@@ -17,6 +18,8 @@ pub struct Index {
     sources: HashMap<NotePath, String>,
     fulltext: FullText,
     graph: LinkGraph,
+    /// Text of PDFs and images, by path. Not searched yet (WS-C).
+    attachments: HashMap<NotePath, AttachmentText>,
 }
 
 impl Index {
@@ -68,6 +71,23 @@ impl Index {
 
     pub fn source(&self, p: &NotePath) -> Option<&str> {
         self.sources.get(p).map(String::as_str)
+    }
+
+    /// Store the text of an attachment (replaces older text for that path).
+    pub fn upsert_attachment(&mut self, text: AttachmentText) {
+        self.attachments.insert(text.path.clone(), text);
+    }
+
+    pub fn remove_attachment(&mut self, path: &NotePath) {
+        self.attachments.remove(path);
+    }
+
+    pub fn attachment(&self, path: &NotePath) -> Option<&AttachmentText> {
+        self.attachments.get(path)
+    }
+
+    pub fn attachments(&self) -> impl Iterator<Item = &AttachmentText> {
+        self.attachments.values()
     }
 
     pub fn records(&self) -> impl Iterator<Item = &NoteRecord> + Clone {

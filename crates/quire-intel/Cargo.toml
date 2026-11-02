@@ -12,7 +12,7 @@ publish.workspace = true
 [features]
 default = []
 # Adds an Anthropic Messages API provider. Off by default: no network code ships unless asked for.
-remote-llm = ["dep:ureq", "dep:serde_json"]
+remote-llm = ["dep:ureq"]
 
 [dependencies]
 quire-markdown.workspace = true
@@ -23,7 +23,8 @@ unicode-segmentation.workspace = true
 thiserror.workspace = true
 crossbeam-channel.workspace = true
 ureq = { workspace = true, optional = true }
-serde_json = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

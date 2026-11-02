@@ -53,6 +53,8 @@ pub enum LlmError {
     NotConfigured(String),
     #[error("request failed: {0}")]
     Request(String),
+    #[error("stopped")]
+    Cancelled,
 }
 
 /// Strategy port for text generation.

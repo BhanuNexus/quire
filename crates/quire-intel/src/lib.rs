@@ -5,8 +5,10 @@
 //! Nothing here needs a network or a model download. An optional
 //! [`llm::LanguageModel`] port adds generative features when the user opts in.
 
+pub mod anchor;
 pub mod ask;
 pub mod calc;
+pub mod chat;
 pub mod dates;
 #[cfg(feature = "remote-llm")]
 pub mod embed;
@@ -18,6 +20,7 @@ pub mod tags;
 
 pub use ask::{Answer, Source, build_ask_request, extractive_answer, retrieve};
 pub use calc::{Calculator, format_number};
+pub use chat::{CancelFlag, ChatEvent, ChatMessage, ChatModel, ChatRequest, Locality, ScriptedChat};
 pub use dates::{DateMatch, parse_natural_date, trailing_date_phrase};
 pub use mentions::{LinkSuggestion, UnlinkedMention, suggest_links, unlinked_mentions};
 pub use related::{RelatedNote, related_notes, related_notes_with};

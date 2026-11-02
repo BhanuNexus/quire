@@ -8,6 +8,7 @@
 //! for parsing and never blocks typing on indexing.
 
 mod actor;
+pub mod attach;
 pub mod chunk;
 mod fulltext;
 mod fuzzy;
@@ -15,14 +16,17 @@ mod graph;
 mod hybrid;
 mod index;
 mod record;
+mod sections;
 pub mod semantic;
 pub mod tokenize;
 pub mod views;
 
 pub use actor::{IndexMsg, IndexService, IndexStatus, SemanticBuilder};
+pub use attach::{AttachmentKind, AttachmentText, TextSource};
 pub use fulltext::{Query, SearchHit};
 pub use fuzzy::QuickOpenHit;
 pub use graph::{Backlink, LinkGraph};
 pub use hybrid::HybridHit;
 pub use index::Index;
 pub use record::NoteRecord;
+pub use sections::{SearchFilters, SearchKind, SectionHit};
