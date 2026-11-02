@@ -309,9 +309,16 @@ pub fn relative_day(phrase: &str, today: NaiveDate) -> Option<NaiveDate> {
 /// nothing a template asks is lost silently. Kept for callers that can't
 /// ask (0.8 API). Returns the text and the `{{cursor}}` char offset.
 pub fn expand_template(tpl: &str, vars: &TemplateVars) -> (String, Option<usize>) {
+    let e = expand_deferred(tpl, vars, "");
+    (e.text, e.cursor)
+}
+
+/// Like [`expand`] without answers, but prompts without a default stay as
+/// `{{prompt:…}}`, to be filled in later ([`pending_prompts`]).
+pub fn expand_deferred(tpl: &str, vars: &TemplateVars, folder: &str) -> Expanded {
     let body = strip_meta(tpl);
     let defaults: HashMap<String, String> = required_prompts(tpl).into_iter().map(|p| (p.key.to_lowercase(), p.default)).collect();
-    // Prompts without a default stay as placeholders, for the app to fill in.
+    // Prompts without a default are hidden from expansion, then put back.
     let mut keep = String::with_capacity(body.len());
     let mut at = 0;
     for (range, inner) in placeholders(&body) {
@@ -327,8 +334,10 @@ pub fn expand_template(tpl: &str, vars: &TemplateVars) -> (String, Option<usize>
         }
     }
     keep.push_str(&body[at..]);
-    let e = expand_text(&keep, vars, "", &with_defaults(tpl, &HashMap::new()), true);
-    (e.text.replace('\u{0}', "{{").replace('\u{1}', "}}"), e.cursor)
+    let e = expand_text(&keep, vars, folder, &with_defaults(tpl, &HashMap::new()), true);
+    // Each marker becomes two characters: move the caret past them.
+    let cursor = e.cursor.map(|c| c + e.text.chars().take(c).filter(|ch| matches!(ch, '\u{0}' | '\u{1}')).count());
+    Expanded { text: e.text.replace('\u{0}', "{{").replace('\u{1}', "}}"), cursor }
 }
 
 /// Prompts left in a note made without asking (`{{prompt:Client}}`), for
@@ -397,6 +406,8 @@ mod tests {
         let (s, _) = expand_template(MEETING, &vars());
         assert_eq!(s, "---\ntags: [meeting]\n---\n# {{prompt:Topic}} with ACME\nStatus: planned\nAgain: ACME\n");
         assert_eq!(pending_prompts(&s).len(), 1);
+        let e = expand_deferred("{{prompt:A}} {{cursor}}x", &vars(), "");
+        assert_eq!((e.text.as_str(), e.cursor), ("{{prompt:A}} x", Some(13)));
         // A template whose only front matter is the settings loses the block.
         let (s, _) = expand_template("---\nquire-template:\n  folder: X\n---\nBody {{title}}\n", &vars());
         assert_eq!(s, "Body Standup\n");

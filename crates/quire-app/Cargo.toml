@@ -48,7 +48,9 @@ quire-agent.workspace = true
 # WS-D: quire-ai
 #
 # WS-E: quire-plan
-#
+quire-plan.workspace = true
+notify-rust.workspace = true
+quire-import.workspace = true
 # WS-G: quire-canvas, quire-pdf (and "quire-pdf/render" in `typeset` above)
 #
 

@@ -29,8 +29,8 @@ pub const COMPATIBILITY: &[(&str, &str, &str)] = &[
     ),
     (
         "Tasks emoji and Dataview task fields",
-        "📅 ⏳ 🛫 ✅ ➕ 🔁 priorities, [due:: …] and the rest, kept as written",
-        "🆔 ⛔ 🏁 are kept but not used",
+        "due, scheduled, start, done, created, repeat and priority, as emoji or [due:: …] fields, kept as written",
+        "task ids, dependencies (blocked by) and on-completion actions are kept but not used",
     ),
     (
         "Kanban boards",

@@ -108,11 +108,18 @@ pub(crate) fn show(ui: &mut Ui, ws: &Workspace, pal: &Palette, spec_src: &str, f
                 ui.label(RichText::new(format!("View error: {e}")).color(pal.danger).size(12.5));
             }
             Ok(r) => match spec.layout {
+                // WS-E: task rows, agenda and timeline layouts.
+                _ if spec.tasks => crate::agenda_ui::view(ui, ws, pal, &spec, r, key),
+                Layout::Agenda | Layout::Timeline => crate::agenda_ui::view(ui, ws, pal, &spec, r, key),
                 Layout::Table => table(ui, pal, &spec, r, key, &mut act),
                 Layout::List => list(ui, pal, &spec, r, &mut act),
                 Layout::Kanban => kanban(ui, pal, &spec, r, key, &mut act),
                 Layout::Calendar => calendar(ui, pal, r, key, &mut act),
             },
+        }
+        // WS-E: "+ New" for views with `new: Templates/…`.
+        if let Ok(r) = result.as_ref() {
+            crate::template_prompt_ui::new_button(ui, ws, pal, &spec, from, &r.groups, key);
         }
     });
     act

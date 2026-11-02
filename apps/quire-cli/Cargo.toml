@@ -29,7 +29,8 @@ quire-mcp.workspace = true
 # WS-D: quire-ai, quire-assistant
 #
 # WS-E: quire-plan
-#
+chrono.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -249,8 +249,7 @@ pub fn parse(src: &str) -> Result<ViewSpec, String> {
         spec.group = Some("status".into());
     }
     if matches!(spec.layout, Layout::Calendar | Layout::Agenda | Layout::Timeline) && spec.date.is_none() {
-        let fallback = if spec.tasks { "due" } else { "date" };
-        spec.date = Some(spec.sort.as_ref().map_or_else(|| fallback.into(), |s| s.0.clone()));
+        spec.date = Some(spec.sort.as_ref().map_or_else(|| "date".into(), |s| s.0.clone()));
     }
     if spec.tasks && spec.fields == ["title"] {
         spec.fields = vec!["text".into()];
@@ -436,6 +435,14 @@ impl Fields for TaskFields<'_> {
             "recurrence" | "repeat" => t.recurrence.clone(),
             "reminder" => t.reminder.clone(),
             "time" => t.time_block.as_ref().map(|(a, b)| if b.is_empty() { a.clone() } else { format!("{a}–{b}") }),
+            // When it's planned: due, else scheduled, else start; a time
+            // block in a daily note (`2026-11-03.md`) is on that day.
+            "date" => t
+                .due
+                .clone()
+                .or_else(|| t.scheduled.clone())
+                .or_else(|| t.start.clone())
+                .or_else(|| t.time_block.as_ref().map(|_| self.note.name.clone()).filter(|n| frontmatter::is_date(n))),
             "path" | "file" => Some(self.note.path.as_str().to_string()),
             "note" => Some(self.note.title.clone()),
             "folder" => Some(self.note.path.folder().to_string()),
@@ -566,7 +573,7 @@ fn sort_rows<T>(rows: &mut [(T, ViewRow)], spec: &ViewSpec, get: impl Fn(&T, &st
             o.then_with(|| ra.title.to_lowercase().cmp(&rb.title.to_lowercase()))
         }),
         None if spec.tasks => rows.sort_by(|(a, ra), (b, rb)| {
-            let key = |t: &T, r: &ViewRow| (r.task.as_ref().is_some_and(|t| t.task.done), get(t, "due").is_none(), get(t, "due"));
+            let key = |t: &T, r: &ViewRow| (r.task.as_ref().is_some_and(|t| t.task.done), get(t, "date").is_none(), get(t, "date"));
             key(a, ra).cmp(&key(b, rb)).then_with(|| ra.path.cmp(&rb.path))
         }),
         None => rows.sort_by_key(|(_, a)| a.title.to_lowercase()),
@@ -1009,11 +1016,24 @@ pub mod tasks_query {
     const DATE_FIELDS: [(&str, &str); 5] =
         [("due", "due"), ("scheduled", "scheduled"), ("starts", "start"), ("start", "start"), ("done", "done")];
 
+    /// A date the views understand: a day, `today`/`tomorrow`/`yesterday`,
+    /// `in 7 days`, `in 2 weeks`, `3 days ago`.
     fn date_word(v: &str) -> Option<String> {
-        let v = v.trim();
-        match v.to_ascii_lowercase().as_str() {
-            w @ ("today" | "tomorrow" | "yesterday") => Some(w.to_string()),
-            d if quire_markdown::frontmatter::is_date(d) && d.len() == 10 => Some(d.to_string()),
+        let v = v.trim().to_ascii_lowercase();
+        let words: Vec<&str> = v.split_whitespace().collect();
+        let span = |n: &str, unit: &str| -> Option<i64> {
+            let n: i64 = n.parse().ok()?;
+            match unit.trim_end_matches('s') {
+                "day" => Some(n),
+                "week" => Some(n * 7),
+                _ => None,
+            }
+        };
+        match words.as_slice() {
+            [w @ ("today" | "tomorrow" | "yesterday")] => Some((*w).to_string()),
+            [d] if quire_markdown::frontmatter::is_date(d) && d.len() == 10 => Some((*d).to_string()),
+            ["in", n, unit] => span(n, unit).map(|d| format!("today+{d}d")),
+            [n, unit, "ago"] => span(n, unit).map(|d| format!("today-{d}d")),
             _ => None,
         }
     }
@@ -1042,6 +1062,7 @@ pub mod tasks_query {
         let parts: Vec<&str> = v.split_whitespace().collect();
         if let [a, b] = parts.as_slice()
             && op == "="
+            && quire_markdown::frontmatter::is_date(a)
         {
             return Some(vec![format!("{field} >= {}", date_word(a)?), format!("{field} <= {}", date_word(b)?)]);
         }
@@ -1156,7 +1177,7 @@ pub mod tasks_query {
                 let f = f.split_whitespace().next().unwrap_or("");
                 match (sort_field(f), &group) {
                     (Some(q), None) if matches!(q, "due" | "path" | "priority" | "note" | "status" | "scheduled" | "start" | "done") => {
-                        group = Some(q)
+                        group = Some(q);
                     }
                     (Some(_), Some(_)) => out.skip("grouping by more than one field"),
                     (_, _) if f == "folder" && group.is_none() => group = Some("folder"),
@@ -1383,6 +1404,8 @@ mod tests {
 
     #[test]
     fn tasks_query_fixtures() {
+        assert_eq!(tasks_query::translate("due before in 7 days").spec, "from: tasks\nwhere: due < today+7d\nlayout: list\n");
+        assert_eq!(tasks_query::translate("done after 2 weeks ago").spec, "from: tasks\nwhere: done > today-14d\nlayout: list\n");
         let t = tasks_query::translate(
             "not done\ndue before tomorrow\npath includes Work/\ntag includes #release\npriority is high\nsort by priority reverse\ngroup by path\nlimit to 20 tasks\nhide edit button\n",
         );
