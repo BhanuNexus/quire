@@ -16,6 +16,11 @@ zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 htmd = "0.5"
 base64 = "0.23"
 md5 = "0.8"
+# URL capture (`web`, WS-B): fetch, Readability extraction, charset decoding.
+ureq.workspace = true
+dom_smoothie.workspace = true
+encoding_rs.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

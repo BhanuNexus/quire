@@ -15,6 +15,8 @@ mod markdown;
 mod notion;
 mod tree;
 pub mod yaml;
+// WS-B: URL capture.
+pub mod web;
 
 use std::path::Path;
 
