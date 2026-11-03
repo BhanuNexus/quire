@@ -173,28 +173,32 @@ impl Index {
             return Vec::new();
         }
         let terms = q.highlight_terms();
-        let mut hits: Vec<SearchHit> = self
+        let mut ranked: Vec<(NotePath, f32)> = self
             .fulltext
             .rank(&q)
             .into_iter()
+            .filter(|(path, _)| {
+                let Some(rec) = self.records.get(path) else { return false };
+                if !q.tags.iter().all(|t| rec.has_tag(t)) {
+                    return false;
+                }
+                q.phrases.is_empty() || {
+                    let folded = crate::tokenize::fold_str(&rec.plain);
+                    q.phrases.iter().all(|ph| folded.contains(ph.as_str()))
+                }
+            })
+            .collect();
+        ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        ranked.truncate(limit);
+        // Snippets only for what is shown.
+        ranked
+            .into_iter()
             .filter_map(|(path, score)| {
                 let rec = self.records.get(&path)?;
-                if !q.tags.iter().all(|t| rec.has_tag(t)) {
-                    return None;
-                }
-                if !q.phrases.is_empty() {
-                    let folded = crate::tokenize::fold_str(&rec.plain);
-                    if !q.phrases.iter().all(|ph| folded.contains(ph.as_str())) {
-                        return None;
-                    }
-                }
                 let (snippet, highlights) = snippet(&rec.plain, &terms, 140);
                 Some(SearchHit { path, title: rec.title.clone(), score, snippet, highlights })
             })
-            .collect();
-        hits.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.path.cmp(&b.path)));
-        hits.truncate(limit);
-        hits
+            .collect()
     }
 
     /// How rare a (folded, stemmed) word is in the vault's notes; `None`

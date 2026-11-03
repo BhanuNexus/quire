@@ -101,12 +101,17 @@ pub fn fold_str(s: &str) -> String {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Folded {
     pub text: String,
-    /// For each byte of `text`, the byte range of the original char it came from.
+    /// For each byte of `text`, the byte range of the original char it came
+    /// from (empty for ASCII text, which folds in place).
     origin: Vec<(u32, u32)>,
 }
 
 impl Folded {
     pub fn new(s: &str) -> Self {
+        if s.is_ascii() {
+            // One byte each, in place: no map needed.
+            return Self { text: s.to_ascii_lowercase(), origin: Vec::new() };
+        }
         let mut text = String::with_capacity(s.len());
         let mut origin = Vec::with_capacity(s.len());
         for (at, c) in s.char_indices() {
@@ -124,6 +129,10 @@ impl Folded {
     /// ends inside one folded-from char (the second `s` of "ß"→"ss") takes
     /// the whole char.
     pub fn original(&self, r: Range<usize>) -> Range<usize> {
+        if self.origin.is_empty() {
+            let end = self.text.len();
+            return r.start.min(end)..r.end.min(end).max(r.start.min(end));
+        }
         let Some(&(start, _)) = self.origin.get(r.start) else {
             let end = self.origin.last().map_or(0, |o| o.1 as usize);
             return end..end;

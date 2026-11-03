@@ -104,7 +104,47 @@ and why, what it needs from others, and the numbers its thresholds rest on.
 
 ## Thresholds and the numbers behind them
 
-See "Calibration" below (filled in from `quire-cli eval synthetic-edits`).
+`quire-cli eval synthetic-edits` (dev build, built-in LSA embedder; seed 42,
+seed 7 in brackets):
+
+| Measure | Before WS-C's retrieval fixes | Now |
+|---|---|---|
+| recall@6 (section covers the gold line) | 1.0 | 1.0 (1.0) |
+| note recall@6 | 1.0 | 1.0 (1.0) |
+| citation span accuracy (≥ 50% of the cited lines are the gold line) | 0.575 | **1.0** (1.0) |
+| `view` tokens per answer | 57.5 | 55.8 (55.6) |
+| latency p50 / p95 (search + ask + view) | 52 / 76 ms | 53 / 74 ms (57 / 85 ms) |
+| abstain precision / recall | — / 0.0 | — / 0.0 (by choice, below) |
+
+The span fixes: passages found by keywords are scored by meaning too (their
+stored vectors), candidate notes are weighted by BM25 rather than by how
+many question words they match, a shared 4-letter stem counts ("owns" /
+"owner"), and a section whose heading names the question's word gets a small
+bonus.
+
+**Abstain** (design §C.4, written there too): on the suite, answerable
+questions have best-passage similarity 0.91–0.96 and coverage 1.0;
+unanswerable ones 0.52–0.95 and 0.16–0.58, so "coverage < 0.6" alone would
+be perfect there. On the repo's sample vault, answerable questions have
+similarity 0.22–0.62 and coverage 0.29–1.0, and that rule says "Not found"
+to 4 of 12. Shipped: **τ_sem 0.30 (LSA), coverage < 0.5** (no wrong "Not
+found" on either; a test guards the sample vault), τ_sem 0.35 for neural
+embedders (unmeasured). With a model, `NOT_FOUND` decides.
+
+**Contradictions** (§C.5): unmeasured (no fixtures, no judge in the eval);
+the design's cut-offs stand (candidates 0.55 neural / 0.35 LSA, contradiction
+0.75, tension 0.85), and the feature is a Preview, off by default.
+
+**Drift**: `Drifted` from 0.75 similarity, `Moved` through the history diff
+from 0.9 (design values; the anchor matrix test covers each case).
+
+**Staleness**: the design's formula and 0.6 flag; on the demo vault a note
+untouched for 10 months that says "currently" twice and states a past year
+scores ≥ 0.6, a fresh one 0.
+
+**Section search** (§9 ≤ 15 ms release): not measured in release (the gate
+forbids release builds); `cargo test -p quire-index -- --ignored
+section_search_speed --nocapture` prints p50/p95 on 2,000 notes.
 
 ## Known limits
 

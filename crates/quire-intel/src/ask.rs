@@ -27,13 +27,23 @@ use crate::chat::ChatRequest;
 use crate::llm::LlmRequest;
 
 /// Abstain when the best passage's meaning similarity is below this
-/// (built-in LSA embedder) … (calibrated with `quire-cli eval
-/// synthetic-edits`; see docs/design/0.9.md §C.4).
-pub const TAU_SEM_LSA: f32 = 0.15;
-/// … or this (neural embedders, which score unrelated text higher) …
+/// (built-in LSA embedder) …
+///
+/// Calibrated with `quire-cli eval synthetic-edits` and the sample vault
+/// (design §C.4, "Calibration"): LSA similarities don't compare across
+/// vaults (0.52–0.95 for the suite's unanswerable questions, 0.22–0.62 for
+/// the sample vault's answerable ones), so the value is the highest that
+/// says "Not found" to none of the questions whose answer is in the text of
+/// either (`abstain_is_calibrated_on_the_sample_vault`).
+pub const TAU_SEM_LSA: f32 = 0.30;
+/// … or this (neural embedders, which score unrelated text higher; the
+/// eval has no neural embedder yet, so this is the design's start) …
 pub const TAU_SEM_NEURAL: f32 = 0.35;
-/// … and the question's distinctive words are covered less than this.
+/// … and the question's distinctive words are covered less than this
+/// (answerable questions: 1.0 in the suite, ≥ 0.29 in the sample vault).
 pub const COVERAGE_MIN: f32 = 0.5;
+/// Extra score for a passage whose heading covers the question's words.
+const HEADING_BONUS: f32 = 0.3;
 /// What a model answers when the sources don't hold the answer.
 pub const NOT_FOUND: &str = "NOT_FOUND";
 /// What the person sees then.
@@ -142,20 +152,23 @@ pub fn retrieve(ix: &Index, semantic: Option<&SemanticIndex>, question: &str, k:
         }
     }
 
-    // Keywords, OR-combined: notes matching more question terms rank higher.
-    let mut note_hits: HashMap<NotePath, usize> = HashMap::new();
+    // Keywords, OR-combined: notes matching more of the question's rarer
+    // words rank higher (each word's BM25 score, so "project" in every note
+    // counts for little).
+    let mut note_hits: HashMap<NotePath, f32> = HashMap::new();
     for t in &q_terms {
-        for h in ix.search(&format!("{t} "), 12) {
-            *note_hits.entry(h.path).or_default() += 1;
+        for h in ix.search(&format!("{t} "), 30) {
+            *note_hits.entry(h.path).or_default() += h.score;
         }
     }
-    let mut notes: Vec<(NotePath, usize)> = note_hits.into_iter().collect();
-    notes.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let mut notes: Vec<(NotePath, f32)> = note_hits.into_iter().collect();
+    notes.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     for (path, _) in notes.into_iter().take(6) {
         let Some(src) = ix.source(&path) else { continue };
         for c in chunk_note(&path, src) {
             let toks: HashSet<String> = content_tokens(&c.text).collect();
-            let overlap = q_terms.iter().filter(|t| toks.contains(*t)).count();
+            // "owns" finds "owner": a shared stem counts.
+            let overlap = q_terms.iter().filter(|t| covers(&toks, t)).count();
             if overlap == 0 {
                 continue;
             }
@@ -164,6 +177,36 @@ pub fn retrieve(ix: &Index, semantic: Option<&SemanticIndex>, question: &str, k:
         }
     }
 
+    // Passages found by keywords alone get their meaning score too, so the
+    // two kinds compare fairly.
+    if let Some(sem) = semantic {
+        let qv = sem.embed_query(question);
+        for ((path, start), e) in &mut cand {
+            if e.4 == 0.0
+                && let Some(v) = sem.vector_of(path, *start)
+            {
+                let sim = v.iter().zip(&qv).map(|(a, b)| a * b).sum::<f32>().max(0.0);
+                e.3 += sim;
+                e.4 = sim;
+            }
+        }
+    }
+    // A section whose heading names what is asked ("Status" for "what is
+    // the status…") answers it more likely than one that mentions it.
+    // Only the heading's own words count: not the note's title (an H1).
+    for ((path, _), e) in &mut cand {
+        if let Some(h) = &e.1 {
+            let title: HashSet<String> =
+                content_tokens(path.stem()).chain(content_tokens(e.2.lines().next().unwrap_or_default())).collect();
+            let own: Vec<(String, f32)> = w.iter().filter(|(t, _)| !covers(&title, t)).cloned().collect();
+            let total: f32 = w.iter().map(|x| x.1).sum();
+            if total > 0.0 && !own.is_empty() {
+                let toks: HashSet<String> = content_tokens(h).filter(|t| !title.contains(t)).collect();
+                let hit: f32 = own.iter().filter(|(t, _)| covers(&toks, t)).map(|x| x.1).sum();
+                e.3 += HEADING_BONUS * hit / total;
+            }
+        }
+    }
     let mut list: Vec<_> = cand.into_iter().collect();
     list.sort_by(|a, b| b.1.3.total_cmp(&a.1.3).then_with(|| a.0.cmp(&b.0)));
     list.into_iter()
@@ -653,5 +696,55 @@ mod tests {
         assert_eq!(cs[0].note(), "Rope Notes");
         assert_eq!(cs[0].claim.as_deref(), Some("Subtrees are shared."));
         assert_eq!(answer_folder(true), "wiki/answers");
+    }
+
+    fn sample_vault() -> Index {
+        fn walk(d: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(d).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "md") {
+                    out.push(p);
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sample-vault");
+        let mut files = Vec::new();
+        walk(&root, &mut files);
+        let mut ix = Index::new();
+        for f in files {
+            let rel = f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+            ix.upsert(NotePath::new(rel), &std::fs::read_to_string(&f).unwrap());
+        }
+        ix
+    }
+
+    /// The calibration's guard (design §C.4): on the sample vault, questions
+    /// its text answers never get "Not found"; unrelated ones do.
+    #[test]
+    fn abstain_is_calibrated_on_the_sample_vault() {
+        let ix = sample_vault();
+        let sem = sem(&ix);
+        for q in [
+            "Why do editors use ropes?",
+            "What does Emacs use to store text?",
+            "Which editor uses a piece table?",
+            "Why is undo cheap?",
+            "What is the architecture of Quire?",
+            "How fast is jumping to a line?",
+            "What are the plans for sync?",
+            "How are the layers of the app arranged?",
+            "What is the budget for designers?",
+            "Which data structure is best for large documents with scattered edits?",
+            "Is there a mobile version?",
+            "What did I write about importers?",
+        ] {
+            let s = retrieve(&ix, Some(&sem), q, 6);
+            assert!(!should_abstain(&s, Some(&sem)), "{q}: {:?}", s.iter().map(|x| (x.sim, x.coverage)).collect::<Vec<_>>());
+        }
+        for q in ["What is the capital of Australia?", "What did the doctor say about my knee?", "Who is the CEO of the company?"] {
+            assert!(should_abstain(&retrieve(&ix, Some(&sem), q, 6), Some(&sem)), "{q}");
+        }
     }
 }

@@ -260,7 +260,7 @@ mod tests {
         assert_eq!(words("Cafe", cased), ["Café"]);
         assert_eq!(words("CAFE", cased), ["CAFÉ"]);
         let word = FindOptions { whole_word: true, ..loose };
-        assert_eq!(words("caf", word), Vec::<String>::new());
+        assert_eq!(words("trasse", word), Vec::<String>::new(), "whole words only");
         assert_eq!(words("a.b(", loose), Vec::<String>::new(), "punctuation is escaped");
         let (out, n) = replace_in_string("un café", &compile("cafe", loose).unwrap(), "bar", loose);
         assert_eq!((out.as_str(), n), ("un bar", 1));

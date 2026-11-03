@@ -26,8 +26,8 @@ use crate::tokenize::{fold_str, tokens};
 const RRF_K: f32 = 60.0;
 /// Minimum cosine for a passage found by meaning alone.
 pub(crate) const MEANING_THRESHOLD: f32 = 0.2;
-/// Notes whose parts are ranked for keywords.
-const KEYWORD_NOTES: usize = 100;
+/// Notes whose parts are ranked for keywords, per hit asked for (at least 20).
+const KEYWORD_NOTES_PER_HIT: usize = 3;
 /// BM25's term-frequency saturation, used for parts too.
 const K1: f32 = 1.2;
 
@@ -138,7 +138,7 @@ impl Index {
     }
 
     /// Parts of notes matching `query`'s keywords, best first.
-    fn keyword_parts(&self, q: &Query, allowed: Option<&HashSet<NotePath>>) -> Vec<Cand> {
+    fn keyword_parts(&self, q: &Query, allowed: Option<&HashSet<NotePath>>, limit: usize) -> Vec<Cand> {
         let mut notes: Vec<(NotePath, f32)> = self
             .fulltext
             .rank(q)
@@ -156,7 +156,7 @@ impl Index {
             })
             .collect();
         notes.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        notes.truncate(KEYWORD_NOTES);
+        notes.truncate((limit * KEYWORD_NOTES_PER_HIT).max(20));
         let top = notes.first().map_or(1.0, |n| n.1.max(1e-6));
         let weights: Vec<(&str, f32)> = q.terms.iter().map(|t| (t.as_str(), self.fulltext.term_idf(t).max(0.1))).collect();
         let prefix = q.prefix.as_deref().map(|p| (p, self.fulltext.term_idf(p).max(0.5)));
@@ -210,7 +210,7 @@ impl Index {
         let allowed = self.allowed(filters);
         let mut fused: HashMap<(NotePath, usize), Cand> = HashMap::new();
         if filters.kind != SearchKind::Attachments {
-            for (rank, c) in self.keyword_parts(&q, allowed.as_ref()).into_iter().enumerate() {
+            for (rank, c) in self.keyword_parts(&q, allowed.as_ref(), limit).into_iter().enumerate() {
                 let score = 1.0 / (RRF_K + rank as f32 + 1.0);
                 fused.insert((c.path.clone(), c.range.start), Cand { score, ..c });
             }
@@ -471,6 +471,23 @@ mod tests {
         }
         times.sort();
         eprintln!("section search, 2,000 notes: p50 {:?}, p95 {:?}", times[times.len() / 2], times[times.len() * 95 / 100]);
+        let ix = s.read();
+        let t = std::time::Instant::now();
+        for q in ["rope undo", "cafe", "editor buffer", "gap cursor", "piece table", "line node"] {
+            let _ = ix.search_sections(None, q, &SearchFilters::default(), 10);
+        }
+        eprintln!("keywords only: {:?} per query", t.elapsed() / 6);
+        let sem = s.semantic().unwrap();
+        let t = std::time::Instant::now();
+        for q in ["rope undo", "cafe", "editor buffer", "gap cursor", "piece table", "line node"] {
+            let _ = sem.search(q, 80);
+        }
+        eprintln!("semantic search alone ({} passages): {:?} per query", sem.len(), t.elapsed() / 6);
+        let t = std::time::Instant::now();
+        for q in ["rope undo", "cafe", "editor buffer", "gap cursor", "piece table", "line node"] {
+            let _ = ix.search(q, 10);
+        }
+        eprintln!("note search (BM25): {:?} per query", t.elapsed() / 6);
     }
 
     #[test]
