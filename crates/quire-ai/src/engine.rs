@@ -68,8 +68,8 @@ impl std::error::Error for EngineError {}
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EngineConfig {
     pub path: Option<PathBuf>,
-    /// SHA-256 the binary must have (a downloaded engine); checked before
-    /// the first start.
+    /// SHA-256 the binary must have (a downloaded engine); checked every
+    /// time the engine starts.
     pub sha256: Option<String>,
     /// Inference threads (0: the engine decides). Takes effect when the
     /// engine next starts.
@@ -112,7 +112,6 @@ struct Shared {
     next_id: AtomicU64,
     crashes: Mutex<u32>,
     gave_up: Mutex<Option<String>>,
-    verified: Mutex<Option<(PathBuf, std::time::SystemTime)>>,
     snapshot: Mutex<EngineSnapshot>,
 }
 
@@ -141,7 +140,6 @@ impl Engine {
                 next_id: AtomicU64::new(1),
                 crashes: Mutex::new(0),
                 gave_up: Mutex::new(None),
-                verified: Mutex::new(None),
                 snapshot: Mutex::new(EngineSnapshot::default()),
             }),
         }
@@ -440,7 +438,7 @@ impl Engine {
     }
 
     /// Start the engine if it isn't running (counting crashes), verify its
-    /// binary once, and say hello.
+    /// binary, and say hello.
     fn ensure_running(&self, guard: &mut MutexGuard<'_, Option<Proc>>, timeout: Duration) -> Result<HelloResult, EngineError> {
         if let Some(p) = guard.as_mut() {
             if p.alive.load(Ordering::Acquire)
@@ -462,7 +460,7 @@ impl Engine {
         }
         let cfg = lock(&self.shared.cfg).clone();
         let path = cfg.path.clone().filter(|p| p.is_file()).ok_or(EngineError::NotInstalled)?;
-        self.verify(&path, cfg.sha256.as_deref())?;
+        Self::verify(&path, cfg.sha256.as_deref())?;
         let mut p = spawn(&path, cfg.threads, &cfg.env)?;
         let hello = Request {
             id: 0,
@@ -502,14 +500,11 @@ impl Engine {
         Ok(h)
     }
 
-    /// A downloaded engine must still be the file that was verified.
-    fn verify(&self, path: &Path, sha: Option<&str>) -> Result<(), EngineError> {
+    /// A downloaded engine must still be the file that was verified. It is
+    /// hashed again before every start (about 18 MB, once per process
+    /// start): a file swapped with its modification time restored is caught.
+    fn verify(path: &Path, sha: Option<&str>) -> Result<(), EngineError> {
         let Some(sha) = sha.filter(|s| !s.is_empty()) else { return Ok(()) };
-        let mtime = std::fs::metadata(path).and_then(|m| m.modified()).map_err(|e| EngineError::Failed(e.to_string()))?;
-        let mut v = lock(&self.shared.verified);
-        if v.as_ref().is_some_and(|(p, t)| p == path && *t == mtime) {
-            return Ok(());
-        }
         let got = crate::download::sha256_file(path).map_err(|e| EngineError::Failed(e.to_string()))?;
         if !got.eq_ignore_ascii_case(sha) {
             return Err(EngineError::GaveUp(
@@ -517,7 +512,6 @@ impl Engine {
                     .into(),
             ));
         }
-        *v = Some((path.to_path_buf(), mtime));
         Ok(())
     }
 }
@@ -635,5 +629,20 @@ mod tests {
         let missing = Engine::at("/nonexistent/quire-ai-engine");
         assert_eq!(missing.hello(Duration::from_millis(100)), Err(EngineError::NotInstalled));
         assert!(!missing.snapshot().installed);
+    }
+
+    #[test]
+    fn the_binary_is_hashed_at_every_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("quire-ai-engine");
+        std::fs::write(&bin, b"the engine that was downloaded").unwrap();
+        let sha = crate::download::sha256_file(&bin).unwrap();
+        Engine::verify(&bin, Some(&sha)).unwrap();
+        // Swapped by another process, with its modification time put back.
+        let mtime = std::fs::metadata(&bin).unwrap().modified().unwrap();
+        std::fs::write(&bin, b"something else entirely, same size?").unwrap();
+        std::fs::File::options().write(true).open(&bin).unwrap().set_modified(mtime).unwrap();
+        assert!(matches!(Engine::verify(&bin, Some(&sha)), Err(EngineError::GaveUp(_))));
+        Engine::verify(&bin, None).unwrap();
     }
 }
