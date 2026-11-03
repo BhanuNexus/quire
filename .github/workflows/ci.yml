@@ -19,7 +19,9 @@ env:
 jobs:
   lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The workspace includes the on-device AI engine (candle, tokenizers,
+    # ocrs): a cold cache takes a while.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -61,7 +63,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-15, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # Includes building candle for the AI engine (cold cache: 10+ minutes more).
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -74,6 +77,9 @@ jobs:
       - name: Quire Lite tests (the desktop and CLI without the typesetter)
         if: matrix.os == 'ubuntu-latest'
         run: cargo test -p quire-desktop -p quire-cli --no-default-features --locked
+      - name: PDF rendering tests (behind the full edition's `render` feature)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo test -p quire-pdf --features render --locked
       - name: Agent edit eval (synthetic edits against the MCP tools, design §B.6)
         if: matrix.os == 'ubuntu-latest'
         run: cargo run -p quire-cli --features eval --locked -- eval synthetic-edits --json

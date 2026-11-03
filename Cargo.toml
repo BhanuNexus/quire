@@ -113,6 +113,8 @@ notify-rust = "4.18.2"
 # 0.7 is what Typst links; 0.8 exists, but two copies would cost size in the full build.
 hayro = "0.7"
 hayro-interpret = "0.7"
+# The geometry types of hayro-interpret's `Device` trait (quire-pdf).
+kurbo = "0.13"
 biblatex = "0.12.0"
 agent-client-protocol-schema = "1.15.1"
 half = "2.7.1"

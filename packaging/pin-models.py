@@ -23,6 +23,7 @@ with unpinned entries (`--check`).
 
 import hashlib
 import json
+import os
 import re
 import sys
 import tomllib
@@ -90,6 +91,15 @@ def main():
     if "--check" in args:
         for m, f in todo:
             print(f"unpinned: {m['id']} / {f['name']}")
+        if todo:
+            msg = (
+                f"{len(todo)} model file(s) in crates/quire-ai/src/catalog.toml have no sha256 and size, "
+                "so the on-device models can't be downloaded from this release. On a machine that can reach "
+                "huggingface.co, run `python3 packaging/pin-models.py`, review the diff, run "
+                "`cargo test -p quire-ai` and commit it before tagging."
+            )
+            # GitHub Actions shows `::error::` lines on the run's summary page.
+            print(f"::error::{msg}" if os.environ.get("GITHUB_ACTIONS") else msg, file=sys.stderr)
         sys.exit(1 if todo else 0)
     results = {}
     revisions = {}

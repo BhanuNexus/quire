@@ -62,9 +62,13 @@ jobs:
               exit 1
             fi
             packaging/release-notes.sh "$version" > /dev/null
-            # On-device models download only with pinned hashes (design §D.2).
-            python3 packaging/pin-models.py --check
           fi
+      - name: On-device models are pinned (tag releases only)
+        # Unpinned models are never downloaded (Settings says "Not available
+        # in this build"), so dry runs and branches build without pins; a
+        # published release must not ship that way (design §D.2).
+        if: env.IS_RELEASE == 'true'
+        run: python3 packaging/pin-models.py --check
       - name: Install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - run: cargo test --workspace --locked

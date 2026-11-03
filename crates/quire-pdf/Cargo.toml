@@ -25,10 +25,8 @@ strsim.workspace = true
 sha2.workspace = true
 hayro-interpret = { workspace = true, optional = true }
 hayro = { workspace = true, optional = true }
-# The geometry types in hayro-interpret's `Device` trait (already in the
-# lock through hayro; not in [workspace.dependencies] yet, see
-# docs/design/handoff/ws-g.md).
-kurbo = { version = "0.13", optional = true }
+# The geometry types in hayro-interpret's `Device` trait (not re-exported).
+kurbo = { workspace = true, optional = true }
 
 [lints]
 workspace = true
