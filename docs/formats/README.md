@@ -54,9 +54,11 @@ F0 is the foundation step, after which its files are frozen).
 | task fields in notes (`📅`, `[due:: …]`, `🔁`) | Markdown | [tasks.md](tasks.md) | WS-E | read and written |
 | `Templates/*.md` (`{{…}}`, `quire-template:`) | Markdown | [templates.md](templates.md) | WS-E | read |
 | flashcards in notes (`::`, `?`, `==cloze==`) | Markdown | [srs.md](srs.md#cards-in-notes) | WS-E | read; `^k-` ids written on request |
-| `*.canvas` | JSON Canvas 1.0, one object per line | [canvas.md](canvas.md) | WS-G | format only |
-| `attachments/<canvas>-ink-<n>.svg` | SVG with `data-quire-*` attributes | [canvas.md](canvas.md) | WS-G | format only |
-| `<pdf> (annotations).md` | Markdown + `quire:pdf-anchor` | [pdf-annotations.md](pdf-annotations.md) | WS-G | format only |
+| `*.canvas` | JSON Canvas 1.0, one object per line | [canvas.md](canvas.md) | WS-G | read and written |
+| `attachments/<canvas>-ink-<n>.svg` | SVG with `data-quire-*` attributes | [canvas.md](canvas.md) | WS-G | read and written |
+| `<pdf> (annotations).md` | Markdown + `quire:pdf-anchor` | [pdf-annotations.md](pdf-annotations.md) | WS-G | read and written |
+| `.quire/cache/pdf-text/<sha256>.json` | JSON, format 1 (cache) | [pdf-annotations.md](pdf-annotations.md#pdf-text-cache-quirecachepdf-textsha256json) | WS-G | written |
+| `[@key]` in notes, library `.bib` files | Pandoc citations, BibTeX | [citations.md](citations.md) | WS-G | read; `.bib` written by Import |
 | `<config>/settings.toml` | TOML | [settings.md](settings.md) | F0 (each table: its feature) | read and written |
 | `<config>/device.toml` | TOML, format 1 | [settings.md](settings.md#devicetoml) | F0 | written |
 | `<config>/themes/*.toml`, `<config>/fonts/*` | TOML, format 1 | [themes.md](themes.md) | WS-F | read (and a template written on request) |

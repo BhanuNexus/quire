@@ -50,3 +50,18 @@ can't parse back are matched against the 30 years around today).
 * A file with `format` above 1, or one that can't be parsed, is read as far
   as possible and never saved over (`PrefsError::NewerFormat`,
   `PrefsError::Unreadable`).
+
+## `[citations]` (WS-G)
+
+```toml
+[citations]
+library = "references.bib"        # or a list: ["references.bib", "refs/thesis.bib"]
+style = "apa"                     # PDF export: "apa", "chicago-author-date" or "ieee"
+watch = "~/Zotero/My Library.bib" # a file outside the vault, merged in when it changes
+```
+
+Every key is optional: the library defaults to `references.bib` when it
+exists, the style to APA, and nothing is watched. Only Typst's built-in
+styles are accepted (no style files). `watch` is checked every few seconds
+while Quire runs; on a device where the path doesn't exist nothing happens.
+See [citations.md](citations.md).
