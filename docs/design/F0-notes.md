@@ -279,6 +279,104 @@ New `[editing] new_note_folder` (`"current"`, default, or `"root"`).
   notes are kept out of the index at start but a template saved while Quire
   runs shows up in the Files tab (0.8 behaviour).
 
+## Integration (wave 2) additions
+
+Wave 2 (WS-C, WS-D, WS-G) is merged on `feat/0.9-integration`. What the
+merge added or changed for everyone, beyond each workstream's hand-off:
+
+### AI model
+
+* **`Workspace::trust_chat()`** is the chat model features use: the
+  configured provider, else the on-device model (`ai::chat_model`). It is
+  built once when AI settings change (`apply_ai_settings`, which also
+  bumps `chat_generation`) instead of on every call, so no keychain read
+  happens on the UI thread per frame. `Workspace::set_chat_model` swaps it
+  (embedders, tests). Background jobs get the same model (`JobCx::chat`).
+* Settings → Trust is part of **Settings → AI** (its Features section calls
+  `trust_ui::settings_tab`); there is one place for Ask style, citation
+  checks, staleness and contradictions.
+
+### Agent panel
+
+* `ws.features.trust.reconcile` (an Inbox contradiction's "Ask agent to
+  reconcile") is taken by the panel: a new Agent-mode conversation with
+  the prompt and both notes as `@` mentions. With no model, or a run going,
+  the request waits in the message box.
+* The composer has `@note` and `#tag` chips (type `@` or `#`; Tab or a
+  click picks). `runner::mentions_message` turns them into context.
+
+### PDFs, OCR and search
+
+* PDF text: WS-G's `pdf-text` job sends every PDF as
+  `IndexMsg::UpsertAttachment` (one string per page, empty for pages with
+  no text). The OCR job (`ai::ocr`) reads images itself and takes scanned
+  PDF pages from `pdf_state::take_ocr_requests` (a few at a time, on the UI
+  thread's tick), sending the text back through `pdf_state::ocr_result`,
+  which caches it with the PDF's text and re-sends the PDF to the index.
+  `pdf_state::queue_ocr` runs when OCR becomes available.
+* Without a job runner (the CLI, the MCP server): `pdf_state::index_pdfs`
+  (from the cache, or read now) and `pdf_state::pdf_changed`. The MCP
+  server reads PDFs when it opens and on `AttachmentChanged`.
+* `SectionHit::place()` is "paper.pdf p. 3" for attachment hits. The app's
+  Search tab lists page hits under the notes (a click opens the viewer at
+  the page, or the PDF's text in Lite), as do `quire-cli search` and MCP
+  `search` (`page` in the structured hit). MCP `search` answers
+  `invalid_args` for a bad `filters.where` (`SearchFilters::validate`).
+
+### UI hooks
+
+* **`UiRequest::SideBySide(a, b)`**: `a` on the left, `b` on the right and
+  active, opening them as needed; never closes a split (unlike `Split`).
+  "Open both" uses it.
+* **`registry::EDITOR_HOVERS`** (`HoverDef { tip }`): a tooltip over the
+  note's text, given the hovered line and byte; first match wins. Citations
+  show their full reference (`citations::hover_text`).
+* A note becoming active (opened from a dialog, a job, the review) takes
+  the central panel back from a PDF or canvas; the Files tab marks the
+  surface in front (`SidebarState::active_surface`).
+* The preview pane shows ⚠ after flagged citation footnotes and hides
+  their `quire:cite` comments (`trust_ui::mark_flagged_citations`).
+* The PDF and canvas toolbars wrap on narrow windows.
+
+### Agent store
+
+* **Undoing an agent's changes includes its suggestions the person
+  accepted** (`accept` entries naming the agent in `from`). A run's
+  "Revert run" passes `RevertSelector::proposals` so acceptances made after
+  the run count; Agent activity offers "Revert run" once any of a run's
+  suggestions was accepted. The person's later edits are kept as with any
+  undo.
+
+### Smaller changes
+
+* `Vault::is_template`: templates saved while Quire runs stay out of the
+  index (and the Files tab), as at start. Only Markdown files are indexed
+  on save (a canvas opened as text for review isn't).
+* Settings → Sync's "Also sync vault settings…" asks the sync server in the
+  background (`sync_share_vault_settings_in_background`, then
+  `sync_set_shared_state`).
+* `Workspace::flush_history()` waits for pending history writes.
+* `kurbo` is a workspace dependency. CI runs `cargo test -p quire-pdf
+  --features render` and has longer time limits for candle; the release
+  check fails on unpinned models only for tag releases, in its own step,
+  with a message saying how to pin them.
+* Formats: WS-C's footnote citations are `docs/formats/span-citations.md`;
+  WS-G's `[@key]` citations keep `citations.md`.
+* The changelog fragments are merged into `CHANGELOG.md`; `changelog.d/`
+  holds only its README until 0.10 work starts.
+
+### Known gaps after wave 2
+
+* The thinking timeline repeats an event for every saved version that
+  still says it (no merging of runs of the same claim yet).
+* An `accept` of a whole new note (a created file) isn't undone by
+  "Revert run" (the ledger entry has no snapshot); edits are.
+* The MCP server reads every PDF's text when it starts (cached after the
+  first time); a vault with many new PDFs starts slower once.
+* On-device models are unpinned in this build (WS-D hand-off, "Before
+  release"): the onboarding rows and Settings say "not available in this
+  build".
+
 ## Performance baselines (F0)
 
 `quire-cli bench 1` on the 2-core build VM, **dev profile** (our crates
