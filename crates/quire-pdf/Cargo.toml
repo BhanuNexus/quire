@@ -11,16 +11,24 @@ publish.workspace = true
 
 [features]
 default = ["text"]
-# Text extraction with positions (both editions). hayro-interpret joins with WS-G.
-text = []
+# Text extraction with positions (both editions).
+text = ["dep:hayro-interpret", "dep:kurbo"]
 # Page rendering (the full edition only, through the desktop's `typeset` feature).
-render = ["text"]
+render = ["text", "dep:hayro"]
 
 [dependencies]
 quire-markdown.workspace = true
 quire-vault.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+strsim.workspace = true
+sha2.workspace = true
+hayro-interpret = { workspace = true, optional = true }
+hayro = { workspace = true, optional = true }
+# The geometry types in hayro-interpret's `Device` trait (already in the
+# lock through hayro; not in [workspace.dependencies] yet, see
+# docs/design/handoff/ws-g.md).
+kurbo = { version = "0.13", optional = true }
 
 [lints]
 workspace = true

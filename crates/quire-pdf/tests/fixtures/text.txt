@@ -1,0 +1,8 @@
+Ropes are balanced trees of strings.
+Edits touch only the path from the root to one leaf,
+so undo is cheap because subtrees are shared.
+Words spaced by gaps.
+See page two for the details.
+
+Page two: piece tables keep the original file intact.
+Ropes are balanced trees of strings, again.

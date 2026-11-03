@@ -1,0 +1,8 @@
+In the left column, text
+flows down first. Readers
+finish this column before
+moving to the right one.
+The right column holds
+the rest of the article
+and ends the page here.
+Reading order matters.

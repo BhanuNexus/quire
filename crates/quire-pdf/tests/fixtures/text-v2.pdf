@@ -1,0 +1,70 @@
+%PDF-1.7
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 6 0 R /Annots [8 0 R 9 0 R] >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 7 0 R >>
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+6 0 obj
+<< /Length 323 >>
+stream
+BT /F1 12 Tf 72 720 Td
+(Revised edition.) Tj
+0 -16 Td
+(Ropes are balanced trees of strings.) Tj
+0 -16 Td
+(Edits touch only the path from the root to one leaf,) Tj
+0 -16 Td
+(so undo is cheap because subtrees are shared.) Tj
+0 -16 Td
+[(Words)-450(spaced)-450(by)-450(gaps.)] TJ
+0 -16 Td
+(See page two for the details.) Tj
+ET
+
+endstream
+endobj
+7 0 obj
+<< /Length 143 >>
+stream
+BT /F1 12 Tf 72 720 Td
+(Page two: piece tables keep the original file intact.) Tj
+0 -16 Td
+(Ropes are balanced trees of strings, again.) Tj
+ET
+
+endstream
+endobj
+8 0 obj
+<< /Type /Annot /Subtype /Link /Rect [72 650 240 664] /Border [0 0 0] /A << /S /URI /URI (https://en.wikipedia.org/wiki/Rope_\(data_structure\)) >> >>
+endobj
+9 0 obj
+<< /Type /Annot /Subtype /Link /Rect [72 652 300 664] /Border [0 0 0] /Dest [4 0 R /XYZ 0 792 0] >>
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000127 00000 n 
+0000000275 00000 n 
+0000000401 00000 n 
+0000000498 00000 n 
+0000000872 00000 n 
+0000001066 00000 n 
+0000001232 00000 n 
+trailer
+<< /Size 10 /Root 1 0 R >>
+startxref
+1347
+%%EOF
