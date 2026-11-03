@@ -115,18 +115,30 @@ pub fn from_seen<S: std::hash::BuildHasher>(seen: &[Seen], scope: &HashSet<NoteP
         .collect()
 }
 
-/// Items in time order, without repeats of the same (claim, event, note)
-/// within a minute (two sources of the same event).
+/// Items in time order, without repeats.
+///
+/// A claim's "added" and "taken out" alternate in each note: adding a claim the note already has (the
+/// same claim seen again in a later version, or reported by both the
+/// replay and the claims job) is not shown again, nor is taking out one it
+/// no longer has. The same contradiction within a minute shows once.
 pub fn merge(mut items: Vec<Item>) -> Vec<Item> {
     items.sort_by(|a, b| a.at.cmp(&b.at).then(a.event.cmp(&b.event)).then_with(|| a.claim.cmp(&b.claim)));
     let mut last: HashMap<(String, Event, NotePath), i64> = HashMap::new();
+    let mut present: HashMap<(String, NotePath), bool> = HashMap::new();
     items.retain(|i| {
-        let key = (i.claim.clone(), i.event, i.path.clone());
-        let keep = last.get(&key).is_none_or(|t| i.at - t > 60_000);
-        if keep {
-            last.insert(key, i.at);
+        let state = (i.claim.clone(), i.path.clone());
+        match i.event {
+            Event::Added => present.insert(state, true) != Some(true),
+            Event::Removed => present.insert(state, false) != Some(false),
+            Event::Contradicted => {
+                let key = (i.claim.clone(), i.event, i.path.clone());
+                let keep = last.get(&key).is_none_or(|t| i.at - t > 60_000);
+                if keep {
+                    last.insert(key, i.at);
+                }
+                keep
+            }
         }
-        keep
     });
     items
 }
@@ -147,6 +159,28 @@ pub fn by_day(items: &[Item]) -> BTreeMap<String, Vec<&Item>> {
 mod tests {
     use super::*;
     use crate::claims::heuristic_claims;
+
+    #[test]
+    fn review_a_claim_shows_once_however_many_versions_have_it() {
+        let p = NotePath::new("Plan.md");
+        let item = |at: i64, event: Event| Item { at, event, claim: "c_1".into(), text: "The launch is in March.".into(), path: p.clone() };
+        let items = vec![
+            item(1, Event::Added),
+            item(200_000, Event::Added),
+            item(400_000, Event::Added),
+            item(500_000, Event::Removed),
+            item(560_000, Event::Removed),
+            item(600_000, Event::Added),
+            item(700_000, Event::Contradicted),
+            item(710_000, Event::Contradicted),
+        ];
+        let ev: Vec<(i64, Event)> = merge(items).iter().map(|i| (i.at, i.event)).collect();
+        assert_eq!(
+            ev,
+            [(1, Event::Added), (500_000, Event::Removed), (600_000, Event::Added), (700_000, Event::Contradicted)],
+            "once per change, not once per version"
+        );
+    }
 
     #[test]
     fn replays_versions_into_events() {

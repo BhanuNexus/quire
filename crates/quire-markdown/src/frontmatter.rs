@@ -125,12 +125,65 @@ impl FrontMatter {
 fn unquote(s: &str) -> String {
     let s = s.trim();
     if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
-        s[1..s.len() - 1].replace("\\\"", "\"").replace("\\\\", "\\")
+        unescape_double(&s[1..s.len() - 1])
     } else if s.len() >= 2 && s.starts_with('\'') && s.ends_with('\'') {
         s[1..s.len() - 1].replace("''", "'")
     } else {
         s.to_string()
     }
+}
+
+/// The inside of a double-quoted scalar: YAML's escapes (`\\n`, `\\t`,
+/// `\\"`, `\\uXXXX`, …). An unknown escape is kept as written.
+fn unescape_double(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        let hex = |it: &mut std::iter::Peekable<std::str::Chars<'_>>, n: usize| -> Option<char> {
+            let digits: String = it.clone().take(n).collect();
+            let ch = (digits.len() == n).then(|| u32::from_str_radix(&digits, 16).ok().and_then(char::from_u32)).flatten()?;
+            for _ in 0..n {
+                it.next();
+            }
+            Some(ch)
+        };
+        match it.peek().copied() {
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            Some('0') => out.push('\0'),
+            Some('"') => out.push('"'),
+            Some('\\') => out.push('\\'),
+            Some('/') => out.push('/'),
+            Some(k @ ('x' | 'u' | 'U')) => {
+                let mut ahead = it.clone();
+                ahead.next();
+                let width = match k {
+                    'x' => 2,
+                    'u' => 4,
+                    _ => 8,
+                };
+                if let Some(ch) = hex(&mut ahead, width) {
+                    out.push(ch);
+                    it = ahead;
+                } else {
+                    // Not a valid escape: the backslash stays as written.
+                    out.push('\\');
+                }
+                continue;
+            }
+            _ => {
+                out.push('\\');
+                continue;
+            }
+        }
+        it.next();
+    }
+    out
 }
 
 // ------------------------------------------------------------------ reader
@@ -524,8 +577,31 @@ pub fn is_date(s: &str) -> bool {
 }
 
 /// Quote a scalar only when YAML would misread it.
+///
+/// A value with a line break or another control character is always
+/// written on one line, double-quoted with escapes (`\\n`), so it can't
+/// end the front matter or start another field.
 pub fn yaml_scalar(s: &str) -> String {
     let s = s.trim();
+    if s.chars().any(needs_escape) {
+        let mut q = String::with_capacity(s.len() + 2);
+        q.push('"');
+        for c in s.chars() {
+            match c {
+                '\\' => q.push_str("\\\\"),
+                '"' => q.push_str("\\\""),
+                '\n' => q.push_str("\\n"),
+                '\r' => q.push_str("\\r"),
+                '\t' => q.push_str("\\t"),
+                c if needs_escape(c) => {
+                    let _ = std::fmt::Write::write_fmt(&mut q, format_args!("\\u{:04X}", u32::from(c)));
+                }
+                c => q.push(c),
+            }
+        }
+        q.push('"');
+        return q;
+    }
     let risky = s.is_empty()
         || s.contains(": ")
         || s.contains(" #")
@@ -533,6 +609,17 @@ pub fn yaml_scalar(s: &str) -> String {
         || s.ends_with(':')
         || matches!(s.to_ascii_lowercase().as_str(), "yes" | "no" | "null" | "~");
     if risky { format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")) } else { s.to_string() }
+}
+
+/// Characters a scalar can't hold as they are: line breaks (including
+/// Unicode's) and other control characters.
+fn needs_escape(c: char) -> bool {
+    c.is_control() || matches!(c, '\u{2028}' | '\u{2029}' | '\u{85}')
+}
+
+/// A key as it can be written: control characters become spaces.
+fn clean_key(k: &str) -> String {
+    k.chars().map(|c| if needs_escape(c) { ' ' } else { c }).collect::<String>().trim().to_string()
 }
 
 /// `key: value` line(s) for a field, with trailing newline.
@@ -611,7 +698,8 @@ fn replace_lines(src: &str, range: Range<usize>, text: String, nl: &str) -> Edit
 
 /// Set (add or replace) a top-level field, preserving everything else in the block.
 pub fn set_field(src: &str, key: &str, value: &Value) -> Edit {
-    let key = key.trim();
+    let key = clean_key(key);
+    let key = key.as_str();
     match parse_doc(src) {
         None => Edit { range: 0..0, text: format!("---\n{}---\n", format_field(key, value)) },
         Some(doc) => match doc.entries.iter().rev().find(|e| e.key == key) {
@@ -647,6 +735,10 @@ fn set_in_map(m: &mut BTreeMap<String, Value>, path: &[&str], value: Value) {
 /// Only the leaf's line or lines change (or, when a parent is written
 /// inline as `{…}`, that parent's line); every other byte stays.
 pub fn set_field_path(src: &str, path: &[&str], value: &Value) -> Edit {
+    if path.iter().any(|k| k.chars().any(needs_escape)) {
+        let clean: Vec<String> = path.iter().map(|k| clean_key(k)).collect();
+        return set_field_path(src, &clean.iter().map(String::as_str).collect::<Vec<_>>(), value);
+    }
     if path.len() <= 1 {
         return set_field(src, path.first().copied().unwrap_or_default(), value);
     }
@@ -747,7 +839,8 @@ fn remove_in_map(m: &mut BTreeMap<String, Value>, path: &[&str]) -> Option<()> {
 /// `None` when the field isn't there.
 pub fn rename_field_path(src: &str, path: &[&str], new_key: &str) -> Option<Edit> {
     let doc = parse_doc(src)?;
-    let new_key = new_key.trim();
+    let new_key = clean_key(new_key);
+    let new_key = new_key.as_str();
     for depth in 0..path.len() {
         let chain = find_path(&doc, &path[..=depth])?;
         let e = chain[depth];
@@ -1007,6 +1100,34 @@ mod tests {
     }
 
     const NESTED: &str = "---\n# who wrote it\nauthor:\n  name: Ada\n  orcid: 0000-0001\n  address:\n    city: London\n\ntags:\n- a\n- b\nmeta: {rev: 2, by: [x, y]}\nabstract: |\n  Line one\n  line two\nrefs:\n  - title: A\n    year: 1999\n  - title: B\ntitle: T\n---\nbody\n";
+
+    #[test]
+    fn review_multiline_value_round_trips() {
+        let src = "---\ntitle: T\ntags: [a]\n---\nbody\n";
+        let evil = "one\ntags: [evil]\n---\ninjected";
+        let out = set_field(src, "summary", &s(evil)).apply(src);
+        let fm = parse(&out).unwrap();
+        assert_eq!(fm.tags(), ["a"], "{out}");
+        assert_eq!(fm.get("summary"), Some(&s(evil)), "{out}");
+        assert!(out.ends_with("---\nbody\n"), "{out}");
+        assert_eq!(out.matches("\n---\n").count(), 1, "one closing fence: {out}");
+        // Nested fields, list items, other line breaks and control characters too.
+        for v in ["a\r\n---\r\nb: c", "x\u{2028}y", "tab\there", "back\\slash \"q\"\n- item", "nul\u{0}"] {
+            let out = set_field_path(src, &["author", "name"], &s(v)).apply(src);
+            let fm = parse(&out).unwrap();
+            assert_eq!(fm.get_path("author.name"), Some(&s(v.trim())), "{out}");
+            assert_eq!(fm.tags(), ["a"], "{out}");
+            let out = set_field(src, "aliases", &Value::List(vec![v.to_string(), "b".into()])).apply(src);
+            assert_eq!(parse(&out).unwrap().aliases(), [v.trim().to_string(), "b".to_string()], "{out}");
+        }
+        // A key can't carry a line break either.
+        let out = set_field(src, "k\ntags", &s("x")).apply(src);
+        assert_eq!(parse(&out).unwrap().tags(), ["a"], "{out}");
+        assert_eq!(parse(&out).unwrap().get("k tags"), Some(&s("x")), "{out}");
+        // Escapes written by other tools read as YAML says.
+        let fm = parse("---\nq: \"a\\nb \\u00e9 \\\\ \\\" C:\\q\"\n---\n").unwrap();
+        assert_eq!(fm.get("q"), Some(&s("a\nb é \\ \" C:\\q")));
+    }
 
     #[test]
     fn parses_nested_yaml() {

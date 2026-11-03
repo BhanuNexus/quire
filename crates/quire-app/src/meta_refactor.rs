@@ -472,12 +472,13 @@ impl Workspace {
         v
     }
 
-    /// Current text of a note: the open document's, else the index's copy.
+    /// Current text of a note: the open document's, else the file's (not
+    /// the index's copy, which can lag behind a change made elsewhere).
     fn note_text(&self, p: &NotePath) -> Option<String> {
         if let Some(d) = self.docs.iter().find(|d| d.path.as_ref() == Some(p)) {
             return Some(d.text().to_string());
         }
-        self.index.read().source(p).map(str::to_string)
+        self.vault.as_ref()?.read(p).ok()
     }
 
     /// Start working out what `op` would change (off the UI thread).
@@ -548,18 +549,24 @@ impl Workspace {
         text: &str,
         now: i64,
     ) -> Result<Option<(i64, i64)>, String> {
+        let vault = self.vault.clone().ok_or("No vault is open")?;
+        // Both versions go to history, the new one with provenance (a batch
+        // the person ran), so the batch can be undone later from the ledger.
+        let device = self.device().id.clone();
+        let prov = |text: &str| quire_agent::Provenance::new(quire_agent::Actor::human(&device), quire_agent::Op::Write, text, now);
+        self.history.keep(&vault, path, before, now - 1, true);
         if let Some(i) = self.docs.iter().position(|d| d.path.as_ref() == Some(path)) {
+            let p = prov(text);
             self.docs[i].replace_minimally(text);
+            self.docs[i].next_save_provenance = Some(p);
             let id = self.docs[i].id;
             if !self.save(id) {
                 return Err(format!("Couldn't save {}", path.stem()));
             }
             return Ok(None);
         }
-        let vault = self.vault.clone().ok_or("No vault is open")?;
-        self.history.keep(&vault, path, before, now - 1, true);
         vault.write(path, text).map_err(|e| format!("Couldn't write {}: {e}", path.stem()))?;
-        self.history.keep(&vault, path, text, now, true);
+        self.history.keep_with(&vault, path, text, now, true, Some(prov(text).to_json()));
         self.index.upsert(path.clone(), text.to_string());
         Ok(Some((now - 1, now)))
     }
@@ -768,6 +775,39 @@ mod tests {
         // The ledger has both batches.
         let log = w.agent_store().unwrap().log(&quire_agent::ledger::LedgerQuery::default());
         assert_eq!(log.iter().filter(|e| e.batch.is_some()).count(), 4);
+    }
+
+    #[test]
+    fn review_apply_reads_closed_notes_from_disk() {
+        let mut w = ws(&[("B.md", "---\ntags: [old]\n---\nB\n")]);
+        w.meta_preview(MetaOp::RenameTag { from: "old".into(), to: "new".into() });
+        w.meta_preview_wait().unwrap();
+        // Changed on disk (a sync, an editor elsewhere); not indexed yet.
+        let v = w.vault().unwrap().clone();
+        v.write(&"B.md".into(), "---\ntags: [old]\n---\nB\nadded elsewhere\n").unwrap();
+        w.meta_apply(&HashSet::new()).unwrap();
+        assert_eq!(v.read(&"B.md".into()).unwrap(), "---\ntags: [new]\n---\nB\nadded elsewhere\n");
+    }
+
+    #[test]
+    fn review_a_batch_is_undone_after_a_restart() {
+        let mut w = ws(&[("A.md", "# A #old\n"), ("B.md", "#old b\n")]);
+        w.open_note(&"A.md".into()).unwrap();
+        w.meta_preview(MetaOp::RenameTag { from: "old".into(), to: "new".into() });
+        w.meta_preview_wait().unwrap();
+        let batch = w.meta_apply(&HashSet::new()).unwrap();
+        w.history.flush();
+        // A restart: the session's batches are gone; the ledger has it.
+        w.features.meta.batches.clear();
+        w.save_all();
+        let store = w.agent_store().unwrap().clone();
+        let plan = store.revert_plan(&quire_agent::RevertSelector { batch: Some(batch.id), ..Default::default() });
+        assert_eq!(plan.steps.len(), 2, "{plan:?}");
+        let r = store.revert_apply(&plan, "Undo");
+        assert!(r.failed.is_empty() && r.proposal.is_none(), "{r:?}");
+        let v = w.vault().unwrap().clone();
+        assert_eq!(v.read(&"A.md".into()).unwrap(), "# A #old\n");
+        assert_eq!(v.read(&"B.md".into()).unwrap(), "#old b\n");
     }
 
     #[test]

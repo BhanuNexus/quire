@@ -681,11 +681,18 @@ impl Workspace {
         }
     }
 
-    pub fn save_all(&mut self) {
+    /// Save every note with unsaved edits: tabs, and notes edited through
+    /// an embed. Untitled notes keep their names (unlike [`Self::save_all`]).
+    pub fn save_open_notes(&mut self) {
         let dirty: Vec<DocId> = self.docs.iter().filter(|d| d.is_dirty() && d.path.is_some()).map(|d| d.id).collect();
         for id in dirty {
             self.save(id);
         }
+        crate::nav::save_hidden_docs(self);
+    }
+
+    pub fn save_all(&mut self) {
+        self.save_open_notes();
         // Leaving (quit, switching vaults): name new notes even mid-title.
         let unnamed: Vec<DocId> = self.docs.iter().filter(|d| d.auto_name).map(|d| d.id).collect();
         for id in unnamed {

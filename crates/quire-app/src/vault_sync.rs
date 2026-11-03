@@ -47,8 +47,9 @@ pub struct SyncConfig {
     pub device: DeviceId,
     pub device_name: String,
     /// Also sync `.quire/shared/` (vault settings, agent policy, review
-    /// logs). Needs Quire 0.9 on every device; turning it on raises the
-    /// space's minimum (design §B.5).
+    /// logs). On a server, turning it on raises the space's minimum so 0.8
+    /// clients stop (design §B.5). In a sync folder it travels in a lane of
+    /// its own that 0.8 never reads, so 0.8 devices keep syncing notes.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub shared_state: bool,
 }
@@ -208,19 +209,50 @@ impl SyncConfig {
 }
 
 fn load_state(root: &Path) -> SyncState {
-    std::fs::read_to_string(sync_dir(root).join("state.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    load_state_named(root, "state.json")
 }
 
 fn save_state(root: &Path, state: &SyncState) -> Result<(), String> {
+    save_state_named(root, "state.json", state)
+}
+
+/// The engine state of a sync folder's settings lane.
+const SHARED_STATE_FILE: &str = "state-shared.json";
+
+fn load_state_named(root: &Path, name: &str) -> SyncState {
+    std::fs::read_to_string(sync_dir(root).join(name)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+}
+
+fn save_state_named(root: &Path, name: &str, state: &SyncState) -> Result<(), String> {
     let dir = sync_dir(root);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let tmp = dir.join("state.json.tmp");
+    let tmp = dir.join(format!("{name}.tmp"));
     std::fs::write(&tmp, serde_json::to_vec(state).unwrap_or_default()).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, dir.join("state.json")).map_err(|e| e.to_string())
+    std::fs::rename(&tmp, dir.join(name)).map_err(|e| e.to_string())
+}
+
+/// Whether a sync folder's settings lane runs on this device: turned on
+/// here, or started by another device and never run (so never turned off)
+/// here.
+fn runs_shared_lane(root: &Path, cfg: &SyncConfig) -> bool {
+    let Some(dir) = &cfg.folder else { return false };
+    cfg.shared_state || (folder::lane_exists(dir, &cfg.space, folder::SHARED_LANE) && !sync_dir(root).join(SHARED_STATE_FILE).exists())
 }
 
 /// Attachments bigger than this don't sync (each change is sent whole).
 pub const MAX_ATTACHMENT_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Which files a [`VaultStore`] syncs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lane {
+    /// Notes and attachments, and `.quire/shared/` once turned on (a server).
+    Mixed,
+    /// Notes and attachments only; `.quire/shared/` doesn't exist for it
+    /// (a sync folder's main lane, which 0.8 devices may read).
+    Notes,
+    /// `.quire/shared/` only (a sync folder's settings lane).
+    Shared,
+}
 
 /// The vault folder as the engine sees it: notes, and attachments (images,
 /// PDFs…) as base64.
@@ -236,6 +268,7 @@ pub struct VaultStore {
     digests: std::cell::RefCell<HashMap<String, (u64, std::time::SystemTime, String)>>,
     /// Sync `.quire/shared/` too.
     shared: bool,
+    lane: Lane,
     /// The revision being applied, when another device's agent wrote it:
     /// its text's hash, who, and the device's name.
     incoming: Option<(quire_vault::ContentHash, quire_sync::ActorRef, String)>,
@@ -247,7 +280,34 @@ fn b64() -> base64::engine::GeneralPurpose {
 
 impl VaultStore {
     pub fn new(vault: Vault) -> Self {
-        Self { vault, seen: HashMap::new(), digests: std::cell::RefCell::default(), shared: false, incoming: None }
+        Self { vault, seen: HashMap::new(), digests: std::cell::RefCell::default(), shared: false, lane: Lane::Mixed, incoming: None }
+    }
+
+    /// Notes and attachments only: `.quire/shared/` is never listed, read,
+    /// written or deleted (a sync folder's main lane).
+    #[must_use]
+    pub const fn notes_only(mut self) -> Self {
+        self.lane = Lane::Notes;
+        self.shared = false;
+        self
+    }
+
+    /// `.quire/shared/` only (a sync folder's settings lane).
+    #[must_use]
+    pub const fn shared_only(mut self) -> Self {
+        self.lane = Lane::Shared;
+        self.shared = true;
+        self
+    }
+
+    /// A path this store's lane leaves alone.
+    fn outside_lane(&self, path: &str) -> bool {
+        let shared = path.starts_with(SHARED_PREFIX);
+        match self.lane {
+            Lane::Mixed => false,
+            Lane::Notes => shared,
+            Lane::Shared => !shared,
+        }
     }
 
     /// Also sync `.quire/shared/` (only once every device runs 0.9).
@@ -285,11 +345,39 @@ impl VaultStore {
 
     fn current(&self, path: &str) -> Option<String> {
         use base64::Engine as _;
+        if self.outside_lane(path) {
+            return None;
+        }
         if quire_sync::engine::is_attachment(path) {
             self.vault.storage().read_bytes(&NotePath::new(path)).ok().map(|b| b64().encode(b))
         } else {
             self.vault.read(&NotePath::new(path)).ok()
         }
+    }
+
+    /// Every file under `.quire/shared/`, subfolders (`srs/`) included.
+    /// Symlinks and hidden folders are not followed.
+    fn shared_files(&self) -> Vec<NotePath> {
+        let root = SHARED_PREFIX.trim_end_matches('/');
+        let Some(abs) = self.vault.storage().absolute(&NotePath::new(root)) else {
+            return self.vault.storage().list_under(root).unwrap_or_default();
+        };
+        let mut out = Vec::new();
+        let mut todo = vec![(abs, root.to_string())];
+        while let Some((dir, rel)) = todo.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let Ok(kind) = e.file_type() else { continue };
+                if kind.is_dir() && !name.starts_with('.') && todo.len() < 1_000 {
+                    todo.push((e.path(), format!("{rel}/{name}")));
+                } else if kind.is_file() {
+                    out.push(NotePath::new(format!("{rel}/{name}")));
+                }
+            }
+        }
+        out.sort();
+        out
     }
 
     fn unchanged_since_read(&self, path: &str) -> Result<(), String> {
@@ -302,21 +390,25 @@ impl VaultStore {
 
 impl LocalStore for VaultStore {
     fn list(&self) -> Vec<String> {
-        let mut out: Vec<String> = self
-            .vault
-            .storage()
-            .list()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|p| {
-                p.is_markdown()
-                    || (quire_sync::engine::is_attachment(p.as_str())
-                        && self.size_and_time(p.as_str()).is_some_and(|(n, _)| n <= MAX_ATTACHMENT_BYTES))
-            })
-            .map(|p| p.as_str().to_string())
-            .collect();
-        if self.shared {
-            let shared = self.vault.storage().list_under(SHARED_PREFIX.trim_end_matches('/')).unwrap_or_default();
+        let notes = if self.lane == Lane::Shared {
+            Vec::new()
+        } else {
+            self.vault
+                .storage()
+                .list()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|p| {
+                    p.is_markdown()
+                        || (quire_sync::engine::is_attachment(p.as_str())
+                            && self.size_and_time(p.as_str()).is_some_and(|(n, _)| n <= MAX_ATTACHMENT_BYTES))
+                })
+                .map(|p| p.as_str().to_string())
+                .collect()
+        };
+        let mut out: Vec<String> = notes;
+        if self.shared && self.lane != Lane::Notes {
+            let shared = self.shared_files();
             out.extend(
                 shared
                     .into_iter()
@@ -344,7 +436,7 @@ impl LocalStore for VaultStore {
     }
 
     fn incoming(&mut self, content: &quire_sync::Content) {
-        if content.path.starts_with(SHARED_PREFIX) {
+        if content.path.starts_with(SHARED_PREFIX) && self.lane == Lane::Mixed {
             self.shared = true;
         }
         self.incoming = content.actor.clone().map(|a| (quire_vault::ContentHash::of(&content.text), a, content.from.clone()));
@@ -355,7 +447,7 @@ impl LocalStore for VaultStore {
     }
 
     fn digest(&self, path: &str) -> Option<String> {
-        if !quire_sync::engine::is_attachment(path) {
+        if !quire_sync::engine::is_attachment(path) || self.outside_lane(path) {
             return self.current(path);
         }
         let stamp = self.size_and_time(path)?;
@@ -371,6 +463,12 @@ impl LocalStore for VaultStore {
 
     fn write(&mut self, path: &str, text: &str) -> Result<(), String> {
         use base64::Engine as _;
+        if self.outside_lane(path) {
+            // Not this lane's (vault settings in a sync folder's notes lane,
+            // which only a 0.9 build from before the lanes could send):
+            // never written, so never deleted here either.
+            return Ok(());
+        }
         self.unchanged_since_read(path)?;
         if path.starts_with(SHARED_PREFIX) {
             if path.contains("/.") || path.contains("..") {
@@ -397,6 +495,9 @@ impl LocalStore for VaultStore {
     }
 
     fn remove(&mut self, path: &str) -> Result<(), String> {
+        if self.outside_lane(path) {
+            return Ok(());
+        }
         self.unchanged_since_read(path)?;
         // Deleted elsewhere: goes to the vault's trash, so it can come back.
         self.vault.trash(&NotePath::new(path)).map_err(|e| e.to_string())?;
@@ -499,21 +600,26 @@ impl SyncWorker {
                 }),
                 // A folder is checked every couple of seconds (sizes and
                 // times only, so it's cheap).
-                Link::Folder(dir) => std::thread::spawn(move || {
-                    let mut last = dir.fingerprint();
-                    // The worker's first pass may have read the folder before
-                    // `last` was taken; a write in between would never show up
-                    // as a change. One more pass after taking it closes that gap.
-                    let _ = tx.send(Msg::Remote);
-                    while !stop.load(Ordering::Relaxed) {
-                        std::thread::sleep(Duration::from_secs(2));
-                        let now = dir.fingerprint();
-                        if now != last {
-                            last = now;
-                            let _ = tx.send(Msg::Remote);
+                Link::Folder(dir) => {
+                    let lane =
+                        cfg.folder.as_ref().map(|r| FolderTransport::lane(r, &cfg.space, cfg.device.clone(), None, folder::SHARED_LANE));
+                    std::thread::spawn(move || {
+                        let print = |d: &FolderTransport| d.fingerprint() ^ lane.as_ref().map_or(0, |l| l.fingerprint().rotate_left(1));
+                        let mut last = print(&dir);
+                        // The worker's first pass may have read the folder before
+                        // `last` was taken; a write in between would never show up
+                        // as a change. One more pass after taking it closes that gap.
+                        let _ = tx.send(Msg::Remote);
+                        while !stop.load(Ordering::Relaxed) {
+                            std::thread::sleep(Duration::from_secs(2));
+                            let now = print(&dir);
+                            if now != last {
+                                last = now;
+                                let _ = tx.send(Msg::Remote);
+                            }
                         }
-                    }
-                }),
+                    })
+                }
             };
         }
 
@@ -522,7 +628,15 @@ impl SyncWorker {
             let stop = worker_stop;
             let link = Link::new(&cfg, &token, Some(&sync_dir(&root)));
             let mut engine = Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), key.keys(), load_state(&root));
-            let mut store = VaultStore::new(vault).with_shared_state(cfg.shared_state);
+            let folder_space = cfg.folder.is_some();
+            // In a sync folder, vault settings travel in a lane of their own,
+            // which 0.8 never reads; the notes lane never touches them.
+            let mut store = if folder_space {
+                VaultStore::new(vault.clone()).notes_only()
+            } else {
+                VaultStore::new(vault.clone()).with_shared_state(cfg.shared_state)
+            };
+            let mut lane: Option<(FolderTransport, Engine, VaultStore)> = None;
             // A server that needs a newer Quire says so plainly instead of failing each pass.
             if let Link::Server(_) = &link
                 && let Ok(n @ quire_sync::Negotiated::TooOld { .. }) = HttpTransport::negotiate(&cfg.server)
@@ -550,8 +664,43 @@ impl SyncWorker {
                 }
                 let _ = events.send(Event::Status(SyncStatus::Syncing));
                 snapshot_reads(&mut store);
-                let res = engine.sync(&mut store, link.transport(), &today());
+                let mut res = engine.sync(&mut store, link.transport(), &today());
                 let _ = save_state(&root, &engine.state);
+                if lane.is_none()
+                    && runs_shared_lane(&root, &cfg)
+                    && let Some(dir) = &cfg.folder
+                {
+                    let t = FolderTransport::lane(dir, &cfg.space, cfg.device.clone(), Some(&sync_dir(&root)), folder::SHARED_LANE);
+                    let e = Engine::new(
+                        cfg.space.clone(),
+                        cfg.device.clone(),
+                        cfg.device_name.clone(),
+                        key.keys(),
+                        load_state_named(&root, SHARED_STATE_FILE),
+                    );
+                    lane = Some((t, e, VaultStore::new(vault.clone()).shared_only()));
+                }
+                if let Some((t, e, st)) = lane.as_mut()
+                    && res.is_ok()
+                {
+                    snapshot_reads(st);
+                    let r = e.sync(st, &*t, &today());
+                    let _ = save_state_named(&root, SHARED_STATE_FILE, &e.state);
+                    res = match (res, r) {
+                        (Ok(mut a), Ok(b)) => {
+                            a.pulled += b.pulled;
+                            a.pushed += b.pushed;
+                            a.merged.extend(b.merged);
+                            a.conflict_copies.extend(b.conflict_copies);
+                            a.kept_over_delete.extend(b.kept_over_delete);
+                            Ok(a)
+                        }
+                        (Err(e), _) | (_, Err(e)) => Err(e),
+                    };
+                    if !cfg.shared_state {
+                        store.shared = true;
+                    }
+                }
                 // Another device turned on sharing vault settings: remember it here.
                 if store.shared && !cfg.shared_state {
                     let mut c = cfg.clone();
@@ -616,11 +765,16 @@ pub fn default_device_name() -> String {
         .unwrap_or_else(|| format!("{} device", std::env::consts::OS))
 }
 
-/// Make sure only Quire 0.9 or later reads the sync folder or server from
-/// now on (vault settings and review history are about to travel with it).
+/// Get ready for vault settings and review history to travel with sync.
+///
+/// In a sync folder they go in a lane of their own, which Quire 0.8 never
+/// reads: a 0.8 device that already joined keeps syncing notes and can
+/// never see those files, so it can't pass on their deletion (it would:
+/// its `list` skips hidden paths). On a server, only Quire 0.9 or later may
+/// connect from now on.
 fn raise_min_reader(cfg: &SyncConfig) -> Result<(), String> {
     if let Some(dir) = &cfg.folder {
-        return folder::raise_min_reader(dir, &cfg.space, 2).map_err(|e| e.to_string());
+        return folder::open_lane(dir, &cfg.space, folder::SHARED_LANE).map_err(|e| e.to_string());
     }
     let negotiated = HttpTransport::negotiate(&cfg.server).map_err(|e| e.to_string())?;
     if !matches!(negotiated, quire_sync::Negotiated::Version(v) if v >= 2) {
@@ -753,10 +907,10 @@ impl Workspace {
         self.sync.status = SyncStatus::Syncing;
     }
 
-    /// "Also sync vault settings and review history" (design §B.5). Turning
-    /// it on first keeps Quire 0.8 out of the space (a 0.9 server answers
-    /// older clients `426`; a sync folder gets `min_reader = 2`), because a
-    /// 0.8 device would see the settings files as deleted and pass that on.
+    /// "Also sync vault settings and review history" (design §B.5). A 0.8
+    /// device would see the settings files as deleted and pass that on, so
+    /// turning it on first keeps them away from 0.8: a 0.9 server answers
+    /// older clients `426`; a sync folder carries them in a separate lane.
     pub fn sync_share_vault_settings(&mut self, on: bool) -> Result<(), String> {
         let (root, _) = self.sync_parts()?;
         let cfg = SyncConfig::load(&root).ok_or("Sync isn't set up for this vault")?;
@@ -1060,6 +1214,8 @@ mod tests {
         assert_eq!(off.list(), vec!["A.md".to_string()], "never .quire/ by default");
         let mut on = VaultStore::new(vault.clone()).with_shared_state(true);
         assert_eq!(on.list(), vec!["A.md".to_string(), ".quire/shared/vault.toml".to_string()], "only the shared folder");
+        vault.storage().write_atomic(&NotePath::new(".quire/shared/srs/d1.jsonl"), "{}\n").unwrap();
+        assert!(on.list().contains(&".quire/shared/srs/d1.jsonl".to_string()), "review logs in subfolders too");
         snapshot_reads(&mut on);
         on.write(".quire/shared/agent-policy.toml", &b64().encode("format = 1\n")).unwrap();
         assert_eq!(vault.storage().read(&NotePath::new(".quire/shared/agent-policy.toml")).unwrap(), "format = 1\n");
@@ -1122,7 +1278,7 @@ mod tests {
     }
 
     #[test]
-    fn sharing_vault_settings_raises_the_folder_minimum() {
+    fn sharing_vault_settings_in_a_folder_opens_a_lane_and_keeps_0_8_in() {
         let vault_dir = tempfile::tempdir().unwrap();
         let sync_dir_root = tempfile::tempdir().unwrap();
         let mut ws = Workspace::new(crate::Settings::default());
@@ -1140,12 +1296,180 @@ mod tests {
             shared_state: false,
         };
         cfg.save(vault_dir.path()).unwrap();
-        assert_eq!(folder::min_reader(&root, &space).unwrap(), 1);
         ws.sync_share_vault_settings(true).unwrap();
-        assert_eq!(folder::min_reader(&root, &space).unwrap(), 2);
+        assert_eq!(folder::min_reader(&root, &space).unwrap(), 1, "0.8 devices keep syncing notes");
+        assert!(folder::lane_exists(&root, &space, folder::SHARED_LANE));
         assert!(SyncConfig::load(vault_dir.path()).unwrap().shared_state);
         ws.sync_share_vault_settings(false).unwrap();
         assert!(!SyncConfig::load(vault_dir.path()).unwrap().shared_state);
-        assert_eq!(folder::min_reader(&root, &space).unwrap(), 2, "the minimum stays");
+    }
+
+    /// Quire 0.8.0's `LocalStore`, as shipped (`git show
+    /// v0.8.0:crates/quire-app/src/vault_sync.rs`): notes and attachments
+    /// are listed, and any path is written. With `FolderTransport::new`
+    /// (its scan of `devices/` is unchanged since 0.8.0) and the engine
+    /// (unchanged but for two hooks whose defaults do what 0.8 did), this
+    /// syncs as a 0.8 device that joined the vault earlier does: it never
+    /// reads `space.json` again.
+    struct Store08 {
+        vault: Vault,
+    }
+
+    impl LocalStore for Store08 {
+        fn list(&self) -> Vec<String> {
+            self.vault
+                .storage()
+                .list()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|p| p.is_markdown() || quire_sync::engine::is_attachment(p.as_str()))
+                .map(|p| p.as_str().to_string())
+                .collect()
+        }
+
+        fn read(&self, path: &str) -> Option<String> {
+            use base64::Engine as _;
+            if quire_sync::engine::is_attachment(path) {
+                self.vault.storage().read_bytes(&NotePath::new(path)).ok().map(|b| b64().encode(b))
+            } else {
+                self.vault.read(&NotePath::new(path)).ok()
+            }
+        }
+
+        fn write(&mut self, path: &str, text: &str) -> Result<(), String> {
+            use base64::Engine as _;
+            if quire_sync::engine::is_attachment(path) {
+                let bytes = b64().decode(text).map_err(|e| e.to_string())?;
+                return self.vault.storage().write_bytes_atomic(&NotePath::new(path), &bytes).map_err(|e| e.to_string());
+            }
+            self.vault.write(&NotePath::new(path), text).map_err(|e| e.to_string())
+        }
+
+        fn remove(&mut self, path: &str) -> Result<(), String> {
+            self.vault.trash(&NotePath::new(path)).map_err(|e| e.to_string())
+        }
+    }
+
+    /// Three devices in one sync folder: `a` and `c` run 0.9, `b` runs 0.8.
+    struct Fleet {
+        _dir: tempfile::TempDir,
+        root: PathBuf,
+        space: SpaceId,
+        keys: quire_sync::Keys,
+        vaults: [Vault; 3],
+        devices: [DeviceId; 3],
+        engines: Vec<Engine>,
+        lanes: Vec<Engine>,
+    }
+
+    impl Fleet {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let root = folder::sync_root(&dir.path().join("Dropbox"));
+            let space = SpaceId::random().unwrap();
+            let key = VaultKey::generate().unwrap();
+            folder::create_space(&root, &space, &WrappedKey::wrap(&key, "pw", KDF).unwrap()).unwrap();
+            let vaults = ["A", "B", "C"].map(|n| {
+                std::fs::create_dir_all(dir.path().join(n)).unwrap();
+                Vault::open_local(dir.path().join(n)).unwrap()
+            });
+            let devices = [(); 3].map(|()| DeviceId::random().unwrap());
+            let engine = |i: usize| Engine::new(space.clone(), devices[i].clone(), ["a", "b", "c"][i], key.keys(), SyncState::default());
+            let engines = (0..3).map(engine).collect();
+            let lanes = (0..3).map(engine).collect();
+            Self { _dir: dir, root, space, keys: key.keys(), vaults, devices, engines, lanes }
+        }
+
+        /// One pass of device `i`: 0.9 (both lanes) or 0.8.
+        fn pass(&mut self, i: usize) {
+            let main = FolderTransport::new(&self.root, &self.space, self.devices[i].clone(), None);
+            if i == 1 {
+                let mut st = Store08 { vault: self.vaults[1].clone() };
+                self.engines[1].sync(&mut st, &main, "2026-11-03").unwrap();
+                return;
+            }
+            let mut notes = VaultStore::new(self.vaults[i].clone()).notes_only();
+            snapshot_reads(&mut notes);
+            self.engines[i].sync(&mut notes, &main, "2026-11-03").unwrap();
+            let lane = FolderTransport::lane(&self.root, &self.space, self.devices[i].clone(), None, folder::SHARED_LANE);
+            let mut shared = VaultStore::new(self.vaults[i].clone()).shared_only();
+            snapshot_reads(&mut shared);
+            self.lanes[i].sync(&mut shared, &lane, "2026-11-03").unwrap();
+        }
+
+        fn rounds(&mut self, n: usize) {
+            for _ in 0..n {
+                for i in 0..3 {
+                    self.pass(i);
+                }
+            }
+        }
+
+        fn shared(&self, i: usize, p: &str) -> Option<String> {
+            self.vaults[i].storage().read(&NotePath::new(format!("{SHARED_PREFIX}{p}"))).ok()
+        }
+    }
+
+    #[test]
+    fn review_a_0_8_device_never_deletes_shared_vault_settings() {
+        let mut f = Fleet::new();
+        let a = &f.vaults[0];
+        a.write(&NotePath::new("Plan.md"), "# Plan\n").unwrap();
+        a.storage().write_atomic(&NotePath::new(".quire/shared/vault.toml"), "format = 1\n").unwrap();
+        a.storage().write_atomic(&NotePath::new(".quire/shared/agent-policy.toml"), "format = 1\n").unwrap();
+        a.storage().write_atomic(&NotePath::new(".quire/shared/srs/a.jsonl"), "{\"v\":1}\n").unwrap();
+        f.rounds(3);
+        // Notes reach every device, 0.8 included; settings reach only 0.9.
+        for i in 0..3 {
+            assert_eq!(f.vaults[i].read(&NotePath::new("Plan.md")).unwrap(), "# Plan\n", "device {i}");
+        }
+        assert_eq!(f.shared(2, "vault.toml").as_deref(), Some("format = 1\n"));
+        assert_eq!(f.shared(2, "srs/a.jsonl").as_deref(), Some("{\"v\":1}\n"));
+        assert!(f.vaults[1].storage().list_under(".quire/shared").unwrap_or_default().is_empty(), "0.8 never gets them");
+        assert!(f.engines[1].state.files.values().all(|t| !t.path.starts_with(".quire")), "0.8 never tracks them");
+        // More changes and passes: nothing is ever deleted.
+        f.vaults[2].storage().write_atomic(&NotePath::new(".quire/shared/srs/c.jsonl"), "{\"v\":1}\n").unwrap();
+        f.vaults[1].write(&NotePath::new("From 0.8.md"), "old device\n").unwrap();
+        f.rounds(3);
+        for i in [0, 2] {
+            for p in ["vault.toml", "agent-policy.toml", "srs/a.jsonl", "srs/c.jsonl"] {
+                assert!(f.shared(i, p).is_some(), "device {i} lost {p}");
+            }
+            assert_eq!(f.vaults[i].read(&NotePath::new("From 0.8.md")).unwrap(), "old device\n");
+        }
+        // No revision a 0.8 device can read names a settings file.
+        let main = FolderTransport::new(&f.root, &f.space, DeviceId::random().unwrap(), None);
+        for r in main.pull(0).unwrap() {
+            let c = quire_sync::Content::open(&f.keys, &f.space, &r).unwrap();
+            assert!(!c.path.starts_with(".quire"), "{}", c.path);
+        }
+        // A settings file that reached the notes lane anyway (a build from
+        // before the lanes) is neither written nor deleted by 0.9 there.
+        let mut notes = VaultStore::new(f.vaults[0].clone()).notes_only();
+        snapshot_reads(&mut notes);
+        notes.remove(".quire/shared/vault.toml").unwrap();
+        notes.write(".quire/shared/vault.toml", "x").unwrap();
+        assert_eq!(f.shared(0, "vault.toml").as_deref(), Some("format = 1\n"));
+    }
+
+    /// The simulation above catches the review's finding: with settings in
+    /// the notes lane (the design before the lanes), the 0.8 device writes
+    /// them, misses them on its next pass, and deletes them everywhere.
+    #[test]
+    fn the_0_8_simulation_sees_the_delete_the_lanes_prevent() {
+        let mut f = Fleet::new();
+        f.vaults[0].storage().write_atomic(&NotePath::new(".quire/shared/vault.toml"), "format = 1\n").unwrap();
+        let mixed = |f: &mut Fleet| {
+            let main = FolderTransport::new(&f.root, &f.space, f.devices[0].clone(), None);
+            let mut st = VaultStore::new(f.vaults[0].clone()).with_shared_state(true);
+            snapshot_reads(&mut st);
+            f.engines[0].sync(&mut st, &main, "2026-11-03").unwrap();
+        };
+        for _ in 0..3 {
+            mixed(&mut f);
+            f.pass(1);
+        }
+        mixed(&mut f);
+        assert!(f.shared(0, "vault.toml").is_none(), "deleted through the 0.8 device");
     }
 }

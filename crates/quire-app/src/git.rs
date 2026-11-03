@@ -545,7 +545,7 @@ pub(crate) fn tick(ws: &mut Workspace, now: Instant) -> bool {
     let idle = Duration::from_secs(st.prefs.commit_after_idle_s.max(10));
     let has_changes = st.status.as_ref().is_some_and(|s| !s.changed.is_empty());
     let quiet = last_activity.is_none_or(|t| now.saturating_duration_since(t) >= idle);
-    let saved = ws.docs().iter().all(|d| !d.is_dirty());
+    let saved = ws.docs().iter().chain(&ws.features.nav.hidden).all(|d| !d.is_dirty());
     if st.prefs.auto_commit && !busy && has_changes && quiet && saved {
         // Commit once per quiet spell: the status refresh after it clears `changed`.
         if let Some(s) = ws.features.git.status.as_mut() {

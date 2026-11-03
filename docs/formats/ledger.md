@@ -34,6 +34,16 @@ Optional fields are left out. Readers skip unparsable lines and lines with
   then a `batch` line; selecting that batch undoes the revert.
 * Undoing an accepted hunk in the editor logs `revert` with the proposal and
   no path.
+* The person's own batches (rename, merge or delete tags and properties) log
+  `write` entries by `human` with one `batch` and a `title`. They are undone
+  only by selecting that batch (Activity → "Undo batch", `quire-cli agent
+  revert <vault> --batch b_…`), also after a restart; selecting by actor or
+  time never picks the person's own writes.
+* Undoing (`revert_plan`) works through a note's selected entries newest
+  first, three-way each (`base` = after it, `mine` = the text so far,
+  `theirs` = before it), so edits made between two selected entries are
+  kept. Applying the plan reads each note again and merges the undo into it
+  when it changed since the plan.
 * `quire_agent::AgentStore::last_actor` reads the last 90 days of write
   events (`write`, `create`, `delete`, `revert`, `accept`; renames move the
   entry) to say who last changed a note.

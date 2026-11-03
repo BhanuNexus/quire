@@ -511,3 +511,140 @@ fn a_big_note_with_many_hunks_reviews_quickly() {
     // Debug build; the release budget (§9) is far below this.
     assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
 }
+
+// ---------------------------------------------------------------- review fixes
+
+#[test]
+fn review_revert_keeps_human_edit_between_agent_writes() {
+    let (v, store, clock, agent) = setup(&[("wiki/A.md", "one\ntwo\nthree\nfour\nfive\n")]);
+    store.submit(&agent, edit("wiki/A.md", "ONE\ntwo\nthree\nfour\nfive\n")).unwrap();
+    clock.advance(600_000);
+    let human = "ONE\ntwo\nTHREE by human\nfour\nfive\n";
+    v.storage().write_atomic(&NotePath::new("wiki/A.md"), human).unwrap();
+    v.snapshot(&NotePath::new("wiki/A.md"), human, T0 + 600_000, false).unwrap();
+    clock.advance(600_000);
+    store.submit(&agent, edit("wiki/A.md", "ONE\ntwo\nTHREE by human\nfour\nFIVE\n")).unwrap();
+    let plan = store.revert_plan(&RevertSelector { actor: Some(agent.id), ..Default::default() });
+    let report = store.revert_apply(&plan, "Undo");
+    assert!(report.failed.is_empty() && report.proposal.is_none(), "{report:?}");
+    assert_eq!(read(&v, "wiki/A.md"), "one\ntwo\nTHREE by human\nfour\nfive\n");
+}
+
+#[test]
+fn review_revert_of_accept_type_accept_keeps_the_typing() {
+    let (v, store, clock, agent) = setup(&[("A.md", "a\nb\nc\nd\ne\n")]);
+    let path = NotePath::new("A.md");
+    let SubmitOutcome::Proposed { id, .. } = store.submit(&agent, edit("A.md", "A\nb\nc\nd\ne\n")).unwrap() else { panic!() };
+    assert_eq!(store.resolve_change(&id, &path, true).unwrap(), Some(ChangeState::Applied));
+    clock.advance(600_000);
+    let typed = "A\nb\nC typed\nd\ne\n";
+    v.storage().write_atomic(&path, typed).unwrap();
+    v.snapshot(&path, typed, clock.now_ms(), false).unwrap();
+    clock.advance(600_000);
+    let SubmitOutcome::Proposed { id: id2, .. } = store.submit(&agent, edit("A.md", "A\nb\nC typed\nd\nE\n")).unwrap() else { panic!() };
+    store.resolve_change(&id2, &path, true).unwrap();
+    assert_eq!(read(&v, "A.md"), "A\nb\nC typed\nd\nE\n");
+    let plan = store.revert_plan(&RevertSelector { actor: Some(agent.id), proposals: Some(vec![id, id2]), ..Default::default() });
+    let report = store.revert_apply(&plan, "Undo");
+    assert!(report.failed.is_empty() && report.proposal.is_none(), "{report:?}");
+    assert_eq!(read(&v, "A.md"), "a\nb\nC typed\nd\ne\n");
+}
+
+#[test]
+fn review_human_batch_can_be_reverted() {
+    let (v, store, _, _) = setup(&[("A.md", "#project\n")]);
+    let path = NotePath::new("A.md");
+    v.snapshot(&path, "#project\n", T0 - 1, true).unwrap();
+    v.storage().write_atomic(&path, "#work\n").unwrap();
+    v.snapshot(&path, "#work\n", T0, true).unwrap();
+    let mut e = LedgerEntry::new(Actor::human("d_test"), Op::Write, T0).path(&path);
+    e.batch = Some("b_test".into());
+    (e.snap_before, e.snap_after) = (Some(T0 - 1), Some(T0));
+    (e.before, e.after) = (Some(ContentHash::of("#project\n")), Some(ContentHash::of("#work\n")));
+    store.record(&e);
+    // Without a batch, the person's own writes are never selected.
+    assert!(store.revert_plan(&RevertSelector::default()).steps.is_empty());
+    let plan = store.revert_plan(&RevertSelector { batch: Some("b_test".into()), ..Default::default() });
+    assert!(!plan.steps.is_empty(), "{:?}", plan.note);
+    store.revert_apply(&plan, "Undo the rename");
+    assert_eq!(read(&v, "A.md"), "#project\n");
+}
+
+#[test]
+fn review_revert_apply_rechecks_current_text() {
+    let (v, store, clock, agent) = setup(&[("wiki/A.md", "one\ntwo\n")]);
+    store.submit(&agent, edit("wiki/A.md", "one\nTWO\n")).unwrap();
+    clock.advance(60_000);
+    let plan = store.revert_plan(&RevertSelector { actor: Some(agent.id.clone()), ..Default::default() });
+    assert_eq!(plan.steps.len(), 1);
+    // The person saves more typing while the dry run is on screen.
+    v.storage().write_atomic(&NotePath::new("wiki/A.md"), "one\nTWO\nthree typed later\n").unwrap();
+    let report = store.revert_apply(&plan, "Undo");
+    assert!(report.failed.is_empty(), "{report:?}");
+    let after = read(&v, "wiki/A.md");
+    assert!(after.contains("three typed later"), "{after}");
+    assert_eq!(after, "one\ntwo\nthree typed later\n");
+    // Typing over the agent's line since the plan: a proposal, file untouched.
+    store.submit(&agent, edit("wiki/A.md", "ONE\ntwo\nthree typed later\n")).unwrap();
+    clock.advance(60_000);
+    let plan = store.revert_plan(&RevertSelector { actor: Some(agent.id), since: Some(T0 + 30_000), ..Default::default() });
+    v.storage().write_atomic(&NotePath::new("wiki/A.md"), "ONE (mine)\ntwo\nthree typed later\n").unwrap();
+    let report = store.revert_apply(&plan, "Undo");
+    assert!(report.proposal.is_some(), "{report:?}");
+    assert_eq!(read(&v, "wiki/A.md"), "ONE (mine)\ntwo\nthree typed later\n");
+}
+
+#[test]
+fn reverting_a_run_trashes_an_accepted_new_note() {
+    let (v, store, _, agent) = setup(&[]);
+    let cs = ChangeSet { changes: vec![Change::Create { path: "Fresh.md".into(), text: "new\n".into() }], ..ChangeSet::default() };
+    let SubmitOutcome::Proposed { id, .. } = store.submit(&agent, cs).unwrap() else { panic!("a note outside wiki/ is a suggestion") };
+    store.resolve_change(&id, &"Fresh.md".into(), true).unwrap();
+    assert!(v.exists(&NotePath::new("Fresh.md")));
+    let plan = store.revert_plan(&RevertSelector { actor: Some(agent.id), proposals: Some(vec![id]), ..Default::default() });
+    assert!(matches!(plan.steps.as_slice(), [RevertStep { action: RevertAction::Trash { .. }, .. }]), "{plan:?}");
+    store.revert_apply(&plan, "Undo");
+    assert!(!v.exists(&NotePath::new("Fresh.md")));
+}
+
+#[test]
+fn an_amend_keeps_decisions_made_meanwhile() {
+    let (v, store, clock, agent) = setup(&[("N.md", "a\nb\nc\nd\ne\n")]);
+    let path = NotePath::new("N.md");
+    let SubmitOutcome::Proposed { id, .. } = store.submit(&agent, edit("N.md", "A\nb\nc\nd\nE\n")).unwrap() else { panic!() };
+    let current = read(&v, "N.md");
+    let r = store.review(&id, &path, &current);
+    assert_eq!(r.hunks.len(), 2);
+    clock.advance(1);
+    let reject = HunkDecision { action: HunkAction::Rejected, ..accept(&r.hunks[1]) };
+    let seen = store.proposal(&id).unwrap().updated;
+    let d = store.decide_checked(&id, &path, &[reject], &current, Some(seen)).unwrap();
+    assert_eq!(d.text, current, "nothing accepted yet");
+    // The agent, unaware, writes its whole text again plus one more line.
+    clock.advance(1);
+    let SubmitOutcome::Proposed { id: again, amended: true } = store.submit(&agent, edit("N.md", "A\nb\nC\nd\nE\n")).unwrap() else {
+        panic!()
+    };
+    assert_eq!(again, id);
+    let r = store.review(&id, &path, &read(&v, "N.md"));
+    let new: Vec<String> = r.hunks.iter().flat_map(|h| h.new_lines.clone()).collect();
+    assert!(!new.contains(&"E\n".to_string()), "the rejected hunk stays rejected: {new:?}");
+    assert!(new.contains(&"A\n".to_string()) && new.contains(&"C\n".to_string()), "{new:?}");
+}
+
+#[test]
+fn review_set_properties_cannot_inject_front_matter() {
+    let (v, store, _, agent) = setup(&[("wiki/A.md", "---\ntitle: T\ntags: [a]\n---\nbody\n")]);
+    let evil = "one\ntags: [evil]\n---\ninjected";
+    let set = Change::SetProperties {
+        path: "wiki/A.md".into(),
+        set: vec![("summary".into(), quire_markdown::Value::Str(evil.into())), ("x\n---".into(), quire_markdown::Value::Str("y".into()))],
+        remove: vec![],
+    };
+    store.submit(&agent, ChangeSet::one(set)).unwrap();
+    let text = read(&v, "wiki/A.md");
+    let fm = quire_markdown::frontmatter::parse(&text).unwrap();
+    assert_eq!(fm.tags(), ["a"], "{text}");
+    assert_eq!(fm.get("summary").and_then(quire_markdown::Value::as_str), Some(evil));
+    assert!(text.ends_with("---\nbody\n"), "{text}");
+}

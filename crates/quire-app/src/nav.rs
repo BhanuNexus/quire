@@ -199,6 +199,11 @@ pub(crate) fn vault_event(ws: &mut Workspace, ev: &VaultEvent) {
 }
 
 /// A vault was opened: state starts fresh (start jobs here: `ws.jobs.add(...)`).
+/// Save the notes edited through embeds (not open in a tab).
+pub(crate) fn save_hidden_docs(ws: &mut Workspace) {
+    embed::save_all_hidden(ws);
+}
+
 pub(crate) fn vault_opened(ws: &mut Workspace) {
     let vim = std::mem::take(&mut ws.features.nav.vim);
     ws.features.nav = NavState { vim, ..NavState::default() };

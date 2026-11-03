@@ -466,9 +466,15 @@ pub fn reanchor_all(ws: &mut Workspace, pdf: &NotePath, sha256: &str, pages: &[q
             None => detached.push(e.id.clone()),
         }
     }
-    // The note now describes this version (detached ones keep their old place).
-    text = annot::set_pdf_sha(&text, sha256);
-    if let Err(e) = write_note(ws, &note_path, &text) {
+    // The note says it matches this version only once every highlight was
+    // found in it: detached ones keep their old place and are looked for
+    // (and listed as detached) again next time.
+    if detached.is_empty() {
+        text = annot::set_pdf_sha(&text, sha256);
+    }
+    if text != current
+        && let Err(e) = write_note(ws, &note_path, &text)
+    {
         ws.notify(NoticeLevel::Warn, format!("Couldn't update the highlights of {pdf}: {e}"));
     }
     Some(detached)
@@ -528,6 +534,44 @@ mod tests {
         remove_highlight(&mut ws, &pdf, &id).unwrap();
         assert!(highlights(&ws, &pdf).is_empty());
         assert!(ws.vault().unwrap().read(&annot::note_for(&pdf)).unwrap().contains("# Highlights: rope"));
+    }
+
+    fn page(text: &str) -> quire_pdf::PageText {
+        let mut p = quire_pdf::PageText::default();
+        for (k, c) in text.chars().enumerate() {
+            let x = 72.0 + 6.0 * k as f32;
+            p.chars.push((c, [x, 700.0, x + 6.0, 710.0]));
+        }
+        p.lines.push(quire_pdf::text::TextLine { text: text.to_string(), quad: [72.0, 700.0, 400.0, 710.0] });
+        p
+    }
+
+    #[test]
+    fn review_reanchoring_keeps_the_old_sha_while_highlights_are_detached() {
+        let mut ws = Workspace::new(Settings::default());
+        ws.attach_vault(Vault::in_memory(&[("rope.pdf", "%PDF-1.7 not really")]));
+        let pdf = NotePath::new("rope.pdf");
+        let a = PdfAnchor {
+            p: 1,
+            q: vec![[72.0, 700.0, 102.0, 710.0]],
+            t: "Ropes".into(),
+            pre: String::new(),
+            suf: String::new(),
+            c: "yellow".into(),
+            other: serde_json::Map::new(),
+        };
+        let id = add_highlight(&mut ws, &pdf, &a, "Ropes", "").unwrap();
+        let sha = |ws: &Workspace| annot::pdf_sha(&read_note(ws, &annot::note_for(&pdf)).unwrap());
+        let old = sha(&ws);
+        // The PDF changed and the highlight's text is gone from it.
+        let gone = [page("Nothing about it here")];
+        assert_eq!(reanchor_all(&mut ws, &pdf, "new", &gone), Some(vec![id.clone()]));
+        assert_eq!(sha(&ws), old, "the note doesn't claim to match the new file");
+        assert_eq!(reanchor_all(&mut ws, &pdf, "new", &gone), Some(vec![id]), "listed as detached again");
+        // Once every highlight is found, the new version is recorded.
+        assert_eq!(reanchor_all(&mut ws, &pdf, "new", &[page("Ropes are here")]), Some(vec![]));
+        assert_eq!(sha(&ws).as_deref(), Some("new"));
+        assert_eq!(reanchor_all(&mut ws, &pdf, "new", &[page("Ropes are here")]), None);
     }
 
     #[test]

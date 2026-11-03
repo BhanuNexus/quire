@@ -30,7 +30,7 @@ use crate::ids::{BatchId, ProposalId};
 use crate::inbox::InboxStore;
 use crate::ledger::{Ledger, LedgerEntry, LedgerQuery};
 use crate::policy::{Mode, OpKind, POLICY_PATH, Policy, Route, Widening, ZoneRole, hard_rule, stricter_limits, strictest, widenings};
-use crate::proposal::{Proposal, ProposalChange, ProposalFilter, ProposalStatus, ProposalStore, ProposalSummary};
+use crate::proposal::{HunkAction, Proposal, ProposalChange, ProposalFilter, ProposalStatus, ProposalStore, ProposalSummary};
 
 /// Where device approvals live: a folder, or memory (in-memory vaults, tests).
 enum StateStore {
@@ -966,9 +966,22 @@ impl AgentStore {
                         let r = quire_text::merge::merge3(disk, &pending, new_text);
                         if r.is_clean() { r.text } else { new_text.clone() }
                     };
+                    // What the person rejected stays rejected: those hunks are
+                    // dropped again. Their decisions are kept for that.
+                    let rejected: Vec<&str> =
+                        c.decisions.iter().filter(|d| d.action == HunkAction::Rejected).map(|d| d.hunk.as_str()).collect();
+                    let merged = if rejected.is_empty() {
+                        merged
+                    } else {
+                        let base = c.base_text().unwrap_or_default();
+                        let hunks = crate::review::hunks(&path, &base, &base, &merged);
+                        let keep = |h: &crate::proposal::Hunk| {
+                            if rejected.contains(&h.id.as_str()) { crate::review::Choice::Reject } else { crate::review::Choice::Pending }
+                        };
+                        crate::review::apply(&base, &hunks, keep).new_text
+                    };
                     c.new_text = Some(merged);
                     c.review = None;
-                    c.decisions.clear();
                 }
                 (Some(c), Change::Create { text, .. }) if c.op == crate::proposal::ChangeOp::Create => {
                     c.text = Some(text.clone());
@@ -987,11 +1000,22 @@ impl AgentStore {
         let store = ProposalStore::new(self.inner.vault.clone());
         let paths: Vec<NotePath> = planned.iter().map(|p| p.change.path().clone()).collect();
         let own = self.own_pending(actor);
-        let target = own.into_iter().find(|p| p.changes.iter().any(|c| c.state.is_none() && c.paths().iter().any(|x| paths.contains(x))));
+        let target = own
+            .into_iter()
+            .find(|p| p.changes.iter().any(|c| c.state.is_none() && c.paths().iter().any(|x| paths.contains(x))))
+            .map(|p| p.id);
         let untrusted = self.untrusted_source(&cs.sources);
-        let (proposal, amended) = if let Some(mut prop) = target {
+        // Amend the latest version of the proposal, and only if nobody
+        // decided on it meanwhile (the desktop reviews it in another
+        // process): otherwise read it again and amend that.
+        let mut amended_prop = None;
+        for _ in 0..8 {
+            let Some(mut prop) = target.as_ref().and_then(|id| store.load(id)).filter(|p| p.status == ProposalStatus::Pending) else {
+                break;
+            };
+            let seen = prop.updated;
             Self::amend(&mut prop, planned, &cs.expected);
-            prop.updated = now;
+            prop.updated = now.max(seen + 1);
             if !cs.rationale.trim().is_empty() && !prop.rationale.contains(cs.rationale.trim()) {
                 if !prop.rationale.is_empty() {
                     prop.rationale.push_str("\n\n");
@@ -1007,6 +1031,12 @@ impl AgentStore {
                 prop.trust = Trust::Untrusted;
                 prop.untrusted_source = prop.untrusted_source.clone().or_else(|| untrusted.clone());
             }
+            if store.save_if(&prop, seen)? {
+                amended_prop = Some(prop);
+                break;
+            }
+        }
+        let (proposal, amended) = if let Some(prop) = amended_prop {
             (prop, true)
         } else {
             let pending =
@@ -1038,9 +1068,9 @@ impl AgentStore {
                 changes: planned.iter().map(Self::proposal_change).collect(),
                 other: crate::actor::Other::new(),
             };
+            store.save(&prop)?;
             (prop, false)
         };
-        store.save(&proposal)?;
         for p in planned {
             let mut e = LedgerEntry::new(actor.clone(), Op::Propose, now).path(p.change.path());
             e.proposal = Some(proposal.id.clone());

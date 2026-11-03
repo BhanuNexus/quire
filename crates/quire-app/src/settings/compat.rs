@@ -3,8 +3,10 @@
 //! 0.8 and 0.9 share one settings.toml: a file written by either loads in
 //! the other, and a save by either keeps what the other wrote.
 //!
-//! `Settings08` is the 0.8.0 `Settings` struct, copied unchanged, standing in
-//! for the old binary.
+//! `Settings08` is the 0.8.0 `Settings` struct, copied unchanged from the
+//! `v0.8.0` tag, standing in for the old binary. It has no catch-all field:
+//! 0.8 drops every key it doesn't know when it saves, and 0.9 gets them back
+//! from its sidecar.
 
 use std::path::{Path, PathBuf};
 
@@ -45,8 +47,6 @@ struct Settings08 {
     capture_shortcut: bool,
     spell_check: bool,
     spell_language: String,
-    #[serde(flatten)]
-    other: toml::Table,
 }
 
 impl Default for Settings08 {
@@ -80,7 +80,6 @@ impl Default for Settings08 {
             capture_shortcut: true,
             spell_check: true,
             spell_language: "en_US".into(),
-            other: toml::Table::new(),
         }
     }
 }
@@ -110,12 +109,13 @@ fn a_0_8_file_survives_a_0_9_save_and_reads_back_in_0_8() {
     assert_eq!(s.ai_local, super::AiLocalSettings::default(), "new tables start at their defaults");
     assert!(s.other.is_empty(), "every 0.8 key is known: {:?}", s.other);
     s.save_to(&p).unwrap();
-    let mut after = Settings08::load(&p);
-    // 0.8 sees the new tables as keys it doesn't know, and keeps them.
+    let text = std::fs::read_to_string(&p).unwrap();
     for key in ["onboarding", "ai_local", "agent_panel", "trust", "mcp_http", "editing", "tasks", "appearance", "jobs"] {
-        assert!(after.other.remove(key).is_some(), "{key} written as a table");
+        assert!(text.contains(&format!("[{key}]")), "{key} written as a table");
     }
-    assert_eq!(after, before, "0.8 reads exactly what it wrote");
+    assert!(text.starts_with("written_by = \"0.9\"\n"), "{text}");
+    // 0.8 ignores what it doesn't know, and reads exactly what it wrote.
+    assert_eq!(Settings08::load(&p), before);
 }
 
 #[test]
@@ -126,18 +126,48 @@ fn a_0_9_file_survives_a_0_8_save_and_reads_back_in_0_9() {
     let before = Settings::load_from(&p);
     assert!(before.ai_local.embeddings && before.mcp_http.port == 7400 && before.editing.vim, "fixture sets 0.9 values");
     assert_eq!(before.editing.other.get("future_editing_key").and_then(toml::Value::as_bool), Some(true));
-    assert!(before.other.contains_key("future_table"));
-    // 0.8 opens it (no error, no `.unreadable` copy), changes a setting, saves.
+    assert!(before.other.contains_key("future_table") && before.other.contains_key("future_flag"));
+    // 0.9 saves it (and its sidecar).
+    before.save_to(&p).unwrap();
+    // 0.8 opens it (no error, no `.unreadable` copy), changes a setting, saves:
+    // every table it doesn't know is gone from settings.toml.
     let mut old = Settings08::load(&p);
-    assert!(old.other.contains_key("ai_local") && old.other.contains_key("future_table"));
     old.font_size = 20.0;
     old.save(&p);
+    assert!(!std::fs::read_to_string(&p).unwrap().contains("[editing]"), "0.8 drops what it doesn't know");
+    // 0.9 takes them back from the sidecar.
     let back = Settings::load_from(&p);
     assert!(!dir.path().join("settings.toml.unreadable").exists());
     assert_eq!(back, Settings { font_size: 20.0, ..before });
     // And a 0.9 save of that keeps everything again.
     back.save_to(&p).unwrap();
     assert_eq!(Settings::load_from(&p), back);
+}
+
+#[test]
+fn review_real_0_8_save_keeps_0_9_tables() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("settings.toml");
+    // 0.9 → 0.8 (change any setting) → 0.9.
+    let mut s = Settings::default();
+    s.editing.vim = true;
+    s.onboarding.ai_done = true;
+    s.mcp_http.port = 7411;
+    s.save_to(&p).unwrap();
+    let mut old = Settings08::load(&p);
+    old.spell_check = false;
+    old.save(&p);
+    let back = Settings::load_from(&p);
+    assert!(back.editing.vim && back.onboarding.ai_done && back.mcp_http.port == 7411, "{back:?}");
+    assert!(!back.spell_check, "0.8's own change is kept too");
+    // A table 0.9 writes wins over the sidecar's older copy.
+    let mut again = back;
+    again.editing.vim = false;
+    again.save_to(&p).unwrap();
+    assert!(!Settings::load_from(&p).editing.vim);
+    // A file 0.9 wrote is never mixed with the sidecar.
+    std::fs::write(super::sidecar_path(&p), "[editing]\nvim = true\n").unwrap();
+    assert!(!Settings::load_from(&p).editing.vim);
 }
 
 #[test]

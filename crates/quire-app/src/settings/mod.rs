@@ -7,7 +7,13 @@
 //! so on), so features never edit a shared struct. Table names must not
 //! collide with top-level keys or their aliases (`editor`, `assistant`): a
 //! collision would make the file unreadable to older versions. Keys a
-//! version doesn't know are kept (`other`), so 0.8 and 0.9 can share one file.
+//! version doesn't know are kept (`other`), so 0.9 and later can share one file.
+//!
+//! Quire 0.8 reads the file but drops every key it doesn't know when it
+//! saves. So 0.9 also writes what 0.8 doesn't know to a sidecar,
+//! `settings.v09.toml` next to it, and marks the main file `written_by =
+//! "0.9"`. A file without that mark was last saved by 0.8: tables it lacks
+//! are taken back from the sidecar (docs/formats/settings.md).
 
 mod agent_panel;
 mod ai_local;
@@ -160,6 +166,56 @@ pub fn config_dir() -> Option<PathBuf> {
     directories::ProjectDirs::from("dev", "Quire", "Quire").map(|d| d.config_dir().to_path_buf())
 }
 
+/// The settings generation written as `written_by`.
+const WRITTEN_BY: &str = "0.9";
+
+/// The keys Quire 0.8.0 knows (and so keeps when it saves), aliases included.
+const KEYS_08: &[&str] = &[
+    "theme",
+    "font_size",
+    "line_width",
+    "indent_unit",
+    "autosave_ms",
+    "large_file_kb",
+    "show_preview",
+    "show_sidebar",
+    "show_insights",
+    "dates_as_links",
+    "inline_calculator",
+    "last_vault",
+    "ai_provider",
+    "assistant",
+    "ai_base_url",
+    "ai_model",
+    "assistant_model",
+    "embeddings",
+    "embed_model",
+    "embed_base_url",
+    "editor",
+    "inline_images",
+    "live_preview",
+    "tour_done",
+    "check_updates",
+    "last_update_check",
+    "skip_update_version",
+    "capture_shortcut",
+    "spell_check",
+    "spell_language",
+];
+
+/// The sidecar of `path`: what only 0.9 and later know.
+pub fn sidecar_path(path: &Path) -> PathBuf {
+    path.with_file_name("settings.v09.toml")
+}
+
+/// Whether `written_by` names a version before 0.9 (or is missing).
+fn older_than_09(written_by: Option<&toml::Value>) -> bool {
+    let Some(v) = written_by.and_then(toml::Value::as_str) else { return true };
+    let mut parts = v.split('.').map(|p| p.trim().parse::<u64>().unwrap_or(0));
+    let (major, minor) = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
+    (major, minor) < (0, 9)
+}
+
 impl Settings {
     /// The settings file. Unit tests get none, so they never touch real settings.
     pub fn path() -> Option<PathBuf> {
@@ -172,9 +228,26 @@ impl Settings {
     /// Settings from `path`; defaults if it's missing. A file that can't be
     /// read as settings is copied to `settings.toml.unreadable` first, so the
     /// next save doesn't silently replace what was in it.
+    ///
+    /// When the file was last saved by Quire 0.8 (no `written_by`), the
+    /// tables and keys it dropped are restored from the sidecar.
     pub fn load_from(path: &Path) -> Self {
         let Ok(text) = std::fs::read_to_string(path) else { return Self::default() };
-        toml::from_str(&text).unwrap_or_else(|e| {
+        let parsed = toml::from_str::<toml::Table>(&text).and_then(|mut t| {
+            if older_than_09(t.get("written_by"))
+                && let Ok(side) = std::fs::read_to_string(sidecar_path(path))
+                && let Ok(side) = toml::from_str::<toml::Table>(&side)
+            {
+                for (k, v) in side {
+                    if !KEYS_08.contains(&k.as_str()) && k != "written_by" && !t.contains_key(&k) {
+                        t.insert(k, v);
+                    }
+                }
+            }
+            t.remove("written_by");
+            toml::Value::Table(t).try_into::<Self>()
+        });
+        parsed.unwrap_or_else(|e| {
             let kept = crate::atomic::keep_unreadable(path);
             eprintln!("quire: couldn't read {} ({e}); using defaults, a copy is at {kept:?}", path.display());
             Self::default()
@@ -185,9 +258,18 @@ impl Settings {
         Self::path().map(|p| Self::load_from(&p)).unwrap_or_default()
     }
 
+    /// Write the settings, and the sidecar with what Quire 0.8 would drop.
     pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
-        let s = toml::to_string_pretty(self).map_err(std::io::Error::other)?;
-        crate::atomic::write(path, s.as_bytes(), false)
+        let body = toml::to_string_pretty(self).map_err(std::io::Error::other)?;
+        let mut newer: toml::Table = toml::Table::try_from(self).map_err(std::io::Error::other)?;
+        newer.retain(|k, _| !KEYS_08.contains(&k));
+        newer.remove("written_by");
+        let side = format!(
+            "# Settings Quire 0.8 doesn't know, kept here in case it saves settings.toml.\n{}",
+            toml::to_string_pretty(&newer).map_err(std::io::Error::other)?
+        );
+        crate::atomic::write(&sidecar_path(path), side.as_bytes(), false)?;
+        crate::atomic::write(path, format!("written_by = \"{WRITTEN_BY}\"\n{body}").as_bytes(), false)
     }
 
     pub fn save(&self) -> std::io::Result<()> {

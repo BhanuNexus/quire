@@ -191,7 +191,10 @@ impl Workspace {
         };
         let date = chrono::Local::now().format("%Y-%m-%d").to_string();
         let model = if a.by.starts_with("extractive") { "Quire (quoting your notes)".to_string() } else { a.by.clone() };
-        let text = ask::answer_note(&AnswerMeta { question: &q, date: &date, model: &model, answered_by: "human" }, &a);
+        // The person saved it; the answer itself was written by a model (or
+        // quoted from the notes by Quire), and the note says which.
+        let by = answered_by(&a.by);
+        let text = ask::answer_note(&AnswerMeta { question: &q, date: &date, model: &model, answered_by: &by }, &a);
         let mut cs = ChangeSet::one(Change::Create { path: path.clone(), text: text.clone() });
         cs.title = format!("Save answer: {q}");
         match store.submit(&Actor::human(&store.device().id), cs) {
@@ -232,6 +235,12 @@ impl Workspace {
     }
 }
 
+/// `answered_by` of a saved answer: `quire:extractive` when Quire quoted
+/// the notes, else `model:<name>` for the model that wrote it.
+fn answered_by(by: &str) -> String {
+    if by.starts_with("extractive") { "quire:extractive".into() } else { format!("model:{by}") }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{Settings, Workspace};
@@ -266,6 +275,8 @@ mod tests {
         assert_eq!(saved.as_str(), "wiki/answers/why is undo cheap.md", "the default policy has an agent-owned wiki/");
         let text = w.vault().unwrap().read(&saved).unwrap();
         assert!(text.contains("> [!ai] Written by Quire (quoting your notes) from 1 note on"));
+        assert!(text.contains("\nanswered_by: quire:extractive\n"), "{text}");
+        assert_eq!(super::answered_by("qwen3-1.7b"), "model:qwen3-1.7b");
         assert!(
             text.contains("[^1]: [[Rope Notes#Undo]] — “Ropes make undo cheap because unchanged subtrees are shared.” <!-- quire:cite v=1")
         );

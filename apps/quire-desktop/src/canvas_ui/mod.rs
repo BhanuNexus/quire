@@ -237,10 +237,27 @@ impl CanvasSurface {
         // Unsaved changes here and a change there: merge node by node.
         let canon = |t: &str| quire_canvas::parse(t).map(|c| quire_canvas::to_canonical(&c));
         let (Ok(base), Ok(other)) = (canon(&self.disk_text), canon(&theirs)) else {
+            // The next save writes ours over it: keep theirs beside it first.
+            let copy = self.elsewhere_copy(&vault);
+            let kept = vault.storage().write_atomic(&copy, &theirs).is_ok();
             ws.notify(
                 NoticeLevel::Warn,
-                format!("{} changed elsewhere in a form Quire can't read; your version is kept.", self.path.file_name()),
+                if kept {
+                    format!(
+                        "{} changed elsewhere in a form Quire can't read; your version is kept and the other is in {}.",
+                        self.path.file_name(),
+                        copy.file_name()
+                    )
+                } else {
+                    format!(
+                        "{} changed elsewhere in a form Quire can't read, and a copy couldn't be kept; not saving over it.",
+                        self.path.file_name()
+                    )
+                },
             );
+            if !kept {
+                self.error = Some(format!("{} changed elsewhere and couldn't be kept", self.path.file_name()));
+            }
             self.disk_text = theirs;
             return;
         };
@@ -252,7 +269,7 @@ impl CanvasSurface {
             ws.notify(NoticeLevel::Info, format!("{} was also changed elsewhere; both changes are kept.", self.path.file_name()));
         } else {
             // Keep ours and put theirs beside it, so nothing is lost.
-            let copy = NotePath::join(self.path.folder(), &format!("{} (changed elsewhere).canvas", self.path.stem()));
+            let copy = self.elsewhere_copy(&vault);
             let _ = vault.storage().write_atomic(&copy, &theirs);
             ws.notify(
                 NoticeLevel::Warn,
@@ -266,6 +283,17 @@ impl CanvasSurface {
         self.disk_text = theirs;
         self.dirty = true;
         self.last_edit = Instant::now();
+    }
+
+    /// A free name for a copy of the version changed elsewhere.
+    fn elsewhere_copy(&self, vault: &Vault) -> NotePath {
+        (1..1000)
+            .map(|n| {
+                let tag = if n == 1 { String::new() } else { format!(" {n}") };
+                NotePath::join(self.path.folder(), &format!("{} (changed elsewhere{tag}).canvas", self.path.stem()))
+            })
+            .find(|p| !vault.exists(p))
+            .unwrap_or_else(|| NotePath::join(self.path.folder(), &format!("{} (changed elsewhere).canvas", self.path.stem())))
     }
 
     fn save(&mut self) {
@@ -2032,6 +2060,17 @@ mod tests {
         ws.features.canvas.disk_changes.insert("C.canvas".into(), 2);
         s.absorb(&mut ws);
         assert!(s.canvas.nodes.iter().any(|n| n.url.as_deref() == Some("https://quire.app")), "their change");
+        // A version Quire can't read, while there are unsaved edits: kept beside
+        // ours before ours is saved over it.
+        let n = s.canvas.nodes[0].id.clone();
+        s.canvas.node_mut(&n).unwrap().x += 5;
+        s.touch();
+        let odd = "{\"nodes\":[{\"id\":\"z\",\"type\":\"text\",\"x\":\"left\"}],\"edges\":[]}";
+        ws.vault().unwrap().storage().write_atomic(&"C.canvas".into(), odd).unwrap();
+        ws.features.canvas.disk_changes.insert("C.canvas".into(), 3);
+        s.absorb(&mut ws);
+        s.save();
+        assert_eq!(ws.vault().unwrap().storage().read(&"C (changed elsewhere).canvas".into()).unwrap(), odd);
     }
 
     #[test]

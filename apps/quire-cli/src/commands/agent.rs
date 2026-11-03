@@ -23,7 +23,8 @@ pub(crate) const COMMANDS: &[CliCommand] = &[
         usage: "  quire-cli agent     proposals <vault> [--all] | show <vault> <id> | log <vault> [--actor ID] [--since T]
                       suggested changes waiting for review, one in detail, and what agents did on this device
   quire-cli agent     accept <vault> <id> [--hunks h1,h2] | reject <vault> <id>     decide on a suggestion
-  quire-cli agent     revert <vault> [--actor ID] [--run R] [--since T] [--write]   undo agent changes (a dry run without --write)",
+  quire-cli agent     revert <vault> [--actor ID] [--run R] [--since T] [--batch B] [--write]
+                      undo agent changes, or one batch (b_…, e.g. a tag rename); a dry run without --write",
         run,
     },
     CliCommand {
@@ -77,10 +78,11 @@ fn run(args: &[String]) -> Result<(), String> {
                     .map(|r| quire_agent::RunId::parse(r).ok_or_else(|| format!("“{r}” isn't a run id (r_…)")))
                     .transpose()?,
                 since: since(args, now)?,
+                batch: flag(args, "--batch").map(str::to_string),
                 ..RevertSelector::default()
             };
-            if sel.actor.is_none() && sel.run.is_none() && sel.since.is_none() {
-                return Err("say what to undo: --actor, --run or --since".into());
+            if sel.actor.is_none() && sel.run.is_none() && sel.since.is_none() && sel.batch.is_none() {
+                return Err("say what to undo: --actor, --run, --since or --batch".into());
             }
             revert(&store, &sel, args.iter().any(|a| a == "--write"))
         }
@@ -263,7 +265,14 @@ fn log(store: &AgentStore, q: &LedgerQuery) -> String {
     for e in entries {
         let path = e.path.as_ref().map(NotePath::as_str).unwrap_or_default();
         let to = e.to.as_ref().map(|t| format!(" → {t}")).unwrap_or_default();
-        let _ = writeln!(s, "{}  {:<8} {:<20} {path}{to}", quire_app::chrono_fmt(e.at), format!("{:?}", e.op).to_lowercase(), e.actor.id);
+        let batch = e.batch.as_ref().map(|b| format!("  ({b})")).unwrap_or_default();
+        let _ = writeln!(
+            s,
+            "{}  {:<8} {:<20} {path}{to}{batch}",
+            quire_app::chrono_fmt(e.at),
+            format!("{:?}", e.op).to_lowercase(),
+            e.actor.id
+        );
     }
     s
 }
@@ -334,5 +343,27 @@ mod tests {
         assert!(out.starts_with("0 changes selected."), "{out}");
         let v = dir.path().to_str().unwrap().to_string();
         assert!(run(&["agent".into(), "revert".into(), v]).unwrap_err().contains("--actor"));
+    }
+
+    #[test]
+    fn a_tag_rename_batch_is_undone_after_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("A.md"), "#work\n").unwrap();
+        let st = store(dir.path().to_str().unwrap()).unwrap();
+        let v = st.vault().clone();
+        let path = NotePath::new("A.md");
+        let now = st.now_ms();
+        v.snapshot(&path, "#project\n", now - 1, true).unwrap();
+        v.snapshot(&path, "#work\n", now, true).unwrap();
+        let mut e = quire_agent::LedgerEntry::new(Actor::human("d"), quire_agent::Op::Write, now).path(&path);
+        e.batch = Some("b_rename".into());
+        (e.snap_before, e.snap_after) = (Some(now - 1), Some(now));
+        (e.before, e.after) = (Some(quire_agent::ContentHash::of("#project\n")), Some(quire_agent::ContentHash::of("#work\n")));
+        st.record(&e);
+        assert!(log(&st, &LedgerQuery::default()).contains("(b_rename)"));
+        let args: Vec<String> =
+            ["agent", "revert", dir.path().to_str().unwrap(), "--batch", "b_rename", "--write"].iter().map(ToString::to_string).collect();
+        run(&args).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.path().join("A.md")).unwrap(), "#project\n");
     }
 }
