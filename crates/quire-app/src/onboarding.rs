@@ -1,9 +1,190 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! First-run AI choice (design §7.1): which step is showing.
+//! First-run AI choice (design §7.1).
+//!
+//! * A new install shows the two-step dialog once, right after the tour.
+//! * Someone upgrading from 0.8 (the tour was done before this version
+//!   started) gets a dismissible card above the note instead, never a dialog.
+//!
+//! Choosing does what it says and nothing more: "No AI" changes nothing,
+//! "Use a provider" opens the provider form, "On this computer" turns the
+//! chosen capabilities on and starts their downloads only on "Download now".
 //!
 //! Owned by WS-D; kept in `ws.features.onboarding`.
 
+use crate::Command;
+use crate::workspace::{UiRequest, Workspace};
+
 /// State for this feature.
 #[derive(Debug, Default)]
-pub struct OnboardingState {}
+pub struct OnboardingState {
+    /// Whether this run started with the tour already done (an upgrade or a
+    /// later start), decided on the first tick.
+    started_after_tour: Option<bool>,
+    /// The dialog was asked for in this run.
+    asked: bool,
+}
+
+/// The on-device capabilities a person can pick (step 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DeviceChoice {
+    pub embeddings: bool,
+    /// The multilingual embedder instead of the English one.
+    pub multilingual: bool,
+    pub llm: bool,
+    /// Catalog id of the language model size.
+    pub llm_size: LlmSize,
+    pub ocr: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LlmSize {
+    Small,
+    #[default]
+    Balanced,
+    Better,
+}
+
+impl LlmSize {
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Small => "qwen3-0.6b-q8",
+            Self::Balanced => "qwen3-1.7b-q4km",
+            Self::Better => "qwen3-4b-q4km",
+        }
+    }
+}
+
+impl DeviceChoice {
+    /// Catalog ids to download for this choice.
+    pub fn models(self) -> Vec<&'static str> {
+        let mut v = Vec::new();
+        if self.embeddings {
+            v.push(if self.multilingual { "multilingual-e5-small" } else { "bge-small-en-v1.5" });
+        }
+        if self.llm {
+            v.push(self.llm_size.id());
+        }
+        if self.ocr {
+            v.push("ocrs");
+        }
+        v
+    }
+}
+
+/// Once per run: after the tour of a new install, ask for the AI choice.
+pub(crate) fn tick(ws: &mut Workspace) {
+    let tour_done = ws.settings.tour_done;
+    let has_vault = ws.vault().is_some();
+    let st = &mut ws.features.onboarding;
+    let first = *st.started_after_tour.get_or_insert(tour_done);
+    if first || st.asked || ws.settings.onboarding.ai_done || !tour_done || !has_vault {
+        return;
+    }
+    st.asked = true;
+    ws.request_ui(UiRequest::Feature(Command::AiSetup));
+}
+
+/// The upgrade card shows: 0.8 users who haven't chosen or dismissed it.
+pub fn show_upgrade_card(ws: &Workspace) -> bool {
+    let o = &ws.settings.onboarding;
+    ws.features.onboarding.started_after_tour == Some(true) && !o.ai_done && !o.upgrade_card_done && ws.vault().is_some()
+}
+
+impl Workspace {
+    /// Step 1: "No AI". Nothing changes.
+    pub fn onboarding_no_ai(&mut self) {
+        self.finish_onboarding("off");
+    }
+
+    /// Step 1: "Use a provider" (the provider form follows).
+    pub fn onboarding_provider(&mut self) {
+        let device = matches!(self.settings.onboarding.ai_choice.as_str(), "device" | "both");
+        self.finish_onboarding(if device { "both" } else { "cloud" });
+    }
+
+    /// Step 2: turn on what was ticked; `download` starts the downloads now
+    /// ("Download now"), otherwise they wait for Settings → AI ("Later").
+    pub fn onboarding_device(&mut self, choice: DeviceChoice, download: bool) {
+        let a = &mut self.settings.ai_local;
+        a.engine |= choice.embeddings || choice.llm || choice.ocr;
+        if choice.embeddings {
+            a.embeddings = true;
+            a.embed_model = (if choice.multilingual { "multilingual-e5-small" } else { "bge-small-en-v1.5" }).into();
+            self.settings.embeddings = "local".into();
+        }
+        if choice.llm {
+            a.llm = true;
+            a.llm_model = choice.llm_size.id().into();
+        }
+        if choice.ocr {
+            a.ocr = true;
+        }
+        let cloud = matches!(self.settings.onboarding.ai_choice.as_str(), "cloud" | "both");
+        self.finish_onboarding(if cloud { "both" } else { "device" });
+        if download {
+            for id in choice.models() {
+                self.ai_download(id);
+            }
+        }
+        self.apply_ai_settings();
+    }
+
+    /// The upgrade card's ✕.
+    pub fn dismiss_upgrade_card(&mut self) {
+        self.settings.onboarding.upgrade_card_done = true;
+        let _ = self.settings.save();
+    }
+
+    fn finish_onboarding(&mut self, choice: &str) {
+        let o = &mut self.settings.onboarding;
+        o.ai_done = true;
+        o.upgrade_card_done = true;
+        o.ai_choice = choice.into();
+        let _ = self.settings.save();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Settings;
+    use crate::vault::Vault;
+
+    #[test]
+    fn new_installs_get_the_dialog_after_the_tour_and_upgraders_a_card() {
+        let mut ws = Workspace::new(Settings::default());
+        ws.attach_vault(Vault::in_memory(&[("A.md", "# A\n")]));
+        tick(&mut ws);
+        assert!(ws.take_ui_requests().is_empty(), "not during the tour");
+        ws.settings.tour_done = true;
+        tick(&mut ws);
+        assert_eq!(ws.take_ui_requests(), vec![UiRequest::Feature(Command::AiSetup)]);
+        tick(&mut ws);
+        assert!(ws.take_ui_requests().is_empty(), "once");
+        assert!(!show_upgrade_card(&ws));
+
+        let mut up = Workspace::new(Settings { tour_done: true, ..Settings::default() });
+        up.attach_vault(Vault::in_memory(&[("A.md", "# A\n")]));
+        tick(&mut up);
+        assert!(up.take_ui_requests().is_empty(), "upgraders never get a dialog");
+        assert!(show_upgrade_card(&up));
+        up.settings.onboarding.upgrade_card_done = true;
+        assert!(!show_upgrade_card(&up));
+    }
+
+    #[test]
+    fn choices_change_only_what_they_say() {
+        let mut ws = Workspace::new(Settings::default());
+        let before = ws.settings.clone();
+        ws.onboarding_no_ai();
+        assert_eq!(ws.settings.ai_provider, before.ai_provider);
+        assert_eq!(ws.settings.ai_local, before.ai_local, "No AI turns nothing on");
+        assert_eq!((ws.settings.onboarding.ai_done, ws.settings.onboarding.ai_choice.as_str()), (true, "off"));
+        ws.onboarding_device(DeviceChoice { embeddings: true, ocr: true, ..DeviceChoice::default() }, false);
+        assert!(ws.settings.ai_local.embeddings && ws.settings.ai_local.ocr && !ws.settings.ai_local.llm);
+        assert_eq!(ws.settings.embeddings, "local");
+        assert!(!ws.features.ai.busy(), "Later doesn't download");
+        assert_eq!(DeviceChoice { llm: true, llm_size: LlmSize::Small, ..DeviceChoice::default() }.models(), vec!["qwen3-0.6b-q8"]);
+    }
+}

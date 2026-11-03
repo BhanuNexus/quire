@@ -46,7 +46,7 @@ quire-agent.workspace = true
 # 0.9 workstreams add their crates on their own line below its marker, so
 # parallel branches don't edit the same lines (docs/design/F0-notes.md).
 # WS-D: quire-ai
-#
+quire-ai = { workspace = true, features = ["client"] }
 # WS-E: quire-plan
 quire-plan.workspace = true
 notify-rust.workspace = true

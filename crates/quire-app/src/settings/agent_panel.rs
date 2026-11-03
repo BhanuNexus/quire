@@ -17,6 +17,9 @@ pub struct AgentPanelSettings {
     pub enabled: bool,
     /// `"provider"` (the configured AI) or `"acp"` (an external agent).
     pub backend: String,
+    /// With both a provider and an on-device model: `""` (the provider when
+    /// there is one), `"provider"` or `"device"`.
+    pub model: String,
     /// Tool steps per message.
     pub max_steps: u32,
     /// External agent command (ACP).
@@ -34,6 +37,7 @@ impl Default for AgentPanelSettings {
         Self {
             enabled: true,
             backend: "provider".into(),
+            model: String::new(),
             max_steps: 20,
             acp_command: String::new(),
             acp_args: Vec::new(),
