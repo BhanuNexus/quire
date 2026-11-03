@@ -4,6 +4,8 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-04
+
 Quire 0.9 lets AI agents work in your vault without taking it over: their changes arrive as suggestions you review in the note, everything they do can be undone, and answers cite the exact sentences they come from. AI stays optional; running it entirely on your computer is coming in an update, and you can try it now behind an experimental switch. Also new: planning with dates and reminders, Vim keys, canvases, a PDF viewer, citations, and Quire Lite.
 
 ### Added
@@ -283,7 +285,8 @@ Downloads for Windows, macOS (universal) and Linux are attached to the release, 
 ### Added
 - First version: live Markdown styling, wikilinks with rename refactoring, backlinks, related notes, daily notes, templates, command palette, quick open, inline calculator and natural-language dates.
 
-[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/BhanuNexus/quire/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/BhanuNexus/quire/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/BhanuNexus/quire/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/BhanuNexus/quire/compare/v0.5.0...v0.6.0
