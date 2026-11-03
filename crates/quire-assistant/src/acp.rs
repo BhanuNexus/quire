@@ -189,7 +189,8 @@ impl VaultHost<'_> {
     /// The vault path for an absolute (or vault-relative) path, if inside.
     fn note_path(&self, path: &str) -> Result<NotePath, String> {
         let p = Path::new(path);
-        let rel = if p.is_absolute() {
+        // `/etc/x` has a root but no drive on Windows: still not vault-relative.
+        let rel = if p.is_absolute() || p.has_root() {
             let root = self.root.canonicalize().unwrap_or_else(|_| self.root.clone());
             let full = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
             let full = if full.exists() {
