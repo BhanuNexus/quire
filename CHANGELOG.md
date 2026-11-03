@@ -4,14 +4,109 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+Quire 0.9 lets AI agents work in your vault without taking it over: their changes arrive as suggestions you review in the note, everything they do can be undone, and answers cite the exact sentences they come from. AI stays optional, and can now run entirely on your computer. Also new: planning with dates and reminders, Vim keys, canvases, a PDF viewer, citations, and Quire Lite.
+
 ### Added
-- **Quire Lite.** Every release now comes in two editions: **Quire**, and **Quire Lite**, the same app without drawn math, diagrams and PDF export (math and diagrams show as their source), at about a third of the size (a 10 MB `.deb` instead of 33 MB). Lite files start with `Quire-Lite-`; the release notes have a table of which download is which. Settings → About says which edition you're running and links to the full one. To build Lite yourself: `cargo build -p quire-desktop --no-default-features`.
-- **Switch editions freely.** Both editions read and write the same notes, settings, session, dictionary and sync setup, and installing one replaces the other (the `quire-lite` package replaces `quire` and the other way round; on Windows and macOS they install over each other). Going from Quire to Lite and back loses nothing: in Lite, PDF export says it's in the full edition instead of failing, and math and diagrams draw again when you go back.
+
+#### Choose your AI (or none)
+- **A short choice the first time you start Quire 0.9:** no AI, a provider (Claude, OpenAI, or a server you run such as Ollama), or small models on this computer. Nothing is preselected and nothing downloads unless you ask. If you are upgrading, a card above the note offers the same choice once; "Set up AI…" opens it again.
+- **On-device AI**, in both editions: meaning search, writing help, the agent, and reading text in images and scanned PDFs, from models that download once and then work offline. They run in a separate engine process, so a model that fails or runs out of memory never takes the editor down. Downloads show their size, progress and speed, can be paused, resumed and cancelled, and are checked against a hash built into Quire. "Install from file…" installs a model downloaded on another computer. `quire-cli ai models|download|install|delete|engine` does the same from the command line.
+- **Settings → AI**, rebuilt: your provider, what runs on this computer (download, pause, delete, the engine's memory use), which model the agent panel uses, and the answer and check features below (Ask style, citation checks, staleness, contradictions).
+
+#### The agent panel
+- **Agent panel** (Ctrl+Shift+J): ask about your notes or ask for changes. It searches and reads your notes with the same tools AI apps get over MCP and shows each step. Its edits to your notes arrive as suggestions; it writes directly only in `wiki/`. Stop works at any moment, and Ask mode only reads.
+- Context chips send the open note and your selection along; type `@` for a note or `#` for a tag to add those too (Tab or a click picks one).
+- With a small on-device model the panel only chats about the open note; the balanced model reads notes and makes one change per message; larger and cloud models use every tool. The panel says which. Conversations are kept on this computer for 30 days and can be saved as a note.
+- **Connect an external agent** (Claude Code, Codex or another ACP agent) to the panel, after a warning that it runs with your permissions. Its edits through Quire become suggestions; when it asks to run commands, fetch from the web or delete, the answer starts on Deny. An amber "External" label stays on the panel while it is connected.
+- **Ingest into wiki** (command, `quire-cli ingest <vault> <note or URL>`, or the MCP prompt `quire_ingest`): a source becomes a summary page in `wiki/sources/` and concept pages in `wiki/concepts/`, every point quoting the source. Points whose quote isn't in the source are left out, links from your own notes are suggestions, and on a cloud model you see the cost first. "Revert run" undoes the whole ingest.
+- `wiki/index.md` lists the wiki's pages by type and is kept up to date between its markers (your own text around them stays). `wiki/log.md` gets a line for each ingest, each agent run in the wiki and each batch of accepted suggestions there.
+
+#### Reviewing what agents do
+- **Review suggestions in the note itself:** the lines an agent would replace are struck through with its version underneath, and Accept, Reject and Edit for each change. A bar above the note says who suggests what and why, with Prev, Next, Accept all, Reject all and Done. Alt+] and Alt+[ move between changes, Ctrl+Alt+Y accepts, Ctrl+Alt+Backspace rejects, Ctrl+Alt+Shift+Y accepts every change in the note. Accepting is one edit you can undo.
+- If you edit a note after an agent read it, its suggestions are adjusted to your version; changes that touch lines you edited are marked "You changed this after the agent read it" and are never applied by Accept all. An agent that keeps working on a note updates its suggestion instead of adding another.
+- **Inbox** (Alt+I): suggestions grouped by agent run, with Review, Accept all and Reject all; new notes, renames and deletions to accept one by one; vault checks, citations that need a look, notes getting stale and contradictions. Filter by kind, agent and folder, snooze for a day or a week. The status bar shows how many items wait.
+- **Agent activity:** what each agent did, run by run, with "Revert run" and "Undo an agent's changes…" (for example everything Claude Code did today). You see what would change before anything is written; your own later edits are kept, and where they overlap the agent's the undo becomes a suggestion to review.
+- **Version history says who made each version** (you, an agent, or you accepting an agent's suggestion) and links to that agent's activity. With a git repository it also has a Git tab with the note's commits.
+- **Settings → Agents:** what agents may do per folder (agent-owned, sources, your notes, private), limits per connected agent, the setup line for Claude Code or Claude Desktop, and an optional log of which notes agents read. Write contracts can require properties and links in agents' notes, and `[limits]` caps writes per minute and waiting suggestions.
+- Agent permissions and `AGENTS.md`/`CLAUDE.md` that change on another device or outside Quire take effect only after you approve them in the Inbox; narrowing what agents may do takes effect at once. "Create agent instructions (AGENTS.md)" writes a starter, which is pinned at the top of the Files tab.
+- **Vault checks** ("Check the vault", `quire-cli lint <vault> [--json]`): broken links (with a fix), links to missing blocks, notes with no links, missing notes many link to, missing required properties, duplicate titles, empty notes and an out-of-date `index.md`. They run in the background after you stop typing and come with quick fixes; choose which run in `.quire/shared/vault.toml` under `[lint]`.
+- Suggestions based on captured or imported content are marked "Based on untrusted content".
+
+#### AI apps over MCP
+- **A much richer set of tools:** search by section with line ranges (filtered by folder, tags, a view condition, dates, and PDF and image text when asked), view a note or a section or line range, outlines, linked notes, recent changes, history and diffs, tags, properties, views, tasks, canvases (`canvas_read`, `canvas_apply`) and the app's own suggestions. Long results are cut to a size the app asks for and continue with a cursor.
+- **Precise edits:** replace a passage, insert lines, edit a section, append, set properties, rename, delete. An edit names the version it was based on; if the note changed meanwhile, Quire re-applies it when it still fits or says what changed, so an agent never overwrites your edits unknowingly. A canvas change is reviewed card by card ("Add text node …").
+- AI apps can save an answer as a note with citations Quire checks later (`save_answer`), suggest undoing an agent's changes (`revert`), group a task's changes (`begin_run`), follow changes, and read notes as `quire://note/…` resources. They get Quire's built-in prompts (`quire_ingest`, `quire_lint`, `quire_answer`, `quire_maintain_index`), and `ask` in model mode uses the AI you set up in Quire.
+- **MCP over HTTP** (Settings → Connections, or `quire-cli mcp serve-http`): off by default, on 127.0.0.1 only, and every request needs a token. Apps sign in with OAuth and you approve each one in Quire (or with `quire-cli mcp approve`); you can also create personal tokens and revoke any app. Settings → Connections has ready-to-copy setup for Claude Code, Claude Desktop and other MCP apps.
+- A vault can let a specific app ask you to apply its change right there instead of sending it to Quire's review.
+- **Capture web page** (command, `quire-cli capture <vault> --url URL`, MCP `capture_url`): a page's article and images become a note in `raw/`, marked as untrusted source material. Private and local network addresses are refused.
+- `AGENTS.md` (or `CLAUDE.md`) is given to AI apps once you've approved it on this computer. `quire-cli agents-md init` writes a starter, `quire-cli skill print|install` gives agents a guide to working in Quire, and `quire-cli agent proposals|show|log|accept|reject|revert` handles suggestions from the command line. See [docs/agents.md](docs/agents.md).
+
+#### Answers you can check
+- **Ask says "Not found in your notes"** when your notes don't answer the question, and shows the passages that came closest instead of quoting something unrelated. It cites the exact sentences an answer comes from, not the whole section.
+- **Save as note** in Ask: the answer becomes a note in `Answers/` (or `wiki/answers/`) with the question, the date, who answered, an "AI wrote this" callout, and each source as a footnote quoting the cited text.
+- **Quire notices when a quoted passage changes or disappears,** offline: the footnote is marked (in the editor and the preview), a note under it shows what the text says now with **Update citation** and **Open**, a bar above the note says how many need a look, and the Inbox lists them.
+- **Check citations in this note:** with an AI model set up (and "Check citations with the AI model" on in Settings → AI), the model says whether each passage supports the sentence citing it. Without a model, citations that share few words with their sentence are pointed out.
+- **Say what you expect first** (Settings → AI, or per question in Ask): write what you think the answer is, see the passages grouped by topic, then the answer, which says where your notes agree or disagree with you.
+- **Getting stale:** a weekly digest in the Inbox of notes that may be out of date (old and not reviewed, linked notes that changed a lot since, "currently" or "as of", a past `valid_until:` or a `superseded_by:`), with the reasons, **Mark reviewed** and Snooze. Set how long a folder stays fresh under `[staleness]` in `.quire/shared/vault.toml`, or per note with `review_every: 90d`.
+- **Find contradictions** (Preview, off by default): an AI model compares claims in your notes about the same thing. Pairs that disagree appear in the Inbox with **Open both** (side by side, the passages highlighted), **Mark superseded**, **Ask agent to reconcile** (the agent panel starts with both passages) and Dismiss. It shows how many requests the first run takes, keeps cloud requests within a daily limit (200 by default), runs only while you're not typing, and sends a passage or a pair once.
+- **Thinking timeline** (Preview): for a tag, a note or a few words, when your notes started saying something, took it back, or another note contradicted it, read from saved versions.
+
+#### Search
+- **Accents are optional:** "cafe" finds "Café", "Lodz" finds "Łódź", "strasse" finds "Straße", in search, quick open and links. The find bar has a "Match accents" toggle; Find and replace in all notes keeps matching accents unless you untick it.
+- **PDF pages are searchable** in the app, `quire-cli search` and MCP `search`, listed as "paper.pdf p. 3" and opening at that page. Scanned pages and images are read with on-device OCR when it's on.
+
+#### Planning
+- **Tasks with dates, repeats and reminders:** Quire reads the Obsidian Tasks emoji (📅 ⏳ 🛫 ✅ ➕ 🔁 and priorities) and Dataview fields (`[due:: …]`), and adds ⏰ reminders. Repeats like `every month on the 1st`, `every weekday` or `every 3 days when done` (or `RRULE:`) add the next task when you tick one off.
+- **Reminders** show in Quire and, where the system allows, as desktop notifications with Open and Snooze 10 min; ones that came due while Quire was closed are listed when it starts.
+- **Agenda** (Alt+A): reminders, overdue, today with a timeline of time blocks (`- [ ] 14:00 - 15:30 Write report`), and the next seven days. **Calendar** sidebar tab: a month with week numbers, daily notes and due tasks.
+- **Weekly, monthly and yearly notes,** with next and previous commands; their folders, names and templates are in Settings → Planning and travel with the vault.
+- **Views:** `from: tasks`, `layout: agenda` and `layout: timeline`, nested fields like `author.name`, dates like `today+7d`, and `new: Templates/Project.md` for a **+ New** button.
+- **Templates** ask questions in a dialog (`{{prompt:Client}}`, `{{select:Status|planned,done}}`), do date maths (`{{date+7d}}`, `{{date:next monday}}`), and can set a folder, a name pattern and the folders they apply to.
+- **Rename, merge or delete tags and properties** across the vault with a preview and Undo (also `quire-cli tags` and `quire-cli props`). Nested front matter is read and edited field by field.
+- **Obsidian compatibility:** Dataview (`TABLE`, `LIST`, `TASK`) and Tasks queries show their results and can be converted to `quire-view`; Kanban plugin boards show as boards; `.base` files open as views. DataviewJS is never run.
+- **Flashcards:** `Question :: Answer`, question/`?`/answer blocks or `==cloze==` in notes tagged `#flashcards`. Review with Ctrl+Alt+R (Space shows the answer, 1–4 rate it), scheduled with FSRS; every device works out the same schedule.
+- "Convert task to note", `quire-cli tasks --agenda`.
+
+#### Writing and the editor
+- **Vim keys** (Settings → Editing): Normal, Insert, Replace, Visual and Visual Line modes, counts, operators with text objects, registers (including `"+`), `.`, `/` and `?`, `:w`, `:q`, `:s`. The mode shows in the status bar.
+- **Edit embedded notes in place:** a `![[Note]]` line shows that text under it, editable and saved to the embedded note.
+- **Tabs that don't pile up:** a note opened with one click replaces the preview tab until you edit or double-click it. Notes reopen where you left them.
+- Sort each folder by name, date or by hand; links to folders (`[[Projects/]]`); a homepage note; folders and notes side by side; note titles instead of file names; folder and note icons; tag colours.
+- **Themes:** Paper, Nord, Solarized and High contrast, an accent colour, and your own theme files (every colour, light and dark, plus fonts).
+- **Git:** when the vault is a git repository, a Git tab shows what changed, commits (by itself after a quiet spell, if you like), pulls and pushes.
+- New note from template puts the note in the template's folder; Settings → Editing chooses where Ctrl+N makes a note.
+
+#### Canvas, PDFs and citations
+- **Canvas** (Ctrl+Alt+C): open and edit `.canvas` files (JSON Canvas, as Obsidian writes them). Cards show Markdown, notes, images, PDFs and diagrams; connect, group, colour, align, copy between canvases, undo. Everything Quire doesn't know about is kept, and a canvas changed elsewhere is merged with your unsaved changes.
+- **Drawing:** pen (with stylus pressure), marker, highlighter, eraser and shapes on a canvas, or in a note with "Insert sketch". Drawings are SVG files any app can show.
+- **PDF viewer** (full edition): continuous pages, zoom, find, copy, links. Highlight text or an area in five colours and add a comment. Highlights live in a Markdown note next to the PDF, can be linked to (`[[paper.pdf#page=3&annot=h7f3a]]`), and are found again when the PDF is replaced. Quire Lite shows the PDF's text and its highlights.
+- **Citations:** `[@key]`, `[@key, p. 4]`, `[see @a; @b]` with works from a BibTeX library. Typing `[@` suggests works, hovering a citation shows the full reference, and Ctrl+click opens its PDF. Preview, HTML export and publishing show "(Lovelace 1843)" and a reference list; PDF export uses APA, Chicago or IEEE. "Import bibliography…" merges a `.bib` file or Zotero's CSL-JSON, and can keep watching it.
+
+#### Editions and sync
+- **Quire Lite:** every release comes in two editions, **Quire** and **Quire Lite**, the same app without drawn math, diagrams, PDF export and the PDF viewer, at about a third of the size. Both read and write the same notes, settings and sync setup, and installing one replaces the other. Settings → About says which edition you run. To build Lite: `cargo build -p quire-desktop --no-default-features`.
+- **Settings → Sync:** "Also sync vault settings and review history". Synced changes show which AI agent made them. Quire Sync Server reports its protocol versions (`GET /v1/info`).
+
+### Changed
+- **`quire-cli mcp --allow-write` now writes according to the vault's agent policy:** directly in agent folders (`wiki/`), new files only in `raw/`, and everywhere else as suggestions you review in Quire's Inbox. In 0.8 it wrote directly to any note. A notice says so when the server starts. MCP edits are recorded in version history with who made them, and can no longer write inside `.quire/`; MCP apps can't see notes in folders the policy marks private.
+- MCP apps on protocol 2025-06-18 or later also see titles, annotations and structured results for every tool; older clients are answered exactly as before.
+- Claude and OpenAI-compatible providers stream their replies and can use tools.
+- Settings lists its tabs down the left side; "AI & search" is now **AI**, and holds the answer and check features.
+- Ask your notes opens as its own dialog and remembers your question. Undo an agent's changes, Capture web page, Rename tags and properties, and flashcard review open as dialogs.
+- Find in note ignores accents unless "Match accents" is on.
+- Ctrl+N makes the new note in the open note's folder by default.
+- A task's text no longer includes its date and priority fields; the MCP `tasks` tool returns `start`, `completed`, `reminder` and `time`.
+- Icons and task emoji display on every system.
 
 ### Fixed
-- Settings written by a newer version or the other edition are kept: a setting this version doesn't know about is saved back unchanged instead of being dropped.
-- A settings or stored-secrets file that can't be read is kept next to the original as `<name>.unreadable` before Quire starts with defaults, instead of being overwritten on the next save.
-- Settings, the open-tabs session, the sync setup and the stored-secrets file are written to a temporary file and moved into place, so a crash or full disk mid-save can't leave a half-written file. The secrets file is created readable by you only.
+- Alt shortcuts no longer type their character into the note.
+- Following `[[Folder/]]` opens the folder's note or shows the folder instead of creating a note; links to `paper.pdf` and `Board.canvas` open the file instead of creating a note.
+- With Vim keys, Escape in Insert mode returns to Normal mode instead of closing the find bar.
+- Headings, links and quotes use the theme's colours in the classic editor and in embedded notes.
+- A template saved while Quire runs no longer shows up among your notes.
+- A version saved by an AI agent is no longer replaced in history when you save the same note again within two minutes.
+- Settings written by a newer version or the other edition are kept: a setting this version doesn't know about is saved back unchanged.
+- A settings or stored-secrets file that can't be read is kept as `<name>.unreadable` before Quire starts with defaults, instead of being overwritten.
+- Settings, the session, the sync setup and the stored-secrets file are written to a temporary file and moved into place, so a crash or full disk can't leave a half-written file. The secrets file is readable by you only.
 
 ## [0.8.0] - 2026-11-02
 

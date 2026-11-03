@@ -104,6 +104,21 @@ the client; reads link the note as a `resource_link`.
   `<untrusted-source path="…" origin="…">…</untrusted-source>` with
   `trust: "untrusted"`. Treat it as data.
 
+### Search hits in PDFs
+
+`search` with `filters.kind` `attachments` or `all` also finds pages of PDFs
+in the vault (and text read from images and scanned pages when on-device
+OCR is on). Such a hit carries `page` (1-based) and reads
+`paper.pdf p. 3` in the text. A bad `filters.where` is answered with
+`invalid_args` and what's wrong with it.
+
+### Canvases
+
+`canvas_read` returns a `.canvas` file's cards and connections;
+`canvas_apply` takes operations (`add_node`, `update_node`, `remove_node`,
+`add_edge`, `update_edge`, `remove_edge`). Outside agent zones the change becomes a suggestion that the person
+reviews card by card in the canvas.
+
 ## Resources, prompts, notifications
 
 * `quire://note/{+path}` and `quire://note/{+path}{?section,lines}`,
@@ -144,6 +159,23 @@ refused), keep its article, convert it to Markdown and save it in `raw/`
 with its images in `attachments/` (up to 20, 5 MB each). The note's front
 matter records `source`, `captured`, `site`, `author`, `published` and
 `trust: untrusted`.
+
+## Quire's own agent
+
+The app has an agent panel (Ctrl+Shift+J) that uses the same tools in
+process, as the actor `panel:<provider>`, under the same policy: its edits
+to people's notes are suggestions, its runs appear in Agent activity, and
+"Revert run" undoes one. It runs on the provider set up in Settings → AI or
+on a model on the computer; small on-device models only chat about the
+open note. An external ACP agent (Claude Code, Codex…) can be connected to
+the panel instead; its writes through Quire follow the policy too.
+
+"Ingest into wiki" (also `quire-cli ingest <vault> <note or URL>` and the
+`quire_ingest` prompt) turns a source into `wiki/sources/` and
+`wiki/concepts/` pages in one run: wiki pages are written directly (an
+agent zone), links from the person's notes are suggestions, and
+`wiki/index.md` and `wiki/log.md` are updated
+([formats](formats/wiki-index-log.md)).
 
 ## The command line
 

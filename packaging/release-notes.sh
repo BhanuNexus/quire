@@ -29,6 +29,7 @@ Every release comes in two editions. They're the same app working on the same fi
 | Everything else (editor, links, search, sync, graph, callouts, spelling…) | ✓ | ✓ |
 | Math and Mermaid diagrams drawn in place | ✓ | shown as their source |
 | Export as PDF | ✓ | — |
+| PDF viewer (pages, highlights) | ✓ | the PDF's text and highlights |
 | Size | larger | about a third |
 
 | | Quire | Quire Lite |

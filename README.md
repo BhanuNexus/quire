@@ -101,6 +101,14 @@ cargo build --release -p quire-desktop --no-default-features   # ~28 MB instead 
 
 | Area | Features |
 |---|---|
+| AI agents, under review | Agents' edits to your notes arrive as suggestions shown in the note (struck-through lines, their version underneath) to accept, reject or edit change by change. The Inbox (Alt+I) collects them; Agent activity shows every run with "Revert run". Per-folder permissions, `AGENTS.md` approval, vault checks |
+| Agent panel | Ctrl+Shift+J: ask about your notes or ask for changes, with `@note` and `#tag` context. Runs on your provider or on this computer; connect Claude Code or Codex (ACP) instead. "Ingest into wiki" turns a source into cited `wiki/` pages |
+| On-device AI | Optional models that download once and run offline in a separate process: meaning search, writing help, the agent, OCR of images and scanned PDFs. Nothing downloads unless you ask |
+| Answers you can check | Ask says "Not found" when your notes don't answer; cites exact sentences; Save as note keeps quotes as footnotes and flags them when the cited text changes. Staleness digest, contradictions (Preview), thinking timeline (Preview) |
+| Planning | Tasks with dates, repeats and reminders (Obsidian Tasks emoji and Dataview fields), Agenda (Alt+A), Calendar, weekly/monthly/yearly notes, flashcards (FSRS, Ctrl+Alt+R), templates with questions |
+| Canvas & drawing | `.canvas` files (JSON Canvas) with cards, connections and groups (Ctrl+Alt+C); pen, highlighter and shapes on a canvas or as a sketch in a note, saved as SVG |
+| PDFs & citations | PDF viewer with highlights kept in a Markdown note (full edition; Lite shows the text). PDF pages are searchable ("paper.pdf p. 3"). `[@key]` citations from a BibTeX library, rendered in preview, HTML, websites and PDF export |
+| Vim & themes | Vim keys (Normal, Insert, Visual, text objects, registers, `:s`), bundled and custom themes, a Git tab |
 | Math & diagrams | `$x^2$`, `$$ … $$` and ```` ```mermaid ```` render in place (Typst + a pure-Rust Mermaid renderer, no browser), in the preview and in PDFs |
 | Callouts & paragraph links | Obsidian callouts (`> [!tip] Title`) as coloured boxes everywhere; `[[Note#^id]]` links to a paragraph; Ctrl+Alt+L copies one |
 | Spelling | Red underlines, suggestions on right-click, a personal dictionary; English built in, other Hunspell dictionaries picked up from your system |
@@ -116,8 +124,8 @@ cargo build --release -p quire-desktop --no-default-features   # ~28 MB instead 
 | Inline intelligence | `12 * 4 =` + Enter → result (variables, `ans`, `%`, functions), `@tomorrow` / `@next friday` / `@in 3 days` → `[[2026-11-02]]` |
 | Linking | Type `[[` for a list of notes to link (or a new one). `[[wikilinks]]`, `[[note#heading|alias]]`, embeds, click/Alt+Enter to follow, unresolved links create notes, F2 rename rewrites every link |
 | Knowledge | Backlinks with context, unlinked mentions, suggested links, related notes (TF-IDF), suggested tags, key sentences, nested `#tags`, tasks across the vault |
-| Finding | Ctrl+P fuzzy quick open, Ctrl+K command palette, search that combines exact words (BM25, `"phrases"`, `#tag`, `-exclude`) with meaning (≈ results) |
-| Ask your notes | Ctrl+Shift+A: answers from your own notes with `[[Note#Heading]]` citations. Offline it quotes the best sentences; with the optional Claude provider it writes an answer from the same sources |
+| Finding | Ctrl+P fuzzy quick open, Ctrl+K command palette, search that combines exact words (BM25, `"phrases"`, `#tag`, `-exclude`) with meaning (≈ results); accents optional ("cafe" finds "Café") |
+| Ask your notes | Ctrl+Shift+A: answers from your own notes with `[[Note#Heading]]` citations to the exact sentences. Offline it quotes the best sentences; with a provider or an on-device model it writes an answer from the same sources |
 | Notes & folders | New notes take their name from the first line (until you rename them yourself). Right-click a note in the sidebar or a tab to rename, move to a folder, see version history, copy a `[[link]]`, show in folder or trash it. Double-click a tab to rename. Right-click a folder for "New note here" |
 | Projects | **+ New → Project…** (Ctrl+Alt+N) creates `Projects/<name>.md` with status, due date and owner, and adds a project board (kanban + due-date table) the first time. Add `Templates/Project.md` to change what new projects contain |
 | Publish | **Publish as a website** (command palette, or `quire-cli publish`): notes marked `publish: true` (or all of them) become a static site with links, backlinks, tags and search, ready for GitHub Pages, Netlify or any web server. Free, no account. Links to unpublished notes become plain text |
@@ -125,8 +133,8 @@ cargo build --release -p quire-desktop --no-default-features   # ~28 MB instead 
 | Properties & views | Edit front matter in the Insights panel (types inferred: date, number, yes/no, list, text). ` ```quire-view ` blocks render live tables, lists, kanban boards (drag a card to change its field) and month calendars, and stay plain Markdown elsewhere |
 | Version history | Every save keeps a compressed snapshot in `.quire/history/` (thinned to hourly/daily/weekly, max 200 per note). Ctrl+Alt+H shows versions with a diff; restore is undoable. Board moves, vault-wide replace and AI edits are versioned too |
 | Import | Logseq graphs, Notion exports (.zip or folder, incl. database CSVs), Bear (.bear2bk / TextBundles), Evernote (.enex), any Markdown folder. Dry run first; never overwrites |
-| AI providers | Offline by default. Optional OpenAI-compatible (Ollama, LM Studio, OpenAI) or Anthropic, with *Test connection*. Optional neural embeddings from the same kind of endpoint, cached per passage, falling back to the built-in index |
-| MCP server | `quire-cli mcp <vault>` lets AI assistants search, read and ask your notes. Read-only unless started with `--allow-write`; every write is versioned |
+| AI providers | Offline by default. Optional OpenAI-compatible (Ollama, LM Studio, OpenAI) or Anthropic, streaming and with tools, with *Test connection*. Optional neural embeddings from the same kind of endpoint or on this computer, cached per passage, falling back to the built-in index |
+| MCP server | `quire-cli mcp <vault>` (stdio) or over HTTP with OAuth: AI apps search by section, read line ranges, and edit precisely. Read-only unless started with `--allow-write`, which writes per the vault's agent policy (suggestions outside `wiki/`). See [docs/agents.md](docs/agents.md) |
 | History | Undo tree: undo, type something else, and the old branch is still reachable |
 | Quire Sync (beta) | Optional end-to-end encrypted sync, free through a folder you already sync (Dropbox, iCloud Drive, Google Drive, OneDrive, Syncthing), or through a server you run yourself ([guide](docs/self-hosting.md)). Only ciphertext leaves your device; concurrent edits merge line by line and never overwrite each other. A managed service is planned |
 | Sync safety | Works with any folder sync (iCloud, Dropbox, Syncthing, Nextcloud, Git). A note changed elsewhere while you edit is merged line by line; overlapping edits pause autosave and let you keep yours, take theirs or keep both. Conflict copies made by sync tools are found and merged back |
@@ -152,7 +160,11 @@ cargo build --release -p quire-desktop --no-default-features   # ~28 MB instead 
 | Ctrl+Alt+\\ | Split editor | Ctrl+Shift+[ | Fold/unfold section |
 | Ctrl+G | Graph view | Ctrl+Alt+[ / ] | Fold / unfold all |
 | Ctrl+Alt+E | Export as PDF | Ctrl+Alt+L | Copy link to paragraph |
-| Ctrl+Alt+Space (⌘⇧Space) | Quick capture, from any app | | |
+| Ctrl+Alt+Space (⌘⇧Space) | Quick capture, from any app | Ctrl+Shift+J | Agent panel |
+| Alt+I | Inbox | Alt+] / Alt+[ | Next / previous suggested change |
+| Ctrl+Alt+Y | Accept suggested change | Ctrl+Alt+Backspace | Reject suggested change |
+| Ctrl+Alt+Shift+Y | Accept all in this note | Alt+A | Agenda |
+| Ctrl+Alt+R | Review flashcards | Ctrl+Alt+C | New canvas |
 
 ## Views
 
@@ -181,7 +193,14 @@ crates/quire-markdown  highlight (whole or windowed), extract, front matter, ren
 crates/quire-vault     Storage port, LocalFs/MemFs, notes, attachments, templates, rename refactor, watcher
 crates/quire-index     BM25, fuzzy open, link graph, passages, semantic index, hybrid search, background actors
 crates/quire-intel     related, mentions, tags, summary, calculator, dates, Ask, LLM port
-crates/quire-import    Logseq, Notion, Bear, Evernote and Markdown importers (plan → apply)
+crates/quire-import    Logseq, Notion, Bear, Evernote, Obsidian and Markdown importers, web capture
+crates/quire-agent     the agent store: one write path, policy, proposals, provenance, ledger, Inbox
+crates/quire-mcp       MCP server (stdio, HTTP + OAuth), tools, resources, prompts
+crates/quire-assistant the agent loop, prompts, conversations, ACP bridge, ingest into wiki
+crates/quire-ai        on-device models: catalog, downloads, the engine process (apps/quire-ai-engine)
+crates/quire-plan      tasks, repeats, reminders, agenda, periodic notes, flashcards (FSRS)
+crates/quire-canvas    JSON Canvas model, operations, node-level diff, ink
+crates/quire-pdf       PDF text, find, highlight anchors, page rendering (full edition)
 crates/quire-app       Document, Workspace, commands, find & replace, attachments, Ask, AI providers,
                        keychain, version history ops, properties & views (UI-agnostic)
 apps/quire-desktop     egui frontend; view/ is the virtualized editor, view_ui renders quire-view blocks
@@ -197,20 +216,29 @@ quire-cli replace ./sample-vault "old" "new" --write # dry run without --write
 quire-cli import  ~/Downloads/notion.zip ./vault --into Imported   # dry run; add --write
 quire-cli history ./sample-vault "Quire Roadmap"     # saved versions of a note
 quire-cli mcp     ./sample-vault                     # MCP server on stdio (read-only)
+quire-cli agent   proposals ./sample-vault           # suggestions agents made, waiting for review
+quire-cli ingest  ./sample-vault "Rope Notes"        # a source into cited wiki pages
+quire-cli tasks   ./sample-vault --agenda            # overdue, today and the next seven days
+quire-cli ai      models                             # on-device models and their state
 quire-cli bench   10                                 # performance on a 10 MB note
 ```
 
-To use Quire from Claude Desktop or another MCP client, add a server whose command is `quire-cli` with args `["mcp", "/path/to/vault"]`. Add `"--allow-write"` to let it create and append to notes.
+To use Quire from Claude Desktop or another MCP client, add a server whose command is `quire-cli` with args `["mcp", "/path/to/vault"]`. Add `"--allow-write"` to let it edit: since 0.9 it writes directly only in agent folders (`wiki/`) and suggests changes everywhere else, for you to review in Quire. Settings → Connections has the setup for each app.
 
 Set `QUIRE_TRACE=1` when launching the desktop app to print per-frame timings.
 
 ## Known limits
 
-- **Built-in meaning search is a latent semantic index** learned from your own notes. It needs a few dozen notes before it helps much. For neural quality, point *Meaning search* at an embeddings endpoint (e.g. Ollama + `nomic-embed-text`); an in-process model is not bundled.
+- **Built-in meaning search is a latent semantic index** learned from your own notes. It needs a few dozen notes before it helps much. For neural quality, download the on-device embedding model (Settings → AI) or point *Meaning search* at an embeddings endpoint (e.g. Ollama + `nomic-embed-text`).
+- **On-device models need memory:** the balanced 1.7B chat model uses about 5 GB while answering (8 GB of RAM recommended for the small model, 16 GB for balanced), and generates a few tokens a second on a laptop CPU. Speed and memory were measured with models of the real shapes; check them on your computer. A build whose model list isn't pinned yet says "Not available in this build" and downloads nothing.
+- **Contradictions and the thinking timeline are previews:** their thresholds come from the design, not from measurements on real vaults, and the prompts are English-first.
+- The PDF viewer (pages, highlights, area selection) is in the full edition; Quire Lite shows a PDF's text and highlights and opens it in your system's viewer. OCR reads printed text best.
+- An external agent connected to the agent panel runs with your permissions on your computer; only its writes through Quire are reviewed.
+- On macOS, the Alt shortcuts (Alt+I, Alt+A, Alt+] and Alt+[) may type characters with some keyboard layouts; the commands are also in the palette (Ctrl+K).
 - The fast editor reports itself to screen readers as a multi-line text field named after the note, with the caret's line as its value. It doesn't yet expose every visible line or the selection range. This and the inline IME pre-edit were checked in code and tests, not with a real screen reader or IME.
 - Notes over 512 KB still edit and style fully, but outline, word count, insights and preview are turned off for them.
 - egui has no complex-script shaping, so Devanagari and Arabic render but conjuncts may not join correctly.
-- AI providers were tested against a local mock of the OpenAI-compatible API (chat, models, embeddings), not against live Ollama or Anthropic servers.
+- AI providers and the agent panel were tested against a local mock of the OpenAI-compatible API (chat, tools, streaming, models, embeddings), not against live Ollama or Anthropic servers.
 - Importers were tested on synthetic exports that follow each app's documented format; run a dry run on your real export first.
 
 ## Contributing
