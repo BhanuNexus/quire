@@ -765,7 +765,9 @@ impl AgentStore {
     }
 
     pub(crate) fn provenance(&self, actor: &Actor, cs: &ChangeSet, op: Op, text: &str) -> serde_json::Value {
+        let op = if cs.accepted_from.is_some() && matches!(op, Op::Write | Op::Create) { Op::Accept } else { op };
         let mut p = Provenance::new(actor.clone(), op, text, self.now_ms());
+        p.accepted_from.clone_from(&cs.accepted_from);
         p.run.clone_from(&cs.run);
         p.sources.clone_from(&cs.sources);
         if self.untrusted_source(&cs.sources).is_some() {
@@ -851,6 +853,13 @@ impl AgentStore {
                     entry.path = Some(path);
                 }
                 Change::SetProperties { .. } => {} // planned as an edit
+            }
+            if let Some(from) = &cs.accepted_from {
+                // Approved in the agent's app: the person accepted the agent's change.
+                if matches!(entry.op, Op::Write | Op::Create) {
+                    entry.op = Op::Accept;
+                }
+                entry.from = Some(from.id.clone());
             }
             // The ledger is a record, not the write: a failure to log never undoes the change.
             let _ = self.ledger().append(&entry);

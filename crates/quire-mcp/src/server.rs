@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
-use quire_agent::{Actor, AgentStore, ClientInfo, Clock, DeviceInfo, LedgerEntry, Mode, Op, SystemClock, Via};
+use quire_agent::{Actor, AgentStore, ClientInfo, Clock, DeviceInfo, Mode, SystemClock, Via};
 use quire_app::index::IndexService;
 use quire_app::intel::chat::{CancelFlag, ChatModel};
 use quire_app::vault::{ContentHash, NotePath, Vault, VaultEvent, VaultWatcher};
@@ -406,8 +406,8 @@ impl Core {
                         .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '.' { c } else { '-' })
                         .collect();
                     let mut a = Actor::agent(format!("mcp:{key}"), name, Via::McpStdio, &self.device.id);
-                    // Self-reported: per-client policy overrides don't apply (design §A.2).
-                    a.other.insert("unverified".into(), true.into());
+                    // Self-reported: per-client policy overrides can't widen (design §A.2).
+                    a.unverified = true;
                     a
                 }
             }
@@ -569,7 +569,7 @@ impl Core {
                 let cx = self.read_cx(&store, &actor);
                 let out = resources::read(&cx, uri).map_err(|e| self.read_error(era, uri, e))?;
                 if let Some(p) = out["contents"][0]["_meta"]["path"].as_str().filter(|_| uri.starts_with("quire://note/")) {
-                    self.log_read(&store, &actor, &NotePath::new(p));
+                    store.record_read(&actor, &NotePath::new(p));
                 }
                 Ok(lists(out, resources::RESOURCES_TTL_MS))
             }
@@ -632,22 +632,8 @@ impl Core {
         json!({ "tools": tools })
     }
 
-    /// Record that `path` was read (path only), unless reads aren't logged.
-    fn log_read(&self, store: &AgentStore, actor: &Actor, path: &NotePath) {
-        let off = self.config.state_dir.as_deref().is_some_and(|d| {
-            std::fs::read_to_string(d.join("state.toml"))
-                .ok()
-                .and_then(|t| t.parse::<toml::Table>().ok())
-                .and_then(|t| t.get("agent")?.get("log_reads")?.as_bool())
-                == Some(false)
-        });
-        if !off {
-            store.record(&LedgerEntry::new(actor.clone(), Op::Read, store.now_ms()).path(path));
-        }
-    }
-
     fn approve_in_client(&self, era: &Era, store: &AgentStore, actor: &Actor, params: &Value, conn: &Conn) -> bool {
-        if !era.is_modern() || actor.other.contains_key("unverified") {
+        if !era.is_modern() || actor.unverified {
             return false;
         }
         let caps = params.get("_meta").and_then(|m| m.get(META_CLIENT_CAPS)).unwrap_or(&conn.client_caps);
@@ -688,7 +674,7 @@ impl Core {
                     && let ToolOutput::Ok { structured, .. } = &out
                     && let Some(p) = structured.get("path").and_then(Value::as_str).or_else(|| args.get("path").and_then(Value::as_str))
                 {
-                    self.log_read(&store, &actor, &NotePath::new(p));
+                    store.record_read(&actor, &NotePath::new(p));
                 }
                 out
             }

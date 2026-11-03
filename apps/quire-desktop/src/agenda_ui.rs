@@ -536,54 +536,48 @@ pub(crate) fn dialog_tab(ui: &mut Ui, ws: &mut Workspace, st: &mut FeatureUi, pa
 
 /// Settings → Planning: tasks, reminders, periodic notes, compatibility.
 pub(crate) fn settings_tab(ui: &mut Ui, ws: &mut Workspace, st: &mut FeatureUi, pal: &Palette) -> PanelOut {
-    // A fixed height, so the Settings dialog keeps its size and fits small windows.
-    let h = (ui.ctx().content_rect().height() - 230.0).clamp(150.0, 520.0);
-    egui::ScrollArea::vertical().id_salt("quire-plan-settings").max_height(h).min_scrolled_height(h).auto_shrink([false, false]).show(
-        ui,
-        |ui| {
-            ui.set_max_width(ui.available_width());
-            ui.label(RichText::new("TASKS").size(11.0).color(pal.muted).strong());
-            let t = &mut ws.settings.tasks;
-            let mut changed = false;
-            ui.label("Write task dates as");
-            ui.indent("quire-plan-format", |ui| {
-                changed |= ui.radio_value(&mut t.format, "emoji".to_string(), "emoji, as Obsidian Tasks writes them").changed();
-                changed |= ui.radio_value(&mut t.format, "dataview".to_string(), "Dataview fields, like [due:: 2026-12-01]").changed();
-            });
-            ui.add_space(4.0);
-            ui.horizontal_wrapped(|ui| {
-                ui.label("A repeating task's next copy goes");
-                changed |= ui.radio_value(&mut t.new_occurrence, "above".to_string(), "above it").changed();
-                changed |= ui.radio_value(&mut t.new_occurrence, "below".to_string(), "below it").changed();
-            });
-            ui.add_space(4.0);
-            changed |= ui
-                .checkbox(&mut t.reminders, "Show reminders as desktop notifications")
-                .on_hover_text("Reminders always show in Quire; they fire only while Quire is running.")
-                .changed();
-            if changed {
-                let _ = ws.settings.save();
-            }
-            ui.add_space(12.0);
-            crate::calendar_ui::periodic_settings(ui, ws, &mut st.calendar, pal);
-            ui.add_space(12.0);
-            ui.label(RichText::new("OBSIDIAN COMPATIBILITY").size(11.0).color(pal.muted).strong());
-            ui.add(
-                egui::Label::new(
-                    RichText::new("Quire reads these as they are and never runs code from a vault.").size(12.0).color(pal.muted),
-                )
+    // The Settings dialog scrolls the tab.
+    ui.scope(|ui| {
+        ui.set_max_width(ui.available_width());
+        ui.label(RichText::new("TASKS").size(11.0).color(pal.muted).strong());
+        let t = &mut ws.settings.tasks;
+        let mut changed = false;
+        ui.label("Write task dates as");
+        ui.indent("quire-plan-format", |ui| {
+            changed |= ui.radio_value(&mut t.format, "emoji".to_string(), "emoji, as Obsidian Tasks writes them").changed();
+            changed |= ui.radio_value(&mut t.format, "dataview".to_string(), "Dataview fields, like [due:: 2026-12-01]").changed();
+        });
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.label("A repeating task's next copy goes");
+            changed |= ui.radio_value(&mut t.new_occurrence, "above".to_string(), "above it").changed();
+            changed |= ui.radio_value(&mut t.new_occurrence, "below".to_string(), "below it").changed();
+        });
+        ui.add_space(4.0);
+        changed |= ui
+            .checkbox(&mut t.reminders, "Show reminders as desktop notifications")
+            .on_hover_text("Reminders always show in Quire; they fire only while Quire is running.")
+            .changed();
+        if changed {
+            let _ = ws.settings.save();
+        }
+        ui.add_space(12.0);
+        crate::calendar_ui::periodic_settings(ui, ws, &mut st.calendar, pal);
+        ui.add_space(12.0);
+        ui.label(RichText::new("OBSIDIAN COMPATIBILITY").size(11.0).color(pal.muted).strong());
+        ui.add(
+            egui::Label::new(RichText::new("Quire reads these as they are and never runs code from a vault.").size(12.0).color(pal.muted))
                 .wrap(),
-            );
-            for (what, ok, not) in quire_import::obsidian::COMPATIBILITY {
-                ui.add_space(4.0);
-                ui.label(RichText::new(*what).size(12.5).color(pal.strong));
-                ui.add(egui::Label::new(RichText::new(*ok).size(11.5).color(pal.text)).wrap());
-                if *not != "—" {
-                    ui.add(egui::Label::new(RichText::new(format!("Not supported: {not}")).size(11.5).color(pal.muted)).wrap());
-                }
+        );
+        for (what, ok, not) in quire_import::obsidian::COMPATIBILITY {
+            ui.add_space(4.0);
+            ui.label(RichText::new(*what).size(12.5).color(pal.strong));
+            ui.add(egui::Label::new(RichText::new(*ok).size(11.5).color(pal.text)).wrap());
+            if *not != "—" {
+                ui.add(egui::Label::new(RichText::new(format!("Not supported: {not}")).size(11.5).color(pal.muted)).wrap());
             }
-        },
-    );
+        }
+    });
     PanelOut::default()
 }
 

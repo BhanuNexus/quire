@@ -5,7 +5,7 @@
 
 use std::fmt::Write as _;
 
-use quire_agent::{FixedClock, LedgerQuery, ProposalFilter, Provenance};
+use quire_agent::{FixedClock, LedgerQuery, Op, ProposalFilter, Provenance};
 use quire_app::vault::NotePath;
 
 use super::*;
@@ -185,7 +185,12 @@ fn allow_write_writes_per_policy() {
     assert_eq!(prov.actor.id, "mcp:claude-code");
     assert!(prov.actor.client.as_ref().is_some_and(|c| c.self_reported));
     let store = AgentStore::open(&vault, DeviceInfo { id: "d_test".into(), name: "t".into() }, Arc::new(SystemClock));
-    assert_eq!(store.proposals(&ProposalFilter::pending()).len(), 3);
+    // The second write to Ideas amends the first suggestion (design §A.4), keeping both changes.
+    let pending = store.proposals(&ProposalFilter::pending());
+    assert_eq!(pending.len(), 2);
+    let ideas = pending.iter().find(|p| p.files.iter().any(|f| f.as_str() == "Ideas.md")).unwrap();
+    let ideas = store.proposal(&ideas.id).unwrap();
+    assert_eq!(ideas.changes[0].new_text.as_deref(), Some("# Ideas\nDraft about [[Rope Notes]].\n- added by AI\n"));
     assert!(store.log(&LedgerQuery::default()).iter().any(|e| e.op == Op::Create));
     assert_eq!(r[6]["result"]["isError"], true, "never under .quire/");
 }
@@ -619,7 +624,8 @@ fn approval_in_the_client() {
     assert_eq!(text_of(&vault, "Ideas.md"), "# Ideas\nWrite about rope undo.\n");
     let prov = Provenance::from_json(&vault.read_provenance(&vault.history(&NotePath::new("Ideas.md"))[0]).unwrap()).unwrap();
     assert_eq!(prov.actor.via, Via::ClientApproval);
-    assert_eq!(prov.actor.other["accepted_from"]["id"], "mcp:claude-code");
+    assert_eq!(prov.accepted_from.as_ref().map(|a| a.id.as_str()), Some("mcp:claude-code"));
+    assert_eq!(prov.op, Op::Accept);
     // "Send to Quire" makes an ordinary proposal; a client without elicitation never gets asked.
     let args2 = json!({"path": "Ideas.md", "old_str": "rope undo", "new_str": "ropes"});
     let r = run(&srv, &[with_caps(6, args2.clone(), json!({}))]);

@@ -18,13 +18,9 @@ fn note(ui: &mut Ui, pal: &Palette, text: &str) {
     ui.add(egui::Label::new(RichText::new(text).size(12.0).color(pal.muted)).wrap());
 }
 
+/// Settings → Editing (the Settings dialog scrolls it).
 pub(crate) fn show(ui: &mut Ui, ws: &mut Workspace, _st: &mut FeatureUi, pal: &Palette) -> PanelOut {
-    let max_h = crate::theme_ui::tab_height(ui);
-    egui::ScrollArea::vertical()
-        .id_salt("quire-settings-editing")
-        .max_height(max_h)
-        .auto_shrink([false, true])
-        .show(ui, |ui| editing(ui, ws, pal));
+    editing(ui, ws, pal);
     PanelOut::default()
 }
 

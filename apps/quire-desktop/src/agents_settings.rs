@@ -66,10 +66,10 @@ pub(crate) fn show(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pa
         return PanelOut::default();
     };
     let state = store.policy_state();
-    let max_h = (ui.ctx().content_rect().height() * 0.62).clamp(200.0, 520.0);
     let mut edit: Option<PolicyEdit> = None;
     let mut after: Option<Later> = None;
-    egui::ScrollArea::vertical().id_salt("quire-agents-settings").max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
+    // The Settings dialog scrolls the tab.
+    ui.scope(|ui| {
         ui.set_width(ui.available_width());
         if let Some(e) = &st.error {
             ui.add(egui::Label::new(RichText::new(e).color(pal.danger)).wrap());

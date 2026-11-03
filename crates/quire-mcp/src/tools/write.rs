@@ -21,9 +21,7 @@
 use std::fmt::Write as _;
 
 use quire_agent::policy::{Route, hard_rule};
-use quire_agent::{
-    Actor, AgentStore, Change, ChangeSet, LedgerEntry, Mode, Op, OpKind, RevertSelector, RunId, SourceRef, SubmitOutcome, Via, WriteError,
-};
+use quire_agent::{Actor, Change, ChangeSet, Mode, OpKind, RevertSelector, RunId, SourceRef, SubmitOutcome, Via, WriteError};
 use quire_app::markdown::Value as FmValue;
 use quire_app::markdown::comment;
 use quire_app::text::merge::merge3;
@@ -326,17 +324,13 @@ fn submit(
 
 /// Write a change the person approved in the agent's client (design §4.5):
 /// as the person, with the agent recorded as the source.
-fn apply_approved(cx: &ToolCx<'_>, path: &NotePath, cs: ChangeSet, extra: Value) -> ToolOutput {
+fn apply_approved(cx: &ToolCx<'_>, path: &NotePath, mut cs: ChangeSet, extra: Value) -> ToolOutput {
     let mut approver = Actor::human(&cx.agent.device().id);
     approver.via = Via::ClientApproval;
     approver.label = format!("You, approving {} in its app", cx.actor.label);
-    approver.other.insert("accepted_from".into(), serde_json::to_value(cx.actor).unwrap_or_default());
+    cs.accepted_from = Some(cx.actor.clone());
     match cx.agent.submit(&approver, cs) {
         Ok(out) => {
-            let mut e = LedgerEntry::new(approver.clone(), Op::Accept, cx.agent.now_ms()).path(path);
-            e.other.insert("via".into(), "client-approval".into());
-            e.other.insert("accepted_from".into(), json!(cx.actor.id));
-            cx.agent.record(&e);
             if let SubmitOutcome::Applied { versions } = &out {
                 for (p, _) in versions {
                     if let Ok(t) = cx.vault.read(p) {
@@ -696,7 +690,7 @@ fn revert(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         None => None,
     };
     let paths = list(a, "paths");
-    let sel = RevertSelector {
+    let mut sel = RevertSelector {
         actor: Some(opt(a, "actor").unwrap_or_else(|| cx.actor.id.clone())),
         run,
         since,
@@ -709,24 +703,13 @@ fn revert(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
                 })
                 .collect()
         }),
+        ..RevertSelector::default()
     };
     let plan = cx.agent.revert_plan(&sel);
-    let changes: Vec<Change> = plan
-        .steps
-        .iter()
-        .filter(|st| visible(cx, &st.path))
-        .map(|st| match &st.action {
-            quire_agent::revert::RevertAction::Restore { text } | quire_agent::revert::RevertAction::Propose { text } => {
-                Change::Edit { path: st.path.clone(), new_text: text.clone() }
-            }
-            quire_agent::revert::RevertAction::Trash => Change::Delete { path: st.path.clone() },
-            quire_agent::revert::RevertAction::RenameBack { to } => {
-                Change::Rename { from: st.path.clone(), to: to.clone(), update_links: true }
-            }
-            quire_agent::revert::RevertAction::Undelete { text } => Change::Create { path: st.path.clone(), text: text.clone() },
-        })
-        .collect();
-    let Some(first) = changes.first().map(|c| c.path().clone()) else {
+    // Only the notes this client may see; the undo itself is built by the
+    // store (three-way, against what is on disk now).
+    let visible_paths: Vec<NotePath> = plan.steps.iter().filter(|st| visible(cx, &st.path)).map(|st| st.path.clone()).collect();
+    let Some(first) = visible_paths.first().cloned() else {
         let why = plan.note.unwrap_or_else(|| format!("No changes match ({} events found).", plan.events.len()));
         return ToolOutput::Err {
             code: "nothing_to_revert",
@@ -734,17 +717,17 @@ fn revert(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
             structured: json!({"error": "nothing_to_revert", "events": plan.events.len(), "message": why}),
         };
     };
+    let n = visible_paths.len();
+    sel.paths = Some(visible_paths);
+    let title = format!("Undo {n} change{} by {}", if n == 1 { "" } else { "s" }, sel.actor.as_deref().unwrap_or(""));
     // An undo by an agent is always a suggestion, even in agent zones.
-    let store = AgentStore::open(cx.vault, cx.agent.device().clone(), cx.agent.clock());
-    store.set_cap(&cx.actor.id, Mode::Propose);
-    let n = changes.len();
-    let cs = ChangeSet {
-        changes,
-        title: format!("Undo {n} change{} by {}", if n == 1 { "" } else { "s" }, sel.actor.as_deref().unwrap_or("")),
-        ..ChangeSet::default()
-    };
-    match store.submit(cx.actor, cs) {
-        Ok(out) => outcome(&first, &out, json!({"changes": n})),
+    match cx.agent.propose_revert(&sel, cx.actor, &title) {
+        Ok(Some(id)) => outcome(&first, &SubmitOutcome::Proposed { id, amended: false }, json!({"changes": n})),
+        Ok(None) => ToolOutput::Err {
+            code: "nothing_to_revert",
+            message: "Nothing left to undo.".into(),
+            structured: json!({"error": "nothing_to_revert", "events": plan.events.len(), "message": "Nothing left to undo."}),
+        },
         Err(e) => write_error(&e),
     }
 }

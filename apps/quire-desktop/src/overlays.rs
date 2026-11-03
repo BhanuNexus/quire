@@ -202,7 +202,7 @@ pub(crate) fn show(ctx: &egui::Context, overlay: &mut Overlay, ws: &mut Workspac
     }
     let mac = cfg!(target_os = "macos");
     match overlay {
-        Overlay::Settings(st) => res.close = crate::dialogs::settings(ctx, st, ws, pal),
+        Overlay::Settings(st) => (res.close, res.run) = crate::dialogs::settings(ctx, st, ws, pal),
         Overlay::History(st) => res.close = crate::dialogs::history(ctx, st, ws, pal),
         Overlay::Import(st) => res.close = crate::dialogs::import(ctx, st, ws, pal),
         Overlay::NewProject(st) => (res.close, res.jumped) = crate::dialogs::new_project(ctx, st, ws, pal),

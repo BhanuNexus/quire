@@ -7,7 +7,7 @@ use quire_markdown::Value;
 use quire_vault::{ContentHash, NotePath};
 use serde::{Deserialize, Serialize};
 
-use crate::actor::SourceRef;
+use crate::actor::{Actor, SourceRef};
 use crate::ids::{ProposalId, RunId};
 use crate::policy::Mode;
 
@@ -66,6 +66,11 @@ pub struct ChangeSet {
     /// Versions the writer last read; a mismatch is a `VersionConflict`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expected: Vec<(NotePath, ContentHash)>,
+    /// The person approved this agent's change outside Quire's review (in
+    /// the agent's own app, design §4.5). The submitting actor is the
+    /// person; provenance and the ledger name the agent as the source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_from: Option<Actor>,
 }
 
 impl ChangeSet {

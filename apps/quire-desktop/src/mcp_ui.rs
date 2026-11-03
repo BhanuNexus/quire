@@ -175,9 +175,7 @@ pub(crate) fn show(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pa
         ui.label(RichText::new("Open a vault to connect apps to it.").color(pal.muted));
         return out;
     };
-    // The tab is taller than a small window; Settings has no scrolling of its own.
-    let height = (ui.ctx().content_rect().height() - 200.0).max(160.0);
-    egui::ScrollArea::vertical().max_height(height).auto_shrink([false, true]).show(ui, |ui| body(ui, ws, me, pal, &root));
+    body(ui, ws, me, pal, &root);
     out
 }
 

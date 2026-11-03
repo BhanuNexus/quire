@@ -19,29 +19,17 @@ pub const INLINE_LIMIT: usize = 8 * 1024;
 pub const AWAITING: &str = "Vault instructions changed outside Quire on this device and await review.";
 
 /// The vault's instructions file and its text: the first of `AGENTS.md`
-/// and `CLAUDE.md` at the root (any case).
+/// and `CLAUDE.md` at the root (any case), as the agent store finds it.
 pub fn find(vault: &Vault) -> Option<(NotePath, String)> {
-    let files = vault.storage().list().ok()?;
-    for want in ["agents.md", "claude.md"] {
-        if let Some(p) = files.iter().find(|p| !p.as_str().contains('/') && p.as_str().eq_ignore_ascii_case(want)) {
-            return Some((p.clone(), vault.read(p).ok()?));
-        }
-    }
-    None
+    let p = quire_agent::instructions::find(vault)?;
+    let text = vault.read(&p).ok()?;
+    Some((p, text))
 }
 
 /// The 16-hex FNV-1a key of a vault folder, as used by
-/// `<config>/vaults/<vault-key>/` (design §2.4): over the canonical path,
-/// lowercased, like the history folders.
-pub fn vault_key(root: &Path) -> String {
-    let canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in canon.to_string_lossy().to_lowercase().bytes() {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x100_0000_01b3);
-    }
-    format!("{h:016x}")
-}
+/// `<config>/vaults/<vault-key>/` (design §2.4). The agent store's function,
+/// so the app, the CLI and this server share one `state.toml`.
+pub use quire_agent::approval::vault_key;
 
 /// This device's folder for a vault on disk (`None` for in-memory vaults
 /// and unit tests, which never touch the real config folder).

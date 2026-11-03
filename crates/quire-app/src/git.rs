@@ -769,6 +769,7 @@ mod tests {
             space: quire_sync::SpaceId::random().unwrap(),
             device: quire_sync::DeviceId::random().unwrap(),
             device_name: "test".into(),
+            shared_state: false,
         });
         assert!(!can_pull_push(&ws));
         let n = ws.notices.len();

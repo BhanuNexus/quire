@@ -9,7 +9,7 @@ use egui::{RichText, Ui};
 use quire_app::history_ops::{DiffKind, diff, diff_stats};
 use quire_app::vault::Snapshot;
 use quire_app::workspace::NoticeLevel;
-use quire_app::{Theme, Workspace, ai};
+use quire_app::{Command, Theme, Workspace, ai};
 
 use crate::theme::Palette;
 
@@ -71,7 +71,7 @@ impl SettingsState {
     }
 }
 
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 enum SettingsTab {
     #[default]
     Editor,
@@ -120,9 +120,10 @@ struct SyncForm {
     confirm_stop: bool,
 }
 
-/// Returns true when the dialog should close.
-pub(crate) fn settings(ctx: &egui::Context, st: &mut SettingsState, ws: &mut Workspace, pal: &Palette) -> bool {
+/// Returns whether the dialog should close, and a command a tab asked for.
+pub(crate) fn settings(ctx: &egui::Context, st: &mut SettingsState, ws: &mut Workspace, pal: &Palette) -> (bool, Option<Command>) {
     let mut close = false;
+    let mut run = None;
     if let Some(rx) = &st.test
         && let Ok(r) = rx.try_recv()
     {
@@ -134,7 +135,10 @@ pub(crate) fn settings(ctx: &egui::Context, st: &mut SettingsState, ws: &mut Wor
     }
     let before = ws.settings.clone();
     modal(ctx, "quire-settings", pal).show(ctx, |ui| {
-        let w = modal_width(ctx, 560.0);
+        let w = modal_width(ctx, 720.0);
+        // Every tab gets the same fixed-height body, scrolled when it needs
+        // more: the dialog keeps its size between tabs and on small windows.
+        let body_h = modal_body_height(ctx, 500.0, 110.0);
         ui.set_width(w);
         ui.set_max_width(w);
         let feature_tabs = crate::registry::offered(crate::registry::SETTINGS_TABS, ws);
@@ -152,32 +156,60 @@ pub(crate) fn settings(ctx: &egui::Context, st: &mut SettingsState, ws: &mut Wor
         if st.tab == SettingsTab::Ai && ai_replaced {
             st.tab = SettingsTab::Feature("ai");
         }
-        ui.horizontal_wrapped(|ui| {
-            ui.heading("Settings");
-            ui.add_space(12.0);
-            ui.selectable_value(&mut st.tab, SettingsTab::Editor, "Editor");
-            if !ai_replaced {
-                ui.selectable_value(&mut st.tab, SettingsTab::Ai, "AI & search");
-            }
-            ui.selectable_value(&mut st.tab, SettingsTab::Sync, "Sync");
-            for t in &feature_tabs {
-                ui.selectable_value(&mut st.tab, SettingsTab::Feature(t.id), (t.label)(ws));
-            }
-            ui.selectable_value(&mut st.tab, SettingsTab::About, "About");
-        });
+        ui.heading("Settings");
         ui.separator();
-        match st.tab {
-            SettingsTab::Editor => editor_settings(ui, ws),
-            SettingsTab::Ai => ai_settings(ui, st, ws, pal),
-            SettingsTab::Sync => sync_settings(ui, &mut st.sync, ws, pal),
-            SettingsTab::About => about(ui, ws, pal),
-            SettingsTab::Feature(id) => {
-                if let Some(t) = crate::registry::SETTINGS_TABS.iter().find(|t| t.id == id) {
-                    let out = (t.show)(ui, ws, &mut st.features, pal);
-                    let _ = out.run;
+        ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), body_h), egui::Layout::left_to_right(egui::Align::Min), |ui| {
+            ui.set_height(body_h);
+            ui.vertical(|ui| {
+                ui.set_width(132.0);
+                let mut tab = |ui: &mut Ui, value: SettingsTab, label: String| {
+                    let r = crate::theme::row(ui, st.tab == value, 28.0, pal, |painter, rect| {
+                        painter.text(
+                            egui::pos2(rect.left() + 8.0, rect.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            label,
+                            egui::FontId::proportional(13.5),
+                            if st.tab == value { pal.strong } else { pal.text },
+                        );
+                    });
+                    if r.clicked() {
+                        st.tab = value;
+                    }
+                };
+                tab(ui, SettingsTab::Editor, "Editor".into());
+                if !ai_replaced {
+                    tab(ui, SettingsTab::Ai, "AI & search".into());
                 }
-            }
-        }
+                tab(ui, SettingsTab::Sync, "Sync".into());
+                for t in &feature_tabs {
+                    tab(ui, SettingsTab::Feature(t.id), (t.label)(ws));
+                }
+                tab(ui, SettingsTab::About, "About".into());
+            });
+            ui.separator();
+            ui.vertical(|ui| {
+                egui::ScrollArea::vertical().id_salt(("quire-settings-body", st.tab)).max_height(body_h).auto_shrink([false, false]).show(
+                    ui,
+                    |ui| {
+                        ui.set_max_width(ui.available_width());
+                        match st.tab {
+                            SettingsTab::Editor => editor_settings(ui, ws),
+                            SettingsTab::Ai => ai_settings(ui, st, ws, pal),
+                            SettingsTab::Sync => sync_settings(ui, &mut st.sync, ws, pal),
+                            SettingsTab::About => about(ui, ws, pal),
+                            SettingsTab::Feature(id) => {
+                                if let Some(t) = crate::registry::SETTINGS_TABS.iter().find(|t| t.id == id) {
+                                    let out = (t.show)(ui, ws, &mut st.features, pal);
+                                    if let Some(c) = out.run {
+                                        run = Some(c);
+                                    }
+                                }
+                            }
+                        }
+                    },
+                );
+            });
+        });
         ui.separator();
         ui.horizontal(|ui| {
             if ui.button("Done").clicked() {
@@ -196,7 +228,7 @@ pub(crate) fn settings(ctx: &egui::Context, st: &mut SettingsState, ws: &mut Wor
     if ws.settings != before {
         let _ = ws.settings.save();
     }
-    close
+    (close, run)
 }
 
 pub(crate) const SOURCE_URL: &str = "https://github.com/BhanuNexus/quire";
@@ -292,6 +324,19 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
         {
             ui.add(egui::Label::new(RichText::new(k).monospace()).wrap());
         }
+        ui.add_space(4.0);
+        let mut shared = cfg.shared_state;
+        if ui
+            .checkbox(&mut shared, "Also sync vault settings and review history")
+            .on_hover_text("Agent permissions, suggestions and their history travel with the vault.")
+            .changed()
+        {
+            match ws.sync_share_vault_settings(shared) {
+                Ok(()) => f.error = None,
+                Err(e) => f.error = Some(e),
+            }
+        }
+        ui.label(RichText::new("Every device needs Quire 0.9 or later.").size(12.0).color(pal.muted));
         ui.label(
             RichText::new(if cfg.folder.is_some() {
                 "Stopping leaves your notes here as they are, and the sync folder for your other devices."

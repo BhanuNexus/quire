@@ -88,19 +88,9 @@ fn choose(ui: &Ui, ws: &mut Workspace, id: &str) {
     theme::sync(ui.ctx(), ws);
 }
 
-/// How tall a settings tab may be: the Settings dialog has no scrolling of
-/// its own, so a long tab scrolls inside this.
-pub(crate) fn tab_height(ui: &Ui) -> f32 {
-    (ui.ctx().content_rect().height() - 240.0).clamp(140.0, 560.0)
-}
-
+/// Settings → Appearance (the Settings dialog scrolls it).
 pub(crate) fn show(ui: &mut Ui, ws: &mut Workspace, st: &mut FeatureUi, pal: &Palette) -> PanelOut {
-    let max_h = tab_height(ui);
-    egui::ScrollArea::vertical()
-        .id_salt("quire-settings-appearance")
-        .max_height(max_h)
-        .auto_shrink([false, true])
-        .show(ui, |ui| appearance(ui, ws, st, pal));
+    appearance(ui, ws, st, pal);
     PanelOut::default()
 }
 
