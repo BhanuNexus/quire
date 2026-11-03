@@ -6,10 +6,16 @@
 //!
 //! * [`protocol`] — JSON-lines messages (shared with the engine)
 //! * `catalog` — the compiled-in list of downloadable models (`client`)
-//! * `engine` — finding and talking to the engine process (`client`)
+//! * `download` — downloads, "Install from file…", the manifest (`client`)
+//! * `engine` — starting and talking to the engine process (`client`)
+//! * `local` — `LocalEmbedder`, `LocalChat`, `LocalOcr` (`client`)
 
 #[cfg(feature = "client")]
 pub mod catalog;
 #[cfg(feature = "client")]
+pub mod download;
+#[cfg(feature = "client")]
 pub mod engine;
+#[cfg(feature = "client")]
+pub mod local;
 pub mod protocol;

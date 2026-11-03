@@ -8,17 +8,30 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 publish.workspace = true
+build = "build.rs"
 
 [features]
-# The app side: catalog, engine process manager, and (with WS-D) the
-# downloader and the LocalEmbedder/LocalChat/LocalOcr clients. Without it
-# only `protocol` is built, which is all the engine sidecar links.
-client = ["dep:toml"]
+# The app side: catalog, downloader, engine process manager and the
+# LocalEmbedder/LocalChat/LocalOcr clients. Without it only `protocol` is
+# built, which is all the engine sidecar links. Neither side contains
+# inference code.
+client = ["dep:toml", "dep:ureq", "dep:sha2", "dep:base64", "dep:half", "dep:flate2", "dep:quire-index", "dep:quire-intel", "dep:quire-vault"]
 
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
 toml = { workspace = true, optional = true }
+ureq = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+half = { workspace = true, optional = true }
+flate2 = { workspace = true, optional = true }
+quire-index = { workspace = true, optional = true }
+quire-intel = { workspace = true, optional = true }
+quire-vault = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

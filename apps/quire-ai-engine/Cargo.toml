@@ -13,12 +13,48 @@ publish.workspace = true
 name = "quire-ai-engine"
 path = "src/main.rs"
 
+# A stand-in engine for tests: speaks the same protocol with tiny,
+# deterministic "models" (no downloads, no inference code).
+[[bin]]
+name = "quire-ai-engine-fake"
+path = "src/bin/fake.rs"
+test = false
+
+# WS-D's day-1 spike: speed and memory of candle's Qwen3 and BERT.
+[[example]]
+name = "spike"
+required-features = ["models"]
+
+[features]
+default = ["models"]
+# The real models: candle (LLM and embeddings), tokenizers, ocrs (OCR).
+models = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers", "dep:ocrs", "dep:rten", "dep:hayro", "dep:image"]
+# Apple GPU (the macOS release build).
+metal = ["models", "candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
+
 [dependencies]
 quire-ai.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+base64.workspace = true
+half.workspace = true
+candle-core = { workspace = true, optional = true }
+candle-nn = { workspace = true, optional = true }
+candle-transformers = { workspace = true, optional = true }
+# The pure-Rust regex backend (fancy-regex) instead of the onig C library:
+# Qwen3's pre-tokenizer needs look-ahead, which it handles (WS-D spike).
+tokenizers = { workspace = true, optional = true, features = ["fancy-regex"] }
+ocrs = { workspace = true, optional = true }
+rten = { workspace = true, optional = true }
+hayro = { workspace = true, optional = true }
+image = { workspace = true, optional = true }
 
 [dev-dependencies]
 quire-ai = { workspace = true, features = ["client"] }
+quire-index.workspace = true
+quire-intel.workspace = true
+quire-vault.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

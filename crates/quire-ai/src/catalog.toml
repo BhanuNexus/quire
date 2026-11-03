@@ -1,5 +1,145 @@
 # Models Quire can download for on-device AI (docs/formats/model-catalog.md).
-# Entries, with pinned URLs, sizes and SHA-256 values, are added by WS-D
-# together with the downloader. Until then the catalog is empty and
-# Settings → AI shows nothing to download.
+#
+# A file downloads only when its `sha256` and `size` are pinned. Unpinned
+# entries are shown in Settings → AI as not available in this build.
+# `packaging/pin-models.py` resolves each repository's revision to a commit
+# and fills in the hashes and sizes; run it before a release (the release
+# workflow refuses to build with unpinned entries).
+#
+# The engine binary isn't listed here: it comes from the same GitHub release
+# as the app, and its hash is embedded at build time (crates/quire-ai/build.rs).
 format = 1
+
+# ---------------------------------------------------------------- embeddings
+
+[[model]]
+id = "bge-small-en-v1.5"
+purpose = "embed"
+label = "English"
+model_name = "BGE small (English)"
+licence = "MIT"
+ram_mb = 650
+dims = 384
+pooling = "cls"
+query_prefix = "Represent this sentence for searching relevant passages: "
+repo = "BAAI/bge-small-en-v1.5"
+revision = "main"
+[[model.files]]
+name = "model.safetensors"
+url = "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/model.safetensors"
+[[model.files]]
+name = "config.json"
+url = "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/config.json"
+[[model.files]]
+name = "tokenizer.json"
+url = "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/tokenizer.json"
+
+[[model]]
+id = "multilingual-e5-small"
+purpose = "embed"
+label = "Multilingual"
+model_name = "E5 small (multilingual)"
+licence = "MIT"
+ram_mb = 600
+dims = 384
+pooling = "mean"
+query_prefix = "query: "
+passage_prefix = "passage: "
+repo = "intfloat/multilingual-e5-small"
+revision = "main"
+[[model.files]]
+name = "model.safetensors"
+url = "https://huggingface.co/intfloat/multilingual-e5-small/resolve/main/model.safetensors"
+[[model.files]]
+name = "config.json"
+url = "https://huggingface.co/intfloat/multilingual-e5-small/resolve/main/config.json"
+[[model.files]]
+name = "tokenizer.json"
+url = "https://huggingface.co/intfloat/multilingual-e5-small/resolve/main/tokenizer.json"
+
+# ---------------------------------------------------------------- language models
+# One family (Qwen3), so the chat template and tool-call format are built
+# into the engine. Every size shares one tokenizer.
+#
+# `ram_mb` is what the engine uses with candle 0.11 on x86-64, measured in
+# WS-D's spike (docs/design/handoff/ws-d.md): candle keeps the token
+# embeddings as f32 and repacks quantized weights into faster tiles on first
+# use, so a model takes much more than its file size. 4B is estimated from
+# the same breakdown.
+
+[[model]]
+id = "qwen3-0.6b-q8"
+purpose = "llm"
+label = "Small"
+model_name = "Qwen3 0.6B"
+licence = "Apache-2.0"
+ram_mb = 2000
+min_ram_gb = 8
+tier = "small"
+repo = "Qwen/Qwen3-0.6B-GGUF"
+revision = "main"
+[[model.files]]
+name = "model.gguf"
+url = "https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf"
+[[model.files]]
+name = "tokenizer.json"
+url = "https://huggingface.co/Qwen/Qwen3-0.6B/resolve/main/tokenizer.json"
+
+[[model]]
+id = "qwen3-1.7b-q4km"
+purpose = "llm"
+label = "Balanced"
+model_name = "Qwen3 1.7B"
+licence = "Apache-2.0"
+ram_mb = 5100
+min_ram_gb = 16
+tier = "balanced"
+repo = "bartowski/Qwen_Qwen3-1.7B-GGUF"
+revision = "main"
+[[model.files]]
+name = "model.gguf"
+url = "https://huggingface.co/bartowski/Qwen_Qwen3-1.7B-GGUF/resolve/main/Qwen_Qwen3-1.7B-Q4_K_M.gguf"
+[[model.files]]
+name = "tokenizer.json"
+url = "https://huggingface.co/Qwen/Qwen3-1.7B/resolve/main/tokenizer.json"
+
+[[model]]
+id = "qwen3-4b-q4km"
+purpose = "llm"
+label = "Better"
+model_name = "Qwen3 4B"
+licence = "Apache-2.0"
+ram_mb = 10000
+min_ram_gb = 32
+tier = "better"
+repo = "Qwen/Qwen3-4B-GGUF"
+revision = "main"
+[[model.files]]
+name = "model.gguf"
+url = "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf"
+[[model.files]]
+name = "tokenizer.json"
+url = "https://huggingface.co/Qwen/Qwen3-4B/resolve/main/tokenizer.json"
+
+# ---------------------------------------------------------------- OCR
+# Licence checked on 2026-11-03 in github.com/robertknight/ocrs-models
+# (LICENSE.md): the code is MIT/Apache-2.0; the trained models inherit the
+# HierText dataset's CC BY-SA 4.0, with the attribution below. Quire doesn't
+# redistribute them: each computer downloads them from the author's host.
+
+[[model]]
+id = "ocrs"
+purpose = "ocr"
+label = "Latin script"
+model_name = "ocrs"
+licence = "CC-BY-SA-4.0"
+attribution = "Ocrs models (github.com/robertknight/ocrs-models), trained on the HierText dataset by Google Research. Licensed under CC BY-SA 4.0."
+ram_mb = 150
+repo = "robertknight/ocrs-models"
+revision = "ocrs-0.13"
+[[model.files]]
+name = "text-detection.onnx"
+url = "https://ocrs-models.s3-accelerate.amazonaws.com/text-detection.onnx"
+[[model.files]]
+name = "text-recognition.onnx"
+url = "https://ocrs-models.s3-accelerate.amazonaws.com/text-recognition.onnx"
