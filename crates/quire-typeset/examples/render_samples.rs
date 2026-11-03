@@ -22,6 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         title: "Sample".into(),
         load_image: Box::new(|path| (path == "assets/gradient.png").then(|| GRADIENT_PNG.to_vec())),
         page: PageSize::A4,
+        bibliography: None,
     };
     let started = Instant::now();
     let pdf = markdown_pdf(SAMPLE, &opts)?;
