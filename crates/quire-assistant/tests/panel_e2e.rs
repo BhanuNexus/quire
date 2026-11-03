@@ -149,7 +149,16 @@ fn the_panel_searches_reads_proposes_and_the_person_reviews_and_reverts() {
     assert!(log.iter().any(|e| e.from.as_deref() == Some("panel:openai")), "{log:#?}");
 
     // Revert run: the note is back to what it was before the panel's run.
-    let plan = store.revert_plan(&RevertSelector { actor: Some("panel:openai".into()), ..RevertSelector::default() });
+    // As Agent activity's "Revert run" asks: the run's time span, plus its
+    // suggestions the person accepted afterwards.
+    let sel = RevertSelector {
+        actor: Some(run.actor_id.clone()),
+        since: Some(run.start),
+        until: Some(run.end),
+        proposals: Some(run.proposals()),
+        ..RevertSelector::default()
+    };
+    let plan = store.revert_plan(&sel);
     assert!(plan.note.is_none() && !plan.steps.is_empty(), "{plan:#?}");
     let report = store.revert_apply(&plan, "Revert the agent panel's run");
     assert!(report.failed.is_empty(), "{report:?}");

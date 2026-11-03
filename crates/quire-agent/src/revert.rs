@@ -44,6 +44,9 @@ pub struct RevertSelector {
     pub batch: Option<String>,
     /// Unix ms; events after it are left alone.
     pub until: Option<i64>,
+    /// A run's suggestions: the person's acceptances of them are undone
+    /// too, whenever they happened (after `until`, typically).
+    pub proposals: Option<Vec<ProposalId>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,12 +152,15 @@ impl AgentStore {
                 _ => None,
             }
         };
+        let of_run = |e: &LedgerEntry| {
+            e.op == Op::Accept && sel.proposals.as_ref().is_some_and(|ps| e.proposal.as_ref().is_some_and(|p| ps.contains(p)))
+        };
         self.log(&q)
             .into_iter()
             .filter(|e| by(e).is_some_and(|a| sel.actor.as_ref().is_none_or(|want| *want == a)))
             .filter(|e| e.op != Op::Accept || e.snap_after.is_some() || e.after.is_some())
             .filter(|e| sel.batch.as_ref().is_none_or(|b| e.batch.as_ref() == Some(b)))
-            .filter(|e| sel.until.is_none_or(|u| e.at <= u))
+            .filter(|e| of_run(e) || sel.until.is_none_or(|u| e.at <= u))
             .filter(|e| {
                 sel.paths
                     .as_ref()

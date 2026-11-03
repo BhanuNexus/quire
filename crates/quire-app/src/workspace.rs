@@ -666,8 +666,9 @@ impl Workspace {
                 self.history.keep_with(vault, &path, &text, now, false, prov);
                 self.docs[i].next_save_provenance = None;
                 self.docs[i].mark_saved(&text);
-                // Templates stay out of the index (and the Files tab), as at start.
-                if !vault.is_template(&path) {
+                // Templates stay out of the index (and the Files tab), as at
+                // start; so do files shown as text (a canvas under review).
+                if path.is_markdown() && !vault.is_template(&path) {
                     self.index.upsert(path, text.to_string());
                 }
                 self.sync_nudge();

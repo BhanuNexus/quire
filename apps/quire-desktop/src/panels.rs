@@ -805,7 +805,7 @@ pub(crate) fn sidebar(
                                     t
                                 })
                                 .inner;
-                            ui.add(egui::Label::new(RichText::new(&h.snippet).color(pal.text)).wrap());
+                            ui.add(egui::Label::new(RichText::new(&h.snippet).color(pal.muted)).wrap());
                             ui.add_space(6.0);
                             t
                         })

@@ -461,7 +461,8 @@ impl PdfSurface {
 
     fn toolbar(&mut self, ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> PanelOut {
         let mut out = PanelOut::default();
-        ui.horizontal(|ui| {
+        // Wraps on a narrow window rather than hiding its last buttons.
+        ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             ui.label(RichText::new(self.path.file_name()).color(pal.strong));
             if !self.pages.is_empty() {

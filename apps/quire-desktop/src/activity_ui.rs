@@ -166,7 +166,7 @@ pub(crate) fn show(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pa
         }
         ui.add_space(6.0);
         for r in runs {
-            run_card(ui, ws, a, r, pal, &mut act);
+            run_card(ui, ws, a, r, &ws.features.agent.activity, pal, &mut act);
         }
         ui.add_space(12.0);
     });
@@ -279,13 +279,30 @@ fn summary(r: &Run) -> String {
 }
 
 fn selector_for(r: &Run) -> RevertSelector {
+    // Suggestions of the run that the person accepted are undone too.
+    let proposals = Some(r.proposals()).filter(|p| !p.is_empty());
     match (&r.id, &r.batch) {
-        (Some(run), _) => RevertSelector { run: Some(run.clone()), actor: Some(r.actor_id.clone()), ..RevertSelector::default() },
-        (None, Some(b)) => RevertSelector { batch: Some(b.clone()), ..RevertSelector::default() },
-        (None, None) => {
-            RevertSelector { actor: Some(r.actor_id.clone()), since: Some(r.start), until: Some(r.end), ..RevertSelector::default() }
+        (Some(run), _) => {
+            RevertSelector { run: Some(run.clone()), actor: Some(r.actor_id.clone()), proposals, ..RevertSelector::default() }
         }
+        (None, Some(b)) => RevertSelector { batch: Some(b.clone()), ..RevertSelector::default() },
+        (None, None) => RevertSelector {
+            actor: Some(r.actor_id.clone()),
+            since: Some(r.start),
+            until: Some(r.end),
+            proposals,
+            ..RevertSelector::default()
+        },
     }
+}
+
+/// Whether the person accepted any of `r`'s suggestions (in `runs`).
+fn accepted_any(r: &Run, runs: &[Run]) -> bool {
+    let mine = r.proposals();
+    !mine.is_empty()
+        && runs.iter().filter(|o| o.kind == ActorKind::Human).flat_map(|o| &o.events).any(|e| {
+            e.op == Op::Accept && e.from.as_deref() == Some(r.actor_id.as_str()) && e.proposal.as_ref().is_some_and(|p| mine.contains(p))
+        })
 }
 
 fn start_plan(ws: &Workspace, a: &mut ActivityUi, sel: RevertSelector, title: String) {
@@ -295,7 +312,7 @@ fn start_plan(ws: &Workspace, a: &mut ActivityUi, sel: RevertSelector, title: St
     a.plan_bg.start(move || store.revert_plan(&sel));
 }
 
-fn run_card(ui: &mut egui::Ui, ws: &Workspace, a: &mut ActivityUi, r: &Run, pal: &Palette, act: &mut Option<Act>) {
+fn run_card(ui: &mut egui::Ui, ws: &Workspace, a: &mut ActivityUi, r: &Run, runs: &[Run], pal: &Palette, act: &mut Option<Act>) {
     let k = key(r);
     let open = a.expanded.contains(&k);
     egui::Frame::NONE
@@ -328,7 +345,7 @@ fn run_card(ui: &mut egui::Ui, ws: &Workspace, a: &mut ActivityUi, r: &Run, pal:
                     }
                 }
                 if r.kind != ActorKind::Human
-                    && r.writes() > 0
+                    && (r.writes() > 0 || accepted_any(r, runs))
                     && ui.small_button("Revert run").on_hover_text("See what undoing this run would do, then decide").clicked()
                 {
                     let sel = selector_for(r);

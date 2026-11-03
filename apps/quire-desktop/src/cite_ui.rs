@@ -357,7 +357,8 @@ pub(crate) fn settings_tab(ui: &mut egui::Ui, ws: &mut Workspace, _st: &mut Feat
             ws.notify(NoticeLevel::Error, e);
         }
     }
-    ui.label(RichText::new(format!("{} works", lib.refs.len())).color(pal.muted));
+    let n = lib.refs.len();
+    ui.label(RichText::new(format!("{n} work{}", if n == 1 { "" } else { "s" })).color(pal.muted));
     for p in &lib.problems {
         ui.label(RichText::new(p).color(pal.warn));
     }

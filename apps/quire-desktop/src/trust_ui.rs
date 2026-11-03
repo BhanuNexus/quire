@@ -282,10 +282,29 @@ pub(crate) fn paint_widget(ui: &mut egui::Ui, ws: &Workspace, id: WidgetId, pal:
 
 // ------------------------------------------------------------------ settings
 
-/// `text` (the note at `path`) with " ⚠ …" at the end of each flagged
-/// citation footnote, for the Markdown preview. Unchanged when nothing is
-/// flagged or the checks are for another version of the text.
-pub(crate) fn mark_flagged_citations(ws: &Workspace, path: &NotePath, mut text: String) -> String {
+/// `text` (the note at `path`) for the Markdown preview: " ⚠ …" at the end
+/// of each flagged citation footnote, and the footnotes' `quire:cite`
+/// comments left out (the preview would show them as text).
+pub(crate) fn mark_flagged_citations(ws: &Workspace, path: &NotePath, text: String) -> String {
+    let text = flag_citations(ws, path, text);
+    if !text.contains("<!-- quire:cite") {
+        return text;
+    }
+    let mut out = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        match (line.starts_with("[^"), line.find("<!-- quire:cite")) {
+            (true, Some(i)) => {
+                let end = line[i..].find("-->").map_or(line.len(), |j| i + j + 3);
+                out.push_str(line[..i].trim_end());
+                out.push_str(&line[end..]);
+            }
+            _ => out.push_str(line),
+        }
+    }
+    out
+}
+
+fn flag_citations(ws: &Workspace, path: &NotePath, mut text: String) -> String {
     let mut checks: Vec<_> = ws.citation_checks(path).into_iter().filter(quire_app::trust_jobs::CiteCheck::flagged).collect();
     checks.sort_by_key(|c| std::cmp::Reverse(c.citation.range.start));
     for c in checks {

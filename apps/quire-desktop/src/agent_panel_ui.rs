@@ -294,7 +294,10 @@ fn bubble(ui: &mut egui::Ui, pal: &Palette, text: &str) {
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
         egui::Frame::NONE.fill(pal.active_bg).corner_radius(10.0).inner_margin(egui::Margin::symmetric(10, 7)).show(ui, |ui| {
             ui.set_max_width(ui.available_width() * 0.85);
-            ui.add(egui::Label::new(RichText::new(text).color(pal.strong)).wrap());
+            // Lines read left to right even though the bubble sits on the right.
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.add(egui::Label::new(RichText::new(text).color(pal.strong)).wrap());
+            });
         });
     });
 }
@@ -335,7 +338,16 @@ fn conversation(ui: &mut egui::Ui, ws: &mut Workspace, p: &mut AgentPanelUi, pal
                 } else {
                     "✓"
                 };
-                egui::CollapsingHeader::new(RichText::new(format!("{icon} {}", strip_md(summary))).size(12.5).color(color))
+                // A header doesn't wrap: cut it to the panel's width (the
+                // panel would grow instead), the whole line on hover.
+                let full = strip_md(summary);
+                let room = ((ui.available_width() - 40.0) / 6.8).max(12.0) as usize;
+                let shown = if full.chars().count() > room {
+                    format!("{}…", full.chars().take(room.saturating_sub(1)).collect::<String>().trim_end())
+                } else {
+                    full.clone()
+                };
+                let r = egui::CollapsingHeader::new(RichText::new(format!("{icon} {shown}")).size(12.5).color(color))
                     .id_salt(("quire-agent-tool", id, i))
                     .default_open(false)
                     .show(ui, |ui| {
@@ -347,6 +359,9 @@ fn conversation(ui: &mut egui::Ui, ws: &mut Workspace, p: &mut AgentPanelUi, pal
                             });
                         }
                     });
+                if shown != full {
+                    r.header_response.on_hover_text(full);
+                }
             }
             Item::Proposal { proposal, path } => {
                 ui.add_space(4.0);
@@ -476,14 +491,19 @@ fn composer(ui: &mut egui::Ui, ws: &Workspace, p: &mut AgentPanelUi, pal: &Palet
         if let Some(i) = remove {
             p.mentions.remove(i);
         }
-        if ext.is_none() {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.selectable_value(&mut p.agent_mode, true, "Agent").on_hover_text("Reads your notes and suggests changes");
-                ui.selectable_value(&mut p.agent_mode, false, "Ask").on_hover_text("Reads your notes; changes nothing");
-            });
-        }
     });
+    let input_id = ui.make_persistent_id("quire-agent-input");
+    // `@note` / `#tag` being typed: Tab takes the first match (before the
+    // text box sees Tab and moves the focus away).
+    let options = mention_options(ws, &p.input);
+    if !options.is_empty() && ui.memory(|m| m.has_focus(input_id)) && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab))
+    {
+        p.add_mention(options[0].1.clone());
+    }
     let edit = egui::TextEdit::multiline(&mut p.input)
+        .id(input_id)
+        // Keep Tab for the mention list instead of moving the focus.
+        .lock_focus(!options.is_empty())
         .desired_rows(2)
         .desired_width(f32::INFINITY)
         .hint_text("Message the agent…  (Enter sends, Shift+Enter for a new line)");
@@ -492,7 +512,16 @@ fn composer(ui: &mut egui::Ui, ws: &Workspace, p: &mut AgentPanelUi, pal: &Palet
         resp.request_focus();
         p.focus_input = false;
     }
-    mention_suggestions(ui, ws, p, pal, resp.has_focus());
+    if !options.is_empty() {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("Mention:").size(11.0).color(pal.faint));
+            for (label, m) in &options {
+                if ui.small_button(label).on_hover_text("Add it to the message (Tab adds the first)").clicked() {
+                    p.add_mention(m.clone());
+                }
+            }
+        });
+    }
     let enter = resp.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
     if enter && p.input.ends_with('\n') {
         p.input.pop();
@@ -516,6 +545,10 @@ fn composer(ui: &mut egui::Ui, ws: &Workspace, p: &mut AgentPanelUi, pal: &Palet
             }
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ext.is_none() {
+                ui.selectable_value(&mut p.agent_mode, true, "Agent").on_hover_text("Reads your notes and suggests changes");
+                ui.selectable_value(&mut p.agent_mode, false, "Ask").on_hover_text("Reads your notes; changes nothing");
+            }
             if p.usage.input_tokens + p.usage.output_tokens > 0
                 && model.as_ref().is_some_and(|(m, _, _)| m.locality() == quire_app::intel::chat::Locality::Cloud)
             {
@@ -543,47 +576,25 @@ fn mention_query(input: &str) -> Option<(char, &str)> {
     Some((sigil, chars.as_str()))
 }
 
-/// While an `@note` or `#tag` is being typed: matching notes or tags under
-/// the box. A click or Tab turns the word into a chip.
-fn mention_suggestions(ui: &mut egui::Ui, ws: &Workspace, p: &mut AgentPanelUi, pal: &Palette, focused: bool) {
-    let Some((sigil, q)) = mention_query(&p.input) else { return };
-    let options: Vec<(String, Mention)> = if sigil == '@' {
+/// While an `@note` or `#tag` is being typed at the end of `input`: the
+/// matching notes or tags (at most five), as chip labels.
+fn mention_options(ws: &Workspace, input: &str) -> Vec<(String, Mention)> {
+    let Some((sigil, q)) = mention_query(input) else { return Vec::new() };
+    if sigil == '@' {
         if q.is_empty() {
-            return;
+            return Vec::new();
         }
-        ws.index().read().quick_open(q, 5).into_iter().map(|h| (format!("@{}", h.path.stem()), Mention::Note(h.path))).collect()
-    } else {
-        let ql = q.to_lowercase();
-        ws.index()
-            .read()
-            .tags()
-            .into_iter()
-            .filter(|(t, _)| t.to_lowercase().contains(&ql))
-            .take(5)
-            .map(|(t, _)| (format!("#{t}"), Mention::Tag(t)))
-            .collect()
-    };
-    if options.is_empty() {
-        return;
+        return ws.index().read().quick_open(q, 5).into_iter().map(|h| (format!("@{}", h.path.stem()), Mention::Note(h.path))).collect();
     }
-    let tab = focused && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab));
-    let mut picked = tab.then(|| options[0].1.clone());
-    ui.horizontal_wrapped(|ui| {
-        ui.label(RichText::new("Mention:").size(11.0).color(pal.faint));
-        for (label, m) in &options {
-            if ui.small_button(label).on_hover_text("Add it to the message (Tab adds the first)").clicked() {
-                picked = Some(m.clone());
-            }
-        }
-    });
-    if let Some(m) = picked {
-        let cut = p.input.len() - q.len() - 1;
-        p.input.truncate(cut);
-        if !p.mentions.contains(&m) {
-            p.mentions.push(m);
-        }
-        p.focus_input = true;
-    }
+    let ql = q.to_lowercase();
+    ws.index()
+        .read()
+        .tags()
+        .into_iter()
+        .filter(|(t, _)| t.to_lowercase().contains(&ql))
+        .take(5)
+        .map(|(t, _)| (format!("#{t}"), Mention::Tag(t)))
+        .collect()
 }
 
 fn thousands(n: u32) -> String {
@@ -615,6 +626,18 @@ fn chip(ui: &mut egui::Ui, pal: &Palette, on: &mut bool, label: &str) {
 }
 
 impl AgentPanelUi {
+    /// The `@word` / `#word` being typed becomes a chip.
+    fn add_mention(&mut self, m: Mention) {
+        if let Some((_, q)) = mention_query(&self.input) {
+            let cut = self.input.len() - q.len() - 1;
+            self.input.truncate(cut);
+        }
+        if !self.mentions.contains(&m) {
+            self.mentions.push(m);
+        }
+        self.focus_input = true;
+    }
+
     fn new_conversation(&mut self, ws: &Workspace) {
         *self = Self {
             vault: ws.vault_root().map(PathBuf::from),

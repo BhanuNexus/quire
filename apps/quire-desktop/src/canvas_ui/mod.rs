@@ -1002,8 +1002,9 @@ impl CanvasSurface {
     // ------------------------------------------------------------ toolbar
 
     fn toolbar(&mut self, ui: &mut egui::Ui, rect_hint: Option<Rect>, pal: &Palette) {
-        // One row: card tools give way to the ink options while drawing.
-        ui.horizontal(|ui| {
+        // One row (two on a narrow window): card tools give way to the ink
+        // options while drawing.
+        ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             for (m, icon, tip) in [(Mode::Select, "⬉", "Select (V)"), (Mode::Hand, "✋", "Move the view (H, or hold Space)")] {
                 if ui.selectable_label(self.mode == m, RichText::new(icon).size(15.0)).on_hover_text(tip).clicked() {

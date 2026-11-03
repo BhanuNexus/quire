@@ -236,9 +236,9 @@ impl Drop for JobRunner {
 }
 
 /// Why `e` can't run now, if it can't.
-fn blocked(e: &Entry, now: Instant, active: bool, idle_long: bool) -> Option<&'static str> {
-    if active {
-        return Some("you're typing");
+fn blocked(e: &Entry, now: Instant, active: Option<&'static str>, idle_long: bool) -> Option<&'static str> {
+    if let Some(why) = active {
+        return Some(why);
     }
     if e.budget.needs == Needs::Idle && !idle_long {
         return Some("waiting until you're idle");
@@ -262,8 +262,14 @@ fn work(shared: &Shared) {
             continue;
         };
         let now = Instant::now();
-        let active = shared.typing.load(Ordering::Acquire) || shared.modal.load(Ordering::Acquire);
-        let idle_long = !active && now.duration_since(st.idle_since) >= IDLE_AFTER;
+        let active = if shared.typing.load(Ordering::Acquire) {
+            Some("you're typing")
+        } else if shared.modal.load(Ordering::Acquire) {
+            Some("a dialog is open")
+        } else {
+            None
+        };
+        let idle_long = active.is_none() && now.duration_since(st.idle_since) >= IDLE_AFTER;
         let mut pick = None;
         for (i, e) in st.jobs.iter_mut().enumerate() {
             if e.job.is_none() || e.status.state == JobState::Done || e.next_at > now {

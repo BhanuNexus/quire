@@ -85,6 +85,19 @@ pub(crate) fn size_text(id: &str) -> String {
     if exact { s } else { format!("about {s}") }
 }
 
+/// What a row of step two says after the model's name: its size, and
+/// "not available in this build" when this build can't download it.
+fn option_text(id: &str, more: &str) -> String {
+    let mut t = size_text(id);
+    if !more.is_empty() {
+        t = format!("{t} · {more}");
+    }
+    if catalog().get(id).is_none_or(|e| !e.is_pinned() && !installed(e)) {
+        t.push_str(" · not available in this build");
+    }
+    t
+}
+
 fn card(ui: &mut egui::Ui, pal: &Palette, selected: bool, w: f32, h: f32, title: &str, body: &str) -> bool {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click());
     let fill = if selected {
@@ -220,12 +233,12 @@ impl OnboardingOverlay {
             ui,
             |ui| {
                 capability(ui, pal, &mut d.embeddings, "Meaning search", "Better “find by meaning” and related notes. Light.", |ui| {
-                    ui.radio_value(&mut d.multilingual, false, format!("English · {}", size_text("bge-small-en-v1.5")));
-                    ui.radio_value(&mut d.multilingual, true, format!("Many languages · {}", size_text("multilingual-e5-small")));
+                    ui.radio_value(&mut d.multilingual, false, format!("English · {}", option_text("bge-small-en-v1.5", "")));
+                    ui.radio_value(&mut d.multilingual, true, format!("Many languages · {}", option_text("multilingual-e5-small", "")));
                 });
                 capability(ui, pal, &mut d.llm, "Writing and agent", "Summaries, tags, the agent panel and claim checks.", |ui| {
                     for (size, name) in [(LlmSize::Small, "Small"), (LlmSize::Balanced, "Balanced"), (LlmSize::Better, "Better")] {
-                        ui.radio_value(&mut d.llm_size, size, format!("{name} · {} · {}", size_text(size.id()), ram_text(size.id())));
+                        ui.radio_value(&mut d.llm_size, size, format!("{name} · {}", option_text(size.id(), &ram_text(size.id()))));
                     }
                 });
                 capability(
@@ -235,7 +248,7 @@ impl OnboardingOverlay {
                     "Read text in images and scanned PDFs",
                     "Makes their text searchable. Latin script only.",
                     |ui| {
-                        ui.label(RichText::new(size_text("ocrs")).color(pal.muted));
+                        ui.label(RichText::new(option_text("ocrs", "")).color(pal.muted));
                     },
                 );
             },

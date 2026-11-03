@@ -64,6 +64,10 @@ pub(crate) struct QuireApp {
     surfaces: crate::surfaces::Surfaces,
     /// Frames in which text typed with Alt is dropped (an Alt shortcut fired).
     drop_alt_text: u8,
+    /// The active note and how many notes were open, last frame: a note
+    /// opened from anywhere (a dialog, a job) takes the central panel back
+    /// from a PDF or canvas.
+    front_note: (Option<DocId>, usize),
 }
 
 fn sample_dir() -> PathBuf {
@@ -132,6 +136,7 @@ impl QuireApp {
             right_tab: crate::registry::INSIGHTS,
             surfaces: crate::surfaces::Surfaces::default(),
             drop_alt_text: 0,
+            front_note: (None, 0),
         }
     }
 
@@ -622,6 +627,12 @@ impl eframe::App for QuireApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let started = Instant::now();
+        let now = (self.ws.active_doc().map(|d| d.id), self.ws.docs().len());
+        // A different note became active and none was closed: it was opened.
+        if now.0.is_some() && now.0 != self.front_note.0 && now.1 >= self.front_note.1 {
+            self.surfaces.active = None;
+        }
+        self.front_note = now;
         self.ui_inner(ui, frame);
         if let Some(text) = self.clipboard.take() {
             ui.ctx().copy_text(text);
