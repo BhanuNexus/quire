@@ -189,6 +189,16 @@ pub(crate) struct Planned {
     pub props: Option<PropertyOps>,
 }
 
+/// Where a path an agent named really leads ([`AgentStore::resolve`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resolved {
+    /// The path as named, in canonical form.
+    pub path: NotePath,
+    /// The file it reaches with links followed, as a vault path (the same
+    /// as `path` when nothing on the way is a link).
+    pub real: NotePath,
+}
+
 /// A vault path an agent may name: NFC, relative, no `..`, no hidden
 /// segments except `.quire` (which policy then denies), no control characters.
 pub fn canonical_path(p: &NotePath) -> Result<NotePath, WriteError> {
@@ -332,10 +342,14 @@ impl AgentStore {
         st
     }
 
-    /// Approve the policy file as it is now on this device (or, with no
-    /// file, go back to the defaults).
-    pub fn approve_policy(&self) -> Result<(), String> {
+    /// Approve the policy file the person was shown (`shown`: its hash, or
+    /// `None` for no file, which goes back to the defaults). Refused when
+    /// the file changed since, so nothing is approved unseen (P7).
+    pub fn approve_policy(&self, shown: Option<&ContentHash>) -> Result<(), String> {
         let text = self.inner.vault.storage().read(&NotePath::new(POLICY_PATH)).ok();
+        if text.as_deref().map(ContentHash::of).as_ref() != shown {
+            return Err("The agent policy changed since it was shown. Look at it again before approving it.".into());
+        }
         let state = self.state();
         if let Some(t) = &text {
             if Policy::parse(t).is_err() {
@@ -356,13 +370,14 @@ impl AgentStore {
             return Err("This vault's agent policy was made by a newer Quire; update Quire to change it".into());
         }
         self.inner.vault.storage().write_atomic(&NotePath::new(POLICY_PATH), text).map_err(|e| format!("Couldn't save the policy: {e}"))?;
-        self.approve_policy()
+        self.approve_policy(Some(&ContentHash::of(text)))
     }
 
     /// What `actor` may do to `path` for `op`. People are never limited.
     /// For anyone else the most restrictive of these applies: the zones of
     /// every active policy (with the client's entry), the hard rules, and
-    /// the actor's grant.
+    /// the actor's grant, for the path as named and for the file it really
+    /// reaches ([`Self::resolve`]). A path that can't be resolved is denied.
     pub fn effective_mode(&self, actor: &Actor, path: &NotePath, op: OpKind) -> Mode {
         self.effective(actor, path, op).0
     }
@@ -372,11 +387,21 @@ impl AgentStore {
         if actor.is_human() {
             return (Mode::Direct, String::new());
         }
+        let Ok(r) = self.resolve(path) else { return (Mode::Deny, path.to_string()) };
+        let mut candidates = self.candidates(actor, &r.path);
+        if r.real != r.path {
+            candidates.extend(self.candidates(actor, &r.real));
+        }
+        strictest(candidates, op)
+    }
+
+    /// The modes that limit `actor` on one (resolved) path.
+    fn candidates(&self, actor: &Actor, path: &NotePath) -> Vec<(Mode, String)> {
         let p = path.as_str();
         let mut candidates: Vec<(Mode, String)> = Vec::new();
         if actor.kind == ActorKind::Agent {
             for pol in self.policy_state().active() {
-                candidates.extend(pol.modes_for(Some(&actor.id), actor.unverified, p));
+                candidates.extend(pol.modes_for(Some(actor.policy_key()), actor.unverified, p));
             }
         } else {
             candidates.push((Mode::Direct, String::new()));
@@ -387,7 +412,57 @@ impl AgentStore {
         if let Some(cap) = self.inner.caps.read().unwrap_or_else(std::sync::PoisonError::into_inner).get(&actor.id) {
             candidates.push((*cap, "grant".into()));
         }
-        strictest(candidates, op)
+        candidates
+    }
+
+    /// Where `path` really leads (design §A.2 step 1). The path must be
+    /// canonical ([`canonical_path`]: NFC, relative, no `..`, no hidden
+    /// folders); links on the way are followed, and the file they reach must
+    /// be inside the vault and outside hidden folders too. A link that leads
+    /// nowhere is refused.
+    pub fn resolve(&self, path: &NotePath) -> Result<Resolved, WriteError> {
+        let path = canonical_path(path)?;
+        let storage = self.inner.vault.storage();
+        let (Some(root), Some(abs)) = (storage.absolute(&NotePath::new("")), storage.absolute(&path)) else {
+            return Ok(Resolved { real: path.clone(), path });
+        };
+        let outside = |why: &str| WriteError::InvalidPath { reason: format!("{path}: {why}") };
+        let root = root.canonicalize().unwrap_or(root);
+        // The deepest part that exists, with links followed; the rest as named.
+        let mut probe = abs.as_path();
+        let mut tail: Vec<String> = Vec::new();
+        let found = loop {
+            match probe.canonicalize() {
+                Ok(c) => break c,
+                Err(_) if probe.symlink_metadata().is_ok() => return Err(outside("is a link that leads nowhere")),
+                Err(_) => {
+                    let name = probe.file_name().and_then(|n| n.to_str()).ok_or_else(|| outside("leads outside the vault"))?;
+                    tail.push(name.to_string());
+                    probe = probe.parent().ok_or_else(|| outside("leads outside the vault"))?;
+                }
+            }
+        };
+        let rel = found.strip_prefix(&root).map_err(|_| outside("leads outside the vault"))?;
+        let mut segs: Vec<String> = Vec::new();
+        for c in rel.components() {
+            segs.push(c.as_os_str().to_str().ok_or_else(|| outside("leads to a file name Quire can't read"))?.to_string());
+        }
+        segs.extend(tail.into_iter().rev());
+        let real = canonical_path(&NotePath::new(segs.join("/"))).map_err(|_| outside("leads into a hidden folder"))?;
+        Ok(Resolved { path, real })
+    }
+
+    /// The one path check for everything an agent names: MCP tools and
+    /// resources, ACP file requests, captured images. The path is resolved
+    /// ([`Self::resolve`]) and `actor` must not be denied `op` on it or on
+    /// the file it reaches. Returns the canonical path.
+    pub fn guard(&self, actor: &Actor, path: &NotePath, op: OpKind) -> Result<NotePath, WriteError> {
+        let r = self.resolve(path)?;
+        let (mode, zone) = self.effective(actor, &r.path, op);
+        if mode.route(op) == Route::Deny {
+            return Err(WriteError::PermissionDenied { path: r.path, zone, mode });
+        }
+        Ok(r.path)
     }
 
     /// The contracts that apply to an agent's write.
@@ -402,8 +477,12 @@ impl AgentStore {
     /// its text when the caller has it (front matter can only lower trust).
     pub fn trust_of(&self, path: &NotePath, text: Option<&str>) -> Trust {
         let st = self.policy_state();
-        let raw = st.active().iter().chain([&&Policy::default()]).any(|p| p.role_of(path.as_str()) == Some(ZoneRole::Raw));
-        if raw || self.imported(path) {
+        // The path as named and the file it reaches; an unapproved policy
+        // file can't relabel a zone the defaults or the approved file call raw.
+        let paths = self.resolve(path).map_or_else(|_| vec![path.clone()], |r| vec![r.path, r.real]);
+        let raw =
+            paths.iter().any(|p| st.active().iter().chain([&&Policy::default()]).any(|pol| pol.role_of(p.as_str()) == Some(ZoneRole::Raw)));
+        if raw || paths.iter().any(|p| self.imported(p)) {
             return Trust::Untrusted;
         }
         let owned = if text.is_none() { self.inner.vault.storage().read(path).ok() } else { None };
@@ -647,6 +726,32 @@ impl AgentStore {
         Ok(())
     }
 
+    fn rate_file(actor: &Actor) -> NotePath {
+        NotePath::new(format!(".quire/agent/rate/{}.txt", &ContentHash::of(&actor.id).hex()[..16]))
+    }
+
+    /// The times of `actor`'s writes in the minute before `now`, oldest first.
+    fn recent_writes(&self, actor: &Actor, now: i64) -> Vec<i64> {
+        let storage = self.inner.vault.storage();
+        let mut times: Vec<i64> = storage
+            .read(&Self::rate_file(actor))
+            .map(|t| t.lines().filter_map(|l| l.split_whitespace().next()?.parse().ok()).collect())
+            .unwrap_or_default();
+        times.retain(|t| now - t < 60_000 && *t <= now);
+        times.sort_unstable();
+        times
+    }
+
+    /// How many more writes `actor` may make this minute (`u32::MAX`: no limit).
+    pub fn writes_left(&self, actor: &Actor) -> u32 {
+        let per_minute = self.policy().limits.writes_per_minute;
+        if actor.kind != ActorKind::Agent || per_minute == 0 {
+            return u32::MAX;
+        }
+        let used = u32::try_from(self.recent_writes(actor, self.now_ms()).len()).unwrap_or(u32::MAX);
+        per_minute.saturating_sub(used)
+    }
+
     /// Writes by `actor` in the last minute, across processes: a small file
     /// per client under `.quire/agent/rate/` plus this process's own count.
     fn rate_check(&self, actor: &Actor, per_minute: u32, record: bool) -> Result<(), WriteError> {
@@ -654,15 +759,12 @@ impl AgentStore {
             return Ok(());
         }
         let now = self.now_ms();
-        let file = NotePath::new(format!(".quire/agent/rate/{}.txt", &ContentHash::of(&actor.id).hex()[..16]));
+        let file = Self::rate_file(actor);
         let storage = self.inner.vault.storage();
         // One process at a time in this process; across processes the file is
         // rewritten atomically, so at worst a racing write goes uncounted.
         let _guard = self.inner.rate.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut times: Vec<i64> =
-            storage.read(&file).map(|t| t.lines().filter_map(|l| l.split_whitespace().next()?.parse().ok()).collect()).unwrap_or_default();
-        times.retain(|t| now - t < 60_000 && *t <= now);
-        times.sort_unstable();
+        let mut times = self.recent_writes(actor, now);
         if times.len() >= per_minute as usize {
             let oldest = times.first().copied().unwrap_or(now);
             let wait = u64::try_from((oldest + 60_000 - now).max(1)).unwrap_or(1);
@@ -758,6 +860,38 @@ impl AgentStore {
         }?;
         let _ = self.rate_check(actor, policy.limits.writes_per_minute, true);
         Ok(out)
+    }
+
+    /// Add a binary file (a captured image) to the attachments folder as
+    /// `actor`. The same path guard, policy and limits as [`Self::submit`]
+    /// apply, except that a binary file can't be a proposal: it is written
+    /// only where `actor` may create files directly, and refused otherwise.
+    /// An agent's file counts as one write and must fit `max_write_bytes`.
+    pub fn add_attachment(&self, actor: &Actor, file_name: &str, bytes: &[u8], source: Option<&str>) -> Result<NotePath, WriteError> {
+        let policy = self.policy();
+        if actor.kind == ActorKind::Agent && bytes.len() as u64 > policy.limits.max_write_bytes {
+            return Err(WriteError::TooLarge { limit: policy.limits.max_write_bytes });
+        }
+        self.rate_check(actor, policy.limits.writes_per_minute, false)?;
+        let vault = &self.inner.vault;
+        let path = canonical_path(&vault.attachment_path(file_name))?;
+        if vault.exists(&path) {
+            return Err(WriteError::AlreadyExists { path });
+        }
+        self.check_new_path(&path)?;
+        let (mode, zone) = self.effective(actor, &path, OpKind::Create);
+        if mode.route(OpKind::Create) != Route::Apply {
+            return Err(WriteError::PermissionDenied { path, zone, mode });
+        }
+        vault.storage().write_bytes_atomic(&path, bytes)?;
+        let mut e = LedgerEntry::new(actor.clone(), Op::Create, self.now_ms()).path(&path);
+        e.bytes = Some(bytes.len() as u64);
+        if let Some(src) = source {
+            e.other.insert("source".into(), serde_json::Value::from(src));
+        }
+        let _ = self.ledger().append(&e);
+        let _ = self.rate_check(actor, policy.limits.writes_per_minute, true);
+        Ok(path)
     }
 
     pub(crate) fn ledger(&self) -> Ledger {
@@ -1113,10 +1247,14 @@ impl AgentStore {
 
     // ------------------------------------------------------------ instructions
 
-    /// Approve the vault's agent instructions as they are now.
-    pub fn approve_instructions(&self) -> Result<(), String> {
+    /// Approve the vault's agent instructions the person was shown
+    /// (`shown`: their hash). Refused when they changed since (P7).
+    pub fn approve_instructions(&self, shown: &ContentHash) -> Result<(), String> {
         let Some(i) = crate::instructions::find(&self.inner.vault) else { return Ok(()) };
         let text = self.inner.vault.read(&i).map_err(|e| e.to_string())?;
+        if ContentHash::of(&text) != *shown {
+            return Err(format!("{i} changed since it was shown. Look at it again before approving it."));
+        }
         let state = self.state();
         state.write_copy(APPROVED_INSTRUCTIONS_FILE, &text)?;
         state.update(|s| s.approved_instructions = Some(ContentHash::of(&text)))?;

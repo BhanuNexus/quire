@@ -107,9 +107,10 @@ pub(crate) fn show(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pa
                 }
                 ui.horizontal_wrapped(|ui| {
                     if ui.button("Approve on this device").clicked() {
-                        after = Some(Box::new(|ws: &mut Workspace| {
+                        let shown = state.file_hash();
+                        after = Some(Box::new(move |ws: &mut Workspace| {
                             if let Some(s) = ws.agent_store().cloned()
-                                && let Err(e) = s.approve_policy()
+                                && let Err(e) = s.approve_policy(shown.as_ref())
                             {
                                 ws.notify(NoticeLevel::Error, e);
                             }
@@ -401,9 +402,10 @@ fn instructions(ui: &mut egui::Ui, ws: &Workspace, pal: &Palette, after: &mut Op
                     }));
                 }
                 if !i.approved && ui.button("Approve on this device").clicked() {
-                    *after = Some(Box::new(|ws: &mut Workspace| {
+                    let shown = i.hash.clone();
+                    *after = Some(Box::new(move |ws: &mut Workspace| {
                         if let Some(s) = ws.agent_store().cloned()
-                            && let Err(e) = s.approve_instructions()
+                            && let Err(e) = s.approve_instructions(&shown)
                         {
                             ws.notify(NoticeLevel::Error, e);
                         }

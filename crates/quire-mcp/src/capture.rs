@@ -4,17 +4,20 @@
 //! `capture_url`, `quire-cli capture --url` and the app's "Capture web
 //! page…" all come here.
 //!
-//! The page is fetched and converted by `quire_import::web`. Its images are
-//! saved as attachments (new files only, reused when the same bytes are
-//! already there), and the note goes through `AgentStore::submit` as the
-//! caller (`import:url` for the CLI and the app, the agent for MCP), so
-//! policy decides whether it is written or proposed. It lands in `raw/` by
-//! default, with front matter that marks it untrusted.
+//! The page is fetched and converted by `quire_import::web`. Its images
+//! (PNG, JPEG, GIF and WebP that decode; never SVG) are saved as attachments
+//! through `AgentStore::add_attachment`, so the caller's zones, grant and
+//! limits apply: only where it may create files directly, one write each,
+//! within `max_write_bytes` and `max_files_per_change`, and leaving one write
+//! for the note. Images it can't save stay links. The note goes through
+//! `AgentStore::submit` as the caller (`import:url` for the CLI and the app,
+//! the agent for MCP), so policy decides whether it is written or proposed.
+//! It lands in `raw/` by default, with front matter that marks it untrusted.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use quire_agent::{Actor, AgentStore, Change, ChangeSet, LedgerEntry, Mode, Op, OpKind, SourceRef, SubmitOutcome, WriteError};
+use quire_agent::{Actor, AgentStore, Change, ChangeSet, OpKind, SourceRef, SubmitOutcome, WriteError};
 use quire_app::markdown::frontmatter::yaml_scalar;
 use quire_app::vault::{NotePath, Vault, sanitize_title};
 use quire_import::web::{self, FetchOptions, WebError};
@@ -115,42 +118,7 @@ pub fn capture(vault: &Vault, agent: &AgentStore, actor: &Actor, url: &str, opts
     let path =
         vault.unique_path(&folder, stem.trim()).map_err(|e| CaptureError::Write(WriteError::InvalidPath { reason: e.to_string() }))?;
     let mut warnings = c.warnings.clone();
-    // Images: binary attachments can't be proposals, so they are added as new
-    // files when the caller may see the attachments folder at all.
-    let att_probe = NotePath::join(&vault.config.attachments_folder, "probe.png");
-    let images_ok = agent.effective_mode(actor, &att_probe, OpKind::Create) != Mode::Deny;
-    let mut names: HashMap<String, String> = HashMap::new();
-    let mut by_hash: HashMap<String, String> = HashMap::new();
-    let now = agent.now_ms();
-    if images_ok {
-        for img in &c.images {
-            if let Some(n) = by_hash.get(&img.sha256) {
-                names.insert(img.src.clone(), n.clone());
-                continue;
-            }
-            let file = format!("{}.{}", img.name, img.ext);
-            let existing = NotePath::join(&vault.config.attachments_folder, &file);
-            let saved = if vault.storage().read_bytes(&existing).is_ok_and(|b| b == img.bytes) {
-                Ok(existing)
-            } else {
-                vault.save_attachment(&file, &img.bytes)
-            };
-            match saved {
-                Ok(p) => {
-                    let mut e = LedgerEntry::new(actor.clone(), Op::Create, now).path(&p);
-                    e.bytes = Some(img.bytes.len() as u64);
-                    e.other.insert("source".into(), json!(img.src));
-                    agent.record(&e);
-                    let name = p.file_name().to_string();
-                    by_hash.insert(img.sha256.clone(), name.clone());
-                    names.insert(img.src.clone(), name);
-                }
-                Err(e) => warnings.push(format!("An image couldn't be saved: {e}.")),
-            }
-        }
-    } else if !c.images.is_empty() {
-        warnings.push("Images were left as links: you can't add files to the attachments folder.".into());
-    }
+    let (names, saved) = save_images(vault, agent, actor, &c.images, &mut warnings);
     let markdown = web::embed_images(&c.article.markdown, &names);
     let captured = chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
     let text = note_text(&c, &title, &markdown, &captured);
@@ -162,5 +130,58 @@ pub fn capture(vault: &Vault, agent: &AgentStore, actor: &Actor, url: &str, opts
         ..ChangeSet::default()
     };
     let outcome = agent.submit(actor, cs).map_err(CaptureError::Write)?;
-    Ok(Done { path, outcome, images: by_hash.len(), warnings })
+    Ok(Done { path, outcome, images: saved, warnings })
+}
+
+/// Save `images` as attachments as `actor`, within its policy and limits.
+/// Returns each saved image's file name by its `src`, and how many files.
+fn save_images(
+    vault: &Vault,
+    agent: &AgentStore,
+    actor: &Actor,
+    images: &[web::Image],
+    warnings: &mut Vec<String>,
+) -> (HashMap<String, String>, usize) {
+    let mut names: HashMap<String, String> = HashMap::new();
+    let mut by_hash: HashMap<String, String> = HashMap::new();
+    // The note is one more file and one more write.
+    let files = agent.policy().limits.max_files_per_change.saturating_sub(1);
+    let room = usize::try_from(files.min(agent.writes_left(actor).saturating_sub(1))).unwrap_or(usize::MAX);
+    for img in images {
+        if let Some(n) = by_hash.get(&img.sha256) {
+            names.insert(img.src.clone(), n.clone());
+            continue;
+        }
+        let file = format!("{}.{}", img.name, img.ext);
+        // The same bytes already there (and readable by the caller): reuse them.
+        let existing = NotePath::join(&vault.config.attachments_folder, &file);
+        if agent.guard(actor, &existing, OpKind::Read).is_ok() && vault.storage().read_bytes(&existing).is_ok_and(|b| b == img.bytes) {
+            let name = existing.file_name().to_string();
+            by_hash.insert(img.sha256.clone(), name.clone());
+            names.insert(img.src.clone(), name);
+            continue;
+        }
+        if by_hash.len() >= room {
+            warnings.push("Some images were left as links: the agent policy limits how many files one change may write.".into());
+            break;
+        }
+        match agent.add_attachment(actor, &file, &img.bytes, Some(&img.src)) {
+            Ok(p) => {
+                let name = p.file_name().to_string();
+                by_hash.insert(img.sha256.clone(), name.clone());
+                names.insert(img.src.clone(), name);
+            }
+            Err(WriteError::PermissionDenied { .. } | WriteError::RawIsImmutable { .. } | WriteError::InvalidPath { .. }) => {
+                warnings.push("Images were left as links: you can't add files to the attachments folder directly.".into());
+                break;
+            }
+            Err(WriteError::RateLimited { .. }) => {
+                warnings.push("Some images were left as links: too many writes this minute.".into());
+                break;
+            }
+            Err(e) => warnings.push(format!("Image {} was left as a link: {e}.", img.src)),
+        }
+    }
+    let saved = by_hash.len();
+    (names, saved)
 }

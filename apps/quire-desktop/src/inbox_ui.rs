@@ -501,9 +501,11 @@ fn permissions(ui: &mut egui::Ui, ws: &Workspace, st: &mut InboxUi, pal: &Palett
                     st.show_policy_diff = !st.show_policy_diff;
                 }
                 if ui.button("Approve on this device").clicked() {
-                    *act = Some(Box::new(|ws: &mut Workspace, _| {
+                    // Exactly the file shown here: refused if it changed since.
+                    let shown = p.file_hash();
+                    *act = Some(Box::new(move |ws: &mut Workspace, _| {
                         if let Some(store) = ws.agent_store().cloned() {
-                            match store.approve_policy() {
+                            match store.approve_policy(shown.as_ref()) {
                                 Ok(()) => ws.notify(NoticeLevel::Info, "Approved the new agent permissions on this device"),
                                 Err(e) => ws.notify(NoticeLevel::Error, e),
                             }
@@ -539,9 +541,10 @@ fn permissions(ui: &mut egui::Ui, ws: &Workspace, st: &mut InboxUi, pal: &Palett
                 }
                 open_button(ui, &i.path, act);
                 if ui.button("Approve on this device").clicked() {
-                    *act = Some(Box::new(|ws: &mut Workspace, _| {
+                    let shown = i.hash.clone();
+                    *act = Some(Box::new(move |ws: &mut Workspace, _| {
                         if let Some(store) = ws.agent_store().cloned()
-                            && let Err(e) = store.approve_instructions()
+                            && let Err(e) = store.approve_instructions(&shown)
                         {
                             ws.notify(NoticeLevel::Error, e);
                         }

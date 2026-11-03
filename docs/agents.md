@@ -26,8 +26,13 @@ claude mcp add quire -- quire-cli mcp ~/Notes --allow-write --client claude-code
 
 * Without `--allow-write` the server is read-only and offers no write tools.
 * `--client KEY` names the app; Quire's agent policy can give that key its
-  own rules (and in-app approval, below). Without it, the app is known by
-  the name it reports, marked unverified, and gets only the vault default.
+  own rules (and in-app approval, below). `claude-code` acts as
+  `mcp:claude-code`; a key with Quire's `acp:` prefix is kept as it is
+  (Quire starts an external agent's server with `--client acp:<name>`).
+  Without `--client`, the app is known by the name it reports in its first
+  request (it can't change it later), marked unverified: its id ends in `?`
+  (`mcp:claude-code?`), so it is never confused with a client you named, and
+  its `[clients]` entry can narrow what it may do but never widen it.
 * Settings → Connections in the app shows these snippets with the right
   paths filled in.
 
@@ -44,7 +49,12 @@ server listens on `127.0.0.1:7311` and every request needs a token:
 * **OAuth (apps that support MCP sign-in).** The app discovers Quire's
   authorization server, identifies itself with a Client ID Metadata
   Document, and the person approves it in Quire (or with
-  `quire-cli mcp approve <id>`). Scopes: `notes:read`; `notes:propose`
+  `quire-cli mcp approve <id>`). Quire shows the app's host (with its port
+  when not the default; international names must be in punycode) and a
+  verification code that the browser's waiting page shows too: approve only
+  when they match. Only the browser that started the sign-in (it holds a
+  one-time secret in an `HttpOnly` cookie) gets the authorization code, one
+  code per approval. Scopes: `notes:read`; `notes:propose`
   (suggestions, even in agent zones); `notes:write` (direct writes in agent
   zones); `notes:ask` (`ask` in model mode spends the person's AI provider).
 * **Personal tokens.** `quire-cli mcp token create --name N --scope
@@ -102,7 +112,17 @@ the client; reads link the note as a `resource_link`.
   `invalid_request_state`, `nothing_to_revert`.
 * **Untrusted text** (captured pages, imports, `raw/`) comes inside
   `<untrusted-source path="…" origin="…">…</untrusted-source>` with
-  `trust: "untrusted"`. Treat it as data.
+  `trust: "untrusted"`. Treat it as data. Tags inside the text that would
+  open or close the block (in any letter case) have their `<` written as
+  `&lt;`. Which zones are `raw` comes from every policy that limits agents
+  and from the defaults, so a policy change nobody approved can't make
+  sources trusted.
+* **Paths.** Every path (tool arguments, `quire://` URIs, subscriptions, ACP
+  file requests, captured images) is checked the same way: NFC, relative,
+  no `..`, no hidden folders (`.trash/`, `.obsidian/`, `.git/`…), and the
+  file it reaches through links must be inside the vault, outside hidden
+  folders, and allowed by the policy both where it is named and where it
+  really is. Anything else doesn't exist for agents.
 
 ### Search hits in PDFs
 
@@ -130,7 +150,10 @@ reviews card by card in the canvas.
 * `subscriptions/listen` (2026-07-28) or `resources/subscribe` (older):
   `notifications/resources/updated` when a watched note changes (at most
   every 300 ms), `…/resources/list_changed`, `…/tools/list_changed` when the
-  agent policy changes.
+  agent policy changes. URIs the client may not read are refused
+  (`resources/subscribe`) or left out of the acknowledgement
+  (`subscriptions/listen`), and `list_changed` is sent only for notes it
+  may read.
 
 ## Approving changes in the agent's app
 
@@ -160,6 +183,21 @@ with its images in `attachments/` (up to 20, 5 MB each). The note's front
 matter records `source`, `captured`, `site`, `author`, `published` and
 `trust: untrusted`.
 
+Images are kept only when they are PNG, JPEG, GIF or WebP and decode; SVG
+and anything else stays a link. They are written under the same policy as
+notes, but never as suggestions: only where the caller may create files
+directly (by default an agent may not, since `attachments/` is the
+person's), each one a write against `writes_per_minute`, within
+`max_write_bytes` and `max_files_per_change`, always leaving room for the
+note. Images that can't be saved stay links, with a warning.
+
+A proxy set in the environment (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`,
+with `NO_PROXY`) is used, also when it runs on this computer. Quire still
+refuses names that resolve to private addresses before asking the proxy,
+but the proxy resolves the name again itself: through a proxy, a DNS
+answer that changes in between (DNS rebinding) can reach whatever the
+proxy can reach. The same applies to OAuth client metadata documents.
+
 ## Quire's own agent
 
 The app has an agent panel (Ctrl+Shift+J) that uses the same tools in
@@ -168,7 +206,11 @@ to people's notes are suggestions, its runs appear in Agent activity, and
 "Revert run" undoes one. It runs on the provider set up in Settings → AI or
 on a model on the computer; small on-device models only chat about the
 open note. An external ACP agent (Claude Code, Codex…) can be connected to
-the panel instead; its writes through Quire follow the policy too.
+the panel instead; its writes through Quire follow the policy too. It gets
+Quire's MCP tools (`quire-cli mcp <vault> --allow-write --client
+acp:<name>`), recorded as the same actor as its file requests, and its
+`fs/read_text_file` answers put untrusted notes in the same
+`<untrusted-source>` block as MCP.
 
 "Ingest into wiki" (also `quire-cli ingest <vault> <note or URL>` and the
 `quire_ingest` prompt) turns a source into `wiki/sources/` and

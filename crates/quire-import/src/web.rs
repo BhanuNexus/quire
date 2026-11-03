@@ -8,13 +8,20 @@
 //!    [`FetchOptions::allow_private`] is set, at every redirect and when
 //!    connecting (so a name can't switch to a private address in between).
 //!    MCP clients can trigger captures, so this is SSRF defence.
+//!    A proxy from the environment (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`,
+//!    honouring `NO_PROXY`) is used for public addresses; the proxy itself
+//!    may be on loopback. Through a proxy, Quire still refuses names that
+//!    resolve to private addresses here, but the proxy looks the name up
+//!    again itself, so a name whose DNS answer changes in between (DNS
+//!    rebinding) could reach what the proxy can reach.
 //! 2. The charset comes from `Content-Type`, a byte-order mark or `<meta>`.
 //! 3. A Readability port (`dom_smoothie`) keeps the article (title, byline,
 //!    published time, content), falling back to `<body>`.
 //! 4. `htmd` converts it to Markdown; links and images are made absolute.
 //! 5. Up to 20 images of at most 5 MB each are downloaded (or decoded from
-//!    `data:` URIs) and deduplicated by SHA-256. SVG is kept as a file and
-//!    never inlined.
+//!    `data:` URIs) and deduplicated by SHA-256. Only PNG, JPEG, GIF and
+//!    WebP are kept, and only when they decode; SVG (which can carry
+//!    scripts) and anything else stays a link.
 //!
 //! This module has no vault: the caller writes the note and images (the MCP
 //! tool and the CLI go through the agent store as `import:url`).
@@ -37,6 +44,8 @@ pub struct FetchOptions {
     pub max_redirects: u32,
     /// For the page and for each image.
     pub timeout: Duration,
+    /// The proxy to use (`http://host:port`); `None`: from the environment.
+    pub proxy: Option<String>,
 }
 
 impl Default for FetchOptions {
@@ -48,6 +57,7 @@ impl Default for FetchOptions {
             max_images: 20,
             max_redirects: 5,
             timeout: Duration::from_secs(20),
+            proxy: None,
         }
     }
 }
@@ -288,10 +298,17 @@ fn check_host(host: &str, port: u16, allow_private: bool) -> Result<Vec<SocketAd
 }
 
 /// A resolver that refuses forbidden addresses when connecting, so DNS
-/// can't hand out a private address after the check.
+/// can't hand out a private address after the check. The configured proxy
+/// (often on loopback) is the one address it lets through.
 #[derive(Debug)]
 struct GuardResolver {
     allow_private: bool,
+    /// The proxy's host (lowercase, no brackets) and port.
+    proxy: Option<(String, u16)>,
+}
+
+fn bare_host(h: &str) -> String {
+    h.trim_start_matches('[').trim_end_matches(']').to_lowercase()
 }
 
 impl ureq::unversioned::resolver::Resolver for GuardResolver {
@@ -302,7 +319,10 @@ impl ureq::unversioned::resolver::Resolver for GuardResolver {
         timeout: ureq::unversioned::transport::NextTimeout,
     ) -> Result<ureq::unversioned::resolver::ResolvedSocketAddrs, ureq::Error> {
         let addrs = ureq::unversioned::resolver::DefaultResolver::default().resolve(uri, config, timeout)?;
-        if !self.allow_private && addrs.iter().any(|a| is_forbidden(a.ip())) {
+        let default_port = if uri.scheme_str() == Some("https") { 443 } else { 80 };
+        let port = uri.port_u16().unwrap_or(default_port);
+        let is_proxy = self.proxy.as_ref().is_some_and(|(h, p)| uri.host().is_some_and(|u| bare_host(u) == *h) && port == *p);
+        if !self.allow_private && !is_proxy && addrs.iter().any(|a| is_forbidden(a.ip())) {
             return Err(ureq::Error::Io(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "blocked private address")));
         }
         Ok(addrs)
@@ -323,20 +343,23 @@ pub struct Fetched {
 }
 
 fn agent(opts: &FetchOptions, direct: bool, timeout: Duration) -> ureq::Agent {
+    // A proxy connects for us, past the connect-time check (see the module
+    // docs); the pre-check in `fetch` still applies, and local addresses
+    // (allowed with `allow_private`) never use one.
+    let proxy = if direct { None } else { opts.proxy.as_deref().map_or_else(ureq::Proxy::try_from_env, |p| ureq::Proxy::new(p).ok()) };
+    let exempt = proxy.as_ref().map(|p| (bare_host(p.host()), p.port()));
     let config = ureq::Agent::config_builder()
         .timeout_global(Some(timeout))
         .http_status_as_error(false)
         .max_redirects(0)
         .user_agent(format!("Quire/{} (+capture)", env!("CARGO_PKG_VERSION")))
-        // A proxy would connect for us, past the connect-time check; the
-        // pre-check below still applies, and local addresses never use one.
-        .proxy(if direct { None } else { ureq::Proxy::try_from_env() })
+        .proxy(proxy)
         .tls_config(ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build())
         .build();
     ureq::Agent::with_parts(
         config,
         ureq::unversioned::transport::DefaultConnector::default(),
-        GuardResolver { allow_private: opts.allow_private },
+        GuardResolver { allow_private: opts.allow_private, proxy: exempt },
     )
 }
 
@@ -580,7 +603,7 @@ pub struct Image {
     /// As written in the Markdown (absolute URL or `data:` URI).
     pub src: String,
     pub bytes: Vec<u8>,
-    /// `png`, `jpg`, `gif`, `webp`, `svg`, `avif`, `bmp`, `ico`.
+    /// `png`, `jpg`, `gif` or `webp`.
     pub ext: &'static str,
     /// Hex SHA-256 of the bytes.
     pub sha256: String,
@@ -588,27 +611,34 @@ pub struct Image {
     pub name: String,
 }
 
-/// The image type of `bytes` by their magic number (SVG by its text).
+/// The type of an image Quire keeps: PNG, JPEG, GIF or WebP by its magic
+/// number, and only if it decodes (within 16384 px a side and 128 MB). Any
+/// other file, SVG included, is `None`.
 pub fn image_ext(bytes: &[u8]) -> Option<&'static str> {
     let starts = |m: &[u8]| bytes.starts_with(m);
-    if starts(b"\x89PNG\r\n\x1a\n") {
-        Some("png")
+    let (ext, format) = if starts(b"\x89PNG\r\n\x1a\n") {
+        ("png", image::ImageFormat::Png)
     } else if starts(b"\xff\xd8\xff") {
-        Some("jpg")
+        ("jpg", image::ImageFormat::Jpeg)
     } else if starts(b"GIF87a") || starts(b"GIF89a") {
-        Some("gif")
+        ("gif", image::ImageFormat::Gif)
     } else if bytes.len() > 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
-        Some("webp")
-    } else if bytes.len() > 12 && &bytes[4..8] == b"ftyp" && (&bytes[8..12] == b"avif" || &bytes[8..12] == b"avis") {
-        Some("avif")
-    } else if starts(b"BM") {
-        Some("bmp")
-    } else if starts(b"\0\0\x01\0") {
-        Some("ico")
+        ("webp", image::ImageFormat::WebP)
     } else {
-        let head = String::from_utf8_lossy(&bytes[..bytes.len().min(1024)]).to_lowercase();
-        head.contains("<svg").then_some("svg")
-    }
+        return None;
+    };
+    let mut reader = image::ImageReader::with_format(std::io::Cursor::new(bytes), format);
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(16_384);
+    limits.max_image_height = Some(16_384);
+    limits.max_alloc = Some(128 * 1024 * 1024);
+    reader.limits(limits);
+    reader.decode().is_ok().then_some(ext)
+}
+
+/// Whether `bytes` look like an SVG document (kept as a link, never a file).
+fn looks_like_svg(bytes: &[u8]) -> bool {
+    String::from_utf8_lossy(&bytes[..bytes.len().min(1024)]).to_lowercase().contains("<svg")
 }
 
 /// Decode a base64 `data:` image URI.
@@ -716,7 +746,12 @@ pub fn capture(url: &str, opts: &FetchOptions) -> Result<Captured, WebError> {
             }
         };
         let Some(ext) = image_ext(&bytes) else {
-            warnings.push(format!("{} isn't an image.", if src.starts_with("data:") { "An embedded file" } else { src.as_str() }));
+            let what = if src.starts_with("data:") { "An embedded file" } else { src.as_str() };
+            warnings.push(if looks_like_svg(&bytes) {
+                format!("{what} is an SVG image, left as a link (SVG can contain scripts).")
+            } else {
+                format!("{what} isn't a PNG, JPEG, GIF or WebP image Quire can read, so it was left as a link.")
+            });
             continue;
         };
         let sha256: String = Sha256::digest(&bytes).iter().fold(String::new(), |mut s, b| {
@@ -827,8 +862,14 @@ mod tests {
 
     #[test]
     fn images_are_recognised_and_embedded() {
-        assert_eq!(image_ext(b"\x89PNG\r\n\x1a\n...."), Some("png"));
-        assert_eq!(image_ext(b"<?xml version='1.0'?><svg xmlns='x'/>"), Some("svg"));
+        assert_eq!(image_ext(b"\x89PNG\r\n\x1a\n...."), None, "the magic number alone isn't enough");
+        let mut png = Vec::new();
+        image::RgbImage::new(2, 2).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        assert_eq!(image_ext(&png), Some("png"));
+        assert_eq!(image_ext(b"<?xml version='1.0'?><svg xmlns='x'/>"), None, "SVG is never kept");
+        assert!(looks_like_svg(b"<?xml version='1.0'?><svg xmlns='x'/>"));
+        assert_eq!(image_ext(b"BM#!/bin/sh\necho arbitrary payload"), None, "not a BMP, and BMP isn't kept");
+        assert_eq!(image_ext(b"GIF89a<script>alert(1)</script>"), None);
         assert_eq!(image_ext(b"<html>"), None);
         assert_eq!(decode_data_uri("data:image/png;base64,iVBORw0KGgo=", 100).unwrap()[..4], *b"\x89PNG");
         assert_eq!(decode_data_uri("data:text/html;base64,PGI+", 100), None);

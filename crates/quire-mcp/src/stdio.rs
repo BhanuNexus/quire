@@ -108,11 +108,11 @@ pub fn serve(server: &Server, input: impl BufRead, output: impl Write + Send) ->
                         conn.client_caps = caps;
                         let _ = out_tx.send(response);
                     }
-                    Reply::Listen { id, filter } => {
-                        server.listen(conn_id, id, &filter, Arc::clone(&sink));
+                    Reply::Listen { id, filter, sees } => {
+                        server.listen(conn_id, id, &filter, Arc::clone(&sink), sees);
                     }
-                    Reply::Subscribe { response, uri, subscribe } => {
-                        server.subscribe_legacy(conn_id, &uri, subscribe, Arc::clone(&sink));
+                    Reply::Subscribe { response, uri, subscribe, sees } => {
+                        server.subscribe_legacy(conn_id, &uri, subscribe, Arc::clone(&sink), sees);
                         let _ = out_tx.send(response);
                     }
                     Reply::Response(v) => {

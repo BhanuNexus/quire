@@ -122,6 +122,21 @@ impl Actor {
     pub fn is_human(&self) -> bool {
         self.kind == ActorKind::Human
     }
+
+    /// An agent that only named itself (no Quire-assigned key), e.g. an MCP
+    /// stdio client without `--client`. Its id ends in `?`, so it can never
+    /// be the id of a client Quire verified (design §A.2).
+    pub fn unverified_agent(id: &str, label: impl Into<String>, via: Via, device: &str) -> Self {
+        let mut a = Self::new(ActorKind::Agent, format!("{}?", id.trim_end_matches('?')), label, via, device);
+        a.unverified = true;
+        a
+    }
+
+    /// The key its `[clients]` policy entry is looked up by: the id, without
+    /// the `?` of an unverified client.
+    pub fn policy_key(&self) -> &str {
+        if self.unverified { self.id.strip_suffix('?').unwrap_or(&self.id) } else { &self.id }
+    }
 }
 
 /// This device, as stored in `<config>/device.toml`.

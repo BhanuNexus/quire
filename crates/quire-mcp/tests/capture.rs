@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use quire_agent::{Actor, AgentStore, DeviceInfo, FixedClock, SubmitOutcome};
 use quire_app::vault::{NotePath, Vault};
@@ -90,7 +90,8 @@ fn a_fixture_page_becomes_an_untrusted_note_with_its_images() {
     let done = capture::capture(&v, &st, &actor, &url, &Options { allow_private: true, ..Options::default() }).unwrap();
     assert!(matches!(done.outcome, SubmitOutcome::Applied { .. }), "raw/ takes new files");
     assert_eq!(done.path, NotePath::new("raw/127.0.0.1 - Ropes for text editors.md"));
-    assert_eq!(done.images, 3, "rope.png and its copy are one file; the SVG and the data: dot are files too");
+    assert_eq!(done.images, 2, "rope.png and its copy are one file; the data: dot is a file too; the SVG stays a link");
+    assert!(done.warnings.iter().any(|w| w.contains("diagram.svg") && w.contains("SVG")), "{:?}", done.warnings);
     let text = v.read(&done.path).unwrap();
     // Front matter (the capture time varies).
     let (fm, body) = text.split_once("\n---\n\n").unwrap();
@@ -119,14 +120,17 @@ fn a_fixture_page_becomes_an_untrusted_note_with_its_images() {
     assert!(body.contains("```\nfn split(node, at) {"), "code blocks stay code");
     assert!(body.contains("| Operation | Rope") && body.contains("| Insert    | O(log n) | O(n)  |"), "tables stay tables");
     assert!(body.contains("![[rope.png|A rope tree]]") && body.contains("![[rope.png|Copy]]"), "deduplicated images are embedded");
-    assert!(body.contains("![[diagram.svg|Diagram]]") && !body.contains("<svg"), "SVG is a file, never inlined");
+    assert!(
+        body.contains("![Diagram](") && body.contains("/blog/diagram.svg)") && !body.contains("<svg"),
+        "SVG stays a link, never inlined"
+    );
     assert!(!body.contains("data:image"), "data: images become files");
     assert!(
         !body.contains("Popular") && !body.contains("Privacy") && !body.contains("Ignore all previous"),
         "navigation, footers and scripts are dropped"
     );
     assert_eq!(v.storage().read_bytes(&NotePath::new("attachments/rope.png")).unwrap(), fixture("rope.png"));
-    assert!(v.storage().read_bytes(&NotePath::new("attachments/diagram.svg")).unwrap().starts_with(b"<svg"));
+    assert!(!v.exists(&NotePath::new("attachments/diagram.svg")), "SVG is never saved");
     // The same page again: the images are reused, the note gets a new name.
     let again = capture::capture(&v, &st, &actor, &url, &Options { allow_private: true, ..Options::default() }).unwrap();
     assert_eq!(again.path, NotePath::new("raw/127.0.0.1 - Ropes for text editors 1.md"));
@@ -154,7 +158,8 @@ fn the_mcp_tool_captures_and_labels_the_note_untrusted() {
     let r = call(1, "capture_url", json!({"url": format!("{base}/blog/post")}));
     let s = &r["result"]["structuredContent"];
     assert_eq!(s["outcome"], "applied", "{r}");
-    assert_eq!(s["images"], 3);
+    assert_eq!(s["images"], 0, "attachments/ is the person's (suggestions only): images stay links");
+    assert!(v.storage().list().unwrap().iter().all(|p| !p.as_str().starts_with("attachments/")));
     let path = s["path"].as_str().unwrap().to_string();
     let r = call(2, "view", json!({"path": path}));
     assert_eq!(r["result"]["structuredContent"]["trust"], "untrusted");
@@ -221,4 +226,160 @@ fn fetching_is_limited() {
     let c = web::capture(&format!("{site}/blog/post"), &small).unwrap();
     assert_eq!(c.images.len(), 0);
     assert!(c.warnings.iter().any(|w| w.contains("rope.png")), "{:?}", c.warnings);
+}
+
+/// A server whose agent policy (approved on this device) is `policy`.
+fn server_with_policy(v: &Vault, policy: &str, state: &std::path::Path) -> Server {
+    v.storage().write_atomic(&NotePath::new(".quire/shared/agent-policy.toml"), policy).unwrap();
+    let st = store(v);
+    st.set_state_dir(Some(state.to_path_buf()));
+    st.approve_policy(st.policy_state().file_hash().as_ref()).unwrap();
+    let cfg = ServerConfig {
+        allow_write: true,
+        allow_private_urls: true,
+        device: Some(DeviceInfo { id: "d_cap".into(), name: "t".into() }),
+        state_dir: Some(state.to_path_buf()),
+        ..ServerConfig::default()
+    };
+    Server::with_config(v.clone(), None, cfg)
+}
+
+fn tool(srv: &Server, name: &str, args: &Value) -> Value {
+    let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": args,
+        "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientInfo": {"name": "agent", "version": "1"}}}});
+    let mut out = Vec::new();
+    srv.serve(std::io::Cursor::new(msg.to_string()), &mut out).unwrap();
+    serde_json::from_slice::<Value>(&out).unwrap()
+}
+
+#[test]
+fn capture_images_ignore_policy() {
+    let page = b"<html><head><title>Payload</title></head><body><article><p>A long enough paragraph for the extractor to keep it as the article of this page.</p><p><img src=\"/a.bmp\" alt=\"a\"><img src=\"/b.png\" alt=\"b\"><img src=\"/c.svg\" alt=\"c\"></p></article></body></html>".to_vec();
+    let png = fixture("rope.png");
+    let base = serve(HashMap::from([
+        ("/page", html(page)),
+        ("/a.bmp", (200, vec![("Content-Type", "image/bmp".into())], b"BM#!/bin/sh\necho arbitrary payload\n".to_vec())),
+        ("/b.png", (200, vec![("Content-Type", "image/png".into())], png.clone())),
+        (
+            "/c.svg",
+            (
+                200,
+                vec![("Content-Type", "image/svg+xml".into())],
+                b"<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>".to_vec(),
+            ),
+        ),
+    ]));
+    let url = format!("{base}/page");
+    // Reads everywhere, new files only in raw/: images can't be written.
+    let dir = tempfile::tempdir().unwrap();
+    let v = Vault::in_memory(&[("A.md", "a")]);
+    let srv = server_with_policy(
+        &v,
+        "format = 1\ndefault = \"read\"\n[[zone]]\npath = \"raw/\"\nrole = \"raw\"\nmode = \"create-only\"\n",
+        dir.path(),
+    );
+    let r = tool(&srv, "capture_url", &json!({"url": url}));
+    let s = &r["result"]["structuredContent"];
+    assert!(s["message"].as_str().unwrap_or_default().contains("Applied") || s["outcome"] == "applied", "{r}");
+    assert_eq!(s["images"], 0, "{r}");
+    let files: Vec<String> = v.storage().list().unwrap().into_iter().map(|p| p.to_string()).collect();
+    assert!(files.iter().all(|f| !f.starts_with("attachments/")), "{files:?}");
+    // Where the agent may add files, only real images are kept.
+    let dir = tempfile::tempdir().unwrap();
+    let v = Vault::in_memory(&[("A.md", "a")]);
+    let srv = server_with_policy(
+        &v,
+        "format = 1\ndefault = \"read\"\n[[zone]]\npath = \"raw/\"\nrole = \"raw\"\nmode = \"create-only\"\n[[zone]]\npath = \"attachments/\"\nrole = \"agent\"\nmode = \"direct\"\n",
+        dir.path(),
+    );
+    let r = tool(&srv, "capture_url", &json!({"url": url}));
+    assert_eq!(r["result"]["structuredContent"]["images"], 1, "{r}");
+    let files: Vec<String> = v.storage().list().unwrap().into_iter().map(|p| p.to_string()).collect();
+    assert_eq!(files.iter().filter(|f| f.starts_with("attachments/")).collect::<Vec<_>>(), ["attachments/b.png"]);
+    assert_eq!(v.storage().read_bytes(&NotePath::new("attachments/b.png")).unwrap(), png);
+    // Each image is a write: a limit of 2 writes a minute leaves room for the note only after one image.
+    let dir = tempfile::tempdir().unwrap();
+    let v = Vault::in_memory(&[("A.md", "a")]);
+    let many = b"<html><body><article><p>A long enough paragraph for the extractor to keep it as the article of this page.</p><p><img src=\"/1.png\"><img src=\"/2.png\"><img src=\"/3.png\"></p></article></body></html>".to_vec();
+    let mut png2 = png.clone();
+    png2.extend_from_slice(b"trailing bytes make another file");
+    let mut png3 = png.clone();
+    png3.extend_from_slice(b"and a third");
+    let base = serve(HashMap::from([
+        ("/many", html(many)),
+        ("/1.png", (200, vec![], png)),
+        ("/2.png", (200, vec![], png2)),
+        ("/3.png", (200, vec![], png3)),
+    ]));
+    let srv = server_with_policy(
+        &v,
+        "format = 1\n[[zone]]\npath = \"raw/\"\nrole = \"raw\"\nmode = \"create-only\"\n[[zone]]\npath = \"attachments/\"\nrole = \"agent\"\nmode = \"direct\"\n[limits]\nwrites_per_minute = 2\n",
+        dir.path(),
+    );
+    let r = tool(&srv, "capture_url", &json!({"url": format!("{base}/many")}));
+    let s = &r["result"]["structuredContent"];
+    assert_eq!((s["outcome"].clone(), s["images"].clone()), (json!("applied"), json!(1)), "{r}");
+}
+
+/// A proxy on loopback that tunnels with CONNECT and serves one page itself;
+/// returns its URL and the CONNECT lines it saw.
+fn connect_proxy() -> (String, Arc<Mutex<Vec<String>>>) {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&seen);
+    std::thread::spawn(move || {
+        for s in l.incoming().flatten() {
+            let log = Arc::clone(&log);
+            std::thread::spawn(move || {
+                let mut r = BufReader::new(s.try_clone().unwrap());
+                let mut line = String::new();
+                if r.read_line(&mut line).is_err() {
+                    return;
+                }
+                log.lock().unwrap().push(line.trim().to_string());
+                loop {
+                    let mut h = String::new();
+                    if r.read_line(&mut h).is_err() || h.trim().is_empty() {
+                        break;
+                    }
+                }
+                let mut s = s;
+                let _ = s.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n");
+                // The tunnelled request.
+                let mut get = String::new();
+                if r.read_line(&mut get).is_err() {
+                    return;
+                }
+                loop {
+                    let mut h = String::new();
+                    if r.read_line(&mut h).is_err() || h.trim().is_empty() {
+                        break;
+                    }
+                }
+                let body = b"<html><head><title>Through the proxy</title></head><body><p>hello</p></body></html>";
+                let head =
+                    format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                let _ = s.write_all(head.as_bytes());
+                let _ = s.write_all(body);
+            });
+        }
+    });
+    (url, seen)
+}
+
+#[test]
+fn capture_through_local_proxy() {
+    let (proxy, seen) = connect_proxy();
+    let opts = FetchOptions { proxy: Some(proxy), ..FetchOptions::default() };
+    // A public address through a proxy on loopback works.
+    let got = web::fetch("http://93.184.215.14/", &opts, 1 << 20).unwrap();
+    assert!(String::from_utf8_lossy(&got.bytes).contains("Through the proxy"));
+    assert_eq!(seen.lock().unwrap().first().map(String::as_str), Some("CONNECT 93.184.215.14:80 HTTP/1.1"));
+    // Private addresses are still refused, before the proxy is asked.
+    let before = seen.lock().unwrap().len();
+    for private in ["http://10.0.0.1/", "http://169.254.169.254/latest/meta-data/", "http://[::1]:8080/"] {
+        assert!(matches!(web::fetch(private, &opts, 1 << 20), Err(WebError::Blocked(_))), "{private}");
+    }
+    assert_eq!(seen.lock().unwrap().len(), before, "the proxy never saw them");
 }

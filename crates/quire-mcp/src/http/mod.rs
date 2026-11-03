@@ -423,12 +423,12 @@ async fn mcp(State(st): State<Arc<HttpState>>, headers: HeaderMap, body: Bytes) 
             (status, [(header::CONTENT_TYPE, "application/json")], v.to_string()).into_response()
         }
         Reply::None => StatusCode::ACCEPTED.into_response(),
-        Reply::Listen { id, filter } => {
+        Reply::Listen { id, filter, sees } => {
             let (tx, rx) = mpsc::unbounded_channel::<Value>();
             let sink: crate::subs::Sink = Arc::new(move |v| {
                 let _ = tx.send(v);
             });
-            let handle = st.server.listen(conn_id, id, &filter, sink);
+            let handle = st.server.listen(conn_id, id, &filter, sink, sees);
             let events = Events { rx, server: st.server.clone(), handle };
             let mut r = Sse::new(events).keep_alive(KeepAlive::new().interval(KEEP_ALIVE).text("")).into_response();
             r.headers_mut().insert("x-accel-buffering", HeaderValue::from_static("no"));

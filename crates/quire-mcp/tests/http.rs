@@ -316,6 +316,13 @@ fn form(url: &str, fields: &[(&str, &str)]) -> Resp {
     post(url, &[("Content-Type", "application/x-www-form-urlencoded")], &body)
 }
 
+/// The `name=value` of the browser cookie an authorize page sets (`HttpOnly`).
+fn browser_cookie(r: &Resp) -> String {
+    let set = r.header("set-cookie").unwrap_or_else(|| panic!("no cookie: {:?}", r.headers));
+    assert!(set.contains("HttpOnly") && set.contains("SameSite=Lax") && set.contains("Path=/oauth/authorize"), "{set}");
+    set.split(';').next().unwrap().to_string()
+}
+
 #[test]
 fn oauth_with_a_client_metadata_document_then_search() {
     let env = start("");
@@ -375,12 +382,24 @@ fn oauth_with_a_client_metadata_document_then_search() {
     let pending = env.consent.pending(quire_app::history_ops::now_ms());
     assert_eq!(pending.len(), 1);
     let req = &pending[0];
-    assert_eq!((req.client_name.as_str(), req.client_host.as_str()), ("Test Agent", "127.0.0.1"));
+    let port = doc_base.rsplit(':').next().unwrap();
+    assert_eq!((req.client_name.as_str(), req.client_host.as_str()), ("Test Agent", format!("127.0.0.1:{port}").as_str()), "host and port");
+    assert!(r.body.contains(req.verify_code()) && !req.verify_code().is_empty(), "the page shows the code Quire shows");
+    // The browser that started the request holds its secret in an HttpOnly cookie.
+    let cookie = browser_cookie(&r);
+    let browser = [("Cookie", cookie.as_str())];
     let wait_url = format!("{}/oauth/authorize/wait?request={}", env.base, req.id);
-    assert_eq!(get(&wait_url, &[]).status, 200, "still waiting");
+    assert_eq!(get(&wait_url, &browser).status, 200, "still waiting");
     // 3. The person approves (Quire's dialog or `quire-cli mcp approve`).
     env.consent.decide(&req.id, true, quire_app::history_ops::now_ms()).unwrap();
-    let r = get(&wait_url, &[]);
+    // Someone who knows only the request id gets nothing.
+    for stolen in [vec![], vec![("Cookie", format!("{}=forged", cookie.split('=').next().unwrap()))]] {
+        let h: Vec<(&str, &str)> = stolen.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let r = get(&wait_url, &h);
+        assert_eq!(r.status, 403, "{}", r.body);
+        assert!(r.header("location").is_none() && !r.body.contains("code="));
+    }
+    let r = get(&wait_url, &browser);
     assert_eq!(r.status, 303);
     let loc = r.header("location").unwrap().to_string();
     assert!(loc.starts_with(redirect));
@@ -390,7 +409,7 @@ fn oauth_with_a_client_metadata_document_then_search() {
     assert_eq!(param("iss"), env.base);
     let code = param("code");
     assert!(!code.is_empty());
-    assert_ne!(get(&wait_url, &[]).status, 303, "one code per approval");
+    assert_ne!(get(&wait_url, &browser).status, 303, "one code per approval");
     // 4. Exchange the code: wrong verifier fails and burns it; a fresh code works.
     let token_url = format!("{}/oauth/token", env.base);
     let bad = form(
@@ -417,10 +436,13 @@ fn oauth_with_a_client_metadata_document_then_search() {
         ],
     );
     assert_eq!(again.json()["error"], "invalid_grant", "codes work once");
-    let _ = authorize(&[]);
+    let cookie = browser_cookie(&authorize(&[]));
     let req = env.consent.pending(quire_app::history_ops::now_ms()).remove(0);
     env.consent.decide(&req.id, true, quire_app::history_ops::now_ms()).unwrap();
-    let loc = get(&format!("{}/oauth/authorize/wait?request={}", env.base, req.id), &[]).header("location").unwrap().to_string();
+    let loc = get(&format!("{}/oauth/authorize/wait?request={}", env.base, req.id), &[("Cookie", &cookie)])
+        .header("location")
+        .unwrap()
+        .to_string();
     let code = query(&loc).into_iter().find(|(k, _)| k == "code").unwrap().1;
     let tok = form(
         &token_url,
@@ -459,10 +481,13 @@ fn oauth_with_a_client_metadata_document_then_search() {
     assert_eq!(form(&token_url, &[("grant_type", "refresh_token"), ("refresh_token", &refresh), ("client_id", &client_id)]).status, 400);
     assert_eq!(mcp(&env, &access2, "tools/list", None, &json!({})).status, 401, "a replayed refresh token revokes the family");
     // A denied request redirects with access_denied.
-    let _ = authorize(&[]);
+    let cookie = browser_cookie(&authorize(&[]));
     let req = env.consent.pending(quire_app::history_ops::now_ms()).remove(0);
     env.consent.decide(&req.id, false, quire_app::history_ops::now_ms()).unwrap();
-    let loc = get(&format!("{}/oauth/authorize/wait?request={}", env.base, req.id), &[]).header("location").unwrap().to_string();
+    let loc = get(&format!("{}/oauth/authorize/wait?request={}", env.base, req.id), &[("Cookie", &cookie)])
+        .header("location")
+        .unwrap()
+        .to_string();
     assert!(loc.contains("error=access_denied") && loc.contains("state=xyz"));
 }
 

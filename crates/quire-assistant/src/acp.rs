@@ -8,10 +8,16 @@
 //! person's permissions. Quire controls only what the agent asks of Quire:
 //!
 //! * `fs/read_text_file` is answered for notes the vault's policy lets
-//!   agents read (deny zones and files outside the vault are refused), with
-//!   the agent's own pending suggestion applied, so it sees what it wrote;
+//!   agents read (the store's path guard: deny zones, hidden folders and
+//!   links out of the vault or into a deny zone are refused), with the
+//!   agent's own pending suggestion applied, so it sees what it wrote.
+//!   Untrusted notes (raw/, imported, `trust: untrusted`) come in an
+//!   `<untrusted-source>` data block, as over MCP; writing such a block back
+//!   unchanged around new text writes the text;
 //! * `fs/write_text_file` becomes `AgentStore::submit` as `acp:<name>`, so in
 //!   the person's notes it is a suggestion for review;
+//! * Quire's MCP server is offered to the agent as `quire-cli mcp <vault>
+//!   --allow-write --client acp:<name>`, so its tool calls are the same actor;
 //! * `session/request_permission` asks the person; `execute`, `fetch` and
 //!   `delete` default to Deny, and "Allow always" is offered only for
 //!   `read`, `search` and `think`;
@@ -25,7 +31,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use quire_agent::{Actor, AgentStore, Change, ChangeSet, ContentHash, Mode, OpKind, SubmitOutcome, Via};
+use quire_agent::{Actor, AgentStore, Change, ChangeSet, ContentHash, OpKind, SubmitOutcome, Trust, Via};
 use quire_app::intel::chat::CancelFlag;
 use quire_app::vault::NotePath;
 use serde_json::{Value, json};
@@ -63,10 +69,16 @@ pub struct AcpAgent {
 }
 
 impl AcpAgent {
-    /// `acp:<name>`: the actor its writes are recorded as.
+    /// `acp:<name>`: the actor its writes are recorded as, and the
+    /// `--client` key of the MCP server Quire offers it (letters, digits,
+    /// `-`, `_` and `.` only).
     pub fn actor_id(&self) -> String {
         let base = Path::new(&self.command).file_stem().map_or_else(|| "agent".into(), |s| s.to_string_lossy().to_lowercase());
-        let base = base.trim_end_matches("-acp").to_string();
+        let base: String = base
+            .trim_end_matches("-acp")
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '-' })
+            .collect();
         format!("acp:{}", if base.is_empty() { "agent" } else { &base })
     }
 
@@ -206,21 +218,34 @@ impl AcpHost for VaultHost<'_> {
                 return Err(why);
             }
         };
-        if self.agent.effective_mode(&self.actor, &np, OpKind::Read) == Mode::Deny {
-            let why = format!("{np} is private: the vault's agent policy hides it");
-            (self.events)(AcpEvent::Refused { path: np.to_string(), why: why.clone() });
-            return Err(why);
-        }
+        let np = match self.agent.guard(&self.actor, &np, OpKind::Read) {
+            Ok(p) => p,
+            Err(e) => {
+                let why = match e {
+                    quire_agent::WriteError::PermissionDenied { .. } => format!("{np} is private: the vault's agent policy hides it"),
+                    other => other.to_string(),
+                };
+                (self.events)(AcpEvent::Refused { path: np.to_string(), why: why.clone() });
+                return Err(why);
+            }
+        };
         let text = match self.agent.pending_text(&self.actor, &np) {
             Some((t, _)) => t,
             None => self.agent.vault().read(&np).map_err(|e| e.to_string())?,
         };
         self.agent.record_read(&self.actor, &np);
         let start = line.map_or(0, |l| l.saturating_sub(1) as usize);
-        Ok(match (line, limit) {
-            (None, None) => text,
+        let part: String = match (line, limit) {
+            (None, None) => text.clone(),
             _ => text.split_inclusive('\n').skip(start).take(limit.map_or(usize::MAX, |l| l as usize)).collect(),
-        })
+        };
+        // Untrusted text reaches the agent as data (P8), as over MCP.
+        if self.agent.trust_of(&np, Some(&text)) == Trust::Untrusted {
+            let origin =
+                quire_app::markdown::frontmatter::parse(&text).and_then(|fm| fm.get("source").and_then(|v| v.as_str().map(str::to_string)));
+            return Ok(quire_agent::fence::fence_untrusted(np.as_str(), origin.as_deref(), &part));
+        }
+        Ok(part)
     }
 
     fn write_text_file(&mut self, path: &str, content: &str) -> Result<(), String> {
@@ -236,6 +261,9 @@ impl AcpHost for VaultHost<'_> {
             (self.events)(AcpEvent::Refused { path: np.to_string(), why: why.clone() });
             return Err(why);
         }
+        // The data block `read_text_file` wrapped it in, written back: the text inside.
+        let unfenced = quire_agent::fence::unfence(np.as_str(), content);
+        let content = unfenced.as_deref().unwrap_or(content);
         let vault = self.agent.vault();
         let (change, expected) = match vault.read(&np) {
             Ok(cur) => (Change::Edit { path: np.clone(), new_text: content.to_string() }, vec![(np.clone(), ContentHash::of(&cur))]),
@@ -514,14 +542,7 @@ impl AcpClient {
         });
         self.agent_info = self.request("initialize", &init, host, &cancel, Some(SETUP_TIMEOUT))?;
         let servers: Vec<Value> = mcp
-            .map(|(cli, key)| {
-                vec![json!({
-                    "name": "quire",
-                    "command": cli.to_string_lossy(),
-                    "args": ["mcp", cwd.to_string_lossy(), "--allow-write", "--client", key],
-                    "env": [],
-                })]
-            })
+            .map(|(cli, key)| vec![json!({ "name": "quire", "command": cli.to_string_lossy(), "args": mcp_args(cwd, key), "env": [] })])
             .unwrap_or_default();
         let r = self.request(
             "session/new",
@@ -546,6 +567,13 @@ impl AcpClient {
         )?;
         Ok(r["stopReason"].as_str().unwrap_or("end_turn").to_string())
     }
+}
+
+/// The arguments of the `quire-cli` MCP server offered to an external agent
+/// in `cwd` (the vault): `key` is its actor id (`acp:<name>`), which
+/// `quire-cli mcp --client` takes as is.
+pub fn mcp_args(cwd: &Path, key: &str) -> Vec<String> {
+    vec!["mcp".into(), cwd.to_string_lossy().into_owned(), "--allow-write".into(), "--client".into(), key.into()]
 }
 
 /// Tool call content (`[{type: "content", content: {type: "text", text}} | {type: "diff", path, newText}]`) as text.

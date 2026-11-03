@@ -182,7 +182,8 @@ fn allow_write_writes_per_policy() {
     assert!(body(&r[5]).contains("wiki/Ropes.md"), "index updated after writes");
     let h = vault.history(&NotePath::new("wiki/Ropes.md"));
     let prov = Provenance::from_json(&vault.read_provenance(&h[0]).unwrap()).unwrap();
-    assert_eq!(prov.actor.id, "mcp:claude-code");
+    assert_eq!(prov.actor.id, "mcp:claude-code?", "self-reported: never a verified client's id");
+    assert!(prov.actor.unverified);
     assert!(prov.actor.client.as_ref().is_some_and(|c| c.self_reported));
     let store = AgentStore::open(&vault, DeviceInfo { id: "d_test".into(), name: "t".into() }, Arc::new(SystemClock));
     // The second write to Ideas amends the first suggestion (design §A.4), keeping both changes.
@@ -709,6 +710,7 @@ fn subscriptions_end_with_a_result_and_notify_on_changes() {
         json!("s"),
         &Filter::from_params(&json!({"notifications": {"resourcesListChanged": true, "resourceSubscriptions": ["quire://note/Ideas.md"]}})),
         sink,
+        Visibility::all(),
     );
     assert_eq!(rx.recv().unwrap()["method"], "notifications/subscriptions/acknowledged");
     std::fs::write(dir.path().join("Ideas.md"), "# Ideas\nchanged\n").unwrap();

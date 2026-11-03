@@ -118,7 +118,7 @@ impl AgentStore {
         let text = starter(&self.policy());
         self.vault().storage().write_atomic(&path, &text).map_err(|e| e.to_string())?;
         let _ = self.vault().snapshot(&path, &text, self.now_ms(), true);
-        self.approve_instructions()?;
+        self.approve_instructions(&ContentHash::of(&text))?;
         Ok(path)
     }
 }
@@ -138,7 +138,11 @@ mod tests {
         let i = store.instructions().unwrap();
         assert!(!i.approved);
         assert_eq!(i.served(), PENDING_MESSAGE);
-        store.approve_instructions().unwrap();
+        let shown = store.instructions().unwrap().hash;
+        v.storage().write_atomic(&NotePath::new("claude.md"), "Changed after it was shown.").unwrap();
+        assert!(store.approve_instructions(&shown).is_err(), "approves only what was shown");
+        v.storage().write_atomic(&NotePath::new("claude.md"), "Be careful.").unwrap();
+        store.approve_instructions(&shown).unwrap();
         let i = store.instructions().unwrap();
         assert!(i.approved);
         assert_eq!(i.served(), "Be careful.");

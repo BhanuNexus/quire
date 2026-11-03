@@ -5738,6 +5738,7 @@ dependencies = [
  "dom_smoothie",
  "encoding_rs 0.8.44",
  "htmd",
+ "image",
  "md5",
  "quire-markdown",
  "quire-vault",

@@ -8,6 +8,11 @@
 //! <id>` / `deny <id>`; the server sees the decision and finishes the
 //! sign-in. Files keep the app and a separate `serve-http` process in step.
 //! Requests expire after 10 minutes.
+//!
+//! Each request is bound to the browser that started it: the server keeps
+//! the hash of a secret only that browser holds (an `HttpOnly` cookie), and
+//! a short verification code that both the browser's page and Quire show,
+//! so the person can check that what they approve is what they started.
 
 use std::path::{Path, PathBuf};
 
@@ -56,6 +61,21 @@ impl Request {
     pub fn scopes(&self) -> crate::tokens::Scopes {
         crate::tokens::Scopes::parse(&self.scopes.join(",")).unwrap_or_default()
     }
+
+    /// The code the browser's waiting page shows ("K7PD-4QXM"), if any.
+    pub fn verify_code(&self) -> &str {
+        self.other.get("verify_code").and_then(serde_json::Value::as_str).unwrap_or_default()
+    }
+}
+
+/// A short code for the person to compare: 8 letters and digits that
+/// can't be confused (no 0/O, 1/I/L), as `XXXX-XXXX`.
+pub fn verify_code() -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+    let mut b = [0u8; 8];
+    let _ = getrandom::fill(&mut b);
+    let c: String = b.iter().map(|x| char::from(ALPHABET[usize::from(*x) % ALPHABET.len()])).collect();
+    format!("{}-{}", &c[..4], &c[4..])
 }
 
 #[derive(Debug, Clone)]
@@ -169,10 +189,16 @@ impl ConsentStore {
         self.save(&r)
     }
 
-    /// Mark an approved request as used (its code was issued). Only once.
+    /// Mark an approved request as used (its code was issued). Only once,
+    /// even when several requests (or processes) race: the first to create
+    /// `<id>.used` wins.
     pub fn mark_used(&self, id: &str) -> bool {
         let Some(mut r) = self.get(id) else { return false };
         if r.state != State::Approved {
+            return false;
+        }
+        let Some(marker) = self.file(id).map(|f| f.with_extension("used")) else { return false };
+        if std::fs::OpenOptions::new().write(true).create_new(true).open(&marker).is_err() {
             return false;
         }
         r.state = State::Used;
@@ -185,7 +211,7 @@ impl ConsentStore {
         for e in dir.flatten() {
             let stale =
                 e.path().file_stem().and_then(|s| s.to_str()).and_then(|id| self.get(id)).is_none_or(|r| r.expires + 86_400_000 < now);
-            if stale && e.path().extension().is_some_and(|x| x == "json") {
+            if stale && e.path().extension().is_some_and(|x| x == "json" || x == "used") {
                 let _ = std::fs::remove_file(e.path());
             }
         }
@@ -217,5 +243,25 @@ mod tests {
             st.create("c", "n", "h", "r", &["notes:read"], "r", 5).unwrap();
         }
         assert!(st.create("c", "n", "h", "r", &["notes:read"], "r", 5).is_err(), "no flood");
+    }
+
+    #[test]
+    #[expect(clippy::needless_collect, reason = "every thread starts before any is joined")]
+    fn one_code_per_approval_under_a_race() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = ConsentStore::in_dir(dir.path());
+        for round in 0..5 {
+            let id = st.create("c", "n", "h", "r", &["notes:read"], "r", 0).unwrap();
+            st.decide(&id, true, 1).unwrap();
+            let wins: usize = std::thread::scope(|s| {
+                let handles: Vec<_> = (0..8).map(|_| s.spawn(|| st.mark_used(&id))).collect();
+                handles.into_iter().map(|h| usize::from(h.join().unwrap())).sum()
+            });
+            assert_eq!(wins, 1, "round {round}");
+            assert_eq!(st.get(&id).unwrap().state, State::Used);
+        }
+        let code = verify_code();
+        assert_eq!(code.len(), 9);
+        assert!(code.chars().all(|c| c == '-' || c.is_ascii_uppercase() || c.is_ascii_digit()));
     }
 }

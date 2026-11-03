@@ -81,9 +81,11 @@ impl McpHost for Host {
             .into_iter()
             .map(|r| ConsentPrompt {
                 wants: r.scopes().describe().iter().map(|s| (*s).to_string()).collect(),
+                verify_code: r.verify_code().to_string(),
                 id: r.id,
                 client_name: r.client_name,
                 client_host: r.client_host,
+                client_id: r.client_id,
             })
             .collect()
     }
@@ -438,6 +440,12 @@ impl OverlayView for ConsentDialog {
             ui.add_space(6.0);
             ui.label(RichText::new(&self.prompt.client_host).size(20.0).strong().color(pal.strong));
             ui.label(RichText::new(format!("calls itself “{}”", self.prompt.client_name)).color(pal.muted));
+            ui.add(egui::Label::new(RichText::new(&self.prompt.client_id).size(11.5).color(pal.muted)).wrap());
+            if !self.prompt.verify_code.is_empty() {
+                ui.add_space(6.0);
+                ui.label("Your browser shows this code. Approve only if it matches:");
+                ui.label(RichText::new(&self.prompt.verify_code).size(20.0).strong().monospace().color(pal.strong));
+            }
             ui.add_space(8.0);
             ui.label("If you approve, it can:");
             for w in &self.prompt.wants {
@@ -582,6 +590,8 @@ pub(crate) fn layout_sample(i: usize) -> crate::overlays::Overlay {
         id: "abc".into(),
         client_name: "A very long client name that someone typed into their metadata document".into(),
         client_host: "very-long-subdomain.example-client-application.com".into(),
+        client_id: "https://very-long-subdomain.example-client-application.com/oauth/a-very-long-path/client-metadata.json".into(),
+        verify_code: "K7PD-4QXM".into(),
         wants: Scopes::parse("notes:propose,notes:ask").unwrap_or_default().describe().iter().map(|s| (*s).to_string()).collect(),
     };
     match i {

@@ -245,6 +245,13 @@ impl Vault {
 
     /// Store bytes as an attachment with a unique, link-safe file name.
     pub fn save_attachment(&self, file_name: &str, bytes: &[u8]) -> Result<NotePath> {
+        let candidate = self.attachment_path(file_name);
+        self.storage.write_bytes_atomic(&candidate, bytes)?;
+        Ok(candidate)
+    }
+
+    /// A free, link-safe path for a new attachment named `file_name`.
+    pub fn attachment_path(&self, file_name: &str) -> NotePath {
         let (stem, ext) = match file_name.rsplit_once('.') {
             Some((s, e)) if !s.is_empty() => (s, format!(".{}", e.to_ascii_lowercase())),
             _ => (file_name, String::new()),
@@ -260,8 +267,7 @@ impl Vault {
             candidate = NotePath::join(&folder, &format!("{base} {n}{ext}"));
             n += 1;
         }
-        self.storage.write_bytes_atomic(&candidate, bytes)?;
-        Ok(candidate)
+        candidate
     }
 
     /// Find a non-note file by name or path (for `![[image.png]]`).
