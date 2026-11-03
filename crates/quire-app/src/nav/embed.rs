@@ -106,6 +106,15 @@ fn save_hidden(ws: &mut Workspace, id: DocId) -> bool {
     }
 }
 
+/// Save every hidden document with unsaved edits (quitting, switching
+/// vaults, "save all").
+pub(super) fn save_all_hidden(ws: &mut Workspace) {
+    let dirty: Vec<DocId> = ws.features.nav.hidden.iter().filter(|d| d.is_dirty() && d.path.is_some()).map(|d| d.id).collect();
+    for id in dirty {
+        save_hidden(ws, id);
+    }
+}
+
 /// Autosave hidden documents, hand them over to tabs, forget idle ones.
 pub(super) fn tick(ws: &mut Workspace, now: Instant) -> bool {
     if ws.features.nav.hidden.is_empty() {
@@ -233,6 +242,20 @@ mod tests {
         // Autosave.
         ws.tick(Instant::now() + Duration::from_secs(5));
         assert_eq!(ws.vault().unwrap().read(&"Target.md".into()).unwrap(), "# T\n\nbody\n");
+    }
+
+    #[test]
+    fn review_embed_edits_survive_shutdown() {
+        let mut ws = ws_with(&[("Host.md", "![[Target]]\n"), ("Target.md", "one\n")]);
+        ws.open_note(&"Host.md".into()).unwrap();
+        let t = embed_doc(&mut ws, &NotePath::new("Target.md")).unwrap();
+        embed_doc_mut(&mut ws, t).unwrap().apply(Transaction::insert(3, " two"), EditKind::Other).unwrap();
+        ws.shutdown();
+        assert_eq!(ws.vault().unwrap().read(&"Target.md".into()).unwrap(), "one two\n");
+        // "Save all" (and so a vault switch, which saves all first) too.
+        embed_doc_mut(&mut ws, t).unwrap().apply(Transaction::insert(7, " three"), EditKind::Other).unwrap();
+        ws.save_all();
+        assert_eq!(ws.vault().unwrap().read(&"Target.md".into()).unwrap(), "one two three\n");
     }
 
     #[test]
