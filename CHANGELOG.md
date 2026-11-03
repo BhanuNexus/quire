@@ -25,7 +25,7 @@ Quire 0.9 lets AI agents work in your vault without taking it over: their change
 - **Review suggestions in the note itself:** the lines an agent would replace are struck through with its version underneath, and Accept, Reject and Edit for each change. A bar above the note says who suggests what and why, with Prev, Next, Accept all, Reject all and Done. Alt+] and Alt+[ move between changes, Ctrl+Alt+Y accepts, Ctrl+Alt+Backspace rejects, Ctrl+Alt+Shift+Y accepts every change in the note. Accepting is one edit you can undo.
 - If you edit a note after an agent read it, its suggestions are adjusted to your version; changes that touch lines you edited are marked "You changed this after the agent read it" and are never applied by Accept all. An agent that keeps working on a note updates its suggestion instead of adding another.
 - **Inbox** (Alt+I): suggestions grouped by agent run, with Review, Accept all and Reject all; new notes, renames and deletions to accept one by one; vault checks, citations that need a look, notes getting stale and contradictions. Filter by kind, agent and folder, snooze for a day or a week. The status bar shows how many items wait.
-- **Agent activity:** what each agent did, run by run, with "Revert run" and "Undo an agent's changes…" (for example everything Claude Code did today). It includes the agent's suggestions you accepted. You see what would change before anything is written; your own later edits are kept, and where they overlap the agent's the undo becomes a suggestion to review.
+- **Agent activity:** what each agent did, run by run, with "Revert run" and "Undo an agent's changes…" (for example everything Claude Code did today). It includes the agent's suggestions you accepted, and new notes you accepted from it. You see what would change before anything is written; your own edits are kept, both later ones and ones made between two of the agent's changes, and where they overlap the agent's the undo becomes a suggestion to review. Your own tag and property renames show there too, with "Undo batch", also after a restart (`quire-cli agent revert <vault> --batch b_…`).
 - **Version history says who made each version** (you, an agent, or you accepting an agent's suggestion) and links to that agent's activity. With a git repository it also has a Git tab with the note's commits.
 - **Settings → Agents:** what agents may do per folder (agent-owned, sources, your notes, private), limits per connected agent, the setup line for Claude Code or Claude Desktop, and an optional log of which notes agents read. Write contracts can require properties and links in agents' notes, and `[limits]` caps writes per minute and waiting suggestions.
 - Agent permissions and `AGENTS.md`/`CLAUDE.md` that change on another device or outside Quire take effect only after you approve them in the Inbox; narrowing what agents may do takes effect at once. "Create agent instructions (AGENTS.md)" writes a starter, which is pinned at the top of the Files tab.
@@ -84,7 +84,7 @@ Quire 0.9 lets AI agents work in your vault without taking it over: their change
 
 #### Editions and sync
 - **Quire Lite:** every release comes in two editions, **Quire** and **Quire Lite**, the same app without drawn math, diagrams, PDF export and the PDF viewer, at about a third of the size. Both read and write the same notes, settings and sync setup, and installing one replaces the other. Settings → About says which edition you run. To build Lite: `cargo build -p quire-desktop --no-default-features`.
-- **Settings → Sync:** "Also sync vault settings and review history". Synced changes show which AI agent made them. Quire Sync Server reports its protocol versions (`GET /v1/info`).
+- **Settings → Sync:** "Also sync vault settings and review history". In a sync folder they travel separately from your notes, so devices still on 0.8 keep syncing notes and never touch them; through a server, every device needs 0.9. Synced changes show which AI agent made them. Quire Sync Server reports its protocol versions (`GET /v1/info`).
 
 ### Changed
 - **`quire-cli mcp --allow-write` now writes according to the vault's agent policy:** directly in agent folders (`wiki/`), new files only in `raw/`, and everywhere else as suggestions you review in Quire's Inbox. In 0.8 it wrote directly to any note. A notice says so when the server starts. MCP edits are recorded in version history with who made them, and can no longer write inside `.quire/`; MCP apps can't see notes in folders the policy marks private.
@@ -104,9 +104,21 @@ Quire 0.9 lets AI agents work in your vault without taking it over: their change
 - Headings, links and quotes use the theme's colours in the classic editor and in embedded notes.
 - A template saved while Quire runs no longer shows up among your notes.
 - A version saved by an AI agent is no longer replaced in history when you save the same note again within two minutes.
-- Settings written by a newer version or the other edition are kept: a setting this version doesn't know about is saved back unchanged.
+- Settings written by a newer version or the other edition are kept: a setting this version doesn't know about is saved back unchanged. Quire 0.8 drops settings it doesn't know when it saves, so Quire 0.9 also keeps its own in `settings.v09.toml` next to `settings.toml` and takes them back after 0.8 saved the file.
 - A settings or stored-secrets file that can't be read is kept as `<name>.unreadable` before Quire starts with defaults, instead of being overwritten.
 - Settings, the session, the sync setup and the stored-secrets file are written to a temporary file and moved into place, so a crash or full disk can't leave a half-written file. The secrets file is readable by you only.
+- A property value with a line break is written on one line with `\n`, so it can no longer end the front matter or add other properties (from the Properties panel, templates or an agent's `set_properties`).
+- Typing in an embedded note and then quitting or switching vaults right away no longer loses the typing.
+- Importing citations no longer rewrites a changed entry from scratch: only the fields that changed are rewritten, so `series`, full dates, `school`, braces and organisation authors stay as written.
+- Version history keeps, for 90 days, the versions needed to undo an agent's change, however many versions were saved since.
+- Undoing an agent's changes rechecks each note when applied, so typing saved while the dry run was on screen is kept.
+- An agent updating its suggestion while you review it no longer brings back changes you rejected.
+- Renaming tags and properties reads notes that aren't open from disk, so a change synced in a moment earlier isn't overwritten.
+- A canvas changed elsewhere in a form Quire can't read is kept as "(changed elsewhere)" before your version is saved.
+- PDF highlights that can't be found after the PDF changed stay listed as detached until they are found again.
+- `wiki/index.md` no longer grows a new list on every update when its text mentions the end marker.
+- A saved answer records the model that wrote it in `answered_by` (or `quire:extractive`), not `human`.
+- The thinking timeline shows each claim once per change, not once per saved version.
 
 ## [0.8.0] - 2026-11-02
 
