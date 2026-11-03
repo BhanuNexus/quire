@@ -382,7 +382,7 @@ fn place(entry: &CatalogEntry, f: &CatalogFile, part: &Path, models: &Path) -> R
         let _ = std::fs::remove_file(part);
     } else {
         // Windows only flushes a handle opened for writing.
-        std::fs::OpenOptions::new().write(true).open(part)?.sync_all()?;
+        OpenOptions::new().write(true).open(part)?.sync_all()?;
         std::fs::rename(part, &dest)?;
     }
     Ok(())
