@@ -451,10 +451,10 @@ fn finding(ui: &mut egui::Ui, ws: &Workspace, s: &StoredItem, pal: &Palette, act
 }
 
 /// A small line diff (old → new), for policy and instructions changes.
-pub(crate) fn diff_view(ui: &mut egui::Ui, old: &str, new: &str, pal: &Palette, salt: &str) {
+pub(crate) fn diff_view(ui: &mut egui::Ui, old: &str, new: &str, pal: &Palette, scroll_id: &str) {
     let lines = diff(old, new, 2);
     egui::Frame::NONE.fill(pal.bg).stroke(Stroke::new(1.0, pal.border)).corner_radius(6.0).inner_margin(6.0).show(ui, |ui| {
-        egui::ScrollArea::vertical().id_salt(("quire-diff", salt)).max_height(200.0).show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt(("quire-diff", scroll_id)).max_height(200.0).show(ui, |ui| {
             ui.set_width(ui.available_width());
             if lines.is_empty() {
                 ui.label(RichText::new("No difference in the text.").size(12.0).color(pal.muted));
