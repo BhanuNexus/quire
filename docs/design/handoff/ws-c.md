@@ -58,6 +58,7 @@ and why, what it needs from others, and the numbers its thresholds rest on.
 | `crates/quire-intel/Cargo.toml`, `src/lib.rs` | `strsim`, `similar` (workspace deps); module lines for `claims`, `cluster`, `contradict`, `json`, `stale`, `timeline` | WS-D also edits these: trivial merge |
 | `crates/quire-index/Cargo.toml` | `unicode-normalization`, `chrono` | folding; `where_` dates |
 | `docs/formats/README.md`, `comments.md` | rows for WS-C's files | format index |
+| `docs/design/0.9.md` (§C.4, §C.5), `docs/design/F0-notes.md` | calibration notes; the `INBOX_KINDS` hook; WS-C's interface notes | the brief asks for the numbers in the design; the hook is documented where the others are |
 
 ## Requests
 
@@ -159,3 +160,12 @@ section_search_speed --nocapture` prints p50/p95 on 2,000 notes.
   ("approximate").
 * Claim extraction blocks the single job thread for one request at a time;
   other jobs wait meanwhile (they're idle-only too).
+* The note under a flagged footnote is an editor decoration; the separate
+  Markdown preview pane (WS-F) shows no marker.
+* The find bar wraps its last button onto a second line at the default
+  width now that it has a fifth toggle (WS-F's bar: a narrower query field
+  would avoid it).
+* Section search in the dev build on 2,000 synthetic notes: keyword parts
+  27 ms, BM25 17 ms, the (pre-existing) semantic scan over 24,000 passages
+  212 ms; the scan's dot product now vectorizes in optimized builds, which
+  the gate doesn't build, so the §9 budget (15 ms, release) is unverified.

@@ -115,7 +115,12 @@ block in a shared table.
 
 * **Owns:** `crates/quire-index/**` except `views.rs` (incl. `attach.rs`, `sections.rs`); `crates/quire-intel/src/{anchor.rs, ask.rs}` and *new* `claims.rs, contradict.rs, stale.rs, timeline.rs, cluster.rs`; `crates/quire-app/src/trust_jobs.rs` (entry module, `TrustState`), `ask_state.rs`; `apps/quire-desktop/src/timeline_ui.rs`, *new* `ask_ui.rs`; the accent toggle in `find.rs`; `settings/trust.rs`, `settings/jobs.rs` (keys only; the runner is F0's).
 * **Blocks:** registry WS-C block (Timeline tab, drift widgets).
-* **Interface notes:** `search_sections` returns note-level hits mapped to the section of the best passage, filtered by folder and tags; `where_`, `modified_*` and attachments are accepted and ignored. `IndexMsg::UpsertAttachment` stores text per path (cleared by `Load`; producers re-send). `anchor::resolve` does exact and moved matches only; `Drifted` is never returned yet. Use `ScriptedChat` in tests and `DailyCap` for `claims_daily_cap`.
+* **Interface notes (after WS-C):** `search_sections` returns note parts
+  with line ranges and applies every filter (`where_`, `modified_*`,
+  attachment pages with `kind`); `anchor::resolve` runs the full ladder
+  (`Drifted` from 0.75); Ask abstains by `ask::should_abstain` (calibrated,
+  design §C.4). What WS-C offers others, its requests and its numbers:
+  `docs/design/handoff/ws-c.md`.
 
 ### WS-D — on-device AI, providers, assistant, onboarding, wiki loop
 

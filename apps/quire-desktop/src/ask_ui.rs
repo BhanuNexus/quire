@@ -26,6 +26,8 @@ pub(crate) struct AskOverlay {
     /// Evidence groups opened up.
     expanded: HashSet<usize>,
     preset: Option<Preset>,
+    /// Where Save as note saves (read once: it looks at the agent policy).
+    folder: &'static str,
 }
 
 impl AskOverlay {
@@ -41,12 +43,13 @@ impl AskOverlay {
             ws.ask.before_tell = before;
         }
         ws.ask.open = true;
-        Box::new(Self { focused: false, expanded: HashSet::new(), preset: None })
+        let folder = ws.answer_folder();
+        Box::new(Self { focused: false, expanded: HashSet::new(), preset: None, folder })
     }
 
     #[cfg(test)]
     pub(crate) fn sample(preset: Preset) -> Self {
-        Self { focused: true, expanded: HashSet::from([0]), preset: Some(preset) }
+        Self { focused: true, expanded: HashSet::from([0]), preset: Some(preset), folder: "Answers" }
     }
 }
 
@@ -249,7 +252,7 @@ impl OverlayView for AskOverlay {
                         }
                         ui.horizontal(|ui| {
                             let can_save = !a.abstained && ws.ask.saved.is_none() && ws.agent_store().is_some();
-                            let folder = ws.answer_folder();
+                            let folder = self.folder;
                             if ui
                                 .add_enabled(can_save, egui::Button::new("Save as note"))
                                 .on_hover_text(format!(
