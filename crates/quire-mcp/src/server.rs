@@ -31,7 +31,7 @@ use crate::mrtr::Sealer;
 use crate::protocol::{self, Era, LEGACY, META_CLIENT_CAPS, META_CLIENT_INFO, MODERN, SUPPORTED, code};
 use crate::resources::{self, PromptDef, ReadCx, ReadError};
 use crate::served::ServedCache;
-use crate::subs::{Filter, Sink, Subscriptions};
+use crate::subs::{Filter, Sink, Subscriptions, Visibility};
 use crate::tokens::TokenGrant;
 use crate::tools::{CallExt, Grant, ToolCx, ToolOutput, ToolRegistry};
 
@@ -133,10 +133,10 @@ pub enum Reply {
     /// `initialize`: the response, and the session it starts (stdio keeps it).
     Initialized { response: Value, version: String, client: Option<ClientInfo>, caps: Value },
     /// `subscriptions/listen`: the transport registers it with a sink and keeps
-    /// the request open.
-    Listen { id: Value, filter: Filter },
+    /// the request open. `sees` is what the subscriber may hear about.
+    Listen { id: Value, filter: Filter, sees: Visibility },
     /// Legacy `resources/subscribe` (`subscribe = true`) or `unsubscribe`.
-    Subscribe { response: Value, uri: String, subscribe: bool },
+    Subscribe { response: Value, uri: String, subscribe: bool, sees: Visibility },
 }
 
 pub(crate) struct Core {
@@ -152,6 +152,9 @@ pub(crate) struct Core {
     stores: Mutex<HashMap<(String, Option<Mode>), AgentStore>>,
     sealer: Sealer,
     policy_hash: Mutex<Option<ContentHash>>,
+    /// stdio without `--client`: the client each connection (one per
+    /// process) named in its first request. It can't rename itself later.
+    stdio_clients: Mutex<HashMap<u64, Option<ClientInfo>>>,
 }
 
 /// The MCP server for one vault. Cheap to clone.
@@ -206,6 +209,7 @@ impl Server {
             stores: Mutex::new(HashMap::new()),
             sealer,
             policy_hash: Mutex::new(None),
+            stdio_clients: Mutex::new(HashMap::new()),
         };
         let s = Self { core: Arc::new(core) };
         s.core.policy_changed();
@@ -245,13 +249,13 @@ impl Server {
     }
 
     /// Register a subscription the transport will keep open.
-    pub fn listen(&self, conn: u64, id: Value, filter: &Filter, sink: Sink) -> u64 {
-        self.core.subs.listen(conn, id, filter, sink)
+    pub fn listen(&self, conn: u64, id: Value, filter: &Filter, sink: Sink, sees: Visibility) -> u64 {
+        self.core.subs.listen(conn, id, filter, sink, sees)
     }
 
-    pub fn subscribe_legacy(&self, conn: u64, uri: &str, subscribe: bool, sink: Sink) {
+    pub fn subscribe_legacy(&self, conn: u64, uri: &str, subscribe: bool, sink: Sink, sees: Visibility) {
         if subscribe {
-            self.core.subs.subscribe_legacy(conn, uri, sink);
+            self.core.subs.subscribe_legacy(conn, uri, sink, sees);
         } else {
             self.core.subs.unsubscribe_legacy(conn, uri);
         }
@@ -269,6 +273,7 @@ impl Server {
     /// End a connection's subscriptions gracefully.
     pub fn close_conn(&self, conn: u64) {
         self.core.subs.close_conn(conn);
+        self.core.stdio_clients.lock().unwrap_or_else(PoisonError::into_inner).remove(&conn);
     }
 
     pub fn remove_subscription(&self, handle: u64) {
@@ -290,6 +295,24 @@ impl Server {
     pub fn serve(&self, input: impl std::io::BufRead, output: impl std::io::Write + Send) -> std::io::Result<()> {
         crate::stdio::serve(self, input, output)
     }
+}
+
+/// The actor id for a client key Quire gave out (`--client KEY`).
+///
+/// `claude-code` acts as `mcp:claude-code`. A key with Quire's `acp:` or
+/// `mcp:` prefix is used as is: Quire starts an external agent's MCP server
+/// with `--client acp:<name>`, so the agent's tool calls and its file
+/// requests are one actor. The CLI checks keys with this too.
+pub fn client_actor_id(key: &str) -> Result<String, String> {
+    let (prefix, bare) = match key.split_once(':') {
+        Some((p @ ("acp" | "mcp"), b)) => (p, b),
+        Some(_) => ("", ""),
+        None => ("mcp", key),
+    };
+    if bare.is_empty() || !bare.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')) {
+        return Err(format!("--client takes a short key like claude-code (or acp:claude-code), not “{key}”"));
+    }
+    Ok(format!("{prefix}:{bare}"))
 }
 
 fn client_info(v: Option<&Value>) -> Option<ClientInfo> {
@@ -322,7 +345,7 @@ impl Core {
         let guard = self.watcher.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(w) = guard.as_ref() else { return };
         let mut changed = false;
-        let mut list_changed = false;
+        let mut list_changed: Vec<String> = Vec::new();
         let now = Instant::now();
         let events: Vec<VaultEvent> = w.events.try_iter().collect();
         drop(guard);
@@ -331,14 +354,16 @@ impl Core {
             match ev {
                 VaultEvent::Changed(p) => {
                     if let Ok(src) = self.vault.read(&p) {
-                        list_changed |= self.index.read().get(&p).is_none();
+                        if self.index.read().get(&p).is_none() {
+                            list_changed.push(resources::uri_for_path(&p));
+                        }
                         self.index.upsert(p.clone(), src);
                     }
                     self.note_changed(&p, now);
                 }
                 VaultEvent::Removed(p) => {
                     self.index.remove(p.clone());
-                    list_changed = true;
+                    list_changed.push(resources::uri_for_path(&p));
                     self.note_changed(&p, now);
                 }
                 VaultEvent::AttachmentChanged(p) | VaultEvent::AttachmentRemoved(p) => {
@@ -350,8 +375,8 @@ impl Core {
         if changed {
             self.index.flush();
         }
-        if list_changed {
-            self.subs.resources_list_changed();
+        if !list_changed.is_empty() {
+            self.subs.resources_list_changed(&list_changed);
         }
     }
 
@@ -391,27 +416,38 @@ impl Core {
     }
 
     /// The actor for a request: the key Quire assigned (`--client`, a token)
-    /// or, unverified, the name the client reports.
+    /// or, unverified, the name the client reported in its first request.
     fn actor(&self, conn: &Conn, params: &Value) -> Actor {
         let meta = params.get("_meta");
-        let client =
+        let mut client =
             client_info(meta.and_then(|m| m.get(META_CLIENT_INFO).or_else(|| m.get("clientInfo")))).or_else(|| conn.client.clone());
         let mut a = match &conn.principal {
             Principal::Stdio => {
                 if let Some(key) = &self.config.client_key {
                     let label = client.as_ref().map_or_else(|| key.clone(), |c| c.name.clone());
-                    Actor::agent(format!("mcp:{key}"), label, Via::McpStdio, &self.device.id)
+                    let id = client_actor_id(key).unwrap_or_else(|_| format!("mcp:{key}"));
+                    Actor::agent(id, label, Via::McpStdio, &self.device.id)
                 } else {
+                    // Fixed at the first request, so a client can't get a fresh
+                    // rate limit or another client's ledger by renaming itself.
+                    let first = self
+                        .stdio_clients
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .entry(conn.id)
+                        .or_insert_with(|| client.take())
+                        .clone();
+                    client = first;
                     let name = client.as_ref().map_or_else(|| "unknown".to_string(), |c| c.name.clone());
                     let key: String = name
                         .to_lowercase()
                         .chars()
                         .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '.' { c } else { '-' })
                         .collect();
-                    let mut a = Actor::agent(format!("mcp:{key}"), name, Via::McpStdio, &self.device.id);
-                    // Self-reported: per-client policy overrides can't widen (design §A.2).
-                    a.unverified = true;
-                    a
+                    // Self-reported: per-client policy overrides can't widen
+                    // (design §A.2), and the id ends in `?`, so it is never a
+                    // verified client's id.
+                    Actor::unverified_agent(&format!("mcp:{key}"), name, Via::McpStdio, &self.device.id)
                 }
             }
             Principal::Token(t) => {
@@ -424,12 +460,23 @@ impl Core {
         a
     }
 
+    /// What the caller of a subscription request may hear about.
+    fn visibility(&self, conn: &Conn, params: &Value) -> Visibility {
+        let actor = self.actor(conn, params);
+        let store = self.store(&actor, self.cap(conn));
+        Visibility(Arc::new(move |uri: &str| resources::uri_visible(&store, &actor, uri)))
+    }
+
     fn store(&self, actor: &Actor, cap: Option<Mode>) -> AgentStore {
         let mut stores = self.stores.lock().unwrap_or_else(PoisonError::into_inner);
         stores
             .entry((actor.id.clone(), cap))
             .or_insert_with(|| {
                 let s = AgentStore::open(&self.vault, self.device.clone(), Arc::clone(&self.config.clock));
+                // The approvals the server was given (the default is the same folder).
+                if let Some(d) = &self.config.state_dir {
+                    s.set_state_dir(Some(d.clone()));
+                }
                 if let Some(c) = cap {
                     s.set_cap(&actor.id, c);
                 }
@@ -482,14 +529,18 @@ impl Core {
             Err(e) => return Reply::Response(rpc_error(id, e)),
         };
         match (method, &era) {
-            ("subscriptions/listen", Era::Modern) => return Reply::Listen { id, filter: Filter::from_params(&params) },
+            ("subscriptions/listen", Era::Modern) => {
+                return Reply::Listen { id, filter: Filter::from_params(&params), sees: self.visibility(conn, &params) };
+            }
             ("resources/subscribe" | "resources/unsubscribe", Era::Legacy(_)) => {
                 let uri = params.get("uri").and_then(Value::as_str).unwrap_or_default().to_string();
-                return Reply::Subscribe {
-                    response: json!({"jsonrpc": "2.0", "id": id, "result": {}}),
-                    uri,
-                    subscribe: method == "resources/subscribe",
-                };
+                let sees = self.visibility(conn, &params);
+                let subscribe = method == "resources/subscribe";
+                // A note it may not read doesn't exist, for subscriptions too.
+                if subscribe && !sees.sees(&uri) {
+                    return Reply::Response(rpc_error(id, protocol::resource_not_found(&era, &uri)));
+                }
+                return Reply::Subscribe { response: json!({"jsonrpc": "2.0", "id": id, "result": {}}), uri, subscribe, sees };
             }
             _ => {}
         }

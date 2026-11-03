@@ -5,16 +5,19 @@
 //! Names, schemas and texts are 0.8's. Since 0.9 `--allow-write` writes
 //! *per policy* (design §B.4): directly in agent zones (`wiki/`), and as
 //! suggestions the person reviews everywhere else, never under `.quire/`.
-//! Every applied write has provenance and a ledger entry.
+//! Every applied write has provenance and a ledger entry. Reads go through
+//! the same path guard and `deny` zones as the 0.9 tools, and untrusted
+//! notes come in an `<untrusted-source>` block.
 
 use std::fmt::Write as _;
 
-use quire_agent::{Change, ChangeSet, SubmitOutcome};
+use quire_agent::{Change, ChangeSet, OpKind, SubmitOutcome};
 use quire_app::find::{FindOptions, compile, replace_in_string};
 use quire_app::intel::{extractive_answer, retrieve};
 use quire_app::vault::{ContentHash, NotePath};
 use serde_json::{Value, json};
 
+use super::common::{fence_untrusted, trust, visible};
 use super::{Access, Annotations, FnTool, Tool, ToolCx, ToolOutput, ToolSpec, schema};
 
 /// Names of the 0.8 tools.
@@ -129,19 +132,22 @@ fn s(a: &Value, k: &str) -> String {
     a.get(k).and_then(Value::as_str).unwrap_or_default().to_string()
 }
 
+/// A note by path or title, through the path guard: notes the caller may
+/// not read don't exist.
 fn resolve(cx: &ToolCx<'_>, note: &str) -> Result<NotePath, String> {
     let ix = cx.index.read();
     let p = NotePath::new(note);
-    if ix.get(&p).is_some() {
-        return Ok(p);
-    }
-    ix.resolve(note.trim_end_matches(".md"), None)
+    let found = if ix.get(&p).is_some() { Some(p) } else { ix.resolve(note.trim_end_matches(".md"), None) };
+    found
+        .and_then(|p| cx.agent.guard(cx.actor, &p, OpKind::Read).ok())
         .ok_or_else(|| format!("No note matches “{note}”. Use search_notes or list_notes to find it."))
 }
 
 fn search_notes(cx: &ToolCx<'_>, a: &Value) -> ToolOutput {
     let limit = a.get("limit").and_then(Value::as_u64).unwrap_or(10).clamp(1, 50) as usize;
-    let hits = cx.index.hybrid_search(&s(a, "query"), limit);
+    let mut hits = cx.index.hybrid_search(&s(a, "query"), limit * 3);
+    hits.retain(|h| visible(cx, &h.path));
+    hits.truncate(limit);
     if hits.is_empty() {
         return ToolOutput::text("No matching notes.");
     }
@@ -159,7 +165,11 @@ fn search_notes(cx: &ToolCx<'_>, a: &Value) -> ToolOutput {
 fn read_note(cx: &ToolCx<'_>, a: &Value) -> ToolOutput {
     match resolve(cx, &s(a, "note")) {
         Ok(p) => match cx.vault.read(&p) {
-            Ok(src) => ToolOutput::text(format!("# File: {p}\n\n{src}")),
+            Ok(src) => {
+                let (untrusted, origin) = trust(cx, &p, &src);
+                let body = if untrusted { fence_untrusted(&p, origin.as_deref(), &src) } else { src };
+                ToolOutput::text(format!("# File: {p}\n\n{body}"))
+            }
             Err(e) => ToolOutput::error("io", e.to_string()),
         },
         Err(e) => ToolOutput::error("not_found", e),
@@ -173,6 +183,7 @@ fn list_notes(cx: &ToolCx<'_>, a: &Value) -> ToolOutput {
     let list: Vec<String> = ix
         .paths()
         .into_iter()
+        .filter(|p| visible(cx, p))
         .filter(|p| folder.is_empty() || p.folder().eq_ignore_ascii_case(folder.trim_matches('/')))
         .filter(|p| tag.is_empty() || ix.get(p).is_some_and(|r| r.has_tag(&tag)))
         .take(limit)
@@ -185,7 +196,8 @@ fn backlinks(cx: &ToolCx<'_>, a: &Value) -> ToolOutput {
     match resolve(cx, &s(a, "note")) {
         Ok(p) => {
             let ix = cx.index.read();
-            let b: Vec<String> = ix.backlinks(&p).iter().map(|b| format!("- {}: {}", b.from, b.context)).collect();
+            let b: Vec<String> =
+                ix.backlinks(&p).iter().filter(|b| visible(cx, &b.from)).map(|b| format!("- {}: {}", b.from, b.context)).collect();
             ToolOutput::text(if b.is_empty() { format!("Nothing links to {p}.") } else { b.join("\n") })
         }
         Err(e) => ToolOutput::error("not_found", e),
@@ -196,7 +208,8 @@ fn ask_notes(cx: &ToolCx<'_>, a: &Value) -> ToolOutput {
     let q = s(a, "question");
     let sem = cx.index.semantic();
     let ix = cx.index.read();
-    let sources = retrieve(&ix, sem.as_deref(), &q, 6);
+    let mut sources = retrieve(&ix, sem.as_deref(), &q, 6);
+    sources.retain(|src| visible(cx, &src.path));
     let mut out = extractive_answer(&q, &sources, sem.as_deref());
     out.push_str("\n\nSources:\n");
     for src in &sources {
@@ -207,7 +220,22 @@ fn ask_notes(cx: &ToolCx<'_>, a: &Value) -> ToolOutput {
 }
 
 fn list_tags(cx: &ToolCx<'_>, _a: &Value) -> ToolOutput {
-    let tags: Vec<String> = cx.index.read().tags().into_iter().map(|(t, n)| format!("#{t} ({n})")).collect();
+    // As the index counts them (each level of a nested tag), notes the caller may read only.
+    let ix = cx.index.read();
+    let mut counts: std::collections::BTreeMap<String, std::collections::HashSet<&NotePath>> = std::collections::BTreeMap::new();
+    for rec in ix.records().filter(|r| visible(cx, &r.path)) {
+        for tag in &rec.tags {
+            let mut acc = String::new();
+            for (i, part) in tag.to_lowercase().split('/').enumerate() {
+                if i > 0 {
+                    acc.push('/');
+                }
+                acc.push_str(part);
+                counts.entry(acc.clone()).or_default().insert(&rec.path);
+            }
+        }
+    }
+    let tags: Vec<String> = counts.into_iter().map(|(t, n)| format!("#{t} ({})", n.len())).collect();
     ToolOutput::text(if tags.is_empty() { "No tags.".into() } else { tags.join(", ") })
 }
 

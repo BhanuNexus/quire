@@ -14,7 +14,7 @@
 
 use std::fmt::Write as _;
 
-use quire_agent::{Actor, AgentStore, Mode, OpKind, ProposalId};
+use quire_agent::{Actor, AgentStore, Mode, OpKind, ProposalId, canonical_path};
 use quire_app::index::IndexService;
 use quire_app::vault::{NotePath, Vault};
 use serde_json::{Value, json};
@@ -56,6 +56,28 @@ impl ReadCx<'_> {
     fn visible(&self, p: &NotePath) -> bool {
         self.agent.effective_mode(self.actor, p, OpKind::Read) != Mode::Deny
     }
+
+    /// The path guard: the canonical path, if the actor may read it.
+    fn guard(&self, p: &NotePath) -> Result<NotePath, ReadError> {
+        self.agent.guard(self.actor, p, OpKind::Read).map_err(|_| ReadError::NotFound)
+    }
+}
+
+/// Whether `actor` may hear about changes to `uri` (subscriptions): notes
+/// and attachments it may read, proposals whose files it may read, and the
+/// vault's index and instructions. Anything else is refused.
+pub fn uri_visible(agent: &AgentStore, actor: &Actor, uri: &str) -> bool {
+    let sees = |p: &NotePath| agent.guard(actor, p, OpKind::Read).is_ok();
+    if uri == INDEX_URI || uri == INSTRUCTIONS_URI {
+        return true;
+    }
+    if let Some(id) = uri.strip_prefix("quire://proposal/") {
+        return ProposalId::parse(id).and_then(|id| agent.proposal(&id)).is_some_and(|p| p.summary().files.iter().all(sees));
+    }
+    if let Some(rest) = uri.strip_prefix("quire://attachment/") {
+        return decode_path(rest.split('?').next().unwrap_or(rest)).is_some_and(|p| sees(&NotePath::new(p)));
+    }
+    parse_note_uri(uri).is_some_and(|(p, _, _)| sees(&p))
 }
 
 /// Why a read failed.
@@ -112,11 +134,12 @@ pub fn list(cx: &ReadCx<'_>, params: &Value) -> Result<Value, ReadError> {
 /// A note URI's parts: path, `section`, `lines`.
 type NoteUri = (NotePath, Option<String>, Option<(usize, usize)>);
 
-/// The note path and query of a `quire://note/…` URI.
+/// The note path and query of a `quire://note/…` URI. The path is
+/// canonical (NFC, relative, no `..` or hidden folders), as tools take it.
 fn parse_note_uri(uri: &str) -> Option<NoteUri> {
     let rest = uri.strip_prefix("quire://note/")?;
     let (path, query) = rest.split_once('?').map_or((rest, ""), |(p, q)| (p, q));
-    let path = NotePath::new(decode_path(path)?);
+    let path = canonical_path(&NotePath::new(decode_path(path)?)).ok()?;
     let mut section = None;
     let mut lines = None;
     for kv in query.split('&').filter(|s| !s.is_empty()) {
@@ -149,10 +172,7 @@ pub fn read(cx: &ReadCx<'_>, uri: &str) -> Result<Value, ReadError> {
         return proposal(cx, uri, id);
     }
     if let Some(p) = uri.strip_prefix("quire://attachment/") {
-        let path = NotePath::new(decode_path(p).ok_or(ReadError::NotFound)?);
-        if !cx.visible(&path) {
-            return Err(ReadError::NotFound);
-        }
+        let path = cx.guard(&NotePath::new(decode_path(p).ok_or(ReadError::NotFound)?))?;
         let ix = cx.index.read();
         let a = ix.attachment(&path).ok_or(ReadError::NotFound)?;
         let mut text = String::new();
@@ -162,7 +182,8 @@ pub fn read(cx: &ReadCx<'_>, uri: &str) -> Result<Value, ReadError> {
         return Ok(json!({"contents": [{"uri": uri, "mimeType": "text/plain", "text": text}]}));
     }
     let (path, section, lines) = parse_note_uri(uri).ok_or(ReadError::NotFound)?;
-    if !cx.visible(&path) || !path.is_markdown() {
+    let path = cx.guard(&path)?;
+    if !path.is_markdown() {
         return Err(ReadError::NotFound);
     }
     let full = cx.vault.read(&path).map_err(|_| ReadError::NotFound)?;
@@ -297,6 +318,10 @@ mod tests {
         assert_eq!(parse_note_uri("quire://note/A.md").unwrap().0.as_str(), "A.md");
         assert!(parse_note_uri("quire://other/A.md").is_none());
         assert!(parse_note_uri("quire://note/A.md?lines=x-y").is_none());
+        assert!(parse_note_uri("quire://note/.trash/20261101-120000%20diary.md").is_none(), "hidden folders");
+        assert!(parse_note_uri("quire://note/a/%2E%2E/b.md").is_none());
+        let nfd = parse_note_uri("quire://note/Prive%CC%81/d.md").unwrap().0;
+        assert_eq!(nfd.as_str(), "Priv\u{e9}/d.md", "NFC");
     }
 
     #[test]
