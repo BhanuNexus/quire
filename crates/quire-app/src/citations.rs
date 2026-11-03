@@ -490,6 +490,9 @@ pub struct ImportPlan {
     pub updated: Vec<Reference>,
     /// Keys already in the library, unchanged.
     pub unchanged: usize,
+    /// Fields Quire doesn't read (abstract, keywords, isbn, …) of the
+    /// incoming BibTeX entries, by key, written into the library as they are.
+    pub extras: HashMap<String, Vec<(String, String)>>,
 }
 
 impl ImportPlan {
@@ -515,8 +518,14 @@ pub fn plan_import(library_text: &str, incoming: Vec<Reference>) -> ImportPlan {
         }
         match existing.get(&r.key) {
             None => plan.added.push(r),
-            Some(old) if same(old, &r) => plan.unchanged += 1,
-            Some(_) => plan.updated.push(r),
+            Some(old) => {
+                let merged = fill_from(r, old);
+                if same(old, &merged) {
+                    plan.unchanged += 1;
+                } else {
+                    plan.updated.push(merged);
+                }
+            }
         }
     }
     plan
@@ -525,11 +534,100 @@ pub fn plan_import(library_text: &str, incoming: Vec<Reference>) -> ImportPlan {
 fn same(a: &Reference, b: &Reference) -> bool {
     let mut b2 = b.clone();
     b2.source.clone_from(&a.source);
-    // A file field we didn't import isn't a difference.
-    if b2.file.is_empty() {
-        b2.file.clone_from(&a.file);
-    }
     *a == b2
+}
+
+/// `new` with what it leaves empty taken from `old`: an export without a
+/// DOI or the `file` link doesn't remove the library's.
+fn fill_from(mut new: Reference, old: &Reference) -> Reference {
+    for (n, o) in [
+        (&mut new.kind, &old.kind),
+        (&mut new.title, &old.title),
+        (&mut new.container, &old.container),
+        (&mut new.year, &old.year),
+        (&mut new.volume, &old.volume),
+        (&mut new.issue, &old.issue),
+        (&mut new.pages, &old.pages),
+        (&mut new.publisher, &old.publisher),
+        (&mut new.doi, &old.doi),
+        (&mut new.url, &old.url),
+        (&mut new.file, &old.file),
+    ] {
+        if n.trim().is_empty() {
+            n.clone_from(o);
+        }
+    }
+    if new.authors.is_empty() {
+        new.authors.clone_from(&old.authors);
+    }
+    if new.editors.is_empty() {
+        new.editors.clone_from(&old.editors);
+    }
+    new
+}
+
+/// BibTeX fields Quire reads; the others are kept as written.
+const READ_FIELDS: [&str; 20] = [
+    "author",
+    "editor",
+    "title",
+    "journaltitle",
+    "journal",
+    "booktitle",
+    "maintitle",
+    "series",
+    "year",
+    "date",
+    "volume",
+    "number",
+    "issue",
+    "pages",
+    "publisher",
+    "institution",
+    "school",
+    "organization",
+    "doi",
+    "url",
+];
+
+/// For each entry of a BibTeX text, the fields Quire doesn't read, as
+/// BibTeX (`{…}` values), in file order. Empty when the text isn't BibTeX.
+pub fn other_fields(text: &str) -> HashMap<String, Vec<(String, String)>> {
+    use biblatex::ChunksExt as _;
+    let t = text.trim_start_matches('\u{feff}').trim_start();
+    if t.starts_with('[') || t.starts_with('{') {
+        return HashMap::new();
+    }
+    let Ok(Ok(bib)) = std::panic::catch_unwind(|| biblatex::Bibliography::parse(t)) else { return HashMap::new() };
+    bib.iter()
+        .map(|e| {
+            let mut v: Vec<(String, String)> = e
+                .fields
+                .iter()
+                .filter(|(k, _)| {
+                    let k = k.to_ascii_lowercase();
+                    k != "file" && !READ_FIELDS.contains(&k.as_str())
+                })
+                .map(|(k, c)| (k.clone(), c.to_biblatex_string(matches!(k.as_str(), "url" | "doi" | "file"))))
+                .collect();
+            v.sort_by(|a, b| a.0.cmp(&b.0));
+            (e.key.clone(), v)
+        })
+        .collect()
+}
+
+/// [`to_bibtex`] with `extra` fields (already BibTeX values) before the end.
+fn to_bibtex_with(r: &Reference, extra: &[(String, String)]) -> String {
+    let mut s = to_bibtex(r);
+    if extra.is_empty() {
+        return s;
+    }
+    s.truncate(s.len() - "}\n".len());
+    for (k, v) in extra {
+        let _ = writeln!(s, "  {k} = {v},");
+    }
+    s.push_str("}\n");
+    s
 }
 
 /// The library file's text after an import: updated entries replaced in
@@ -537,21 +635,25 @@ fn same(a: &Reference, b: &Reference) -> bool {
 pub fn apply_import(library_text: &str, plan: &ImportPlan) -> String {
     let spans = bib_spans(library_text);
     // Read the whole file once (an entry alone may use the file's @string macros).
-    let existing: HashMap<String, Reference> =
-        parse_bibtex(library_text).unwrap_or_default().into_iter().map(|r| (r.key.clone(), r)).collect();
+    // Fields Quire doesn't read stay: the library's, then the import's over them.
+    let kept = other_fields(library_text);
+    let extra_for = |key: &str| {
+        let mut v: Vec<(String, String)> = kept.get(key).cloned().unwrap_or_default();
+        for (k, val) in plan.extras.get(key).into_iter().flatten() {
+            match v.iter_mut().find(|(k2, _)| k2 == k) {
+                Some(slot) => slot.1.clone_from(val),
+                None => v.push((k.clone(), val.clone())),
+            }
+        }
+        v
+    };
     let mut out = library_text.to_string();
     let mut repl: Vec<(Range<usize>, String)> = plan
         .updated
         .iter()
         .filter_map(|r| {
             let (_, range) = spans.iter().find(|(k, _)| *k == r.key)?;
-            let mut merged = r.clone();
-            if merged.file.is_empty()
-                && let Some(old) = existing.get(&r.key)
-            {
-                merged.file.clone_from(&old.file);
-            }
-            Some((range.clone(), to_bibtex(&merged)))
+            Some((range.clone(), to_bibtex_with(r, &extra_for(&r.key))))
         })
         .collect();
     repl.sort_by_key(|(r, _)| std::cmp::Reverse(r.start));
@@ -566,7 +668,7 @@ pub fn apply_import(library_text: &str, plan: &ImportPlan) -> String {
             if !out.is_empty() {
                 out.push('\n');
             }
-            out.push_str(&to_bibtex(r));
+            out.push_str(&to_bibtex_with(r, plan.extras.get(&r.key).map_or(&[], Vec::as_slice)));
         }
     }
     out
@@ -796,7 +898,7 @@ fn check_watched(ws: &mut Workspace) -> bool {
         }
     };
     let target = ws.features.citations.prefs.import_target();
-    match import_now(ws, &target, incoming) {
+    match import_now(ws, &target, incoming, other_fields(&text)) {
         Ok(plan) if !plan.is_empty() => {
             ws.notify(NoticeLevel::Info, format!("Bibliography updated from {}: {}", path.display(), plan.summary()));
         }
@@ -807,10 +909,17 @@ fn check_watched(ws: &mut Workspace) -> bool {
 }
 
 /// Merge `incoming` into `target` now. Returns what was done.
-pub fn import_now(ws: &mut Workspace, target: &NotePath, incoming: Vec<Reference>) -> Result<ImportPlan, String> {
+/// `extras` are the incoming entries' other fields ([`other_fields`]).
+pub(crate) fn import_now(
+    ws: &mut Workspace,
+    target: &NotePath,
+    incoming: Vec<Reference>,
+    extras: HashMap<String, Vec<(String, String)>>,
+) -> Result<ImportPlan, String> {
     let vault = ws.vault.clone().ok_or("No vault is open")?;
     let current = if vault.exists(target) { vault.read(target).map_err(|e| e.to_string())? } else { String::new() };
-    let plan = plan_import(&current, incoming);
+    let mut plan = plan_import(&current, incoming);
+    plan.extras = extras;
     if plan.is_empty() {
         return Ok(plan);
     }
@@ -830,7 +939,8 @@ pub fn prepare_import(ws: &mut Workspace, path: &std::path::Path) -> Result<(), 
     let vault = ws.vault.clone().ok_or("No vault is open")?;
     let target = ws.features.citations.prefs.import_target();
     let current = if vault.exists(&target) { vault.read(&target).unwrap_or_default() } else { String::new() };
-    let plan = plan_import(&current, incoming);
+    let mut plan = plan_import(&current, incoming);
+    plan.extras = other_fields(&text);
     let from = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
     ws.features.citations.import = Some(PendingImport { from, target, plan });
     Ok(())
@@ -841,7 +951,9 @@ pub fn confirm_import(ws: &mut Workspace) -> Result<String, String> {
     let p = ws.features.citations.import.take().ok_or("Nothing to import")?;
     let mut incoming = p.plan.added.clone();
     incoming.extend(p.plan.updated.iter().cloned());
-    let done = import_now(ws, &p.target, incoming)?;
+    let mut done = import_now(ws, &p.target, incoming, p.plan.extras)?;
+    // Only the new and changed works were merged; count the rest as the dry run did.
+    done.unchanged += p.plan.unchanged;
     if ws.features.citations.prefs.library.list().is_empty() && p.target.as_str() != DEFAULT_LIBRARY {
         let t = p.target.as_str().to_string();
         save_prefs(ws, |c| c.library = Files::One(t))?;
@@ -1027,6 +1139,7 @@ mod tests {
   volume = {3},
   pages = {666--731},
   file = {Full Text:papers/notes.pdf:application/pdf},
+  abstract = {On the {Engine}.},
 }
 
 @book{knuth1,
@@ -1101,6 +1214,14 @@ mod tests {
         assert_eq!(ada.title, "Notes on the Analytical Engine, revised");
         assert_eq!(ada.pdf_name().as_deref(), Some("notes.pdf"), "the file link is kept");
         assert!(out.contains("@book{knuth1,\n  author = {Donald E. Knuth}"), "untouched entries keep their text");
+        assert!(out.contains("  abstract = {On the {Engine}.},\n}"), "fields Quire doesn't read stay: {out}");
+        assert_eq!(ada.volume, "3", "what the import leaves out stays");
+        // BibTeX brings its other fields along.
+        let bib = "@book{new2, author = {Liskov, Barbara}, title = {Abstraction}, year = {1986}, isbn = {0-262-12112-3}}";
+        let mut plan = plan_import(&out, parse_any(bib).unwrap());
+        plan.extras = other_fields(bib);
+        let out2 = apply_import(&out, &plan);
+        assert!(out2.contains("  isbn = {0-262-12112-3},\n}"), "{out2}");
         let again = plan_import(&out, parse_bibtex(&out).unwrap());
         assert!(again.is_empty(), "importing the same again changes nothing: {}", again.summary());
         assert_eq!(bib_spans(BIB).iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["ada", "knuth1", "knuth2"]);
