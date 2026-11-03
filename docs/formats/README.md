@@ -62,16 +62,18 @@ F0 is the foundation step, after which its files are frozen).
 | `<config>/themes/*.toml`, `<config>/fonts/*` | TOML, format 1 | [themes.md](themes.md) | WS-F | read (and a template written on request) |
 | `<config>/session.json` (`positions`) | JSON | [editor-state.md](editor-state.md#sessionjson) | WS-F | written |
 | `.quire/shared/vault.toml` `[sort]`, `[order]`, `[icons]`, `[tags]`, `[git]` | TOML sections | [editor-state.md](editor-state.md#vaulttoml-sections) | WS-F | read and written |
-| `<data_dir>/models/…`, the catalog | TOML, format 1 | [model-catalog.md](model-catalog.md) | WS-D | format only |
-| engine stdio | JSON lines | [engine-protocol.md](engine-protocol.md) | WS-D | `hello` and `shutdown` |
+| `<data_dir>/models/…` (`installed.toml`), the catalog, `cache/vectors-<model>.f16`, `cache/ocr/` | TOML format 1, binary, JSON format 1 | [model-catalog.md](model-catalog.md) | WS-D | written |
+| engine stdio | JSON lines, protocol 1 | [engine-protocol.md](engine-protocol.md) | WS-D | in use |
+| `.quire/agent/conversations/<id>.json` | JSON, format 1 | [conversations.md](conversations.md) | WS-D | written |
+| `wiki/index.md` (between `quire:index` markers), `wiki/log.md` | Markdown | [wiki-index-log.md](wiki-index-log.md) | WS-D | written |
 | `<config>/mcp/tokens.json`, `<config>/mcp/consent/<id>.json` | JSON, format 1 | [mcp.md](mcp.md) | WS-B | written |
 | `<config>/vaults/<key>/mrtr.key` | 32 random bytes | [mcp.md](mcp.md#configvaultsvault-keymrtrkey) | WS-B | written |
 | Quire Sync: `/v1/info`, `actor`, `space.json` `min_reader`, `config.json` `shared_state` | protocol 2 | [sync-protocol.md](sync-protocol.md) | WS-B | in use |
 | `.quire/cache/**` | rebuildable; formats are private to their job | — | the job's owner | — |
 
 Planned and not yet written by any code (formats come with their
-workstream): `.quire/agent/runs/`, `.quire/agent/conversations/`,
+workstream): `.quire/agent/runs/`,
 `.quire/cache/served/`, `cache/claims/`, `cache/contradict/`,
-`cache/pdf-text/`, `cache/ocr/`,
+`cache/pdf-text/`,
 `<config>/mcp/tokens.json`, `<config>/themes/*.toml`. A workstream adds a
 `docs/formats/<name>.md` for each file it introduces and a row above.
