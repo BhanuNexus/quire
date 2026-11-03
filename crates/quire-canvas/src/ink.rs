@@ -155,27 +155,20 @@ fn radius(size: f32, thinning: f32, pressure: f32) -> f32 {
     (size * (0.5 - thinning * (0.5 - p))).max(size * 0.12).max(0.25)
 }
 
-/// The filled outline of a stroke (a closed polygon), in the style of
-/// perfect-freehand: each point offset left and right by its radius, with
-/// round caps. The points are smoothed first.
-pub fn outline(points: &[Point], size: f32, thinning: f32) -> Vec<(f32, f32)> {
+/// One point of a stroke drawn as a ribbon: its centre, its left and right
+/// edges and its radius.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RibbonPoint {
+    pub center: (f32, f32),
+    pub left: (f32, f32),
+    pub right: (f32, f32),
+    pub radius: f32,
+}
+
+/// A stroke as a ribbon (smoothed, repeated points dropped): what the
+/// outline is made of, and what a UI draws as triangles plus round ends.
+pub fn ribbon(points: &[Point], size: f32, thinning: f32) -> Vec<RibbonPoint> {
     let pts = smooth(points, 4);
-    let Some(first) = pts.first() else { return Vec::new() };
-    let cap = |c: Point, r: f32, from: f32, out: &mut Vec<(f32, f32)>| {
-        for k in 0..=8 {
-            let a = from + std::f32::consts::PI * k as f32 / 8.0;
-            out.push((c.x + r * a.cos(), c.y + r * a.sin()));
-        }
-    };
-    let single = pts.iter().all(|p| (p.x - first.x).abs() < 0.01 && (p.y - first.y).abs() < 0.01);
-    if single {
-        let r = radius(size, thinning, first.pressure);
-        let mut out = Vec::new();
-        cap(*first, r, 0.0, &mut out);
-        cap(*first, r, std::f32::consts::PI, &mut out);
-        return out;
-    }
-    // Drop repeated points so every direction is defined.
     let mut p: Vec<Point> = Vec::with_capacity(pts.len());
     for q in pts {
         if p.last().is_none_or(|l: &Point| (l.x - q.x).hypot(l.y - q.y) > 0.01) {
@@ -183,26 +176,50 @@ pub fn outline(points: &[Point], size: f32, thinning: f32) -> Vec<(f32, f32)> {
         }
     }
     let n = p.len();
-    let mut left = Vec::with_capacity(n);
-    let mut right = Vec::with_capacity(n);
-    let mut angles = Vec::with_capacity(n);
-    for i in 0..n {
-        let a = p[i.saturating_sub(1)];
-        let b = p[(i + 1).min(n - 1)];
-        let (dx, dy) = (b.x - a.x, b.y - a.y);
-        let len = dx.hypot(dy).max(f32::EPSILON);
-        let (nx, ny) = (-dy / len, dx / len);
-        let r = radius(size, thinning, p[i].pressure);
-        left.push((p[i].x + nx * r, p[i].y + ny * r));
-        right.push((p[i].x - nx * r, p[i].y - ny * r));
-        angles.push(ny.atan2(nx));
+    (0..n)
+        .map(|i| {
+            let a = p[i.saturating_sub(1)];
+            let b = p[(i + 1).min(n - 1)];
+            let (dx, dy) = (b.x - a.x, b.y - a.y);
+            let len = dx.hypot(dy);
+            let (nx, ny) = if len > f32::EPSILON { (-dy / len, dx / len) } else { (0.0, 1.0) };
+            let r = radius(size, thinning, p[i].pressure);
+            RibbonPoint {
+                center: (p[i].x, p[i].y),
+                left: (p[i].x + nx * r, p[i].y + ny * r),
+                right: (p[i].x - nx * r, p[i].y - ny * r),
+                radius: r,
+            }
+        })
+        .collect()
+}
+
+/// The filled outline of a stroke (a closed polygon), in the style of
+/// perfect-freehand: each point offset left and right by its radius, with
+/// round caps. The points are smoothed first.
+pub fn outline(points: &[Point], size: f32, thinning: f32) -> Vec<(f32, f32)> {
+    let rib = ribbon(points, size, thinning);
+    let (Some(first), Some(last)) = (rib.first(), rib.last()) else { return Vec::new() };
+    // Half a circle from angle `from`, turning towards the stroke's outside.
+    let cap = |c: (f32, f32), r: f32, from: f32, out: &mut Vec<(f32, f32)>| {
+        for k in 0..=8 {
+            let a = from - std::f32::consts::PI * k as f32 / 8.0;
+            out.push((c.0 + r * a.cos(), c.1 + r * a.sin()));
+        }
+    };
+    let angle = |p: &RibbonPoint| (p.left.1 - p.center.1).atan2(p.left.0 - p.center.0);
+    if rib.len() == 1 {
+        let mut out = Vec::new();
+        cap(first.center, first.radius, 0.0, &mut out);
+        cap(first.center, first.radius, std::f32::consts::PI, &mut out);
+        return out;
     }
-    let mut out = Vec::with_capacity(2 * n + 18);
-    out.extend(left.iter().copied());
-    // End cap: from the left offset round to the right one.
-    cap(p[n - 1], radius(size, thinning, p[n - 1].pressure), angles[n - 1], &mut out);
-    out.extend(right.iter().rev().copied());
-    cap(p[0], radius(size, thinning, p[0].pressure), angles[0] + std::f32::consts::PI, &mut out);
+    let mut out = Vec::with_capacity(2 * rib.len() + 18);
+    out.extend(rib.iter().map(|p| p.left));
+    // End cap: from the left edge round the tip to the right edge.
+    cap(last.center, last.radius, angle(last), &mut out);
+    out.extend(rib.iter().rev().map(|p| p.right));
+    cap(first.center, first.radius, angle(first) + std::f32::consts::PI, &mut out);
     out
 }
 
@@ -620,6 +637,131 @@ fn element_end(s: &str, t: &Tag<'_>) -> Option<usize> {
     Some(at)
 }
 
+/// Samples per pixel side when rasterizing.
+const S: usize = 4;
+
+/// A polygon to fill: its points, colour and opacity.
+type Fill = (Vec<(f32, f32)>, (u8, u8, u8), f32);
+
+/// A thick line from `a` to `b` as a quad.
+fn segment(a: (f32, f32), b: (f32, f32), w: f32) -> Vec<(f32, f32)> {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let len = dx.hypot(dy).max(1e-3);
+    let (nx, ny) = (-dy / len * w / 2.0, dx / len * w / 2.0);
+    vec![(a.0 + nx, a.1 + ny), (b.0 + nx, b.1 + ny), (b.0 - nx, b.1 - ny), (a.0 - nx, a.1 - ny)]
+}
+
+fn rgb(c: &str) -> (u8, u8, u8) {
+    let h = c.trim_start_matches('#');
+    let ch = |i: usize| h.get(i..i + 2).and_then(|x| u8::from_str_radix(x, 16).ok()).unwrap_or(30);
+    (ch(0), ch(2), ch(4))
+}
+
+/// What a sketch fills, in sketch units.
+fn fills(sk: &Sketch) -> Vec<Fill> {
+    let mut out = Vec::new();
+    for item in &sk.items {
+        match item {
+            Item::Stroke(s) => out.push((s.outline(), rgb(&s.color), s.tool.opacity())),
+            Item::Shape(sh) => {
+                let c = rgb(&sh.color);
+                let r = crate::geom::Rect::from_corners(sh.from, sh.to);
+                let lines: Vec<((f32, f32), (f32, f32))> = match sh.kind {
+                    ShapeKind::Line => vec![(sh.from, sh.to)],
+                    ShapeKind::Arrow => {
+                        let [h1, h2] = sh.arrow_head();
+                        vec![(sh.from, sh.to), (h1, sh.to), (h2, sh.to)]
+                    }
+                    ShapeKind::Rect => {
+                        let p = [(r.x, r.y), (r.right(), r.y), (r.right(), r.bottom()), (r.x, r.bottom())];
+                        (0..4).map(|i| (p[i], p[(i + 1) % 4])).collect()
+                    }
+                    ShapeKind::Ellipse => {
+                        let (cx, cy) = r.center();
+                        let pt = |k: usize| {
+                            let t = std::f32::consts::TAU * k as f32 / 64.0;
+                            (cx + r.w / 2.0 * t.cos(), cy + r.h / 2.0 * t.sin())
+                        };
+                        (0..64).map(|k| (pt(k), pt(k + 1))).collect()
+                    }
+                };
+                for (a, b) in lines {
+                    out.push((segment(a, b, sh.width), c, 1.0));
+                }
+            }
+            Item::Raw(_) => {}
+        }
+    }
+    out
+}
+
+/// Draw a sketch into RGBA pixels on white, `scale` pixels per unit
+/// (anti-aliased, 4 × 4 samples a pixel). For showing sketches as pictures
+/// (embedded in notes); the size is capped at 2,000 pixels a side.
+pub fn rasterize(sk: &Sketch, scale: f32) -> (u32, u32, Vec<u8>) {
+    let scale = scale.min(2000.0 / sk.width.max(sk.height).max(1.0)).max(0.01);
+    let w = ((sk.width * scale).ceil() as u32).clamp(1, 2000);
+    let h = ((sk.height * scale).ceil() as u32).clamp(1, 2000);
+    let mut px = vec![255u8; (w * h * 4) as usize];
+    let mut cover = vec![0u8; w as usize];
+    for (poly, rgb, opacity) in fills(sk) {
+        let rgb: [u8; 3] = rgb.into();
+        if poly.len() < 3 {
+            continue;
+        }
+        let pts: Vec<(f32, f32)> = poly.iter().map(|p| (p.0 * scale, p.1 * scale)).collect();
+        let y0 = pts.iter().map(|p| p.1).fold(f32::MAX, f32::min).floor().max(0.0) as u32;
+        let y1 = (pts.iter().map(|p| p.1).fold(f32::MIN, f32::max).ceil().max(0.0) as u32).min(h);
+        for y in y0..y1 {
+            cover.fill(0);
+            let mut touched = false;
+            for sy in 0..S {
+                let fy = y as f32 + (sy as f32 + 0.5) / S as f32;
+                // Crossings with their winding direction (non-zero rule).
+                let mut xs: Vec<(f32, i32)> = Vec::new();
+                for i in 0..pts.len() {
+                    let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+                    if (a.1 <= fy) != (b.1 <= fy) {
+                        let t = (fy - a.1) / (b.1 - a.1);
+                        xs.push((a.0 + t * (b.0 - a.0), if b.1 > a.1 { 1 } else { -1 }));
+                    }
+                }
+                xs.sort_by(|p, q| p.0.total_cmp(&q.0));
+                let mut wind = 0;
+                for k in 0..xs.len().saturating_sub(1) {
+                    wind += xs[k].1;
+                    if wind == 0 {
+                        continue;
+                    }
+                    let (sx0, sx1) = (
+                        (xs[k].0 * S as f32).round().max(0.0) as usize,
+                        ((xs[k + 1].0 * S as f32).round().max(0.0) as usize).min(w as usize * S),
+                    );
+                    for sx in sx0..sx1 {
+                        cover[sx / S] = cover[sx / S].saturating_add(1);
+                        touched = true;
+                    }
+                }
+            }
+            if !touched {
+                continue;
+            }
+            for (x, c) in cover.iter().enumerate() {
+                if *c == 0 {
+                    continue;
+                }
+                let a = opacity * f32::from(*c) / (S * S) as f32;
+                let i = ((y * w) as usize + x) * 4;
+                for (k, v) in rgb.into_iter().enumerate() {
+                    let old = f32::from(px[i + k]);
+                    px[i + k] = (old + (f32::from(v) - old) * a.min(1.0)).round() as u8;
+                }
+            }
+        }
+    }
+    (w, h, px)
+}
+
 /// An empty sketch file (for "Insert sketch").
 pub fn empty_svg(width: f32, height: f32) -> String {
     to_svg(&Sketch { width, height, items: Vec::new() })
@@ -706,6 +848,29 @@ mod tests {
         assert!(parse_svg("<svg><path d=\"M0 0\"").is_err());
         assert!(parse_svg("hello").is_err());
         assert_eq!(parse_svg(&empty_svg(300.0, 200.0)).unwrap().items.len(), 0);
+    }
+
+    #[test]
+    fn rasterizes_strokes_and_shapes() {
+        let sk = Sketch {
+            width: 100.0,
+            height: 50.0,
+            items: vec![
+                Item::Stroke(Stroke {
+                    tool: Tool::Marker,
+                    color: "#000000".into(),
+                    size: 8.0,
+                    points: vec![Point::new(10.0, 25.0, 0.5), Point::new(90.0, 25.0, 0.5)],
+                }),
+                Item::Shape(Shape { kind: ShapeKind::Rect, from: (2.0, 2.0), to: (98.0, 48.0), color: "#ff0000".into(), width: 2.0 }),
+            ],
+        };
+        let (w, h, px) = rasterize(&sk, 2.0);
+        assert_eq!((w, h), (200, 100));
+        let at = |x: u32, y: u32| &px[((y * w + x) * 4) as usize..((y * w + x) * 4 + 3) as usize];
+        assert_eq!(at(100, 50), [0, 0, 0], "inside the stroke");
+        assert_eq!(at(100, 20), [255, 255, 255], "paper");
+        assert!(at(4, 50)[0] > 200 && at(4, 50)[1] < 60, "on the red frame: {:?}", at(4, 50));
     }
 
     #[test]
