@@ -54,10 +54,12 @@ F0 is the foundation step, after which its files are frozen).
 | task fields in notes (`📅`, `[due:: …]`, `🔁`) | Markdown | [tasks.md](tasks.md) | WS-E | read and written |
 | `Templates/*.md` (`{{…}}`, `quire-template:`) | Markdown | [templates.md](templates.md) | WS-E | read |
 | flashcards in notes (`::`, `?`, `==cloze==`) | Markdown | [srs.md](srs.md#cards-in-notes) | WS-E | read; `^k-` ids written on request |
-| `*.canvas` | JSON Canvas 1.0, one object per line | [canvas.md](canvas.md) | WS-G | format only |
-| `attachments/<canvas>-ink-<n>.svg` | SVG with `data-quire-*` attributes | [canvas.md](canvas.md) | WS-G | format only |
-| `<pdf> (annotations).md` | Markdown + `quire:pdf-anchor` | [pdf-annotations.md](pdf-annotations.md) | WS-G | format only |
-| citation footnotes in notes (`[^n]: [[Note]] — “…” <!-- quire:cite … -->`) | Markdown + `quire:cite` | [citations.md](citations.md) | WS-C | read and written |
+| `*.canvas` | JSON Canvas 1.0, one object per line | [canvas.md](canvas.md) | WS-G | read and written |
+| `attachments/<canvas>-ink-<n>.svg` | SVG with `data-quire-*` attributes | [canvas.md](canvas.md) | WS-G | read and written |
+| `<pdf> (annotations).md` | Markdown + `quire:pdf-anchor` | [pdf-annotations.md](pdf-annotations.md) | WS-G | read and written |
+| `.quire/cache/pdf-text/<sha256>.json` | JSON, format 1 (cache) | [pdf-annotations.md](pdf-annotations.md#pdf-text-cache-quirecachepdf-textsha256json) | WS-G | written |
+| `[@key]` in notes, library `.bib` files | Pandoc citations, BibTeX | [citations.md](citations.md) | WS-G | read; `.bib` written by Import |
+| citation footnotes in notes (`[^n]: [[Note]] — “…” <!-- quire:cite … -->`) | Markdown + `quire:cite` | [span-citations.md](span-citations.md) | WS-C | read and written |
 | `.quire/cache/claims/<extractor>/<h2>/<hash>.json`, `claims/seen.jsonl` | JSON format 1, JSONL v 1 | [claims.md](claims.md) | WS-C | written (device-local cache) |
 | `.quire/cache/contradict/<judge>.jsonl` | JSONL, v 1 | [claims.md](claims.md) | WS-C | written (device-local cache) |
 | `.quire/cache/stale.json`, `[staleness]` in `vault.toml` | JSON format 1, TOML | [claims.md](claims.md#staleness-in-quiresharedvaulttoml) | WS-C | written / read |

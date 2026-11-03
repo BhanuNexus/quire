@@ -1275,6 +1275,8 @@ pub(crate) fn preview(ui: &mut egui::Ui, ws: &mut Workspace, cache: &mut CommonM
     } else {
         text
     };
+    // WS-G: `[@key]` citations as author-date text and a reference list.
+    let text = quire_app::citations::render_source(ws, &text);
     let md = for_preview(&text, &|t| ws.attachment_path(t).map(|p| format!("file://{}", p.display())));
     let urls: Vec<String> =
         md.match_indices("(quire://note/").filter_map(|(i, _)| md[i + 1..].find(')').map(|e| md[i + 1..i + 1 + e].to_string())).collect();

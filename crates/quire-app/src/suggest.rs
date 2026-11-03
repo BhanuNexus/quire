@@ -21,6 +21,8 @@ pub enum SuggestKind {
     Tag,
     /// `/query` → a block to insert.
     Slash,
+    /// `[@query` → a work in the bibliography (WS-G, `citations.rs`).
+    Cite,
 }
 
 /// Where the trigger is: chars `start..end` (end is the caret) get replaced.
@@ -166,6 +168,15 @@ impl Workspace {
         let line = buf.char_to_line(sel.head);
         let line_start = buf.line_to_char(line);
         let before = buf.slice(line_start..sel.head);
+        // WS-G: `[@` completes citation keys from the bibliography.
+        if let Some((col, query, items)) = crate::citations::suggestions(self, &before)
+            && !in_code(&doc.text(), line)
+        {
+            return Some(Suggestions {
+                context: SuggestContext { kind: SuggestKind::Cite, start: line_start + col, end: sel.head, query },
+                items,
+            });
+        }
         let (kind, col, query) = detect(&before)?;
         if in_code(&doc.text(), line) {
             return None;
@@ -179,6 +190,7 @@ impl Workspace {
             SuggestKind::Link => self.link_items(&context.query),
             SuggestKind::Tag => self.tag_items(&context.query),
             SuggestKind::Slash => self.slash_items(&context.query, at_line_start),
+            SuggestKind::Cite => Vec::new(),
         };
         (!items.is_empty()).then_some(Suggestions { context, items })
     }

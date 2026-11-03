@@ -15,6 +15,7 @@
 
 pub mod blocks;
 pub mod callout;
+pub mod cite;
 pub mod comment;
 pub mod editing;
 pub mod extract;

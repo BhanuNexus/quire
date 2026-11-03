@@ -16,8 +16,15 @@ pub fn export_pdf(vault: &Vault, title: &str, text: &str, out: &NotePath) -> Res
         let p = vault.resolve_file(t).or_else(|| Some(NotePath::new(t.trim_start_matches("./"))))?;
         vault.storage().read_bytes(&p).ok()
     };
-    let opts = quire_typeset::PdfOptions { title: title.to_string(), load_image: Box::new(load), ..quire_typeset::PdfOptions::default() };
-    let bytes = quire_typeset::markdown_pdf(text, &opts).map_err(|e| e.to_string())?;
+    // WS-G: `[@key]` citations and the reference list (Typst, embedded style).
+    let (text, bibliography) = crate::citations::for_pdf(vault, text);
+    let opts = quire_typeset::PdfOptions {
+        title: title.to_string(),
+        load_image: Box::new(load),
+        bibliography,
+        ..quire_typeset::PdfOptions::default()
+    };
+    let bytes = quire_typeset::markdown_pdf(&text, &opts).map_err(|e| e.to_string())?;
     vault.storage().write_bytes_atomic(out, &bytes).map_err(|e| e.to_string())?;
     Ok(vault.storage().absolute(out).map_or_else(|| out.to_string(), |p| p.display().to_string()))
 }

@@ -5634,6 +5634,7 @@ name = "quire-app"
 version = "0.8.0"
 dependencies = [
  "base64 0.23.1",
+ "biblatex",
  "chrono",
  "crossbeam-channel",
  "directories",
@@ -5643,10 +5644,12 @@ dependencies = [
  "png",
  "quire-agent",
  "quire-ai",
+ "quire-canvas",
  "quire-import",
  "quire-index",
  "quire-intel",
  "quire-markdown",
+ "quire-pdf",
  "quire-plan",
  "quire-sync",
  "quire-text",
@@ -5716,8 +5719,10 @@ dependencies = [
  "quire-ai",
  "quire-app",
  "quire-assistant",
+ "quire-canvas",
  "quire-import",
  "quire-mcp",
+ "quire-pdf",
  "quire-spell",
  "quire-typeset",
  "resvg",
@@ -5815,10 +5820,15 @@ dependencies = [
 name = "quire-pdf"
 version = "0.8.0"
 dependencies = [
+ "hayro",
+ "hayro-interpret",
+ "kurbo",
  "quire-markdown",
  "quire-vault",
  "serde",
  "serde_json",
+ "sha2",
+ "strsim",
 ]
 
 [[package]]

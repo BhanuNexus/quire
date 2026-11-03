@@ -23,7 +23,7 @@ and why, what it needs from others, and the numbers its thresholds rest on.
   `Index::{line_of, lines_of, modified, idf}`, `LinkGraph::neighbors`.
 * **Anchors** (`quire_intel::anchor`): `make_anchor` widens to whole
   sentences; `resolve` runs the full ladder (§C.3); `footnote` /
-  `citations` write and read citation footnotes (docs/formats/citations.md);
+  `citations` write and read citation footnotes (docs/formats/span-citations.md);
   `verify_request`, `parse_support`, `lexical_support`.
 * **Ask** (`quire_intel::ask`): `retrieve` (sources now carry `end`, `sim`,
   `coverage`), `should_abstain`, `model_abstained` (`NOT_FOUND`),

@@ -316,6 +316,7 @@ fn sample_options() -> PdfOptions<'static> {
         title: "Sample".into(),
         load_image: Box::new(|path| (path == "assets/gradient.png").then(|| GRADIENT_PNG.to_vec())),
         page: PageSize::A4,
+        bibliography: None,
     }
 }
 
@@ -342,6 +343,7 @@ fn missing_and_broken_images_still_compile() {
             _ => None,
         }),
         page: PageSize::A4,
+        bibliography: None,
     };
     let pdf = markdown_pdf(md, &opts).unwrap();
     assert!(pdf.starts_with(b"%PDF-"));

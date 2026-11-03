@@ -64,6 +64,8 @@ pub(crate) struct FeatureUi {
     // ---- WS-F
     pub themes: crate::theme_ui::ThemeUi,
     pub git: crate::git_ui::GitUi,
+    // ---- WS-G
+    pub canvas: crate::canvas_ui::CanvasUi,
 }
 
 /// The built-in right-panel tab.
@@ -125,6 +127,13 @@ pub(crate) const SETTINGS_TABS: &[TabDef] = &[
     // ---- WS-F
     TabDef { id: "editing", label: label!("Editing"), available: crate::view::settings::available, show: crate::view::settings::show },
     TabDef { id: "appearance", label: label!("Appearance"), available: crate::theme_ui::available, show: crate::theme_ui::show },
+    // ---- WS-G
+    TabDef {
+        id: "citations",
+        label: label!("Citations"),
+        available: crate::cite_ui::settings_available,
+        show: crate::cite_ui::settings_tab,
+    },
 ];
 
 /// A bar drawn above the note, below the find bar: full width, as tall as
@@ -145,7 +154,8 @@ pub(crate) const EDITOR_BANNERS: &[BannerDef] = &[
     BannerDef { id: "citations", available: crate::trust_ui::banner_available, show: crate::trust_ui::banner },
     // ---- WS-D: "New in 0.9: AI is your choice…" for people upgrading from 0.8
     BannerDef { id: "ai-upgrade", available: crate::onboarding_ui::banner_available, show: crate::onboarding_ui::banner },
-    // ---- WS-G
+    // ---- WS-G: a canvas open as text (for review): its changes in words
+    BannerDef { id: "canvas-review", available: crate::canvas_ui::banner_available, show: crate::canvas_ui::banner },
 ];
 
 /// Something to do once the Inbox has drawn (drawing borrows its data).
@@ -213,6 +223,9 @@ pub(crate) const fn ui_target(cmd: Command) -> Option<UiTarget> {
         Command::StartReview | Command::ReviewThisNote => UiTarget::Overlay(crate::srs_ui::ReviewOverlay::make),
         // ---- WS-F
         Command::ChooseTheme => UiTarget::Settings("appearance"),
+        // ---- WS-G
+        Command::InsertCitation => UiTarget::Overlay(crate::cite_ui::CitePicker::make),
+        Command::ImportBibliography => UiTarget::Overlay(crate::cite_ui::ImportDialog::make),
         _ => return None,
     })
 }
@@ -260,9 +273,10 @@ pub(crate) fn open_surface(path: &NotePath) -> Option<Box<dyn crate::surfaces::S
     match ext.as_str() {
         // ---- WS-E: `.base` (Obsidian Bases)
         "base" => Some(Box::new(crate::base_surface::BaseSurface::new(path))),
-        // ---- WS-G: `.canvas`, `.pdf`
-        "canvas" => Some(Box::new(crate::surfaces::SystemViewer::new(path, "Canvas editing"))),
-        "pdf" => Some(Box::new(crate::surfaces::SystemViewer::new(path, "The PDF viewer"))),
+        // ---- WS-G: `.canvas`, `.pdf`, sketches (`.svg`)
+        "canvas" => Some(Box::new(crate::canvas_ui::CanvasSurface::new(path))),
+        "pdf" => Some(Box::new(crate::pdf_ui::PdfSurface::new(path))),
+        "svg" => Some(Box::new(crate::canvas_ui::SketchSurface::new(path))),
         _ => None,
     }
 }
@@ -310,5 +324,9 @@ pub(crate) fn layout_samples(ws: &mut Workspace) -> Vec<(&'static str, crate::ov
         ("new note from template: questions", Overlay::Feature(Box::new(crate::template_prompt_ui::TemplateDialog::sample()))),
         // ---- WS-F
         // ---- WS-G
+        ("insert citation: no library", Overlay::Feature(Box::new(crate::cite_ui::CitePicker::sample(false)))),
+        ("insert citation", Overlay::Feature(Box::new(crate::cite_ui::CitePicker::sample(true)))),
+        ("import bibliography", Overlay::Feature(Box::new(crate::cite_ui::ImportDialog::sample(false)))),
+        ("import bibliography: dry run", Overlay::Feature(Box::new(crate::cite_ui::ImportDialog::sample(true)))),
     ]
 }

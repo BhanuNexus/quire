@@ -46,12 +46,107 @@ pub struct PdfOptions<'a> {
     pub load_image: ImageLoader<'a>,
     /// Paper size.
     pub page: PageSize,
+    /// Citations and the works they cite (design §G.3); `None` for none.
+    pub bibliography: Option<Bibliography>,
 }
 
 impl Default for PdfOptions<'_> {
     fn default() -> Self {
-        Self { title: String::new(), load_image: Box::new(|_| None), page: PageSize::A4 }
+        Self { title: String::new(), load_image: Box::new(|_| None), page: PageSize::A4, bibliography: None }
     }
+}
+
+/// How a cited work appears in the text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CiteForm {
+    /// `(Lovelace 1843)`.
+    #[default]
+    Normal,
+    /// `Lovelace (1843)`: the author named in the sentence.
+    Prose,
+    /// `(1843)`: the author already named.
+    Year,
+}
+
+/// One work in a citation.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BibCite {
+    pub key: String,
+    /// Text before it (`see`).
+    pub prefix: String,
+    /// Where in the work (`p. 4`).
+    pub supplement: String,
+    pub form: CiteForm,
+}
+
+/// The note's citations for the PDF.
+///
+/// The Markdown holds the placeholder ([`cite_placeholder`]) where each citation goes;
+/// the PDF gets Typst's citations and a `References` list in an embedded
+/// style. If Typst can't read the bibliography, the PDF is made with each
+/// citation's fallback text instead.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Bibliography {
+    /// BibTeX of the cited works.
+    pub bibtex: String,
+    /// `apa`, `chicago-author-date` or `ieee` (Typst's built-in styles; no
+    /// other style is accepted).
+    pub style: String,
+    /// Each citation's works, and its text when Typst can't be used.
+    pub cites: Vec<(Vec<BibCite>, String)>,
+}
+
+/// The styles a [`Bibliography`] may name.
+pub const BIB_STYLES: [&str; 3] = ["apa", "chicago-author-date", "ieee"];
+
+/// Where citation `i` goes in the Markdown given to [`markdown_pdf`]
+/// (private-use characters, which survive escaping).
+pub fn cite_placeholder(i: usize) -> String {
+    format!("\u{e000}{i}\u{e001}")
+}
+
+/// Replace the citation placeholders in generated Typst: with Typst
+/// citations (`with_typst`), or with the fallback text.
+fn place_citations(source: &str, bib: &Bibliography, with_typst: bool) -> String {
+    let mut out = String::with_capacity(source.len());
+    let mut rest = source;
+    while let Some(open) = rest.find('\u{e000}') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + '\u{e000}'.len_utf8()..];
+        let Some(close) = after.find('\u{e001}') else {
+            rest = after;
+            continue;
+        };
+        let i: Option<usize> = after[..close].parse().ok();
+        match i.and_then(|i| bib.cites.get(i)) {
+            Some((works, _)) if with_typst => {
+                for (n, w) in works.iter().enumerate() {
+                    if n > 0 && !w.prefix.is_empty() {
+                        out.push(' ');
+                    }
+                    if !w.prefix.is_empty() {
+                        out.push_str(&escaped(&w.prefix));
+                        out.push(' ');
+                    }
+                    let _ = write!(out, "#cite(label({})", typst_string(&w.key));
+                    if !w.supplement.is_empty() {
+                        let _ = write!(out, ", supplement: [{}]", escaped(&w.supplement));
+                    }
+                    match w.form {
+                        CiteForm::Normal => {}
+                        CiteForm::Prose => out.push_str(", form: \"prose\""),
+                        CiteForm::Year => out.push_str(", form: \"year\""),
+                    }
+                    out.push(')');
+                }
+            }
+            Some((_, fallback)) => out.push_str(&escaped(fallback)),
+            None => {}
+        }
+        rest = &after[close + '\u{e001}'.len_utf8()..];
+    }
+    out.push_str(rest);
+    out
 }
 
 impl std::fmt::Debug for PdfOptions<'_> {
@@ -63,11 +158,36 @@ impl std::fmt::Debug for PdfOptions<'_> {
 /// Typesets a Markdown note as a PDF document.
 pub fn markdown_pdf(markdown: &str, opts: &PdfOptions<'_>) -> Result<Vec<u8>, TypesetError> {
     let doc = to_typst(markdown, opts);
-    let mut world = TypesetWorld::new(doc.source);
-    for (path, data) in doc.files {
-        world.add_file(&path, data);
-    }
-    let paged = world.compile()?;
+    let paged = match &opts.bibliography {
+        Some(bib) if !bib.cites.is_empty() => {
+            // With Typst's citations and reference list; if Typst can't read
+            // the bibliography, the citations are written as text instead.
+            let style = BIB_STYLES.iter().find(|s| **s == bib.style).copied().unwrap_or("apa");
+            let mut source = place_citations(&doc.source, bib, true);
+            let _ = write!(source, "\n\n#bibliography(\"/references.bib\", title: [References], style: {})\n", typst_string(style));
+            let mut world = TypesetWorld::new(source);
+            for (path, data) in &doc.files {
+                world.add_file(path, data.clone());
+            }
+            world.add_file("/references.bib", Bytes::new(bib.bibtex.clone().into_bytes()));
+            if let Ok(p) = world.compile() {
+                p
+            } else {
+                let mut world = TypesetWorld::new(place_citations(&doc.source, bib, false));
+                for (path, data) in doc.files {
+                    world.add_file(&path, data);
+                }
+                world.compile()?
+            }
+        }
+        _ => {
+            let mut world = TypesetWorld::new(doc.source);
+            for (path, data) in doc.files {
+                world.add_file(&path, data);
+            }
+            world.compile()?
+        }
+    };
     let options = typst_pdf::PdfOptions { creator: Smart::Custom(Some("Quire".into())), ..typst_pdf::PdfOptions::default() };
     match catch_unwind(AssertUnwindSafe(|| typst_pdf::pdf(&paged, &options))) {
         Ok(Ok(bytes)) => Ok(bytes),

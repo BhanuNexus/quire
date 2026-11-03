@@ -65,11 +65,12 @@ fn replace(args: &[String]) -> Result<(), String> {
 
 fn export(args: &[String]) -> Result<(), String> {
     let arg = |i: usize| super::arg(args, i);
-    let (_, svc, _) = load(arg(1)?)?;
+    let (vault, svc, _) = load(arg(1)?)?;
     let ix = svc.read();
     let p = find_note(&ix, arg(2)?)?;
-    let src = ix.source(&p).unwrap_or_default();
-    let html = render::to_html_document(p.stem(), src, &|l| {
+    // WS-G: `[@key]` citations as author-date text and a reference list.
+    let src = quire_app::citations::render_with_vault(&vault, ix.source(&p).unwrap_or_default());
+    let html = render::to_html_document(p.stem(), &src, &|l| {
         ix.resolve(&l.target, Some(&p)).map(|t| format!("{}.html", render::encode_url(t.stem())))
     });
     let out = args.get(3).cloned().unwrap_or_else(|| format!("{}.html", p.stem()));

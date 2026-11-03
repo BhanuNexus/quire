@@ -481,6 +481,10 @@ impl Workspace {
                 crate::nav::FolderLink::Folder(_) => None,
             };
         }
+        // WS-G: a PDF, canvas or other file opens in its editor (`[[paper.pdf#page=3]]`).
+        if crate::canvas_state::open_file_link(self, target, heading) {
+            return None;
+        }
         let from = self.active_doc().and_then(|d| d.path.clone());
         let resolved = self.index.read().resolve(target, from.as_ref());
         let id = match resolved {
@@ -974,7 +978,8 @@ impl Workspace {
     pub fn export_active_html(&mut self) -> Option<String> {
         let doc = self.active_doc()?;
         let title = doc.title();
-        let text = doc.text();
+        // WS-G: `[@key]` citations as author-date text and a reference list.
+        let text = crate::citations::render_source(self, &doc.text());
         let html = {
             let ix = self.index.read();
             let from = doc.path.clone();
@@ -1132,7 +1137,8 @@ impl Workspace {
     pub fn follow_link_at_caret(&mut self) -> bool {
         match self.link_at_caret() {
             Some((t, h)) => self.open_link(&t, h.as_deref()).is_some(),
-            None => false,
+            // WS-G: a `[@key]` citation opens its PDF or library entry.
+            None => crate::citations::follow_at_caret(self),
         }
     }
 

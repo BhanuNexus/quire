@@ -1,0 +1,6 @@
+cid
+Piece tables
+A piece table keeps the original file untouched and appends every insertion to a second buffer.
+Edits only add entries to a short list of pieces, which makes undo a matter of restoring an earlier list.
+Ünïcödé text such as naïve café façades, Ελληνικά and ligatures like office and flow must survive extraction.
+1 / 1

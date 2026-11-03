@@ -20,7 +20,7 @@ mod math;
 mod world;
 
 pub use diagram::diagram_svg;
-pub use markdown::{ImageLoader, PageSize, PdfOptions, markdown_pdf};
+pub use markdown::{BIB_STYLES, BibCite, Bibliography, CiteForm, ImageLoader, PageSize, PdfOptions, cite_placeholder, markdown_pdf};
 pub use math::{MathStyle, math_svg};
 
 /// A rendered SVG and its size in points.

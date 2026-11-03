@@ -16,6 +16,6 @@ Kinds in use or reserved:
 
 | Kind | Body | Owner |
 |---|---|---|
-| `cite` | `v=1 sha=<32 hex> l=<start>-<end> p="<prefix>" s="<suffix>"` (+ optional `b=<block id>`) after a footnote citation; see [citations.md](citations.md) | WS-C |
+| `cite` | `v=1 sha=<32 hex> l=<start>-<end> p="<prefix>" s="<suffix>"` (+ optional `b=<block id>`) after a footnote citation; see [span-citations.md](span-citations.md) | WS-C |
 | `index:start`, `index:end` | none; the generated part of `wiki/index.md` is between them | WS-D |
 | `pdf-anchor` | JSON, see [pdf-annotations.md](pdf-annotations.md) | WS-G |

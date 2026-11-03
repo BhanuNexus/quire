@@ -302,8 +302,10 @@ pub fn publish(vault: &Vault, ix: &Index, out: &Path, site_title: &str, which: S
     let mut tags: BTreeMap<String, Vec<&quire_index::NoteRecord>> = BTreeMap::new();
     let mut search = Vec::new();
 
+    // WS-G: `[@key]` citations as author-date text and a reference list.
+    let library = crate::citations::vault_library(vault);
     for rec in &chosen {
-        let src = ix.source(&rec.path).unwrap_or_default();
+        let src = &*crate::citations::render_with(&library, ix.source(&rec.path).unwrap_or_default());
         let private = std::cell::Cell::new(0);
         let embedded = std::cell::RefCell::new(Vec::new());
         let html = render::to_html(src, &|l| {

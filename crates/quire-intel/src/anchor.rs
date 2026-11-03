@@ -11,7 +11,7 @@
 //! sentences, which is `Drifted` when it is at least 75% similar.
 //!
 //! In Markdown a citation is a footnote that reads well anywhere (see
-//! docs/formats/citations.md):
+//! docs/formats/span-citations.md):
 //!
 //! ```markdown
 //! [^1]: [[Rope Notes#Undo]] — “Ropes make undo cheap.” <!-- quire:cite v=1 sha=… l=3-3 p="…" s="…" -->

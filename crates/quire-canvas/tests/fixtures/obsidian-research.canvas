@@ -1,0 +1,18 @@
+{
+	"nodes":[
+		{"id":"7c5b8ad0f3e1a2b4","type":"group","x":-520,"y":-360,"width":1140,"height":760,"label":"Ropes paper","color":"5","background":"attachments/paper-bg.png","backgroundStyle":"ratio"},
+		{"id":"b2d1c3e4f5a60718","type":"text","text":"# Ropes\n\nBalanced trees of strings. See [[Rope Notes#Undo]].\n\n- O(log n) edits\n- cheap undo","x":-480,"y":-320,"width":360,"height":220,"color":"#e9973f"},
+		{"id":"c3e2d4f5a6b70819","type":"file","file":"Rope Notes.md","subpath":"#Undo","x":-60,"y":-320,"width":400,"height":400},
+		{"id":"d4f3e5a6b7c8091a","type":"file","file":"attachments/rope-diagram.png","x":-480,"y":-60,"width":360,"height":240},
+		{"id":"e5a4f6b7c8d9102b","type":"link","url":"https://en.wikipedia.org/wiki/Rope_(data_structure)","x":380,"y":-320,"width":220,"height":300},
+		{"id":"f6b5a7c8d9e0213c","type":"text","text":"```mermaid\ngraph TD; A-->B\n```","x":380,"y":20,"width":220,"height":160,"styleAttributes":{"textAlign":"center","shape":"pill"}},
+		{"id":"0718293a4b5c6d7e","type":"text","text":"Unknown future type below","x":-60,"y":120,"width":400,"height":60},
+		{"id":"18293a4b5c6d7e8f","type":"sticker","x":-60,"y":220,"width":80,"height":80,"emoji":"⭐"}
+	],
+	"edges":[
+		{"id":"a1b2c3d4e5f60718","fromNode":"b2d1c3e4f5a60718","fromSide":"right","toNode":"c3e2d4f5a6b70819","toSide":"left"},
+		{"id":"b2c3d4e5f6071829","fromNode":"c3e2d4f5a6b70819","fromSide":"right","fromEnd":"arrow","toNode":"e5a4f6b7c8d9102b","toSide":"left","toEnd":"none","color":"1","label":"source"},
+		{"id":"c3d4e5f60718293a","fromNode":"d4f3e5a6b7c8091a","toNode":"b2d1c3e4f5a60718","styleAttributes":{"pathfindingMethod":"square"}}
+	],
+	"metadata":{"version":"1.0-1.0","frontmatter":{}}
+}
