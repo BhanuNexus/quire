@@ -12,7 +12,14 @@
 //! <chosen folder>/Quire Sync/<space>/
 //!   space.json                          the wrapped vault key (written once)
 //!   devices/<device>/000001.jsonl       one sealed revision per line, append-only
+//!   shared/devices/<device>/000001.jsonl  vault settings (0.9), the same way
 //! ```
+//!
+//! `shared/` is a **lane** of its own ([`FolderTransport::lane`]): vault
+//! settings and review history sync there, with their own revisions and
+//! state. Quire 0.8 reads only `devices/`, so it never sees those files and
+//! can never pass on a delete of them, even when it already joined the
+//! vault before a 0.9 device turned settings sync on.
 //!
 //! Each device reads everyone's logs and works out, for every note, the same
 //! **current revision**: start at the note's first revision and keep following
@@ -48,6 +55,8 @@ pub const FOLDER_NAME: &str = "Quire Sync";
 /// A device starts a new log file past this size, so tools that upload whole
 /// files on every change don't re-send a growing log.
 const SEGMENT_LIMIT: u64 = 1 << 20;
+/// The lane vault settings sync in (`<space>/shared/`), which 0.8 never reads.
+pub const SHARED_LANE: &str = "shared";
 /// The format new spaces are written in; 0.8 reads it.
 const FORMAT: u32 = 1;
 /// The newest format this build understands (0.9: `min_reader` exists).
@@ -129,6 +138,16 @@ fn read_space(dir: &Path) -> Result<SpaceFile, TransportError> {
         return Err(TransportError::Refused("this vault was made by a newer Quire; update Quire on this device".into()));
     }
     Ok(f)
+}
+
+/// Start the lane `lane` of a space (other 0.9 devices then join it).
+pub fn open_lane(root: &Path, space: &SpaceId, lane: &str) -> Result<(), TransportError> {
+    fs::create_dir_all(root.join(&space.0).join(lane).join("devices")).map_err(|e| io_err("can't write to the sync folder", &e))
+}
+
+/// Whether some device started the lane `lane` of a space.
+pub fn lane_exists(root: &Path, space: &SpaceId, lane: &str) -> bool {
+    root.join(&space.0).join(lane).join("devices").is_dir()
 }
 
 /// The oldest Quire format that may read this space (1 unless raised).
@@ -213,7 +232,10 @@ struct Index {
 /// A space in a synced folder, seen from one device.
 #[derive(Debug)]
 pub struct FolderTransport {
+    /// The space's folder (`space.json`).
     dir: PathBuf,
+    /// The folder holding `devices/`: the space's, or a lane's inside it.
+    logs: PathBuf,
     device: DeviceId,
     /// Remembers the last order number handed out, across restarts.
     seq_file: Option<PathBuf>,
@@ -230,7 +252,21 @@ impl FolderTransport {
         let saved = seq_file.as_ref().and_then(|f| fs::read_to_string(f).ok()).and_then(|s| s.trim().parse::<u64>().ok());
         let clock = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| u64::try_from(d.as_micros()).unwrap_or(u64::MAX));
         let seq = saved.unwrap_or(clock);
-        Self { dir: root.join(&space.0), device, seq_file, index: Mutex::new(Index { seq, ..Index::default() }) }
+        let dir = root.join(&space.0);
+        Self { logs: dir.clone(), dir, device, seq_file, index: Mutex::new(Index { seq, ..Index::default() }) }
+    }
+
+    /// A lane of the space (`<space>/<lane>/devices/…`): the same layout and
+    /// rules, in a folder older readers don't look at. `state_dir` keeps its
+    /// own counter (`folder-seq-<lane>`).
+    pub fn lane(root: &Path, space: &SpaceId, device: DeviceId, state_dir: Option<&Path>, lane: &str) -> Self {
+        let dir = state_dir.map(|d| d.join(format!("lane-{lane}")));
+        if let Some(d) = &dir {
+            let _ = fs::create_dir_all(d);
+        }
+        let mut t = Self::new(root, space, device, dir.as_deref());
+        t.logs = t.dir.join(lane);
+        t
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Index> {
@@ -238,7 +274,7 @@ impl FolderTransport {
     }
 
     fn own_dir(&self) -> PathBuf {
-        self.dir.join("devices").join(&self.device.0)
+        self.logs.join("devices").join(&self.device.0)
     }
 
     fn check_folder(&self) -> Result<(), TransportError> {
@@ -272,7 +308,7 @@ impl FolderTransport {
     /// Changes whenever any device's log changes; cheap enough to poll.
     pub fn fingerprint(&self) -> u64 {
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        if let Ok(devs) = fs::read_dir(self.dir.join("devices")) {
+        if let Ok(devs) = fs::read_dir(self.logs.join("devices")) {
             let mut files: Vec<(PathBuf, u64, Option<SystemTime>)> = devs
                 .flatten()
                 .filter_map(|d| fs::read_dir(d.path()).ok())
@@ -291,7 +327,7 @@ impl FolderTransport {
     fn scan(&self, ix: &mut Index) -> Result<(), TransportError> {
         self.check_folder()?;
         ix.waiting_for_download = 0;
-        let Ok(devs) = fs::read_dir(self.dir.join("devices")) else { return Ok(()) };
+        let Ok(devs) = fs::read_dir(self.logs.join("devices")) else { return Ok(()) };
         let mut logs = Vec::new();
         for dev in devs.flatten() {
             let own = dev.file_name().to_str() == Some(self.device.0.as_str());
@@ -556,6 +592,33 @@ mod tests {
     fn readable_by_0_8(dir: &Path) -> bool {
         let v: serde_json::Value = serde_json::from_slice(&fs::read(dir.join("space.json")).unwrap()).unwrap();
         v["format"].as_u64().unwrap() <= 1
+    }
+
+    #[test]
+    fn a_lane_is_invisible_to_the_main_logs_and_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = sync_root(dir.path());
+        let space = SpaceId::random().unwrap();
+        let key = WrappedKey::wrap(&VaultKey::generate().unwrap(), "pw", KdfParams::TEST).unwrap();
+        create_space(&root, &space, &key).unwrap();
+        let d = DeviceId::random().unwrap();
+        assert!(!lane_exists(&root, &space, SHARED_LANE));
+        let lane = FolderTransport::lane(&root, &space, d.clone(), None, SHARED_LANE);
+        let main = FolderTransport::new(&root, &space, d.clone(), None);
+        let f = FileId::random().unwrap();
+        let r = rev(&f, &[], &d);
+        assert!(matches!(lane.push(&r).unwrap(), PushOutcome::Accepted { .. }));
+        assert!(lane_exists(&root, &space, SHARED_LANE));
+        assert!(root.join(&space.0).join("shared/devices").join(&d.0).join("000001.jsonl").is_file());
+        // The main logs (all that 0.8 reads) don't have it.
+        let other = FolderTransport::new(&root, &space, DeviceId::random().unwrap(), None);
+        assert!(other.pull(0).unwrap().is_empty());
+        assert!(main.pull(0).unwrap().is_empty());
+        let main_rev = rev(&FileId::random().unwrap(), &[], &d);
+        main.push(&main_rev).unwrap();
+        let other_lane = FolderTransport::lane(&root, &space, DeviceId::random().unwrap(), None, SHARED_LANE);
+        assert_eq!(other_lane.pull(0).unwrap().iter().map(|r| r.rev.clone()).collect::<Vec<_>>(), [r.rev]);
+        assert_eq!(other.pull(0).unwrap().iter().map(|r| r.rev.clone()).collect::<Vec<_>>(), [main_rev.rev]);
     }
 
     #[test]

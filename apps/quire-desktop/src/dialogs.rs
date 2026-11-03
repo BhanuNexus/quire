@@ -356,7 +356,15 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
                 ui.add(egui::Spinner::new().size(12.0));
             }
         });
-        ui.label(RichText::new("Every device needs Quire 0.9 or later.").size(12.0).color(pal.muted));
+        ui.label(
+            RichText::new(if cfg.folder.is_some() {
+                "Devices still on Quire 0.8 keep syncing notes; settings reach devices on 0.9 or later."
+            } else {
+                "Every device needs Quire 0.9 or later."
+            })
+            .size(12.0)
+            .color(pal.muted),
+        );
         ui.label(
             RichText::new(if cfg.folder.is_some() {
                 "Stopping leaves your notes here as they are, and the sync folder for your other devices."

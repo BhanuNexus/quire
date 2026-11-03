@@ -42,18 +42,35 @@ incoming version (`via: "sync"`); 0.8 devices ignore the field.
 
 0.9 adds an optional `min_reader`. 0.8 refuses any `format` above 1. From
 0.9 on, a reader refuses a space only when `min_reader` is above the format
-it reads (2), and otherwise ignores a higher `format`. 0.9 keeps writing
-`format: 1` without `min_reader`; it writes `"format": 2, "min_reader": 2`
-only when the vault starts sharing settings (below). Unknown fields are kept.
+it reads (2), and otherwise ignores a higher `format`. 0.9 writes `format: 1`
+without `min_reader`, including when the vault shares settings (below).
+Unknown fields are kept.
 
-Note: a 0.8 device that already syncs a folder doesn't re-read `space.json`,
-so raising the minimum stops 0.8 devices from joining, not ones already set
-up. The setting asks the person to update every device first.
+## The settings lane in a sync folder
+
+```text
+<space>/devices/<device>/000001.jsonl          notes and attachments (0.8 and 0.9)
+<space>/shared/devices/<device>/000001.jsonl   .quire/shared/** (0.9 only)
+```
+
+With "Also sync vault settings and review history" on, `.quire/shared/**`
+(files up to 10 MB) travels in a lane of its own: the same log layout and
+rules, under `<space>/shared/`, with its own revisions and engine state
+(`.quire/sync/state-shared.json`, `.quire/sync/lane-shared/folder-seq`).
+Quire 0.8 reads only `<space>/devices/`, so it never sees those files, even
+on a device that joined before. (A 0.8 device that received them would write
+them, miss them on its next pass because it doesn't list hidden files, and
+send their deletion to every device.) The notes lane never lists, writes or
+deletes anything under `.quire/shared/`. 0.8 devices keep syncing notes.
 
 ## `.quire/sync/config.json` (vault, device-local)
 
 Adds `"shared_state": true` when "Also sync vault settings and review
-history" is on: `.quire/shared/**` (files up to 10 MB) then travels with
-Quire Sync. Absent means off; 0.8 ignores the field. A 0.9 device that
-receives a `.quire/shared/` file from another device turns it on too, so it
-never mistakes those files for deleted ones.
+history" is on. Absent means off; 0.8 ignores the field.
+
+* Through a server, `.quire/shared/**` travels with the notes, and turning
+  it on first raises the space's minimum protocol to 2, so 0.8 clients get
+  `426`. A 0.9 device that receives a `.quire/shared/` file from another
+  device turns it on too, so it never mistakes those files for deleted ones.
+* In a sync folder, turning it on starts the lane (`<space>/shared/devices/`).
+  A 0.9 device that never ran the lane joins it when it finds it.
