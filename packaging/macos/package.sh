@@ -30,7 +30,7 @@ name="$prefix-$version-macos-universal"
 app="$out/Quire.app"
 
 for t in aarch64-apple-darwin x86_64-apple-darwin; do
-  cargo build --release --locked --target "$t" -p quire-desktop -p quire-cli "${features[@]}"
+  cargo build --release --locked --target "$t" -p quire-desktop -p quire-cli ${features[@]+"${features[@]}"}
 done
 
 rm -rf "$app" && mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"

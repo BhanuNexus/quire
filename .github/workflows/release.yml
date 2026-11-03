@@ -39,7 +39,7 @@ env:
   IS_RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') }}
   # On-device AI ships disabled behind its experimental switch until its
   # models are pinned (design §D.1), so for now unpinned models only warn.
-  # For 0.9.1: pin them (`python3 packaging/pin-models.py`), then set this to
+  # For the release that turns it on: pin them (`python3 packaging/pin-models.py`), then set this to
   # "true" so a tag release fails again while any model is unpinned.
   REQUIRE_MODEL_PINS: "false"
 

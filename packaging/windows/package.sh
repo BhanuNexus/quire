@@ -28,7 +28,7 @@ case "$edition" in
 esac
 name="$prefix-$version-windows-x64"
 
-cargo build --release --locked --target "$target" -p quire-desktop -p quire-cli "${features[@]}"
+cargo build --release --locked --target "$target" -p quire-desktop -p quire-cli ${features[@]+"${features[@]}"}
 
 rm -rf "$stage" && mkdir -p "$stage"
 cp "target/$target/release/quire.exe" "target/$target/release/quire-cli.exe" "$stage/"

@@ -36,7 +36,7 @@ export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct 2>/dev/
 release_date="$(date -u -d "@$SOURCE_DATE_EPOCH" +%Y-%m-%d)"
 bin="target/$target/release"
 
-cargo build --release --locked --target "$target" -p quire-desktop -p quire-cli "${features[@]}"
+cargo build --release --locked --target "$target" -p quire-desktop -p quire-cli ${features[@]+"${features[@]}"}
 [[ "$edition" == full ]] && cargo build --release --locked --target "$target" -p quire-sync-server
 mkdir -p "$out"
 
