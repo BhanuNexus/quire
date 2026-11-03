@@ -326,9 +326,42 @@ impl ChatModel for LanguageModelChat {
     }
 }
 
+/// Any [`ChatModel`] as a one-shot [`LanguageModel`], for the assist
+/// features (summarize, rewrite…) when the model is the on-device one.
+pub struct ChatLanguageModel {
+    inner: Arc<dyn ChatModel>,
+}
+
+impl ChatLanguageModel {
+    pub fn new(inner: Arc<dyn ChatModel>) -> Self {
+        Self { inner }
+    }
+}
+
+impl LanguageModel for ChatLanguageModel {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn complete(&self, _task: &Assist, req: &LlmRequest) -> Result<String, LlmError> {
+        let chat = ChatRequest::simple(req.system.clone(), req.prompt.clone(), req.max_tokens);
+        let (text, _) = chat_text(self.inner.as_ref(), &chat, &CancelFlag::new())?;
+        if text.trim().is_empty() { Err(LlmError::Request("the model sent an empty reply".into())) } else { Ok(text) }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chat_models_complete_one_shot() {
+        let m = ChatLanguageModel::new(Arc::new(ScriptedChat::texts(["- one", ""])));
+        let req = LlmRequest { system: "s".into(), prompt: "p".into(), max_tokens: 10 };
+        assert_eq!(m.complete(&Assist::Summarize, &req).unwrap(), "- one");
+        assert!(m.complete(&Assist::Summarize, &req).is_err(), "an empty reply is an error");
+        assert_eq!(m.name(), "Scripted");
+    }
 
     #[test]
     fn scripted_chat_replays_and_records() {
