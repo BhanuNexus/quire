@@ -199,6 +199,21 @@ mod tests {
     }
 
     #[test]
+    fn review_a_multi_line_value_stays_one_property() {
+        let mut w = ws();
+        w.open_note(&NotePath::new("Tasks/A.md")).unwrap();
+        let evil = Value::Str("one\ntags: [evil]\n---\ninjected".into());
+        assert!(w.set_property("summary", &evil));
+        let text = w.active_doc().unwrap().text().to_string();
+        let fm = frontmatter::parse(&text).unwrap();
+        assert!(!fm.tags().contains(&"evil".to_string()), "{text}");
+        assert_eq!(fm.get("summary"), Some(&evil), "{text}");
+        assert!(w.set_property_path(&["author", "name"], &evil));
+        let text = w.active_doc().unwrap().text().to_string();
+        assert_eq!(frontmatter::parse(&text).unwrap().get_path("author.name"), Some(&evil), "{text}");
+    }
+
+    #[test]
     fn views_run_and_kanban_moves_closed_notes() {
         let mut w = ws();
         let spec = "from: Tasks/\nlayout: kanban\n";
