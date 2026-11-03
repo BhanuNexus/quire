@@ -81,10 +81,10 @@ fn tokens() -> Result<TokenStore, String> {
 fn stdio(args: &[String]) -> Result<(), String> {
     let allow_write = has(args, "--allow-write");
     let client_key = flag(args, "--client").map(str::to_string);
-    if let Some(k) = &client_key
-        && (k.is_empty() || !k.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')))
-    {
-        return Err(format!("--client takes a short key like claude-code, not “{k}”"));
+    // The same rule the server uses: `claude-code`, or `acp:<name>` for an
+    // external agent Quire started.
+    if let Some(k) = &client_key {
+        quire_mcp::server::client_actor_id(k)?;
     }
     if allow_write {
         eprintln!(
@@ -139,10 +139,11 @@ fn serve_http(args: &[String]) -> Result<(), String> {
         for r in consent.pending(now()) {
             if seen.insert(r.id.clone()) {
                 eprintln!(
-                    "\n{} ({}) asks for {}.\n  Approve: quire-cli mcp approve {}\n  Deny:    quire-cli mcp deny {}",
-                    r.client_name,
+                    "\n{} (calls itself {}) asks for {}.\n  Its browser page shows the code {}: approve only if it matches.\n  Approve: quire-cli mcp approve {}\n  Deny:    quire-cli mcp deny {}",
                     r.client_host,
+                    r.client_name,
                     r.scopes().describe().join("; "),
+                    r.verify_code(),
                     r.id,
                     r.id
                 );
@@ -159,7 +160,8 @@ fn requests(store: &ConsentStore, now: i64) -> String {
     }
     let mut s = String::new();
     for r in list {
-        let _ = writeln!(s, "{}  {} ({})  {}", r.id, r.client_name, r.client_host, r.scopes.join(", "));
+        let code = if r.verify_code().is_empty() { String::new() } else { format!("  code {}", r.verify_code()) };
+        let _ = writeln!(s, "{}  {} (calls itself {}){code}  {}", r.id, r.client_host, r.client_name, r.scopes.join(", "));
     }
     s
 }
@@ -224,6 +226,6 @@ mod tests {
         let c = ConsentStore::in_dir(dir.path());
         assert_eq!(requests(&c, 0), "No requests waiting.\n");
         let id = c.create("https://a.example/c.json", "App", "a.example", "http://127.0.0.1:1/cb", &["notes:read"], "r", 0).unwrap();
-        assert!(requests(&c, 1).starts_with(&format!("{id}  App (a.example)  notes:read")));
+        assert!(requests(&c, 1).starts_with(&format!("{id}  a.example (calls itself App)  notes:read")));
     }
 }

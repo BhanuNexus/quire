@@ -7,10 +7,14 @@
 //!    issuer (RFC 8414 metadata at `/.well-known/oauth-authorization-server`).
 //! 2. `/oauth/authorize` checks the client's metadata document, the redirect
 //!    URI, PKCE (S256 only), the resource and the scopes, then files a consent
-//!    request and shows "Approve this request in Quire".
+//!    request and shows "Approve this request in Quire" with the client's
+//!    host and a verification code that Quire shows too. It sets a secret,
+//!    unguessable per request, in an `HttpOnly` cookie: the browser that
+//!    started the request.
 //! 3. The person approves in Quire (or with `quire-cli mcp approve <id>`);
-//!    the waiting page redirects with `code`, `state` and `iss`. Codes work
-//!    once, for 60 s.
+//!    the waiting page, in that browser only, redirects with `code`, `state`
+//!    and `iss`. Knowing the request id isn't enough to get the code. One
+//!    code per approval; codes work once, for 60 s.
 //! 4. `/oauth/token` swaps the code (with the PKCE verifier) for a 1-hour
 //!    access token and a rotating 30-day refresh token, bound to the MCP
 //!    endpoint. `/oauth/revoke` revokes a token's family.
@@ -24,7 +28,7 @@ use std::sync::Arc;
 
 use axum::Form;
 use axum::extract::{Query, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -175,28 +179,67 @@ pub(crate) async fn authorize(State(st): State<Arc<HttpState>>, Query(q): Query<
     let (cid, name, host, redirect, resource) =
         (client.client_id.clone(), client.name.clone(), client.host.clone(), redirect_uri.to_string(), st.urls.resource.clone());
     let (challenge, state_s, actor) = (challenge.to_string(), state.to_string(), client.actor());
+    // The browser's secret (only its hash is kept) and the code to compare.
+    let mut raw = [0u8; 32];
+    if getrandom::fill(&mut raw).is_err() {
+        return error_page("No randomness available.");
+    }
+    let secret = URL_SAFE_NO_PAD.encode(raw);
+    let (browser, code) = (hash(&secret), crate::consent::verify_code());
+    let code2 = code.clone();
     let created = tokio::task::spawn_blocking(move || {
         let id = consent.create(&cid, &name, &host, &redirect, &names, &resource, now_ms())?;
-        // What the code needs later; none of it is secret.
-        consent.annotate(&id, &[("code_challenge", &challenge), ("oauth_state", &state_s), ("actor", &actor)])?;
+        // What the code needs later; only the browser secret's hash is kept.
+        consent.annotate(
+            &id,
+            &[("code_challenge", &challenge), ("oauth_state", &state_s), ("actor", &actor), ("browser", &browser), ("verify_code", &code2)],
+        )?;
         Ok::<_, String>(id)
     })
     .await;
     let Ok(Ok(id)) = created else { return error_page("Quire couldn't file the request.") };
-    waiting(&st, &id, &client.name, &client.host, scopes)
+    let mut res = waiting(&st, &id, &client.name, &client.host, &code, scopes);
+    let secure = if st.urls.issuer.starts_with("https://") { "; Secure" } else { "" };
+    let cookie = format!("{}={secret}; Path=/oauth/authorize; HttpOnly; SameSite=Lax; Max-Age=600{secure}", cookie_name(&id));
+    if let Ok(v) = HeaderValue::from_str(&cookie) {
+        res.headers_mut().append(header::SET_COOKIE, v);
+    }
+    res
 }
 
-fn waiting(st: &HttpState, id: &str, name: &str, host: &str, scopes: Scopes) -> Response {
+/// The cookie that holds request `id`'s browser secret.
+fn cookie_name(id: &str) -> String {
+    format!("quire_oauth_{id}")
+}
+
+/// Whether the request comes from the browser that started consent `r`.
+fn same_browser(headers: &HeaderMap, id: &str, r: &crate::consent::Request) -> bool {
+    let want = r.other.get("browser").and_then(|v| v.as_str()).unwrap_or_default();
+    let name = cookie_name(id);
+    !want.is_empty()
+        && headers
+            .get_all(header::COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .flat_map(|v| v.split(';'))
+            .filter_map(|kv| kv.trim().split_once('='))
+            .any(|(k, v)| k == name && hash(v) == want)
+}
+
+fn waiting(st: &HttpState, id: &str, name: &str, host: &str, code: &str, scopes: Scopes) -> Response {
     let wants = scopes.describe().iter().fold(String::new(), |mut s, d| {
         let _ = write!(s, "<li>{}</li>", escape(d));
         s
     });
     let body = format!(
-        "<p><b>{}</b> (from <b>{}</b>) asks to use your Quire notes:</p><ul>{wants}</ul>\
-<p>Approve or deny this request in the Quire app. Without the app open, run:</p><p><code>quire-cli mcp approve {}</code></p>\
-<p>This page continues by itself.</p>",
-        escape(name),
+        "<p>An app at <b style=\"font-size:1.3em\">{}</b> (it calls itself “{}”) asks to use your Quire notes:</p><ul>{wants}</ul>\
+<p>Approve or deny this request in the Quire app. Check that Quire shows the same code:</p>\
+<p style=\"font-size:1.6em;letter-spacing:.1em\"><b>{}</b></p>\
+<p>Without the app open, run:</p><p><code>quire-cli mcp approve {}</code></p>\
+<p>This page continues by itself. Keep it open: only this browser window can finish connecting.</p>",
         escape(host),
+        escape(name),
+        escape(code),
         escape(id)
     );
     html(
@@ -205,24 +248,45 @@ fn waiting(st: &HttpState, id: &str, name: &str, host: &str, scopes: Scopes) -> 
     )
 }
 
-pub(crate) async fn wait(State(st): State<Arc<HttpState>>, Query(q): Query<HashMap<String, String>>) -> Response {
+pub(crate) async fn wait(State(st): State<Arc<HttpState>>, Query(q): Query<HashMap<String, String>>, headers: HeaderMap) -> Response {
     let id = q.get("request").cloned().unwrap_or_default();
     let consent = st.consent.clone();
     let id2 = id.clone();
     let Ok(Some(r)) = tokio::task::spawn_blocking(move || consent.get(&id2)).await else {
         return error_page("This request doesn't exist. Start connecting again from the app.");
     };
+    // Only the browser that started the request may continue it: the code
+    // is never handed to someone who only knows the request id.
+    if !same_browser(&headers, &id, &r) {
+        return html(
+            StatusCode::FORBIDDEN,
+            page(
+                "Quire can't connect this app",
+                "<p>Finish connecting in the browser window that started it. If that window is gone, start connecting again from the app.</p>",
+                None,
+            ),
+        );
+    }
     let now = now_ms();
     let other = |k: &str| r.other.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();
     let state = other("oauth_state");
+    let clear = format!("{}=; Path=/oauth/authorize; HttpOnly; SameSite=Lax; Max-Age=0", cookie_name(&id));
+    let finish = |mut res: Response| {
+        if let Ok(v) = HeaderValue::from_str(&clear) {
+            res.headers_mut().append(header::SET_COOKIE, v);
+        }
+        res
+    };
     match r.state {
         ConsentState::Pending if r.expires <= now => error_page("This request expired. Start connecting again from the app."),
-        ConsentState::Pending => waiting(&st, &id, &r.client_name, &r.client_host, r.scopes()),
-        ConsentState::Denied => Redirect::to(&with_params(
-            &r.redirect_uri,
-            &[("error", "access_denied"), ("error_description", "denied in Quire"), ("state", &state), ("iss", &st.urls.issuer)],
-        ))
-        .into_response(),
+        ConsentState::Pending => waiting(&st, &id, &r.client_name, &r.client_host, r.verify_code(), r.scopes()),
+        ConsentState::Denied => finish(
+            Redirect::to(&with_params(
+                &r.redirect_uri,
+                &[("error", "access_denied"), ("error_description", "denied in Quire"), ("state", &state), ("iss", &st.urls.issuer)],
+            ))
+            .into_response(),
+        ),
         ConsentState::Used => error_page("This request was already completed."),
         ConsentState::Approved => {
             let consent = st.consent.clone();
@@ -250,7 +314,10 @@ pub(crate) async fn wait(State(st): State<Arc<HttpState>>, Query(q): Query<HashM
                 codes.0.retain(|_, c| c.expires > now);
                 codes.0.insert(hash(&code), entry);
             }
-            Redirect::to(&with_params(&r.redirect_uri, &[("code", &code), ("state", &state), ("iss", &st.urls.issuer)])).into_response()
+            finish(
+                Redirect::to(&with_params(&r.redirect_uri, &[("code", &code), ("state", &state), ("iss", &st.urls.issuer)]))
+                    .into_response(),
+            )
         }
     }
 }

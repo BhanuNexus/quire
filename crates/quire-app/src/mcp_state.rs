@@ -28,8 +28,13 @@ pub struct ConsentPrompt {
     pub id: String,
     /// The name the app gives itself (shown, never trusted alone).
     pub client_name: String,
-    /// The host of its `client_id`, shown prominently.
+    /// The host of its `client_id` (with a port when not the default),
+    /// shown prominently.
     pub client_host: String,
+    /// The whole `client_id` URL: the metadata document that names it.
+    pub client_id: String,
+    /// The code the browser that asked shows; the person compares the two.
+    pub verify_code: String,
     /// What it may do, in plain words.
     pub wants: Vec<String>,
 }
@@ -230,6 +235,8 @@ mod tests {
             id: "r1".into(),
             client_name: "App".into(),
             client_host: "a.example".into(),
+            client_id: "https://a.example/client.json".into(),
+            verify_code: "ABCD-EFGH".into(),
             wants: vec![],
         }])))
     }

@@ -35,7 +35,8 @@ pub struct Client {
     pub client_id: String,
     /// As the client names itself (shown with the host, never trusted alone).
     pub name: String,
-    /// The `client_id`'s host, shown prominently on the consent screen.
+    /// The `client_id`'s host, with its port when it isn't the default:
+    /// exactly whose document this is, shown prominently on the consent screen.
     pub host: String,
     /// `host/path`, for the actor id `oauth:<host/path>`.
     pub host_path: String,
@@ -104,6 +105,10 @@ impl Cache {
         if path == "/" || url.rest.contains('#') {
             return Err("client_id must name a document (a URL with a path and no fragment)".into());
         }
+        // The consent screen shows the host as it is: no look-alike letters.
+        if !url.host.is_ascii() || url.host.ends_with('.') {
+            return Err("client_id's host must be written in ASCII (punycode for international names), without a trailing dot".into());
+        }
         let opts = FetchOptions { allow_private: loopback_http, max_redirects: 0, timeout: TIMEOUT, ..FetchOptions::default() };
         let got = web::fetch(client_id, &opts, MAX_DOC).map_err(|e| format!("couldn't read the client's metadata at {client_id}: {e}"))?;
         let doc: Value = serde_json::from_slice(&got.bytes).map_err(|_| "the client's metadata isn't JSON".to_string())?;
@@ -121,15 +126,15 @@ impl Cache {
         if redirect_uris.is_empty() {
             return Err("the client's metadata lists no redirect_uris".into());
         }
-        let host = url.host.clone();
+        let default_port = if url.https { 443 } else { 80 };
+        let host = if url.port == default_port { url.host.clone() } else { format!("{}:{}", url.host, url.port) };
         let name = doc
             .get("client_name")
             .and_then(Value::as_str)
             .map(|n| n.chars().filter(|c| !c.is_control()).take(80).collect::<String>())
             .filter(|n| !n.trim().is_empty())
             .unwrap_or_else(|| host.clone());
-        let client =
-            Client { client_id: client_id.to_string(), name, host: host.clone(), host_path: format!("{host}{path}"), redirect_uris };
+        let client = Client { client_id: client_id.to_string(), name, host, host_path: format!("{}{path}", url.host), redirect_uris };
         let ttl = max_age(&got.cache_control);
         if !ttl.is_zero() {
             self.entries
@@ -169,6 +174,8 @@ mod tests {
         assert!(cache.get("http://a.example/c.json").unwrap_err().contains("https"));
         assert!(cache.get("https://a.example/").unwrap_err().contains("path"));
         assert!(cache.get("https://a.example/c.json#x").unwrap_err().contains("path"));
+        assert!(cache.get("https://\u{441}laude.ai/c.json").unwrap_err().contains("ASCII"), "look-alike letters");
+        assert!(cache.get("https://claude.ai./c.json").unwrap_err().contains("ASCII"));
         let local = cache.get("https://127.0.0.1/c.json").unwrap_err();
         assert!(local.contains("private or local"), "{local}");
         assert_eq!(max_age("public, max-age=600"), Duration::from_mins(10));
