@@ -201,8 +201,15 @@ impl Job for CitationsJob {
             return Step::Done;
         }
         let resolve = |target: &str, from: &NotePath| cx.index.read().ok().and_then(|ix| ix.resolve(target, Some(from)));
-        // First run: find the notes that cite.
-        let scan = self.scan.get_or_insert_with(|| cx.index.read().map(|ix| ix.paths()).unwrap_or_default());
+        // First run: find the notes that cite, once the index has loaded.
+        if self.scan.is_none() {
+            let paths = cx.index.read().map(|ix| ix.paths()).unwrap_or_default();
+            if paths.is_empty() {
+                return Step::Idle(Duration::from_secs(1));
+            }
+            self.scan = Some(paths);
+        }
+        let Some(scan) = self.scan.as_mut() else { return Step::Idle(Duration::from_secs(1)) };
         if !scan.is_empty() {
             let take: Vec<NotePath> = scan.drain(..scan.len().min(SCAN_CHUNK)).collect();
             let found: Vec<(NotePath, String)> = cx

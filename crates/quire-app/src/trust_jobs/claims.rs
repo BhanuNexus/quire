@@ -395,7 +395,7 @@ impl Job for ClaimsJob {
         let settings = self.shared.settings();
         let Some(model) = self.shared.chat().filter(|_| settings.contradictions) else {
             self.status(|s| s.note = None);
-            return Step::Idle(Duration::from_secs(30));
+            return Step::Idle(Duration::from_secs(5));
         };
         if model.name() != self.model_name {
             // Another model: its own cache; start over.

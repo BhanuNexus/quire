@@ -272,12 +272,13 @@ impl Job for StaleJob {
             return Step::Done;
         }
         if !self.shared.settings().staleness {
-            return Step::Idle(Duration::from_secs(30));
+            return Step::Idle(Duration::from_secs(5));
         }
         match &mut self.phase {
             Phase::Waiting => {
                 if let Some(wait) = self.due() {
-                    return Step::Idle(wait.clamp(Duration::from_secs(1), Duration::from_mins(1)));
+                    // Look again every second: "Check now" and new changes are atomics.
+                    return Step::Idle(wait.min(Duration::from_secs(1)));
                 }
                 self.changed = false;
                 let paths = cx.index.read().map(|ix| ix.paths()).unwrap_or_default();

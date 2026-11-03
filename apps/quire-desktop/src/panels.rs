@@ -1398,6 +1398,7 @@ pub(crate) fn find_bar(ui: &mut egui::Ui, ws: &mut Workspace, focus: &mut bool, 
         toggle(ui, &mut o.case_sensitive, "Aa", "Match case", pal);
         toggle(ui, &mut o.whole_word, "W", "Whole word", pal);
         toggle(ui, &mut o.regex, ".*", "Regular expression ($1 in replacement)", pal);
+        toggle(ui, &mut o.match_accents, "é", "Match accents (off: “cafe” also finds “café”)", pal);
         ws.find.opts = o;
         let (m, err) = ws.find_matches();
         let label = match (&err, m.len(), ws.find_current()) {

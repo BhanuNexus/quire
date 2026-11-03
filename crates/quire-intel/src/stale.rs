@@ -182,7 +182,8 @@ pub fn score(input: &Input<'_>) -> Score {
     let phrases = time_bound(input.text, input.today);
     let n_phrases: u32 = phrases.iter().map(|p| p.1).sum();
     let s_terms = (0.25 * n_phrases as f32).clamp(0.0, 1.0);
-    let expired = input.valid_until.filter(|d| *d < input.today);
+    // Reviewed after it expired: the person has seen it (Mark reviewed).
+    let expired = input.valid_until.filter(|d| *d < input.today && input.reviewed.is_none_or(|r| r < *d));
     let hard = expired.is_some() || input.superseded_by.is_some();
     if let Some(by) = &input.superseded_by {
         reasons.push(Reason::Superseded { by: by.clone() });
@@ -298,6 +299,8 @@ mod tests {
         assert!((score(&gone).score - 1.0).abs() < 1e-6);
         let sup = Input { superseded_by: Some("[[New]]".into()), ..input("x") };
         assert_eq!(score(&sup).reasons[0], Reason::Superseded { by: "[[New]]".into() });
+        let seen = Input { valid_until: Some(d("2026-01-01")), reviewed: Some(d("2026-02-01")), ..input("x") };
+        assert!(!score(&seen).hard, "reviewed after it expired");
         let future = Input { valid_until: Some(d("2027-01-01")), ..input("x") };
         assert!(!score(&future).hard);
     }

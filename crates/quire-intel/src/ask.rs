@@ -223,6 +223,11 @@ fn answer_like(sent: &str) -> bool {
     if words.len() < 5 {
         return false;
     }
+    // Pointers to other notes ("See [[X]] for…", "Related: …") aren't answers.
+    let first = words[0].trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+    if matches!(first.as_str(), "see" | "related" | "cf" | "also") {
+        return false;
+    }
     let tags = words.iter().filter(|w| w.starts_with('#')).count();
     if tags * 4 > words.len() {
         return false;
@@ -499,15 +504,24 @@ pub fn answer_note(meta: &AnswerMeta<'_>, answer: &Answer) -> String {
         }
         body.push_str(&text[last..at]);
         let inner = &text[at + 1..close - 1];
+        // Footnote markers sit right after the word or full stop: "cheap.[^1]".
+        if inner.split(',').any(|x| x.trim().parse::<usize>().ok().and_then(label).is_some()) {
+            body.truncate(body.trim_end_matches(' ').len());
+        }
         let refs: Vec<String> =
             inner.split(',').filter_map(|x| x.trim().parse().ok()).filter_map(label).map(|l| format!("[^{l}]")).collect();
         let _ = n;
+        last = close;
         if refs.is_empty() {
             body.push_str(&text[at..close]);
         } else {
+            // "shared [1]." becomes "shared.[^1]": the marker after the full stop.
+            if let Some(p) = text[close..].chars().next().filter(|c| matches!(c, '.' | ',' | ';' | ':' | '!' | '?')) {
+                body.push(p);
+                last += p.len_utf8();
+            }
             body.push_str(&refs.concat());
         }
-        last = close;
     }
     body.push_str(&text[last..]);
     let notes: Vec<&NotePath> = {
@@ -584,6 +598,7 @@ mod tests {
         assert!(!answer_like("How Editors Store Text"));
         assert!(!answer_like("Related: Rope Notes · #reading/cs #editors"));
         assert!(answer_like("Edits touch only the path from the root to one leaf"));
+        assert!(!answer_like("See [[Lodz]] for the other trip and more."));
         let req = build_ask_request("why?", &sources);
         assert!(req.prompt.contains("[1] [[Rope Notes#Undo]]") && req.system.contains("NOT_FOUND"));
     }
@@ -632,7 +647,7 @@ mod tests {
         let meta = AnswerMeta { question: "Why is undo cheap?", date: "2026-11-03", model: "Quire (offline)", answered_by: "human" };
         let text = answer_note(&meta, &a);
         assert!(text.starts_with("---\ntype: answer\nquestion: Why is undo cheap?\nasked: 2026-11-03\nanswered_by: human\nai_written: true\nsources: [\"[[Rope Notes]]\"]\n---\n"), "{text}");
-        assert!(text.contains("> [!ai] Written by Quire (offline) from 1 note on 2026-11-03\n\nSubtrees are shared [^1].\n"));
+        assert!(text.contains("> [!ai] Written by Quire (offline) from 1 note on 2026-11-03\n\nSubtrees are shared.[^1]\n"));
         let cs = crate::anchor::citations(&text);
         assert_eq!(cs.len(), 1);
         assert_eq!(cs[0].note(), "Rope Notes");

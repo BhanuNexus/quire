@@ -10,6 +10,7 @@
 //! * [`SIDEBAR_TABS`] — extra sidebar tabs (Files, Search, Tags, Tasks are built in)
 //! * [`SETTINGS_TABS`] — tabs of the Settings dialog
 //! * [`EDITOR_BANNERS`] — bars above the note (the review banner)
+//! * [`INBOX_KINDS`] — how a feature's Inbox items read and what they offer
 //! * [`ui_target`] — what a feature command's `UiRequest::Feature` opens
 //!   (a tab, or a dialog with [`UiTarget::Overlay`])
 //! * [`paint_widget`] — widgets a feature puts under a line of a note
@@ -18,6 +19,7 @@
 //!
 //! Each table is in workstream order; add to your block only.
 
+use quire_app::agent::inbox::{InboxItem, StoredItem};
 use quire_app::decor::{ActionId, WidgetId};
 use quire_app::vault::NotePath;
 use quire_app::workspace::NoticeLevel;
@@ -52,6 +54,7 @@ pub(crate) struct FeatureUi {
     pub mcp: crate::mcp_ui::McpUi,
     // ---- WS-C
     pub timeline: crate::timeline_ui::TimelineUi,
+    pub trust: crate::trust_ui::TrustSettingsUi,
     // ---- WS-D
     pub agent_panel: crate::agent_panel_ui::AgentPanelUi,
     // ---- WS-E
@@ -112,6 +115,8 @@ pub(crate) const SETTINGS_TABS: &[TabDef] = &[
     TabDef { id: "agents", label: label!("Agents"), available: crate::agents_settings::available, show: crate::agents_settings::show },
     // ---- WS-B (HTTP MCP and tokens: a section of the Agents tab, or a tab here)
     TabDef { id: "mcp", label: label!("Connections"), available: crate::mcp_ui::available, show: crate::mcp_ui::show },
+    // ---- WS-C (ask style, citation checks, staleness, contradictions; WS-D may fold it into AI)
+    TabDef { id: "trust", label: label!("Trust"), available: crate::trust_ui::settings_available, show: crate::trust_ui::settings_tab },
     // ---- WS-D
     // ---- WS-E
     TabDef { id: "planning", label: label!("Planning"), available: crate::agenda_ui::available, show: crate::agenda_ui::settings_tab },
@@ -134,9 +139,32 @@ pub(crate) struct BannerDef {
 pub(crate) const EDITOR_BANNERS: &[BannerDef] = &[
     // ---- WS-A: "Claude Code suggests 4 changes · Why … · ◀ Prev  Next ▶ · …"
     BannerDef { id: "review", available: crate::inbox_ui::review_ui::banner_available, show: crate::inbox_ui::review_ui::banner },
-    // ---- WS-C
+    // ---- WS-C: "2 citations in this note no longer match the cited text · Check again"
+    BannerDef { id: "citations", available: crate::trust_ui::banner_available, show: crate::trust_ui::banner },
     // ---- WS-D
     // ---- WS-G
+];
+
+/// Something to do once the Inbox has drawn (drawing borrows its data).
+pub(crate) type InboxAct = Box<dyn FnOnce(&mut Workspace, &mut PanelOut)>;
+
+/// How a feature's Inbox items read and what they offer. The Inbox draws a
+/// card per item: `body` inside it, then a row with `actions` followed by
+/// the Inbox's own Dismiss and Snooze. Items no entry claims get a plain
+/// sentence and Open.
+#[derive(Clone, Copy)]
+pub(crate) struct InboxKindDef {
+    /// Whether this entry draws `item` (cheap: called per item per frame).
+    pub handles: fn(&InboxItem) -> bool,
+    pub body: fn(&mut egui::Ui, &Workspace, &StoredItem, &Palette),
+    /// The item's buttons; return what a click should do.
+    pub actions: fn(&mut egui::Ui, &Workspace, &StoredItem, &Palette) -> Option<InboxAct>,
+}
+
+/// Inbox item kinds with their own text and actions, by workstream.
+pub(crate) const INBOX_KINDS: &[InboxKindDef] = &[
+    // ---- WS-C: contradictions, staleness, citations
+    InboxKindDef { handles: crate::trust_ui::is_trust_item, body: crate::trust_ui::inbox_body, actions: crate::trust_ui::inbox_actions },
 ];
 
 /// The tabs of `table` that are offered now.
@@ -203,6 +231,8 @@ pub(crate) fn paint_widget(ui: &mut egui::Ui, ws: &Workspace, id: WidgetId, pal:
     match id.owner {
         // ---- WS-A
         quire_app::Owner::Agent => crate::inbox_ui::review_ui::paint_widget(ui, ws, id, pal),
+        // ---- WS-C: notes under drifted citations
+        quire_app::Owner::Trust => crate::trust_ui::paint_widget(ui, ws, id, pal),
         // ---- WS-E: Dataview/Tasks results, Kanban boards, template fields
         quire_app::Owner::Plan => crate::agenda_ui::paint_widget(ui, ws, id, pal),
         quire_app::Owner::Core => (0.0, None),
@@ -249,6 +279,11 @@ pub(crate) fn layout_samples(ws: &mut Workspace) -> Vec<(&'static str, crate::ov
         ("capture web page", crate::mcp_ui::layout_sample(2)),
         ("capture web page, error", crate::mcp_ui::layout_sample(3)),
         // ---- WS-C
+        ("ask", Overlay::Feature(Box::new(crate::ask_ui::AskOverlay::sample(crate::ask_ui::samples::empty)))),
+        ("ask: what do you expect", Overlay::Feature(Box::new(crate::ask_ui::AskOverlay::sample(crate::ask_ui::samples::expect)))),
+        ("ask: evidence", Overlay::Feature(Box::new(crate::ask_ui::AskOverlay::sample(crate::ask_ui::samples::evidence)))),
+        ("ask: answer", Overlay::Feature(Box::new(crate::ask_ui::AskOverlay::sample(crate::ask_ui::samples::answer)))),
+        ("ask: not found", Overlay::Feature(Box::new(crate::ask_ui::AskOverlay::sample(crate::ask_ui::samples::not_found)))),
         // ---- WS-D
         // ---- WS-E
         ("rename tag", Overlay::Feature(Box::new(crate::meta_refactor_ui::RefactorOverlay::sample(false, false)))),

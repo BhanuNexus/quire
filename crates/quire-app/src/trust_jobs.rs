@@ -186,16 +186,15 @@ impl TrustState {
 
 // ------------------------------------------------------------------ model
 
-/// Where the configured provider runs.
+/// Where the configured provider runs: on this computer or a server here
+/// (Ollama, LM Studio) when its address is local, else the cloud.
 fn locality(settings: &crate::Settings) -> Locality {
-    match settings.ai_provider.as_str() {
-        "anthropic" | "openai" => Locality::Cloud,
-        _ => {
-            let (base, _) = crate::ai::resolved(settings);
-            let local = ["localhost", "127.0.0.1", "[::1]"].iter().any(|h| base.contains(h));
-            if local { Locality::LocalServer } else { Locality::Cloud }
-        }
-    }
+    let (base, _) = crate::ai::resolved(settings);
+    let host = base.split("://").nth(1).unwrap_or(&base).split(['/', ':']).next().unwrap_or_default().to_ascii_lowercase();
+    let local = matches!(host.as_str(), "localhost" | "127.0.0.1" | "0.0.0.0" | "[")
+        || host.rsplit('.').next() == Some("local")
+        || base.contains("[::1]");
+    if local { Locality::LocalServer } else { Locality::Cloud }
 }
 
 impl Workspace {
@@ -296,13 +295,23 @@ impl Workspace {
         let (la, lb) = (lines(self, a), lines(self, b));
         self.features.trust.highlights = vec![(a.path.clone(), la), (b.path.clone(), lb)];
         self.features.decor_generation += 1;
-        if self.open_note(&a.path).is_none() {
-            return;
-        }
+        // Real tabs, not the preview tab that the next note would replace.
+        self.features.nav.open_pinned = true;
+        let Some(id_a) = self.open_note(&a.path) else { return };
+        crate::nav::pin(self, id_a);
         self.jump_to_line(la.0);
-        if a.path != b.path && self.open_note(&b.path).is_some() {
-            self.jump_to_line(lb.0);
-            self.request_ui(UiRequest::Split);
+        if a.path != b.path {
+            // The split shows the most recent other note: make that `a`.
+            if let Some(i) = self.docs.iter().position(|d| d.id == id_a) {
+                let doc = self.docs.remove(i);
+                self.docs.push(doc);
+                self.active = Some(self.docs.len() - 1);
+            }
+            if let Some(id_b) = self.open_note(&b.path) {
+                crate::nav::pin(self, id_b);
+                self.jump_to_line(lb.0);
+                self.request_ui(UiRequest::Split);
+            }
         }
         self.request_ui(UiRequest::RevealCaret);
     }
@@ -657,6 +666,19 @@ mod tests {
     use super::*;
     use crate::Settings;
     use quire_vault::Vault;
+
+    #[test]
+    fn providers_are_local_by_address() {
+        let mut s = Settings { ai_provider: "openai".into(), ..Settings::default() };
+        assert_eq!(locality(&s), Locality::LocalServer, "the default is Ollama on this computer");
+        s.ai_base_url = "https://api.openai.com/v1".into();
+        assert_eq!(locality(&s), Locality::Cloud);
+        s.ai_base_url = "http://[::1]:1234".into();
+        assert_eq!(locality(&s), Locality::LocalServer);
+        s.ai_provider = "anthropic".into();
+        s.ai_base_url = String::new();
+        assert_eq!(locality(&s), Locality::Cloud);
+    }
 
     #[test]
     fn footnotes_are_found_by_label() {

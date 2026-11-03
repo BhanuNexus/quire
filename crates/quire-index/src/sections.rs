@@ -435,6 +435,44 @@ mod tests {
         assert!(s.search_sections("boehm", &only, 5).is_empty());
     }
 
+    /// Timing on 2,000 notes (design §9: ≤ 15 ms in release). Run with
+    /// `cargo test -p quire-index --release -- --ignored section_search_speed --nocapture`.
+    #[test]
+    #[ignore = "a benchmark"]
+    fn section_search_speed() {
+        let words = ["rope", "tree", "undo", "buffer", "editor", "café", "line", "node", "piece", "table", "gap", "cursor"];
+        let notes: Vec<(String, String)> = (0..2_000)
+            .map(|i| {
+                let body = (0..12).fold(String::new(), |mut b, j| {
+                    use std::fmt::Write as _;
+                    let _ = write!(
+                        b,
+                        "## Part {j}\n{} {} {} and more text about {}.\n\n",
+                        words[(i + j) % 12],
+                        words[(i * 7 + j) % 12],
+                        words[(i * 3 + j * 5) % 12],
+                        words[j % 12]
+                    );
+                    b
+                });
+                (format!("Folder {}/Note {i}.md", i % 20), format!("# Note {i}\n{body}"))
+            })
+            .collect();
+        let files: Vec<(&str, &str)> = notes.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
+        let s = svc(&files);
+        let mut times = Vec::new();
+        for q in ["rope undo", "cafe", "editor buffer", "gap cursor", "piece table", "line node"] {
+            for _ in 0..5 {
+                let t = std::time::Instant::now();
+                let hits = s.search_sections(q, &SearchFilters::default(), 10);
+                times.push(t.elapsed());
+                assert!(!hits.is_empty());
+            }
+        }
+        times.sort();
+        eprintln!("section search, 2,000 notes: p50 {:?}, p95 {:?}", times[times.len() / 2], times[times.len() * 95 / 100]);
+    }
+
     #[test]
     fn meaning_hits_fill_in() {
         let s = svc(&[

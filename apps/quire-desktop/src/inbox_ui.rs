@@ -60,7 +60,7 @@ fn heading(ui: &mut egui::Ui, pal: &Palette, title: &str, n: usize) {
 }
 
 /// Something to do once drawing is over (drawing borrows the data).
-type Act = Box<dyn FnOnce(&mut Workspace, &mut PanelOut)>;
+type Act = crate::registry::InboxAct;
 
 fn snooze_menu(ui: &mut egui::Ui, fingerprint: &str, act: &mut Option<Act>) {
     ui.menu_button(RichText::new("Snooze").size(12.0), |ui| {
@@ -165,7 +165,7 @@ fn body(ui: &mut egui::Ui, ws: &Workspace, st: &mut InboxUi, pal: &Palette, act:
             checks(ui, ws, &items, st, pal, act);
         } else {
             for s in items {
-                finding(ui, s, pal, act);
+                finding(ui, ws, s, pal, act);
             }
         }
         shown += 1;
@@ -402,8 +402,26 @@ fn dismiss(ws: &mut Workspace, fingerprint: &str) {
     ws.features.agent.reload_inbox_soon();
 }
 
-/// Findings of other features: shown plainly with Open and Dismiss.
-fn finding(ui: &mut egui::Ui, s: &StoredItem, pal: &Palette, act: &mut Option<Act>) {
+/// Findings of other features: drawn by their owner when it registered
+/// their kind (`registry::INBOX_KINDS`), else plainly with Open; then
+/// Dismiss and Snooze.
+fn finding(ui: &mut egui::Ui, ws: &Workspace, s: &StoredItem, pal: &Palette, act: &mut Option<Act>) {
+    if let Some(kind) = crate::registry::INBOX_KINDS.iter().find(|k| (k.handles)(&s.item)) {
+        card(ui, pal, |ui| {
+            (kind.body)(ui, ws, s, pal);
+            ui.horizontal_wrapped(|ui| {
+                if let Some(a) = (kind.actions)(ui, ws, s, pal) {
+                    *act = Some(a);
+                }
+                let fp = s.fingerprint.clone();
+                if ui.small_button("Dismiss").on_hover_text("Hide this until it changes").clicked() {
+                    *act = Some(Box::new(move |ws: &mut Workspace, _| dismiss(ws, &fp)));
+                }
+                snooze_menu(ui, &s.fingerprint, act);
+            });
+        });
+        return;
+    }
     let text = match &s.item {
         InboxItem::Contradiction { a, b, rationale, confidence, .. } => {
             format!("“{}” and “{}” may disagree ({:.0}% sure). {rationale}", a.path.stem(), b.path.stem(), confidence * 100.0)
