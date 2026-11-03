@@ -73,7 +73,6 @@ fn overlays(ws: &mut Workspace) -> Vec<(&'static str, Overlay)> {
         ("delete", Overlay::ConfirmDelete),
         ("open vault", Overlay::OpenVault { input: String::new() }),
         ("replace", Overlay::VaultReplace { focused: false }),
-        ("ask", Overlay::Ask { focused: false }),
         ("history", Overlay::History(HistoryState::new(ws))),
         ("history: all devices", Overlay::History(HistoryState::all_devices(ws, Ok(sync_versions())))),
         ("history: all devices, error", Overlay::History(HistoryState::all_devices(ws, Err("The sync server is too old. ".repeat(8))))),

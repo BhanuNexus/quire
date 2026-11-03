@@ -5122,11 +5122,13 @@ dependencies = [
 name = "quire-index"
 version = "0.8.0"
 dependencies = [
+ "chrono",
  "crossbeam-channel",
  "nucleo-matcher",
  "quire-markdown",
  "quire-vault",
  "tempfile",
+ "unicode-normalization",
  "unicode-segmentation",
 ]
 
@@ -5141,6 +5143,8 @@ dependencies = [
  "quire-vault",
  "serde",
  "serde_json",
+ "similar",
+ "strsim",
  "thiserror 2.0.21",
  "unicode-segmentation",
  "ureq",

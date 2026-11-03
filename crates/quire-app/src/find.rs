@@ -8,11 +8,28 @@ use quire_text::{Buffer, Change, Transaction};
 use quire_vault::NotePath;
 use regex::{Regex, RegexBuilder};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FindOptions {
     pub case_sensitive: bool,
     pub whole_word: bool,
     pub regex: bool,
+    /// Accents must match ("cafe" doesn't find "café"). Off by default in
+    /// the find bar (design §C.2); regular expressions always match as written.
+    pub match_accents: bool,
+}
+
+/// Exact matching, as in 0.8 (the CLI, MCP, Vim and vault-wide replace).
+impl Default for FindOptions {
+    fn default() -> Self {
+        Self { case_sensitive: false, whole_word: false, regex: false, match_accents: true }
+    }
+}
+
+impl FindOptions {
+    /// The in-note find bar's start: accents optional (design §C.2).
+    pub fn find_bar() -> Self {
+        Self { match_accents: false, ..Self::default() }
+    }
 }
 
 /// Compile a pattern with options. Plain text is escaped; empty patterns are an error.
@@ -20,9 +37,96 @@ pub fn compile(pattern: &str, opts: FindOptions) -> Result<Regex, String> {
     if pattern.is_empty() {
         return Err("empty pattern".into());
     }
-    let core = if opts.regex { pattern.to_string() } else { regex::escape(pattern) };
+    let core = if opts.regex {
+        pattern.to_string()
+    } else if opts.match_accents {
+        regex::escape(pattern)
+    } else {
+        accent_insensitive(pattern, opts.case_sensitive)
+    };
     let pat = if opts.whole_word { format!(r"\b(?:{core})\b") } else { core };
     RegexBuilder::new(&pat).case_insensitive(!opts.case_sensitive).multi_line(true).build().map_err(|e| e.to_string())
+}
+
+/// Every char that folds to `f` (one ASCII or base letter), by folded letter.
+fn variants() -> &'static std::collections::HashMap<char, Vec<char>> {
+    static TABLE: std::sync::OnceLock<std::collections::HashMap<char, Vec<char>>> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut t: std::collections::HashMap<char, Vec<char>> = std::collections::HashMap::new();
+        let ranges = [0x00C0..=0x024F, 0x0370..=0x03FF, 0x0400..=0x04FF, 0x1E00..=0x1EFF, 0x1F00..=0x1FFF];
+        for c in ranges.into_iter().flatten().filter_map(char::from_u32) {
+            let f = quire_index::tokenize::fold_str(&c.to_string());
+            let mut it = f.chars();
+            if let (Some(base), None) = (it.next(), it.next())
+                && base != c
+                && base.is_alphanumeric()
+            {
+                t.entry(base).or_default().push(c);
+            }
+        }
+        t
+    })
+}
+
+/// Combining accents a decomposed letter may carry.
+const MARKS: &str = r"[\x{0300}-\x{036F}\x{1AB0}-\x{1AFF}\x{1DC0}-\x{1DFF}]*";
+
+/// A pattern that matches `text` with or without accents, on the original
+/// text: every letter becomes the class of letters that fold to it ("e" →
+/// `[eéèêë…]`), followed by optional combining accents; "ss", "ae" and "oe"
+/// also match "ß", "æ" and "œ".
+fn accent_insensitive(text: &str, case_sensitive: bool) -> String {
+    use std::fmt::Write as _;
+    let units: Vec<(char, bool)> = text
+        .chars()
+        .flat_map(|c| {
+            let upper = c.is_uppercase();
+            quire_index::tokenize::fold_str(&c.to_string()).chars().map(move |f| (f, upper)).collect::<Vec<_>>()
+        })
+        .collect();
+    let class = |(f, upper): (char, bool)| -> String {
+        if !f.is_alphanumeric() {
+            return regex::escape(&f.to_string());
+        }
+        let mut members: Vec<char> = vec![f];
+        if upper {
+            members.extend(f.to_uppercase());
+        }
+        if let Some(v) = variants().get(&f) {
+            members.extend(v.iter().copied().filter(|x| !case_sensitive || x.is_uppercase() == upper));
+        }
+        if case_sensitive && upper {
+            members.retain(|x| x.is_uppercase() || !x.is_alphabetic());
+        }
+        members.sort_unstable();
+        members.dedup();
+        let mut out = String::from("[");
+        for m in members {
+            let _ = write!(out, "\\x{{{:X}}}", u32::from(m));
+        }
+        out.push(']');
+        out.push_str(MARKS);
+        out
+    };
+    let mut out = String::new();
+    let mut i = 0;
+    while i < units.len() {
+        let pair = units.get(i + 1).map(|n| (units[i].0, n.0));
+        let lig = match pair {
+            Some(('s', 's')) => Some("ßẞ"),
+            Some(('a', 'e')) => Some("æÆ"),
+            Some(('o', 'e')) => Some("œŒ"),
+            _ => None,
+        };
+        if let Some(lig) = lig {
+            let _ = write!(out, "(?:[{lig}]|{}{})", class(units[i]), class(units[i + 1]));
+            i += 2;
+        } else {
+            out.push_str(&class(units[i]));
+            i += 1;
+        }
+    }
+    out
 }
 
 /// Non-empty matches as byte ranges.
@@ -135,6 +239,31 @@ mod tests {
         let ro = FindOptions { regex: true, ..opts };
         let re = compile(r"(\w+)@(\w+)", ro).unwrap();
         assert_eq!(replace_in_string("me@home, you@work", &re, "$2:$1", ro), ("home:me, work:you".into(), 2));
+    }
+
+    #[test]
+    fn accents_are_optional_unless_asked() {
+        let text = "Café, cafe, CAFÉ, cafe\u{301}, Straße, strasse, Æsir, Łódź";
+        let words = |pattern: &str, opts: FindOptions| -> Vec<String> {
+            find_bytes(text, &compile(pattern, opts).unwrap()).into_iter().map(|r| text[r].to_string()).collect()
+        };
+        let loose = FindOptions::find_bar();
+        assert_eq!(words("cafe", loose), ["Café", "cafe", "CAFÉ", "cafe\u{301}"]);
+        assert_eq!(words("café", loose), ["Café", "cafe", "CAFÉ", "cafe\u{301}"]);
+        assert_eq!(words("strasse", loose), ["Straße", "strasse"]);
+        assert_eq!(words("straße", loose), ["Straße", "strasse"]);
+        assert_eq!(words("aesir", loose), ["Æsir"]);
+        assert_eq!(words("lodz", loose), ["Łódź"]);
+        let exact = FindOptions::default();
+        assert_eq!(words("cafe", exact), ["cafe", "cafe"]);
+        let cased = FindOptions { case_sensitive: true, ..loose };
+        assert_eq!(words("Cafe", cased), ["Café"]);
+        assert_eq!(words("CAFE", cased), ["CAFÉ"]);
+        let word = FindOptions { whole_word: true, ..loose };
+        assert_eq!(words("trasse", word), Vec::<String>::new(), "whole words only");
+        assert_eq!(words("a.b(", loose), Vec::<String>::new(), "punctuation is escaped");
+        let (out, n) = replace_in_string("un café", &compile("cafe", loose).unwrap(), "bar", loose);
+        assert_eq!((out.as_str(), n), ("un bar", 1));
     }
 
     #[test]

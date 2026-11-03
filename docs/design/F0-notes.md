@@ -115,7 +115,12 @@ block in a shared table.
 
 * **Owns:** `crates/quire-index/**` except `views.rs` (incl. `attach.rs`, `sections.rs`); `crates/quire-intel/src/{anchor.rs, ask.rs}` and *new* `claims.rs, contradict.rs, stale.rs, timeline.rs, cluster.rs`; `crates/quire-app/src/trust_jobs.rs` (entry module, `TrustState`), `ask_state.rs`; `apps/quire-desktop/src/timeline_ui.rs`, *new* `ask_ui.rs`; the accent toggle in `find.rs`; `settings/trust.rs`, `settings/jobs.rs` (keys only; the runner is F0's).
 * **Blocks:** registry WS-C block (Timeline tab, drift widgets).
-* **Interface notes:** `search_sections` returns note-level hits mapped to the section of the best passage, filtered by folder and tags; `where_`, `modified_*` and attachments are accepted and ignored. `IndexMsg::UpsertAttachment` stores text per path (cleared by `Load`; producers re-send). `anchor::resolve` does exact and moved matches only; `Drifted` is never returned yet. Use `ScriptedChat` in tests and `DailyCap` for `claims_daily_cap`.
+* **Interface notes (after WS-C):** `search_sections` returns note parts
+  with line ranges and applies every filter (`where_`, `modified_*`,
+  attachment pages with `kind`); `anchor::resolve` runs the full ladder
+  (`Drifted` from 0.75); Ask abstains by `ask::should_abstain` (calibrated,
+  design §C.4). What WS-C offers others, its requests and its numbers:
+  `docs/design/handoff/ws-c.md`.
 
 ### WS-D — on-device AI, providers, assistant, onboarding, wiki loop
 
@@ -186,6 +191,19 @@ bars between the find bar and the note, drawn while `available(ws)` is true
 panel. WS-A's review banner is the first. A banner returns `PanelOut` like a
 tab.
 
+### Inbox items of other features (added by WS-C)
+
+**`registry::INBOX_KINDS`** (`InboxKindDef { handles, body, actions }`):
+a producer of Inbox findings (contradictions, staleness, citations) draws
+its own items. For each stored finding the Inbox finds the first entry whose
+`handles(&item)` is true and draws a card with `body(ui, ws, item, pal)`,
+then one row with `actions(…)` followed by the Inbox's own **Dismiss** and
+**Snooze**. `actions` returns an `InboxAct` (`Box<dyn FnOnce(&mut Workspace,
+&mut PanelOut)>`), run after drawing, like the Inbox's own buttons. Items no
+entry claims keep the plain sentence with Open. Grouping, filters, snooze,
+the weekly digest and dismissals stay the Inbox's. WS-C registers
+`trust_ui::{is_trust_item, inbox_body, inbox_actions}`.
+
 ### Keys
 
 * An Alt shortcut (Alt without Ctrl) drops the text its key types, in that
@@ -250,8 +268,8 @@ New `[editing] new_note_folder` (`"current"`, default, or `"root"`).
   command's `ui_target` pointing at the tab or `UiTarget::Overlay`.
 * WS-D's onboarding overlay and ACP warning: `UiTarget::Overlay` (or
   `request_ui` at first start); the agent panel stays a right tab.
-* WS-C's contradiction actions in the Inbox still need a hook from WS-A's
-  `inbox_ui` (none was added in wave 1; ask the integrator).
+* WS-C's contradiction actions in the Inbox use `registry::INBOX_KINDS`
+  (above), added by WS-C.
 * WS-G: register `.canvas`/`.pdf` in `open_surface`; links to them can call
   `request_ui(UiRequest::OpenFile(path))`.
 * Banners (e.g. "This answer's citations drifted") go in `EDITOR_BANNERS`.

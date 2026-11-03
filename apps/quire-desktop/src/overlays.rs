@@ -38,9 +38,6 @@ pub(crate) enum Overlay {
     VaultReplace {
         focused: bool,
     },
-    Ask {
-        focused: bool,
-    },
     Settings(Box<crate::dialogs::SettingsState>),
     History(crate::dialogs::HistoryState),
     Import(crate::dialogs::ImportState),
@@ -446,6 +443,7 @@ pub(crate) fn show(ctx: &egui::Context, overlay: &mut Overlay, ws: &mut Workspac
                     refresh |= ui.checkbox(&mut o.case_sensitive, "Match case").changed();
                     refresh |= ui.checkbox(&mut o.whole_word, "Whole word").changed();
                     refresh |= ui.checkbox(&mut o.regex, "Regex").changed();
+                    refresh |= ui.checkbox(&mut o.match_accents, "Match accents").changed();
                 });
                 if let Some(e) = &ws.find.vault_error {
                     ui.label(RichText::new(e.lines().last().unwrap_or("invalid pattern")).color(pal.danger));
@@ -509,83 +507,6 @@ pub(crate) fn show(ctx: &egui::Context, overlay: &mut Overlay, ws: &mut Workspac
             }
             if apply {
                 ws.vault_replace();
-            }
-            if let Some((p, at)) = open_at
-                && ws.open_note(&p).is_some()
-            {
-                ws.jump_to_byte(at);
-                res.close = true;
-                res.jumped = true;
-            }
-        }
-        Overlay::Ask { focused } => {
-            let mut go = false;
-            let mut open_at: Option<(NotePath, usize)> = None;
-            let mut insert = false;
-            egui::Modal::new(egui::Id::unique("quire-ask")).show(ctx, |ui| {
-                let w = 640.0_f32.min(ctx.content_rect().width() - 48.0);
-                ui.set_width(w);
-                ui.set_max_width(w);
-                ui.heading("Ask your notes");
-                ui.label(RichText::new(format!("Answers come only from your vault · {}", ws.assistant_name())).color(pal.muted).size(12.0));
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    let r = ui
-                        .add(egui::TextEdit::singleline(&mut ws.ask.question).hint_text("What did I decide about…?").desired_width(500.0));
-                    if !*focused {
-                        r.request_focus();
-                        *focused = true;
-                    }
-                    if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                        go = true;
-                    }
-                    if ui.add_enabled(!ws.ask.pending(), egui::Button::new("Ask")).clicked() {
-                        go = true;
-                    }
-                });
-                if ws.ask.pending() {
-                    ui.horizontal(|ui| {
-                        ui.add(egui::Spinner::new());
-                        ui.label("Thinking…");
-                    });
-                }
-                if let Some(e) = &ws.ask.error {
-                    ui.label(RichText::new(format!("Model unavailable ({e}); showing an offline answer.")).color(pal.warn).size(12.0));
-                }
-                if let Some(a) = ws.ask.answer.clone() {
-                    ui.separator();
-                    egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-                        ui.label(RichText::new(a.markdown.replace("[[", "").replace("]]", "")).size(14.0));
-                        ui.add_space(8.0);
-                        ui.label(RichText::new(format!("SOURCES · {}", a.by)).size(11.0).color(pal.muted).strong());
-                        for s in &a.sources {
-                            ui.horizontal_wrapped(|ui| {
-                                if ui.link(format!("{}. {}", s.n, s.citation().trim_start_matches("[[").trim_end_matches("]]"))).clicked() {
-                                    open_at = Some((s.path.clone(), s.offset));
-                                }
-                            });
-                        }
-                    });
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        if ws.active_doc().is_some() && ui.button("Insert into note").clicked() {
-                            insert = true;
-                        }
-                        if ui.button("Copy").clicked() {
-                            ui.ctx().copy_text(a.markdown.clone());
-                        }
-                        if ui.button("Close").clicked() {
-                            res.close = true;
-                        }
-                    });
-                }
-            });
-            if go {
-                ws.ask();
-            }
-            if insert && ws.insert_answer() {
-                res.close = true;
-                res.jumped = true;
             }
             if let Some((p, at)) = open_at
                 && ws.open_note(&p).is_some()

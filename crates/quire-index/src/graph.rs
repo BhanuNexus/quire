@@ -8,6 +8,7 @@ use quire_markdown::Link;
 use quire_vault::NotePath;
 
 use crate::record::NoteRecord;
+use crate::tokenize::fold_str;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Backlink {
@@ -17,56 +18,101 @@ pub struct Backlink {
     pub context: String,
 }
 
-/// Name → path resolution tables built from the current records.
+/// Name → path resolution tables built from the current records: by
+/// lowercase text, and by folded text (accents and case ignored, §C.2).
+#[derive(Debug, Default, Clone)]
+pub struct Resolver {
+    exact: Tables,
+    folded: Tables,
+}
+
 #[derive(Debug, Default, Clone)]
 #[allow(clippy::struct_field_names, reason = "by_path / by_name / by_alias read as lookup tables")]
-pub struct Resolver {
+struct Tables {
     by_path: HashMap<String, NotePath>,
     by_name: HashMap<String, Vec<NotePath>>,
     by_alias: HashMap<String, NotePath>,
+}
+
+impl Tables {
+    fn add(&mut self, rec: &NoteRecord, key: &dyn Fn(&str) -> String) {
+        self.by_path.entry(key(rec.path.without_ext())).or_insert_with(|| rec.path.clone());
+        self.by_name.entry(key(&rec.name)).or_default().push(rec.path.clone());
+        for a in &rec.aliases {
+            self.by_alias.entry(key(a)).or_insert_with(|| rec.path.clone());
+        }
+    }
+
+    fn sort(&mut self) {
+        for v in self.by_name.values_mut() {
+            v.sort_by_key(|p| (p.as_str().len(), p.as_str().to_string()));
+            v.dedup();
+        }
+    }
+
+    /// Path, then name (preferring `from`'s folder), without aliases.
+    fn path_or_name(&self, t: &str, from: Option<&NotePath>, key: &dyn Fn(&str) -> String) -> Option<NotePath> {
+        if let Some(p) = self.by_path.get(t) {
+            return Some(p.clone());
+        }
+        let name = t.rsplit('/').next().unwrap_or(t);
+        let cands = self.by_name.get(name)?;
+        let here = from.map(NotePath::folder);
+        let mut best: Option<&NotePath> = None;
+        for c in cands.iter().filter(|c| !t.contains('/') || key(c.without_ext()).ends_with(t)) {
+            if Some(c.folder()) == here {
+                return Some(c.clone());
+            }
+            best = best.or(Some(c));
+        }
+        best.cloned()
+    }
+}
+
+fn lower(s: &str) -> String {
+    s.to_lowercase()
 }
 
 impl Resolver {
     pub fn build<'a>(records: impl Iterator<Item = &'a NoteRecord>) -> Self {
         let mut r = Self::default();
         for rec in records {
-            r.by_path.insert(rec.path.without_ext().to_lowercase(), rec.path.clone());
-            r.by_name.entry(rec.name.to_lowercase()).or_default().push(rec.path.clone());
-            for a in &rec.aliases {
-                r.by_alias.entry(a.to_lowercase()).or_insert_with(|| rec.path.clone());
-            }
+            r.exact.add(rec, &lower);
+            r.folded.add(rec, &fold_str);
         }
-        for v in r.by_name.values_mut() {
-            v.sort_by_key(|p| (p.as_str().len(), p.as_str().to_string()));
-        }
+        r.exact.sort();
+        r.folded.sort();
         r
     }
 
-    /// Same rules as `Vault::resolve`, plus aliases.
+    /// Same rules as `Vault::resolve`, plus aliases, then the same again
+    /// ignoring accents: `[[Lodz]]` finds `Łódź.md` when nothing matches exactly.
     pub fn resolve(&self, target: &str, from: Option<&NotePath>) -> Option<NotePath> {
-        let t = target.trim().trim_end_matches(".md").to_lowercase();
-        if t.is_empty() {
+        let raw = target.trim().trim_end_matches(".md");
+        if raw.is_empty() {
             return from.cloned();
         }
-        if let Some(p) = self.by_path.get(&t) {
+        let t = raw.to_lowercase();
+        if let Some(p) = self.exact.path_or_name(&t, from, &lower) {
+            return Some(p);
+        }
+        if let Some(p) = self.exact.by_alias.get(&t) {
             return Some(p.clone());
         }
-        let name = t.rsplit('/').next().unwrap_or(&t);
-        if let Some(cands) = self.by_name.get(name) {
-            let here = from.map(NotePath::folder);
-            let mut best: Option<&NotePath> = None;
-            for c in cands.iter().filter(|c| !t.contains('/') || c.without_ext().to_lowercase().ends_with(&t)) {
-                if Some(c.folder()) == here {
-                    return Some(c.clone());
-                }
-                best = best.or(Some(c));
-            }
-            if let Some(b) = best {
-                return Some(b.clone());
-            }
-        }
-        self.by_alias.get(&t).cloned()
+        let f = fold_str(raw);
+        self.folded.path_or_name(&f, from, &fold_str).or_else(|| self.folded.by_alias.get(&f).cloned())
     }
+}
+
+/// Which links [`LinkGraph::neighbors`] follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Direction {
+    /// Notes linking here.
+    In,
+    /// Notes this one links to.
+    Out,
+    #[default]
+    Both,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -134,6 +180,34 @@ impl LinkGraph {
 
     pub fn is_orphan(&self, p: &NotePath) -> bool {
         self.backlinks(p).is_empty() && self.outgoing(p).is_empty()
+    }
+
+    /// Notes within `depth` links of `start` (at most 3), breadth first,
+    /// with their distance; `start` itself isn't listed. Stops after 500 notes.
+    pub fn neighbors(&self, start: &NotePath, depth: usize, dir: Direction) -> Vec<(NotePath, usize)> {
+        const VISITED_CAP: usize = 500;
+        let depth = depth.clamp(1, 3);
+        let mut seen: HashSet<NotePath> = HashSet::from([start.clone()]);
+        let mut out = Vec::new();
+        let mut frontier = vec![start.clone()];
+        for d in 1..=depth {
+            let mut next = Vec::new();
+            for p in &frontier {
+                let ins = matches!(dir, Direction::In | Direction::Both).then(|| self.backlinks(p).iter().map(|b| &b.from));
+                let outs = matches!(dir, Direction::Out | Direction::Both).then(|| self.outgoing(p).iter());
+                for n in ins.into_iter().flatten().chain(outs.into_iter().flatten()) {
+                    if seen.len() >= VISITED_CAP {
+                        return out;
+                    }
+                    if seen.insert(n.clone()) {
+                        out.push((n.clone(), d));
+                        next.push(n.clone());
+                    }
+                }
+            }
+            frontier = next;
+        }
+        out
     }
 
     pub fn edges(&self) -> impl Iterator<Item = (&NotePath, &NotePath)> {

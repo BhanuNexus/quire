@@ -57,6 +57,10 @@ F0 is the foundation step, after which its files are frozen).
 | `*.canvas` | JSON Canvas 1.0, one object per line | [canvas.md](canvas.md) | WS-G | format only |
 | `attachments/<canvas>-ink-<n>.svg` | SVG with `data-quire-*` attributes | [canvas.md](canvas.md) | WS-G | format only |
 | `<pdf> (annotations).md` | Markdown + `quire:pdf-anchor` | [pdf-annotations.md](pdf-annotations.md) | WS-G | format only |
+| citation footnotes in notes (`[^n]: [[Note]] — “…” <!-- quire:cite … -->`) | Markdown + `quire:cite` | [citations.md](citations.md) | WS-C | read and written |
+| `.quire/cache/claims/<extractor>/<h2>/<hash>.json`, `claims/seen.jsonl` | JSON format 1, JSONL v 1 | [claims.md](claims.md) | WS-C | written (device-local cache) |
+| `.quire/cache/contradict/<judge>.jsonl` | JSONL, v 1 | [claims.md](claims.md) | WS-C | written (device-local cache) |
+| `.quire/cache/stale.json`, `[staleness]` in `vault.toml` | JSON format 1, TOML | [claims.md](claims.md#staleness-in-quiresharedvaulttoml) | WS-C | written / read |
 | `<config>/settings.toml` | TOML | [settings.md](settings.md) | F0 (each table: its feature) | read and written |
 | `<config>/device.toml` | TOML, format 1 | [settings.md](settings.md#devicetoml) | F0 | written |
 | `<config>/themes/*.toml`, `<config>/fonts/*` | TOML, format 1 | [themes.md](themes.md) | WS-F | read (and a template written on request) |

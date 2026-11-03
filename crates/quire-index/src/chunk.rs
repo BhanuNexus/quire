@@ -21,8 +21,18 @@ pub struct Chunk {
     pub text: String,
 }
 
-pub fn chunk_note(path: &NotePath, src: &str) -> Vec<Chunk> {
-    let title = path.stem();
+/// A retrievable part of a note: a heading's text up to the next heading
+/// (of any level), split at blank lines when it is longer than [`MAX_WORDS`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Part {
+    pub heading: Option<String>,
+    /// Byte range in the note's source.
+    pub range: Range<usize>,
+}
+
+/// The parts of a note, in order, covering all of it. Passages and section
+/// hits share these boundaries, so a passage's range is its part's range.
+pub fn parts(src: &str) -> Vec<Part> {
     let heads = outline(src);
     let mut bounds: Vec<(usize, Option<String>)> = vec![(0, None)];
     for h in &heads {
@@ -43,14 +53,23 @@ pub fn chunk_note(path: &NotePath, src: &str) -> Vec<Chunk> {
         for para in section.split_inclusive("\n\n") {
             let w = para.split_whitespace().count();
             if words > 0 && words + w > MAX_WORDS {
-                push(&mut out, path, title, heading.as_ref(), src, start + piece_start..start + pos);
+                out.push(Part { heading: heading.clone(), range: start + piece_start..start + pos });
                 piece_start = pos;
                 words = 0;
             }
             words += w;
             pos += para.len();
         }
-        push(&mut out, path, title, heading.as_ref(), src, start + piece_start..end);
+        out.push(Part { heading: heading.clone(), range: start + piece_start..end });
+    }
+    out
+}
+
+pub fn chunk_note(path: &NotePath, src: &str) -> Vec<Chunk> {
+    let title = path.stem();
+    let mut out = Vec::new();
+    for p in parts(src) {
+        push(&mut out, path, title, p.heading.as_ref(), src, p.range);
     }
     out
 }

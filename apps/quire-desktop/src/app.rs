@@ -276,7 +276,7 @@ impl QuireApp {
                 }
                 Overlay::VaultReplace { focused: false }
             }
-            UiRequest::Ask => Overlay::Ask { focused: false },
+            UiRequest::Ask => Overlay::Feature(crate::ask_ui::AskOverlay::make(&mut self.ws)),
             UiRequest::Settings => Overlay::Settings(Box::default()),
             UiRequest::SyncSettings => Overlay::Settings(Box::new(crate::dialogs::SettingsState::sync_tab(&self.ws))),
             UiRequest::NewProject => Overlay::NewProject(crate::dialogs::ProjectState::default()),

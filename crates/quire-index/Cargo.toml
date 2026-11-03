@@ -15,6 +15,8 @@ quire-vault.workspace = true
 nucleo-matcher.workspace = true
 crossbeam-channel.workspace = true
 unicode-segmentation.workspace = true
+unicode-normalization.workspace = true
+chrono.workspace = true
 
 [lints]
 workspace = true

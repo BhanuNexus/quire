@@ -225,7 +225,14 @@ impl Drop for IndexService {
     }
 }
 
-fn parse_parallel(vault: &Vault, paths: &[NotePath], shared: &Shared) -> Vec<(NoteRecord, String)> {
+/// Now, Unix ms.
+fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
+type Parsed = (NoteRecord, String, i64);
+
+fn parse_parallel(vault: &Vault, paths: &[NotePath], shared: &Shared) -> Vec<Parsed> {
     let threads = std::thread::available_parallelism().map_or(2, std::num::NonZero::get).clamp(1, 8);
     let chunk = paths.len().div_ceil(threads).max(1);
     std::thread::scope(|s| {
@@ -237,8 +244,14 @@ fn parse_parallel(vault: &Vault, paths: &[NotePath], shared: &Shared) -> Vec<(No
                         .filter_map(|p| {
                             let src = vault.read(p).ok()?;
                             let rec = NoteRecord::from_source(p.clone(), &src);
+                            let modified = vault
+                                .storage()
+                                .modified(p)
+                                .ok()
+                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
                             shared.indexed.fetch_add(1, Ordering::Relaxed);
-                            Some((rec, src))
+                            Some((rec, src, modified))
                         })
                         .collect::<Vec<_>>()
                 })
@@ -250,7 +263,7 @@ fn parse_parallel(vault: &Vault, paths: &[NotePath], shared: &Shared) -> Vec<(No
 
 /// A message's work, done before taking the write lock.
 enum Prepared {
-    Note(Box<(NoteRecord, String)>),
+    Note(Box<Parsed>),
     Remove(NotePath),
     Attachment(crate::attach::AttachmentText),
     RemoveAttachment(NotePath),
@@ -264,7 +277,7 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
         let mut batch = vec![first];
         batch.extend(rx.try_iter());
         let mut prepared: Vec<Prepared> = Vec::new();
-        let mut reload: Option<Vec<(NoteRecord, String)>> = None;
+        let mut reload: Option<Vec<Parsed>> = None;
         let mut shutdown = false;
         let mut waiters = Vec::new();
         let mut changed = false;
@@ -280,7 +293,7 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                 }
                 IndexMsg::Upsert { path, source } => {
                     changed = true;
-                    prepared.push(Prepared::Note(Box::new((NoteRecord::from_source(path, &source), source))));
+                    prepared.push(Prepared::Note(Box::new((NoteRecord::from_source(path, &source), source, now_ms()))));
                 }
                 IndexMsg::Remove(path) => {
                     changed = true;
@@ -297,15 +310,19 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
             let mut ix = write();
             if let Some(all) = reload {
                 *ix = Index::new();
-                for (rec, src) in all {
+                for (rec, src, modified) in all {
+                    let path = rec.path.clone();
                     ix.insert_record(rec, src);
+                    ix.set_modified(&path, modified);
                 }
             }
             for item in prepared {
                 match item {
                     Prepared::Note(note) => {
-                        let (rec, src) = *note;
+                        let (rec, src, modified) = *note;
+                        let path = rec.path.clone();
                         ix.insert_record(rec, src);
+                        ix.set_modified(&path, modified);
                     }
                     Prepared::Remove(path) => ix.remove_no_refresh(&path),
                     Prepared::Attachment(text) => ix.upsert_attachment(text),
