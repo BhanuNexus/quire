@@ -1,0 +1,2 @@
+# Embedded with include_str! and compared byte for byte, so the same on every OS.
+skills/** text eol=lf
