@@ -14,6 +14,7 @@ Each is marked `WS-G` in a comment at the place.
 | `crates/quire-app/src/publish.rs` | 2 lines: the library is read once, each note goes through `citations::render_with` | publish renders citations |
 | `crates/quire-app/src/export_pdf.rs` | 3 lines: `citations::for_pdf` gives the Markdown with citation placeholders and `PdfOptions::bibliography` | Typst bibliography in the PDF export |
 | `crates/quire-typeset/src/lib.rs` | the `pub use markdown::{…}` line also exports `Bibliography`, `BibCite`, `CiteForm`, `cite_placeholder`, `BIB_STYLES` | the bibliography types live in `markdown.rs` (WS-G's part of it) |
+| `crates/quire-typeset/tests/typeset.rs`, `examples/render_samples.rs` | `bibliography: None` in three `PdfOptions` literals | `PdfOptions` has a new field |
 | `crates/quire-markdown/src/lib.rs` | `pub mod cite;` | the design's new module |
 | `apps/quire-desktop/src/panels.rs` | `preview`: 1 line, the text goes through `citations::render_source` | `[@key]` renders in preview |
 | `apps/quire-desktop/src/app.rs` | 1 line after `install_image_loaders`: `canvas_ui::install_sketch_loader` | sketches embedded in notes (`![[Note-ink-1.svg]]`) show as pictures in both editions; egui has no SVG loader here |
@@ -91,3 +92,13 @@ Registration blocks used: `registry.rs` (WS-G blocks of `FeatureUi`,
 * Canvas, sketch and PDF surfaces save themselves (0.6 s after a change and
   when closed) and take in changes from elsewhere through
   `ws.features.canvas.disk_generation(path)`, bumped on `AttachmentChanged`.
+
+## Known limits
+
+* A highlighter stroke (translucent ink) is drawn as one triangle strip;
+  where it turns sharply the strip overlaps itself and that spot looks a
+  little darker. The saved SVG is right (one filled path).
+* A canvas text card shows Markdown with the canvas's own small renderer
+  (headings, lists, emphasis, code, links, Mermaid), not the full preview.
+* CSL-JSON imports bring only the fields Quire reads; BibTeX imports keep
+  the others.
