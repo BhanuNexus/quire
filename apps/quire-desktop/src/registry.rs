@@ -54,6 +54,7 @@ pub(crate) struct FeatureUi {
     pub timeline: crate::timeline_ui::TimelineUi,
     // ---- WS-D
     pub agent_panel: crate::agent_panel_ui::AgentPanelUi,
+    pub ai_settings: crate::ai_settings_ui::AiSettingsUi,
     // ---- WS-E
     pub agenda: crate::agenda_ui::AgendaUi,
     pub calendar: crate::calendar_ui::CalendarUi,
@@ -112,7 +113,8 @@ pub(crate) const SETTINGS_TABS: &[TabDef] = &[
     TabDef { id: "agents", label: label!("Agents"), available: crate::agents_settings::available, show: crate::agents_settings::show },
     // ---- WS-B (HTTP MCP and tokens: a section of the Agents tab, or a tab here)
     TabDef { id: "mcp", label: label!("Connections"), available: crate::mcp_ui::available, show: crate::mcp_ui::show },
-    // ---- WS-D
+    // ---- WS-D: replaces the built-in "AI & search" tab
+    TabDef { id: "ai", label: label!("AI"), available: crate::ai_settings_ui::available, show: crate::ai_settings_ui::show },
     // ---- WS-E
     TabDef { id: "planning", label: label!("Planning"), available: crate::agenda_ui::available, show: crate::agenda_ui::settings_tab },
     // ---- WS-F
@@ -135,7 +137,8 @@ pub(crate) const EDITOR_BANNERS: &[BannerDef] = &[
     // ---- WS-A: "Claude Code suggests 4 changes · Why … · ◀ Prev  Next ▶ · …"
     BannerDef { id: "review", available: crate::inbox_ui::review_ui::banner_available, show: crate::inbox_ui::review_ui::banner },
     // ---- WS-C
-    // ---- WS-D
+    // ---- WS-D: "New in 0.9: AI is your choice…" for people upgrading from 0.8
+    BannerDef { id: "ai-upgrade", available: crate::onboarding_ui::banner_available, show: crate::onboarding_ui::banner },
     // ---- WS-G
 ];
 
@@ -172,7 +175,9 @@ pub(crate) const fn ui_target(cmd: Command) -> Option<UiTarget> {
         Command::ThinkingTimeline => UiTarget::Right("timeline"),
         // ---- WS-D
         Command::ToggleAgentPanel => UiTarget::Right("agent"),
-        Command::AiSetup => UiTarget::Settings("ai"),
+        Command::AiSetup => UiTarget::Overlay(crate::onboarding_ui::OnboardingOverlay::make),
+        Command::IngestIntoWiki => UiTarget::Overlay(crate::agent_panel_ui::ingest_ui::IngestDialog::make),
+        Command::ConnectExternalAgent => UiTarget::Overlay(crate::agent_panel_ui::acp_ui::ConnectOverlay::make),
         // ---- WS-E
         Command::ShowAgenda => UiTarget::Sidebar("agenda"),
         Command::ShowCalendar => UiTarget::Sidebar("calendar"),
@@ -250,6 +255,16 @@ pub(crate) fn layout_samples(ws: &mut Workspace) -> Vec<(&'static str, crate::ov
         ("capture web page, error", crate::mcp_ui::layout_sample(3)),
         // ---- WS-C
         // ---- WS-D
+        ("set up AI: choose", Overlay::Feature(crate::onboarding_ui::OnboardingOverlay::make(ws))),
+        ("set up AI: chosen", Overlay::Feature(Box::new(crate::onboarding_ui::OnboardingOverlay::sample(1)))),
+        ("set up AI: on this computer", Overlay::Feature(Box::new(crate::onboarding_ui::OnboardingOverlay::sample(2)))),
+        ("external agent: warning", Overlay::Feature(Box::new(crate::agent_panel_ui::acp_ui::ConnectOverlay::sample(false)))),
+        ("external agent: acknowledged", Overlay::Feature(Box::new(crate::agent_panel_ui::acp_ui::ConnectOverlay::sample(true)))),
+        ("external agent: run a command?", Overlay::Feature(Box::new(crate::agent_panel_ui::acp_ui::PermissionOverlay::sample("execute")))),
+        ("external agent: read files?", Overlay::Feature(Box::new(crate::agent_panel_ui::acp_ui::PermissionOverlay::sample("read")))),
+        ("ingest: choose", Overlay::Feature(Box::new(crate::agent_panel_ui::ingest_ui::IngestDialog::sample(0)))),
+        ("ingest: running", Overlay::Feature(Box::new(crate::agent_panel_ui::ingest_ui::IngestDialog::sample(1)))),
+        ("ingest: done", Overlay::Feature(Box::new(crate::agent_panel_ui::ingest_ui::IngestDialog::sample(2)))),
         // ---- WS-E
         ("rename tag", Overlay::Feature(Box::new(crate::meta_refactor_ui::RefactorOverlay::sample(false, false)))),
         ("rename tag: preview", Overlay::Feature(Box::new(crate::meta_refactor_ui::RefactorOverlay::sample(false, true)))),

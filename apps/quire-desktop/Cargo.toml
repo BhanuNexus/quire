@@ -41,7 +41,8 @@ image.workspace = true
 # WS-B: quire-mcp (with features = ["http"] for the HTTP server)
 quire-mcp.workspace = true
 # WS-D: quire-ai, quire-assistant
-#
+quire-ai = { workspace = true, features = ["client"] }
+quire-assistant.workspace = true
 # WS-G: quire-canvas, quire-pdf (and "quire-pdf/render" in `typeset` above)
 #
 
