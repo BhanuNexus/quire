@@ -104,7 +104,16 @@ fn start_host(s: &McpHttpSettings, root: &std::path::Path) -> Result<Box<dyn Mcp
     cfg.public_url.clone_from(&s.public_url);
     let consent = cfg.consent.clone();
     // Over HTTP, what a client may do depends on its token's scopes.
-    let srv = Server::open_with(&root.to_string_lossy(), ServerConfig { allow_write: true, ..ServerConfig::default() })?;
+    let srv = Server::open_with(
+        &root.to_string_lossy(),
+        // WS-D: the built-in prompts and the person's AI for `ask` in model mode.
+        ServerConfig {
+            allow_write: true,
+            prompts: quire_assistant::prompts::mcp_defs(),
+            chat: quire_app::ai::chat_model(&quire_app::Settings::load()),
+            ..ServerConfig::default()
+        },
+    )?;
     let http = HttpServer::start(srv, cfg)?;
     Ok(Box::new(Host { url: http.urls().resource.clone(), _http: http, consent }))
 }
