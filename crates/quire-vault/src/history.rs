@@ -83,6 +83,30 @@ pub fn retained(mut times: Vec<i64>, now: i64) -> Vec<i64> {
     keep
 }
 
+/// How long the versions around an agent's change stay, whatever the
+/// thinning: the snapshot with provenance and the one just before it, which
+/// the agent ledger points at and undoing the change needs.
+pub(crate) const PINNED_FOR_MS: i64 = 90 * DAY;
+
+/// [`retained`], plus the versions an undo may need: every snapshot with
+/// provenance (`true`) younger than [`PINNED_FOR_MS`], and the snapshot just
+/// before each of them.
+pub(crate) fn retained_pinned(mut snaps: Vec<(i64, bool)>, now: i64) -> Vec<i64> {
+    snaps.sort_unstable_by_key(|(t, _)| *t);
+    let mut keep = retained(snaps.iter().map(|(t, _)| *t).collect(), now);
+    for (i, (t, prov)) in snaps.iter().enumerate() {
+        if *prov && now - t < PINNED_FOR_MS {
+            keep.push(*t);
+            if let Some((before, _)) = i.checked_sub(1).and_then(|j| snaps.get(j)) {
+                keep.push(*before);
+            }
+        }
+    }
+    keep.sort_unstable_by(|a, b| b.cmp(a));
+    keep.dedup();
+    keep
+}
+
 impl Vault {
     /// Snapshots of a note, newest first.
     pub fn history(&self, note: &NotePath) -> Vec<Snapshot> {
@@ -162,7 +186,8 @@ impl Vault {
     /// snapshots without knowing about them).
     fn prune_history(&self, note: &NotePath, now_ms: i64) -> Result<()> {
         let hist = self.history(note);
-        let keep: std::collections::HashSet<i64> = retained(hist.iter().map(|s| s.at_ms).collect(), now_ms).into_iter().collect();
+        let keep: std::collections::HashSet<i64> =
+            retained_pinned(hist.iter().map(|s| (s.at_ms, s.prov_file.is_some())).collect(), now_ms).into_iter().collect();
         for s in hist.iter().filter(|s| !keep.contains(&s.at_ms)) {
             if let Some(p) = &s.prov_file {
                 self.storage().remove(p)?;
@@ -251,9 +276,11 @@ mod tests {
         let a = NotePath::new("A.md");
         let now = 1_800_000_000_000;
         let prov = serde_json::json!({"format": 1});
-        // Two versions in the same old day: retention keeps only the newer.
-        v.snapshot_with(&a, "old 1", now - 10 * DAY, true, Some(&prov)).unwrap();
-        v.snapshot_with(&a, "old 2", now - 10 * DAY + HOUR, true, Some(&prov)).unwrap();
+        // Two versions in the same old week, past the time agent versions
+        // are pinned: retention keeps only the newer.
+        let old = (now - 100 * DAY) / (7 * DAY) * (7 * DAY) + DAY;
+        v.snapshot_with(&a, "old 1", old, true, Some(&prov)).unwrap();
+        v.snapshot_with(&a, "old 2", old + HOUR, true, Some(&prov)).unwrap();
         // A 0.8 build left a provenance file without its snapshot.
         let folder = folder_for(&a);
         v.storage().write_bytes_atomic(&NotePath::new(format!("{folder}/123.prov.json")), b"{}").unwrap();
@@ -287,6 +314,29 @@ mod tests {
         assert!(kept.len() <= MAX_SNAPSHOTS);
         assert!(kept.iter().filter(|t| now - **t < HOUR).count() >= 6, "recent ones all kept");
         assert!(kept.iter().any(|t| now - t > 40 * DAY), "weekly ones survive");
+    }
+
+    #[test]
+    fn review_thinning_keeps_the_versions_an_undo_needs() {
+        let v = Vault::in_memory(&[("A.md", "x")]);
+        let a = NotePath::new("A.md");
+        let day = 1_800_000_000_000 / DAY * DAY;
+        let prov = serde_json::json!({"format": 1, "actor": {"kind": "agent", "id": "mcp:claude-code"}});
+        // 14:04:59 the version before the agent's write, 14:05 the agent's, 14:30 the person's.
+        let (before, agent, human) = (day + 14 * HOUR + 4 * MIN + 59_000, day + 14 * HOUR + 5 * MIN, day + 14 * HOUR + 30 * MIN);
+        v.snapshot(&a, "before", before, true).unwrap();
+        v.snapshot_with(&a, "agent", agent, true, Some(&prov)).unwrap();
+        v.snapshot(&a, "human", human, true).unwrap();
+        // The next day, and a month later, thinning runs again.
+        for later in [day + DAY + 10 * HOUR, day + 40 * DAY] {
+            v.snapshot(&a, &format!("later {later}"), later, true).unwrap();
+            let kept: Vec<i64> = v.history(&a).iter().map(|s| s.at_ms).collect();
+            assert!(kept.contains(&before) && kept.contains(&agent), "{kept:?}");
+        }
+        // Past the pinning time, thinning applies as before.
+        v.snapshot(&a, "much later", day + 200 * DAY, true).unwrap();
+        let kept: Vec<i64> = v.history(&a).iter().map(|s| s.at_ms).collect();
+        assert!(!kept.contains(&before), "{kept:?}");
     }
 
     #[test]
