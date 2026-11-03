@@ -174,6 +174,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "alloc-no-stdlib"
+version = "2.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc7bb162ec39d46ab1ca8c77bf72e890535becd1751bb45f64c597edb4c8c6b3"
+
+[[package]]
+name = "alloc-stdlib"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e76a019e91224d279006ff972f1e984179a6e9feb050adba6ce8274aef23195"
+dependencies = [
+ "alloc-no-stdlib",
+]
+
+[[package]]
 name = "android-activity"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -712,6 +727,27 @@ dependencies = [
  "futures-io",
  "futures-lite",
  "piper",
+]
+
+[[package]]
+name = "brotli"
+version = "8.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5cc91aac060a7a1e25823bdccbfb6af1875b88f17c6daac97894eed8207166b3"
+dependencies = [
+ "alloc-no-stdlib",
+ "alloc-stdlib",
+ "brotli-decompressor",
+]
+
+[[package]]
+name = "brotli-decompressor"
+version = "5.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a32acac15fe1967bc3986b2a6347dffc965602354ea6f450ad07e8bfd253583"
+dependencies = [
+ "alloc-no-stdlib",
+ "alloc-stdlib",
 ]
 
 [[package]]
@@ -2526,6 +2562,7 @@ version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "24d285dc30731c8485de5fa732fbdf2b3affdf01e4da7c2135022ca6fa664bf6"
 dependencies = [
+ "brotli",
  "hayro-postscript",
 ]
 
@@ -5021,6 +5058,7 @@ name = "quire-app"
 version = "0.8.0"
 dependencies = [
  "base64 0.23.1",
+ "biblatex",
  "chrono",
  "crossbeam-channel",
  "directories",
@@ -5029,10 +5067,12 @@ dependencies = [
  "notify-rust",
  "png",
  "quire-agent",
+ "quire-canvas",
  "quire-import",
  "quire-index",
  "quire-intel",
  "quire-markdown",
+ "quire-pdf",
  "quire-plan",
  "quire-sync",
  "quire-text",
@@ -5091,8 +5131,10 @@ dependencies = [
  "global-hotkey",
  "image",
  "quire-app",
+ "quire-canvas",
  "quire-import",
  "quire-mcp",
+ "quire-pdf",
  "quire-spell",
  "quire-typeset",
  "resvg",
@@ -5186,10 +5228,15 @@ dependencies = [
 name = "quire-pdf"
 version = "0.8.0"
 dependencies = [
+ "hayro",
+ "hayro-interpret",
+ "kurbo",
  "quire-markdown",
  "quire-vault",
  "serde",
  "serde_json",
+ "sha2",
+ "strsim",
 ]
 
 [[package]]

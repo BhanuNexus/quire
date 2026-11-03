@@ -19,7 +19,7 @@ keychain = ["dep:keyring"]
 update-check = ["dep:ureq"]
 # Math, Mermaid diagrams and PDF export (Typst). About 40 MB of the full app;
 # Quire Lite is built without it.
-typeset = ["dep:quire-typeset"]
+typeset = ["dep:quire-typeset", "quire-pdf/render"]
 
 [dependencies]
 quire-text.workspace = true
@@ -52,7 +52,9 @@ quire-plan.workspace = true
 notify-rust.workspace = true
 quire-import.workspace = true
 # WS-G: quire-canvas, quire-pdf (and "quire-pdf/render" in `typeset` above)
-#
+quire-canvas.workspace = true
+quire-pdf.workspace = true
+biblatex.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
