@@ -75,6 +75,20 @@ impl Workspace {
         answers: &HashMap<String, String>,
         preset: &[(String, Value)],
     ) -> Option<DocId> {
+        self.new_note_from_template_titled(template, None, folder, answers, preset)
+    }
+
+    /// [`Workspace::new_note_from_template`], named `title` when one is
+    /// given (it wins over the template's `name:`): "New note from template…"
+    /// with a title typed first.
+    pub fn new_note_from_template_titled(
+        &mut self,
+        template: &NotePath,
+        title: Option<&str>,
+        folder: Option<&str>,
+        answers: &HashMap<String, String>,
+        preset: &[(String, Value)],
+    ) -> Option<DocId> {
         let text = match self.vault()?.read(template) {
             Ok(t) => t,
             Err(e) => {
@@ -86,11 +100,11 @@ impl Workspace {
         let meta = templates::template_meta(&text);
         let folder = folder.map(str::to_string).or_else(|| meta.folder.clone()).unwrap_or_default();
         let vars0 = TemplateVars { title: String::new(), now };
-        let name = meta
-            .name
-            .as_deref()
-            .map(|n| templates::expand_name(&text, n, &vars0, &folder, answers))
-            .filter(|n| !n.trim().is_empty())
+        let typed = title.map(quire_vault::sanitize_title).filter(|t| !t.trim().is_empty());
+        let name = typed
+            .or_else(|| {
+                meta.name.as_deref().map(|n| templates::expand_name(&text, n, &vars0, &folder, answers)).filter(|n| !n.trim().is_empty())
+            })
             .unwrap_or_else(|| template.stem().to_string());
         let path = self.vault()?.unique_path(&folder, &name).ok()?;
         let vars = TemplateVars { title: path.stem().to_string(), now };

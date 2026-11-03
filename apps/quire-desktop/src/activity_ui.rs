@@ -16,9 +16,10 @@ use quire_app::agent::{ActorKind, LedgerEntry, Op, RevertPlan, RevertSelector};
 use quire_app::agent_state::activity::Run;
 use quire_app::agent_state::{Bg, load_activity};
 use quire_app::vault::NotePath;
-use quire_app::workspace::NoticeLevel;
+use quire_app::workspace::{NoticeLevel, UiRequest};
 
 use crate::inbox_ui::review_ui::{added, short_time};
+use crate::overlays::{OverlayResult, OverlayView};
 use crate::panels::PanelOut;
 use crate::registry::FeatureUi;
 use crate::theme::Palette;
@@ -92,8 +93,6 @@ impl Since {
 pub(crate) struct ActivityUi {
     range: Range,
     expanded: HashSet<String>,
-    /// The "undo an agent's changes" form is open.
-    revert_open: bool,
     agent: Option<String>,
     since: Since,
     /// A plan being worked out, and the one to show.
@@ -120,9 +119,6 @@ pub(crate) fn show(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pa
     if ws.features.agent.activity_loaded.is_none() && !ws.features.agent.activity_bg.busy() {
         load_activity(ws);
     }
-    if std::mem::take(&mut ws.features.agent.open_revert) {
-        a.revert_open = true;
-    }
     if let Some(plan) = a.plan_bg.poll() {
         a.plan = Some((plan, std::mem::take(&mut a.pending_title)));
     }
@@ -142,7 +138,11 @@ pub(crate) fn show(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pa
         });
         let now = ws.agent_store().map_or(0, quire_app::agent::AgentStore::now_ms);
         let runs: Vec<&Run> = ws.features.agent.activity.iter().filter(|r| r.end >= now - a.range.ms()).collect();
-        revert_form(ui, ws, a, &runs, now, pal, &mut act);
+        ui.add_space(4.0);
+        if ui.button("Undo an agent's changes…").clicked() {
+            out.run = Some(quire_app::Command::UndoAgentChanges);
+        }
+        ui.add_space(6.0);
         if ws.features.agent.activity_loaded.is_none() {
             ui.label(RichText::new("Loading…").color(pal.muted));
             return;
@@ -292,7 +292,6 @@ fn start_plan(ws: &Workspace, a: &mut ActivityUi, sel: RevertSelector, title: St
     let Some(store) = ws.agent_store().cloned() else { return };
     a.plan = None;
     a.pending_title = title;
-    a.revert_open = true;
     a.plan_bg.start(move || store.revert_plan(&sel));
 }
 
@@ -334,7 +333,10 @@ fn run_card(ui: &mut egui::Ui, ws: &Workspace, a: &mut ActivityUi, r: &Run, pal:
                 {
                     let sel = selector_for(r);
                     let title = format!("Undo {}'s changes from {}", r.actor_label, short_time(r.start));
-                    start_plan(ws, a, sel, title);
+                    *act = Some(Box::new(move |ws: &mut Workspace, _, _| {
+                        ws.features.agent.revert_preset = Some((sel, title));
+                        ws.request_ui(UiRequest::Feature(quire_app::Command::UndoAgentChanges));
+                    }));
                 }
                 let waiting: Vec<_> =
                     r.proposals().into_iter().filter(|id| ws.features.agent.inbox.pending.iter().any(|p| &p.id == id)).collect();
@@ -385,103 +387,165 @@ fn run_card(ui: &mut egui::Ui, ws: &Workspace, a: &mut ActivityUi, r: &Run, pal:
         });
 }
 
-/// "Undo an agent's changes": pick an agent and a time, look at the plan, apply.
-fn revert_form(ui: &mut egui::Ui, ws: &Workspace, a: &mut ActivityUi, runs: &[&Run], now: i64, pal: &Palette, act: &mut Option<Act>) {
-    ui.add_space(4.0);
-    if !a.revert_open {
-        if ui.button("Undo an agent's changes…").clicked() {
-            a.revert_open = true;
+/// "Undo an agent's changes" (Activity → the button, a run's "Revert run",
+/// or the command): pick an agent and a time, look at the plan, apply.
+pub(crate) struct RevertOverlay {
+    a: ActivityUi,
+    done: bool,
+}
+
+impl RevertOverlay {
+    /// The dialog, on a run's selection when one was asked for.
+    pub(crate) fn make(ws: &mut Workspace) -> Box<dyn OverlayView> {
+        let mut a = ActivityUi::default();
+        if ws.features.agent.activity_loaded.is_none() && !ws.features.agent.activity_bg.busy() {
+            load_activity(ws);
         }
-        return;
+        if let Some((sel, title)) = ws.features.agent.revert_preset.take() {
+            if let Some(id) = &sel.actor {
+                a.agent = Some(id.clone());
+            }
+            start_plan(ws, &mut a, sel, title);
+        }
+        Box::new(Self { a, done: false })
     }
-    egui::Frame::NONE.fill(pal.raised).stroke(Stroke::new(1.0, pal.border)).corner_radius(8.0).inner_margin(10.0).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.label(RichText::new("Undo an agent's changes").strong().color(pal.strong));
-        let mut agents: Vec<(String, String)> = ws
-            .features
-            .agent
-            .activity
-            .iter()
-            .filter(|r| r.kind != ActorKind::Human)
-            .map(|r| (r.actor_id.clone(), r.actor_label.clone()))
-            .collect();
-        agents.sort();
-        agents.dedup();
-        if agents.is_empty() {
-            ui.label(RichText::new("No agent has changed notes on this device in the last 30 days.").size(12.5).color(pal.muted));
-        } else {
-            if a.agent.as_ref().is_none_or(|x| !agents.iter().any(|(id, _)| id == x)) {
-                a.agent = Some(agents[0].0.clone());
-            }
-            ui.horizontal_wrapped(|ui| {
-                ui.label("Everything");
-                let who = agents.iter().find(|(id, _)| Some(id) == a.agent.as_ref()).map_or("", |(_, l)| l.as_str());
-                egui::ComboBox::from_id_salt("quire-revert-agent").selected_text(who).width(120.0).show_ui(ui, |ui| {
-                    for (id, l) in &agents {
-                        ui.selectable_value(&mut a.agent, Some(id.clone()), l);
-                    }
-                });
-                ui.label("did");
-                egui::ComboBox::from_id_salt("quire-revert-since").selected_text(a.since.label()).width(150.0).show_ui(ui, |ui| {
-                    for s in Since::ALL {
-                        ui.selectable_value(&mut a.since, s, s.label());
-                    }
-                });
-            });
-            let busy = a.plan_bg.busy();
-            ui.horizontal_wrapped(|ui| {
-                if ui.add_enabled(!busy, egui::Button::new("Show what would change")).clicked()
-                    && let Some(id) = a.agent.clone()
-                {
-                    let label = agents.iter().find(|(x, _)| *x == id).map_or_else(|| id.clone(), |(_, l)| l.clone());
-                    let since = a.since.start(now);
-                    let title = format!("Undo {label}'s changes {}", a.since.label());
-                    start_plan(ws, a, RevertSelector { actor: Some(id), since: Some(since), ..RevertSelector::default() }, title);
-                }
-                if busy {
-                    ui.spinner();
-                }
-            });
+}
+
+impl OverlayView for RevertOverlay {
+    fn show(&mut self, ctx: &egui::Context, ws: &mut Workspace, pal: &Palette) -> OverlayResult {
+        let a = &mut self.a;
+        if let Some(plan) = a.plan_bg.poll() {
+            a.plan = Some((plan, std::mem::take(&mut a.pending_title)));
         }
-        let _ = runs;
-        if let Some((plan, title)) = &a.plan {
+        if let Some(runs) = ws.features.agent.activity_bg.poll() {
+            ws.features.agent.activity = runs;
+            ws.features.agent.activity_loaded = Some(std::time::Instant::now());
+        }
+        if a.plan_bg.busy() || ws.features.agent.activity_bg.busy() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        let now = ws.agent_store().map_or(0, quire_app::agent::AgentStore::now_ms);
+        let mut act: Option<Act> = None;
+        let mut close = false;
+        egui::Modal::new(egui::Id::unique("quire-revert")).frame(egui::Frame::popup(&ctx.global_style()).fill(pal.panel)).show(ctx, |ui| {
+            let w = 560.0_f32.min(ctx.content_rect().width() - 48.0);
+            ui.set_width(w);
+            ui.set_max_width(w);
+            ui.heading("Undo an agent's changes");
             ui.separator();
-            ui.label(RichText::new(title).color(pal.text));
-            if let Some(n) = &plan.note {
-                ui.label(RichText::new(n).size(12.5).color(pal.muted));
-            }
-            for s in &plan.steps {
-                ui.add(egui::Label::new(RichText::new(format!("• {}", s.describe())).size(12.5).color(pal.text)).wrap());
-            }
-            for (p, why) in &plan.skipped {
-                ui.add(egui::Label::new(RichText::new(format!("• Can't undo “{}”: {why}", p.stem())).size(12.5).color(pal.warn)).wrap());
-            }
-            if !plan.steps.is_empty() {
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(
-                            "Edits made since are kept. Notes edited where the agent wrote become a suggestion for you to review.",
-                        )
-                        .size(12.0)
-                        .color(pal.muted),
-                    )
-                    .wrap(),
-                );
-            }
+            let h = (ctx.content_rect().height() - 180.0).clamp(120.0, 420.0);
+            egui::ScrollArea::vertical().id_salt("quire-revert-body").max_height(h).auto_shrink([false, true]).show(ui, |ui| {
+                revert_body(ui, ws, a, now, pal);
+            });
+            ui.separator();
+            ui.horizontal_wrapped(|ui| {
+                if let Some((plan, title)) = a.plan.clone().filter(|(p, _)| !p.steps.is_empty())
+                    && ui.button(RichText::new("Undo these changes").color(pal.danger)).clicked()
+                {
+                    act = Some(Box::new(move |ws: &mut Workspace, a: &mut ActivityUi, _| apply_revert(ws, a, &plan, &title)));
+                    self.done = true;
+                }
+                if ui.button("Close").clicked() {
+                    close = true;
+                }
+            });
+        });
+        if let Some(f) = act {
+            f(ws, a, &mut PanelOut::default());
+        }
+        OverlayResult { close: close || self.done, ..OverlayResult::default() }
+    }
+}
+
+/// The dialog's body: the agent and time, and the plan once worked out.
+fn revert_body(ui: &mut egui::Ui, ws: &Workspace, a: &mut ActivityUi, now: i64, pal: &Palette) {
+    let mut agents: Vec<(String, String)> = ws
+        .features
+        .agent
+        .activity
+        .iter()
+        .filter(|r| r.kind != ActorKind::Human)
+        .map(|r| (r.actor_id.clone(), r.actor_label.clone()))
+        .collect();
+    agents.sort();
+    agents.dedup();
+    if ws.features.agent.activity_loaded.is_none() {
+        ui.label(RichText::new("Loading…").color(pal.muted));
+    } else if agents.is_empty() {
+        ui.label(RichText::new("No agent has changed notes on this device in the last 30 days.").size(12.5).color(pal.muted));
+    } else {
+        if a.agent.as_ref().is_none_or(|x| !agents.iter().any(|(id, _)| id == x)) {
+            a.agent = Some(agents[0].0.clone());
         }
         ui.horizontal_wrapped(|ui| {
-            if let Some((plan, title)) = a.plan.clone().filter(|(p, _)| !p.steps.is_empty())
-                && ui.button(RichText::new("Undo these changes").color(pal.danger)).clicked()
+            ui.label("Everything");
+            let who = agents.iter().find(|(id, _)| Some(id) == a.agent.as_ref()).map_or("", |(_, l)| l.as_str());
+            egui::ComboBox::from_id_salt("quire-revert-agent").selected_text(who).width(120.0).show_ui(ui, |ui| {
+                for (id, l) in &agents {
+                    ui.selectable_value(&mut a.agent, Some(id.clone()), l);
+                }
+            });
+            ui.label("did");
+            egui::ComboBox::from_id_salt("quire-revert-since").selected_text(a.since.label()).width(150.0).show_ui(ui, |ui| {
+                for s in Since::ALL {
+                    ui.selectable_value(&mut a.since, s, s.label());
+                }
+            });
+        });
+        let busy = a.plan_bg.busy();
+        ui.horizontal_wrapped(|ui| {
+            if ui.add_enabled(!busy, egui::Button::new("Show what would change")).clicked()
+                && let Some(id) = a.agent.clone()
             {
-                *act = Some(Box::new(move |ws: &mut Workspace, a: &mut ActivityUi, _| apply_revert(ws, a, &plan, &title)));
+                let label = agents.iter().find(|(x, _)| *x == id).map_or_else(|| id.clone(), |(_, l)| l.clone());
+                let since = a.since.start(now);
+                let title = format!("Undo {label}'s changes {}", a.since.label());
+                start_plan(ws, a, RevertSelector { actor: Some(id), since: Some(since), ..RevertSelector::default() }, title);
             }
-            if ui.button("Close").clicked() {
-                a.revert_open = false;
-                a.plan = None;
+            if busy {
+                ui.spinner();
             }
         });
-    });
-    ui.add_space(6.0);
+    }
+    if let Some((plan, title)) = &a.plan {
+        ui.separator();
+        ui.label(RichText::new(title).color(pal.text));
+        if let Some(n) = &plan.note {
+            ui.label(RichText::new(n).size(12.5).color(pal.muted));
+        }
+        for s in &plan.steps {
+            ui.add(egui::Label::new(RichText::new(format!("• {}", s.describe())).size(12.5).color(pal.text)).wrap());
+        }
+        for (p, why) in &plan.skipped {
+            ui.add(egui::Label::new(RichText::new(format!("• Can't undo “{}”: {why}", p.stem())).size(12.5).color(pal.warn)).wrap());
+        }
+        if !plan.steps.is_empty() {
+            ui.add(
+                egui::Label::new(
+                    RichText::new("Edits made since are kept. Notes edited where the agent wrote become a suggestion for you to review.")
+                        .size(12.0)
+                        .color(pal.muted),
+                )
+                .wrap(),
+            );
+        }
+    }
+}
+
+/// A sample for `layout_check`: a plan with many steps.
+#[cfg(test)]
+impl RevertOverlay {
+    pub(crate) fn sample() -> Self {
+        use quire_app::agent::revert::{RevertAction, RevertStep};
+        let steps = (0..30)
+            .map(|i| RevertStep {
+                path: NotePath::new(format!("Notes/Note {i}.md")),
+                action: RevertAction::Restore { text: String::new() },
+            })
+            .collect();
+        let plan = RevertPlan { steps, ..RevertPlan::default() };
+        Self { a: ActivityUi { plan: Some((plan, "Undo Claude Code's changes today".into())), ..ActivityUi::default() }, done: false }
+    }
 }
 
 fn apply_revert(ws: &mut Workspace, a: &mut ActivityUi, plan: &RevertPlan, title: &str) {
@@ -498,7 +562,6 @@ fn apply_revert(ws: &mut Workspace, a: &mut ActivityUi, plan: &RevertPlan, title
         ws.notify(NoticeLevel::Error, format!("Couldn't undo “{}”: {e}", p.stem()));
     }
     a.plan = None;
-    a.revert_open = false;
     load_activity(ws);
     ws.features.agent.reload_inbox_soon();
 }

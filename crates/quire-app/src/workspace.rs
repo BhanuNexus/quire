@@ -102,6 +102,12 @@ pub enum UiRequest {
     /// A 0.9 feature's UI (a panel tab, a sidebar tab, a dialog); the
     /// frontend's feature registry shows it.
     Feature(Command),
+    /// Scroll the editor to the caret (a feature moved it, e.g. to the
+    /// next suggested change), without taking focus from where it is.
+    RevealCaret,
+    /// Open a file that isn't a Markdown note (`.base`, `.canvas`, `.pdf`)
+    /// in the frontend's editor for it (a surface).
+    OpenFile(NotePath),
 }
 
 /// Everything the insights panel shows for the active note.
@@ -168,6 +174,8 @@ pub struct Workspace {
     /// The agent store of the open vault.
     pub(crate) agent: Option<quire_agent::AgentStore>,
     device: quire_agent::DeviceInfo,
+    /// UI asked for outside a command's return value ([`Workspace::request_ui`]).
+    ui_requests: Vec<UiRequest>,
 }
 
 impl Workspace {
@@ -204,7 +212,27 @@ impl Workspace {
             jobs: crate::jobs::JobRunner::new(),
             agent: None,
             device: crate::device::this_device(),
+            ui_requests: Vec::new(),
         }
+    }
+
+    /// Ask the frontend for some UI from anywhere a command's return value
+    /// can't carry it: a click in a note widget that opens a feature's
+    /// dialog (`UiRequest::Feature`), a feature that moved the caret
+    /// (`UiRequest::RevealCaret`), a link to a canvas (`UiRequest::OpenFile`).
+    /// The frontend takes them once a frame, in order.
+    pub fn request_ui(&mut self, req: UiRequest) {
+        self.ui_requests.push(req);
+    }
+
+    /// The UI requests made since the last call (the frontend, once a frame).
+    pub fn take_ui_requests(&mut self) -> Vec<UiRequest> {
+        std::mem::take(&mut self.ui_requests)
+    }
+
+    /// Whether UI requests wait (the frontend repaints for them).
+    pub const fn ui_requested(&self) -> bool {
+        !self.ui_requests.is_empty()
     }
 
     /// This device (id and name, from `<config>/device.toml`).
@@ -446,6 +474,13 @@ impl Workspace {
 
     /// Follow a wikilink target. Unresolved targets create the note (Obsidian behaviour).
     pub fn open_link(&mut self, target: &str, heading: Option<&str>) -> Option<DocId> {
+        // `[[Projects/]]`: the folder's note, or the folder in the sidebar.
+        if let Some(r) = crate::nav::folder_link(self, target) {
+            return match r {
+                crate::nav::FolderLink::Note(_) => self.active_doc().map(|d| d.id),
+                crate::nav::FolderLink::Folder(_) => None,
+            };
+        }
         let from = self.active_doc().and_then(|d| d.path.clone());
         let resolved = self.index.read().resolve(target, from.as_ref());
         let id = match resolved {
@@ -1120,7 +1155,21 @@ impl Workspace {
         }
         match cmd {
             C::NewNote => {
-                self.new_note(None);
+                // In the open note's folder (where its template applies), unless set to the top.
+                let folder = (self.settings.editing.new_note_folder != "root")
+                    .then(|| self.active_doc().and_then(|d| d.path.as_ref()).map(|p| p.folder().to_string()))
+                    .flatten()
+                    .filter(|f| !f.is_empty());
+                match folder {
+                    Some(f) => {
+                        if let Err(e) = self.new_note_in(&f) {
+                            self.notify(NoticeLevel::Error, e);
+                        }
+                    }
+                    None => {
+                        self.new_note(None);
+                    }
+                }
             }
             C::NewFromTemplate => return Some(UiRequest::PickTemplate),
             C::DailyNote => {

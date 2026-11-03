@@ -29,12 +29,12 @@ sha2.workspace = true
 getrandom.workspace = true
 base64.workspace = true
 ureq.workspace = true
-# The same version quire-sync uses (in the lock already); MRTR request states.
-chacha20poly1305 = "0.11"
+# MRTR request states.
+chacha20poly1305.workspace = true
 axum = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
-# The `Stream` trait for event streams (in the lock already, through axum).
-futures-core = { version = "0.3", optional = true, default-features = false }
+# The `Stream` trait for event streams.
+futures-core = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

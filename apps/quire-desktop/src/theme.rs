@@ -4,7 +4,7 @@
 //!
 //! The palettes are built from the built-in colours, the chosen theme file
 //! and the accent colour (`quire_app::themes`). [`LIGHT`] and [`DARK`] always
-//! hold the palettes in use; [`apply`] swaps them when the theme changes.
+//! hold the palettes in use; [`set_palettes`] swaps them when the theme changes.
 
 use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -107,7 +107,7 @@ pub(crate) const BASE_DARK: Palette = Palette {
 };
 
 /// A palette that can change while the app runs. It reads like a
-/// `&'static Palette` (`&LIGHT` coerces to one); [`apply`] replaces it.
+/// `&'static Palette` (`&LIGHT` coerces to one); [`set_palettes`] replaces it.
 pub(crate) struct Live(Mutex<&'static Palette>);
 
 impl Live {
@@ -432,24 +432,11 @@ fn user_font(name: &str) -> Option<Vec<u8>> {
         .filter(|b| b.len() < 32 * 1024 * 1024)
 }
 
-/// A monochrome emoji font for icons (`icon: 📘`, folder icons): one put in
-/// the fonts folder, or the system's. Colour-only emoji fonts can't be drawn.
+/// A newer monochrome emoji font put in the fonts folder
+/// (`NotoEmoji-Regular.ttf`); egui's bundled one covers icons otherwise.
 fn emoji_font() -> Option<Vec<u8>> {
-    let mut paths: Vec<std::path::PathBuf> = Vec::new();
-    if let Some(dir) = quire_app::themes::fonts_dir() {
-        paths.push(dir.join("NotoEmoji-Regular.ttf"));
-    }
-    for p in [
-        "/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf",
-        "/usr/share/fonts/noto/NotoEmoji-Regular.ttf",
-        "/usr/share/fonts/google-noto-emoji/NotoEmoji-Regular.ttf",
-        "C:\\Windows\\Fonts\\seguiemj.ttf",
-        "C:\\Windows\\Fonts\\seguisym.ttf",
-        "/System/Library/Fonts/Apple Symbols.ttf",
-    ] {
-        paths.push(p.into());
-    }
-    paths.iter().find_map(|p| std::fs::read(p).ok()).filter(|b| b.len() < 24 * 1024 * 1024)
+    let dir = quire_app::themes::fonts_dir()?;
+    std::fs::read(dir.join("NotoEmoji-Regular.ttf")).ok().filter(|b| b.len() < 24 * 1024 * 1024)
 }
 
 fn install_fonts_with(ctx: &egui::Context, theme_fonts: &quire_app::themes::ThemeFonts) -> FontSupport {

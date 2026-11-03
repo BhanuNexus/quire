@@ -9,7 +9,9 @@
 //! * [`RIGHT_TABS`] — tabs of the right panel (Insights is built in)
 //! * [`SIDEBAR_TABS`] — extra sidebar tabs (Files, Search, Tags, Tasks are built in)
 //! * [`SETTINGS_TABS`] — tabs of the Settings dialog
+//! * [`EDITOR_BANNERS`] — bars above the note (the review banner)
 //! * [`ui_target`] — what a feature command's `UiRequest::Feature` opens
+//!   (a tab, or a dialog with [`UiTarget::Overlay`])
 //! * [`paint_widget`] — widgets a feature puts under a line of a note
 //! * [`open_surface`] — editors for non-Markdown files (`surfaces.rs`)
 //! * `layout_samples` — every feature overlay, for `layout_check` (tests)
@@ -55,8 +57,6 @@ pub(crate) struct FeatureUi {
     // ---- WS-E
     pub agenda: crate::agenda_ui::AgendaUi,
     pub calendar: crate::calendar_ui::CalendarUi,
-    pub refactor: crate::meta_refactor_ui::RefactorUi,
-    pub review: crate::srs_ui::ReviewUi,
     // ---- WS-F
     pub themes: crate::theme_ui::ThemeUi,
     pub git: crate::git_ui::GitUi,
@@ -94,12 +94,6 @@ pub(crate) const RIGHT_TABS: &[TabDef] = &[
     TabDef { id: "agent", label: label!("Agent"), available: crate::agent_panel_ui::available, show: crate::agent_panel_ui::show },
     // ---- WS-E
     TabDef { id: "agenda", label: label!("Agenda"), available: crate::agenda_ui::available, show: crate::agenda_ui::show },
-    TabDef {
-        id: "plan",
-        label: crate::agenda_ui::dialog_label,
-        available: crate::agenda_ui::dialog_open,
-        show: crate::agenda_ui::dialog_tab,
-    },
     // ---- WS-F
     TabDef { id: "git", label: crate::git_ui::label, available: crate::git_ui::available, show: crate::git_ui::show },
 ];
@@ -126,34 +120,54 @@ pub(crate) const SETTINGS_TABS: &[TabDef] = &[
     TabDef { id: "appearance", label: label!("Appearance"), available: crate::theme_ui::available, show: crate::theme_ui::show },
 ];
 
+/// A bar drawn above the note, below the find bar: full width, as tall as
+/// it needs. `show` returns what the app should do next (`PanelOut`).
+#[derive(Clone, Copy)]
+pub(crate) struct BannerDef {
+    pub id: &'static str,
+    /// Drawn only while this says so (cheap: called every frame).
+    pub available: fn(&Workspace) -> bool,
+    pub show: ShowFn,
+}
+
+/// Bars above the note, top to bottom, by workstream.
+pub(crate) const EDITOR_BANNERS: &[BannerDef] = &[
+    // ---- WS-A: "Claude Code suggests 4 changes · Why … · ◀ Prev  Next ▶ · …"
+    BannerDef { id: "review", available: crate::inbox_ui::review_ui::banner_available, show: crate::inbox_ui::review_ui::banner },
+    // ---- WS-C
+    // ---- WS-D
+    // ---- WS-G
+];
+
 /// The tabs of `table` that are offered now.
 pub(crate) fn offered<'a>(table: &'a [TabDef], ws: &Workspace) -> Vec<&'a TabDef> {
     table.iter().filter(|t| (t.available)(ws)).collect()
 }
+
+/// Makes a feature's dialog (it may read or prepare state in the workspace).
+pub(crate) type MakeOverlay = fn(&mut Workspace) -> Box<dyn crate::overlays::OverlayView>;
 
 /// Where a feature command's UI is.
 pub(crate) enum UiTarget {
     Right(&'static str),
     Sidebar(&'static str),
     Settings(&'static str),
+    /// A dialog in its own file, shown as `Overlay::Feature` (background
+    /// jobs pause while it is open; Escape closes it).
+    Overlay(MakeOverlay),
 }
 
 /// The UI a `UiRequest::Feature(cmd)` opens, by workstream.
 pub(crate) const fn ui_target(cmd: Command) -> Option<UiTarget> {
     Some(match cmd {
         // ---- WS-A
-        Command::OpenInbox
-        | Command::NextHunk
-        | Command::PrevHunk
-        | Command::AcceptHunk
-        | Command::RejectHunk
-        | Command::AcceptAllInFile
-        | Command::RejectAllInFile
-        | Command::LintVault => UiTarget::Right("inbox"),
-        Command::ShowAgentActivity | Command::UndoAgentChanges => UiTarget::Right("activity"),
+        Command::OpenInbox | Command::LintVault => UiTarget::Right("inbox"),
+        Command::ShowAgentActivity => UiTarget::Right("activity"),
+        Command::UndoAgentChanges => UiTarget::Overlay(crate::activity_ui::RevertOverlay::make),
         Command::AgentSettings => UiTarget::Settings("agents"),
         // ---- WS-B
-        Command::ConnectAgent | Command::CaptureWebPage => UiTarget::Settings("mcp"),
+        Command::ConnectAgent => UiTarget::Settings("mcp"),
+        Command::CaptureWebPage => UiTarget::Overlay(crate::mcp_ui::CaptureDialog::make),
         // ---- WS-C
         Command::ThinkingTimeline => UiTarget::Right("timeline"),
         // ---- WS-D
@@ -162,7 +176,8 @@ pub(crate) const fn ui_target(cmd: Command) -> Option<UiTarget> {
         // ---- WS-E
         Command::ShowAgenda => UiTarget::Sidebar("agenda"),
         Command::ShowCalendar => UiTarget::Sidebar("calendar"),
-        Command::RenameTag | Command::RenameProperty | Command::StartReview | Command::ReviewThisNote => UiTarget::Right("plan"),
+        Command::RenameTag | Command::RenameProperty => UiTarget::Overlay(crate::meta_refactor_ui::RefactorOverlay::make),
+        Command::StartReview | Command::ReviewThisNote => UiTarget::Overlay(crate::srs_ui::ReviewOverlay::make),
         // ---- WS-F
         Command::ChooseTheme => UiTarget::Settings("appearance"),
         _ => return None,
@@ -198,8 +213,13 @@ pub(crate) fn paint_widget(ui: &mut egui::Ui, ws: &Workspace, id: WidgetId, pal:
     }
 }
 
+/// Whether a file that isn't a note has an editor here (the Files tab
+/// lists those files, and `UiRequest::OpenFile` opens them).
+pub(crate) fn has_surface(path: &NotePath) -> bool {
+    !path.is_markdown() && open_surface(path).is_some()
+}
+
 /// An editor for a non-Markdown file, by extension.
-#[cfg_attr(not(test), expect(dead_code, reason = "WS-E and WS-G open surfaces from the file tree and links"))]
 pub(crate) fn open_surface(path: &NotePath) -> Option<Box<dyn crate::surfaces::Surface>> {
     let ext = path.as_str().rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
     match ext.as_str() {
@@ -215,13 +235,14 @@ pub(crate) fn open_surface(path: &NotePath) -> Option<Box<dyn crate::surfaces::S
 /// Every feature overlay in a state worth checking, for `layout_check`.
 /// Each workstream adds its dialogs (in every interesting state) to its block.
 #[cfg(test)]
-pub(crate) fn layout_samples(ws: &Workspace) -> Vec<(&'static str, crate::overlays::Overlay)> {
+pub(crate) fn layout_samples(ws: &mut Workspace) -> Vec<(&'static str, crate::overlays::Overlay)> {
     use crate::overlays::Overlay;
-    let _ = ws;
     vec![
         // ---- F0
         ("shortcuts (feature overlay)", Overlay::Feature(Box::new(crate::overlays::ShortcutsOverlay::default()))),
         // ---- WS-A
+        ("undo agent changes", Overlay::Feature(crate::activity_ui::RevertOverlay::make(ws))),
+        ("undo agent changes: plan", Overlay::Feature(Box::new(crate::activity_ui::RevertOverlay::sample()))),
         // ---- WS-B
         ("mcp: consent", crate::mcp_ui::layout_sample(0)),
         ("mcp: consent, error", crate::mcp_ui::layout_sample(1)),
@@ -236,6 +257,7 @@ pub(crate) fn layout_samples(ws: &Workspace) -> Vec<(&'static str, crate::overla
         ("review: question", Overlay::Feature(Box::new(crate::srs_ui::ReviewOverlay::sample(false, false)))),
         ("review: answer", Overlay::Feature(Box::new(crate::srs_ui::ReviewOverlay::sample(true, false)))),
         ("review: done", Overlay::Feature(Box::new(crate::srs_ui::ReviewOverlay::sample(false, true)))),
+        ("new note from template: questions", Overlay::Feature(Box::new(crate::template_prompt_ui::TemplateDialog::sample()))),
         // ---- WS-F
         // ---- WS-G
     ]

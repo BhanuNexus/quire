@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Hunk review in the editor (design §7.3): the widget under each
 //! suggested change, the bar under a note's title when suggestions wait,
-//! and the review card at the top of the Inbox tab.
+//! and the review banner above the note (`registry::EDITOR_BANNERS`).
 //!
 //! The lines a hunk replaces are tinted and struck through by the editor
 //! (decorations from `quire_app::agent_state`); this file draws what goes
@@ -238,129 +238,114 @@ pub(crate) fn untrusted_chip(ui: &mut egui::Ui, p: &Proposal, pal: &Palette) {
 /// Something to do with the workspace after drawing.
 type Later = Box<dyn FnOnce(&mut Workspace)>;
 
-/// The review card at the top of the Inbox tab while a proposal is under
-/// review: who and why, where you are, Accept all / Reject all / Done, and
-/// the proposal's other notes (new notes, renames, deletions).
-pub(crate) fn review_card(ui: &mut egui::Ui, ws: &mut Workspace, preview: &mut Option<String>, pal: &Palette) -> PanelOut {
-    let mut out = PanelOut::default();
+/// Whether the review banner shows: a suggestion is under review in the
+/// note on screen (or only its new notes, renames and deletions are left).
+pub(crate) fn banner_available(ws: &Workspace) -> bool {
+    ws.features.agent.review.as_ref().is_some_and(|r| r.doc.is_none() || r.doc == ws.active_doc().map(|d| d.id))
+}
+
+/// The review banner above the note while a suggestion is under review:
+/// who and why, where you are, Accept all / Reject all / Done, and the
+/// suggestion's other changes (new notes, renames, deletions).
+pub(crate) fn banner(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut crate::registry::FeatureUi, pal: &Palette) -> PanelOut {
+    let out = PanelOut::default();
+    let preview = &mut st.inbox.preview;
     let Some(r) = ws.features.agent.review.as_ref() else { return out };
-    if r.reveal.replace(false) {
-        out.reveal_only = true;
-    }
     let p = r.proposal.clone();
     let (n, current, conflicts, path) = (r.hunks.len(), r.current, r.conflicts(), r.path.clone());
     let pending = p.pending_changes().count();
     let mut action: Option<Later> = None;
-    egui::Frame::NONE.fill(pal.raised).stroke(Stroke::new(1.0, added(pal).gamma_multiply(0.6))).corner_radius(8.0).inner_margin(10.0).show(
-        ui,
-        |ui| {
-            ui.set_width(ui.available_width());
-            let total: usize = n + p.pending_changes().filter(|c| c.path != path || !matches!(c.op, ChangeOp::Edit)).count();
-            ui.label(
-                RichText::new(format!("{} suggests {} change{}", p.actor.label, total.max(1), if total == 1 { "" } else { "s" }))
-                    .strong()
-                    .color(pal.strong),
-            );
-            ui.label(RichText::new(&p.title).color(pal.text));
-            rationale(ui, &p, pal);
-            untrusted_chip(ui, &p, pal);
-            ui.add_space(4.0);
-            if n > 0 {
-                ui.horizontal(|ui| {
-                    if ui.button("◀ Prev").on_hover_text("Previous change (Alt+[)").clicked() {
-                        action = Some(Box::new(|ws: &mut Workspace| ws.review_step(-1)));
-                    }
-                    ui.label(RichText::new(format!("{} of {n}", current + 1)).color(pal.muted));
-                    if ui.button("Next ▶").on_hover_text("Next change (Alt+])").clicked() {
-                        action = Some(Box::new(|ws: &mut Workspace| ws.review_step(1)));
-                    }
-                });
-                if conflicts > 0 {
-                    ui.label(
-                        RichText::new(format!("{conflicts} of them conflict with your edits (amber); Accept all leaves those for you"))
-                            .size(12.0)
-                            .color(pal.warn),
-                    );
-                }
+    let total: usize = n + p.pending_changes().filter(|c| c.path != path || !matches!(c.op, ChangeOp::Edit)).count();
+    ui.horizontal_wrapped(|ui| {
+        ui.label(
+            RichText::new(format!("{} suggests {} change{}", p.actor.label, total.max(1), if total == 1 { "" } else { "s" }))
+                .strong()
+                .color(pal.strong),
+        );
+        ui.label(RichText::new(format!("· {}", p.title)).color(pal.muted));
+        untrusted_chip(ui, &p, pal);
+        ui.add_space(8.0);
+        if n > 0 {
+            if ui.button("◀ Prev").on_hover_text("Previous change (Alt+[)").clicked() {
+                action = Some(Box::new(|ws: &mut Workspace| ws.review_step(-1)));
             }
-            ui.horizontal_wrapped(|ui| {
-                if n > 0 {
-                    if ui
-                        .button("Accept all in note")
-                        .on_hover_text("Every change in this note except conflicts (Ctrl+Alt+Shift+Y)")
-                        .clicked()
-                    {
-                        action = Some(Box::new(|ws: &mut Workspace| ws.review_all_in_file(true)));
-                    }
-                    if ui.button("Reject all in note").clicked() {
-                        action = Some(Box::new(|ws: &mut Workspace| ws.review_all_in_file(false)));
-                    }
-                }
-                if ui.button("Done").on_hover_text("Stop reviewing; what's left stays in the Inbox").clicked() {
-                    action = Some(Box::new(Workspace::end_review));
-                }
-            });
-            if pending > 1 || path.is_none() {
-                ui.add_space(6.0);
-                ui.label(RichText::new("IN THIS SUGGESTION").size(11.0).color(pal.muted).strong());
-                for c in p.pending_changes() {
-                    let Some(subject) = c.subject().cloned() else { continue };
-                    let here = path.as_ref() == Some(&subject);
-                    let shown = subject.clone();
-                    ui.horizontal_wrapped(|ui| {
-                        let words = change_words(c);
-                        let label =
-                            if here { RichText::new(format!("• {words}")).strong() } else { RichText::new(format!("• {words}")) };
-                        ui.label(label.size(12.5).color(pal.text));
-                        let id = p.id.clone();
-                        match c.op {
-                            ChangeOp::Edit if !here => {
-                                if ui.small_button("Review").clicked() {
-                                    action = Some(Box::new(move |ws: &mut Workspace| {
-                                        ws.start_review(&id, Some(&subject));
-                                    }));
-                                }
-                            }
-                            ChangeOp::Edit => {}
-                            _ => {
-                                if c.op == ChangeOp::Create
-                                    && ui
-                                        .small_button(if preview.as_deref() == Some(subject.as_str()) { "Hide" } else { "Preview" })
-                                        .clicked()
-                                {
-                                    *preview = if preview.as_deref() == Some(subject.as_str()) { None } else { Some(subject.to_string()) };
-                                }
-                                let (s1, s2, id2) = (subject.clone(), subject.clone(), id.clone());
-                                if ui.small_button("Accept").clicked() {
-                                    action = Some(Box::new(move |ws: &mut Workspace| ws.resolve_one_change(&id, &s1, true)));
-                                }
-                                if ui.small_button("Reject").clicked() {
-                                    action = Some(Box::new(move |ws: &mut Workspace| ws.resolve_one_change(&id2, &s2, false)));
-                                }
+            ui.label(RichText::new(format!("{} of {n}", current + 1)).color(pal.muted));
+            if ui.button("Next ▶").on_hover_text("Next change (Alt+])").clicked() {
+                action = Some(Box::new(|ws: &mut Workspace| ws.review_step(1)));
+            }
+            if ui.button("Accept all").on_hover_text("Every change in this note except conflicts (Ctrl+Alt+Shift+Y)").clicked() {
+                action = Some(Box::new(|ws: &mut Workspace| ws.review_all_in_file(true)));
+            }
+            if ui.button("Reject all").on_hover_text("Keep this note as it is").clicked() {
+                action = Some(Box::new(|ws: &mut Workspace| ws.review_all_in_file(false)));
+            }
+        }
+        if ui.button("Done").on_hover_text("Stop reviewing; what's left stays in the Inbox").clicked() {
+            action = Some(Box::new(Workspace::end_review));
+        }
+    });
+    rationale(ui, &p, pal);
+    if conflicts > 0 {
+        ui.label(
+            RichText::new(format!("{conflicts} of them conflict with your edits (amber); Accept all leaves those for you"))
+                .size(12.0)
+                .color(pal.warn),
+        );
+    }
+    if pending > 1 || path.is_none() {
+        egui::ScrollArea::vertical().id_salt("quire-review-banner-changes").max_height(150.0).show(ui, |ui| {
+            for c in p.pending_changes() {
+                let Some(subject) = c.subject().cloned() else { continue };
+                let here = path.as_ref() == Some(&subject);
+                let shown = subject.clone();
+                ui.horizontal_wrapped(|ui| {
+                    let words = change_words(c);
+                    let label = if here { RichText::new(format!("• {words}")).strong() } else { RichText::new(format!("• {words}")) };
+                    ui.label(label.size(12.5).color(pal.text));
+                    let id = p.id.clone();
+                    match c.op {
+                        ChangeOp::Edit if !here => {
+                            if ui.small_button("Review").clicked() {
+                                action = Some(Box::new(move |ws: &mut Workspace| {
+                                    ws.start_review(&id, Some(&subject));
+                                }));
                             }
                         }
-                    });
-                    if c.op == ChangeOp::Create && preview.as_deref() == Some(shown.as_str()) {
-                        create_preview(ui, c.text.as_deref().unwrap_or_default(), pal);
-                    }
-                }
-                ui.horizontal(|ui| {
-                    let (a, b) = (p.id.clone(), p.id.clone());
-                    if ui.button("Accept everything").on_hover_text("Every change of this suggestion, except conflicts").clicked() {
-                        action = Some(Box::new(move |ws: &mut Workspace| ws.resolve_whole_proposal(&a, true)));
-                    }
-                    if ui.button("Reject everything").clicked() {
-                        action = Some(Box::new(move |ws: &mut Workspace| ws.resolve_whole_proposal(&b, false)));
+                        ChangeOp::Edit => {}
+                        _ => {
+                            if c.op == ChangeOp::Create
+                                && ui.small_button(if preview.as_deref() == Some(subject.as_str()) { "Hide" } else { "Preview" }).clicked()
+                            {
+                                *preview = if preview.as_deref() == Some(subject.as_str()) { None } else { Some(subject.to_string()) };
+                            }
+                            let (s1, s2, id2) = (subject.clone(), subject.clone(), id.clone());
+                            if ui.small_button("Accept").clicked() {
+                                action = Some(Box::new(move |ws: &mut Workspace| ws.resolve_one_change(&id, &s1, true)));
+                            }
+                            if ui.small_button("Reject").clicked() {
+                                action = Some(Box::new(move |ws: &mut Workspace| ws.resolve_one_change(&id2, &s2, false)));
+                            }
+                        }
                     }
                 });
+                if c.op == ChangeOp::Create && preview.as_deref() == Some(shown.as_str()) {
+                    create_preview(ui, c.text.as_deref().unwrap_or_default(), pal);
+                }
             }
-        },
-    );
+        });
+        ui.horizontal(|ui| {
+            let (a, b) = (p.id.clone(), p.id.clone());
+            if ui.button("Accept everything").on_hover_text("Every change of this suggestion, except conflicts").clicked() {
+                action = Some(Box::new(move |ws: &mut Workspace| ws.resolve_whole_proposal(&a, true)));
+            }
+            if ui.button("Reject everything").clicked() {
+                action = Some(Box::new(move |ws: &mut Workspace| ws.resolve_whole_proposal(&b, false)));
+            }
+        });
+    }
     if let Some(f) = action {
         f(ws);
-        out.reveal_only = true;
     }
-    ui.add_space(8.0);
     out
 }
 

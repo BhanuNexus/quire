@@ -13,7 +13,7 @@ use quire_app::Workspace;
 use quire_app::decor::{ActionId, WidgetId};
 use quire_app::index::views::{Layout, ViewResult, ViewRow, ViewSpec};
 use quire_app::markdown::Task;
-use quire_app::tasks_state::{Action, Dialog, PlanWidget};
+use quire_app::tasks_state::{Action, PlanWidget};
 use quire_app::vault::NotePath;
 
 use crate::panels::PanelOut;
@@ -490,46 +490,6 @@ pub(crate) fn paint_widget(ui: &mut Ui, ws: &Workspace, id: WidgetId, pal: &Pale
         None => None,
     };
     (ui.min_rect().bottom() - top + 6.0, action)
-}
-
-// ---------------------------------------------------------------- dialog host
-
-/// The right-panel tab that hosts WS-E's dialogs while one is open.
-pub(crate) fn dialog_open(ws: &Workspace) -> bool {
-    ws.features.tasks.dialog.is_some()
-}
-
-pub(crate) fn dialog_label(ws: &Workspace) -> String {
-    match ws.features.tasks.dialog {
-        Some(Dialog::Refactor) => "Rename".into(),
-        Some(Dialog::Review) => "Review".into(),
-        None => String::new(),
-    }
-}
-
-pub(crate) fn dialog_tab(ui: &mut Ui, ws: &mut Workspace, st: &mut FeatureUi, pal: &Palette) -> PanelOut {
-    let ctx = ui.ctx().clone();
-    ui.add_space(8.0);
-    let close = match ws.features.tasks.dialog {
-        Some(Dialog::Refactor) => {
-            ui.label(RichText::new("Renaming tags and properties…").color(pal.muted));
-            st.refactor.show_modal(&ctx, ws, pal)
-        }
-        Some(Dialog::Review) => {
-            ui.label(RichText::new("Reviewing flashcards…").color(pal.muted));
-            st.review.show_modal(&ctx, ws, pal)
-        }
-        None => false,
-    };
-    if close {
-        if ws.features.tasks.dialog == Some(Dialog::Review) {
-            ws.srs_end();
-        }
-        ws.features.tasks.dialog = None;
-        st.refactor = crate::meta_refactor_ui::RefactorUi::default();
-        st.review = crate::srs_ui::ReviewUi::default();
-    }
-    PanelOut { jumped: close, ..PanelOut::default() }
 }
 
 // ---------------------------------------------------------------- settings

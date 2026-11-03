@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Command palette, quick open, pickers, dialogs and toasts.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use egui::{Align2, Key, Modifiers, Pos2, RichText};
@@ -72,6 +73,11 @@ pub(crate) trait OverlayView {
     fn yields_to_capture(&self) -> bool {
         false
     }
+    /// The dialog went away, however (Escape, its own button, another
+    /// dialog in its place): end what it started.
+    fn closed(&mut self, ws: &mut Workspace) {
+        let _ = ws;
+    }
 }
 
 impl Overlay {
@@ -87,6 +93,8 @@ enum Action {
     OpenAt(NotePath, usize),
     Create(String),
     Template(NotePath),
+    /// A file that isn't a note, in its surface.
+    OpenFile(NotePath),
 }
 
 struct Item {
@@ -142,27 +150,51 @@ fn items(ws: &Workspace, mode: Mode, query: &str, mac: bool) -> Vec<Item> {
             v.into_iter().map(|(_, i)| i).collect()
         }
         Mode::Notes => {
+            // Labels follow Settings → Editing → "Show note titles"; quick open
+            // matches titles and file names either way.
+            let label = |p: &NotePath| quire_app::nav::display_name(ws, p);
+            let titled = ws.settings.editing.display_titles;
             // Empty query: recently opened notes first.
             let recent = if query.trim().is_empty() { ws.recent_notes(8) } else { Vec::new() };
-            let ix = ws.index().read();
+            let hits = ws.index().read().quick_open(query, 40);
             let mut v: Vec<Item> = recent
                 .iter()
                 .map(|p| Item {
-                    label: p.stem().to_string(),
+                    label: label(p),
                     detail: if p.folder().is_empty() { "recent".into() } else { format!("recent · {}", p.folder()) },
                     action: Action::Open(p.clone()),
                 })
                 .collect();
-            v.extend(ix.quick_open(query, 40).into_iter().filter(|h| !recent.contains(&h.path)).map(|h| Item {
-                label: h.path.stem().to_string(),
-                detail: match (h.title == h.path.stem(), h.path.folder()) {
-                    (true, f) => f.to_string(),
-                    (false, "") => h.title.clone(),
-                    (false, f) => format!("{} · {f}", h.title),
-                },
-                action: Action::Open(h.path),
+            v.extend(hits.into_iter().filter(|h| !recent.contains(&h.path)).map(|h| {
+                let shown = label(&h.path);
+                // The other name (title or file name) goes in the detail when it differs.
+                let other = if titled { h.path.stem().to_string() } else { h.title.clone() };
+                Item {
+                    detail: match (other == shown || other.trim().is_empty(), h.path.folder()) {
+                        (true, f) => f.to_string(),
+                        (false, "") => other,
+                        (false, f) => format!("{other} · {f}"),
+                    },
+                    label: shown,
+                    action: Action::Open(h.path),
+                }
             }));
             let q = query.trim();
+            if !q.is_empty() {
+                // Files with an editor of their own: `.base`, canvases, PDFs.
+                let mut files: Vec<(i32, NotePath)> = ws
+                    .other_files()
+                    .into_iter()
+                    .filter(crate::registry::has_surface)
+                    .filter_map(|p| Some((fuzzy_score(p.as_str(), q)?, p)))
+                    .collect();
+                files.sort_by_key(|(sc, _)| std::cmp::Reverse(*sc));
+                v.extend(files.into_iter().take(10).map(|(_, p)| Item {
+                    label: p.file_name().to_string(),
+                    detail: p.folder().to_string(),
+                    action: Action::OpenFile(p),
+                }));
+            }
             if !q.is_empty() && !v.iter().any(|i| i.label.eq_ignore_ascii_case(q)) {
                 v.push(Item { label: format!("Create “{q}”"), detail: "new note".into(), action: Action::Create(q.to_string()) });
             }
@@ -191,11 +223,14 @@ pub(crate) struct OverlayResult {
     pub run: Option<Command>,
     /// The editor should take focus / scroll to the caret.
     pub jumped: bool,
+    /// Show this overlay in place of the current one (a picker leading to
+    /// a dialog that asks more).
+    pub then: Option<Overlay>,
 }
 
 /// Draw the active overlay. Returns what the app should do next.
 pub(crate) fn show(ctx: &egui::Context, overlay: &mut Overlay, ws: &mut Workspace, pal: &Palette) -> OverlayResult {
-    let mut res = OverlayResult { close: false, run: None, jumped: false };
+    let mut res = OverlayResult::default();
     if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
         res.close = true;
         return res;
@@ -234,7 +269,7 @@ pub(crate) fn show(ctx: &egui::Context, overlay: &mut Overlay, ws: &mut Workspac
             let hint = match mode {
                 Mode::Commands => "Type a command…",
                 Mode::Notes => "Jump to a note, or type a new title…",
-                Mode::Templates => "Title for the new note, then pick a template",
+                Mode::Templates => "Title for the new note (optional), then pick a template",
                 Mode::Tasks => "Filter open tasks…",
             };
             egui::Area::new(egui::Id::unique("quire-palette")).order(egui::Order::Foreground).anchor(Align2::CENTER_TOP, [0.0, 72.0]).show(
@@ -324,9 +359,16 @@ pub(crate) fn show(ctx: &egui::Context, overlay: &mut Overlay, ws: &mut Workspac
                     Action::Create(title) => {
                         res.jumped = ws.open_link(&title, None).is_some();
                     }
+                    Action::OpenFile(p) => ws.request_ui(quire_app::workspace::UiRequest::OpenFile(p)),
                     Action::Template(t) => {
-                        let title = if query.trim().is_empty() { t.stem().to_string() } else { query.trim().to_string() };
-                        res.jumped = ws.new_from_template(&t, &title).is_some();
+                        // The template's questions first, if it has any; then its
+                        // `folder:` and `name:` (the typed title wins over `name:`).
+                        let title = Some(query.trim().to_string()).filter(|q| !q.is_empty());
+                        if ws.template_prompts(&t).is_empty() {
+                            res.jumped = ws.new_note_from_template_titled(&t, title.as_deref(), None, &HashMap::new(), &[]).is_some();
+                        } else {
+                            res.then = Some(Overlay::Feature(Box::new(crate::template_prompt_ui::TemplateDialog::new(ws, t, title))));
+                        }
                     }
                 }
             }

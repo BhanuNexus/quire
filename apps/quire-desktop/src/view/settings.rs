@@ -52,6 +52,17 @@ fn editing(ui: &mut Ui, ws: &mut Workspace, pal: &Palette) {
     note(ui, pal, "In the sidebar and on tabs: the title from front matter or the first heading. Links keep using file names.");
     ui.add_space(6.0);
     ui.checkbox(&mut e.two_pane, "Folders and notes side by side in the sidebar");
+    ui.add_space(6.0);
+    let root = e.new_note_folder == "root";
+    ui.horizontal_wrapped(|ui| {
+        ui.label("New notes (Ctrl+N) go");
+        if ui.radio(!root, "in the open note's folder").clicked() {
+            e.new_note_folder = "current".into();
+        }
+        if ui.radio(root, "at the top of the vault").clicked() {
+            e.new_note_folder = "root".into();
+        }
+    });
 
     ui.add_space(10.0);
     ui.label(RichText::new("Homepage").strong());

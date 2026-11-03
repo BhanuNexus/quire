@@ -43,7 +43,6 @@ pub(crate) struct McpUi {
     network_ok: bool,
     bind_text: String,
     consent: Option<ConsentDialog>,
-    capture: Option<CaptureDialog>,
 }
 
 impl Default for McpUi {
@@ -60,7 +59,6 @@ impl Default for McpUi {
             network_ok: false,
             bind_text: String::new(),
             consent: None,
-            capture: None,
         }
     }
 }
@@ -150,12 +148,9 @@ fn quote(s: &str) -> String {
 }
 
 pub(crate) fn show(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pal: &Palette) -> PanelOut {
-    let out = PanelOut::default();
+    let mut out = PanelOut::default();
     let me = &mut st.mcp;
-    // Dialogs opened from the status bar or the command.
-    if std::mem::take(&mut ws.features.mcp.capture_requested) {
-        me.capture = Some(CaptureDialog::default());
-    }
+    // An app asking to connect (the status bar's item opens this tab).
     if me.consent.is_none()
         && let Some(p) = ws.features.mcp.pending.first()
     {
@@ -166,20 +161,22 @@ pub(crate) fn show(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pa
     {
         me.consent = None;
     }
-    if let Some(d) = me.capture.as_mut()
-        && d.show(ui.ctx(), ws, pal).close
-    {
-        me.capture = None;
-    }
     let Some(root) = ws.vault_root().map(std::path::Path::to_path_buf) else {
         ui.label(RichText::new("Open a vault to connect apps to it.").color(pal.muted));
         return out;
     };
-    body(ui, ws, me, pal, &root);
+    body(ui, ws, me, pal, &root, &mut out.run);
     out
 }
 
-fn body(ui: &mut egui::Ui, ws: &mut Workspace, me: &mut McpUi, pal: &Palette, root: &std::path::Path) {
+fn body(
+    ui: &mut egui::Ui,
+    ws: &mut Workspace,
+    me: &mut McpUi,
+    pal: &Palette,
+    root: &std::path::Path,
+    run: &mut Option<quire_app::Command>,
+) {
     let vault = quote(&root.to_string_lossy());
     let cli = quote(&cli_path());
 
@@ -290,7 +287,7 @@ fn body(ui: &mut egui::Ui, ws: &mut Workspace, me: &mut McpUi, pal: &Palette, ro
     }
     section(ui, pal, "Web pages");
     if ui.button("Capture a web page…").clicked() {
-        me.capture = Some(CaptureDialog::default());
+        *run = Some(quire_app::Command::CaptureWebPage);
     }
 }
 
@@ -479,6 +476,11 @@ pub(crate) struct CaptureDialog {
 }
 
 impl CaptureDialog {
+    /// The dialog for `Command::CaptureWebPage` (`registry::UiTarget::Overlay`).
+    pub(crate) fn make(_ws: &mut Workspace) -> Box<dyn OverlayView> {
+        Box::<Self>::default()
+    }
+
     #[cfg(test)]
     pub(crate) fn sample(url: &str, error: Option<&str>) -> Self {
         Self { url: url.into(), focused: true, busy: None, error: error.map(str::to_string) }

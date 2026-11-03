@@ -17,6 +17,7 @@ use quire_app::tasks_state::Action;
 use quire_app::vault::NotePath;
 use quire_app::vault::templates::Prompt;
 
+use crate::overlays::{OverlayResult, OverlayView};
 use crate::theme::Palette;
 
 /// Answers being typed, kept in egui's memory per form.
@@ -169,6 +170,75 @@ pub(crate) fn fill_widget(ui: &mut Ui, ws: &Workspace, doc: DocId, pal: &Palette
         ws.plan_request(Action::FillTemplate { doc, answers: answers.drain().collect() });
     }
     ui.data_mut(|d| d.insert_temp(id, answers));
+}
+
+/// "New note from template…" for a template with questions: asks them,
+/// then makes the note in the template's `folder:`, named by the title typed
+/// in the picker or the template's `name:`.
+pub(crate) struct TemplateDialog {
+    template: NotePath,
+    title: Option<String>,
+    prompts: Vec<Prompt>,
+    answers: HashMap<String, String>,
+}
+
+impl TemplateDialog {
+    pub(crate) fn new(ws: &Workspace, template: NotePath, title: Option<String>) -> Self {
+        let prompts = ws.template_prompts(&template);
+        Self { template, title, prompts, answers: HashMap::new() }
+    }
+}
+
+impl OverlayView for TemplateDialog {
+    fn show(&mut self, ctx: &egui::Context, ws: &mut Workspace, pal: &Palette) -> OverlayResult {
+        let mut res = OverlayResult::default();
+        let id = Id::unique(("quire-template-dialog", self.template.as_str()));
+        egui::Modal::new(Id::unique("quire-template-dialog")).frame(egui::Frame::popup(&ctx.global_style()).fill(pal.panel)).show(
+            ctx,
+            |ui| {
+                let w = 460.0_f32.min(ctx.content_rect().width() - 48.0);
+                ui.set_width(w);
+                ui.set_max_width(w);
+                ui.heading(format!("New note from {}", self.template.stem()));
+                if let Some(t) = &self.title {
+                    ui.label(RichText::new(format!("Named “{t}”")).size(12.0).color(pal.muted));
+                }
+                ui.add_space(6.0);
+                let h = (ctx.content_rect().height() - 200.0).clamp(80.0, 360.0);
+                let mut enter = false;
+                egui::ScrollArea::vertical().id_salt("quire-template-fields").max_height(h).show(ui, |ui| {
+                    enter = fields(ui, id, None, &self.prompts, &mut self.answers);
+                });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Create").clicked() || enter {
+                        let done = ws.new_note_from_template_titled(&self.template, self.title.as_deref(), None, &self.answers, &[]);
+                        res.close = true;
+                        res.jumped = done.is_some();
+                    }
+                    if ui.button("Cancel").clicked() {
+                        res.close = true;
+                    }
+                });
+            },
+        );
+        res
+    }
+}
+
+#[cfg(test)]
+impl TemplateDialog {
+    /// A template with many questions, for `layout_check`.
+    pub(crate) fn sample() -> Self {
+        let prompts = (0..14)
+            .map(|i| Prompt {
+                key: format!("Question {i}"),
+                default: String::new(),
+                options: if i % 3 == 0 { vec!["a".into(), "b".into()] } else { Vec::new() },
+            })
+            .collect();
+        Self { template: NotePath::new("Templates/Meeting.md"), title: Some("Planning".into()), prompts, answers: HashMap::new() }
+    }
 }
 
 #[cfg(test)]

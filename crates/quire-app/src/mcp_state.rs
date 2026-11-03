@@ -66,8 +66,6 @@ pub struct McpState {
     pub error: Option<String>,
     pub pending: Vec<ConsentPrompt>,
     next_poll: Option<Instant>,
-    /// "Capture web page…" was chosen; the desktop shows its dialog.
-    pub capture_requested: bool,
     /// A vault folder is open (the commands need one).
     vault_open: bool,
 }
@@ -157,10 +155,8 @@ pub(crate) const fn available(ws: &Workspace, cmd: Command) -> bool {
 
 /// A Mcp-owned command ([`Command::owner`]).
 #[expect(clippy::unnecessary_wraps, reason = "the features hub's signature: other owners return `None` for some commands")]
-pub(crate) fn run(ws: &mut Workspace, cmd: Command) -> Option<UiRequest> {
-    if cmd == Command::CaptureWebPage {
-        ws.features.mcp.capture_requested = true;
-    }
+pub(crate) fn run(ws: &Workspace, cmd: Command) -> Option<UiRequest> {
+    let _ = ws;
     Some(UiRequest::Feature(cmd))
 }
 
@@ -185,7 +181,6 @@ pub(crate) fn vault_opened(ws: &mut Workspace) {
     ws.features.mcp.stop();
     ws.features.mcp.pending.clear();
     ws.features.mcp.error = None;
-    ws.features.mcp.capture_requested = false;
 }
 
 /// Status-bar items, appended to `out`.
@@ -262,7 +257,6 @@ mod tests {
         assert!(tick(&mut ws, t + POLL));
         assert!(ws.features.mcp.url().is_none());
         assert!(available(&ws, Command::CaptureWebPage));
-        assert!(matches!(run(&mut ws, Command::CaptureWebPage), Some(UiRequest::Feature(Command::CaptureWebPage))));
-        assert!(ws.features.mcp.capture_requested);
+        assert!(matches!(run(&ws, Command::CaptureWebPage), Some(UiRequest::Feature(Command::CaptureWebPage))));
     }
 }

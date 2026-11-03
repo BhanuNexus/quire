@@ -166,6 +166,10 @@ pub fn move_note_in_order(
 /// What a note is called in lists and tabs: its title (`title:` or first
 /// heading) with display titles on, else its file name.
 pub fn display_name(ws: &Workspace, path: &NotePath) -> String {
+    if !path.is_markdown() {
+        // A `.base`, canvas or PDF: the file name tells it from a note of the same name.
+        return path.file_name().to_string();
+    }
     if ws.settings.editing.display_titles
         && let Some(r) = ws.index().read().get(path)
         && !r.title.trim().is_empty()

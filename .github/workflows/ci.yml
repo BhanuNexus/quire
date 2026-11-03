@@ -74,6 +74,9 @@ jobs:
       - name: Quire Lite tests (the desktop and CLI without the typesetter)
         if: matrix.os == 'ubuntu-latest'
         run: cargo test -p quire-desktop -p quire-cli --no-default-features --locked
+      - name: Agent edit eval (synthetic edits against the MCP tools, design §B.6)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo run -p quire-cli --features eval --locked -- eval synthetic-edits --json
 
   deny:
     runs-on: ubuntu-latest

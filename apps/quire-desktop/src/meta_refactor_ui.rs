@@ -4,7 +4,7 @@
 //! preview of every note that changes (design §E.1).
 //!
 //! Owned by WS-E. Opened by "Rename tag…" and "Rename property…"; shown
-//! from the Plan panel tab (`agenda_ui::dialog_tab`).
+//! as a dialog (`registry::UiTarget::Overlay`).
 
 use std::collections::HashSet;
 
@@ -450,18 +450,26 @@ fn diff(ui: &mut Ui, pal: &Palette, e: &quire_app::meta_refactor::FileEdit) {
     });
 }
 
-/// The dialog as an overlay, for `layout_check` (and for app.rs once it
-/// can open feature dialogs; see docs/design/handoff/ws-e.md).
-#[cfg_attr(not(test), expect(dead_code, reason = "only layout_check opens it as an overlay today"))]
+/// The dialog (`Command::RenameTag`, `Command::RenameProperty`).
 pub(crate) struct RefactorOverlay(pub RefactorUi);
 
 impl OverlayView for RefactorOverlay {
     fn show(&mut self, ctx: &egui::Context, ws: &mut Workspace, pal: &Palette) -> OverlayResult {
         OverlayResult { close: self.0.show_modal(ctx, ws, pal), ..Default::default() }
     }
+
+    fn closed(&mut self, ws: &mut Workspace) {
+        ws.features.meta.preview = None;
+    }
 }
 
 impl RefactorOverlay {
+    /// For `registry::UiTarget::Overlay`: it starts on what the command
+    /// found at the caret (`features.tasks.refactor_start`).
+    pub(crate) fn make(_ws: &mut Workspace) -> Box<dyn OverlayView> {
+        Box::new(Self(RefactorUi::default()))
+    }
+
     /// The dialog on a tag or a property value, with or without its preview.
     #[cfg(test)]
     pub(crate) fn sample(props: bool, preview: bool) -> Self {

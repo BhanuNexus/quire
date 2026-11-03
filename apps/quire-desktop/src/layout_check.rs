@@ -64,7 +64,7 @@ fn sync_versions() -> Vec<quire_app::vault_sync::SyncVersion> {
         .collect()
 }
 
-fn overlays(ws: &Workspace) -> Vec<(&'static str, Overlay)> {
+fn overlays(ws: &mut Workspace) -> Vec<(&'static str, Overlay)> {
     let mut v = vec![
         ("palette", Overlay::palette(Mode::Commands)),
         ("quick open", Overlay::palette(Mode::Notes)),
@@ -119,7 +119,7 @@ fn dialogs_keep_their_size_and_fit_the_window() {
     for size in [Vec2::new(1280.0, 820.0), Vec2::new(900.0, 560.0), Vec2::new(760.0, 480.0)] {
         let screen = Rect::from_min_size(Pos2::ZERO, size);
         let mut ws = workspace();
-        for (name, mut ov) in overlays(&ws) {
+        for (name, mut ov) in overlays(&mut ws) {
             let ctx = egui::Context::default();
             theme::install_fonts(&ctx);
             ctx.set_visuals(theme::visuals(&theme::DARK));

@@ -134,9 +134,10 @@ impl Workspace {
         n
     }
 
-    /// Absolute path of the file an embed points to, for image display.
-    pub fn attachment_path(&self, target: &str) -> Option<PathBuf> {
-        let vault = self.vault.as_ref()?;
+    /// List the vault's files that aren't notes again if the list is older
+    /// than a few seconds.
+    fn refresh_file_cache(&self) {
+        let Some(vault) = self.vault.as_ref() else { return };
         let mut cache = self.file_cache.0.borrow_mut();
         let stale = cache.as_ref().is_none_or(|(t, _)| t.elapsed() > Duration::from_secs(5));
         if stale {
@@ -147,6 +148,24 @@ impl Workspace {
             }
             *cache = Some((Instant::now(), map));
         }
+    }
+
+    /// The vault's files that aren't notes (attachments, `.base`, `.canvas`,
+    /// `.pdf`), sorted; listed again every few seconds.
+    pub fn other_files(&self) -> Vec<NotePath> {
+        self.refresh_file_cache();
+        let cache = self.file_cache.0.borrow();
+        let mut v: Vec<NotePath> = cache.as_ref().map(|(_, m)| m.values().cloned().collect()).unwrap_or_default();
+        v.sort();
+        v.dedup();
+        v
+    }
+
+    /// Absolute path of the file an embed points to, for image display.
+    pub fn attachment_path(&self, target: &str) -> Option<PathBuf> {
+        let vault = self.vault.as_ref()?;
+        self.refresh_file_cache();
+        let cache = self.file_cache.0.borrow();
         let key = quire_markdown::extract::internal_target(target).0.to_lowercase();
         let key = if key.is_empty() { target.to_lowercase() } else { key };
         let found = cache.as_ref()?.1.get(&key).or_else(|| cache.as_ref()?.1.get(&target.to_lowercase())).cloned()?;

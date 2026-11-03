@@ -266,7 +266,6 @@ impl Workspace {
         {
             self.notify(NoticeLevel::Info, format!("Reviewed {} card{}", s.reviewed, if s.reviewed == 1 { "" } else { "s" }));
         }
-        self.features.tasks.dialog = None;
     }
 
     /// Give the active note's cards `^id`s, keeping their history.

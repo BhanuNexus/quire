@@ -32,15 +32,6 @@ use crate::decor::{ActionId, Decoration, DecorationEvent, StatusItem, WidgetId};
 use crate::document::{DocId, Document};
 use crate::workspace::{NoticeLevel, UiRequest, Workspace};
 
-/// Which WS-E dialog is open. The desktop shows it (in the Plan panel).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Dialog {
-    /// Rename, merge or delete tags and properties.
-    Refactor,
-    /// Flashcard review.
-    Review,
-}
-
 /// Work asked for while drawing (views and widgets see only `&Workspace`);
 /// done on the next tick.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,7 +99,6 @@ pub struct TasksState {
     agenda: AgendaCache,
     /// Open recurring tasks per document at its last revision, to notice one being ticked.
     recurring: HashMap<DocId, (u64, Vec<String>)>,
-    pub dialog: Option<Dialog>,
     pending: RefCell<Vec<Action>>,
     /// New notes already offered their folder's template.
     pub(crate) checked_new: HashSet<DocId>,
@@ -489,7 +479,8 @@ fn run_actions(ws: &mut Workspace) -> bool {
             }
             Action::ReviewNote(path) => {
                 if ws.srs_start(Some(&path)) {
-                    ws.features.tasks.dialog = Some(Dialog::Review);
+                    // The review dialog, from a click in a note (no command ran).
+                    ws.request_ui(UiRequest::Feature(Command::StartReview));
                 } else {
                     ws.notify(NoticeLevel::Info, format!("No flashcards are due in {}", path.stem()));
                 }
@@ -633,7 +624,6 @@ pub(crate) fn run(ws: &mut Workspace, cmd: Command) -> Option<UiRequest> {
                 return None;
             }
             if ws.srs_start(note.as_ref()) {
-                ws.features.tasks.dialog = Some(Dialog::Review);
                 return Some(UiRequest::Feature(cmd));
             }
             let (due, new) = ws.srs_due_counts();
@@ -666,7 +656,6 @@ pub(crate) fn run(ws: &mut Workspace, cmd: Command) -> Option<UiRequest> {
                 _ => Some((false, String::new())),
             };
             ws.features.meta.preview = None;
-            ws.features.tasks.dialog = Some(Dialog::Refactor);
             return Some(UiRequest::Feature(cmd));
         }
         C::ConvertTaskToNote => {

@@ -62,6 +62,8 @@ pub(crate) struct QuireApp {
     right_tab: &'static str,
     /// Open non-Markdown files (canvas, PDF, `.base`).
     surfaces: crate::surfaces::Surfaces,
+    /// Frames in which text typed with Alt is dropped (an Alt shortcut fired).
+    drop_alt_text: u8,
 }
 
 fn sample_dir() -> PathBuf {
@@ -127,6 +129,7 @@ impl QuireApp {
             features: crate::registry::FeatureUi::default(),
             right_tab: crate::registry::INSIGHTS,
             surfaces: crate::surfaces::Surfaces::default(),
+            drop_alt_text: 0,
         }
     }
 
@@ -145,9 +148,42 @@ impl QuireApp {
                 self.sidebar.tab = SidebarTab::Feature(id);
             }
             Some(UiTarget::Settings(id)) if tab_offered(SETTINGS_TABS, id, &self.ws) => {
-                self.overlay = Some(Overlay::Settings(Box::new(crate::dialogs::SettingsState::feature_tab(id))));
+                self.set_overlay(Some(Overlay::Settings(Box::new(crate::dialogs::SettingsState::feature_tab(id)))));
+            }
+            Some(UiTarget::Overlay(make)) => {
+                let view = make(&mut self.ws);
+                self.set_overlay(Some(Overlay::Feature(view)));
             }
             _ => crate::registry::not_available(&mut self.ws, cmd),
+        }
+    }
+
+    /// Replace the overlay, telling a feature dialog that it went away.
+    fn set_overlay(&mut self, overlay: Option<Overlay>) {
+        if let Some(Overlay::Feature(mut old)) = std::mem::replace(&mut self.overlay, overlay) {
+            old.closed(&mut self.ws);
+        }
+    }
+
+    /// Open a file that isn't a note in its surface (`registry::open_surface`).
+    fn open_file(&mut self, path: &NotePath) {
+        if path.is_markdown() {
+            if self.ws.open_note(path).is_some() {
+                self.surfaces.active = None;
+                self.focus_editor();
+                self.reveal_caret();
+            }
+        } else if let Some(s) = crate::registry::open_surface(path) {
+            self.surfaces.open(s);
+        } else {
+            self.ws.notify(NoticeLevel::Info, format!("Quire can't open {} files", path.as_str().rsplit('.').next().unwrap_or("these")));
+        }
+    }
+
+    /// UI the workspace asked for outside a command (`Workspace::request_ui`).
+    fn take_ui_requests(&mut self) {
+        for req in self.ws.take_ui_requests() {
+            self.request(req);
         }
     }
 
@@ -190,77 +226,7 @@ impl QuireApp {
 
     fn run(&mut self, cmd: Command) {
         if let Some(req) = self.ws.run(cmd) {
-            self.overlay = Some(match req {
-                UiRequest::QuickOpen => Overlay::palette(Mode::Notes),
-                UiRequest::CommandPalette => Overlay::palette(Mode::Commands),
-                UiRequest::PickTemplate => Overlay::palette(Mode::Templates),
-                UiRequest::ShowTasks => Overlay::palette(Mode::Tasks),
-                UiRequest::Search => {
-                    self.ws.settings.show_sidebar = true;
-                    self.ws.focus_mode = false;
-                    self.sidebar.tab = SidebarTab::Search;
-                    self.sidebar.focus_query = true;
-                    return;
-                }
-                UiRequest::Rename => match self.ws.active_doc() {
-                    Some(d) if d.path.is_some() => Overlay::Rename { input: d.title(), focused: false },
-                    _ => return,
-                },
-                UiRequest::ConfirmDelete => Overlay::ConfirmDelete,
-                UiRequest::OpenVault => {
-                    Overlay::OpenVault { input: self.ws.vault_root().map(|p| p.display().to_string()).unwrap_or_default() }
-                }
-                UiRequest::Find => {
-                    self.focus_find = true;
-                    return;
-                }
-                UiRequest::VaultReplace => {
-                    if self.ws.find.vault_query.is_empty() {
-                        self.ws.find.vault_query = self.ws.find.query.clone();
-                    }
-                    Overlay::VaultReplace { focused: false }
-                }
-                UiRequest::Ask => Overlay::Ask { focused: false },
-                UiRequest::Settings => Overlay::Settings(Box::default()),
-                UiRequest::SyncSettings => Overlay::Settings(Box::new(crate::dialogs::SettingsState::sync_tab(&self.ws))),
-                UiRequest::NewProject => Overlay::NewProject(crate::dialogs::ProjectState::default()),
-                UiRequest::Publish => Overlay::Publish(crate::dialogs::PublishState::new(&self.ws)),
-                UiRequest::Shortcuts => Overlay::Feature(Box::new(overlays::ShortcutsOverlay::default())),
-                UiRequest::Tour => Overlay::Tour { step: 0 },
-                UiRequest::SyncConflicts => Overlay::SyncConflicts,
-                UiRequest::NewInFolder => Overlay::Folder(crate::dialogs::FolderState::new(&self.ws, crate::dialogs::FolderMode::NewNote)),
-                UiRequest::MoveNote => Overlay::Folder(crate::dialogs::FolderState::new(&self.ws, crate::dialogs::FolderMode::Move)),
-                UiRequest::History => Overlay::History(crate::dialogs::HistoryState::new(&self.ws)),
-                UiRequest::Graph => Overlay::Graph(Box::new(crate::graph_view::GraphState::new(&self.ws))),
-                UiRequest::Split => {
-                    self.toggle_split();
-                    return;
-                }
-                UiRequest::Copy(text) => {
-                    self.clipboard = Some(text);
-                    return;
-                }
-                UiRequest::Capture => Overlay::Capture { text: String::new(), focused: false, minimize: false },
-                UiRequest::Import => {
-                    if self.ws.vault().is_none() {
-                        self.ws.notify(NoticeLevel::Info, "Open a vault first, then import into it");
-                        return;
-                    }
-                    Overlay::Import(crate::dialogs::ImportState::default())
-                }
-                UiRequest::Feature(c) => {
-                    self.show_feature(c);
-                    return;
-                }
-                UiRequest::Editor(c) => {
-                    if self.classic() {
-                        self.ws.notify(NoticeLevel::Info, "Multiple cursors need the fast editor (View: Switch editor)");
-                    } else {
-                        self.fast.command(c, &mut self.ws);
-                    }
-                    return;
-                }
-            });
+            self.request(req);
         } else {
             // Most commands edit or move the caret; keep the editor focused.
             self.focus_editor();
@@ -278,6 +244,88 @@ impl QuireApp {
                 self.reveal_caret();
             }
         }
+    }
+
+    /// Show what a command or a feature asked for.
+    fn request(&mut self, req: UiRequest) {
+        let next = match req {
+            UiRequest::QuickOpen => Overlay::palette(Mode::Notes),
+            UiRequest::CommandPalette => Overlay::palette(Mode::Commands),
+            UiRequest::PickTemplate => Overlay::palette(Mode::Templates),
+            UiRequest::ShowTasks => Overlay::palette(Mode::Tasks),
+            UiRequest::Search => {
+                self.ws.settings.show_sidebar = true;
+                self.ws.focus_mode = false;
+                self.sidebar.tab = SidebarTab::Search;
+                self.sidebar.focus_query = true;
+                return;
+            }
+            UiRequest::Rename => match self.ws.active_doc() {
+                Some(d) if d.path.is_some() => Overlay::Rename { input: d.title(), focused: false },
+                _ => return,
+            },
+            UiRequest::ConfirmDelete => Overlay::ConfirmDelete,
+            UiRequest::OpenVault => Overlay::OpenVault { input: self.ws.vault_root().map(|p| p.display().to_string()).unwrap_or_default() },
+            UiRequest::Find => {
+                self.focus_find = true;
+                return;
+            }
+            UiRequest::VaultReplace => {
+                if self.ws.find.vault_query.is_empty() {
+                    self.ws.find.vault_query = self.ws.find.query.clone();
+                }
+                Overlay::VaultReplace { focused: false }
+            }
+            UiRequest::Ask => Overlay::Ask { focused: false },
+            UiRequest::Settings => Overlay::Settings(Box::default()),
+            UiRequest::SyncSettings => Overlay::Settings(Box::new(crate::dialogs::SettingsState::sync_tab(&self.ws))),
+            UiRequest::NewProject => Overlay::NewProject(crate::dialogs::ProjectState::default()),
+            UiRequest::Publish => Overlay::Publish(crate::dialogs::PublishState::new(&self.ws)),
+            UiRequest::Shortcuts => Overlay::Feature(Box::new(overlays::ShortcutsOverlay::default())),
+            UiRequest::Tour => Overlay::Tour { step: 0 },
+            UiRequest::SyncConflicts => Overlay::SyncConflicts,
+            UiRequest::NewInFolder => Overlay::Folder(crate::dialogs::FolderState::new(&self.ws, crate::dialogs::FolderMode::NewNote)),
+            UiRequest::MoveNote => Overlay::Folder(crate::dialogs::FolderState::new(&self.ws, crate::dialogs::FolderMode::Move)),
+            UiRequest::History => Overlay::History(crate::dialogs::HistoryState::new(&self.ws)),
+            UiRequest::Graph => Overlay::Graph(Box::new(crate::graph_view::GraphState::new(&self.ws))),
+            UiRequest::Split => {
+                self.toggle_split();
+                return;
+            }
+            UiRequest::Copy(text) => {
+                self.clipboard = Some(text);
+                return;
+            }
+            UiRequest::Capture => Overlay::Capture { text: String::new(), focused: false, minimize: false },
+            UiRequest::Import => {
+                if self.ws.vault().is_none() {
+                    self.ws.notify(NoticeLevel::Info, "Open a vault first, then import into it");
+                    return;
+                }
+                Overlay::Import(crate::dialogs::ImportState::default())
+            }
+            UiRequest::Feature(c) => {
+                self.show_feature(c);
+                return;
+            }
+            UiRequest::Editor(c) => {
+                if self.classic() {
+                    self.ws.notify(NoticeLevel::Info, "Multiple cursors need the fast editor (View: Switch editor)");
+                } else {
+                    self.fast.command(c, &mut self.ws);
+                }
+                return;
+            }
+            UiRequest::RevealCaret => {
+                self.reveal_caret();
+                return;
+            }
+            UiRequest::OpenFile(p) => {
+                self.open_file(&p);
+                return;
+            }
+        };
+        self.set_overlay(Some(next));
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
@@ -318,6 +366,7 @@ impl QuireApp {
         combos.sort_by_key(|c| std::cmp::Reverse(c.0));
         let mut fired = Vec::new();
         let typed = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(t) if !t.is_empty())));
+        let mut alt_only = false;
         ctx.input_mut(|i| {
             for (_, cmd, sc) in &combos {
                 if altgr_typed(sc.modifiers, typed) {
@@ -325,9 +374,20 @@ impl QuireApp {
                 }
                 if i.consume_shortcut(sc) {
                     fired.push(*cmd);
+                    alt_only |= sc.modifiers.alt && !sc.modifiers.command;
                 }
             }
         });
+        // The key of an Alt shortcut also types its character (Alt+] gives
+        // "]" on Linux and Windows, "‘" with Option on macOS): keep it out
+        // of the note, this frame and the next (it can arrive a frame late).
+        if alt_only {
+            self.drop_alt_text = 2;
+        }
+        if self.drop_alt_text > 0 {
+            self.drop_alt_text -= 1;
+            ctx.input_mut(|i| drop_alt_text(&mut i.events, i.modifiers));
+        }
         for cmd in fired {
             self.run(cmd);
         }
@@ -404,6 +464,8 @@ impl QuireApp {
             self.run(c);
         }
         if out.jumped {
+            // A note was opened or chosen: notes get the central panel again.
+            self.surfaces.active = None;
             self.focus_editor();
             self.reveal_caret();
         }
@@ -523,6 +585,9 @@ impl eframe::App for QuireApp {
         {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
+        if self.ws.ui_requested() {
+            ctx.request_repaint();
+        }
         if let Some(t) = self.ws.next_deadline() {
             ctx.request_repaint_after(t.saturating_duration_since(now));
         }
@@ -576,7 +641,7 @@ impl QuireApp {
                     self.overlay = Some(Overlay::Capture { text: String::new(), focused: false, minimize: minimized });
                 }
                 Some(Overlay::Feature(v)) if v.yields_to_capture() => {
-                    self.overlay = Some(Overlay::Capture { text: String::new(), focused: false, minimize: minimized });
+                    self.set_overlay(Some(Overlay::Capture { text: String::new(), focused: false, minimize: minimized }));
                 }
                 Some(_) => self.ws.notify(NoticeLevel::Info, "Close the open dialog to use quick capture"),
             }
@@ -591,12 +656,20 @@ impl QuireApp {
         // Background jobs wait while a dialog is open.
         self.ws.jobs.set_modal_open(self.overlay.is_some());
         self.handle_shortcuts(&ctx);
+        self.take_ui_requests();
         if self.overlay.is_none() && self.classic() {
             EditorState::handle_smart_keys(&ctx, &mut self.ws);
         }
         // Escape closes the find bar (unless it's clearing extra cursors).
         let extra_cursors = self.ws.active_doc().is_some_and(|d| self.fast.has_extra_cursors(d.id)) || self.fast.suggesting();
-        if self.overlay.is_none() && self.ws.find.open && !extra_cursors && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+        // With Vim keys, Escape in Insert mode is Vim's (back to Normal mode).
+        let vim_typing = self.ws.settings.editing.vim && self.ws.features.nav.vim.typing();
+        if self.overlay.is_none()
+            && self.ws.find.open
+            && !extra_cursors
+            && !vim_typing
+            && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
+        {
             self.ws.find.open = false;
             self.focus_editor();
         }
@@ -637,10 +710,6 @@ impl QuireApp {
                         out
                     })
                     .inner;
-                if out.jumped {
-                    // A note tab was chosen: notes get the central panel again.
-                    self.surfaces.active = None;
-                }
                 self.after_panel(&out);
             }
             let status = egui::Panel::bottom("quire-status")
@@ -702,8 +771,27 @@ impl QuireApp {
                     .inner;
                 self.after_panel(&out);
             }
+            // Feature bars above the note (`registry::EDITOR_BANNERS`): the review banner.
+            if self.surfaces.active.is_none() {
+                for b in crate::registry::EDITOR_BANNERS {
+                    if !(b.available)(&self.ws) {
+                        continue;
+                    }
+                    let out = egui::Panel::top(egui::Id::unique(("quire-banner", b.id)))
+                        .frame(
+                            egui::Frame::NONE
+                                .fill(pal.panel)
+                                .inner_margin(egui::Margin::symmetric(12, 8))
+                                .stroke(egui::Stroke::new(1.0, pal.border)),
+                        )
+                        .show(ui, |ui| (b.show)(ui, &mut self.ws, &mut self.features, pal))
+                        .inner;
+                    self.after_panel(&out);
+                }
+            }
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(pal.bg)).show(ui, |ui| {
                 if let Some(out) = self.surfaces.show_active(ui, &mut self.ws, pal) {
+                    // `jumped` (a note opened from a `.base`) gives notes the panel again.
                     self.after_panel(&out);
                 } else if self.ws.active_doc().is_some() {
                     self.settle_split();
@@ -740,6 +828,8 @@ impl QuireApp {
             });
         }
 
+        // What panels and widgets asked for while drawing.
+        self.take_ui_requests();
         // First run: a short tour once there's a vault to look at.
         if self.overlay.is_none() && !self.ws.settings.tour_done && self.ws.vault().is_some() {
             self.overlay = Some(Overlay::Tour { step: 0 });
@@ -752,8 +842,10 @@ impl QuireApp {
                 self.ws.settings.tour_done = true;
                 let _ = self.ws.settings.save();
             }
-            if res.close {
-                self.overlay = None;
+            if let Some(next) = res.then {
+                self.set_overlay(Some(next));
+            } else if res.close {
+                self.set_overlay(None);
                 self.focus_editor();
                 if let Some(keep) = self.pick_side.take()
                     && self.ws.active_doc().is_some_and(|d| d.id != keep)
@@ -787,6 +879,14 @@ fn altgr_typed(m: Modifiers, typed: bool) -> bool {
     typed && m.alt && m.command
 }
 
+/// Take out the text an Alt key typed (not `AltGr`, which is Ctrl+Alt on
+/// Windows and types real characters).
+fn drop_alt_text(events: &mut Vec<egui::Event>, m: Modifiers) {
+    if m.alt && !m.command {
+        events.retain(|e| !matches!(e, egui::Event::Text(_)));
+    }
+}
+
 /// With `QUIRE_TRACE` set, report sections slower than 8 ms.
 fn trace(what: &str, since: Instant) {
     let ms = since.elapsed().as_secs_f64() * 1000.0;
@@ -813,5 +913,22 @@ mod tests {
         assert!(!altgr_typed(ctrl_alt, false), "no text: it's the shortcut");
         assert!(!altgr_typed(Modifiers::ALT, true));
         assert!(!altgr_typed(Modifiers::COMMAND | Modifiers::SHIFT, true));
+    }
+
+    #[test]
+    fn alt_shortcuts_leave_no_character_in_the_note() {
+        let text = |t: &str| egui::Event::Text(t.into());
+        let mut ev = vec![text("]"), egui::Event::Copy];
+        drop_alt_text(&mut ev, Modifiers::ALT);
+        assert_eq!(ev, vec![egui::Event::Copy], "Alt+] typed \"]\"");
+        let mut ev = vec![text("‘")];
+        drop_alt_text(&mut ev, Modifiers::ALT | Modifiers::SHIFT);
+        assert!(ev.is_empty(), "Option+] on macOS");
+        let mut ev = vec![text("ł")];
+        drop_alt_text(&mut ev, Modifiers::ALT | Modifiers::COMMAND);
+        assert_eq!(ev.len(), 1, "AltGr+L types ł");
+        let mut ev = vec![text("a")];
+        drop_alt_text(&mut ev, Modifiers::NONE);
+        assert_eq!(ev.len(), 1, "after Alt is released, typing is typing");
     }
 }

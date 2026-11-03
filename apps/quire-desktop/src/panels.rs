@@ -656,7 +656,9 @@ pub(crate) fn sidebar(
                 }
             });
             ui.add_space(4.0);
-            let paths = ws.index().read().paths();
+            let mut paths = ws.index().read().paths();
+            // Files with an editor of their own (`.base`, `.canvas`, `.pdf`) next to the notes.
+            paths.extend(ws.other_files().into_iter().filter(crate::registry::has_surface));
             let tree = folder_tree(&paths);
             let mut ev = FileEvents::default();
             if ws.settings.editing.two_pane {
@@ -843,7 +845,10 @@ pub(crate) fn sidebar(
             out.run = Some(cmd);
         }
     }
-    if let Some((p, at)) = open
+    if let Some((p, _)) = open.as_ref().filter(|(p, _)| !p.is_markdown()) {
+        // A `.base`, canvas or PDF: its surface (`registry::open_surface`).
+        ws.request_ui(quire_app::workspace::UiRequest::OpenFile(p.clone()));
+    } else if let Some((p, at)) = open
         && ws.open_note(&p).is_some()
     {
         if let Some(b) = at {

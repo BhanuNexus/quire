@@ -184,9 +184,8 @@ fn body(ui: &mut Ui, ws: &mut Workspace, pal: &Palette, screen_h: f32) -> bool {
     close
 }
 
-/// The review as an overlay, for `layout_check` (and for app.rs once it
-/// can open feature dialogs; see docs/design/handoff/ws-e.md).
-#[cfg_attr(not(test), expect(dead_code, reason = "only layout_check opens it as an overlay today"))]
+/// The flashcard review (`Command::StartReview`, `Command::ReviewThisNote`,
+/// a note's "Review" button). The session is in the workspace.
 pub(crate) struct ReviewOverlay(pub ReviewUi, pub Option<quire_app::srs_state::Session>);
 
 impl OverlayView for ReviewOverlay {
@@ -194,11 +193,23 @@ impl OverlayView for ReviewOverlay {
         if let Some(s) = self.1.take() {
             ws.features.srs.session = Some(s);
         }
+        if ws.features.srs.session.is_none() {
+            return OverlayResult { close: true, ..Default::default() };
+        }
         OverlayResult { close: self.0.show_modal(ctx, ws, pal), ..Default::default() }
+    }
+
+    fn closed(&mut self, ws: &mut Workspace) {
+        ws.srs_end();
     }
 }
 
 impl ReviewOverlay {
+    /// For `registry::UiTarget::Overlay`: the command started the session.
+    pub(crate) fn make(_ws: &mut Workspace) -> Box<dyn OverlayView> {
+        Box::new(Self(ReviewUi::default(), None))
+    }
+
     /// A session with a long question, at the question, the answer or the end.
     #[cfg(test)]
     pub(crate) fn sample(revealed: bool, finished: bool) -> Self {

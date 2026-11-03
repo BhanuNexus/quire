@@ -66,7 +66,6 @@ pub(crate) struct Surfaces {
 
 impl Surfaces {
     /// Show `s` (or the already open surface for the same file).
-    #[cfg_attr(not(test), expect(dead_code, reason = "WS-E and WS-G open surfaces from the file tree and links"))]
     pub(crate) fn open(&mut self, s: Box<dyn Surface>) {
         let i = self.open.iter().position(|o| o.path() == s.path()).unwrap_or_else(|| {
             self.open.push(s);

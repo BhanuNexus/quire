@@ -23,6 +23,9 @@ pub struct EditingSettings {
     pub homepage: String,
     /// The Files sidebar shows folders and notes side by side.
     pub two_pane: bool,
+    /// Where Ctrl+N puts a new note: `"current"` (the open note's folder,
+    /// so the folder's template applies) or `"root"` (the vault's top).
+    pub new_note_folder: String,
     #[serde(flatten)]
     pub other: toml::Table,
 }
@@ -35,6 +38,7 @@ impl Default for EditingSettings {
             display_titles: false,
             homepage: String::new(),
             two_pane: false,
+            new_note_folder: "current".into(),
             other: toml::Table::new(),
         }
     }

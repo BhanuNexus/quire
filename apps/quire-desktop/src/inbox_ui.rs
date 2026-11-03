@@ -6,8 +6,8 @@
 //! Accept all and Reject all; checks are batched per kind with their quick
 //! fixes; a changed agent policy or `AGENTS.md` waits here for approval.
 //! Filters by kind, agent and folder; snooze for a day or a week; resolved
-//! suggestions on request. While a suggestion is under review, its card is
-//! at the top.
+//! suggestions on request. A suggestion under review has its banner above
+//! the note (`review_ui::banner`).
 
 #[path = "review_ui.rs"]
 pub(crate) mod review_ui;
@@ -34,8 +34,8 @@ pub(crate) struct InboxUi {
     folder: String,
     /// Groups and check batches opened up.
     expanded: HashSet<String>,
-    /// A new note shown in full (its path).
-    preview: Option<String>,
+    /// A new note shown in full (its path); the review banner's too.
+    pub(crate) preview: Option<String>,
     show_policy_diff: bool,
     show_instructions_diff: bool,
 }
@@ -93,10 +93,6 @@ pub(crate) fn show(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pa
     ws.features.agent.loader.set_want_resolved(ui_st.filters.show_resolved);
     egui::ScrollArea::vertical().id_salt("quire-inbox").auto_shrink([false, false]).show(ui, |ui| {
         ui.add_space(6.0);
-        if ws.features.agent.review.is_some() {
-            let o = review_ui::review_card(ui, ws, &mut ui_st.preview, pal);
-            out.reveal_only |= o.reveal_only;
-        }
         filters(ui, ws, ui_st, pal);
         let mut act: Option<Act> = None;
         body(ui, ws, ui_st, pal, &mut act);

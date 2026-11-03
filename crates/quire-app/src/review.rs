@@ -22,7 +22,7 @@ use quire_agent::{
 use quire_vault::{ContentHash, NotePath};
 
 use crate::document::DocId;
-use crate::workspace::{NoticeLevel, Workspace};
+use crate::workspace::{NoticeLevel, UiRequest, Workspace};
 
 /// Notes longer than this are rebased after a pause in typing, not on every key.
 pub const LARGE_LINES: usize = 1_500;
@@ -101,8 +101,6 @@ pub struct ReviewSession {
     pub edit_text: RefCell<String>,
     /// Give the inline editor focus on its next paint.
     pub edit_focus: Cell<bool>,
-    /// Scroll the editor to the caret on the next frame the Inbox tab draws.
-    pub reveal: Cell<bool>,
     pub started: Instant,
 }
 
@@ -175,7 +173,6 @@ impl Workspace {
             editing: None,
             edit_text: RefCell::new(String::new()),
             edit_focus: Cell::new(false),
-            reveal: Cell::new(false),
             started: Instant::now(),
         });
         self.refresh_review_hunks(true);
@@ -258,8 +255,8 @@ impl Workspace {
         }
         if let Some(r) = self.review_mut() {
             r.current = k;
-            r.reveal.set(true);
         }
+        self.request_ui(UiRequest::RevealCaret);
         self.features.decor_generation += 1;
     }
 
@@ -297,7 +294,6 @@ impl Workspace {
                     r.path = None;
                     r.doc = None;
                     r.hunks.clear();
-                    r.reveal.set(false);
                 }
                 self.features.decor_generation += 1;
             }
@@ -717,9 +713,10 @@ The end.
         assert!(store.proposal(&id).is_none());
     }
 
-    /// Alt+] also types "]" on Linux and Windows: it must not stay in the note.
+    /// The review keys move the caret and ask the frontend to scroll to it
+    /// (the review banner shows where you are); they don't open the Inbox.
     #[test]
-    fn the_character_an_alt_shortcut_types_is_taken_out() {
+    fn review_keys_reveal_the_caret() {
         let mut ws = Workspace::new(Settings::default());
         ws.attach_vault(Vault::in_memory(&[("N.md", "one\ntwo\nthree\n")]));
         let doc = ws.open_note(&"N.md".into()).unwrap();
@@ -728,20 +725,15 @@ The end.
         let cs = ChangeSet::one(Change::Edit { path: "N.md".into(), new_text: "ONE\ntwo\nTHREE\n".into() });
         let SubmitOutcome::Proposed { id, .. } = store.submit(&agent, cs).unwrap() else { panic!() };
         assert!(ws.start_review(&id, None));
-        let _ = ws.run(crate::Command::NextHunk);
-        // The editor then gets the key's text, at the new caret.
-        let i = ws.docs.iter().position(|d| d.id == doc).unwrap();
-        let at = ws.docs[i].selection().head;
-        ws.docs[i].apply(quire_text::Transaction::insert(at, "]"), quire_text::EditKind::Insert).unwrap();
-        let _ = crate::agent_state::tick(&mut ws, Instant::now());
-        assert_eq!(&*ws.doc(doc).unwrap().text(), "one\ntwo\nthree\n");
-        assert_eq!(ws.features.agent.review.as_ref().unwrap().hunks.iter().filter(|h| h.conflict).count(), 0);
-        // Typing later is left alone.
-        let _ = crate::agent_state::tick(&mut ws, Instant::now());
-        let i = ws.docs.iter().position(|d| d.id == doc).unwrap();
-        ws.docs[i].apply(quire_text::Transaction::insert(0, "x"), quire_text::EditKind::Insert).unwrap();
-        let _ = crate::agent_state::tick(&mut ws, Instant::now());
-        assert!(ws.doc(doc).unwrap().text().starts_with('x'));
+        let _ = ws.take_ui_requests();
+        assert_eq!(ws.run(crate::Command::NextHunk), None);
+        assert_eq!(ws.take_ui_requests(), vec![UiRequest::RevealCaret]);
+        let r = ws.features.agent.review.as_ref().unwrap();
+        assert_eq!(r.current, 1);
+        let line = ws.doc(doc).unwrap().buffer().char_to_line(ws.doc(doc).unwrap().selection().head);
+        assert_eq!(line, 2, "the caret is on the second hunk");
+        assert_eq!(ws.run(crate::Command::AcceptHunk), None);
+        assert!(ws.doc(doc).unwrap().text().contains("THREE"));
     }
 
     #[test]

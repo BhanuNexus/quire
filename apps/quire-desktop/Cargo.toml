@@ -28,7 +28,8 @@ global-hotkey.workspace = true
 resvg = { workspace = true, optional = true }
 quire-spell.workspace = true
 quire-typeset = { workspace = true, optional = true }
-egui.workspace = true
+# The monochrome emoji font: icons, task dates (📅 ⏳) and ▸ ▾ in every edition.
+egui = { workspace = true, features = ["monochrome_emoji_fonts"] }
 egui_commonmark.workspace = true
 rfd.workspace = true
 chrono.workspace = true
