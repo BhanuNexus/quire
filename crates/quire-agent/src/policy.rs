@@ -17,6 +17,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use unicode_normalization::UnicodeNormalization;
 
 /// Where the vault's agent policy lives.
 pub const POLICY_PATH: &str = ".quire/shared/agent-policy.toml";
@@ -447,6 +448,22 @@ pub fn widenings(old: &Policy, new: &Policy) -> Vec<Widening> {
             }
         }
     }
+    // Roles decide trust labels: a zone that marks sources untrusted (raw)
+    // or hides notes (private) losing that role gives agents more (P7, P8).
+    for path in &paths {
+        let (was, now) = (old.role_of(path), new.role_of(path));
+        if let Some(r @ (ZoneRole::Raw | ZoneRole::Private)) = was
+            && now != was
+        {
+            let place = if path == "Note.md" { "notes outside any zone".to_string() } else { path.trim_end_matches("x.md").to_string() };
+            let label = if r == ZoneRole::Raw { "untrusted sources" } else { "private" };
+            let now = now.map_or("none", ZoneRole::as_str);
+            let what = format!("Notes in {place} would no longer be treated as {label} (role {} → {now})", r.as_str());
+            if !out.iter().any(|w| w.what == what) {
+                out.push(Widening { what });
+            }
+        }
+    }
     let (ol, nl) = (&old.limits, &new.limits);
     for (name, a, b) in [
         ("writes per minute", u64::from(ol.writes_per_minute), u64::from(nl.writes_per_minute)),
@@ -495,7 +512,9 @@ fn specificity(pattern: &str) -> (usize, bool) {
 /// Case-insensitive: a zone written `Wiki/` also covers `wiki/` on
 /// case-insensitive file systems, the safe direction for deny zones.
 fn zone_matches(pattern: &str, path: &str) -> bool {
-    let (p, path) = (pattern.trim_start_matches("./").to_lowercase(), path.to_lowercase());
+    // NFC as well: a zone written in one Unicode form covers paths in the other.
+    let fold = |s: &str| s.nfc().collect::<String>().to_lowercase();
+    let (p, path) = (fold(pattern.trim_start_matches("./")), fold(path));
     if !p.contains(is_glob) {
         return if p.ends_with('/') { path.starts_with(&p) } else { path == p || path.starts_with(&format!("{p}/")) };
     }
@@ -632,6 +651,35 @@ zones = { "wiki/" = "direct", "notes/" = "direct" }
         let mut limits = Policy::default();
         limits.limits.max_write_bytes = 10_000_000;
         assert_eq!(widenings(&d, &limits).len(), 1);
+    }
+
+    #[test]
+    fn relabelling_raw_or_private_is_a_widening() {
+        let d = Policy::default();
+        let mut relabel = Policy::default();
+        relabel.zones[1].role = ZoneRole::Human;
+        let w = widenings(&d, &relabel);
+        assert!(w.iter().any(|w| w.what.contains("raw/") && w.what.contains("untrusted")), "{w:?}");
+        let mut gone = Policy::default();
+        gone.zones.pop();
+        gone.zones.push(Zone { path: "raw/".into(), role: ZoneRole::Agent, mode: Mode::Read, other: toml::Table::new() });
+        assert!(widenings(&d, &gone).iter().any(|w| w.what.contains("role raw → agent")));
+        let mut private = Policy::default();
+        private.zones.push(Zone { path: "Private/".into(), role: ZoneRole::Private, mode: Mode::Deny, other: toml::Table::new() });
+        let mut unhidden = private.clone();
+        unhidden.zones[2].role = ZoneRole::Human;
+        assert!(widenings(&private, &unhidden).iter().any(|w| w.what.contains("Private/") && w.what.contains("private")));
+        assert!(widenings(&relabel, &d).is_empty(), "making a zone raw narrows");
+    }
+
+    #[test]
+    fn zones_match_in_either_unicode_form() {
+        let mut p = Policy::default();
+        p.zones.push(Zone { path: "Priv\u{e9}/".into(), role: ZoneRole::Private, mode: Mode::Deny, other: toml::Table::new() });
+        assert_eq!(p.zone_mode("Prive\u{301}/diary.md"), Mode::Deny, "NFD path, NFC zone");
+        p.zones[2].path = "Prive\u{301}/".into();
+        assert_eq!(p.zone_mode("Priv\u{e9}/diary.md"), Mode::Deny, "NFC path, NFD zone");
+        assert_eq!(p.zone_mode("PRIV\u{c9}/diary.md"), Mode::Deny, "any case");
     }
 
     #[test]

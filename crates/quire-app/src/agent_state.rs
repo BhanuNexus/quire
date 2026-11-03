@@ -281,9 +281,9 @@ fn approve_own_instruction_edits(ws: &mut Workspace) {
     }
     if std::mem::take(&mut ws.features.agent.instructions_dirty)
         && let Some(store) = ws.agent_store()
-        && store.instructions().is_some_and(|i| !i.approved && *i.text == *text)
+        && let Some(i) = store.instructions().filter(|i| !i.approved && *i.text == *text)
     {
-        let _ = store.approve_instructions();
+        let _ = store.approve_instructions(&i.hash);
         ws.features.agent.reload_inbox_soon();
     }
 }

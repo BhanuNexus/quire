@@ -9,6 +9,7 @@
 //! * [`inbox`] — findings waiting for the person; [`revert`] — undo plans
 //! * [`review`] — hunks and decisions; [`approval`] — what this device approved
 //! * [`contract`] — write contracts; [`lint`] — vault checks
+//! * [`fence`] — untrusted text in data blocks
 //! * [`instructions`] — `AGENTS.md`; [`watch`] — noticing other processes
 //!
 //! File formats are described in `docs/formats/`.
@@ -17,6 +18,7 @@ pub mod actor;
 pub mod approval;
 pub mod change;
 pub mod contract;
+pub mod fence;
 pub mod ids;
 pub mod inbox;
 pub mod instructions;
@@ -43,7 +45,7 @@ pub use proposal::{
 };
 pub use quire_vault::ContentHash;
 pub use revert::{RevertAction, RevertPlan, RevertReport, RevertSelector, RevertStep};
-pub use store::{AgentStore, PolicyState, canonical_path};
+pub use store::{AgentStore, PolicyState, Resolved, canonical_path};
 
 #[cfg(test)]
 mod tests;
