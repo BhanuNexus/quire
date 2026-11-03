@@ -21,7 +21,7 @@ pub(super) fn search(buf: &Buffer, pattern: &str, from: usize, backward: bool) -
     if pattern.is_empty() {
         return None;
     }
-    let opts = FindOptions { case_sensitive: true, whole_word: false, regex: true };
+    let opts = FindOptions { case_sensitive: true, whole_word: false, regex: true, match_accents: true };
     let re = compile(&vim_to_regex(pattern), opts).or_else(|_| compile(pattern, FindOptions { regex: false, ..opts })).ok()?;
     let text = buf.to_string();
     let from_b = buf.char_to_byte(from);
@@ -108,7 +108,7 @@ pub fn collapse_insert(doc: &mut Document, base: &Buffer, base_rev: u64) {
 
 /// `:s` on the active note: Vim's pattern and replacement as regular expressions.
 fn substitute(ws: &mut Workspace, s: &Substitute) {
-    let opts = FindOptions { case_sensitive: !s.ignore_case, whole_word: false, regex: true };
+    let opts = FindOptions { case_sensitive: !s.ignore_case, whole_word: false, regex: true, match_accents: true };
     let re = match compile(&s.regex_pattern(), opts) {
         Ok(re) => re,
         Err(e) => {

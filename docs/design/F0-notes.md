@@ -186,6 +186,19 @@ bars between the find bar and the note, drawn while `available(ws)` is true
 panel. WS-A's review banner is the first. A banner returns `PanelOut` like a
 tab.
 
+### Inbox items of other features (added by WS-C)
+
+**`registry::INBOX_KINDS`** (`InboxKindDef { handles, body, actions }`):
+a producer of Inbox findings (contradictions, staleness, citations) draws
+its own items. For each stored finding the Inbox finds the first entry whose
+`handles(&item)` is true and draws a card with `body(ui, ws, item, pal)`,
+then one row with `actions(…)` followed by the Inbox's own **Dismiss** and
+**Snooze**. `actions` returns an `InboxAct` (`Box<dyn FnOnce(&mut Workspace,
+&mut PanelOut)>`), run after drawing, like the Inbox's own buttons. Items no
+entry claims keep the plain sentence with Open. Grouping, filters, snooze,
+the weekly digest and dismissals stay the Inbox's. WS-C registers
+`trust_ui::{is_trust_item, inbox_body, inbox_actions}`.
+
 ### Keys
 
 * An Alt shortcut (Alt without Ctrl) drops the text its key types, in that
@@ -250,8 +263,8 @@ New `[editing] new_note_folder` (`"current"`, default, or `"root"`).
   command's `ui_target` pointing at the tab or `UiTarget::Overlay`.
 * WS-D's onboarding overlay and ACP warning: `UiTarget::Overlay` (or
   `request_ui` at first start); the agent panel stays a right tab.
-* WS-C's contradiction actions in the Inbox still need a hook from WS-A's
-  `inbox_ui` (none was added in wave 1; ask the integrator).
+* WS-C's contradiction actions in the Inbox use `registry::INBOX_KINDS`
+  (above), added by WS-C.
 * WS-G: register `.canvas`/`.pdf` in `open_surface`; links to them can call
   `request_ui(UiRequest::OpenFile(path))`.
 * Banners (e.g. "This answer's citations drifted") go in `EDITOR_BANNERS`.

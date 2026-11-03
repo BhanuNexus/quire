@@ -5,7 +5,7 @@
 
 pub mod agent_state;
 pub mod ai;
-mod ask_state;
+pub mod ask_state;
 pub mod assistant_state;
 pub mod atomic;
 pub mod attach;

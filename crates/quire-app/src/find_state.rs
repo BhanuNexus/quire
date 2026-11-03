@@ -17,7 +17,6 @@ use crate::workspace::{NoticeLevel, Workspace};
 type MatchKey = (DocId, u64, String, FindOptions);
 type MatchCache = RefCell<Option<(MatchKey, Rc<Vec<Range<usize>>>, Option<String>)>>;
 
-#[derive(Default)]
 pub struct FindState {
     /// In-note bar.
     pub open: bool,
@@ -35,6 +34,27 @@ pub struct FindState {
     /// Notes the user un-ticked in the preview.
     pub vault_excluded: BTreeSet<NotePath>,
     pub vault_error: Option<String>,
+}
+
+impl Default for FindState {
+    fn default() -> Self {
+        Self {
+            open: false,
+            replace_mode: false,
+            query: String::new(),
+            replacement: String::new(),
+            // Accents are optional in the find bar (design §C.2, "Match accents" off).
+            opts: FindOptions::find_bar(),
+            cache: MatchCache::default(),
+            vault_open: false,
+            vault_query: String::new(),
+            vault_replacement: String::new(),
+            vault_opts: FindOptions::default(),
+            vault_results: Vec::new(),
+            vault_excluded: BTreeSet::new(),
+            vault_error: None,
+        }
+    }
 }
 
 impl Workspace {
