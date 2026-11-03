@@ -9,14 +9,20 @@ pub mod anchor;
 pub mod ask;
 pub mod calc;
 pub mod chat;
+pub mod claims;
+pub mod cluster;
+pub mod contradict;
 pub mod dates;
 #[cfg(feature = "remote-llm")]
 pub mod embed;
+pub mod json;
 pub mod llm;
 pub mod mentions;
 pub mod related;
+pub mod stale;
 pub mod summary;
 pub mod tags;
+pub mod timeline;
 
 pub use ask::{Answer, Source, build_ask_request, extractive_answer, retrieve};
 pub use calc::{Calculator, format_number};

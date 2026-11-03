@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashMap};
 use quire_vault::NotePath;
 
 use crate::record::NoteRecord;
-use crate::tokenize::tokens;
+use crate::tokenize::{Folded, fold_str, tokens};
 
 const K1: f32 = 1.2;
 const B: f32 = 0.75;
@@ -34,7 +34,7 @@ impl Query {
             out.push_words(before);
             match rest[open + 1..].find('"') {
                 Some(close) => {
-                    let phrase = rest[open + 1..open + 1 + close].trim().to_lowercase();
+                    let phrase = fold_str(rest[open + 1..open + 1 + close].trim());
                     if !phrase.is_empty() {
                         out.terms.extend(tokens(&phrase));
                         out.phrases.push(phrase);
@@ -131,10 +131,27 @@ pub(crate) struct FullText {
 
 impl FullText {
     pub(crate) fn upsert(&mut self, rec: &NoteRecord) {
-        self.remove(&rec.path);
+        self.insert(&rec.path, &rec.search_terms.0, rec.search_terms.1);
+    }
+
+    /// Index a document that isn't a note (an attachment page).
+    pub(crate) fn upsert_terms(&mut self, path: &NotePath, tf: &[(String, f32)], len: f32) {
+        self.insert(path, tf, len);
+    }
+
+    /// Inverse document frequency of a term (0 when no document has it).
+    pub(crate) fn term_idf(&self, term: &str) -> f32 {
+        self.postings.get(term).map_or(0.0, |p| self.idf(p.len()))
+    }
+
+    pub(crate) fn has_term(&self, term: &str) -> bool {
+        self.postings.contains_key(term)
+    }
+
+    fn insert(&mut self, path: &NotePath, tf: &[(String, f32)], len: f32) {
+        self.remove(path);
         let id = self.next_id;
         self.next_id += 1;
-        let (tf, len) = (&rec.search_terms.0, rec.search_terms.1);
         let mut terms = Vec::with_capacity(tf.len());
         for (t, f) in tf {
             self.postings.entry(t.clone()).or_default().insert(id, *f);
@@ -143,8 +160,8 @@ impl FullText {
         self.doc_terms.insert(id, terms);
         self.doc_len.insert(id, len.max(1.0));
         self.total_len += f64::from(len.max(1.0));
-        self.ids.insert(rec.path.clone(), id);
-        self.paths.insert(id, rec.path.clone());
+        self.ids.insert(path.clone(), id);
+        self.paths.insert(id, path.clone());
     }
 
     pub(crate) fn remove(&mut self, path: &NotePath) {
@@ -232,13 +249,13 @@ impl FullText {
     }
 }
 
-/// Build a short snippet around the first matching term.
+/// Build a short snippet around the first matching term. Terms are folded
+/// (`tokens`), so "cafe" highlights "Café"; ranges are exact in the snippet.
 pub(crate) fn snippet(plain: &str, terms: &[String], width: usize) -> (String, Vec<std::ops::Range<usize>>) {
-    let lower = plain.to_lowercase();
-    // Lowercasing can change byte lengths for some scripts; fall back to start in that case.
-    let same_len = lower.len() == plain.len();
-    let first = if same_len { terms.iter().filter_map(|t| lower.find(t.as_str())).min() } else { None };
-    let center = first.unwrap_or(0);
+    let folded = Folded::new(plain);
+    let mut found: Vec<std::ops::Range<usize>> = terms.iter().flat_map(|t| folded.find_all(t)).collect();
+    found.sort_by_key(|r| (r.start, std::cmp::Reverse(r.end)));
+    let center = found.first().map_or(0, |r| r.start);
     let floor = |mut i: usize| {
         while !plain.is_char_boundary(i) {
             i -= 1;
@@ -247,29 +264,25 @@ pub(crate) fn snippet(plain: &str, terms: &[String], width: usize) -> (String, V
     };
     let start = floor(center.saturating_sub(width / 3));
     let end = floor((start + width).min(plain.len()));
-    let mut text: String = plain[start..end].replace('\n', " ");
+    let mut text = String::with_capacity(end - start + 8);
     let offset = if start > 0 {
-        text.insert(0, '…');
+        text.push('…');
         '…'.len_utf8()
     } else {
         0
     };
+    // Newlines become spaces: same length, so ranges stay put.
+    text.push_str(&plain[start..end].replace('\n', " "));
     if end < plain.len() {
         text.push('…');
     }
-    let mut hl = Vec::new();
-    if same_len {
-        let lower_slice = &lower[start..end];
-        for t in terms.iter().filter(|t| !t.is_empty()) {
-            let mut from = 0;
-            while let Some(i) = lower_slice[from..].find(t.as_str()) {
-                let s = from + i;
-                hl.push(offset + s..offset + s + t.len());
-                from = s + t.len();
-            }
+    let mut hl: Vec<std::ops::Range<usize>> = Vec::new();
+    for r in found {
+        if r.start < start || r.end > end || hl.last().is_some_and(|l| r.start < l.end) {
+            continue;
         }
+        hl.push(offset + r.start - start..offset + r.end - start);
     }
-    hl.sort_by_key(|r| r.start);
     (text, hl)
 }
 
@@ -286,6 +299,17 @@ mod tests {
         assert_eq!(q.exclude, vec!["draft"]);
         assert_eq!(q.prefix.as_deref(), Some("edi"));
         assert_eq!(Query::parse("rope ").prefix, None);
+    }
+
+    #[test]
+    fn snippets_fold_accents() {
+        let (s, hl) = snippet("Notes from the café in Łódź about Straße names.", &["cafe".into(), "lodz".into(), "strasse".into()], 200);
+        let words: Vec<&str> = hl.iter().map(|r| &s[r.clone()]).collect();
+        assert_eq!(words, ["café", "Łódź", "Straße"]);
+        let long = format!("{} Ångström {}", "x ".repeat(200), "y ".repeat(200));
+        let (s, hl) = snippet(&long, &["angstrom".into()], 60);
+        assert!(s.starts_with('…') && s.ends_with('…'));
+        assert_eq!(&s[hl[0].clone()], "Ångström");
     }
 
     #[test]

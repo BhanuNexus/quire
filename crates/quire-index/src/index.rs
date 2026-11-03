@@ -16,10 +16,26 @@ use crate::record::NoteRecord;
 pub struct Index {
     records: HashMap<NotePath, NoteRecord>,
     sources: HashMap<NotePath, String>,
-    fulltext: FullText,
+    pub(crate) fulltext: FullText,
     graph: LinkGraph,
-    /// Text of PDFs and images, by path. Not searched yet (WS-C).
+    /// Byte offset of each line's start, per note (line numbers for hits).
+    line_starts: HashMap<NotePath, Vec<u32>>,
+    /// Last change, Unix ms: the file's time at load, the time of an update after.
+    modified: HashMap<NotePath, i64>,
+    /// Text of PDFs and images, by path.
     attachments: HashMap<NotePath, AttachmentText>,
+    /// Keyword index of attachment pages (`path#page=N`).
+    pub(crate) attachment_text: FullText,
+}
+
+/// Byte offsets where each line starts.
+pub(crate) fn line_starts(src: &str) -> Vec<u32> {
+    std::iter::once(0).chain(src.match_indices('\n').map(|(i, _)| u32::try_from(i + 1).unwrap_or(u32::MAX))).collect()
+}
+
+/// The key of an attachment page in the keyword index.
+pub(crate) fn page_key(path: &NotePath, page: usize) -> NotePath {
+    NotePath::new(format!("{path}#page={}", page + 1))
 }
 
 impl Index {
@@ -36,6 +52,7 @@ impl Index {
     /// Insert a pre-built record without refreshing the graph (bulk loads).
     pub fn insert_record(&mut self, rec: NoteRecord, src: String) {
         self.fulltext.upsert(&rec);
+        self.line_starts.insert(rec.path.clone(), line_starts(&src));
         self.sources.insert(rec.path.clone(), src);
         self.records.insert(rec.path.clone(), rec);
     }
@@ -48,7 +65,35 @@ impl Index {
     pub fn remove_no_refresh(&mut self, path: &NotePath) {
         self.records.remove(path);
         self.sources.remove(path);
+        self.line_starts.remove(path);
+        self.modified.remove(path);
         self.fulltext.remove(path);
+    }
+
+    /// When a note last changed (Unix ms), as far as the index knows.
+    pub fn modified(&self, p: &NotePath) -> Option<i64> {
+        self.modified.get(p).copied()
+    }
+
+    pub fn set_modified(&mut self, p: &NotePath, ms: i64) {
+        self.modified.insert(p.clone(), ms);
+    }
+
+    /// The 1-based line holding byte `byte` of a note.
+    pub fn line_of(&self, p: &NotePath, byte: usize) -> u32 {
+        let Some(starts) = self.line_starts.get(p) else { return 1 };
+        let b = u32::try_from(byte).unwrap_or(u32::MAX);
+        u32::try_from(starts.partition_point(|s| *s <= b)).unwrap_or(u32::MAX).max(1)
+    }
+
+    /// The 1-based inclusive lines a byte range of a note covers (a range
+    /// ending with its line's newline doesn't count the next line).
+    pub fn lines_of(&self, p: &NotePath, range: &std::ops::Range<usize>) -> (u32, u32) {
+        let first = self.line_of(p, range.start);
+        let last_byte = if range.end > range.start { range.end - 1 } else { range.start };
+        let last = self.line_of(p, last_byte);
+        let ends_on_newline = self.source(p).is_some_and(|s| s.as_bytes().get(last_byte) == Some(&b'\n'));
+        (first, if ends_on_newline && last > first { last - 1 } else { last }.max(first))
     }
 
     /// Rebuild the link graph (linear in the number of links).
@@ -73,13 +118,26 @@ impl Index {
         self.sources.get(p).map(String::as_str)
     }
 
-    /// Store the text of an attachment (replaces older text for that path).
+    /// Store the text of an attachment (replaces older text for that path)
+    /// and index its pages for search.
     pub fn upsert_attachment(&mut self, text: AttachmentText) {
+        self.remove_attachment(&text.path);
+        let name = text.path.stem().to_string();
+        for (i, page) in text.pages.iter().enumerate() {
+            // The file's name counts for its first page only, not every page.
+            let title = if i == 0 { name.as_str() } else { "" };
+            let (terms, len) = crate::fulltext::search_terms(page, title, title, &[], &[]);
+            self.attachment_text.upsert_terms(&page_key(&text.path, i), &terms, len);
+        }
         self.attachments.insert(text.path.clone(), text);
     }
 
     pub fn remove_attachment(&mut self, path: &NotePath) {
-        self.attachments.remove(path);
+        if let Some(old) = self.attachments.remove(path) {
+            for i in 0..old.pages.len() {
+                self.attachment_text.remove(&page_key(path, i));
+            }
+        }
     }
 
     pub fn attachment(&self, path: &NotePath) -> Option<&AttachmentText> {
@@ -125,8 +183,8 @@ impl Index {
                     return None;
                 }
                 if !q.phrases.is_empty() {
-                    let lower = rec.plain.to_lowercase();
-                    if !q.phrases.iter().all(|ph| lower.contains(ph.as_str())) {
+                    let folded = crate::tokenize::fold_str(&rec.plain);
+                    if !q.phrases.iter().all(|ph| folded.contains(ph.as_str())) {
                         return None;
                     }
                 }
@@ -137,6 +195,13 @@ impl Index {
         hits.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.path.cmp(&b.path)));
         hits.truncate(limit);
         hits
+    }
+
+    /// How rare a (folded, stemmed) word is in the vault's notes; `None`
+    /// when no note uses it.
+    pub fn idf(&self, term: &str) -> Option<f32> {
+        let idf = self.fulltext.term_idf(term);
+        self.fulltext.has_term(term).then_some(idf)
     }
 
     pub fn quick_open(&self, query: &str, limit: usize) -> Vec<QuickOpenHit> {
@@ -232,6 +297,14 @@ mod tests {
         let ix = index();
         let bl = ix.backlinks(&NotePath::new("Rope Notes.md"));
         assert_eq!(bl.len(), 1);
+        let g = ix.graph();
+        assert_eq!(g.neighbors(&NotePath::new("Rope Notes.md"), 1, crate::graph::Direction::In), [(NotePath::new("Editors.md"), 1)]);
+        assert!(g.neighbors(&NotePath::new("Rope Notes.md"), 1, crate::graph::Direction::Out).is_empty());
+        assert_eq!(g.neighbors(&NotePath::new("Editors.md"), 3, crate::graph::Direction::Both).len(), 1);
+        assert_eq!(ix.line_of(&NotePath::new("Editors.md"), 0), 1);
+        assert_eq!(ix.line_of(&NotePath::new("Editors.md"), 12), 2);
+        assert_eq!(ix.lines_of(&NotePath::new("Editors.md"), &(0..10)), (1, 1));
+        assert_eq!(ix.lines_of(&NotePath::new("Editors.md"), &(0..12)), (1, 2));
         assert_eq!(bl[0].from.as_str(), "Editors.md");
         assert!(bl[0].context.contains("Zed uses a rope"));
         assert_eq!(ix.graph().unresolved()[0].0, "Missing Note");
@@ -247,6 +320,34 @@ mod tests {
         let hits = ix.quick_open("rpnt", 5);
         assert_eq!(hits[0].path.as_str(), "Rope Notes.md");
         assert_eq!(ix.quick_open("", 10).len(), 4);
+    }
+
+    #[test]
+    fn accents_are_optional_everywhere() {
+        let mut ix = Index::new();
+        for (p, s) in [
+            ("Łódź.md", "# Łódź\nA city with a café on every corner. Straße-like streets.\n"),
+            ("Trip.md", "# Trip\nWent to [[Lodz]] and met Zoë. See [[łódź]] too.\n"),
+            ("Ångström.md", "---\naliases: [Angstrom unit]\n---\nTiny length.\n"),
+            ("Units.md", "Measured in [[angstrom unit]] and [[ANGSTRÖM]].\n"),
+        ] {
+            ix.insert_record(NoteRecord::from_source(NotePath::new(p), s), s.to_string());
+        }
+        ix.refresh();
+        assert_eq!(ix.search("cafe", 5)[0].path.as_str(), "Łódź.md");
+        assert_eq!(ix.search("CAFÉ strasse", 5).len(), 1);
+        assert_eq!(ix.search("zoe", 5)[0].path.as_str(), "Trip.md");
+        assert_eq!(ix.search("\"cafe on every\"", 5).len(), 1);
+        let hit = &ix.search("lodz", 5)[0];
+        assert!(hit.highlights.iter().any(|r| &hit.snippet[r.clone()] == "Łódź"), "{hit:?}");
+        let lodz = NotePath::new("Łódź.md");
+        assert_eq!(ix.resolve("Lodz", None), Some(lodz.clone()));
+        assert_eq!(ix.backlinks(&lodz).len(), 2);
+        assert_eq!(ix.resolve("angstrom", None), Some(NotePath::new("Ångström.md")));
+        assert_eq!(ix.backlinks(&NotePath::new("Ångström.md")).len(), 2);
+        assert!(ix.graph().unresolved().is_empty());
+        assert_eq!(ix.quick_open("lodz", 3)[0].path, lodz);
+        assert_eq!(ix.quick_open("łódź", 3)[0].path, lodz);
     }
 
     #[test]

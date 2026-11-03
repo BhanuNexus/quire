@@ -25,7 +25,7 @@ pub use actor::{IndexMsg, IndexService, IndexStatus, SemanticBuilder};
 pub use attach::{AttachmentKind, AttachmentText, TextSource};
 pub use fulltext::{Query, SearchHit};
 pub use fuzzy::QuickOpenHit;
-pub use graph::{Backlink, LinkGraph};
+pub use graph::{Backlink, Direction, LinkGraph};
 pub use hybrid::HybridHit;
 pub use index::Index;
 pub use record::NoteRecord;

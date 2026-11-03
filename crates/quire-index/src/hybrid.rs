@@ -80,8 +80,8 @@ impl IndexService {
                 if !q.tags.iter().all(|t| rec.has_tag(t)) {
                     continue;
                 }
-                let lower = c.text.to_lowercase();
-                if q.exclude.iter().any(|x| lower.contains(x.as_str())) {
+                let folded = crate::tokenize::fold_str(&c.text);
+                if q.exclude.iter().any(|x| folded.contains(x.as_str())) {
                     continue;
                 }
                 if seen.contains_key(&c.path) {

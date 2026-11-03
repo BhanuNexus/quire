@@ -209,6 +209,12 @@ impl SemanticIndex {
         scored
     }
 
+    /// The stored unit vector of the passage of `path` starting at byte `start`.
+    pub fn vector_of(&self, path: &NotePath, start: usize) -> Option<&[f32]> {
+        let i = self.chunks.iter().position(|c| &c.path == path && c.range.start == start)?;
+        self.vectors.get(i).map(Vec::as_slice)
+    }
+
     /// Cosine similarity between a query vector and a passage.
     pub fn similarity(&self, query_vec: &[f32], chunk: usize) -> f32 {
         self.vectors.get(chunk).map_or(0.0, |v| dot(query_vec, v))
