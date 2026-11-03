@@ -167,9 +167,13 @@ pub fn with_index(existing: Option<&str>, block: &str) -> String {
             "# Wiki index\n\nQuire keeps the list below up to date. Write anything you like outside the markers.\n\n{START}\n{block}{END}\n"
         );
     };
-    if let (Some(s), Some(e)) = (text.find(START), text.find(END))
-        && s < e
-    {
+    // The last START with an END after it: the person's text may mention
+    // either marker (a note about the format) before the real block.
+    let pair = text.rmatch_indices(START).find_map(|(s, _)| {
+        let inner = s + START.len();
+        text[inner..].find(END).map(|k| (s, inner + k))
+    });
+    if let Some((s, e)) = pair {
         let inner = s + START.len();
         let mut out = String::with_capacity(text.len() + block.len());
         out.push_str(&text[..inner]);
@@ -258,6 +262,22 @@ mod tests {
         assert!(fresh.starts_with("# Wiki index") && fresh.contains(START) && fresh.ends_with(&format!("{END}\n")));
         assert!(with_index(Some("no markers"), "x\n").ends_with(&format!("no markers\n\n{START}\nx\n{END}\n")));
         assert_eq!(index_block(&[], &[]), "\nNo wiki pages yet.\n\n");
+    }
+
+    #[test]
+    fn review_malformed_markers_never_grow_the_index() {
+        // The person's text mentions the END marker above the block.
+        let mine = format!("# My wiki\nThe block ends at {END}.\n");
+        let once = with_index(Some(&mine), "\n- [[A]]\n\n");
+        let twice = with_index(Some(&once), "\n- [[A]]\n\n");
+        assert_eq!(once, twice, "regenerating twice adds nothing");
+        assert_eq!(twice.matches(START).count(), 1);
+        // And a START mentioned after the block.
+        let tail = format!("{twice}Remember: {START} starts it.\n");
+        assert_eq!(with_index(Some(&tail), "\n- [[B]]\n\n").matches(START).count(), 2, "the block and the mention; no new block");
+        let next = with_index(Some(&tail), "\n- [[B]]\n\n");
+        assert!(next.contains("- [[B]]") && !next.contains("- [[A]]"), "{next}");
+        assert_eq!(with_index(Some(&next), "\n- [[B]]\n\n"), next);
     }
 
     #[test]

@@ -3,6 +3,9 @@
 A saved answer (Ask → Save as note, MCP `save_answer`) cites its sources as
 footnotes that read well in any Markdown editor, with the data Quire needs to
 find the quoted passage again in a `quire:cite` comment (design §C.3).
+Its front matter says who answered in `answered_by`: `model:<name>` for a
+model in Ask, `quire:extractive` when Quire quoted the notes itself, or the
+agent's id for MCP `save_answer`.
 Owner: WS-C. Code: `quire_intel::anchor` (`footnote`, `citations`, `resolve`).
 
 ```markdown
