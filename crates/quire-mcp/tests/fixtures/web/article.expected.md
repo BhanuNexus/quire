@@ -22,7 +22,7 @@ A small rope.
 
 The same picture again, from a CDN: ![[rope.png|Copy]]
 
-A diagram: ![[diagram.svg|Diagram]] and an inline dot: ![[image.png|dot]]
+A diagram: ![Diagram](http://SITE/blog/diagram.svg) and an inline dot: ![[image.png|dot]]
 
 ## Costs
 

@@ -21,6 +21,8 @@ ureq.workspace = true
 dom_smoothie.workspace = true
 encoding_rs.workspace = true
 sha2.workspace = true
+# Captured images are decoded before they are kept (PNG, JPEG, GIF, WebP).
+image.workspace = true
 # WS-E: Obsidian Bases (.base YAML)
 yaml-rust2.workspace = true
 
