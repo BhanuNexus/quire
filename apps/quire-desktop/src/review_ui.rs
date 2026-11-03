@@ -20,9 +20,9 @@ use quire_app::decor::{ActionId, WidgetId};
 use crate::panels::PanelOut;
 use crate::theme::Palette;
 
-/// Green for proposed text (the theme has no "added" colour of its own).
-pub(crate) fn added(pal: &Palette) -> Color32 {
-    if pal.dark { Color32::from_rgb(0x5f, 0xc8, 0x7a) } else { Color32::from_rgb(0x1f, 0x80, 0x3a) }
+/// Proposed text: the theme's `added` colour.
+pub(crate) const fn added(pal: &Palette) -> Color32 {
+    pal.added
 }
 
 fn added_bg(pal: &Palette) -> Color32 {

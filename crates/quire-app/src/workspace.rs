@@ -1846,4 +1846,80 @@ mod tests {
         assert!(w.active_doc().unwrap().text().contains("\nRopes are"));
         assert_eq!(w.run(Command::QuickOpen), Some(UiRequest::QuickOpen));
     }
+
+    /// The joins the integration added (docs/design/F0-notes.md, wave 1).
+    #[test]
+    fn integration_wave_1_joins() {
+        let mut w = Workspace::new(Settings::default());
+        w.attach_vault(Vault::in_memory(&[
+            ("Calls/Kickoff.md", "# Kickoff\n"),
+            ("Projects/Projects.md", "# All projects\n"),
+            ("Areas/x.md", "x"),
+            ("Templates/Call.md", "---\nquire-template:\n  applies_to: [Calls]\n  name: \"Call {{prompt:Who}}\"\n---\n# Call\n"),
+            ("People/Ada.md", "---\ntitle: Ada Lovelace\nauthor:\n  name: Ada\n  born: 1815\n---\nBody\n"),
+        ]));
+        w.index().flush();
+        // Ctrl+N: in the open note's folder, where its template applies.
+        w.open_note(&NotePath::new("Calls/Kickoff.md")).unwrap();
+        assert_eq!(w.run(Command::NewNote), None);
+        assert_eq!(w.active_doc().unwrap().path.as_ref().unwrap().folder(), "Calls");
+        w.settings.editing.new_note_folder = "root".into();
+        w.run(Command::NewNote);
+        assert_eq!(w.active_doc().unwrap().path.as_ref().unwrap().folder(), "");
+        // Follow link on a folder: its note, or the folder in the sidebar.
+        assert!(w.open_link("Projects/", None).is_some());
+        assert_eq!(w.active_doc().unwrap().path.as_ref().unwrap().as_str(), "Projects/Projects.md");
+        assert!(w.open_link("Areas/", None).is_none());
+        assert!(!w.vault().unwrap().exists(&NotePath::new("Areas.md")), "no note made for a folder link");
+        // A template's name: with a typed title, the title wins.
+        let id = w
+            .new_note_from_template_titled(
+                &NotePath::new("Templates/Call.md"),
+                Some("Board sync"),
+                None,
+                &std::collections::HashMap::new(),
+                &[],
+            )
+            .unwrap();
+        assert_eq!(w.doc(id).unwrap().path.as_ref().unwrap().stem(), "Board sync");
+        // Nested properties edit one line.
+        w.open_note(&NotePath::new("People/Ada.md")).unwrap();
+        assert!(w.set_property_path(&["author", "born"], &quire_markdown::Value::Str("1816".into())));
+        assert!(w.active_doc().unwrap().text().contains("  born: 1816\n"));
+        assert!(w.remove_property_path(&["author", "name"]));
+        assert!(!w.active_doc().unwrap().text().contains("name: Ada"));
+        // UI requests queue up for the frontend.
+        w.request_ui(UiRequest::RevealCaret);
+        assert!(w.ui_requested());
+        assert_eq!(w.take_ui_requests(), vec![UiRequest::RevealCaret]);
+        assert!(!w.ui_requested());
+        // The graph shows file names unless titles are turned on.
+        let g = w.link_graph(&crate::graph::Scope::All { orphans: true });
+        assert!(g.nodes.iter().any(|n| n.title == "Ada"));
+        w.settings.editing.display_titles = true;
+        let g = w.link_graph(&crate::graph::Scope::All { orphans: true });
+        assert!(g.nodes.iter().any(|n| n.title == "Ada Lovelace"));
+    }
+
+    /// An agent's suggestion accepted in the editor is saved with provenance
+    /// that Version history shows (WS-A's review, F0's history).
+    #[test]
+    fn accepted_suggestions_carry_provenance_into_history() {
+        let mut w = Workspace::new(Settings::default());
+        w.attach_vault(Vault::in_memory(&[("Rope.md", "# Rope\nOne.\n")]));
+        let store = w.agent_store().unwrap().clone();
+        let agent = quire_agent::Actor::agent("mcp:claude-code", "Claude Code", quire_agent::Via::McpStdio, "d");
+        let cs = quire_agent::ChangeSet::one(quire_agent::Change::Edit { path: "Rope.md".into(), new_text: "# Rope\nOne!\n".into() });
+        let quire_agent::SubmitOutcome::Proposed { id, .. } = store.submit(&agent, cs).unwrap() else {
+            panic!("a human note gets a proposal")
+        };
+        assert!(w.start_review(&id, Some(&NotePath::new("Rope.md"))));
+        w.review_all_in_file(true);
+        w.history.flush();
+        assert_eq!(&*w.active_doc().unwrap().text(), "# Rope\nOne!\n");
+        let newest = w.note_history().into_iter().next().unwrap();
+        let prov = w.snapshot_provenance(&newest).expect("accepted versions say who");
+        assert_eq!(prov.accepted_from.map(|a| a.id), Some("mcp:claude-code".to_string()));
+        assert!(w.features.agent.review.is_none(), "nothing left to review");
+    }
 }

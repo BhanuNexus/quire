@@ -31,6 +31,7 @@ quote = "#839496"
 conflict = "#B58900"
 warn = "#B58900"
 danger = "#DC322F"
+added = "#5F7A00"
 
 [dark]
 bg = "#002B36"
@@ -60,3 +61,4 @@ quote = "#839496"
 conflict = "#B58900"
 warn = "#B58900"
 danger = "#DC322F"
+added = "#859900"

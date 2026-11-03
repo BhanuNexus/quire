@@ -164,7 +164,8 @@ fn settings(ui: &mut Ui, ws: &mut Workspace, st: &mut GitUi, pal: &Palette) {
     }
 }
 
-fn history(ui: &mut Ui, ws: &mut Workspace, st: &mut GitUi, pal: &Palette) {
+/// The open note's git history (the Git tab and Version history → Git).
+pub(crate) fn history(ui: &mut Ui, ws: &mut Workspace, st: &mut GitUi, pal: &Palette) {
     let Some(path) = ws.active_doc().and_then(|d| d.path.clone()) else { return };
     section(ui, pal, &format!("Git history of {}", path.stem()));
     if st.log_for.as_ref() != Some(&path) {
@@ -221,7 +222,7 @@ fn diff_view(ui: &mut Ui, ws: &Workspace, hash: &str, pal: &Palette) {
                 egui::ScrollArea::both().id_salt(("quire-git-diff", hash)).max_height(320.0).show(ui, |ui| {
                     for line in diff.lines().skip_while(|l| !l.starts_with("@@")).take(2000) {
                         let color = if line.starts_with('+') {
-                            egui::Color32::from_rgb(0x2E, 0xA0, 0x43)
+                            pal.added
                         } else if line.starts_with('-') {
                             pal.danger
                         } else if line.starts_with("@@") {

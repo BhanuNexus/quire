@@ -858,3 +858,24 @@ fn normalize(mut v: Value) -> Value {
     walk(&mut v);
     v
 }
+
+/// The `tasks` tool gives what the planning parser (WS-E) reads from a task line.
+#[test]
+fn tasks_carry_the_planning_fields() {
+    let v = Vault::in_memory(&[(
+        "Home.md",
+        "# Home\n- [ ] Pay rent ⏫ 🔁 every month on the 1st 📅 2026-12-01 ⏳ 2026-11-28 #money\n- [x] 09:00 - 09:30 Call bank ✅ 2026-11-02\n",
+    )]);
+    let srv = Server::with_config(v, None, config(false));
+    let r = run_seq(&srv, &[modern(1, "tools/call", &json!({"name": "tasks", "arguments": {"status": "all"}}))]);
+    let tasks = sc(&r[0])["tasks"].as_array().unwrap().clone();
+    assert_eq!(tasks.len(), 2, "{}", r[0]);
+    let rent = &tasks[0];
+    assert_eq!(rent["text"], "Pay rent #money", "clean text, tags kept");
+    assert_eq!((rent["due"].as_str(), rent["scheduled"].as_str()), (Some("2026-12-01"), Some("2026-11-28")));
+    assert_eq!(rent["priority"], 1, "⏫ is high");
+    assert_eq!(rent["recurrence"], "every month on the 1st");
+    let call = &tasks[1];
+    assert_eq!((call["done"].as_bool(), call["completed"].as_str()), (Some(true), Some("2026-11-02")));
+    assert_eq!(call["time"], "09:00-09:30");
+}

@@ -55,6 +55,7 @@ pub const TOKENS: &[&str] = &[
     "conflict",
     "warn",
     "danger",
+    "added",
 ];
 
 /// The newest theme format this version reads fully.

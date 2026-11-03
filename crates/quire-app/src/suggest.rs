@@ -184,10 +184,17 @@ impl Workspace {
     }
 
     fn link_items(&self, query: &str) -> Vec<SuggestItem> {
+        // With display titles on, a note whose title differs from its file
+        // name is linked as `[[name|Title]]`, so the text reads as it shows.
+        let titled = self.settings.editing.display_titles;
         let item = |p: &NotePath, title: &str| SuggestItem {
             label: if title.is_empty() { p.stem().to_string() } else { title.to_string() },
             detail: if title.is_empty() || title == p.stem() { p.folder().to_string() } else { p.without_ext().to_string() },
-            insert: format!("[[{}]]", p.stem()),
+            insert: if titled && !title.trim().is_empty() && title.trim() != p.stem() && !title.contains([']', '|']) {
+                format!("[[{}|{}]]", p.stem(), title.trim())
+            } else {
+                format!("[[{}]]", p.stem())
+            },
         };
         let ix = self.index().read();
         let active = self.active_doc().and_then(|d| d.path.clone());

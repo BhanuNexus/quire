@@ -154,6 +154,11 @@ impl Workspace {
         }
     }
 
+    /// Who made a version (its `.prov.json`), when known.
+    pub fn snapshot_provenance(&self, s: &Snapshot) -> Option<quire_agent::Provenance> {
+        quire_agent::Provenance::from_json(&self.vault()?.read_provenance(s)?)
+    }
+
     pub fn snapshot_text(&self, s: &Snapshot) -> Option<String> {
         self.history.flush();
         self.vault()?.read_snapshot(s).ok()

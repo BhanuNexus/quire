@@ -87,6 +87,27 @@ impl Workspace {
         self.apply_fm_edit_active(edit)
     }
 
+    /// Set a field inside a nested map of the active note (`["author",
+    /// "name"]`): only that line changes, as an undoable edit.
+    pub fn set_property_path(&mut self, path: &[&str], value: &Value) -> bool {
+        if path.iter().any(|k| k.trim().is_empty() || k.contains(':')) {
+            self.notify(NoticeLevel::Warn, "Property names can't be empty or contain “:”");
+            return false;
+        }
+        let Some(doc) = self.active_doc() else { return false };
+        let edit = frontmatter::set_field_path(&doc.text(), path, value);
+        self.apply_fm_edit_active(edit)
+    }
+
+    /// Remove a field inside a nested map of the active note.
+    pub fn remove_property_path(&mut self, path: &[&str]) -> bool {
+        let Some(doc) = self.active_doc() else { return false };
+        match frontmatter::remove_field_path(&doc.text(), path) {
+            Some(edit) => self.apply_fm_edit_active(edit),
+            None => false,
+        }
+    }
+
     pub fn remove_property(&mut self, key: &str) -> bool {
         let Some(doc) = self.active_doc() else { return false };
         match frontmatter::remove_field(&doc.text(), key) {

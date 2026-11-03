@@ -31,7 +31,8 @@ mono = "Iosevka.ttf"      # code
   dialogs), `text`, `strong` (bold text), `muted`, `faint`, `accent`, `link`,
   `tag`, `tag_bg`, `border`, `selection`, `hover`, `active_bg` (the chosen
   row), `mark_bg` (==highlights== and find matches), `code_bg`, `h1` to `h6`,
-  `quote`, `conflict`, `warn`, `danger`. A token a theme leaves out keeps
+  `quote`, `conflict`, `warn`, `danger`, `added` (suggested text in review,
+  added lines in diffs). A token a theme leaves out keeps
   the built-in colour; `link` follows `accent` when only `accent` is set.
   Settings → Appearance → New theme from these colours writes every token.
 * **Forgiving.** Unknown tables and keys are ignored (a theme written for a

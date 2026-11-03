@@ -60,7 +60,8 @@ pub struct Task {
     pub created: Option<String>,
     /// 🔁 rule as written (`every month on the 1st`).
     pub recurrence: Option<String>,
-    /// 0 = highest (⏫) … 4 = lowest (⏬); `None` = normal.
+    /// As in Obsidian Tasks: 0 = highest (🔺), 1 = high (⏫), 2 = medium
+    /// (🔼), 3 = low (🔽), 4 = lowest (⏬); `None` = normal.
     pub priority: Option<u8>,
     /// ⏰ date and time as written.
     pub reminder: Option<String>,

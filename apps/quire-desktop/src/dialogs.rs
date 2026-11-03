@@ -801,13 +801,29 @@ fn ai_settings(ui: &mut Ui, st: &mut SettingsState, ws: &mut Workspace, pal: &Pa
 
 // ------------------------------------------------------------------ history
 
+/// Which versions the history dialog lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum HistoryView {
+    /// Quire's own history on this device.
+    #[default]
+    Local,
+    /// Every device's, from the sync log.
+    AllDevices,
+    /// The note's git commits.
+    Git,
+}
+
 pub(crate) struct HistoryState {
     snapshots: Vec<Snapshot>,
     selected: usize,
     /// (index, text) of the loaded snapshot.
     loaded: Option<(usize, String)>,
-    /// Showing versions from every device (the sync log) instead of this one's.
-    all_devices: bool,
+    /// Who made each version (read as rows are drawn): `None` inside means
+    /// the person typing, or a version from before 0.9.
+    provenance: std::collections::HashMap<usize, Option<quire_app::agent::Provenance>>,
+    view: HistoryView,
+    /// The Git tab's state (the Git panel's drawing code).
+    git: crate::git_ui::GitUi,
     sync_rx: Option<Receiver<Result<Vec<quire_app::vault_sync::SyncVersion>, String>>>,
     /// Newest first.
     sync: Option<Result<Vec<quire_app::vault_sync::SyncVersion>, String>>,
@@ -826,7 +842,7 @@ impl HistoryState {
     /// The All devices view, already showing `versions` (newest first).
     #[cfg(test)]
     pub(crate) fn all_devices(ws: &Workspace, versions: Result<Vec<quire_app::vault_sync::SyncVersion>, String>) -> Self {
-        Self { all_devices: true, sync: Some(versions), ..Self::new(ws) }
+        Self { view: HistoryView::AllDevices, sync: Some(versions), ..Self::new(ws) }
     }
 
     pub(crate) fn new(ws: &Workspace) -> Self {
@@ -836,11 +852,23 @@ impl HistoryState {
         let current = ws.active_doc().map(|d| d.text().to_string());
         let same = snapshots.first().and_then(|s| ws.snapshot_text(s)) == current;
         let selected = usize::from(same && snapshots.len() > 1);
-        Self { snapshots, selected, loaded: None, all_devices: false, sync_rx: None, sync: None, sync_selected: 0, diffed: None }
+        Self {
+            snapshots,
+            selected,
+            loaded: None,
+            provenance: std::collections::HashMap::new(),
+            view: HistoryView::Local,
+            git: crate::git_ui::GitUi::default(),
+            sync_rx: None,
+            sync: None,
+            sync_selected: 0,
+            diffed: None,
+        }
     }
 }
 
-pub(crate) fn history(ctx: &egui::Context, st: &mut HistoryState, ws: &mut Workspace, pal: &Palette) -> bool {
+/// Returns whether the dialog should close, and a command to run after.
+pub(crate) fn history(ctx: &egui::Context, st: &mut HistoryState, ws: &mut Workspace, pal: &Palette) -> (bool, Option<Command>) {
     let mut close = false;
     let mut restore = None;
     let mut restore_sync: Option<(String, String)> = None;
@@ -859,7 +887,7 @@ pub(crate) fn history(ctx: &egui::Context, st: &mut HistoryState, ws: &mut Works
             Err(_) => ctx.request_repaint_after(std::time::Duration::from_millis(100)),
         }
     }
-    if st.all_devices
+    if st.view == HistoryView::AllDevices
         && st.sync.is_none()
         && st.sync_rx.is_none()
         && let Some(p) = ws.active_doc().and_then(|d| d.path.clone())
@@ -875,14 +903,18 @@ pub(crate) fn history(ctx: &egui::Context, st: &mut HistoryState, ws: &mut Works
         chrono::DateTime::from_timestamp_millis(ms).map(|d| d.with_timezone(&chrono::Local).format(fmt).to_string()).unwrap_or_default()
     };
     // The text being compared: a local snapshot, or a version from the sync log.
-    let shown: Option<String> = if st.all_devices {
+    let shown: Option<String> = if st.view == HistoryView::AllDevices {
         match &st.sync {
             Some(Ok(v)) => v.get(st.sync_selected).filter(|x| !x.deleted).map(|x| x.text.clone()),
             _ => None,
         }
-    } else {
+    } else if st.view == HistoryView::Local {
         st.loaded.as_ref().map(|(_, t)| t.clone())
+    } else {
+        None
     };
+    let git_repo = ws.features.git.repo;
+    let mut run: Option<Command> = None;
     modal(ctx, "quire-history", pal).show(ctx, |ui| {
         let w = modal_width(ctx, 820.0);
         // The lists scroll inside a body of fixed height that leaves room for
@@ -894,20 +926,37 @@ pub(crate) fn history(ctx: &egui::Context, st: &mut HistoryState, ws: &mut Works
         ui.set_max_width(w);
         ui.horizontal(|ui| {
             ui.heading(format!("Version history · {title}"));
-            if syncing {
+            if syncing || git_repo {
                 ui.add_space(12.0);
-                ui.selectable_value(&mut st.all_devices, false, "This device");
-                ui.selectable_value(&mut st.all_devices, true, "All devices");
+                ui.selectable_value(&mut st.view, HistoryView::Local, "This device");
+                if syncing {
+                    ui.selectable_value(&mut st.view, HistoryView::AllDevices, "All devices");
+                }
+                if git_repo {
+                    ui.selectable_value(&mut st.view, HistoryView::Git, "Git");
+                }
             }
         });
-        let note = if st.all_devices {
-            "Every version Quire Sync holds, from every device, including ones that lost a race. Restoring is undoable."
-        } else {
-            "Saved automatically in the vault's .quire folder. Restoring is undoable."
+        let note = match st.view {
+            HistoryView::AllDevices => {
+                "Every version Quire Sync holds, from every device, including ones that lost a race. Restoring is undoable."
+            }
+            HistoryView::Local => "Saved automatically in the vault's .quire folder. Restoring is undoable.",
+            HistoryView::Git => "The commits that changed this note.",
         };
         ui.label(RichText::new(note).size(12.0).color(pal.muted));
         ui.separator();
-        if !st.all_devices && st.snapshots.is_empty() {
+        if st.view == HistoryView::Git {
+            egui::ScrollArea::vertical().id_salt("hist-git").max_height(body_h).auto_shrink([false, false]).show(ui, |ui| {
+                crate::git_ui::history(ui, ws, &mut st.git, pal);
+            });
+            ui.separator();
+            if ui.button("Close").clicked() {
+                close = true;
+            }
+            return;
+        }
+        if st.view == HistoryView::Local && st.snapshots.is_empty() {
             ui.label(RichText::new("No earlier versions yet. Versions are kept as you edit and save.").color(pal.muted));
         }
         ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), body_h), egui::Layout::left_to_right(egui::Align::Min), |ui| {
@@ -915,7 +964,7 @@ pub(crate) fn history(ctx: &egui::Context, st: &mut HistoryState, ws: &mut Works
             ui.vertical(|ui| {
                 ui.set_width(200.0);
                 egui::ScrollArea::vertical().id_salt("hist-list").max_height(body_h).show(ui, |ui| {
-                    if st.all_devices {
+                    if st.view == HistoryView::AllDevices {
                         match &st.sync {
                             None => {
                                 ui.horizontal(|ui| {
@@ -959,7 +1008,30 @@ pub(crate) fn history(ctx: &egui::Context, st: &mut HistoryState, ws: &mut Works
                     } else {
                         for (i, s) in st.snapshots.iter().enumerate() {
                             let label = when(s.at_ms, "%b %-d · %H:%M:%S");
-                            if ui.selectable_label(i == st.selected, label).clicked() {
+                            let prov = st.provenance.entry(i).or_insert_with(|| ws.snapshot_provenance(s));
+                            let who = prov.as_ref().map(provenance_words);
+                            let r =
+                                crate::theme::row(ui, i == st.selected, if who.is_some() { 40.0 } else { 26.0 }, pal, |painter, rect| {
+                                    let left = rect.left() + 8.0;
+                                    let y = if who.is_some() { rect.top() + 12.0 } else { rect.center().y };
+                                    painter.text(
+                                        egui::pos2(left, y),
+                                        egui::Align2::LEFT_CENTER,
+                                        &label,
+                                        egui::FontId::proportional(13.0),
+                                        pal.text,
+                                    );
+                                    if let Some(w) = &who {
+                                        painter.text(
+                                            egui::pos2(left, rect.top() + 28.0),
+                                            egui::Align2::LEFT_CENTER,
+                                            w,
+                                            egui::FontId::proportional(11.5),
+                                            pal.muted,
+                                        );
+                                    }
+                                });
+                            if r.clicked() {
                                 st.selected = i;
                             }
                         }
@@ -968,7 +1040,22 @@ pub(crate) fn history(ctx: &egui::Context, st: &mut HistoryState, ws: &mut Works
             });
             ui.separator();
             ui.vertical(|ui| {
-                if st.all_devices
+                if st.view == HistoryView::Local
+                    && let Some(Some(p)) = st.provenance.get(&st.selected)
+                {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(provenance_words(p)).size(12.5).color(pal.text));
+                        if p.actor.kind != quire_app::agent::ActorKind::Human || p.accepted_from.is_some() {
+                            if p.trust == quire_app::agent::Trust::Untrusted {
+                                ui.label(RichText::new("· based on untrusted content").size(12.0).color(pal.danger));
+                            }
+                            if ui.small_button("Agent activity").on_hover_text("What this agent did, and undo it").clicked() {
+                                run = Some(Command::ShowAgentActivity);
+                            }
+                        }
+                    });
+                }
+                if st.view == HistoryView::AllDevices
                     && let Some(Ok(v)) = &st.sync
                     && v.get(st.sync_selected).is_some_and(|x| x.deleted)
                 {
@@ -1026,7 +1113,7 @@ pub(crate) fn history(ctx: &egui::Context, st: &mut HistoryState, ws: &mut Works
         ui.separator();
         ui.horizontal(|ui| {
             if ui.add_enabled(shown.is_some(), egui::Button::new("Restore this version")).clicked() {
-                if st.all_devices {
+                if st.view == HistoryView::AllDevices {
                     if let (Some(text), Some(Ok(v))) = (&shown, &st.sync)
                         && let Some(x) = v.get(st.sync_selected)
                     {
@@ -1056,7 +1143,22 @@ pub(crate) fn history(ctx: &egui::Context, st: &mut HistoryState, ws: &mut Works
     {
         close = true;
     }
-    close
+    (close || run.is_some(), run)
+}
+
+/// Who made a version, in a few words.
+fn provenance_words(p: &quire_app::agent::Provenance) -> String {
+    use quire_app::agent::{ActorKind, Op};
+    if let Some(from) = &p.accepted_from {
+        return format!("You accepted {}'s suggestion", from.label);
+    }
+    match (p.actor.kind, p.op) {
+        (_, Op::Revert) => "An agent's change, undone".into(),
+        (ActorKind::Agent, _) => format!("Written by {}", p.actor.label),
+        (ActorKind::Import, _) => format!("Imported ({})", p.actor.label),
+        (ActorKind::Job, _) => format!("Quire ({})", p.actor.label),
+        (ActorKind::Human, _) => "You".into(),
+    }
 }
 
 // ------------------------------------------------------------------ import

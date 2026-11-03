@@ -255,7 +255,11 @@ pub fn tools_before_canvas() -> Vec<Box<dyn Tool>> {
                 "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 200}}}),
             json!({"type": "object", "properties": {"tasks": {"type": "array", "items": {"type": "object", "properties": {
                 "path": {"type": "string"}, "line": {"type": "integer"}, "text": {"type": "string"}, "due": {"type": ["string", "null"]},
-                "scheduled": {"type": ["string", "null"]}, "priority": {"type": ["integer", "null"]}, "recurrence": {"type": ["string", "null"]},
+                "scheduled": {"type": ["string", "null"]}, "start": {"type": ["string", "null"]},
+                "completed": {"type": ["string", "null"]}, "reminder": {"type": ["string", "null"]},
+                "time": {"type": ["string", "null"], "description": "a day-planner block, 14:00-15:30"},
+                "priority": {"type": ["integer", "null"], "description": "0 highest, 1 high, 2 medium, 3 low, 4 lowest; null is normal"},
+                "recurrence": {"type": ["string", "null"]},
                 "done": {"type": "boolean"}}}}}, "required": ["tasks"]}),
             r,
             Access::Read,
@@ -1092,8 +1096,9 @@ fn tasks(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
                 r.path,
                 t.due.as_deref().map(|d| format!(", due {d}")).unwrap_or_default()
             );
-            rows.push(json!({"path": r.path, "line": line, "text": t.text, "due": t.due, "scheduled": t.scheduled, "priority": t.priority,
-                "recurrence": t.recurrence, "done": t.done}));
+            rows.push(json!({"path": r.path, "line": line, "text": t.text, "due": t.due, "scheduled": t.scheduled, "start": t.start,
+                "completed": t.done_on, "reminder": t.reminder, "time": t.time_block.as_ref().map(|(a, b)| format!("{a}-{b}")),
+                "priority": t.priority, "recurrence": t.recurrence, "done": t.done}));
         }
     }
     if rows.is_empty() {

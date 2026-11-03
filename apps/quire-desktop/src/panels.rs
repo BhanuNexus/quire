@@ -337,6 +337,29 @@ fn note_row(ui: &mut egui::Ui, ws: &Workspace, p: &NotePath, active: Option<&Not
     r.on_hover_text(p.as_str())
 }
 
+/// The pinned agent instructions: the file, and a badge that says whether
+/// this device approved them.
+fn instructions_row(ui: &mut egui::Ui, path: &NotePath, approved: bool, active: bool, pal: &Palette) -> egui::Response {
+    let (badge, color) = if approved { ("Agent instructions", pal.muted) } else { ("Review changes", pal.warn) };
+    let name = path.file_name().to_string();
+    let r = crate::theme::row(ui, active, 26.0, pal, |painter, rect| {
+        painter.text(
+            egui::pos2(rect.left() + 10.0, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            &name,
+            FontId::proportional(13.5),
+            if active { pal.strong } else { pal.text },
+        );
+        painter.text(egui::pos2(rect.right() - 8.0, rect.center().y), egui::Align2::RIGHT_CENTER, badge, FontId::proportional(11.0), color);
+    });
+    let hint = if approved {
+        "What agents read first. Edit it here; saving approves it on this device."
+    } else {
+        "Changed outside Quire: agents get it only after you approve it (Inbox)."
+    };
+    r.on_hover_text(hint)
+}
+
 /// Clicks on a note row: open (in a tab of its own with Ctrl or the middle
 /// button), keep on double-click, the context menu.
 fn note_row_events(ui: &egui::Ui, ws: &Workspace, r: &egui::Response, p: &NotePath, ev: &mut FileEvents) {
@@ -659,8 +682,15 @@ pub(crate) fn sidebar(
             let mut paths = ws.index().read().paths();
             // Files with an editor of their own (`.base`, `.canvas`, `.pdf`) next to the notes.
             paths.extend(ws.other_files().into_iter().filter(crate::registry::has_surface));
-            let tree = folder_tree(&paths);
             let mut ev = FileEvents::default();
+            // The agent instructions (`AGENTS.md`/`CLAUDE.md`) pinned on top (design §A.6).
+            if let Some((pinned, approved)) = ws.features.agent.inbox.instructions.as_ref().map(|i| (i.path.clone(), i.approved)) {
+                paths.retain(|p| *p != pinned);
+                let r = instructions_row(ui, &pinned, approved, active_path.as_ref() == Some(&pinned), pal);
+                note_row_events(ui, ws, &r, &pinned, &mut ev);
+                ui.add_space(4.0);
+            }
+            let tree = folder_tree(&paths);
             if ws.settings.editing.two_pane {
                 two_pane(ui, ws, st, &tree, active_path.as_ref(), pal, &mut ev);
             } else {

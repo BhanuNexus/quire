@@ -270,7 +270,14 @@ impl Layout {
 impl crate::workspace::Workspace {
     /// The graph to draw: everything, or the notes around the open one.
     pub fn link_graph(&self, scope: &Scope) -> Graph {
-        Graph::build(&self.index().read(), scope)
+        let mut g = Graph::build(&self.index().read(), scope);
+        // Titles only with Settings → Editing → "Show note titles"; file names otherwise.
+        if !self.settings.editing.display_titles {
+            for n in &mut g.nodes {
+                n.title = n.path.stem().to_string();
+            }
+        }
+        g
     }
 }
 

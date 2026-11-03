@@ -342,7 +342,51 @@ pub(crate) fn properties(ui: &mut Ui, ws: &mut Workspace, pal: &Palette, doc: Do
     let base = Id::unique(("quire-props", doc.0));
     let mut set: Option<(String, quire_app::markdown::Value)> = None;
     let mut remove: Option<String> = None;
+    let mut set_path: Option<(Vec<String>, quire_app::markdown::Value)> = None;
+    let mut remove_path: Option<Vec<String>> = None;
     for p in &props {
+        if p.kind == Kind::Map {
+            // Nested fields: the map's name, then each field under it, edited in place.
+            ui.horizontal(|ui| {
+                ui.add_sized([72.0, 20.0], egui::Label::new(RichText::new(&p.key).size(12.5).color(pal.muted)).truncate())
+                    .on_hover_text(format!("{} · nested fields", p.key));
+                ui.add_space((ui.available_width() - 28.0).max(0.0));
+                if ui.small_button("×").on_hover_text("Remove these fields").clicked() {
+                    remove = Some(p.key.clone());
+                }
+            });
+            let mut leaves = Vec::new();
+            map_leaves(std::slice::from_ref(&p.key), &p.value, &mut leaves);
+            for (path, v) in leaves {
+                let depth = path.len() - 1;
+                ui.horizontal(|ui| {
+                    ui.add_space(10.0 * depth as f32);
+                    let name = path.last().cloned().unwrap_or_default();
+                    ui.add_sized(
+                        [(72.0 - 10.0 * depth as f32).max(40.0), 20.0],
+                        egui::Label::new(RichText::new(&name).size(12.0).color(pal.muted)).truncate(),
+                    )
+                    .on_hover_text(path.join("."));
+                    let current = v.display();
+                    let w = (ui.available_width() - 48.0).max(60.0);
+                    let id = base.with(("draft", path.join(".")));
+                    let mut draft = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_else(|| current.clone());
+                    let r = ui.add(egui::TextEdit::singleline(&mut draft).desired_width(w));
+                    if r.has_focus() {
+                        ui.data_mut(|d| d.insert_temp(id, draft.clone()));
+                    } else {
+                        ui.data_mut(|d| d.remove::<String>(id));
+                    }
+                    if r.lost_focus() && draft.trim() != current {
+                        set_path = Some((path.clone(), parse_input(&draft, v.kind() == Kind::List)));
+                    }
+                    if ui.small_button("×").on_hover_text("Remove this field").clicked() {
+                        remove_path = Some(path.clone());
+                    }
+                });
+            }
+            continue;
+        }
         ui.horizontal(|ui| {
             ui.add_sized([72.0, 20.0], egui::Label::new(RichText::new(&p.key).size(12.5).color(pal.muted)).truncate())
                 .on_hover_text(format!("{} · {}", p.key, kind_name(p.kind)));
@@ -403,6 +447,28 @@ pub(crate) fn properties(ui: &mut Ui, ws: &mut Workspace, pal: &Palette, doc: Do
     }
     if let Some(k) = remove {
         ws.remove_property(&k);
+    }
+    if let Some((path, v)) = set_path {
+        let parts: Vec<&str> = path.iter().map(String::as_str).collect();
+        ws.set_property_path(&parts, &v);
+    }
+    if let Some(path) = remove_path {
+        let parts: Vec<&str> = path.iter().map(String::as_str).collect();
+        ws.remove_property_path(&parts);
+    }
+}
+
+/// The fields under a nested map, with their key paths (an empty map has none).
+fn map_leaves(prefix: &[String], v: &quire_app::markdown::Value, out: &mut Vec<(Vec<String>, quire_app::markdown::Value)>) {
+    match v.as_map() {
+        Some(m) => {
+            for (k, child) in m {
+                let mut path = prefix.to_vec();
+                path.push(k.clone());
+                map_leaves(&path, child, out);
+            }
+        }
+        None => out.push((prefix.to_vec(), v.clone())),
     }
 }
 

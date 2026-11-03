@@ -28,14 +28,16 @@ pub(crate) fn format_for(style: &Style, p: &Palette, size: f32, fonts: FontSuppo
     if style.heading > 0 {
         let s = size * HEADING_SCALE[(style.heading as usize - 1).min(5)];
         f.font_id = FontId::new(s, if fonts.bold { FontFamily::Name(BOLD.into()) } else { FontFamily::Proportional });
-        f.color = p.strong;
+        f.color = p.h[(style.heading as usize - 1).min(5)];
         f.line_height = Some(s * 1.45);
     }
     if style.strong {
         if fonts.bold {
             f.font_id.family = FontFamily::Name(BOLD.into());
         }
-        f.color = p.strong;
+        if style.heading == 0 {
+            f.color = p.strong;
+        }
     }
     if style.emphasis {
         // A true italic face, not a slanted regular.
@@ -47,7 +49,7 @@ pub(crate) fn format_for(style: &Style, p: &Palette, size: f32, fonts: FontSuppo
     }
     if style.quote {
         // The editor draws a bar beside quotes; the text just recedes a little.
-        f.color = p.muted;
+        f.color = p.quote;
     }
     if style.code_block || style.front_matter {
         // Blocks get one background behind the whole block (drawn by the editor).
@@ -66,10 +68,10 @@ pub(crate) fn format_for(style: &Style, p: &Palette, size: f32, fonts: FontSuppo
         f.color = p.tag;
     }
     if style.link || style.wikilink {
-        f.color = p.accent;
+        f.color = p.link;
     }
     if style.wikilink {
-        f.underline = Stroke::new(1.0, p.accent.gamma_multiply(0.35));
+        f.underline = Stroke::new(1.0, p.link.gamma_multiply(0.35));
     }
     if style.tag {
         f.color = p.tag;
@@ -93,7 +95,7 @@ pub(crate) fn format_for(style: &Style, p: &Palette, size: f32, fonts: FontSuppo
     }
     if style.conflict {
         f.font_id = FontId::new(size * 0.9, FontFamily::Monospace);
-        f.color = p.warn;
+        f.color = p.conflict;
         f.background = p.mark_bg;
     }
     f
@@ -130,7 +132,8 @@ impl HighlightCache {
         let mut h = std::hash::DefaultHasher::new();
         text.hash(&mut h);
         plain_mode.hash(&mut h);
-        p.dark.hash(&mut h);
+        // The whole palette: another theme recolours without clearing caches.
+        p.hash(&mut h);
         size.to_bits().hash(&mut h);
         let key = h.finish();
         if self.key != key || self.job.is_none() {

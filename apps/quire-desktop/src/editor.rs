@@ -28,8 +28,6 @@ pub(crate) struct EditorState {
     /// Scroll the caret into view on the next frame (after jumps).
     pub scroll_to_caret: bool,
     pub request_focus: bool,
-    /// The theme the highlighting was done with.
-    theme_generation: u64,
 }
 
 pub(crate) fn editor_id(doc: DocId) -> egui::Id {
@@ -101,11 +99,6 @@ impl EditorState {
     pub(crate) fn show(&mut self, ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette, fonts: FontSupport) {
         let ctx = ui.ctx().clone();
         crate::theme::sync(&ctx, ws);
-        if self.theme_generation != ws.features.themes.generation {
-            // New colours: highlight again.
-            self.theme_generation = ws.features.themes.generation;
-            self.highlight.clear();
-        }
         if let Some(id) = ws.active_doc().map(|d| d.id)
             && !self.mirrors.contains_key(&id)
         {

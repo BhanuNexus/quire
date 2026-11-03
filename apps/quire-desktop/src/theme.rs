@@ -14,7 +14,7 @@ use egui::{Color32, FontData, FontDefinitions, FontFamily, Stroke, Visuals};
 use quire_app::Workspace;
 use quire_app::themes::{Rgba, Theme};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct Palette {
     pub dark: bool,
     pub bg: Color32,
@@ -46,6 +46,8 @@ pub(crate) struct Palette {
     pub conflict: Color32,
     /// Headings, level 1 to 6.
     pub h: [Color32; 6],
+    /// Text an agent suggests adding (review), lines added in a diff.
+    pub added: Color32,
 }
 
 const fn hex(rgb: u32) -> Color32 {
@@ -77,6 +79,7 @@ pub(crate) const BASE_LIGHT: Palette = Palette {
     quote: hex(0x0076_7B85),
     conflict: hex(0x00B0_6F12),
     h: [hex(0x0011_1318); 6],
+    added: hex(0x001F_803A),
 };
 
 /// The built-in dark colours.
@@ -104,6 +107,7 @@ pub(crate) const BASE_DARK: Palette = Palette {
     quote: hex(0x0082_8994),
     conflict: hex(0x00E0_B046),
     h: [hex(0x00F3_F4F6); 6],
+    added: hex(0x005F_C87A),
 };
 
 /// A palette that can change while the app runs. It reads like a
@@ -173,6 +177,7 @@ pub(crate) fn token(p: &Palette, name: &str) -> Option<Color32> {
         "conflict" => p.conflict,
         "warn" => p.warn,
         "danger" => p.danger,
+        "added" => p.added,
         h if h.len() == 2 && h.starts_with('h') => p.h[h[1..].parse::<usize>().ok().filter(|n| (1..=6).contains(n))? - 1],
         _ => return None,
     })
@@ -201,6 +206,7 @@ fn set_token(p: &mut Palette, name: &str, c: Color32) {
         "conflict" => &mut p.conflict,
         "warn" => &mut p.warn,
         "danger" => &mut p.danger,
+        "added" => &mut p.added,
         h if h.len() == 2 && h.starts_with('h') => match h[1..].parse::<usize>() {
             Ok(n @ 1..=6) => &mut p.h[n - 1],
             _ => return,
