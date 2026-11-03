@@ -43,11 +43,30 @@ fn models_dir() -> Result<PathBuf, String> {
     quire_app::ai::models_dir().ok_or_else(|| "no folder for models on this system".to_string())
 }
 
+/// While on-device AI is off (`[ai_local] experimental`, design §D.1).
+fn later() -> String {
+    format!(
+        "on-device AI is coming in an update, so this build doesn't download or run models. \
+         Use a provider such as Ollama or LM Studio to keep everything on this computer today. \
+         To try it anyway, tick Settings → AI → On this computer → Advanced → \"Experimental: show on-device AI\" \
+         (or set {}=1).",
+        quire_app::settings::EXPERIMENTAL_ENV
+    )
+}
+
 fn run_ai(args: &[String]) -> Result<(), String> {
     let catalog = Catalog::builtin();
     let dir = models_dir()?;
-    match args.get(1).map(String::as_str) {
+    let on = Settings::load().ai_local.on_device();
+    let sub = args.get(1).map(String::as_str);
+    if !on && matches!(sub, Some("download" | "install" | "engine")) {
+        return Err(later());
+    }
+    match sub {
         None | Some("models") => {
+            if !on {
+                println!("Note: {}\n", later());
+            }
             let m = quire_ai::download::Manifest::load(&dir);
             for e in &catalog.models {
                 let state = if quire_app::ai::installed(e) {

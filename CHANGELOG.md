@@ -4,14 +4,15 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
-Quire 0.9 lets AI agents work in your vault without taking it over: their changes arrive as suggestions you review in the note, everything they do can be undone, and answers cite the exact sentences they come from. AI stays optional, and can now run entirely on your computer. Also new: planning with dates and reminders, Vim keys, canvases, a PDF viewer, citations, and Quire Lite.
+Quire 0.9 lets AI agents work in your vault without taking it over: their changes arrive as suggestions you review in the note, everything they do can be undone, and answers cite the exact sentences they come from. AI stays optional; running it entirely on your computer is coming in an update, and you can try it now behind an experimental switch. Also new: planning with dates and reminders, Vim keys, canvases, a PDF viewer, citations, and Quire Lite.
 
 ### Added
 
 #### Choose your AI (or none)
-- **A short choice the first time you start Quire 0.9:** no AI, a provider (Claude, OpenAI, or a server you run such as Ollama), or small models on this computer. Nothing is preselected and nothing downloads unless you ask. If you are upgrading, a card above the note offers the same choice once; "Set up AI…" opens it again.
-- **On-device AI**, in both editions: meaning search, writing help, the agent, and reading text in images and scanned PDFs, from models that download once and then work offline. They run in a separate engine process, so a model that fails or runs out of memory never takes the editor down. Downloads show their size, progress and speed, can be paused, resumed and cancelled, and are checked against a hash built into Quire. "Install from file…" installs a model downloaded on another computer. `quire-cli ai models|download|install|delete|engine` does the same from the command line.
-- **Settings → AI**, rebuilt: your provider, what runs on this computer (download, pause, delete, the engine's memory use), which model the agent panel uses, and the answer and check features below (Ask style, citation checks, staleness, contradictions).
+- **A short choice the first time you start Quire 0.9:** no AI, or a provider (Claude, OpenAI, or a server you run such as Ollama or LM Studio). Nothing is preselected and nothing downloads unless you ask. If you are upgrading, a card above the note offers the same choice once; "Set up AI…" opens it again.
+- **On-device AI is coming in an update.** Quire 0.9.0 ships it turned off, because its models aren't pinned and measured yet: nothing on-device is shown, started or downloaded, and features that would use it work as before (built-in meaning search, a notice in chat, no OCR). To keep everything on your computer today, use a provider such as Ollama or LM Studio. To try it, turn on Settings → AI → On this computer → Advanced → "Experimental: show on-device AI" (`[ai_local] experimental = true`, or `QUIRE_EXPERIMENTAL_ON_DEVICE=1`); a model whose download isn't pinned yet says "Not available in this build". A choice of "On this computer" made before is kept.
+- **On-device AI (experimental)**, in both editions: meaning search, writing help, the agent, and reading text in images and scanned PDFs, from models that download once and then work offline. They run in a separate engine process, so a model that fails or runs out of memory never takes the editor down. Downloads show their size, progress and speed, can be paused, resumed and cancelled, and are checked against a hash built into Quire. "Install from file…" installs a model downloaded on another computer. `quire-cli ai models|download|install|delete|engine` does the same from the command line, and says on-device AI is coming in an update while the switch is off.
+- **Settings → AI**, rebuilt: your provider, what runs on this computer when the experimental switch is on (download, pause, delete, the engine's memory use), which model the agent panel uses, and the answer and check features below (Ask style, citation checks, staleness, contradictions).
 
 #### The agent panel
 - **Agent panel** (Ctrl+Shift+J): ask about your notes or ask for changes. It searches and reads your notes with the same tools AI apps get over MCP and shows each step. Its edits to your notes arrive as suggestions; it writes directly only in `wiki/`. Stop works at any moment, and Ask mode only reads.
@@ -53,7 +54,7 @@ Quire 0.9 lets AI agents work in your vault without taking it over: their change
 
 #### Search
 - **Accents are optional:** "cafe" finds "Café", "Lodz" finds "Łódź", "strasse" finds "Straße", in search, quick open and links. The find bar has a "Match accents" toggle; Find and replace in all notes keeps matching accents unless you untick it.
-- **PDF pages are searchable** in the app, `quire-cli search` and MCP `search`, listed as "paper.pdf p. 3" and opening at that page. Scanned pages and images are read with on-device OCR when it's on.
+- **PDF pages are searchable** in the app, `quire-cli search` and MCP `search`, listed as "paper.pdf p. 3" and opening at that page. Scanned pages and images are read with on-device OCR when it's on (experimental).
 
 #### Planning
 - **Tasks with dates, repeats and reminders:** Quire reads the Obsidian Tasks emoji (📅 ⏳ 🛫 ✅ ➕ 🔁 and priorities) and Dataview fields (`[due:: …]`), and adds ⏰ reminders. Repeats like `every month on the 1st`, `every weekday` or `every 3 days when done` (or `RRULE:`) add the next task when you tick one off.

@@ -28,7 +28,7 @@ mod trust;
 use std::path::{Path, PathBuf};
 
 pub use agent_panel::AgentPanelSettings;
-pub use ai_local::AiLocalSettings;
+pub use ai_local::{AiLocalSettings, EXPERIMENTAL_ENV};
 pub use appearance::AppearanceSettings;
 pub use editing::EditingSettings;
 pub use jobs::JobSettings;

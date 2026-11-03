@@ -102,8 +102,8 @@ cargo build --release -p quire-desktop --no-default-features   # ~28 MB instead 
 | Area | Features |
 |---|---|
 | AI agents, under review | Agents' edits to your notes arrive as suggestions shown in the note (struck-through lines, their version underneath) to accept, reject or edit change by change. The Inbox (Alt+I) collects them; Agent activity shows every run with "Revert run". Per-folder permissions, `AGENTS.md` approval, vault checks |
-| Agent panel | Ctrl+Shift+J: ask about your notes or ask for changes, with `@note` and `#tag` context. Runs on your provider or on this computer; connect Claude Code or Codex (ACP) instead. "Ingest into wiki" turns a source into cited `wiki/` pages |
-| On-device AI | Optional models that download once and run offline in a separate process: meaning search, writing help, the agent, OCR of images and scanned PDFs. Nothing downloads unless you ask |
+| Agent panel | Ctrl+Shift+J: ask about your notes or ask for changes, with `@note` and `#tag` context. Runs on your provider (on-device models are coming in an update); connect Claude Code or Codex (ACP) instead. "Ingest into wiki" turns a source into cited `wiki/` pages |
+| On-device AI (coming in an update) | Off in 0.9.0, behind an experimental switch (Settings → AI → Advanced): models that download once and run offline in a separate process, for meaning search, writing help, the agent, and OCR of images and scanned PDFs. To keep everything on your computer today, use a provider such as Ollama or LM Studio |
 | Answers you can check | Ask says "Not found" when your notes don't answer; cites exact sentences; Save as note keeps quotes as footnotes and flags them when the cited text changes. Staleness digest, contradictions (Preview), thinking timeline (Preview) |
 | Planning | Tasks with dates, repeats and reminders (Obsidian Tasks emoji and Dataview fields), Agenda (Alt+A), Calendar, weekly/monthly/yearly notes, flashcards (FSRS, Ctrl+Alt+R), templates with questions |
 | Canvas & drawing | `.canvas` files (JSON Canvas) with cards, connections and groups (Ctrl+Alt+C); pen, highlighter and shapes on a canvas or as a sketch in a note, saved as SVG |
@@ -125,7 +125,7 @@ cargo build --release -p quire-desktop --no-default-features   # ~28 MB instead 
 | Linking | Type `[[` for a list of notes to link (or a new one). `[[wikilinks]]`, `[[note#heading|alias]]`, embeds, click/Alt+Enter to follow, unresolved links create notes, F2 rename rewrites every link |
 | Knowledge | Backlinks with context, unlinked mentions, suggested links, related notes (TF-IDF), suggested tags, key sentences, nested `#tags`, tasks across the vault |
 | Finding | Ctrl+P fuzzy quick open, Ctrl+K command palette, search that combines exact words (BM25, `"phrases"`, `#tag`, `-exclude`) with meaning (≈ results); accents optional ("cafe" finds "Café") |
-| Ask your notes | Ctrl+Shift+A: answers from your own notes with `[[Note#Heading]]` citations to the exact sentences. Offline it quotes the best sentences; with a provider or an on-device model it writes an answer from the same sources |
+| Ask your notes | Ctrl+Shift+A: answers from your own notes with `[[Note#Heading]]` citations to the exact sentences. Offline it quotes the best sentences; with a provider it writes an answer from the same sources |
 | Notes & folders | New notes take their name from the first line (until you rename them yourself). Right-click a note in the sidebar or a tab to rename, move to a folder, see version history, copy a `[[link]]`, show in folder or trash it. Double-click a tab to rename. Right-click a folder for "New note here" |
 | Projects | **+ New → Project…** (Ctrl+Alt+N) creates `Projects/<name>.md` with status, due date and owner, and adds a project board (kanban + due-date table) the first time. Add `Templates/Project.md` to change what new projects contain |
 | Publish | **Publish as a website** (command palette, or `quire-cli publish`): notes marked `publish: true` (or all of them) become a static site with links, backlinks, tags and search, ready for GitHub Pages, Netlify or any web server. Free, no account. Links to unpublished notes become plain text |
@@ -133,7 +133,7 @@ cargo build --release -p quire-desktop --no-default-features   # ~28 MB instead 
 | Properties & views | Edit front matter in the Insights panel (types inferred: date, number, yes/no, list, text). ` ```quire-view ` blocks render live tables, lists, kanban boards (drag a card to change its field) and month calendars, and stay plain Markdown elsewhere |
 | Version history | Every save keeps a compressed snapshot in `.quire/history/` (thinned to hourly/daily/weekly, max 200 per note). Ctrl+Alt+H shows versions with a diff; restore is undoable. Board moves, vault-wide replace and AI edits are versioned too |
 | Import | Logseq graphs, Notion exports (.zip or folder, incl. database CSVs), Bear (.bear2bk / TextBundles), Evernote (.enex), any Markdown folder. Dry run first; never overwrites |
-| AI providers | Offline by default. Optional OpenAI-compatible (Ollama, LM Studio, OpenAI) or Anthropic, streaming and with tools, with *Test connection*. Optional neural embeddings from the same kind of endpoint or on this computer, cached per passage, falling back to the built-in index |
+| AI providers | Offline by default. Optional OpenAI-compatible (Ollama, LM Studio, OpenAI) or Anthropic, streaming and with tools, with *Test connection*. Optional neural embeddings from the same kind of endpoint, cached per passage, falling back to the built-in index |
 | MCP server | `quire-cli mcp <vault>` (stdio) or over HTTP with OAuth: AI apps search by section, read line ranges, and edit precisely. Read-only unless started with `--allow-write`, which writes per the vault's agent policy (suggestions outside `wiki/`). See [docs/agents.md](docs/agents.md) |
 | History | Undo tree: undo, type something else, and the old branch is still reachable |
 | Quire Sync (beta) | Optional end-to-end encrypted sync, free through a folder you already sync (Dropbox, iCloud Drive, Google Drive, OneDrive, Syncthing), or through a server you run yourself ([guide](docs/self-hosting.md)). Only ciphertext leaves your device; concurrent edits merge line by line and never overwrite each other. A managed service is planned |
@@ -219,7 +219,7 @@ quire-cli mcp     ./sample-vault                     # MCP server on stdio (read
 quire-cli agent   proposals ./sample-vault           # suggestions agents made, waiting for review
 quire-cli ingest  ./sample-vault "Rope Notes"        # a source into cited wiki pages
 quire-cli tasks   ./sample-vault --agenda            # overdue, today and the next seven days
-quire-cli ai      models                             # on-device models and their state
+quire-cli ai      models                             # on-device models (experimental in 0.9.0)
 quire-cli bench   10                                 # performance on a 10 MB note
 ```
 
@@ -229,7 +229,8 @@ Set `QUIRE_TRACE=1` when launching the desktop app to print per-frame timings.
 
 ## Known limits
 
-- **Built-in meaning search is a latent semantic index** learned from your own notes. It needs a few dozen notes before it helps much. For neural quality, download the on-device embedding model (Settings → AI) or point *Meaning search* at an embeddings endpoint (e.g. Ollama + `nomic-embed-text`).
+- **Built-in meaning search is a latent semantic index** learned from your own notes. It needs a few dozen notes before it helps much. For neural quality, point *Meaning search* at an embeddings endpoint (e.g. Ollama + `nomic-embed-text`).
+- **On-device AI is coming in an update.** Quire 0.9.0 ships it turned off, because its models aren't pinned and measured yet: nothing on-device is shown, started or downloaded, meaning search uses the built-in index, and OCR is off. Settings → AI → Advanced has "Experimental: show on-device AI" (or set `QUIRE_EXPERIMENTAL_ON_DEVICE=1`); even then a model says "Not available in this build" until it is pinned.
 - **On-device models need memory:** the balanced 1.7B chat model uses about 5 GB while answering (8 GB of RAM recommended for the small model, 16 GB for balanced), and generates a few tokens a second on a laptop CPU. Speed and memory were measured with models of the real shapes; check them on your computer. A build whose model list isn't pinned yet says "Not available in this build" and downloads nothing.
 - **Contradictions and the thinking timeline are previews:** their thresholds come from the design, not from measurements on real vaults, and the prompts are English-first.
 - The PDF viewer (pages, highlights, area selection) is in the full edition; Quire Lite shows a PDF's text and highlights and opens it in your system's viewer. OCR reads printed text best.

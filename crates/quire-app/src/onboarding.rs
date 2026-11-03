@@ -200,6 +200,35 @@ mod tests {
         assert!(!show_upgrade_card(&up));
     }
 
+    /// Someone who chose "On this computer" (or both) before on-device AI
+    /// became experimental keeps that choice through a load and a save, and
+    /// through choosing a provider.
+    #[test]
+    fn an_earlier_device_choice_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.toml");
+        for choice in ["device", "both"] {
+            std::fs::write(
+                &p,
+                format!(
+                    "[onboarding]\nai_done = true\nai_choice = \"{choice}\"\n\n[ai_local]\nengine = true\nllm = true\nfuture_key = 1\n"
+                ),
+            )
+            .unwrap();
+            let s = Settings::load_from(&p);
+            assert_eq!(s.onboarding.ai_choice, choice);
+            assert!(!s.ai_local.experimental && s.ai_local.llm && s.ai_local.other.contains_key("future_key"));
+            s.save_to(&p).unwrap();
+            let back = Settings::load_from(&p);
+            assert_eq!(back, s, "nothing lost in a save");
+            assert!(std::fs::read_to_string(&p).unwrap().contains(&format!("ai_choice = \"{choice}\"")));
+            let mut ws = Workspace::new(back);
+            ws.onboarding_provider();
+            assert_eq!(ws.settings.onboarding.ai_choice, "both", "a provider is added to the device choice");
+            assert!(ws.settings.ai_local.llm, "and the capability stays as it was");
+        }
+    }
+
     #[test]
     fn choices_change_only_what_they_say() {
         let mut ws = Workspace::new(Settings::default());

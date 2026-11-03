@@ -125,7 +125,7 @@ pub(crate) fn tick(ws: &mut Workspace, _now: Instant) -> bool {
         changed = true;
         match d.text {
             Ok(t) => {
-                if ws.settings.ai_local.ocr {
+                if ws.settings.ai_local.ocr_on() {
                     for p in &t.image_only {
                         if !t.ocr.contains(p) {
                             ws.features.pdf.ocr_queue.push_back(OcrRequest { path: d.path.clone(), page: p - 1, sha256: t.sha256.clone() });

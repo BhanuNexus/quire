@@ -1557,7 +1557,7 @@ const TOUR: [(&str, &str, &str); 5] = [
     ),
     (
         "Your notes, your AI",
-        "Ask questions of your notes with cited answers, offline. Settings → AI is where you choose a provider or models on this computer, or no AI. The shortcut sheet lists everything else.",
+        "Ask questions of your notes with cited answers, offline. Settings → AI is where you choose a provider, or no AI. The shortcut sheet lists everything else.",
         "Ctrl+Shift+A ask  ·  Ctrl+, settings  ·  Ctrl+/ all shortcuts",
     ),
 ];

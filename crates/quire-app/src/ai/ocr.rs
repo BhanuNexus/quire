@@ -63,7 +63,7 @@ fn wants(p: &NotePath) -> bool {
 
 fn enabled(ws: &Workspace) -> bool {
     let a = &ws.settings.ai_local;
-    a.ocr
+    a.ocr_on()
         && super::catalog().of(quire_ai::catalog::Purpose::Ocr).next().is_some_and(super::installed)
         && super::engine_installed()
         && ws.vault_root().is_some()
@@ -119,7 +119,7 @@ pub(crate) fn tick(ws: &mut Workspace) {
 pub(crate) fn vault_event(ws: &Workspace, ev: &VaultEvent) {
     if let VaultEvent::AttachmentChanged(p) = ev
         && wants(p)
-        && ws.settings.ai_local.ocr
+        && ws.settings.ai_local.ocr_on()
     {
         lock(&ws.features.ai.ocr.queue).push_back(Item::Image(p.clone()));
     }

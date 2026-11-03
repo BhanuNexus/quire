@@ -67,6 +67,17 @@ pub fn embed_base_url(settings: &Settings) -> String {
 
 // ------------------------------------------------------------------ models
 
+/// What Quire says while on-device AI is off (the experimental switch,
+/// design §D.1): onboarding, Settings → AI and refused downloads.
+pub const ON_DEVICE_LATER: &str =
+    "On-device AI is coming in an update. Use a provider such as Ollama or LM Studio to keep everything on this computer today.";
+
+/// Whether on-device AI is offered (the experimental switch or
+/// `QUIRE_EXPERIMENTAL_ON_DEVICE=1`).
+pub fn on_device(settings: &Settings) -> bool {
+    settings.ai_local.on_device()
+}
+
 /// `<data_dir>/models` (device-local, never in the vault). `QUIRE_MODELS_DIR` overrides it.
 pub fn models_dir() -> Option<PathBuf> {
     if let Some(d) = std::env::var_os("QUIRE_MODELS_DIR") {
@@ -127,7 +138,7 @@ pub fn installed(entry: &CatalogEntry) -> bool {
 /// The on-device language model, when it is on and installed.
 pub fn device_chat(settings: &Settings) -> Option<(Arc<LocalChat>, Tier)> {
     let a = &settings.ai_local;
-    if !a.llm {
+    if !a.llm_on() {
         return None;
     }
     let entry = catalog().get(&a.llm_model)?;
@@ -326,7 +337,7 @@ impl Workspace {
     pub(crate) fn apply_embedder(&self) {
         let cache_dir = self.vault_root().map(|r| r.join(".quire").join("cache"));
         if self.settings.embeddings == "local"
-            && self.settings.ai_local.embeddings
+            && self.settings.ai_local.embeddings_on()
             && let Some(entry) = catalog().get(&self.settings.ai_local.embed_model)
             && installed(entry)
             && engine_installed()
@@ -428,6 +439,10 @@ impl Workspace {
     /// when it isn't installed. Only ever called when the person asks.
     pub fn ai_download(&mut self, id: &str) {
         let Some(entry) = catalog().get(id) else { return };
+        if !self.settings.ai_local.on_device() {
+            self.notify(NoticeLevel::Info, ON_DEVICE_LATER);
+            return;
+        }
         if !entry.is_pinned() {
             self.notify(NoticeLevel::Info, format!("{} isn't available in this build of Quire", entry.display_name()));
             return;
@@ -663,6 +678,46 @@ mod tests {
         assert_eq!(embed_base_url(&s), "http://box:1234/v1");
         s.ai_provider = "anthropic".into();
         assert_eq!(embed_base_url(&s), "http://localhost:11434");
+    }
+
+    /// On-device AI is experimental in 0.9.0: with every capability turned
+    /// on in settings.toml but the switch off, nothing on-device is used,
+    /// downloaded or spawned, and the keys keep their values.
+    #[test]
+    fn on_device_ai_is_off_until_the_experimental_switch() {
+        if std::env::var_os(crate::settings::EXPERIMENTAL_ENV).is_some() {
+            return; // the switch is on for this process
+        }
+        let mut s = Settings::default();
+        assert!(!s.ai_local.experimental && !on_device(&s), "off by default");
+        s.ai_local.engine = true;
+        s.ai_local.embeddings = true;
+        s.ai_local.llm = true;
+        s.ai_local.ocr = true;
+        s.embeddings = "local".into();
+        assert!(!s.ai_local.embeddings_on() && !s.ai_local.llm_on() && !s.ai_local.ocr_on());
+        assert!(device_chat(&s).is_none() && chat_model(&s).is_none() && panel_chat(&s).is_none());
+        let mut w = Workspace::new(s.clone());
+        w.attach_vault(quire_vault::Vault::in_memory(&[("A.md", "# A\nRopes make undo cheap.")]));
+        w.apply_ai_settings();
+        for id in ["engine", "bge-small-en-v1.5", "ocrs"] {
+            w.ai_download(id);
+        }
+        assert!(!w.features.ai.busy(), "nothing downloads");
+        for _ in 0..5 {
+            w.tick(Instant::now());
+        }
+        assert!(w.jobs.statuses().iter().all(|j| j.id != "ocr"), "no OCR job");
+        assert!(!engine(&w.settings).is_running(), "no engine process");
+        // Meaning search falls back to the built-in index.
+        w.index().flush_semantic();
+        assert!(w.index().semantic().is_some_and(|sem| sem.embedder_name().contains("latent")));
+        assert_eq!(w.settings.ai_local, s.ai_local, "the choices are kept");
+
+        // The switch brings back today's behaviour: the language model is
+        // asked for again (still absent without its files).
+        w.settings.ai_local.experimental = true;
+        assert!(w.settings.ai_local.on_device() && w.settings.ai_local.llm_on() && w.settings.ai_local.ocr_on());
     }
 
     #[test]

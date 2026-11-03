@@ -935,7 +935,7 @@ impl PdfSurface {
 
     /// Lite: each page's text, with find.
     #[cfg(not(feature = "typeset"))]
-    fn text_view(&mut self, ui: &mut egui::Ui, pal: &Palette) {
+    fn text_view(&mut self, ui: &mut egui::Ui, pal: &Palette, ocr: bool) {
         let Some(all) = &self.all_text else {
             ui.label(RichText::new("Reading the text…").color(pal.muted));
             return;
@@ -959,9 +959,12 @@ impl PdfSurface {
                 }
                 let text = page.text();
                 if page.image_only {
-                    ui.label(
-                        RichText::new("(a scanned page: its text appears here once on-device OCR has read it)").color(pal.faint).size(12.0),
-                    );
+                    let why = if ocr {
+                        "(a scanned page: its text appears here once on-device OCR has read it)"
+                    } else {
+                        "(a scanned page: this build doesn't read text in images)"
+                    };
+                    ui.label(RichText::new(why).color(pal.faint).size(12.0));
                 }
                 let n = hits.iter().filter(|(p, _)| *p == i).count();
                 if n > 0 {
@@ -1055,7 +1058,7 @@ impl Surface for PdfSurface {
         #[cfg(feature = "typeset")]
         self.pages_view(ui, ws, pal);
         #[cfg(not(feature = "typeset"))]
-        self.text_view(ui, pal);
+        self.text_view(ui, pal, ws.settings.ai_local.ocr_on());
         out
     }
 }

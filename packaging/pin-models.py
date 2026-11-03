@@ -13,12 +13,15 @@ For every file of every model:
 
 The model's `revision` becomes the commit of its first file's repository.
 Comments and layout are kept. Run it where huggingface.co is reachable,
-review the diff, and commit it; the release workflow refuses to build
-with unpinned entries (`--check`).
+review the diff, and commit it. The release workflow checks for unpinned
+entries (`--check`); while on-device AI ships disabled behind its
+experimental switch (0.9.0) it only warns (`--check --warn`), see
+REQUIRE_MODEL_PINS in .github/workflows/release.yml.
 
-    python3 packaging/pin-models.py            # pin what isn't pinned
-    python3 packaging/pin-models.py --all      # re-resolve everything
-    python3 packaging/pin-models.py --check    # exit 1 if anything is unpinned
+    python3 packaging/pin-models.py                  # pin what isn't pinned
+    python3 packaging/pin-models.py --all            # re-resolve everything
+    python3 packaging/pin-models.py --check          # exit 1 if anything is unpinned
+    python3 packaging/pin-models.py --check --warn   # list them, warn, exit 0
 """
 
 import hashlib
@@ -91,7 +94,16 @@ def main():
     if "--check" in args:
         for m, f in todo:
             print(f"unpinned: {m['id']} / {f['name']}")
-        if todo:
+        warn = "--warn" in args
+        if todo and warn:
+            msg = (
+                "On-device AI ships disabled (behind its experimental switch) until the models are pinned: "
+                f"{len(todo)} model file(s) in crates/quire-ai/src/catalog.toml have no sha256 and size. "
+                "Pin them with `python3 packaging/pin-models.py` and set REQUIRE_MODEL_PINS to \"true\" "
+                "in .github/workflows/release.yml to make this an error again."
+            )
+            print(f"::warning::{msg}" if os.environ.get("GITHUB_ACTIONS") else f"warning: {msg}", file=sys.stderr)
+        elif todo:
             msg = (
                 f"{len(todo)} model file(s) in crates/quire-ai/src/catalog.toml have no sha256 and size, "
                 "so the on-device models can't be downloaded from this release. On a machine that can reach "
@@ -100,7 +112,7 @@ def main():
             )
             # GitHub Actions shows `::error::` lines on the run's summary page.
             print(f"::error::{msg}" if os.environ.get("GITHUB_ACTIONS") else msg, file=sys.stderr)
-        sys.exit(1 if todo else 0)
+        sys.exit(1 if todo and not warn else 0)
     results = {}
     revisions = {}
     for m, f in todo:

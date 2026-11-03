@@ -29,14 +29,17 @@ fn lines(n: u32, pattern: &str) -> String {
     })
 }
 
-fn workspace() -> Workspace {
+/// The test workspace, with on-device AI's experimental switch on or off.
+fn workspace_with(experimental: bool) -> Workspace {
     let long: String = lines(300, "Line {} of a long note");
     let notes: Vec<(String, String)> = (0..40)
         .map(|i| (format!("Folder {}/Note {i}.md", i % 5), format!("# Note {i}\n\n[[Note {}]] [[Note {}]]\n", (i + 1) % 40, (i + 7) % 40)))
         .collect();
     let mut files: Vec<(&str, &str)> = notes.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
     files.push(("Long.md", &long));
-    let mut ws = Workspace::new(quire_app::Settings::default());
+    let mut settings = quire_app::Settings::default();
+    settings.ai_local.experimental = experimental;
+    let mut ws = Workspace::new(settings);
     ws.attach_vault(Vault::in_memory(&files));
     ws.index().flush();
     // Sixty versions, each further from the current text: a long list and a long diff.
@@ -114,11 +117,25 @@ fn input(screen: Rect, frame: usize) -> RawInput {
 
 #[test]
 fn dialogs_keep_their_size_and_fit_the_window() {
+    check_dialogs(false, |_| true);
+}
+
+/// With on-device AI's experimental switch on, the dialogs that change
+/// with it (Set up AI and Settings) too.
+#[test]
+fn on_device_dialogs_keep_their_size_and_fit_the_window() {
+    check_dialogs(true, |name| name.starts_with("set up AI") || name.starts_with("settings: "));
+}
+
+fn check_dialogs(experimental: bool, wanted: impl Fn(&str) -> bool) {
     let mut failures = Vec::new();
     for size in [Vec2::new(1280.0, 820.0), Vec2::new(900.0, 560.0), Vec2::new(760.0, 480.0)] {
         let screen = Rect::from_min_size(Pos2::ZERO, size);
-        let mut ws = workspace();
+        let mut ws = workspace_with(experimental);
         for (name, mut ov) in overlays(&mut ws) {
+            if !wanted(name) {
+                continue;
+            }
             let ctx = egui::Context::default();
             theme::install_fonts(&ctx);
             ctx.set_visuals(theme::visuals(&theme::DARK));
@@ -168,16 +185,21 @@ fn dialogs_keep_their_size_and_fit_the_window() {
 }
 
 /// Every registered panel tab (offered or not) draws without growing from
-/// frame to frame, in a narrow and a wide panel.
+/// frame to frame, in a narrow and a wide panel; the Settings tabs also with
+/// on-device AI's experimental switch on.
 #[test]
 fn feature_tabs_keep_their_size() {
     let mut failures = Vec::new();
-    let tables =
-        [("right", crate::registry::RIGHT_TABS), ("sidebar", crate::registry::SIDEBAR_TABS), ("settings", crate::registry::SETTINGS_TABS)];
-    for (table, tabs) in tables {
+    let tables = [
+        ("right", crate::registry::RIGHT_TABS, false),
+        ("sidebar", crate::registry::SIDEBAR_TABS, false),
+        ("settings", crate::registry::SETTINGS_TABS, false),
+        ("settings (on-device on)", crate::registry::SETTINGS_TABS, true),
+    ];
+    for (table, tabs, experimental) in tables {
         for tab in tabs {
             for width in [220.0_f32, 480.0] {
-                let mut ws = workspace();
+                let mut ws = workspace_with(experimental);
                 let mut fui = crate::registry::FeatureUi::default();
                 let ctx = egui::Context::default();
                 theme::install_fonts(&ctx);
@@ -202,4 +224,82 @@ fn feature_tabs_keep_their_size() {
         }
     }
     assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Every piece of text drawn in `out`.
+fn drawn_text(out: &egui::FullOutput) -> String {
+    fn walk(shape: &egui::Shape, into: &mut String) {
+        match shape {
+            egui::Shape::Text(t) => {
+                into.push_str(t.galley.text());
+                into.push('\n');
+            }
+            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, into)),
+            _ => {}
+        }
+    }
+    let mut text = String::new();
+    for c in &out.shapes {
+        walk(&c.shape, &mut text);
+    }
+    text
+}
+
+/// What Set up AI and Settings → AI show, with the switch off and on.
+fn on_device_screens(experimental: bool) -> (String, String, Workspace) {
+    let mut ws = workspace_with(experimental);
+    let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 820.0));
+    let ctx = egui::Context::default();
+    theme::install_fonts(&ctx);
+    ctx.global_style_mut(theme::style);
+    let mut ov = Overlay::Feature(crate::onboarding_ui::OnboardingOverlay::make(&mut ws));
+    let mut onboarding = String::new();
+    for frame in 0..5 {
+        let mut out = ctx.run_pass(input(screen, frame), |ctx| {
+            let _ = crate::overlays::show(ctx, &mut ov, &mut ws, &theme::LIGHT);
+        });
+        onboarding = drawn_text(&out);
+        out.textures_delta.clear();
+    }
+    let tab = crate::registry::SETTINGS_TABS.iter().find(|t| t.id == "ai").expect("the AI tab");
+    let mut fui = crate::registry::FeatureUi::default();
+    let ctx = egui::Context::default();
+    theme::install_fonts(&ctx);
+    ctx.global_style_mut(theme::style);
+    let mut settings = String::new();
+    for frame in 0..5 {
+        let mut out = ctx.run_ui(input(screen, frame), |ui| {
+            let _ = (tab.show)(ui, &mut ws, &mut fui, &theme::LIGHT);
+        });
+        settings = drawn_text(&out);
+        out.textures_delta.clear();
+    }
+    (onboarding, settings, ws)
+}
+
+/// On-device AI is experimental in 0.9.0: by default Set up AI and
+/// Settings → AI offer none of it and say it's coming, and nothing starts
+/// the engine; the switch brings back the rows, marked Experimental.
+#[test]
+fn on_device_rows_follow_the_experimental_switch() {
+    if std::env::var_os(quire_app::settings::EXPERIMENTAL_ENV).is_some() {
+        return; // the switch is on for this process
+    }
+    let later = quire_app::ai::ON_DEVICE_LATER;
+    let (onboarding, settings, ws) = on_device_screens(false);
+    assert!(onboarding.contains("No AI") && onboarding.contains("Use a provider"), "{onboarding}");
+    assert!(!onboarding.contains("On this computer") && !onboarding.contains("Experimental"), "{onboarding}");
+    assert!(onboarding.contains(later), "{onboarding}");
+    assert!(settings.contains(later) && settings.contains("Advanced"), "{settings}");
+    for row in ["Writing and agent", "Read text in images", "Engine", "Install from file", "Not available in this build", "Experimental"] {
+        assert!(!settings.contains(row), "{row} shown while off: {settings}");
+    }
+    assert!(!quire_app::ai::engine(&ws.settings).is_running(), "nothing started the engine");
+
+    let (onboarding, settings, _) = on_device_screens(true);
+    assert!(onboarding.contains("On this computer") && onboarding.contains("Experimental") && !onboarding.contains(later), "{onboarding}");
+    for row in ["Meaning search", "Writing and agent", "Read text in images", "Engine", "Not available in this build", "Experimental"] {
+        assert!(settings.contains(row), "{row} missing while on: {settings}");
+    }
+    assert!(!settings.contains(later), "{settings}");
 }

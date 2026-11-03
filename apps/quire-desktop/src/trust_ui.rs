@@ -395,7 +395,15 @@ pub(crate) fn settings_tab(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut Featu
             None => {
                 let mut off = false;
                 ui.add_enabled(false, egui::Checkbox::new(&mut off, "Find contradictions"));
-                note(ui, pal, "Needs an AI model: choose a provider or a model on this computer above.");
+                note(
+                    ui,
+                    pal,
+                    if ws.settings.ai_local.on_device() {
+                        "Needs an AI model: choose a provider or a model on this computer above."
+                    } else {
+                        "Needs an AI model: choose a provider above."
+                    },
+                );
             }
             Some(m) => {
                 let cloud = m.locality() == Locality::Cloud;

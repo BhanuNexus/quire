@@ -22,7 +22,7 @@ Every release is built by GitHub Actions from a tag. It's published as an immuta
    ```
    Or, without a local clone (from a phone, say): **Actions → Tag release → Run workflow** on `main`, with the version. It checks the version and changelog, creates the annotated tag on the latest `main` commit (credited to that commit's author), and starts the Release workflow on it.
 4. `.github/workflows/release.yml` then:
-   1. checks that the tag matches `Cargo.toml` and that the changelog has a section for it, and runs the tests;
+   1. checks that the tag matches `Cargo.toml` and that the changelog has a section for it, checks that the on-device models are pinned (`packaging/pin-models.py --check`; only a warning while `REQUIRE_MODEL_PINS` at the top of the workflow is `"false"`, as in 0.9.0, where on-device AI ships behind an experimental switch), and runs the tests;
    2. builds Linux, macOS and Windows in parallel, from clean (no build caches);
    3. creates a build-provenance attestation for every file;
    4. generates an SPDX SBOM and attests it against the binaries;

@@ -4,6 +4,11 @@
 //!
 //! Nothing runs or downloads unless turned on.
 //!
+//! On-device AI is experimental in 0.9.0 (its models aren't pinned yet):
+//! everything here is ignored unless `experimental` is on, or
+//! `QUIRE_EXPERIMENTAL_ON_DEVICE=1` is set for testing. The capability keys
+//! keep their values either way, so turning it on later restores them.
+//!
 //! Owned by WS-D. Every field defaults to off or unchanged; keys this
 //! version doesn't know are kept in `other`, so older and newer Quire
 //! versions can share the file.
@@ -13,6 +18,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AiLocalSettings {
+    /// Show and use on-device AI (Settings → AI → Advanced). Off in 0.9.0.
+    pub experimental: bool,
     /// The engine may run at all.
     pub engine: bool,
     /// Meaning search on this computer.
@@ -40,6 +47,7 @@ pub struct AiLocalSettings {
 impl Default for AiLocalSettings {
     fn default() -> Self {
         Self {
+            experimental: false,
             engine: false,
             embeddings: false,
             llm: false,
@@ -52,5 +60,37 @@ impl Default for AiLocalSettings {
             mirror_url: String::new(),
             other: toml::Table::new(),
         }
+    }
+}
+
+/// Set to `1` to turn on on-device AI for this process (testing).
+pub const EXPERIMENTAL_ENV: &str = "QUIRE_EXPERIMENTAL_ON_DEVICE";
+
+fn env_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os(EXPERIMENTAL_ENV).is_some_and(|v| v == "1"))
+}
+
+impl AiLocalSettings {
+    /// On-device AI is offered at all: the experimental switch or
+    /// [`EXPERIMENTAL_ENV`]. When false nothing on-device is shown, spawned
+    /// or downloaded, whatever the other keys say.
+    pub fn on_device(&self) -> bool {
+        self.experimental || env_on()
+    }
+
+    /// Meaning search on this computer is on (and on-device AI is offered).
+    pub fn embeddings_on(&self) -> bool {
+        self.embeddings && self.on_device()
+    }
+
+    /// The on-device language model is on (and on-device AI is offered).
+    pub fn llm_on(&self) -> bool {
+        self.llm && self.on_device()
+    }
+
+    /// OCR is on (and on-device AI is offered).
+    pub fn ocr_on(&self) -> bool {
+        self.ocr && self.on_device()
     }
 }

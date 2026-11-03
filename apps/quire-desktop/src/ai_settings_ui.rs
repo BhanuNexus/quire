@@ -38,9 +38,41 @@ pub(crate) const fn available(_ws: &Workspace) -> bool {
 }
 
 fn section(ui: &mut egui::Ui, pal: &Palette, title: &str) {
+    section_badge(ui, pal, title, None);
+}
+
+fn section_badge(ui: &mut egui::Ui, pal: &Palette, title: &str, badge: Option<&str>) {
     ui.add_space(14.0);
-    ui.label(RichText::new(title.to_uppercase()).size(11.0).color(pal.muted).strong());
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new(title.to_uppercase()).size(11.0).color(pal.muted).strong());
+        if let Some(b) = badge {
+            experimental_label(ui, pal, b);
+        }
+    });
     ui.add_space(4.0);
+}
+
+/// A small amber label such as "Experimental".
+pub(crate) fn experimental_label(ui: &mut egui::Ui, pal: &Palette, text: &str) {
+    egui::Frame::NONE.stroke(Stroke::new(1.0, pal.warn)).corner_radius(4.0).inner_margin(egui::Margin::symmetric(5, 1)).show(ui, |ui| {
+        ui.add(egui::Label::new(RichText::new(text).size(10.5).color(pal.warn)).extend());
+    });
+}
+
+/// The experimental switch (Settings → AI → On this computer → Advanced).
+fn experimental_switch(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) {
+    ui.checkbox(&mut ws.settings.ai_local.experimental, "Experimental: show on-device AI");
+    if !ws.settings.ai_local.experimental && ws.settings.ai_local.on_device() {
+        ui.label(RichText::new(format!("On for now: {}=1 is set.", quire_app::settings::EXPERIMENTAL_ENV)).size(11.5).color(pal.faint));
+    }
+}
+
+/// While on-device AI is off: one line, and the switch under Advanced.
+fn device_later(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) {
+    ui.add(egui::Label::new(RichText::new(ai::ON_DEVICE_LATER).size(12.5).color(pal.text)).wrap());
+    egui::CollapsingHeader::new(RichText::new("Advanced").color(pal.text)).id_salt("quire-ai-advanced").show(ui, |ui| {
+        experimental_switch(ui, ws, pal);
+    });
 }
 
 pub(crate) fn show(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pal: &Palette) -> PanelOut {
@@ -67,8 +99,13 @@ pub(crate) fn show(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pa
     let before_panel = ws.settings.agent_panel.model.clone();
     section(ui, pal, "Provider");
     provider(ui, ws, s, pal);
-    section(ui, pal, "On this computer");
-    device(ui, ws, s, pal);
+    if ws.settings.ai_local.on_device() {
+        section_badge(ui, pal, "On this computer", Some("Experimental"));
+        device(ui, ws, s, pal);
+    } else {
+        section(ui, pal, "On this computer");
+        device_later(ui, ws, pal);
+    }
     section(ui, pal, "Features");
     features(ui, ws, pal, &mut out);
     // Ask, citations, staleness and contradictions (WS-C's settings).
@@ -366,6 +403,7 @@ fn device(ui: &mut egui::Ui, ws: &mut Workspace, s: &mut AiSettingsUi, pal: &Pal
         ui.add(egui::Label::new(RichText::new(format!("Stored in {}", dir.display())).size(11.5).color(pal.faint)).wrap());
     }
     egui::CollapsingHeader::new(RichText::new("Advanced").color(pal.text)).id_salt("quire-ai-advanced").show(ui, |ui| {
+        experimental_switch(ui, ws, pal);
         let a = &mut ws.settings.ai_local;
         field(ui, pal, "Download mirror (keeps each file's path and hash)", |ui| {
             ui.add(egui::TextEdit::singleline(&mut a.mirror_url).hint_text("https://…").desired_width(text_width(ui, 300.0)));
@@ -457,9 +495,14 @@ fn features(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette, out: &mut Pane
     field(ui, pal, "Meaning search", |ui| {
         let s = &mut ws.settings;
         ui.radio_value(&mut s.embeddings, "lsa".to_string(), "Built in (offline, instant)");
-        if ui.radio_value(&mut s.embeddings, "local".to_string(), "On this computer (the model above)").changed() {
-            s.ai_local.embeddings = true;
-            s.ai_local.engine = true;
+        if s.ai_local.on_device() {
+            if ui.radio_value(&mut s.embeddings, "local".to_string(), "On this computer (the model above)").changed() {
+                s.ai_local.embeddings = true;
+                s.ai_local.engine = true;
+            }
+        } else if s.embeddings == "local" {
+            // Kept for when on-device AI is on; the built-in index is used meanwhile.
+            ui.label(RichText::new("Using the built-in index until on-device AI is available.").size(12.0).color(pal.muted));
         }
         ui.radio_value(&mut s.embeddings, "endpoint".to_string(), "From a server (/v1/embeddings)");
         if s.embeddings == "endpoint" {

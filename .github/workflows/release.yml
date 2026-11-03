@@ -37,6 +37,11 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   IS_RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') }}
+  # On-device AI ships disabled behind its experimental switch until its
+  # models are pinned (design §D.1), so for now unpinned models only warn.
+  # For 0.9.1: pin them (`python3 packaging/pin-models.py`), then set this to
+  # "true" so a tag release fails again while any model is unpinned.
+  REQUIRE_MODEL_PINS: "false"
 
 jobs:
   check:
@@ -65,10 +70,16 @@ jobs:
           fi
       - name: On-device models are pinned (tag releases only)
         # Unpinned models are never downloaded (Settings says "Not available
-        # in this build"), so dry runs and branches build without pins; a
-        # published release must not ship that way (design §D.2).
+        # in this build"), so dry runs and branches build without pins. With
+        # REQUIRE_MODEL_PINS (above) a tag release must not ship that way
+        # (design §D.2); without it this is a warning.
         if: env.IS_RELEASE == 'true'
-        run: python3 packaging/pin-models.py --check
+        run: |
+          if [ "$REQUIRE_MODEL_PINS" = "true" ]; then
+            python3 packaging/pin-models.py --check
+          else
+            python3 packaging/pin-models.py --check --warn
+          fi
       - name: Install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - run: cargo test --workspace --locked

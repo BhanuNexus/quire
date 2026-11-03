@@ -131,8 +131,15 @@ impl AgentPanelUi {
     fn model(&mut self, ws: &Workspace) -> Option<PanelModel> {
         let st = &ws.settings;
         let key = format!(
-            "{}|{}|{}|{}|{}|{}|{}",
-            st.ai_provider, st.ai_base_url, st.ai_model, st.agent_panel.model, st.ai_local.engine, st.ai_local.llm, st.ai_local.llm_model
+            "{}|{}|{}|{}|{}|{}|{}|{}",
+            st.ai_provider,
+            st.ai_base_url,
+            st.ai_model,
+            st.agent_panel.model,
+            st.ai_local.engine,
+            st.ai_local.llm_on(),
+            st.ai_local.llm_model,
+            st.ai_local.experimental
         );
         let fresh = self.model.as_ref().is_some_and(|(k, at, _)| *k == key && at.elapsed() < Duration::from_secs(5));
         if !fresh {
@@ -185,7 +192,7 @@ pub(crate) fn show(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pa
     header(ui, ws, p, pal, ext.as_ref(), model.as_ref());
     ui.separator();
     if ext.is_none() && model.is_none() {
-        empty_setup(ui, pal, &mut out);
+        empty_setup(ui, pal, ws.settings.ai_local.on_device(), &mut out);
         return out;
     }
     // The composer sits at the bottom at whatever height it needs; the
@@ -272,14 +279,19 @@ fn header(ui: &mut egui::Ui, ws: &mut Workspace, p: &mut AgentPanelUi, pal: &Pal
     }
 }
 
-fn empty_setup(ui: &mut egui::Ui, pal: &Palette, out: &mut PanelOut) {
+fn empty_setup(ui: &mut egui::Ui, pal: &Palette, device: bool, out: &mut PanelOut) {
     ui.add_space(30.0);
     ui.vertical_centered(|ui| {
         ui.label(RichText::new("The agent needs an AI model").size(16.0).color(pal.strong));
         ui.add_space(4.0);
         ui.add(
             egui::Label::new(
-                RichText::new("Use a provider (Claude, OpenAI, Ollama…) or download a model that runs on this computer.").color(pal.muted),
+                RichText::new(if device {
+                    "Use a provider (Claude, OpenAI, Ollama…) or download a model that runs on this computer."
+                } else {
+                    "Use a provider: Claude, OpenAI, or a server you run such as Ollama or LM Studio."
+                })
+                .color(pal.muted),
             )
             .wrap(),
         );
