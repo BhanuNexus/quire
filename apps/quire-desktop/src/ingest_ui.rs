@@ -30,6 +30,8 @@ pub(crate) struct IngestDialog {
     sources: Vec<NotePath>,
     chosen: Option<NotePath>,
     state: State,
+    /// The model, chosen when the dialog opens.
+    model: Option<Arc<dyn ChatModel>>,
 }
 
 impl IngestDialog {
@@ -39,7 +41,8 @@ impl IngestDialog {
             ws.vault().and_then(|v| v.notes().ok()).unwrap_or_default().into_iter().filter(|p| p.as_str().starts_with("raw/")).collect();
         sources.sort();
         let chosen = ws.features.assistant.ingest_source.take().or_else(|| sources.first().cloned());
-        Box::new(Self { sources, chosen, state: State::Choose })
+        let model = quire_app::ai::panel_chat(&ws.settings).map(|(m, _, _)| m);
+        Box::new(Self { sources, chosen, state: State::Choose, model })
     }
 
     #[cfg(test)]
@@ -59,7 +62,7 @@ impl IngestDialog {
                 ..IngestReport::default()
             })),
         };
-        Self { chosen: sources.first().cloned(), sources, state: st }
+        Self { chosen: sources.first().cloned(), sources, state: st, model: None }
     }
 }
 
@@ -119,7 +122,7 @@ impl OverlayView for IngestDialog {
 
 impl IngestDialog {
     fn choose(&mut self, ui: &mut egui::Ui, ws: &Workspace, pal: &Palette, res: &mut OverlayResult) {
-        let model = quire_app::ai::panel_chat(&ws.settings);
+        let model = self.model.clone();
         ui.label(RichText::new("Source").strong());
         egui::Frame::NONE.stroke(egui::Stroke::new(1.0, pal.border)).corner_radius(6.0).inner_margin(4.0).show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -156,7 +159,7 @@ impl IngestDialog {
             }
         });
         ui.add_space(8.0);
-        let Some((model, _, _)) = model else {
+        let Some(model) = model else {
             ui.label(RichText::new("Ingest needs an AI model.").color(pal.warn));
             ui.horizontal(|ui| {
                 if ui.button("Set up AI…").clicked() {

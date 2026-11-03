@@ -37,15 +37,27 @@ pub struct DeviceChoice {
     pub ocr: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmSize {
     Small,
-    #[default]
     Balanced,
     Better,
 }
 
+/// The suggested size: Balanced with 16 GB of memory or more, otherwise
+/// (or when the memory can't be read) Small. The spike measured about 5 GB
+/// in use for Balanced and 2 GB for Small (docs/design/handoff/ws-d.md).
+impl Default for LlmSize {
+    fn default() -> Self {
+        Self::for_memory_gb(memory_gb())
+    }
+}
+
 impl LlmSize {
+    pub fn for_memory_gb(gb: Option<u64>) -> Self {
+        if gb.is_some_and(|g| g >= 15) { Self::Balanced } else { Self::Small }
+    }
+
     pub const fn id(self) -> &'static str {
         match self {
             Self::Small => "qwen3-0.6b-q8",
@@ -53,6 +65,21 @@ impl LlmSize {
             Self::Better => "qwen3-4b-q4km",
         }
     }
+}
+
+/// This computer's memory in GB, rounded, where it is cheap to read.
+pub fn memory_gb() -> Option<u64> {
+    let bytes = if cfg!(target_os = "linux") {
+        let info = std::fs::read_to_string("/proc/meminfo").ok()?;
+        let kb: u64 = info.lines().find_map(|l| l.strip_prefix("MemTotal:"))?.trim().trim_end_matches("kB").trim().parse().ok()?;
+        kb * 1024
+    } else if cfg!(target_os = "macos") {
+        let out = std::process::Command::new("/usr/sbin/sysctl").args(["-n", "hw.memsize"]).output().ok()?;
+        String::from_utf8_lossy(&out.stdout).trim().parse().ok()?
+    } else {
+        return None;
+    };
+    Some((bytes + (1 << 29)) >> 30)
 }
 
 impl DeviceChoice {
@@ -186,5 +213,8 @@ mod tests {
         assert_eq!(ws.settings.embeddings, "local");
         assert!(!ws.features.ai.busy(), "Later doesn't download");
         assert_eq!(DeviceChoice { llm: true, llm_size: LlmSize::Small, ..DeviceChoice::default() }.models(), vec!["qwen3-0.6b-q8"]);
+        assert_eq!(LlmSize::for_memory_gb(Some(8)), LlmSize::Small);
+        assert_eq!(LlmSize::for_memory_gb(Some(16)), LlmSize::Balanced);
+        assert_eq!(LlmSize::for_memory_gb(None), LlmSize::Small);
     }
 }

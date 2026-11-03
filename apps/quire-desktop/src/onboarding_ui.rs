@@ -330,26 +330,30 @@ pub(crate) fn banner_available(ws: &Workspace) -> bool {
     quire_app::onboarding::show_upgrade_card(ws)
 }
 
-/// "New in 0.9: AI is opt-in…" with Choose… and ✕.
+/// "New in 0.9: AI is opt-in…" with Choose… and ×.
 pub(crate) fn banner(ui: &mut egui::Ui, ws: &mut Workspace, _st: &mut FeatureUi, pal: &Palette) -> PanelOut {
     let mut out = PanelOut::default();
     egui::Frame::NONE.fill(pal.panel).stroke(Stroke::new(1.0, pal.border)).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
             ui.label(RichText::new("New in Quire 0.9").strong().color(pal.accent));
-            ui.add(
-                egui::Label::new(
-                    RichText::new("AI is your choice: keep it off, use a provider, or run small models on this computer.").color(pal.text),
-                )
-                .truncate(),
-            );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("✕").on_hover_text("Don't show this again").clicked() {
+                if ui.small_button("×").on_hover_text("Don't show this again").clicked() {
                     ws.dismiss_upgrade_card();
                 }
                 if ui.button("Choose…").clicked() {
                     out.run = Some(Command::AiSetup);
                 }
+                // The message takes the space left of the buttons.
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new("AI is your choice: keep it off, use a provider, or run small models on this computer.")
+                                .color(pal.text),
+                        )
+                        .truncate(),
+                    );
+                });
             });
         });
     });

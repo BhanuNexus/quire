@@ -89,6 +89,9 @@ pub(crate) struct AgentPanelUi {
     usage: Usage,
     md: CommonMarkCache,
     focus_input: bool,
+    /// The panel's model, rebuilt when its settings change or every few
+    /// seconds (an API key saved meanwhile), not on every frame.
+    model: Option<(String, Instant, Option<PanelModel>)>,
 }
 
 impl Default for AgentPanelUi {
@@ -108,7 +111,23 @@ impl Default for AgentPanelUi {
             usage: Usage::default(),
             md: CommonMarkCache::default(),
             focus_input: false,
+            model: None,
         }
+    }
+}
+
+impl AgentPanelUi {
+    fn model(&mut self, ws: &Workspace) -> Option<PanelModel> {
+        let st = &ws.settings;
+        let key = format!(
+            "{}|{}|{}|{}|{}|{}|{}",
+            st.ai_provider, st.ai_base_url, st.ai_model, st.agent_panel.model, st.ai_local.engine, st.ai_local.llm, st.ai_local.llm_model
+        );
+        let fresh = self.model.as_ref().is_some_and(|(k, at, _)| *k == key && at.elapsed() < Duration::from_secs(5));
+        if !fresh {
+            self.model = Some((key, Instant::now(), quire_app::ai::panel_chat(st)));
+        }
+        self.model.as_ref().and_then(|(_, _, m)| m.clone())
     }
 }
 
@@ -148,26 +167,27 @@ pub(crate) fn show(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pa
         ui.ctx().request_repaint_after(Duration::from_millis(60));
     }
     let ext = external(ws);
-    let model = if ext.is_some() { None } else { quire_app::ai::panel_chat(&ws.settings) };
+    let model = if ext.is_some() { None } else { p.model(ws) };
     header(ui, ws, p, pal, ext.as_ref(), model.as_ref());
     ui.separator();
     if ext.is_none() && model.is_none() {
         empty_setup(ui, pal, &mut out);
         return out;
     }
-    let composer_h = 128.0;
-    let body_h = (ui.available_height() - composer_h).max(80.0);
-    egui::ScrollArea::vertical().id_salt("quire-agent-convo").max_height(body_h).auto_shrink([false, false]).stick_to_bottom(true).show(
-        ui,
-        |ui| {
+    // The composer sits at the bottom at whatever height it needs; the
+    // conversation scrolls in the rest.
+    egui::Panel::bottom("quire-agent-composer").frame(egui::Frame::NONE).resizable(false).show_separator_line(false).show(ui, |ui| {
+        composer(ui, ws, p, pal, ext.as_ref(), model.as_ref());
+    });
+    egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt("quire-agent-convo").auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
             if let Some(list) = &p.history {
                 history_list(ui, ws, p, pal, list.clone());
             } else {
                 conversation(ui, ws, p, pal, &mut out);
             }
-        },
-    );
-    composer(ui, ws, p, pal, ext.as_ref(), model.as_ref());
+        });
+    });
     if p.pending.is_some() {
         let close = p.pending.as_mut().is_some_and(|pending| acp_ui::permission_modal(ui.ctx(), pending, pal));
         if close {
@@ -190,14 +210,12 @@ fn header(ui: &mut egui::Ui, ws: &mut Workspace, p: &mut AgentPanelUi, pal: &Pal
                     ui.label(RichText::new(format!("External: {}", a.label)).size(12.0).strong().color(pal.warn))
                         .on_hover_text(quire_assistant::acp::WARNING);
                 });
-        } else if let Some((m, _, tier)) = model {
+        } else if let Some((m, _, _)) = model {
             ui.label(RichText::new(m.name()).strong().color(pal.strong));
             ui.label(RichText::new(format!("· {}", quire_app::ai::locality_words(m.locality()))).color(pal.muted));
-            let cap = Capability::for_model(m.as_ref(), *tier);
-            ui.label(RichText::new("ⓘ").color(pal.faint)).on_hover_text(cap.label());
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.menu_button("⋯", |ui| {
+            ui.menu_button("···", |ui| {
                 if ui.add_enabled(p.running.is_none(), egui::Button::new("New conversation")).clicked() {
                     p.new_conversation(ws);
                     ui.close();
@@ -232,6 +250,12 @@ fn header(ui: &mut egui::Ui, ws: &mut Workspace, p: &mut AgentPanelUi, pal: &Pal
             }
         });
     });
+    // What this model may do here (chat only, one change, or every tool).
+    if ext.is_none()
+        && let Some((m, _, tier)) = model
+    {
+        ui.label(RichText::new(Capability::for_model(m.as_ref(), *tier).label()).size(11.5).color(pal.faint));
+    }
 }
 
 fn empty_setup(ui: &mut egui::Ui, pal: &Palette, out: &mut PanelOut) {
@@ -412,14 +436,7 @@ fn history_list(ui: &mut egui::Ui, ws: &Workspace, p: &mut AgentPanelUi, pal: &P
     }
 }
 
-fn composer(
-    ui: &mut egui::Ui,
-    ws: &Workspace,
-    p: &mut AgentPanelUi,
-    pal: &Palette,
-    ext: Option<&AcpAgent>,
-    model: Option<&PanelModel>,
-) {
+fn composer(ui: &mut egui::Ui, ws: &Workspace, p: &mut AgentPanelUi, pal: &Palette, ext: Option<&AcpAgent>, model: Option<&PanelModel>) {
     ui.separator();
     let note = ws.active_doc().and_then(|d| d.path.clone());
     let selection = ws.active_doc().map(|d| d.buffer().slice(d.selection().range())).filter(|s| !s.trim().is_empty());
@@ -506,7 +523,7 @@ fn chip(ui: &mut egui::Ui, pal: &Palette, on: &mut bool, label: &str) {
         .inner_margin(egui::Margin::symmetric(8, 2))
         .show(ui, |ui| {
             ui.label(RichText::new(label).size(12.0).color(text));
-            ui.label(RichText::new(if *on { "✕" } else { "+" }).size(11.0).color(pal.muted));
+            ui.label(RichText::new(if *on { "×" } else { "+" }).size(11.0).color(pal.muted));
         });
     let r = ui.interact(r.response.rect, ui.scope_id().with(("quire-agent-chip", label)), egui::Sense::click());
     if r.clicked() {

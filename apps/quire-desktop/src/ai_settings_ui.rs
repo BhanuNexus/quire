@@ -237,7 +237,12 @@ fn model_row(ui: &mut egui::Ui, ws: &mut Workspace, s: &mut AiSettingsUi, pal: &
         }
         ModelState::Ready => {
             ui.label(RichText::new("✓ Ready").color(pal.accent));
-            if s.confirm_delete.as_deref() == Some(id) {
+            // An engine found elsewhere (QUIRE_AI_ENGINE, or next to the app) isn't Quire's to delete.
+            let downloaded =
+                id != ai::ENGINE_ID || ai::engine(&ws.settings).path().zip(ai::models_dir()).is_some_and(|(p, d)| p.starts_with(d));
+            if !downloaded {
+                ui.label(RichText::new("· installed with Quire").size(12.0).color(pal.faint));
+            } else if s.confirm_delete.as_deref() == Some(id) {
                 ui.label(RichText::new("Delete its files?").color(pal.warn));
                 if ui.button("Delete").clicked() {
                     ws.ai_delete(id);

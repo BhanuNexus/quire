@@ -14,7 +14,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, bounded, unbounded};
-use quire_ai::catalog::{BINARY_SHA256, Catalog, CatalogEntry, ENGINE_ID};
+use quire_ai::catalog::{BINARY_SHA256, Catalog, CatalogEntry};
 use quire_ai::download::{Control, DownloadError, Downloader, Manifest, Progress};
 use quire_ai::engine::{Engine, EngineConfig, EngineSnapshot};
 use quire_ai::local::{LocalChat, LocalEmbedder, LocalSetup};
@@ -27,7 +27,7 @@ use crate::workspace::{NoticeLevel, Workspace};
 
 pub mod ocr;
 
-pub use quire_ai::catalog::{Purpose, Tier, human_size};
+pub use quire_ai::catalog::{ENGINE_ID, Purpose, Tier, human_size};
 
 pub const PROVIDERS: &[(&str, &str)] =
     &[("local", "Offline (built-in)"), ("anthropic", "Anthropic (Claude)"), ("openai", "OpenAI-compatible (OpenAI, Ollama, LM Studio…)")];
