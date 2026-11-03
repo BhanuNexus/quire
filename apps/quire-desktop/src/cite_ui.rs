@@ -174,6 +174,8 @@ pub(crate) struct ImportDialog {
     error: Option<String>,
     watch: bool,
     chosen: Option<std::path::PathBuf>,
+    /// A path typed or pasted (when there's no file dialog, or it's quicker).
+    typed: String,
     /// For layout samples.
     sample_plan: Option<citations::PendingImport>,
 }
@@ -195,10 +197,10 @@ impl ImportDialog {
             citations::PendingImport {
                 from: "My Library.json".into(),
                 target: "references.bib".into(),
-                plan: citations::ImportPlan { added, updated: Vec::new(), unchanged: 41 },
+                plan: citations::ImportPlan { added, unchanged: 41, ..Default::default() },
             }
         });
-        Self { error: None, watch: true, chosen: None, sample_plan }
+        Self { watch: true, sample_plan, ..Self::default() }
     }
 }
 
@@ -218,9 +220,19 @@ impl OverlayView for ImportDialog {
                 .color(pal.muted),
             );
             ui.add_space(8.0);
-            if ui.button("Choose a file…").clicked()
-                && let Some(p) = rfd::FileDialog::new().add_filter("Bibliography", &["bib", "json"]).pick_file()
-            {
+            let mut picked = None;
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Choose a file…").clicked() {
+                    picked = rfd::FileDialog::new().add_filter("Bibliography", &["bib", "json"]).pick_file();
+                }
+                ui.label(RichText::new("or").color(pal.muted));
+                let r = ui.add(TextEdit::singleline(&mut self.typed).hint_text("a path, e.g. ~/Zotero/library.bib").desired_width(220.0));
+                let go = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                if (ui.add_enabled(!self.typed.trim().is_empty(), egui::Button::new("Read")).clicked() || go) && !self.typed.trim().is_empty() {
+                    picked = Some(expand_home(self.typed.trim()));
+                }
+            });
+            if let Some(p) = picked {
                 match citations::prepare_import(ws, &p) {
                     Ok(()) => {
                         self.error = None;
@@ -409,4 +421,12 @@ pub(crate) fn settings_tab(ui: &mut egui::Ui, ws: &mut Workspace, _st: &mut Feat
         .wrap(),
     );
     out
+}
+
+/// `~/x` as a path under the home folder; other paths as they are.
+fn expand_home(path: &str) -> std::path::PathBuf {
+    match path.strip_prefix("~/") {
+        Some(rest) => std::env::var_os("HOME").map_or_else(|| std::path::PathBuf::from(path), |h| std::path::PathBuf::from(h).join(rest)),
+        None => std::path::PathBuf::from(path),
+    }
 }

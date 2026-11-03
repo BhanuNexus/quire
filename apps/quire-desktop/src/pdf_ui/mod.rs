@@ -197,7 +197,8 @@ pub(crate) struct PdfSurface {
     #[cfg_attr(not(feature = "typeset"), allow(dead_code, reason = "Lite shows text only, with no page view"))]
     area: Option<AreaDrag>,
     find_query: String,
-    find_focus: bool,
+    /// Frames left to ask for the focus for the find box.
+    find_focus: u8,
     hits: Vec<(usize, Vec<Quad>)>,
     hit: usize,
     found_for: String,
@@ -239,7 +240,7 @@ impl PdfSurface {
             selecting: false,
             area: None,
             find_query: String::new(),
-            find_focus: false,
+            find_focus: 0,
             hits: Vec::new(),
             hit: 0,
             found_for: String::new(),
@@ -481,9 +482,10 @@ impl PdfSurface {
                 ui.separator();
             }
             let r = ui.add(egui::TextEdit::singleline(&mut self.find_query).hint_text("Find in PDF (Ctrl+F)").desired_width(150.0));
-            if self.find_focus {
+            if self.find_focus > 0 {
                 r.request_focus();
-                self.find_focus = false;
+                self.find_focus -= 1;
+                ui.ctx().request_repaint();
             }
             let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
             if enter || (ui.input(|i| i.key_pressed(Key::F3)) && !self.find_query.is_empty()) {
@@ -539,7 +541,7 @@ impl PdfSurface {
             }
             ui.separator();
             ui.toggle_value(&mut self.show_list, format!("Highlights · {}", self.highlights.len()));
-            ui.menu_button("Open ▾", |ui| {
+            ui.menu_button("Open…", |ui| {
                 let note = annot::note_for(&self.path);
                 if ui
                     .add_enabled(ws.vault().is_some_and(|v| v.exists(&note)), egui::Button::new("The annotation note"))
@@ -604,8 +606,12 @@ impl PdfSurface {
                                     .on_hover_text("This text wasn't found in the changed PDF; the highlight keeps its old place.");
                             }
                         });
-                        let quote: String = h.quote.chars().take(220).collect();
-                        ui.label(RichText::new(quote).size(12.5).color(pal.text));
+                        if h.anchor.is_area() {
+                            ui.label(RichText::new("Area (its picture is in the note)").size(12.5).color(pal.muted));
+                        } else {
+                            let quote: String = h.quote.chars().take(220).collect();
+                            ui.label(RichText::new(quote).size(12.5).color(pal.text));
+                        }
                         if !h.comment.is_empty() && !chosen {
                             ui.label(RichText::new(&h.comment).size(12.0).color(pal.muted).italics());
                         }
@@ -636,9 +642,10 @@ impl PdfSurface {
                             });
                         }
                     })
-                    .response
-                    .interact(Sense::click());
-                if resp.clicked() && !chosen {
+                    .response;
+                // Only a card that isn't open is clickable as a whole, so the
+                // open card's buttons and comment field get their clicks.
+                if !chosen && resp.interact(Sense::click()).clicked() {
                     self.chosen = Some(h.id.clone());
                     self.comment.clone_from(&h.comment);
                     if !self.pages.is_empty() {
@@ -793,15 +800,14 @@ impl PdfSurface {
                 if let (Some(p), Some((_, links))) = (pointer, self.texts.get(&i))
                     && r.contains(p)
                 {
-                    for l in links {
-                        if to_screen(l.quad).contains(p) {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                            let tip = match &l.target {
-                                LinkTarget::Uri(u) => u.clone(),
-                                LinkTarget::Page(n) => format!("Go to page {}", n + 1),
-                            };
-                            let _ = resp.clone().on_hover_text_at_pointer(tip);
-                        }
+                    // One tip, for the link drawn last, when links overlap.
+                    if let Some(l) = links.iter().rev().find(|l| to_screen(l.quad).contains(p)) {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        let tip = match &l.target {
+                            LinkTarget::Uri(u) => u.clone(),
+                            LinkTarget::Page(n) => format!("Go to page {}", n + 1),
+                        };
+                        let _ = resp.clone().on_hover_text_at_pointer(tip);
                     }
                 }
                 // Pointer: select text, draw an area, click links and highlights.
@@ -1013,7 +1019,9 @@ impl Surface for PdfSurface {
         // Ctrl+F here finds in the PDF, not in the note behind it.
         if ws.find.open {
             ws.find.open = false;
-            self.find_focus = true;
+            // The note's find bar asked for the focus this frame too; ask
+            // again next frame so the PDF's box keeps it.
+            self.find_focus = 2;
         }
         let mut out = PanelOut::default();
         egui::Frame::NONE.fill(pal.panel).inner_margin(egui::Margin::symmetric(10, 5)).show(ui, |ui| {
