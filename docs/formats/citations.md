@@ -33,8 +33,11 @@ citation to that PDF in the vault.
 
 **Import** reads a `.bib` or CSL-JSON file (Zotero: Export → CSL JSON) and
 merges it into the first library file by key: new keys are appended,
-changed ones rewritten in place, everything else in the file stays as
-written. A rewritten entry keeps what the import leaves out (a DOI, the
+changed ones patched in place (only the fields whose value changed are
+rewritten; every other field keeps its text, including `series`, a full
+`date`, `school` and case-protecting braces), everything else in the file
+stays as written. A name without a given name (`{World Health
+Organization}`) is written braced. A rewritten entry keeps what the import leaves out (a DOI, the
 `file` link) and the fields Quire doesn't read (`abstract`, `keywords`,
 `isbn`, …); BibTeX imports bring those fields along too (CSL-JSON brings
 only the fields Quire reads). The dialog shows the dry run first.

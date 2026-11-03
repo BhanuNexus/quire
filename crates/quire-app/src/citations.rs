@@ -414,13 +414,33 @@ pub fn parse_any(text: &str) -> Result<Vec<Reference>, String> {
 }
 
 fn bib_value(s: &str) -> String {
-    // Braces must balance inside `{…}`; drop stray ones.
-    s.replace(['{', '}'], "")
+    // Braces must balance inside `{…}`: kept when they do (`{DNA}` keeps
+    // its case), all dropped when they don't.
+    let mut depth = 0_i32;
+    for c in s.chars() {
+        match c {
+            '{' => depth += 1,
+            '}' if depth == 0 => return s.replace(['{', '}'], ""),
+            '}' => depth -= 1,
+            _ => {}
+        }
+    }
+    if depth == 0 { s.to_string() } else { s.replace(['{', '}'], "") }
+}
+
+/// Names for an `author` or `editor` field. A name without a given name
+/// that has spaces in it (`World Health Organization`) is braced, or
+/// BibTeX would read it as given names and a family name.
+fn bib_names(v: &[Name]) -> String {
+    v.iter()
+        .map(|n| if n.given.is_empty() && n.family.contains(char::is_whitespace) { format!("{{{}}}", n.family) } else { n.inverted() })
+        .collect::<Vec<_>>()
+        .join(" and ")
 }
 
 /// One BibTeX entry for `r`.
 pub fn to_bibtex(r: &Reference) -> String {
-    let names = |v: &[Name]| v.iter().map(Name::inverted).collect::<Vec<_>>().join(" and ");
+    let names = bib_names;
     let journal = r.kind == "article";
     let fields: [(&str, String); 13] = [
         ("author", names(&r.authors)),
@@ -630,10 +650,188 @@ fn to_bibtex_with(r: &Reference, extra: &[(String, String)]) -> String {
     s
 }
 
-/// The library file's text after an import: updated entries replaced in
-/// place, new ones appended. Everything else stays as written.
+/// One `name = value` of an entry's text.
+#[derive(Debug)]
+struct RawField {
+    /// Lower case.
+    name: String,
+    /// The value as written (`{…}`, `"…"`, a number or macros joined with `#`).
+    value: Range<usize>,
+}
+
+/// The parts of one entry's text: where its type is, its fields, and
+/// where the last field ends. `None` when it doesn't look like an entry.
+fn raw_entry(t: &str) -> Option<(Range<usize>, Vec<RawField>, usize)> {
+    let b = t.as_bytes();
+    let at = t.find('@')?;
+    let open = at + 1 + t[at + 1..].find(['{', '('])?;
+    let close = if b[open] == b'{' { b'}' } else { b')' };
+    let kind = at + 1..open;
+    let mut i = open + 1 + t[open + 1..].find(',')? + 1;
+    let mut fields = Vec::new();
+    let mut last_end = i;
+    let skip_ws = |i: &mut usize| {
+        while *i < b.len() && b[*i].is_ascii_whitespace() {
+            *i += 1;
+        }
+    };
+    loop {
+        skip_ws(&mut i);
+        while i < b.len() && b[i] == b',' {
+            i += 1;
+            skip_ws(&mut i);
+        }
+        if i >= b.len() || b[i] == close {
+            break;
+        }
+        let name_start = i;
+        while i < b.len() && (b[i].is_ascii_alphanumeric() || b"_-:.+".contains(&b[i])) {
+            i += 1;
+        }
+        if i == name_start {
+            return None;
+        }
+        let name = t[name_start..i].to_ascii_lowercase();
+        skip_ws(&mut i);
+        if b.get(i) != Some(&b'=') {
+            return None;
+        }
+        i += 1;
+        skip_ws(&mut i);
+        let v_start = i;
+        loop {
+            match b.get(i)? {
+                b'{' => {
+                    let mut depth = 0;
+                    while i < b.len() {
+                        match b[i] {
+                            b'{' => depth += 1,
+                            b'}' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                        i += 1;
+                    }
+                    i += 1;
+                }
+                b'"' => {
+                    i += 1;
+                    let mut depth = 0;
+                    while i < b.len() && !(b[i] == b'"' && depth == 0) {
+                        match b[i] {
+                            b'{' => depth += 1,
+                            b'}' => depth -= 1,
+                            _ => {}
+                        }
+                        i += 1;
+                    }
+                    i += 1;
+                }
+                _ => {
+                    while i < b.len() && !(b[i].is_ascii_whitespace() || b[i] == b',' || b[i] == b'#' || b[i] == close) {
+                        i += 1;
+                    }
+                }
+            }
+            let v_end = i.min(b.len());
+            skip_ws(&mut i);
+            if b.get(i) == Some(&b'#') {
+                i += 1;
+                skip_ws(&mut i);
+                continue;
+            }
+            fields.push(RawField { name, value: v_start..v_end });
+            last_end = v_end;
+            break;
+        }
+    }
+    Some((kind, fields, last_end))
+}
+
+/// `entry` (one entry's text, as in the library) with what differs between
+/// `old` and `new` written into it, and `extras` (BibTeX values) set.
+/// Fields that didn't change keep their text exactly, including the
+/// fields Quire reads more coarsely than BibTeX has them (`series`, a full
+/// `date`, `school`, braces that protect case). `None` when the entry
+/// can't be read field by field.
+fn patch_entry(entry: &str, old: &Reference, new: &Reference, extras: &[(String, String)]) -> Option<String> {
+    let (kind, fields, last_end) = raw_entry(entry)?;
+    let mut edits: Vec<(Range<usize>, String)> = Vec::new();
+    let mut added: Vec<(String, String)> = Vec::new();
+    let braced = |v: &str| format!("{{{}}}", bib_value(v.trim()));
+    let find = |names: &[&str]| names.iter().find_map(|n| fields.iter().find(|f| f.name == *n));
+    let mut set = |names: &[&str], default: &str, old_v: &str, new_v: &str, value: String| {
+        if old_v == new_v || new_v.trim().is_empty() {
+            return;
+        }
+        match find(names) {
+            Some(f) => edits.push((f.value.clone(), value)),
+            None => added.push((default.to_string(), value)),
+        }
+    };
+    if old.authors != new.authors {
+        set(&["author"], "author", "", "changed", braced(&bib_names(&new.authors)));
+    }
+    if old.editors != new.editors {
+        set(&["editor"], "editor", "", "changed", braced(&bib_names(&new.editors)));
+    }
+    set(&["title"], "title", &old.title, &new.title, braced(&new.title));
+    let container_key = if new.kind == "article" { "journal" } else { "booktitle" };
+    let containers = ["journaltitle", "journal", "booktitle", "maintitle", "series"];
+    set(&containers, container_key, &old.container, &new.container, braced(&new.container));
+    set(&["volume"], "volume", &old.volume, &new.volume, braced(&new.volume));
+    set(&["number", "issue"], "number", &old.issue, &new.issue, braced(&new.issue));
+    set(&["pages"], "pages", &old.pages, &new.pages, braced(&new.pages));
+    set(&["publisher", "institution", "school", "organization"], "publisher", &old.publisher, &new.publisher, braced(&new.publisher));
+    set(&["doi"], "doi", &old.doi, &new.doi, braced(&new.doi));
+    set(&["url"], "url", &old.url, &new.url, braced(&new.url));
+    set(&["file"], "file", &old.file, &new.file, braced(&new.file));
+    if old.year != new.year && !new.year.is_empty() {
+        match (find(&["year"]), find(&["date"])) {
+            (Some(f), _) => edits.push((f.value.clone(), braced(&new.year))),
+            // A full date keeps its month and day.
+            (None, Some(f)) if !old.year.is_empty() && entry[f.value.clone()].contains(&old.year) => {
+                edits.push((f.value.clone(), entry[f.value.clone()].replacen(&old.year, &new.year, 1)));
+            }
+            _ => added.push(("year".into(), braced(&new.year))),
+        }
+    }
+    for (k, v) in extras {
+        match fields.iter().find(|f| f.name == k.to_ascii_lowercase()) {
+            Some(f) if entry[f.value.clone()] != *v => edits.push((f.value.clone(), v.clone())),
+            Some(_) => {}
+            None => added.push((k.clone(), v.clone())),
+        }
+    }
+    if old.kind != new.kind && !new.kind.is_empty() {
+        edits.push((kind, new.kind.clone()));
+    }
+    let mut out = entry.to_string();
+    if !added.is_empty() {
+        let mut tail = String::new();
+        for (k, v) in &added {
+            let _ = write!(tail, ",\n  {k} = {v}");
+        }
+        out.insert_str(last_end, &tail);
+    }
+    edits.sort_by_key(|(r, _)| std::cmp::Reverse(r.start));
+    for (r, v) in edits {
+        out.replace_range(r, &v);
+    }
+    Some(out)
+}
+
+/// The library file's text after an import: updated entries patched in
+/// place (only the fields that changed are rewritten), new ones appended.
+/// Everything else stays as written.
 pub fn apply_import(library_text: &str, plan: &ImportPlan) -> String {
     let spans = bib_spans(library_text);
+    let before: HashMap<String, Reference> =
+        parse_bibtex(library_text).unwrap_or_default().into_iter().map(|r| (r.key.clone(), r)).collect();
     // Read the whole file once (an entry alone may use the file's @string macros).
     // Fields Quire doesn't read stay: the library's, then the import's over them.
     let kept = other_fields(library_text);
@@ -653,7 +851,10 @@ pub fn apply_import(library_text: &str, plan: &ImportPlan) -> String {
         .iter()
         .filter_map(|r| {
             let (_, range) = spans.iter().find(|(k, _)| *k == r.key)?;
-            Some((range.clone(), to_bibtex_with(r, &extra_for(&r.key))))
+            let patched = before
+                .get(&r.key)
+                .and_then(|old| patch_entry(&library_text[range.clone()], old, r, plan.extras.get(&r.key).map_or(&[], Vec::as_slice)));
+            Some((range.clone(), patched.unwrap_or_else(|| to_bibtex_with(r, &extra_for(&r.key)))))
         })
         .collect();
     repl.sort_by_key(|(r, _)| std::cmp::Reverse(r.start));
@@ -1236,6 +1437,53 @@ mod tests {
         let again = plan_import(&out, parse_bibtex(&out).unwrap());
         assert!(again.is_empty(), "importing the same again changes nothing: {}", again.summary());
         assert_eq!(bib_spans(BIB).iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["ada", "knuth1", "knuth2"]);
+    }
+
+    #[test]
+    fn review_update_keeps_fields() {
+        let lib = "@incollection{k1,
+  author = {{World Health Organization}},
+  title = {The {DNA} of things},
+  booktitle = {Proceedings},
+  series = {Lecture Notes},
+  date = {2020-05-17},
+  school = {MIT},
+  note = {keep me},
+}
+";
+        let csl = r#"[{"id":"k1","type":"chapter","title":"The DNA of things, 2nd","author":[{"literal":"World Health Organization"}],
+            "container-title":"Proceedings","issued":{"date-parts":[[2020]]},"publisher":"MIT","page":"1-9"}]"#;
+        let plan = plan_import(lib, parse_any(csl).unwrap());
+        assert_eq!(plan.updated.len(), 1, "{}", plan.summary());
+        let out = apply_import(lib, &plan);
+        for kept in [
+            "  series = {Lecture Notes},",
+            "  date = {2020-05-17},",
+            "  school = {MIT},",
+            "  note = {keep me}",
+            "author = {{World Health Organization}}",
+        ] {
+            assert!(out.contains(kept), "{kept} in {out}");
+        }
+        assert!(out.contains("  title = {The DNA of things, 2nd},"), "{out}");
+        assert!(out.contains("  pages = {1-9}"), "{out}");
+        let back = parse_bibtex(&out).unwrap();
+        assert_eq!(back[0].authors, [Name { family: "World Health Organization".into(), given: String::new() }]);
+        // A new year changes only the year of a full date; a changed author
+        // without a given name stays one name; added entries too.
+        let mut newer = back[0].clone();
+        newer.year = "2021".into();
+        newer.authors = vec![Name { family: "United Nations".into(), given: String::new() }];
+        let plan = plan_import(&out, vec![newer.clone()]);
+        let out2 = apply_import(&out, &plan);
+        assert!(out2.contains("  date = {2021-05-17},") && out2.contains("author = {{United Nations}}"), "{out2}");
+        assert_eq!(parse_bibtex(&out2).unwrap()[0].authors, newer.authors);
+        newer.key = "k2".into();
+        let added = to_bibtex(&newer);
+        assert!(added.contains("author = {{United Nations}}"), "{added}");
+        // Case-protecting braces survive a regenerated value.
+        assert_eq!(bib_value("The {DNA}"), "The {DNA}");
+        assert_eq!(bib_value("odd } brace"), "odd  brace");
     }
 
     #[test]
