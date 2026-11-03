@@ -56,12 +56,20 @@ Expired after 10 minutes, deleted after a day.
   "client_id": "https://app.example/client.json", "client_name": "Example Agent", "client_host": "app.example",
   "redirect_uri": "http://127.0.0.1:54321/callback", "scopes": ["notes:read", "notes:propose"],
   "state": "pending", "decided_at": null, "resource": "http://127.0.0.1:7311/mcp",
-  "code_challenge": "…", "oauth_state": "…", "actor": "oauth:app.example/client.json" }
+  "code_challenge": "…", "oauth_state": "…", "actor": "oauth:app.example/client.json",
+  "browser": "sha256:…", "verify_code": "K7PD-4QXM" }
 ```
 
 `state` is `pending`, `approved`, `denied` or `used` (the authorization code
-was issued; an approval yields one code). Nothing here is secret: the code
-itself lives only in the server's memory for 60 seconds.
+was issued; an approval yields one code: the server creates `<id>.used`
+exclusively before issuing it). `client_host` is the `client_id`'s host,
+with its port when not the default. `browser` is the hash of the secret the
+starting browser holds in the `HttpOnly` cookie `quire_oauth_<id>` (path
+`/oauth/authorize`, `SameSite=Lax`, 10 minutes): `/oauth/authorize/wait`
+answers only a request carrying it, so the request id alone gets nothing.
+`verify_code` is shown on the browser's waiting page and in Quire for the
+person to compare. Nothing here is secret: the authorization code lives
+only in the server's memory for 60 seconds.
 
 ## `<config>/vaults/<vault-key>/mrtr.key`
 

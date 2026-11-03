@@ -108,6 +108,18 @@ Quire 0.9 lets AI agents work in your vault without taking it over: their change
 - A settings or stored-secrets file that can't be read is kept as `<name>.unreadable` before Quire starts with defaults, instead of being overwritten.
 - Settings, the session, the sync setup and the stored-secrets file are written to a temporary file and moved into place, so a crash or full disk can't leave a half-written file. The secrets file is readable by you only.
 
+### Security
+- Agents can no longer read notes in hidden folders, including private notes in `.trash/` after you delete them, by asking for them as `quire://note/…` resources. Every path an agent names (tools, resources, subscriptions, external agents' file requests, captured images) goes through one check.
+- A symbolic link in the vault no longer lets agents read or write a private folder or a file outside the vault: the policy applies to where a link really leads.
+- Signing in an app over HTTP can only be finished in the browser that started it, and Quire and the browser show the same verification code to compare before you approve. Quire shows the app's exact host, with its port. Each approval gives one sign-in.
+- Captured web pages keep only real PNG, JPEG, GIF and WebP images, and agents save them only where the policy lets them add files directly, within their limits. SVG images stay links.
+- A synced agent policy you haven't approved can no longer make captured sources look trusted; changing a folder's role from sources or private now waits for your approval. Approving the policy or `AGENTS.md` approves exactly the version you were shown.
+- Text from a source can no longer end its data block in the ingest prompts or in an external agent's file reads, whatever its letter case.
+- External agents connected to the panel now get Quire's note tools, recorded as the same agent.
+- An app started without `--client` keeps the name it gave first and can't pass for one you named. Agents can't follow changes to notes they can't read.
+- Web capture and app sign-in work through a proxy set in the environment, including one on this computer.
+- The on-device AI engine is checked against its hash every time it starts.
+
 ## [0.8.0] - 2026-11-02
 
 ### Added

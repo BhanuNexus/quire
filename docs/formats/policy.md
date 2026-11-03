@@ -38,10 +38,15 @@ know survive) and approves the result on that device.
 `AgentStore::effective_mode(actor, path, op)`:
 
 1. **The path** must be canonical: NFC, relative, no `.`/`..`/empty
-   segment, not in a hidden folder (except `.quire`, which rule 3 denies), no
-   control characters, not reached through a link out of the vault, and a
-   new path may not differ only in case from an existing file
-   (`invalid_path`).
+   segment, not in a hidden folder (except `.quire`, which rule 4 denies), no
+   control characters, and a new path may not differ only in case from an
+   existing file (`invalid_path`). Links are followed (`AgentStore::resolve`):
+   the file they reach must be inside the vault and outside hidden folders,
+   and a link that leads nowhere is refused. Rules 3 to 5 apply to the path
+   as named **and** to the file it really reaches; the stricter wins, so a
+   link into a `deny` zone is that zone. `AgentStore::guard` is this check
+   for everything agents name (tools, resources, subscriptions, ACP file
+   requests, captured images).
 2. **People** are never limited. Quire's own jobs and importers write
    directly (subject to rule 4).
 3. For agents, every **active policy** (below) gives a mode, and the most
@@ -49,11 +54,13 @@ know survive) and approves the result on that device.
    * the zone that matches most specifically (longest literal prefix; at
      equal length a literal beats a glob; matching ignores case; `*` and `?`
      within a segment, `**` across segments; a pattern ending in `/` covers
-     everything below);
+     everything below; patterns and paths are compared in NFC, so `Privé/`
+     covers both Unicode spellings);
    * the client's entry in `[clients]`, by the Quire-assigned key: its own
      `zones` win over the vault's zone when at least as specific; otherwise
      the vault's zone applies, capped by the entry's `default`. An agent
-     that only reported its name (`unverified`, no `--client` key) can be
+     that only reported its name (`unverified`, no `--client` key; its id
+     ends in `?`, which is ignored when looking up its entry) can be
      narrowed by its entry but never widened.
 4. **Hard rules**: `.quire/**` is `deny`; root `AGENTS.md` and `CLAUDE.md`,
    any `SKILL.md` and the templates folder are at most `propose`.
@@ -82,8 +89,15 @@ approvals are in `<config>/vaults/<key>/state.toml`
   the defaults and that file are both active until approved).
 
 The Inbox and Settings → Agents list how the file widens the baseline: for
-every zone, client and operation where it gives more, and for raised limits
-and approval in the agent's app.
+every zone, client and operation where it gives more, for raised limits and
+approval in the agent's app, and for a zone that loses the `raw` or
+`private` role (roles decide which notes reach agents as untrusted data).
+Until then, a note counts as untrusted when any active policy, or the
+defaults, put it in a `raw` zone.
+
+Approving names the file that was shown (its hash): if the file changed in
+between (a sync landed), the approval is refused and the new file is shown.
+`AGENTS.md` and `CLAUDE.md` are approved the same way.
 
 ## Limits
 
@@ -91,9 +105,9 @@ Per client key, from every active policy (the stricter value):
 
 | Key | Error | Notes |
 |---|---|---|
-| `writes_per_minute` | `rate_limited` (`retry_after_ms`) | counted across processes in `.quire/agent/rate/<hash>.txt` |
-| `max_write_bytes` | `too_large` | per resulting file |
-| `max_files_per_change` | `too_large` | per change set |
+| `writes_per_minute` | `rate_limited` (`retry_after_ms`) | counted across processes in `.quire/agent/rate/<hash>.txt`; each captured image is a write |
+| `max_write_bytes` | `too_large` | per resulting file, captured images included |
+| `max_files_per_change` | `too_large` | per change set; a capture's images and note together |
 | `max_pending_per_client` | `inbox_full` | new proposals only; amending is fine |
 
 ## Write contracts
