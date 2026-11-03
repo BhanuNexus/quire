@@ -25,11 +25,13 @@ pub(crate) trait Surface {
 }
 
 /// For a file Quire can't edit yet: say so, and offer the system's viewer.
+#[expect(dead_code, reason = "every registered file type has an editor since WS-G; kept for the next one")]
 pub(crate) struct SystemViewer {
     path: NotePath,
     what: &'static str,
 }
 
+#[expect(dead_code, reason = "every registered file type has an editor since WS-G; kept for the next one")]
 impl SystemViewer {
     pub(crate) fn new(path: &NotePath, what: &'static str) -> Self {
         Self { path: path.clone(), what }

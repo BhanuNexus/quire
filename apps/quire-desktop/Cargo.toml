@@ -17,7 +17,7 @@ path = "src/main.rs"
 default = ["typeset"]
 remote-llm = ["quire-app/remote-llm"]
 # Math, diagrams and PDF export. `--no-default-features` builds Quire Lite.
-typeset = ["quire-app/typeset", "dep:quire-typeset", "dep:resvg"]
+typeset = ["quire-app/typeset", "dep:quire-typeset", "dep:resvg", "quire-pdf/render"]
 
 [dependencies]
 quire-app = { workspace = true, features = ["remote-llm", "keychain", "update-check"] }
@@ -43,7 +43,8 @@ quire-mcp.workspace = true
 # WS-D: quire-ai, quire-assistant
 #
 # WS-G: quire-canvas, quire-pdf (and "quire-pdf/render" in `typeset` above)
-#
+quire-canvas.workspace = true
+quire-pdf.workspace = true
 
 [build-dependencies]
 winresource = "0.1"
