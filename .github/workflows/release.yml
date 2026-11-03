@@ -62,13 +62,80 @@ jobs:
               exit 1
             fi
             packaging/release-notes.sh "$version" > /dev/null
+            # On-device models download only with pinned hashes (design §D.2).
+            python3 packaging/pin-models.py --check
           fi
       - name: Install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - run: cargo test --workspace --locked
 
-  linux:
+  # The on-device AI engine (design §D.3): built per target first, so each
+  # app build can embed the SHA-256 of the engine it may download
+  # (crates/quire-ai/engine.sha256.<target>). One engine serves both editions.
+  engine:
     needs: check
+    timeout-minutes: 90
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, features: "" }
+          - { os: macos-15, target: aarch64-apple-darwin, features: "--features metal" }
+          - { os: macos-15, target: x86_64-apple-darwin, features: "" }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, features: "" }
+    runs-on: ${{ matrix.os }}
+    env:
+      TARGET: ${{ matrix.target }}
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain and target
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add "$TARGET"
+      - name: Build the engine
+        run: cargo build --release --locked --target "$TARGET" -p quire-ai-engine --bin quire-ai-engine ${{ matrix.features }}
+      - name: Compress, pin and check the size budget
+        run: |
+          mkdir -p dist pins
+          exe=""; case "$TARGET" in *windows*) exe=".exe" ;; esac
+          bin="target/$TARGET/release/quire-ai-engine$exe"
+          gzip -9 -n -c "$bin" > "dist/quire-ai-engine-$TARGET.gz"
+          sha() { if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
+          size=$(wc -c < "dist/quire-ai-engine-$TARGET.gz" | tr -d ' ')
+          echo "$(sha "dist/quire-ai-engine-$TARGET.gz") $size $(sha "$bin")" > "pins/engine.sha256.$TARGET"
+          cat "pins/engine.sha256.$TARGET"
+          packaging/check-size.sh "dist/quire-ai-engine-$TARGET.gz" engine
+      - name: Smoke-test the engine
+        if: matrix.target != 'x86_64-apple-darwin'
+        run: |
+          exe=""; case "$TARGET" in *windows*) exe=".exe" ;; esac
+          "target/$TARGET/release/quire-ai-engine$exe" --version
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        if: env.IS_RELEASE == 'true'
+        with:
+          subject-path: dist/quire-ai-engine-*.gz
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: quire-engine-${{ matrix.target }}
+          path: dist/quire-ai-engine-*.gz
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pins-${{ matrix.target }}
+          path: pins/engine.sha256.*
+          if-no-files-found: error
+
+  linux:
+    needs: [check, engine]
     # Oldest supported runner, so the binary runs on older glibc (2.35+).
     runs-on: ubuntu-22.04
     timeout-minutes: 60
@@ -88,6 +155,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: pins-*
+          path: crates/quire-ai
+          merge-multiple: true
       - name: Install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - name: Build tar.gz, .deb and AppImage
@@ -128,7 +200,7 @@ jobs:
           if-no-files-found: error
 
   macos:
-    needs: check
+    needs: [check, engine]
     runs-on: macos-15
     timeout-minutes: 60
     permissions:
@@ -151,6 +223,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: pins-*
+          path: crates/quire-ai
+          merge-multiple: true
       - name: Install the pinned toolchain and targets
         run: |
           rustup show active-toolchain || rustup toolchain install
@@ -179,7 +256,7 @@ jobs:
           if-no-files-found: error
 
   windows:
-    needs: check
+    needs: [check, engine]
     runs-on: windows-latest
     timeout-minutes: 60
     permissions:
@@ -201,6 +278,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: pins-*
+          path: crates/quire-ai
+          merge-multiple: true
       - name: Install the pinned toolchain and target
         run: |
           rustup show active-toolchain || rustup toolchain install
@@ -257,7 +339,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: [check, linux, macos, windows, sbom]
+    needs: [check, engine, linux, macos, windows, sbom]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -282,6 +364,8 @@ jobs:
       - name: Checksums
         working-directory: dist
         run: |
+          # The engine pins are compiled into the apps; they aren't assets.
+          rm -f engine.sha256.*
           sha256sum -- * | sort -k2 > SHA256SUMS
           cat SHA256SUMS
       - uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
@@ -293,6 +377,7 @@ jobs:
             dist/*.dmg
             dist/*.exe
             dist/*.zip
+            dist/quire-ai-engine-*.gz
           sbom-path: dist/Quire-${{ env.VERSION }}-sbom.spdx.json
       - name: Create draft release with all assets
         run: |
