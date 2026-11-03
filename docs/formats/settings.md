@@ -22,8 +22,14 @@ workstream; every key defaults to off or unchanged.
 | `[jobs]` | F0 | `pause_on_typing_ms`, `max_threads` |
 
 * Keys and tables a version doesn't know are kept (`other` at the top level
-  and in every table), so 0.8 and 0.9 can share the file in both directions;
-  `settings/compat.rs` tests exactly that against the 0.8 struct.
+  and in every table), from 0.9 on.
+* Quire 0.8.0 reads the file but drops every key it doesn't know when it
+  saves. So 0.9 writes `written_by = "0.9"` as the first line, and with every
+  save also writes `settings.v09.toml` next to the file (atomically): every
+  table and key that isn't a 0.8 key. When `settings.toml` has no
+  `written_by` (or an older one), 0.8 saved it last: tables and keys it lacks
+  are taken from the sidecar. A file 0.9 wrote is never mixed with the
+  sidecar. `settings/compat.rs` tests this against 0.8.0's exact struct.
 * A new table name must not collide with a top-level key or alias: `editor`
   (fast or classic) and `assistant` (old name of `ai_provider`) are taken.
   A collision would make the file unreadable to older versions. New
