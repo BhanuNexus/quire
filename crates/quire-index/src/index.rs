@@ -132,6 +132,11 @@ impl Index {
         self.attachments.insert(text.path.clone(), text);
     }
 
+    /// Whether any attachment text (PDF or OCR pages) is indexed.
+    pub fn has_attachments(&self) -> bool {
+        !self.attachments.is_empty()
+    }
+
     pub fn remove_attachment(&mut self, path: &NotePath) {
         if let Some(old) = self.attachments.remove(path) {
             for i in 0..old.pages.len() {

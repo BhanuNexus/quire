@@ -21,6 +21,8 @@ chrono.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# The panel's end-to-end test talks to a loopback OpenAI-compatible server.
+quire-intel = { workspace = true, features = ["remote-llm"] }
 
 [lints]
 workspace = true

@@ -295,7 +295,17 @@ impl Workspace {
     /// embedder and the chat model background jobs use.
     pub fn apply_ai_settings(&mut self) {
         self.assistant = make_assistant(&self.settings);
+        self.chat = chat_model(&self.settings);
+        self.chat_generation += 1;
         self.apply_embedder();
+        self.refresh_job_chat();
+    }
+
+    /// Use `chat` as the chat model features use (embedders and tests; the
+    /// app builds it from the AI settings).
+    pub fn set_chat_model(&mut self, chat: Option<Arc<dyn ChatModel>>) {
+        self.chat = chat;
+        self.chat_generation += 1;
         self.refresh_job_chat();
     }
 
@@ -306,7 +316,7 @@ impl Workspace {
                 vault: vault.clone(),
                 index: self.index.handle(),
                 agent: agent.clone(),
-                chat: chat_model(&self.settings),
+                chat: self.chat.clone(),
                 user_active: self.jobs.user_active_flag(),
                 cancel: quire_intel::chat::CancelFlag::new(),
             }));

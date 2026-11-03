@@ -182,12 +182,12 @@ pub(crate) fn show(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pa
                         quire_app::trust_jobs::timeline::BACKFILL_REQUESTS
                     )
                 } else {
-                    "Turn on “Find contradictions” in Settings → Trust to let the cloud model read your notes".to_string()
+                    "Turn on “Find contradictions” in Settings → AI to let the cloud model read your notes".to_string()
                 };
                 if ui
                     .add_enabled(allowed, egui::Button::new("Fill in with AI").small())
                     .on_hover_text(tip)
-                    .on_disabled_hover_text("Turn on “Find contradictions” in Settings → Trust first")
+                    .on_disabled_hover_text("Turn on “Find contradictions” in Settings → AI first")
                     .clicked()
                 {
                     backfill = true;

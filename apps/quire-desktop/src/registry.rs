@@ -118,8 +118,7 @@ pub(crate) const SETTINGS_TABS: &[TabDef] = &[
     TabDef { id: "agents", label: label!("Agents"), available: crate::agents_settings::available, show: crate::agents_settings::show },
     // ---- WS-B (HTTP MCP and tokens: a section of the Agents tab, or a tab here)
     TabDef { id: "mcp", label: label!("Connections"), available: crate::mcp_ui::available, show: crate::mcp_ui::show },
-    // ---- WS-C (ask style, citation checks, staleness, contradictions; WS-D may fold it into AI)
-    TabDef { id: "trust", label: label!("Trust"), available: crate::trust_ui::settings_available, show: crate::trust_ui::settings_tab },
+    // ---- WS-C: Ask, citations, staleness and contradictions are in AI → Features
     // ---- WS-D: replaces the built-in "AI & search" tab
     TabDef { id: "ai", label: label!("AI"), available: crate::ai_settings_ui::available, show: crate::ai_settings_ui::show },
     // ---- WS-E
@@ -157,6 +156,26 @@ pub(crate) const EDITOR_BANNERS: &[BannerDef] = &[
     // ---- WS-G: a canvas open as text (for review): its changes in words
     BannerDef { id: "canvas-review", available: crate::canvas_ui::banner_available, show: crate::canvas_ui::banner },
 ];
+
+/// A tooltip for the note's text under the pointer: `tip(ws, line, byte)`
+/// gets the hovered line (without its newline) and the byte in it, and
+/// says what is there, or `None`. Called while the pointer rests on the
+/// text (keep it cheap).
+#[derive(Clone, Copy)]
+pub(crate) struct HoverDef {
+    pub tip: fn(&Workspace, &str, usize) -> Option<String>,
+}
+
+/// Tooltips over the note's text, first match wins, by workstream.
+pub(crate) const EDITOR_HOVERS: &[HoverDef] = &[
+    // ---- WS-G: a citation's full reference
+    HoverDef { tip: quire_app::citations::hover_text },
+];
+
+/// The tooltip for `byte` of `line`, if a feature has one.
+pub(crate) fn hover_tip(ws: &Workspace, line: &str, byte: usize) -> Option<String> {
+    EDITOR_HOVERS.iter().find_map(|h| (h.tip)(ws, line, byte))
+}
 
 /// Something to do once the Inbox has drawn (drawing borrows its data).
 pub(crate) type InboxAct = Box<dyn FnOnce(&mut Workspace, &mut PanelOut)>;

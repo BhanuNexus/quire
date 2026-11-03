@@ -155,6 +155,12 @@ impl Workspace {
     }
 
     /// Who made a version (its `.prov.json`), when known.
+    /// Wait until every version saved so far is written to history (tests,
+    /// and before reading history right after a save).
+    pub fn flush_history(&self) {
+        self.history.flush();
+    }
+
     pub fn snapshot_provenance(&self, s: &Snapshot) -> Option<quire_agent::Provenance> {
         quire_agent::Provenance::from_json(&self.vault()?.read_provenance(s)?)
     }

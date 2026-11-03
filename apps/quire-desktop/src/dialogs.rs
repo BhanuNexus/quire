@@ -118,6 +118,8 @@ struct SyncForm {
     recovery: Option<String>,
     show_key: bool,
     confirm_stop: bool,
+    /// "Also sync vault settings…" turned on: the sync server is being asked.
+    shared_pending: Option<(bool, Receiver<Result<(), String>>)>,
 }
 
 /// Returns whether the dialog should close, and a command a tab asked for.
@@ -325,17 +327,35 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
             ui.add(egui::Label::new(RichText::new(k).monospace()).wrap());
         }
         ui.add_space(4.0);
-        let mut shared = cfg.shared_state;
-        if ui
-            .checkbox(&mut shared, "Also sync vault settings and review history")
-            .on_hover_text("Agent permissions, suggestions and their history travel with the vault.")
-            .changed()
-        {
-            match ws.sync_share_vault_settings(shared) {
-                Ok(()) => f.error = None,
-                Err(e) => f.error = Some(e),
+        let mut shared = f.shared_pending.as_ref().map_or(cfg.shared_state, |(on, _)| *on);
+        if let Some((on, rx)) = &f.shared_pending {
+            match rx.try_recv() {
+                Ok(r) => {
+                    f.error = r.and_then(|()| ws.sync_set_shared_state(*on)).err();
+                    f.shared_pending = None;
+                }
+                Err(crossbeam_channel::TryRecvError::Empty) => ui.ctx().request_repaint_after(std::time::Duration::from_millis(100)),
+                Err(crossbeam_channel::TryRecvError::Disconnected) => f.shared_pending = None,
             }
         }
+        ui.horizontal_wrapped(|ui| {
+            let r = ui
+                .add_enabled(f.shared_pending.is_none(), egui::Checkbox::new(&mut shared, "Also sync vault settings and review history"))
+                .on_hover_text("Agent permissions, suggestions and their history travel with the vault.");
+            if r.changed() {
+                // Turning it on asks the sync server first, off the UI thread.
+                match ws.sync_share_vault_settings_in_background(shared) {
+                    Ok(rx) => {
+                        f.error = None;
+                        f.shared_pending = Some((shared, rx));
+                    }
+                    Err(e) => f.error = Some(e),
+                }
+            }
+            if f.shared_pending.is_some() {
+                ui.add(egui::Spinner::new().size(12.0));
+            }
+        });
         ui.label(RichText::new("Every device needs Quire 0.9 or later.").size(12.0).color(pal.muted));
         ui.label(
             RichText::new(if cfg.folder.is_some() {

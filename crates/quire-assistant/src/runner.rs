@@ -494,11 +494,41 @@ pub fn context_message(note: Option<&str>, selection: Option<&str>, note_text: O
     s
 }
 
+/// Notes and tags the person mentioned (`@note`, `#tag` chips in the
+/// composer). `texts` holds each note's text when the model has no tools
+/// (in the same order as `notes`; empty otherwise).
+pub fn mentions_message(notes: &[&str], tags: &[&str], texts: &[String]) -> String {
+    let mut s = String::new();
+    for (i, n) in notes.iter().enumerate() {
+        let _ = writeln!(s, "They mention [[{}]] ({}).", stem(n), quire_mcp::resources::uri_for_path(&(*n).into()));
+        if let Some(t) = texts.get(i) {
+            s.push_str("Its text:\n<note>\n");
+            s.push_str(&cut(t, 6_000));
+            s.push_str("\n</note>\n");
+        }
+    }
+    if !tags.is_empty() {
+        let list = tags.iter().map(|t| format!("#{}", t.trim_start_matches('#'))).collect::<Vec<_>>().join(", ");
+        let _ = writeln!(s, "They mean the notes tagged {list} (search for the tag).");
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use quire_app::intel::chat::ScriptedChat;
     use serde_json::json;
+
+    #[test]
+    fn mentions_name_notes_and_tags() {
+        let m = mentions_message(&["Notes/Rope Notes.md"], &["#ropes", "undo"], &[]);
+        assert!(m.contains("They mention [[Rope Notes]] (quire://"), "{m}");
+        assert!(m.contains("#ropes, #undo"), "{m}");
+        let m = mentions_message(&["A.md"], &[], &["body".to_string()]);
+        assert!(m.contains("<note>\nbody\n</note>"), "{m}");
+        assert!(mentions_message(&[], &[], &[]).is_empty());
+    }
 
     #[test]
     fn summaries_read_naturally() {

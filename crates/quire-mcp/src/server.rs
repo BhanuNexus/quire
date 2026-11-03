@@ -189,6 +189,8 @@ impl Server {
     pub fn with_config(vault: Vault, watcher: Option<VaultWatcher>, config: ServerConfig) -> Self {
         let index = IndexService::spawn();
         index.load(vault.clone());
+        // PDF pages are searchable too ("paper.pdf p. 3").
+        quire_app::pdf_state::index_pdfs(&vault, &index);
         index.flush_semantic();
         let device = config.device.clone().unwrap_or_else(quire_app::device::this_device);
         let sealer = config.state_dir.as_deref().map_or_else(Sealer::ephemeral, |d| Sealer::load_or_create(&d.join("mrtr.key")));
@@ -340,6 +342,7 @@ impl Core {
                     self.note_changed(&p, now);
                 }
                 VaultEvent::AttachmentChanged(p) | VaultEvent::AttachmentRemoved(p) => {
+                    quire_app::pdf_state::pdf_changed(&self.vault, &self.index, &p);
                     self.subs.changed(&resources::uri_for_path(&p), now);
                 }
             }

@@ -111,6 +111,12 @@ impl Vault {
         resolve_in(&notes, target, from)
     }
 
+    /// Whether `p` is in the templates folder (templates aren't notes:
+    /// [`Self::notes`] leaves them out, and so does the index).
+    pub fn is_template(&self, p: &NotePath) -> bool {
+        p.as_str().strip_prefix(self.config.templates_folder.as_str()).is_some_and(|rest| rest.starts_with('/'))
+    }
+
     pub fn templates(&self) -> Vec<NotePath> {
         let prefix = format!("{}/", self.config.templates_folder);
         self.storage.list().unwrap_or_default().into_iter().filter(|p| p.is_markdown() && p.as_str().starts_with(&prefix)).collect()
@@ -337,6 +343,8 @@ mod tests {
         assert_eq!(v.resolve("archive/rope notes", None).unwrap().as_str(), "Archive/Rope Notes.md");
         assert!(v.resolve("Nope", None).is_none());
         assert!(!v.notes().unwrap().iter().any(|p| p.as_str().starts_with("Templates/")));
+        assert!(v.is_template(&NotePath::new("Templates/Daily.md")));
+        assert!(!v.is_template(&NotePath::new("Templates.md")) && !v.is_template(&NotePath::new("TemplatesOld/A.md")));
     }
 
     #[test]

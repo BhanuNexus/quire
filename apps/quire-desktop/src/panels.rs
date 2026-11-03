@@ -33,6 +33,10 @@ pub(crate) struct SidebarState {
     pub query: String,
     pub focus_query: bool,
     cache: Option<(String, u64, u64, Vec<HybridHit>)>,
+    /// The file of the surface in front of the notes (set every frame).
+    pub active_surface: Option<NotePath>,
+    /// Pages of PDFs (and images) matching the same query.
+    page_hits: Vec<quire_app::index::SectionHit>,
     open_tag: Option<String>,
     /// Two-pane browser: the folder whose notes are listed.
     browse_folder: Option<String>,
@@ -645,7 +649,7 @@ pub(crate) fn sidebar(
         st.tab = SidebarTab::Files;
     }
     st.two_pane_seen = ws.settings.editing.two_pane;
-    let active_path = ws.active_doc().and_then(|d| d.path.clone());
+    let active_path = st.active_surface.clone().or_else(|| ws.active_doc().and_then(|d| d.path.clone()));
     let mut open: Option<(NotePath, Option<usize>)> = None;
     let mut file_action: Option<(NotePath, NoteAction)> = None;
     let mut folder_action: Option<(String, Command)> = None;
@@ -734,14 +738,21 @@ pub(crate) fn sidebar(
             let stale = st.cache.as_ref().is_none_or(|(q, v, s, _)| *q != st.query || *v != version || *s != sv);
             if stale {
                 let hits = ws.index().hybrid_search(&st.query, 50);
+                st.page_hits = if st.query.trim().is_empty() || !ws.index().read().has_attachments() {
+                    Vec::new()
+                } else {
+                    let filters = quire_app::index::SearchFilters { kind: quire_app::index::SearchKind::Attachments, ..Default::default() };
+                    ws.index().search_sections(&st.query, &filters, 10)
+                };
                 st.cache = Some((st.query.clone(), version, sv, hits));
             }
             let hits = st.cache.as_ref().map(|c| c.3.clone()).unwrap_or_default();
             let meaning = hits.iter().filter(|h| h.by_meaning).count();
+            let total = hits.len() + st.page_hits.len();
             let summary = match (st.query.trim().is_empty(), meaning) {
                 (true, _) => String::new(),
-                (false, 0) => format!("{} results", hits.len()),
-                (false, m) => format!("{} results · {m} by meaning (≈)", hits.len()),
+                (false, 0) => format!("{total} results"),
+                (false, m) => format!("{total} results · {m} by meaning (≈)"),
             };
             ui.label(RichText::new(summary).color(pal.muted).size(11.5));
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -773,6 +784,42 @@ pub(crate) fn sidebar(
                         let term = quire_app::index::Query::parse(&st.query).highlight_terms().into_iter().next();
                         let at = term.and_then(|t| ix.source(&h.path).and_then(|s| s.to_lowercase().find(&t))).or(h.offset);
                         open = Some((h.path.clone(), at));
+                    }
+                }
+                let mut open_page = None;
+                for h in &st.page_hits {
+                    let resp = ui
+                        .vertical(|ui| {
+                            let t = ui
+                                .horizontal_wrapped(|ui| {
+                                    let t = ui.add(
+                                        egui::Label::new(RichText::new(h.path.file_name()).strong().color(pal.strong))
+                                            .sense(egui::Sense::click()),
+                                    );
+                                    if let Some(p) = h.page {
+                                        ui.label(RichText::new(format!("p. {p}")).color(pal.muted).size(11.5));
+                                    }
+                                    if h.by_meaning {
+                                        ui.label(RichText::new("≈").color(pal.tag)).on_hover_text("Found by meaning, not exact words");
+                                    }
+                                    t
+                                })
+                                .inner;
+                            ui.add(egui::Label::new(RichText::new(&h.snippet).color(pal.text)).wrap());
+                            ui.add_space(6.0);
+                            t
+                        })
+                        .inner;
+                    if resp.clicked() {
+                        open_page = Some((h.path.clone(), h.page));
+                    }
+                }
+                if let Some((path, page)) = open_page {
+                    let fragment = page.map(|p| format!("page={p}"));
+                    if path.as_str().to_ascii_lowercase().ends_with(".pdf") {
+                        quire_app::pdf_state::open_link(ws, &path, fragment.as_deref());
+                    } else {
+                        ws.request_ui(quire_app::workspace::UiRequest::OpenFile(path));
                     }
                 }
             });
@@ -1253,6 +1300,11 @@ pub(crate) fn preview(ui: &mut egui::Ui, ws: &mut Workspace, cache: &mut CommonM
     }
     // Mermaid blocks become display math holding a marker; the math hook draws the diagram.
     let text = doc.text().to_string();
+    // WS-C: ⚠ after footnotes whose cited text changed (as the editor shows).
+    let text = match doc.path.clone() {
+        Some(p) => crate::trust_ui::mark_flagged_citations(ws, &p, text),
+        None => text,
+    };
     let figures = quire_app::markdown::blocks::figures(&text);
     let mut diagrams: Vec<String> = Vec::new();
     let text = if figures.iter().any(|f| f.kind == quire_app::markdown::blocks::FigureKind::Diagram) {

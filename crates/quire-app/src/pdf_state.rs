@@ -141,14 +141,18 @@ pub(crate) fn tick(ws: &mut Workspace, _now: Instant) -> bool {
     changed
 }
 
-fn send_to_index(ws: &Workspace, path: &NotePath, t: &CachedText) {
-    ws.index.upsert_attachment(AttachmentText {
+fn attachment(path: &NotePath, t: &CachedText) -> AttachmentText {
+    AttachmentText {
         path: path.clone(),
         kind: AttachmentKind::Pdf,
         pages: t.pages.clone(),
         source_hash: t.sha256.clone(),
         by: if t.ocr.is_empty() { TextSource::Embedded } else { TextSource::Ocr },
-    });
+    }
+}
+
+fn send_to_index(ws: &Workspace, path: &NotePath, t: &CachedText) {
+    ws.index.upsert_attachment(attachment(path, t));
 }
 
 pub(crate) fn vault_event(ws: &mut Workspace, ev: &VaultEvent) {
@@ -311,6 +315,56 @@ impl Job for PdfTextJob {
             let _ = self.done.send(Done { path: cur.path, text: Ok(t) });
         }
         Step::Continue
+    }
+}
+
+// ---------------------------------------------------------------- without a workspace
+
+/// The text of the PDF at `path`, from the cache or read now (and cached).
+/// `None` when the file is gone or isn't a PDF Quire can read.
+pub fn read_text(vault: &Vault, path: &NotePath) -> Option<CachedText> {
+    let bytes = vault.storage().read_bytes(path).ok()?;
+    let sha = quire_pdf::sha256_hex(&bytes);
+    if let Some(t) = read_cache(vault, &sha) {
+        return Some(t);
+    }
+    let doc = quire_pdf::PdfDoc::open(bytes).ok()?;
+    let mut pages = Vec::with_capacity(doc.page_count());
+    let mut image_only = Vec::new();
+    for i in 0..doc.page_count() {
+        let page = doc.page_text(i).unwrap_or_default();
+        if page.image_only {
+            image_only.push(u32::try_from(i + 1).unwrap_or(u32::MAX));
+        }
+        pages.push(page.text());
+    }
+    let t = CachedText { format: 1, sha256: sha, pages, image_only, ocr: Vec::new(), other: serde_json::Map::new() };
+    write_cache(vault, &t);
+    Some(t)
+}
+
+/// Give `index` the text of every PDF in `vault` (for the CLI and the MCP
+/// server, which have no background jobs; the app uses the `pdf-text`
+/// job). Returns how many PDFs were sent.
+pub fn index_pdfs(vault: &Vault, index: &quire_index::IndexService) -> usize {
+    let mut n = 0;
+    for p in vault.storage().list().unwrap_or_default().into_iter().filter(is_pdf) {
+        if let Some(t) = read_text(vault, &p) {
+            index.upsert_attachment(attachment(&p, &t));
+            n += 1;
+        }
+    }
+    n
+}
+
+/// A PDF changed or went away: update `index` (the MCP server's watcher).
+pub fn pdf_changed(vault: &Vault, index: &quire_index::IndexService, path: &NotePath) {
+    if !is_pdf(path) {
+        return;
+    }
+    match read_text(vault, path) {
+        Some(t) => index.upsert_attachment(attachment(path, &t)),
+        None => index.remove_attachment(path.clone()),
     }
 }
 

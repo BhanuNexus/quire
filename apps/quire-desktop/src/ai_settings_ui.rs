@@ -71,6 +71,11 @@ pub(crate) fn show(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pa
     device(ui, ws, s, pal);
     section(ui, pal, "Features");
     features(ui, ws, pal, &mut out);
+    // Ask, citations, staleness and contradictions (WS-C's settings).
+    if crate::trust_ui::settings_available(ws) {
+        let trust = crate::trust_ui::settings_tab(ui, ws, st, pal);
+        out.run = out.run.or(trust.run);
+    }
     section(ui, pal, "Background work");
     jobs(ui, ws, pal);
     if ws.settings.ai_local != before || ws.settings.embeddings != before_embed || ws.settings.agent_panel.model != before_panel {
@@ -421,7 +426,8 @@ fn engine_status(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) {
 }
 
 fn features(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette, out: &mut PanelOut) {
-    let has_provider = ai::provider_chat(&ws.settings).is_some();
+    // The cached model (provider first), not a keychain read every frame.
+    let has_provider = ws.trust_chat().is_some_and(|c| c.locality() != quire_app::intel::chat::Locality::Device);
     let has_device = ai::device_chat(&ws.settings).is_some();
     field(ui, pal, "Agent panel", |ui| {
         ui.checkbox(&mut ws.settings.agent_panel.enabled, "Show the Agent tab (Ctrl+Shift+J)");
@@ -468,35 +474,6 @@ fn features(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette, out: &mut Pane
                 egui::Label::new(RichText::new(format!("Not available ({e}); using the built-in index.")).size(12.0).color(pal.warn))
                     .wrap(),
             );
-        }
-    });
-    let t = &mut ws.settings.trust;
-    field(ui, pal, "Ask", |ui| {
-        ui.radio_value(&mut t.ask_before_tell, false, "Answer directly");
-        ui.radio_value(&mut t.ask_before_tell, true, "Ask what I expect first, then show the evidence");
-    });
-    field(ui, pal, "Checks", |ui| {
-        ui.checkbox(&mut t.staleness, "A weekly list of notes that may be out of date");
-        ui.checkbox(&mut t.verify_citations, "Check that citations still match what they quote");
-        ui.checkbox(&mut t.contradictions, "Find contradictions between notes (Preview)");
-        if t.contradictions {
-            ui.horizontal_wrapped(|ui| {
-                ui.label("At most");
-                ui.add(egui::DragValue::new(&mut t.claims_daily_cap).range(10..=5000));
-                ui.label(RichText::new("model requests a day").color(pal.muted));
-            });
-            if has_provider {
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(
-                            "With a cloud provider each request is billed by your provider; the first full pass shows an estimate first.",
-                        )
-                        .size(11.5)
-                        .color(pal.faint),
-                    )
-                    .wrap(),
-                );
-            }
         }
     });
 }

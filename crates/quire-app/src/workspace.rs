@@ -94,6 +94,9 @@ pub enum UiRequest {
     MoveNote,
     /// Show two notes side by side (or go back to one).
     Split,
+    /// Show these two notes side by side, the first on the left (opening
+    /// them as needed); unlike `Split`, never closes a split.
+    SideBySide(NotePath, NotePath),
     Graph,
     /// Put this text on the clipboard.
     Copy(String),
@@ -176,11 +179,17 @@ pub struct Workspace {
     device: quire_agent::DeviceInfo,
     /// UI asked for outside a command's return value ([`Workspace::request_ui`]).
     ui_requests: Vec<UiRequest>,
+    /// The chat model features use ([`crate::ai::chat_model`]), built when
+    /// AI settings change rather than on every call (reading a key may ask
+    /// the OS keychain); `chat_generation` counts the changes.
+    pub(crate) chat: Option<Arc<dyn quire_intel::chat::ChatModel>>,
+    pub(crate) chat_generation: u64,
 }
 
 impl Workspace {
     pub fn new(settings: Settings) -> Self {
         let assistant = crate::ai::make_assistant(&settings);
+        let chat = crate::ai::chat_model(&settings);
         Self {
             settings,
             focus_mode: false,
@@ -213,6 +222,8 @@ impl Workspace {
             agent: None,
             device: crate::device::this_device(),
             ui_requests: Vec::new(),
+            chat,
+            chat_generation: 0,
         }
     }
 
@@ -655,7 +666,10 @@ impl Workspace {
                 self.history.keep_with(vault, &path, &text, now, false, prov);
                 self.docs[i].next_save_provenance = None;
                 self.docs[i].mark_saved(&text);
-                self.index.upsert(path, text.to_string());
+                // Templates stay out of the index (and the Files tab), as at start.
+                if !vault.is_template(&path) {
+                    self.index.upsert(path, text.to_string());
+                }
                 self.sync_nudge();
                 true
             }
@@ -781,6 +795,9 @@ impl Workspace {
                     }
                     if self.absorb_external_change(&p, &content) {
                         continue; // our own save echoing back
+                    }
+                    if self.vault.as_ref().is_some_and(|v| v.is_template(&p)) {
+                        continue; // templates aren't indexed (as at start)
                     }
                     self.index.upsert(p, content);
                 }

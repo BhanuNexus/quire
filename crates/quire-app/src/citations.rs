@@ -1064,6 +1064,17 @@ pub fn at_caret(ws: &Workspace) -> Option<(cite::Citation, Option<Reference>)> {
     Some((c, r))
 }
 
+/// The full references of the citation at `byte` of `line` (a line of a
+/// note), one per line, for a hover tooltip. `None` when there is no
+/// citation there or none of its works is in the library.
+pub fn hover_text(ws: &Workspace, line: &str, byte: usize) -> Option<String> {
+    let c = cite::at(line, byte)?;
+    let lib = &ws.features.citations.library;
+    let refs: Vec<String> =
+        c.items.iter().filter(|i| lib.get(&i.key).is_some()).map(|i| lib.reference(&i.key).replace(['*', '\\'], "")).collect();
+    (!refs.is_empty()).then(|| refs.join("\n"))
+}
+
 /// Open what a citation points at: the work's PDF in the vault when its
 /// `file` field names one, else its entry in the library file. Returns
 /// false when there is no known citation at the caret.

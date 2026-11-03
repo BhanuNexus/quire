@@ -6,7 +6,9 @@
 //! "Qwen3 1.7B · this computer", or the amber "External: Codex"). The
 //! conversation streams in, with tool calls as collapsible lines and
 //! suggested changes as cards that open the review. The composer has
-//! context chips (this note, the selection), Ask / Agent, Send and Stop.
+//! context chips (this note, the selection, `@note` and `#tag` mentions),
+//! Ask / Agent, Send and Stop. "Ask agent to reconcile" (an Inbox
+//! contradiction) starts an Agent run here with both passages.
 //!
 //! Runs happen on a background thread: the UI only draws what arrives, so a
 //! slow or stuck model never holds up the editor, and Stop answers at once.
@@ -73,6 +75,13 @@ type PanelModel = (Arc<dyn quire_app::intel::chat::ChatModel>, String, Option<qu
 /// The tool host for the open vault, built on the first message.
 type HostSlot = Arc<Mutex<Option<(PathBuf, Arc<ToolHost>)>>>;
 
+/// A note or tag mentioned in the composer (`@note`, `#tag`).
+#[derive(Clone, PartialEq, Eq)]
+enum Mention {
+    Note(NotePath),
+    Tag(String),
+}
+
 /// UI state kept between frames (in [`FeatureUi`]).
 pub(crate) struct AgentPanelUi {
     conv: Conversation,
@@ -83,6 +92,7 @@ pub(crate) struct AgentPanelUi {
     agent_mode: bool,
     chip_note: bool,
     chip_selection: bool,
+    mentions: Vec<Mention>,
     history: Option<Vec<Conversation>>,
     pending: Option<Pending>,
     vault: Option<PathBuf>,
@@ -105,6 +115,7 @@ impl Default for AgentPanelUi {
             agent_mode: true,
             chip_note: true,
             chip_selection: true,
+            mentions: Vec::new(),
             history: None,
             pending: None,
             vault: None,
@@ -168,6 +179,9 @@ pub(crate) fn show(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pa
     }
     let ext = external(ws);
     let model = if ext.is_some() { None } else { p.model(ws) };
+    if let Some(req) = ws.features.trust.reconcile.take() {
+        p.reconcile(ws, req, ext.clone(), model.clone());
+    }
     header(ui, ws, p, pal, ext.as_ref(), model.as_ref());
     ui.separator();
     if ext.is_none() && model.is_none() {
@@ -447,6 +461,21 @@ fn composer(ui: &mut egui::Ui, ws: &Workspace, p: &mut AgentPanelUi, pal: &Palet
         if selection.is_some() {
             chip(ui, pal, &mut p.chip_selection, "✂ Selection");
         }
+        let mut remove = None;
+        for (i, m) in p.mentions.iter().enumerate() {
+            let label = match m {
+                Mention::Note(n) => format!("@{}", n.stem()),
+                Mention::Tag(t) => format!("#{t}"),
+            };
+            let mut on = true;
+            chip(ui, pal, &mut on, &label);
+            if !on {
+                remove = Some(i);
+            }
+        }
+        if let Some(i) = remove {
+            p.mentions.remove(i);
+        }
         if ext.is_none() {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.selectable_value(&mut p.agent_mode, true, "Agent").on_hover_text("Reads your notes and suggests changes");
@@ -463,6 +492,7 @@ fn composer(ui: &mut egui::Ui, ws: &Workspace, p: &mut AgentPanelUi, pal: &Palet
         resp.request_focus();
         p.focus_input = false;
     }
+    mention_suggestions(ui, ws, p, pal, resp.has_focus());
     let enter = resp.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
     if enter && p.input.ends_with('\n') {
         p.input.pop();
@@ -480,7 +510,8 @@ fn composer(ui: &mut egui::Ui, ws: &Workspace, p: &mut AgentPanelUi, pal: &Palet
                 let text = std::mem::take(&mut p.input);
                 let note_ctx = if p.chip_note { note.as_ref() } else { None };
                 let sel_ctx = if p.chip_selection { selection.as_deref() } else { None };
-                p.send(ws, text.trim(), note_ctx, sel_ctx, ext.cloned(), model.cloned());
+                let mentions = std::mem::take(&mut p.mentions);
+                p.send(ws, text.trim(), note_ctx, sel_ctx, &mentions, ext.cloned(), model.cloned());
                 p.focus_input = true;
             }
         }
@@ -502,6 +533,57 @@ fn composer(ui: &mut egui::Ui, ws: &Workspace, p: &mut AgentPanelUi, pal: &Palet
         "Edits to your notes arrive as suggestions in the Inbox."
     };
     ui.label(RichText::new(note_line).size(11.0).color(pal.faint));
+}
+
+/// The `@word` or `#word` being typed at the end of `input`, if any.
+fn mention_query(input: &str) -> Option<(char, &str)> {
+    let word = input.rsplit(char::is_whitespace).next()?;
+    let mut chars = word.chars();
+    let sigil = chars.next().filter(|c| matches!(c, '@' | '#'))?;
+    Some((sigil, chars.as_str()))
+}
+
+/// While an `@note` or `#tag` is being typed: matching notes or tags under
+/// the box. A click or Tab turns the word into a chip.
+fn mention_suggestions(ui: &mut egui::Ui, ws: &Workspace, p: &mut AgentPanelUi, pal: &Palette, focused: bool) {
+    let Some((sigil, q)) = mention_query(&p.input) else { return };
+    let options: Vec<(String, Mention)> = if sigil == '@' {
+        if q.is_empty() {
+            return;
+        }
+        ws.index().read().quick_open(q, 5).into_iter().map(|h| (format!("@{}", h.path.stem()), Mention::Note(h.path))).collect()
+    } else {
+        let ql = q.to_lowercase();
+        ws.index()
+            .read()
+            .tags()
+            .into_iter()
+            .filter(|(t, _)| t.to_lowercase().contains(&ql))
+            .take(5)
+            .map(|(t, _)| (format!("#{t}"), Mention::Tag(t)))
+            .collect()
+    };
+    if options.is_empty() {
+        return;
+    }
+    let tab = focused && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab));
+    let mut picked = tab.then(|| options[0].1.clone());
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new("Mention:").size(11.0).color(pal.faint));
+        for (label, m) in &options {
+            if ui.small_button(label).on_hover_text("Add it to the message (Tab adds the first)").clicked() {
+                picked = Some(m.clone());
+            }
+        }
+    });
+    if let Some(m) = picked {
+        let cut = p.input.len() - q.len() - 1;
+        p.input.truncate(cut);
+        if !p.mentions.contains(&m) {
+            p.mentions.push(m);
+        }
+        p.focus_input = true;
+    }
 }
 
 fn thousands(n: u32) -> String {
@@ -715,15 +797,62 @@ impl AgentPanelUi {
         }
     }
 
+    /// "Ask agent to reconcile": a new Agent-mode conversation about both
+    /// passages. Without a model, or while a run is going, the request waits
+    /// in the box for the person to send.
+    fn reconcile(
+        &mut self,
+        ws: &mut Workspace,
+        req: quire_app::trust_jobs::ReconcileRequest,
+        ext: Option<AcpAgent>,
+        model: Option<PanelModel>,
+    ) {
+        let mut notes: Vec<Mention> = Vec::new();
+        for a in &req.anchors {
+            let m = Mention::Note(a.path.clone());
+            if !notes.contains(&m) {
+                notes.push(m);
+            }
+        }
+        if self.running.is_some() || (ext.is_none() && model.is_none()) {
+            self.input = req.prompt;
+            self.mentions = notes;
+            self.focus_input = true;
+            if self.running.is_some() {
+                ws.notify(quire_app::NoticeLevel::Info, "The agent is busy. The request to reconcile is in its message box.");
+            }
+            return;
+        }
+        self.new_conversation(ws);
+        self.agent_mode = true;
+        self.send(ws, &req.prompt, None, None, &notes, ext, model);
+    }
+
     fn send(
         &mut self,
         ws: &Workspace,
         text: &str,
         note: Option<&NotePath>,
         selection: Option<&str>,
+        mentions: &[Mention],
         ext: Option<AcpAgent>,
         model: Option<PanelModel>,
     ) {
+        let notes: Vec<&str> = mentions
+            .iter()
+            .filter_map(|m| if let Mention::Note(n) = m { Some(n.as_str()) } else { None })
+            .filter(|n| note.is_none_or(|x| x.as_str() != *n))
+            .collect();
+        let tags: Vec<&str> = mentions.iter().filter_map(|m| if let Mention::Tag(t) = m { Some(t.as_str()) } else { None }).collect();
+        let read = |n: &str| -> String {
+            let p = NotePath::new(n);
+            ws.docs()
+                .iter()
+                .find(|d| d.path.as_ref() == Some(&p))
+                .map(|d| d.text().to_string())
+                .or_else(|| ws.vault().and_then(|v| v.read(&p).ok()))
+                .unwrap_or_default()
+        };
         let (Some(vault), Some(agent)) = (ws.vault().cloned(), ws.agent_store().cloned()) else { return };
         let root = ws.vault_root().map(PathBuf::from);
         self.history = None;
@@ -740,6 +869,7 @@ impl AgentPanelUi {
                 return;
             };
             let mut prompt = runner::context_message(note.map(NotePath::as_str), selection, None);
+            prompt.push_str(&runner::mentions_message(&notes, &tags, &[]));
             prompt.push_str(text);
             let slot = Arc::clone(&self.acp);
             std::thread::spawn(move || run_acp(&a, &root, &prompt, &agent, &device, &slot, &cancel, &tx));
@@ -756,6 +886,8 @@ impl AgentPanelUi {
             None
         };
         let mut content = runner::context_message(note.map(NotePath::as_str), selection, note_text.as_deref());
+        let texts: Vec<String> = if cap == Capability::ChatOnly { notes.iter().map(|n| read(n)).collect() } else { Vec::new() };
+        content.push_str(&runner::mentions_message(&notes, &tags, &texts));
         if !content.is_empty() {
             content.push('\n');
         }

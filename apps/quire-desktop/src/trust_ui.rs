@@ -6,7 +6,7 @@
 //!   actions (registered in `registry::INBOX_KINDS`);
 //! * the bar above a note whose citations need a look (`EDITOR_BANNERS`);
 //! * the note under a drifted citation's footnote (`paint_widget`);
-//! * Settings → Trust: ask style, citation checks, staleness, and the
+//! * Settings → AI (its Features section draws these): ask style, citation checks, staleness, and the
 //!   contradiction finder (Preview) with its estimate, cap and usage.
 
 use std::fmt::Write as _;
@@ -282,7 +282,29 @@ pub(crate) fn paint_widget(ui: &mut egui::Ui, ws: &Workspace, id: WidgetId, pal:
 
 // ------------------------------------------------------------------ settings
 
-/// Settings → Trust state.
+/// `text` (the note at `path`) with " ⚠ …" at the end of each flagged
+/// citation footnote, for the Markdown preview. Unchanged when nothing is
+/// flagged or the checks are for another version of the text.
+pub(crate) fn mark_flagged_citations(ws: &Workspace, path: &NotePath, mut text: String) -> String {
+    let mut checks: Vec<_> = ws.citation_checks(path).into_iter().filter(quire_app::trust_jobs::CiteCheck::flagged).collect();
+    checks.sort_by_key(|c| std::cmp::Reverse(c.citation.range.start));
+    for c in checks {
+        let r = c.citation.range.clone();
+        let Some(line) = text.get(r.clone()).filter(|l| l.starts_with(&format!("[^{}]:", c.citation.label))) else { continue };
+        let why = match c.status {
+            AnchorStatus::Lost => "the quoted text is gone",
+            AnchorStatus::Drifted { .. } => "the quoted text changed",
+            _ => "check this citation",
+        };
+        // Before the `quire:cite` comment, which the preview hides.
+        let visible = line.find("<!--").map_or(line, |i| &line[..i]);
+        let at = r.start + visible.trim_end().len();
+        text.insert_str(at, &format!(" ⚠ *{why}*"));
+    }
+    text
+}
+
+/// The trust part of Settings → AI: state.
 #[derive(Default)]
 pub(crate) struct TrustSettingsUi {
     /// Working out the first run's size: (passages, not yet read).
@@ -354,7 +376,7 @@ pub(crate) fn settings_tab(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut Featu
             None => {
                 let mut off = false;
                 ui.add_enabled(false, egui::Checkbox::new(&mut off, "Find contradictions"));
-                note(ui, pal, "Needs an AI model: set one up in Settings → AI (a provider, or one on this computer).");
+                note(ui, pal, "Needs an AI model: choose a provider or a model on this computer above.");
             }
             Some(m) => {
                 let cloud = m.locality() == Locality::Cloud;

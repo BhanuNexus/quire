@@ -398,6 +398,9 @@ fn search(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let limit = int(a, "limit", 10, 1, 50);
     let budget = bounds::max_tokens(a, 2_000);
     let filters = search_filters(cx, a);
+    if let Err(e) = filters.validate() {
+        return ToolOutput::error("invalid_args", format!("`filters.where` isn't valid: {e}"));
+    }
     let fingerprint = format!("q:{}", ContentHash::of(&format!("{query}\u{1}{filters:?}\u{1}{limit}")).hex());
     let skip = match bounds::start(a, &fingerprint) {
         Start::Beginning => 0,
@@ -414,13 +417,22 @@ fn search(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         let sec = h.heading.as_deref().map(|x| format!(" › {x}")).unwrap_or_default();
         let how = if h.by_meaning { " (by meaning)" } else { "" };
         let snippet = if untrusted { fence_untrusted(&h.path, origin.as_deref(), &h.snippet) } else { h.snippet.clone() };
-        let line = format!("- {}{sec} (lines {}–{}){how}\n  {}", h.path, h.lines.0, h.lines.1, snippet.replace('\n', "\n  "));
+        let line = if h.page.is_some() {
+            // A page of a PDF or an image: "paper.pdf p. 3".
+            format!("- {}{how}\n  {}", h.place(), snippet.replace('\n', "\n  "))
+        } else {
+            format!("- {}{sec} (lines {}–{}){how}\n  {}", h.path, h.lines.0, h.lines.1, snippet.replace('\n', "\n  "))
+        };
         let st = json!({
             "uri": note_uri(&h.path), "path": h.path, "title": title, "heading": h.heading, "lines": [h.lines.0, h.lines.1],
             "snippet": h.snippet, "score": h.score, "by_meaning": h.by_meaning, "modified": modified(cx, &h.path),
             "version": ContentHash::of(&src), "last_actor": last_actor(cx, &h.path),
             "trust": if untrusted { "untrusted" } else { "trusted" },
         });
+        let mut st = st;
+        if let Some(p) = h.page {
+            st["page"] = json!(p);
+        }
         rows.push((line, st, h.path.clone()));
     }
     let n = bounds::fit(rows.iter().map(|r| r.0.as_str()), budget);

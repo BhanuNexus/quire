@@ -58,18 +58,28 @@ fn index(args: &[String]) -> Result<(), String> {
 
 fn search(args: &[String]) -> Result<(), String> {
     let arg = |i: usize| super::arg(args, i);
-    let (_, svc, _) = load(arg(1)?)?;
+    let (vault, svc, _) = load(arg(1)?)?;
+    // PDF pages too ("paper.pdf p. 3"), from the cache Quire keeps.
+    if quire_app::pdf_state::index_pdfs(&vault, &svc) > 0 {
+        svc.flush();
+    }
     svc.flush_semantic();
     let q = args[2..].join(" ");
     let t = Instant::now();
     let hits = svc.hybrid_search(&q, 20);
+    let filters = quire_app::index::SearchFilters { kind: quire_app::index::SearchKind::Attachments, ..Default::default() };
+    let pages = svc.search_sections(&q, &filters, 10);
     let us = t.elapsed().as_micros();
     for h in &hits {
         let mark = if h.by_meaning { "≈" } else { " " };
         let head = h.heading.as_deref().map(|x| format!(" › {x}")).unwrap_or_default();
         println!("{mark} {:.4}  {}{head}\n        {}", h.score, h.path, h.snippet);
     }
-    println!("{} results in {us} µs", hits.len());
+    for h in &pages {
+        let mark = if h.by_meaning { "≈" } else { " " };
+        println!("{mark} {:.4}  {}\n        {}", h.score, h.place(), h.snippet);
+    }
+    println!("{} results in {us} µs", hits.len() + pages.len());
     Ok(())
 }
 

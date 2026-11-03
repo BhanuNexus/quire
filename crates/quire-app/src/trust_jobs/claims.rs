@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Claims and the contradiction finder (design §C.5), a Preview that is
-//! off until the person turns it on (Settings → Trust).
+//! off until the person turns it on (Settings → AI).
 //!
 //! While the person is idle, the job goes through changed passages: their
 //! claims come from the cache or one model request each; new claims are

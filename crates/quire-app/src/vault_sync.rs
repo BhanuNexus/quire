@@ -616,6 +616,20 @@ pub fn default_device_name() -> String {
         .unwrap_or_else(|| format!("{} device", std::env::consts::OS))
 }
 
+/// Make sure only Quire 0.9 or later reads the sync folder or server from
+/// now on (vault settings and review history are about to travel with it).
+fn raise_min_reader(cfg: &SyncConfig) -> Result<(), String> {
+    if let Some(dir) = &cfg.folder {
+        return folder::raise_min_reader(dir, &cfg.space, 2).map_err(|e| e.to_string());
+    }
+    let negotiated = HttpTransport::negotiate(&cfg.server).map_err(|e| e.to_string())?;
+    if !matches!(negotiated, quire_sync::Negotiated::Version(v) if v >= 2) {
+        return Err("Update your sync server first: it needs Quire Sync Server 0.9 or later.".into());
+    }
+    let token = secrets::store().get(&token_name(&cfg.space)).ok_or("This device is missing the sync token")?;
+    HttpTransport::new(&cfg.server, cfg.space.clone(), &token).set_min_protocol(2).map_err(|e| e.to_string())
+}
+
 impl Workspace {
     fn sync_parts(&self) -> Result<(PathBuf, Vault), String> {
         let root = self.vault_root().ok_or("Open a vault folder first")?.to_path_buf();
@@ -745,19 +759,35 @@ impl Workspace {
     /// 0.8 device would see the settings files as deleted and pass that on.
     pub fn sync_share_vault_settings(&mut self, on: bool) -> Result<(), String> {
         let (root, _) = self.sync_parts()?;
-        let mut cfg = SyncConfig::load(&root).ok_or("Sync isn't set up for this vault")?;
+        let cfg = SyncConfig::load(&root).ok_or("Sync isn't set up for this vault")?;
         if on && !cfg.shared_state {
-            if let Some(dir) = &cfg.folder {
-                folder::raise_min_reader(dir, &cfg.space, 2).map_err(|e| e.to_string())?;
-            } else {
-                let negotiated = HttpTransport::negotiate(&cfg.server).map_err(|e| e.to_string())?;
-                if !matches!(negotiated, quire_sync::Negotiated::Version(v) if v >= 2) {
-                    return Err("Update your sync server first: it needs Quire Sync Server 0.9 or later.".into());
-                }
-                let token = secrets::store().get(&token_name(&cfg.space)).ok_or("This device is missing the sync token")?;
-                HttpTransport::new(&cfg.server, cfg.space.clone(), &token).set_min_protocol(2).map_err(|e| e.to_string())?;
-            }
+            raise_min_reader(&cfg)?;
         }
+        self.sync_set_shared_state(on)
+    }
+
+    /// [`Self::sync_share_vault_settings`] for the UI thread: turning it on
+    /// first raises the oldest version that may read the vault (a request
+    /// to the sync server) in the background. Give the result to
+    /// [`Self::sync_set_shared_state`] when it is `Ok`.
+    pub fn sync_share_vault_settings_in_background(&self, on: bool) -> Result<Receiver<Result<(), String>>, String> {
+        let (root, _) = self.sync_parts()?;
+        let cfg = SyncConfig::load(&root).ok_or("Sync isn't set up for this vault")?;
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        if on && !cfg.shared_state {
+            std::thread::spawn(move || {
+                let _ = tx.send(raise_min_reader(&cfg));
+            });
+        } else {
+            let _ = tx.send(Ok(()));
+        }
+        Ok(rx)
+    }
+
+    /// Record whether vault settings and review history sync, and restart sync.
+    pub fn sync_set_shared_state(&mut self, on: bool) -> Result<(), String> {
+        let (root, _) = self.sync_parts()?;
+        let mut cfg = SyncConfig::load(&root).ok_or("Sync isn't set up for this vault")?;
         cfg.shared_state = on;
         cfg.save(&root)?;
         self.start_sync();

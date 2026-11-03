@@ -24,7 +24,7 @@ use std::time::Instant;
 use quire_agent::{Actor, Change, ChangeSet};
 use quire_index::semantic::SemanticIndex;
 use quire_intel::anchor::{self, Anchor, AnchorStatus};
-use quire_intel::chat::{ChatModel, LanguageModelChat, Locality};
+use quire_intel::chat::ChatModel;
 use quire_markdown::Value;
 use quire_vault::{NotePath, VaultEvent};
 
@@ -186,25 +186,12 @@ impl TrustState {
 
 // ------------------------------------------------------------------ model
 
-/// Where the configured provider runs: on this computer or a server here
-/// (Ollama, LM Studio) when its address is local, else the cloud.
-fn locality(settings: &crate::Settings) -> Locality {
-    let (base, _) = crate::ai::resolved(settings);
-    let host = base.split("://").nth(1).unwrap_or(&base).split(['/', ':']).next().unwrap_or_default().to_ascii_lowercase();
-    let local = matches!(host.as_str(), "localhost" | "127.0.0.1" | "0.0.0.0" | "[")
-        || host.rsplit('.').next() == Some("local")
-        || base.contains("[::1]");
-    if local { Locality::LocalServer } else { Locality::Cloud }
-}
-
 impl Workspace {
-    /// The configured AI model as a chat model, when there is one (not the
-    /// offline stand-in). Trust features use it only once turned on.
+    /// The configured AI model as a chat model, when there is one: the
+    /// provider, else the on-device model ([`crate::ai::chat_model`]).
+    /// Trust features use it only once turned on.
     pub fn trust_chat(&self) -> Option<Arc<dyn ChatModel>> {
-        if self.assistant.is_offline() {
-            return None;
-        }
-        Some(Arc::new(LanguageModelChat::new(Arc::clone(&self.assistant), locality(&self.settings))))
+        self.chat.clone()
     }
 
     /// The latest citation checks of `path`.
@@ -300,18 +287,12 @@ impl Workspace {
         let Some(id_a) = self.open_note(&a.path) else { return };
         crate::nav::pin(self, id_a);
         self.jump_to_line(la.0);
-        if a.path != b.path {
-            // The split shows the most recent other note: make that `a`.
-            if let Some(i) = self.docs.iter().position(|d| d.id == id_a) {
-                let doc = self.docs.remove(i);
-                self.docs.push(doc);
-                self.active = Some(self.docs.len() - 1);
-            }
-            if let Some(id_b) = self.open_note(&b.path) {
-                crate::nav::pin(self, id_b);
-                self.jump_to_line(lb.0);
-                self.request_ui(UiRequest::Split);
-            }
+        if a.path != b.path
+            && let Some(id_b) = self.open_note(&b.path)
+        {
+            crate::nav::pin(self, id_b);
+            self.jump_to_line(lb.0);
+            self.request_ui(UiRequest::SideBySide(a.path.clone(), b.path.clone()));
         }
         self.request_ui(UiRequest::RevealCaret);
     }
@@ -462,7 +443,7 @@ pub(crate) fn tick(ws: &mut Workspace, now: Instant) -> bool {
         ws.features.trust.settings_seen = Some(ws.settings.trust.clone());
         ws.features.trust.shared.set_settings(ws.settings.trust.clone());
     }
-    let key = format!("{}|{}|{}", ws.assistant.name(), ws.settings.ai_provider, ws.settings.ai_base_url);
+    let key = format!("{}|{}", ws.chat_generation, ws.chat.as_ref().map_or("", |c| c.name()));
     if ws.features.trust.chat_key.as_ref() != Some(&key) {
         ws.features.trust.chat_key = Some(key);
         let chat = ws.trust_chat();
@@ -666,19 +647,6 @@ mod tests {
     use super::*;
     use crate::Settings;
     use quire_vault::Vault;
-
-    #[test]
-    fn providers_are_local_by_address() {
-        let mut s = Settings { ai_provider: "openai".into(), ..Settings::default() };
-        assert_eq!(locality(&s), Locality::LocalServer, "the default is Ollama on this computer");
-        s.ai_base_url = "https://api.openai.com/v1".into();
-        assert_eq!(locality(&s), Locality::Cloud);
-        s.ai_base_url = "http://[::1]:1234".into();
-        assert_eq!(locality(&s), Locality::LocalServer);
-        s.ai_provider = "anthropic".into();
-        s.ai_base_url = String::new();
-        assert_eq!(locality(&s), Locality::Cloud);
-    }
 
     #[test]
     fn footnotes_are_found_by_label() {

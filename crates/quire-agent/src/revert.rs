@@ -136,12 +136,23 @@ impl AgentStore {
         None
     }
 
-    /// The selected events, oldest first.
+    /// The selected events, oldest first. An agent's changes include the
+    /// suggestions of its that the person accepted (`accept` entries naming
+    /// it in `from`): undoing what an agent did undoes those too, keeping
+    /// the person's own later edits like any other undo.
     fn revert_events(&self, sel: &RevertSelector) -> Vec<LedgerEntry> {
-        let q = LedgerQuery { since: sel.since, actor: sel.actor.clone(), run: sel.run.clone() };
+        let q = LedgerQuery { since: sel.since, actor: None, run: sel.run.clone() };
+        let by = |e: &LedgerEntry| -> Option<String> {
+            match e.op {
+                Op::Accept => e.from.clone(),
+                op if is_write(op) && e.actor.kind != ActorKind::Human => Some(e.actor.id.clone()),
+                _ => None,
+            }
+        };
         self.log(&q)
             .into_iter()
-            .filter(|e| is_write(e.op) && e.actor.kind != ActorKind::Human)
+            .filter(|e| by(e).is_some_and(|a| sel.actor.as_ref().is_none_or(|want| *want == a)))
+            .filter(|e| e.op != Op::Accept || e.snap_after.is_some() || e.after.is_some())
             .filter(|e| sel.batch.as_ref().is_none_or(|b| e.batch.as_ref() == Some(b)))
             .filter(|e| sel.until.is_none_or(|u| e.at <= u))
             .filter(|e| {

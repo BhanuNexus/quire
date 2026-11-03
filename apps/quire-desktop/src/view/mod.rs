@@ -1502,6 +1502,22 @@ impl FastEditor {
             if resp.hovered() {
                 ctx.set_cursor_icon(CursorIcon::Text);
             }
+            // Features' tooltips over the text (a citation's reference…),
+            // once the pointer rests and no button is down.
+            if resp.hovered()
+                && let Some(p) = ui.input(|i| (!i.pointer.any_down() && i.pointer.is_still()).then(|| i.pointer.hover_pos()).flatten())
+            {
+                let doc = ws.active_doc().expect("checked");
+                let at = self.hit(ui, &mut view, doc, &cx, origin, x0, p);
+                let buf = doc.buffer();
+                let line = buf.char_to_line(at);
+                let text = buf.line(line);
+                let text = text.trim_end_matches(['\n', '\r']);
+                let byte = buf.char_to_byte(at) - buf.char_to_byte(buf.line_to_char(line));
+                if let Some(tip) = crate::registry::hover_tip(ws, text, byte.min(text.len())) {
+                    resp.clone().on_hover_text_at_pointer(tip);
+                }
+            }
             // Screen readers: a multi-line text input named after the note,
             // whose value is the caret's line.
             {

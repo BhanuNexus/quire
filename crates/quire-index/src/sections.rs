@@ -85,6 +85,17 @@ pub struct SectionHit {
     pub page: Option<u32>,
 }
 
+impl SectionHit {
+    /// Where the hit is, for people: "paper.pdf p. 3" for a page of an
+    /// attachment, the note's path otherwise.
+    pub fn place(&self) -> String {
+        match self.page {
+            Some(p) => format!("{} p. {p}", self.path.file_name()),
+            None => self.path.to_string(),
+        }
+    }
+}
+
 /// A candidate part while fusing.
 struct Cand {
     path: NotePath,

@@ -294,6 +294,10 @@ impl QuireApp {
                 self.toggle_split();
                 return;
             }
+            UiRequest::SideBySide(a, b) => {
+                self.side_by_side(&a, &b);
+                return;
+            }
             UiRequest::Copy(text) => {
                 self.clipboard = Some(text);
                 return;
@@ -439,6 +443,24 @@ impl QuireApp {
             self.pick_side = Some(active);
             self.overlay = Some(Overlay::palette(Mode::Notes));
         }
+    }
+
+    /// `a` on the left, `b` on the right and active, whether or not a split
+    /// was open.
+    fn side_by_side(&mut self, a: &NotePath, b: &NotePath) {
+        if self.classic() {
+            self.ws.notify(NoticeLevel::Info, "Split view needs the fast editor (View: Switch editor)");
+            self.ws.open_note(b);
+            return;
+        }
+        let (Some(id_a), Some(id_b)) = (self.ws.open_note(a), self.ws.open_note(b)) else { return };
+        if id_a == id_b {
+            return;
+        }
+        self.ws.settings.show_preview = false;
+        self.split = Some(id_a);
+        self.split_left = true;
+        self.last_active = Some(id_b);
     }
 
     /// Open `p` in the other half of the editor (splitting it if needed).
@@ -721,6 +743,8 @@ impl QuireApp {
                 .inner;
             self.after_panel(&status);
             if self.ws.settings.show_sidebar && !focus {
+                // A PDF or canvas in front is what the Files tab marks.
+                self.sidebar.active_surface = self.surfaces.active.and_then(|i| self.surfaces.open.get(i)).map(|s| s.path().clone());
                 let out = egui::Panel::left("quire-sidebar")
                     .resizable(true)
                     .default_size(250.0)
