@@ -3,21 +3,24 @@
 //! Undoing what an agent (or a batch) did, from the ledger (design §A.1):
 //! "undo everything Claude Code did since 14:00".
 //!
-//! [`AgentStore::revert_plan`] is a dry run. For each note it takes the
-//! version before the first selected change and after the last one, and the
-//! note as it is now:
+//! [`AgentStore::revert_plan`] is a dry run. For each note it undoes the
+//! selected changes one at a time, newest first, starting from the note as
+//! it is now:
 //!
-//! * now equal to "after": go back to "before";
-//! * otherwise undo three-way (`merge3(base = after, mine = now, theirs =
-//!   before)`), which keeps edits made since; if those edits overlap the
-//!   agent's, the note gets a **revert proposal** for review instead (no
-//!   conflict markers are ever written);
+//! * each change is undone three-way (`merge3(base = after it, mine = the
+//!   text so far, theirs = before it)`), which keeps edits made by anyone
+//!   else, both after the changes and between them (the person typing
+//!   between two agent writes, or between two accepted suggestions);
+//! * if those edits overlap the agent's, the note gets a **revert
+//!   proposal** for review instead (no conflict markers are ever written);
 //! * a note the agent created is trashed (or proposed for deletion if it was
 //!   edited since); a renamed note is renamed back when the old name is
 //!   free; a deleted one is restored.
 //!
 //! [`AgentStore::revert_apply`] carries the plan out as one batch with its
 //! own ledger `batch` id, so the revert itself can be undone the same way.
+//! It reads every note again first: a note edited since the dry run gets
+//! the undo merged into the new text, or a proposal when they overlap.
 
 use std::collections::BTreeMap;
 
@@ -31,7 +34,8 @@ use crate::proposal::{Proposal, ProposalChange, ProposalStatus, ProposalStore};
 use crate::store::AgentStore;
 
 /// Which events to undo; empty fields match everything (except the person's
-/// own edits, which are never undone this way).
+/// own edits, which are undone this way only by `batch`: a tag rename or
+/// another batch the person ran).
 #[derive(Debug, Clone, Default)]
 pub struct RevertSelector {
     /// Actor id (`mcp:claude-code`).
@@ -51,10 +55,13 @@ pub struct RevertSelector {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RevertAction {
-    /// Write this text (a clean three-way undo).
-    Restore { text: String },
-    /// Move a file the agent created to the trash.
-    Trash,
+    /// Write this text (a clean three-way undo). `from` is the note as it
+    /// was when the plan was made: if it changed since, the undo is merged
+    /// into the new text when applied.
+    Restore { text: String, from: String },
+    /// Move a file the agent created to the trash (`was`: its hash when the
+    /// plan was made; edited since, it is proposed for deletion instead).
+    Trash { was: ContentHash },
     /// Rename back to this path.
     RenameBack { to: NotePath },
     /// Bring back a deleted note from the trash or history.
@@ -78,7 +85,7 @@ impl RevertStep {
         let name = self.path.stem();
         match &self.action {
             RevertAction::Restore { .. } => format!("Undo the changes to “{name}”"),
-            RevertAction::Trash => format!("Move “{name}” (created by the agent) to the trash"),
+            RevertAction::Trash { .. } => format!("Move “{name}” (created by the agent) to the trash"),
             RevertAction::RenameBack { to } => format!("Rename “{name}” back to “{}”", to.stem()),
             RevertAction::Undelete { .. } => format!("Bring back “{name}”"),
             RevertAction::Propose { .. } => format!("“{name}” was edited since: suggest the undo for review"),
@@ -113,6 +120,54 @@ const fn is_write(op: Op) -> bool {
     matches!(op, Op::Write | Op::Create | Op::Rename | Op::Delete | Op::Revert)
 }
 
+/// Whether `e` brought the note into being: a create, or the acceptance of
+/// a suggested new note (an `accept` with only an "after").
+fn creates(e: &LedgerEntry) -> bool {
+    e.op == Op::Create || (e.op == Op::Accept && e.before.is_none() && e.snap_before.is_none())
+}
+
+const BEFORE_GONE: &str = "the version before the change isn't in history any more";
+const AFTER_GONE: &str = "the agent's version isn't in history any more";
+
+/// A three-way merge where overlapping lines keep `mine`.
+fn merge_keep_mine(base: &str, mine: &str, theirs: &str) -> String {
+    use quire_text::merge::Region;
+    let mut out = String::new();
+    for r in quire_text::merge::merge3_regions(base, mine, theirs) {
+        let lines = match &r {
+            Region::Same(l) | Region::Both(l) => l,
+            Region::Mine { mine, .. } | Region::Conflict { mine, .. } => mine,
+            Region::Theirs { theirs, .. } => theirs,
+        };
+        for l in lines {
+            out.push_str(l);
+        }
+    }
+    out
+}
+
+/// Undo `changes` (`(before, after)` texts, oldest first) from `start`,
+/// newest first. `None` when one doesn't merge cleanly, unless `force`:
+/// then overlapping lines keep the text as it is.
+fn undo_chain(start: &str, changes: &[(String, String)], force: bool) -> Option<String> {
+    let mut text = start.to_string();
+    for (before, after) in changes.iter().rev() {
+        if text == *after {
+            text.clone_from(before);
+            continue;
+        }
+        let m = quire_text::merge::merge3(after, &text, before);
+        text = if m.is_clean() {
+            m.text
+        } else if force {
+            merge_keep_mine(after, &text, before)
+        } else {
+            return None;
+        };
+    }
+    Some(text)
+}
+
 impl AgentStore {
     /// The text of `path` in history at `at` (a ledger `snap_*` time), or
     /// failing that, a version whose hash is `hash`.
@@ -145,10 +200,11 @@ impl AgentStore {
     /// the person's own later edits like any other undo.
     fn revert_events(&self, sel: &RevertSelector) -> Vec<LedgerEntry> {
         let q = LedgerQuery { since: sel.since, actor: None, run: sel.run.clone() };
+        // The person's own writes are undone only as a whole batch they ran.
         let by = |e: &LedgerEntry| -> Option<String> {
             match e.op {
                 Op::Accept => e.from.clone(),
-                op if is_write(op) && e.actor.kind != ActorKind::Human => Some(e.actor.id.clone()),
+                op if is_write(op) && (e.actor.kind != ActorKind::Human || sel.batch.is_some()) => Some(e.actor.id.clone()),
                 _ => None,
             }
         };
@@ -167,6 +223,60 @@ impl AgentStore {
                     .is_none_or(|ps| e.path.as_ref().is_some_and(|p| ps.contains(p)) || e.to.as_ref().is_some_and(|p| ps.contains(p)))
             })
             .collect()
+    }
+
+    /// What undoing `evs` (one note's selected events, oldest first) takes,
+    /// from the note as it is now (`current`). `Err` says why it can't be
+    /// undone.
+    fn plan_note(&self, where_: &[&NotePath], evs: &[&LedgerEntry], current: Option<String>) -> Result<Option<RevertAction>, String> {
+        let (Some(first), Some(last)) = (evs.first(), evs.last()) else { return Ok(None) };
+        let created = creates(first);
+        let deleted = last.op == Op::Delete && evs.len() > usize::from(created);
+        if created && current.is_none() {
+            return Ok(None);
+        }
+        // The texts before and after each change in between, oldest first.
+        let middle = &evs[usize::from(created)..evs.len() - usize::from(deleted)];
+        let mut changes = Vec::with_capacity(middle.len());
+        for e in middle {
+            let before = self.version(where_, e.snap_before, e.before.as_ref()).ok_or(BEFORE_GONE)?;
+            let after = self.version(where_, e.snap_after, e.after.as_ref()).ok_or(AFTER_GONE)?;
+            changes.push((before, after));
+        }
+        if deleted {
+            if current.is_some() {
+                return Err("a note with that name exists again".into());
+            }
+            let gone = self.version(where_, last.snap_before, last.before.as_ref()).ok_or(BEFORE_GONE)?;
+            let text = undo_chain(&gone, &changes, false).or_else(|| undo_chain(&gone, &changes, true)).unwrap_or(gone);
+            return Ok(Some(RevertAction::Undelete { text }));
+        }
+        let Some(current) = current else { return Err("it was deleted since".into()) };
+        if created {
+            // Trashed only when what is left is exactly what the agent made.
+            let made = self.version(where_, first.snap_after, first.after.as_ref());
+            let rest = undo_chain(&current, &changes, false);
+            return Ok(Some(match (made, rest) {
+                (Some(m), Some(r)) if m == r => RevertAction::Trash { was: ContentHash::of(&current) },
+                _ => RevertAction::ProposeDelete,
+            }));
+        }
+        let Some((first_before, _)) = changes.first() else { return Ok(None) };
+        if current == *first_before {
+            return Ok(None);
+        }
+        match undo_chain(&current, &changes, false) {
+            Some(text) if text == current => Ok(None),
+            Some(text) => Ok(Some(RevertAction::Restore { text, from: current })),
+            None => {
+                // For review: the undo of every change from the agent's last
+                // version (the person's edits between them kept); the review
+                // rebases it on the note and marks the overlaps.
+                let base = changes.last().map(|(_, a)| a.clone()).unwrap_or_default();
+                let text = undo_chain(&base, &changes, true).unwrap_or_else(|| first_before.clone());
+                Ok(Some(RevertAction::Propose { base, text }))
+            }
+        }
     }
 
     /// A dry run of undoing the selected events.
@@ -216,57 +326,15 @@ impl AgentStore {
             }
         }
         for (path, evs) in by_path {
-            let (Some(first), Some(last)) = (evs.first(), evs.last()) else { continue };
             let recorded: Vec<&NotePath> = evs.iter().filter_map(|e| e.path.as_ref()).collect();
             let here = now_at.get(&path).unwrap_or(&path);
             let mut where_ = vec![here, &path];
             where_.extend(recorded.iter().copied());
             let current = vault.read(here).ok();
-            let created = first.op == Op::Create;
-            let deleted = last.op == Op::Delete;
-            let after = if deleted { None } else { self.version(&where_, last.snap_after, last.after.as_ref()) };
-            if created {
-                match (&current, &after) {
-                    (None, _) => {}
-                    (Some(c), Some(a)) if c == a => plan.steps.push(RevertStep { path, action: RevertAction::Trash }),
-                    (Some(_), _) => plan.steps.push(RevertStep { path, action: RevertAction::ProposeDelete }),
-                }
-                continue;
-            }
-            let Some(before) = self.version(&where_, first.snap_before, first.before.as_ref()) else {
-                plan.skipped.push((path, "the version before the change isn't in history any more".into()));
-                continue;
-            };
-            if deleted {
-                if current.is_some() {
-                    plan.skipped.push((path, "a note with that name exists again".into()));
-                } else {
-                    plan.steps.push(RevertStep { path, action: RevertAction::Undelete { text: before } });
-                }
-                continue;
-            }
-            let Some(current) = current else {
-                plan.skipped.push((path, "it was deleted since".into()));
-                continue;
-            };
-            if current == before {
-                continue;
-            }
-            let Some(after) = after else {
-                plan.skipped.push((path, "the agent's version isn't in history any more".into()));
-                continue;
-            };
-            if current == after {
-                plan.steps.push(RevertStep { path, action: RevertAction::Restore { text: before } });
-                continue;
-            }
-            let m = quire_text::merge::merge3(&after, &current, &before);
-            if m.is_clean() {
-                if m.text != current {
-                    plan.steps.push(RevertStep { path, action: RevertAction::Restore { text: m.text } });
-                }
-            } else {
-                plan.steps.push(RevertStep { path, action: RevertAction::Propose { base: after, text: before } });
+            match self.plan_note(&where_, &evs, current) {
+                Ok(Some(action)) => plan.steps.push(RevertStep { path, action }),
+                Ok(None) => {}
+                Err(why) => plan.skipped.push((path, why)),
             }
         }
         if plan.steps.is_empty() && plan.note.is_none() {
@@ -302,8 +370,23 @@ impl AgentStore {
             e.batch = Some(batch.clone());
             let r: Result<(), WriteError> = (|| {
                 match &s.action {
-                    RevertAction::Restore { text } => {
+                    RevertAction::Restore { text, from } => {
                         let cur = vault.read(&s.path)?;
+                        // Edited since the dry run: merge the undo into the new text.
+                        let text = if cur == *from {
+                            text.clone()
+                        } else {
+                            let m = quire_text::merge::merge3(from, &cur, text);
+                            if !m.is_clean() {
+                                proposed.push(ProposalChange::edit(&s.path, from, text));
+                                return Ok(());
+                            }
+                            if m.text == cur {
+                                return Ok(());
+                            }
+                            m.text
+                        };
+                        let text = &text;
                         let _ = vault.snapshot(&s.path, &cur, now - 1, true);
                         e.snap_before = self.newest_snapshot(&s.path);
                         e.before = Some(ContentHash::of(&cur));
@@ -312,8 +395,12 @@ impl AgentStore {
                         e.snap_after = self.newest_snapshot(&s.path);
                         e.after = Some(ContentHash::of(text));
                     }
-                    RevertAction::Trash => {
+                    RevertAction::Trash { was } => {
                         let cur = vault.read(&s.path)?;
+                        if ContentHash::of(&cur) != *was {
+                            proposed.push(ProposalChange::delete(&s.path));
+                            return Ok(());
+                        }
                         let _ = vault.snapshot(&s.path, &cur, now - 1, true);
                         e.snap_before = self.newest_snapshot(&s.path);
                         e.before = Some(ContentHash::of(&cur));
@@ -394,9 +481,9 @@ impl AgentStore {
         let mut changes = Vec::new();
         for s in &plan.steps {
             changes.push(match &s.action {
-                RevertAction::Restore { text } => ProposalChange::edit(&s.path, &vault.read(&s.path)?, text),
+                RevertAction::Restore { text, from } => ProposalChange::edit(&s.path, from, text),
                 RevertAction::Propose { base, text } => ProposalChange::edit(&s.path, base, text),
-                RevertAction::Trash | RevertAction::ProposeDelete => ProposalChange::delete(&s.path),
+                RevertAction::Trash { .. } | RevertAction::ProposeDelete => ProposalChange::delete(&s.path),
                 RevertAction::RenameBack { to } => ProposalChange::rename(&s.path, to, true),
                 RevertAction::Undelete { text } => ProposalChange::create(&s.path, text),
             });

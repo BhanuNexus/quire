@@ -372,6 +372,11 @@ impl Workspace {
         let Some(doc) = self.doc(doc_id) else { return };
         let current = doc.text().to_string();
         let prior = r.proposal.clone();
+        // The text the acceptance starts from (with any typing not saved yet)
+        // goes to history: undoing the suggestion later needs it.
+        if let Some(vault) = self.vault.as_ref() {
+            self.history.keep(vault, &path, &current, crate::history_ops::now_ms() - 1, true);
+        }
         match store.decide_checked(&prior.id, &path, decisions, &current, Some(prior.updated)) {
             Ok(d) => {
                 if d.text != current

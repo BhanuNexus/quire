@@ -305,7 +305,9 @@ fn accepted_any(r: &Run, runs: &[Run]) -> bool {
         })
 }
 
-fn start_plan(ws: &Workspace, a: &mut ActivityUi, sel: RevertSelector, title: String) {
+fn start_plan(ws: &mut Workspace, a: &mut ActivityUi, sel: RevertSelector, title: String) {
+    // The plan works from the files: they must hold what is typed first.
+    ws.save_open_notes();
     let Some(store) = ws.agent_store().cloned() else { return };
     a.plan = None;
     a.pending_title = title;
@@ -350,6 +352,24 @@ fn run_card(ui: &mut egui::Ui, ws: &Workspace, a: &mut ActivityUi, r: &Run, runs
                 {
                     let sel = selector_for(r);
                     let title = format!("Undo {}'s changes from {}", r.actor_label, short_time(r.start));
+                    *act = Some(Box::new(move |ws: &mut Workspace, _, _| {
+                        ws.features.agent.revert_preset = Some((sel, title));
+                        ws.request_ui(UiRequest::Feature(quire_app::Command::UndoAgentChanges));
+                    }));
+                }
+                // The person's own batches (a tag or property rename): undone
+                // from the ledger, also after a restart.
+                if r.kind == ActorKind::Human
+                    && r.writes() > 0
+                    && let Some(b) = r.batch.clone()
+                    && ui.small_button("Undo batch").on_hover_text("See what undoing this batch would do, then decide").clicked()
+                {
+                    let title = r
+                        .events
+                        .iter()
+                        .find_map(|e| e.other.get("title").and_then(|t| t.as_str()).map(|t| format!("Undo: {t}")))
+                        .unwrap_or_else(|| format!("Undo the batch from {}", short_time(r.start)));
+                    let sel = RevertSelector { batch: Some(b), ..RevertSelector::default() };
                     *act = Some(Box::new(move |ws: &mut Workspace, _, _| {
                         ws.features.agent.revert_preset = Some((sel, title));
                         ws.request_ui(UiRequest::Feature(quire_app::Command::UndoAgentChanges));
@@ -475,7 +495,7 @@ impl OverlayView for RevertOverlay {
 }
 
 /// The dialog's body: the agent and time, and the plan once worked out.
-fn revert_body(ui: &mut egui::Ui, ws: &Workspace, a: &mut ActivityUi, now: i64, pal: &Palette) {
+fn revert_body(ui: &mut egui::Ui, ws: &mut Workspace, a: &mut ActivityUi, now: i64, pal: &Palette) {
     let mut agents: Vec<(String, String)> = ws
         .features
         .agent
@@ -557,7 +577,7 @@ impl RevertOverlay {
         let steps = (0..30)
             .map(|i| RevertStep {
                 path: NotePath::new(format!("Notes/Note {i}.md")),
-                action: RevertAction::Restore { text: String::new() },
+                action: RevertAction::Restore { text: String::new(), from: String::new() },
             })
             .collect();
         let plan = RevertPlan { steps, ..RevertPlan::default() };

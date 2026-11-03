@@ -46,4 +46,9 @@ replaces the newest snapshot only when that snapshot was also a typing save
 (no provenance) made less than two minutes earlier, so a human save right
 after an agent's change never removes the agent's version. Pruning removes a
 provenance file with its snapshot, and removes provenance files whose
-snapshot is gone (0.8 prunes without knowing about them).
+snapshot is gone (0.8 prunes without knowing about them). Thinning (the
+newest version per hour, day and week) never removes, for 90 days, a
+snapshot with provenance or the snapshot just before it: undoing that change
+needs both.
+* The person's tag and property batches write their new versions with
+  provenance too (`actor` the person, `op: write`), so they stay undoable.

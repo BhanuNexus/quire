@@ -188,7 +188,7 @@ impl AgentStore {
         let known: Vec<HunkDecision> =
             decisions.iter().filter(|d| hunks.iter().any(|h| h.id == d.hunk)).map(|d| HunkDecision { at: now, ..d.clone() }).collect();
         let applied = review::apply(current, &hunks, review::choices_from(&known));
-        let (snap_before, snap_after) = commit(&p, &applied.text)?;
+        let prior = p.clone();
         let c = &mut p.changes[i];
         c.decisions.extend(known.iter().cloned());
         if applied.pending == 0 {
@@ -208,9 +208,21 @@ impl AgentStore {
         if let Some(s) = p.settled_status() {
             p.status = s;
         }
+        // The proposal first, then the note: a decision that lost a race
+        // with another process writes nothing.
         if !store.save_if(&p, loaded)? {
             return Err(DecideError::Changed);
         }
+        let (snap_before, snap_after) = match commit(&prior, &applied.text) {
+            Ok(snaps) => snaps,
+            Err(e) => {
+                // The note couldn't be written: put the proposal back as it was.
+                let mut back = prior;
+                back.updated = now + 1;
+                let _ = store.save_if(&back, now);
+                return Err(e.into());
+            }
+        };
         if p.status != ProposalStatus::Pending {
             let _ = store.archive(&p.id);
         }
@@ -512,5 +524,57 @@ impl AgentStore {
     /// Resolved and expired proposals, newest first ("Show resolved").
     pub fn archived_proposals(&self) -> Vec<Proposal> {
         self.proposals_store().archived(self.now_ms())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::{Change, ChangeSet, DeviceInfo, FixedClock, SubmitOutcome, Via};
+
+    /// L5: the proposal is recorded before the note is written, and a note
+    /// that can't be written leaves the proposal as it was.
+    #[test]
+    fn accepting_into_a_closed_note_records_the_proposal_first() {
+        let vault = quire_vault::Vault::in_memory(&[("N.md", "a\nb\n")]);
+        let store = AgentStore::open(&vault, DeviceInfo { id: "d".into(), name: "D".into() }, FixedClock::new(1_793_000_000_000));
+        let agent = Actor::agent("mcp:x", "X", Via::McpStdio, "d");
+        let cs = ChangeSet::one(Change::Edit { path: "N.md".into(), new_text: "A\nb\n".into() });
+        let SubmitOutcome::Proposed { id, .. } = store.submit(&agent, cs).unwrap() else { panic!() };
+        let path = NotePath::new("N.md");
+        let r = store.review(&id, &path, "a\nb\n");
+        let accept = |h: &crate::proposal::Hunk| HunkDecision {
+            hunk: h.id.clone(),
+            action: HunkAction::Accepted,
+            at: 0,
+            text: None,
+            other: crate::actor::Other::new(),
+        };
+        let ds: Vec<HunkDecision> = r.hunks.iter().map(accept).collect();
+        let loaded = store.proposal(&id).unwrap().updated;
+        // A failing write: nothing recorded, the proposal untouched.
+        let e = store.decide_inner(&id, &path, &ds, "a\nb\n", Some(loaded), |_, _| Err(WriteError::Io("disk full".into())));
+        assert!(matches!(e, Err(DecideError::Write(_))));
+        let p = store.proposal(&id).unwrap();
+        assert_eq!(p.status, ProposalStatus::Pending);
+        assert!(p.changes[0].decisions.is_empty());
+        assert!(!store.log(&crate::LedgerQuery::default()).iter().any(|e| e.op == Op::Accept));
+        // The write happens after the proposal is saved.
+        let seen = p.updated;
+        let saved_first = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&saved_first);
+        let check = store.clone();
+        let id2 = id.clone();
+        store
+            .decide_inner(&id, &path, &ds, "a\nb\n", Some(seen), move |_, _| {
+                let on_disk = check.proposal(&id2).map(|p| p.updated);
+                flag.store(on_disk.is_none_or(|u| u != seen), std::sync::atomic::Ordering::SeqCst);
+                Ok((None, None))
+            })
+            .unwrap();
+        assert!(saved_first.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(store.log(&crate::LedgerQuery::default()).iter().any(|e| e.op == Op::Accept));
     }
 }
