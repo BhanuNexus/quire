@@ -12,6 +12,15 @@ publish.workspace = true
 [dependencies]
 quire-intel.workspace = true
 quire-agent.workspace = true
+quire-app.workspace = true
+quire-mcp.workspace = true
+quire-ai = { workspace = true, features = ["client"] }
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

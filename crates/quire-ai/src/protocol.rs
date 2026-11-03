@@ -22,6 +22,8 @@ pub mod method {
     pub const CANCEL: &str = "cancel";
     pub const UNLOAD: &str = "unload";
     pub const SHUTDOWN: &str = "shutdown";
+    /// What is loaded and how much memory the engine uses.
+    pub const STATUS: &str = "status";
 }
 
 /// Error codes in replies.
@@ -33,6 +35,10 @@ pub mod code {
     pub const VERSION_MISMATCH: i32 = 1;
     pub const MODEL_NOT_LOADED: i32 = 2;
     pub const CANCELLED: i32 = 3;
+    /// The model file couldn't be read or isn't what `sha256` says.
+    pub const LOAD_FAILED: i32 = 4;
+    /// Inference failed (out of memory, a bad input).
+    pub const FAILED: i32 = 5;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,6 +113,18 @@ pub struct LoadParams {
     pub kind: ModelKind,
     #[serde(default)]
     pub ctx: u32,
+    /// Unload after this many idle seconds (0: the engine's default, 300).
+    #[serde(default)]
+    pub idle_unload_s: u64,
+    /// Threads for inference (0: automatic).
+    #[serde(default)]
+    pub threads: u32,
+    /// `"auto"`, `"on"` or `"off"` (Metal on macOS).
+    #[serde(default)]
+    pub gpu: String,
+    /// Model options from the catalog (pooling, prefixes, file names).
+    #[serde(default)]
+    pub options: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,6 +155,8 @@ pub struct EmbedResult {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GenerateParams {
     pub model: String,
+    #[serde(default)]
+    pub system: String,
     /// Chat messages in `quire_intel::chat::ChatMessage` JSON form.
     pub messages: Vec<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -149,13 +169,49 @@ pub struct GenerateParams {
     pub json: bool,
 }
 
-/// Streamed `generate` events.
+/// Streamed `generate` events. A tool call is `{"id", "name", "input"}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum GenerateEvent {
     Delta { delta: String },
     ToolCall { tool_call: Value },
-    Done { done: bool, usage: Value },
+    Done { done: bool, usage: GenUsage },
+}
+
+/// `generate` usage and why it stopped (the `done` event).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct GenUsage {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    /// `end_turn`, `tool_use`, `max_tokens`, `stop_sequence`.
+    #[serde(default)]
+    pub stop: StopKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StopKind {
+    #[default]
+    EndTurn,
+    ToolUse,
+    MaxTokens,
+    StopSequence,
+}
+
+/// A `status` result.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct StatusResult {
+    pub loaded: Vec<LoadedModel>,
+    /// Resident memory of the engine process, when the OS reports it.
+    #[serde(default)]
+    pub rss_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoadedModel {
+    pub model: String,
+    pub kind: ModelKind,
+    pub mem_bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,6 +224,7 @@ pub struct PdfPage {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OcrParams {
+    /// The loaded OCR model (`ocrs`).
     pub model_set: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_path: Option<String>,

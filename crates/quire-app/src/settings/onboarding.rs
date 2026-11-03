@@ -15,12 +15,15 @@ pub struct OnboardingSettings {
     pub ai_done: bool,
     /// `""` (not asked yet), `"off"`, `"cloud"`, `"device"` or `"both"`.
     pub ai_choice: String,
+    /// The card offering the AI choice to people upgrading from 0.8 was
+    /// dismissed (it is never shown to new installs, who get the dialog).
+    pub upgrade_card_done: bool,
     #[serde(flatten)]
     pub other: toml::Table,
 }
 
 impl Default for OnboardingSettings {
     fn default() -> Self {
-        Self { ai_done: false, ai_choice: String::new(), other: toml::Table::new() }
+        Self { ai_done: false, ai_choice: String::new(), upgrade_card_done: false, other: toml::Table::new() }
     }
 }

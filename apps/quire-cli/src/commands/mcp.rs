@@ -91,7 +91,15 @@ fn stdio(args: &[String]) -> Result<(), String> {
             "quire mcp: since Quire 0.9, --allow-write writes per the vault's agent policy: directly in wiki/, as suggestions you review in Quire elsewhere."
         );
     }
-    let cfg = ServerConfig { allow_write, client_key, allow_private_urls: has(args, "--allow-private-urls"), ..ServerConfig::default() };
+    let cfg = ServerConfig {
+        allow_write,
+        client_key,
+        allow_private_urls: has(args, "--allow-private-urls"),
+        // WS-D: the built-in prompts and the person's AI for `ask` in model mode.
+        prompts: quire_assistant::prompts::mcp_defs(),
+        chat: quire_app::ai::chat_model(&quire_app::Settings::load()),
+        ..ServerConfig::default()
+    };
     let srv = Server::open_with(arg(args, 1)?, cfg)?;
     srv.start_pump();
     let stdin = std::io::stdin();
@@ -114,7 +122,13 @@ fn serve_http(args: &[String]) -> Result<(), String> {
     // Over HTTP, writes depend on each token's scopes.
     let srv = Server::open_with(
         vault,
-        ServerConfig { allow_write: true, allow_private_urls: has(args, "--allow-private-urls"), ..ServerConfig::default() },
+        ServerConfig {
+            allow_write: true,
+            allow_private_urls: has(args, "--allow-private-urls"),
+            prompts: quire_assistant::prompts::mcp_defs(),
+            chat: quire_app::ai::chat_model(&quire_app::Settings::load()),
+            ..ServerConfig::default()
+        },
     )?;
     let http = quire_mcp::http::HttpServer::start(srv, cfg)?;
     let consent = consent()?;

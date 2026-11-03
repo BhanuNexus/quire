@@ -1,0 +1,8 @@
+: ollama keep-alive
+
+data: {"id":"chatcmpl-2","object":"chat.completion.chunk","model":"llama3.2","choices":[{"index":0,"delta":{"role":"assistant","content":"- local"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-2","object":"chat.completion.chunk","model":"llama3.2","choices":[{"index":0,"delta":{"content":" answer"},"finish_reason":"stop"}]}
+
+data: [DONE]
+

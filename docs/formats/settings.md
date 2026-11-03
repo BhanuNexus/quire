@@ -11,9 +11,9 @@ workstream; every key defaults to off or unchanged.
 
 | Table | Owner | Keys |
 |---|---|---|
-| `[onboarding]` | WS-D | `ai_done`, `ai_choice` |
+| `[onboarding]` | WS-D | `ai_done`, `ai_choice`, `upgrade_card_done` |
 | `[ai_local]` | WS-D | `engine`, `embeddings`, `llm`, `ocr`, `embed_model`, `llm_model`, `threads`, `gpu`, `idle_unload_s`, `mirror_url` |
-| `[agent_panel]` | WS-D | `enabled`, `backend`, `max_steps`, `acp_command`, `acp_args`, `acp_risk_ack` |
+| `[agent_panel]` | WS-D | `enabled`, `backend`, `model` (`""`, `"provider"` or `"device"`), `max_steps`, `acp_command`, `acp_args`, `acp_risk_ack` |
 | `[trust]` | WS-C | `contradictions`, `claims_daily_cap`, `ask_before_tell`, `staleness`, `verify_citations` |
 | `[mcp_http]` | WS-B | `enabled`, `bind`, `port`, `public_url` |
 | `[editing]` | WS-F | `vim`, `tab_mode` (`"reuse"` or `"new"`), `display_titles`, `homepage` (a note's name or path), `two_pane`, `new_note_folder` (`"current"` or `"root"`) |
