@@ -1,2 +1,3 @@
-# Embedded with include_str! and compared byte for byte, so the same on every OS.
-skills/** text eol=lf
+# Fixtures and embedded files are compared byte for byte, so check out
+# text with LF on every OS (binaries are detected and left alone).
+* text=auto eol=lf
