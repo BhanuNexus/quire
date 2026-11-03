@@ -1022,13 +1022,14 @@ pub(crate) fn history(ctx: &egui::Context, st: &mut HistoryState, ws: &mut Works
                                         pal.text,
                                     );
                                     if let Some(w) = &who {
-                                        painter.text(
-                                            egui::pos2(left, rect.top() + 28.0),
-                                            egui::Align2::LEFT_CENTER,
-                                            w,
+                                        let mut job = egui::text::LayoutJob::simple_singleline(
+                                            w.clone(),
                                             egui::FontId::proportional(11.5),
                                             pal.muted,
                                         );
+                                        job.wrap = egui::text::TextWrapping::truncate_at_width(rect.width() - 16.0);
+                                        let galley = painter.layout_job(job);
+                                        painter.galley(egui::pos2(left, rect.top() + 28.0 - galley.size().y / 2.0), galley, pal.muted);
                                     }
                                 });
                             if r.clicked() {

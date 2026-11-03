@@ -128,3 +128,14 @@ widening is WS-C's).
 * **rmcp interop** (an optional job in §4.7) isn't wired; the recorded
   per-era sessions in `crates/quire-mcp/tests/fixtures/mcp-0.9-*.jsonl`
   cover the protocol surface.
+
+## Status after integration (wave 1)
+
+Done: `ChangeSet::accepted_from` (and MCP uses it), `Actor::unverified`
+(honoured by WS-A's `modes_for`), one vault key and `state.toml` (MCP uses
+the agent store's; read logging through `record_read`, default off),
+path-level decisions (`resolve_change`/`resolve_proposal`, used by the CLI),
+amend, `RevertPlan::steps` (MCP `revert` uses `propose_revert`), the `tasks`
+fields (plus `start`, `completed`, `reminder`, `time`), the CI eval step,
+the Sync checkbox, and Capture web page as a dialog. Open: WS-D's prompts and
+chat model.

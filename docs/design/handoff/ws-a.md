@@ -97,3 +97,14 @@ an inbox item by kind" if WS-C wants to draw them; ask.
   submit two change sets with the same `run`; the Inbox groups them by run.
 * `revert_plan(&RevertSelector { run: Some(run), .. })` + `revert_apply`
   restores the vault for "Revert run".
+
+## Status after integration (wave 1)
+
+All six requests are done (`docs/design/F0-notes.md`, "Integration (wave 1)
+additions"): the review banner is in `registry::EDITOR_BANNERS` (the Inbox
+card is gone), review keys reveal the caret through `UiRequest::RevealCaret`,
+Version history shows provenance and links to Agent activity, AGENTS.md is
+pinned in the Files tab, Alt shortcuts drop their text in `app.rs`
+(`drop_typed_key` is gone), and Undo agent changes is a dialog
+(`UiTarget::Overlay`; "Revert run" opens it through `revert_preset`). A
+review ends when its note is closed.

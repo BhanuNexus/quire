@@ -380,13 +380,14 @@ impl QuireApp {
         });
         // The key of an Alt shortcut also types its character (Alt+] gives
         // "]" on Linux and Windows, "‘" with Option on macOS): keep it out
-        // of the note, this frame and the next (it can arrive a frame late).
+        // of the note, this frame and the next (it can arrive a frame late,
+        // and Alt may be up again by the end of the frame).
         if alt_only {
             self.drop_alt_text = 2;
         }
         if self.drop_alt_text > 0 {
             self.drop_alt_text -= 1;
-            ctx.input_mut(|i| drop_alt_text(&mut i.events, i.modifiers));
+            ctx.input_mut(|i| drop_typed_text(&mut i.events));
         }
         for cmd in fired {
             self.run(cmd);
@@ -879,12 +880,10 @@ fn altgr_typed(m: Modifiers, typed: bool) -> bool {
     typed && m.alt && m.command
 }
 
-/// Take out the text an Alt key typed (not `AltGr`, which is Ctrl+Alt on
-/// Windows and types real characters).
-fn drop_alt_text(events: &mut Vec<egui::Event>, m: Modifiers) {
-    if m.alt && !m.command {
-        events.retain(|e| !matches!(e, egui::Event::Text(_)));
-    }
+/// Take out typed text: right after an Alt shortcut (not `AltGr`, which is
+/// Ctrl+Alt on Windows and types real characters), it is the shortcut key's.
+fn drop_typed_text(events: &mut Vec<egui::Event>) {
+    events.retain(|e| !matches!(e, egui::Event::Text(_)));
 }
 
 /// With `QUIRE_TRACE` set, report sections slower than 8 ms.
@@ -919,16 +918,7 @@ mod tests {
     fn alt_shortcuts_leave_no_character_in_the_note() {
         let text = |t: &str| egui::Event::Text(t.into());
         let mut ev = vec![text("]"), egui::Event::Copy];
-        drop_alt_text(&mut ev, Modifiers::ALT);
+        drop_typed_text(&mut ev);
         assert_eq!(ev, vec![egui::Event::Copy], "Alt+] typed \"]\"");
-        let mut ev = vec![text("‘")];
-        drop_alt_text(&mut ev, Modifiers::ALT | Modifiers::SHIFT);
-        assert!(ev.is_empty(), "Option+] on macOS");
-        let mut ev = vec![text("ł")];
-        drop_alt_text(&mut ev, Modifiers::ALT | Modifiers::COMMAND);
-        assert_eq!(ev.len(), 1, "AltGr+L types ł");
-        let mut ev = vec![text("a")];
-        drop_alt_text(&mut ev, Modifiers::NONE);
-        assert_eq!(ev.len(), 1, "after Alt is released, typing is typing");
     }
 }

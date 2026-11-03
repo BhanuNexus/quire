@@ -141,6 +141,126 @@ block in a shared table.
 * **Blocks:** registry WS-G block (`.canvas`, `.pdf` in `open_surface`; widgets); Cargo markers in quire-app and desktop (`quire-canvas`, `quire-pdf`, and `"quire-pdf/render"` in their `typeset` feature).
 * **Interface notes:** the canvas model and canonical writer exist and round-trip Obsidian files with unknown keys. `quire-pdf` has `text` (default) and `render` features; `hayro`/`hayro-interpret` 0.7 are workspace deps (what Typst links), not yet used. The annotation format and `note_for` are fixed. `SystemViewer` is the placeholder surface for files without an editor.
 
+## Integration (wave 1) additions
+
+Wave 1 (WS-A, WS-B, WS-E, WS-F) is merged on `feat/0.9-integration`. The
+hot files are the integrator's again; these mechanisms replace the
+stand-ins the workstreams used. WS-C, WS-D and WS-G use them instead of
+building their own.
+
+### Asking for UI from anywhere
+
+* **`Workspace::request_ui(UiRequest)`** queues a request from any code that
+  has the workspace: a click in a note widget, a decoration event, a tick, a
+  job's result. The desktop takes the queue every frame
+  (`Workspace::take_ui_requests`) and treats each one like a command's
+  return value. Use it instead of flags that a panel polls.
+* **`UiRequest::Feature(cmd)`** shows `cmd`'s UI (`registry::ui_target`)
+  without running the command: e.g. WS-E's note widget starts a flashcard
+  session, then asks for `Feature(Command::StartReview)`.
+* **`UiRequest::RevealCaret`** scrolls the editor to the caret without taking
+  focus (after a feature moved it; the review asks for it on every hunk).
+* **`UiRequest::OpenFile(path)`** opens a file that isn't a note in its
+  surface (`registry::open_surface`); notes open as notes.
+
+### Dialogs for commands
+
+* **`registry::UiTarget::Overlay(make)`**, with
+  `make: fn(&mut Workspace) -> Box<dyn OverlayView>`, opens a dialog for a
+  command (it may read what the command prepared in the workspace). Used by
+  Undo agent changes, Capture web page, Rename tags/properties and the
+  flashcard review. Background jobs pause while it is open.
+* **`OverlayView::closed(&mut self, ws)`** runs however the dialog goes away
+  (Escape, its own button, another dialog replacing it): end sessions there
+  (the flashcard review calls `srs_end`).
+* **`OverlayResult::then`** replaces the current overlay with another (the
+  template picker leads to `TemplateDialog` when a template has questions).
+* `layout_samples` takes `&mut Workspace` now (so samples can use `make`).
+  Every dialog still goes there, in each interesting state.
+
+### Bars above the note
+
+**`registry::EDITOR_BANNERS`** (`BannerDef { id, available, show }`): full-width
+bars between the find bar and the note, drawn while `available(ws)` is true
+(called every frame; keep it cheap) and not while a surface has the central
+panel. WS-A's review banner is the first. A banner returns `PanelOut` like a
+tab.
+
+### Keys
+
+* An Alt shortcut (Alt without Ctrl) drops the text its key types, in that
+  frame and the next, for every command. Don't add per-key guards.
+* With Vim keys, Escape in Insert mode is Vim's; the find bar closes on
+  Escape only in Normal mode.
+
+### Files, surfaces and the sidebar
+
+* The Files tab and quick open list files that have a surface
+  (`registry::has_surface`) next to the notes; `Workspace::other_files()`
+  lists the vault's non-note files (cached a few seconds). Registering an
+  extension in `open_surface` is all WS-G needs for `.canvas` and `.pdf`.
+* A `PanelOut` with `jumped` (from a tab, the sidebar or a surface) gives
+  the notes the central panel again.
+* `nav::display_name` returns the file name (with extension) for non-notes.
+
+### Settings
+
+The Settings dialog lists tabs on the left and gives every tab one
+fixed-height body that it scrolls. **Tabs must not add their own scroll area
+or size themselves from the window**; just draw top to bottom. A tab's
+`PanelOut::run` runs after the dialog (e.g. Connections → Capture a web page).
+New `[editing] new_note_folder` (`"current"`, default, or `"root"`).
+
+### Agent store and MCP
+
+* **`ChangeSet::accepted_from: Option<Actor>`**: a change the person approved
+  outside Quire's review (MCP in-client approval). Submit it as the person;
+  provenance gets `accepted_from` and `op: accept`, the ledger entry `from`.
+* **`Actor::unverified`**: set for MCP clients identified only by what they
+  report; their `[clients]` entry can narrow but never widen.
+* Read logging goes through `AgentStore::record_read` (off unless Settings →
+  Agents turns it on). `quire_mcp::instructions::{vault_key, find}` are the
+  agent store's.
+* `Workspace::snapshot_provenance(&Snapshot)` reads who made a version (the
+  History dialog shows it and links to Agent activity).
+* The CLI's `agent accept/reject/revert` use `resolve_proposal`,
+  `accept_in_file`/`decide_checked` and `revert_plan`/`revert_apply`; MCP
+  `revert` uses `propose_revert` (always a suggestion).
+
+### Smaller additions
+
+* `Workspace::set_property_path` / `remove_property_path`: one nested
+  front-matter field of the active note (the Properties panel edits maps
+  field by field).
+* `Workspace::new_note_from_template_titled(template, title, …)`: a typed
+  title wins over the template's `name:`.
+* Themes: the `added` token (`Palette::added`: suggested text, added lines);
+  the shared highlighter (classic editor, embeds) uses `h1`–`h6`, `link`,
+  `quote`, `conflict` and caches per palette.
+* The desktop bundles egui's monochrome emoji font (both editions), so icons
+  and task emoji draw everywhere; `NotoEmoji-Regular.ttf` in the fonts folder
+  still takes over when present.
+* `chacha20poly1305` and `futures-core` are workspace dependencies; CI runs
+  `quire-cli eval synthetic-edits` on Linux.
+
+### For WS-C, WS-D and WS-G
+
+* A tab or dialog that opens from a click (an Inbox action, a citation chip,
+  a canvas node): `ws.request_ui(UiRequest::Feature(cmd))`, with the
+  command's `ui_target` pointing at the tab or `UiTarget::Overlay`.
+* WS-D's onboarding overlay and ACP warning: `UiTarget::Overlay` (or
+  `request_ui` at first start); the agent panel stays a right tab.
+* WS-C's contradiction actions in the Inbox still need a hook from WS-A's
+  `inbox_ui` (none was added in wave 1; ask the integrator).
+* WS-G: register `.canvas`/`.pdf` in `open_surface`; links to them can call
+  `request_ui(UiRequest::OpenFile(path))`.
+* Banners (e.g. "This answer's citations drifted") go in `EDITOR_BANNERS`.
+* Known gaps left for later: the sidebar highlights the active note, not the
+  active surface; Settings → Sync's checkbox talks to the sync server on the
+  UI thread when turned on (a one-off request); the Templates folder's
+  notes are kept out of the index at start but a template saved while Quire
+  runs shows up in the Files tab (0.8 behaviour).
+
 ## Performance baselines (F0)
 
 `quire-cli bench 1` on the 2-core build VM, **dev profile** (our crates
@@ -172,13 +292,12 @@ in release when the parser lands.
 * **Proposal sets are all-or-nothing** today; ingest (WS-D) that writes
   `wiki/` pages and suggests links in human notes should submit two change
   sets.
-* **Legacy MCP writes bypass policy** until WS-B moves them to `submit`;
-  that change alters behaviour for 0.8 clients (CHANGELOG, §B.4).
+* **Legacy MCP writes** go through `submit` since WS-B (wave 1): 0.8 clients
+  with `--allow-write` now make suggestions outside agent zones (§B.4).
 * **Device files in tests:** `device::this_device()` never writes in unit
   tests, but the CLI and MCP server create `<config>/device.toml` on first run.
 * **`Workspace::decorations` caching** is keyed by revision and
   `decor_generation`; data that changes without an edit (a new proposal
   file) must bump the generation or nothing repaints.
-* **Policy approval is missing**, so a synced policy can't widen access but
-  also can't be approved yet: users who widen zones in the file see no effect
-  until WS-A lands approval.
+* **Policy approval** landed with WS-A (wave 1): a synced or hand-edited
+  policy that widens access waits for approval in the Inbox.

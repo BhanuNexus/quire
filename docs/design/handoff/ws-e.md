@@ -93,3 +93,12 @@ WS-E's features, which work around it today.
   tasks_query}` (next to the views it produces and below `quire-app`,
   where `view_ui` and decorations need it); `.base` and Kanban parsing are
   in `quire_import::obsidian` as designed.
+
+## Status after integration (wave 1)
+
+Done: `Workspace::request_ui` (dialogs from clicks), `UiTarget::Overlay`
+(the Plan tab and `Dialog` are gone), `.base` in the Files tab and quick open
+with `jumped` handled, template questions and `folder:`/`name:` in New note
+from template (`TemplateDialog`), Ctrl+N in the open note's folder
+(Settings → Editing), the nested properties tree, display titles, and the
+emoji font.

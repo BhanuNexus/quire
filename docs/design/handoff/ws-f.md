@@ -67,3 +67,11 @@ a frozen or other-owned file. Ordered by how much a user would notice.
   sequences and words cut by the cursor marker read as typos).
 * `docs/formats/README.md`, `settings.md`, `vault-prefs.md`: rows for WS-F's
   files and sections.
+
+## Status after integration (wave 1)
+
+Done: egui's `monochrome_emoji_fonts`, folder links in `open_link`, Escape
+routing for Vim, display titles in quick open, the graph and link
+suggestions, the Git tab in Version history, and theme colours plus a
+palette cache key in `highlight.rs` (the classic editor's cache clearing is
+gone). `open_hidden` was not needed.

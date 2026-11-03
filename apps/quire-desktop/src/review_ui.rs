@@ -241,7 +241,11 @@ type Later = Box<dyn FnOnce(&mut Workspace)>;
 /// Whether the review banner shows: a suggestion is under review in the
 /// note on screen (or only its new notes, renames and deletions are left).
 pub(crate) fn banner_available(ws: &Workspace) -> bool {
-    ws.features.agent.review.as_ref().is_some_and(|r| r.doc.is_none() || r.doc == ws.active_doc().map(|d| d.id))
+    let active = ws.active_doc().map(|a| a.id);
+    ws.features.agent.review.as_ref().is_some_and(|r| match r.doc {
+        Some(d) => Some(d) == active,
+        None => r.path.is_none(),
+    })
 }
 
 /// The review banner above the note while a suggestion is under review:
@@ -258,7 +262,7 @@ pub(crate) fn banner(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut crate::regi
     let total: usize = n + p.pending_changes().filter(|c| c.path != path || !matches!(c.op, ChangeOp::Edit)).count();
     ui.horizontal_wrapped(|ui| {
         ui.label(
-            RichText::new(format!("{} suggests {} change{}", p.actor.label, total.max(1), if total == 1 { "" } else { "s" }))
+            RichText::new(format!("{} suggests {} change{}", p.actor.label, total.max(1), if total <= 1 { "" } else { "s" }))
                 .strong()
                 .color(pal.strong),
         );

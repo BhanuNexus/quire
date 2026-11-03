@@ -191,12 +191,8 @@ impl Workspace {
         let Some(r) = self.features.agent.review.as_ref() else { return false };
         let (Some(doc_id), Some(path)) = (r.doc, r.path.clone()) else { return false };
         let Some(doc) = self.doc(doc_id) else {
-            // The note was closed: keep the session for the inbox card only.
-            if let Some(r) = self.review_mut() {
-                r.doc = None;
-                r.hunks.clear();
-            }
-            self.features.decor_generation += 1;
+            // The note was closed: the review ends; the suggestion waits in the Inbox.
+            self.end_review();
             return true;
         };
         let key = (r.proposal.updated, doc.revision());

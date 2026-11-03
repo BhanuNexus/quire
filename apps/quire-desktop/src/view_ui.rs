@@ -350,7 +350,8 @@ pub(crate) fn properties(ui: &mut Ui, ws: &mut Workspace, pal: &Palette, doc: Do
             ui.horizontal(|ui| {
                 ui.add_sized([72.0, 20.0], egui::Label::new(RichText::new(&p.key).size(12.5).color(pal.muted)).truncate())
                     .on_hover_text(format!("{} · nested fields", p.key));
-                ui.add_space((ui.available_width() - 28.0).max(0.0));
+                // Where the value boxes of the other rows are, so × lines up.
+                ui.add_space((ui.available_width() - 48.0).max(60.0) + 8.0);
                 if ui.small_button("×").on_hover_text("Remove these fields").clicked() {
                     remove = Some(p.key.clone());
                 }
