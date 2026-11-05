@@ -142,7 +142,10 @@ pub(crate) struct CanvasSurface {
     editing: Option<Editing>,
     grid: bool,
     snap: bool,
-    galleys: HashMap<String, (u64, Arc<egui::Galley>)>,
+    /// Text cards drawn by the note preview's renderer, by node: (key, shapes).
+    galleys: HashMap<String, (u64, Arc<Vec<egui::Shape>>)>,
+    /// The preview renderer's cache (parsed blocks, link hooks).
+    md: egui_commonmark::CommonMarkCache,
     previews: Previews,
     sketches: HashMap<NotePath, SketchEntry>,
     seed: u64,
@@ -182,6 +185,7 @@ impl CanvasSurface {
             grid: true,
             snap: true,
             galleys: HashMap::new(),
+            md: egui_commonmark::CommonMarkCache::default(),
             previews: Previews::default(),
             sketches: HashMap::new(),
             seed,
@@ -707,7 +711,9 @@ impl CanvasSurface {
         }
     }
 
-    fn galley(&mut self, painter: &egui::Painter, n: &Node, width: f32, pal: &Palette) -> Arc<egui::Galley> {
+    /// A text card as the note preview draws it (0.10), laid out once per
+    /// text, width, zoom and theme; later frames only move the shapes.
+    fn card_shapes(&mut self, ui: &egui::Ui, ws: &Workspace, n: &Node, width: f32, pal: &Palette) -> Arc<Vec<egui::Shape>> {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         n.text.hash(&mut h);
@@ -721,10 +727,18 @@ impl CanvasSurface {
         {
             return Arc::clone(g);
         }
-        let job = text::markdown_job(n.text.as_deref().unwrap_or_default(), width, 14.0 * self.zoom, pal);
-        let g = painter.layout_job(job);
-        self.galleys.insert(n.id.clone(), (key, Arc::clone(&g)));
-        g
+        let src = n.text.as_deref().unwrap_or_default();
+        let md = quire_app::markdown::render::for_preview(src, &|t| ws.attachment_path(t).map(|p| format!("file://{}", p.display())));
+        let shapes = Arc::new(text::render_markdown(ui, &mut self.md, &md, width, self.zoom, &n.id));
+        if ui.ctx().will_discard() {
+            // A table measured itself this pass; the next pass draws it.
+            return shapes;
+        }
+        if self.galleys.len() > self.canvas.nodes.len() * 2 + 64 {
+            self.galleys.clear();
+        }
+        self.galleys.insert(n.id.clone(), (key, Arc::clone(&shapes)));
+        shapes
     }
 
     fn note_preview(&mut self, ws: &Workspace, path: &NotePath) -> String {
@@ -889,8 +903,8 @@ impl CanvasSurface {
                         let src = n.text.as_deref().unwrap_or_default();
                         let drawn = text::mermaid(src).is_some_and(|m| self.paint_diagram(ui, &clip, inner, m, pal));
                         if !drawn {
-                            let g = self.galley(painter, &n, inner.width(), pal);
-                            clip.galley(inner.min, g, pal.text);
+                            let shapes = self.card_shapes(ui, ws, &n, inner.width(), pal);
+                            clip.extend(shapes.iter().map(|s| text::moved(s, inner.min.to_vec2())));
                         }
                     }
                 }
@@ -2104,6 +2118,41 @@ mod tests {
         assert!(svg.contains("data-quire-tool=\"pen\""), "{svg}");
         let saved = ws.vault().unwrap().read(&"Board.canvas".into()).unwrap();
         assert!(saved.contains("\"file\":\"attachments/Board-ink-1.svg\""));
+    }
+
+    /// 0.10: text cards are drawn by the note preview's renderer, laid out
+    /// once and moved after that.
+    #[test]
+    fn text_cards_use_the_preview_renderer() {
+        fn texts(s: &egui::Shape, out: &mut String) {
+            match s {
+                egui::Shape::Text(t) => out.push_str(&t.galley.job.text),
+                egui::Shape::Vec(v) => v.iter().for_each(|x| texts(x, out)),
+                _ => {}
+            }
+        }
+        let mut ws = Workspace::new(quire_app::Settings::default());
+        ws.attach_vault(Vault::in_memory(&[]));
+        let mut c = Canvas::default();
+        let mut n = Node::new("t".to_string(), NodeKind::Text, 0, 0, 320, 220);
+        n.text = Some("# Plan\n> [!tip] Ship it\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n- [x] done [[Rope Notes]]".into());
+        c.nodes.push(n);
+        let mut s = surface_with(&ws, "Card.canvas", &quire_canvas::to_canonical(&c));
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        frame(&ctx, &mut s, &mut ws, raw());
+        frame(&ctx, &mut s, &mut ws, raw());
+        let (_, shapes) = s.galleys.get("t").cloned().expect("the card was drawn");
+        let mut all = String::new();
+        shapes.iter().for_each(|x| texts(x, &mut all));
+        for want in ["Plan", "Ship it", "a", "2", "done", "Rope Notes"] {
+            assert!(all.contains(want), "{want:?} in {all:?}");
+        }
+        assert!(!all.contains("[[") && !all.contains("> [!tip]"), "rendered, not source: {all:?}");
+        // A pan doesn't lay the card out again.
+        s.offset += Vec2::new(40.0, 10.0);
+        frame(&ctx, &mut s, &mut ws, raw());
+        assert!(Arc::ptr_eq(&shapes, &s.galleys["t"].1));
     }
 
     /// §9: a 1,000-card canvas draws within budget (release: ≤ 8 ms; this
