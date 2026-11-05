@@ -4,7 +4,17 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Added
+- **Voice notes** (full edition): "Record voice note…", or 🎤 in quick capture for today's note. The microphone records only between Record and Stop. The recording is saved in the vault as a WAV file and embedded in the note. A transcript is added under it if you choose where transcription runs (Settings → AI → Voice notes): through your OpenAI-compatible provider (the recording is sent to it; the dialog says so before you record), or on this computer with Whisper while on-device AI is experimental. Transcription is off until you choose. Quire Lite doesn't record.
+- **Ask writes its answer as you watch**, with Stop (what was written stays, marked as stopped). Closing the dialog stops it too.
+- MCP `ask`: when the notes don't answer, it lists the three nearest passages with their anchors (`nearest`), as the app does, and cites nothing.
+- Settings → AI → Advanced → "Faster prompts, more memory" for on-device writing models.
+- `quire-cli eval` (development builds): an endpoint or offline mock embedder (`--embedder endpoint|mock`), a sweep of the "Not found" threshold, the sample vault as a suite, and a contradiction suite that scores the Inbox's precision and recall.
+
 ### Changed
+- **On-device writing models use far less memory**: the Balanced model (Qwen3 1.7B) about 1.3 GB with a short prompt and 1.7 GB with a long one, down from about 5 GB. Quire now suggests Balanced on computers with 8 GB of memory or more (16 GB before), and reads the memory on Windows too (it suggested Small there before). Long prompts are read more slowly unless "Faster prompts, more memory" is on.
+- Small on-device models' tool calls are read more forgivingly (single quotes, code fences, two calls at once, words around the call). A call that still can't be read is never run: the model is asked once to write it again.
+- The full edition's Linux packages now depend on the ALSA library (`libasound2`), for recording.
 - The full edition now includes the on-device AI engine; Quire Lite downloads it when you turn on-device AI on. Settings → AI says "Included with Quire" for the engine that came with the app, and Quire checks it against a hash built into the app before every start, as it does a downloaded engine.
 
 ## [0.9.1] - 2026-11-04

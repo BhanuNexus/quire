@@ -33,6 +33,7 @@ Download from [Releases](https://github.com/BhanuNexus/quire/releases). Each rel
 | Math and Mermaid diagrams drawn in place | ✓ | shown as their source |
 | Export as PDF | ✓ | — |
 | On-device AI engine (about 18 MB) | included | downloaded when you turn on-device AI on |
+| Voice notes (record from the microphone) | ✓ | — |
 | App size | ~68 MB | ~28 MB |
 | File names | `Quire-<version>-…` | `Quire-Lite-<version>-…` |
 
@@ -104,7 +105,8 @@ cargo build --release -p quire-desktop --no-default-features   # ~28 MB instead 
 |---|---|
 | AI agents, under review | Agents' edits to your notes arrive as suggestions shown in the note (struck-through lines, their version underneath) to accept, reject or edit change by change. The Inbox (Alt+I) collects them; Agent activity shows every run with "Revert run". Per-folder permissions, `AGENTS.md` approval, vault checks |
 | Agent panel | Ctrl+Shift+J: ask about your notes or ask for changes, with `@note` and `#tag` context. Runs on your provider (on-device models are coming in an update); connect Claude Code or Codex (ACP) instead. "Ingest into wiki" turns a source into cited `wiki/` pages |
-| On-device AI (coming in an update) | Off in 0.9.0, behind an experimental switch (Settings → AI → Advanced): models that download once and run offline in a separate process, for meaning search, writing help, the agent, and OCR of images and scanned PDFs. To keep everything on your computer today, use a provider such as Ollama or LM Studio |
+| On-device AI (coming in an update) | Behind an experimental switch (Settings → AI → Advanced): models that download once and run offline in a separate process, for meaning search, writing help, the agent, OCR of images and scanned PDFs, and voice-note transcripts. The Balanced writing model uses about 1.3–1.7 GB of memory. To keep everything on your computer today, use a provider such as Ollama or LM Studio |
+| Voice notes | Full edition: record from the microphone (only between Record and Stop) into the note or today's note; the recording is saved in the vault as WAV. Optional transcript through your provider (the recording is sent to it) or on this computer (experimental) |
 | Answers you can check | Ask says "Not found" when your notes don't answer; cites exact sentences; Save as note keeps quotes as footnotes and flags them when the cited text changes. Staleness digest, contradictions (Preview), thinking timeline (Preview) |
 | Planning | Tasks with dates, repeats and reminders (Obsidian Tasks emoji and Dataview fields), Agenda (Alt+A), Calendar, weekly/monthly/yearly notes, flashcards (FSRS, Ctrl+Alt+R), templates with questions |
 | Canvas & drawing | `.canvas` files (JSON Canvas) with cards, connections and groups (Ctrl+Alt+C); pen, highlighter and shapes on a canvas or as a sketch in a note, saved as SVG |
@@ -126,7 +128,7 @@ cargo build --release -p quire-desktop --no-default-features   # ~28 MB instead 
 | Linking | Type `[[` for a list of notes to link (or a new one). `[[wikilinks]]`, `[[note#heading|alias]]`, embeds, click/Alt+Enter to follow, unresolved links create notes, F2 rename rewrites every link |
 | Knowledge | Backlinks with context, unlinked mentions, suggested links, related notes (TF-IDF), suggested tags, key sentences, nested `#tags`, tasks across the vault |
 | Finding | Ctrl+P fuzzy quick open, Ctrl+K command palette, search that combines exact words (BM25, `"phrases"`, `#tag`, `-exclude`) with meaning (≈ results); accents optional ("cafe" finds "Café") |
-| Ask your notes | Ctrl+Shift+A: answers from your own notes with `[[Note#Heading]]` citations to the exact sentences. Offline it quotes the best sentences; with a provider it writes an answer from the same sources |
+| Ask your notes | Ctrl+Shift+A: answers from your own notes with `[[Note#Heading]]` citations to the exact sentences. Offline it quotes the best sentences; with a provider it writes an answer from the same sources, shown as it is written, with Stop |
 | Notes & folders | New notes take their name from the first line (until you rename them yourself). Right-click a note in the sidebar or a tab to rename, move to a folder, see version history, copy a `[[link]]`, show in folder or trash it. Double-click a tab to rename. Right-click a folder for "New note here" |
 | Projects | **+ New → Project…** (Ctrl+Alt+N) creates `Projects/<name>.md` with status, due date and owner, and adds a project board (kanban + due-date table) the first time. Add `Templates/Project.md` to change what new projects contain |
 | Publish | **Publish as a website** (command palette, or `quire-cli publish`): notes marked `publish: true` (or all of them) become a static site with links, backlinks, tags and search, ready for GitHub Pages, Netlify or any web server. Free, no account. Links to unpublished notes become plain text |
@@ -232,7 +234,8 @@ Set `QUIRE_TRACE=1` when launching the desktop app to print per-frame timings.
 
 - **Built-in meaning search is a latent semantic index** learned from your own notes. It needs a few dozen notes before it helps much. For neural quality, point *Meaning search* at an embeddings endpoint (e.g. Ollama + `nomic-embed-text`).
 - **On-device AI is coming in an update.** Quire 0.9.0 ships it turned off, because its models aren't pinned and measured yet: nothing on-device is shown, started or downloaded, meaning search uses the built-in index, and OCR is off. Settings → AI → Advanced has "Experimental: show on-device AI" (or set `QUIRE_EXPERIMENTAL_ON_DEVICE=1`); even then a model says "Not available in this build" until it is pinned.
-- **On-device models need memory:** the balanced 1.7B chat model uses about 5 GB while answering (8 GB of RAM recommended for the small model, 16 GB for balanced), and generates a few tokens a second on a laptop CPU. Speed and memory were measured with models of the real shapes; check them on your computer. A build whose model list isn't pinned yet says "Not available in this build" and downloads nothing.
+- **On-device models need memory:** the balanced 1.7B chat model uses about 1.3 GB with a short prompt and 1.7 GB with a long one (8 GB of RAM recommended), and generates a few tokens a second on a laptop CPU; it reads long prompts slowly unless "Faster prompts, more memory" is on (about 4 GB then). Speed and memory were measured with models of the real shapes; check them on your computer. A build whose model list isn't pinned yet says "Not available in this build" and downloads nothing.
+- **Voice notes** need the full edition and a microphone; Linux builds of the full edition link the ALSA library. Recordings are WAV (about 1.9 MB a minute). Transcripts on this computer use Whisper (experimental, models not pinned yet); through a provider, the recording is sent to that provider.
 - **Contradictions and the thinking timeline are previews:** their thresholds come from the design, not from measurements on real vaults, and the prompts are English-first.
 - The PDF viewer (pages, highlights, area selection) is in the full edition; Quire Lite shows a PDF's text and highlights and opens it in your system's viewer. OCR reads printed text best.
 - An external agent connected to the agent panel runs with your permissions on your computer; only its writes through Quire are reviewed.
