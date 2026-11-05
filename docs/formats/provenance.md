@@ -31,7 +31,9 @@ before 0.9. Owner: WS-A. Type: `quire_agent::Provenance`.
   because it connected without a Quire-assigned key (policy can narrow it,
   never widen it; see [policy.md](policy.md)).
 * `via`: `mcp-stdio`, `mcp-http`, `panel`, `acp`, `cli`, `app`,
-  `client-approval`, `sync`.
+  `client-approval`, `sync`, and from 0.10 `web` (an edit in the web app of
+  `quire-cli serve`; `actor.device_name` then names the server). Quire 0.9
+  can't read a record with `web` and shows that version as a plain save.
 * `op`: `write`, `create`, `rename`, `delete`, `propose`, `accept`, `reject`,
   `revert`, `read`, `batch`.
 * `accepted_from` is set when a person accepted an agent's suggestion; then
