@@ -35,7 +35,7 @@ const COMPUTED: [&str; 11] = ["title", "name", "path", "file", "folder", "tags",
 
 /// A table cell that edits its property in place: click to type, Enter or
 /// clicking away saves, Escape cancels. Yes/no values are checkboxes.
-fn editable_cell(ui: &mut Ui, pal: &Palette, key: Id, path: &NotePath, field: &str, cell: &str, act: &mut Option<ViewAction>) {
+pub(crate) fn editable_cell(ui: &mut Ui, pal: &Palette, key: Id, path: &NotePath, field: &str, cell: &str, act: &mut Option<ViewAction>) {
     let id = key.with(("cell", path.as_str(), field));
     if matches!(cell, "true" | "false") {
         let mut on = cell == "true";

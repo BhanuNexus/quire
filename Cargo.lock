@@ -5735,6 +5735,7 @@ name = "quire-import"
 version = "0.9.1"
 dependencies = [
  "base64 0.23.1",
+ "chrono",
  "dom_smoothie",
  "encoding_rs 0.8.44",
  "htmd",

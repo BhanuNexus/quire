@@ -9,6 +9,7 @@ pub mod ask_state;
 pub mod assistant_state;
 pub mod atomic;
 pub mod attach;
+pub mod bases;
 pub mod canvas_state;
 pub mod capture;
 pub mod citations;
