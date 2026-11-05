@@ -20,6 +20,9 @@ remote-llm = ["quire-app/remote-llm"]
 typeset = ["quire-app/typeset", "dep:quire-typeset", "dep:resvg", "quire-pdf/render"]
 # Record voice notes from the microphone (full edition; ALSA on Linux).
 voice = ["dep:cpal"]
+# `QUIRE_BENCH=startup|typing|canvas`: timing runs for the CI `perf` job
+# (docs/design/0.10-perf.md). Never in releases.
+bench = []
 
 [dependencies]
 quire-app = { workspace = true, features = ["remote-llm", "keychain", "update-check"] }

@@ -69,8 +69,13 @@ pub(super) fn read_prefs(ws: &mut Workspace, prefs: &VaultPrefs) {
     let order: BTreeMap<String, Vec<String>> = prefs.section("order");
     let sort: BTreeMap<String, String> = prefs.section("sort");
     let st = &mut ws.features.nav;
-    st.order = order.into_iter().map(|(k, v)| (folder_key(&k), v)).collect();
-    st.sort = sort.into_iter().map(|(k, v)| (folder_key(&k), v)).collect();
+    let order = order.into_iter().map(|(k, v)| (folder_key(&k), v)).collect();
+    let sort = sort.into_iter().map(|(k, v)| (folder_key(&k), v)).collect();
+    if st.order != order || st.sort != sort {
+        st.order = order;
+        st.sort = sort;
+        st.sort_generation += 1;
+    }
 }
 
 pub fn sort_mode(ws: &Workspace, folder: &str) -> SortMode {

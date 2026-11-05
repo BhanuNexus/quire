@@ -160,29 +160,58 @@ impl Folded {
 /// Folded, lightly stemmed Unicode words. Works for Latin, Cyrillic,
 /// Devanagari, etc.; CJK text is split per ideograph by UAX #29.
 pub fn tokens(text: &str) -> impl Iterator<Item = String> + '_ {
-    text.unicode_words().map(|w| stem(&fold_str(w)))
+    text.unicode_words().map(|w| stem_owned(fold_str(w)))
 }
 
 /// Conservative English plural folding so "ropes" finds "rope" and
 /// "libraries" finds "library". Non-ASCII words are left untouched.
 pub fn stem(w: &str) -> String {
+    stem_owned(w.to_string())
+}
+
+/// [`stem`], reusing the word's allocation (indexing stems every word).
+pub(crate) fn stem_owned(mut w: String) -> String {
+    stem_in_place(&mut w);
+    w
+}
+
+/// [`stem`] in place.
+pub(crate) fn stem_in_place(w: &mut String) {
     if !w.is_ascii() || w.len() <= 3 {
-        return w.to_string();
+        return;
     }
-    if let Some(base) = w.strip_suffix("ies").filter(|b| b.len() >= 2) {
-        return format!("{base}y");
+    if w.ends_with("ies") && w.len() >= 5 {
+        w.truncate(w.len() - 3);
+        w.push('y');
+        return;
     }
     for suf in ["sses", "shes", "ches", "xes", "zes"] {
         if w.ends_with(suf) {
-            return w[..w.len() - 2].to_string();
+            w.truncate(w.len() - 2);
+            return;
         }
     }
     if w.ends_with('s') && !w.ends_with("ss") && !w.ends_with("us") && !w.ends_with("is") {
-        return w[..w.len() - 1].to_string();
+        w.truncate(w.len() - 1);
     }
-    w.to_string()
 }
 
+/// [`fold_str`] into `out` (cleared first), so a loop over words can reuse
+/// one buffer.
+pub(crate) fn fold_into(s: &str, out: &mut String) {
+    out.clear();
+    if s.is_ascii() {
+        out.push_str(s);
+        out.make_ascii_lowercase();
+        return;
+    }
+    for c in s.chars() {
+        fold_char(c, &mut |f| out.push(f));
+    }
+}
+
+/// The stopwords, sorted; [`is_stopword`] matches exactly these.
+#[cfg(test)]
 const STOPWORDS: &[&str] = &[
     "a", "about", "after", "all", "also", "an", "and", "any", "are", "as", "at", "be", "because", "been", "but", "by", "can", "could",
     "do", "does", "for", "from", "get", "had", "has", "have", "he", "her", "his", "how", "i", "if", "in", "into", "is", "it", "its",
@@ -193,16 +222,172 @@ const STOPWORDS: &[&str] = &[
 ];
 
 pub fn is_stopword(t: &str) -> bool {
-    STOPWORDS.binary_search(&t).is_ok()
+    // A `match` on the words (checked against STOPWORDS in a test): the
+    // compiler compares lengths first and short words as integers, where
+    // a binary search called memcmp seven times a word (a tenth of indexing
+    // time, 0.10 perf).
+    matches!(
+        t,
+        "a" | "about"
+            | "after"
+            | "all"
+            | "also"
+            | "an"
+            | "and"
+            | "any"
+            | "are"
+            | "as"
+            | "at"
+            | "be"
+            | "because"
+            | "been"
+            | "but"
+            | "by"
+            | "can"
+            | "could"
+            | "do"
+            | "does"
+            | "for"
+            | "from"
+            | "get"
+            | "had"
+            | "has"
+            | "have"
+            | "he"
+            | "her"
+            | "his"
+            | "how"
+            | "i"
+            | "if"
+            | "in"
+            | "into"
+            | "is"
+            | "it"
+            | "its"
+            | "just"
+            | "like"
+            | "may"
+            | "me"
+            | "more"
+            | "most"
+            | "my"
+            | "no"
+            | "not"
+            | "now"
+            | "of"
+            | "on"
+            | "one"
+            | "only"
+            | "or"
+            | "other"
+            | "our"
+            | "out"
+            | "over"
+            | "she"
+            | "so"
+            | "some"
+            | "such"
+            | "than"
+            | "that"
+            | "the"
+            | "their"
+            | "them"
+            | "then"
+            | "there"
+            | "these"
+            | "they"
+            | "this"
+            | "those"
+            | "through"
+            | "to"
+            | "too"
+            | "up"
+            | "us"
+            | "use"
+            | "very"
+            | "was"
+            | "we"
+            | "were"
+            | "what"
+            | "when"
+            | "where"
+            | "which"
+            | "while"
+            | "who"
+            | "why"
+            | "will"
+            | "with"
+            | "would"
+            | "you"
+            | "your"
+    )
 }
 
 /// Tokens worth using as content features (no stopwords, no 1-char Latin
 /// noise, no pure numbers), folded like [`tokens`].
 pub fn content_tokens(text: &str) -> impl Iterator<Item = String> + '_ {
-    text.unicode_words().map(fold_str).filter_map(|t| {
-        let short_ascii = t.len() < 3 && t.is_ascii();
-        (!short_ascii && !is_stopword(&t) && !t.chars().all(|c| c.is_ascii_digit())).then(|| stem(&t))
-    })
+    text.unicode_words().map(fold_str).filter_map(|t| is_content(&t).then(|| stem_owned(t)))
+}
+
+/// Whether a folded word is a content feature: not a stopword, not 1–2
+/// Latin letters, not a number.
+pub(crate) fn is_content(folded: &str) -> bool {
+    let short_ascii = folded.len() < 3 && folded.is_ascii();
+    !short_ascii && !is_stopword(folded) && !folded.chars().all(|c| c.is_ascii_digit())
+}
+
+/// A fast hasher for the term maps built while indexing (`FxHash`).
+///
+/// It is the hash rustc uses. The keys are the person's own words, so the
+/// denial-of-service protection of the default hasher buys nothing here,
+/// and `SipHash` was a tenth of indexing time (0.10 perf).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct FastHash;
+
+impl std::hash::BuildHasher for FastHash {
+    type Hasher = FxHasher;
+    fn build_hasher(&self) -> FxHasher {
+        FxHasher(0)
+    }
+}
+
+#[derive(Debug)]
+pub struct FxHasher(u64);
+
+impl FxHasher {
+    const fn add(&mut self, w: u64) {
+        self.0 = (self.0.rotate_left(5) ^ w).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+}
+
+impl std::hash::Hasher for FxHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        let mut chunks = bytes.chunks_exact(8);
+        for c in &mut chunks {
+            let mut b = [0u8; 8];
+            b.copy_from_slice(c);
+            self.add(u64::from_le_bytes(b));
+        }
+        let rest = chunks.remainder();
+        if !rest.is_empty() {
+            let mut b = [0u8; 8];
+            b[..rest.len()].copy_from_slice(rest);
+            self.add(u64::from_le_bytes(b) ^ ((rest.len() as u64) << 59));
+        }
+    }
+
+    fn write_u8(&mut self, i: u8) {
+        self.add(u64::from(i));
+    }
+
+    fn write_usize(&mut self, i: usize) {
+        self.add(i as u64);
+    }
+
+    fn finish(&self) -> u64 {
+        // Spread the high bits down: hashbrown takes buckets from the low bits.
+        self.0.rotate_left(26)
+    }
 }
 
 #[cfg(test)]
@@ -214,6 +399,10 @@ mod tests {
         let mut v = STOPWORDS.to_vec();
         v.sort_unstable();
         assert_eq!(v, STOPWORDS);
+        assert!(STOPWORDS.iter().all(|w| is_stopword(w)), "is_stopword knows every stopword");
+        for w in ["rope", "ab", "abouts", "them2", "", "zz", "yours", "wh"] {
+            assert!(!is_stopword(w), "{w}");
+        }
     }
 
     #[test]

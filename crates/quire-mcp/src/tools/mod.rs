@@ -211,6 +211,9 @@ pub struct CallExt<'a> {
     pub method: &'a str,
     /// This device's folder for the vault (`<config>/vaults/<key>/`): approvals.
     pub state_dir: Option<&'a std::path::Path>,
+    /// `(done, total)` while the server is still reading the vault's PDFs
+    /// at start-up: `search` says its PDF hits may be incomplete.
+    pub pdf_indexing: Option<(usize, usize)>,
 }
 
 impl<'a> CallExt<'a> {
@@ -227,6 +230,7 @@ impl<'a> CallExt<'a> {
             allow_private_urls: false,
             method: "tools/call",
             state_dir: None,
+            pdf_indexing: None,
         }
     }
 }

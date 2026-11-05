@@ -66,7 +66,9 @@ pub fn tools_before_canvas() -> Vec<Box<dyn Tool>> {
                     "lines": {"type": "array", "items": {"type": "integer"}}, "snippet": {"type": "string"}, "score": {"type": "number"},
                     "by_meaning": {"type": "boolean"}, "modified": {"type": ["string", "null"]}, "version": {"type": "string"},
                     "last_actor": {"type": "string"}, "trust": {"type": "string", "enum": ["trusted", "untrusted"]}}}},
-                "next_cursor": {"type": ["string", "null"]}, "truncated": {"type": "boolean"}}, "required": ["hits"]}),
+                "next_cursor": {"type": ["string", "null"]}, "truncated": {"type": "boolean"},
+                "indexing": {"type": "object", "description": "Present while PDFs are still being read: PDF pages may be missing.",
+                    "properties": {"done": {"type": "integer"}, "total": {"type": "integer"}}}}, "required": ["hits"]}),
             r,
             Access::Read,
             search,
@@ -391,7 +393,7 @@ fn stale(version: &str) -> ToolOutput {
     }
 }
 
-fn search(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
+fn search(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let query = match req(a, "query") {
         Ok(q) if !q.trim().is_empty() => q,
         Ok(_) => return ToolOutput::error("invalid_args", "`query` is empty."),
@@ -447,7 +449,13 @@ fn search(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         let _ = write!(text, "\n… more results: call search again with cursor=\"{c}\"");
     }
     let links = shown.iter().map(|r| note_link(&r.2)).collect();
-    let st = json!({"hits": shown.iter().map(|r| r.1.clone()).collect::<Vec<_>>(), "next_cursor": next, "truncated": truncated});
+    let mut st = json!({"hits": shown.iter().map(|r| r.1.clone()).collect::<Vec<_>>(), "next_cursor": next, "truncated": truncated});
+    // Still reading PDFs at start-up: their pages may be missing yet.
+    if let Some((done, total)) = ext.pdf_indexing.filter(|_| filters.kind != SearchKind::Notes) {
+        st["indexing"] = json!({"done": done, "total": total});
+        let of = if total == 0 { String::new() } else { format!(" ({done} of {total} read)") };
+        let _ = write!(text, "\n(Quire is still reading the vault's PDFs{of}: PDF pages may be missing. Search again in a moment.)");
+    }
     ToolOutput::ok(text, st).with_links(links)
 }
 

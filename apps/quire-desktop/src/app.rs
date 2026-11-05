@@ -32,6 +32,10 @@ const SAMPLE: &[(&str, &str)] = &[
 ];
 
 pub(crate) struct QuireApp {
+    #[cfg(feature = "bench")]
+    bench: Option<crate::bench::Run>,
+    /// Set by the first frame; the vault is read from the second on.
+    first_frame_shown: bool,
     ws: Workspace,
     editor: EditorState,
     fast: FastEditor,
@@ -99,7 +103,8 @@ impl QuireApp {
         ws.features.ai.voice.can_record = crate::voice_ui::CAN_RECORD;
         let target = vault_arg.or_else(|| ws.settings.last_vault.clone()).filter(|p| p.is_dir());
         if let Some(dir) = target {
-            match ws.open_vault(&dir) {
+            // The index and the watcher start after the first frame (`logic`).
+            match ws.open_vault_deferred(&dir) {
                 Ok(()) => {
                     if session.vault.as_deref().map(Path::canonicalize).and_then(Result::ok) == dir.canonicalize().ok() {
                         ws.restore(&session);
@@ -117,6 +122,9 @@ impl QuireApp {
         let mut fast = FastEditor::default();
         fast.request_focus = true;
         Self {
+            #[cfg(feature = "bench")]
+            bench: crate::bench::Run::from_env(),
+            first_frame_shown: false,
             ws,
             editor,
             fast,
@@ -598,7 +606,23 @@ impl QuireApp {
 }
 
 impl eframe::App for QuireApp {
+    #[cfg(feature = "bench")]
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if let Some(b) = &mut self.bench {
+            let index = self.ws.index();
+            let indexed = !index.status().busy && !index.semantic_busy() && index.semantic_version() > 0;
+            b.input(raw_input, indexed);
+        }
+    }
+
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // The first frame is on screen: now read the vault (design §9).
+        if self.first_frame_shown {
+            self.ws.start_deferred();
+        } else {
+            self.first_frame_shown = true;
+            ctx.request_repaint();
+        }
         let now = Instant::now();
         let changed = self.ws.tick(now);
         trace("tick (autosave, watcher, results)", now);
@@ -637,7 +661,17 @@ impl eframe::App for QuireApp {
             self.surfaces.active = None;
         }
         self.front_note = now;
+        #[cfg(feature = "bench")]
+        if let Some(note) = self.bench.as_mut().and_then(crate::bench::Run::note_to_open) {
+            self.ws.settings.tour_done = true;
+            self.set_overlay(None);
+            self.open_file(&NotePath::new(note));
+        }
         self.ui_inner(ui, frame);
+        #[cfg(feature = "bench")]
+        if let Some(b) = &mut self.bench {
+            b.frame_done(ui.ctx());
+        }
         if let Some(text) = self.clipboard.take() {
             ui.ctx().copy_text(text);
         }

@@ -8,8 +8,8 @@ use pulldown_cmark::{Event, LinkType, Parser, Tag, TagEnd};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::frontmatter::{self, FrontMatter};
-use crate::outline::{Heading, outline};
-use crate::scan::{Inline, scan_with, verbatim_ranges};
+use crate::outline::Heading;
+use crate::scan::{Inline, scan_with};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LinkKind {
@@ -158,7 +158,9 @@ fn strip_wikilinks(s: &str) -> String {
 }
 
 pub fn extract(src: &str) -> Extracted {
-    let mut out = Extracted { front_matter: frontmatter::parse(src), headings: outline(src), ..Default::default() };
+    let mut out = Extracted { front_matter: frontmatter::parse(src), ..Default::default() };
+    let mut outliner = crate::outline::Outliner::default();
+    let mut verbatim = crate::scan::Verbatim::default();
 
     let mut link_stack: Vec<(Range<usize>, String, String)> = Vec::new();
     let mut in_task: Option<(bool, usize, String)> = None;
@@ -167,6 +169,8 @@ pub fn extract(src: &str) -> Extracted {
 
     let parsed = crate::parse_source(src);
     for (ev, range) in Parser::new_ext(&parsed, crate::options()).into_offset_iter() {
+        outliner.event(&ev, &range);
+        verbatim.event(src, &ev, &range);
         match ev {
             Event::Start(Tag::Link { link_type, dest_url, .. }) => {
                 let dest = if link_type == LinkType::Email { format!("mailto:{dest_url}") } else { dest_url.to_string() };
@@ -223,6 +227,8 @@ pub fn extract(src: &str) -> Extracted {
         }
     }
 
+    out.headings = outliner.out;
+
     // Callout markers (`[!tip]-`) and paragraph ids (`^id`) aren't prose.
     if out.plain.contains("[!") || out.plain.contains('^') {
         out.plain = out
@@ -235,7 +241,7 @@ pub fn extract(src: &str) -> Extracted {
             .collect::<Vec<_>>()
             .join("\n");
     }
-    let verbatim = verbatim_ranges(src);
+    let verbatim = verbatim.finish();
     let mut tags: Vec<String> = out.front_matter.as_ref().map(FrontMatter::tags).unwrap_or_default();
     for inline in scan_with(src, &verbatim) {
         match inline {

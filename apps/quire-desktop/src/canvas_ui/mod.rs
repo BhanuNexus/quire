@@ -1988,6 +1988,50 @@ impl Surface for CanvasSurface {
     }
 }
 
+/// §9: a 1,000-card canvas, drawn without a window; the time of each pan
+/// frame at three zoom levels, in ms (the test below and `QUIRE_BENCH=canvas`).
+#[cfg(any(test, feature = "bench"))]
+pub(crate) fn bench_thousand_cards() -> Vec<f64> {
+    let mut ws = Workspace::new(quire_app::Settings::default());
+    ws.attach_vault(Vault::in_memory(&[]));
+    let mut c = Canvas::default();
+    for i in 0..1000i64 {
+        let mut n = Node::new(format!("n{i}"), NodeKind::Text, (i % 40) * 300, (i / 40) * 200, 250, 120);
+        n.text = Some(format!("# Card {i}\nSome **text** with a [[link]] and `code`.\n- one\n- two"));
+        c.nodes.push(n);
+        if i > 0 {
+            c.edges.push(Edge::new(format!("e{i}"), format!("n{}", i - 1), format!("n{i}")));
+        }
+    }
+    let path = NotePath::new("Big.canvas");
+    if let Some(v) = ws.vault() {
+        let _ = v.storage().write_atomic(&path, &quire_canvas::to_canonical(&c));
+    }
+    let mut s = CanvasSurface::new(&path);
+    let ctx = egui::Context::default();
+    crate::theme::install_fonts(&ctx);
+    let raw = || egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0))), ..Default::default() };
+    let mut frame = |s: &mut CanvasSurface| {
+        let mut out = ctx.run_ui(raw(), |ui| {
+            s.show(ui, &mut ws, &crate::theme::LIGHT);
+        });
+        out.textures_delta.clear();
+    };
+    frame(&mut s);
+    let mut times = Vec::new();
+    for zoom in [1.0, 0.5, 0.1] {
+        s.zoom = zoom;
+        frame(&mut s);
+        for k in 0..20u8 {
+            s.offset += Vec2::new(30.0 * f32::from(k % 5), 10.0);
+            let t = Instant::now();
+            frame(&mut s);
+            times.push(t.elapsed().as_secs_f64() * 1000.0);
+        }
+    }
+    times
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2159,32 +2203,7 @@ mod tests {
     /// dev build of our code is slower, so the bound here is loose).
     #[test]
     fn a_thousand_cards_draw_quickly() {
-        let mut ws = Workspace::new(quire_app::Settings::default());
-        ws.attach_vault(Vault::in_memory(&[]));
-        let mut c = Canvas::default();
-        for i in 0..1000i64 {
-            let mut n = Node::new(format!("n{i}"), NodeKind::Text, (i % 40) * 300, (i / 40) * 200, 250, 120);
-            n.text = Some(format!("# Card {i}\nSome **text** with a [[link]] and `code`.\n- one\n- two"));
-            c.nodes.push(n);
-            if i > 0 {
-                c.edges.push(Edge::new(format!("e{i}"), format!("n{}", i - 1), format!("n{i}")));
-            }
-        }
-        let mut s = surface_with(&ws, "Big.canvas", &quire_canvas::to_canonical(&c));
-        let ctx = egui::Context::default();
-        crate::theme::install_fonts(&ctx);
-        frame(&ctx, &mut s, &mut ws, raw());
-        let mut times = Vec::new();
-        for zoom in [1.0, 0.5, 0.1] {
-            s.zoom = zoom;
-            frame(&ctx, &mut s, &mut ws, raw());
-            for k in 0..5 {
-                s.offset += Vec2::new(30.0 * k as f32, 10.0);
-                let t = Instant::now();
-                frame(&ctx, &mut s, &mut ws, raw());
-                times.push(t.elapsed().as_secs_f64() * 1000.0);
-            }
-        }
+        let mut times = bench_thousand_cards();
         times.sort_by(f64::total_cmp);
         let median = times[times.len() / 2];
         eprintln!("1,000-card canvas: median {median:.1} ms a frame, worst {:.1} ms (dev build)", times[times.len() - 1]);

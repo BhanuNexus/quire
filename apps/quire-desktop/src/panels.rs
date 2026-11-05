@@ -42,6 +42,20 @@ pub(crate) struct SidebarState {
     browse_folder: Option<String>,
     /// The two-pane setting last frame (turning it on shows the Files tab).
     two_pane_seen: bool,
+    /// The Files tab's tree, sorted, kept while nothing it shows changed:
+    /// building and sorting it every frame took most of a frame in a
+    /// 10,000-note vault (0.10 perf).
+    files: Option<FilesCache>,
+}
+
+/// What the Files tab lists, and what it was built from.
+struct FilesCache {
+    key: (u64, u64, Vec<NotePath>, Option<NotePath>),
+    /// Every listed path (notes and files with an editor of their own).
+    count: usize,
+    tree: BTreeMap<String, Vec<NotePath>>,
+    /// The tree's folders with their notes in the folder's sort order.
+    ordered: Vec<(String, Vec<NotePath>)>,
 }
 
 /// What a panel asks the app to do after drawing.
@@ -319,10 +333,13 @@ fn note_label(ws: &Workspace, p: &NotePath) -> String {
 
 /// One note in the Files tab. In a manually ordered folder rows can be
 /// dragged; a drop puts the dragged note before this one.
+/// The height of a row of the Files tab.
+const NOTE_ROW_HEIGHT: f32 = 26.0;
+
 fn note_row(ui: &mut egui::Ui, ws: &Workspace, p: &NotePath, active: Option<&NotePath>, draggable: bool, pal: &Palette) -> egui::Response {
     let is_active = active == Some(p);
     let label = note_label(ws, p);
-    let r = crate::theme::row(ui, is_active, 26.0, pal, |painter, rect| {
+    let r = crate::theme::row(ui, is_active, NOTE_ROW_HEIGHT, pal, |painter, rect| {
         let color = if is_active { pal.strong } else { pal.text };
         let mut job = LayoutJob::simple_singleline(label.clone(), FontId::proportional(13.5), color);
         job.wrap = egui::text::TextWrapping::truncate_at_width(rect.width() - 20.0);
@@ -442,19 +459,26 @@ fn sorted_notes(ws: &mut Workspace, folder: &str, notes: &[NotePath]) -> Vec<Not
 fn file_tree(
     ui: &mut egui::Ui,
     ws: &mut Workspace,
-    tree: &BTreeMap<String, Vec<NotePath>>,
+    ordered: &[(String, Vec<NotePath>)],
     active: Option<&NotePath>,
     pal: &Palette,
     ev: &mut FileEvents,
 ) {
     let reveal = ws.features.nav.reveal_folder.take();
-    let ordered: Vec<(String, Vec<NotePath>)> = tree.iter().map(|(f, n)| (f.clone(), sorted_notes(ws, f, n))).collect();
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        for (folder, notes) in &ordered {
+        for (folder, notes) in ordered {
             let manual = quire_app::nav::sort_mode(ws, folder) == quire_app::nav::SortMode::Manual;
             let mut draw = |ui: &mut egui::Ui| {
                 ui.spacing_mut().item_spacing.y = 1.0;
+                let dragging = egui::DragAndDrop::has_any_payload(ui.ctx());
                 for (i, p) in notes.iter().enumerate() {
+                    // Rows out of view only take their space: a 10,000-note
+                    // vault laid every row out every frame (0.10 perf).
+                    let next = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), NOTE_ROW_HEIGHT));
+                    if !ui.is_rect_visible(next) && !dragging && active != Some(p) && i + 1 < notes.len() {
+                        ui.allocate_exact_size(next.size(), egui::Sense::hover());
+                        continue;
+                    }
                     let r = note_row(ui, ws, p, active, manual, pal);
                     note_row_events(ui, ws, &r, p, ev);
                     if manual && let Some(dragged) = r.dnd_release_payload::<NotePath>() {
@@ -683,24 +707,38 @@ pub(crate) fn sidebar(
                 }
             });
             ui.add_space(4.0);
-            let mut paths = ws.index().read().paths();
             // Files with an editor of their own (`.base`, `.canvas`, `.pdf`) next to the notes.
-            paths.extend(ws.other_files().into_iter().filter(crate::registry::has_surface));
+            let others: Vec<NotePath> = ws.other_files().into_iter().filter(crate::registry::has_surface).collect();
             let mut ev = FileEvents::default();
             // The agent instructions (`AGENTS.md`/`CLAUDE.md`) pinned on top (design §A.6).
-            if let Some((pinned, approved)) = ws.features.agent.inbox.instructions.as_ref().map(|i| (i.path.clone(), i.approved)) {
-                paths.retain(|p| *p != pinned);
-                let r = instructions_row(ui, &pinned, approved, active_path.as_ref() == Some(&pinned), pal);
-                note_row_events(ui, ws, &r, &pinned, &mut ev);
+            let instructions = ws.features.agent.inbox.instructions.as_ref().map(|i| (i.path.clone(), i.approved));
+            if let Some((pinned, approved)) = &instructions {
+                let r = instructions_row(ui, pinned, *approved, active_path.as_ref() == Some(pinned), pal);
+                note_row_events(ui, ws, &r, pinned, &mut ev);
                 ui.add_space(4.0);
             }
-            let tree = folder_tree(&paths);
+            let key = (ws.index().version(), ws.features.nav.sort_generation(), others, instructions.map(|(p, _)| p));
+            let files = match st.files.take() {
+                Some(c) if c.key == key => c,
+                _ => {
+                    let mut paths = ws.index().read().paths();
+                    paths.extend(key.2.iter().cloned());
+                    if let Some(pinned) = &key.3 {
+                        paths.retain(|p| p != pinned);
+                    }
+                    let tree = folder_tree(&paths);
+                    let ordered = tree.iter().map(|(f, n)| (f.clone(), sorted_notes(ws, f, n))).collect();
+                    FilesCache { key, count: paths.len(), tree, ordered }
+                }
+            };
             if ws.settings.editing.two_pane {
-                two_pane(ui, ws, st, &tree, active_path.as_ref(), pal, &mut ev);
+                two_pane(ui, ws, st, &files.tree, active_path.as_ref(), pal, &mut ev);
             } else {
-                file_tree(ui, ws, &tree, active_path.as_ref(), pal, &mut ev);
+                file_tree(ui, ws, &files.ordered, active_path.as_ref(), pal, &mut ev);
             }
-            if paths.is_empty() {
+            let empty = files.count == 0;
+            st.files = Some(files);
+            if empty {
                 ui.label(RichText::new("No notes yet. Press Ctrl+N.").color(pal.muted));
             }
             open = ev.open.map(|(p, pinned)| {

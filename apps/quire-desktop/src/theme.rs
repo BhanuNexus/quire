@@ -406,10 +406,18 @@ fn first_existing(paths: &[&str]) -> Option<Vec<u8>> {
 
 /// The bundled faces (SIL Open Font License; see `fonts/`), so every
 /// platform gets the same type instead of whatever the system falls back to.
-pub(crate) const INTER_REGULAR: &[u8] = include_bytes!("../fonts/Inter-Regular.ttf");
-const INTER_SEMIBOLD: &[u8] = include_bytes!("../fonts/Inter-SemiBold.ttf");
-const INTER_ITALIC: &[u8] = include_bytes!("../fonts/Inter-Italic.ttf");
-pub(crate) const JETBRAINS_MONO: &[u8] = include_bytes!("../fonts/JetBrainsMonoNL-Regular.ttf");
+/// The full edition takes them from the typesetter, which embeds the same
+/// files, so they are in the app once.
+#[cfg(feature = "typeset")]
+pub(crate) use quire_typeset::fonts::{INTER_ITALIC, INTER_REGULAR, INTER_SEMIBOLD, JETBRAINS_MONO_NL as JETBRAINS_MONO};
+#[cfg(not(feature = "typeset"))]
+pub(crate) static INTER_REGULAR: &[u8] = include_bytes!("../fonts/Inter-Regular.ttf");
+#[cfg(not(feature = "typeset"))]
+static INTER_SEMIBOLD: &[u8] = include_bytes!("../fonts/Inter-SemiBold.ttf");
+#[cfg(not(feature = "typeset"))]
+static INTER_ITALIC: &[u8] = include_bytes!("../fonts/Inter-Italic.ttf");
+#[cfg(not(feature = "typeset"))]
+pub(crate) static JETBRAINS_MONO: &[u8] = include_bytes!("../fonts/JetBrainsMonoNL-Regular.ttf");
 
 pub(crate) const ITALIC: &str = "quire-italic";
 

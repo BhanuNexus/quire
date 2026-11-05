@@ -65,6 +65,9 @@ pub struct NavState {
     /// Vault preferences WS-F reads: manual order and sort modes.
     pub(crate) order: std::collections::BTreeMap<String, Vec<String>>,
     pub(crate) sort: std::collections::BTreeMap<String, String>,
+    /// Bumped when `order` or `sort` change, so a sorted file list can be
+    /// kept between frames.
+    sort_generation: u64,
     prefs_seen: Option<(Instant, Option<std::time::SystemTime>)>,
     /// A folder link was followed: the sidebar shows this folder.
     pub reveal_folder: Option<String>,
@@ -75,6 +78,13 @@ pub struct NavState {
     next_hidden: u64,
     /// Modified and created times for sorting, per index version.
     pub(crate) times: browse::TimesCache,
+}
+
+impl NavState {
+    /// Changes whenever a folder's sort mode or manual order changes.
+    pub const fn sort_generation(&self) -> u64 {
+        self.sort_generation
+    }
 }
 
 /// Time-driven work; return true to repaint.

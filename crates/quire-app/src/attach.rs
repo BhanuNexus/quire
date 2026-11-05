@@ -147,7 +147,12 @@ impl Workspace {
     fn refresh_file_cache(&self) {
         let Some(vault) = self.vault.as_ref() else { return };
         let mut cache = self.file_cache.0.borrow_mut();
-        let stale = cache.as_ref().is_none_or(|(t, _)| t.elapsed() > Duration::from_secs(5));
+        // The watcher's events clear the cache when a file comes or goes
+        // (`Workspace::tick`), so with a watcher the list is only read again
+        // now and then, in case it missed one: listing a 10,000-note vault
+        // every 5 s was a hitch on the UI thread (0.10 perf).
+        let max_age = if self.watcher.is_some() { Duration::from_mins(1) } else { Duration::from_secs(5) };
+        let stale = cache.as_ref().is_none_or(|(t, _)| t.elapsed() > max_age);
         if stale {
             let mut map = HashMap::new();
             for p in vault.storage().list().unwrap_or_default().into_iter().filter(|p| !p.is_markdown()) {

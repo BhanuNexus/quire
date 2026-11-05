@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 use quire_agent::{Actor, AgentStore, ClientInfo, Clock, DeviceInfo, Mode, SystemClock, Via};
 use quire_app::index::IndexService;
 use quire_app::intel::chat::{CancelFlag, ChatModel};
+use quire_app::pdf_state::PdfIndexing;
 use quire_app::vault::{ContentHash, NotePath, Vault, VaultEvent, VaultWatcher};
 use serde_json::{Value, json};
 
@@ -159,6 +160,9 @@ pub(crate) struct Core {
     /// stdio without `--client`: the client each connection (one per
     /// process) named in its first request. It can't rename itself later.
     stdio_clients: Mutex<HashMap<u64, Option<ClientInfo>>>,
+    /// The start-up pass that reads every PDF's text (search says how far
+    /// it got while it runs).
+    pub(crate) pdf_indexing: Arc<PdfIndexing>,
 }
 
 /// The MCP server for one vault. Cheap to clone.
@@ -196,8 +200,6 @@ impl Server {
     pub fn with_config(vault: Vault, watcher: Option<VaultWatcher>, config: ServerConfig) -> Self {
         let index = IndexService::spawn();
         index.load(vault.clone());
-        // PDF pages are searchable too ("paper.pdf p. 3").
-        quire_app::pdf_state::index_pdfs(&vault, &index);
         index.flush_semantic();
         let device = config.device.clone().unwrap_or_else(quire_app::device::this_device);
         let sealer = config.state_dir.as_deref().map_or_else(Sealer::ephemeral, |d| Sealer::load_or_create(&d.join("mrtr.key")));
@@ -214,10 +216,45 @@ impl Server {
             sealer,
             policy_hash: Mutex::new(None),
             stdio_clients: Mutex::new(HashMap::new()),
+            pdf_indexing: Arc::default(),
         };
         let s = Self { core: Arc::new(core) };
         s.core.policy_changed();
+        s.index_pdfs();
         s
+    }
+
+    /// PDF pages are searchable too ("paper.pdf p. 3"). Reading a vault
+    /// full of PDFs takes a while the first time (the text is cached
+    /// afterwards), so it runs in the background: the server answers at
+    /// once, and pages show up in search as they are read.
+    fn index_pdfs(&self) {
+        let weak: Weak<Core> = Arc::downgrade(&self.core);
+        quire_app::pdf_state::index_pdfs_in_background(self.core.vault.clone(), Arc::clone(&self.core.pdf_indexing), move |text| {
+            let Some(core) = weak.upgrade() else { return false };
+            core.index.upsert_attachment(text);
+            // Counted as done once a search can find it.
+            core.index.flush();
+            true
+        });
+    }
+
+    /// `(done, total)` while the start-up pass over the vault's PDFs runs.
+    pub fn pdf_indexing(&self) -> Option<(usize, usize)> {
+        self.core.pdf_indexing.in_progress()
+    }
+
+    /// Wait until every PDF that was in the vault at start-up is searchable,
+    /// or `timeout` passes. Returns whether it finished (tests, the CLI).
+    pub fn wait_for_pdfs(&self, timeout: Duration) -> bool {
+        let until = Instant::now() + timeout;
+        while self.pdf_indexing().is_some() {
+            if Instant::now() >= until {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        true
     }
 
     pub fn vault(&self) -> &Vault {
@@ -733,6 +770,7 @@ impl Core {
             allow_private_urls: self.config.allow_private_urls,
             method: "tools/call",
             state_dir: self.config.state_dir.as_deref(),
+            pdf_indexing: self.pdf_indexing.in_progress(),
         };
         let out = match self.registry.get(name) {
             Some(t) if grant.allows(t.spec().access) => {
