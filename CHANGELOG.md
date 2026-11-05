@@ -4,6 +4,15 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Added
+- **Vim macros:** `qa` … `q` records, `@a` plays, `@@` plays again, `3@a` three times. A macro run is one undo step, stops at the first command that fails (so `100@a` stops at the end of a list), and is kept as text in its register (`"ap` shows it). The status bar says `recording @a`.
+- **Vim marks:** `ma`, `` `a ``, `'a`, `''` (back to before the last jump), `` `. `` (the last change) and `:'a,'bd`. Marks move with their lines as you edit, belong to their note, and are kept with the session.
+- **Vim Visual-block mode** (Ctrl+V): `I`, `A`, `c`, `d`, `y`, `p`, `r`, `$`, `~`, `o`/`O` and `.` on a column of text, using the editor's multiple cursors. Tabs and wide characters (CJK) count by their width on screen, and short lines are skipped or padded as in Vim. A block insert is one undo step.
+- **Reminders while Quire is closed:** Settings → Planning → "Remind me even when Quire is closed" installs a small job of your own (a systemd user timer or a crontab line on Linux, a LaunchAgent on macOS, a Task Scheduler task on Windows) that runs `quire-cli remind` every minute. No administrator rights; Settings shows exactly what is installed where, and turning it off removes it. Each reminder shows once, whether Quire or the job shows it. `quire-cli remind <vault>` (with `--dry-run`, `--install`, `--uninstall`, `--status`) does the same from a terminal.
+- **Canvas text cards look like the preview:** callouts, tables, task lists and code render as in the note preview, and stay fast on a 1,000-card canvas.
+- **Excalidraw drawings show as pictures:** `![[Plan.excalidraw]]` in a note and its preview, drawing files on a canvas, the drawing note itself, `.excalidraw` files and HTML export (as SVG). Rectangles, ellipses, diamonds, lines, arrows, freehand, text, images and frames, drawn in a clean style. Read-only: edit in Excalidraw.
+- **Obsidian Bases formulas and summaries:** `formulas` columns (arithmetic, comparisons, `if`, `date`, `now`, `today`, durations, `file.*` fields, and string, number, date and list functions) and `summaries` (Sum, Average, Min, Max, Median, Earliest, Latest, … and a base's own) under table and cards views. Filters can use the same expressions (`not`, dates, formulas). A function Quire doesn't know says so in its cell.
+
 ### Changed
 - The full edition now includes the on-device AI engine; Quire Lite downloads it when you turn on-device AI on. Settings → AI says "Included with Quire" for the engine that came with the app, and Quire checks it against a hash built into the app before every start, as it does a downloaded engine.
 
