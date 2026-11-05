@@ -103,7 +103,9 @@ mermaid-rs-renderer = { version = "0.3", default-features = false }
 sha2 = "0.11"
 getrandom = "0.4"
 base64 = "0.23"
-axum = "0.8.9"
+# 0.10 perf: without the `tracing`, `tower-log`, `matched-path` and
+# `original-uri` defaults, which nothing here uses.
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "json", "query", "form"] }
 tokio = { version = "1.54.1", default-features = false }
 toml_edit = "0.25"
 unicode-normalization = "0.1.26"
@@ -210,6 +212,225 @@ codegen-units = 1
 # bad formula shows an error instead of closing the app.
 panic = "unwind"
 strip = true
+
+# Size (0.10, docs/design/0.10-perf.md): dependencies are optimized for size
+# ("z"), except those on a hot path (drawing frames, editing, search, PDF
+# pages, images, diffs, hashing and encryption, and the AI engine's
+# inference), which stay at full speed. Our own crates stay at opt-level 3,
+# except the ones off the hot path below ("s"). The CI `perf` job checks
+# the speed budgets with these settings (`[profile.perf]` inherits them).
+[profile.release.package."*"]
+opt-level = "z"
+
+# Our crates off the hot path: MCP and agents (their §9 budgets are checked
+# by the perf job), importers, the web app, sync, the assistant and AI
+# client, planning, the typesetter's glue.
+[profile.release.package.quire-mcp]
+opt-level = "s"
+[profile.release.package.quire-agent]
+opt-level = "s"
+[profile.release.package.quire-import]
+opt-level = "s"
+[profile.release.package.quire-web]
+opt-level = "s"
+[profile.release.package.quire-sync]
+opt-level = "s"
+[profile.release.package.quire-assistant]
+opt-level = "s"
+[profile.release.package.quire-ai]
+opt-level = "s"
+[profile.release.package.quire-plan]
+opt-level = "s"
+[profile.release.package.quire-typeset]
+opt-level = "s"
+[profile.release.package.quire-cli]
+opt-level = "s"
+# The app's state and its UI: what a frame runs is mostly egui and the
+# editor crates (quire-text, quire-markdown, quire-index), which stay at 3;
+# the typing and canvas budgets are checked by the perf job.
+[profile.release.package.quire-app]
+opt-level = "s"
+[profile.release.package.quire-desktop]
+opt-level = "s"
+
+[profile.release.package.egui]
+opt-level = 3
+[profile.release.package.epaint]
+opt-level = 3
+[profile.release.package.emath]
+opt-level = 3
+[profile.release.package.ecolor]
+opt-level = 3
+[profile.release.package.eframe]
+opt-level = 3
+[profile.release.package.egui_glow]
+opt-level = 3
+[profile.release.package.egui-winit]
+opt-level = 3
+[profile.release.package.glow]
+opt-level = 3
+[profile.release.package.egui_extras]
+opt-level = 3
+[profile.release.package.egui_commonmark]
+opt-level = 3
+[profile.release.package.egui_commonmark_backend]
+opt-level = 3
+[profile.release.package.skrifa]
+opt-level = 3
+[profile.release.package.read-fonts]
+opt-level = 3
+[profile.release.package.vello_cpu]
+opt-level = 3
+[profile.release.package.vello_common]
+opt-level = 3
+[profile.release.package.fearless_simd]
+opt-level = 3
+[profile.release.package.kurbo]
+opt-level = 3
+[profile.release.package.ropey]
+opt-level = 3
+[profile.release.package.pulldown-cmark]
+opt-level = 3
+[profile.release.package.nucleo-matcher]
+opt-level = 3
+[profile.release.package.unicode-segmentation]
+opt-level = 3
+[profile.release.package.unicode-normalization]
+opt-level = 3
+[profile.release.package.memchr]
+opt-level = 3
+[profile.release.package.aho-corasick]
+opt-level = 3
+[profile.release.package.regex]
+opt-level = 3
+[profile.release.package.regex-automata]
+opt-level = 3
+[profile.release.package.hashbrown]
+opt-level = 3
+[profile.release.package.crossbeam-channel]
+opt-level = 3
+[profile.release.package.serde_json]
+opt-level = 3
+[profile.release.package.similar]
+opt-level = 3
+[profile.release.package.spellbook]
+opt-level = 3
+[profile.release.package.strsim]
+opt-level = 3
+[profile.release.package.hayro]
+opt-level = 3
+[profile.release.package.hayro-interpret]
+opt-level = 3
+[profile.release.package.hayro-syntax]
+opt-level = 3
+[profile.release.package.hayro-cmap]
+opt-level = 3
+[profile.release.package.image]
+opt-level = 3
+[profile.release.package.png]
+opt-level = 3
+[profile.release.package.zune-jpeg]
+opt-level = 3
+[profile.release.package.zune-core]
+opt-level = 3
+[profile.release.package.image-webp]
+opt-level = 3
+[profile.release.package.fdeflate]
+opt-level = 3
+[profile.release.package.miniz_oxide]
+opt-level = 3
+[profile.release.package.crc32fast]
+opt-level = 3
+[profile.release.package.flate2]
+opt-level = 3
+[profile.release.package.resvg]
+opt-level = 3
+[profile.release.package.tiny-skia]
+opt-level = 3
+[profile.release.package.sha2]
+opt-level = 3
+[profile.release.package.chacha20poly1305]
+opt-level = 3
+[profile.release.package.chacha20]
+opt-level = 3
+[profile.release.package.poly1305]
+opt-level = 3
+[profile.release.package.argon2]
+opt-level = 3
+[profile.release.package.blake2]
+opt-level = 3
+# The on-device AI engine (apps/quire-ai-engine): inference at full speed.
+[profile.release.package.candle-core]
+opt-level = 3
+[profile.release.package.candle-nn]
+opt-level = 3
+[profile.release.package.candle-transformers]
+opt-level = 3
+[profile.release.package.gemm]
+opt-level = 3
+[profile.release.package.gemm-common]
+opt-level = 3
+[profile.release.package.gemm-f16]
+opt-level = 3
+[profile.release.package.gemm-f32]
+opt-level = 3
+[profile.release.package.gemm-f64]
+opt-level = 3
+[profile.release.package.gemm-c32]
+opt-level = 3
+[profile.release.package.gemm-c64]
+opt-level = 3
+[profile.release.package.pulp]
+opt-level = 3
+[profile.release.package.half]
+opt-level = 3
+[profile.release.package.float8]
+opt-level = 3
+[profile.release.package.rten]
+opt-level = 3
+[profile.release.package.rten-base]
+opt-level = 3
+[profile.release.package.rten-gemm]
+opt-level = 3
+[profile.release.package.rten-imageproc]
+opt-level = 3
+[profile.release.package.rten-simd]
+opt-level = 3
+[profile.release.package.rten-tensor]
+opt-level = 3
+[profile.release.package.rten-vecmath]
+opt-level = 3
+[profile.release.package.rten-parallel]
+opt-level = 3
+[profile.release.package.ocrs]
+opt-level = 3
+[profile.release.package.tokenizers]
+opt-level = 3
+[profile.release.package.fancy-regex]
+opt-level = 3
+[profile.release.package.rayon]
+opt-level = 3
+[profile.release.package.rayon-core]
+opt-level = 3
+[profile.release.package.crossbeam-deque]
+opt-level = 3
+[profile.release.package.crossbeam-epoch]
+opt-level = 3
+[profile.release.package.pic-scale]
+opt-level = 3
+[profile.release.package.dyn-stack]
+opt-level = 3
+[profile.release.package.safetensors]
+opt-level = 3
+
+# The CI `perf` job (design §9 speed budgets, docs/design/0.10-perf.md):
+# release code generation without LTO, so it builds in minutes. Release
+# builds are a little faster still, so budgets met here are met there.
+[profile.perf]
+inherits = "release"
+lto = false
+codegen-units = 16
+strip = false
 
 [profile.dev.package."*"]
 opt-level = 2

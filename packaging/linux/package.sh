@@ -60,6 +60,11 @@ if [[ -n "$engine" ]]; then
   echo "Bundling the engine $engine ($(cat "$engine_pin"))"
 fi
 
+# Identical code folding: the linker keeps one copy of functions that
+# compiled to the same machine code (generic code repeats a lot). About 1 MB
+# off each binary (docs/design/0.10-perf.md); Rust promises no unique
+# function addresses, so nothing relies on them.
+export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,--icf=all"
 cargo build --release --locked --target "$target" -p quire-desktop -p quire-cli ${features[@]+"${features[@]}"}
 [[ "$edition" == full ]] && cargo build --release --locked --target "$target" -p quire-sync-server
 mkdir -p "$out"

@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# Fails when a release binary is over its size budget (docs/design/0.9.md §2.3).
+# Fails when a release binary is over its size budget (docs/design/0.9.md §2.3,
+# lowered in 0.10 to the measured size plus about 10 %: 67.6 and 40.0 MiB,
+# docs/design/0.10-perf.md §2).
 #   packaging/check-size.sh <binary> full|lite|engine
 # Budgets are for the stripped release binary, in MiB.
 set -euo pipefail
 bin="$1"
 edition="$2"
 case "$edition" in
-  full) budget=96 ;;
-  lite) budget=56 ;;
+  full) budget=75 ;;
+  lite) budget=45 ;;
   engine) budget=25 ;;
   *) echo "edition must be full, lite or engine" >&2; exit 2 ;;
 esac
