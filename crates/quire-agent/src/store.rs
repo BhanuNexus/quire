@@ -1124,6 +1124,40 @@ impl AgentStore {
         }
     }
 
+    /// A new proposal of `actor` keeps out what the person rejected from
+    /// that actor's suggestions for the same notes in the last 30 days (on
+    /// this device or, with shared review history, another): the same
+    /// suggestion in a new run isn't asked about again. A change left with
+    /// nothing is settled as rejected at once.
+    fn carry_rejections(&self, actor: &Actor, prop: &mut Proposal) {
+        use crate::proposal::{ChangeOp, ChangeState, HunkAction};
+        let now = self.now_ms();
+        let past: Vec<Proposal> = ProposalStore::new(self.inner.vault.clone())
+            .archived(now)
+            .into_iter()
+            .filter(|p| p.actor.id == actor.id && now - p.updated <= crate::ops::EXPIRE_AFTER_MS)
+            .collect();
+        if past.is_empty() {
+            return;
+        }
+        for c in prop.changes.iter_mut().filter(|c| c.op == ChangeOp::Edit) {
+            let Some(path) = c.path.clone() else { continue };
+            for old in past.iter().flat_map(|p| &p.changes).filter(|o| o.subject() == Some(&path)) {
+                for d in old.decided.iter().filter(|d| d.action == HunkAction::Rejected) {
+                    if !c.decided.contains(d) {
+                        c.decided.push(d.clone());
+                    }
+                }
+            }
+            if c.drop_rejected() && c.new_text == c.base_text() {
+                c.set_state(ChangeState::Rejected, &self.inner.device.id, now);
+            }
+        }
+        if let Some(s) = prop.settled_status() {
+            prop.status = s;
+        }
+    }
+
     fn propose(&self, actor: &Actor, cs: &ChangeSet, planned: &[Planned], max_pending: u32) -> Result<SubmitOutcome, WriteError> {
         let now = self.now_ms();
         let store = ProposalStore::new(self.inner.vault.clone());
@@ -1197,7 +1231,12 @@ impl AgentStore {
                 changes: planned.iter().map(Self::proposal_change).collect(),
                 other: crate::actor::Other::new(),
             };
+            let mut prop = prop;
+            self.carry_rejections(actor, &mut prop);
             store.save(&prop)?;
+            if prop.status != ProposalStatus::Pending {
+                let _ = store.archive(&prop.id);
+            }
             (prop, false)
         };
         for p in planned {

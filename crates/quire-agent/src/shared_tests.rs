@@ -387,3 +387,33 @@ fn a_proposal_amended_after_the_desktop_resolved_it_comes_back() {
     assert!(lines.iter().any(|l| l.contains("And a new line")), "{lines:?}");
     assert!(lines.iter().all(|l| !l.contains("water") && !l.contains("for Friday")), "rejected ones stay rejected: {lines:?}");
 }
+
+#[test]
+fn a_rejection_holds_when_the_agent_suggests_it_again_in_a_new_run() {
+    let (s, d) = (server(), desktop());
+    let id = propose(&s, AGENT);
+    exchange(&s, &d);
+    // The desktop accepts the venue line and rejects the water: resolved.
+    let path = NotePath::new("Launch.md");
+    let h = d.store.review(&id, &path, NOTE).hunks;
+    d.store.accept_in_file(&id, &path, &[decision(&h[0], HunkAction::Accepted)], None).unwrap();
+    let now = read(&d, "Launch.md");
+    let left = d.store.review(&id, &path, &now).hunks;
+    d.store.decide_checked(&id, &path, &[decision(&left[0], HunkAction::Rejected)], &now, None).unwrap();
+    exchange(&s, &d);
+    s.vault.write(&path, &now).unwrap();
+    assert_eq!(outcome(&s, &id).0, ProposalStatus::PartiallyApplied);
+    // A new run: the rejected line again (reworded), and something new.
+    s.clock.advance(60_000);
+    let again = now.replace("Bring snacks.", "bring snacks and Water!\nAsk about parking.");
+    let second = propose(&s, &again);
+    assert_ne!(second, id, "a new suggestion");
+    let shown: Vec<String> = s.store.review(&second, &path, &now).hunks.iter().map(|h| h.new_lines.concat()).collect();
+    assert_eq!(shown, ["Ask about parking.\n"], "only what is new");
+    // Only the rejected line again: settled at once, nothing to review.
+    s.clock.advance(60_000);
+    let third = propose(&s, &now.replace("Bring snacks.", "Bring snacks and water."));
+    let _ = third;
+    let waiting: Vec<_> = s.store.proposals(&ProposalFilter::pending()).into_iter().filter(|p| p.files.contains(&path)).collect();
+    assert_eq!(waiting.len(), 1, "{waiting:?}");
+}
