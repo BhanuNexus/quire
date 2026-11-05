@@ -664,6 +664,15 @@ fn capture(ctx: &egui::Context, text: &mut String, focused: &mut bool, minimize:
         ui.horizontal(|ui| {
             add |= ui.add_enabled(!text.trim().is_empty(), egui::Button::new("Add")).clicked();
             close |= ui.button("Cancel").clicked();
+            // 0.10: record a voice note into today's note instead.
+            if ws.features.ai.voice.can_record
+                && ws.vault().is_some()
+                && ui.button("🎤 Voice note…").on_hover_text("Record a voice note for today's note").clicked()
+            {
+                ws.features.ai.voice.to_capture = true;
+                ws.request_ui(quire_app::workspace::UiRequest::Feature(Command::RecordVoiceNote));
+                close = true;
+            }
             ui.label(RichText::new(format!("From any app: {}", crate::capture_key::label())).size(11.5).color(pal.faint));
         });
     });

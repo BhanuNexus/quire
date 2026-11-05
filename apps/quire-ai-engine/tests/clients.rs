@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use quire_ai::catalog::Catalog;
 use quire_ai::engine::{Engine, EngineConfig, EngineError};
-use quire_ai::local::{LocalChat, LocalEmbedder, LocalOcr, LocalSetup, ocr_text};
+use quire_ai::local::{LocalChat, LocalEmbedder, LocalOcr, LocalSetup, LocalTranscriber, ocr_text};
 use quire_ai::protocol::{LoadParams, ModelKind};
 use quire_index::semantic::Embedder;
 use quire_intel::chat::{CancelFlag, ChatEvent, ChatMessage, ChatModel, ChatRequest, StopReason, ToolDef};
@@ -125,6 +125,37 @@ fn ocr_reads_images() {
     assert_eq!(ocr_text(&lines), "Second line\nFirst line");
     let page = ocr.pdf_page(&tmp.path().join("doc.pdf"), 2, &CancelFlag::new()).unwrap();
     assert_eq!(ocr_text(&page), "Page 3 of doc.pdf");
+}
+
+#[test]
+fn voice_notes_are_transcribed_through_protocol_two_and_stop_works() {
+    let tmp = tempfile::tempdir().unwrap();
+    let wav = tmp.path().join("Voice note.wav");
+    std::fs::write(&wav, quire_ai::wav::encode_pcm16(&vec![0.1; 48_000], 16_000)).unwrap();
+    std::fs::write(tmp.path().join("Voice note.wav.txt"), "Buy milk, then call Sam.").unwrap();
+    let c = catalog();
+    let engine = engine_with(&[], None);
+    let t = LocalTranscriber::new(engine.clone(), c.get("whisper-base").unwrap(), &setup(tmp.path()));
+    let r = t.transcribe(&wav, "", &CancelFlag::new()).unwrap();
+    assert_eq!((r.text.as_str(), r.language.as_str()), ("Buy milk, then call Sam.", "en"));
+    assert!((r.seconds - 3.0).abs() < 0.01);
+    assert_eq!(engine.protocol(), Some(quire_ai::protocol::PROTOCOL_VERSION));
+    // Not a WAV file: an error, and the engine keeps working.
+    let bad = tmp.path().join("bad.wav");
+    std::fs::write(&bad, b"OggS").unwrap();
+    assert!(t.transcribe(&bad, "", &CancelFlag::new()).is_err());
+    let slow = tmp.path().join("__slow__.wav");
+    std::fs::write(&slow, quire_ai::wav::encode_pcm16(&[0.0; 1600], 16_000)).unwrap();
+    let cancel = CancelFlag::new();
+    let stopper = cancel.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        stopper.cancel();
+    });
+    let started = Instant::now();
+    assert!(matches!(t.transcribe(&slow, "de", &cancel), Err(EngineError::Cancelled)));
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert_eq!(t.transcribe(&wav, "de", &CancelFlag::new()).unwrap().language, "de");
 }
 
 #[test]

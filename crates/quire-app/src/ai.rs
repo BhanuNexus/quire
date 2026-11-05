@@ -292,6 +292,8 @@ pub struct LocalAiState {
     snapshot: Option<(Instant, EngineSnapshot)>,
     status_rx: Option<Receiver<EngineSnapshot>>,
     pub(crate) ocr: ocr::OcrState,
+    /// Voice notes (0.10).
+    pub voice: crate::voice::VoiceState,
 }
 
 impl std::fmt::Debug for LocalAiState {

@@ -55,6 +55,7 @@ enum Model {
     Llm(Box<Llm>),
     Embed(Box<Embedder>),
     Ocr(Box<Ocr>),
+    Whisper(Box<crate::whisper::Transcriber>),
 }
 
 #[derive(Default)]
@@ -155,6 +156,10 @@ impl Backend for RealBackend {
                 })
                 .map_err(load_failed)?;
                 (Model::Ocr(Box::new(Ocr { engine })), mem * 4)
+            }
+            ModelKind::Transcribe => {
+                let mem = file_size(&dir.join("model.safetensors"));
+                (Model::Whisper(Box::new(crate::whisper::Transcriber::load(dir, &device(&p.gpu))?)), mem)
             }
         };
         self.models.insert(p.model.clone(), model);
@@ -321,6 +326,22 @@ impl Backend for RealBackend {
                 OcrLine { text: line.to_string(), quad: [[l, t], [rr, t], [rr, b], [l, b]], conf: 1.0 }
             })
             .collect())
+    }
+
+    fn transcribe(&mut self, p: &TranscribeParams, cancel: &AtomicBool) -> Result<TranscribeResult, Failure> {
+        self.transcribe_impl(p, cancel)
+    }
+}
+
+impl RealBackend {
+    fn transcribe_impl(&mut self, p: &TranscribeParams, cancel: &AtomicBool) -> Result<TranscribeResult, Failure> {
+        let Some(Model::Whisper(m)) = self.models.get_mut(&p.model) else {
+            return Err((code::MODEL_NOT_LOADED, format!("{} isn't loaded", p.model)));
+        };
+        let bytes = std::fs::read(&p.audio_path).map_err(|e| failed(format!("{}: {e}", p.audio_path)))?;
+        let audio = quire_ai::wav::decode(&bytes).map_err(failed)?;
+        let pcm = quire_ai::wav::resample(&audio.samples, audio.rate, quire_ai::wav::VOICE_RATE);
+        m.run(&pcm, &p.language, cancel)
     }
 }
 

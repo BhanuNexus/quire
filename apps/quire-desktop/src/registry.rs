@@ -235,6 +235,8 @@ pub(crate) const fn ui_target(cmd: Command) -> Option<UiTarget> {
         Command::AiSetup => UiTarget::Overlay(crate::onboarding_ui::OnboardingOverlay::make),
         Command::IngestIntoWiki => UiTarget::Overlay(crate::agent_panel_ui::ingest_ui::IngestDialog::make),
         Command::ConnectExternalAgent => UiTarget::Overlay(crate::agent_panel_ui::acp_ui::ConnectOverlay::make),
+        // ---- 0.10 AI
+        Command::RecordVoiceNote => UiTarget::Overlay(crate::voice_ui::VoiceDialog::make),
         // ---- WS-E
         Command::ShowAgenda => UiTarget::Sidebar("agenda"),
         Command::ShowCalendar => UiTarget::Sidebar("calendar"),
@@ -333,6 +335,11 @@ pub(crate) fn layout_samples(ws: &mut Workspace) -> Vec<(&'static str, crate::ov
         ("ingest: choose", Overlay::Feature(Box::new(crate::agent_panel_ui::ingest_ui::IngestDialog::sample(0)))),
         ("ingest: running", Overlay::Feature(Box::new(crate::agent_panel_ui::ingest_ui::IngestDialog::sample(1)))),
         ("ingest: done", Overlay::Feature(Box::new(crate::agent_panel_ui::ingest_ui::IngestDialog::sample(2)))),
+        // ---- 0.10 AI
+        ("voice: ready", Overlay::Feature(Box::new(crate::voice_ui::VoiceDialog::sample(0)))),
+        ("voice: recording", Overlay::Feature(Box::new(crate::voice_ui::VoiceDialog::sample(1)))),
+        ("voice: transcribing", Overlay::Feature(Box::new(crate::voice_ui::VoiceDialog::sample(2)))),
+        ("voice: failed", Overlay::Feature(Box::new(crate::voice_ui::VoiceDialog::sample(3)))),
         // ---- WS-E
         ("rename tag", Overlay::Feature(Box::new(crate::meta_refactor_ui::RefactorOverlay::sample(false, false)))),
         ("rename tag: preview", Overlay::Feature(Box::new(crate::meta_refactor_ui::RefactorOverlay::sample(false, true)))),

@@ -113,6 +113,8 @@ pub(crate) fn show(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pa
         let trust = crate::trust_ui::settings_tab(ui, ws, st, pal);
         out.run = out.run.or(trust.run);
     }
+    section(ui, pal, "Voice notes");
+    voice(ui, ws, &mut st.ai_settings, pal);
     section(ui, pal, "Background work");
     jobs(ui, ws, pal);
     if ws.settings.ai_local != before || ws.settings.embeddings != before_embed || ws.settings.agent_panel.model != before_panel {
@@ -441,6 +443,74 @@ fn device(ui: &mut egui::Ui, ws: &mut Workspace, s: &mut AiSettingsUi, pal: &Pal
             }
         });
     });
+}
+
+/// Voice notes (0.10): where recordings are transcribed, if anywhere.
+fn voice(ui: &mut egui::Ui, ws: &mut Workspace, s: &mut AiSettingsUi, pal: &Palette) {
+    let muted = |t: &str| RichText::new(t.to_string()).size(12.0).color(pal.muted);
+    if crate::voice_ui::CAN_RECORD {
+        ui.add(
+            egui::Label::new(muted(
+                "“Record voice note…” records only between Record and Stop, and saves the recording in the vault as a WAV file.",
+            ))
+            .wrap(),
+        );
+    } else {
+        ui.add(egui::Label::new(muted("This edition can't record. Recordings already in a vault can still be played elsewhere.")).wrap());
+        return;
+    }
+    field(ui, pal, "Transcripts", |ui| {
+        let t = &mut ws.settings.voice.transcribe;
+        ui.radio_value(t, String::new(), "None (keep the recording only)");
+        if ws.settings.ai_local.on_device() {
+            ui.radio_value(t, "device".to_string(), "On this computer (Whisper; experimental)");
+        }
+        ui.radio_value(t, "provider".to_string(), "Through my provider (sends the recording)");
+    });
+    match ws.settings.voice.transcribe.as_str() {
+        "device" => {
+            ui.horizontal_wrapped(|ui| {
+                let m = &mut ws.settings.voice.device_model;
+                for (id, name) in [("whisper-tiny", "Fast"), ("whisper-base", "Balanced"), ("whisper-small", "Better")] {
+                    ui.radio_value(m, id.to_string(), name);
+                }
+            });
+            let id = ws.settings.voice.device_model.clone();
+            model_row(ui, ws, s, pal, &id);
+            ui.add(egui::Label::new(muted("The recording doesn't leave this computer. It needs the engine too (above).")).wrap());
+        }
+        "provider" => {
+            let (base, _) = ai::resolved(&ws.settings);
+            field(ui, pal, "Transcription model", |ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut ws.settings.voice.provider_model)
+                        .hint_text("whisper-1")
+                        .desired_width(text_width(ui, 200.0)),
+                );
+            });
+            if ws.settings.ai_provider == "openai" {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!("Each recording you transcribe is sent to {base} (/v1/audio/transcriptions)."))
+                            .size(12.0)
+                            .color(pal.warn),
+                    )
+                    .wrap(),
+                );
+            }
+        }
+        _ => {}
+    }
+    if let Some(why) = quire_app::voice::unavailable_reason(&ws.settings) {
+        ui.add(egui::Label::new(RichText::new(why).size(12.0).color(pal.warn)).wrap());
+    }
+    if !ws.settings.voice.transcribe.is_empty() {
+        field(ui, pal, "Language (empty: detect it)", |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut ws.settings.voice.language).hint_text("en, de, fr…").desired_width(text_width(ui, 120.0)),
+            );
+        });
+    }
 }
 
 fn engine_status(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) {

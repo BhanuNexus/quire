@@ -9,7 +9,9 @@
 //!   each an array of `{"delta"}` / `{"tool_call"}` events), else simple
 //!   rules: a message saying "search for X" calls `search`, a tool result
 //!   is summarized, anything else is echoed;
-//! * OCR: the text of `<image>.txt` next to the image, else a fixed line.
+//! * OCR: the text of `<image>.txt` next to the image, else a fixed line;
+//! * transcription: the text of `<audio>.txt` next to the WAV file, else
+//!   "A voice note of N seconds." (the WAV is read, so bad files fail).
 //!
 //! Inputs containing `__crash__` end the process, `__hang__` stops
 //! answering, and `__slow__` streams slowly, to test restarts and Stop.
@@ -17,7 +19,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use quire_ai::protocol::{EmbedParams, GenUsage, GenerateParams, LoadParams, OcrLine, OcrParams, StopKind, code};
+use quire_ai::protocol::{
+    EmbedParams, GenUsage, GenerateParams, LoadParams, OcrLine, OcrParams, StopKind, TranscribeParams, TranscribeResult, code,
+};
 use serde_json::{Value, json};
 
 use crate::{Backend, Failure};
@@ -182,6 +186,24 @@ impl Backend for FakeBackend {
             })
             .collect())
     }
+
+    fn transcribe(&mut self, p: &TranscribeParams, cancel: &AtomicBool) -> Result<TranscribeResult, Failure> {
+        trap(&p.audio_path);
+        let bytes = std::fs::read(&p.audio_path).map_err(|e| (code::FAILED, format!("{}: {e}", p.audio_path)))?;
+        let audio = quire_ai::wav::decode(&bytes).map_err(|e| (code::FAILED, e))?;
+        if p.audio_path.contains("__slow__") {
+            for _ in 0..40 {
+                if cancel.load(Ordering::Acquire) {
+                    return Err((code::CANCELLED, "cancelled".into()));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        let text = std::fs::read_to_string(format!("{}.txt", p.audio_path))
+            .map_or_else(|_| format!("A voice note of {} seconds.", audio.seconds().round()), |t| t.trim().to_string());
+        let language = if p.language.is_empty() { "en".to_string() } else { p.language.clone() };
+        Ok(TranscribeResult { text, language, seconds: audio.seconds() })
+    }
 }
 
 #[cfg(test)]
@@ -242,6 +264,10 @@ impl Backend for NoModels {
     }
 
     fn ocr(&mut self, _p: &OcrParams, _c: &AtomicBool) -> Result<Vec<OcrLine>, Failure> {
+        Err((code::MODEL_NOT_LOADED, "no models in this build".into()))
+    }
+
+    fn transcribe(&mut self, _p: &TranscribeParams, _c: &AtomicBool) -> Result<TranscribeResult, Failure> {
         Err((code::MODEL_NOT_LOADED, "no models in this build".into()))
     }
 }

@@ -145,3 +145,67 @@ url = "https://ocrs-models.s3-accelerate.amazonaws.com/text-detection.onnx"
 [[model.files]]
 name = "text-recognition.onnx"
 url = "https://ocrs-models.s3-accelerate.amazonaws.com/text-recognition.onnx"
+
+# ---------------------------------------------------------------- speech
+# Whisper (OpenAI, MIT) for voice notes, multilingual, through candle's
+# `whisper` model: safetensors (f32) with the model's own config and
+# tokenizer. `ram_mb` is the engine's peak for one 30-second window decoded
+# to the 224-token limit, measured with random weights of these shapes
+# (docs/formats/model-catalog.md, 0.10); real speech ends sooner.
+
+[[model]]
+id = "whisper-tiny"
+purpose = "transcribe"
+label = "Fast"
+model_name = "Whisper tiny"
+licence = "MIT"
+ram_mb = 650
+repo = "openai/whisper-tiny"
+revision = "main"
+[[model.files]]
+name = "model.safetensors"
+url = "https://huggingface.co/openai/whisper-tiny/resolve/main/model.safetensors"
+[[model.files]]
+name = "config.json"
+url = "https://huggingface.co/openai/whisper-tiny/resolve/main/config.json"
+[[model.files]]
+name = "tokenizer.json"
+url = "https://huggingface.co/openai/whisper-tiny/resolve/main/tokenizer.json"
+
+[[model]]
+id = "whisper-base"
+purpose = "transcribe"
+label = "Balanced"
+model_name = "Whisper base"
+licence = "MIT"
+ram_mb = 1200
+repo = "openai/whisper-base"
+revision = "main"
+[[model.files]]
+name = "model.safetensors"
+url = "https://huggingface.co/openai/whisper-base/resolve/main/model.safetensors"
+[[model.files]]
+name = "config.json"
+url = "https://huggingface.co/openai/whisper-base/resolve/main/config.json"
+[[model.files]]
+name = "tokenizer.json"
+url = "https://huggingface.co/openai/whisper-base/resolve/main/tokenizer.json"
+
+[[model]]
+id = "whisper-small"
+purpose = "transcribe"
+label = "Better"
+model_name = "Whisper small"
+licence = "MIT"
+ram_mb = 3600
+repo = "openai/whisper-small"
+revision = "main"
+[[model.files]]
+name = "model.safetensors"
+url = "https://huggingface.co/openai/whisper-small/resolve/main/model.safetensors"
+[[model.files]]
+name = "config.json"
+url = "https://huggingface.co/openai/whisper-small/resolve/main/config.json"
+[[model.files]]
+name = "tokenizer.json"
+url = "https://huggingface.co/openai/whisper-small/resolve/main/tokenizer.json"

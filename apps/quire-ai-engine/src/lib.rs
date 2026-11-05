@@ -15,8 +15,9 @@ use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use quire_ai::protocol::{
-    EmbedParams, EmbedResult, GenUsage, GenerateParams, HelloParams, HelloResult, LoadParams, LoadResult, LoadedModel, OcrLine, OcrParams,
-    OcrResult, PROTOCOL_VERSION, Reply, Request, StatusResult, code, method,
+    EmbedParams, EmbedResult, GenUsage, GenerateParams, HelloParams, HelloResult, LoadParams, LoadResult, LoadedModel,
+    MIN_PROTOCOL_VERSION, OcrLine, OcrParams, OcrResult, PROTOCOL_VERSION, Reply, Request, StatusResult, TranscribeParams,
+    TranscribeResult, code, method,
 };
 use serde_json::{Value, json};
 
@@ -48,6 +49,8 @@ pub trait Backend: Send + 'static {
     /// Stream `{"delta"}` and `{"tool_call"}` events through `emit`.
     fn generate(&mut self, p: &GenerateParams, cancel: &AtomicBool, emit: &mut dyn FnMut(Value)) -> Result<GenUsage, Failure>;
     fn ocr(&mut self, p: &OcrParams, cancel: &AtomicBool) -> Result<Vec<OcrLine>, Failure>;
+    /// Speech to text (protocol 2).
+    fn transcribe(&mut self, p: &TranscribeParams, cancel: &AtomicBool) -> Result<TranscribeResult, Failure>;
 }
 
 /// Unload a model after this long without use when `load` didn't say.
@@ -189,7 +192,7 @@ fn control(
             let rss = rss_bytes().unwrap_or_else(|| st.loaded.values().map(|l| l.mem).sum());
             Control::Reply(Reply::ok(req.id, serde_json::to_value(StatusResult { loaded, rss_bytes: rss }).unwrap_or_default()))
         }
-        method::LOAD | method::UNLOAD | method::EMBED | method::GENERATE | method::OCR => {
+        method::LOAD | method::UNLOAD | method::EMBED | method::GENERATE | method::OCR | method::TRANSCRIBE => {
             let cancel = Arc::new(AtomicBool::new(false));
             lock(cancels).insert(req.id, Arc::clone(&cancel));
             let _ = work.send(Work::Job(Job { req, cancel }));
@@ -201,11 +204,18 @@ fn control(
 
 fn hello(req: &Request, greeted: &mut bool) -> Reply {
     match serde_json::from_value::<HelloParams>(req.params.clone()) {
-        Ok(h) if h.app_version != env!("CARGO_PKG_VERSION") || h.protocol != PROTOCOL_VERSION => Reply::err(
-            req.id,
-            code::VERSION_MISMATCH,
-            format!("engine {} (protocol {PROTOCOL_VERSION}), app {} (protocol {})", env!("CARGO_PKG_VERSION"), h.app_version, h.protocol),
-        ),
+        Ok(h) if h.app_version != env!("CARGO_PKG_VERSION") || !(MIN_PROTOCOL_VERSION..=PROTOCOL_VERSION).contains(&h.protocol) => {
+            Reply::err(
+                req.id,
+                code::VERSION_MISMATCH,
+                format!(
+                    "engine {} (protocol {PROTOCOL_VERSION}), app {} (protocol {})",
+                    env!("CARGO_PKG_VERSION"),
+                    h.app_version,
+                    h.protocol
+                ),
+            )
+        }
         Ok(_) => {
             *greeted = true;
             let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
@@ -359,6 +369,21 @@ fn run<B: Backend>(backend: &mut B, job: &Job, out: &Out, state: &Mutex<State>) 
                 Err((c, m)) => Reply::err(id, c, m),
             }
         }
+        method::TRANSCRIBE => {
+            let p: TranscribeParams = match serde_json::from_value(params) {
+                Ok(p) => p,
+                Err(e) => return bad(e),
+            };
+            if !touch(state, &p.model) {
+                return not_loaded(id, &p.model);
+            }
+            let r = backend.transcribe(&p, &job.cancel);
+            touch(state, &p.model);
+            match r {
+                Ok(t) => Reply::ok(id, serde_json::to_value(t).unwrap_or_default()),
+                Err((c, m)) => Reply::err(id, c, m),
+            }
+        }
         other => Reply::err(id, code::UNKNOWN_METHOD, format!("{other} isn't a method of this engine")),
     }
 }
@@ -398,6 +423,9 @@ mod tests {
         let r = call(r#"{"id":2,"method":"hello","params":{"app_version":"0.0.1","protocol":1}}"#, &mut greeted).unwrap();
         assert_eq!(r.error.unwrap().code, code::VERSION_MISMATCH);
         assert!(!greeted);
+        let newer = format!(r#"{{"id":2,"method":"hello","params":{{"app_version":"{}","protocol":99}}}}"#, env!("CARGO_PKG_VERSION"));
+        assert_eq!(call(&newer, &mut greeted).unwrap().error.unwrap().code, code::VERSION_MISMATCH, "a protocol from the future");
+        // Protocol 1 (before `transcribe`) is still accepted.
         let hello = format!(r#"{{"id":3,"method":"hello","params":{{"app_version":"{}","protocol":1}}}}"#, env!("CARGO_PKG_VERSION"));
         let h: HelloResult = serde_json::from_value(call(&hello, &mut greeted).unwrap().result.unwrap()).unwrap();
         assert_eq!(h.protocol, PROTOCOL_VERSION);
