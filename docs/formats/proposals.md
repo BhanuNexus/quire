@@ -37,6 +37,21 @@ Types: `quire_agent::proposal`.
   Lines keep their line endings. A reader uses them while the note is
   exactly `current` (so ids don't move when a line diff aligns repeated
   lines differently), and otherwise rebases from `base_text`.
+* `decisions[].device` (0.10): the device the decision was made on;
+  absent in older files (the device holding the proposal).
+* `changes[].decided` (0.10): what each decided hunk held, so the same
+  suggestion isn't asked about again when its id changes (the agent
+  reworded it a little, or rewrote the lines around it):
+  `[{"action", "old": [lines], "new": [lines], "before"?, "after"?, "at", "device"?}]`.
+  Lines are normalised (NFC, whitespace collapsed, trimmed, lower case;
+  blank lines left out); `before`/`after` are the nearest non-empty lines
+  around the hunk. See "Decided content" below.
+* `changes[].state_device`, `state_at` (0.10): where and when `state` was set.
+* `origin`, `origin_body` (0.10): a **mirror** of a proposal made on
+  another device, copied in by shared review history
+  ([shared-review.md](shared-review.md)). `origin` is `{"id", "name"}` of
+  that device. A mirror is reviewed like any proposal but never amended
+  here; its agent amends it on its own device.
 * `trust`: `untrusted` when a source is untrusted content (`raw/`, imported,
   `trust: untrusted`, or a URL); `untrusted_source` names the first one.
   Absent means trusted.
@@ -59,6 +74,23 @@ next time. When no hunk waits, the change gets its `state`.
 Every decision rereads the file and refuses to save over one whose
 `updated` changed since the caller read it (another process decided); the
 caller reviews again.
+
+## Decided content
+
+A hunk is hidden (in review, after a rebase, and dropped when the agent
+amends) when its id was decided, or when it only brings back a decided
+change at the same place: every line it adds matches a line that change
+added, every line it removes matches a line that change would have
+replaced, at similarity ≥ 0.85 (normalised Levenshtein; lines under 20
+characters must be equal apart from closing punctuation), and one of its
+replaced lines or its context matches that change's. Rejections always
+count; acceptances only when made on another device (until the note with
+that text arrives). A hunk that adds or removes anything else is shown.
+Hidden hunks keep the current lines. When the agent amends, a rejected
+line inside a bigger hunk is taken out of its text (back to the line it
+replaced), and the rest stays. A new proposal by the same agent for the
+same note starts with the rejected content of its proposals resolved in the
+last 30 days; a change left with nothing is settled as `rejected` at once.
 
 ## Writing and amending
 
@@ -91,3 +123,6 @@ waiting gets `inbox_full`.
 * Undoing an accepted hunk in the editor puts the proposal back as it was,
   if nothing else changed it since.
 * A file whose `format` is above 1 is not listed and never rewritten.
+* With shared review history on, a waiting proposal and its decisions are
+  also published under `.quire/shared/agent/` for the other devices
+  ([shared-review.md](shared-review.md)).

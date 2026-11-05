@@ -206,9 +206,45 @@ correct one clears it. Restarting the server signs everyone out.
   token.
 * Claude Code: `claude mcp add --transport http quire https://notes.example.com/mcp`.
 
-Agents' changes outside agent zones arrive as suggestions; you review them
-in the Quire app on any device once they sync (the web app doesn't review
-suggestions yet).
+Agents' changes outside agent zones arrive as suggestions. The web app
+doesn't review them yet: you review them in the Quire app, below.
+
+### Agents on the server, review on your desktop
+
+An agent connected to `serve` writes on the server, so its suggestions and
+its run history are made there. To review them in the app on your desktop
+(and undo a run from there), turn on **"Also sync vault settings and review
+history"**: Settings → Sync in the app, or on the server
+
+```sh
+quire-cli sync share ~/vault on
+```
+
+It needs Quire 0.9 or later on every device (through a Quire Sync server,
+older devices are then refused; through a sync folder, 0.8 devices keep
+syncing notes only). Then, with `serve --sync` (or `sync watch`) running:
+
+* **Suggestions** made on the server appear in the desktop's Inbox after
+  the next sync, marked "on home server". Review them hunk by hunk, Accept
+  all or Reject all, as usual. What you decide goes back to the server:
+  the note you changed syncs like any edit, and the suggestion is resolved
+  there too, so it's never applied twice. If you and someone at the server
+  decide the same suggestion at the same time, both devices end with the
+  same outcome.
+* **Rejected stays rejected.** If the agent on the server writes again and
+  brings back a line you rejected (reworded a little, or with the lines
+  around it rewritten), it isn't shown again.
+* **Activity** shows the server's runs on their own lanes, under the
+  server's name, and **Revert run** works from the desktop: the server
+  carries the versions an undo needs, and your edits made since are kept
+  (overlapping ones become a suggestion to review).
+
+Without it, suggestions stay on the device where the agent ran, and the
+Inbox says "Suggestions from other devices appear here when 'Also sync
+vault settings and review history' is on". The shared review history is
+small (a few hundred KB for most vaults; nothing over 4 MB per file),
+kept for 30 days after a suggestion is resolved and three months for runs,
+and kept out of git. Details: [design/0.10-agentsync.md](design/0.10-agentsync.md).
 
 ## Security, in short
 

@@ -1,7 +1,11 @@
 # Ledger: `.quire/agent/ledger/<device-id>/<yyyy-mm>.jsonl`
 
 One line per agent event on this device, appended under a file lock (UTC
-month of `at`). Proposals and the ledger are device-local (design §8.3).
+month of `at`). The ledger is device-local (design §8.3); with shared
+review history on (0.10), a copy without `read` events is published for
+the other devices at `.quire/shared/agent/ledger/<device>/<yyyy-mm>.jsonl`
+([shared-review.md](shared-review.md)), and `AgentStore::log` reads this
+device's ledger with those copies (Activity, revert, `last_actor`).
 Owner: WS-A. Type: `quire_agent::LedgerEntry`.
 
 ```json
@@ -47,3 +51,7 @@ Optional fields are left out. Readers skip unparsable lines and lines with
 * `quire_agent::AgentStore::last_actor` reads the last 90 days of write
   events (`write`, `create`, `delete`, `revert`, `accept`; renames move the
   entry) to say who last changed a note.
+* Undoing a change made on another device: the `snap_*` times are that
+  device's, so revert finds each text by hash in this device's history,
+  then among the texts the other device carried
+  (`.quire/shared/agent/texts/`).
