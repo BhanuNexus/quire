@@ -139,6 +139,7 @@ cargo build --release -p quire-desktop --no-default-features   # ~28 MB instead 
 | AI providers | Offline by default. Optional OpenAI-compatible (Ollama, LM Studio, OpenAI) or Anthropic, streaming and with tools, with *Test connection*. Optional neural embeddings from the same kind of endpoint, cached per passage, falling back to the built-in index |
 | MCP server | `quire-cli mcp <vault>` (stdio) or over HTTP with OAuth: AI apps search by section, read line ranges, and edit precisely. Read-only unless started with `--allow-write`, which writes per the vault's agent policy (suggestions outside `wiki/`). See [docs/agents.md](docs/agents.md) |
 | History | Undo tree: undo, type something else, and the old branch is still reachable |
+| Your server, for agents and a browser (Beta) | `quire-cli serve`: a web app (read, search, light editing with conflict checks, voice notes and drawings shown in place) and MCP for agents on one port of a machine you own, behind a sign-in. It keeps the vault in sync with `--sync` (or `quire-cli sync`, also selective with `--only`). That machine holds a decrypted copy of the notes it serves ([setup](docs/serve.md)) |
 | Quire Sync (beta) | Optional end-to-end encrypted sync, free through a folder you already sync (Dropbox, iCloud Drive, Google Drive, OneDrive, Syncthing), or through a server you run yourself ([guide](docs/self-hosting.md)). Only ciphertext leaves your device; concurrent edits merge line by line and never overwrite each other. A managed service is planned |
 | Sync safety | Works with any folder sync (iCloud, Dropbox, Syncthing, Nextcloud, Git). A note changed elsewhere while you edit is merged line by line; overlapping edits pause autosave and let you keep yours, take theirs or keep both. Conflict copies made by sync tools are found and merged back |
 | Updates | Optional daily check for a new release (Settings → About). Sends nothing about you; nothing installs itself |
@@ -223,7 +224,9 @@ quire-cli agent   proposals ./sample-vault           # suggestions agents made, 
 quire-cli ingest  ./sample-vault "Rope Notes"        # a source into cited wiki pages
 quire-cli tasks   ./sample-vault --agenda            # overdue, today and the next seven days
 quire-cli remind  ./sample-vault --install           # reminders as notifications, even when Quire is closed
-quire-cli ai      models                             # on-device models (experimental in 0.9.0)
+quire-cli sync    once ./vault                       # one sync pass without the app (after `sync join`)
+quire-cli serve   ./vault --sync                     # Beta: web app + MCP for agents, on a server you own
+quire-cli ai      models                             # on-device models (experimental)
 quire-cli bench   10                                 # performance on a 10 MB note
 ```
 
@@ -231,13 +234,18 @@ To use Quire from Claude Desktop or another MCP client, add a server whose comma
 
 Set `QUIRE_TRACE=1` when launching the desktop app to print per-frame timings.
 
-### Your vault in a browser, and for agents elsewhere
+### Your agents and your browser, on a server you own (Beta)
 
-A headless Quire on a machine you control (a VPS, a home box) keeps a copy
-of the vault in sync and serves it: a web app to read, search and lightly
-edit from any browser, and MCP at `/mcp` for agents, on one port, always
-behind a sign-in. Quire Sync stays end-to-end encrypted; this machine holds
-the plain text, so it can hold just the folders it needs.
+`quire-cli serve` is **Beta, for self-hosters.** A headless Quire on a
+machine you control (a VPS, a home box) keeps a copy of the vault in sync
+and serves it: a web app to read, search and lightly edit from any browser,
+and MCP at `/mcp` for agents, on one port, always behind a sign-in.
+
+Quire Sync stays end-to-end encrypted, but **this machine holds a decrypted
+copy** of the folders it serves and syncs, so it can read your notes; run it
+only on a machine you trust, and give it just the folders it needs
+(`--only`). This isn't "Quire on the web": an end-to-end encrypted app that
+runs in the browser is planned separately.
 
 ```bash
 quire-cli sync join ~/vault --server https://sync.example.com --only Work   # or --folder ~/Sync
@@ -267,6 +275,7 @@ clients.
 - Vim mode has no vimrc, `:normal`, Ctrl+A or Ctrl+X. Ctrl+V reaches Quire as a paste, so it starts Visual-block mode only when the clipboard holds something (copy anything first); Vim's other key for it, Ctrl+Q, quits Quire. A Visual-block insert types on every row as you go (Vim fills the other rows at Escape), so Enter in a block insert reaches every row.
 - Reminders while Quire is closed need `quire-cli` next to the app or on the PATH. The job was run for real with cron on Linux; the systemd, launchd and Task Scheduler jobs were checked by unit tests only.
 - Excalidraw drawings are pictures only (no editing), drawn in a clean style rather than Excalidraw's hand-drawn one, with the bundled fonts. When a drawing changes in Excalidraw, its own note shows the new picture at once; pictures of it in other notes and canvases update after Quire restarts. Canvas cards don't render math, and their links aren't clickable.
+- **`quire-cli serve` is Beta.** Its server holds a decrypted copy of the notes it serves; it does no TLS itself (put a reverse proxy or tunnel in front); a restart signs everyone out; the web app doesn't rename, move or delete notes, upload attachments or review agents' suggestions (review them in the app once synced).
 - Bases: no grouping, map or list views, `this`, `image`, `icon`, `html` or regular expressions. `file.ctime` is the last change (Quire keeps no creation time) and `file.size` counts characters.
 
 ## Contributing

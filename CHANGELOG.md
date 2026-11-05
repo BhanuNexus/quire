@@ -4,29 +4,49 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+Quire 0.10 brings your vault to your browser and your agents, on a server you own (Beta), voice notes, much lighter on-device AI, and a round of things people asked for: Vim macros and block editing, reminders while Quire is closed, Excalidraw drawings, canvas cards that look like the preview, and Obsidian Bases formulas.
+
 ### Added
-- **Headless sync:** `quire-cli sync join | once | watch | status` syncs a vault folder without the app, through a sync folder or a Quire Sync server, with the same conflict handling and history. The passphrase comes from a prompt, `QUIRE_SYNC_PASSPHRASE` or a file, and is never printed. `watch` stops on Ctrl+C or SIGTERM after finishing the pass under way.
+
+#### Your vault in a browser and for agents, on a server you own (Beta)
+- **`quire-cli serve` (Beta, for self-hosters):** your agents and your browser, on a server you own. One port serves a web app and MCP over HTTP for AI agents, always behind a sign-in. In the web app, sign in with a passphrase (`quire-cli serve passwd`), browse the files, open notes by name (Ctrl+K), search, and read notes as they publish (callouts, links, embeds, tags, backlinks, images, PDFs, Excalidraw drawings, and voice notes that play in place), light and dark, on a phone too. Edit in Markdown with a preview, or start a new note: a note that changed meanwhile is never overwritten (you get the combined text to check, or save yours as a copy), and every save is kept in history as "You · via web". `--read-only`, `--hide FOLDER` (or `[web] hide` in `.quire/shared/vault.toml`), and `--sync` to sync in the same process. Apps signing in over MCP can be approved in the web app. Setup: [docs/serve.md](docs/serve.md).
+- **The server holds a decrypted copy** of the folders it serves and syncs, unlike Quire Sync, whose server only ever sees encrypted data; run `serve` only on a machine you trust. It is not "Quire on the web": an end-to-end encrypted app that runs in the browser is planned separately. `serve --help`, the sign-in page and every page's footer say so.
+- **Headless sync:** `quire-cli sync join | once | watch | status` syncs a vault folder without the app, through a sync folder or a Quire Sync server, with the same conflict handling and history as the app. The passphrase comes from a prompt, `QUIRE_SYNC_PASSPHRASE` or a file, and is never printed. `watch` stops on Ctrl+C or SIGTERM after finishing the pass under way.
 - **Selective sync:** `--only FOLDER` and `--exclude FOLDER` (and `quire-cli sync scope`) keep only some folders on a device. Notes outside the selection are never written there and never sent as deleted; widening the selection fetches them.
-- **`quire-cli serve`:** a web app and MCP over HTTP on one port, for a vault on a machine you control. Sign in with a passphrase (`quire-cli serve passwd`), browse the files, open notes by name (Ctrl+K), search, read notes as they publish (callouts, links, embeds, tags, backlinks, images, PDFs), light and dark, on a phone too. Edit in Markdown with a preview, or start a new note: a note that changed meanwhile is never overwritten (you get the combined text to check, or save yours as a copy), and every save is kept in history as "You · via web". `--read-only`, `--hide FOLDER` or `[web] hide` in `.quire/shared/vault.toml`, and `--sync` to sync in the same process. Apps signing in over MCP can be approved in the web app. Setup: [docs/serve.md](docs/serve.md).
-- **Voice notes** (full edition): "Record voice note…", or "Voice note…" in quick capture for today's note. The microphone records only between Record and Stop. The recording is saved in the vault as a WAV file and embedded in the note. A transcript is added under it if you choose where transcription runs (Settings → AI → Voice notes): through your OpenAI-compatible provider (the recording is sent to it; the dialog says so before you record), or on this computer with Whisper while on-device AI is experimental. Transcription is off until you choose. Quire Lite doesn't record.
+
+#### Voice notes
+- **Record a voice note** (full edition): "Record voice note…", or "Voice note…" in quick capture for today's note. The microphone records only between Record and Stop. The recording is saved in the vault as a WAV file and embedded in the note; published sites and the web app play it in place.
+- **Transcripts, if you choose where they run** (Settings → AI → Voice notes): through your OpenAI-compatible provider (the recording is sent to it; the dialog says so before you record), or on this computer with Whisper while on-device AI is experimental. Transcription is off until you choose. Quire Lite doesn't record.
+
+#### Ask and on-device AI
 - **Ask writes its answer as you watch**, with Stop (what was written stays, marked as stopped). Closing the dialog stops it too.
-- MCP `ask`: when the notes don't answer, it lists the three nearest passages with their anchors (`nearest`), as the app does, and cites nothing.
 - Settings → AI → Advanced → "Faster prompts, more memory" for on-device writing models.
-- `quire-cli eval` (development builds): an endpoint or offline mock embedder (`--embedder endpoint|mock`), a sweep of the "Not found" threshold, the sample vault as a suite, and a contradiction suite that scores the Inbox's precision and recall.
-- **Vim macros:** `qa` … `q` records, `@a` plays, `@@` plays again, `3@a` three times. A macro run is one undo step, stops at the first command that fails (so `100@a` stops at the end of a list), and is kept as text in its register (`"ap` shows it). The status bar says `recording @a`.
-- **Vim marks:** `ma`, `` `a ``, `'a`, `''` (back to before the last jump), `` `. `` (the last change) and `:'a,'bd`. Marks move with their lines as you edit, belong to their note, and are kept with the session.
-- **Vim Visual-block mode** (Ctrl+V): `I`, `A`, `c`, `d`, `y`, `p`, `r`, `$`, `~`, `o`/`O` and `.` on a column of text, using the editor's multiple cursors. Tabs and wide characters (CJK) count by their width on screen, and short lines are skipped or padded as in Vim. A block insert is one undo step.
-- **Reminders while Quire is closed:** Settings → Planning → "Remind me even when Quire is closed" installs a small job of your own (a systemd user timer or a crontab line on Linux, a LaunchAgent on macOS, a Task Scheduler task on Windows) that runs `quire-cli remind` every minute. No administrator rights; Settings shows exactly what is installed where, and turning it off removes it. Each reminder shows once, whether Quire or the job shows it. `quire-cli remind <vault>` (with `--dry-run`, `--install`, `--uninstall`, `--status`) does the same from a terminal.
+
+#### Vim
+- **Macros:** `qa` … `q` records, `@a` plays, `@@` plays again, `3@a` three times. A macro run is one undo step, stops at the first command that fails (so `100@a` stops at the end of a list), and is kept as text in its register (`"ap` shows it). The status bar says `recording @a`.
+- **Marks:** `ma`, `` `a ``, `'a`, `''` (back to before the last jump), `` `. `` (the last change) and `:'a,'bd`. Marks move with their lines as you edit, belong to their note, and are kept with the session.
+- **Visual-block mode** (Ctrl+V): `I`, `A`, `c`, `d`, `y`, `p`, `r`, `$`, `~`, `o`/`O` and `.` on a column of text, using the editor's multiple cursors. Tabs and wide characters (CJK) count by their width on screen, and short lines are skipped or padded as in Vim. A block insert is one undo step.
+
+#### Planning
+- **Reminders while Quire is closed:** Settings → Planning → "Remind me even when Quire is closed" installs a small job of your own (a systemd user timer or a crontab line on Linux, a LaunchAgent on macOS, a Task Scheduler task on Windows) that runs `quire-cli remind` every minute. No administrator rights; Settings shows exactly what is installed where, and turning it off removes it. Each reminder shows once, whether Quire or the job shows it, even when both check at the same moment. `quire-cli remind <vault>` (with `--dry-run`, `--install`, `--uninstall`, `--status`) does the same from a terminal.
+
+#### Canvas, drawings and Bases
+- **Excalidraw drawings show as pictures:** `![[Plan.excalidraw]]` in a note and its preview, drawing files on a canvas, the drawing note itself, `.excalidraw` files, HTML export, published sites and the web app (as SVG). Rectangles, ellipses, diamonds, lines, arrows, freehand, text, images and frames, drawn in a clean style. Read-only: edit in Excalidraw.
 - **Canvas text cards look like the preview:** callouts, tables, task lists and code render as in the note preview, and stay fast on a 1,000-card canvas.
-- **Excalidraw drawings show as pictures:** `![[Plan.excalidraw]]` in a note and its preview, drawing files on a canvas, the drawing note itself, `.excalidraw` files and HTML export (as SVG). Rectangles, ellipses, diamonds, lines, arrows, freehand, text, images and frames, drawn in a clean style. Read-only: edit in Excalidraw.
 - **Obsidian Bases formulas and summaries:** `formulas` columns (arithmetic, comparisons, `if`, `date`, `now`, `today`, durations, `file.*` fields, and string, number, date and list functions) and `summaries` (Sum, Average, Min, Max, Median, Earliest, Latest, … and a base's own) under table and cards views. Filters can use the same expressions (`not`, dates, formulas). A function Quire doesn't know says so in its cell.
 
+#### AI apps over MCP
+- MCP `ask`: when the notes don't answer, it lists the three nearest passages with their anchors (`nearest`), as the app does, and cites nothing. This works over `quire-cli serve`'s `/mcp` too.
+
+#### For developers
+- `quire-cli eval` (development builds): an endpoint or offline mock embedder (`--embedder endpoint|mock`), a sweep of the "Not found" threshold, the sample vault as a suite, and a contradiction suite that scores the Inbox's precision and recall.
+
 ### Changed
-- A read-only MCP server now caps HTTP tokens to reading too (only `quire-cli serve --read-only` starts one).
 - **On-device writing models use far less memory**: the Balanced model (Qwen3 1.7B) about 1.3 GB with a short prompt and 1.7 GB with a long one, down from about 5 GB. Quire now suggests Balanced on computers with 8 GB of memory or more (16 GB before), and reads the memory on Windows too (it suggested Small there before). Long prompts are read more slowly unless "Faster prompts, more memory" is on.
 - Small on-device models' tool calls are read more forgivingly (single quotes, code fences, two calls at once, words around the call). A call that still can't be read is never run: the model is asked once to write it again.
-- The full edition's Linux packages now depend on the ALSA library (`libasound2`), for recording.
 - The full edition now includes the on-device AI engine; Quire Lite downloads it when you turn on-device AI on. Settings → AI says "Included with Quire" for the engine that came with the app, and Quire checks it against a hash built into the app before every start, as it does a downloaded engine.
+- A read-only MCP server now caps HTTP tokens to reading too (only `quire-cli serve --read-only` starts one).
+- The full edition's Linux packages now depend on the ALSA library (`libasound2`), for recording.
 
 ## [0.9.1] - 2026-11-04
 
