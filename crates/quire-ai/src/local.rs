@@ -33,6 +33,9 @@ pub struct LocalSetup {
     pub threads: u32,
     pub gpu: String,
     pub idle_unload_s: u64,
+    /// Let the engine expand every weight into faster x86 tiles (quicker
+    /// prompts, about twice the memory of a `Q4_K` model).
+    pub fast_prompts: bool,
 }
 
 /// How the engine should load a catalog model.
@@ -49,6 +52,7 @@ pub fn load_params(entry: &CatalogEntry, kind: ModelKind, setup: &LocalSetup) ->
         options: json!({
             "pooling": entry.pooling,
             "files": entry.files.iter().map(|f| f.name.clone()).collect::<Vec<_>>(),
+            "repack": if setup.fast_prompts { "all" } else { "auto" },
         }),
     }
 }

@@ -44,9 +44,12 @@ pub enum LlmSize {
     Better,
 }
 
-/// The suggested size: Balanced with 16 GB of memory or more, otherwise
-/// (or when the memory can't be read) Small. The spike measured about 5 GB
-/// in use for Balanced and 2 GB for Small (docs/design/handoff/ws-d.md).
+/// The suggested size: Balanced with 8 GB of memory or more, otherwise (or
+/// when the memory can't be read) Small. 0.10 measured about 1.3 GB in use
+/// for Balanced after a 256-token prompt and 1.65 GB after 1,024 (5.1 GB and
+/// out of memory with candle's own model), and 1.35 and 1.86 GB for Small,
+/// whose weights the engine still repacks for speed
+/// (docs/formats/model-catalog.md).
 impl Default for LlmSize {
     fn default() -> Self {
         Self::for_memory_gb(memory_gb())
@@ -55,7 +58,7 @@ impl Default for LlmSize {
 
 impl LlmSize {
     pub fn for_memory_gb(gb: Option<u64>) -> Self {
-        if gb.is_some_and(|g| g >= 15) { Self::Balanced } else { Self::Small }
+        if gb.is_some_and(|g| g >= 7) { Self::Balanced } else { Self::Small }
     }
 
     pub const fn id(self) -> &'static str {
@@ -67,19 +70,70 @@ impl LlmSize {
     }
 }
 
-/// This computer's memory in GB, rounded, where it is cheap to read.
+/// This computer's memory in GB, rounded; `None` when it can't be read.
+/// Read once per run (on Windows it asks another program).
 pub fn memory_gb() -> Option<u64> {
-    let bytes = if cfg!(target_os = "linux") {
-        let info = std::fs::read_to_string("/proc/meminfo").ok()?;
-        let kb: u64 = info.lines().find_map(|l| l.strip_prefix("MemTotal:"))?.trim().trim_end_matches("kB").trim().parse().ok()?;
-        kb * 1024
+    static GB: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    *GB.get_or_init(|| memory_bytes().map(|b| (b + (1 << 29)) >> 30))
+}
+
+fn memory_bytes() -> Option<u64> {
+    if cfg!(target_os = "linux") {
+        parse_meminfo(&std::fs::read_to_string("/proc/meminfo").ok()?)
     } else if cfg!(target_os = "macos") {
         let out = std::process::Command::new("/usr/sbin/sysctl").args(["-n", "hw.memsize"]).output().ok()?;
-        String::from_utf8_lossy(&out.stdout).trim().parse().ok()?
+        String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+    } else if cfg!(windows) {
+        windows_memory()
     } else {
-        return None;
+        None
+    }
+}
+
+/// `MemTotal:` from `/proc/meminfo`, in bytes.
+fn parse_meminfo(info: &str) -> Option<u64> {
+    let kb: u64 = info.lines().find_map(|l| l.strip_prefix("MemTotal:"))?.trim().trim_end_matches("kB").trim().parse().ok()?;
+    Some(kb * 1024)
+}
+
+/// Windows without unsafe code: ask PowerShell (CIM), then `wmic` (older
+/// systems; removed from the newest), with no console window.
+fn windows_memory() -> Option<u64> {
+    let run = |program: &str, args: &[&str]| -> Option<String> {
+        let mut cmd = std::process::Command::new(program);
+        cmd.args(args).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt as _;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let out = cmd.output().ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
     };
-    Some((bytes + (1 << 29)) >> 30)
+    run(
+        "powershell",
+        &["-NoProfile", "-NonInteractive", "-Command", "(Get-CimInstance -ClassName Win32_ComputerSystem).TotalPhysicalMemory"],
+    )
+    .as_deref()
+    .and_then(parse_powershell_bytes)
+    .or_else(|| run("wmic", &["ComputerSystem", "get", "TotalPhysicalMemory", "/value"]).as_deref().and_then(parse_wmic_bytes))
+}
+
+/// PowerShell prints the number alone (`17079209984`).
+fn parse_powershell_bytes(out: &str) -> Option<u64> {
+    out.lines().map(str::trim).find(|l| !l.is_empty())?.parse().ok().filter(|&b| b > 0)
+}
+
+/// `wmic … /value` prints `TotalPhysicalMemory=17079209984` among blank lines
+/// (UTF-16 turned into text by the caller, so stray NULs are dropped).
+fn parse_wmic_bytes(out: &str) -> Option<u64> {
+    out.lines()
+        .find_map(|l| l.trim().trim_matches('\0').strip_prefix("TotalPhysicalMemory="))
+        .map(|v| v.chars().filter(char::is_ascii_digit).collect::<String>())?
+        .parse()
+        .ok()
+        .filter(|&b| b > 0)
 }
 
 impl DeviceChoice {
@@ -242,8 +296,27 @@ mod tests {
         assert_eq!(ws.settings.embeddings, "local");
         assert!(!ws.features.ai.busy(), "Later doesn't download");
         assert_eq!(DeviceChoice { llm: true, llm_size: LlmSize::Small, ..DeviceChoice::default() }.models(), vec!["qwen3-0.6b-q8"]);
-        assert_eq!(LlmSize::for_memory_gb(Some(8)), LlmSize::Small);
+        assert_eq!(LlmSize::for_memory_gb(Some(4)), LlmSize::Small);
+        assert_eq!(LlmSize::for_memory_gb(Some(8)), LlmSize::Balanced);
         assert_eq!(LlmSize::for_memory_gb(Some(16)), LlmSize::Balanced);
         assert_eq!(LlmSize::for_memory_gb(None), LlmSize::Small);
+    }
+}
+
+#[cfg(test)]
+mod memory_tests {
+    use super::*;
+
+    #[test]
+    fn reads_memory_from_each_systems_output() {
+        assert_eq!(parse_meminfo("MemTotal:       16303516 kB\nMemFree: 1 kB\n"), Some(16_303_516 * 1024));
+        assert_eq!(parse_powershell_bytes("17079209984\r\n"), Some(17_079_209_984));
+        assert_eq!(parse_powershell_bytes("\r\n  8589934592  \r\n"), Some(8_589_934_592));
+        assert_eq!(parse_powershell_bytes("Get-CimInstance : Access denied\r\n"), None);
+        assert_eq!(parse_powershell_bytes(""), None);
+        assert_eq!(parse_wmic_bytes("\r\r\n\r\r\nTotalPhysicalMemory=17079209984\r\r\n\r\r\n\r\r\n"), Some(17_079_209_984));
+        assert_eq!(parse_wmic_bytes("TotalPhysicalMemory=34359738368\0\n"), Some(34_359_738_368));
+        assert_eq!(parse_wmic_bytes("No Instance(s) Available.\r\n"), None);
+        assert_eq!(parse_wmic_bytes("TotalPhysicalMemory=\r\n"), None);
     }
 }

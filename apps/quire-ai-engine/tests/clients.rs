@@ -34,7 +34,7 @@ fn catalog() -> Catalog {
 }
 
 fn setup(dir: &std::path::Path) -> LocalSetup {
-    LocalSetup { models_dir: dir.to_path_buf(), threads: 0, gpu: "auto".into(), idle_unload_s: 300 }
+    LocalSetup { models_dir: dir.to_path_buf(), threads: 0, gpu: "auto".into(), idle_unload_s: 300, fast_prompts: false }
 }
 
 #[test]

@@ -61,11 +61,13 @@ url = "https://huggingface.co/intfloat/multilingual-e5-small/resolve/main/tokeni
 # One family (Qwen3), so the chat template and tool-call format are built
 # into the engine. Every size shares one tokenizer.
 #
-# `ram_mb` is what the engine uses with candle 0.11 on x86-64, measured in
-# WS-D's spike (docs/design/handoff/ws-d.md): candle keeps the token
-# embeddings as f32 and repacks quantized weights into faster tiles on first
-# use, so a model takes much more than its file size. 4B is estimated from
-# the same breakdown.
+# `ram_mb` is what the engine uses on x86-64 with a prompt of about 2,000
+# tokens, from the 0.10 measurements (docs/formats/model-catalog.md): the
+# engine's own Qwen3 keeps the token table quantized and the K-quant weights
+# in their GGUF blocks, so a model takes its file size plus the KV cache
+# (about 0.23 MB per token for 0.6B and 1.7B, 0.29 MB for 4B). 4B is
+# estimated from the same breakdown. `min_ram_gb` leaves room for the app,
+# the system and other programs.
 
 [[model]]
 id = "qwen3-0.6b-q8"
@@ -73,8 +75,8 @@ purpose = "llm"
 label = "Small"
 model_name = "Qwen3 0.6B"
 licence = "Apache-2.0"
-ram_mb = 2000
-min_ram_gb = 8
+ram_mb = 2100
+min_ram_gb = 6
 tier = "small"
 repo = "Qwen/Qwen3-0.6B-GGUF"
 revision = "main"
@@ -91,8 +93,8 @@ purpose = "llm"
 label = "Balanced"
 model_name = "Qwen3 1.7B"
 licence = "Apache-2.0"
-ram_mb = 5100
-min_ram_gb = 16
+ram_mb = 1700
+min_ram_gb = 8
 tier = "balanced"
 repo = "bartowski/Qwen_Qwen3-1.7B-GGUF"
 revision = "main"
@@ -109,8 +111,8 @@ purpose = "llm"
 label = "Better"
 model_name = "Qwen3 4B"
 licence = "Apache-2.0"
-ram_mb = 10000
-min_ram_gb = 32
+ram_mb = 3200
+min_ram_gb = 16
 tier = "better"
 repo = "Qwen/Qwen3-4B-GGUF"
 revision = "main"

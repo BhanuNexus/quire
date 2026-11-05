@@ -25,6 +25,12 @@ pub mod template;
 #[cfg(feature = "models")]
 pub mod models;
 
+#[cfg(feature = "models")]
+pub mod qwen3;
+
+#[cfg(feature = "models")]
+pub mod whisper;
+
 pub mod fake;
 
 /// An error for a reply: a `protocol::code` and a message.

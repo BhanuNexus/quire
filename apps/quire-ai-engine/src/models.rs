@@ -14,11 +14,13 @@ use candle_core::quantized::gguf_file;
 use candle_core::{D, DType, Device, Tensor};
 use candle_transformers::generation::{LogitsProcessor, Sampling};
 use candle_transformers::models::bert::{BertModel, Config as BertConfig};
-use candle_transformers::models::quantized_qwen3::ModelWeights as Qwen3;
-use quire_ai::protocol::{EmbedParams, GenUsage, GenerateParams, LoadParams, ModelKind, OcrLine, OcrParams, StopKind, code};
+use quire_ai::protocol::{
+    EmbedParams, GenUsage, GenerateParams, LoadParams, ModelKind, OcrLine, OcrParams, StopKind, TranscribeParams, TranscribeResult, code,
+};
 use serde_json::{Value, json};
 use tokenizers::Tokenizer;
 
+use crate::qwen3::{Options as QwenOptions, Qwen3, Repack};
 use crate::template::{Piece, ReplyParser, STOP_TOKENS, render};
 use crate::{Backend, Failure};
 
@@ -106,14 +108,22 @@ impl Backend for RealBackend {
                 let path = dir.join("model.gguf");
                 let mut f = std::fs::File::open(&path).map_err(|e| load_failed(format!("{}: {e}", path.display())))?;
                 let ct = gguf_file::Content::read(&mut f).map_err(load_failed)?;
-                let vocab = ct.tensor_infos.get("token_embd.weight").map_or(0, |t| t.shape.elem_count());
                 let device = device(&p.gpu);
-                let model = Qwen3::from_gguf(ct, &mut f, &device).map_err(load_failed)?;
+                let ctx = if p.ctx == 0 { 8192 } else { p.ctx as usize };
+                // `repack: "all"` in the options gives every weight to candle's
+                // x86 tiles (faster prompts, more memory); `"never"` none.
+                let repack = match p.options["repack"].as_str() {
+                    Some("all") => Repack::All,
+                    Some("never") => Repack::Never,
+                    _ => Repack::Q8,
+                };
+                let opts = QwenOptions { repack, max_ctx: ctx };
+                let model = Qwen3::from_gguf(ct, &mut f, &device, opts).map_err(load_failed)?;
                 let tok = tokenizer(dir)?;
                 let stop_ids = STOP_TOKENS.iter().filter_map(|t| tok.token_to_id(t)).collect();
-                // The quantized weights, plus the token embeddings candle keeps as f32.
-                let mem = file_size(&path) + vocab as u64 * 4;
-                (Model::Llm(Box::new(Llm { model, tok, device, stop_ids, ctx: if p.ctx == 0 { 8192 } else { p.ctx as usize } })), mem)
+                // The quantized weights as they are in the file (the KV cache comes on top).
+                let mem = file_size(&path);
+                (Model::Llm(Box::new(Llm { model, tok, device, stop_ids, ctx })), mem)
             }
             ModelKind::Embed => {
                 let device = device(&p.gpu);

@@ -432,6 +432,8 @@ fn device(ui: &mut egui::Ui, ws: &mut Workspace, s: &mut AiSettingsUi, pal: &Pal
                 });
             });
         }
+        ui.checkbox(&mut a.fast_prompts, "Faster prompts, more memory")
+            .on_hover_text("On Intel and AMD processors, the writing model reads long prompts about twice as fast, but Balanced uses about 4 GB of memory instead of 1.7 GB. Takes effect when the model next loads.");
         field(ui, pal, "Free the memory of a model unused for", |ui| {
             let mut mins = (a.idle_unload_s / 60).max(1);
             if ui.add(egui::DragValue::new(&mut mins).range(1..=240).suffix(" min")).changed() {

@@ -99,7 +99,13 @@ fn setup(settings: &Settings) -> Option<LocalSetup> {
         threads: settings.ai_local.threads,
         gpu: settings.ai_local.gpu.clone(),
         idle_unload_s: settings.ai_local.idle_unload_s,
+        fast_prompts: settings.ai_local.fast_prompts,
     })
+}
+
+/// The engine settings local models are made with (`None` without a data folder).
+pub fn local_setup(settings: &Settings) -> Option<LocalSetup> {
+    setup(settings)
 }
 
 /// The one engine this process talks to (shared by search, chat and OCR).
