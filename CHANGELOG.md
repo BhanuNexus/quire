@@ -4,7 +4,13 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Added
+- **Headless sync:** `quire-cli sync join | once | watch | status` syncs a vault folder without the app, through a sync folder or a Quire Sync server, with the same conflict handling and history. The passphrase comes from a prompt, `QUIRE_SYNC_PASSPHRASE` or a file, and is never printed. `watch` stops on Ctrl+C or SIGTERM after finishing the pass under way.
+- **Selective sync:** `--only FOLDER` and `--exclude FOLDER` (and `quire-cli sync scope`) keep only some folders on a device. Notes outside the selection are never written there and never sent as deleted; widening the selection fetches them.
+- **`quire-cli serve`:** a web app and MCP over HTTP on one port, for a vault on a machine you control. Sign in with a passphrase (`quire-cli serve passwd`), browse the files, open notes by name (Ctrl+K), search, read notes as they publish (callouts, links, embeds, tags, backlinks, images, PDFs), light and dark, on a phone too. Edit in Markdown with a preview, or start a new note: a note that changed meanwhile is never overwritten (you get the combined text to check, or save yours as a copy), and every save is kept in history as "You · via web". `--read-only`, `--hide FOLDER` or `[web] hide` in `.quire/shared/vault.toml`, and `--sync` to sync in the same process. Apps signing in over MCP can be approved in the web app. Setup: [docs/serve.md](docs/serve.md).
+
 ### Changed
+- A read-only MCP server now caps HTTP tokens to reading too (only `quire-cli serve --read-only` starts one).
 - The full edition now includes the on-device AI engine; Quire Lite downloads it when you turn on-device AI on. Settings → AI says "Included with Quire" for the engine that came with the app, and Quire checks it against a hash built into the app before every start, as it does a downloaded engine.
 
 ## [0.9.1] - 2026-11-04
