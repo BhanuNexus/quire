@@ -104,6 +104,10 @@ fn safe_next(next: &str) -> &str {
     if next.starts_with('/') && !next.starts_with("//") && !next.contains('\\') && !next.starts_with("/login") { next } else { "/" }
 }
 
+/// On the sign-in page: Beta, and where the notes are readable.
+const BETA_NOTE: &str = "<p class=\"beta-note\"><span class=\"beta\">Beta</span> For self-hosters: this server keeps \
+a decrypted copy of your notes, so use it only on a machine you trust.</p>";
+
 fn login_page(web: &Web, req: &Req, status: StatusCode, message: &str) -> Res {
     let Some(token) = auth::random_token() else {
         return Res::html(StatusCode::INTERNAL_SERVER_ERROR, html::error_page("No randomness available."));
@@ -112,7 +116,7 @@ fn login_page(web: &Web, req: &Req, status: StatusCode, message: &str) -> Res {
     let set = web.cfg.login.is_set();
     let body = if set {
         format!(
-            "<h1>Sign in to Quire</h1>{}\
+            "<h1>Sign in to Quire</h1>{BETA_NOTE}{}\
 <form method=\"post\" action=\"/login\" class=\"stack\">\
 <label for=\"pass\">Web passphrase</label>\
 <input id=\"pass\" type=\"password\" name=\"passphrase\" autocomplete=\"current-password\" required autofocus>\
@@ -123,8 +127,8 @@ fn login_page(web: &Web, req: &Req, status: StatusCode, message: &str) -> Res {
             esc(next)
         )
     } else {
-        "<h1>Sign in to Quire</h1><p>No web passphrase is set. On the server, run <code>quire-cli serve passwd</code>, then reload this page.</p>"
-            .to_string()
+        "<h1>Sign in to Quire</h1>{BETA_NOTE}<p>No web passphrase is set. On the server, run <code>quire-cli serve passwd</code>, then reload this page.</p>"
+            .replace("{BETA_NOTE}", BETA_NOTE)
     };
     Res::html(status, html::plain("Sign in", &body)).with(header::SET_COOKIE, web.cookie(LOGIN_COOKIE, &token, 3600))
 }

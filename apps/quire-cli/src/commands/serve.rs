@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `quire-cli serve`: one HTTP server for a vault, with the web app for
-//! people and MCP (with its OAuth sign-in) for agents on the same port
-//! (design 0.10-serve §2). `--sync` keeps the vault synced in the same
-//! process.
+//! `quire-cli serve` (Beta, for self-hosters): one HTTP server for a vault,
+//! with the web app for people and MCP (with its OAuth sign-in) for agents
+//! on the same port (design 0.10-serve §2). `--sync` keeps the vault synced
+//! in the same process. The server reads the plain notes, so it holds a
+//! decrypted copy of what it syncs; it is not "Quire on the web" (a later,
+//! end-to-end encrypted browser app).
 //!
 //! Sign-in is always needed, even on 127.0.0.1. Quire terminates no TLS:
 //! for use from other computers, put a reverse proxy (Caddy, nginx) or a
@@ -23,7 +25,7 @@ pub(crate) const COMMANDS: &[CliCommand] = &[CliCommand {
     name: "serve",
     rank: 41,
     usage: "  quire-cli serve <vault> [--port 7311] [--bind ADDR] [--public-url URL] [--read-only] [--hide FOLDER]…
-                        [--sync [--poll 60s]]   the web app and MCP (with sign-in) on one port, 127.0.0.1 by default
+                        [--sync [--poll 60s]]   Beta: the web app and MCP (with sign-in) on one port, on a server you own
   quire-cli serve passwd [--passphrase-file F]   set the web app's passphrase (or QUIRE_WEB_PASSPHRASE)",
     run,
 }];
@@ -44,8 +46,40 @@ fn now() -> i64 {
     quire_app::history_ops::now_ms()
 }
 
+/// `quire-cli serve --help`.
+pub(crate) const HELP: &str = "\
+quire-cli serve (Beta, for self-hosters): your agents and your browser, on a server you own.
+
+One port serves a web app (sign in, browse, search, read and edit notes) and MCP over
+HTTP for AI agents, with OAuth sign-in. It listens on 127.0.0.1 unless you say otherwise;
+put HTTPS (a reverse proxy or a tunnel) in front of it for use from other computers.
+
+The server reads your notes as plain files, so it holds a decrypted copy of the vault and
+of every folder it syncs (--sync). That is unlike Quire Sync, whose server only ever sees
+encrypted data. Run it only on a machine you trust. This is not \"Quire on the web\": an
+end-to-end encrypted browser app is planned separately.
+
+USAGE:
+  quire-cli serve <vault> [options]
+  quire-cli serve passwd [--passphrase-file F]   set the web passphrase (or QUIRE_WEB_PASSPHRASE)
+
+OPTIONS:
+  --port N               port (default 7311)
+  --bind ADDR            address to listen on (default 127.0.0.1)
+  --public-url URL       the https:// address people and agents use (needed with --bind 0.0.0.0)
+  --read-only            no edits from the web app or agents
+  --hide FOLDER          keep a folder out of the web app (repeatable; also [web] hide in .quire/shared/vault.toml)
+  --sync [--poll 60s]    sync the vault in the same process (after `quire-cli sync join`)
+  --allow-private-urls   let agents fetch addresses on private networks
+
+Setup guide: docs/serve.md";
+
 fn run(args: &[String]) -> Result<(), String> {
     let first = arg(args, 1)?;
+    if matches!(first, "--help" | "-h" | "help") && !Path::new(first).is_dir() {
+        println!("{HELP}");
+        return Ok(());
+    }
     if first == "passwd" && !Path::new(first).is_dir() {
         return passwd(args);
     }
@@ -127,7 +161,8 @@ but use HTTPS (a reverse proxy or tunnel) for anything beyond your own network."
     }
     let http = quire_mcp::http::HttpServer::start_with(srv, cfg, |urls| quire_web::mount(web, urls))?;
     let urls = http.urls().clone();
-    eprintln!("Quire is serving {} at {}/{}", vault.display(), urls.issuer, if read_only { " (read-only)" } else { "" });
+    eprintln!("Quire serve (Beta) is serving {} at {}/{}", vault.display(), urls.issuer, if read_only { " (read-only)" } else { "" });
+    eprintln!("  This server holds a decrypted copy of the vault: run it only on a machine you trust.");
     eprintln!("  web app: {}/      MCP: {}", urls.issuer, urls.resource);
     eprintln!("Stop with Ctrl+C.");
 
@@ -194,5 +229,17 @@ but use HTTPS (a reverse proxy or tunnel) for anything beyond your own network."
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn help_says_beta_and_that_the_server_holds_plain_notes() {
+        let args: Vec<String> = ["serve", "--help"].map(String::from).to_vec();
+        assert_eq!(super::run(&args), Ok(()));
+        assert!(super::HELP.contains("Beta, for self-hosters"));
+        assert!(super::HELP.contains("decrypted copy"));
+        assert!(super::COMMANDS[0].usage.contains("Beta"));
     }
 }

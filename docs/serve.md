@@ -1,5 +1,13 @@
 # Your vault in a browser, and for agents: `quire-cli serve`
 
+> **Beta, for self-hosters.** `quire-cli serve` is your agents and your
+> browser, on a server you own. The server reads your notes as plain files,
+> so it holds a **decrypted copy** of every folder it serves or syncs,
+> unlike Quire Sync, whose server only ever sees encrypted data. Run it
+> only on a machine you trust. It is not "Quire on the web": an end-to-end
+> encrypted app that runs in the browser is planned separately. Expect
+> rough edges, and tell us about them.
+
 Quire Sync is end-to-end encrypted, so the sync server can't show your
 notes to a browser or to an AI agent. A **headless Quire** can: a copy of
 the vault on a machine you control, kept in sync, serving
@@ -166,8 +174,9 @@ service finds it as long as it runs as the same user.
 passphrase. The left side lists files; `Ctrl+K` opens a note by name; the
 search box finds words in any note (accents and letter case don't matter,
 `"exact phrase"` and `#tag` work). Notes show as in a published site:
-callouts, links between notes, embedded images and PDFs, tags, backlinks,
-code with colours, and (full edition) math and Mermaid diagrams. The sun
+callouts, links between notes, embedded images and PDFs, Excalidraw
+drawings as pictures, voice notes and other recordings with a player, tags,
+backlinks, code with colours, and (full edition) math and Mermaid diagrams. The sun
 button switches light and dark; the layout works on a phone.
 
 **Editing** is a plain Markdown text box with a preview, plus "New note".

@@ -68,7 +68,10 @@ pub(crate) fn page(f: &Frame<'_>, main: &str) -> String {
     }
     out.push_str("<a class=\"brand\" href=\"/\"><img src=\"/assets/icon.svg?v=");
     out.push_str(asset_version());
-    out.push_str("\" alt=\"\" width=\"22\" height=\"22\"><span class=\"brand-name\">Quire</span></a>\n");
+    out.push_str(
+        "\" alt=\"\" width=\"22\" height=\"22\"><span class=\"brand-name\">Quire</span></a>\n\
+<span class=\"beta\" title=\"quire-cli serve is in Beta, for self-hosters\">Beta</span>\n",
+    );
     if !f.csrf.is_empty() {
         let _ = write!(
             out,
@@ -104,6 +107,7 @@ placeholder=\"Search notes\" aria-label=\"Search notes\" autocomplete=\"off\"></
     }
     out.push_str("<main id=\"main\" tabindex=\"-1\">\n");
     out.push_str(main);
+    out.push_str(FOOTER);
     out.push_str("\n</main>\n</div>\n");
     if !f.csrf.is_empty() {
         out.push_str(
@@ -116,6 +120,13 @@ role=\"combobox\" aria-controls=\"palette-list\" aria-expanded=\"true\">\
     out.push_str("</body>\n</html>\n");
     out
 }
+
+/// Under every page: what this server is (Beta, self-hosted, not end to
+/// end encrypted).
+pub(crate) const FOOTER: &str = "\n<footer class=\"foot\"><span class=\"beta\">Beta</span> \
+Quire serve, for self-hosters: your agents and your browser, on a server you own. \
+This server holds a decrypted copy of your notes. \
+<a href=\"https://github.com/BhanuNexus/quire/blob/main/docs/serve.md\" rel=\"noreferrer\">About serve</a></footer>";
 
 /// A bare page (sign-in, errors) without the app's frame.
 pub(crate) fn plain(title: &str, main: &str) -> String {

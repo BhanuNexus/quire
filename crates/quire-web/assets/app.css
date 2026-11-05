@@ -52,6 +52,15 @@ code, pre, kbd { font-family: var(--mono); }
   border-bottom: 1px solid var(--line); }
 .brand { display: flex; align-items: center; gap: .45rem; font-weight: 650; color: var(--fg); text-decoration: none;
   letter-spacing: .01em; margin-right: .5rem; }
+.beta { display: inline-block; font-size: .68rem; font-weight: 650; letter-spacing: .04em; text-transform: uppercase;
+  line-height: 1; padding: .22rem .4rem; border-radius: 999px; color: var(--warn); background: var(--warn-soft);
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent); vertical-align: .1em; }
+.top > .beta { margin-left: -.6rem; margin-right: .4rem; }
+.beta-note { font-size: .92rem; color: var(--muted); }
+.foot { max-width: 46rem; margin: 3rem auto 0; padding-top: 1rem; border-top: 1px solid var(--line);
+  font-size: .82rem; color: var(--muted); }
+.foot a { color: inherit; }
+.note audio { display: block; width: 100%; max-width: 32rem; margin: .5rem 0; }
 .search { flex: 1; max-width: 28rem; }
 .search input, input[type="search"], input[type="text"], input[type="password"], input:not([type]), textarea {
   width: 100%; font: inherit; color: var(--fg); background: var(--raised); border: 1px solid var(--line);
