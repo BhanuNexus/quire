@@ -10,7 +10,7 @@
 //!   f32 (1.2 GB for Qwen3's 152k × 2048 table); here a lookup dequantizes
 //!   only the rows it needs. Qwen3 ties the output projection to the same
 //!   table, so the one quantized copy serves both.
-//! * **Weights stay in their GGUF blocks on x86** ([`MatMul::Compact`]).
+//! * **Weights stay in their GGUF blocks on x86** (`MatMul::Compact`).
 //!   Candle repacks `Q4_K` and `Q8_0` weights into wider tiles the first time
 //!   each is used (on CPUs with AVX2 or AVX-512), a second copy larger than
 //!   the first. The compact path uses candle's own block kernels (the
