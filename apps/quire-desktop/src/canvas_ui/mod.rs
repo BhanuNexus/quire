@@ -1000,6 +1000,12 @@ impl CanvasSurface {
         );
         let body = Rect::from_min_max(inner.min + Vec2::new(0.0, title_h), inner.max);
         match ext.as_str() {
+            // 0.10: an Excalidraw drawing as its picture.
+            _ if quire_canvas::excalidraw::is_drawing(path.as_str()) => {
+                if let Some(abs) = ws.vault().and_then(|v| v.storage().absolute(&path)) {
+                    egui::Image::new(format!("file://{}", abs.display())).maintain_aspect_ratio(true).paint_at(ui, body);
+                }
+            }
             "md" => {
                 let src = self.note_preview(ws, &path);
                 let job = text::markdown_job(&src, body.width(), 13.0 * z, pal);

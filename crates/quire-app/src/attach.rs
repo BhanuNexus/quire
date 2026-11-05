@@ -19,6 +19,7 @@ const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"]
 
 pub fn is_image(name: &str) -> bool {
     name.rsplit_once('.').is_some_and(|(_, e)| IMAGE_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+        || quire_canvas::excalidraw::is_drawing(name)
 }
 
 /// Encode straight RGBA8 pixels as PNG.
@@ -168,7 +169,13 @@ impl Workspace {
         let cache = self.file_cache.0.borrow();
         let key = quire_markdown::extract::internal_target(target).0.to_lowercase();
         let key = if key.is_empty() { target.to_lowercase() } else { key };
-        let found = cache.as_ref()?.1.get(&key).or_else(|| cache.as_ref()?.1.get(&target.to_lowercase())).cloned()?;
+        let found = cache.as_ref()?.1.get(&key).or_else(|| cache.as_ref()?.1.get(&target.to_lowercase())).cloned();
+        // `![[Plan.excalidraw]]` is the note `Plan.excalidraw.md`.
+        let found = match found {
+            Some(f) => f,
+            None if quire_canvas::excalidraw::is_drawing(target) => self.index.read().resolve(target.trim_end_matches(".md"), None)?,
+            None => return None,
+        };
         vault.storage().absolute(&found)
     }
 }

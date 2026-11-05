@@ -109,6 +109,7 @@ impl QuireApp {
         egui_extras::install_image_loaders(&cc.egui_ctx);
         // WS-G: Quire sketches (`*-ink-*.svg`) as pictures in notes, both editions.
         crate::canvas_ui::install_sketch_loader(&cc.egui_ctx);
+        crate::drawing_ui::install(&cc.egui_ctx);
         let mut editor = EditorState::default();
         editor.request_focus = true;
         let mut fast = FastEditor::default();

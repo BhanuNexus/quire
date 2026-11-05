@@ -20,6 +20,7 @@ mod capture_key;
 mod cite_ui;
 mod decor;
 mod dialogs;
+mod drawing_ui;
 mod editor;
 mod embed_edit;
 mod git_ui;

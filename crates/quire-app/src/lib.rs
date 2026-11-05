@@ -17,6 +17,7 @@ pub mod commands;
 pub mod decor;
 pub mod device;
 pub mod document;
+pub mod drawings;
 #[cfg(feature = "typeset")]
 pub mod export_pdf;
 pub mod features;

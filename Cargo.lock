@@ -5707,6 +5707,7 @@ dependencies = [
 name = "quire-desktop"
 version = "0.9.1"
 dependencies = [
+ "base64 0.23.1",
  "chrono",
  "crossbeam-channel",
  "directories",
@@ -5727,6 +5728,8 @@ dependencies = [
  "quire-typeset",
  "resvg",
  "rfd",
+ "skrifa 0.44.0",
+ "vello_cpu 0.2.0",
  "winresource",
 ]
 
