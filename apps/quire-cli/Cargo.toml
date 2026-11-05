@@ -35,6 +35,8 @@ serde_json.workspace = true
 # 0.10 serve: the web app, and a clean stop on SIGINT/SIGTERM.
 quire-web.workspace = true
 tokio = { workspace = true, features = ["rt", "signal", "macros"] }
+# 0.10 perf: `bench --suite pdf` times text extraction (already linked through quire-app).
+quire-pdf.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

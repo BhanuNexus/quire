@@ -5839,6 +5839,7 @@ dependencies = [
  "quire-assistant",
  "quire-import",
  "quire-mcp",
+ "quire-pdf",
  "quire-sync-server",
  "quire-web",
  "serde_json",

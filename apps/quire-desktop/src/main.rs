@@ -14,6 +14,8 @@ mod ai_settings_ui;
 mod app;
 mod ask_ui;
 mod base_surface;
+#[cfg(feature = "bench")]
+mod bench;
 mod calendar_ui;
 mod canvas_ui;
 mod capture_key;
@@ -61,6 +63,13 @@ fn app_icon() -> Option<Arc<egui::IconData>> {
 }
 
 fn main() -> eframe::Result {
+    #[cfg(feature = "bench")]
+    {
+        bench::mark_start();
+        if bench::headless() {
+            return Ok(());
+        }
+    }
     if std::env::args().nth(1).is_some_and(|a| a == "--version" || a == "-V") {
         println!("Quire {}{}", env!("CARGO_PKG_VERSION"), if cfg!(feature = "typeset") { "" } else { " (Lite)" });
         return Ok(());

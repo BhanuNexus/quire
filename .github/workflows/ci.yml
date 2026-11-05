@@ -88,6 +88,41 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: cargo run -p quire-cli --features eval --locked -- eval synthetic-edits --json
 
+  perf:
+    # The design §9 speed budgets on an optimised build (`[profile.perf]`:
+    # release without LTO, so it builds in minutes). Medians of several
+    # runs; fails above budget x 1.25 (docs/design/0.10-perf.md).
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: ALSA headers, Xvfb and software OpenGL (the desktop runs)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev xvfb xauth libgl1-mesa-dri libegl1 libxkbcommon-x11-0 libxcursor1 libxrandr2 libxi6
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: perf
+      - name: Build quire-cli and the desktop with its bench runs
+        run: cargo build --profile perf --locked -p quire-cli -p quire-desktop --features quire-desktop/bench
+      - name: Speed budgets
+        env:
+          QUIRE_BENCH_PDFS: crates/quire-pdf/tests/fixtures
+        run: >-
+          xvfb-run -a -s "-screen 0 1600x1000x24"
+          python3 packaging/perf-check.py --cli target/perf/quire-cli --app target/perf/quire
+          --runs 5 --app-runs 5 --json perf.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: perf-results
+          path: perf.json
+          if-no-files-found: ignore
+
   deny:
     runs-on: ubuntu-latest
     timeout-minutes: 15
