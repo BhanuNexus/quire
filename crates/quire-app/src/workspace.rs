@@ -147,7 +147,9 @@ pub struct Workspace {
     pub(crate) vault: Option<Vault>,
     vault_root: Option<PathBuf>,
     pub(crate) index: IndexService,
-    watcher: Option<VaultWatcher>,
+    pub(crate) watcher: Option<VaultWatcher>,
+    /// The watcher and the index load wait for `start_deferred`.
+    deferred_start: bool,
     pub(crate) docs: Vec<Document>,
     pub(crate) active: Option<usize>,
     next_id: u64,
@@ -197,6 +199,7 @@ impl Workspace {
             vault_root: None,
             index: IndexService::spawn(),
             watcher: None,
+            deferred_start: false,
             docs: Vec::new(),
             active: None,
             next_id: 1,
@@ -306,19 +309,24 @@ impl Workspace {
     }
 
     pub fn open_vault(&mut self, root: &Path) -> Result<(), String> {
+        self.open_vault_deferred(root)?;
+        self.start_deferred();
+        Ok(())
+    }
+
+    /// [`Self::open_vault`], except that reading every note into the index
+    /// and watching the folder wait for [`Self::start_deferred`]. The app
+    /// opens its startup vault this way and starts them after its first
+    /// frame, so a large vault doesn't delay the window (design §9: nothing
+    /// but settings is read before the first frame).
+    pub fn open_vault_deferred(&mut self, root: &Path) -> Result<(), String> {
         let vault = Vault::open_local(root).map_err(|e| e.to_string())?;
         self.save_all();
         self.docs.retain(|d| d.path.is_none());
         self.active = if self.docs.is_empty() { None } else { Some(0) };
         self.vault_root = Some(root.canonicalize().unwrap_or_else(|_| root.to_path_buf()));
-        self.watcher = match VaultWatcher::start(self.vault_root.as_deref().unwrap_or(root)) {
-            Ok(w) => Some(w),
-            Err(e) => {
-                self.notify(NoticeLevel::Warn, format!("Not watching for outside changes: {e}"));
-                None
-            }
-        };
-        self.index.load(vault.clone());
+        self.watcher = None;
+        self.deferred_start = true;
         self.vault_attached(&vault);
         self.vault = Some(vault);
         self.settings.last_vault = self.vault_root.clone();
@@ -326,6 +334,23 @@ impl Workspace {
         self.apply_embedder();
         self.start_sync();
         Ok(())
+    }
+
+    /// Start what [`Self::open_vault_deferred`] left: the folder watcher and
+    /// reading every note into the index. Does nothing when nothing waits.
+    pub fn start_deferred(&mut self) {
+        if !std::mem::take(&mut self.deferred_start) {
+            return;
+        }
+        let (Some(vault), Some(root)) = (self.vault.clone(), self.vault_root.clone()) else { return };
+        self.watcher = match VaultWatcher::start(&root) {
+            Ok(w) => Some(w),
+            Err(e) => {
+                self.notify(NoticeLevel::Warn, format!("Not watching for outside changes: {e}"));
+                None
+            }
+        };
+        self.index.load(vault);
     }
 
     /// Use an existing vault (tests, demos, in-memory scratch vaults).
@@ -814,8 +839,11 @@ impl Workspace {
                         self.index.remove(p);
                     }
                 }
-                // PDFs, images and canvases: the features that use them listen below.
-                VaultEvent::AttachmentChanged(_) | VaultEvent::AttachmentRemoved(_) => {}
+                // PDFs, images and canvases: the features that use them
+                // listen below. The list of files is read again.
+                VaultEvent::AttachmentChanged(_) | VaultEvent::AttachmentRemoved(_) => {
+                    self.file_cache.clear();
+                }
             }
         }
         for ev in &events {
