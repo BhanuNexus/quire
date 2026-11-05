@@ -183,8 +183,11 @@ pub(crate) fn tick(ws: &mut Workspace) -> bool {
     if now <= after {
         return changed;
     }
+    let root = ws.vault_root().map(std::path::Path::to_path_buf);
     let st = &mut ws.features.tasks.reminders;
-    let mut due: Vec<Reminder> = reminders::due_in(&st.schedule, after, now).into_iter().cloned().collect();
+    let due: Vec<Reminder> = reminders::due_in(&st.schedule, after, now).into_iter().cloned().collect();
+    // 0.10: `quire-cli remind` may have shown some already (and learns of these).
+    let mut due = crate::remind_bg::not_yet_shown(root.as_deref(), due, now);
     let woke: Vec<String> = st.snoozed.iter().filter(|(_, (t, _))| *t <= now).map(|(k, _)| k.clone()).collect();
     for k in woke {
         if let Some((_, r)) = st.snoozed.remove(&k) {

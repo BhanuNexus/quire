@@ -36,6 +36,7 @@ mod overlays;
 mod panels;
 mod pdf_ui;
 mod registry;
+mod remind_ui;
 mod spell_ui;
 mod srs_ui;
 mod surfaces;

@@ -36,6 +36,7 @@ pub mod periodic;
 pub mod projects;
 pub mod properties;
 pub mod publish;
+pub mod remind_bg;
 pub mod reminders;
 pub mod secrets;
 pub mod session;
