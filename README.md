@@ -245,7 +245,7 @@ Set `QUIRE_TRACE=1` when launching the desktop app to print per-frame timings.
 - Importers were tested on synthetic exports that follow each app's documented format; run a dry run on your real export first.
 - Vim mode has no vimrc, `:normal`, Ctrl+A or Ctrl+X. Ctrl+V reaches Quire as a paste, so it starts Visual-block mode only when the clipboard holds something (copy anything first); Vim's other key for it, Ctrl+Q, quits Quire. A Visual-block insert types on every row as you go (Vim fills the other rows at Escape), so Enter in a block insert reaches every row.
 - Reminders while Quire is closed need `quire-cli` next to the app or on the PATH. The job was run for real with cron on Linux; the systemd, launchd and Task Scheduler jobs were checked by unit tests only.
-- Excalidraw drawings are pictures only (no editing), drawn in a clean style rather than Excalidraw's hand-drawn one, with the bundled fonts. Canvas cards don't render math, and their links aren't clickable.
+- Excalidraw drawings are pictures only (no editing), drawn in a clean style rather than Excalidraw's hand-drawn one, with the bundled fonts. When a drawing changes in Excalidraw, its own note shows the new picture at once; pictures of it in other notes and canvases update after Quire restarts. Canvas cards don't render math, and their links aren't clickable.
 - Bases: no grouping, map or list views, `this`, `image`, `icon`, `html` or regular expressions. `file.ctime` is the last change (Quire keeps no creation time) and `file.size` counts characters.
 
 ## Contributing
