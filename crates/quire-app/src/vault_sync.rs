@@ -134,6 +134,8 @@ impl Selection {
 pub const SHARED_PREFIX: &str = ".quire/shared/";
 /// The largest file synced from it.
 const MAX_SHARED_BYTES: u64 = 10 * 1024 * 1024;
+/// Review history shared between devices (0.10), inside the settings.
+const SHARED_REVIEW_PREFIX: &str = ".quire/shared/agent/";
 
 /// Shown in the status bar and Settings.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -637,6 +639,13 @@ impl LocalStore for VaultStore {
             return Ok(());
         }
         self.unchanged_since_read(path)?;
+        if path.starts_with(SHARED_REVIEW_PREFIX) {
+            // Review history another device stopped sharing (resolved long
+            // ago): a copy of its own data, nothing to keep in the trash.
+            self.vault.storage().remove(&NotePath::new(path)).map_err(|e| e.to_string())?;
+            self.seen.insert(path.to_string(), None);
+            return Ok(());
+        }
         // Deleted elsewhere: goes to the vault's trash, so it can come back.
         self.vault.trash(&NotePath::new(path)).map_err(|e| e.to_string())?;
         self.seen.insert(path.to_string(), None);
@@ -703,6 +712,8 @@ struct Session {
     engine: Engine,
     store: VaultStore,
     lane: Option<(FolderTransport, Engine, VaultStore)>,
+    /// This device's agent store, to share review history (0.10).
+    agent: quire_agent::AgentStore,
 }
 
 /// The outcome of one pass, and when to try again without a nudge.
@@ -724,7 +735,19 @@ impl Session {
             VaultStore::new(vault.clone()).with_shared_state(cfg.shared_state)
         }
         .with_selection(cfg.selection());
-        Self { root, vault, cfg, key, link, engine, store, lane: None }
+        // Other devices see this one under its sync name ("home server").
+        let mut device = crate::device::this_device();
+        if !cfg.device_name.trim().is_empty() {
+            device.name = cfg.device_name.trim().to_string();
+        }
+        let agent = quire_agent::AgentStore::open(&vault, device, Arc::new(quire_agent::SystemClock));
+        Self { root, vault, cfg, key, link, engine, store, lane: None, agent }
+    }
+
+    /// Whether `.quire/shared/` travels on this device now (turned on here,
+    /// or another device's settings arrived).
+    fn shares_state(&self) -> bool {
+        self.cfg.shared_state || self.store.shared || self.lane.is_some() || runs_shared_lane(&self.root, &self.cfg)
     }
 
     /// A server that needs a newer Quire, in words.
@@ -740,6 +763,11 @@ impl Session {
     /// One pass: pull, merge, push, for notes and (in a sync folder) the
     /// settings lane.
     fn pass(&mut self, poll: Duration) -> Pass {
+        // Review history: this device's proposals, decisions and ledger go
+        // out with the vault settings, and other devices' come in after.
+        if self.shares_state() {
+            export_review(&self.agent);
+        }
         let (root, cfg) = (&self.root, &self.cfg);
         snapshot_reads(&mut self.store);
         let mut res = self.engine.sync(&mut self.store, self.link.transport(), &today());
@@ -784,6 +812,9 @@ impl Session {
             self.cfg.shared_state = true;
             let _ = self.cfg.save(&self.root);
         }
+        if res.is_ok() && self.shares_state() {
+            import_review(&self.agent);
+        }
         let (status, report, again) = match res {
             Ok(report) => {
                 let status = match &self.link {
@@ -806,6 +837,22 @@ impl Session {
         let _ = LastPass::record(&self.root, &status, report.as_ref());
         Pass { status, report, again }
     }
+}
+
+/// Publish this device's review history before a pass.
+///
+/// Proposals its agents made, what the person decided here and its ledger
+/// go to `.quire/shared/agent/`. Only with shared state on: then the
+/// settings lane carries them.
+pub fn export_review(agent: &quire_agent::AgentStore) -> usize {
+    agent.export_shared()
+}
+
+/// Take in other devices' review history after a pass: their agents'
+/// suggestions appear in this device's Inbox, and decisions made elsewhere
+/// resolve them here. Never writes a note.
+pub fn import_review(agent: &quire_agent::AgentStore) -> quire_agent::ImportReport {
+    agent.import_shared()
 }
 
 /// What the last pass on this device did, in `.quire/sync/last.json`, for
@@ -1038,6 +1085,19 @@ pub fn sync_once_at(root: &Path) -> Result<Report, String> {
         SyncStatus::Offline(e) | SyncStatus::Error(e) => Err(e),
         SyncStatus::Off => Err("sync is off".into()),
     }
+}
+
+/// "Also sync vault settings and review history" for the vault at `root`.
+///
+/// For `quire-cli sync share`. Turning it on first keeps 0.8 devices out of
+/// those files (a server's minimum version, a sync folder's own lane).
+pub fn sync_share_at(root: &Path, on: bool) -> Result<(), String> {
+    let mut cfg = SyncConfig::load(root).ok_or("Sync isn't set up for this vault. Run `quire-cli sync join` first.")?;
+    if on && !cfg.shared_state {
+        raise_min_reader(&cfg)?;
+    }
+    cfg.shared_state = on;
+    cfg.save(root)
 }
 
 /// Sync's part of the workspace.
@@ -1280,6 +1340,11 @@ impl Workspace {
         self.sync.worker = Some(SyncWorker::start(root, vault, cfg.clone(), token, key, APP_POLL));
         self.sync.config = Some(cfg);
         self.sync.status = SyncStatus::Syncing;
+    }
+
+    /// Whether vault settings and review history sync for this vault.
+    pub fn sync_shares_state(&self) -> bool {
+        self.sync.config.as_ref().is_some_and(|c| c.shared_state)
     }
 
     /// "Also sync vault settings and review history" (design §B.5). A 0.8
@@ -1547,6 +1612,25 @@ mod tests {
             let (ta, tb) = (all_text(&va), all_text(&vb));
             files(&va) == files(&vb) && [&ta, &tb].iter().all(|t| t.contains("ONE (laptop)") && t.contains("four (server)"))
         });
+        // Off by default: an agent's suggestion on the server stays there,
+        // and no review history is written on either side.
+        let server_store = quire_agent::AgentStore::open(
+            &Vault::open_local(&vb).unwrap(),
+            crate::device::this_device(),
+            Arc::new(quire_agent::SystemClock),
+        );
+        let agent = quire_agent::Actor::agent("oauth:claude.ai", "Claude", quire_agent::Via::McpHttp, &server_store.device().id);
+        server_store
+            .submit(
+                &agent,
+                quire_agent::ChangeSet::one(quire_agent::Change::Edit { path: NotePath::new("Plan.md"), new_text: "suggested\n".into() }),
+            )
+            .unwrap();
+        std::fs::write(vb.join("Marker.md"), "after the suggestion\n").unwrap();
+        b.nudge();
+        wait_both(&mut a, &b, "the marker to reach the app", || va.join("Marker.md").exists());
+        assert!(!va.join(".quire/shared/agent").exists() && !vb.join(".quire/shared/agent").exists());
+        assert!(a.agent_store().unwrap().proposals(&quire_agent::ProposalFilter::pending()).is_empty());
         let summary = sync_summary_at(&vb).unwrap();
         assert_eq!((summary.config.device_name.as_str(), summary.has_secrets), ("server", true));
         assert!(summary.last.is_some_and(|l| l.state == "synced" || l.state == "syncing"));
@@ -1905,6 +1989,115 @@ mod tests {
 
         fn shared(&self, i: usize, p: &str) -> Option<String> {
             self.vaults[i].storage().read(&NotePath::new(format!("{SHARED_PREFIX}{p}"))).ok()
+        }
+
+        /// One pass of device `i` as Quire 0.9 runs it: both lanes, no
+        /// review history of its own.
+        fn pass_09(&mut self, i: usize) {
+            let main = FolderTransport::new(&self.root, &self.space, self.devices[i].clone(), None);
+            let mut notes = VaultStore::new(self.vaults[i].clone()).notes_only();
+            snapshot_reads(&mut notes);
+            self.engines[i].sync(&mut notes, &main, "2026-11-03").unwrap();
+            let lane = FolderTransport::lane(&self.root, &self.space, self.devices[i].clone(), None, folder::SHARED_LANE);
+            let mut shared = VaultStore::new(self.vaults[i].clone()).shared_only();
+            snapshot_reads(&mut shared);
+            self.lanes[i].sync(&mut shared, &lane, "2026-11-03").unwrap();
+        }
+
+        /// One pass of device `i` as 0.10 runs it with shared state on:
+        /// publish review history, both lanes, take in the others'.
+        fn pass_10(&mut self, i: usize, agent: &quire_agent::AgentStore) {
+            export_review(agent);
+            self.pass_09(i);
+            import_review(agent);
+        }
+    }
+
+    /// 0.10: a server's agent suggests, the desktop reviews, through the
+    /// real engine and lanes, with a Quire 0.9 device in the same folder
+    /// passing the shared review history on without reading or deleting it.
+    #[test]
+    fn review_history_travels_between_devices_and_0_9_passes_it_on() {
+        let mut f = Fleet::new();
+        let note = "# Launch\nThe venue is booked.\nWe ship on Monday.\nBring snacks.\n";
+        f.vaults[0].write(&NotePath::new("Launch.md"), note).unwrap();
+        let store = |i: usize, id: &str, name: &str| {
+            quire_agent::AgentStore::open(
+                &f.vaults[i],
+                quire_agent::DeviceInfo { id: id.into(), name: name.into() },
+                Arc::new(quire_agent::SystemClock),
+            )
+        };
+        let (server, desk) = (store(0, "d_server", "home server"), store(2, "d_desk", "laptop"));
+        let rounds = |f: &mut Fleet, n: usize| {
+            for _ in 0..n {
+                f.pass_10(0, &server);
+                f.pass_09(1);
+                f.pass_10(2, &desk);
+            }
+        };
+        rounds(&mut f, 2);
+        assert_eq!(f.vaults[2].read(&NotePath::new("Launch.md")).unwrap(), note);
+        // The agent on the server suggests two changes.
+        let agent = quire_agent::Actor::agent("oauth:claude.ai", "Claude", quire_agent::Via::McpHttp, "d_server");
+        let new_text = "# Launch\nThe venue is booked for Friday.\nWe ship on Monday.\nBring snacks and water.\n";
+        let quire_agent::SubmitOutcome::Proposed { id, .. } = server
+            .submit(
+                &agent,
+                quire_agent::ChangeSet::one(quire_agent::Change::Edit { path: NotePath::new("Launch.md"), new_text: new_text.into() }),
+            )
+            .unwrap()
+        else {
+            panic!("a suggestion")
+        };
+        rounds(&mut f, 2);
+        let pending = desk.proposals(&quire_agent::ProposalFilter::pending());
+        assert_eq!(pending.len(), 1, "on the desktop");
+        assert_eq!(pending[0].from_device.as_ref().map(|d| d.1.as_str()), Some("home server"));
+        // The 0.9 device holds the files as they are, and reads none of them.
+        let file = format!("agent/proposals/d_server/{id}.json");
+        assert_eq!(f.shared(1, &file), f.shared(0, &file));
+        assert!(f.vaults[1].storage().list_under(".quire/agent/proposals").unwrap_or_default().is_empty());
+        // The desktop accepts the first hunk and rejects the second.
+        let path = NotePath::new("Launch.md");
+        let hunks = desk.review(&id, &path, note).hunks;
+        assert_eq!(hunks.len(), 2);
+        let d = |h: &quire_agent::Hunk, a| quire_agent::HunkDecision {
+            hunk: h.id.clone(),
+            action: a,
+            at: 0,
+            text: None,
+            other: serde_json::Map::new(),
+        };
+        desk.accept_in_file(&id, &path, &[d(&hunks[0], quire_agent::HunkAction::Accepted)], None).unwrap();
+        let now = f.vaults[2].read(&path).unwrap();
+        let left = desk.review(&id, &path, &now).hunks;
+        desk.decide_checked(&id, &path, &[d(&left[0], quire_agent::HunkAction::Rejected)], &now, None).unwrap();
+        rounds(&mut f, 3);
+        // Resolved on the server, the text there once (it came by note sync).
+        assert!(server.proposals(&quire_agent::ProposalFilter::pending()).is_empty());
+        let resolved = server.archived_proposals().into_iter().find(|p| p.id == id).unwrap();
+        assert_eq!(resolved.status, quire_agent::ProposalStatus::PartiallyApplied);
+        for i in 0..3 {
+            let t = f.vaults[i].read(&path).unwrap();
+            assert_eq!(t.matches("for Friday").count(), 1, "device {i}: {t}");
+            assert!(!t.contains("water"), "device {i}: {t}");
+        }
+        // Every device's runs, on the server too; nothing was deleted anywhere.
+        assert!(
+            server.log(&quire_agent::LedgerQuery::default()).iter().any(|e| e.op == quire_agent::Op::Accept && e.actor.device == "d_desk")
+        );
+        for i in 0..3 {
+            assert!(f.shared(i, &file).is_some(), "device {i}");
+            assert!(f.shared(i, &format!("agent/decisions/d_desk/{id}.json")).is_some(), "device {i}");
+            assert!(f.shared(i, "agent/devices/d_server.json").is_some(), "device {i}");
+        }
+        assert!(f.vaults[1].storage().list_under(".quire/agent/proposals").unwrap_or_default().is_empty(), "0.9 never took it in");
+        // No revision a 0.8 device could read names review history.
+        let main = FolderTransport::new(&f.root, &f.space, DeviceId::random().unwrap(), None);
+        for r in main.pull(0).unwrap() {
+            let c = quire_sync::Content::open(&f.keys, &f.space, &r).unwrap();
+            assert!(!c.path.starts_with(".quire"), "{}", c.path);
         }
     }
 

@@ -86,6 +86,8 @@ impl Section {
 pub struct Group<'a> {
     pub actor_label: &'a str,
     pub actor_id: &'a str,
+    /// The device the suggestions came from, when not this one.
+    pub device_name: Option<&'a str>,
     /// When the first of them was made.
     pub at_ms: i64,
     pub title: &'a str,
@@ -153,10 +155,12 @@ impl InboxData {
             if !p.pending_changes().filter_map(|c| c.subject()).any(|path| in_folder(path.as_str(), f.folder.as_ref())) {
                 continue;
             }
-            let key = p.run.as_ref().map_or_else(|| p.id.to_string(), |r| format!("{}|{r}", p.actor.id));
+            let origin = p.origin();
+            let key = p.run.as_ref().map_or_else(|| p.id.to_string(), |r| format!("{}|{r}|{}", p.actor.id, origin.map_or("", |o| o.0)));
             let g = by_key.entry(key).or_insert_with(|| Group {
                 actor_label: &p.actor.label,
                 actor_id: &p.actor.id,
+                device_name: origin.map(|(_, name)| if name.is_empty() { "another device" } else { name }),
                 at_ms: p.created,
                 title: &p.title,
                 proposals: Vec::new(),

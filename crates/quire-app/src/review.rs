@@ -209,6 +209,7 @@ impl Workspace {
             return false;
         }
         let current = doc.text().to_string();
+        let here = self.agent_store().map(|s| s.device().id.clone()).unwrap_or_default();
         let hunks = r
             .proposal
             .changes
@@ -219,7 +220,10 @@ impl Workspace {
                     ChangeOp::Create => (current.clone(), c.text.clone()?),
                     _ => (c.base_text()?, c.new_text.clone()?),
                 };
-                Some(hunks_mod::review_hunks(&path, &base, &current, &new, c.review.as_ref()))
+                // Without hunks decided already, here or on another device
+                // (by id, or bringing back what was rejected).
+                let all = hunks_mod::review_hunks(&path, &base, &current, &new, c.review.as_ref());
+                Some(hunks_mod::visible(&current, all, &c.decisions, &c.decided, &here))
             })
             .unwrap_or_default();
         let gen_changed = r.hunks.iter().map(|h| &h.id).ne(hunks.iter().map(|h| &h.id));

@@ -102,6 +102,11 @@ pub mod activity {
         pub actor_id: String,
         pub actor_label: String,
         pub kind: ActorKind,
+        /// The device it ran on (its id), and that device's name when the
+        /// run came from another device (shared review history); empty
+        /// for this device.
+        pub device: String,
+        pub device_name: String,
         /// The run id, when the agent gave one.
         pub id: Option<quire_agent::RunId>,
         pub batch: Option<String>,
@@ -125,12 +130,20 @@ pub mod activity {
 
     const GAP_MS: i64 = 10 * 60 * 1000;
 
-    /// The runs in `entries` (oldest first), newest run first.
+    /// The runs in `entries` (oldest first), newest run first. Entries
+    /// with no device are this device's.
     pub fn runs(entries: Vec<LedgerEntry>) -> Vec<Run> {
+        runs_on(entries, "", &std::collections::BTreeMap::new())
+    }
+
+    /// [`runs`], with runs from devices other than `here` named from `names`.
+    pub fn runs_on(entries: Vec<LedgerEntry>, here: &str, names: &std::collections::BTreeMap<String, String>) -> Vec<Run> {
         let mut out: Vec<Run> = Vec::new();
         for e in entries.into_iter().filter(|e| e.op != Op::Batch) {
+            let device = if e.actor.device == here { String::new() } else { e.actor.device.clone() };
             let same = out.iter_mut().rev().find(|r| {
                 r.actor_id == e.actor.id
+                    && r.device == device
                     && match (&e.run, &e.batch) {
                         (Some(run), _) => r.id.as_ref() == Some(run),
                         (None, Some(b)) => r.batch.as_ref() == Some(b),
@@ -146,6 +159,12 @@ pub mod activity {
                     actor_id: e.actor.id.clone(),
                     actor_label: e.actor.label.clone(),
                     kind: e.actor.kind,
+                    device_name: if device.is_empty() {
+                        String::new()
+                    } else {
+                        names.get(&device).cloned().unwrap_or_else(|| "another device".into())
+                    },
+                    device,
                     id: e.run.clone(),
                     batch: e.batch.clone(),
                     start: e.at,
@@ -161,7 +180,42 @@ pub mod activity {
     /// The ledger of the last `days` days, as runs.
     pub fn load(store: &quire_agent::AgentStore, days: i64) -> Vec<Run> {
         let since = store.now_ms() - days * 86_400_000;
-        runs(store.log(&LedgerQuery { since: Some(since), ..LedgerQuery::default() }))
+        // Every device's runs (shared review history), each on its own lanes.
+        runs_on(store.log(&LedgerQuery { since: Some(since), ..LedgerQuery::default() }), &store.device().id, &store.device_names())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use quire_agent::{Actor, LedgerEntry, Op, RunId, Via};
+
+        #[test]
+        fn runs_from_other_devices_get_their_own_lanes() {
+            let names: std::collections::BTreeMap<String, String> = [("d_srv".to_string(), "home server".to_string())].into();
+            let at = 1_793_000_000_000;
+            let here = Actor::agent("mcp:claude-code", "Claude Code", Via::McpStdio, "d_desk");
+            let there = Actor::agent("mcp:claude-code", "Claude Code", Via::McpHttp, "d_srv");
+            let mut a = LedgerEntry::new(here, Op::Write, at).path(&"A.md".into());
+            let mut b = LedgerEntry::new(there, Op::Write, at + 1_000).path(&"B.md".into());
+            // The same client key and no run id, a second apart: still two runs.
+            a.run = None;
+            b.run = None;
+            let mut c = LedgerEntry::new(Actor::agent("mcp:x", "X", Via::McpHttp, "d_gone"), Op::Write, at + 2_000);
+            c.run = Some(RunId::new(at));
+            let runs = super::runs_on(vec![a, b, c], "d_desk", &names);
+            assert_eq!(runs.len(), 3);
+            let by: Vec<(&str, &str)> = runs.iter().map(|r| (r.device.as_str(), r.device_name.as_str())).collect();
+            assert!(by.contains(&("", "")), "this device: {by:?}");
+            assert!(by.contains(&("d_srv", "home server")), "{by:?}");
+            assert!(by.contains(&("d_gone", "another device")), "{by:?}");
+        }
+    }
+}
+
+/// "Claude", or "Claude (on home server)" for a suggestion made on another device.
+fn reviewer_label(p: &quire_agent::Proposal) -> String {
+    match p.origin() {
+        Some((_, name)) => format!("{} (on {})", p.actor.label, if name.is_empty() { "another device" } else { name }),
+        None => p.actor.label.clone(),
     }
 }
 
@@ -530,9 +584,9 @@ pub(crate) fn status(ws: &Workspace, out: &mut Vec<StatusItem>) {
     if let Some(r) = &a.review {
         let n = r.hunks.len();
         let text = if n == 0 {
-            format!("Reviewing {}", r.proposal.actor.label)
+            format!("Reviewing {}", reviewer_label(&r.proposal))
         } else {
-            format!("Reviewing {} · {} of {n}", r.proposal.actor.label, r.current + 1)
+            format!("Reviewing {} · {} of {n}", reviewer_label(&r.proposal), r.current + 1)
         };
         out.push(StatusItem {
             owner: Owner::Agent,

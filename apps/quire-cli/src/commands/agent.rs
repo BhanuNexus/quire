@@ -209,7 +209,11 @@ fn skill(args: &[String]) -> Result<(), String> {
 /// One line per proposal: id, status, who, when, title and files.
 pub(crate) fn proposals(store: &AgentStore, all: bool) -> String {
     let filter = if all { ProposalFilter::default() } else { ProposalFilter::pending() };
-    let list = store.proposals(&filter);
+    let mut list = store.proposals(&filter);
+    if all {
+        // And the resolved ones (the archive keeps them 90 days).
+        list.extend(store.archived_proposals().iter().map(quire_agent::Proposal::summary));
+    }
     if list.is_empty() {
         return if all { "No proposals.\n".into() } else { "No suggested changes waiting for review.\n".into() };
     }
@@ -217,15 +221,11 @@ pub(crate) fn proposals(store: &AgentStore, all: bool) -> String {
     for p in list {
         let files: Vec<&str> = p.files.iter().map(NotePath::as_str).collect();
         let status = format!("{:?}", p.status).to_lowercase();
-        let _ = writeln!(
-            s,
-            "{}  {status:<9} {:<16} {}  {}  ({})",
-            p.id,
-            p.actor.label,
-            quire_app::chrono_fmt(p.created),
-            p.title,
-            files.join(", ")
-        );
+        let who = match &p.from_device {
+            Some((_, name)) => format!("{} on {name}", p.actor.label),
+            None => p.actor.label.clone(),
+        };
+        let _ = writeln!(s, "{}  {status:<9} {:<16} {}  {}  ({})", p.id, who, quire_app::chrono_fmt(p.created), p.title, files.join(", "));
     }
     s
 }
@@ -259,16 +259,23 @@ fn show(store: &AgentStore, id: &str) -> Result<String, String> {
 fn log(store: &AgentStore, q: &LedgerQuery) -> String {
     let entries = store.log(q);
     if entries.is_empty() {
-        return "Nothing logged on this device.\n".into();
+        return "Nothing logged.\n".into();
     }
+    // Entries from other devices (shared review history) say where.
+    let names = store.device_names();
     let mut s = String::new();
     for e in entries {
         let path = e.path.as_ref().map(NotePath::as_str).unwrap_or_default();
         let to = e.to.as_ref().map(|t| format!(" → {t}")).unwrap_or_default();
         let batch = e.batch.as_ref().map(|b| format!("  ({b})")).unwrap_or_default();
+        let on = if e.actor.device.is_empty() || e.actor.device == store.device().id {
+            String::new()
+        } else {
+            format!("  [on {}]", names.get(&e.actor.device).map_or("another device", String::as_str))
+        };
         let _ = writeln!(
             s,
-            "{}  {:<8} {:<20} {path}{to}{batch}",
+            "{}  {:<8} {:<20} {path}{to}{batch}{on}",
             quire_app::chrono_fmt(e.at),
             format!("{:?}", e.op).to_lowercase(),
             e.actor.id
