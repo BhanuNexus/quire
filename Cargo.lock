@@ -5831,6 +5831,7 @@ dependencies = [
 name = "quire-cli"
 version = "0.9.1"
 dependencies = [
+ "axum",
  "chrono",
  "quire-agent",
  "quire-ai",
@@ -5838,10 +5839,12 @@ dependencies = [
  "quire-assistant",
  "quire-import",
  "quire-mcp",
+ "quire-sync-server",
  "quire-web",
  "serde_json",
  "tempfile",
  "tokio",
+ "ureq",
  "winresource",
 ]
 

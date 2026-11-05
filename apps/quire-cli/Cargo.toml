@@ -38,6 +38,12 @@ tokio = { workspace = true, features = ["rt", "signal", "macros"] }
 
 [dev-dependencies]
 tempfile.workspace = true
+# 0.10 integration: `sync` and `serve --sync` against a real Quire Sync
+# server, in the test process.
+quire-sync-server = { path = "../quire-sync-server" }
+axum = "0.8"
+tokio = { workspace = true, features = ["rt-multi-thread", "net"] }
+ureq.workspace = true
 
 [build-dependencies]
 winresource = "0.1"
