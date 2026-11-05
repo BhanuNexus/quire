@@ -11,6 +11,7 @@
 //! * [`contract`] — write contracts; [`lint`] — vault checks
 //! * [`fence`] — untrusted text in data blocks
 //! * [`instructions`] — `AGENTS.md`; [`watch`] — noticing other processes
+//! * [`shared`] — review history shared between devices (0.10)
 //!
 //! File formats are described in `docs/formats/`.
 
@@ -30,6 +31,7 @@ pub mod policy_edit;
 pub mod proposal;
 pub mod revert;
 pub mod review;
+pub mod shared;
 mod store;
 pub mod watch;
 
@@ -45,7 +47,10 @@ pub use proposal::{
 };
 pub use quire_vault::ContentHash;
 pub use revert::{RevertAction, RevertPlan, RevertReport, RevertSelector, RevertStep};
+pub use shared::ImportReport;
 pub use store::{AgentStore, PolicyState, Resolved, canonical_path};
 
+#[cfg(test)]
+mod shared_tests;
 #[cfg(test)]
 mod tests;

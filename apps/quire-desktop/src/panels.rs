@@ -940,6 +940,63 @@ pub(crate) fn sidebar(
 
 // ---------------------------------------------------------------- insights
 
+/// Insights while a file that isn't a note is open (a `.base`, a canvas, a
+/// PDF): what it is, and for a base its views. Notes' outline, backlinks
+/// and related notes don't apply.
+pub(crate) fn surface_insights(ui: &mut egui::Ui, ws: &Workspace, path: &NotePath, pal: &Palette) {
+    egui::ScrollArea::vertical().id_salt("quire-surface-insights").auto_shrink([false, false]).show(ui, |ui| {
+        ui.add_space(6.0);
+        ui.label(RichText::new(path.file_name()).strong().color(pal.strong));
+        let ext = path.as_str().rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+        let what = match ext.as_str() {
+            "base" => "Obsidian Base: a saved view of notes and their properties",
+            "canvas" => "Canvas",
+            "pdf" => "PDF",
+            "excalidraw" => "Excalidraw drawing",
+            _ => "File",
+        };
+        ui.label(RichText::new(what).size(12.5).color(pal.muted));
+        if !path.folder().is_empty() {
+            ui.label(RichText::new(format!("In {}", path.folder())).size(12.0).color(pal.faint));
+        }
+        if ext == "base"
+            && let Some(text) = ws.vault().and_then(|v| v.read(path).ok())
+        {
+            match quire_import::obsidian::base::parse(&text) {
+                Ok(b) => {
+                    section(ui, pal, &format!("Views · {}", b.views.len()));
+                    for v in &b.views {
+                        let kind = match v.kind {
+                            quire_import::obsidian::base::ViewKind::Table => "table",
+                            quire_import::obsidian::base::ViewKind::Cards => "cards",
+                        };
+                        let cols = v.columns.len();
+                        ui.label(
+                            RichText::new(format!("{} · {kind} · {cols} column{}", v.name, if cols == 1 { "" } else { "s" })).size(12.5),
+                        );
+                        for u in &v.unsupported {
+                            ui.label(RichText::new(format!("Not shown: {u}")).size(11.5).color(pal.faint));
+                        }
+                    }
+                    if !b.formulas.is_empty() {
+                        section(ui, pal, &format!("Formulas · {}", b.formulas.len()));
+                        for (name, f) in &b.formulas {
+                            ui.label(RichText::new(format!("{name} = {f}")).size(12.0).monospace().color(pal.text));
+                        }
+                    }
+                }
+                Err(e) => {
+                    ui.label(RichText::new(format!("This base can't be read: {e}")).size(12.5).color(pal.danger));
+                }
+            }
+        }
+        ui.add_space(8.0);
+        ui.add(
+            egui::Label::new(RichText::new("Outline, backlinks and related notes are shown for notes.").size(12.0).color(pal.faint)).wrap(),
+        );
+    });
+}
+
 pub(crate) fn insights(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> PanelOut {
     let mut out = PanelOut::default();
     let Some(doc) = ws.active_doc() else {
@@ -1146,11 +1203,13 @@ pub(crate) fn insights(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> 
 
 // ---------------------------------------------------------------- status bar
 
-pub(crate) fn status_bar(ui: &mut egui::Ui, ws: &Workspace, pal: &Palette) -> PanelOut {
+/// `surface`: a base, canvas or PDF has the central panel, so the note
+/// open before it isn't described.
+pub(crate) fn status_bar(ui: &mut egui::Ui, ws: &Workspace, pal: &Palette, surface: bool) -> PanelOut {
     let mut out = PanelOut::default();
     ui.horizontal(|ui| {
         let small = |s: String| RichText::new(s).size(12.0).color(pal.muted);
-        if let Some(doc) = ws.active_doc() {
+        if let Some(doc) = ws.active_doc().filter(|_| !surface) {
             let (l, c) = doc.caret_line_col();
             if doc.large {
                 let b = doc.buffer();

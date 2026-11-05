@@ -54,7 +54,9 @@ Unknown fields are kept.
 ```
 
 With "Also sync vault settings and review history" on, `.quire/shared/**`
-(files up to 10 MB) travels in a lane of its own: the same log layout and
+(files up to 10 MB; from 0.10 that includes the review history under
+`.quire/shared/agent/`, [shared-review.md](shared-review.md)) travels in a
+lane of its own: the same log layout and
 rules, under `<space>/shared/`, with its own revisions and engine state
 (`.quire/sync/state-shared.json`, `.quire/sync/lane-shared/folder-seq`).
 Quire 0.8 reads only `<space>/devices/`, so it never sees those files, even
@@ -74,3 +76,8 @@ history" is on. Absent means off; 0.8 ignores the field.
   device turns it on too, so it never mistakes those files for deleted ones.
 * In a sync folder, turning it on starts the lane (`<space>/shared/devices/`).
   A 0.9 device that never ran the lane joins it when it finds it.
+* `quire-cli sync share <vault> on|off` (0.10) does the same from a server.
+* Review history (0.10) under `.quire/shared/agent/` is written and read by
+  0.10 devices only; a 0.9 device carries those files like any other
+  settings file and reads none of them. A file there that another device
+  removed is deleted, not moved to `.trash/`.

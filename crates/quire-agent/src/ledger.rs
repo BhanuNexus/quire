@@ -4,7 +4,9 @@
 //!
 //! Per device and month, at `.quire/agent/ledger/<device-id>/<yyyy-mm>.jsonl`
 //! (design §A.1, docs/formats/ledger.md). Appends lock the file; readers
-//! skip lines they can't parse or that have a newer `v`.
+//! skip lines they can't parse or that have a newer `v`. With shared review
+//! history on, other devices' ledgers arrive read-only under
+//! `.quire/shared/agent/ledger/` ([`crate::shared`]).
 
 use quire_vault::{ContentHash, NotePath, Vault};
 use serde::{Deserialize, Serialize};
@@ -163,13 +165,19 @@ impl Ledger {
     /// Matching entries, oldest first. Unreadable lines and lines from a
     /// newer version are skipped (and stay in the file).
     pub fn read(&self, q: &LedgerQuery) -> Vec<LedgerEntry> {
+        Self::read_folder(&self.vault, &self.folder(), q)
+    }
+
+    /// Matching entries of the month files in `folder` (one device's
+    /// ledger, here or a shared copy), oldest first.
+    pub(crate) fn read_folder(vault: &Vault, folder: &str, q: &LedgerQuery) -> Vec<LedgerEntry> {
         let since_month = q.since.map(month_of);
-        let mut files = self.vault.storage().list_under(&self.folder()).unwrap_or_default();
+        let mut files = vault.storage().list_under(folder).unwrap_or_default();
         files.retain(|f| f.file_name().strip_suffix(".jsonl").is_some_and(|m| since_month.as_deref().is_none_or(|s| m >= s)));
         files.sort();
         let mut out: Vec<LedgerEntry> = files
             .iter()
-            .filter_map(|f| self.vault.storage().read(f).ok())
+            .filter_map(|f| vault.storage().read(f).ok())
             .flat_map(|text| text.lines().filter_map(|l| serde_json::from_str::<LedgerEntry>(l).ok()).collect::<Vec<_>>())
             .filter(|e| e.v <= LEDGER_VERSION)
             .filter(|e| q.since.is_none_or(|s| e.at >= s))

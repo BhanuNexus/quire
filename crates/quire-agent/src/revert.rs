@@ -191,7 +191,9 @@ impl AgentStore {
                 }
             }
         }
-        None
+        // A change made on another device: the version it carried with its
+        // shared review history (its snapshot times mean nothing here).
+        hash.and_then(|h| self.shared_text(h))
     }
 
     /// The selected events, oldest first. An agent's changes include the
@@ -284,7 +286,7 @@ impl AgentStore {
         let events = self.revert_events(sel);
         let mut plan = RevertPlan { events: events.clone(), ..RevertPlan::default() };
         if events.is_empty() {
-            plan.note = Some("Nothing to undo: no matching changes on this device.".into());
+            plan.note = Some("Nothing to undo: no matching changes.".into());
             return plan;
         }
         let vault = self.vault();

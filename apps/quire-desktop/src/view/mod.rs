@@ -2389,6 +2389,14 @@ impl FastEditor {
                     h += size.y + 10.0;
                 }
 
+                // A voice note (or other recording): a small player, not a link.
+                if !collapsed_here && let Some(target) = crate::audio_ui::audio_embed(&doc.buffer().line(line)) {
+                    let r = Rect::from_min_size(Pos2::new(x0, top + h + 4.0), Vec2::new(cx.wrap.min(560.0), cx.row_h().max(26.0)));
+                    let key = Id::unique(("quire-audio", doc_id.0, line));
+                    new_view_rects.push(r);
+                    h += crate::audio_ui::row(ui, ws, target, r, pal, key) + 10.0;
+                }
+
                 if let Some(vb) = view_blocks.iter().find(|b| b.close_line == line) {
                     let key = Id::unique(("quire-view", doc_id.0, vb.open_line));
                     let prev_h = ui.data(|d| d.get_temp::<f32>(key)).unwrap_or(80.0);

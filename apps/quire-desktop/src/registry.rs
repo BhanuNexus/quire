@@ -66,6 +66,10 @@ pub(crate) struct FeatureUi {
     pub git: crate::git_ui::GitUi,
     // ---- WS-G
     pub canvas: crate::canvas_ui::CanvasUi,
+    // ---- app
+    /// The file of the surface in the central panel (a `.base`, a canvas,
+    /// a PDF), set each frame; `None` while a note is shown.
+    pub active_surface: Option<NotePath>,
 }
 
 /// The built-in right-panel tab.
@@ -84,7 +88,13 @@ macro_rules! label {
     }};
 }
 
-fn insights_tab(ui: &mut egui::Ui, ws: &mut Workspace, _st: &mut FeatureUi, pal: &Palette) -> PanelOut {
+fn insights_tab(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pal: &Palette) -> PanelOut {
+    // A base, canvas or PDF in the middle: about that file, never the note
+    // that was open before it.
+    if let Some(path) = st.active_surface.clone() {
+        crate::panels::surface_insights(ui, ws, &path, pal);
+        return PanelOut::default();
+    }
     crate::panels::insights(ui, ws, pal)
 }
 

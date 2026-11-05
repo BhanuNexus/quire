@@ -173,6 +173,29 @@ note's version, and expires after 10 minutes. Applied changes are recorded
 as the person's, approved from the agent's app. `AGENTS.md`, `CLAUDE.md`,
 skills and templates are always reviewed in Quire.
 
+## Suggestions from another device
+
+An agent often runs on a server (`quire-cli serve`, [serve.md](serve.md))
+while you review on your desktop. With "Also sync vault settings and review
+history" on (Settings → Sync, or `quire-cli sync share <vault> on`), each
+device publishes its agents' suggestions, what was decided on it and its
+run history under `.quire/shared/agent/`, and takes in the other devices'
+([format](formats/shared-review.md)):
+
+* The suggestion appears in the other device's Inbox ("Claude · on home
+  server") and is reviewed there like any other. The device where you
+  decide writes the note; the others record the decision and never apply
+  the text themselves.
+* The agent keeps amending its suggestion on its own device. What you
+  rejected stays rejected even when it writes the same lines again
+  reworded, or rewrites the lines around them.
+* `quire-cli agent log` and Activity show every device's runs;
+  `quire-cli agent revert` and **Revert run** undo a run made on another
+  device, keeping later edits.
+
+Read events stay on their device. With the option off (the default), all
+of this stays on the device where the agent ran, as in 0.9.
+
 ## Web capture
 
 `capture_url` (MCP, needs a write grant), `quire-cli capture <vault> --url
@@ -222,11 +245,12 @@ agent zone), links from the person's notes are suggestions, and
 ## The command line
 
 ```
-quire-cli agent proposals <vault> [--all]        suggestions waiting for review
+quire-cli agent proposals <vault> [--all]        suggestions waiting for review (--all: resolved ones too)
 quire-cli agent show <vault> <id>                one, with its diff
 quire-cli agent accept|reject <vault> <id> [--hunks h1,h2]
-quire-cli agent log <vault> [--actor ID] [--since 2h]
+quire-cli agent log <vault> [--actor ID] [--since 2h]   every device's, with shared review history
 quire-cli agent revert <vault> --actor ID [--since 2h] [--write]
+quire-cli sync share <vault> on|off               share suggestions and runs between devices
 quire-cli agents-md init <vault>                 a starter AGENTS.md
 quire-cli skill print | install ~/.claude/skills/quire
 ```

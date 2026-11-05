@@ -265,3 +265,118 @@ fn sync_and_serve_through_a_quire_sync_server() {
     let status = env.run("srv", &["sync", "status", h]);
     assert!(status.contains("Folders: only"), "{status}");
 }
+
+/// 0.10: an agent writes through `serve --sync` on a headless server; its
+/// suggestion reaches the laptop with "Also sync vault settings and review
+/// history" on, is decided there, and the server learns the outcome
+/// without applying it a second time. The server's run shows on the
+/// laptop and is undone from there.
+#[test]
+fn an_agent_on_the_server_is_reviewed_on_the_laptop() {
+    let env = Env { dir: tempfile::tempdir().unwrap() };
+    let server = sync_server();
+    let (laptop, home) = (env.path("laptop"), env.path("home-server"));
+    for d in [&laptop, &home] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let note = "# Launch\n\nThe venue is booked.\n\nBring snacks.\n";
+    std::fs::write(laptop.join("Launch.md"), note).unwrap();
+    let (l, h) = (laptop.to_str().unwrap(), home.to_str().unwrap());
+    let key = env.path("recovery.txt");
+    env.run(
+        "laptop",
+        &["sync", "join", l, "--server", &server, "--create", "--recovery-key-file", key.to_str().unwrap(), "--device", "laptop"],
+    );
+    // Off by default: nothing about review history is written.
+    env.run("laptop", &["sync", "once", l]);
+    assert!(!laptop.join(".quire/shared/agent").exists());
+    let shared = env.run("laptop", &["sync", "share", l, "on"]);
+    assert!(shared.contains("review history"), "{shared}");
+    env.run("laptop", &["sync", "once", l]);
+    env.run("srv", &["sync", "join", h, "--server", &server, "--device", "home server"]);
+    env.run("srv", &["serve", "passwd"]);
+    let created = env.run("srv", &["mcp", "token", "create", "--name", "agent", "--scope", "notes:read,notes:propose,notes:write"]);
+    let token = created
+        .split_whitespace()
+        .find(|w| w.len() > 30 && !w.contains('/'))
+        .unwrap()
+        .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
+        .to_string();
+    let port = free_port();
+    let child = env
+        .cmd("srv", &["serve", h, "--sync", "--poll", "5s", "--port", &port.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut serve = Serve(child);
+    let base = format!("http://127.0.0.1:{port}");
+    wait_for("serve --sync brings the note and turns sharing on", || {
+        serve.check();
+        home.join("Launch.md").exists() && env.run("srv", &["sync", "status", h]).contains("review history sync too")
+    });
+    wait_for("serve listens", || agent().get(&format!("{base}/login")).call().is_ok());
+
+    // The agent on the server: a suggestion for the person's note, and a
+    // new page in its own folder (written at once).
+    let r = mcp(
+        &base,
+        &token,
+        "tools/call",
+        Some("str_replace"),
+        &json!({"name": "str_replace", "arguments": {"path": "Launch.md", "old_str": "Bring snacks.", "new_str": "Bring snacks and water."}}),
+    );
+    assert!(r["result"].to_string().contains("p_"), "a suggestion: {r}");
+    let r = mcp(
+        &base,
+        &token,
+        "tools/call",
+        Some("create"),
+        &json!({"name": "create", "arguments": {"path": "wiki/Venue.md", "content": "# Venue\n\nBooked for Friday.\n"}}),
+    );
+    assert_eq!(r["result"]["isError"], json!(false), "{r}");
+    assert_eq!(std::fs::read_to_string(home.join("Launch.md")).unwrap(), note, "the note on the server is untouched");
+
+    // The laptop gets the suggestion, from the server.
+    let mut waiting = String::new();
+    wait_for("the suggestion reaches the laptop", || {
+        serve.check();
+        env.run("laptop", &["sync", "once", l]);
+        waiting = env.run("laptop", &["agent", "proposals", l]);
+        waiting.contains("on home server")
+    });
+    let id = waiting.split_whitespace().find(|w| w.starts_with("p_")).unwrap().to_string();
+    let accepted = env.run("laptop", &["agent", "accept", l, &id]);
+    assert!(accepted.contains("1 change accepted"), "{accepted}");
+    assert!(std::fs::read_to_string(laptop.join("Launch.md")).unwrap().contains("Bring snacks and water."));
+    env.run("laptop", &["sync", "once", l]);
+
+    // The server learns it: resolved there, the text there once (by note sync).
+    wait_for("the server sees it resolved", || {
+        serve.check();
+        env.run("laptop", &["sync", "once", l]);
+        env.run("srv", &["agent", "proposals", h]).contains("No suggested changes waiting")
+            && std::fs::read_to_string(home.join("Launch.md")).unwrap().contains("water")
+    });
+    let all = env.run("srv", &["agent", "proposals", h, "--all"]);
+    assert!(all.contains(&id) && all.contains("applied"), "{all}");
+    assert_eq!(std::fs::read_to_string(home.join("Launch.md")).unwrap().matches("Bring snacks and water.").count(), 1);
+
+    // The server's run on the laptop: listed with the device, and undone there.
+    let log = env.run("laptop", &["agent", "log", l]);
+    assert!(log.contains("[on home server]") && log.contains("wiki/Venue.md"), "{log}");
+    let actor =
+        log.lines().find(|x| x.contains("create") && x.contains("wiki/Venue.md")).unwrap().split_whitespace().nth(3).unwrap().to_string();
+    wait_for("the agent's page reaches the laptop", || {
+        env.run("laptop", &["sync", "once", l]);
+        laptop.join("wiki/Venue.md").exists()
+    });
+    let undo = env.run("laptop", &["agent", "revert", l, "--actor", &actor, "--write"]);
+    assert!(undo.contains("Undid"), "{undo}");
+    assert!(!laptop.join("wiki/Venue.md").exists(), "{undo}");
+    env.run("laptop", &["sync", "once", l]);
+    wait_for("the undo reaches the server", || {
+        serve.check();
+        !home.join("wiki/Venue.md").exists()
+    });
+}

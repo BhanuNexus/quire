@@ -13,9 +13,11 @@ Quire 0.10 brings your vault to your browser and your agents, on a server you ow
 - **The server holds a decrypted copy** of the folders it serves and syncs, unlike Quire Sync, whose server only ever sees encrypted data; run `serve` only on a machine you trust. It is not "Quire on the web": an end-to-end encrypted app that runs in the browser is planned separately. `serve --help`, the sign-in page and every page's footer say so.
 - **Headless sync:** `quire-cli sync join | once | watch | status` syncs a vault folder without the app, through a sync folder or a Quire Sync server, with the same conflict handling and history as the app. The passphrase comes from a prompt, `QUIRE_SYNC_PASSPHRASE` or a file, and is never printed. `watch` stops on Ctrl+C or SIGTERM after finishing the pass under way.
 - **Selective sync:** `--only FOLDER` and `--exclude FOLDER` (and `quire-cli sync scope`) keep only some folders on a device. Notes outside the selection are never written there and never sent as deleted; widening the selection fetches them.
+- **Review your server agents' suggestions on your desktop:** with "Also sync vault settings and review history" on (Settings → Sync, or `quire-cli sync share <vault> on`), suggestions an agent makes through `quire-cli serve` appear in the desktop's Inbox, marked with the device they came from, and are reviewed as usual. What you decide reaches the server: the note syncs like any edit and the suggestion is resolved there, never applied twice; two devices deciding at once end with the same result. Activity shows every device's runs on their own lanes, and **Revert run** undoes a server run from the desktop, keeping your later edits. Off, each device keeps its own suggestions as before, and the Inbox says how to turn it on. Quire 0.9 devices pass the shared review history on untouched. Details: [docs/serve.md](docs/serve.md#agents-on-the-server-review-on-your-desktop).
 
 #### Voice notes
 - **Record a voice note** (full edition): "Record voice note…", or "Voice note…" in quick capture for today's note. The microphone records only between Record and Stop. The recording is saved in the vault as a WAV file and embedded in the note; published sites and the web app play it in place.
+- **Voice notes play in the editor:** a recording embedded on its own line shows a small player (Play and Stop with the position in the full edition) and "Open in system player" (both editions, also for MP3, M4A and Ogg), instead of a link.
 - **Transcripts, if you choose where they run** (Settings → AI → Voice notes): through your OpenAI-compatible provider (the recording is sent to it; the dialog says so before you record), or on this computer with Whisper while on-device AI is experimental. Transcription is off until you choose. Quire Lite doesn't record.
 
 #### Ask and on-device AI
@@ -47,6 +49,8 @@ Quire 0.10 brings your vault to your browser and your agents, on a server you ow
 - The full edition now includes the on-device AI engine; Quire Lite downloads it when you turn on-device AI on. Settings → AI says "Included with Quire" for the engine that came with the app, and Quire checks it against a hash built into the app before every start, as it does a downloaded engine.
 - A read-only MCP server now caps HTTP tokens to reading too (only `quire-cli serve --read-only` starts one).
 - The full edition's Linux packages now depend on the ALSA library (`libasound2`), for recording.
+- **A suggestion you rejected stays rejected** when the agent writes it again reworded a little (letter case, spacing, a full stop), rewrites the lines around it, or suggests it again in a later run within 30 days: Quire compares what the lines say, not only the exact change, and still asks about anything new.
+- With an Obsidian Base, canvas or PDF open, Insights describes that file (for a base: its views, columns and formulas) instead of showing the note that was open before, and the status bar no longer counts that note's words.
 
 ## [0.9.1] - 2026-11-04
 

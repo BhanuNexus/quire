@@ -41,6 +41,10 @@ pub(crate) struct InboxUi {
 }
 
 /// Whether the tab is offered.
+/// Shown while review history stays on each device (Settings → Sync).
+pub(crate) const OTHER_DEVICES_OFF: &str =
+    "Suggestions from other devices appear here when 'Also sync vault settings and review history' is on (Settings → Sync).";
+
 pub(crate) const fn available(ws: &Workspace) -> bool {
     ws.agent_store().is_some()
 }
@@ -172,6 +176,12 @@ fn body(ui: &mut egui::Ui, ws: &Workspace, st: &mut InboxUi, pal: &Palette, act:
     }
     if f.show_resolved {
         resolved(ui, ws, pal, act);
+    }
+    // Agents on a server (quire-cli serve) keep their suggestions there
+    // unless review history travels with sync.
+    if ws.sync.config.is_some() && !ws.sync_shares_state() && f.section.is_none_or(|s| s == Section::Suggested) {
+        ui.add_space(8.0);
+        ui.add(egui::Label::new(RichText::new(OTHER_DEVICES_OFF).size(11.5).color(pal.faint)).wrap());
     }
     // Looking at checks resets the weekly digest.
     if digest_seen && data.digest_due() && act.is_none() {
@@ -577,9 +587,11 @@ fn resolved(ui: &mut egui::Ui, ws: &Workspace, pal: &Palette, act: &mut Option<A
                 ProposalStatus::Superseded => "no longer applies",
                 ProposalStatus::Pending => "waiting",
             };
-            ui.label(
-                RichText::new(format!("{} · {} · {status}", review_ui::short_time(p.updated), p.actor.label)).size(11.5).color(pal.muted),
-            );
+            let who = match &p.from_device {
+                Some((_, name)) => format!("{} on {name}", p.actor.label),
+                None => p.actor.label.clone(),
+            };
+            ui.label(RichText::new(format!("{} · {who} · {status}", review_ui::short_time(p.updated))).size(11.5).color(pal.muted));
             ui.label(RichText::new(&p.title).size(12.0).color(pal.text));
             if p.status == ProposalStatus::Expired {
                 let id = p.id.clone();

@@ -30,7 +30,7 @@ use crate::ids::{BatchId, ProposalId};
 use crate::inbox::InboxStore;
 use crate::ledger::{Ledger, LedgerEntry, LedgerQuery};
 use crate::policy::{Mode, OpKind, POLICY_PATH, Policy, Route, Widening, ZoneRole, hard_rule, stricter_limits, strictest, widenings};
-use crate::proposal::{HunkAction, Proposal, ProposalChange, ProposalFilter, ProposalStatus, ProposalStore, ProposalSummary};
+use crate::proposal::{Proposal, ProposalChange, ProposalFilter, ProposalStatus, ProposalStore, ProposalSummary};
 
 /// Where device approvals live: a folder, or memory (in-memory vaults, tests).
 enum StateStore {
@@ -514,14 +514,16 @@ impl AgentStore {
 
     fn refresh_last(&self) {
         let ledger = self.ledger();
-        let stamp = ledger.stamp();
+        let mut stamp = ledger.stamp();
+        stamp.extend(self.shared_log_stamp());
         if self.inner.last.read().unwrap_or_else(std::sync::PoisonError::into_inner).stamp == stamp && !stamp.is_empty() {
             return;
         }
         let since = self.now_ms() - 90 * 86_400_000;
         let mut map: HashMap<NotePath, (Actor, i64)> = HashMap::new();
         let mut imported = HashSet::new();
-        for e in ledger.read(&LedgerQuery { since: Some(since), ..LedgerQuery::default() }) {
+        // Every device's changes: an agent on a server wrote this note too.
+        for e in self.log(&LedgerQuery { since: Some(since), ..LedgerQuery::default() }) {
             let Some(path) = e.path.clone() else { continue };
             match e.op {
                 Op::Write | Op::Create | Op::Delete | Op::Revert | Op::Accept => {
@@ -1047,7 +1049,11 @@ impl AgentStore {
         let mut v: Vec<Proposal> = ProposalStore::new(self.inner.vault.clone())
             .list()
             .into_iter()
-            .filter(|p| p.status == ProposalStatus::Pending && p.actor.id == actor.id)
+            // Only proposals made here: another device's (shared review
+            // history) are amended there, by the agent that made them.
+            .filter(|p| {
+                p.status == ProposalStatus::Pending && p.actor.id == actor.id && p.origin().is_none_or(|(d, _)| d == self.device().id)
+            })
             .collect();
         v.sort_by_key(|p| std::cmp::Reverse((p.updated, p.created)));
         v
@@ -1100,22 +1106,11 @@ impl AgentStore {
                         let r = quire_text::merge::merge3(disk, &pending, new_text);
                         if r.is_clean() { r.text } else { new_text.clone() }
                     };
-                    // What the person rejected stays rejected: those hunks are
-                    // dropped again. Their decisions are kept for that.
-                    let rejected: Vec<&str> =
-                        c.decisions.iter().filter(|d| d.action == HunkAction::Rejected).map(|d| d.hunk.as_str()).collect();
-                    let merged = if rejected.is_empty() {
-                        merged
-                    } else {
-                        let base = c.base_text().unwrap_or_default();
-                        let hunks = crate::review::hunks(&path, &base, &base, &merged);
-                        let keep = |h: &crate::proposal::Hunk| {
-                            if rejected.contains(&h.id.as_str()) { crate::review::Choice::Reject } else { crate::review::Choice::Pending }
-                        };
-                        crate::review::apply(&base, &hunks, keep).new_text
-                    };
                     c.new_text = Some(merged);
                     c.review = None;
+                    // What the person rejected stays rejected, also reworded
+                    // or with the lines around it rewritten.
+                    c.drop_rejected();
                 }
                 (Some(c), Change::Create { text, .. }) if c.op == crate::proposal::ChangeOp::Create => {
                     c.text = Some(text.clone());
@@ -1126,6 +1121,40 @@ impl AgentStore {
                 }
                 _ => prop.changes.push(Self::proposal_change(p)),
             }
+        }
+    }
+
+    /// A new proposal of `actor` keeps out what the person rejected from
+    /// that actor's suggestions for the same notes in the last 30 days (on
+    /// this device or, with shared review history, another): the same
+    /// suggestion in a new run isn't asked about again. A change left with
+    /// nothing is settled as rejected at once.
+    fn carry_rejections(&self, actor: &Actor, prop: &mut Proposal) {
+        use crate::proposal::{ChangeOp, ChangeState, HunkAction};
+        let now = self.now_ms();
+        let past: Vec<Proposal> = ProposalStore::new(self.inner.vault.clone())
+            .archived(now)
+            .into_iter()
+            .filter(|p| p.actor.id == actor.id && now - p.updated <= crate::ops::EXPIRE_AFTER_MS)
+            .collect();
+        if past.is_empty() {
+            return;
+        }
+        for c in prop.changes.iter_mut().filter(|c| c.op == ChangeOp::Edit) {
+            let Some(path) = c.path.clone() else { continue };
+            for old in past.iter().flat_map(|p| &p.changes).filter(|o| o.subject() == Some(&path)) {
+                for d in old.decided.iter().filter(|d| d.action == HunkAction::Rejected) {
+                    if !c.decided.contains(d) {
+                        c.decided.push(d.clone());
+                    }
+                }
+            }
+            if c.drop_rejected() && c.new_text == c.base_text() {
+                c.set_state(ChangeState::Rejected, &self.inner.device.id, now);
+            }
+        }
+        if let Some(s) = prop.settled_status() {
+            prop.status = s;
         }
     }
 
@@ -1202,7 +1231,12 @@ impl AgentStore {
                 changes: planned.iter().map(Self::proposal_change).collect(),
                 other: crate::actor::Other::new(),
             };
+            let mut prop = prop;
+            self.carry_rejections(actor, &mut prop);
             store.save(&prop)?;
+            if prop.status != ProposalStatus::Pending {
+                let _ = store.archive(&prop.id);
+            }
             (prop, false)
         };
         for p in planned {
@@ -1229,8 +1263,20 @@ impl AgentStore {
         let _ = self.ledger().append(entry);
     }
 
-    /// Ledger entries of this device.
+    /// Ledger entries of this device and, with shared review history, of
+    /// the other devices (read-only copies), oldest first.
     pub fn log(&self, q: &LedgerQuery) -> Vec<LedgerEntry> {
+        let mut v = self.ledger().read(q);
+        let others = self.shared_log(q);
+        if !others.is_empty() {
+            v.extend(others);
+            v.sort_by(|a, b| a.at.cmp(&b.at).then_with(|| a.actor.device.cmp(&b.actor.device)));
+        }
+        v
+    }
+
+    /// Ledger entries of this device only.
+    pub fn log_here(&self, q: &LedgerQuery) -> Vec<LedgerEntry> {
         self.ledger().read(q)
     }
 

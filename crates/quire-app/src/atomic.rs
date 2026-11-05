@@ -11,11 +11,17 @@ use std::path::{Path, PathBuf};
 /// The bytes go to a temporary file in the same folder, are flushed to
 /// disk, then renamed over the old file. With `private`, the
 /// file is readable only by its owner (Unix) from the moment it exists.
+/// Numbers temporary files, so threads writing the same file at once don't collide.
+static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub fn write(path: &Path, bytes: &[u8], private: bool) -> std::io::Result<()> {
     let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(dir)?;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+    // Unique per call too: two threads saving the same file must not share
+    // a temporary file (one rename would find it gone).
+    let n = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = dir.join(format!(".{name}.{}.{n}.tmp", std::process::id()));
     let result = (|| {
         let mut opts = std::fs::OpenOptions::new();
         opts.write(true).create(true).truncate(true);

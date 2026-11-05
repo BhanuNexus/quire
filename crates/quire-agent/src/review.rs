@@ -309,6 +309,203 @@ pub fn choices_from(decisions: &[HunkDecision]) -> impl Fn(&Hunk) -> Choice + '_
     move |h: &Hunk| decisions.iter().rev().find(|d| d.hunk == h.id).map_or(Choice::Pending, Choice::of)
 }
 
+// ------------------------------------------------------------ decided content
+
+/// Two normalised lines count as the same suggestion at or above this
+/// similarity (normalised Levenshtein, 0–1): "the launch is friday." and
+/// "The launch is on Friday" match; a different sentence doesn't.
+pub const DECIDED_LINE_SIMILARITY: f64 = 0.85;
+
+/// Hunks or records longer than this many lines are compared by exact
+/// normalised lines only (the fuzzy comparison is quadratic).
+const FUZZY_MAX_LINES: usize = 200;
+
+/// A line as decisions compare it: Unicode NFC, whitespace runs collapsed
+/// to one space, trimmed, lower case. Empty lines normalise to "" and are
+/// left out of records.
+pub fn normalise_line(line: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    let nfc: String = line.nfc().collect();
+    nfc.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
+
+fn normalised(lines: &[String]) -> Vec<String> {
+    lines.iter().map(|l| normalise_line(l)).filter(|l| !l.is_empty()).collect()
+}
+
+/// Lines shorter than this (in characters) must be equal apart from closing
+/// punctuation: one character is too much of a short line ("changed 7",
+/// "changed 78").
+pub const DECIDED_FUZZY_MIN_CHARS: usize = 20;
+
+fn similar(a: &str, b: &str, fuzzy: bool) -> bool {
+    if a == b {
+        return true;
+    }
+    let bare = |s: &str| s.trim_end_matches(['.', ',', ';', ':', '!', '?']).trim_end().to_string();
+    let (x, y) = (bare(a), bare(b));
+    x == y
+        || (fuzzy
+            && x.chars().count().min(y.chars().count()) >= DECIDED_FUZZY_MIN_CHARS
+            && strsim::normalized_levenshtein(&x, &y) >= DECIDED_LINE_SIMILARITY)
+}
+
+/// The content of a hunk the person decided.
+///
+/// The lines it would replace and the agent's lines (normalised), with the
+/// nearest non-empty line on each side for its place. Kept with the change
+/// (`decided` in the file), so a hunk the agent brings back reworded a
+/// little, or with the lines around it rewritten, isn't asked about again,
+/// on this device or another.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DecidedContent {
+    pub action: HunkAction,
+    pub old: Vec<String>,
+    pub new: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+    pub at: i64,
+    /// The device it was decided on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    #[serde(flatten)]
+    pub other: crate::actor::Other,
+}
+
+/// The nearest non-empty line before and after `range` in `lines`, normalised.
+pub fn context_of(lines: &[&str], range: &Range<u32>) -> (Option<String>, Option<String>) {
+    let start = usize::try_from(range.start).unwrap_or(usize::MAX).min(lines.len());
+    let end = usize::try_from(range.end).unwrap_or(usize::MAX).min(lines.len());
+    let before = lines[..start].iter().rev().map(|l| normalise_line(l)).find(|l| !l.is_empty());
+    let after = lines[end..].iter().map(|l| normalise_line(l)).find(|l| !l.is_empty());
+    (before, after)
+}
+
+impl DecidedContent {
+    /// The record of deciding `h` (a hunk of `current`) with `action`.
+    pub fn of(h: &Hunk, current: &str, action: HunkAction, at: i64, device: Option<&str>) -> Self {
+        let (before, after) = context_of(&split_lines(current), &h.range_in_current);
+        Self {
+            action,
+            old: normalised(&h.old_lines),
+            new: normalised(&h.new_lines),
+            before,
+            after,
+            at,
+            device: device.map(str::to_string),
+            other: crate::actor::Other::new(),
+        }
+    }
+
+    /// Whether hunk `h` (with `before`/`after`, its normalised context) only
+    /// brings back this decided change at the same place:
+    ///
+    /// * every line it adds matches a line this change added, and every
+    ///   line it removes matches a line this change would have replaced
+    ///   (each at [`DECIDED_LINE_SIMILARITY`]); a hunk that also adds or
+    ///   removes anything else is asked about again;
+    /// * and it is at the same place: one of its replaced lines or its
+    ///   context matches one of this change's replaced lines or context.
+    pub fn covers(&self, h: &Hunk, before: Option<&str>, after: Option<&str>) -> bool {
+        let old = normalised(&h.old_lines);
+        let new = normalised(&h.new_lines);
+        let added: Vec<&String> = new.iter().filter(|l| !old.contains(l)).collect();
+        let removed: Vec<&String> = old.iter().filter(|l| !new.contains(l)).collect();
+        if added.is_empty() && removed.is_empty() {
+            // Only blank lines or spacing change: nothing to match against.
+            return false;
+        }
+        let fuzzy = old.len() + new.len() <= FUZZY_MAX_LINES && self.old.len() + self.new.len() <= FUZZY_MAX_LINES;
+        let within = |l: &str, set: &[String]| set.iter().any(|x| similar(l, x, fuzzy));
+        if !added.iter().all(|l| within(l, &self.new)) || !removed.iter().all(|l| within(l, &self.old)) {
+            return false;
+        }
+        let mine: Vec<&str> = old.iter().map(String::as_str).chain(before).chain(after).collect();
+        let theirs: Vec<String> = self.old.iter().cloned().chain(self.before.clone()).chain(self.after.clone()).collect();
+        // Nothing around either (a note that was empty): the same place.
+        (mine.is_empty() && theirs.is_empty()) || mine.iter().any(|l| within(l, &theirs))
+    }
+}
+
+impl DecidedContent {
+    /// The agent's lines of hunk `h` with this rejected change taken out,
+    /// when `h` also changes other lines (the agent rewrote a line next to
+    /// one the person rejected, so both are in one hunk): each added line
+    /// that matches a line this change added goes back to the line it
+    /// replaced (or goes, for an insertion). `None` when nothing matches or
+    /// `h` is elsewhere. Only the agent's text changes, never the note.
+    pub fn strip(&self, h: &Hunk, before: Option<&str>, after: Option<&str>) -> Option<Vec<String>> {
+        if self.action != HunkAction::Rejected || h.old_lines.len() + h.new_lines.len() > FUZZY_MAX_LINES {
+            return None;
+        }
+        let old_n: Vec<String> = h.old_lines.iter().map(|l| normalise_line(l)).collect();
+        let new_n: Vec<String> = h.new_lines.iter().map(|l| normalise_line(l)).collect();
+        let theirs: Vec<String> = self.old.iter().cloned().chain(self.before.clone()).chain(self.after.clone()).collect();
+        let mine: Vec<&str> = old_n.iter().map(String::as_str).filter(|l| !l.is_empty()).chain(before).chain(after).collect();
+        let place = (mine.is_empty() && theirs.is_empty()) || mine.iter().any(|l| theirs.iter().any(|x| similar(l, x, true)));
+        if !place {
+            return None;
+        }
+        // Lines the hunk removes that the rejected change would have replaced.
+        let mut spare: Vec<usize> = (0..old_n.len())
+            .filter(|&i| !old_n[i].is_empty() && !new_n.contains(&old_n[i]) && self.old.iter().any(|x| similar(&old_n[i], x, true)))
+            .collect();
+        let mut out = Vec::with_capacity(h.new_lines.len());
+        let mut changed = false;
+        for (j, line) in h.new_lines.iter().enumerate() {
+            let n = &new_n[j];
+            let rejected = !n.is_empty() && !old_n.contains(n) && self.new.iter().any(|x| similar(n, x, true));
+            if !rejected {
+                out.push(line.clone());
+            } else if self.old.is_empty() {
+                changed = true;
+            } else if !spare.is_empty() {
+                out.push(h.old_lines[spare.remove(0)].clone());
+                changed = true;
+            } else {
+                out.push(line.clone());
+            }
+        }
+        // A line put back from the end of a note may have no line ending.
+        let n = out.len();
+        let last_nl = h.new_lines.last().is_some_and(|l| l.ends_with('\n'));
+        for (i, l) in out.iter_mut().enumerate() {
+            if !l.ends_with('\n') && (i + 1 < n || last_nl) {
+                l.push('\n');
+            }
+        }
+        changed.then_some(out)
+    }
+}
+
+/// The hunks still to show.
+///
+/// `hunks` without those already decided (by id, [`HunkDecision`]s) and
+/// without those that only bring back a decided change
+/// ([`DecidedContent::covers`]): every rejection, and acceptances made on
+/// another device than `here` (this device's own are already in the
+/// proposal's base). Hiding a hunk keeps the current lines.
+pub fn visible(current: &str, hunks: Vec<Hunk>, decisions: &[HunkDecision], decided: &[DecidedContent], here: &str) -> Vec<Hunk> {
+    let relevant: Vec<&DecidedContent> =
+        decided.iter().filter(|d| d.action == HunkAction::Rejected || d.device.as_deref().is_some_and(|dev| dev != here)).collect();
+    if decisions.is_empty() && relevant.is_empty() {
+        return hunks;
+    }
+    let lines = split_lines(current);
+    hunks
+        .into_iter()
+        .filter(|h| {
+            if decisions.iter().any(|d| d.hunk == h.id) {
+                return false;
+            }
+            let (b, a) = context_of(&lines, &h.range_in_current);
+            !relevant.iter().any(|d| d.covers(h, b.as_deref(), a.as_deref()))
+        })
+        .collect()
+}
+
 /// The character range (in chars, for the editor) of a line range of `text`:
 /// from the start of line `lines.start` to the start of line `lines.end`.
 pub fn char_range_of_lines(text: &str, lines: &Range<u32>) -> Range<usize> {
@@ -538,5 +735,164 @@ mod tests {
                 assert_eq!(h.old_lines, h.base_lines, "case {case}");
             }
         }
+    }
+
+    // ---- decided content: rejected suggestions stay rejected (0.10)
+
+    fn rejected(h: &Hunk, current: &str) -> DecidedContent {
+        DecidedContent::of(h, current, HunkAction::Rejected, 1, Some("d_desk"))
+    }
+
+    /// The same line as the person would read it: other case, other spacing,
+    /// and (for longer lines) a full stop.
+    fn reword(r: &mut Rng, line: &str) -> String {
+        let body = line.trim_end_matches('\n');
+        let mut out = match r.below(3) {
+            0 => body.to_uppercase(),
+            1 => body.replace(' ', "  "),
+            _ => format!("  {body}"),
+        };
+        if normalise_line(body).chars().count() >= 10 && r.below(2) == 0 {
+            out.push('.');
+        }
+        if line.ends_with('\n') {
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn a_reworded_rejection_is_hidden_and_something_new_is_not() {
+        let base = "# Launch\nThe venue is booked.\nWe ship on Monday.\nBring snacks.\n";
+        let agent = "# Launch\nThe venue is booked.\nWe ship on Monday.\nBring snacks and water.\n";
+        let hs = hunks(&p(), base, base, agent);
+        let r = rejected(&hs[0], base);
+        assert_eq!(r.old, ["bring snacks."]);
+        assert_eq!(r.new, ["bring snacks and water."]);
+        assert_eq!(r.before.as_deref(), Some("we ship on monday."));
+        // Reworded, with the line before it rewritten too (the hunk grows).
+        let again = "# Launch\nThe venue is booked.\nWe ship on Monday.\nbring snacks and Water\n";
+        let h2 = hunks(&p(), base, base, again);
+        assert_ne!(h2[0].id, hs[0].id, "a different hunk id");
+        assert!(visible(base, h2, &[], std::slice::from_ref(&r), "d_desk").is_empty());
+        let around = "# Launch\nThe venue is booked for Friday.\nWe ship on Monday.\nBring snacks and water!\n";
+        let shown = visible(base, hunks(&p(), base, base, around), &[], std::slice::from_ref(&r), "d_desk");
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].new_lines, ["The venue is booked for Friday.\n"]);
+        // Different words at the same place, or the same words elsewhere: asked about.
+        let other = "# Launch\nThe venue is booked.\nWe ship on Monday.\nBring a first-aid kit.\n";
+        assert_eq!(visible(base, hunks(&p(), base, base, other), &[], std::slice::from_ref(&r), "d_desk").len(), 1);
+        let elsewhere = "# Launch\nBring snacks and water.\nThe venue is booked.\nWe ship on Monday.\nBring snacks.\n";
+        assert_eq!(visible(base, hunks(&p(), base, base, elsewhere), &[], std::slice::from_ref(&r), "d_desk").len(), 1);
+        // Accepted on this device: already in the base, not used to hide.
+        let mine = DecidedContent { action: HunkAction::Accepted, ..r };
+        assert_eq!(visible(base, hunks(&p(), base, base, agent), &[], std::slice::from_ref(&mine), "d_desk").len(), 1);
+        assert!(visible(base, hunks(&p(), base, base, agent), &[], &[mine], "d_server").is_empty(), "accepted on another device");
+    }
+
+    #[test]
+    fn property_a_rejected_hunk_brought_back_reworded_is_never_shown_again() {
+        let mut r = Rng(0xA5A5_1234_5678_9ABC);
+        let mut checked = 0;
+        for case in 0..3_000 {
+            let base = random_text(&mut r);
+            let agent = mutate(&mut r, &base);
+            let hs = hunks(&p(), &base, &base, &agent);
+            if hs.is_empty() {
+                continue;
+            }
+            let h = &hs[r.below(hs.len())];
+            if normalised(&h.new_lines).iter().all(|l| normalised(&h.old_lines).contains(l)) {
+                continue; // only blank lines change
+            }
+            let rec = rejected(h, &base);
+            // The agent writes its text again with that hunk's lines reworded.
+            let reworded: String = h.new_lines.iter().map(|l| reword(&mut r, l)).collect();
+            let again = apply(&base, &hs, |x| if x.id == h.id { Choice::Edit(reworded.clone()) } else { Choice::Accept }).text;
+            let shown = visible(&base, hunks(&p(), &base, &base, &again), &[], std::slice::from_ref(&rec), "d_desk");
+            // Where the rejected hunk was: nothing there that only repeats it.
+            let at = &h.range_in_current;
+            for s in shown.iter().filter(|s| s.range_in_current.start <= at.end && at.start <= s.range_in_current.end) {
+                let added: Vec<String> = normalised(&s.new_lines).into_iter().filter(|l| !normalised(&s.old_lines).contains(l)).collect();
+                let all_rejected = !added.is_empty() && added.iter().all(|l| rec.new.iter().any(|x| similar(l, x, true)));
+                assert!(!all_rejected, "case {case}: rejected lines shown again {s:?}\nbase {base:?}\nagain {again:?}");
+            }
+            checked += 1;
+        }
+        assert!(checked > 1_000, "{checked}");
+    }
+
+    #[test]
+    fn property_a_hunk_adding_anything_new_is_never_hidden() {
+        let mut r = Rng(99);
+        for case in 0..3_000 {
+            let base = random_text(&mut r);
+            let a1 = mutate(&mut r, &base);
+            let recs: Vec<DecidedContent> = hunks(&p(), &base, &base, &a1).iter().map(|h| rejected(h, &base)).collect();
+            // A second text that adds a line no rejection has.
+            let mut lines: Vec<String> = split_lines(&a1).iter().map(|l| (*l).to_string()).collect();
+            let at = r.below(lines.len() + 1);
+            lines.insert(at, format!("brand new {case} qqzx\n"));
+            let a2 = lines.concat();
+            let all = hunks(&p(), &base, &base, &a2);
+            let shown = visible(&base, all.clone(), &[], &recs, "d_desk");
+            assert!(shown.iter().any(|h| h.new_lines.concat().contains("qqzx")), "case {case}: {all:?} {recs:?}");
+            // Hiding keeps the current lines: accepting what is shown is
+            // applying it with the hidden hunks rejected.
+            let ids: Vec<&str> = shown.iter().map(|h| h.id.as_str()).collect();
+            let via_shown = apply(&base, &shown, |_| Choice::Accept).text;
+            let via_all = apply(&base, &all, |h| if ids.contains(&h.id.as_str()) { Choice::Accept } else { Choice::Reject }).text;
+            assert_eq!(via_shown, via_all, "case {case}");
+            // Every hidden hunk only repeats a rejection.
+            for h in all.iter().filter(|h| !ids.contains(&h.id.as_str())) {
+                let (b, a) = context_of(&split_lines(&base), &h.range_in_current);
+                assert!(recs.iter().any(|x| x.covers(h, b.as_deref(), a.as_deref())), "case {case}");
+            }
+        }
+    }
+
+    #[test]
+    fn property_an_amend_takes_rejected_lines_out_and_keeps_everything_else() {
+        let mut r = Rng(0x00C0_FFEE);
+        let mut stripped = 0;
+        for case in 0..2_000 {
+            let base = random_text(&mut r);
+            let agent = mutate(&mut r, &base);
+            let hs = hunks(&p(), &base, &base, &agent);
+            let Some(h) = hs.get(r.below(hs.len().max(1))) else { continue };
+            let rec = rejected(h, &base);
+            // The agent writes again: the rejected lines reworded, and the
+            // line before them rewritten too (one bigger hunk).
+            let reworded: String = h.new_lines.iter().map(|l| reword(&mut r, l)).collect();
+            let mut again = apply(&base, &hs, |x| if x.id == h.id { Choice::Edit(reworded.clone()) } else { Choice::Accept }).text;
+            let mut lines: Vec<String> = split_lines(&again).iter().map(|l| (*l).to_string()).collect();
+            let at = usize::try_from(h.range_in_current.start).unwrap();
+            if at > 0 && at <= lines.len() {
+                lines[at - 1] = format!("rewritten neighbour {case}\n");
+                again = lines.concat();
+            }
+            let mut c = crate::proposal::ProposalChange::edit(&p(), &base, &again);
+            c.decided.push(rec.clone());
+            stripped += usize::from(c.drop_rejected());
+            let out = c.new_text.clone().unwrap();
+            // Nothing invented: every line comes from the agent's text or the base.
+            let from: Vec<&str> = split_lines(&again).into_iter().chain(split_lines(&base)).map(|l| l.trim_end_matches('\n')).collect();
+            for l in split_lines(&out) {
+                assert!(
+                    from.contains(&l.trim_end_matches('\n')),
+                    "case {case}: {l:?} from nowhere\nbase {base:?}\nagain {again:?}\nout {out:?}"
+                );
+            }
+            // Nothing new lost: the agent's lines that don't repeat the rejection stay.
+            let count = |t: &str, l: &str| split_lines(t).into_iter().filter(|x| *x == l).count();
+            for l in split_lines(&again) {
+                let n = normalise_line(l);
+                if n.is_empty() || rec.new.iter().any(|x| similar(&n, x, true)) {
+                    continue;
+                }
+                assert!(count(&out, l) >= count(&again, l).min(1), "case {case}: lost {l:?}\nbase {base:?}\nagain {again:?}\nout {out:?}");
+            }
+        }
+        assert!(stripped > 300, "{stripped}");
     }
 }

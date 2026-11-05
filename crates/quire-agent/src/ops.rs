@@ -73,10 +73,31 @@ fn change_index(p: &Proposal, path: &NotePath) -> Option<usize> {
     p.changes.iter().position(|c| c.state.is_none() && matches!(c.op, ChangeOp::Edit | ChangeOp::Create) && c.path.as_ref() == Some(path))
 }
 
+/// What each hunk came to, from every device's decisions on it: one that
+/// wrote text somewhere (accepted or edited) wins over a rejection, since
+/// the note carries that text; among equals the earliest (time, device).
+/// The same on every device, whatever order the decisions arrived in.
+pub(crate) fn effective(decisions: &[HunkDecision]) -> Vec<&HunkDecision> {
+    let mut by_hunk: std::collections::BTreeMap<&str, &HunkDecision> = std::collections::BTreeMap::new();
+    for d in decisions {
+        let key = |d: &HunkDecision| (d.action == HunkAction::Rejected, d.at, d.device().unwrap_or_default().to_string());
+        by_hunk
+            .entry(d.hunk.as_str())
+            .and_modify(|cur| {
+                if key(d) < key(cur) {
+                    *cur = d;
+                }
+            })
+            .or_insert(d);
+    }
+    by_hunk.into_values().collect()
+}
+
 /// The state of a change whose last hunk was just decided.
-fn final_state(decisions: &[HunkDecision]) -> ChangeState {
-    let accepted = decisions.iter().any(|d| matches!(d.action, HunkAction::Accepted | HunkAction::Edited));
-    let rejected = decisions.iter().any(|d| d.action == HunkAction::Rejected);
+pub(crate) fn final_state(decisions: &[HunkDecision]) -> ChangeState {
+    let eff = effective(decisions);
+    let accepted = eff.iter().any(|d| matches!(d.action, HunkAction::Accepted | HunkAction::Edited));
+    let rejected = eff.iter().any(|d| d.action == HunkAction::Rejected);
     match (accepted, rejected) {
         (true, true) => ChangeState::PartiallyApplied,
         (true, false) => ChangeState::Applied,
@@ -95,7 +116,14 @@ impl AgentStore {
         let Some(p) = self.proposal(id) else { return Review { hunks: Vec::new(), available: true } };
         let Some(c) = change_index(&p, path).map(|i| &p.changes[i]) else { return Review { hunks: Vec::new(), available: true } };
         let Some((base, new)) = texts(c, current) else { return Review { hunks: Vec::new(), available: true } };
-        Review { hunks: review::review_hunks(path, &base, current, &new, c.review.as_ref()), available: true }
+        Review { hunks: self.visible_hunks(c, path, &base, current, &new), available: true }
+    }
+
+    /// The hunks of change `c` still to decide for `current`: rebased, and
+    /// without those decided here or on another device, by id or by content.
+    fn visible_hunks(&self, c: &ProposalChange, path: &NotePath, base: &str, current: &str, new: &str) -> Vec<crate::proposal::Hunk> {
+        let all = review::review_hunks(path, base, current, new, c.review.as_ref());
+        review::visible(current, all, &c.decisions, &c.decided, &self.device().id)
     }
 
     /// The provenance of a version the person made by accepting `p`'s
@@ -183,16 +211,27 @@ impl AgentStore {
         };
         let Some(i) = change_index(&p, path) else { return Ok(unchanged(&p)) };
         let Some((base, new)) = texts(&p.changes[i], current) else { return Ok(unchanged(&p)) };
-        let hunks = review::review_hunks(path, &base, current, &new, p.changes[i].review.as_ref());
+        let hunks = self.visible_hunks(&p.changes[i], path, &base, current, &new);
         let now = self.now_ms().max(loaded + 1);
-        let known: Vec<HunkDecision> =
-            decisions.iter().filter(|d| hunks.iter().any(|h| h.id == d.hunk)).map(|d| HunkDecision { at: now, ..d.clone() }).collect();
+        let here = self.device().id.clone();
+        let known: Vec<HunkDecision> = decisions
+            .iter()
+            .filter(|d| hunks.iter().any(|h| h.id == d.hunk))
+            .map(|d| HunkDecision { at: now, ..d.clone() }.on_device(&here))
+            .collect();
         let applied = review::apply(current, &hunks, review::choices_from(&known));
         let prior = p.clone();
         let c = &mut p.changes[i];
+        // What each decided hunk held, for hunks the agent brings back
+        // reworded and for the other devices (shared review history).
+        for d in &known {
+            if let Some(h) = hunks.iter().find(|h| h.id == d.hunk) {
+                c.decided.push(review::DecidedContent::of(h, current, d.action, now, Some(&here)));
+            }
+        }
         c.decisions.extend(known.iter().cloned());
         if applied.pending == 0 {
-            c.state = Some(final_state(&c.decisions));
+            c.set_state(final_state(&c.decisions), &here, now);
             c.review = None;
         } else {
             if c.op == ChangeOp::Create {
@@ -256,8 +295,9 @@ impl AgentStore {
     pub fn mark_change(&self, id: &ProposalId, subject: &NotePath, state: ChangeState) -> Result<(), WriteError> {
         let store = self.proposals_store();
         let Some(mut p) = store.load(id) else { return Err(WriteError::NotFound { path: subject.clone() }) };
+        let (here, now) = (self.device().id.clone(), self.now_ms());
         let Some(c) = p.changes.iter_mut().find(|c| c.state.is_none() && c.subject() == Some(subject)) else { return Ok(()) };
-        c.state = Some(state);
+        c.set_state(state, &here, now);
         c.review = None;
         let op = if state == ChangeState::Rejected { Op::Reject } else { Op::Accept };
         self.settle(&store, &mut p)?;
@@ -321,7 +361,7 @@ impl AgentStore {
             };
         }
         if !accept {
-            p.changes[i].state = Some(ChangeState::Rejected);
+            p.changes[i].set_state(ChangeState::Rejected, &self.device().id, self.now_ms());
             self.settle(&store, &mut p)?;
             self.log_decision(&p, Op::Reject, subject, None);
             return Ok(Some(ChangeState::Rejected));
@@ -373,7 +413,7 @@ impl AgentStore {
             }
             ChangeOp::Edit => {}
         }
-        p.changes[i].state = Some(ChangeState::Applied);
+        p.changes[i].set_state(ChangeState::Applied, &self.device().id, now);
         self.settle(&store, &mut p)?;
         Ok(Some(ChangeState::Applied))
     }
@@ -389,7 +429,7 @@ impl AgentStore {
     }
 
     fn supersede(&self, store: &ProposalStore, p: &mut Proposal, i: usize) -> Result<ChangeState, WriteError> {
-        p.changes[i].state = Some(ChangeState::Superseded);
+        p.changes[i].set_state(ChangeState::Superseded, &self.device().id, self.now_ms());
         self.settle(store, p)?;
         Ok(ChangeState::Superseded)
     }
@@ -454,8 +494,9 @@ impl AgentStore {
         let mut out = Vec::new();
         for mut p in store.list().into_iter().filter(|p| p.status == ProposalStatus::Pending) {
             let mut hit = false;
+            let (here, now) = (self.device().id.clone(), self.now_ms());
             for c in p.changes.iter_mut().filter(|c| c.state.is_none() && c.op != ChangeOp::Create && c.subject() == Some(path)) {
-                c.state = Some(ChangeState::Superseded);
+                c.set_state(ChangeState::Superseded, &here, now);
                 hit = true;
             }
             if hit && self.settle(&store, &mut p).is_ok() {

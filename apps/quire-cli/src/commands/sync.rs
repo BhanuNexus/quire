@@ -35,7 +35,9 @@ pub(crate) const COMMANDS: &[CliCommand] = &[CliCommand {
   quire-cli sync once   <vault>                 one sync pass
   quire-cli sync watch  <vault> [--poll 60s]    keep syncing until Ctrl+C or SIGTERM
   quire-cli sync status <vault>                 how sync is set up and how the last pass went
-  quire-cli sync scope  <vault> (--only FOLDER… [--exclude FOLDER…] | --all)   change which folders sync",
+  quire-cli sync scope  <vault> (--only FOLDER… [--exclude FOLDER…] | --all)   change which folders sync
+  quire-cli sync share  <vault> on|off          also sync vault settings and review history (agents' suggestions
+                        and runs reach your other devices; every device needs Quire 0.9 or later)",
     run,
 }];
 
@@ -69,6 +71,23 @@ fn run(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         "scope" => scope(&vault, args),
+        "share" => {
+            let on = match arg(args, 3)? {
+                "on" => true,
+                "off" => false,
+                other => return Err(format!("sync share takes on or off, not “{other}”")),
+            };
+            vault_sync::sync_share_at(&vault, on)?;
+            println!(
+                "{}",
+                if on {
+                    "Vault settings and review history now sync from this device: agents' suggestions made here can be reviewed on your other devices."
+                } else {
+                    "Vault settings and review history no longer sync from this device."
+                }
+            );
+            Ok(())
+        }
         other => Err(format!("unknown sync command “{other}”\n\n{}", super::usage())),
     }
 }

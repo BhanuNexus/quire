@@ -45,6 +45,7 @@ F0 is the foundation step, after which its files are frozen).
 | `.quire/history/<fnv>/<ms>.prov.json` | JSON, format 1 | [provenance.md](provenance.md) | WS-A | written by agent writes and accepted suggestions |
 | `.quire/agent/ledger/<device>/<yyyy-mm>.jsonl` | JSONL, v 1 | [ledger.md](ledger.md) | WS-A | written |
 | `.quire/agent/proposals/<id>.json`, `archive/<yyyy-mm>/<id>.json` | JSON, format 1 | [proposals.md](proposals.md) | WS-A | written |
+| `.quire/shared/agent/{devices,proposals,decisions,ledger,texts}/…` | JSON format 1, JSONL v 1 | [shared-review.md](shared-review.md) | WS-A | written and read with shared review history on (0.10) |
 | `.quire/agent/inbox/<fingerprint>.json`, `dismissed.jsonl` | JSON format 1, JSONL v 1 | [inbox.md](inbox.md) | WS-A | written |
 | `.quire/shared/agent-policy.toml` | TOML, format 1 | [policy.md](policy.md) | WS-A | read; written by Settings → Agents |
 | `.quire/agent/rate/<hash>.txt` | Unix ms per line (a counter) | [policy.md](policy.md#limits) | WS-A | written |
