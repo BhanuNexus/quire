@@ -252,6 +252,23 @@ pub fn render_note(
     let private = std::cell::Cell::new(0);
     let embedded = std::cell::RefCell::new(Vec::new());
     let html = render::to_html(src, &|l| {
+        // 0.10: an Excalidraw drawing (`.excalidraw`, or a drawing note)
+        // goes in as an SVG picture, if the reader may see it.
+        if l.embed
+            && let Some(d) = vault
+                .resolve_file(&l.target)
+                .or_else(|| ix.resolve(&l.target, Some(path)))
+                .filter(|p| quire_canvas::excalidraw::is_drawing(p.as_str()))
+        {
+            let allowed = if d.is_markdown() { (links.note)(&d) } else { (links.file)(&d) };
+            if allowed.is_none() {
+                private.set(private.get() + 1);
+                return None;
+            }
+            if let Some(svg) = crate::drawings::svg(vault, &d) {
+                return Some(crate::drawings::data_url(&svg));
+            }
+        }
         if l.embed
             && let Some(f) = vault.resolve_file(&l.target).filter(|f| !f.is_markdown())
         {

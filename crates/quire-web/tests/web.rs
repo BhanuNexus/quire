@@ -634,6 +634,41 @@ fn the_sample_vault_renders() {
     assert_eq!(b.get("/search?q=quire").status, 200);
 }
 
+/// 0.10 integration: a voice note plays in an `<audio>` element, an
+/// Excalidraw drawing shows as a picture (a hidden one doesn't), and every
+/// page says the server is Beta and holds the notes in plain text.
+#[test]
+fn voice_notes_play_drawings_show_and_pages_say_beta() {
+    let drawing = include_str!("../../quire-canvas/testdata/excalidraw/Plain.excalidraw.md");
+    let env = start_with(
+        &[
+            ("Daily.md", "# Daily\n\n![[Voice note 2026-11-05 153012.wav]]\n\n![[Plan.excalidraw]]\n\n![[Private/Secret.excalidraw]]\n"),
+            ("Plan.excalidraw.md", drawing),
+            ("Private/Secret.excalidraw.md", drawing),
+            ("attachments/Voice note 2026-11-05 153012.wav", "RIFF....WAVEfmt "),
+        ],
+        false,
+        |_| {},
+    );
+    let mut b = Browser::new(&env);
+    let login = b.get("/login");
+    assert!(login.body.contains("class=\"beta\">Beta</span>"), "{}", login.body);
+    assert!(login.body.contains("decrypted copy"), "{}", login.body);
+    let mut b = Browser::signed_in(&env);
+    let r = b.get("/n/Daily.md");
+    assert_eq!(r.status, 200, "{}", r.body);
+    assert!(
+        r.body.contains("<audio controls preload=\"metadata\" src=\"/f/attachments/Voice%20note%202026-11-05%20153012.wav\">"),
+        "{}",
+        r.body
+    );
+    assert_eq!(r.body.matches("<img src=\"data:image/svg+xml;base64,").count(), 1, "the hidden drawing isn't drawn: {}", r.body);
+    assert!(r.body.contains("<footer class=\"foot\">"), "{}", r.body);
+    assert!(r.header("content-security-policy").unwrap().contains("media-src 'self'"));
+    let wav = b.get("/f/attachments/Voice%20note%202026-11-05%20153012.wav");
+    assert_eq!((wav.status, wav.header("content-type")), (200, Some("audio/wav")));
+}
+
 /// Serve one JSON document (a client's metadata) on loopback.
 fn serve_doc(make: impl Fn(&str) -> String + Send + 'static) -> String {
     let l = TcpListener::bind("127.0.0.1:0").unwrap();

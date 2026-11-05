@@ -48,6 +48,11 @@ fn is_image(target: &str) -> bool {
     [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".excalidraw", ".excalidraw.md"].iter().any(|e| t.ends_with(e))
 }
 
+fn is_audio(target: &str) -> bool {
+    let t = target.to_ascii_lowercase();
+    [".wav", ".mp3", ".m4a", ".ogg", ".oga", ".opus", ".flac"].iter().any(|e| t.ends_with(e))
+}
+
 /// Rewrite extension inlines with `f`, dropping front matter.
 fn rewrite(src: &str, mut f: impl FnMut(&Inline, &str) -> String) -> String {
     let body_start = frontmatter::parse(src).map_or(0, |fm| fm.range.end);
@@ -75,6 +80,12 @@ pub fn to_html(src: &str, resolve: Resolver<'_>) -> String {
             match resolve(link) {
                 Some(href) if link.embed && is_image(&link.target) => {
                     format!("<img src=\"{}\" alt=\"{label}\">", escape_html(&href))
+                }
+                // A voice note or other recording plays in place; the link
+                // inside is for browsers without audio.
+                Some(href) if link.embed && is_audio(&link.target) => {
+                    let href = escape_html(&href);
+                    format!("<audio controls preload=\"metadata\" src=\"{href}\"><a href=\"{href}\">{label}</a></audio>")
                 }
                 Some(href) => format!("<a class=\"wikilink\" href=\"{}\">{label}</a>", escape_html(&href)),
                 None => format!("<span class=\"wikilink unresolved\">{label}</span>"),
@@ -369,6 +380,18 @@ mod tests {
         assert!(html.contains("<mark>bright</mark>"));
         assert!(html.contains("<code>[[raw]]</code>"));
         assert!(!html.contains("title: x"));
+    }
+
+    #[test]
+    fn audio_embeds_play_in_place() {
+        let html = to_html("![[Voice note.wav]] and [[Voice note.wav]]\n", &|_| Some("a/Voice%20note.wav".to_string()));
+        assert!(
+            html.contains(
+                "<audio controls preload=\"metadata\" src=\"a/Voice%20note.wav\"><a href=\"a/Voice%20note.wav\">Voice note.wav</a></audio>"
+            ),
+            "{html}"
+        );
+        assert!(html.contains("<a class=\"wikilink\" href=\"a/Voice%20note.wav\">"), "a plain link stays a link: {html}");
     }
 
     #[test]
