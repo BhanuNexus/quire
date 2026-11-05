@@ -44,6 +44,8 @@ pub struct NavState {
     pub vim: VimState,
     /// The note the Vim state belongs to; switching notes returns to Normal mode.
     vim_doc: Option<DocId>,
+    /// Vim marks of open notes other than the active one.
+    vim_marks: std::collections::HashMap<DocId, quire_text::vim::Marks>,
     /// A message from Vim (an error, "Pattern not found") and when it came.
     pub vim_message: Option<(String, Instant)>,
     /// Reuse mode: the tab the next opened note replaces (shown in italics).

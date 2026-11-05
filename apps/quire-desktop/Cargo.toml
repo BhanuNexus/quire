@@ -50,6 +50,10 @@ cpal = { workspace = true, optional = true }
 # WS-G: quire-canvas, quire-pdf (and "quire-pdf/render" in `typeset` above)
 quire-canvas.workspace = true
 quire-pdf.workspace = true
+# 0.10 people: Excalidraw pictures drawn with egui's own 2D renderer and font reader
+vello_cpu = { version = "0.2", default-features = false, features = ["std", "u8_pipeline"] }
+skrifa = { version = "0.44", default-features = false, features = ["std"] }
+base64 = "0.23"
 
 [build-dependencies]
 winresource = "0.1"

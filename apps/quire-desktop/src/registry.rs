@@ -155,6 +155,8 @@ pub(crate) const EDITOR_BANNERS: &[BannerDef] = &[
     BannerDef { id: "ai-upgrade", available: crate::onboarding_ui::banner_available, show: crate::onboarding_ui::banner },
     // ---- WS-G: a canvas open as text (for review): its changes in words
     BannerDef { id: "canvas-review", available: crate::canvas_ui::banner_available, show: crate::canvas_ui::banner },
+    // ---- 0.10 people: an Excalidraw note's picture, read-only
+    BannerDef { id: "drawing", available: crate::drawing_ui::banner_available, show: crate::drawing_ui::banner },
 ];
 
 /// A tooltip for the note's text under the pointer: `tip(ws, line, byte)`
@@ -298,6 +300,8 @@ pub(crate) fn open_surface(path: &NotePath) -> Option<Box<dyn crate::surfaces::S
         "canvas" => Some(Box::new(crate::canvas_ui::CanvasSurface::new(path))),
         "pdf" => Some(Box::new(crate::pdf_ui::PdfSurface::new(path))),
         "svg" => Some(Box::new(crate::canvas_ui::SketchSurface::new(path))),
+        // ---- 0.10 people: Excalidraw drawings (`.excalidraw.md` opens as a note with its picture)
+        "excalidraw" => Some(Box::new(crate::drawing_ui::DrawingSurface::new(path))),
         _ => None,
     }
 }

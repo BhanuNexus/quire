@@ -10,7 +10,9 @@
 //! * [`geom`] — rectangles, edge curves, hit tests, alignment
 //! * [`ops`] — `canvas_apply` operations and a node-level diff
 //! * [`ink`] — strokes as SVG paths with their points kept in `data-` attributes
+//! * [`excalidraw`] — Excalidraw drawings read as pictures (SVG and draw ops)
 
+pub mod excalidraw;
 pub mod geom;
 pub mod ink;
 pub mod model;

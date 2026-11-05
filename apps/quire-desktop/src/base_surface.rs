@@ -6,10 +6,12 @@
 //!
 //! Owned by WS-E. Registered in `registry.rs` (`open_surface`, `paint_widget`).
 
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use egui::{Id, RichText, Sense, Ui};
 use quire_app::Workspace;
+use quire_app::bases::{Cell, Table};
 use quire_app::decor::ActionId;
 use quire_app::document::DocId;
 use quire_app::markdown::Value;
@@ -157,6 +159,9 @@ pub(crate) fn kanban_widget(ui: &mut Ui, ws: &Workspace, doc: DocId, pal: &Palet
 
 // ---------------------------------------------------------------- `.base` surface
 
+/// What a worked-out table depends on: the index, the file, the view and the minute.
+type TableKey = (u64, u64, usize, i64);
+
 /// An Obsidian base, shown as its views.
 pub(crate) struct BaseSurface {
     path: NotePath,
@@ -164,11 +169,30 @@ pub(crate) struct BaseSurface {
     base: Option<Result<Base, String>>,
     view: usize,
     read_at: Option<Instant>,
+    table: Option<(TableKey, Rc<Table>)>,
 }
 
 impl BaseSurface {
     pub(crate) fn new(path: &NotePath) -> Self {
-        Self { path: path.clone(), text: None, base: None, view: 0, read_at: None }
+        Self { path: path.clone(), text: None, base: None, view: 0, read_at: None, table: None }
+    }
+
+    /// The view worked out (formulas, filters, summaries), cached until the
+    /// index, the file or the minute changes.
+    fn table(&mut self, ws: &Workspace, base: &Base, view: usize) -> Rc<Table> {
+        use std::hash::{Hash, Hasher};
+        let now = chrono::Local::now().naive_local();
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.text.hash(&mut h);
+        let key = (ws.index().version(), h.finish(), view, now.and_utc().timestamp() / 60);
+        match &self.table {
+            Some((k, t)) if *k == key => Rc::clone(t),
+            _ => {
+                let t = Rc::new(quire_app::bases::table(ws, base, view, now));
+                self.table = Some((key, Rc::clone(&t)));
+                t
+            }
+        }
     }
 
     /// Read the file again now and then (it may change on disk).
@@ -223,18 +247,24 @@ impl Surface for BaseSurface {
                     }
                 });
             }
-            let Some(v) = base.views.get(self.view.min(base.views.len().saturating_sub(1))) else { return };
+            let view = self.view.min(base.views.len().saturating_sub(1));
+            let Some(v) = base.views.get(view) else { return };
             if !v.unsupported.is_empty() {
                 ui.add(
                     egui::Label::new(RichText::new(format!("Not shown: {}.", v.unsupported.join("; "))).size(12.0).color(pal.warn)).wrap(),
                 );
             }
             ui.add_space(6.0);
+            let table = self.table(ws, &base, view);
+            if let Some(e) = &table.error {
+                ui.label(RichText::new(e).color(pal.danger));
+                return;
+            }
             egui::ScrollArea::vertical().id_salt(("quire-base", self.path.as_str())).auto_shrink([false, false]).show(ui, |ui| {
                 let key = Id::unique(("quire-base-view", self.path.as_str(), self.view));
                 let action = match v.kind {
-                    ViewKind::Table => crate::view_ui::show(ui, ws, pal, &v.spec, None, key),
-                    ViewKind::Cards => cards(ui, ws, pal, &v.spec, &v.labels),
+                    ViewKind::Table => base_table(ui, pal, &table, key),
+                    ViewKind::Cards => cards(ui, pal, &table),
                 };
                 if let Some(ViewAction::Open(p)) = &action {
                     if ws.open_note(p).is_some() {
@@ -249,48 +279,137 @@ impl Surface for BaseSurface {
     }
 }
 
-/// A cards view: one card per note, its fields under the title.
-fn cards(ui: &mut Ui, ws: &Workspace, pal: &Palette, spec: &str, labels: &[(String, String)]) -> Option<ViewAction> {
-    let result = ws.run_view(spec, None);
-    let parsed = quire_app::index::views::parse(spec).unwrap_or_default();
-    let r = match result.as_ref() {
-        Ok(r) => r,
-        Err(e) => {
-            ui.label(RichText::new(format!("View error: {e}")).color(pal.danger));
-            return None;
+fn count_line(ui: &mut Ui, pal: &Palette, t: &Table) {
+    let more = if t.total > t.rows.len() { format!(" · showing {}", t.rows.len()) } else { String::new() };
+    ui.label(RichText::new(format!("{} note{}{more}", t.total, if t.total == 1 { "" } else { "s" })).size(11.0).color(pal.muted).strong());
+}
+
+/// A worked-out cell: formulas read-only, properties edited in place, errors said in the cell.
+fn cell(ui: &mut Ui, pal: &Palette, key: Id, path: &NotePath, c: &Cell, act: &mut Option<ViewAction>) {
+    match c {
+        Cell::Name(title) => {
+            let r = ui.add(egui::Label::new(RichText::new(title).color(pal.accent)).truncate().sense(Sense::click()));
+            if r.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(path.as_str()).clicked() {
+                *act = Some(ViewAction::Open(path.clone()));
+            }
         }
-    };
-    ui.label(RichText::new(format!("{} note{}", r.total, if r.total == 1 { "" } else { "s" })).size(11.0).color(pal.muted).strong());
+        Cell::Property { field, value } => crate::view_ui::editable_cell(ui, pal, key, path, field, value, act),
+        Cell::Computed(v) => {
+            ui.add(egui::Label::new(RichText::new(v).size(13.0).color(pal.text)).truncate()).on_hover_text("Worked out by a formula");
+        }
+        Cell::Error(e) => {
+            ui.add(egui::Label::new(RichText::new(format!("⚠ {e}")).size(12.0).color(pal.warn)).truncate()).on_hover_text(e.as_str());
+        }
+    }
+}
+
+/// A table view with formula columns and a row of summaries.
+fn base_table(ui: &mut Ui, pal: &Palette, t: &Table, key: Id) -> Option<ViewAction> {
+    let mut act = None;
+    count_line(ui, pal, t);
+    if t.rows.is_empty() {
+        ui.label(RichText::new("No notes match.").color(pal.muted));
+        return None;
+    }
+    let cols = t.headings.len().max(1);
+    let col_w = ((ui.available_width() - 8.0 * cols as f32) / cols as f32).max(60.0);
+    egui::ScrollArea::horizontal().id_salt(key.with("h")).show(ui, |ui| {
+        egui::Grid::new(key.with("grid")).striped(true).num_columns(cols).spacing([10.0, 5.0]).min_col_width(col_w.min(200.0)).show(
+            ui,
+            |ui| {
+                for h in &t.headings {
+                    ui.label(RichText::new(h).size(12.0).color(pal.muted).strong());
+                }
+                ui.end_row();
+                for row in t.rows.iter().take(MAX_ROWS) {
+                    for c in &row.cells {
+                        ui.scope(|ui| {
+                            ui.set_max_width(col_w.max(80.0));
+                            cell(ui, pal, key, &row.path, c, &mut act);
+                        });
+                    }
+                    ui.end_row();
+                }
+                if t.summaries.iter().any(Option::is_some) {
+                    for s in &t.summaries {
+                        match s {
+                            Some((name, Ok(v))) => {
+                                ui.label(RichText::new(format!("{name}  {v}")).size(12.0).color(pal.strong).strong());
+                            }
+                            Some((name, Err(e))) => {
+                                ui.label(RichText::new(format!("{name}: ⚠")).size(12.0).color(pal.warn)).on_hover_text(e.as_str());
+                            }
+                            None => {
+                                ui.label("");
+                            }
+                        }
+                    }
+                    ui.end_row();
+                }
+            },
+        );
+    });
+    act
+}
+
+/// A cards view: one card per note, its columns under the title, and the summaries under the cards.
+fn cards(ui: &mut Ui, pal: &Palette, t: &Table) -> Option<ViewAction> {
+    count_line(ui, pal, t);
     let mut act = None;
     let card_w = 220.0;
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
-        for row in r.rows.iter().take(300) {
+        for row in t.rows.iter().take(MAX_ROWS) {
             egui::Frame::NONE.fill(pal.panel).stroke(egui::Stroke::new(1.0, pal.border)).corner_radius(6.0).inner_margin(10.0).show(
                 ui,
                 |ui| {
                     ui.set_width(card_w);
                     ui.set_min_height(64.0);
                     ui.vertical(|ui| {
-                        let t = ui
-                            .add(egui::Label::new(RichText::new(&row.title).size(14.0).color(pal.accent)).truncate().sense(Sense::click()));
-                        if t.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(row.path.as_str()).clicked() {
-                            act = Some(ViewAction::Open(row.path.clone()));
-                        }
-                        for (f, c) in parsed.fields.iter().zip(&row.cells).filter(|(f, c)| *f != "title" && !c.is_empty()) {
-                            let label = labels.iter().find(|(k, _)| k == f).map_or(f.as_str(), |(_, l)| l.as_str());
-                            ui.add(egui::Label::new(RichText::new(format!("{label}: {c}")).size(12.0).color(pal.muted)).truncate());
+                        for (h, c) in t.headings.iter().zip(&row.cells) {
+                            match c {
+                                Cell::Name(title) => {
+                                    let r = ui.add(
+                                        egui::Label::new(RichText::new(title).size(14.0).color(pal.accent))
+                                            .truncate()
+                                            .sense(Sense::click()),
+                                    );
+                                    if r.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(row.path.as_str()).clicked() {
+                                        act = Some(ViewAction::Open(row.path.clone()));
+                                    }
+                                }
+                                Cell::Property { value: v, .. } | Cell::Computed(v) if !v.is_empty() => {
+                                    ui.add(egui::Label::new(RichText::new(format!("{h}: {v}")).size(12.0).color(pal.muted)).truncate());
+                                }
+                                Cell::Error(e) => {
+                                    ui.add(egui::Label::new(RichText::new(format!("{h}: ⚠ {e}")).size(12.0).color(pal.warn)).truncate());
+                                }
+                                _ => {}
+                            }
                         }
                     });
                 },
             );
         }
     });
-    if r.rows.is_empty() {
+    if t.rows.is_empty() {
         ui.label(RichText::new("No notes match.").color(pal.muted));
+    }
+    let sums: Vec<String> = t
+        .headings
+        .iter()
+        .zip(&t.summaries)
+        .filter_map(|(h, s)| s.as_ref().map(|(n, v)| format!("{h} · {n} {}", v.as_deref().unwrap_or("⚠"))))
+        .collect();
+    if !sums.is_empty() {
+        ui.add_space(6.0);
+        ui.label(RichText::new(sums.join("    ")).size(12.0).color(pal.strong).strong());
     }
     act
 }
+
+/// Rows drawn at most (a base over a big vault).
+const MAX_ROWS: usize = 300;
 
 #[cfg(test)]
 mod tests {

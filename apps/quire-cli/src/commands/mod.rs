@@ -16,6 +16,7 @@ mod import;
 mod lint;
 mod mcp;
 mod notes;
+mod remind;
 mod search;
 mod serve;
 mod sync;
@@ -44,6 +45,7 @@ pub(crate) fn all() -> Vec<&'static CliCommand> {
         notes::COMMANDS,
         capture::COMMANDS,
         tasks::COMMANDS,
+        remind::COMMANDS,
         mcp::COMMANDS,
         import::COMMANDS,
         bench::COMMANDS,

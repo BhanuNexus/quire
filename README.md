@@ -108,10 +108,10 @@ cargo build --release -p quire-desktop --no-default-features   # ~28 MB instead 
 | On-device AI (coming in an update) | Behind an experimental switch (Settings → AI → Advanced): models that download once and run offline in a separate process, for meaning search, writing help, the agent, OCR of images and scanned PDFs, and voice-note transcripts. The Balanced writing model uses about 1.3–1.7 GB of memory. To keep everything on your computer today, use a provider such as Ollama or LM Studio |
 | Voice notes | Full edition: record from the microphone (only between Record and Stop) into the note or today's note; the recording is saved in the vault as WAV. Optional transcript through your provider (the recording is sent to it) or on this computer (experimental) |
 | Answers you can check | Ask says "Not found" when your notes don't answer; cites exact sentences; Save as note keeps quotes as footnotes and flags them when the cited text changes. Staleness digest, contradictions (Preview), thinking timeline (Preview) |
-| Planning | Tasks with dates, repeats and reminders (Obsidian Tasks emoji and Dataview fields), Agenda (Alt+A), Calendar, weekly/monthly/yearly notes, flashcards (FSRS, Ctrl+Alt+R), templates with questions |
-| Canvas & drawing | `.canvas` files (JSON Canvas) with cards, connections and groups (Ctrl+Alt+C); pen, highlighter and shapes on a canvas or as a sketch in a note, saved as SVG |
+| Planning | Tasks with dates, repeats and reminders (Obsidian Tasks emoji and Dataview fields), also while Quire is closed (a per-user job runs `quire-cli remind`), Agenda (Alt+A), Calendar, weekly/monthly/yearly notes, flashcards (FSRS, Ctrl+Alt+R), templates with questions |
+| Canvas & drawing | `.canvas` files (JSON Canvas) with cards (rendered like the preview), connections and groups (Ctrl+Alt+C); pen, highlighter and shapes on a canvas or as a sketch in a note, saved as SVG. Excalidraw drawings (`.excalidraw`, `.excalidraw.md`) show as pictures in notes, the preview, canvases and HTML export |
 | PDFs & citations | PDF viewer with highlights kept in a Markdown note (full edition; Lite shows the text). PDF pages are searchable ("paper.pdf p. 3"). `[@key]` citations from a BibTeX library, rendered in preview, HTML, websites and PDF export |
-| Vim & themes | Vim keys (Normal, Insert, Visual, text objects, registers, `:s`), bundled and custom themes, a Git tab |
+| Vim & themes | Vim keys (Normal, Insert, Visual and Visual-block, text objects, registers, macros, marks, `:s`), bundled and custom themes, a Git tab |
 | Math & diagrams | `$x^2$`, `$$ … $$` and ```` ```mermaid ```` render in place (Typst + a pure-Rust Mermaid renderer, no browser), in the preview and in PDFs |
 | Callouts & paragraph links | Obsidian callouts (`> [!tip] Title`) as coloured boxes everywhere; `[[Note#^id]]` links to a paragraph; Ctrl+Alt+L copies one |
 | Spelling | Red underlines, suggestions on right-click, a personal dictionary; English built in, other Hunspell dictionaries picked up from your system |
@@ -133,7 +133,7 @@ cargo build --release -p quire-desktop --no-default-features   # ~28 MB instead 
 | Projects | **+ New → Project…** (Ctrl+Alt+N) creates `Projects/<name>.md` with status, due date and owner, and adds a project board (kanban + due-date table) the first time. Add `Templates/Project.md` to change what new projects contain |
 | Publish | **Publish as a website** (command palette, or `quire-cli publish`): notes marked `publish: true` (or all of them) become a static site with links, backlinks, tags and search, ready for GitHub Pages, Netlify or any web server. Free, no account. Links to unpublished notes become plain text |
 | Files | Daily notes, templates (`{{title}} {{date}} {{cursor}}`), atomic writes, soft delete to `.trash/`, outside-change detection, HTML export |
-| Properties & views | Edit front matter in the Insights panel (types inferred: date, number, yes/no, list, text). ` ```quire-view ` blocks render live tables, lists, kanban boards (drag a card to change its field) and month calendars, and stay plain Markdown elsewhere |
+| Properties & views | Edit front matter in the Insights panel (types inferred: date, number, yes/no, list, text). ` ```quire-view ` blocks render live tables, lists, kanban boards (drag a card to change its field) and month calendars, and stay plain Markdown elsewhere. Obsidian `.base` files open with their formulas and summaries |
 | Version history | Every save keeps a compressed snapshot in `.quire/history/` (thinned to hourly/daily/weekly, max 200 per note). Ctrl+Alt+H shows versions with a diff; restore is undoable. Board moves, vault-wide replace and AI edits are versioned too |
 | Import | Logseq graphs, Notion exports (.zip or folder, incl. database CSVs), Bear (.bear2bk / TextBundles), Evernote (.enex), any Markdown folder. Dry run first; never overwrites |
 | AI providers | Offline by default. Optional OpenAI-compatible (Ollama, LM Studio, OpenAI) or Anthropic, streaming and with tools, with *Test connection*. Optional neural embeddings from the same kind of endpoint, cached per passage, falling back to the built-in index |
@@ -222,6 +222,7 @@ quire-cli mcp     ./sample-vault                     # MCP server on stdio (read
 quire-cli agent   proposals ./sample-vault           # suggestions agents made, waiting for review
 quire-cli ingest  ./sample-vault "Rope Notes"        # a source into cited wiki pages
 quire-cli tasks   ./sample-vault --agenda            # overdue, today and the next seven days
+quire-cli remind  ./sample-vault --install           # reminders as notifications, even when Quire is closed
 quire-cli ai      models                             # on-device models (experimental in 0.9.0)
 quire-cli bench   10                                 # performance on a 10 MB note
 ```
@@ -263,6 +264,10 @@ clients.
 - egui has no complex-script shaping, so Devanagari and Arabic render but conjuncts may not join correctly.
 - AI providers and the agent panel were tested against a local mock of the OpenAI-compatible API (chat, tools, streaming, models, embeddings), not against live Ollama or Anthropic servers.
 - Importers were tested on synthetic exports that follow each app's documented format; run a dry run on your real export first.
+- Vim mode has no vimrc, `:normal`, Ctrl+A or Ctrl+X. Ctrl+V reaches Quire as a paste, so it starts Visual-block mode only when the clipboard holds something (copy anything first); Vim's other key for it, Ctrl+Q, quits Quire. A Visual-block insert types on every row as you go (Vim fills the other rows at Escape), so Enter in a block insert reaches every row.
+- Reminders while Quire is closed need `quire-cli` next to the app or on the PATH. The job was run for real with cron on Linux; the systemd, launchd and Task Scheduler jobs were checked by unit tests only.
+- Excalidraw drawings are pictures only (no editing), drawn in a clean style rather than Excalidraw's hand-drawn one, with the bundled fonts. When a drawing changes in Excalidraw, its own note shows the new picture at once; pictures of it in other notes and canvases update after Quire restarts. Canvas cards don't render math, and their links aren't clickable.
+- Bases: no grouping, map or list views, `this`, `image`, `icon`, `html` or regular expressions. `file.ctime` is the last change (Quire keeps no creation time) and `file.size` counts characters.
 
 ## Contributing
 

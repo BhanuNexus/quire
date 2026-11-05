@@ -1008,8 +1008,16 @@ impl Workspace {
         let html = {
             let ix = self.index.read();
             let from = doc.path.clone();
+            let vault = self.vault.as_ref();
             quire_markdown::render::to_html_document(&title, &text, &|l| {
                 ix.resolve(&l.target, from.as_ref()).map(|p| {
+                    // 0.10: an Excalidraw drawing goes in as an SVG picture.
+                    if l.embed
+                        && quire_canvas::excalidraw::is_drawing(p.as_str())
+                        && let Some(svg) = vault.and_then(|v| crate::drawings::svg(v, &p))
+                    {
+                        return crate::drawings::data_url(&svg);
+                    }
                     if l.embed { p.as_str().to_string() } else { format!("{}.html", quire_markdown::render::encode_url(p.stem())) }
                 })
             })

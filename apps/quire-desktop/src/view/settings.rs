@@ -31,7 +31,8 @@ fn editing(ui: &mut Ui, ws: &mut Workspace, pal: &Palette) {
         ui,
         pal,
         "Normal, Insert and Visual modes, operators with motions and text objects, counts, registers (\"+ is the clipboard), . to repeat, \
-         u and Ctrl+R, / and ? to search, :w :q :s. Not supported: macros, marks, visual block mode and a vimrc. \
+         u and Ctrl+R, / and ? to search, :w :q :s, macros (qa … q, @a, @@), marks (ma, `a, 'a, '', `.) and Visual-block mode \
+         (Ctrl+V, with I, A, c, d, y, p, r and $). Not supported: a vimrc, :normal, Ctrl+A and Ctrl+X. \
          Vim keys work in the fast editor (not the classic one); embedded notes are edited without them.",
     );
 

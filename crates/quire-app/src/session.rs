@@ -34,7 +34,7 @@ pub struct Session {
 pub const MAX_POSITIONS: usize = 500;
 
 /// Where you were in a note.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Position {
     /// Caret (char index).
@@ -43,6 +43,9 @@ pub struct Position {
     pub scroll: f32,
     /// When it was last updated (Unix ms), to forget the oldest first.
     pub at: i64,
+    /// Vim marks (`a`–`z`, `.`) as (name, line, column).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub marks: Vec<(char, usize, usize)>,
 }
 
 /// Positions by vault-relative path.
@@ -148,7 +151,7 @@ mod tests {
         std::fs::create_dir(&vault).unwrap();
         std::fs::write(&file, r#"{"vault": null, "from_the_future": {"x": 1}}"#).unwrap();
         let mut pos = Positions::new();
-        pos.insert("A.md".into(), Position { caret: 7, scroll: 120.5, at: 1 });
+        pos.insert("A.md".into(), Position { caret: 7, scroll: 120.5, at: 1, marks: vec![('a', 2, 0)] });
         stash_positions(Some(&vault), &pos);
         let s = Session { vault: Some(vault.clone()), ..Session::default() };
         s.save_to(&file).unwrap();
@@ -161,7 +164,8 @@ mod tests {
 
     #[test]
     fn only_the_most_recent_positions_are_kept() {
-        let mut p: Positions = (0..20).map(|i| (format!("{i}.md"), Position { caret: i, scroll: 0.0, at: i as i64 })).collect();
+        let mut p: Positions =
+            (0..20).map(|i| (format!("{i}.md"), Position { caret: i, scroll: 0.0, at: i as i64, ..Position::default() })).collect();
         trim_positions(&mut p, 5);
         assert_eq!(p.len(), 5);
         assert!(p.contains_key("19.md") && p.contains_key("15.md") && !p.contains_key("14.md"));

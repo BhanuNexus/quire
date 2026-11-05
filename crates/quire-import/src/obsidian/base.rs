@@ -3,10 +3,14 @@
 //! Obsidian Bases: a `.base` file is YAML with `filters`, `properties` and
 //! `views` (`table` or `cards`).
 //!
-//! Each view becomes a `quire-view` spec. Supported: `and`/`or` filters with `file.inFolder("…")`,
-//! `file.hasTag("…")` and property comparisons; `order`, `sort`, `limit`.
-//! Not supported (and said so): `formulas`, `summaries`, `not`, other
-//! functions.
+//! Each view becomes a `quire-view` spec. Filters it can say (`and`/`or`
+//! with `file.inFolder("…")`, `file.hasTag("…")` and property comparisons)
+//! go into the spec; when a filter needs more (`not`, functions, dates),
+//! the whole filter becomes an expression ([`super::expr`]) the app checks
+//! for each note. `formulas` add computed columns and `summaries` a row of
+//! totals under a table (or a line under cards). Not supported (and said
+//! so): `groupBy`, view types other than table and cards, and functions
+//! [`super::expr`] doesn't know.
 
 use yaml_rust2::{Yaml, YamlLoader};
 
@@ -27,11 +31,42 @@ pub struct BaseView {
     pub labels: Vec<(String, String)>,
     /// What this view's settings use that Quire can't show.
     pub unsupported: Vec<String>,
+    /// The columns, in order, as the base names them (`file.name`,
+    /// `status`, `formula.total`, `file.mtime`).
+    pub columns: Vec<String>,
+    /// Column → summary (a built-in name like `Sum`, or one of the base's own).
+    pub summaries: Vec<(String, String)>,
+    /// The filter as an expression, when the spec can't say it: the spec
+    /// then lists every note and this decides.
+    pub filter: Option<String>,
+    /// Sort by a column the spec can't sort by (a formula, `file.mtime`), descending?
+    pub sort: Option<(String, bool)>,
+    /// Applied after `filter` when there is one.
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Base {
     pub views: Vec<BaseView>,
+    /// `formulas:` by name, as written.
+    pub formulas: Vec<(String, String)>,
+    /// `summaries:` (the base's own summaries) by name, as written.
+    pub custom_summaries: Vec<(String, String)>,
+    /// Display names from `properties:`, by column as the base names it.
+    pub display: Vec<(String, String)>,
+}
+
+impl Base {
+    /// The heading of a column: its display name, or the name without `note.`/`formula.`.
+    pub fn label(&self, column: &str) -> String {
+        if let Some((_, l)) = self.display.iter().find(|(k, _)| k == column || k.strip_prefix("note.") == Some(column)) {
+            return l.clone();
+        }
+        match column {
+            "file.name" | "file.basename" => "Name".into(),
+            _ => column.strip_prefix("note.").or_else(|| column.strip_prefix("formula.")).unwrap_or(column).replace('_', " "),
+        }
+    }
 }
 
 fn s(y: &Yaml) -> Option<String> {
@@ -68,11 +103,39 @@ fn unquote(v: &str) -> String {
 }
 
 /// A filter's pieces: sources (OR'ed) and conditions (AND'ed).
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Filters {
     sources: Vec<String>,
     conds: Vec<String>,
     unsupported: Vec<String>,
+}
+
+/// A filter tree (`and`/`or`/`not` lists of expressions) as one expression.
+fn filter_expr(y: &Yaml) -> Option<String> {
+    match y {
+        Yaml::String(e) => Some(format!("({e})")),
+        Yaml::Hash(h) => {
+            let mut parts = Vec::new();
+            for (k, v) in h {
+                let items: Vec<String> = v.as_vec().map(|l| l.iter().filter_map(filter_expr).collect()).unwrap_or_default();
+                if items.is_empty() {
+                    continue;
+                }
+                parts.push(match k.as_str()? {
+                    "and" => format!("({})", items.join(" && ")),
+                    "or" => format!("({})", items.join(" || ")),
+                    "not" => format!("!({})", items.join(" || ")),
+                    _ => return None,
+                });
+            }
+            (!parts.is_empty()).then(|| parts.join(" && "))
+        }
+        Yaml::Array(items) => {
+            let parts: Vec<String> = items.iter().filter_map(filter_expr).collect();
+            (!parts.is_empty()).then(|| format!("({})", parts.join(" && ")))
+        }
+        _ => None,
+    }
 }
 
 impl Filters {
@@ -148,6 +211,11 @@ impl Filters {
     }
 }
 
+/// `name: expression` pairs of a YAML map (`formulas:`, `summaries:`).
+fn named(y: &Yaml) -> Vec<(String, String)> {
+    y.as_hash().map(|h| h.iter().filter_map(|(k, v)| Some((s(k)?, s(v)?))).collect()).unwrap_or_default()
+}
+
 /// Read a `.base` file.
 pub fn parse(text: &str) -> Result<Base, String> {
     let docs = YamlLoader::load_from_str(text).map_err(|e| format!("this base can't be read: {e}"))?;
@@ -159,17 +227,14 @@ pub fn parse(text: &str) -> Result<Base, String> {
     if top.sources.len() > 1 && !top.unsupported.is_empty() {
         top.skip("several folders or tags joined by “and”".into());
     }
-    let mut file_notes = top.unsupported.clone();
-    if !doc["formulas"].is_badvalue() {
-        file_notes.push("formulas".into());
-    }
-    if !doc["summaries"].is_badvalue() {
-        file_notes.push("summaries".into());
-    }
-    let labels: Vec<(String, String)> = doc["properties"]
+    let top_expr = if doc["filters"].is_badvalue() { None } else { filter_expr(&doc["filters"]) };
+    let formulas = named(&doc["formulas"]);
+    let custom_summaries = named(&doc["summaries"]);
+    let display: Vec<(String, String)> = doc["properties"]
         .as_hash()
-        .map(|h| h.iter().filter_map(|(k, v)| Some((field(k.as_str()?).ok()?, s(&v["displayName"])?))).collect())
+        .map(|h| h.iter().filter_map(|(k, v)| Some((s(k)?, s(&v["displayName"])?))).collect())
         .unwrap_or_default();
+    let labels: Vec<(String, String)> = display.iter().filter_map(|(k, l)| Some((field(k).ok()?, l.clone()))).collect();
     let mut views = Vec::new();
     let empty = vec![Yaml::Hash(yaml_rust2::yaml::Hash::new())];
     let list = doc["views"].as_vec().filter(|v| !v.is_empty()).unwrap_or(&empty);
@@ -178,25 +243,40 @@ pub fn parse(text: &str) -> Result<Base, String> {
             Some("cards") => ViewKind::Cards,
             _ => ViewKind::Table,
         };
-        let mut f = Filters { sources: top.sources.clone(), conds: top.conds.clone(), unsupported: file_notes.clone() };
+        let mut f = top.clone();
+        let mut notes = Vec::new();
         if let Some(t) = v["type"].as_str().filter(|t| !matches!(*t, "table" | "cards")) {
-            f.skip(format!("the “{t}” view type (shown as a table)"));
+            notes.push(format!("the “{t}” view type (shown as a table)"));
         }
         if !v["filters"].is_badvalue() {
             f.node(&v["filters"], false);
         }
-        if !v["summaries"].is_badvalue() || !v["groupBy"].is_badvalue() {
-            f.skip("summaries and grouping".into());
+        if !v["groupBy"].is_badvalue() {
+            notes.push("grouping".into());
         }
+        // A filter the spec can't say: the whole filter is checked note by note.
+        let view_expr = if v["filters"].is_badvalue() { None } else { filter_expr(&v["filters"]) };
+        let filter = (!f.unsupported.is_empty())
+            .then(|| [top_expr.clone(), view_expr].into_iter().flatten().collect::<Vec<_>>().join(" && "))
+            .filter(|e| !e.is_empty());
+        if filter.is_some() {
+            f = Filters::default();
+        }
+        let mut columns = Vec::new();
         let mut fields = vec!["title".to_string()];
         for o in v["order"].as_vec().map(Vec::as_slice).unwrap_or_default() {
-            match o.as_str().map(field) {
-                Some(Ok(x)) if x == "name" => {}
-                Some(Ok(x)) => fields.push(x),
-                Some(Err(why)) => f.skip(why),
-                None => {}
+            let Some(name) = s(o) else { continue };
+            if let Ok(x) = field(&name)
+                && x != "name"
+            {
+                fields.push(x);
             }
+            columns.push(name);
         }
+        if !columns.iter().any(|c| matches!(c.as_str(), "file.name" | "file.basename")) {
+            columns.insert(0, "file.name".into());
+        }
+        let summaries = named(&v["summaries"]);
         let mut spec = String::new();
         let mut push = |k: &str, val: &str| {
             spec.push_str(k);
@@ -210,32 +290,51 @@ pub fn parse(text: &str) -> Result<Base, String> {
         if !f.conds.is_empty() {
             push("where", &f.conds.join(" and "));
         }
+        let mut sort = None;
         if let Some(first) = v["sort"].as_vec().and_then(|s| s.first()) {
-            match first["property"].as_str().map(field) {
-                Some(Ok(p)) => {
-                    let desc = first["direction"].as_str().is_some_and(|d| d.eq_ignore_ascii_case("desc"));
-                    push("sort", &format!("{p}{}", if desc { " desc" } else { "" }));
+            let desc = first["direction"].as_str().is_some_and(|d| d.eq_ignore_ascii_case("desc"));
+            if let Some(p) = first["property"].as_str() {
+                match field(p) {
+                    Ok(x) => push("sort", &format!("{x}{}", if desc { " desc" } else { "" })),
+                    Err(_) => sort = Some((p.to_string(), desc)),
                 }
-                Some(Err(why)) => f.skip(why),
-                None => {}
             }
         }
-        if let Some(l) = v["limit"].as_i64().filter(|l| *l > 0) {
+        let limit = v["limit"].as_i64().filter(|l| *l > 0).map(|l| l as usize);
+        if let Some(l) = limit.filter(|_| filter.is_none() && sort.is_none()) {
             push("limit", &l.to_string());
         }
         push("fields", &format!("[{}]", fields.join(", ")));
         push("layout", if kind == ViewKind::Cards { "list" } else { "table" });
         let name = s(&v["name"]).unwrap_or_else(|| format!("View {}", n + 1));
-        views.push(BaseView { name, kind, spec, labels: labels.clone(), unsupported: f.unsupported });
+        // What still can't be shown: filters with nothing to check them by, and the view notes.
+        let mut unsupported = if filter.is_none() { f.unsupported } else { Vec::new() };
+        unsupported.extend(notes);
+        views.push(BaseView { name, kind, spec, labels: labels.clone(), unsupported, columns, summaries, filter, sort, limit });
     }
-    Ok(Base { views })
+    Ok(Base { views, formulas, custom_summaries, display })
+}
+
+/// What a note made by [`to_note`] can't carry over from this view.
+fn lost_in_note(v: &BaseView) -> Vec<String> {
+    let mut out = v.unsupported.clone();
+    if v.filter.is_some() {
+        out.push("filters that need expressions".into());
+    }
+    if v.columns.iter().any(|c| c.starts_with("formula.")) {
+        out.push("formulas".into());
+    }
+    if !v.summaries.is_empty() {
+        out.push("summaries".into());
+    }
+    out
 }
 
 /// "Convert to note with quire-view": a note with one view per base view,
 /// and what didn't convert in a callout.
 pub fn to_note(base: &Base, title: &str) -> String {
     let mut out = format!("# {title}\n\n");
-    let mut skipped: Vec<&str> = base.views.iter().flat_map(|v| v.unsupported.iter().map(String::as_str)).collect();
+    let mut skipped: Vec<String> = base.views.iter().flat_map(lost_in_note).collect();
     skipped.sort_unstable();
     skipped.dedup();
     if !skipped.is_empty() {
@@ -299,19 +398,93 @@ views:
         assert_eq!(b.views.len(), 3);
         let v = &b.views[0];
         assert_eq!((v.name.as_str(), v.kind), ("Active", ViewKind::Table));
-        assert_eq!(
-            v.spec,
-            "from: Projects/, #urgent\nwhere: status != done\nsort: due desc\nlimit: 20\nfields: [title, status, owner.name]\nlayout: table\n"
-        );
+        // Projects AND urgent: more than a spec's sources can say, so the filter is an expression.
+        assert_eq!(v.filter.as_deref(), Some(r#"((file.inFolder("Projects")) && (status != "done")) && ((file.hasTag("urgent")))"#));
+        assert_eq!(v.spec, "sort: due desc\nfields: [title, status, owner.name]\nlayout: table\n");
+        assert_eq!(v.limit, Some(20));
+        assert_eq!(v.columns, ["file.name", "status", "note.owner.name", "formula.age"]);
+        assert!(v.unsupported.is_empty(), "{:?}", v.unsupported);
         assert_eq!(v.labels, vec![("status".to_string(), "Status".to_string())]);
-        assert!(v.unsupported.iter().any(|u| u.contains("formula")), "{:?}", v.unsupported);
-        assert_eq!(b.views[1].spec, "from: Projects/\nwhere: status != done\nfields: [title]\nlayout: list\n");
-        assert!(b.views[1].unsupported.iter().any(|u| u.contains("not")));
-        assert!(b.views[2].unsupported.iter().any(|u| u.contains("map")));
+        assert_eq!(b.formulas, vec![("age".to_string(), "now() - file.ctime".to_string())]);
+        assert_eq!(b.label("status"), "Status");
+        assert_eq!(b.label("formula.age"), "age");
+        let cards = &b.views[1];
+        assert_eq!(cards.filter.as_deref(), Some(r#"((file.inFolder("Projects")) && (status != "done")) && !((file.hasTag("archived")))"#));
+        assert_eq!(cards.spec, "fields: [title]\nlayout: list\n");
+        // Only a folder and a comparison: the spec says it all.
+        let map = &b.views[2];
+        assert_eq!(map.spec, "from: Projects/\nwhere: status != done\nfields: [title]\nlayout: table\n");
+        assert_eq!(map.filter, None);
+        assert!(map.unsupported.iter().any(|u| u.contains("map")));
         let note = to_note(&b, "Projects");
-        assert!(note.starts_with("# Projects\n\n> [!note] Converted from an Obsidian base\n> Not converted: "));
+        assert!(note.starts_with("# Projects\n\n> [!note] Converted from an Obsidian base\n> Not converted: "), "{note}");
+        assert!(note.contains("formulas") && note.contains("filters that need expressions"));
         assert_eq!(note.matches("```quire-view").count(), 3);
         assert!(parse("views: [").is_err());
         assert_eq!(parse("").unwrap().views.len(), 1, "an empty base is one table of every note");
+    }
+
+    /// Formulas and summaries as Obsidian's Bases syntax documents them.
+    const BUDGET: &str = r#"
+filters:
+  and:
+    - file.inFolder("Bills")
+formulas:
+  total: "price * qty"
+  label: 'if(paid, "Paid", "Due " + due.format("D MMM"))'
+  overdue: "!paid && due < today()"
+properties:
+  formula.total:
+    displayName: Total
+summaries:
+  mean3: "values.mean().round(3)"
+views:
+  - type: table
+    name: Bills
+    order:
+      - file.name
+      - price
+      - qty
+      - formula.total
+      - formula.label
+      - due
+    sort:
+      - property: formula.total
+        direction: DESC
+    summaries:
+      formula.total: Sum
+      price: mean3
+      due: Earliest
+  - type: cards
+    name: Overdue
+    filters:
+      and:
+        - formula.overdue
+"#;
+
+    #[test]
+    fn formulas_and_summaries() {
+        let b = parse(BUDGET).unwrap();
+        assert_eq!(b.formulas.len(), 3);
+        assert_eq!(b.custom_summaries, vec![("mean3".to_string(), "values.mean().round(3)".to_string())]);
+        assert_eq!(b.label("formula.total"), "Total");
+        let v = &b.views[0];
+        assert_eq!(v.columns, ["file.name", "price", "qty", "formula.total", "formula.label", "due"]);
+        assert_eq!(v.sort, Some(("formula.total".to_string(), true)), "sorted by a formula: done by the app");
+        assert_eq!(
+            v.summaries,
+            vec![
+                ("formula.total".to_string(), "Sum".to_string()),
+                ("price".to_string(), "mean3".to_string()),
+                ("due".to_string(), "Earliest".to_string())
+            ]
+        );
+        assert_eq!(v.spec, "from: Bills/\nfields: [title, price, qty, due]\nlayout: table\n");
+        assert!(v.unsupported.is_empty());
+        for (_, f) in &b.formulas {
+            assert!(super::super::expr::parse(f).is_ok(), "{f}");
+        }
+        let overdue = &b.views[1];
+        assert_eq!(overdue.filter.as_deref(), Some(r#"((file.inFolder("Bills"))) && ((formula.overdue))"#));
     }
 }

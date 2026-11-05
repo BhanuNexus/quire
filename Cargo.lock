@@ -5849,6 +5849,7 @@ dependencies = [
 name = "quire-desktop"
 version = "0.9.1"
 dependencies = [
+ "base64 0.23.1",
  "chrono",
  "cpal",
  "crossbeam-channel",
@@ -5870,6 +5871,8 @@ dependencies = [
  "quire-typeset",
  "resvg",
  "rfd",
+ "skrifa 0.44.0",
+ "vello_cpu 0.2.0",
  "winresource",
 ]
 
@@ -5878,6 +5881,7 @@ name = "quire-import"
 version = "0.9.1"
 dependencies = [
  "base64 0.23.1",
+ "chrono",
  "dom_smoothie",
  "encoding_rs 0.8.44",
  "htmd",
@@ -6040,6 +6044,7 @@ version = "0.9.1"
 dependencies = [
  "ropey",
  "similar",
+ "unicode-width",
 ]
 
 [[package]]

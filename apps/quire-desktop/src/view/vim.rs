@@ -7,6 +7,12 @@
 //! multiple cursors keep working); only Escape goes to Vim there. In Normal
 //! and Visual mode every key goes to Vim and the input method is off. An
 //! insert session becomes one undo step when it ends.
+//!
+//! Visual-block mode shows its rows as the editor's extra selections, and
+//! a block insert (`I`, `A`, `c`) types at one cursor a row. Ctrl+V reaches
+//! the editor as a paste (the system takes the shortcut), so in Normal and
+//! Visual mode a paste starts Visual-block mode. With an empty clipboard the
+//! system passes nothing on; Vim's other key for it, Ctrl+Q, quits the app.
 
 use egui::{Event, Key, Modifiers, Ui, ViewportCommand};
 use quire_app::document::DocId;
@@ -95,8 +101,14 @@ impl FastEditor {
     ) -> Option<(bool, bool)> {
         let typing = ws.features.nav.vim.typing();
         let keys: Vec<VKey> = match ev {
-            Event::Text(_) if typing => return None,
+            Event::Text(t) | Event::Ime(egui::ImeEvent::Commit(t)) if typing => {
+                // A macro being recorded keeps what the editor types.
+                ws.features.nav.vim.typed(t);
+                return None;
+            }
             Event::Text(t) => t.chars().map(VKey::Char).collect(),
+            // Ctrl+V (taken by the system as paste): Visual-block mode.
+            Event::Paste(_) if !typing && self.vim.paste.is_none() => vec![VKey::Ctrl('v')],
             Event::Key { key, pressed: true, modifiers, .. } => match vim_key(*key, *modifiers) {
                 Some(k) => vec![k],
                 None if typing => return None,
@@ -152,7 +164,7 @@ impl FastEditor {
         let (id, buf, sel) = (doc.id, doc.buffer().clone(), doc.selection());
         let paste = match self.vim.paste.take() {
             Some((pid, p)) if pid == id => p,
-            _ if matches!(ws.features.nav.vim.mode(), Mode::Visual | Mode::VisualLine) => {
+            _ if matches!(ws.features.nav.vim.mode(), Mode::Visual | Mode::VisualLine | Mode::VisualBlock) => {
                 let tx = quire_app::text::Transaction::replace(sel.start(), sel.end(), text)
                     .with_selection(Selection::cursor((sel.start() + text.chars().count()).saturating_sub(1)));
                 if let Some(d) = ws.active_doc_mut()
@@ -187,6 +199,10 @@ impl FastEditor {
             }
         } else if let Some(s) = out.selection {
             doc.set_selection(s);
+        }
+        if let Some(extra) = out.extra {
+            // A Visual block's other rows, or one cursor a row to type at.
+            view.extra = extra;
         }
         if out.group == vim::Group::End
             && let Some((base, base_rev, bid)) = self.vim.base.take()
@@ -278,6 +294,18 @@ mod tests {
             self.ws.active_doc().map(|d| d.text().to_string()).unwrap_or_default()
         }
 
+        /// Ctrl+V as the system sends it: a paste of the clipboard.
+        fn paste(&mut self, text: &str) {
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 700.0))),
+                events: vec![Event::Paste(text.into())],
+                ..Default::default()
+            };
+            let (fast, ws) = (&mut self.fast, &mut self.ws);
+            let mut out = self.ctx.run_ui(input, |ui| fast.show(ui, ws, &crate::theme::LIGHT, crate::theme::FontSupport::default()));
+            out.textures_delta.clear();
+        }
+
         fn caret(&self) -> usize {
             self.ws.active_doc().map_or(0, |d| d.selection().head)
         }
@@ -300,6 +328,34 @@ mod tests {
         // Vim keys off: the editor types again.
         e.ws.settings.editing.vim = false;
         assert_eq!(e.keys("x"), "xthRee\n");
+    }
+
+    #[test]
+    fn block_mode_types_on_every_row() {
+        let mut e = Editor::new("abc\ndef\nghi\n");
+        let id = e.ws.active_doc().map(|d| d.id).expect("a note");
+        e.paste("x");
+        e.keys("jj");
+        assert_eq!(e.ws.features.nav.vim.mode(), Mode::VisualBlock);
+        assert!(e.fast.has_extra_cursors(id), "the other rows are selections");
+        assert_eq!(e.keys("I-"), "-abc\n-def\n-ghi\n", "one cursor a row");
+        assert_eq!(e.keys("<Esc>"), "-abc\n-def\n-ghi\n");
+        assert!(!e.fast.has_extra_cursors(id));
+        assert_eq!(e.keys("u"), "abc\ndef\nghi\n", "the block insert is one undo step");
+        // Again, from Normal mode: Ctrl+V comes as a paste.
+        e.paste("x");
+        assert_eq!(e.ws.features.nav.vim.mode(), Mode::VisualBlock);
+        assert_eq!(e.keys("jd"), "bc\nef\nghi\n");
+    }
+
+    #[test]
+    fn a_macro_records_typing_and_undoes_in_one_step() {
+        let mut e = Editor::new("a\nb\nc\n");
+        assert_eq!(e.keys("qaA!<Esc>jq"), "a!\nb\nc\n");
+        assert_eq!(e.keys("@a"), "a!\nb!\nc\n", "the typed ! was recorded");
+        assert_eq!(e.keys("u"), "a!\nb\nc\n");
+        // Marks: set, edit above, jump back.
+        assert_eq!(e.keys("ggjjmaggOtop<Esc>'ax"), "top\na!\nb\n\n", "the mark moved down with its line");
     }
 
     #[test]

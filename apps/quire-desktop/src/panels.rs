@@ -1275,7 +1275,7 @@ pub(crate) fn status_bar(ui: &mut egui::Ui, ws: &Workspace, pal: &Palette) -> Pa
 // ---------------------------------------------------------------- preview
 
 /// Obsidian's callout types as the preview's alert boxes.
-fn callout_alerts() -> egui_commonmark::AlertBundle {
+pub(crate) fn callout_alerts() -> egui_commonmark::AlertBundle {
     egui_commonmark::AlertBundle::from_alerts(
         quire_app::markdown::callout::KINDS
             .iter()

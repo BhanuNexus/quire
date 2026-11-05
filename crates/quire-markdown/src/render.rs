@@ -45,7 +45,7 @@ pub fn encode_url(s: &str) -> String {
 
 fn is_image(target: &str) -> bool {
     let t = target.to_ascii_lowercase();
-    [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"].iter().any(|e| t.ends_with(e))
+    [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".excalidraw", ".excalidraw.md"].iter().any(|e| t.ends_with(e))
 }
 
 /// Rewrite extension inlines with `f`, dropping front matter.

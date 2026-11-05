@@ -14,6 +14,7 @@ use quire_text::Selection;
 use crate::document::DocId;
 use crate::session::{MAX_POSITIONS, Position, Session, stash_positions, trim_positions};
 use crate::workspace::Workspace;
+use quire_text::vim::Marks;
 
 /// How often changed positions are handed to the session save.
 pub(super) const STASH_EVERY: Duration = Duration::from_secs(2);
@@ -21,6 +22,7 @@ pub(super) const STASH_EVERY: Duration = Duration::from_secs(2);
 /// Switching notes (or turning Vim keys off) returns Vim to Normal mode.
 pub(super) fn track_vim_doc(ws: &mut Workspace) {
     let active = ws.active_doc().map(|d| d.id);
+    let active_path = ws.active_doc().and_then(|d| d.path.clone());
     let st = &mut ws.features.nav;
     if !ws.settings.editing.vim {
         if st.vim.mode() != quire_text::vim::Mode::Normal || st.vim.cmdline().is_some() {
@@ -29,8 +31,28 @@ pub(super) fn track_vim_doc(ws: &mut Workspace) {
         return;
     }
     if st.vim_doc != active {
+        // Each note keeps its own marks.
+        let old = st.vim.swap_marks(Marks::default());
+        if let Some(id) = st.vim_doc {
+            st.vim_marks.insert(id, old);
+        }
         st.vim.reset();
         st.vim_doc = active;
+        if let Some(id) = active {
+            let saved =
+                st.vim_marks.remove(&id).or_else(|| st.positions.get(active_path.as_ref()?.as_str()).map(|p| Marks::from_list(&p.marks)));
+            st.vim.swap_marks(saved.unwrap_or_default());
+        }
+    }
+    // The open note's marks go into the session with its position.
+    if let Some(path) = &active_path {
+        let list = st.vim.marks.list();
+        let stored = st.positions.get(path.as_str()).map(|p| p.marks.as_slice());
+        if stored.unwrap_or_default() != list.as_slice() && (stored.is_some() || !list.is_empty()) {
+            let at = crate::history_ops::now_ms();
+            st.positions.entry(path.as_str().to_string()).or_insert_with(|| Position { at, ..Position::default() }).marks = list;
+            st.positions_dirty = true;
+        }
     }
     // `>` and `<` shift by the editor's indent.
     if st.vim.indent != ws.settings.indent_unit {
@@ -113,11 +135,11 @@ pub fn remember_position(ws: &mut Workspace, id: DocId, caret: usize, scroll: f3
     match st.positions.get_mut(key) {
         Some(p) if p.caret == caret && (p.scroll - scroll).abs() < 1.0 => {}
         Some(p) => {
-            *p = Position { caret, scroll, at: crate::history_ops::now_ms() };
+            *p = Position { caret, scroll, at: crate::history_ops::now_ms(), marks: std::mem::take(&mut p.marks) };
             st.positions_dirty = true;
         }
         None => {
-            st.positions.insert(key.to_string(), Position { caret, scroll, at: crate::history_ops::now_ms() });
+            st.positions.insert(key.to_string(), Position { caret, scroll, at: crate::history_ops::now_ms(), marks: Vec::new() });
             st.positions_dirty = true;
         }
     }
@@ -128,7 +150,7 @@ pub fn remember_position(ws: &mut Workspace, id: DocId, caret: usize, scroll: f3
 /// restore, if the caret is where it was.
 pub fn restore_position(ws: &mut Workspace, id: DocId) -> Option<f32> {
     let doc = ws.docs.iter_mut().find(|d| d.id == id)?;
-    let pos = *ws.features.nav.positions.get(doc.path.as_ref()?.as_str())?;
+    let pos = ws.features.nav.positions.get(doc.path.as_ref()?.as_str())?.clone();
     let len = doc.buffer().len_chars();
     if doc.revision() == 0 && doc.selection() == Selection::cursor(0) && pos.caret > 0 && pos.caret <= len {
         doc.set_selection(Selection::cursor(pos.caret));

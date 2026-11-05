@@ -406,10 +406,10 @@ fn first_existing(paths: &[&str]) -> Option<Vec<u8>> {
 
 /// The bundled faces (SIL Open Font License; see `fonts/`), so every
 /// platform gets the same type instead of whatever the system falls back to.
-const INTER_REGULAR: &[u8] = include_bytes!("../fonts/Inter-Regular.ttf");
+pub(crate) const INTER_REGULAR: &[u8] = include_bytes!("../fonts/Inter-Regular.ttf");
 const INTER_SEMIBOLD: &[u8] = include_bytes!("../fonts/Inter-SemiBold.ttf");
 const INTER_ITALIC: &[u8] = include_bytes!("../fonts/Inter-Italic.ttf");
-const JETBRAINS_MONO: &[u8] = include_bytes!("../fonts/JetBrainsMonoNL-Regular.ttf");
+pub(crate) const JETBRAINS_MONO: &[u8] = include_bytes!("../fonts/JetBrainsMonoNL-Regular.ttf");
 
 pub(crate) const ITALIC: &str = "quire-italic";
 

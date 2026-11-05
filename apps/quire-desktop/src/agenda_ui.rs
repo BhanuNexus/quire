@@ -516,11 +516,14 @@ pub(crate) fn settings_tab(ui: &mut Ui, ws: &mut Workspace, st: &mut FeatureUi, 
         ui.add_space(4.0);
         changed |= ui
             .checkbox(&mut t.reminders, "Show reminders as desktop notifications")
-            .on_hover_text("Reminders always show in Quire; they fire only while Quire is running.")
+            .on_hover_text("Reminders always show in Quire; as notifications while Quire runs, or always with the setting below.")
             .changed();
         if changed {
             let _ = ws.settings.save();
         }
+        // 0.10: reminders while Quire is closed.
+        ui.add_space(4.0);
+        crate::remind_ui::settings(ui, ws, pal);
         ui.add_space(12.0);
         crate::calendar_ui::periodic_settings(ui, ws, &mut st.calendar, pal);
         ui.add_space(12.0);

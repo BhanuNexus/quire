@@ -1,0 +1,29 @@
+---
+
+excalidraw-plugin: parsed
+tags: [excalidraw]
+
+---
+==⚠  Switch to EXCALIDRAW VIEW in the MORE OPTIONS menu of this document. ⚠==
+
+
+# Excalidraw Data
+
+## Text Elements
+Idea ^t1
+
+## Embedded Files
+img7: [[attachments/dot.png]]
+
+%%
+## Drawing
+```compressed-json
+N4KAkARALgngDgUwgLgAQQQDwMYEMA2AlgCYBOuA7hADTgQBuCpAzoQPYB2KqATLZMzYBXUtiRoIARyGFSCALRQEzKMxp0E+BAFsEHVdwDa4MKDDmIK0mwDWCAMJt8bUtwgBiAIwJv39ecgAI1xsGwBzayEOYkdnVwl3ADNEhGwATjT/C0TCfHwAZVgtN0EiYiyBKGs7AHUSKAALbj4TSuqEQphiiVKSCohIsIaOZTU0AAZ+CzY4EMJYbk9xydaI
+
+XA4w7tQVgIhCZgARTQQlcrREgmYEKchI6JHmMdQOITybvbP0Uk9+2EQ3OTYKDrTZId6Ybg7CwwSHvCj1JpoHjLd4NBCEIZQbhpcYmAC+UzMFistgcThcbi8Pmp/WCoQiwmisQpEiq62Yszk+n6OTynS2licfXeJNqCOaIqqpP54nQvXK70Gw1GsNWMzmCzQSyhkBBWx1e0Ox1O3Au+CuisZxAeTxeb1WfVZP3ef1l0CwWPBzQNMLQAGYDfDiI1Fg
+
+A2A1ojENLFIgCsLo9bgAksQELhUAA9ZgNQhwHmcKD5QgAL1lyPeiQLADFcNpcr7UJ4E5goABBIhhLgSLSJT2rRikKCEPD4dsYrvoKAzCD4wmrUVkuKU3w09508J3GLk+KT8gcDm4Ll93a8gpFN3y/oLurBxG8SXtGUlIUK1ZKm2q3bq7DzBva956rKBr7EcWgmuclzXG+Vofmgdr4O8jroIQADsvzwG6hDaLgYRgqsEJIuWqwNkRuxBiGaCxhG6K
+
+YtwVEVrkCApm4WFhGh+LgAAuvwaxwHAhS4Eo3BEgwhAIBQABCIQblazI7h4ySKYkM5gASdC8sowl4iAeJAA=
+```
+%%

@@ -184,6 +184,78 @@ pub(crate) fn markdown_job(src: &str, width: f32, size: f32, pal: &Palette) -> L
     job
 }
 
+/// Draw Markdown with the note preview's renderer (`egui_commonmark`) at
+/// canvas zoom `zoom`, `width` points wide, and keep what it painted: a
+/// card's picture as shapes placed at (0, 0). Nothing is shown while this
+/// runs (the shapes are taken from a layer of their own). A table measures
+/// itself the first time and asks egui to run the frame again
+/// (`will_discard`); don't keep that picture.
+pub(crate) fn render_markdown(
+    ui: &egui::Ui,
+    cache: &mut egui_commonmark::CommonMarkCache,
+    md: &str,
+    width: f32,
+    zoom: f32,
+    salt: &str,
+) -> Vec<egui::Shape> {
+    let id = egui::Id::unique(("quire-card-md", salt));
+    let layer = egui::LayerId::new(egui::Order::Background, id);
+    draw_markdown(ui, cache, md, width, zoom, id, layer);
+    ui.ctx().graphics_mut(|g| {
+        let list = g.entry(layer);
+        let shapes = list.all_entries().map(|c| c.shape.clone()).collect();
+        *list = egui::layers::PaintList::default();
+        shapes
+    })
+}
+
+fn draw_markdown(
+    ui: &egui::Ui,
+    cache: &mut egui_commonmark::CommonMarkCache,
+    md: &str,
+    width: f32,
+    zoom: f32,
+    id: egui::Id,
+    layer: egui::LayerId,
+) {
+    let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width.max(10.0), 1.0e5));
+    let mut child = egui::Ui::new(ui.ctx().clone(), id, egui::UiBuilder::new().layer_id(layer).max_rect(rect));
+    child.set_style(std::sync::Arc::clone(ui.style()));
+    {
+        let st = child.style_mut();
+        for f in st.text_styles.values_mut() {
+            f.size *= zoom;
+        }
+        st.spacing.item_spacing *= zoom;
+        st.spacing.indent *= zoom;
+        st.spacing.interact_size *= zoom;
+        st.spacing.icon_width *= zoom;
+        st.spacing.icon_spacing *= zoom;
+    }
+    child.set_clip_rect(rect);
+    egui_commonmark::CommonMarkViewer::new()
+        .alerts(crate::panels::callout_alerts())
+        .max_image_width(Some(width.max(10.0) as usize))
+        .show(&mut child, cache, md);
+}
+
+/// A shape moved by `d` (text keeps its laid-out galley).
+pub(crate) fn moved(s: &egui::Shape, d: egui::Vec2) -> egui::Shape {
+    match s {
+        egui::Shape::Text(t) => {
+            let mut t = t.clone();
+            t.pos += d;
+            egui::Shape::Text(t)
+        }
+        egui::Shape::Vec(v) => egui::Shape::Vec(v.iter().map(|x| moved(x, d)).collect()),
+        other => {
+            let mut o = other.clone();
+            o.translate(d);
+            o
+        }
+    }
+}
+
 /// The Mermaid source when a card is just a diagram.
 pub(crate) fn mermaid(src: &str) -> Option<&str> {
     let t = src.trim();

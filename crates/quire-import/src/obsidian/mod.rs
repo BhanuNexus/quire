@@ -13,6 +13,7 @@
 //! become. `DataviewJS` is never run.
 
 pub mod base;
+pub mod expr;
 pub mod kanban;
 
 /// What converts, for Settings → About → Compatibility.
@@ -39,8 +40,10 @@ pub const COMPATIBILITY: &[(&str, &str, &str)] = &[
     ),
     (
         "Bases (.base)",
-        "table and cards views; and / or filters with file.inFolder, file.hasTag and comparisons; order, sort, limit",
-        "formulas, summaries, not, other functions",
+        "table and cards views; filters (and / or / not, file.inFolder, file.hasTag, comparisons, dates); formulas with arithmetic, if, \
+         date, now, today, duration, file fields and string, number, date and list functions; summaries (Sum, Average, Earliest… and \
+         the base's own); order, sort, limit",
+        "grouping, map and list views, image, icon, html and other functions not listed",
     ),
     ("JSON Canvas (.canvas)", "the canvas editor", "—"),
     ("Excalidraw (.excalidraw.md)", "shown as Markdown", "drawing"),
