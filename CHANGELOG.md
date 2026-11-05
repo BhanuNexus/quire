@@ -39,6 +39,7 @@ Quire 0.10 brings your vault to your browser and your agents, on a server you ow
 - MCP `ask`: when the notes don't answer, it lists the three nearest passages with their anchors (`nearest`), as the app does, and cites nothing. This works over `quire-cli serve`'s `/mcp` too.
 
 #### For developers
+- `quire-cli bench --suite …` measures design §9's speed budgets (index, search, section search, MCP `view`/`search` on 10,000 notes, PDF text, MCP start-up with 200 PDFs) as JSON lines, and the desktop app built with `--features bench` times start-up, typing and a 1,000-card canvas. A new CI job, `perf`, runs them on an optimised build and fails above budget × 1.25 (docs/design/0.10-perf.md).
 - `quire-cli eval` (development builds): an endpoint or offline mock embedder (`--embedder endpoint|mock`), a sweep of the "Not found" threshold, the sample vault as a suite, and a contradiction suite that scores the Inbox's precision and recall.
 
 ### Changed
@@ -47,6 +48,9 @@ Quire 0.10 brings your vault to your browser and your agents, on a server you ow
 - The full edition now includes the on-device AI engine; Quire Lite downloads it when you turn on-device AI on. Settings → AI says "Included with Quire" for the engine that came with the app, and Quire checks it against a hash built into the app before every start, as it does a downloaded engine.
 - A read-only MCP server now caps HTTP tokens to reading too (only `quire-cli serve --read-only` starts one).
 - The full edition's Linux packages now depend on the ALSA library (`libasound2`), for recording.
+- **Smaller downloads:** the app is about a fifth smaller (Quire 68 MiB, Quire Lite 40 MiB on Linux, from 84 and 48), with every feature kept: code off the hot path is optimised for size, the full edition no longer carries its fonts twice, and the Linux build folds identical code.
+- **A large vault starts and types faster:** with 10,000 notes the window appears before the vault is read, typing in a long note no longer redraws the whole file list every frame, and indexing is almost twice as fast (2,000 notes in about 360 ms, from 690 ms on the same machine).
+- `quire-cli mcp` and `serve` answer at once in a vault with many PDFs: PDF text is read in the background, and while it is, `search` over attachments says so (`indexing: {done, total}` and a sentence in the text).
 
 ## [0.9.1] - 2026-11-04
 
