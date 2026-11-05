@@ -277,6 +277,12 @@ pub(crate) fn tick(ws: &mut Workspace, now: Instant) -> bool {
     if ws.features.agent.watcher.as_ref().is_some_and(AgentWatcher::take) {
         // Another process wrote a proposal, a finding or the policy.
         ws.features.agent.loader.request(Duration::from_millis(200));
+        // A decision made here (a rejection changes no note) or an agent's
+        // new suggestion: let the other devices know without waiting for
+        // the next poll, when review history travels with sync.
+        if ws.sync_shares_state() {
+            ws.sync_nudge();
+        }
     }
     let store = ws.agent_store().cloned();
     if let Some(data) = ws.features.agent.loader.poll(store.as_ref(), now) {
