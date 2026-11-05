@@ -20,6 +20,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
+/// What one sync pass did.
+pub use quire_sync::Report as SyncReport;
 pub use quire_sync::SpaceInfo;
 /// One version of a note from the sync log, for the history dialog.
 pub use quire_sync::Version as SyncVersion;
@@ -52,6 +54,80 @@ pub struct SyncConfig {
     /// its own that 0.8 never reads, so 0.8 devices keep syncing notes.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub shared_state: bool,
+    /// Selective sync: only these folders (`Work/`); empty means all.
+    /// Notes outside the selection are never written here, and never sent
+    /// as deleted (see [`Selection`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub only: Vec<String>,
+    /// Selective sync: never these folders.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<String>,
+}
+
+/// Which folders a device syncs (`quire-cli sync --only/--exclude`), so a
+/// server can hold just the folders it needs.
+///
+/// A note outside the selection is never written, read or sent from this
+/// device: its absence here is never taken for a delete. A note moved out
+/// of the selection on another device leaves this one (to its trash); one
+/// moved into an unselected folder here is sent as a rename. Widening the
+/// selection fetches the notes it now includes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Selection {
+    /// Folder prefixes with a trailing `/`; empty: every folder.
+    pub only: Vec<String>,
+    pub exclude: Vec<String>,
+}
+
+impl Selection {
+    /// Folder names as typed (`Work`, `Work/`, `./Work`, `Projects/2026`).
+    /// Names are compared exactly, case included.
+    pub fn new(only: &[String], exclude: &[String]) -> Result<Self, String> {
+        let norm = |f: &String| -> Result<String, String> {
+            let t = f.trim().trim_start_matches("./").trim_matches('/');
+            let bad = t.is_empty()
+                || t.contains('\\')
+                || t.chars().any(char::is_control)
+                || t.split('/').any(|seg| seg.is_empty() || seg == "." || seg == ".." || seg.starts_with('.'));
+            if bad {
+                return Err(format!("“{f}” isn't a folder in the vault (a relative path, not hidden, without `..`)"));
+            }
+            Ok(format!("{t}/"))
+        };
+        let list = |v: &[String]| -> Result<Vec<String>, String> {
+            let mut out = v.iter().map(norm).collect::<Result<Vec<_>, _>>()?;
+            out.sort();
+            out.dedup();
+            Ok(out)
+        };
+        Ok(Self { only: list(only)?, exclude: list(exclude)? })
+    }
+
+    pub const fn is_everything(&self) -> bool {
+        self.only.is_empty() && self.exclude.is_empty()
+    }
+
+    /// Whether this device syncs `path`. Vault settings (`.quire/shared/`)
+    /// follow their own switch, not the selection.
+    pub fn includes(&self, path: &str) -> bool {
+        if path.starts_with(SHARED_PREFIX) {
+            return true;
+        }
+        (self.only.is_empty() || self.only.iter().any(|o| path.starts_with(o.as_str())))
+            && !self.exclude.iter().any(|e| path.starts_with(e.as_str()))
+    }
+
+    /// "only Work/, Projects/; not Work/Old/", or "everything".
+    pub fn describe(&self) -> String {
+        let mut parts = Vec::new();
+        if !self.only.is_empty() {
+            parts.push(format!("only {}", self.only.join(", ")));
+        }
+        if !self.exclude.is_empty() {
+            parts.push(format!("not {}", self.exclude.join(", ")));
+        }
+        if parts.is_empty() { "everything".into() } else { parts.join("; ") }
+    }
 }
 
 /// The vault-settings folder that travels with Quire Sync when allowed.
@@ -197,6 +273,15 @@ fn sync_folder_root(chosen: &Path, vault_root: &Path) -> Result<PathBuf, String>
 }
 
 impl SyncConfig {
+    /// The folders this device syncs.
+    pub fn selection(&self) -> Selection {
+        Selection::new(&self.only, &self.exclude).unwrap_or_else(|_| Selection {
+            // Written by hand and unreadable: hold nothing rather than guess.
+            only: vec!["\u{0}/".into()],
+            exclude: Vec::new(),
+        })
+    }
+
     pub fn load(root: &Path) -> Option<Self> {
         let s = std::fs::read_to_string(sync_dir(root).join("config.json")).ok()?;
         serde_json::from_str(&s).ok()
@@ -208,12 +293,21 @@ impl SyncConfig {
     }
 }
 
-fn load_state(root: &Path) -> SyncState {
-    load_state_named(root, "state.json")
+/// The engine state's file: `state.json`, or `state-partial.json` while a
+/// selection is set. Quire 0.9, which knows nothing of selections, never
+/// reads the latter: if it opened this folder it would start afresh, which
+/// can't delete anything, rather than read notes outside the selection as
+/// deleted.
+fn state_file(cfg: &SyncConfig) -> &'static str {
+    if cfg.selection().is_everything() { "state.json" } else { "state-partial.json" }
 }
 
-fn save_state(root: &Path, state: &SyncState) -> Result<(), String> {
-    save_state_named(root, "state.json", state)
+fn load_state(root: &Path, cfg: &SyncConfig) -> SyncState {
+    load_state_named(root, state_file(cfg))
+}
+
+fn save_state(root: &Path, cfg: &SyncConfig, state: &SyncState) -> Result<(), String> {
+    save_state_named(root, state_file(cfg), state)
 }
 
 /// The engine state of a sync folder's settings lane.
@@ -272,6 +366,8 @@ pub struct VaultStore {
     /// The revision being applied, when another device's agent wrote it:
     /// its text's hash, who, and the device's name.
     incoming: Option<(quire_vault::ContentHash, quire_sync::ActorRef, String)>,
+    /// Selective sync: the folders this device holds.
+    selection: Selection,
 }
 
 fn b64() -> base64::engine::GeneralPurpose {
@@ -280,7 +376,15 @@ fn b64() -> base64::engine::GeneralPurpose {
 
 impl VaultStore {
     pub fn new(vault: Vault) -> Self {
-        Self { vault, seen: HashMap::new(), digests: std::cell::RefCell::default(), shared: false, lane: Lane::Mixed, incoming: None }
+        Self {
+            vault,
+            seen: HashMap::new(),
+            digests: std::cell::RefCell::default(),
+            shared: false,
+            lane: Lane::Mixed,
+            incoming: None,
+            selection: Selection::default(),
+        }
     }
 
     /// Notes and attachments only: `.quire/shared/` is never listed, read,
@@ -300,12 +404,19 @@ impl VaultStore {
         self
     }
 
-    /// A path this store's lane leaves alone.
+    /// Hold only the selected folders (selective sync).
+    #[must_use]
+    pub fn with_selection(mut self, selection: Selection) -> Self {
+        self.selection = selection;
+        self
+    }
+
+    /// A path this store leaves alone: another lane's, or outside the selection.
     fn outside_lane(&self, path: &str) -> bool {
         let shared = path.starts_with(SHARED_PREFIX);
         match self.lane {
-            Lane::Mixed => false,
-            Lane::Notes => shared,
+            Lane::Mixed => !self.selection.includes(path),
+            Lane::Notes => shared || !self.selection.includes(path),
             Lane::Shared => !shared,
         }
     }
@@ -398,6 +509,7 @@ impl LocalStore for VaultStore {
                 .list()
                 .unwrap_or_default()
                 .into_iter()
+                .filter(|p| self.selection.includes(p.as_str()))
                 .filter(|p| {
                     p.is_markdown()
                         || (quire_sync::engine::is_attachment(p.as_str())
@@ -444,6 +556,32 @@ impl LocalStore for VaultStore {
 
     fn read(&self, path: &str) -> Option<String> {
         self.current(path)
+    }
+
+    fn in_scope(&self, path: &str) -> bool {
+        !self.outside_lane(path)
+    }
+
+    fn moved_out(&self, base: &str) -> Option<(String, String)> {
+        use base64::Engine as _;
+        if self.selection.is_everything() || self.lane == Lane::Shared {
+            return None;
+        }
+        // Only when a selected note went missing; the unselected files on
+        // this device are few or none (a server holding some folders).
+        self.vault.storage().list().ok()?.into_iter().filter(|p| !self.selection.includes(p.as_str())).find_map(|p| {
+            let text = if quire_sync::engine::is_attachment(p.as_str()) {
+                if self.size_and_time(p.as_str()).is_none_or(|(n, _)| n > MAX_ATTACHMENT_BYTES) {
+                    return None;
+                }
+                b64().encode(self.vault.storage().read_bytes(&p).ok()?)
+            } else if p.is_markdown() {
+                self.vault.read(&p).ok()?
+            } else {
+                return None;
+            };
+            (quire_sync::engine::fingerprint(p.as_str(), &text) == base).then(|| (p.as_str().to_string(), text))
+        })
     }
 
     fn digest(&self, path: &str) -> Option<String> {
@@ -523,8 +661,11 @@ enum Msg {
     Stop,
 }
 
-enum Event {
+/// What the background sync reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncEvent {
     Status(SyncStatus),
+    /// A pass that changed something.
     Report(Report),
 }
 
@@ -550,11 +691,179 @@ impl Link {
     }
 }
 
+/// One device's sync of one vault: the engine, its state and the way to
+/// the other devices. The app's background worker and `quire-cli sync`
+/// both run passes of this.
+struct Session {
+    root: PathBuf,
+    vault: Vault,
+    cfg: SyncConfig,
+    key: VaultKey,
+    link: Link,
+    engine: Engine,
+    store: VaultStore,
+    lane: Option<(FolderTransport, Engine, VaultStore)>,
+}
+
+/// The outcome of one pass, and when to try again without a nudge.
+struct Pass {
+    status: SyncStatus,
+    report: Option<Report>,
+    again: Duration,
+}
+
+impl Session {
+    fn new(root: PathBuf, vault: Vault, cfg: SyncConfig, token: &str, key: VaultKey) -> Self {
+        let link = Link::new(&cfg, token, Some(&sync_dir(&root)));
+        let engine = Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), key.keys(), load_state(&root, &cfg));
+        // In a sync folder, vault settings travel in a lane of their own,
+        // which 0.8 never reads; the notes lane never touches them.
+        let store = if cfg.folder.is_some() {
+            VaultStore::new(vault.clone()).notes_only()
+        } else {
+            VaultStore::new(vault.clone()).with_shared_state(cfg.shared_state)
+        }
+        .with_selection(cfg.selection());
+        Self { root, vault, cfg, key, link, engine, store, lane: None }
+    }
+
+    /// A server that needs a newer Quire, in words.
+    fn too_old(&self) -> Option<String> {
+        if let Link::Server(_) = &self.link
+            && let Ok(n @ quire_sync::Negotiated::TooOld { .. }) = HttpTransport::negotiate(&self.cfg.server)
+        {
+            return Some(n.notice().unwrap_or_default());
+        }
+        None
+    }
+
+    /// One pass: pull, merge, push, for notes and (in a sync folder) the
+    /// settings lane.
+    fn pass(&mut self, poll: Duration) -> Pass {
+        let (root, cfg) = (&self.root, &self.cfg);
+        snapshot_reads(&mut self.store);
+        let mut res = self.engine.sync(&mut self.store, self.link.transport(), &today());
+        let _ = save_state(root, cfg, &self.engine.state);
+        if self.lane.is_none()
+            && runs_shared_lane(root, cfg)
+            && let Some(dir) = &cfg.folder
+        {
+            let t = FolderTransport::lane(dir, &cfg.space, cfg.device.clone(), Some(&sync_dir(root)), folder::SHARED_LANE);
+            let e = Engine::new(
+                cfg.space.clone(),
+                cfg.device.clone(),
+                cfg.device_name.clone(),
+                self.key.keys(),
+                load_state_named(root, SHARED_STATE_FILE),
+            );
+            self.lane = Some((t, e, VaultStore::new(self.vault.clone()).shared_only()));
+        }
+        if let Some((t, e, st)) = self.lane.as_mut()
+            && res.is_ok()
+        {
+            snapshot_reads(st);
+            let r = e.sync(st, &*t, &today());
+            let _ = save_state_named(root, SHARED_STATE_FILE, &e.state);
+            res = match (res, r) {
+                (Ok(mut a), Ok(b)) => {
+                    a.pulled += b.pulled;
+                    a.pushed += b.pushed;
+                    a.merged.extend(b.merged);
+                    a.conflict_copies.extend(b.conflict_copies);
+                    a.kept_over_delete.extend(b.kept_over_delete);
+                    Ok(a)
+                }
+                (Err(e), _) | (_, Err(e)) => Err(e),
+            };
+            if !cfg.shared_state {
+                self.store.shared = true;
+            }
+        }
+        // Another device turned on sharing vault settings: remember it here.
+        if self.store.shared && !self.cfg.shared_state {
+            self.cfg.shared_state = true;
+            let _ = self.cfg.save(&self.root);
+        }
+        let (status, report, again) = match res {
+            Ok(report) => {
+                let status = match &self.link {
+                    Link::Folder(dir) => match (dir.problem(), dir.waiting()) {
+                        (Some(p), _) => SyncStatus::Error(p),
+                        (None, Some(w)) => SyncStatus::Waiting(w),
+                        (None, None) => SyncStatus::Synced(Instant::now()),
+                    },
+                    Link::Server(_) => SyncStatus::Synced(Instant::now()),
+                };
+                (status, report.changed_anything().then_some(report), poll)
+            }
+            Err(quire_sync::SyncError::Transport(quire_sync::TransportError::Offline(e))) => {
+                (SyncStatus::Offline(e), None, Duration::from_secs(30).min(poll))
+            }
+            // A note changed mid-pass, or other devices are busy: try again soon.
+            Err(quire_sync::SyncError::Local { .. } | quire_sync::SyncError::Busy) => (SyncStatus::Syncing, None, Duration::from_secs(2)),
+            Err(e) => (SyncStatus::Error(e.to_string()), None, Duration::from_mins(5).min(poll.max(Duration::from_secs(30)))),
+        };
+        let _ = LastPass::record(&self.root, &status, report.as_ref());
+        Pass { status, report, again }
+    }
+}
+
+/// What the last pass on this device did, in `.quire/sync/last.json`, for
+/// `quire-cli sync status` (another process may be running the sync).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LastPass {
+    pub format: u32,
+    /// Unix ms.
+    pub at: i64,
+    /// `synced`, `waiting`, `offline`, `syncing` or `error`.
+    pub state: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detail: String,
+    #[serde(default)]
+    pub pulled: usize,
+    #[serde(default)]
+    pub pushed: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conflicts: Vec<String>,
+    #[serde(flatten)]
+    pub other: serde_json::Map<String, serde_json::Value>,
+}
+
+impl LastPass {
+    fn record(root: &Path, status: &SyncStatus, report: Option<&Report>) -> Result<(), String> {
+        let (state, detail) = match status {
+            SyncStatus::Synced(_) => ("synced", String::new()),
+            SyncStatus::Waiting(w) => ("waiting", w.clone()),
+            SyncStatus::Offline(e) => ("offline", e.clone()),
+            SyncStatus::Error(e) => ("error", e.clone()),
+            SyncStatus::Syncing | SyncStatus::Off => ("syncing", String::new()),
+        };
+        let last = Self {
+            format: 1,
+            at: crate::history_ops::now_ms(),
+            state: state.into(),
+            detail,
+            pulled: report.map_or(0, |r| r.pulled),
+            pushed: report.map_or(0, |r| r.pushed),
+            conflicts: report.map(|r| r.conflict_copies.clone()).unwrap_or_default(),
+            other: serde_json::Map::new(),
+        };
+        let text = serde_json::to_vec_pretty(&last).map_err(|e| e.to_string())?;
+        crate::atomic::write(&sync_dir(root).join("last.json"), &text, false).map_err(|e| e.to_string())
+    }
+
+    pub fn load(root: &Path) -> Option<Self> {
+        let s = std::fs::read(sync_dir(root).join("last.json")).ok()?;
+        serde_json::from_slice::<Self>(&s).ok().filter(|l| l.format <= 1)
+    }
+}
+
 /// The background sync thread for one vault.
 pub struct SyncWorker {
     tx: Sender<Msg>,
-    rx: Receiver<Event>,
+    rx: Receiver<SyncEvent>,
     stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for SyncWorker {
@@ -574,8 +883,11 @@ fn today() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 
+/// How often the app syncs without a reason to (a save, another device's change).
+pub const APP_POLL: Duration = Duration::from_mins(2);
+
 impl SyncWorker {
-    fn start(root: PathBuf, vault: Vault, cfg: SyncConfig, token: String, key: VaultKey) -> Self {
+    fn start(root: PathBuf, vault: Vault, cfg: SyncConfig, token: String, key: VaultKey, poll: Duration) -> Self {
         let (tx, msgs) = crossbeam_channel::unbounded();
         let (events, rx) = crossbeam_channel::unbounded();
         let stop = Arc::new(AtomicBool::new(false));
@@ -624,24 +936,12 @@ impl SyncWorker {
         }
 
         let worker_stop = Arc::clone(&stop);
-        std::thread::spawn(move || {
+        let thread = std::thread::spawn(move || {
             let stop = worker_stop;
-            let link = Link::new(&cfg, &token, Some(&sync_dir(&root)));
-            let mut engine = Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), key.keys(), load_state(&root));
-            let folder_space = cfg.folder.is_some();
-            // In a sync folder, vault settings travel in a lane of their own,
-            // which 0.8 never reads; the notes lane never touches them.
-            let mut store = if folder_space {
-                VaultStore::new(vault.clone()).notes_only()
-            } else {
-                VaultStore::new(vault.clone()).with_shared_state(cfg.shared_state)
-            };
-            let mut lane: Option<(FolderTransport, Engine, VaultStore)> = None;
+            let mut session = Session::new(root, vault, cfg, &token, key);
             // A server that needs a newer Quire says so plainly instead of failing each pass.
-            if let Link::Server(_) = &link
-                && let Ok(n @ quire_sync::Negotiated::TooOld { .. }) = HttpTransport::negotiate(&cfg.server)
-            {
-                let _ = events.send(Event::Status(SyncStatus::Error(n.notice().unwrap_or_default())));
+            if let Some(notice) = session.too_old() {
+                let _ = events.send(SyncEvent::Status(SyncStatus::Error(notice)));
                 return;
             }
             let mut wait = Duration::ZERO;
@@ -662,89 +962,81 @@ impl SyncWorker {
                 if stop.load(Ordering::Relaxed) {
                     return;
                 }
-                let _ = events.send(Event::Status(SyncStatus::Syncing));
-                snapshot_reads(&mut store);
-                let mut res = engine.sync(&mut store, link.transport(), &today());
-                let _ = save_state(&root, &engine.state);
-                if lane.is_none()
-                    && runs_shared_lane(&root, &cfg)
-                    && let Some(dir) = &cfg.folder
-                {
-                    let t = FolderTransport::lane(dir, &cfg.space, cfg.device.clone(), Some(&sync_dir(&root)), folder::SHARED_LANE);
-                    let e = Engine::new(
-                        cfg.space.clone(),
-                        cfg.device.clone(),
-                        cfg.device_name.clone(),
-                        key.keys(),
-                        load_state_named(&root, SHARED_STATE_FILE),
-                    );
-                    lane = Some((t, e, VaultStore::new(vault.clone()).shared_only()));
+                let _ = events.send(SyncEvent::Status(SyncStatus::Syncing));
+                let pass = session.pass(poll);
+                known.store(session.engine.state.cursor, Ordering::Relaxed);
+                if let Some(r) = pass.report {
+                    let _ = events.send(SyncEvent::Report(r));
                 }
-                if let Some((t, e, st)) = lane.as_mut()
-                    && res.is_ok()
-                {
-                    snapshot_reads(st);
-                    let r = e.sync(st, &*t, &today());
-                    let _ = save_state_named(&root, SHARED_STATE_FILE, &e.state);
-                    res = match (res, r) {
-                        (Ok(mut a), Ok(b)) => {
-                            a.pulled += b.pulled;
-                            a.pushed += b.pushed;
-                            a.merged.extend(b.merged);
-                            a.conflict_copies.extend(b.conflict_copies);
-                            a.kept_over_delete.extend(b.kept_over_delete);
-                            Ok(a)
-                        }
-                        (Err(e), _) | (_, Err(e)) => Err(e),
-                    };
-                    if !cfg.shared_state {
-                        store.shared = true;
-                    }
-                }
-                // Another device turned on sharing vault settings: remember it here.
-                if store.shared && !cfg.shared_state {
-                    let mut c = cfg.clone();
-                    c.shared_state = true;
-                    let _ = c.save(&root);
-                }
-                known.store(engine.state.cursor, Ordering::Relaxed);
-                let status = match res {
-                    Ok(report) => {
-                        if report.changed_anything() {
-                            let _ = events.send(Event::Report(report));
-                        }
-                        wait = Duration::from_mins(2);
-                        match &link {
-                            Link::Folder(dir) => match (dir.problem(), dir.waiting()) {
-                                (Some(p), _) => SyncStatus::Error(p),
-                                (None, Some(w)) => SyncStatus::Waiting(w),
-                                (None, None) => SyncStatus::Synced(Instant::now()),
-                            },
-                            Link::Server(_) => SyncStatus::Synced(Instant::now()),
-                        }
-                    }
-                    Err(quire_sync::SyncError::Transport(quire_sync::TransportError::Offline(e))) => {
-                        wait = Duration::from_secs(30);
-                        SyncStatus::Offline(e)
-                    }
-                    Err(quire_sync::SyncError::Local { .. } | quire_sync::SyncError::Busy) => {
-                        // A note changed mid-pass, or other devices are busy: try again soon.
-                        wait = Duration::from_secs(2);
-                        SyncStatus::Syncing
-                    }
-                    Err(e) => {
-                        wait = Duration::from_mins(5);
-                        SyncStatus::Error(e.to_string())
-                    }
-                };
-                let _ = events.send(Event::Status(status));
+                wait = pass.again;
+                let _ = events.send(SyncEvent::Status(pass.status));
             }
         });
-        Self { tx, rx, stop }
+        Self { tx, rx, stop, thread: Some(thread) }
     }
 
-    fn nudge(&self) {
+    /// Sync the vault at `root` in the background, as set up by
+    /// [`sync_join_at`] or [`sync_create_at`], without the app: passes run
+    /// when another device changes something, after [`Self::nudge`], and
+    /// every `poll` otherwise.
+    pub fn start_headless(root: &Path, poll: Duration) -> Result<Self, String> {
+        let (vault, cfg, token, key) = open_parts(root)?;
+        Ok(Self::start(root.to_path_buf(), vault, cfg, token, key, poll))
+    }
+
+    /// Sync soon (local files changed).
+    pub fn nudge(&self) {
         let _ = self.tx.send(Msg::Nudge);
+    }
+
+    /// What happened since the last call.
+    pub fn events(&self) -> Vec<SyncEvent> {
+        self.rx.try_iter().collect()
+    }
+
+    /// Wait up to `timeout` for the next event.
+    pub fn next_event(&self, timeout: Duration) -> Option<SyncEvent> {
+        self.rx.recv_timeout(timeout).ok()
+    }
+
+    /// Stop after the pass under way, if any, and wait for it: every file
+    /// it writes is written whole (atomically) before this returns.
+    pub fn stop_and_wait(mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        let _ = self.tx.send(Msg::Stop);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+/// The vault, configuration and secrets that syncing `root` needs.
+fn open_parts(root: &Path) -> Result<(Vault, SyncConfig, String, VaultKey), String> {
+    let cfg = SyncConfig::load(root).ok_or("Sync isn't set up for this vault. Run `quire-cli sync join` first.")?;
+    let vault = Vault::open_local(root).map_err(|e| e.to_string())?;
+    let store = secrets::store();
+    // A folder needs no token.
+    let token = if cfg.folder.is_some() { Some(String::new()) } else { store.get(&token_name(&cfg.space)) };
+    let key = store.get(&key_name(&cfg.space)).and_then(|k| VaultKey::from_recovery_key(&k).ok());
+    match (token, key) {
+        (Some(t), Some(k)) => Ok((vault, cfg, t, k)),
+        _ => Err(format!("This device is missing the sync key ({}). Join the vault again.", secrets::store().kind())),
+    }
+}
+
+/// One sync pass of the vault at `root`, in this thread (`quire-cli sync once`).
+pub fn sync_once_at(root: &Path) -> Result<Report, String> {
+    let (vault, cfg, token, key) = open_parts(root)?;
+    let mut session = Session::new(root.to_path_buf(), vault, cfg, &token, key);
+    if let Some(notice) = session.too_old() {
+        return Err(notice);
+    }
+    let pass = session.pass(APP_POLL);
+    match pass.status {
+        SyncStatus::Synced(_) | SyncStatus::Waiting(_) => Ok(pass.report.unwrap_or_default()),
+        SyncStatus::Syncing => Err("a note changed while syncing, or other devices were busy; run it again".into()),
+        SyncStatus::Offline(e) | SyncStatus::Error(e) => Err(e),
+        SyncStatus::Off => Err("sync is off".into()),
     }
 }
 
@@ -784,6 +1076,143 @@ fn raise_min_reader(cfg: &SyncConfig) -> Result<(), String> {
     HttpTransport::new(&cfg.server, cfg.space.clone(), &token).set_min_protocol(2).map_err(|e| e.to_string())
 }
 
+fn sync_config_for(root: &Path, target: &SyncTarget, space: SpaceId, device_name: &str, sel: &Selection) -> Result<SyncConfig, String> {
+    let (server, folder) = match target {
+        SyncTarget::Folder(chosen) => (String::new(), Some(sync_folder_root(chosen, root)?)),
+        SyncTarget::Server { url, .. } => (url.trim().to_string(), None),
+    };
+    Ok(SyncConfig {
+        server,
+        folder,
+        space,
+        device: DeviceId::random().map_err(|e| e.to_string())?,
+        device_name: device_name.trim().to_string(),
+        shared_state: false,
+        only: sel.only.clone(),
+        exclude: sel.exclude.clone(),
+    })
+}
+
+fn store_sync_secrets(cfg: &SyncConfig, target: &SyncTarget, key: &VaultKey) -> Result<(), String> {
+    let store = secrets::store();
+    if let SyncTarget::Server { token, .. } = target {
+        store.set(&token_name(&cfg.space), token.trim())?;
+    }
+    store.set(&key_name(&cfg.space), &key.recovery_key().to_string())
+}
+
+/// Start syncing the vault folder `root` as a new sync vault (the app's
+/// Settings → Sync, `quire-cli sync join --create`). Returns the recovery
+/// key, to show once.
+pub fn sync_create_at(
+    root: &Path,
+    target: &SyncTarget,
+    passphrase: &str,
+    device_name: &str,
+    selection: &Selection,
+) -> Result<RecoveryKey, String> {
+    if passphrase.chars().count() < 8 {
+        return Err("Use a passphrase of at least 8 characters".into());
+    }
+    let key = VaultKey::generate().map_err(|e| e.to_string())?;
+    let cfg = sync_config_for(root, target, SpaceId::random().map_err(|e| e.to_string())?, device_name, selection)?;
+    let wrapped = WrappedKey::wrap(&key, passphrase, KDF).map_err(|e| e.to_string())?;
+    match (target, &cfg.folder) {
+        (_, Some(dir)) => folder::create_space(dir, &cfg.space, &wrapped).map_err(|e| e.to_string())?,
+        (SyncTarget::Server { url, token }, None) => {
+            HttpTransport::new(url.trim(), cfg.space.clone(), token.trim()).create_space(&wrapped).map_err(|e| e.to_string())?;
+        }
+        (SyncTarget::Folder(_), None) => return Err("No sync folder".into()),
+    }
+    store_sync_secrets(&cfg, target, &key)?;
+    cfg.save(root)?;
+    let _ = save_state(root, &cfg, &SyncState::default());
+    Ok(key.recovery_key())
+}
+
+/// Join an existing sync vault from the vault folder `root` with its
+/// passphrase (or recovery key). The key and a server's token go to the
+/// keychain or the private secrets file, never into the vault.
+pub fn sync_join_at(
+    root: &Path,
+    target: &SyncTarget,
+    space: &SpaceId,
+    secret: &str,
+    device_name: &str,
+    selection: &Selection,
+) -> Result<(), String> {
+    let cfg = sync_config_for(root, target, space.clone(), device_name, selection)?;
+    let key = if let Ok(k) = VaultKey::from_recovery_key(secret) {
+        k
+    } else {
+        let wrapped = match (target, &cfg.folder) {
+            (_, Some(dir)) => folder::wrapped_key(dir, space),
+            (SyncTarget::Server { url, token }, None) => HttpTransport::new(url.trim(), space.clone(), token.trim()).wrapped_key(),
+            (SyncTarget::Folder(_), None) => return Err("No sync folder".into()),
+        };
+        wrapped.map_err(|e| e.to_string())?.unwrap(secret).map_err(|e| e.to_string())?
+    };
+    store_sync_secrets(&cfg, target, &key)?;
+    cfg.save(root)?;
+    let _ = save_state(root, &cfg, &SyncState::default());
+    let _ = std::fs::remove_file(sync_dir(root).join("folder-seq"));
+    Ok(())
+}
+
+/// Change which folders the vault at `root` syncs. The engine's state
+/// moves with it, so notes now included are fetched and notes now left out
+/// are never sent as deletes.
+pub fn sync_set_selection_at(root: &Path, selection: &Selection) -> Result<(), String> {
+    let mut cfg = SyncConfig::load(root).ok_or("Sync isn't set up for this vault")?;
+    let from = state_file(&cfg);
+    cfg.only.clone_from(&selection.only);
+    cfg.exclude.clone_from(&selection.exclude);
+    let to = state_file(&cfg);
+    if from != to {
+        let dir = sync_dir(root);
+        if dir.join(from).exists() {
+            std::fs::rename(dir.join(from), dir.join(to)).map_err(|e| e.to_string())?;
+        }
+    }
+    cfg.save(root)
+}
+
+/// What `quire-cli sync status` shows about the vault at `root`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncSummary {
+    pub config: SyncConfig,
+    /// The keychain or secrets file has this vault's key (and token).
+    pub has_secrets: bool,
+    /// Notes and attachments the engine tracks, and how many of them are
+    /// outside the selection.
+    pub tracked: usize,
+    pub outside: usize,
+    pub last: Option<LastPass>,
+}
+
+/// Sync's setup and last result for the vault at `root`; `None` when sync
+/// isn't set up there. Reads no secret values.
+pub fn sync_summary_at(root: &Path) -> Option<SyncSummary> {
+    let config = SyncConfig::load(root)?;
+    let state = load_state(root, &config);
+    let store = secrets::store();
+    let has_secrets =
+        store.get(&key_name(&config.space)).is_some() && (config.folder.is_some() || store.get(&token_name(&config.space)).is_some());
+    let live: Vec<&quire_sync::Tracked> = state.files.values().filter(|t| !t.deleted).collect();
+    Some(SyncSummary {
+        tracked: live.len(),
+        outside: live.iter().filter(|t| t.outside).count(),
+        has_secrets,
+        last: LastPass::load(root),
+        config,
+    })
+}
+
+/// The vaults a new device can join, in a sync folder or on a server.
+pub fn sync_list(target: &SyncTarget) -> Result<Vec<SyncVaultInfo>, String> {
+    Workspace::sync_list(target)
+}
+
 impl Workspace {
     fn sync_parts(&self) -> Result<(PathBuf, Vault), String> {
         let root = self.vault_root().ok_or("Open a vault folder first")?.to_path_buf();
@@ -811,43 +1240,11 @@ impl Workspace {
         }
     }
 
-    fn sync_config_for(&self, target: &SyncTarget, space: SpaceId, device_name: &str) -> Result<SyncConfig, String> {
-        let (root, _) = self.sync_parts()?;
-        let (server, folder) = match target {
-            SyncTarget::Folder(chosen) => (String::new(), Some(sync_folder_root(chosen, &root)?)),
-            SyncTarget::Server { url, .. } => (url.trim().to_string(), None),
-        };
-        Ok(SyncConfig {
-            server,
-            folder,
-            space,
-            device: DeviceId::random().map_err(|e| e.to_string())?,
-            device_name: device_name.trim().to_string(),
-            shared_state: false,
-        })
-    }
-
     /// Start syncing this vault as a new sync vault. Returns the recovery
     /// key, to show once.
     pub fn sync_create(&mut self, target: &SyncTarget, passphrase: &str, device_name: &str) -> Result<RecoveryKey, String> {
         let (root, _) = self.sync_parts()?;
-        if passphrase.chars().count() < 8 {
-            return Err("Use a passphrase of at least 8 characters".into());
-        }
-        let key = VaultKey::generate().map_err(|e| e.to_string())?;
-        let cfg = self.sync_config_for(target, SpaceId::random().map_err(|e| e.to_string())?, device_name)?;
-        let wrapped = WrappedKey::wrap(&key, passphrase, KDF).map_err(|e| e.to_string())?;
-        match (target, &cfg.folder) {
-            (_, Some(dir)) => folder::create_space(dir, &cfg.space, &wrapped).map_err(|e| e.to_string())?,
-            (SyncTarget::Server { url, token }, None) => {
-                HttpTransport::new(url.trim(), cfg.space.clone(), token.trim()).create_space(&wrapped).map_err(|e| e.to_string())?;
-            }
-            (SyncTarget::Folder(_), None) => return Err("No sync folder".into()),
-        }
-        Self::store_sync_secrets(&cfg, target, &key)?;
-        cfg.save(&root)?;
-        let _ = save_state(&root, &SyncState::default());
-        let rk = key.recovery_key();
+        let rk = sync_create_at(&root, target, passphrase, device_name, &Selection::default())?;
         self.start_sync();
         Ok(rk)
     }
@@ -855,31 +1252,9 @@ impl Workspace {
     /// Join an existing sync vault with its passphrase (or recovery key).
     pub fn sync_join(&mut self, target: &SyncTarget, space: &SpaceId, secret: &str, device_name: &str) -> Result<(), String> {
         let (root, _) = self.sync_parts()?;
-        let cfg = self.sync_config_for(target, space.clone(), device_name)?;
-        let key = if let Ok(k) = VaultKey::from_recovery_key(secret) {
-            k
-        } else {
-            let wrapped = match (target, &cfg.folder) {
-                (_, Some(dir)) => folder::wrapped_key(dir, space),
-                (SyncTarget::Server { url, token }, None) => HttpTransport::new(url.trim(), space.clone(), token.trim()).wrapped_key(),
-                (SyncTarget::Folder(_), None) => return Err("No sync folder".into()),
-            };
-            wrapped.map_err(|e| e.to_string())?.unwrap(secret).map_err(|e| e.to_string())?
-        };
-        Self::store_sync_secrets(&cfg, target, &key)?;
-        cfg.save(&root)?;
-        let _ = save_state(&root, &SyncState::default());
-        let _ = std::fs::remove_file(sync_dir(&root).join("folder-seq"));
+        sync_join_at(&root, target, space, secret, device_name, &Selection::default())?;
         self.start_sync();
         Ok(())
-    }
-
-    fn store_sync_secrets(cfg: &SyncConfig, target: &SyncTarget, key: &VaultKey) -> Result<(), String> {
-        let store = secrets::store();
-        if let SyncTarget::Server { token, .. } = target {
-            store.set(&token_name(&cfg.space), token.trim())?;
-        }
-        store.set(&key_name(&cfg.space), &key.recovery_key().to_string())
     }
 
     /// Start (or restart) the worker if this vault is set up for sync.
@@ -902,7 +1277,7 @@ impl Workspace {
             self.sync.status = SyncStatus::Error("This device is missing the sync key. Join the vault again in Settings → Sync.".into());
             return;
         };
-        self.sync.worker = Some(SyncWorker::start(root, vault, cfg.clone(), token, key));
+        self.sync.worker = Some(SyncWorker::start(root, vault, cfg.clone(), token, key, APP_POLL));
         self.sync.config = Some(cfg);
         self.sync.status = SyncStatus::Syncing;
     }
@@ -960,6 +1335,8 @@ impl Workspace {
         let dir = sync_dir(&root);
         let _ = std::fs::remove_file(dir.join("config.json"));
         let _ = std::fs::remove_file(dir.join("state.json"));
+        let _ = std::fs::remove_file(dir.join("state-partial.json"));
+        let _ = std::fs::remove_file(dir.join("last.json"));
         let _ = std::fs::remove_file(dir.join("folder-seq"));
         Ok(())
     }
@@ -976,7 +1353,7 @@ impl Workspace {
         let path = path.as_str().to_string();
         std::thread::spawn(move || {
             let link = Link::new(&cfg, &token, None);
-            let engine = Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), key.keys(), load_state(&root));
+            let engine = Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), key.keys(), load_state(&root, &cfg));
             let _ = tx.send(engine.history(link.transport(), &path).map_err(|e| e.to_string()));
         });
         Some(rx)
@@ -998,14 +1375,14 @@ impl Workspace {
     /// Collect worker events. Returns true when something changed.
     pub(crate) fn poll_sync(&mut self) -> bool {
         let Some(w) = &self.sync.worker else { return false };
-        let events: Vec<Event> = w.rx.try_iter().collect();
+        let events = w.events();
         if events.is_empty() {
             return false;
         }
         for e in events {
             match e {
-                Event::Status(s) => self.sync.status = s,
-                Event::Report(r) => {
+                SyncEvent::Status(s) => self.sync.status = s,
+                SyncEvent::Report(r) => {
                     for p in &r.conflict_copies {
                         self.notify(
                             NoticeLevel::Warn,
@@ -1115,6 +1492,123 @@ mod tests {
         assert_eq!(b.sync.status, SyncStatus::Off);
     }
 
+    /// Drain a headless worker's events while ticking the app.
+    fn wait_both(a: &mut Workspace, b: &SyncWorker, what: &str, mut done: impl FnMut() -> bool) {
+        let start = Instant::now();
+        while !done() {
+            assert!(start.elapsed() < Duration::from_secs(40), "timed out waiting for {what}: app {:?}", a.sync.status);
+            a.tick(Instant::now());
+            let _ = b.events();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn files(root: &Path) -> Vec<String> {
+        let v = Vault::open_local(root).unwrap();
+        let mut out: Vec<String> = v.storage().list().unwrap().into_iter().map(|p| p.as_str().to_string()).collect();
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn a_headless_device_and_the_app_converge() {
+        let dir = tempfile::tempdir().unwrap();
+        let (va, vb, shared) = (dir.path().join("Desktop"), dir.path().join("Server"), dir.path().join("Syncthing"));
+        for d in [&va, &vb, &shared] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(va.join("Plan.md"), "# Plan\none\ntwo\nthree\n").unwrap();
+        let target = SyncTarget::Folder(shared);
+        let mut a = Workspace::new(crate::Settings::default());
+        a.open_vault(&va).unwrap();
+        a.sync_create(&target, "correct horse battery", "laptop").unwrap();
+
+        // The headless side joins the way `quire-cli sync join` does.
+        let space = sync_list(&target).unwrap().remove(0).space;
+        assert!(sync_join_at(&vb, &target, &space, "wrong passphrase", "server", &Selection::default()).is_err());
+        sync_join_at(&vb, &target, &space, "correct horse battery", "server", &Selection::default()).unwrap();
+        let b = SyncWorker::start_headless(&vb, Duration::from_secs(5)).unwrap();
+        wait_both(&mut a, &b, "the note to reach the server", || {
+            std::fs::read_to_string(vb.join("Plan.md")).is_ok_and(|t| t.contains("three"))
+        });
+
+        // Each side's edits reach the other.
+        std::fs::write(vb.join("From server.md"), "written headless\n").unwrap();
+        b.nudge();
+        wait_both(&mut a, &b, "the server's note to reach the app", || va.join("From server.md").exists());
+        // Both change the same note before seeing each other: merged, or
+        // both versions kept; never a lost line.
+        std::fs::write(va.join("Plan.md"), "# Plan\nONE (laptop)\ntwo\nthree\n").unwrap();
+        std::fs::write(vb.join("Plan.md"), "# Plan\none\ntwo\nthree\nfour (server)\n").unwrap();
+        a.sync_nudge();
+        b.nudge();
+        let all_text = |root: &Path| -> String { files(root).iter().filter_map(|p| std::fs::read_to_string(root.join(p)).ok()).collect() };
+        wait_both(&mut a, &b, "both edits on both sides, and the same files", || {
+            let (ta, tb) = (all_text(&va), all_text(&vb));
+            files(&va) == files(&vb) && [&ta, &tb].iter().all(|t| t.contains("ONE (laptop)") && t.contains("four (server)"))
+        });
+        let summary = sync_summary_at(&vb).unwrap();
+        assert_eq!((summary.config.device_name.as_str(), summary.has_secrets), ("server", true));
+        assert!(summary.last.is_some_and(|l| l.state == "synced" || l.state == "syncing"));
+        b.stop_and_wait();
+        // A one-off pass works too, and finds nothing left to do.
+        let r = sync_once_at(&vb).unwrap();
+        assert_eq!(r.pushed, 0);
+    }
+
+    #[test]
+    fn a_selective_device_never_deletes_what_it_doesnt_hold() {
+        let dir = tempfile::tempdir().unwrap();
+        let (va, vb, shared) = (dir.path().join("Desktop"), dir.path().join("Server"), dir.path().join("Dropbox"));
+        for d in [&va, &vb, &shared, &va.join("Work"), &va.join("Journal"), &vb.join("Journal")] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(va.join("Work/Plan.md"), "plan\n").unwrap();
+        std::fs::write(va.join("Journal/Today.md"), "private day\n").unwrap();
+        std::fs::write(va.join("Inbox.md"), "inbox\n").unwrap();
+        // Something already on the server, outside its selection.
+        std::fs::write(vb.join("Journal/Stale.md"), "never synced\n").unwrap();
+        let target = SyncTarget::Folder(shared);
+        let mut a = Workspace::new(crate::Settings::default());
+        a.open_vault(&va).unwrap();
+        a.sync_create(&target, "correct horse battery", "laptop").unwrap();
+        let space = sync_list(&target).unwrap().remove(0).space;
+        let only = Selection::new(&["Work".to_string()], &[]).unwrap();
+        sync_join_at(&vb, &target, &space, "correct horse battery", "server", &only).unwrap();
+        let start = Instant::now();
+        while !vb.join("Work/Plan.md").exists() {
+            assert!(start.elapsed() < Duration::from_secs(30), "the selected note never arrived");
+            a.tick(Instant::now());
+            let _ = sync_once_at(&vb);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        for _ in 0..5 {
+            a.tick(Instant::now());
+            sync_once_at(&vb).unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert_eq!(files(&vb), ["Journal/Stale.md", "Work/Plan.md"], "only the selection is written here");
+        assert!(!dir.path().join("Desktop/Journal/Stale.md").exists(), "unselected files here are never sent");
+        a.sync_nudge();
+        std::fs::write(va.join("Journal/Today.md"), "private day, later\n").unwrap();
+        for _ in 0..5 {
+            a.tick(Instant::now());
+            sync_once_at(&vb).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        assert_eq!(files(&va), ["Inbox.md", "Journal/Today.md", "Work/Plan.md"], "nothing deleted on the app's side");
+        assert_eq!(std::fs::read_to_string(va.join("Journal/Today.md")).unwrap(), "private day, later\n");
+        let s = sync_summary_at(&vb).unwrap();
+        assert_eq!((s.tracked, s.outside), (3, 2));
+        assert!(sync_dir(&vb).join("state-partial.json").exists() && !sync_dir(&vb).join("state.json").exists());
+        // Widening fetches the rest, still deleting nothing.
+        sync_set_selection_at(&vb, &Selection::default()).unwrap();
+        sync_once_at(&vb).unwrap();
+        assert!(vb.join("Journal/Today.md").exists() && vb.join("Inbox.md").exists());
+        assert!(sync_dir(&vb).join("state.json").exists());
+        assert_eq!(std::fs::read_to_string(va.join("Work/Plan.md")).unwrap(), "plan\n");
+    }
+
     fn walk(dir: &Path) -> Vec<PathBuf> {
         let mut out = Vec::new();
         for e in std::fs::read_dir(dir).unwrap().flatten() {
@@ -1195,11 +1689,13 @@ mod tests {
             device: DeviceId::random().unwrap(),
             device_name: "laptop".into(),
             shared_state: false,
+            only: Vec::new(),
+            exclude: Vec::new(),
         };
         cfg.save(dir.path()).unwrap();
         assert!(!std::fs::read_to_string(sync_dir(dir.path()).join("config.json")).unwrap().contains("shared_state"), "unchanged for 0.8");
-        assert_eq!(SyncConfig::load(dir.path()), Some(cfg));
-        assert_eq!(load_state(dir.path()), SyncState::default());
+        assert_eq!(SyncConfig::load(dir.path()).as_ref(), Some(&cfg));
+        assert_eq!(load_state(dir.path(), &cfg), SyncState::default());
     }
 
     #[test]
@@ -1294,6 +1790,8 @@ mod tests {
             device: DeviceId::random().unwrap(),
             device_name: "x".into(),
             shared_state: false,
+            only: Vec::new(),
+            exclude: Vec::new(),
         };
         cfg.save(vault_dir.path()).unwrap();
         ws.sync_share_vault_settings(true).unwrap();

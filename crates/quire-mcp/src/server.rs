@@ -44,8 +44,11 @@ const PUMP_EVERY: Duration = Duration::from_millis(150);
 /// What the server is allowed to do, set by whoever starts it.
 #[derive(Clone)]
 pub struct ServerConfig {
-    /// stdio: `--allow-write` (writes per policy).
+    /// stdio: `--allow-write` (writes per policy). Over HTTP, each token's
+    /// scopes decide instead.
     pub allow_write: bool,
+    /// Every caller only reads, HTTP tokens included (`quire-cli serve --read-only`).
+    pub read_only: bool,
     /// stdio: `--client KEY`, the key Quire gave this client (verified).
     pub client_key: Option<String>,
     /// URL capture may reach private and loopback addresses.
@@ -64,6 +67,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             allow_write: false,
+            read_only: false,
             client_key: None,
             allow_private_urls: false,
             chat: None,
@@ -218,6 +222,12 @@ impl Server {
 
     pub fn vault(&self) -> &Vault {
         &self.core.vault
+    }
+
+    /// The vault's index, kept fresh by [`Self::start_pump`] (the web app
+    /// of `quire-cli serve` searches the same one).
+    pub fn index(&self) -> &IndexService {
+        &self.core.index
     }
 
     pub fn config(&self) -> &ServerConfig {
@@ -403,14 +413,16 @@ impl Core {
 
     fn grant(&self, conn: &Conn) -> Grant {
         match &conn.principal {
-            Principal::Stdio => Grant::stdio(self.config.allow_write),
+            Principal::Stdio => Grant::stdio(self.config.allow_write && !self.config.read_only),
+            Principal::Token(t) if self.config.read_only => Grant { write: false, network: false, ..t.scopes.grant() },
             Principal::Token(t) => t.scopes.grant(),
         }
     }
 
     fn cap(&self, conn: &Conn) -> Option<Mode> {
         match &conn.principal {
-            Principal::Stdio => (!self.config.allow_write).then_some(Mode::Read),
+            Principal::Stdio => (!self.config.allow_write || self.config.read_only).then_some(Mode::Read),
+            Principal::Token(_) if self.config.read_only => Some(Mode::Read),
             Principal::Token(t) => t.scopes.cap(),
         }
     }

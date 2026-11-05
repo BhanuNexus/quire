@@ -53,6 +53,9 @@ pub enum Via {
     ClientApproval,
     /// Arrived from another device through Quire Sync.
     Sync,
+    /// The web app of `quire-cli serve` (0.10). Quire 0.9 can't read this
+    /// value and shows such a version as a plain save.
+    Web,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

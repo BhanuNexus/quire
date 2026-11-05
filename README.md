@@ -228,6 +228,24 @@ To use Quire from Claude Desktop or another MCP client, add a server whose comma
 
 Set `QUIRE_TRACE=1` when launching the desktop app to print per-frame timings.
 
+### Your vault in a browser, and for agents elsewhere
+
+A headless Quire on a machine you control (a VPS, a home box) keeps a copy
+of the vault in sync and serves it: a web app to read, search and lightly
+edit from any browser, and MCP at `/mcp` for agents, on one port, always
+behind a sign-in. Quire Sync stays end-to-end encrypted; this machine holds
+the plain text, so it can hold just the folders it needs.
+
+```bash
+quire-cli sync join ~/vault --server https://sync.example.com --only Work   # or --folder ~/Sync
+quire-cli serve passwd                                                       # the web app's passphrase
+quire-cli serve ~/vault --sync --public-url https://notes.example.com        # behind Caddy/nginx for HTTPS
+```
+
+[docs/serve.md](docs/serve.md) has the setup: reverse proxy, a systemd
+unit, hiding folders from the web, and connecting Claude or other MCP
+clients.
+
 ## Known limits
 
 - **Built-in meaning search is a latent semantic index** learned from your own notes. It needs a few dozen notes before it helps much. For neural quality, point *Meaning search* at an embeddings endpoint (e.g. Ollama + `nomic-embed-text`).

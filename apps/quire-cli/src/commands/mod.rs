@@ -4,7 +4,7 @@
 //! lists its commands in a `COMMANDS` table; [`all`] joins the tables and
 //! the help text is built from them. Owners: `search`, `notes`, `import`,
 //! `bench` (frozen after F0); `capture`, `mcp`, `agent`, `eval` (WS-B);
-//! `lint` (WS-A); `ai` (WS-D); `tasks` (WS-E).
+//! `lint` (WS-A); `ai` (WS-D); `tasks` (WS-E); `sync`, `serve` (0.10 serve).
 
 mod agent;
 mod ai;
@@ -17,6 +17,8 @@ mod lint;
 mod mcp;
 mod notes;
 mod search;
+mod serve;
+mod sync;
 mod tasks;
 
 use std::time::Instant;
@@ -48,6 +50,8 @@ pub(crate) fn all() -> Vec<&'static CliCommand> {
         agent::COMMANDS,
         lint::COMMANDS,
         ai::COMMANDS,
+        sync::COMMANDS,
+        serve::COMMANDS,
         #[cfg(feature = "eval")]
         eval::COMMANDS,
     ];

@@ -126,7 +126,7 @@ fn add_heading_ids(html: &str) -> String {
 
 /// Replace each `quire-view` code block with the view it describes, listing
 /// only published notes (a view never reveals a private note's title).
-fn render_views(html: &str, src: &str, ix: &Index, from: &NotePath, url: &HashMap<NotePath, String>) -> String {
+fn render_views(html: &str, src: &str, ix: &Index, from: &NotePath, url: &dyn Fn(&NotePath) -> Option<String>) -> String {
     use quire_index::views::{self, Layout};
     let open = "<pre><code class=\"language-quire-view\">";
     let blocks = views::find_blocks(src);
@@ -145,8 +145,10 @@ fn render_views(html: &str, src: &str, ix: &Index, from: &NotePath, url: &HashMa
             continue;
         };
         let mut r = views::run(&spec, ix, &today, Some(from));
-        r.rows.retain(|row| url.contains_key(&row.path));
-        let link = |row: &views::ViewRow| format!("<a href=\"{}\">{}</a>", url[&row.path], escape_html(&row.title));
+        r.rows.retain(|row| url(&row.path).is_some());
+        let link = |row: &views::ViewRow| {
+            format!("<a href=\"{}\">{}</a>", escape_html(&url(&row.path).unwrap_or_default()), escape_html(&row.title))
+        };
         out.push_str("<div class=\"view\">");
         if r.rows.is_empty() {
             out.push_str("<p class=\"muted\">Nothing here yet.</p>");
@@ -211,6 +213,77 @@ fn render_views(html: &str, src: &str, ix: &Index, from: &NotePath, url: &HashMa
     }
     out.push_str(rest);
     out
+}
+
+/// Where a rendered note's links go. A link whose target gets `None`
+/// becomes plain text (a note that isn't published, or that the reader
+/// may not see), and is counted.
+pub struct Links<'a> {
+    /// A note's URL.
+    pub note: &'a dyn Fn(&NotePath) -> Option<String>,
+    /// An embedded file's URL (images, PDFs).
+    pub file: &'a dyn Fn(&NotePath) -> Option<String>,
+    /// A tag's URL.
+    pub tag: &'a dyn Fn(&str) -> String,
+}
+
+/// A note rendered to an HTML fragment.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RenderedNote {
+    pub html: String,
+    /// Files the note embeds that got a URL.
+    pub files: Vec<NotePath>,
+    /// Links left as text because their target got no URL.
+    pub private_links: usize,
+}
+
+/// Render the note at `path` (text `src`) the way a published site shows
+/// it: callouts, wikilinks and embeds, tags, citations, views, heading
+/// anchors. Shared by publishing and `quire-cli serve`'s web app.
+pub fn render_note(
+    vault: &Vault,
+    ix: &Index,
+    library: &crate::citations::Library,
+    path: &NotePath,
+    src: &str,
+    links: &Links<'_>,
+) -> RenderedNote {
+    let src = &*crate::citations::render_with(library, src);
+    let private = std::cell::Cell::new(0);
+    let embedded = std::cell::RefCell::new(Vec::new());
+    let html = render::to_html(src, &|l| {
+        if l.embed
+            && let Some(f) = vault.resolve_file(&l.target).filter(|f| !f.is_markdown())
+        {
+            let href = (links.file)(&f);
+            if href.is_some() {
+                embedded.borrow_mut().push(f);
+            } else {
+                private.set(private.get() + 1);
+            }
+            return href;
+        }
+        let target = ix.resolve(&l.target, Some(path));
+        if let Some(u) = target.as_ref().and_then(|t| (links.note)(t)) {
+            Some(match &l.heading {
+                Some(h) => format!("{u}#{}", anchor(h)),
+                None => u,
+            })
+        } else {
+            private.set(private.get() + usize::from(target.is_some()));
+            None
+        }
+    });
+    let html = render_views(&html, src, ix, path, links.note);
+    let mut body = add_heading_ids(&html);
+    if let Some(rec) = ix.get(path) {
+        for t in &rec.tags {
+            let from = format!("<span class=\"tag\">#{}</span>", escape_html(t));
+            let to = format!("<a class=\"tag\" href=\"{}\">#{}</a>", escape_html(&(links.tag)(t)), escape_html(t));
+            body = body.replace(&from, &to);
+        }
+    }
+    RenderedNote { html: body, files: embedded.into_inner(), private_links: private.get() }
 }
 
 fn tag_anchor(t: &str) -> String {
@@ -304,38 +377,16 @@ pub fn publish(vault: &Vault, ix: &Index, out: &Path, site_title: &str, which: S
 
     // WS-G: `[@key]` citations as author-date text and a reference list.
     let library = crate::citations::vault_library(vault);
+    let note_url = |p: &NotePath| url.get(p).cloned();
+    let file_url = |f: &NotePath| Some(format!("files/{}", render::encode_url(f.as_str())));
+    let tag_url = |t: &str| format!("tags.html#{}", tag_anchor(t));
+    let links = Links { note: &note_url, file: &file_url, tag: &tag_url };
     for rec in &chosen {
-        let src = &*crate::citations::render_with(&library, ix.source(&rec.path).unwrap_or_default());
-        let private = std::cell::Cell::new(0);
-        let embedded = std::cell::RefCell::new(Vec::new());
-        let html = render::to_html(src, &|l| {
-            if l.embed
-                && let Some(f) = vault.resolve_file(&l.target).filter(|f| !f.is_markdown())
-            {
-                let href = format!("files/{}", render::encode_url(f.as_str()));
-                embedded.borrow_mut().push(f);
-                return Some(href);
-            }
-            let target = ix.resolve(&l.target, Some(&rec.path));
-            if let Some(u) = target.as_ref().and_then(|t| url.get(t)) {
-                Some(match &l.heading {
-                    Some(h) => format!("{u}#{}", anchor(h)),
-                    None => u.clone(),
-                })
-            } else {
-                private.set(private.get() + usize::from(target.is_some()));
-                None
-            }
-        });
-        report.private_links += private.get();
-        files.extend(embedded.into_inner());
-        let html = render_views(&html, src, ix, &rec.path, &url);
-        // Tags link to the tags page.
-        let mut body = add_heading_ids(&html);
+        let rendered = render_note(vault, ix, &library, &rec.path, ix.source(&rec.path).unwrap_or_default(), &links);
+        report.private_links += rendered.private_links;
+        files.extend(rendered.files);
+        let mut body = rendered.html;
         for t in &rec.tags {
-            let from = format!("<span class=\"tag\">#{}</span>", escape_html(t));
-            let to = format!("<a class=\"tag\" href=\"tags.html#{}\">#{}</a>", tag_anchor(t), escape_html(t));
-            body = body.replace(&from, &to);
             tags.entry(t.to_lowercase()).or_default().push(rec);
         }
         // Published notes that link here.
