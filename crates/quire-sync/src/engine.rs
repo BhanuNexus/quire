@@ -17,6 +17,13 @@
 //! Edits beat deletes: a note edited on one device and deleted on another is
 //! kept. Renames travel with the note (the path lives inside the encrypted
 //! content), and a local rename is recognised by content.
+//!
+//! **Selective sync.** A store can hold only part of a vault
+//! ([`LocalStore::in_scope`]). Notes outside it are tracked but never
+//! written, read or pushed: their absence here is never sent as a delete.
+//! A note moved out of the selection on another device leaves this folder
+//! (to its trash); one moved in arrives. When the selection grows, the notes
+//! that were outside it are fetched again from the log.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -53,6 +60,23 @@ pub trait LocalStore {
     /// written as is, or merged); stores can keep its `actor`.
     fn incoming(&mut self, content: &Content) {
         let _ = content;
+    }
+    /// Whether `path` belongs to what this store holds. A store that holds
+    /// part of a vault (selective sync) says no for the rest: the engine
+    /// then never writes, removes or pushes those notes, so their absence
+    /// here never reads as a delete. `list`, `read` and `digest` must leave
+    /// them out too.
+    fn in_scope(&self, path: &str) -> bool {
+        let _ = path;
+        true
+    }
+    /// A file outside the selection whose contents [`fingerprint`] to
+    /// `base`, as `(path, text)`: where a note that left the selection
+    /// here went (moved into an unselected folder), so the move is sent as
+    /// a rename rather than a delete.
+    fn moved_out(&self, base: &str) -> Option<(String, String)> {
+        let _ = base;
+        None
     }
 }
 
@@ -102,6 +126,11 @@ pub struct Tracked {
     /// attachment, its [`fingerprint`].
     pub base: String,
     pub deleted: bool,
+    /// The note is outside this device's selection (selective sync): it is
+    /// tracked, never written or pushed here. When the selection grows to
+    /// include it, it is fetched again from the log.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub outside: bool,
 }
 
 /// Everything the engine persists between runs (small; stored in `.quire/sync/`).
@@ -179,6 +208,20 @@ impl Engine {
     /// Pull, merge and push until this device and the server agree.
     /// `today` (e.g. `2026-11-01`) goes into conflict copy names.
     pub fn sync(&mut self, local: &mut dyn LocalStore, server: &dyn Transport, today: &str) -> Result<Report, SyncError> {
+        self.rescope(&*local);
+        let res = self.rounds(local, server, today);
+        // Whatever happened, notes now tracked outside the selection are
+        // marked, so a later, wider selection fetches them instead of
+        // reading their absence here as a delete.
+        for t in self.state.files.values_mut() {
+            if !local.in_scope(&t.path) {
+                t.outside = true;
+            }
+        }
+        res
+    }
+
+    fn rounds(&mut self, local: &mut dyn LocalStore, server: &dyn Transport, today: &str) -> Result<Report, SyncError> {
         let mut report = Report::default();
         for round in 0..MAX_ROUNDS {
             if round > 0 {
@@ -190,6 +233,29 @@ impl Engine {
             }
         }
         Err(SyncError::Busy)
+    }
+
+    /// Bring the tracked notes in line with the store's selection: notes now
+    /// outside it are marked so; notes that were outside and are now inside
+    /// are forgotten and the log is read again from the start, so they
+    /// arrive as they are now (a file already here with other text is kept
+    /// beside them, never overwritten).
+    fn rescope(&mut self, local: &dyn LocalStore) {
+        let mut widened = false;
+        self.state.files.retain(|_, t| {
+            if !local.in_scope(&t.path) {
+                t.outside = true;
+                true
+            } else if t.outside {
+                widened = true;
+                false
+            } else {
+                true
+            }
+        });
+        if widened {
+            self.state.cursor = 0;
+        }
     }
 
     fn pull(&mut self, local: &mut dyn LocalStore, server: &dyn Transport, today: &str, report: &mut Report) -> Result<(), SyncError> {
@@ -220,7 +286,7 @@ impl Engine {
         let Some(t) = self.state.files.get(&r.file).cloned() else {
             // A note we haven't seen.
             let mut path = c.path.clone();
-            if !c.deleted {
+            if !c.deleted && local.in_scope(&c.path) {
                 // The same name may have been created here too; that file
                 // keeps its name and this note takes the next free one.
                 path = self.claim_path(local, &c.path, &r.file)?;
@@ -243,12 +309,38 @@ impl Engine {
             }
             None => (t.base.clone(), t.deleted),
         };
+        if !local.in_scope(&t.path) {
+            // Outside the selection here: nothing local to protect. It is
+            // written only if it moved into the selection.
+            if !c.deleted && local.in_scope(&c.path) {
+                let to = self.claim_path(local, &c.path, &r.file)?;
+                self.protect_unsynced(local, &to, &c.text)?;
+                write(local, &to, &c.text)?;
+                self.track_at(r, c, &to);
+            } else {
+                self.track_at(r, c, &c.path);
+            }
+            return Ok(());
+        }
         let here = local.read(&t.path);
         let changed_here = match (&here, base_deleted) {
             (None, deleted) => !deleted,
             (Some(_), true) => true,
             (Some(x), false) => !same_as_base(&t.path, x, &base),
         };
+        if !c.deleted && !local.in_scope(&c.path) {
+            // Moved out of the selection on another device. Unchanged here:
+            // it leaves this folder (to the trash). Changed here: this
+            // device's text stays where it is and is sent as a note of its
+            // own, so nothing typed here is lost.
+            if changed_here && here.is_some() {
+                report.conflict_copies.push(t.path.clone());
+            } else {
+                remove(local, &t.path)?;
+            }
+            self.track_at(r, c, &c.path);
+            return Ok(());
+        }
 
         if !changed_here {
             // Nothing to protect: take the remote version.
@@ -400,6 +492,7 @@ impl Engine {
                 head_seq: r.seq,
                 base: fingerprint(&c.path, &c.text),
                 deleted: c.deleted,
+                outside: false,
             },
         );
     }
@@ -414,6 +507,7 @@ impl Engine {
                 head_seq: r.seq,
                 base: String::new(),
                 deleted,
+                outside: false,
             },
         );
     }
@@ -446,6 +540,10 @@ impl Engine {
         let ids: Vec<FileId> = self.state.files.keys().cloned().collect();
         for id in ids {
             let t = self.state.files[&id].clone();
+            if t.outside || !local.in_scope(&t.path) {
+                // Not held here (selective sync): never pushed, so never deleted.
+                continue;
+            }
             // Compare fingerprints first, so unchanged attachments aren't read.
             let here = if present.contains(&t.path) { local.digest(&t.path) } else { None };
             let full = |p: &str| local.read(p);
@@ -466,6 +564,9 @@ impl Engine {
                         let to = untracked.remove(i);
                         let Some(text) = full(&to) else { continue };
                         Content { actor: local.actor(&to), path: to, deleted: false, text, from: String::new(), at: 0 }
+                    } else if let Some((to, text)) = local.moved_out(&t.base) {
+                        // Moved into a folder this device doesn't sync: a rename, not a delete.
+                        Content { actor: None, path: to, deleted: false, text, from: String::new(), at: 0 }
                     } else {
                         Content { path: t.path.clone(), deleted: true, text: String::new(), from: String::new(), at: 0, actor: None }
                     }
@@ -519,6 +620,7 @@ impl Engine {
                         head_seq: seq,
                         base: fingerprint(&content.path, &content.text),
                         deleted: content.deleted,
+                        outside: false,
                     },
                 );
                 report.pushed += 1;
