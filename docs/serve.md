@@ -214,7 +214,8 @@ suggestions yet).
   captured web page, an agent's text) can't run scripts, load anything from
   elsewhere, or be framed. Files from the vault are sent as downloads or in
   a sandbox (PDFs excepted, so the browser's viewer works).
-* Nothing is cached by browsers or proxies.
+* Pages and vault files are sent with `Cache-Control: no-store`, which tells browsers
+  and proxies not to keep a copy (only the app's own scripts and styles are cached).
 * What's not protected: anyone who controls the server, or gets the web
   passphrase, can read and change the notes held there. Pick a long
   passphrase and hold only the folders you need.
