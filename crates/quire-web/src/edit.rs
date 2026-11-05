@@ -4,7 +4,7 @@
 //!
 //! The editor sends the text it started from and that text's hash. If the
 //! note still has that hash, the new text is written atomically and kept
-//! in history with who wrote it ("You · via web · <device>"); the version
+//! in history with who wrote it (`You · via web · <device>`); the version
 //! it replaces is kept first, so the edit can be undone. If the note
 //! changed meanwhile (another device, an agent, sync), nothing is written:
 //! the person sees the three-way merge when it is clean, or both versions

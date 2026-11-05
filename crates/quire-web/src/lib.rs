@@ -57,7 +57,7 @@ pub struct WebConfig {
     /// Where MCP connection requests wait (shared with `quire-cli mcp approve`).
     pub consent: ConsentStore,
     pub limits: SessionLimits,
-    /// Recorded with web edits ("You · via web · <device>").
+    /// Recorded with web edits (`You · via web · <device>`).
     pub device: DeviceInfo,
     pub clock: Clock,
 }
@@ -160,7 +160,7 @@ impl Res {
 }
 
 /// The policy for pages: only this server's scripts, styles and images.
-const PAGE_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; \
+const PAGE_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self'; connect-src 'self'; \
 form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'self'; frame-src 'self'";
 
 /// Routes for [`quire_mcp::http::HttpServer::start_with`].
