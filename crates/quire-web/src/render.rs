@@ -98,15 +98,20 @@ fn unescape(s: &str) -> String {
     s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replace("&amp;", "&")
 }
 
+/// An SVG with its width and height in points; `None` when it failed.
+#[cfg(feature = "typeset")]
+type Svg = Option<(String, f32, f32)>;
+
 /// Math and Mermaid as SVG images (full edition). Errors leave the source.
 #[cfg(feature = "typeset")]
 fn typeset(html: &str) -> String {
     use base64::Engine as _;
     use std::collections::HashMap;
+    use std::fmt::Write as _;
     use std::sync::{Mutex, OnceLock};
-    static CACHE: OnceLock<Mutex<HashMap<String, Option<(String, f32, f32)>>>> = OnceLock::new();
+    static CACHE: OnceLock<Mutex<HashMap<String, Svg>>> = OnceLock::new();
     let cache = CACHE.get_or_init(Mutex::default);
-    let render = |key: String, f: &dyn Fn() -> Option<(String, f32, f32)>| {
+    let render = |key: String, f: &dyn Fn() -> Svg| {
         if let Some(v) = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&key) {
             return v.clone();
         }
@@ -157,9 +162,7 @@ fn typeset(html: &str) -> String {
         match svg {
             Some((svg, ..)) => {
                 let data = base64::engine::general_purpose::STANDARD.encode(svg.as_bytes());
-                done.push_str(&format!(
-                    "<figure class=\"diagram\"><img src=\"data:image/svg+xml;base64,{data}\" alt=\"Diagram\"></figure>"
-                ));
+                let _ = write!(done, "<figure class=\"diagram\"><img src=\"data:image/svg+xml;base64,{data}\" alt=\"Diagram\"></figure>");
             }
             None => done.push_str(&rest[i..i + len + 13]),
         }

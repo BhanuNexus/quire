@@ -71,7 +71,7 @@
   function setupPalette() {
     var dlg = $("#palette"), input = $("#palette-q"), list = $("#palette-list"), btn = $("#quick");
     if (!dlg || !input || !list) return;
-    var hits = [], sel = 0, timer = 0, seq = 0;
+    var hits = [], sel = 0, timer = 0, seq = 0, shownFor = null, pending = null;
     function render() {
       list.innerHTML = hits.map(function (h, i) {
         var folder = h.path.indexOf("/") >= 0 ? h.path.slice(0, h.path.lastIndexOf("/")) : "";
@@ -81,11 +81,12 @@
       input.setAttribute("aria-activedescendant", hits.length ? "pal-" + sel : "");
     }
     function load() {
-      var n = ++seq;
-      fetch("/api/quick?q=" + encodeURIComponent(input.value), { credentials: "same-origin" })
+      var n = ++seq, q = input.value;
+      pending = fetch("/api/quick?q=" + encodeURIComponent(q), { credentials: "same-origin" })
         .then(function (r) { return r.json(); })
-        .then(function (j) { if (n === seq) { hits = j.hits || []; sel = 0; render(); } })
+        .then(function (j) { if (n === seq) { hits = j.hits || []; sel = 0; shownFor = q; render(); } })
         .catch(function () { /* offline: keep what's shown */ });
+      return pending;
     }
     function open() {
       if (dlg.open) return;
@@ -103,7 +104,12 @@
     input.addEventListener("keydown", function (e) {
       if (e.key === "ArrowDown") { e.preventDefault(); sel = Math.min(sel + 1, hits.length - 1); render(); }
       else if (e.key === "ArrowUp") { e.preventDefault(); sel = Math.max(sel - 1, 0); render(); }
-      else if (e.key === "Enter") { e.preventDefault(); go(sel); }
+      else if (e.key === "Enter") {
+        e.preventDefault();
+        // Typed faster than the list came back: go by the latest list.
+        if (shownFor === input.value) go(sel);
+        else { clearTimeout(timer); load().then(function () { go(sel); }); }
+      }
     });
     list.addEventListener("click", function (e) {
       var li = e.target.closest("li[data-url]");

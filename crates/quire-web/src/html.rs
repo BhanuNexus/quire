@@ -68,7 +68,7 @@ pub(crate) fn page(f: &Frame<'_>, main: &str) -> String {
     }
     out.push_str("<a class=\"brand\" href=\"/\"><img src=\"/assets/icon.svg?v=");
     out.push_str(asset_version());
-    out.push_str("\" alt=\"\" width=\"22\" height=\"22\">Quire</a>\n");
+    out.push_str("\" alt=\"\" width=\"22\" height=\"22\"><span class=\"brand-name\">Quire</span></a>\n");
     if !f.csrf.is_empty() {
         let _ = write!(
             out,

@@ -212,7 +212,8 @@ impl Cx<'_> {
             csrf: &self.session.csrf,
             tree: &tree,
             read_only: self.web.cfg.read_only,
-            query: if self.req.path == "/search" { self.req.q("q") } else { "" },
+            // The search page has its own box.
+            query: "",
             folder,
         };
         Res::html(StatusCode::OK, html::page(&frame, main))
@@ -274,7 +275,7 @@ impl Cx<'_> {
             let here = current == Some(&f);
             let _ = write!(
                 out,
-                "<li class=\"file {}\"><a href=\"{}\"{}>{}</a></li>",
+                "<li class=\"file k-{}\"><a href=\"{}\"{}>{}</a></li>",
                 kind_class(&f),
                 esc(&note_href(&f)),
                 if here { " aria-current=\"page\"" } else { "" },
@@ -323,7 +324,7 @@ impl Cx<'_> {
         for f in &files {
             let _ = write!(
                 out,
-                "<li class=\"file {}\"><a href=\"{}\">{}</a></li>",
+                "<li class=\"file k-{}\"><a href=\"{}\">{}</a></li>",
                 kind_class(f),
                 esc(&note_href(f)),
                 esc(display_name(f.as_str()))
@@ -352,7 +353,7 @@ impl Cx<'_> {
                 let when = if m > 0 { format!("<time>{}</time>", esc(&quire_app::chrono_fmt(m))) } else { String::new() };
                 let _ = write!(
                     main,
-                    "<li class=\"file note\"><a href=\"{}\">{}</a> <span class=\"muted path\">{}</span> {when}</li>",
+                    "<li class=\"file k-note\"><a href=\"{}\">{}</a> <span class=\"muted path\">{}</span> {when}</li>",
                     esc(&note_href(p)),
                     esc(title),
                     esc(p.folder())
@@ -647,7 +648,7 @@ impl Cx<'_> {
         for (t, p) in &notes {
             let _ = write!(
                 main,
-                "<li class=\"file note\"><a href=\"{}\">{}</a> <span class=\"muted path\">{}</span></li>",
+                "<li class=\"file k-note\"><a href=\"{}\">{}</a> <span class=\"muted path\">{}</span></li>",
                 esc(&note_href(p)),
                 esc(t),
                 esc(p.folder())
@@ -779,7 +780,7 @@ Your changes and the other ones don't overlap, so both are combined below. Nothi
         }
         let gone = current.is_empty() && !self.web.guard.vault().exists(path);
         let mut out = format!(
-            "{}<div class=\"alert\" role=\"alert\"><strong>{}</strong> Nothing was overwritten. Choose what to do with your text.</div>",
+            "{}<div class=\"alert warn\" role=\"alert\"><strong>{}</strong> Nothing was overwritten. Choose what to do with your text.</div>",
             Self::crumbs(path.folder(), Some(display_name(path.as_str()))),
             if gone {
                 "This note was deleted or moved while you were editing."
@@ -787,24 +788,6 @@ Your changes and the other ones don't overlap, so both are combined below. Nothi
                 "This note changed while you were editing, on the same lines you changed."
             }
         );
-        if !gone {
-            out.push_str("<h2>What differs</h2><p class=\"muted\">Lines only in the saved version are marked −, lines only in yours +.</p><pre class=\"diff\">");
-            let diff = similar::TextDiff::from_lines(current, mine);
-            for change in diff.iter_all_changes() {
-                let (class, sign) = match change.tag() {
-                    similar::ChangeTag::Delete => ("del", "−"),
-                    similar::ChangeTag::Insert => ("ins", "+"),
-                    similar::ChangeTag::Equal => ("eq", " "),
-                };
-                let _ = write!(
-                    out,
-                    "<span class=\"{class}\">{sign} {}</span>",
-                    esc(change.as_str().unwrap_or_default().trim_end_matches('\n'))
-                );
-                out.push('\n');
-            }
-            out.push_str("</pre>");
-        }
         let _ = write!(
             out,
             "<div class=\"choices\"><form method=\"post\" action=\"/edit/{url}\">{csrf}<input type=\"hidden\" name=\"action\" value=\"copy\">\
@@ -815,11 +798,38 @@ Your changes and the other ones don't overlap, so both are combined below. Nothi
             mine = esc(mine)
         );
         if !gone {
+            let _ = write!(out, "<a class=\"btn\" href=\"/n/{}\">See the saved version</a>", url_path(path.as_str()));
+        }
+        out.push_str("</div>");
+        if !gone {
+            out.push_str(
+                "<h2>What differs</h2><p class=\"muted\">Lines only in the saved version are marked −, lines only in yours +.</p><pre class=\"diff\">",
+            );
+            let diff = similar::TextDiff::from_lines(current, mine);
+            for (i, group) in diff.grouped_ops(2).iter().enumerate() {
+                if i > 0 {
+                    out.push_str("<span class=\"gap\">⋯</span>\n");
+                }
+                for op in group {
+                    for change in diff.iter_changes(op) {
+                        let (class, sign) = match change.tag() {
+                            similar::ChangeTag::Delete => ("del", "−"),
+                            similar::ChangeTag::Insert => ("ins", "+"),
+                            similar::ChangeTag::Equal => ("eq", " "),
+                        };
+                        let _ = writeln!(
+                            out,
+                            "<span class=\"{class}\">{sign} {}</span>",
+                            esc(change.as_str().unwrap_or_default().trim_end_matches('\n'))
+                        );
+                    }
+                }
+            }
+            out.push_str("</pre>");
             out.push_str("<details class=\"redo\"><summary class=\"btn\">Edit mine against the saved version</summary>");
             out.push_str(&self.editor(path, mine, current, "", None));
             out.push_str("</details>");
         }
-        out.push_str("</div>");
         out
     }
 
