@@ -575,3 +575,122 @@ héllo |wörld ñ	~	héllo W|örld ñ
 héllo |wörld ñ	gUiw	héllo |WÖRLD ñ
 héllo |wörld ñ	fñ	héllo wörld |ñ
 a|b\nc	x	|a\nc
+|a1\na2\na3\na4	qaA!<Esc>jq2@a	a1!\na2!\na3!\na|4
+|one two three four	qadwq@a	|three four
+|x\nx\nx\nx\nx	qarYjq@a@@	Y\nY\nY\n|x\nx
+|1\n2\n3	qaA.<Esc>jq10@a	1.\n2.\n3|.
+|foo bar	qqxq3@q	|bar
+|a b c d e	qwdwq@w.	|d e
+|abc\nabc	qaxq"ap	b|xc\nabc
+|word word word	qaciwX<Esc>wq2@a	X X |X
+|aa\nbb\ncc	qaI- <Esc>jq2@a	- aa\n- bb\n-| cc
+|abcdef	qaxxq@au	|cdef
+|abcdef	qaxxq2@au	|cdef
+|one\ntwo\nthree	qaxjq@aq	ne\nwo\n|three
+|one\ntwo	qa0q@a	|one\ntwo
+|abc	qaq@ax	|bc
+|abcdef	qaxq@a3@@	|f
+|a\nb\nc\nd	qajq@aqbxq@b	a\nb\n|\nd
+|ab\nab\nab	qaxqqAjq@a	b\nb\n|ab
+|one\ntwo\nthree	majjd'a	|
+|one\ntwo\nthree	jmaggd'a	|three
+|one two\nthree four	wmajx`ax	one |wo\nthre four
+|one\ntwo\nthree	Gx``x	|ne\ntwo\nhree
+|one\ntwo\nthree	Gx''x	|ne\ntwo\nhree
+|one\ntwo\nthree	jlmaggOnew<Esc>`ax	new\none\nt|o\nthree
+|one\ntwo\nthree	jjmaggdd'ax	two\n|hree
+|one\ntwo\nthree	jmadd'ax	one\n|hree
+|one\ntwo\nthree	jmadd`ax	one\n|hree
+|one two three	wwx0`.x	one two |ree
+|one\ntwo\nthree	jAend<Esc>gg`.x	one\ntwoe|n\nthree
+|one\ntwo\nthree	jAend<Esc>gg'.x	one\n|woend\nthree
+|abc def	wmb0d`b	|def
+|abc def	wmb$y`bP	abc d|edef
+|a\nb\nc\nd	jjmagg''x	a\nb\n|\nd
+|a\nb\nc\nd	3Gx''x	|\nb\n\nd
+|x\ny\nz	/z<CR>``x	|\ny\nz
+|one\ntwo	jmagg'ax	one\n|wo
+|one two\nthree	wmalmb`ax`bx	one |w\nthree
+|one\ntwo\nthree	jmajd'a	|one
+|abc def ghi	wmaww`ad``	abc |i
+|abc\ndef	`ax	|bc\ndef
+|abc\ndef	jlmakmajx`ax	a|c\ndf
+|one\ntwo\nthree\nfour	jmajmbgg:'a,'bd<CR>	one\n|four
+|one two\nthree	lmaggI--<Esc>`ax	-|one two\nthree
+|a\nb\nc\nd\ne	2Gma4G''x''x	a\n\nc\n|\ne
+|one\ntwo	ix<Esc>`.x	|one\ntwo
+|one\ntwo	ihello<Esc>`.x	hell|one\ntwo
+|one\ntwo	jA<CR>new<Esc>gg`.x	one\ntwo\nn|e
+|abc\ndef\nghi	<C-v>jld	|c\nf\nghi
+|abc\ndef\nghi	l<C-v>jjIX<Esc>	a|Xbc\ndXef\ngXhi
+|abc\ndef\nghi	<C-v>jjAZ<Esc>	|aZbc\ndZef\ngZhi
+|abc\nd\nghi	l<C-v>jjIX<Esc>	a|Xbc\ndX\ngXhi
+|abc\nd\nghi	l<C-v>jjAX<Esc>	a|bXc\nd X\nghXi
+|abc\nd\nghijk	l<C-v>jj$AX<Esc>	a|bcX\ndX\nghijkX
+|abcd\nefgh\nijkl	l<C-v>jlcXY<Esc>	aX|Yd\neXYh\nijkl
+|abcd\nefgh	<C-v>jly$p	abcd|ab\nefghef
+|abcd\nefgh	<C-v>jlyP	|ababcd\nefefgh
+|abcd\nefgh	l<C-v>jly0P	|bcabcd\nfgefgh
+|abc\ndef	<C-v>jlrx	|xxc\nxxf
+|ab\tc\nabcdefghij	l<C-v>jlld	a|    c\naefghij
+|ab\tc\nabcdefghij	lll<C-v>jld	ab|\t\nabcdefgh
+|ab\tc\nabcdefghij	lll<C-v>jIX<Esc>	ab\t|Xc\nabcdefghXij
+|ab\tc\nabcdefghij	jllll<C-v>kIX<Esc>	ab|X\tc\nabXcdefghij
+|ab\tc\nabcdefghij	jllll<C-v>klAX<Esc>	ab|\tcX\nabcdefghiXj
+|日本語\nabcdef	<C-v>jld	|本語\ncdef
+|日本語\nabcdef	l<C-v>jIX<Esc>	日|X本語\nabXcdef
+|abcdef\n日本語	ll<C-v>jd	ab|ef\n日語
+|abc\ndef\nghi	<C-v>jj$d	|\n\n
+|abc\ndef	<C-v>jlU	|ABc\nDEf
+|aBc\nDeF	<C-v>jl~	|Abc\ndEF
+|abc\ndef\nghi\njkl	<C-v>jdj.	bc\n|f\nhi\njkl
+|abc\ndef\nghi\njkl	<C-v>jlIX<Esc>jj.	Xabc\nXdef\n|Xghi\nXjkl
+|abc\ndef	<C-v>jlo<Esc>x	|bc\ndef
+|abc\ndef	<C-v>jlO<Esc>x	abc\n|ef
+|abc\ndef\nghi	<C-v>jlyjjp	abc\ndef\ng|abhi\n de
+|abcd\nefgh	<C-v>jlxu	|abcd\nefgh
+|abc\ndef	<C-v>jIX<Esc>u	|abc\ndef
+|abc\ndef	<C-v>jy"ap	|abc\ndef
+|abc\ndef\nghi	l<C-v>jjy	a|bc\ndef\nghi
+|abc\ndef\nghi	jl<C-v>jky	abc\nd|ef\nghi
+|ab\nabcd\nabcdef	ll<C-v>jjd	|a\nacd\nacdef
+|ab\nabcd\nabcdef	ll<C-v>jjcX<Esc>	a|X\naXcd\naXcdef
+|ab\nabcd\nabcdef	<C-v>jj$y$p	ab|ab\nababcd  cd\nababcdefcdef
+|xyz\nxyz	yl<C-v>jp	|xyz\nxyz
+|abc\ndef	<C-v>j<Esc>gvd	|bc\nef
+|abc\ndef\nghi	<C-v>jjlv	abc\ndef\ng|hi
+|abc\ndef	v<C-v>d	|bc\ndef
+|abc\ndef	<C-v>jVd	|
+|abc def\nabc def	<C-v>jeD	|\n
+|abc def\nabc def	l<C-v>jC-<Esc>	a|-\na-
+|ab\nab	<C-v>jlJ	ab| ab
+|abc\nabc	<C-v>j>	|  abc\n  abc
+|two	Ax<Esc>`.x	tw|o
+|two	Axy<Esc>`.x	two|x
+|two	lixy<Esc>`.x	tx|wo
+|two	llaxy<Esc>`.x	two|x
+|two	ccab<Esc>`.x	|a
+|two\nthree	ddj`.x	|hree
+|two\nthree	jddk`.x	|wo
+|one two	wdw0`.x	on|e
+|one two	ylp0`.x	o|ne two
+|one\ntwo	yyjp`.x	one\ntwo\n|ne
+|one two	wcwxx<Esc>0`.x	one |x
+|one\ntwo\nthree	jmajd`a	one\n|three
+|one\ntwo	jmak:2d<CR>'ax	|ne
+|one\ntwo	ma:s/o/0/<CR>`ax	|ne\ntwo
+|a\nb\nc\nd	qaI(<Esc>A)<Esc>jq@a@@	(a)\n(b)\n(c)\n|d
+|abc\nabc\nabc	qa<C-v>jIx<Esc>q	|xabc\nxabc\nabc
+|abc\nabc\nabc\nabc	qa<C-v>jIx<Esc>jjq@a	xabc\nxabc\nxabc\n|xabc
+|one\ntwo\nthree	qayyjpq	one\ntwo\n|one\nthree
+|a b c	qaxwq100@a	 | 
+|one two\nthree four	majjy'aP	|one two\nthree four\none two\nthree four
+|one two three	wmawwc`aX<Esc>	one |Xe
+|a\nb\nc	qamaq@a'ax	|\nb\nc
+|x1 x2 x3	qa0f1rYq:s/2/Z/<CR>	|xY xZ x3
+|aaa\nbbb\nccc	qa0x:s/b/B/<CR>q@a	|a\nbbb\nccc
+|ab\ncd	ma<C-v>j`ad	|b\ncd
+|abc\ndef\nghi	<C-v>jjlc<Esc>	|c\nf\ni
+|abcd\nabcd	l<C-v>jlU.	a|BCd\naBCd
+|ab\nab	<C-v>jdu<C-r>	|b\nb
+|abc\ndef	<C-v>jlyGo<Esc>p	abc\ndef\n|ab\nde

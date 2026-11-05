@@ -12,6 +12,8 @@ struct Sim {
     vim: VimState,
     buf: Buffer,
     sel: Selection,
+    /// The editor's other cursors (a Visual block's rows).
+    extra: Vec<Selection>,
     /// Text before each change, and the cursor (line, column) before it.
     undo: Vec<(String, (usize, usize))>,
     redo: Vec<(String, (usize, usize))>,
@@ -29,6 +31,7 @@ impl Sim {
             vim,
             buf: Buffer::from(text.as_str()),
             sel: Selection::cursor(cur),
+            extra: Vec::new(),
             undo: Vec::new(),
             redo: Vec::new(),
             group: None,
@@ -64,24 +67,13 @@ impl Sim {
         self.sel = tx.selection().expect("edits carry a selection").clamp(self.buf.len_chars());
     }
 
-    /// Typing in Insert mode, as the editor does it.
+    /// Typing in Insert mode, as the editor does it (at every cursor).
     fn type_key(&mut self, k: Key) {
-        let p = self.sel.head;
-        let tx = match k {
-            Key::Char(c) => Transaction::insert(p, c.to_string()).with_selection(Selection::cursor(p + 1)),
-            Key::Tab => Transaction::insert(p, "\t").with_selection(Selection::cursor(p + 1)),
-            Key::Enter => Transaction::insert(p, "\n").with_selection(Selection::cursor(p + 1)),
-            Key::Backspace if p > 0 => Transaction::delete(p - 1, p).with_selection(Selection::cursor(p - 1)),
-            Key::Left => {
-                self.sel = Selection::cursor(p.saturating_sub(1));
-                return;
-            }
-            _ => return,
-        };
-        if self.group.is_none() {
-            self.push_undo(self.snapshot());
+        let before = self.snapshot();
+        macros::type_key(k, &mut self.buf, &mut self.sel, &mut self.extra);
+        if self.group.is_none() && before.0 != self.buf.to_string() {
+            self.push_undo(before);
         }
-        self.apply(&tx);
     }
 
     fn press(&mut self, k: Key) {
@@ -134,6 +126,9 @@ impl Sim {
         {
             self.sel = s;
         }
+        if let Some(e) = out.extra {
+            self.extra = e;
+        }
         if let Some(c) = out.clipboard {
             self.clipboard = c;
         }
@@ -151,15 +146,15 @@ impl Sim {
     }
 
     /// `:s` with a literal pattern (the editor uses regular expressions).
+    /// The cursor goes to the first non-blank of the last line changed.
     fn substitute(&mut self, s: &Substitute) {
-        let mut lines: Vec<String> = self.buf.to_string().split('\n').map(str::to_string).collect();
-        for l in s.lines.clone() {
-            if let Some(line) = lines.get_mut(l) {
-                *line = if s.global { line.replace(&s.pattern, &s.replacement) } else { line.replacen(&s.pattern, &s.replacement, 1) };
-            }
-        }
+        let Some(text) = PlainHost.substitute(&self.buf, s) else { return };
+        let last = s.lines.clone().rev().find(|l| *l < self.buf.len_lines() && self.buf.line(*l).contains(&s.pattern));
         self.push_undo(self.snapshot());
-        self.buf = Buffer::from(lines.join("\n").as_str());
+        self.buf = Buffer::from(text.as_str());
+        if let Some(l) = last {
+            self.sel = Selection::cursor(motions::first_non_blank(&self.buf, l));
+        }
     }
 
     fn run(&mut self, keys: &str) -> String {
@@ -273,11 +268,11 @@ fn ex_commands_reach_the_editor() {
         s.run(keys);
         assert_eq!(s.ex.pop(), Some(ex), "{keys}");
     }
-    assert_eq!(s.run(":%s/b/X/g<CR>"), "|a\nX\nc");
-    assert_eq!(s.run(":2,3s/X/Y/<CR>"), "|a\nY\nc");
+    assert_eq!(s.run(":%s/b/X/g<CR>"), "a\n|X\nc");
+    assert_eq!(s.run(":2,3s/X/Y/<CR>"), "a\n|Y\nc");
     s.run(":frob<CR>");
     assert_eq!(s.vim.take_message().as_deref(), Some("Not an editor command: frob"));
-    s.run("Vj:s/a/b/<CR>");
+    s.run("ggVj:s/a/b/<CR>");
     let Some(Ex::Substitute(sub)) = s.ex.pop() else { panic!("a substitute") };
     assert_eq!(sub.lines, 0..2, "'<,'> is the visual selection");
 }
@@ -388,4 +383,79 @@ fn diff_span_matches_a_char_by_char_diff() {
     }
     assert_eq!(diff_span(&Buffer::from(""), &Buffer::from("€")), (0, 0, 1));
     assert_eq!(diff_span(&Buffer::from("a€b"), &Buffer::from("a😀b")), (1, 2, 2));
+}
+
+#[test]
+fn a_macro_run_is_one_undo_step() {
+    let mut s = Sim::new("|a\nb\nc\nd");
+    s.run("qaA!<Esc>jq");
+    assert_eq!(s.vim.recording(), None);
+    let before = s.undo.len();
+    assert_eq!(s.run("2@a"), "a!\nb!\nc!\n|d");
+    assert_eq!(s.undo.len(), before + 1, "two runs of three keys, one step");
+    assert_eq!(s.run("u"), "a!\n|b\nc\nd");
+    // The macro is text in its register.
+    assert_eq!(s.run("\"ap"), "a!\nbA!\u{1b}|j\nc\nd");
+}
+
+#[test]
+fn recording_shows_in_the_status_bar() {
+    let mut s = Sim::new("|one");
+    s.run("qq");
+    assert_eq!(s.vim.status(), "recording @q");
+    s.run("i");
+    assert_eq!(s.vim.status(), "-- INSERT --  recording @q");
+    s.run("x<Esc>q");
+    assert_eq!(s.vim.status(), "");
+    // Text typed by the editor itself is recorded too.
+    let mut v = VimState::new();
+    let b = Buffer::from("one");
+    for k in Key::parse_seq("qai") {
+        v.handle(k, &b, Selection::cursor(0), &mut PlainHost);
+    }
+    v.typed("hi");
+    v.handle(Key::Esc, &b, Selection::cursor(0), &mut PlainHost);
+    v.handle(Key::Char('q'), &b, Selection::cursor(0), &mut PlainHost);
+    assert_eq!(v.registers.get(&'a').map(|r| r.text.as_str()), Some("ihi\u{1b}"));
+}
+
+#[test]
+fn a_runaway_macro_stops() {
+    let mut s = Sim::new("|ab");
+    // `@a` inside `a`: stops at the nesting limit, the text is still there.
+    s.vim.registers.insert('a', Register { text: "@a".into(), ..Register::default() });
+    s.run("@a");
+    assert_eq!(s.buf.to_string(), "ab");
+    assert!(s.vim.take_message().is_some_and(|m| m.contains("deep")));
+}
+
+#[test]
+fn marks_travel_with_their_note() {
+    let mut s = Sim::new("one\n|two\nthree");
+    s.run("ma");
+    let kept = s.vim.swap_marks(Marks::default());
+    assert_eq!(kept.get('a'), Some((1, 0)));
+    s.run("gg");
+    assert_eq!(s.run("'a"), "|one\ntwo\nthree", "no mark a here");
+    s.vim.swap_marks(kept);
+    assert_eq!(s.run("'a"), "one\n|two\nthree");
+}
+
+#[test]
+fn a_block_is_one_selection_a_row() {
+    let mut s = Sim::new("|abc\ndef\nghi");
+    s.run("<C-v>jjl");
+    assert_eq!(s.vim.mode(), Mode::VisualBlock);
+    assert_eq!(s.vim.status(), "-- VISUAL BLOCK --");
+    assert_eq!(s.sel, Selection::new(8, 10), "the cursor's row");
+    assert_eq!(s.extra, vec![Selection::new(0, 2), Selection::new(4, 6)]);
+    // `I` types at one cursor a row; Escape clears them; one undo step.
+    s.vim.handle(Key::Esc, &s.buf.clone(), s.sel, &mut PlainHost);
+    let mut s = Sim::new("|abc\ndef\nghi");
+    s.run("<C-v>jjI");
+    assert_eq!(s.extra.len(), 2);
+    s.run("--<Esc>");
+    assert!(s.extra.is_empty());
+    assert_eq!(s.show(), "|--abc\n--def\n--ghi");
+    assert_eq!(s.run("u"), "|abc\ndef\nghi");
 }

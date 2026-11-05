@@ -43,6 +43,8 @@ pub(super) enum Motion {
     SearchNext(bool),
     PageDown,
     PageUp,
+    /// `` `a `` (to the mark itself) and `'a` (to its line's first non-blank).
+    Mark(char, bool),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,6 +121,22 @@ pub(super) enum Simple {
     Swap,
     /// Visual mode: an operator acts on the selection.
     VisualOp(Op, bool),
+    /// `Ctrl-v`
+    VisualBlock,
+    /// `q{reg}`: start recording a macro.
+    Record(char),
+    /// `@{reg}`, `@@` (`'@'`): run a macro.
+    Execute(char),
+    /// `m{a-z}`
+    SetMark(char),
+    /// Visual block: `I` and `A`.
+    BlockInsert {
+        append: bool,
+    },
+    /// Visual block: `D` and `C` (to the end of each line).
+    BlockEol(Op),
+    /// Visual block: `O` goes to the other end of the row.
+    SwapSide,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,6 +235,13 @@ fn motion_key(c: &mut Cursor<'_>, k: Key) -> Step<Motion> {
         Key::Char('N') => Motion::SearchNext(true),
         Key::PageDown | Key::Ctrl('f') => Motion::PageDown,
         Key::PageUp | Key::Ctrl('b') => Motion::PageUp,
+        Key::Char(q @ ('`' | '\'')) => {
+            return match c.next() {
+                None => Ok(None),
+                Some(Key::Char(ch @ ('a'..='z' | '\'' | '`' | '.' | '<' | '>'))) => Ok(Some(Motion::Mark(ch, q == '`'))),
+                Some(_) => Err(()),
+            };
+        }
         Key::Char(f @ ('f' | 'F' | 't' | 'T')) => {
             let kind = match f {
                 'f' => FindKind::Forward,
@@ -339,6 +364,21 @@ fn simple(c: &mut Cursor<'_>, k: Key) -> Step<Simple> {
         Key::Char('.') => Simple::Repeat,
         Key::Char('v') => Simple::Visual,
         Key::Char('V') => Simple::VisualLine,
+        Key::Ctrl('v' | 'q') => Simple::VisualBlock,
+        Key::Char('q') => match c.next() {
+            None => return Ok(None),
+            Some(Key::Char(r)) if r.is_ascii_alphanumeric() || r == '"' => Simple::Record(r),
+            Some(_) => return Err(()),
+        },
+        Key::Char('@') => match c.next() {
+            None => return Ok(None),
+            Some(Key::Char(r)) if r.is_ascii_alphanumeric() || matches!(r, '"' | '@' | '-' | '+' | '*') => Simple::Execute(r),
+            Some(_) => return Err(()),
+        },
+        Key::Char('m') => match mark_name(c)? {
+            None => return Ok(None),
+            Some(ch) => Simple::SetMark(ch),
+        },
         Key::Char('~') => Simple::ToggleCaseChar,
         Key::Char('D') => Simple::DelEnd,
         Key::Char('C') => Simple::ChangeEnd,
@@ -359,6 +399,15 @@ fn simple(c: &mut Cursor<'_>, k: Key) -> Step<Simple> {
         },
         _ => return Err(()),
     }))
+}
+
+/// The mark `m` sets: `None` while the name is still to come.
+fn mark_name(c: &mut Cursor<'_>) -> Result<Option<char>, ()> {
+    match c.next() {
+        None => Ok(None),
+        Some(Key::Char(ch @ ('a'..='z' | '\'' | '`'))) => Ok(Some(ch)),
+        Some(_) => Err(()),
+    }
 }
 
 /// Parse the pending keys of a Normal-mode command.
@@ -419,7 +468,7 @@ pub(super) fn parse_normal(keys: &[Key]) -> Parsed {
 }
 
 /// Parse the pending keys of a Visual-mode command.
-pub(super) fn parse_visual(keys: &[Key]) -> Parsed {
+pub(super) fn parse_visual(keys: &[Key], block: bool) -> Parsed {
     if keys.len() > MAX_PENDING {
         return Parsed::Invalid;
     }
@@ -433,6 +482,17 @@ pub(super) fn parse_visual(keys: &[Key]) -> Parsed {
     let done = |act: Act| Parsed::Done(Cmd { reg, count, act });
     let vop = |op: Op, lines: bool| done(Act::Do(Simple::VisualOp(op, lines)));
     match k {
+        Key::Char('I') if block => done(Act::Do(Simple::BlockInsert { append: false })),
+        Key::Char('A') if block => done(Act::Do(Simple::BlockInsert { append: true })),
+        Key::Char('D') if block => done(Act::Do(Simple::BlockEol(Op::Delete))),
+        Key::Char('O') if block => done(Act::Do(Simple::SwapSide)),
+        Key::Char('C') if block => done(Act::Do(Simple::BlockEol(Op::Change))),
+        Key::Ctrl('v' | 'q') => done(Act::Do(Simple::VisualBlock)),
+        Key::Char('m') => match mark_name(&mut c) {
+            Ok(Some(ch)) => done(Act::Do(Simple::SetMark(ch))),
+            Ok(None) => Parsed::Incomplete,
+            Err(()) => Parsed::Invalid,
+        },
         Key::Char('d' | 'x') | Key::Delete => vop(Op::Delete, false),
         Key::Char('X' | 'D') => vop(Op::Delete, true),
         Key::Char('c' | 's') => vop(Op::Change, false),

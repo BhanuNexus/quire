@@ -18,10 +18,16 @@
 //! (`iw aw iW aW i" a" i' a' i( a( i[ a[ i{ a{ i< a< ip ap it at`),
 //! `x X s S r R o O a A i I p P J gJ u Ctrl-r . ~ D C Y v V gv`, `/ ? n N`,
 //! `:w :q :wq :x :{n} :s :%s :d :y`, registers `"a`–`"z` (`"A` appends),
-//! `"0`–`"9`, `"-`, `"_` and `"+` (the system clipboard). Not supported:
-//! macros, marks, visual block and a vimrc.
+//! `"0`–`"9`, `"-`, `"_` and `"+` (the system clipboard), macros (`q{reg}`
+//! … `q`, `@{reg}`, `@@`, with counts; one undo step a run), marks (`m{a-z}`,
+//! `` `a `` `'a` `''` `` `. ``) and Visual-block mode (`Ctrl-v` with `I A c
+//! C d D y p r ~ u U $ o O`, on the editor's multiple cursors). Not
+//! supported: a vimrc.
 
+mod block;
 mod ex;
+mod macros;
+mod marks;
 mod motions;
 mod parse;
 #[cfg(test)]
@@ -31,6 +37,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 pub use ex::{Ex, Substitute, vim_to_regex};
+pub use marks::Marks;
 pub use motions::FindKind;
 
 use crate::{Buffer, Selection, Transaction};
@@ -110,6 +117,13 @@ pub enum Mode {
     Replace,
     Visual,
     VisualLine,
+    VisualBlock,
+}
+
+impl Mode {
+    const fn visual(self) -> bool {
+        matches!(self, Self::Visual | Self::VisualLine | Self::VisualBlock)
+    }
 }
 
 /// Where an insert session (one undo step) starts and ends.
@@ -152,6 +166,9 @@ pub struct Outcome {
     pub clipboard: Option<String>,
     /// Read the system clipboard and put it (`"+p`).
     pub paste_clipboard: Option<Paste>,
+    /// More selections besides the main one: the rows of a Visual block,
+    /// or one cursor a row for a block insert. `Some(vec![])` clears them.
+    pub extra: Option<Vec<Selection>>,
 }
 
 /// Editor services the state machine can't compute from the text alone.
@@ -189,6 +206,25 @@ pub trait Host {
     fn page_lines(&self) -> usize {
         20
     }
+
+    /// `:s` inside a macro: the text after the substitution, or `None` when
+    /// nothing matched. The default replaces the pattern as plain text.
+    fn substitute(&mut self, buf: &Buffer, s: &Substitute) -> Option<String> {
+        let mut hit = false;
+        let lines: Vec<String> = buf
+            .to_string()
+            .split('\n')
+            .enumerate()
+            .map(|(i, line)| {
+                if !s.lines.contains(&i) || s.pattern.is_empty() || !line.contains(&s.pattern) {
+                    return line.to_string();
+                }
+                hit = true;
+                if s.global { line.replace(&s.pattern, &s.replacement) } else { line.replacen(&s.pattern, &s.replacement, 1) }
+            })
+            .collect();
+        hit.then(|| lines.join("\n"))
+    }
 }
 
 /// A [`Host`] for plain text: lines, not display rows, and literal search.
@@ -196,10 +232,22 @@ pub struct PlainHost;
 
 impl Host for PlainHost {}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct Register {
     text: String,
     linewise: bool,
+    /// Yanked from a Visual block: one row a line.
+    block: bool,
+}
+
+/// The selection a Visual-mode change acted on, for `.`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    /// Lines below the first, and the last line's column (chars on one line).
+    Chars(usize, usize),
+    Lines(usize),
+    /// Lines below the first and columns right of the first (`None`: to the end).
+    Block(usize, Option<usize>),
 }
 
 /// A change `.` can repeat.
@@ -209,14 +257,23 @@ struct Recorded {
     /// What was typed in the insert session the command started.
     insert: Option<String>,
     /// For a Visual-mode change: the selection's shape.
-    visual: Option<(bool, usize, usize)>,
+    visual: Option<Shape>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InsertKind {
     Plain,
-    Open { below: bool },
+    Open {
+        below: bool,
+    },
     Replace,
+    /// Typing at one cursor a row of a Visual block. `top` is where the
+    /// first row's insert starts; Escape puts the cursor at `ret` (or, for
+    /// `c`, after what was typed).
+    Block {
+        top: usize,
+        ret: Option<usize>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -235,11 +292,13 @@ struct Scratch {
     work: Buffer,
     /// (start, end in `orig`, end in `work`) of the changed region.
     span: Option<(usize, usize, usize)>,
+    /// The marks already follow these edits (a macro ran them one by one).
+    marks_done: bool,
 }
 
 impl Scratch {
     fn new(buf: &Buffer) -> Self {
-        Self { orig: buf.clone(), work: buf.clone(), span: None }
+        Self { orig: buf.clone(), work: buf.clone(), span: None, marks_done: false }
     }
 
     fn replace(&mut self, r: Range<usize>, text: &str) {
@@ -327,6 +386,43 @@ pub struct VimState {
     message: Option<String>,
     /// One level of indentation for `>` and `<`.
     pub indent: String,
+    /// Display columns between tab stops (Visual-block columns).
+    pub tabstop: usize,
+    /// This note's marks.
+    pub marks: Marks,
+    /// The text the marks were last placed in (edits since then move them).
+    seen: Option<Buffer>,
+    /// `q{reg}`: the register and the keys so far.
+    recording: Option<(char, Vec<Key>)>,
+    /// The macro `@@` runs again.
+    last_macro: Option<char>,
+    /// Macros running inside each other.
+    depth: usize,
+    /// A command failed (a motion that can't move, a mark not set): a
+    /// running macro stops.
+    error: bool,
+    /// Visual block reaches the end of every line (`$`).
+    dollar: bool,
+    /// Visual block: the display column `j` and `k` keep.
+    block_col: usize,
+    /// Extra selections were handed to the editor (they need clearing).
+    shown_extra: bool,
+    /// Where the last change was, when a command knows better than its edit.
+    change_at: Option<marks::Pos>,
+}
+
+/// Motions that are jumps: `''` goes back to where they started.
+fn is_jump(mo: &Motion) -> bool {
+    matches!(
+        mo,
+        Motion::GotoFirst
+            | Motion::GotoLast
+            | Motion::SearchNext(_)
+            | Motion::ParaFwd
+            | Motion::ParaBack
+            | Motion::MatchPair
+            | Motion::Mark(..)
+    )
 }
 
 fn line_range(buf: &Buffer, l0: usize, l1: usize) -> Range<usize> {
@@ -424,7 +520,7 @@ pub fn diff_span(a: &Buffer, b: &Buffer) -> (usize, usize, usize) {
 
 impl VimState {
     pub fn new() -> Self {
-        Self { indent: "  ".into(), ..Self::default() }
+        Self { indent: "  ".into(), tabstop: 8, ..Self::default() }
     }
 
     pub const fn mode(&self) -> Mode {
@@ -459,12 +555,51 @@ impl VimState {
             Mode::Replace => "-- REPLACE --",
             Mode::Visual => "-- VISUAL --",
             Mode::VisualLine => "-- VISUAL LINE --",
+            Mode::VisualBlock => "-- VISUAL BLOCK --",
         };
         let pending = self.pending();
-        match (mode.is_empty(), pending.is_empty()) {
+        let mut out = match (mode.is_empty(), pending.is_empty()) {
             (true, _) => pending,
             (false, true) => mode.to_string(),
             (false, false) => format!("{mode}  {pending}"),
+        };
+        if let Some((r, _)) = &self.recording {
+            out = if out.is_empty() { format!("recording @{r}") } else { format!("{out}  recording @{r}") };
+        }
+        out
+    }
+
+    /// The register a macro is being recorded into.
+    pub fn recording(&self) -> Option<char> {
+        self.recording.as_ref().map(|(r, _)| *r)
+    }
+
+    /// Text the editor typed itself in Insert mode, for a macro being recorded.
+    pub fn typed(&mut self, text: &str) {
+        if self.depth == 0
+            && let Some((_, keys)) = self.recording.as_mut()
+        {
+            keys.extend(text.chars().map(|c| if c == '\n' { Key::Enter } else { Key::Char(c) }));
+        }
+    }
+
+    /// This note's marks, to keep while another note is open; the state
+    /// machine starts over with `next`.
+    pub fn swap_marks(&mut self, next: Marks) -> Marks {
+        self.seen = None;
+        std::mem::replace(&mut self.marks, next)
+    }
+
+    /// Move the marks along with edits made since the last key.
+    fn track(&mut self, buf: &Buffer) {
+        match &self.seen {
+            Some(old) if old.rope() == buf.rope() => {}
+            Some(old) => {
+                let old = old.clone();
+                self.marks.edited(&old, buf);
+                self.seen = Some(buf.clone());
+            }
+            None => self.seen = Some(buf.clone()),
         }
     }
 
@@ -481,9 +616,10 @@ impl VimState {
     /// Back to Normal mode without finishing anything (the note was
     /// switched or Vim keys turned off).
     pub fn reset(&mut self) {
-        if matches!(self.mode, Mode::Visual | Mode::VisualLine) {
+        if self.mode.visual() {
             self.last_visual = Some((self.mode, self.anchor, self.cursor));
         }
+        self.dollar = false;
         self.mode = Mode::Normal;
         self.keys.clear();
         self.insert = None;
@@ -494,6 +630,7 @@ impl VimState {
     /// Where the cursor block is drawn for a selection the state machine set.
     pub fn cursor_pos(&self, buf: &Buffer, sel: Selection) -> usize {
         match self.mode {
+            Mode::VisualBlock => self.cursor.min(buf.len_chars()),
             Mode::Visual | Mode::VisualLine if self.visual_selection(buf) == sel => self.cursor.min(buf.len_chars()),
             Mode::Visual | Mode::VisualLine if sel.head > sel.anchor => sel.head - 1,
             _ => sel.head.min(buf.len_chars()),
@@ -507,7 +644,7 @@ impl VimState {
         self.sync(buf, sel);
         let want = match self.mode {
             Mode::Normal if self.cmdline.is_none() => Selection::cursor(Self::clamp(buf, sel.head)),
-            Mode::Visual | Mode::VisualLine => self.visual_selection(buf),
+            Mode::Visual | Mode::VisualLine | Mode::VisualBlock => self.visual_selection(buf),
             _ => return None,
         };
         (want != sel).then_some(want)
@@ -521,6 +658,9 @@ impl VimState {
     fn visual_selection(&self, buf: &Buffer) -> Selection {
         let len = buf.len_chars();
         let (a, c) = (self.anchor.min(len), self.cursor.min(len));
+        if self.mode == Mode::VisualBlock {
+            return self.block_rows(buf).0;
+        }
         if self.mode == Mode::VisualLine {
             let (la, lc) = (m::line_of(buf, a), m::line_of(buf, c));
             let r = line_range(buf, la.min(lc), la.max(lc));
@@ -537,7 +677,7 @@ impl VimState {
                 self.mode = Mode::Visual;
                 self.adopt(sel);
             }
-            Mode::Visual | Mode::VisualLine if self.visual_selection(buf) != sel => {
+            Mode::Visual | Mode::VisualLine | Mode::VisualBlock if self.visual_selection(buf) != sel => {
                 if sel.is_empty() {
                     self.mode = Mode::Normal;
                 } else {
@@ -563,7 +703,21 @@ impl VimState {
 
     /// Handle one key.
     pub fn handle(&mut self, key: Key, buf: &Buffer, sel: Selection, host: &mut dyn Host) -> Outcome {
+        self.track(buf);
         self.sync(buf, sel);
+        if self.depth == 0
+            && let Some((reg, keys)) = self.recording.as_mut()
+        {
+            // `q` ends the recording (and isn't part of it).
+            if key == Key::Char('q') && self.keys.is_empty() && self.cmdline.is_none() && !matches!(self.mode, Mode::Insert | Mode::Replace)
+            {
+                let (reg, keys) = (*reg, std::mem::take(keys));
+                self.recording = None;
+                self.store_macro(reg, &keys);
+                return Outcome { consumed: true, ..Outcome::default() };
+            }
+            keys.push(key);
+        }
         if self.cmdline.is_some() {
             return self.cmdline_key(key, buf, sel, host);
         }
@@ -573,10 +727,11 @@ impl VimState {
                 _ => Outcome::default(),
             },
             Mode::Replace => self.replace_key(key, buf, sel),
-            Mode::Normal | Mode::Visual | Mode::VisualLine => {
+            Mode::Normal | Mode::Visual | Mode::VisualLine | Mode::VisualBlock => {
                 self.keys.push(key);
                 let visual = self.mode != Mode::Normal;
-                let parsed = if visual { parse::parse_visual(&self.keys) } else { parse::parse_normal(&self.keys) };
+                let parsed =
+                    if visual { parse::parse_visual(&self.keys, self.mode == Mode::VisualBlock) } else { parse::parse_normal(&self.keys) };
                 match parsed {
                     Parsed::Incomplete => Outcome { consumed: true, ..Outcome::default() },
                     Parsed::Invalid => {
@@ -611,7 +766,7 @@ impl VimState {
         let mut out = Outcome { consumed: true, ..Outcome::default() };
         let mut sx = Scratch::new(buf);
         let pos = match self.mode {
-            Mode::Visual | Mode::VisualLine => self.cursor,
+            Mode::Visual | Mode::VisualLine | Mode::VisualBlock => self.cursor,
             _ => Self::clamp(buf, sel.head),
         };
         let pos = if self.mode == Mode::Normal {
@@ -628,22 +783,45 @@ impl VimState {
         let buf = sx.work.clone();
         let sel = match self.mode {
             Mode::Normal => Selection::cursor(Self::clamp(&buf, pos)),
-            Mode::Visual | Mode::VisualLine => {
+            Mode::Visual | Mode::VisualLine | Mode::VisualBlock => {
                 self.cursor = pos.min(buf.len_chars());
                 self.visual_selection(&buf)
             }
             Mode::Insert | Mode::Replace => Selection::cursor(pos.min(buf.len_chars())),
         };
+        if self.mode == Mode::VisualBlock {
+            out.extra = Some(self.block_rows(&buf).1);
+            self.shown_extra = true;
+        } else if out.extra.as_ref().is_some_and(|e| !e.is_empty()) {
+            self.shown_extra = true;
+        } else if self.shown_extra && out.extra.is_none() {
+            out.extra = Some(Vec::new());
+            self.shown_extra = false;
+        }
+        let span = sx.span.filter(|_| !sx.marks_done);
+        let orig = sx.orig.clone();
         match sx.finish() {
-            Some(tx) => out.edit = Some(tx.with_selection(sel)),
+            Some(tx) => {
+                if let Some((s, oe, ce)) = span {
+                    self.marks.edited_at(&orig, &buf, (s, oe, ce));
+                    let at = self.change_at.take().unwrap_or_else(|| buf.line_col(s.min(buf.len_chars())));
+                    self.marks.set('.', at);
+                }
+                self.seen = Some(buf);
+                out.edit = Some(tx.with_selection(sel));
+            }
             None => out.selection = Some(sel),
         }
+        self.change_at = None;
     }
 
     // ------------------------------------------------------------ registers
 
     fn store(&mut self, reg: Option<char>, text: String, linewise: bool, yank: bool, out: &mut Outcome) {
-        let r = Register { text, linewise };
+        self.store_reg(reg, Register { text, linewise, block: false }, yank, out);
+    }
+
+    fn store_reg(&mut self, reg: Option<char>, r: Register, yank: bool, out: &mut Outcome) {
         match reg {
             Some('_') => return,
             Some('+' | '*') => out.clipboard = Some(r.text.clone()),
@@ -659,7 +837,7 @@ impl VimState {
                             t.push('\n');
                         }
                         t.push_str(&r.text);
-                        Register { text: t, linewise: old.linewise || r.linewise }
+                        Register { text: t, linewise: old.linewise || r.linewise, block: old.block && r.block }
                     }
                     None => r,
                 };
@@ -827,6 +1005,25 @@ impl VimState {
                 let t = m::find_char(buf, pos, n, k, c, true)?;
                 (t, if k.forward() { Kind::Inclusive } else { Kind::Exclusive })
             }
+            Motion::Mark(c, exact) => {
+                let at = match c {
+                    '<' | '>' => self.last_visual.map(|(_, a, b)| {
+                        let (a, b) = (a.min(buf.len_chars()), b.min(buf.len_chars()));
+                        buf.line_col(if *c == '<' { a.min(b) } else { a.max(b) })
+                    }),
+                    _ => self.marks.get(*c),
+                };
+                let Some((l, col)) = at else {
+                    self.message = Some("E20: Mark not set".into());
+                    return None;
+                };
+                let l = if *c == '.' { l.min(last) } else { l };
+                if l > last {
+                    self.message = Some("E20: Mark not set".into());
+                    return None;
+                }
+                if *exact { (m::at_col(buf, l, col, false), Kind::Exclusive) } else { (m::first_non_blank(buf, l), Kind::Linewise) }
+            }
             Motion::SearchNext(rev) => {
                 let Some((pat, back)) = self.last_search.clone() else {
                     self.message = Some("No previous search".into());
@@ -916,6 +1113,7 @@ impl VimState {
                         range.start -= 1;
                     }
                     sx.replace(range, "");
+                    self.change_at = Some((l0, 0));
                     let l = l0.min(m::last_line(&sx.work));
                     m::first_non_blank(&sx.work, l)
                 } else {
@@ -1029,11 +1227,32 @@ impl VimState {
             out.selection = Some(Selection::cursor(Self::clamp(buf, sel.head)));
             return out;
         };
-        let typed = if kind == Mode::Replace { std::mem::take(&mut self.replace_typed) } else { typed_text(&s.base, buf) };
+        let block = match s.kind {
+            InsertKind::Block { top, ret } => Some((top, ret)),
+            _ => None,
+        };
+        let typed = match (kind, block) {
+            (Mode::Replace, _) => std::mem::take(&mut self.replace_typed),
+            (_, Some((top, _))) => {
+                let head = sel.head.min(buf.len_chars());
+                if head >= top && m::line_of(buf, head) == m::line_of(buf, top) { buf.slice(top..head) } else { String::new() }
+            }
+            _ => typed_text(&s.base, buf),
+        };
         self.replaced.clear();
         let mut sx = Scratch::new(buf);
         let mut pos = sel.head.min(buf.len_chars());
-        if s.count > 1 && !typed.is_empty() {
+        if let Some((_, Some(ret))) = block {
+            self.finish(sx, ret, &mut out);
+            if let Some(mut rec) = s.rec {
+                rec.insert = Some(typed);
+                self.last_change = Some(rec);
+            }
+            return out;
+        }
+        if block.is_some() {
+            // `c` on a block: the cursor goes where it would after typing on one line.
+        } else if s.count > 1 && !typed.is_empty() {
             pos = match s.kind {
                 InsertKind::Open { .. } => {
                     let e = m::line_end(buf, m::line_of(buf, pos));
@@ -1049,11 +1268,16 @@ impl VimState {
         if pos > ls {
             pos -= 1;
         }
+        // `'.` is where the cursor rests after Escape.
+        let change = (!typed.is_empty()).then(|| sx.work.line_col(pos));
         if let Some(mut rec) = s.rec {
             rec.insert = Some(typed);
             self.last_change = Some(rec);
         }
         self.finish(sx, pos, &mut out);
+        if let Some(at) = change {
+            self.marks.set('.', at);
+        }
         out
     }
 
@@ -1131,6 +1355,16 @@ impl VimState {
     }
 
     fn search(&mut self, pattern: &str, backward: bool, buf: &Buffer, pos: usize, host: &mut dyn Host) -> usize {
+        let to = self.search_to(pattern, backward, buf, pos, host);
+        if to == pos {
+            self.error = true;
+        } else {
+            self.marks.set('\'', buf.line_col(pos));
+        }
+        to
+    }
+
+    fn search_to(&mut self, pattern: &str, backward: bool, buf: &Buffer, pos: usize, host: &mut dyn Host) -> usize {
         let pat = if pattern.is_empty() {
             let Some((p, _)) = &self.last_search else {
                 self.message = Some("No previous search".into());
@@ -1150,11 +1384,19 @@ impl VimState {
             let (la, lc) = (m::line_of(&buf, a.min(buf.len_chars())), m::line_of(&buf, c.min(buf.len_chars())));
             (la.min(lc), la.max(lc))
         });
-        let at = ex::Lines { cur: m::line_of(&buf, pos), last: m::last_line(&buf), visual };
+        let marks = ('a'..='z')
+            .chain(['.', '\''])
+            .filter_map(|c| self.marks.get(c).map(|(l, _)| (c, l)))
+            .filter(|(_, l)| *l <= m::last_line(&buf))
+            .collect();
+        let at = ex::Lines { cur: m::line_of(&buf, pos), last: m::last_line(&buf), visual, marks };
         let cmd = Cmd { reg: None, count: None, act: Act::Do(Simple::Escape) };
         match ex::parse(text, &at) {
             ex::Parsed::Nothing => pos,
-            ex::Parsed::Goto(l) => m::first_non_blank(&buf, l),
+            ex::Parsed::Goto(l) => {
+                self.marks.set('\'', buf.line_col(pos));
+                m::first_non_blank(&buf, l)
+            }
             ex::Parsed::DeleteLines(r) => self.apply_op(Op::Delete, Span::Lines(r.start, r.end - 1), 1, &cmd, sx, pos, out),
             ex::Parsed::YankLines(r) => {
                 self.apply_op(Op::Yank, Span::Lines(r.start, r.end - 1), 1, &cmd, sx, pos, out);
@@ -1185,7 +1427,23 @@ impl VimState {
             }
         };
         match &cmd.act {
-            Act::Move(mo) => self.motion(&buf, pos, mo, cmd.count, false, host).map_or(pos, |(p, _)| p),
+            Act::Move(mo) => match self.motion(&buf, pos, mo, cmd.count, false, host) {
+                // `w` and `e` at the end of the note can't move: that fails (a macro stops).
+                Some((p, _)) if matches!(mo, Motion::WordFwd(_) | Motion::WordEnd(_)) && Self::clamp(&buf, p) == pos => {
+                    self.error = true;
+                    pos
+                }
+                Some((p, _)) => {
+                    if is_jump(mo) {
+                        self.marks.set('\'', buf.line_col(pos));
+                    }
+                    p
+                }
+                None => {
+                    self.error = true;
+                    pos
+                }
+            },
             Act::Select(_) => pos,
             Act::Op(op, target) => {
                 let span = match target {
@@ -1205,10 +1463,13 @@ impl VimState {
                         let e = m::word_end(&buf, pos, n, *big, true);
                         Self::motion_span(&buf, pos, e, Kind::Inclusive)
                     }
-                    Target::Motion(mo) => match self.motion(&buf, pos, mo, cmd.count, true, host) {
-                        Some((to, kind)) => Self::motion_span(&buf, pos, to, kind),
-                        None => return pos,
-                    },
+                    Target::Motion(mo) => {
+                        let Some((to, kind)) = self.motion(&buf, pos, mo, cmd.count, true, host) else {
+                            self.error = true;
+                            return pos;
+                        };
+                        Self::motion_span(&buf, pos, to, kind)
+                    }
                 };
                 if *op != Op::Yank && *op != Op::Change {
                     record(self);
@@ -1314,9 +1575,16 @@ impl VimState {
                 }
                 let Some(r) = self.registers.get(&reg).cloned() else {
                     self.message = Some(format!("Nothing in register {reg}"));
+                    self.error = true;
                     return pos;
                 };
                 rec(self);
+                if r.block {
+                    return self.put_block(sx, pos, &r.text, before, n);
+                }
+                if r.linewise {
+                    self.change_at = Some((line + usize::from(!before), 0));
+                }
                 Self::put_text(sx, pos, &r.text, r.linewise, before, n)
             }
             Simple::Join { spaces } => {
@@ -1335,19 +1603,39 @@ impl VimState {
                 pos
             }
             Simple::Repeat => self.repeat(cmd.count, sx, pos, host, out),
-            Simple::Visual | Simple::VisualLine => {
-                self.mode = if s == Simple::Visual { Mode::Visual } else { Mode::VisualLine };
+            Simple::Visual | Simple::VisualLine | Simple::VisualBlock => {
+                self.mode = match s {
+                    Simple::Visual => Mode::Visual,
+                    Simple::VisualLine => Mode::VisualLine,
+                    _ => Mode::VisualBlock,
+                };
                 self.anchor = pos;
+                self.dollar = false;
+                self.block_col = block::vcols(&buf, pos, self.tabstop).0;
                 pos
             }
             Simple::Reselect => match self.last_visual {
                 Some((mode, a, c)) => {
                     self.mode = mode;
                     self.anchor = a.min(buf.len_chars());
-                    c.min(buf.len_chars())
+                    let c = c.min(buf.len_chars());
+                    self.dollar = false;
+                    self.block_col = block::vcols(&buf, c, self.tabstop).0;
+                    c
                 }
                 None => pos,
             },
+            Simple::Record(r) => {
+                if self.depth == 0 {
+                    self.recording = Some((r, Vec::new()));
+                }
+                pos
+            }
+            Simple::Execute(r) => self.run_macro(r, n, sx, pos, host, out),
+            Simple::SetMark(c) => {
+                self.marks.set(c, buf.line_col(pos));
+                pos
+            }
             Simple::ToggleCaseChar => {
                 if ls == le {
                     return pos;
@@ -1362,7 +1650,9 @@ impl VimState {
                 self.cmdline = Some((c, String::new()));
                 pos
             }
-            Simple::Escape | Simple::Swap | Simple::VisualOp(..) => pos,
+            Simple::Escape | Simple::Swap | Simple::VisualOp(..) | Simple::BlockInsert { .. } | Simple::BlockEol(_) | Simple::SwapSide => {
+                pos
+            }
             Simple::WriteQuit => {
                 out.ex = Some(Ex::WriteQuit);
                 pos
@@ -1439,16 +1729,22 @@ impl VimState {
             }
         }
         self.replay = Some(rec.insert.clone().unwrap_or_default());
-        let p = if let Some((linewise, lines, chars)) = rec.visual {
+        let p = if let Some(shape) = rec.visual {
             let buf = sx.work.clone();
             let line = m::line_of(&buf, pos);
-            self.mode = if linewise { Mode::VisualLine } else { Mode::Visual };
             self.anchor = pos;
-            self.cursor = if linewise || lines > 0 {
-                let l = (line + lines).min(m::last_line(&buf));
-                if linewise { m::line_start(&buf, l) } else { m::at_col(&buf, l, chars, false) }
-            } else {
-                (pos + chars).min(m::line_last(&buf, line))
+            let last = m::last_line(&buf);
+            (self.mode, self.cursor) = match shape {
+                Shape::Lines(lines) => (Mode::VisualLine, m::line_start(&buf, (line + lines).min(last))),
+                Shape::Chars(0, chars) => (Mode::Visual, (pos + chars).min(m::line_last(&buf, line))),
+                Shape::Chars(lines, chars) => (Mode::Visual, m::at_col(&buf, (line + lines).min(last), chars, false)),
+                Shape::Block(lines, cols) => {
+                    let col = block::vcols(&buf, pos, self.tabstop).0;
+                    self.dollar = cols.is_none();
+                    self.block_col = col;
+                    let l = (line + lines).min(last);
+                    (Mode::VisualBlock, block::at_vcol(&buf, l, col + cols.unwrap_or(0), self.tabstop))
+                }
             };
             let c = self.cursor;
             self.visual(&rec.cmd, sx, c, host, out)
@@ -1468,6 +1764,9 @@ impl VimState {
     // ------------------------------------------------------------ Visual mode
 
     fn visual(&mut self, cmd: &Cmd, sx: &mut Scratch, pos: usize, host: &mut dyn Host, out: &mut Outcome) -> usize {
+        if self.mode == Mode::VisualBlock {
+            return self.visual_block(cmd, sx, pos, host, out);
+        }
         let buf = sx.work.clone();
         let len = buf.len_chars();
         let n = cmd.n();
@@ -1481,7 +1780,7 @@ impl VimState {
             s.mode = Mode::Normal;
         };
         // What `.` needs to select the same shape again.
-        let shape = (lines, l1 - l0, if l1 == l0 { hi - lo } else { m::col_of(&buf, hi) });
+        let shape = if lines { Shape::Lines(l1 - l0) } else { Shape::Chars(l1 - l0, if l1 == l0 { hi - lo } else { m::col_of(&buf, hi) }) };
         let record = |s: &mut Self| {
             if s.replay.is_none() {
                 s.last_change = Some(Recorded { cmd: cmd.clone(), insert: None, visual: Some(shape) });
@@ -1489,7 +1788,13 @@ impl VimState {
         };
         match &cmd.act {
             Act::Move(mo) => {
-                let (p, _) = self.motion(&buf, c, mo, cmd.count, false, host).unwrap_or((c, Kind::Exclusive));
+                let (p, _) = self.motion(&buf, c, mo, cmd.count, false, host).unwrap_or_else(|| {
+                    self.error = true;
+                    (c, Kind::Exclusive)
+                });
+                if is_jump(mo) && p != c {
+                    self.marks.set('\'', buf.line_col(c));
+                }
                 if *mo == Motion::LineEnd && !lines {
                     return m::line_end(&buf, m::line_of(&buf, p)).min(len.saturating_sub(1)).max(p);
                 }
@@ -1589,6 +1894,16 @@ impl VimState {
                     } else {
                         self.mode = want;
                     }
+                    c
+                }
+                Simple::VisualBlock => {
+                    self.mode = Mode::VisualBlock;
+                    self.dollar = false;
+                    self.block_col = block::vcols(&buf, c, self.tabstop).0;
+                    c
+                }
+                Simple::SetMark(ch) => {
+                    self.marks.set(ch, buf.line_col(c));
                     c
                 }
                 Simple::Escape => {

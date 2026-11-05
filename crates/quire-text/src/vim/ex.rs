@@ -110,6 +110,8 @@ pub(super) struct Lines {
     pub cur: usize,
     pub last: usize,
     pub visual: Option<(usize, usize)>,
+    /// Lines of the marks `'a`–`'z` (and `'.`, `''`) for ranges like `'a,'b`.
+    pub marks: Vec<(char, usize)>,
 }
 
 fn address(s: &str, at: &Lines) -> Option<(usize, usize)> {
@@ -120,6 +122,10 @@ fn address(s: &str, at: &Lines) -> Option<(usize, usize)> {
         b'$' => Some((at.last, 1)),
         b'\'' if bytes.get(1) == Some(&b'<') => Some((at.visual.map_or(at.cur, |v| v.0), 2)),
         b'\'' if bytes.get(1) == Some(&b'>') => Some((at.visual.map_or(at.cur, |v| v.1), 2)),
+        b'\'' => {
+            let c = char::from(*bytes.get(1)?);
+            at.marks.iter().find(|(m, _)| *m == c).map(|(_, l)| (*l, 2))
+        }
         b'0'..=b'9' => {
             let n = s.bytes().take_while(u8::is_ascii_digit).count();
             let v: usize = s[..n].parse().ok()?;
@@ -190,6 +196,12 @@ pub(super) fn parse(line: &str, at: &Lines) -> Parsed {
     if s.is_empty() {
         return Parsed::Nothing;
     }
+    if let Some(m) = s.strip_prefix('\'').and_then(|r| r.chars().next())
+        && !matches!(m, '<' | '>')
+        && !at.marks.iter().any(|(c, _)| *c == m)
+    {
+        return Parsed::Error("E20: Mark not set".into());
+    }
     let (r, rest) = range(s, at);
     let rest = rest.trim_start();
     let lines = r.unwrap_or((at.cur, at.cur));
@@ -224,7 +236,7 @@ pub(super) fn parse(line: &str, at: &Lines) -> Parsed {
 mod tests {
     use super::*;
 
-    const AT: Lines = Lines { cur: 4, last: 9, visual: Some((2, 3)) };
+    const AT: Lines = Lines { cur: 4, last: 9, visual: Some((2, 3)), marks: Vec::new() };
 
     #[test]
     fn ranges_and_commands() {
@@ -240,6 +252,9 @@ mod tests {
         let Parsed::Ex(Ex::Substitute(s)) = parse("'<,'>s#x##", &AT) else { panic!() };
         assert_eq!((s.lines.clone(), s.replacement.as_str(), s.global), (2..4, "", false));
         assert!(matches!(parse("frobnicate", &AT), Parsed::Error(_)));
+        let at = Lines { marks: vec![('a', 1), ('b', 5)], ..AT };
+        assert_eq!(parse("'a,'bd", &at), Parsed::DeleteLines(1..6));
+        assert_eq!(parse("'c,'bd", &at), Parsed::Error("E20: Mark not set".into()));
         assert_eq!(vim_to_regex(r"\<foo\(x\|y\)\>"), r"\bfoo(x|y)\b");
     }
 }
