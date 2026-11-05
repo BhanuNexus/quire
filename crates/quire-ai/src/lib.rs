@@ -5,6 +5,8 @@
 //! [`protocol`] over stdio.
 //!
 //! * [`protocol`] — JSON-lines messages (shared with the engine)
+//! * [`toolcall`] — reading tool calls the way small models write them
+//! * [`wav`] — WAV files for voice notes (written by the app, read by the engine)
 //! * `catalog` — the compiled-in list of downloadable models (`client`)
 //! * `download` — downloads, "Install from file…", the manifest (`client`)
 //! * `engine` — starting and talking to the engine process (`client`)
@@ -19,3 +21,5 @@ pub mod engine;
 #[cfg(feature = "client")]
 pub mod local;
 pub mod protocol;
+pub mod toolcall;
+pub mod wav;

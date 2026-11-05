@@ -224,7 +224,7 @@ impl Backend for RealBackend {
             pos += chunk.len();
         }
         let mut logits = logits.ok_or_else(|| failed("empty prompt"))?;
-        let mut parser = ReplyParser::new();
+        let mut parser = ReplyParser::with_tools(tools.iter().filter_map(|t| t["name"].as_str().map(str::to_string)).collect());
         let mut out_ids: Vec<u32> = Vec::new();
         let mut shown = 0usize;
         let mut text = String::new();
@@ -235,6 +235,10 @@ impl Backend for RealBackend {
                 match piece {
                     Piece::Text(t) => emit(json!({ "delta": t })),
                     Piece::ToolCall { id, name, input } => emit(json!({ "tool_call": { "id": id, "name": name, "input": input } })),
+                    // Never run: no name, and the raw text under `_unparsed`.
+                    Piece::BadCall { id, raw, error } => {
+                        emit(json!({ "tool_call": { "id": id, "name": "", "input": { "_unparsed": raw, "_error": error } } }));
+                    }
                 }
             }
         };
