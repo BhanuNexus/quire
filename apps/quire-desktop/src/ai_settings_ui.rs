@@ -216,7 +216,11 @@ fn model_row(ui: &mut egui::Ui, ws: &mut Workspace, s: &mut AiSettingsUi, pal: &
     let state = ws.model_state(id);
     ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new(entry.display_name()).color(pal.strong));
-        ui.label(RichText::new(size_text(id)).size(12.0).color(pal.muted));
+        // A bundled engine downloads nothing, so its size says nothing.
+        let bundled = entry.purpose == ai::Purpose::Engine && ai::engine_source() == Some(ai::EngineSource::Bundled);
+        if !bundled {
+            ui.label(RichText::new(size_text(id)).size(12.0).color(pal.muted));
+        }
         if entry.ram_mb > 0 && entry.purpose != ai::Purpose::Engine {
             ui.label(
                 RichText::new(format!("· about {} of memory in use", ai::human_size(u64::from(entry.ram_mb) * 1_000_000)))
@@ -279,11 +283,13 @@ fn model_row(ui: &mut egui::Ui, ws: &mut Workspace, s: &mut AiSettingsUi, pal: &
         }
         ModelState::Ready => {
             ui.label(RichText::new("✓ Ready").color(pal.accent));
-            // An engine found elsewhere (QUIRE_AI_ENGINE, or next to the app) isn't Quire's to delete.
-            let downloaded =
-                id != ai::ENGINE_ID || ai::engine(&ws.settings).path().zip(ai::models_dir()).is_some_and(|(p, d)| p.starts_with(d));
-            if !downloaded {
-                ui.label(RichText::new("· installed with Quire").size(12.0).color(pal.faint));
+            // An engine packaged with Quire (the full edition) or set with
+            // QUIRE_AI_ENGINE isn't Quire's to delete.
+            let source = if id == ai::ENGINE_ID { ai::engine_source() } else { None };
+            if source == Some(ai::EngineSource::Bundled) {
+                ui.label(RichText::new("· Included with Quire").size(12.0).color(pal.faint));
+            } else if source == Some(ai::EngineSource::Override) {
+                ui.label(RichText::new("· from QUIRE_AI_ENGINE").size(12.0).color(pal.faint));
             } else if s.confirm_delete.as_deref() == Some(id) {
                 ui.label(RichText::new("Delete its files?").color(pal.warn));
                 if ui.button("Delete").clicked() {

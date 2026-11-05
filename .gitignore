@@ -4,3 +4,6 @@ dist/
 **/.quire/
 *.swp
 .DS_Store
+# Engine pins written by the release workflow and the packaging scripts.
+crates/quire-ai/engine.sha256.*
+crates/quire-ai/engine.bundled.sha256

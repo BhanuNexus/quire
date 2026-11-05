@@ -133,6 +133,22 @@ const ENGINE_PIN: &str = env!("QUIRE_AI_ENGINE_PIN");
 /// The engine entry's key for the unpacked binary's SHA-256.
 pub const BINARY_SHA256: &str = "binary_sha256";
 
+/// SHA-256 of the engine packaged next to the app (the full edition's
+/// packages; empty when this build ships without one). Written by the
+/// packaging scripts after `lipo` and signing, so it is the hash of the
+/// exact file installed.
+const BUNDLED_ENGINE_SHA256: &str = env!("QUIRE_AI_BUNDLED_ENGINE_SHA256");
+
+/// The hash a bundled engine must have, if this build ships one.
+pub fn bundled_engine_sha256() -> Option<&'static str> {
+    is_sha256(BUNDLED_ENGINE_SHA256).then_some(BUNDLED_ENGINE_SHA256)
+}
+
+/// 64 hex digits.
+pub fn is_sha256(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// Where release assets are downloaded from.
 pub const RELEASES: &str = "https://github.com/BhanuNexus/quire/releases/download";
 

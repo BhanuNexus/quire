@@ -64,12 +64,44 @@ impl std::fmt::Display for EngineError {
 
 impl std::error::Error for EngineError {}
 
+/// Where the engine binary was found ([`Engine::find_with_source`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineSource {
+    /// `$QUIRE_AI_ENGINE`: someone's own build (development). Not checked.
+    Override,
+    /// Next to the app's executable: packaged with it (the full edition).
+    Bundled,
+    /// Downloaded into the models folder.
+    Downloaded,
+}
+
+impl EngineSource {
+    /// The SHA-256 an engine from here must have before it is started.
+    ///
+    /// `bundled` is the hash of the engine this build was packaged with (the
+    /// file next to the app); `binary` is the pinned hash of the engine this
+    /// build downloads. A bundled engine is checked against `bundled`, or
+    /// against `binary` when the build wasn't packaged with one (an engine
+    /// put next to Quire Lite by hand). Development builds have neither pin,
+    /// so nothing is checked there.
+    pub fn required_sha256(self, bundled: Option<&str>, binary: Option<&str>) -> Option<String> {
+        let pin = match self {
+            Self::Override => None,
+            Self::Bundled => bundled.filter(|s| !s.is_empty()).or(binary),
+            Self::Downloaded => binary,
+        };
+        pin.filter(|s| !s.is_empty()).map(str::to_ascii_lowercase)
+    }
+}
+
 /// How to run the engine.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EngineConfig {
     pub path: Option<PathBuf>,
-    /// SHA-256 the binary must have (a downloaded engine); checked every
-    /// time the engine starts.
+    /// Where `path` was found (it decides what a failed check tells the person).
+    pub source: Option<EngineSource>,
+    /// SHA-256 the binary must have (a downloaded or bundled engine in a
+    /// release build); checked every time the engine starts.
     pub sha256: Option<String>,
     /// Inference threads (0: the engine decides). Takes effect when the
     /// engine next starts.
@@ -148,15 +180,20 @@ impl Engine {
     /// The engine at `$QUIRE_AI_ENGINE`, or next to this executable, or in
     /// `models_dir` (where downloads go).
     pub fn find(models_dir: Option<&Path>) -> Option<PathBuf> {
-        let from_env = std::env::var_os("QUIRE_AI_ENGINE").map(PathBuf::from);
-        let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join(ENGINE_BIN)));
-        let downloaded = models_dir.map(|d| d.join(crate::catalog::ENGINE_ID).join(ENGINE_BIN));
-        [from_env, beside, downloaded].into_iter().flatten().find(|p| p.is_file())
+        Self::find_with_source(models_dir).map(|(p, _)| p)
     }
 
-    /// An engine found like [`Engine::find`].
+    /// [`Engine::find`], and where the engine was found.
+    pub fn find_with_source(models_dir: Option<&Path>) -> Option<(PathBuf, EngineSource)> {
+        let from_env = std::env::var_os("QUIRE_AI_ENGINE").map(PathBuf::from);
+        let exe = std::env::current_exe().ok();
+        find_in(from_env, exe.as_deref().and_then(Path::parent), models_dir)
+    }
+
+    /// An engine found like [`Engine::find`] (not checked: tests and tools).
     pub fn locate(models_dir: Option<&Path>) -> Self {
-        Self::new(EngineConfig { path: Self::find(models_dir), ..EngineConfig::default() })
+        let found = Self::find_with_source(models_dir);
+        Self::new(EngineConfig { source: found.as_ref().map(|f| f.1), path: found.map(|f| f.0), ..EngineConfig::default() })
     }
 
     pub fn at(path: impl Into<PathBuf>) -> Self {
@@ -460,7 +497,7 @@ impl Engine {
         }
         let cfg = lock(&self.shared.cfg).clone();
         let path = cfg.path.clone().filter(|p| p.is_file()).ok_or(EngineError::NotInstalled)?;
-        Self::verify(&path, cfg.sha256.as_deref())?;
+        Self::verify(&path, cfg.sha256.as_deref(), cfg.source)?;
         let mut p = spawn(&path, cfg.threads, &cfg.env)?;
         let hello = Request {
             id: 0,
@@ -500,20 +537,39 @@ impl Engine {
         Ok(h)
     }
 
-    /// A downloaded engine must still be the file that was verified. It is
-    /// hashed again before every start (about 18 MB, once per process
-    /// start): a file swapped with its modification time restored is caught.
-    fn verify(path: &Path, sha: Option<&str>) -> Result<(), EngineError> {
+    /// A downloaded engine must still be the file that was verified, and a
+    /// bundled one the file this build was packaged with. It is hashed again
+    /// before every start (about 18 MB, once per process start): a file
+    /// swapped with its modification time restored is caught.
+    fn verify(path: &Path, sha: Option<&str>, source: Option<EngineSource>) -> Result<(), EngineError> {
         let Some(sha) = sha.filter(|s| !s.is_empty()) else { return Ok(()) };
         let got = crate::download::sha256_file(path).map_err(|e| EngineError::Failed(e.to_string()))?;
         if !got.eq_ignore_ascii_case(sha) {
-            return Err(EngineError::GaveUp(
+            return Err(EngineError::GaveUp(if source == Some(EngineSource::Bundled) {
+                format!(
+                    "The on-device AI engine next to Quire ({}) isn't the one this version of Quire came with, so Quire won't run it. Reinstall Quire.",
+                    path.display()
+                )
+            } else {
                 "The on-device AI engine file changed after it was verified, so Quire won't run it. Download it again in Settings → AI."
-                    .into(),
-            ));
+                    .into()
+            }));
         }
         Ok(())
     }
+}
+
+/// The first engine that exists: `from_env`, then next to the app in
+/// `exe_dir`, then downloaded into `models_dir`.
+fn find_in(from_env: Option<PathBuf>, exe_dir: Option<&Path>, models_dir: Option<&Path>) -> Option<(PathBuf, EngineSource)> {
+    [
+        from_env.map(|p| (p, EngineSource::Override)),
+        exe_dir.map(|d| (d.join(ENGINE_BIN), EngineSource::Bundled)),
+        models_dir.map(|d| (d.join(crate::catalog::ENGINE_ID).join(ENGINE_BIN), EngineSource::Downloaded)),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|(p, _)| p.is_file())
 }
 
 impl Drop for Shared {
@@ -637,12 +693,70 @@ mod tests {
         let bin = dir.path().join("quire-ai-engine");
         std::fs::write(&bin, b"the engine that was downloaded").unwrap();
         let sha = crate::download::sha256_file(&bin).unwrap();
-        Engine::verify(&bin, Some(&sha)).unwrap();
+        Engine::verify(&bin, Some(&sha), Some(EngineSource::Downloaded)).unwrap();
         // Swapped by another process, with its modification time put back.
         let mtime = std::fs::metadata(&bin).unwrap().modified().unwrap();
         std::fs::write(&bin, b"something else entirely, same size?").unwrap();
         std::fs::File::options().write(true).open(&bin).unwrap().set_modified(mtime).unwrap();
-        assert!(matches!(Engine::verify(&bin, Some(&sha)), Err(EngineError::GaveUp(_))));
-        Engine::verify(&bin, None).unwrap();
+        assert!(matches!(Engine::verify(&bin, Some(&sha), Some(EngineSource::Downloaded)), Err(EngineError::GaveUp(_))));
+        Engine::verify(&bin, None, None).unwrap();
+    }
+
+    #[test]
+    fn the_engine_is_found_in_order_and_says_where() {
+        let dir = tempfile::tempdir().unwrap();
+        let (env_dir, app, models) = (dir.path().join("env"), dir.path().join("app"), dir.path().join("models"));
+        for d in [&env_dir, &app, &models.join(crate::catalog::ENGINE_ID)] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let from_env = env_dir.join(ENGINE_BIN);
+        let find = || find_in(Some(from_env.clone()), Some(&app), Some(&models)).map(|f| f.1);
+        assert_eq!(find(), None);
+        std::fs::write(models.join(crate::catalog::ENGINE_ID).join(ENGINE_BIN), b"downloaded").unwrap();
+        assert_eq!(find(), Some(EngineSource::Downloaded));
+        std::fs::write(app.join(ENGINE_BIN), b"bundled").unwrap();
+        assert_eq!(find(), Some(EngineSource::Bundled), "an engine next to the app wins over a downloaded one");
+        std::fs::write(&from_env, b"mine").unwrap();
+        assert_eq!(find(), Some(EngineSource::Override));
+    }
+
+    #[test]
+    fn a_bundled_engine_is_checked_against_a_pin_in_release_builds() {
+        let (bundled, binary) = ("A".repeat(64), "b".repeat(64));
+        let s = EngineSource::Bundled;
+        assert_eq!(s.required_sha256(Some(&bundled), Some(&binary)), Some("a".repeat(64)), "the packaged file's own hash");
+        assert_eq!(s.required_sha256(None, Some(&binary)), Some(binary.clone()), "else the downloaded engine's");
+        assert_eq!(s.required_sha256(Some(""), Some(&binary)), Some(binary.clone()));
+        assert_eq!(s.required_sha256(None, None), None, "development builds have no pin");
+        assert_eq!(EngineSource::Downloaded.required_sha256(Some(&bundled), Some(&binary)), Some(binary.clone()));
+        assert_eq!(EngineSource::Override.required_sha256(Some(&bundled), Some(&binary)), None);
+    }
+
+    /// The check happens before the process is started: an engine next to
+    /// the app that isn't the packaged one never runs.
+    #[cfg(unix)]
+    #[test]
+    fn a_bundled_engine_that_fails_its_check_is_never_started() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let ran = dir.path().join("ran");
+        let bin = dir.path().join(ENGINE_BIN);
+        std::fs::write(&bin, format!("#!/bin/sh\ntouch '{}'\n", ran.display())).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let good = crate::download::sha256_file(&bin).unwrap();
+        let cfg = |sha: &str| EngineConfig {
+            path: Some(bin.clone()),
+            source: Some(EngineSource::Bundled),
+            sha256: EngineSource::Bundled.required_sha256(Some(sha), None),
+            ..EngineConfig::default()
+        };
+        let e = Engine::new(cfg(&"0".repeat(64)));
+        let Err(EngineError::GaveUp(why)) = e.hello(Duration::from_secs(5)) else { panic!("a wrong engine must be refused") };
+        assert!(why.contains("Reinstall Quire"), "{why}");
+        assert!(!ran.exists(), "it was started");
+        // The packaged file passes and is started (this one exits at once).
+        let e = Engine::new(cfg(&good));
+        assert!(matches!(e.hello(Duration::from_secs(5)), Err(EngineError::Failed(_))));
+        assert!(ran.exists(), "it wasn't started");
     }
 }

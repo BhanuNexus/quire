@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, bounded, unbounded};
 use quire_ai::catalog::{BINARY_SHA256, Catalog, CatalogEntry};
 use quire_ai::download::{Control, DownloadError, Downloader, Manifest, Progress};
+pub use quire_ai::engine::EngineSource;
 use quire_ai::engine::{Engine, EngineConfig, EngineSnapshot};
 use quire_ai::local::{LocalChat, LocalEmbedder, LocalSetup};
 use quire_intel::chat::{ChatLanguageModel, ChatModel, Locality};
@@ -105,16 +106,13 @@ fn setup(settings: &Settings) -> Option<LocalSetup> {
 pub fn engine(settings: &Settings) -> Engine {
     static E: OnceLock<Engine> = OnceLock::new();
     let e = E.get_or_init(|| Engine::new(EngineConfig::default()));
-    let dir = models_dir();
-    let path = Engine::find(dir.as_deref());
-    // A downloaded engine must still be the file that was verified.
-    let downloaded = dir.as_ref().map(|d| d.join(ENGINE_ID).join(quire_ai::engine::ENGINE_BIN));
-    let sha256 = if path.is_some() && path == downloaded {
-        catalog().get(ENGINE_ID).and_then(|en| en.other.get(BINARY_SHA256)).and_then(toml::Value::as_str).map(str::to_string)
-    } else {
-        None
-    };
-    let cfg = EngineConfig { path, sha256, threads: settings.ai_local.threads, ..EngineConfig::default() };
+    let found = Engine::find_with_source(models_dir().as_deref());
+    // A downloaded engine must still be the file that was verified, and one
+    // next to the app the file this build was packaged with (design §D.3).
+    let binary = catalog().get(ENGINE_ID).and_then(|en| en.other.get(BINARY_SHA256)).and_then(toml::Value::as_str);
+    let sha256 = found.as_ref().and_then(|(_, src)| src.required_sha256(quire_ai::catalog::bundled_engine_sha256(), binary));
+    let (path, source) = found.map_or((None, None), |(p, s)| (Some(p), Some(s)));
+    let cfg = EngineConfig { path, source, sha256, threads: settings.ai_local.threads, ..EngineConfig::default() };
     if e.config() != cfg {
         e.configure(cfg);
     }
@@ -125,6 +123,12 @@ pub fn engine(settings: &Settings) -> Engine {
 /// `QUIRE_AI_ENGINE` in development).
 pub fn engine_installed() -> bool {
     Engine::find(models_dir().as_deref()).is_some()
+}
+
+/// Where the engine in use comes from: packaged with Quire (the full
+/// edition), downloaded, or `QUIRE_AI_ENGINE`. `None` while there is none.
+pub fn engine_source() -> Option<EngineSource> {
+    Engine::find_with_source(models_dir().as_deref()).map(|(_, s)| s)
 }
 
 /// Whether a model's files are on this computer and verified.
