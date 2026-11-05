@@ -107,7 +107,8 @@ impl OverlayView for AskOverlay {
         let mut insert = false;
         let mut save = false;
         if ws.ask.pending() {
-            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            // Often enough for the answer to read as it is written.
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
         egui::Modal::new(egui::Id::unique("quire-ask")).show(ctx, |ui| {
             let w = 640.0_f32.min(ctx.content_rect().width() - 48.0);
@@ -207,10 +208,28 @@ impl OverlayView for AskOverlay {
                 AskStep::Answer => {
                     ui.separator();
                     if ws.ask.pending() {
+                        let mut stop = false;
                         ui.horizontal(|ui| {
                             ui.add(egui::Spinner::new());
-                            ui.label("Thinking…");
+                            ui.label(if ws.ask.partial().is_empty() { "Thinking…" } else { "Writing…" });
+                            if ui.button("Stop").on_hover_text("Stop the answer here; what is written stays").clicked() {
+                                stop = true;
+                            }
                         });
+                        if stop {
+                            ws.stop_ask();
+                        }
+                        let partial = ws.ask.partial().replace("[[", "").replace("]]", "");
+                        if !partial.is_empty() {
+                            egui::ScrollArea::vertical()
+                                .id_salt("quire-ask-streaming")
+                                .max_height(max_h)
+                                .auto_shrink([false, true])
+                                .stick_to_bottom(true)
+                                .show(ui, |ui| {
+                                    ui.add(egui::Label::new(RichText::new(partial).size(14.0)).wrap());
+                                });
+                        }
                     }
                     if let Some(e) = &ws.ask.error {
                         ui.label(
@@ -302,6 +321,8 @@ impl OverlayView for AskOverlay {
     }
 
     fn closed(&mut self, ws: &mut Workspace) {
+        // Closing stops an answer still being written.
+        ws.stop_ask();
         ws.ask.open = false;
     }
 }
