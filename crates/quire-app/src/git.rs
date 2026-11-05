@@ -770,6 +770,8 @@ mod tests {
             device: quire_sync::DeviceId::random().unwrap(),
             device_name: "test".into(),
             shared_state: false,
+            only: Vec::new(),
+            exclude: Vec::new(),
         });
         assert!(!can_pull_push(&ws));
         let n = ws.notices.len();
