@@ -54,9 +54,17 @@ fn remind(args: &[String]) -> Result<(), String> {
     let vault = Vault::open_local(&root).map_err(|e| e.to_string())?;
     let all = remind_bg::vault_reminders(&vault);
     let now = chrono::Local::now().naive_local();
+    // Held from reading the list to saving it, so the app (or another run)
+    // can't show the same reminders meanwhile; released before notifying,
+    // which can wait on the system.
+    let lock = remind_bg::lock(&root);
     let mut log = FiredLog::load(&root);
     let first = log.fresh;
     let due = remind_bg::take_due(&all, &mut log, now);
+    if !flag("--dry-run") {
+        log.save(now).map_err(|e| e.to_string())?;
+    }
+    drop(lock);
     for r in &due {
         println!("{}  {}  ({})", r.at.format("%Y-%m-%d %H:%M"), r.text, r.path);
         if !flag("--dry-run") {
@@ -65,9 +73,6 @@ fn remind(args: &[String]) -> Result<(), String> {
     }
     if first {
         println!("Started keeping track of reminders for {} (ones already due aren't shown).", root.display());
-    }
-    if !flag("--dry-run") {
-        log.save(now).map_err(|e| e.to_string())?;
     }
     Ok(())
 }

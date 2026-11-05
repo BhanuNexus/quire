@@ -139,11 +139,42 @@ pub fn take_due(all: &[Reminder], log: &mut FiredLog, now: NaiveDateTime) -> Vec
     due
 }
 
+/// An exclusive lock on `vault`'s fired list under `config`, until dropped.
+///
+/// The app and `quire-cli remind` each take it from reading the list to
+/// saving it, so neither can read the list while the other is about to
+/// note a reminder as shown (both would show it). `None` when no lock
+/// could be taken; the list then works as without one.
+pub fn lock_in(config: &Path, vault: &Path) -> Option<std::fs::File> {
+    let dir = config.join("reminders");
+    std::fs::create_dir_all(&dir).ok()?;
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(dir.join(format!("{}.lock", vault_key(vault))))
+        .ok()?;
+    f.lock().ok()?;
+    Some(f)
+}
+
+/// [`lock_in`] in Quire's config folder (none in unit tests).
+pub fn lock(vault: &Path) -> Option<std::fs::File> {
+    crate::settings::config_dir().filter(|_| !cfg!(test)).and_then(|c| lock_in(&c, vault))
+}
+
 /// The app's side: of reminders coming due now, the ones not shown on this
 /// device yet (by `quire-cli remind`), which are then noted as shown.
 pub fn not_yet_shown(vault: Option<&Path>, due: Vec<Reminder>, now: NaiveDateTime) -> Vec<Reminder> {
     let Some(vault) = vault.filter(|_| !due.is_empty()) else { return due };
+    let _lock = lock(vault);
     let mut log = FiredLog::load(vault);
+    claim(&mut log, due, now)
+}
+
+/// Of `due`, the reminders `log` hasn't got, noted in it and saved.
+fn claim(log: &mut FiredLog, due: Vec<Reminder>, now: NaiveDateTime) -> Vec<Reminder> {
     let due: Vec<Reminder> = due.into_iter().filter(|r| !log.has(r)).collect();
     for r in &due {
         log.record(r, now);
@@ -601,6 +632,48 @@ mod tests {
         assert_eq!(edit_crontab(&t, Some(mine), "# quire-remind abcd1234"), t, "not twice");
         assert_eq!(edit_crontab(&t, None, "# quire-remind abcd1234"), "MAILTO=\"\"\n0 3 * * * backup\n");
         assert_eq!(edit_crontab("", None, "# x"), "");
+    }
+
+    /// The app and `quire-cli remind` checking at the same moment: with the
+    /// lock, exactly one of them shows each reminder.
+    #[test]
+    fn the_app_and_the_command_never_both_show_a_reminder() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().to_path_buf();
+        let vault = Path::new("/v");
+        let v = quire_vault::Vault::in_memory(&[("A.md", "- [ ] Call Bo ⏰ 2026-11-05 09:00\n- [ ] Pay rent ⏰ 2026-11-05 09:00\n")]);
+        let all = vault_reminders(&v);
+        for round in 0..5 {
+            let now = at("2026-11-05 09:00") + Duration::minutes(round);
+            let _ = std::fs::remove_file(config.join("reminders").join(format!("{}.json", vault_key(vault))));
+            let mut seed = FiredLog::load_in(&config, vault);
+            seed.fresh = false;
+            seed.save(now).unwrap();
+            let shown = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let threads: Vec<_> = (0..8)
+                .map(|i| {
+                    let (config, all, shown) = (config.clone(), all.clone(), std::sync::Arc::clone(&shown));
+                    std::thread::spawn(move || {
+                        let _lock = lock_in(&config, vault).expect("a lock");
+                        let mut log = FiredLog::load_in(&config, vault);
+                        let n = if i % 2 == 0 {
+                            // `quire-cli remind`
+                            let due = take_due(&all, &mut log, now);
+                            log.save(now).unwrap();
+                            due.len()
+                        } else {
+                            // the app
+                            claim(&mut log, all.clone(), now).len()
+                        };
+                        shown.fetch_add(n, std::sync::atomic::Ordering::SeqCst);
+                    })
+                })
+                .collect();
+            for t in threads {
+                t.join().unwrap();
+            }
+            assert_eq!(shown.load(std::sync::atomic::Ordering::SeqCst), 2, "round {round}: each reminder once");
+        }
     }
 
     #[test]
