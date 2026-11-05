@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The Agent activity tab: a lane per agent, runs and their events (design §A.9).
 //!
-//! Owned by WS-A. Built from this device's ledger: a timeline with one lane
-//! per agent, then the runs, newest first, each opening to its events.
+//! Owned by WS-A. Built from the ledger of this device and, with shared
+//! review history, of the other devices: a timeline with one lane per agent
+//! (grouped by device), then the runs, newest first, each opening to its
+//! events. A run from another device is undone here like one from this one.
 //! "Undo an agent's changes" plans a revert (a dry run listing every step)
 //! before anything is written; the undo keeps edits made since, and turns
 //! the ones it can't merge into a suggestion to review.
@@ -152,13 +154,14 @@ pub(crate) fn show(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pa
             ui.add(
                 egui::Label::new(
                     RichText::new(format!(
-                        "No agent activity on this device in the last {}. When an agent writes or suggests changes, it shows here.",
+                        "No agent activity in the last {}. When an agent writes or suggests changes, it shows here.",
                         a.range.label()
                     ))
                     .color(pal.muted),
                 )
                 .wrap(),
             );
+            other_devices_note(ui, ws, pal);
             return;
         }
         if let Some(k) = lanes(ui, &runs, now, a.range, pal) {
@@ -168,6 +171,7 @@ pub(crate) fn show(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pa
         for r in runs {
             run_card(ui, ws, a, r, &ws.features.agent.activity, pal, &mut act);
         }
+        other_devices_note(ui, ws, pal);
         ui.add_space(12.0);
     });
     if let Some(f) = act {
@@ -176,15 +180,42 @@ pub(crate) fn show(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pa
     out
 }
 
-/// The timeline: one lane per actor over the chosen range. Returns the run clicked.
+/// One row of the timeline: a device's caption, or an actor's lane on a device.
+enum Row<'a> {
+    Device(&'a str),
+    Lane { device: &'a str, actor: &'a str, label: &'a str },
+}
+
+/// The timeline's rows: one lane per actor, grouped by device (this device
+/// first) when runs came from other devices too.
+fn rows<'a>(runs: &[&'a Run]) -> Vec<Row<'a>> {
+    let mut lanes: Vec<(&str, &str, &str)> =
+        runs.iter().map(|r| (r.device_name.as_str(), r.actor_id.as_str(), r.actor_label.as_str())).collect();
+    lanes.sort_unstable();
+    lanes.dedup();
+    let several = lanes.iter().any(|l| !l.0.is_empty());
+    let mut out = Vec::new();
+    let mut last: Option<&str> = None;
+    for (device, actor, label) in lanes {
+        if several && last != Some(device) {
+            out.push(Row::Device(if device.is_empty() { "This device" } else { device }));
+            last = Some(device);
+        }
+        out.push(Row::Lane { device, actor, label });
+    }
+    out
+}
+
+/// The timeline: one lane per actor (per device) over the chosen range.
+/// Returns the run clicked.
 fn lanes(ui: &mut egui::Ui, runs: &[&Run], now: i64, range: Range, pal: &Palette) -> Option<String> {
-    let mut actors: Vec<(&str, &str)> = runs.iter().map(|r| (r.actor_id.as_str(), r.actor_label.as_str())).collect();
-    actors.sort_unstable();
-    actors.dedup();
+    let rows = rows(runs);
     let lane_h = 20.0;
+    let caption_h = 16.0;
     let label_w = 86.0;
     let w = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(w, lane_h * actors.len() as f32 + 18.0), Sense::hover());
+    let height: f32 = rows.iter().map(|r| if matches!(r, Row::Device(_)) { caption_h } else { lane_h }).sum();
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(w, height + 18.0), Sense::hover());
     let p = ui.painter_at(rect);
     let t0 = now - range.ms();
     let x_of = |t: i64| rect.left() + label_w + (w - label_w - 4.0) * ((t - t0) as f32 / range.ms() as f32).clamp(0.0, 1.0);
@@ -207,12 +238,29 @@ fn lanes(ui: &mut egui::Ui, runs: &[&Run], now: i64, range: Range, pal: &Palette
     let pointer = ui.input(|i| i.pointer.hover_pos());
     let clicked = ui.input(|i| i.pointer.primary_clicked());
     let mut hit = None;
-    for (i, (id, label)) in actors.iter().enumerate() {
-        let y = rect.top() + lane_h * i as f32 + lane_h / 2.0;
+    let mut top = rect.top();
+    for row in &rows {
+        let (device, id, label) = match row {
+            Row::Device(name) => {
+                let short: String = name.chars().take(40).collect();
+                p.text(
+                    Pos2::new(rect.left(), top + caption_h / 2.0 + 1.0),
+                    Align2::LEFT_CENTER,
+                    short,
+                    FontId::proportional(10.5),
+                    pal.faint,
+                );
+                top += caption_h;
+                continue;
+            }
+            Row::Lane { device, actor, label } => (*device, *actor, *label),
+        };
+        let y = top + lane_h / 2.0;
+        top += lane_h;
         let short: String = label.chars().take(12).collect();
         p.text(Pos2::new(rect.left(), y), Align2::LEFT_CENTER, short, FontId::proportional(11.5), pal.muted);
         p.line_segment([Pos2::new(rect.left() + label_w, y), Pos2::new(rect.right() - 4.0, y)], Stroke::new(1.0, pal.border));
-        for r in runs.iter().filter(|r| r.actor_id == *id) {
+        for r in runs.iter().filter(|r| r.actor_id == id && r.device_name == device) {
             let (a, b) = (x_of(r.start), x_of(r.end).max(x_of(r.start) + 5.0));
             let bar = Rect::from_min_max(Pos2::new(a, y - 5.0), Pos2::new(b, y + 5.0));
             let color = match r.kind {
@@ -232,6 +280,24 @@ fn lanes(ui: &mut egui::Ui, runs: &[&Run], now: i64, range: Range, pal: &Palette
         }
     }
     hit
+}
+
+/// While review history stays on each device, say where runs from other
+/// devices (an agent on a server) would come from.
+fn other_devices_note(ui: &mut egui::Ui, ws: &Workspace, pal: &Palette) {
+    if ws.sync.config.is_some() && !ws.sync_shares_state() {
+        ui.add_space(8.0);
+        ui.add(
+            egui::Label::new(
+                RichText::new(
+                    "Runs from other devices appear here when 'Also sync vault settings and review history' is on (Settings → Sync).",
+                )
+                .size(11.5)
+                .color(pal.faint),
+            )
+            .wrap(),
+        );
+    }
 }
 
 fn event_words(e: &LedgerEntry) -> String {
@@ -336,7 +402,8 @@ fn run_card(ui: &mut egui::Ui, ws: &Workspace, a: &mut ActivityUi, r: &Run, runs
             } else {
                 short_time(r.start)
             };
-            ui.label(RichText::new(format!("{} · {when}", r.actor_label)).color(pal.strong));
+            let who = if r.device_name.is_empty() { r.actor_label.clone() } else { format!("{} · on {}", r.actor_label, r.device_name) };
+            ui.label(RichText::new(format!("{who} · {when}")).color(pal.strong));
             ui.label(RichText::new(summary(r)).size(12.0).color(pal.muted));
             ui.horizontal_wrapped(|ui| {
                 if ui.small_button(if open { "Less" } else { "Events" }).clicked() {

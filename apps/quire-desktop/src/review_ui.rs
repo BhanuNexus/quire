@@ -68,7 +68,7 @@ fn title_bar(ui: &mut egui::Ui, ws: &Workspace, id: u64, pal: &Palette) -> (f32,
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new(format!("{} suggested changes to this note", p.actor.label)).color(pal.text).size(13.0));
+                ui.label(RichText::new(format!("{} suggested changes to this note", who(p))).color(pal.text).size(13.0));
                 ui.label(RichText::new(format!("· {}", p.title)).color(pal.muted).size(13.0));
                 if ui.button(RichText::new("Review").size(12.5)).on_hover_text("Show the changes here, one by one").clicked() {
                     clicked = Some(ActionId { owner: Owner::Agent, id });
@@ -126,7 +126,7 @@ fn hunk_widget(ui: &mut egui::Ui, ws: &Workspace, r: &ReviewSession, gen_: u64, 
         ui.add_space(2.0);
         ui.horizontal(|ui| {
             let total = r.hunks.len();
-            ui.label(RichText::new(format!("{} · {} of {total}", r.proposal.actor.label, k + 1)).size(11.5).color(pal.muted));
+            ui.label(RichText::new(format!("{} · {} of {total}", who(&r.proposal), k + 1)).size(11.5).color(pal.muted));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if tool_button(ui, "Edit", pal.text, "Change the suggested text before accepting it") {
                     clicked = Some(act(gen_, k, HunkAct::Edit));
@@ -262,7 +262,7 @@ pub(crate) fn banner(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut crate::regi
     let total: usize = n + p.pending_changes().filter(|c| c.path != path || !matches!(c.op, ChangeOp::Edit)).count();
     ui.horizontal_wrapped(|ui| {
         ui.label(
-            RichText::new(format!("{} suggests {} change{}", p.actor.label, total.max(1), if total <= 1 { "" } else { "s" }))
+            RichText::new(format!("{} suggests {} change{}", who(&p), total.max(1), if total <= 1 { "" } else { "s" }))
                 .strong()
                 .color(pal.strong),
         );
@@ -365,7 +365,19 @@ pub(crate) fn create_preview(ui: &mut egui::Ui, text: &str, pal: &Palette) {
 
 /// How a group of suggestions is introduced: "Claude Code · 14:02".
 pub(crate) fn group_line(g: &inbox::Group<'_>) -> String {
-    format!("{} · {}", g.actor_label, short_time(g.at_ms))
+    match g.device_name {
+        Some(d) => format!("{} · on {d} · {}", g.actor_label, short_time(g.at_ms)),
+        None => format!("{} · {}", g.actor_label, short_time(g.at_ms)),
+    }
+}
+
+/// Who suggested `p`: "Claude", or "Claude (on home server)" when its agent
+/// ran on another device (shared review history).
+pub(crate) fn who(p: &Proposal) -> String {
+    match p.origin() {
+        Some((_, name)) => format!("{} (on {})", p.actor.label, if name.is_empty() { "another device" } else { name }),
+        None => p.actor.label.clone(),
+    }
 }
 
 /// "14:02" today, "Mon 14:02" this week, else the date.
