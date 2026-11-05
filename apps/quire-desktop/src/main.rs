@@ -13,6 +13,7 @@ mod agents_settings;
 mod ai_settings_ui;
 mod app;
 mod ask_ui;
+mod audio_ui;
 mod base_surface;
 mod calendar_ui;
 mod canvas_ui;

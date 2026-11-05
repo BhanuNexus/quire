@@ -565,6 +565,7 @@ impl QuireApp {
 
     /// The right panel: Insights, plus any feature tabs that are offered.
     fn right_panel(&mut self, ui: &mut egui::Ui, pal: &Palette) -> PanelOut {
+        self.features.active_surface = self.surfaces.active.and_then(|i| self.surfaces.open.get(i)).map(|s| s.path().clone());
         let tabs = crate::registry::offered(crate::registry::RIGHT_TABS, &self.ws);
         let tab = tabs.iter().find(|t| t.id == self.right_tab).or_else(|| tabs.first()).copied();
         if tabs.len() > 1 {
@@ -753,7 +754,7 @@ impl QuireApp {
             }
             let status = egui::Panel::bottom("quire-status")
                 .frame(egui::Frame::NONE.fill(if focus { pal.bg } else { pal.panel }).inner_margin(egui::Margin::symmetric(12, 4)))
-                .show(ui, |ui| panels::status_bar(ui, &self.ws, pal))
+                .show(ui, |ui| panels::status_bar(ui, &self.ws, pal, self.surfaces.active.is_some()))
                 .inner;
             self.after_panel(&status);
             if self.ws.settings.show_sidebar && !focus {
