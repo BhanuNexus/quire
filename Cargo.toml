@@ -18,6 +18,7 @@ members = [
     "crates/quire-ai",
     "crates/quire-mcp",
     "crates/quire-assistant",
+    "crates/quire-web",
     "apps/quire-desktop",
     "apps/quire-cli",
     "apps/quire-sync-server",
@@ -58,6 +59,8 @@ quire-pdf = { path = "crates/quire-pdf" }
 quire-ai = { path = "crates/quire-ai", default-features = false }
 quire-mcp = { path = "crates/quire-mcp" }
 quire-assistant = { path = "crates/quire-assistant" }
+# 0.10: the web app of `quire-cli serve`.
+quire-web = { path = "crates/quire-web" }
 
 ropey = "1.6"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }

@@ -5698,8 +5698,10 @@ dependencies = [
  "quire-assistant",
  "quire-import",
  "quire-mcp",
+ "quire-web",
  "serde_json",
  "tempfile",
+ "tokio",
  "winresource",
 ]
 
@@ -5929,6 +5931,30 @@ dependencies = [
  "thiserror 2.0.21",
  "toml 1.1.8+spec-1.1.0",
  "toml_edit 0.25.17+spec-1.1.0",
+]
+
+[[package]]
+name = "quire-web"
+version = "0.9.1"
+dependencies = [
+ "argon2",
+ "axum",
+ "base64 0.23.1",
+ "chrono",
+ "getrandom 0.4.3",
+ "quire-agent",
+ "quire-app",
+ "quire-mcp",
+ "quire-typeset",
+ "serde",
+ "serde_json",
+ "sha2",
+ "similar",
+ "tempfile",
+ "tokio",
+ "toml 1.1.8+spec-1.1.0",
+ "unicode-normalization",
+ "ureq",
 ]
 
 [[package]]
