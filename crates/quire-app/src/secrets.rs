@@ -59,16 +59,22 @@ impl FileSecrets {
     }
 }
 
+/// Held while the file is read and rewritten, so two threads saving
+/// secrets at once (two vaults setting up sync) don't drop each other's.
+static FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 impl SecretStore for FileSecrets {
     fn get(&self, key: &str) -> Option<String> {
         self.load().remove(key)
     }
     fn set(&self, key: &str, value: &str) -> Result<(), String> {
+        let _held = FILE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut m = self.load();
         m.insert(key.to_string(), value.to_string());
         self.store(&m)
     }
     fn delete(&self, key: &str) -> Result<(), String> {
+        let _held = FILE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut m = self.load();
         m.remove(key);
         self.store(&m)
