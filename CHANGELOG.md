@@ -4,6 +4,9 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Changed
+- The full edition now includes the on-device AI engine; Quire Lite downloads it when you turn on-device AI on. Settings → AI says "Included with Quire" for the engine that came with the app, and Quire checks it against a hash built into the app before every start, as it does a downloaded engine.
+
 ## [0.9.1] - 2026-11-04
 
 The first published 0.9 release. (0.9.0 was tagged, but its release build stopped on two packaging problems before anything was published.)

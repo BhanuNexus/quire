@@ -32,6 +32,7 @@ Download from [Releases](https://github.com/BhanuNexus/quire/releases). Each rel
 | Editor, links, search, sync, graph, callouts, spelling, capture… | ✓ | ✓ |
 | Math and Mermaid diagrams drawn in place | ✓ | shown as their source |
 | Export as PDF | ✓ | — |
+| On-device AI engine (about 18 MB) | included | downloaded when you turn on-device AI on |
 | App size | ~68 MB | ~28 MB |
 | File names | `Quire-<version>-…` | `Quire-Lite-<version>-…` |
 

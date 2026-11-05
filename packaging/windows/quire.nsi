@@ -2,6 +2,10 @@
 ;
 ;   makensis -DVERSION=0.4.0 -DSRCDIR=<folder with quire.exe and quire-cli.exe> -DOUTFILE=<installer.exe> quire.nsi
 ;
+; -DENGINE (the full edition) also installs quire-ai-engine.exe from SRCDIR,
+; next to quire.exe. Without it (Quire Lite) an engine left by the full
+; edition is removed: Lite downloads its own when on-device AI is turned on.
+;
 ; Works with makensis on Windows (CI) and on Linux (cross builds).
 
 Unicode true
@@ -66,9 +70,15 @@ Section "Quire" SecApp
   SectionIn RO
   ; Close a running copy so files can be replaced on upgrade.
   nsExec::Exec 'taskkill /IM quire.exe /F'
+  nsExec::Exec 'taskkill /IM quire-ai-engine.exe /F'
   SetOutPath "$INSTDIR"
   File "${SRCDIR}\quire.exe"
   File "${SRCDIR}\quire-cli.exe"
+!ifdef ENGINE
+  File "${SRCDIR}\quire-ai-engine.exe"
+!else
+  Delete "$INSTDIR\quire-ai-engine.exe"
+!endif
   File /oname=README.md "${SRCDIR}\README.md"
   File "${SRCDIR}\LICENSE.txt"
   WriteUninstaller "$INSTDIR\Uninstall Quire.exe"
@@ -99,8 +109,10 @@ SectionEnd
 
 Section "Uninstall"
   nsExec::Exec 'taskkill /IM quire.exe /F'
+  nsExec::Exec 'taskkill /IM quire-ai-engine.exe /F'
   Delete "$INSTDIR\quire.exe"
   Delete "$INSTDIR\quire-cli.exe"
+  Delete "$INSTDIR\quire-ai-engine.exe"
   Delete "$INSTDIR\README.md"
   Delete "$INSTDIR\LICENSE.txt"
   Delete "$INSTDIR\Uninstall Quire.exe"

@@ -86,7 +86,10 @@ jobs:
 
   # The on-device AI engine (design §D.3): built per target first, so each
   # app build can embed the SHA-256 of the engine it may download
-  # (crates/quire-ai/engine.sha256.<target>). One engine serves both editions.
+  # (crates/quire-ai/engine.sha256.<target>). One engine serves both editions:
+  # the full edition's packages include it (next to the app, checked against
+  # crates/quire-ai/engine.bundled.sha256, written by the packaging scripts);
+  # Quire Lite downloads it when on-device AI is turned on.
   engine:
     needs: check
     timeout-minutes: 90
@@ -175,6 +178,17 @@ jobs:
           pattern: pins-*
           path: crates/quire-ai
           merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: matrix.edition == 'full'
+        with:
+          name: quire-engine-x86_64-unknown-linux-gnu
+          path: ${{ runner.temp }}/engine
+      - name: Unpack the engine to bundle (full edition)
+        if: matrix.edition == 'full'
+        run: |
+          engine="$(packaging/unpack-engine.sh "$RUNNER_TEMP/engine/quire-ai-engine-x86_64-unknown-linux-gnu.gz" \
+            x86_64-unknown-linux-gnu "$RUNNER_TEMP/engine/quire-ai-engine")"
+          echo "ENGINE_BIN=$engine" >> "$GITHUB_ENV"
       - name: Install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - name: Build tar.gz, .deb and AppImage
@@ -197,6 +211,37 @@ jobs:
           if [ "$EDITION" = full ]; then
             tar -xzf dist/quire-sync-server-*-linux-x86_64.tar.gz -C "$RUNNER_TEMP"
             "$RUNNER_TEMP"/quire-sync-server-*-linux-x86_64/quire-sync-server --version
+          fi
+      - name: The full edition includes the engine, Quire Lite doesn't
+        run: |
+          # Listings go to files first: `grep -q` closing a pipe early would
+          # fail the step under pipefail.
+          dpkg-deb -c dist/Quire-*-linux-amd64.deb > "$RUNNER_TEMP/deb.txt"
+          tar -tzf dist/Quire-*-linux-x86_64.tar.gz > "$RUNNER_TEMP/tar.txt"
+          appimage=(dist/Quire-*-linux-x86_64.AppImage)
+          (cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/${appimage[0]}" --appimage-extract > /dev/null)
+          appdir="$RUNNER_TEMP/squashfs-root"
+          tardir="$(echo "$RUNNER_TEMP"/Quire-*-linux-x86_64)"
+          if [ "$EDITION" = full ]; then
+            grep -q ' \./usr/bin/quire-ai-engine$' "$RUNNER_TEMP/deb.txt"
+            grep -q '^Quire-[^/]*/quire-ai-engine$' "$RUNNER_TEMP/tar.txt"
+            for engine in /usr/bin/quire-ai-engine "$tardir/quire-ai-engine" "$appdir/usr/bin/quire-ai-engine"; do
+              "$engine" --version
+            done
+            # The app finds the engine next to it, checks it against the
+            # hash it was built with, and talks to it.
+            export QUIRE_EXPERIMENTAL_ON_DEVICE=1
+            quire-cli ai engine | tee "$RUNNER_TEMP/engine.txt"
+            grep -q '^/usr/bin/quire-ai-engine ' "$RUNNER_TEMP/engine.txt"
+            "$tardir/quire-cli" ai engine
+            # A changed engine next to the app is refused before it starts.
+            printf x >> "$tardir/quire-ai-engine"
+            if "$tardir/quire-cli" ai engine 2> "$RUNNER_TEMP/refused.txt"; then exit 1; fi
+            grep -q "Reinstall Quire" "$RUNNER_TEMP/refused.txt"
+          else
+            if grep -q quire-ai-engine "$RUNNER_TEMP/deb.txt" "$RUNNER_TEMP/tar.txt"; then exit 1; fi
+            test ! -e /usr/bin/quire-ai-engine
+            test ! -e "$appdir/usr/bin/quire-ai-engine"
           fi
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         if: env.IS_RELEASE == 'true'
@@ -243,6 +288,27 @@ jobs:
           pattern: pins-*
           path: crates/quire-ai
           merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: matrix.edition == 'full'
+        with:
+          pattern: quire-engine-*-apple-darwin
+          path: ${{ runner.temp }}/engine
+          merge-multiple: true
+      - name: Unpack the engines and make the universal one to bundle (full edition)
+        # Each thin engine is checked against its own pin first. lipo and
+        # signing change the bytes, so package.sh signs the universal engine
+        # and builds the app with the hash of that file
+        # (crates/quire-ai/engine.bundled.sha256), the same in both slices.
+        if: matrix.edition == 'full'
+        run: |
+          for t in aarch64-apple-darwin x86_64-apple-darwin; do
+            packaging/unpack-engine.sh "$RUNNER_TEMP/engine/quire-ai-engine-$t.gz" "$t" "$RUNNER_TEMP/engine/$t/quire-ai-engine"
+          done
+          lipo -create -output "$RUNNER_TEMP/engine/quire-ai-engine" \
+            "$RUNNER_TEMP/engine/aarch64-apple-darwin/quire-ai-engine" "$RUNNER_TEMP/engine/x86_64-apple-darwin/quire-ai-engine"
+          lipo -info "$RUNNER_TEMP/engine/quire-ai-engine"
+          "$RUNNER_TEMP/engine/quire-ai-engine" --version
+          echo "ENGINE_BIN=$RUNNER_TEMP/engine/quire-ai-engine" >> "$GITHUB_ENV"
       - name: Install the pinned toolchain and targets
         run: |
           rustup show active-toolchain || rustup toolchain install
@@ -260,6 +326,16 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" build.keychain
           rm "$RUNNER_TEMP/cert.p12"
       - run: packaging/macos/package.sh
+      - name: The full edition includes the engine, Quire Lite doesn't
+        run: |
+          engine=dist/Quire.app/Contents/MacOS/quire-ai-engine
+          if [ "$EDITION" = full ]; then
+            lipo "$engine" -verify_arch arm64 x86_64
+            "$engine" --version
+            QUIRE_EXPERIMENTAL_ON_DEVICE=1 dist/Quire.app/Contents/MacOS/quire-cli ai engine
+          else
+            test ! -e "$engine"
+          fi
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         if: env.IS_RELEASE == 'true'
         with:
@@ -298,6 +374,17 @@ jobs:
           pattern: pins-*
           path: crates/quire-ai
           merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: matrix.edition == 'full'
+        with:
+          name: quire-engine-x86_64-pc-windows-msvc
+          path: ${{ runner.temp }}/engine
+      - name: Unpack the engine to bundle (full edition)
+        if: matrix.edition == 'full'
+        run: |
+          engine="$(packaging/unpack-engine.sh "$RUNNER_TEMP/engine/quire-ai-engine-x86_64-pc-windows-msvc.gz" \
+            x86_64-pc-windows-msvc "$RUNNER_TEMP/engine/quire-ai-engine.exe")"
+          echo "ENGINE_BIN=$engine" >> "$GITHUB_ENV"
       - name: Install the pinned toolchain and target
         run: |
           rustup show active-toolchain || rustup toolchain install
@@ -316,6 +403,17 @@ jobs:
           echo "WINDOWS_CERT_PFX=$(cygpath -w "$RUNNER_TEMP/cert.pfx")" >> "$GITHUB_ENV"
           echo "WINDOWS_CERT_PASSWORD=$WINDOWS_CERTIFICATE_PASSWORD" >> "$GITHUB_ENV"
       - run: packaging/windows/package.sh msvc
+      - name: The full edition includes the engine, Quire Lite doesn't
+        run: |
+          python -c "import sys, zipfile; print('\n'.join(zipfile.ZipFile(sys.argv[1]).namelist()))" dist/*-portable.zip | tr -d "\r" > "$RUNNER_TEMP/zip.txt"
+          cat "$RUNNER_TEMP/zip.txt"
+          if [ "$EDITION" = full ]; then
+            grep -qx 'quire-ai-engine\.exe' "$RUNNER_TEMP/zip.txt"
+            dist/windows-stage/quire-ai-engine.exe --version
+            QUIRE_EXPERIMENTAL_ON_DEVICE=1 dist/windows-stage/quire-cli.exe ai engine
+          elif grep -q quire-ai-engine "$RUNNER_TEMP/zip.txt"; then
+            exit 1
+          fi
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         if: env.IS_RELEASE == 'true'
         with:

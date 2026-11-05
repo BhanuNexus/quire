@@ -23,12 +23,13 @@ Every release is built by GitHub Actions from a tag. It's published as an immuta
    Or, without a local clone (from a phone, say): **Actions → Tag release → Run workflow** on `main`, with the version. It checks the version and changelog, creates the annotated tag on the latest `main` commit (credited to that commit's author), and starts the Release workflow on it.
 4. `.github/workflows/release.yml` then:
    1. checks that the tag matches `Cargo.toml` and that the changelog has a section for it, checks that the on-device models are pinned (`packaging/pin-models.py --check`; only a warning while `REQUIRE_MODEL_PINS` at the top of the workflow is `"false"`, as in 0.9.0, where on-device AI ships behind an experimental switch), and runs the tests;
-   2. builds Linux, macOS and Windows in parallel, from clean (no build caches);
-   3. creates a build-provenance attestation for every file;
-   4. generates an SPDX SBOM and attests it against the binaries;
-   5. writes `SHA256SUMS`;
-   6. creates a **draft** release with the changelog section as notes and uploads every file;
-   7. publishes the release. With immutable releases on, the tag and assets are locked from this point.
+   2. builds the on-device AI engine per target, uploads it as a release asset (`quire-ai-engine-<target>.gz`) and pins its SHA-256 into the app builds (`engine.sha256.<target>`);
+   3. builds Linux, macOS and Windows in parallel, from clean (no build caches), both editions. The full edition's packages include the engine next to the app: each job unpacks the engine assets for its target, checks them against their pins (`packaging/unpack-engine.sh`; on macOS the two are joined with `lipo`), and passes the file as `ENGINE_BIN` to the packaging script, which signs it (macOS, Windows), writes its SHA-256 to `crates/quire-ai/engine.bundled.sha256` and builds the app with it, so the app refuses an engine next to it that isn't that file. Quire Lite's packages have no engine; it downloads the asset when on-device AI is turned on. A smoke test checks each package has (or hasn't) the engine and, for the full edition, that `quire-cli ai engine` starts it;
+   4. creates a build-provenance attestation for every file;
+   5. generates an SPDX SBOM and attests it against the binaries;
+   6. writes `SHA256SUMS`;
+   7. creates a **draft** release with the changelog section as notes and uploads every file;
+   8. publishes the release. With immutable releases on, the tag and assets are locked from this point.
 
 A tag with a suffix (e.g. `v0.4.0-rc.1`) is published as a pre-release. Running the Release workflow by hand on a branch is a dry run: the same builds are uploaded as workflow artifacts, with no attestations and no release.
 
@@ -78,7 +79,14 @@ packaging/windows/package.sh gnu           # Windows, cross from Linux (mingw-w6
 packaging/macos/package.sh                 # macOS (on a Mac)
 ```
 
-Files land in `dist/`.
+Files land in `dist/`. Without `ENGINE_BIN` the full edition is packaged without the on-device AI engine (it then downloads it, like Lite). To include one, build it and pass it (on macOS, a universal binary made with `lipo`):
+
+```bash
+cargo build --release --locked -p quire-ai-engine --bin quire-ai-engine
+ENGINE_BIN=target/release/quire-ai-engine packaging/linux/package.sh
+```
+
+A local build has no download pins, so it doesn't check an engine it downloads; it does check the bundled one against `engine.bundled.sha256`.
 
 ## Toolchain and lints
 
