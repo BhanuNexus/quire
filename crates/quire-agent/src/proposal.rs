@@ -79,6 +79,35 @@ pub struct HunkDecision {
     pub other: Other,
 }
 
+impl HunkDecision {
+    /// The device the decision was made on (absent in decisions made
+    /// before 0.10: then the device that holds the proposal).
+    pub fn device(&self) -> Option<&str> {
+        self.other.get("device").and_then(serde_json::Value::as_str)
+    }
+
+    /// The same decision, recorded as made on `device`.
+    #[must_use]
+    pub fn on_device(mut self, device: &str) -> Self {
+        self.other.insert("device".into(), device.into());
+        self
+    }
+}
+
+impl ChangeState {
+    /// Which of two devices' outcomes a change keeps: one that wrote text
+    /// somewhere wins (the note carries it), then a rejection, then
+    /// "superseded". The same on every device, whatever the order.
+    pub const fn rank(self) -> u8 {
+        match self {
+            Self::Applied => 3,
+            Self::PartiallyApplied => 2,
+            Self::Rejected => 1,
+            Self::Superseded => 0,
+        }
+    }
+}
+
 /// One file's part of a proposal.
 ///
 /// Which fields are set depends on `op`: edit: `path`, `base`, `base_text` (or `base_text_gz`), `new_text`,
@@ -107,6 +136,11 @@ pub struct ProposalChange {
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub decisions: Vec<HunkDecision>,
+    /// What decided hunks contained (rejections, and acceptances on other
+    /// devices), so the same suggestion isn't asked about again when the
+    /// agent rewrites lines around it or the hunk ids differ (0.10).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decided: Vec<crate::review::DecidedContent>,
     /// Set once the change is decided; absent while it waits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<ChangeState>,
@@ -131,6 +165,7 @@ impl ProposalChange {
             new_text: None,
             text: None,
             decisions: Vec::new(),
+            decided: Vec::new(),
             state: None,
             review: None,
             other: Other::new(),
@@ -206,6 +241,69 @@ impl ProposalChange {
     pub fn paths(&self) -> Vec<NotePath> {
         [&self.path, &self.from, &self.to].into_iter().flatten().cloned().collect()
     }
+
+    /// Take what the person rejected out of a waiting edit's text: hunks
+    /// with a rejected id, hunks that only bring back rejected content at
+    /// the same place (reworded a little), and rejected lines inside a
+    /// bigger hunk (the agent rewrote the line next to them). Only the
+    /// proposal's text changes. True when it changed.
+    pub fn drop_rejected(&mut self) -> bool {
+        use crate::review::{Choice, DecidedContent};
+        let (Some(path), Some(new_text), Some(base)) = (self.path.clone(), self.new_text.clone(), self.base_text()) else { return false };
+        if self.op != ChangeOp::Edit || self.state.is_some() {
+            return false;
+        }
+        let rejected: Vec<&str> = self.decisions.iter().filter(|d| d.action == HunkAction::Rejected).map(|d| d.hunk.as_str()).collect();
+        let turned_down: Vec<&DecidedContent> = self.decided.iter().filter(|d| d.action == HunkAction::Rejected).collect();
+        if rejected.is_empty() && turned_down.is_empty() {
+            return false;
+        }
+        let hunks = crate::review::hunks(&path, &base, &base, &new_text);
+        let lines = crate::review::split_lines(&base);
+        let keep = |h: &Hunk| {
+            let (before, after) = crate::review::context_of(&lines, &h.range_in_current);
+            let (b, a) = (before.as_deref(), after.as_deref());
+            if rejected.contains(&h.id.as_str()) || turned_down.iter().any(|d| d.covers(h, b, a)) {
+                return Choice::Reject;
+            }
+            let mut kept = h.new_lines.clone();
+            let mut stripped = false;
+            for d in &turned_down {
+                let probe = Hunk { new_lines: kept.clone(), ..h.clone() };
+                if let Some(l) = d.strip(&probe, b, a) {
+                    kept = l;
+                    stripped = true;
+                }
+            }
+            if !stripped {
+                Choice::Pending
+            } else if kept == h.old_lines {
+                Choice::Reject
+            } else {
+                Choice::Edit(kept.concat())
+            }
+        };
+        let out = crate::review::apply(&base, &hunks, keep).new_text;
+        if out == new_text {
+            return false;
+        }
+        self.new_text = Some(out);
+        self.review = None;
+        true
+    }
+
+    /// The device that set `state` and when (0.10; absent before).
+    pub fn state_by(&self) -> Option<(&str, i64)> {
+        let dev = self.other.get("state_device")?.as_str()?;
+        Some((dev, self.other.get("state_at").and_then(serde_json::Value::as_i64).unwrap_or_default()))
+    }
+
+    /// Set `state`, recorded as decided on `device` at `at`.
+    pub fn set_state(&mut self, state: ChangeState, device: &str, at: i64) {
+        self.state = Some(state);
+        self.other.insert("state_device".into(), device.into());
+        self.other.insert("state_at".into(), at.into());
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -241,6 +339,14 @@ fn is_trusted(t: &Trust) -> bool {
 }
 
 impl Proposal {
+    /// The device whose agent made this proposal, and its name, when that
+    /// isn't this device: a proposal that came with shared review history
+    /// (`origin` in the file). `None` for proposals made here.
+    pub fn origin(&self) -> Option<(&str, &str)> {
+        let o = self.other.get("origin")?;
+        Some((o.get("id")?.as_str()?, o.get("name").and_then(serde_json::Value::as_str).unwrap_or_default()))
+    }
+
     /// Changes still waiting for a decision.
     pub fn pending_changes(&self) -> impl Iterator<Item = &ProposalChange> {
         self.changes.iter().filter(|c| c.state.is_none())
@@ -281,6 +387,7 @@ impl Proposal {
             decided_hunks: self.changes.iter().map(|c| c.decisions.len()).sum(),
             pending_files: self.pending_changes().filter_map(ProposalChange::subject).cloned().collect(),
             untrusted_source: self.untrusted_source.clone(),
+            from_device: self.origin().map(|(id, name)| (id.to_string(), name.to_string())),
         }
     }
 }
@@ -304,6 +411,9 @@ pub struct ProposalSummary {
     /// The first untrusted source, if the proposal is based on untrusted content.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub untrusted_source: Option<String>,
+    /// The device (id, name) the proposal came from, when not this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_device: Option<(String, String)>,
 }
 
 /// Which proposals to list; empty fields match everything.
@@ -476,6 +586,19 @@ impl ProposalStore {
             .collect();
         v.sort_by_key(|p| std::cmp::Reverse((p.updated, p.created)));
         v
+    }
+
+    /// Rewrite the archived copy of `p` in place (its `updated` must be the
+    /// one it was archived with: that picks the month folder).
+    pub fn save_archived(&self, p: &Proposal) -> Result<(), WriteError> {
+        let file = Self::archive_file(&p.id, p.updated);
+        let on_disk = self.vault.storage().read_bytes(&file).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
+        if on_disk.and_then(|v| v.get("format").and_then(serde_json::Value::as_u64)).is_none_or(|f| f > u64::from(PROPOSAL_FORMAT)) {
+            return Err(WriteError::NotFound { path: file });
+        }
+        let bytes = serde_json::to_vec_pretty(p).map_err(|e| WriteError::Io(e.to_string()))?;
+        self.vault.storage().write_bytes_atomic(&file, &bytes)?;
+        Ok(())
     }
 
     /// Delete the archived copy of `p`.
