@@ -14,6 +14,8 @@
 //!   highlight (full edition) or the annotation note at `^h7f3a` (Lite).
 
 use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
@@ -357,6 +359,60 @@ pub fn index_pdfs(vault: &Vault, index: &quire_index::IndexService) -> usize {
     n
 }
 
+/// How far a background pass over a vault's PDFs has got.
+///
+/// The MCP server and `quire-cli serve` answer at once and say so in search
+/// results while it runs.
+#[derive(Debug, Default)]
+pub struct PdfIndexing {
+    total: AtomicUsize,
+    done: AtomicUsize,
+    finished: AtomicBool,
+}
+
+impl PdfIndexing {
+    /// `(done, total)` while PDFs are still being read; `None` once every
+    /// PDF is searchable. `total` is 0 until the vault has been listed.
+    pub fn in_progress(&self) -> Option<(usize, usize)> {
+        if self.finished.load(Ordering::Acquire) {
+            return None;
+        }
+        Some((self.done.load(Ordering::Acquire), self.total.load(Ordering::Acquire)))
+    }
+
+    /// The pass is over (or there is nothing to read).
+    pub fn finish(&self) {
+        self.finished.store(true, Ordering::Release);
+    }
+}
+
+/// Read the text of every PDF in `vault` on a background thread.
+///
+/// The text comes from the cache when it has it. Each PDF goes to `sink`,
+/// which sends it to an index and returns `false` to stop early (the server
+/// is gone). `progress` counts a PDF once `sink` has taken it, or once it
+/// turned out to have no text.
+pub fn index_pdfs_in_background(vault: Vault, progress: Arc<PdfIndexing>, mut sink: impl FnMut(AttachmentText) -> bool + Send + 'static) {
+    let after = Arc::clone(&progress);
+    let run = move || {
+        let pdfs: Vec<NotePath> = vault.storage().list().unwrap_or_default().into_iter().filter(is_pdf).collect();
+        progress.total.store(pdfs.len(), Ordering::Release);
+        for p in pdfs {
+            if let Some(t) = read_text(&vault, &p)
+                && !sink(attachment(&p, &t))
+            {
+                break;
+            }
+            progress.done.fetch_add(1, Ordering::AcqRel);
+        }
+        progress.finish();
+    };
+    if std::thread::Builder::new().name("pdf-text".into()).spawn(run).is_err() {
+        // No thread: PDFs stay out of search rather than block start-up.
+        after.finish();
+    }
+}
+
 /// A PDF changed or went away: update `index` (the MCP server's watcher).
 pub fn pdf_changed(vault: &Vault, index: &quire_index::IndexService, path: &NotePath) {
     if !is_pdf(path) {
@@ -591,10 +647,10 @@ mod tests {
             agent: quire_agent::AgentStore::open(
                 &vault,
                 quire_agent::DeviceInfo { id: "d".into(), name: "test".into() },
-                std::sync::Arc::new(quire_agent::SystemClock),
+                Arc::new(quire_agent::SystemClock),
             ),
             chat: None,
-            user_active: std::sync::Arc::default(),
+            user_active: Arc::default(),
             cancel: quire_intel::chat::CancelFlag::new(),
         };
         qtx.send(NotePath::new("paper.pdf")).unwrap();
