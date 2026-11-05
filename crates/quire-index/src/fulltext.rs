@@ -5,9 +5,10 @@
 use std::collections::{BTreeMap, HashMap};
 
 use quire_vault::NotePath;
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::record::NoteRecord;
-use crate::tokenize::{Folded, fold_str, tokens};
+use crate::tokenize::{FastHash, Folded, fold_into, fold_str, is_content, stem_in_place, stem_owned, tokens};
 
 const K1: f32 = 1.2;
 const B: f32 = 0.75;
@@ -100,19 +101,76 @@ pub struct SearchHit {
 /// Weighted term frequencies and length for BM25, computed when a note is
 /// parsed (outside the index lock) so inserting is cheap.
 pub(crate) fn search_terms(plain: &str, name: &str, title: &str, aliases: &[String], tags: &[String]) -> (Vec<(String, f32)>, f32) {
-    let mut tf: HashMap<String, f32> = HashMap::new();
+    note_terms(plain, name, title, aliases, tags, None)
+}
+
+fn bump(tf: &mut HashMap<String, f32, FastHash>, t: String, by: f32) {
+    match tf.get_mut(t.as_str()) {
+        Some(v) => *v += by,
+        None => {
+            tf.insert(t, by);
+        }
+    }
+}
+
+fn count(terms: &mut HashMap<String, u32, FastHash>, t: &str) {
+    match terms.get_mut(t) {
+        Some(n) => *n += 1,
+        None => {
+            terms.insert(t.to_string(), 1);
+        }
+    }
+}
+
+/// [`search_terms`], and with `content` also the note's content terms
+/// ([`crate::tokenize::content_tokens`] of `plain` and `name`, counted), in
+/// one pass over the words: indexing used to segment, fold and stem the
+/// text twice.
+pub(crate) fn note_terms(
+    plain: &str,
+    name: &str,
+    title: &str,
+    aliases: &[String],
+    tags: &[String],
+    mut content: Option<&mut HashMap<String, u32, FastHash>>,
+) -> (Vec<(String, f32)>, f32) {
+    let mut tf: HashMap<String, f32, FastHash> = HashMap::with_capacity_and_hasher(plain.len() / 16, FastHash);
     let mut len = 0f32;
-    for t in tokens(plain) {
-        *tf.entry(t).or_default() += 1.0;
+    // One buffer for every word: most words are already in the maps, so
+    // most need no allocation at all.
+    let mut buf = String::new();
+    for w in plain.unicode_words() {
+        fold_into(w, &mut buf);
+        let content_word = content.is_some() && is_content(&buf);
+        stem_in_place(&mut buf);
+        if content_word && let Some(terms) = content.as_deref_mut() {
+            count(terms, &buf);
+        }
+        match tf.get_mut(buf.as_str()) {
+            Some(v) => *v += 1.0,
+            None => {
+                tf.insert(buf.clone(), 1.0);
+            }
+        }
         len += 1.0;
     }
-    for t in tokens(name).chain(tokens(title)).chain(aliases.iter().flat_map(|a| tokens(a))) {
-        *tf.entry(t).or_default() += TITLE_WEIGHT;
+    for w in name.unicode_words() {
+        let folded = fold_str(w);
+        let content_word = content.is_some() && is_content(&folded);
+        let t = stem_owned(folded);
+        if content_word && let Some(terms) = content.as_deref_mut() {
+            count(terms, &t);
+        }
+        bump(&mut tf, t, TITLE_WEIGHT);
+        len += 1.0;
+    }
+    for t in tokens(title).chain(aliases.iter().flat_map(|a| tokens(a))) {
+        bump(&mut tf, t, TITLE_WEIGHT);
         len += 1.0;
     }
     for tag in tags {
         for t in tokens(tag) {
-            *tf.entry(t).or_default() += TAG_WEIGHT;
+            bump(&mut tf, t, TAG_WEIGHT);
         }
     }
     (tf.into_iter().collect(), len)

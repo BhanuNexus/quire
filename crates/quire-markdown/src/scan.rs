@@ -47,28 +47,48 @@ impl Inline {
 /// Byte ranges whose content must be treated literally (code, math, HTML,
 /// front matter, link destinations), sorted and merged.
 pub fn verbatim_ranges(src: &str) -> Vec<Range<usize>> {
-    let mut out = Vec::new();
-    let mut open: Option<usize> = None;
+    let mut v = Verbatim::default();
     let parsed = crate::parse_source(src);
     for (ev, range) in Parser::new_ext(&parsed, crate::options()).into_offset_iter() {
+        v.event(src, &ev, &range);
+    }
+    v.finish()
+}
+
+/// Collects [`verbatim_ranges`] from parser events, so `extract` gets them
+/// from the parse it already does (a third parse was 9% of indexing, 0.10
+/// perf).
+#[derive(Debug, Default)]
+pub(crate) struct Verbatim {
+    out: Vec<Range<usize>>,
+    open: Option<usize>,
+}
+
+impl Verbatim {
+    pub(crate) fn event(&mut self, src: &str, ev: &Event<'_>, range: &Range<usize>) {
         match ev {
-            Event::Start(Tag::CodeBlock(_) | Tag::MetadataBlock(_) | Tag::HtmlBlock) => open = Some(range.start),
+            Event::Start(Tag::CodeBlock(_) | Tag::MetadataBlock(_) | Tag::HtmlBlock) => self.open = Some(range.start),
             Event::End(TagEnd::CodeBlock | TagEnd::MetadataBlock(_) | TagEnd::HtmlBlock) => {
-                if let Some(s) = open.take() {
-                    out.push(s..range.end);
+                if let Some(s) = self.open.take() {
+                    self.out.push(s..range.end);
                 }
             }
-            Event::Code(_) | Event::InlineMath(_) | Event::DisplayMath(_) | Event::InlineHtml(_) | Event::Html(_) => out.push(range),
+            Event::Code(_) | Event::InlineMath(_) | Event::DisplayMath(_) | Event::InlineHtml(_) | Event::Html(_) => {
+                self.out.push(range.clone());
+            }
             Event::Start(Tag::Link { .. }) => {
                 // The destination part `(...)` of an inline link is verbatim too.
-                if let Some(off) = src[range.clone()].rfind("](") {
-                    out.push(range.start + off + 1..range.end);
+                if let Some(off) = src.get(range.clone()).and_then(|r| r.rfind("](")) {
+                    self.out.push(range.start + off + 1..range.end);
                 }
             }
             _ => {}
         }
     }
-    merge(out)
+
+    pub(crate) fn finish(self) -> Vec<Range<usize>> {
+        merge(self.out)
+    }
 }
 
 fn merge(mut v: Vec<Range<usize>>) -> Vec<Range<usize>> {

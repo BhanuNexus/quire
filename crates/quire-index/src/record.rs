@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use quire_markdown::{Extracted, Heading, Link, Stats, Task, Value, extract};
 use quire_vault::NotePath;
 
-use crate::tokenize::content_tokens;
+use crate::tokenize::FastHash;
 
 /// Everything derived from one note's source. Rebuildable at any time.
 #[derive(Debug, Clone)]
@@ -26,7 +26,7 @@ pub struct NoteRecord {
     /// Prose without markup, for snippets and summaries.
     pub plain: String,
     /// Content term frequencies (stopwords removed) for intelligence features.
-    pub terms: HashMap<String, u32>,
+    pub terms: HashMap<String, u32, FastHash>,
     /// BM25 term weights and document length, precomputed off the index lock.
     pub(crate) search_terms: (Vec<(String, f32)>, f32),
 }
@@ -37,11 +37,9 @@ impl NoteRecord {
         let name = path.stem().to_string();
         let title = ex.title().map_or_else(|| name.clone(), str::to_string);
         let aliases = ex.front_matter.as_ref().map(quire_markdown::FrontMatter::aliases).unwrap_or_default();
-        let mut terms: HashMap<String, u32> = HashMap::new();
-        for t in content_tokens(&ex.plain).chain(content_tokens(&name)) {
-            *terms.entry(t).or_default() += 1;
-        }
-        let search_terms = crate::fulltext::search_terms(&ex.plain, &name, &title, &aliases, &ex.tags);
+        // Content terms and search terms in one pass over the words.
+        let mut terms: HashMap<String, u32, FastHash> = HashMap::default();
+        let search_terms = crate::fulltext::note_terms(&ex.plain, &name, &title, &aliases, &ex.tags, Some(&mut terms));
         let properties = ex.front_matter.as_ref().map(|f| f.fields.clone()).unwrap_or_default();
         Self {
             properties,

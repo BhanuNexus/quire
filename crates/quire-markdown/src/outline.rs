@@ -26,34 +26,47 @@ pub fn slugify(s: &str) -> String {
 }
 
 pub fn outline(src: &str) -> Vec<Heading> {
-    let mut out = Vec::new();
-    let mut cur: Option<Heading> = None;
-    let mut seen = std::collections::HashMap::<String, usize>::new();
+    let mut o = Outliner::default();
     let parsed = crate::parse_source(src);
     for (ev, range) in Parser::new_ext(&parsed, crate::options()).into_offset_iter() {
+        o.event(&ev, &range);
+    }
+    o.out
+}
+
+/// Builds the outline from parser events, so `extract` gets it from the
+/// parse it already does (a second parse was 7% of indexing, 0.10 perf).
+#[derive(Debug, Default)]
+pub(crate) struct Outliner {
+    pub(crate) out: Vec<Heading>,
+    cur: Option<Heading>,
+    seen: std::collections::HashMap<String, usize>,
+}
+
+impl Outliner {
+    pub(crate) fn event(&mut self, ev: &Event<'_>, range: &std::ops::Range<usize>) {
         match ev {
             Event::Start(Tag::Heading { level, .. }) => {
-                cur = Some(Heading { level: level as u8, text: String::new(), offset: range.start, anchor: String::new() });
+                self.cur = Some(Heading { level: *level as u8, text: String::new(), offset: range.start, anchor: String::new() });
             }
             Event::Text(t) | Event::Code(t) | Event::InlineMath(t) => {
-                if let Some(h) = cur.as_mut() {
-                    h.text.push_str(&t);
+                if let Some(h) = self.cur.as_mut() {
+                    h.text.push_str(t);
                 }
             }
             Event::End(TagEnd::Heading(_)) => {
-                if let Some(mut h) = cur.take() {
+                if let Some(mut h) = self.cur.take() {
                     h.text = h.text.trim().to_string();
                     let base = slugify(&h.text);
-                    let n = seen.entry(base.clone()).or_insert(0);
+                    let n = self.seen.entry(base.clone()).or_insert(0);
                     h.anchor = if *n == 0 { base } else { format!("{base}-{n}") };
                     *n += 1;
-                    out.push(h);
+                    self.out.push(h);
                 }
             }
             _ => {}
         }
     }
-    out
 }
 
 #[cfg(test)]
