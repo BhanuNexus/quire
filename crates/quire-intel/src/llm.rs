@@ -176,6 +176,30 @@ mod remote {
         LlmError::Request(format!("HTTP {status}: {msg}"))
     }
 
+    /// A `multipart/form-data` body with the fields
+    /// `/v1/audio/transcriptions` takes.
+    pub(crate) fn multipart(boundary: &str, model: &str, audio: &[u8], file_name: &str, language: &str) -> Vec<u8> {
+        let mut b = Vec::with_capacity(audio.len() + 512);
+        let mut field = |name: &str, value: &str| {
+            b.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n").as_bytes());
+        };
+        field("model", model);
+        field("response_format", "json");
+        if !language.is_empty() {
+            field("language", language);
+        }
+        let safe: String = file_name.chars().filter(|c| !matches!(c, '"' | '\r' | '\n' | '\\')).collect();
+        b.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{safe}\"\r\nContent-Type: audio/wav\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        b.extend_from_slice(audio);
+        b.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        b
+    }
+
     fn trim(base: &str) -> &str {
         base.trim_end_matches('/').trim_end_matches("/v1")
     }
@@ -541,6 +565,28 @@ mod remote {
                 return Err(LlmError::Request("embedding response was missing vectors".into()));
             }
             Ok(out)
+        }
+
+        /// Speech to text through `/v1/audio/transcriptions` (`OpenAI`, and the
+        /// servers that copy it). Sends `audio` (a WAV file's bytes) as
+        /// multipart form data; `language` is a code or empty.
+        pub fn transcribe(&self, model: &str, audio: &[u8], file_name: &str, language: &str) -> Result<String, LlmError> {
+            let boundary = format!("quire-{:016x}", audio.len() as u64 ^ 0x5157_4952_4551_5549);
+            let body = multipart(&boundary, model, audio, file_name, language);
+            let mut req = agent(Duration::from_mins(10))
+                .post(format!("{}/v1/audio/transcriptions", trim(&self.base_url)))
+                .header("content-type", &format!("multipart/form-data; boundary={boundary}"));
+            if let Some(k) = &self.api_key {
+                req = req.header("authorization", &format!("Bearer {k}"));
+            }
+            let mut resp = req.send(&body[..]).map_err(|e| LlmError::Request(e.to_string()))?;
+            let status = resp.status().as_u16();
+            let text = resp.body_mut().read_to_string().map_err(|e| LlmError::Request(e.to_string()))?;
+            let v: Value = serde_json::from_str(&text).unwrap_or_else(|_| json!({ "text": text.trim() }));
+            if status >= 400 {
+                return Err(err_from(status, &v));
+            }
+            v["text"].as_str().map(|t| t.trim().to_string()).ok_or_else(|| LlmError::Request(format!("unexpected response: {v}")))
         }
 
         /// The chat completions body for `req` (streamed).

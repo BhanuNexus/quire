@@ -15,6 +15,13 @@ use crate::workspace::{NoticeLevel, Workspace};
 #[derive(Default)]
 pub struct FileCache(RefCell<Option<(Instant, HashMap<String, NotePath>)>>);
 
+impl FileCache {
+    /// Forget the cache (a file was just added).
+    pub(crate) fn clear(&self) {
+        self.0.borrow_mut().take();
+    }
+}
+
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"];
 
 pub fn is_image(name: &str) -> bool {

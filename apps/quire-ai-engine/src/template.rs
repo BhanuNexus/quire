@@ -13,7 +13,7 @@
 
 use std::fmt::Write as _;
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
 pub const IM_START: &str = "<|im_start|>";
 pub const IM_END: &str = "<|im_end|>";
@@ -133,10 +133,29 @@ pub fn render(system: &str, messages: &[Value], tools: &[Value], json_mode: bool
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Piece {
     Text(String),
-    ToolCall { id: String, name: String, input: Value },
+    ToolCall {
+        id: String,
+        name: String,
+        input: Value,
+    },
+    /// A block that couldn't be read as a call (sent to the app with an
+    /// empty name and `_unparsed`, so it is never run).
+    BadCall {
+        id: String,
+        raw: String,
+        error: String,
+    },
 }
 
 /// Splits a streamed reply into text and tool calls.
+///
+/// Small models don't always follow the format, so it also:
+/// repairs the JSON inside a block ([`quire_ai::toolcall`]); reads several
+/// calls in one block; ends a block at the next `<tool_call>` when the
+/// closing tag is missing; drops `<think>` blocks and a stray `</think>`;
+/// stops at a `<tool_response>` the model writes itself (it is imagining
+/// the result); and, when tools were offered, reads a reply that is only a
+/// JSON call (bare or in a code fence) as a call, if it names one of them.
 #[derive(Debug, Default)]
 pub struct ReplyParser {
     pending: String,
@@ -144,25 +163,43 @@ pub struct ReplyParser {
     in_think: bool,
     calls: usize,
     started: bool,
+    /// The names of the tools offered.
+    tools: Vec<String>,
+    /// The reply so far looks like bare JSON: hold it until the end.
+    holding: bool,
+    /// The model began imagining a tool's answer: ignore the rest.
+    ended: bool,
 }
 
 const OPEN_CALL: &str = "<tool_call>";
 const CLOSE_CALL: &str = "</tool_call>";
 const OPEN_THINK: &str = "<think>";
 const CLOSE_THINK: &str = "</think>";
+const OPEN_RESPONSE: &str = "<tool_response>";
+
+/// Tags found in plain text, in the order they are tried.
+const TAGS: [&str; 4] = [OPEN_CALL, OPEN_THINK, CLOSE_THINK, OPEN_RESPONSE];
 
 impl ReplyParser {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// How many tool calls were found.
+    /// A parser for a reply to a request that offered `tools` (by name).
+    pub fn with_tools(tools: Vec<String>) -> Self {
+        Self { tools, ..Self::default() }
+    }
+
+    /// How many tool calls were found (read or not).
     pub const fn calls(&self) -> usize {
         self.calls
     }
 
     /// Feed more of the reply; returns what is now certain.
     pub fn push(&mut self, delta: &str) -> Vec<Piece> {
+        if self.ended {
+            return Vec::new();
+        }
         self.pending.push_str(delta);
         let mut out = Vec::new();
         loop {
@@ -178,50 +215,83 @@ impl ReplyParser {
                 continue;
             }
             if self.in_call {
-                let Some(i) = self.pending.find(CLOSE_CALL) else { return out };
-                let body = self.pending[..i].trim().to_string();
-                self.pending.drain(..i + CLOSE_CALL.len());
+                let close = self.pending.find(CLOSE_CALL);
+                let reopen = self.pending.find(OPEN_CALL);
+                let (end, skip) = match (close, reopen) {
+                    (Some(c), Some(o)) if o < c => (o, 0),
+                    (Some(c), _) => (c, CLOSE_CALL.len()),
+                    // A new call starts before this one closed: this one ended.
+                    (None, Some(o)) => (o, 0),
+                    (None, None) => return out,
+                };
+                let body = self.pending[..end].to_string();
+                self.pending.drain(..end + skip);
                 self.in_call = false;
-                out.push(self.call(&body));
+                self.read_block(&body, true, &mut out);
                 continue;
             }
-            let call = self.pending.find(OPEN_CALL);
-            let think = self.pending.find(OPEN_THINK);
-            let next = match (call, think) {
-                (Some(c), Some(t)) => Some(c.min(t)),
-                (a, b) => a.or(b),
-            };
-            if let Some(i) = next {
+            if !self.started && !self.tools.is_empty() {
+                let lead = self.pending.trim_start();
+                if lead.is_empty() {
+                    return out;
+                }
+                if lead.starts_with('{') || lead.starts_with('[') || lead.starts_with("```") {
+                    self.holding = true;
+                }
+            }
+            if self.holding {
+                if !self.pending.contains(OPEN_CALL) {
+                    return out;
+                }
+                // Tags after all: read it the usual way.
+                self.holding = false;
+            }
+            let next = TAGS.iter().filter_map(|t| self.pending.find(t).map(|i| (i, *t))).min_by_key(|(i, _)| *i);
+            if let Some((i, tag)) = next {
                 let text = self.pending[..i].to_string();
                 self.emit_text(&text, &mut out);
-                if Some(i) == call {
-                    self.pending.drain(..i + OPEN_CALL.len());
-                    self.in_call = true;
-                } else {
-                    self.pending.drain(..i + OPEN_THINK.len());
-                    self.in_think = true;
+                self.pending.drain(..i + tag.len());
+                match tag {
+                    OPEN_CALL => self.in_call = true,
+                    OPEN_THINK => self.in_think = true,
+                    OPEN_RESPONSE => {
+                        self.ended = true;
+                        self.pending.clear();
+                        return out;
+                    }
+                    _ => {} // a stray </think>
                 }
                 continue;
             }
-            let keep = longest_prefix_suffix(&self.pending, OPEN_CALL).max(longest_prefix_suffix(&self.pending, OPEN_THINK));
+            let keep = TAGS.iter().map(|t| longest_prefix_suffix(&self.pending, t)).max().unwrap_or(0);
             let text: String = self.pending.drain(..self.pending.len() - keep).collect();
             self.emit_text(&text, &mut out);
             return out;
         }
     }
 
-    /// The end of the reply: whatever is left (an unclosed call is parsed
-    /// if it is complete JSON, otherwise shown as text).
+    /// The end of the reply: whatever is left. An unclosed call is read
+    /// only if it is complete as it stands (nothing is added to a reply
+    /// that was cut off); otherwise it is a bad call.
     pub fn finish(&mut self) -> Vec<Piece> {
         let mut out = Vec::new();
         let rest = std::mem::take(&mut self.pending);
+        if self.ended {
+            return out;
+        }
         if self.in_call {
             self.in_call = false;
-            let body = rest.trim();
-            if serde_json::from_str::<Value>(body).is_ok() {
-                out.push(self.call(body));
-            } else {
-                self.emit_text(&format!("{OPEN_CALL}{rest}"), &mut out);
+            self.read_block(&rest, false, &mut out);
+        } else if self.holding {
+            self.holding = false;
+            match quire_ai::toolcall::read_calls(&rest, true) {
+                Ok(calls) if calls.iter().all(|c| self.tools.contains(&c.name)) => {
+                    for c in calls {
+                        self.calls += 1;
+                        out.push(Piece::ToolCall { id: format!("call_{}", self.calls), name: c.name, input: c.arguments });
+                    }
+                }
+                _ => self.emit_text(&rest, &mut out),
             }
         } else if !self.in_think {
             self.emit_text(&rest, &mut out);
@@ -243,16 +313,19 @@ impl ReplyParser {
         }
     }
 
-    fn call(&mut self, body: &str) -> Piece {
-        self.calls += 1;
-        let id = format!("call_{}", self.calls);
-        let v: Value = serde_json::from_str(body).unwrap_or_else(|_| json!({ "name": "", "arguments": { "_unparsed": body } }));
-        let input = match v.get("arguments").or_else(|| v.get("parameters")) {
-            Some(Value::String(s)) => serde_json::from_str(s).unwrap_or_else(|_| json!({ "_unparsed": s })),
-            Some(a) => a.clone(),
-            None => json!({}),
-        };
-        Piece::ToolCall { id, name: v["name"].as_str().unwrap_or_default().to_string(), input }
+    fn read_block(&mut self, body: &str, closed: bool, out: &mut Vec<Piece>) {
+        match quire_ai::toolcall::read_calls(body, closed) {
+            Ok(calls) => {
+                for c in calls {
+                    self.calls += 1;
+                    out.push(Piece::ToolCall { id: format!("call_{}", self.calls), name: c.name, input: c.arguments });
+                }
+            }
+            Err(e) => {
+                self.calls += 1;
+                out.push(Piece::BadCall { id: format!("call_{}", self.calls), raw: body.trim().to_string(), error: e.message });
+            }
+        }
     }
 }
 
@@ -264,6 +337,7 @@ fn longest_prefix_suffix(s: &str, tag: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn msg(role: &str, parts: &Value) -> Value {
         json!({ "role": role, "parts": parts })
@@ -323,8 +397,53 @@ mod tests {
         );
         let mut p = ReplyParser::new();
         p.push("<tool_call>{broken");
-        assert_eq!(p.finish(), vec![Piece::Text("<tool_call>{broken".into())]);
+        assert!(matches!(&p.finish()[..], [Piece::BadCall { raw, .. }] if raw == "{broken"), "a cut-off call is never run");
         assert_eq!(longest_prefix_suffix("abc<to", "<tool_call>"), 3);
         assert_eq!(longest_prefix_suffix("é", "<think>"), 0);
+    }
+}
+
+#[cfg(test)]
+mod fixtures {
+    use super::*;
+    use serde_json::json;
+
+    /// `tests/fixtures/qwen3-tool-calls.jsonl`: replies in Qwen3's published
+    /// tool-call format with the mistakes small models make, streamed in
+    /// 3-character pieces.
+    #[test]
+    fn small_model_replies_parse_as_expected() {
+        let src = include_str!("../tests/fixtures/qwen3-tool-calls.jsonl");
+        let mut n = 0;
+        for line in src.lines().filter(|l| !l.contains("\"_comment\"")) {
+            let case: Value = serde_json::from_str(line).unwrap();
+            let name = case["case"].as_str().unwrap();
+            let tools = case["tools"].as_array().unwrap().iter().map(|t| t.as_str().unwrap().to_string()).collect();
+            let mut p = ReplyParser::with_tools(tools);
+            let reply: Vec<char> = case["reply"].as_str().unwrap().chars().collect();
+            let mut pieces = Vec::new();
+            for chunk in reply.chunks(3) {
+                pieces.extend(p.push(&chunk.iter().collect::<String>()));
+            }
+            pieces.extend(p.finish());
+            // Merge neighbouring text so the chunking doesn't matter.
+            let mut got: Vec<Value> = Vec::new();
+            for piece in pieces {
+                match piece {
+                    Piece::Text(t) => match got.last_mut() {
+                        Some(Value::Object(o)) if o.contains_key("text") => {
+                            let joined = format!("{}{t}", o["text"].as_str().unwrap());
+                            o.insert("text".into(), joined.into());
+                        }
+                        _ => got.push(json!({ "text": t })),
+                    },
+                    Piece::ToolCall { name, input, .. } => got.push(json!({ "call": { "name": name, "arguments": input } })),
+                    Piece::BadCall { .. } => got.push(json!({ "bad": true })),
+                }
+            }
+            assert_eq!(Value::Array(got), case["expect"], "case: {name}");
+            n += 1;
+        }
+        assert!(n >= 20, "{n} cases");
     }
 }

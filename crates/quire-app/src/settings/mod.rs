@@ -24,6 +24,7 @@ mod mcp_http;
 mod onboarding;
 mod tasks;
 mod trust;
+mod voice;
 
 use std::path::{Path, PathBuf};
 
@@ -37,6 +38,7 @@ pub use onboarding::OnboardingSettings;
 use serde::{Deserialize, Serialize};
 pub use tasks::TaskSettings;
 pub use trust::TrustSettings;
+pub use voice::VoiceSettings;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -111,6 +113,8 @@ pub struct Settings {
     pub tasks: TaskSettings,
     pub appearance: AppearanceSettings,
     pub jobs: JobSettings,
+    /// 0.10: voice notes.
+    pub voice: VoiceSettings,
     /// Settings this version doesn't know (written by a newer version, or
     /// the other edition), kept as they are so saving doesn't drop them.
     #[serde(flatten)]
@@ -157,6 +161,7 @@ impl Default for Settings {
             tasks: TaskSettings::default(),
             appearance: AppearanceSettings::default(),
             jobs: JobSettings::default(),
+            voice: VoiceSettings::default(),
             other: toml::Table::new(),
         }
     }

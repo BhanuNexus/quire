@@ -239,4 +239,43 @@ questions (40 unanswerable), runs them through `search`, `ask` and `view`,
 and reports recall@k, citation span accuracy, abstain precision and recall,
 tokens per answer and latency in `target/eval/`. `quire-cli eval
 longmemeval-s <file>` runs the LongMemEval-S dataset, which you download
-yourself.
+yourself, and `quire-cli eval sample-vault` the repository's sample vault
+with answerable and unanswerable questions.
+
+Every run also reports what decides "Not found": the best passage's
+similarity and keyword coverage for answerable and unanswerable questions,
+and how many wrong "Not found"s and how much abstain recall each threshold
+(τ_sem) would give. `--embedder endpoint --url http://localhost:11434
+--model nomic-embed-text` measures a real embedding server;
+`--embedder mock` runs the same path offline with deterministic hashed
+vectors (not a trained model).
+
+`quire-cli eval contradictions` runs 32 labelled claim pairs
+(contradiction, tension, compatible, unrelated) through the contradiction
+finder (embedding, candidates, judge, Inbox cut-offs) and reports the
+Inbox's precision and recall at the shipped cut-offs and across a sweep.
+The judge is scripted (hand-written replies in the fixture) unless you give
+one: `--judge endpoint --url … --model …`.
+
+Results with the built-in index and the mock (0.10, 2026-11-05):
+
+| Suite | Embedder | Answerable: similarity / coverage | Unanswerable: similarity / coverage | τ_sem with no wrong "Not found" |
+|---|---|---|---|---|
+| synthetic-edits (seed 42) | LSA | 0.91–0.96 / 1.0 | 0.52–0.95 / 0.31–0.58 | any (abstain recall 0 below 0.95) |
+| synthetic-edits (seed 42) | mock | 0.52–0.75 / 1.0 | 0.35–0.66 / 0.31–0.58 | any (recall 0 to 0.55, 0.4 at 0.65) |
+| synthetic-edits (seed 7) | mock | 0.63–0.73 / 1.0 | 0.33–0.67 / 0.31–0.58 | any |
+| sample-vault | LSA | 0.25–0.62 / 0.27–1.0 | 0.32–0.36 / 0.18–0.24 (2 find nothing) | ≤ 0.35 (recall 0.8 at 0.30, 0.9 at 0.35) |
+| sample-vault | mock | 0.21–0.39 / 0.27–1.0 | 0.07–0.24 / 0–0.33 | ≤ 0.20 (recall 0.8; 2 wrong at 0.25–0.35) |
+
+With the mock, synthetic-edits keeps recall@6 0.975–0.988 and citation span
+accuracy 0.975–1.0 (LSA: 1.0 and 1.0). Shipped: τ_sem 0.30 for LSA
+(unchanged) and **0.20 for other embedders** (was 0.35).
+
+Contradictions (scripted judge, built-in index, candidates ≥ 0.35):
+candidate recall 0.889 (16 of the 18 contradiction or tension pairs; two
+tensions whose subjects share no word are never compared), 56 extra
+candidate pairs to judge, 13 Inbox items, precision 0.923, recall 0.667,
+kind right 0.769. Lower cut-offs would find more (contradiction 0.70 and
+tension 0.75: precision 0.941, recall 0.889), but the judge's replies are
+hand-written, so the cut-offs (0.75, 0.85) stay until a real judge is
+measured.

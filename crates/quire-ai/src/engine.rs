@@ -258,6 +258,11 @@ impl Engine {
         s
     }
 
+    /// The protocol the running engine said it speaks in `hello`.
+    pub fn protocol(&self) -> Option<u32> {
+        lock(&self.shared.proc).as_ref().and_then(|p| p.hello.as_ref()).map(|h| h.protocol)
+    }
+
     /// Ask a running engine what it has loaded and how much memory it uses.
     /// Doesn't start one.
     pub fn refresh_status(&self) {

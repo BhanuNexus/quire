@@ -19,6 +19,8 @@ pub enum Purpose {
     Embed,
     Llm,
     Ocr,
+    /// Speech to text (Whisper, voice notes).
+    Transcribe,
 }
 
 /// How capable a language model is, which decides what the agent panel lets
@@ -246,7 +248,17 @@ mod tests {
     fn builtin_catalog_has_every_documented_model() {
         let c = Catalog::builtin();
         assert_eq!(c.models[0].id, ENGINE_ID);
-        for id in ["bge-small-en-v1.5", "multilingual-e5-small", "qwen3-0.6b-q8", "qwen3-1.7b-q4km", "qwen3-4b-q4km", "ocrs"] {
+        for id in [
+            "bge-small-en-v1.5",
+            "multilingual-e5-small",
+            "qwen3-0.6b-q8",
+            "qwen3-1.7b-q4km",
+            "qwen3-4b-q4km",
+            "ocrs",
+            "whisper-tiny",
+            "whisper-base",
+            "whisper-small",
+        ] {
             let m = c.get(id).unwrap_or_else(|| panic!("{id} missing"));
             assert!(!m.files.is_empty(), "{id}");
             assert!(m.files.iter().all(|f| f.url.starts_with("https://")), "{id}");
@@ -256,6 +268,11 @@ mod tests {
         assert_eq!(c.get("qwen3-4b-q4km").unwrap().tier, Some(Tier::Better));
         assert_eq!(c.get("bge-small-en-v1.5").unwrap().dims, Some(384));
         assert!(c.get("ocrs").unwrap().attribution.contains("HierText"));
+        assert_eq!(c.of(Purpose::Transcribe).count(), 3);
+        for m in c.of(Purpose::Transcribe) {
+            let names: Vec<&str> = m.files.iter().map(|f| f.name.as_str()).collect();
+            assert_eq!(names, ["model.safetensors", "config.json", "tokenizer.json"], "{}", m.id);
+        }
         // Hugging Face URLs name the revision they are pinned to (the first
         // file comes from the entry's own repository).
         for m in c.models.iter().filter(|m| m.files[0].url.starts_with("https://huggingface.co/")) {

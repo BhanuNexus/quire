@@ -113,8 +113,11 @@ if command -v dpkg-deb > /dev/null; then
   install_tree "$pkg"
   install -Dm 644 LICENSE "$pkg/usr/share/doc/$pkg_name/copyright"
   size_kb="$(du -sk --exclude=DEBIAN "$pkg" | cut -f1)"
-  # The binary links only libc; windowing and GL libraries are loaded at run
-  # time, so they're listed here for the package manager to install.
+  # The binary links only libc (and, in the full edition, ALSA for voice
+  # notes); windowing and GL libraries are loaded at run time, so they're
+  # listed here for the package manager to install.
+  alsa=""
+  [[ "$edition" == full ]] && alsa=", libasound2t64 | libasound2"
   cat > "$pkg/DEBIAN/control" <<EOF
 Package: $pkg_name
 Version: ${version//-/\~}
@@ -124,7 +127,7 @@ Provides: quire-editor
 Architecture: amd64
 Maintainer: The Quire contributors <https://github.com/BhanuNexus/quire/issues>
 Installed-Size: $size_kb
-Depends: libc6 (>= 2.35), libgcc-s1, libgl1 | libegl1, libxkbcommon0, libwayland-client0 | libx11-6
+Depends: libc6 (>= 2.35), libgcc-s1, libgl1 | libegl1, libxkbcommon0, libwayland-client0 | libx11-6$alsa
 Recommends: libegl1, libwayland-egl1, libx11-xcb1, libxcursor1, libxi6, libxrender1, libxkbcommon-x11-0, libdbus-1-3
 Section: editors
 Priority: optional

@@ -489,6 +489,7 @@ fn read_tools_answer_with_structure() {
             mcall(12, "list", &json!({})),
             mcall(13, "view", &json!({"path": "Rope Notes", "section": "^undo"})),
             mcall(14, "ask", &json!({"question": "why?", "mode": "model"})),
+            mcall(15, "ask", &json!({"question": "What colour are the climbing ropes at the gym on Fridays?"})),
         ],
     );
     let hits = sc(&r[0])["hits"].as_array().unwrap();
@@ -524,6 +525,19 @@ fn read_tools_answer_with_structure() {
     assert_ne!(sc(&page2[0])["notes"][0]["path"], sc(&page[0])["notes"][0]["path"], "cursors page through lists");
     assert_eq!(sc(&r[12])["lines"], json!([6, 6]));
     assert_eq!(sc(&r[13])["error"], "not_available", "no provider configured");
+    // 0.10: abstaining lists the nearest passages with anchors, and cites nothing.
+    let none = sc(&r[14]);
+    assert_eq!(none["abstained"], true, "{none}");
+    assert_eq!(none["citations"], json!([]));
+    let nearest = none["nearest"].as_array().unwrap();
+    assert!((1..=3).contains(&nearest.len()), "{none}");
+    assert!(
+        nearest
+            .iter()
+            .all(|c| c["uri"].as_str().is_some_and(|u| u.starts_with("quire://note/")) && c["quote"].is_string() && c["lines"].is_array())
+    );
+    assert!(nearest.iter().all(|c| c["path"] != "Private/secret.md"));
+    assert!(body(&r[14]).contains("Nearest passages (they don't answer it):"), "{}", body(&r[14]));
 }
 
 #[test]

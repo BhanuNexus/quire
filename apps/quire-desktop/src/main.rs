@@ -46,6 +46,7 @@ mod trust_ui;
 mod typeset_ui;
 mod view;
 mod view_ui;
+mod voice_ui;
 
 use std::path::PathBuf;
 use std::sync::Arc;

@@ -16,15 +16,28 @@ use crossbeam_channel::Receiver;
 use quire_agent::policy::ZoneRole;
 use quire_agent::{Actor, Change, ChangeSet};
 use quire_intel::ask::{self, AnswerMeta};
+use quire_intel::chat::{CancelFlag, ChatEvent, ChatModel};
 use quire_intel::cluster::{Cluster, evidence_clusters};
-use quire_intel::llm::{Assist, LlmError, LlmRequest, spawn};
+use quire_intel::llm::LlmError;
 use quire_intel::{Answer, Source, retrieve};
 use quire_text::{EditKind, Selection, Transaction};
 use quire_vault::NotePath;
 
 use crate::workspace::{NoticeLevel, Workspace};
 
-type PendingAnswer = (Vec<Source>, Receiver<Result<String, LlmError>>);
+/// What the answering thread sends: pieces of the reply, then the end.
+enum AskMsg {
+    Text(String),
+    Done(Result<(), LlmError>),
+}
+
+/// A model answer being written.
+struct PendingAnswer {
+    sources: Vec<Source>,
+    rx: Receiver<AskMsg>,
+    cancel: CancelFlag,
+    by: String,
+}
 
 /// Where an ask is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -56,12 +69,21 @@ pub struct AskState {
     pub error: Option<String>,
     /// The note the answer was saved to.
     pub saved: Option<NotePath>,
+    /// The model's answer so far, while it writes (see [`AskState::partial`]).
+    streamed: String,
     pending: Option<PendingAnswer>,
 }
 
 impl AskState {
     pub fn pending(&self) -> bool {
         self.pending.is_some()
+    }
+
+    /// The answer as far as the model has written it (empty before the
+    /// first words, and while it could still be the `NOT_FOUND` reply).
+    pub fn partial(&self) -> &str {
+        let t = self.streamed.trim_start();
+        if self.pending.is_none() || ask::NOT_FOUND.starts_with(t.trim_end()) || t.starts_with(ask::NOT_FOUND) { "" } else { t }
     }
 
     /// Back to an empty question (keeps the ask-before-tell choice).
@@ -112,17 +134,29 @@ impl Workspace {
         let q = self.ask.question.trim().to_string();
         let sem = self.index.semantic();
         let sources = self.ask.sources.clone();
-        if self.assistant.is_offline() || sources.is_empty() {
+        if sources.is_empty() {
             let abstain = ask::should_abstain(&sources, sem.as_deref());
             let markdown = if abstain { None } else { ask::extractive_markdown(&q, &sources, sem.as_deref()) };
             self.ask.answer = Some(self.finish_answer(markdown, sources, "extractive (offline)".into()));
             return;
         }
+        let Some(model) = self.trust_chat() else {
+            let abstain = ask::should_abstain(&sources, sem.as_deref());
+            let markdown = if abstain { None } else { ask::extractive_markdown(&q, &sources, sem.as_deref()) };
+            self.ask.answer = Some(self.finish_answer(markdown, sources, "extractive (offline)".into()));
+            return;
+        };
         let hyp = Some(self.ask.hypothesis.trim()).filter(|h| !h.is_empty() && self.ask.before_tell);
         let req = ask::build_chat_request(&q, &sources, hyp);
-        let llm = LlmRequest { system: req.system.clone(), prompt: req.messages[0].text(), max_tokens: req.max_tokens };
-        let rx = spawn(Arc::clone(&self.assistant), Assist::Ask { question: q }, llm);
-        self.ask.pending = Some((sources, rx));
+        self.ask.streamed.clear();
+        self.ask.pending = Some(stream_answer(model, req, sources));
+    }
+
+    /// Stop the model's answer; what it wrote so far stays, marked as cut.
+    pub fn stop_ask(&self) {
+        if let Some(p) = &self.ask.pending {
+            p.cancel.cancel();
+        }
     }
 
     /// The answer with its span citations, or "not found" (`markdown: None`).
@@ -142,11 +176,31 @@ impl Workspace {
     }
 
     pub(crate) fn poll_ask(&mut self) -> bool {
-        let Some((_, rx)) = &self.ask.pending else { return false };
-        let Ok(res) = rx.try_recv() else { return false };
-        let (sources, _) = self.ask.pending.take().expect("checked above");
+        let Some(p) = &self.ask.pending else { return false };
+        let mut changed = false;
+        let mut end = None;
+        while let Ok(m) = p.rx.try_recv() {
+            changed = true;
+            match m {
+                AskMsg::Text(t) => self.ask.streamed.push_str(&t),
+                AskMsg::Done(r) => {
+                    end = Some(r);
+                    break;
+                }
+            }
+        }
+        let Some(res) = end else { return changed };
+        let p = self.ask.pending.take().expect("checked above");
+        let (sources, by) = (p.sources, p.by);
+        let markdown = std::mem::take(&mut self.ask.streamed);
         match res {
-            Ok(markdown) => self.ask.answer = Some(self.finish_answer(Some(markdown), sources, self.assistant.name().to_string())),
+            Ok(()) => self.ask.answer = Some(self.finish_answer(Some(markdown), sources, by)),
+            Err(LlmError::Cancelled) if !markdown.trim().is_empty() && !ask::model_abstained(&markdown) => {
+                let mut a = self.finish_answer(Some(format!("{}\n\n(Stopped.)", markdown.trim_end())), sources, by);
+                a.abstained = false;
+                self.ask.answer = Some(a);
+            }
+            Err(LlmError::Cancelled) => self.ask.step = AskStep::Question,
             Err(e) => {
                 // Fall back to an extractive answer so the user still gets something.
                 let sem = self.index.semantic();
@@ -235,6 +289,23 @@ impl Workspace {
     }
 }
 
+/// Run the model on its own thread, sending the reply as it is written.
+fn stream_answer(model: Arc<dyn ChatModel>, req: quire_intel::chat::ChatRequest, sources: Vec<Source>) -> PendingAnswer {
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let cancel = CancelFlag::new();
+    let by = model.name().to_string();
+    let c = cancel.clone();
+    std::thread::spawn(move || {
+        let r = model.chat(&req, &c, &mut |ev| {
+            if let ChatEvent::Text { text } = ev {
+                let _ = tx.send(AskMsg::Text(text));
+            }
+        });
+        let _ = tx.send(AskMsg::Done(r));
+    });
+    PendingAnswer { sources, rx, cancel, by }
+}
+
 /// `answered_by` of a saved answer: `quire:extractive` when Quire quoted
 /// the notes, else `model:<name>` for the model that wrote it.
 fn answered_by(by: &str) -> String {
@@ -304,5 +375,53 @@ mod tests {
         w.ask_answer();
         assert_eq!(w.ask.step, AskStep::Answer);
         assert!(w.ask.answer.is_some());
+    }
+
+    fn wait(w: &mut Workspace) {
+        for _ in 0..200 {
+            w.poll_ask();
+            if !w.ask.pending() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("the answer never finished");
+    }
+
+    #[test]
+    fn a_model_answer_streams_and_can_be_stopped() {
+        use quire_intel::chat::{ChatEvent, ScriptedChat};
+        use std::sync::Arc;
+        let mut w = ws();
+        let text = |t: &str| ChatEvent::Text { text: t.into() };
+        let model = Arc::new(ScriptedChat::new(vec![
+            vec![text("Ropes share "), text("unchanged subtrees [1].")],
+            vec![text("NOT_"), text("FOUND")],
+        ]));
+        w.set_chat_model(Some(Arc::clone(&model) as _));
+        w.ask.question = "why is undo cheap?".into();
+        w.ask();
+        assert!(w.ask.pending());
+        wait(&mut w);
+        let a = w.ask.answer.clone().unwrap();
+        assert_eq!(a.markdown, "Ropes share unchanged subtrees [1].");
+        assert_eq!(a.by, "Scripted");
+        assert!(!a.citations.is_empty());
+        assert!(model.requests()[0].system.contains("NOT_FOUND"));
+        w.ask();
+        wait(&mut w);
+        assert!(w.ask.answer.as_ref().unwrap().abstained, "NOT_FOUND streamed in pieces still abstains");
+        assert_eq!(w.ask.partial(), "", "nothing streaming");
+    }
+
+    #[test]
+    fn partial_text_hides_a_coming_not_found() {
+        let mut s = super::AskState { streamed: "NOT_".into(), ..Default::default() };
+        assert_eq!(s.partial(), "", "not pending");
+        let (_tx, rx) = crossbeam_channel::unbounded();
+        s.pending = Some(super::PendingAnswer { sources: Vec::new(), rx, cancel: quire_intel::chat::CancelFlag::new(), by: String::new() });
+        assert_eq!(s.partial(), "");
+        s.streamed = "Ropes share".into();
+        assert_eq!(s.partial(), "Ropes share");
     }
 }

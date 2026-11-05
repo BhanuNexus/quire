@@ -10,6 +10,14 @@
 //!   version, 40 of them unanswerable.
 //! * **`longmemeval-s`**: the LongMemEval-S file the user supplies (it isn't
 //!   vendored), one note per chat session.
+//! * **`sample-vault`**: the repository's sample vault with answerable and
+//!   unanswerable questions (answerability only).
+//! * **`contradictions`** ([`contradict`]): labelled claim pairs through the
+//!   contradiction pipeline, scored as the Inbox shows them.
+//!
+//! An embedder other than the built-in LSA can be given (an endpoint, for
+//! the neural `τ_sem`); every run reports the abstain features and what each
+//! `τ_sem` would do.
 //!
 //! Questions go through the MCP tools a client would call (`search`, `ask`
 //! in extractive mode, `view` of the cited lines), in process. Reported:
@@ -18,6 +26,8 @@
 //! least 50%), abstain precision and recall, `view` tokens per answer,
 //! and latency. Answers are judged by an LLM only when a provider is given
 //! (not yet wired: `judge` is null).
+
+pub mod contradict;
 
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
@@ -267,8 +277,83 @@ fn ratio(n: usize, d: usize) -> Value {
     if d == 0 { Value::Null } else { json!((n as f64 / d as f64 * 1000.0).round() / 1000.0) }
 }
 
-/// Run a suite at `k` and report.
+/// Run a suite at `k` with the built-in embedder and report.
 pub fn run(suite: &Suite, k: usize) -> Report {
+    run_with(suite, k, None)
+}
+
+/// The questions of the repository's sample vault (`sample-vault/`).
+///
+/// The 12 answerable ones `ask`'s calibration test guards, and 10 its notes
+/// don't answer. Gold lines aren't recorded (no recall@k), only answerability.
+pub fn sample_vault(root: &std::path::Path) -> Result<Suite, String> {
+    fn walk(d: &std::path::Path, root: &std::path::Path, out: &mut Vec<(String, String)>) -> Result<(), String> {
+        for e in std::fs::read_dir(d).map_err(|e| format!("{}: {e}", d.display()))?.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, root, out)?;
+            } else if p.extension().is_some_and(|x| x == "md") {
+                let rel = p.strip_prefix(root).map_err(|e| e.to_string())?.to_string_lossy().replace('\\', "/");
+                out.push((rel, std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?));
+            }
+        }
+        Ok(())
+    }
+    let mut notes = Vec::new();
+    walk(root, root, &mut notes)?;
+    notes.sort();
+    let answerable = [
+        "Why do editors use ropes?",
+        "What does Emacs use to store text?",
+        "Which editor uses a piece table?",
+        "Why is undo cheap?",
+        "What is the architecture of Quire?",
+        "How fast is jumping to a line?",
+        "What are the plans for sync?",
+        "How are the layers of the app arranged?",
+        "What is the budget for designers?",
+        "Which data structure is best for large documents with scattered edits?",
+        "Is there a mobile version?",
+        "What did I write about importers?",
+    ];
+    let unanswerable = [
+        "What is the annual budget of the rocket programme?",
+        "Who won the chess tournament in Oslo?",
+        "What is my sister's phone number?",
+        "Which vaccine did the clinic recommend?",
+        "How much did the kitchen renovation cost?",
+        "What is the recipe for sourdough bread?",
+        "When does the train to Vienna leave?",
+        "What grade did Maria get in chemistry?",
+        "Which hiking boots did I buy last winter?",
+        "What is the capital of Mongolia?",
+    ];
+    let mut questions: Vec<Question> = answerable
+        .iter()
+        .enumerate()
+        .map(|(i, q)| Question { id: format!("a{i}"), text: (*q).into(), answer: Some(String::new()), gold: None })
+        .collect();
+    questions.extend(unanswerable.iter().enumerate().map(|(i, q)| Question {
+        id: format!("u{i}"),
+        text: (*q).into(),
+        answer: None,
+        gold: None,
+    }));
+    Ok(Suite { name: "sample-vault".into(), notes, questions, params: json!({"root": root.display().to_string()}) })
+}
+
+/// The `τ_sem` values the abstain sweep tries.
+const TAUS: [f32; 21] = [0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0];
+
+fn range(v: &[f32]) -> Value {
+    let lo = v.iter().copied().fold(f32::INFINITY, f32::min);
+    let hi = v.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    if v.is_empty() { Value::Null } else { json!([(f64::from(lo) * 1000.0).round() / 1000.0, (f64::from(hi) * 1000.0).round() / 1000.0]) }
+}
+
+/// Run a suite at `k` and report. `semantic` replaces the built-in embedder
+/// (an endpoint embedder, for neural calibration).
+pub fn run_with(suite: &Suite, k: usize, semantic: Option<quire_app::index::SemanticBuilder>) -> Report {
     let files: Vec<(&str, &str)> = suite.notes.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
     let t0 = Instant::now();
     let vault = Vault::in_memory(&files);
@@ -278,7 +363,16 @@ pub fn run(suite: &Suite, k: usize) -> Report {
         ..ServerConfig::default()
     };
     let srv = Server::with_config(vault, None, cfg);
+    if let Some(b) = semantic {
+        srv.index().set_semantic_builder(Some(b));
+        srv.index().flush_semantic();
+    }
     let index_ms = t0.elapsed().as_millis();
+    let sem = srv.index().semantic();
+    let embedder = sem.as_deref().map_or_else(|| "none".to_string(), |s| s.embedder_name().to_string());
+    // Abstain features of each question (as `ask` sees them): best passage
+    // similarity and coverage, and whether anything was found.
+    let mut features: Vec<(bool, Option<(f32, f32)>)> = Vec::new();
     let conn = Conn::stdio(srv.new_conn());
     let (mut found, mut answerable, mut note_found) = (0usize, 0usize, 0usize);
     let (mut span_ok, mut cited) = (0usize, 0usize);
@@ -293,6 +387,13 @@ pub fn run(suite: &Suite, k: usize) -> Report {
         let ask = call(&srv, &conn, id + 1, "ask", &json!({"question": q.text, "k": k}));
         let s = &ask["structuredContent"];
         let did_abstain = s["abstained"] == true;
+        {
+            let ix = srv.index().read();
+            let src = quire_app::intel::retrieve(&ix, sem.as_deref(), &q.text, k);
+            let best = (!src.is_empty())
+                .then(|| (src.iter().map(|s| s.sim).fold(0.0, f32::max), src.iter().map(|s| s.coverage).fold(0.0, f32::max)));
+            features.push((q.answer.is_some(), best));
+        }
         // What a client reads to verify the answer: the first citation's lines.
         if let Some(c) = s["citations"].get(0) {
             let v = call(&srv, &conn, id + 2, "view", &json!({"path": c["path"], "lines": c["lines"]}));
@@ -302,14 +403,16 @@ pub fn run(suite: &Suite, k: usize) -> Report {
         if did_abstain {
             abstained += 1;
         }
-        match &q.gold {
-            None => {
+        match (&q.answer, &q.gold) {
+            (None, _) => {
                 should_abstain += 1;
                 if did_abstain {
                     abstain_right += 1;
                 }
             }
-            Some((path, line)) => {
+            // Answerable, but without a gold line (the sample vault).
+            (Some(_), None) => {}
+            (Some(_), Some((path, line))) => {
                 answerable += 1;
                 let top: Vec<&Value> = hits["structuredContent"]["hits"].as_array().into_iter().flatten().take(k).collect();
                 if top.iter().any(|h| h["path"] == path.as_str()) {
@@ -333,6 +436,27 @@ pub fn run(suite: &Suite, k: usize) -> Report {
             }
         }
     }
+    // What each τ_sem would do (abstain = nothing found, or similarity < τ
+    // and coverage < COVERAGE_MIN): wrong "Not found"s and abstain recall.
+    let cov_min = quire_app::intel::ask::COVERAGE_MIN;
+    let sweep: Vec<Value> = TAUS
+        .iter()
+        .map(|&tau| {
+            let abstains = |f: &Option<(f32, f32)>| f.is_none_or(|(sim, cov)| sim < tau && cov < cov_min);
+            let wrong = features.iter().filter(|(a, f)| *a && abstains(f)).count();
+            let right = features.iter().filter(|(a, f)| !*a && abstains(f)).count();
+            let unans = features.iter().filter(|(a, _)| !*a).count();
+            json!({"tau": (f64::from(tau) * 100.0).round() / 100.0, "wrong_not_found": wrong, "abstain_recall": ratio(right, unans), "abstain_precision": ratio(right, right + wrong)})
+        })
+        .collect();
+    let feats = |answerable: bool, pick: fn(&(f32, f32)) -> f32| -> Vec<f32> {
+        features.iter().filter(|(a, _)| *a == answerable).filter_map(|(_, f)| f.as_ref().map(pick)).collect()
+    };
+    let abstain_features = json!({
+        "answerable": {"sim": range(&feats(true, |f| f.0)), "coverage": range(&feats(true, |f| f.1))},
+        "unanswerable": {"sim": range(&feats(false, |f| f.0)), "coverage": range(&feats(false, |f| f.1))},
+    });
+    let tau_now = quire_app::intel::ask::tau_sem(sem.as_deref());
     latencies.sort();
     let pct = |p: f64| latencies.get(((latencies.len() as f64 - 1.0) * p).round() as usize).map_or(0, Duration::as_micros) as f64 / 1000.0;
     let mean_tokens = if view_tokens.is_empty() { 0.0 } else { view_tokens.iter().sum::<usize>() as f64 / view_tokens.len() as f64 };
@@ -352,6 +476,10 @@ pub fn run(suite: &Suite, k: usize) -> Report {
         "latency_ms": {"p50": pct(0.5), "p95": pct(0.95), "max": pct(1.0)},
         "judge": Value::Null,
         "misses": misses,
+        "embedder": embedder,
+        "tau_sem": (f64::from(tau_now) * 100.0).round() / 100.0,
+        "abstain_features": abstain_features,
+        "tau_sweep": sweep,
     });
     let mut text = format!("{} ({} notes, {} questions, k = {k})\n", suite.name, suite.notes.len(), suite.questions.len());
     for key in
@@ -360,6 +488,21 @@ pub fn run(suite: &Suite, k: usize) -> Report {
         let _ = writeln!(text, "  {key:<24} {}", json[key]);
     }
     let _ = writeln!(text, "  {:<24} p50 {} ms, p95 {} ms", "latency", json["latency_ms"]["p50"], json["latency_ms"]["p95"]);
+    let _ = writeln!(text, "  {:<24} {} (τ_sem {})", "embedder", json["embedder"], json["tau_sem"]);
+    let af = &json["abstain_features"];
+    let _ = writeln!(
+        text,
+        "  {:<24} answerable sim {} cov {}; unanswerable sim {} cov {}",
+        "abstain features",
+        af["answerable"]["sim"],
+        af["answerable"]["coverage"],
+        af["unanswerable"]["sim"],
+        af["unanswerable"]["coverage"]
+    );
+    let _ = writeln!(text, "  τ_sem sweep (wrong \"Not found\" / abstain recall):");
+    for row in json["tau_sweep"].as_array().into_iter().flatten() {
+        let _ = writeln!(text, "    {:<5} {:>3} / {}", row["tau"], row["wrong_not_found"], row["abstain_recall"]);
+    }
     Report { json, text }
 }
 

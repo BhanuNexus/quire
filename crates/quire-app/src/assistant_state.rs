@@ -63,6 +63,7 @@ pub(crate) const fn available(ws: &Workspace, cmd: Command) -> bool {
         Command::AiSetup => true,
         Command::ToggleAgentPanel => ws.settings.agent_panel.enabled,
         Command::IngestIntoWiki | Command::ConnectExternalAgent => ws.agent.is_some(),
+        Command::RecordVoiceNote => ws.vault.is_some() && ws.features.ai.voice.can_record,
         _ => false,
     }
 }

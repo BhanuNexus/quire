@@ -3,7 +3,8 @@
 //! The app's on-device models, all served by the engine process (design §D.3).
 //!
 //! [`LocalEmbedder`] for meaning search, [`LocalChat`] for writing
-//! and the agent panel, [`LocalOcr`] for text in images and scans.
+//! and the agent panel, [`LocalOcr`] for text in images and scans,
+//! [`LocalTranscriber`] for voice notes.
 //!
 //! Each turns engine failures into the errors its port already has, so the
 //! app falls back as it does for a provider that is down: the built-in index
@@ -24,7 +25,9 @@ use sha2::{Digest, Sha256};
 
 use crate::catalog::{CatalogEntry, Tier};
 use crate::engine::{Engine, EngineError};
-use crate::protocol::{EmbedResult, GenUsage, LoadParams, ModelKind, OcrLine, OcrResult, PdfPage, StopKind, method};
+use crate::protocol::{
+    EmbedResult, GenUsage, LoadParams, ModelKind, OcrLine, OcrResult, PdfPage, StopKind, TRANSCRIBE_SINCE, TranscribeResult, code, method,
+};
 
 /// Per-computer engine settings (`[ai_local]`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,6 +36,9 @@ pub struct LocalSetup {
     pub threads: u32,
     pub gpu: String,
     pub idle_unload_s: u64,
+    /// Let the engine expand every weight into faster x86 tiles (quicker
+    /// prompts, about twice the memory of a `Q4_K` model).
+    pub fast_prompts: bool,
 }
 
 /// How the engine should load a catalog model.
@@ -49,6 +55,7 @@ pub fn load_params(entry: &CatalogEntry, kind: ModelKind, setup: &LocalSetup) ->
         options: json!({
             "pooling": entry.pooling,
             "files": entry.files.iter().map(|f| f.name.clone()).collect::<Vec<_>>(),
+            "repack": if setup.fast_prompts { "all" } else { "auto" },
         }),
     }
 }
@@ -377,6 +384,44 @@ impl LocalOcr {
         self.engine.with_model(&self.spec, |e| {
             let r = e.call(method::OCR, params.clone(), Some(cancel), &mut |_| {}, Duration::from_mins(2))?;
             serde_json::from_value::<OcrResult>(r).map(|r| r.lines).map_err(|e| EngineError::Failed(format!("bad OCR reply: {e}")))
+        })
+    }
+}
+
+// ------------------------------------------------------------------ speech
+
+/// Voice notes to text on this computer (Whisper in the engine, protocol 2).
+pub struct LocalTranscriber {
+    engine: Engine,
+    spec: LoadParams,
+}
+
+impl LocalTranscriber {
+    pub fn new(engine: Engine, entry: &CatalogEntry, setup: &LocalSetup) -> Self {
+        Self { engine, spec: load_params(entry, ModelKind::Transcribe, setup) }
+    }
+
+    pub fn model(&self) -> &str {
+        &self.spec.model
+    }
+
+    /// The text of a WAV file. `language` is a code (`en`) or empty to detect it.
+    pub fn transcribe(&self, wav: &Path, language: &str, cancel: &CancelFlag) -> Result<TranscribeResult, EngineError> {
+        let params = json!({ "model": self.spec.model, "audio_path": wav.to_string_lossy(), "language": language });
+        self.engine.with_model(&self.spec, |e| {
+            // An engine from before protocol 2 can't transcribe.
+            if e.protocol().is_some_and(|p| p < TRANSCRIBE_SINCE) {
+                return Err(EngineError::Failed("this engine can't transcribe; download the engine again in Settings → AI".into()));
+            }
+            match e.call(method::TRANSCRIBE, params.clone(), Some(cancel), &mut |_| {}, Duration::from_mins(10)) {
+                Ok(r) => {
+                    serde_json::from_value::<TranscribeResult>(r).map_err(|e| EngineError::Failed(format!("bad transcription reply: {e}")))
+                }
+                Err(EngineError::Refused { code: code::UNKNOWN_METHOD, .. }) => {
+                    Err(EngineError::Failed("this engine can't transcribe; download the engine again in Settings → AI".into()))
+                }
+                Err(other) => Err(other),
+            }
         })
     }
 }

@@ -14,10 +14,12 @@ name = "quire"
 path = "src/main.rs"
 
 [features]
-default = ["typeset"]
+default = ["typeset", "voice"]
 remote-llm = ["quire-app/remote-llm"]
 # Math, diagrams and PDF export. `--no-default-features` builds Quire Lite.
 typeset = ["quire-app/typeset", "dep:quire-typeset", "dep:resvg", "quire-pdf/render"]
+# Record voice notes from the microphone (full edition; ALSA on Linux).
+voice = ["dep:cpal"]
 
 [dependencies]
 quire-app = { workspace = true, features = ["remote-llm", "keychain", "update-check"] }
@@ -43,6 +45,8 @@ quire-mcp.workspace = true
 # WS-D: quire-ai, quire-assistant
 quire-ai = { workspace = true, features = ["client"] }
 quire-assistant.workspace = true
+# 0.10 AI: microphone capture for voice notes
+cpal = { workspace = true, optional = true }
 # WS-G: quire-canvas, quire-pdf (and "quire-pdf/render" in `typeset` above)
 quire-canvas.workspace = true
 quire-pdf.workspace = true

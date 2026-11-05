@@ -249,3 +249,59 @@ fn stop_ends_a_stalled_stream_and_unreachable_servers_fail_fast() {
     let m = OpenAiCompatible::new("http://127.0.0.1:9", "x", None);
     assert!(m.complete(&Assist::Summarize, &build_request(&Assist::Summarize, "t")).is_err());
 }
+
+/// One request to a loopback server: (headers, raw body); answers `status` with `json`.
+#[expect(clippy::unwrap_used, reason = "a test helper: any failure should fail the test")]
+fn raw_server(status: u16, json: &'static str) -> (String, mpsc::Receiver<(String, Vec<u8>)>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = format!("http://{}", listener.local_addr().unwrap());
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut s = stream;
+        let mut r = BufReader::new(s.try_clone().unwrap());
+        let (mut len, mut head) = (0, String::new());
+        loop {
+            let mut h = String::new();
+            r.read_line(&mut h).unwrap();
+            if h == "\r\n" || h.is_empty() {
+                break;
+            }
+            if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+                len = v.trim().parse().unwrap();
+            }
+            head.push_str(&h);
+        }
+        let mut body = vec![0; len];
+        r.read_exact(&mut body).unwrap();
+        tx.send((head, body)).unwrap();
+        let _ = write!(
+            s,
+            "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{json}",
+            json.len()
+        );
+    });
+    (addr, rx)
+}
+
+#[test]
+fn openai_transcription_sends_the_recording_as_multipart() {
+    let (addr, rx) = raw_server(200, r#"{"text": " Buy milk and call Sam. "}"#);
+    let m = OpenAiCompatible::new(addr, "chat-model", Some("sk-test".into()));
+    let wav = b"RIFF\x24\0\0\0WAVEfmt fake audio bytes";
+    let text = m.transcribe("whisper-1", wav, "Voice 2026-11-05.wav", "en").unwrap();
+    assert_eq!(text, "Buy milk and call Sam.");
+    let (head, body) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(head.starts_with("POST /v1/audio/transcriptions "), "{head}");
+    assert!(head.to_ascii_lowercase().contains("authorization: bearer sk-test"));
+    let boundary = head.lines().find_map(|l| l.to_ascii_lowercase().split("boundary=").nth(1).map(str::to_string)).unwrap();
+    let body = String::from_utf8_lossy(&body);
+    assert!(body.contains("name=\"model\"\r\n\r\nwhisper-1\r\n"), "{body}");
+    assert!(body.contains("name=\"language\"\r\n\r\nen\r\n"));
+    assert!(body.contains("filename=\"Voice 2026-11-05.wav\"\r\nContent-Type: audio/wav\r\n\r\nRIFF"));
+    assert!(body.trim_end().ends_with(&format!("--{boundary}--")));
+
+    let (addr, _rx) = raw_server(401, r#"{"error": {"message": "Incorrect API key"}}"#);
+    let err = OpenAiCompatible::new(addr, "m", None).transcribe("whisper-1", wav, "a.wav", "").unwrap_err();
+    assert!(err.to_string().contains("HTTP 401: Incorrect API key"), "{err}");
+}

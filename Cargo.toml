@@ -133,6 +133,9 @@ rten = "0.26"
 chacha20poly1305 = "0.11"
 # The `Stream` trait for MCP event streams (already in the tree through axum).
 futures-core = { version = "0.3", default-features = false }
+# 0.10 voice notes: microphone capture in the desktop app (full edition;
+# links the system ALSA library on Linux).
+cpal = { version = "0.18.2", default-features = false }
 # Dev-dependencies only (test oracles and interop clients).
 rrule = "0.14.0"
 fsrs = "6.6.2"

@@ -95,6 +95,8 @@ impl QuireApp {
         let settings = Settings::load();
         let session = Session::path().map(|p| Session::load_from(&p)).unwrap_or_default();
         let mut ws = Workspace::new(settings);
+        // 0.10: "Record voice note…" is offered when this build can record.
+        ws.features.ai.voice.can_record = crate::voice_ui::CAN_RECORD;
         let target = vault_arg.or_else(|| ws.settings.last_vault.clone()).filter(|p| p.is_dir());
         if let Some(dir) = target {
             match ws.open_vault(&dir) {

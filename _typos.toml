@@ -13,3 +13,9 @@ extend-exclude = [
 # Dirac bra-ket notation: LaTeX's \ket and \braket in crates/quire-typeset.
 ket = "ket"
 braket = "braket"
+# Candle's `Tensor::arange` (apps/quire-ai-engine).
+arange = "arange"
+
+[type.rust]
+# Whisper's language codes (`"fo"`, `"ba"`…) in apps/quire-ai-engine/src/whisper.rs.
+extend-ignore-re = ['"(fo|ba)",']

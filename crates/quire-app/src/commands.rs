@@ -116,6 +116,8 @@ pub enum Command {
     IngestIntoWiki,
     AiSetup,
     ConnectExternalAgent,
+    // 0.10 AI: voice notes
+    RecordVoiceNote,
     // WS-E: planning and metadata
     ShowAgenda,
     ShowCalendar,
@@ -178,7 +180,9 @@ impl Command {
             | Self::AgentSettings => Owner::Agent,
             Self::CaptureWebPage | Self::ConnectAgent => Owner::Mcp,
             Self::CheckCitations | Self::ThinkingTimeline | Self::MarkReviewed => Owner::Trust,
-            Self::ToggleAgentPanel | Self::IngestIntoWiki | Self::AiSetup | Self::ConnectExternalAgent => Owner::Assistant,
+            Self::ToggleAgentPanel | Self::IngestIntoWiki | Self::AiSetup | Self::ConnectExternalAgent | Self::RecordVoiceNote => {
+                Owner::Assistant
+            }
             Self::ShowAgenda
             | Self::ShowCalendar
             | Self::OpenWeeklyNote
@@ -391,6 +395,7 @@ commands! {
     IngestIntoWiki,   "Agent",  "Ingest into wiki…",              [], false;
     AiSetup,          "App",    "Set up AI…",                     [], false;
     ConnectExternalAgent,"Agent","Connect an external agent (ACP)…", [], false;
+    RecordVoiceNote,  "Note",   "Record voice note…",             [], false;
     ShowAgenda,       "Go",     "Agenda",                         [alt("A")], false;
     ShowCalendar,     "Go",     "Calendar",                       [], false;
     OpenWeeklyNote,   "Note",   "Open this week's note",          [], false;

@@ -40,6 +40,10 @@ pub struct AiLocalSettings {
     pub idle_unload_s: u64,
     /// Replaces the download host; empty for the catalog URLs.
     pub mirror_url: String,
+    /// 0.10: expand every model weight into the engine's faster x86 tiles
+    /// (prompts read about twice as fast; the Balanced model then uses about
+    /// 4 GB instead of 1.7 GB). Off: only the Small model's are.
+    pub fast_prompts: bool,
     #[serde(flatten)]
     pub other: toml::Table,
 }
@@ -58,6 +62,7 @@ impl Default for AiLocalSettings {
             gpu: "auto".into(),
             idle_unload_s: 300,
             mirror_url: String::new(),
+            fast_prompts: false,
             other: toml::Table::new(),
         }
     }

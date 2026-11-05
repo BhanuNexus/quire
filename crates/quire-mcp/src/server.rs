@@ -225,7 +225,8 @@ impl Server {
     }
 
     /// The vault's index, kept fresh by [`Self::start_pump`] (the web app
-    /// of `quire-cli serve` searches the same one).
+    /// of `quire-cli serve` searches the same one; the eval sets its
+    /// embedder).
     pub fn index(&self) -> &IndexService {
         &self.core.index
     }

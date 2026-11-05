@@ -1411,6 +1411,7 @@ impl Workspace {
             | C::IngestIntoWiki
             | C::AiSetup
             | C::ConnectExternalAgent
+            | C::RecordVoiceNote
             | C::ShowAgenda
             | C::ShowCalendar
             | C::OpenWeeklyNote

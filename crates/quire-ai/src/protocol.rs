@@ -10,8 +10,14 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Bumped when a message changes incompatibly.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// The protocol this build speaks. 2 added `transcribe` (and the
+/// `transcribe` model kind); nothing else changed, so an engine also accepts
+/// a client that says 1 (it just won't ask to transcribe).
+pub const PROTOCOL_VERSION: u32 = 2;
+/// The oldest protocol an engine still accepts in `hello`.
+pub const MIN_PROTOCOL_VERSION: u32 = 1;
+/// The first protocol with `transcribe`.
+pub const TRANSCRIBE_SINCE: u32 = 2;
 
 pub mod method {
     pub const HELLO: &str = "hello";
@@ -19,6 +25,8 @@ pub mod method {
     pub const EMBED: &str = "embed";
     pub const GENERATE: &str = "generate";
     pub const OCR: &str = "ocr";
+    /// Speech to text (protocol 2).
+    pub const TRANSCRIBE: &str = "transcribe";
     pub const CANCEL: &str = "cancel";
     pub const UNLOAD: &str = "unload";
     pub const SHUTDOWN: &str = "shutdown";
@@ -103,6 +111,8 @@ pub enum ModelKind {
     Embed,
     Llm,
     Ocr,
+    /// Speech recognition (Whisper; protocol 2).
+    Transcribe,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,6 +255,27 @@ pub struct OcrResult {
     pub lines: Vec<OcrLine>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscribeParams {
+    pub model: String,
+    /// A WAV file on this computer.
+    pub audio_path: String,
+    /// A language code (`en`, `de`) or empty to detect it.
+    #[serde(default)]
+    pub language: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TranscribeResult {
+    pub text: String,
+    /// The language used (given or detected).
+    #[serde(default)]
+    pub language: String,
+    /// Length of the audio.
+    #[serde(default)]
+    pub seconds: f32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,12 +284,15 @@ mod tests {
     fn messages_match_the_documented_shapes() {
         let req: Request = serde_json::from_str(r#"{"id":1,"method":"hello","params":{"app_version":"0.9.0","protocol":1}}"#).unwrap();
         let hello: HelloParams = serde_json::from_value(req.params).unwrap();
-        assert_eq!(hello.protocol, PROTOCOL_VERSION);
+        assert!((MIN_PROTOCOL_VERSION..=PROTOCOL_VERSION).contains(&hello.protocol), "a protocol-1 hello is still accepted");
         let r = Reply::err(1, code::VERSION_MISMATCH, "engine 0.9.1, app 0.9.0");
         assert_eq!(serde_json::to_string(&r).unwrap(), r#"{"id":1,"error":{"code":1,"message":"engine 0.9.1, app 0.9.0"}}"#);
         let ev: GenerateEvent = serde_json::from_str(r#"{"delta":"Ro"}"#).unwrap();
         assert_eq!(ev, GenerateEvent::Delta { delta: "Ro".into() });
         let load: LoadParams = serde_json::from_str(r#"{"model":"bge","path":"/m","sha256":"ab","kind":"embed"}"#).unwrap();
         assert_eq!((load.kind, load.ctx), (ModelKind::Embed, 0));
+        let t: TranscribeParams = serde_json::from_str(r#"{"model":"whisper-base","audio_path":"/a.wav"}"#).unwrap();
+        assert!(t.language.is_empty());
+        assert_eq!(serde_json::to_string(&ModelKind::Transcribe).unwrap(), r#""transcribe""#);
     }
 }

@@ -6,7 +6,7 @@
 //! which is enough for speed and memory: the arithmetic doesn't depend on
 //! the values. Run in release:
 //!
-//!     cargo run --release -p quire-ai-engine --example spike -- <scratch dir>
+//!     cargo run --release -p quire-ai-engine --example spike -- <scratch dir> qwen3 compact
 
 use std::time::Instant;
 
@@ -41,8 +41,42 @@ fn f(shape: &[usize], dev: &Device) -> QTensor {
     QTensor::quantize(&t, GgmlDType::F32).expect("f32")
 }
 
+/// Which Qwen3 implementation to measure.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Impl {
+    /// candle-transformers' `quantized_qwen3` (f32 token table, x86 repacking).
+    Candle,
+    /// The engine's adapted model with candle's repacking kept.
+    Repack,
+    /// The engine's adapted model with nothing repacked.
+    Compact,
+    /// The engine's adapted model as shipped (only `Q8_0` repacked).
+    Auto,
+}
+
+enum Loaded {
+    Candle(candle_transformers::models::quantized_qwen3::ModelWeights),
+    Engine(quire_ai_engine::qwen3::Qwen3),
+}
+
+impl Loaded {
+    fn forward(&mut self, x: &Tensor, pos: usize) -> candle_core::Result<Tensor> {
+        match self {
+            Self::Candle(m) => m.forward(x, pos),
+            Self::Engine(m) => m.forward(x, pos),
+        }
+    }
+
+    fn clear_kv_cache(&mut self) {
+        match self {
+            Self::Candle(m) => m.clear_kv_cache(),
+            Self::Engine(m) => m.clear_kv_cache(),
+        }
+    }
+}
+
 /// Qwen3 1.7B at `Q4_K_M` (`small` = false) or 0.6B at `Q8_0`.
-fn qwen3(dir: &std::path::Path, small: bool) {
+fn qwen3(dir: &std::path::Path, small: bool, which: Impl) {
     let dev = Device::Cpu;
     let (hidden, inter, layers, heads, kv, head_dim, vocab) = if small {
         (1024usize, 3072usize, 28usize, 16usize, 8usize, 128usize, 151_936usize)
@@ -96,10 +130,30 @@ fn qwen3(dir: &std::path::Path, small: bool) {
     let t = Instant::now();
     let mut file = std::fs::File::open(&path).expect("open gguf");
     let ct = gguf_file::Content::read(&mut file).expect("read gguf");
-    let mut model = candle_transformers::models::quantized_qwen3::ModelWeights::from_gguf(ct, &mut file, &dev).expect("load");
-    println!("{name}: load {:.1}s, RSS after load {} MB (peak {} MB)", t.elapsed().as_secs_f64(), now_mb(), rss_mb());
+    let mut model = match which {
+        Impl::Candle => {
+            Loaded::Candle(candle_transformers::models::quantized_qwen3::ModelWeights::from_gguf(ct, &mut file, &dev).expect("load"))
+        }
+        Impl::Repack | Impl::Compact | Impl::Auto => {
+            use quire_ai_engine::qwen3::Repack;
+            let repack = match which {
+                Impl::Repack => Repack::All,
+                Impl::Compact => Repack::Never,
+                _ => Repack::Q8,
+            };
+            let opts = quire_ai_engine::qwen3::Options { repack, max_ctx: 8192 };
+            Loaded::Engine(quire_ai_engine::qwen3::Qwen3::from_gguf(ct, &mut file, &dev, opts).expect("load"))
+        }
+    };
+    let label = match which {
+        Impl::Candle => "candle",
+        Impl::Repack => "engine, repacked",
+        Impl::Compact => "engine, compact",
+        Impl::Auto => "engine, as shipped",
+    };
+    println!("{name} ({label}): load {:.1}s, RSS after load {} MB (peak {} MB)", t.elapsed().as_secs_f64(), now_mb(), rss_mb());
     let threads = candle_core::utils::get_num_threads();
-    for prompt_len in [16usize, 256] {
+    for prompt_len in [16usize, 256, 1024] {
         model.clear_kv_cache();
         let prompt: Vec<u32> = (0..prompt_len).map(|i| (i * 7919 % 150_000) as u32).collect();
         let t = Instant::now();
@@ -161,16 +215,76 @@ fn bert() {
     }
 }
 
-/// `spike <dir> [bert|qwen3]`: one model per run, so peak memory is that model's.
+/// Whisper at the shapes of `openai/whisper-{tiny,base,small}` with random
+/// weights: memory, and how long 30 seconds of audio take (the decoder runs
+/// its full 224 tokens, as random weights never end a reply: the worst case).
+fn whisper(size: &str) {
+    use candle_transformers::models::whisper::{Config, model::Whisper};
+    let (d, layers, heads) = match size {
+        "tiny" => (384, 4, 6),
+        "small" => (768, 12, 12),
+        _ => (512, 6, 8),
+    };
+    let cfg = Config {
+        num_mel_bins: 80,
+        max_source_positions: 1500,
+        d_model: d,
+        encoder_attention_heads: heads,
+        encoder_layers: layers,
+        vocab_size: 51_865,
+        max_target_positions: 448,
+        decoder_attention_heads: heads,
+        decoder_layers: layers,
+        suppress_tokens: vec![],
+    };
+    let dev = Device::Cpu;
+    let t = Instant::now();
+    let vm = candle_nn::VarMap::new();
+    let vb = candle_nn::VarBuilder::from_varmap(&vm, DType::F32, &dev);
+    let model = Whisper::load(&vb, cfg).expect("whisper");
+    // A word-level tokenizer with Whisper's special tokens at their ids.
+    let specials = [
+        ("<|endoftext|>", 50_257u32),
+        ("<|startoftranscript|>", 50_258),
+        ("<|en|>", 50_259),
+        ("<|transcribe|>", 50_359),
+        ("<|notimestamps|>", 50_363),
+    ];
+    let mut vocab: std::collections::HashMap<String, u32> = specials.iter().map(|(t, i)| ((*t).to_string(), *i)).collect();
+    vocab.insert("<unk>".into(), 0);
+    let wl = tokenizers::models::wordlevel::WordLevel::builder()
+        .vocab(vocab.into_iter().collect())
+        .unk_token("<unk>".into())
+        .build()
+        .expect("vocab");
+    let tok = tokenizers::Tokenizer::new(wl);
+    let mut tr = quire_ai_engine::whisper::Transcriber::new(model, tok, dev).expect("transcriber");
+    println!("whisper-{size}: load {:.1}s, RSS {} MB", t.elapsed().as_secs_f64(), now_mb());
+    let pcm: Vec<f32> = (0..16_000 * 30).map(|i| ((i as f32) * 0.05).sin() * 0.1).collect();
+    let t = Instant::now();
+    let r = tr.run(&pcm, "en", &std::sync::atomic::AtomicBool::new(false)).expect("run");
+    let s = t.elapsed().as_secs_f64();
+    println!("  30 s of audio in {s:.1}s (worst case: 224 tokens), {} chars, peak RSS {} MB", r.text.len(), rss_mb());
+}
+
+/// `spike <dir> [bert|qwen3|qwen3-small|whisper] [candle|repack|compact|auto|tiny|base|small]`:
+/// one model per run, so peak memory is that model's.
 fn main() {
     let dir = std::path::PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| ".".into()));
+    let which = match std::env::args().nth(3).as_deref() {
+        Some("candle") => Impl::Candle,
+        Some("repack") => Impl::Repack,
+        Some("compact") => Impl::Compact,
+        _ => Impl::Auto,
+    };
     match std::env::args().nth(2).as_deref() {
         Some("bert") => bert(),
-        Some("qwen3") => qwen3(&dir, false),
-        Some("qwen3-small") => qwen3(&dir, true),
+        Some("qwen3") => qwen3(&dir, false, which),
+        Some("qwen3-small") => qwen3(&dir, true, which),
+        Some("whisper") => whisper(std::env::args().nth(3).as_deref().unwrap_or("base")),
         _ => {
             bert();
-            qwen3(&dir, false);
+            qwen3(&dir, false, which);
         }
     }
 }

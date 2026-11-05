@@ -306,6 +306,7 @@ pub fn run(spec: &RunSpec<'_>, conversation: &mut Vec<ChatMessage>, cancel: &Can
         .unwrap_or_default();
     let mut total = Usage::default();
     let mut writes = 0u32;
+    let mut repaired = false;
     for step in 1..=spec.limits.max_steps.max(1) {
         let req = ChatRequest {
             system: spec.system.clone(),
@@ -343,6 +344,37 @@ pub fn run(spec: &RunSpec<'_>, conversation: &mut Vec<ChatMessage>, cancel: &Can
                 sink(RunEvent::Failed(e.to_string()));
                 return;
             }
+        }
+        // A call that couldn't be read is never run, nor is anything else in
+        // the same turn: the model gets one short correction and tries again.
+        if let Some(why) = unreadable(&calls) {
+            let raw = calls.iter().find_map(|(_, _, i)| i[quire_ai::toolcall::UNPARSED].as_str()).unwrap_or_default();
+            let id = format!("repair_{step}");
+            sink(RunEvent::ToolStarted { id: id.clone(), name: String::new(), summary: "Reading the model's tool call".into() });
+            if repaired {
+                sink(RunEvent::ToolFinished {
+                    id,
+                    summary: "The model's tool call couldn't be read · nothing was run".into(),
+                    detail: cut(raw, 2_000),
+                    is_error: true,
+                });
+                sink(RunEvent::Failed(
+                    "The model wrote a tool call Quire couldn't read, twice. Nothing was run; try again or rephrase.".into(),
+                ));
+                return;
+            }
+            repaired = true;
+            sink(RunEvent::ToolFinished {
+                id,
+                summary: "The model's tool call couldn't be read · asked it to write it again".into(),
+                detail: cut(raw, 2_000),
+                is_error: true,
+            });
+            if !text.is_empty() {
+                conversation.push(ChatMessage::assistant(text));
+            }
+            conversation.push(ChatMessage::user(repair_message(&why)));
+            continue;
         }
         let mut parts = Vec::new();
         if !text.is_empty() {
@@ -416,6 +448,31 @@ pub fn run(spec: &RunSpec<'_>, conversation: &mut Vec<ChatMessage>, cancel: &Can
     }
     sink(RunEvent::Text(format!("\n\n*(Stopped after {} steps. Say \"go on\" to continue.)*", spec.limits.max_steps)));
     sink(RunEvent::Done { usage: total, steps: spec.limits.max_steps });
+}
+
+/// Why a turn's calls can't be run, if one of them couldn't be read: no
+/// name, input that isn't an object, or the engine's `_unparsed` marker.
+fn unreadable(calls: &[(String, String, Value)]) -> Option<String> {
+    calls.iter().find_map(|(_, name, input)| {
+        if quire_ai::toolcall::is_unparsed(input) {
+            Some(input["_error"].as_str().unwrap_or("it isn't valid JSON").to_string())
+        } else if name.trim().is_empty() {
+            Some("it has no tool name".to_string())
+        } else if !input.is_object() {
+            Some(format!("the arguments of {name} aren't a JSON object"))
+        } else {
+            None
+        }
+    })
+}
+
+/// The one correction sent after a tool call that couldn't be read.
+fn repair_message(why: &str) -> String {
+    format!(
+        "Your last tool call couldn't be read ({why}), so nothing was run. Write it again as \
+         <tool_call>{{\"name\": \"<tool>\", \"arguments\": {{…}}}}</tool_call> with double-quoted JSON \
+         and nothing else inside the tags, or answer in plain text."
+    )
 }
 
 /// `quire://note/Rope%20Notes.md` → `Rope Notes.md`.
@@ -574,5 +631,56 @@ mod tests {
         let mut events = Vec::new();
         run(&spec, &mut conv, &stopped, &mut |e| events.push(e));
         assert_eq!(events, vec![RunEvent::Stopped]);
+    }
+
+    #[test]
+    fn an_unreadable_call_is_never_run_and_gets_one_correction() {
+        let bad = || ChatEvent::ToolUse {
+            id: "call_1".into(),
+            name: String::new(),
+            input: json!({"_unparsed": "{\"name\": search", "_error": "the tool call isn't valid JSON"}),
+        };
+        let half = || ChatEvent::ToolUse { id: "call_2".into(), name: "delete".into(), input: json!({"path": "A.md"}) };
+        let actor = panel_actor("device", "Agent panel", None, "d_1");
+        let model = ScriptedChat::new(vec![
+            vec![ChatEvent::Text { text: "Let me look.".into() }, half(), bad()],
+            vec![ChatEvent::Text { text: "Rope is a data structure.".into() }],
+        ]);
+        let spec = RunSpec {
+            model: &model,
+            host: None,
+            actor: &actor,
+            capability: Capability::Full,
+            core_tools: true,
+            read_only: false,
+            limits: RunLimits::default(),
+            system: "sys".into(),
+            max_reply_tokens: 100,
+        };
+        let mut conv = vec![ChatMessage::user("what is a rope?")];
+        let mut events = Vec::new();
+        run(&spec, &mut conv, &CancelFlag::new(), &mut |e| events.push(e));
+        assert!(
+            events.iter().any(
+                |e| matches!(e, RunEvent::ToolFinished { summary, is_error: true, .. } if summary.contains("asked it to write it again"))
+            ),
+            "{events:?}"
+        );
+        assert!(matches!(events.last(), Some(RunEvent::Done { steps: 2, .. })), "{events:?}");
+        // The readable call in the same turn wasn't run either.
+        assert!(!events.iter().any(|e| matches!(e, RunEvent::ToolStarted { name, .. } if name == "delete")));
+        let second = &model.requests()[1].messages;
+        assert!(
+            second.last().is_some_and(|m| m.role == Role::User && m.text().contains("couldn't be read (the tool call isn't valid JSON)")),
+            "{second:?}"
+        );
+        assert!(second.iter().all(|m| m.parts.iter().all(|p| !matches!(p, Part::ToolUse { .. }))), "no unanswered tool_use is sent back");
+
+        let model = ScriptedChat::new(vec![vec![bad()], vec![bad()]]);
+        let spec = RunSpec { model: &model, ..spec };
+        let mut events = Vec::new();
+        run(&spec, &mut vec![ChatMessage::user("hi")], &CancelFlag::new(), &mut |e| events.push(e));
+        assert!(matches!(events.last(), Some(RunEvent::Failed(m)) if m.contains("Nothing was run")), "{events:?}");
+        assert_eq!(model.remaining(), 0);
     }
 }

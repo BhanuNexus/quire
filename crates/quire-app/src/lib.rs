@@ -47,6 +47,7 @@ pub mod themes;
 pub mod trust_jobs;
 pub mod updates;
 pub mod vault_sync;
+pub mod voice;
 pub mod workspace;
 
 pub use ask_state::AskState;

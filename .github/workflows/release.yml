@@ -189,6 +189,8 @@ jobs:
           engine="$(packaging/unpack-engine.sh "$RUNNER_TEMP/engine/quire-ai-engine-x86_64-unknown-linux-gnu.gz" \
             x86_64-unknown-linux-gnu "$RUNNER_TEMP/engine/quire-ai-engine")"
           echo "ENGINE_BIN=$engine" >> "$GITHUB_ENV"
+      - name: ALSA headers (the full edition records voice notes through cpal)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
       - name: Install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - name: Build tar.gz, .deb and AppImage
