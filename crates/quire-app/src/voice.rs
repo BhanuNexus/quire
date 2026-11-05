@@ -231,11 +231,26 @@ impl Workspace {
     /// daily capture when no note is open. Returns where it went.
     pub fn insert_voice_note(&mut self, markdown: &str) -> Option<NotePath> {
         if let Some(p) = self.active_doc().and_then(|d| d.path.clone()) {
-            let needs_break = self.active_doc().is_some_and(|d| {
+            // Its own block: a blank line before and after when text touches it.
+            let (before, text_follows) = self.active_doc().map_or(("", false), |d| {
                 let s = d.selection().start();
-                s > 0 && d.buffer().char_at(s - 1).is_some_and(|c| c != '\n')
+                let at = |i: usize| d.buffer().char_at(i);
+                let before = if s == 0 {
+                    ""
+                } else if at(s - 1) != Some('\n') {
+                    "\n\n"
+                } else if s >= 2 && at(s - 2) != Some('\n') {
+                    "\n"
+                } else {
+                    ""
+                };
+                (before, at(s).is_some_and(|c| c != '\n'))
             });
-            self.insert_text(&if needs_break { format!("\n{markdown}") } else { markdown.to_string() });
+            let mut block = format!("{before}{markdown}");
+            if text_follows {
+                block.push('\n');
+            }
+            self.insert_text(&block);
             return Some(p);
         }
         self.capture(markdown)
@@ -307,6 +322,6 @@ mod tests {
         assert_eq!(w.insert_voice_note(&md), Some(NotePath::new("Note.md")));
         let doc = w.active_doc().unwrap().text().to_string();
         assert!(doc.contains(&format!("![[{}]]", p.file_name())), "{doc}");
-        assert!(doc.contains("> Hello there."));
+        assert!(doc.contains("> Hello there.\n\n# Note"), "a block of its own, before the text at the caret: {doc}");
     }
 }

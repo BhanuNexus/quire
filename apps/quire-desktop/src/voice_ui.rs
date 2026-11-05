@@ -180,9 +180,12 @@ impl VoiceDialog {
         Self { state, to_capture: false }
     }
 
-    fn insert(&self, ws: &mut Workspace, path: &NotePath, seconds: f32, transcript: Option<(&str, &str)>) -> bool {
+    /// Add the note (once: the dialog is done afterwards, so closing it
+    /// doesn't add it again).
+    fn insert(&mut self, ws: &mut Workspace, path: &NotePath, seconds: f32, transcript: Option<(&str, &str)>) -> bool {
         let md = voice::voice_note_markdown(path.file_name(), seconds, transcript);
         let done = if self.to_capture { ws.capture(&md) } else { ws.insert_voice_note(&md) };
+        self.state = State::Ready;
         if let Some(note) = done {
             ws.notify(quire_app::workspace::NoticeLevel::Info, format!("Added a voice note to {note}"));
             true

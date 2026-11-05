@@ -196,7 +196,7 @@ impl Workspace {
         match res {
             Ok(()) => self.ask.answer = Some(self.finish_answer(Some(markdown), sources, by)),
             Err(LlmError::Cancelled) if !markdown.trim().is_empty() && !ask::model_abstained(&markdown) => {
-                let mut a = self.finish_answer(Some(format!("{}\n\n*(Stopped.)*", markdown.trim_end())), sources, by);
+                let mut a = self.finish_answer(Some(format!("{}\n\n(Stopped.)", markdown.trim_end())), sources, by);
                 a.abstained = false;
                 self.ask.answer = Some(a);
             }

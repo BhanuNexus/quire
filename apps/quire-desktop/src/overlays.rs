@@ -667,7 +667,7 @@ fn capture(ctx: &egui::Context, text: &mut String, focused: &mut bool, minimize:
             // 0.10: record a voice note into today's note instead.
             if ws.features.ai.voice.can_record
                 && ws.vault().is_some()
-                && ui.button("🎤 Voice note…").on_hover_text("Record a voice note for today's note").clicked()
+                && ui.button("Voice note…").on_hover_text("Record a voice note for today's note").clicked()
             {
                 ws.features.ai.voice.to_capture = true;
                 ws.request_ui(quire_app::workspace::UiRequest::Feature(Command::RecordVoiceNote));

@@ -5,7 +5,7 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 ## [Unreleased]
 
 ### Added
-- **Voice notes** (full edition): "Record voice note…", or 🎤 in quick capture for today's note. The microphone records only between Record and Stop. The recording is saved in the vault as a WAV file and embedded in the note. A transcript is added under it if you choose where transcription runs (Settings → AI → Voice notes): through your OpenAI-compatible provider (the recording is sent to it; the dialog says so before you record), or on this computer with Whisper while on-device AI is experimental. Transcription is off until you choose. Quire Lite doesn't record.
+- **Voice notes** (full edition): "Record voice note…", or "Voice note…" in quick capture for today's note. The microphone records only between Record and Stop. The recording is saved in the vault as a WAV file and embedded in the note. A transcript is added under it if you choose where transcription runs (Settings → AI → Voice notes): through your OpenAI-compatible provider (the recording is sent to it; the dialog says so before you record), or on this computer with Whisper while on-device AI is experimental. Transcription is off until you choose. Quire Lite doesn't record.
 - **Ask writes its answer as you watch**, with Stop (what was written stays, marked as stopped). Closing the dialog stops it too.
 - MCP `ask`: when the notes don't answer, it lists the three nearest passages with their anchors (`nearest`), as the app does, and cites nothing.
 - Settings → AI → Advanced → "Faster prompts, more memory" for on-device writing models.
