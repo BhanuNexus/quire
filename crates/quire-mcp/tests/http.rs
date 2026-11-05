@@ -47,7 +47,13 @@ fn start(public_url: &str) -> Env {
         consent: consent.clone(),
         cimd: cimd::Policy { allow_http_loopback: true },
     };
-    let http = HttpServer::start(srv, cfg).unwrap();
+    // Every test here runs with other routes on the same port, as
+    // `quire-cli serve` mounts its web app: MCP must behave the same.
+    let http = HttpServer::start_with(srv, cfg, |_| quire_mcp::http::Mount {
+        router: axum::Router::new().fallback(|| async { "web app" }),
+        consent_page: Some("/consent".into()),
+    })
+    .unwrap();
     let base = format!("http://127.0.0.1:{}", http.addr().port());
     Env { http, base, tokens, consent, _dir: dir }
 }
@@ -379,6 +385,8 @@ fn oauth_with_a_client_metadata_document_then_search() {
     assert_eq!(r.status, 200);
     assert!(r.body.contains("Approve this request in Quire") && r.body.contains("Test Agent") && r.body.contains("127.0.0.1"));
     assert!(!r.body.contains("tracker.png"), "the logo is never loaded");
+    assert!(r.body.contains("/consent?request="), "a mounted web app's approval page is linked");
+    assert_eq!(get(&format!("{}/elsewhere", env.base), &[]).body, "web app", "other paths reach the mounted routes");
     let pending = env.consent.pending(quire_app::history_ops::now_ms());
     assert_eq!(pending.len(), 1);
     let req = &pending[0];

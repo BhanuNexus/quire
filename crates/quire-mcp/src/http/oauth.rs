@@ -235,11 +235,16 @@ fn waiting(st: &HttpState, id: &str, name: &str, host: &str, code: &str, scopes:
         "<p>An app at <b style=\"font-size:1.3em\">{}</b> (it calls itself “{}”) asks to use your Quire notes:</p><ul>{wants}</ul>\
 <p>Approve or deny this request in the Quire app. Check that Quire shows the same code:</p>\
 <p style=\"font-size:1.6em;letter-spacing:.1em\"><b>{}</b></p>\
-<p>Without the app open, run:</p><p><code>quire-cli mcp approve {}</code></p>\
+{}<p>Without the app open, run:</p><p><code>quire-cli mcp approve {}</code></p>\
 <p>This page continues by itself. Keep it open: only this browser window can finish connecting.</p>",
         escape(host),
         escape(name),
         escape(code),
+        st.consent_page.as_deref().map_or_else(String::new, |p| format!(
+            "<p>Or <a href=\"{}?request={}\">answer it in Quire's web app</a> (you sign in first).</p>",
+            escape(p),
+            escape(id)
+        )),
         escape(id)
     );
     html(

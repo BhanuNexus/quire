@@ -18,6 +18,9 @@
 //!   URL's host.
 //! * `GET` and `DELETE` on `/mcp` are `405`. Quire terminates no TLS: put a
 //!   reverse proxy or tunnel in front for remote use and set the public URL.
+//! * Other routes can share the port ([`HttpServer::start_with`]):
+//!   `quire-cli serve` mounts its web app there. They bring their own
+//!   checks; the ones above cover MCP's and OAuth's routes.
 
 pub mod cimd;
 pub mod oauth;
@@ -120,8 +123,21 @@ impl Urls {
     }
 }
 
+/// Routes served on the same port as MCP, and how the OAuth waiting page
+/// points at them.
+pub struct Mount {
+    /// More routes (they must not use `/mcp`, `/oauth/…` or `/.well-known/…`).
+    pub router: Router,
+    /// A page where a signed-in person can approve a connection request:
+    /// the waiting page links to `{consent_page}?request=<id>`. Approving
+    /// there only decides the request; the code still goes only to the
+    /// browser that started it.
+    pub consent_page: Option<String>,
+}
+
 pub(crate) struct HttpState {
     pub(crate) server: Server,
+    pub(crate) consent_page: Option<String>,
     pub(crate) urls: Urls,
     pub(crate) tokens: TokenStore,
     pub(crate) consent: ConsentStore,
@@ -146,14 +162,22 @@ impl std::fmt::Debug for HttpServer {
 impl HttpServer {
     /// Bind and serve on a background thread with its own small runtime.
     pub fn start(server: Server, cfg: HttpConfig) -> Result<Self, String> {
+        Self::start_with(server, cfg, |_| Mount { router: Router::new(), consent_page: None })
+    }
+
+    /// [`Self::start`], with more routes on the same port, made once the
+    /// address is known.
+    pub fn start_with(server: Server, cfg: HttpConfig, mount: impl FnOnce(&Urls) -> Mount) -> Result<Self, String> {
         let listener =
             std::net::TcpListener::bind((cfg.bind, cfg.port)).map_err(|e| format!("can't listen on {}:{}: {e}", cfg.bind, cfg.port))?;
         let addr = listener.local_addr().map_err(|e| e.to_string())?;
         listener.set_nonblocking(true).map_err(|e| e.to_string())?;
         let urls = Urls::new(cfg.bind, addr.port(), &cfg.public_url)?;
+        let extra = mount(&urls);
         server.start_pump();
         let state = Arc::new(HttpState {
             server,
+            consent_page: extra.consent_page,
             urls: urls.clone(),
             tokens: cfg.tokens,
             consent: cfg.consent,
@@ -172,7 +196,7 @@ impl HttpServer {
             .spawn(move || {
                 rt.block_on(async move {
                     let Ok(listener) = tokio::net::TcpListener::from_std(listener) else { return };
-                    let app = router(state);
+                    let app = router(state).merge(extra.router);
                     let _ = axum::serve(listener, app.into_make_service())
                         .with_graceful_shutdown(async {
                             let _ = stop_rx.await;
