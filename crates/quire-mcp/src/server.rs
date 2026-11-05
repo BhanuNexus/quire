@@ -220,6 +220,11 @@ impl Server {
         &self.core.vault
     }
 
+    /// The index the tools search (the eval sets its embedder).
+    pub fn index(&self) -> &IndexService {
+        &self.core.index
+    }
+
     pub fn config(&self) -> &ServerConfig {
         &self.core.config
     }

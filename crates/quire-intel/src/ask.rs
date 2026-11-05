@@ -36,9 +36,15 @@ use crate::llm::LlmRequest;
 /// says "Not found" to none of the questions whose answer is in the text of
 /// either (`abstain_is_calibrated_on_the_sample_vault`).
 pub const TAU_SEM_LSA: f32 = 0.30;
-/// … or this (neural embedders, which score unrelated text higher; the
-/// eval has no neural embedder yet, so this is the design's start) …
-pub const TAU_SEM_NEURAL: f32 = 0.35;
+/// … or this (embedders other than LSA).
+///
+/// 0.10 calibration (design §C.4): `quire-cli eval --embedder mock` (deterministic hashed vectors through
+/// the endpoint embedder, not a trained model) gives the sample vault's
+/// answerable questions similarities of 0.21–0.39 with coverage down to
+/// 0.27, so the design's 0.35 said "Not found" to 2 of 12 of them; 0.20 is
+/// the highest value with none on either set. Re-run with
+/// `--embedder endpoint` and a real model before trusting it further …
+pub const TAU_SEM_NEURAL: f32 = 0.20;
 /// … and the question's distinctive words are covered less than this
 /// (answerable questions: 1.0 in the suite, ≥ 0.29 in the sample vault).
 pub const COVERAGE_MIN: f32 = 0.5;
