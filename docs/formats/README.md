@@ -80,7 +80,7 @@ F0 is the foundation step, after which its files are frozen).
 | `<folder>/quire-lock.json`, `*.qenc`, `.quire/history/<fnv>/<ms>.md.gz.qenc` | JSON format 1; binary, version 1 | [locked-folders.md](locked-folders.md) | 0.11 security | written (locked folders) |
 | `agent-policy.toml`: `ai`, `[clients]` `revoked`, `log_reads`, `allow_tags`, `allow_folders` | TOML, format 1 | [policy.md](policy.md#connections-allow-lists-and-ai-off) | 0.11 security | read; written by Settings → Agents |
 | `<config>/settings.toml` `[security]` | TOML | [settings.md](settings.md) | 0.11 security | read and written |
-| `SKILL.source.json` beside an installed `SKILL.md` | JSON, format 1 | [locked-folders.md](../agents.md#skills) | 0.11 security | written by `quire-cli skill install --from` |
+| `SKILL.source.json` beside an installed `SKILL.md` | JSON, format 1 | [agents.md](../agents.md#skills) | 0.11 security | written by `quire-cli skill install --from` |
 
 Planned and not yet written by any code (formats come with their
 workstream): `.quire/agent/runs/`,
