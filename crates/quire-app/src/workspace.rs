@@ -1292,6 +1292,10 @@ impl Workspace {
     /// Run a command. Returns a request when the frontend must show UI.
     pub fn run(&mut self, cmd: Command) -> Option<UiRequest> {
         use Command as C;
+        // 0.11: Markdown-aware formatting toggles (`format_cmds`).
+        if crate::format_cmds::handles(cmd) {
+            return crate::format_cmds::run(self, cmd);
+        }
         if cmd.owner() != Owner::Core {
             return crate::features::run(self, cmd);
         }
@@ -1549,6 +1553,24 @@ impl Workspace {
             | C::InsertSketch
             | C::InsertCitation
             | C::ImportBibliography => return crate::features::run(self, cmd),
+            // 0.11 editor: formatting runs in `format_cmds` above; the rest in `nav`.
+            C::Heading4
+            | C::Heading5
+            | C::Heading6
+            | C::BulletList
+            | C::NumberedList
+            | C::InsertMarkdownLink
+            | C::InsertCallout
+            | C::InsertTable
+            | C::InlineMath
+            | C::MathBlock
+            | C::CodeBlock
+            | C::InsertFootnote
+            | C::InsertRule
+            | C::InsertAttachment
+            | C::ToggleToolbar
+            | C::FocusToolbar
+            | C::CustomizeCommands => return crate::features::run(self, cmd),
         }
         None
     }
@@ -1673,6 +1695,7 @@ impl Workspace {
             let slot = Arc::new(std::sync::Mutex::new(None));
             let (out, index, semantic, text) = (Arc::clone(&slot), self.index.shared(), self.index.semantic(), text.to_string());
             std::thread::spawn(move || {
+                quire_index::background::lower_priority();
                 let ix = index.read().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let ins = compute_insights(&ix, semantic.as_deref(), path.as_ref(), &text, &plain, large);
                 if let Ok(mut o) = out.lock() {

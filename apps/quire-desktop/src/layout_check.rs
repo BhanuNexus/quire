@@ -303,3 +303,57 @@ fn on_device_rows_follow_the_experimental_switch() {
     }
     assert!(!settings.contains(later), "{settings}");
 }
+
+/// 0.11: the formatting toolbar keeps its size from frame to frame, wraps
+/// in a narrow window instead of overflowing, and the floating toolbar
+/// stays on screen wherever the selection is.
+#[test]
+fn toolbars_keep_their_size_and_fit_the_window() {
+    let mut failures = Vec::new();
+    let mut ws = workspace_with(false);
+    ws.settings.toolbar.show = true;
+    let keymap = quire_app::keymap::Keymap::new(&ws.settings.commands);
+    for width in [300.0_f32, 760.0, 1280.0] {
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(width, 600.0));
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        ctx.global_style_mut(theme::style);
+        let mut st = crate::toolbar_ui::ToolbarUi::default();
+        let mut sizes = Vec::new();
+        for frame in 0..30 {
+            let mut out = ctx.run_ui(input(screen, frame), |ui| {
+                let r = ui
+                    .allocate_ui(Vec2::new(width, 300.0), |ui| {
+                        let _ = crate::toolbar_ui::bar(ui, &ws, &keymap, &theme::LIGHT, &mut st);
+                    })
+                    .response
+                    .rect;
+                sizes.push(r.size());
+            });
+            out.textures_delta.clear();
+        }
+        if sizes[10..].iter().any(|s| (s.y - sizes[10].y).abs() > 0.5 || s.x > width + 0.5) {
+            failures.push(format!("toolbar at width {width}: {:?}", &sizes[10..]));
+        }
+        // The floating toolbar near each corner of the window.
+        for at in [Pos2::new(0.0, 0.0), Pos2::new(width - 2.0, 0.0), Pos2::new(width - 2.0, 580.0), Pos2::new(10.0, 300.0)] {
+            let sel = Rect::from_min_size(at, Vec2::new(2.0, 18.0));
+            let ctx = egui::Context::default();
+            theme::install_fonts(&ctx);
+            ctx.global_style_mut(theme::style);
+            let mut st = crate::toolbar_ui::ToolbarUi::default();
+            for frame in 0..5 {
+                let mut out = ctx.run_pass(input(screen, frame), |ctx| {
+                    let _ = crate::toolbar_ui::floating(ctx, sel, &keymap, &theme::DARK, &mut st);
+                });
+                out.textures_delta.clear();
+            }
+            let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("quire-floating-toolbar"));
+            match ctx.memory(|m| m.area_rect(layer.id)) {
+                Some(r) if screen.expand(0.5).contains_rect(r) => {}
+                other => failures.push(format!("floating toolbar for a selection at {at:?} in {width}: {other:?}")),
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}

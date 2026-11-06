@@ -407,6 +407,11 @@ pub fn index_pdfs_in_background(vault: Vault, progress: Arc<PdfIndexing>, mut si
         }
         progress.finish();
     };
+    let mut task = run;
+    let run = move || {
+        quire_index::background::lower_priority();
+        task();
+    };
     if std::thread::Builder::new().name("pdf-text".into()).spawn(run).is_err() {
         // No thread: PDFs stay out of search rather than block start-up.
         after.finish();

@@ -66,6 +66,10 @@ pub(crate) struct FeatureUi {
     pub git: crate::git_ui::GitUi,
     // ---- WS-G
     pub canvas: crate::canvas_ui::CanvasUi,
+    // ---- 0.11 editor: Settings → Commands and Toolbar, the toolbar, Insights rows
+    pub commands: crate::commands_ui::CommandsUi,
+    pub toolbar: crate::toolbar_ui::ToolbarUi,
+    pub insights: crate::panels::InsightsRows,
     // ---- app
     /// The file of the surface in the central panel (a `.base`, a canvas,
     /// a PDF), set each frame; `None` while a note is shown.
@@ -95,7 +99,7 @@ fn insights_tab(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pal: 
         crate::panels::surface_insights(ui, ws, &path, pal);
         return PanelOut::default();
     }
-    crate::panels::insights(ui, ws, pal)
+    crate::panels::insights(ui, ws, pal, &mut st.insights)
 }
 
 pub(crate) const RIGHT_TABS: &[TabDef] = &[
@@ -143,6 +147,9 @@ pub(crate) const SETTINGS_TABS: &[TabDef] = &[
         available: crate::cite_ui::settings_available,
         show: crate::cite_ui::settings_tab,
     },
+    // ---- 0.11 editor
+    TabDef { id: "commands", label: label!("Commands"), available: crate::commands_ui::available, show: crate::commands_ui::show },
+    TabDef { id: "toolbar", label: label!("Toolbar"), available: crate::commands_ui::available, show: crate::commands_ui::toolbar_tab },
 ];
 
 /// A bar drawn above the note, below the find bar: full width, as tall as
@@ -259,6 +266,8 @@ pub(crate) const fn ui_target(cmd: Command) -> Option<UiTarget> {
         // ---- WS-G
         Command::InsertCitation => UiTarget::Overlay(crate::cite_ui::CitePicker::make),
         Command::ImportBibliography => UiTarget::Overlay(crate::cite_ui::ImportDialog::make),
+        // ---- 0.11 editor
+        Command::CustomizeCommands => UiTarget::Settings("commands"),
         _ => return None,
     })
 }
@@ -363,6 +372,8 @@ pub(crate) fn layout_samples(ws: &mut Workspace) -> Vec<(&'static str, crate::ov
         ("review: done", Overlay::Feature(Box::new(crate::srs_ui::ReviewOverlay::sample(false, true)))),
         ("new note from template: questions", Overlay::Feature(Box::new(crate::template_prompt_ui::TemplateDialog::sample()))),
         // ---- WS-F
+        // ---- 0.11 editor
+        ("diagram, full screen", Overlay::Feature(Box::new(crate::diagram_ui::DiagramOverlay::new("graph TD; A-->B".into())))),
         // ---- WS-G
         ("insert citation: no library", Overlay::Feature(Box::new(crate::cite_ui::CitePicker::sample(false)))),
         ("insert citation", Overlay::Feature(Box::new(crate::cite_ui::CitePicker::sample(true)))),

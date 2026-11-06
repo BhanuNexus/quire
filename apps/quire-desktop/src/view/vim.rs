@@ -9,10 +9,17 @@
 //! insert session becomes one undo step when it ends.
 //!
 //! Visual-block mode shows its rows as the editor's extra selections, and
-//! a block insert (`I`, `A`, `c`) types at one cursor a row. Ctrl+V reaches
-//! the editor as a paste (the system takes the shortcut), so in Normal and
-//! Visual mode a paste starts Visual-block mode. With an empty clipboard the
-//! system passes nothing on; Vim's other key for it, Ctrl+Q, quits the app.
+//! a block insert (`I`, `A`, `c`) types at one cursor a row. Ctrl+V and
+//! Ctrl+Q start it. Until 0.11 Ctrl+V never arrived as a key: egui-winit
+//! turned it into a paste of the clipboard (nothing at all when the
+//! clipboard was empty). The app now handles the clipboard keys itself
+//! (`app::clipboard_keys`) and leaves Ctrl+V a key in Normal and Visual
+//! mode; in Insert mode it pastes. A paste in Normal mode (the `"+p`
+//! answer, or from elsewhere) puts the text before the cursor. Ctrl+Q,
+//! Vim's other key for Visual block, used to close the window: egui quits
+//! on Ctrl+Q at the end of each frame (`Options::quit_shortcuts`); the app
+//! turns that off while Vim has the keys (on Windows and Linux; ⌘Q on
+//! macOS still quits).
 
 use egui::{Event, Key, Modifiers, Ui, ViewportCommand};
 use quire_app::document::DocId;
@@ -44,8 +51,9 @@ fn vim_key(key: Key, m: Modifiers) -> Option<VKey> {
     if m.ctrl && !m.alt {
         return Some(match key {
             Key::OpenBracket => VKey::Ctrl('['),
-            // Ctrl+C, V and X stay copy, paste and cut.
-            Key::C | Key::V | Key::X => return None,
+            // Ctrl+C and X stay copy and cut (Ctrl+V is Visual block here;
+            // in Insert mode the app has made it a paste).
+            Key::C | Key::X => return None,
             k => {
                 let name = k.name();
                 let c = name.chars().next().filter(|c| name.len() == 1 && c.is_ascii_alphabetic())?;
@@ -107,8 +115,6 @@ impl FastEditor {
                 return None;
             }
             Event::Text(t) => t.chars().map(VKey::Char).collect(),
-            // Ctrl+V (taken by the system as paste): Visual-block mode.
-            Event::Paste(_) if !typing && self.vim.paste.is_none() => vec![VKey::Ctrl('v')],
             Event::Key { key, pressed: true, modifiers, .. } => match vim_key(*key, *modifiers) {
                 Some(k) => vec![k],
                 None if typing => return None,
@@ -334,7 +340,7 @@ mod tests {
     fn block_mode_types_on_every_row() {
         let mut e = Editor::new("abc\ndef\nghi\n");
         let id = e.ws.active_doc().map(|d| d.id).expect("a note");
-        e.paste("x");
+        e.keys("<C-v>");
         e.keys("jj");
         assert_eq!(e.ws.features.nav.vim.mode(), Mode::VisualBlock);
         assert!(e.fast.has_extra_cursors(id), "the other rows are selections");
@@ -342,10 +348,13 @@ mod tests {
         assert_eq!(e.keys("<Esc>"), "-abc\n-def\n-ghi\n");
         assert!(!e.fast.has_extra_cursors(id));
         assert_eq!(e.keys("u"), "abc\ndef\nghi\n", "the block insert is one undo step");
-        // Again, from Normal mode: Ctrl+V comes as a paste.
-        e.paste("x");
+        // Again with Ctrl+Q, Vim's other key for it.
+        e.keys("<C-q>");
         assert_eq!(e.ws.features.nav.vim.mode(), Mode::VisualBlock);
         assert_eq!(e.keys("jd"), "bc\nef\nghi\n");
+        // A paste in Normal mode puts the text before the cursor.
+        e.paste("x");
+        assert_eq!(&*e.ws.active_doc().unwrap().text(), "xbc\nef\nghi\n");
     }
 
     #[test]
@@ -370,6 +379,7 @@ mod tests {
         assert_eq!(vim_key(Key::R, Modifiers::CTRL), Some(VKey::Ctrl('r')));
         assert_eq!(vim_key(Key::OpenBracket, Modifiers::CTRL), Some(VKey::Ctrl('[')));
         assert_eq!(vim_key(Key::C, Modifiers::CTRL), None, "Ctrl+C stays copy");
+        assert_eq!(vim_key(Key::V, Modifiers::CTRL), Some(VKey::Ctrl('v')), "Ctrl+V is Visual block");
         assert_eq!(vim_key(Key::A, Modifiers::NONE), None, "letters come as text");
         assert_eq!(vim_key(Key::ArrowDown, Modifiers::SHIFT), Some(VKey::Down));
         assert_eq!(vim_key(Key::S, Modifiers::ALT), None);

@@ -18,11 +18,15 @@
 mod agent_panel;
 mod ai_local;
 mod appearance;
+// 0.11 editor
+pub mod commands;
 mod editing;
 mod jobs;
 mod mcp_http;
 mod onboarding;
 mod tasks;
+// 0.11 editor
+pub mod toolbar;
 mod trust;
 mod voice;
 
@@ -31,12 +35,16 @@ use std::path::{Path, PathBuf};
 pub use agent_panel::AgentPanelSettings;
 pub use ai_local::{AiLocalSettings, EXPERIMENTAL_ENV};
 pub use appearance::AppearanceSettings;
+// 0.11 editor
+pub use commands::{CommandSettings, Macro};
 pub use editing::EditingSettings;
 pub use jobs::JobSettings;
 pub use mcp_http::McpHttpSettings;
 pub use onboarding::OnboardingSettings;
 use serde::{Deserialize, Serialize};
 pub use tasks::TaskSettings;
+// 0.11 editor
+pub use toolbar::{ToolbarItem, ToolbarSettings};
 pub use trust::TrustSettings;
 pub use voice::VoiceSettings;
 
@@ -115,6 +123,10 @@ pub struct Settings {
     pub jobs: JobSettings,
     /// 0.10: voice notes.
     pub voice: VoiceSettings,
+    /// 0.11 editor: shortcuts, pinned commands and macros.
+    pub commands: CommandSettings,
+    /// 0.11 editor: the formatting toolbar.
+    pub toolbar: ToolbarSettings,
     /// Settings this version doesn't know (written by a newer version, or
     /// the other edition), kept as they are so saving doesn't drop them.
     #[serde(flatten)]
@@ -162,6 +174,8 @@ impl Default for Settings {
             appearance: AppearanceSettings::default(),
             jobs: JobSettings::default(),
             voice: VoiceSettings::default(),
+            commands: CommandSettings::default(),
+            toolbar: ToolbarSettings::default(),
             other: toml::Table::new(),
         }
     }
@@ -306,6 +320,32 @@ mod tests {
         let back = std::fs::read_to_string(&p).unwrap();
         assert!(back.contains("future_option = true") && back.contains("[future_section]") && back.contains("level = 3"), "{back}");
         assert_eq!(Settings::load_from(&p).font_size, 19.0);
+    }
+
+    #[test]
+    fn commands_and_toolbar_keep_what_this_version_does_not_know() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.toml");
+        std::fs::write(
+            &p,
+            "[commands]\npinned = [\"Bold\", \"FutureCommand\"]\nfuture = 1\n[commands.keys]\nBold = [\"Ctrl+Alt+B\"]\nFutureCommand = [\"F7\"]\n\
+             [[commands.macros]]\nname = \"Tidy\"\nsteps = [\"FormatTable\", \"Save\"]\ncolor = \"red\"\n\
+             [toolbar]\nshow = true\n[[toolbar.items]]\ncommand = \"Bold\"\nicon = \"B\"\nshape = \"round\"\n",
+        )
+        .unwrap();
+        let s = Settings::load_from(&p);
+        assert!(s.toolbar.show && !s.toolbar.floating);
+        assert_eq!(s.toolbar.items().len(), 1);
+        assert_eq!(s.commands.macros[0].steps, ["FormatTable", "Save"]);
+        s.save_to(&p).unwrap();
+        let back = Settings::load_from(&p);
+        assert_eq!(back, s);
+        let text = std::fs::read_to_string(&p).unwrap();
+        for kept in ["FutureCommand", "future = 1", "color = \"red\"", "shape = \"round\""] {
+            assert!(text.contains(kept), "{kept} in {text}");
+        }
+        // No `items` key: the default buttons.
+        assert!(Settings::default().toolbar.items().len() > 10);
     }
 
     #[test]

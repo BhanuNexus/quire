@@ -473,6 +473,9 @@ pub(crate) struct FastEditor {
     vim: vim::VimView,
     /// Notes edited in place under `![[embed]]` lines.
     embeds: crate::embed_edit::EmbedEditors,
+    /// 0.11: the start of the selection on screen, while text is selected
+    /// in the focused editor (the floating toolbar goes above it).
+    pub selection_rect: Option<Rect>,
 }
 
 /// Right-click on a misspelled word: its char range and what to offer.
@@ -1413,6 +1416,19 @@ impl FastEditor {
         self.request_focus = true;
     }
 
+    /// 0.11: a formatting command on every cursor (one undo step).
+    pub(crate) fn format(&mut self, cmd: Command, ws: &mut Workspace) {
+        let Some(id) = ws.active_doc().map(|d| d.id) else { return };
+        let view = self.views.entry(id).or_insert_with(DocView::new);
+        let done = Self::apply_multi(view, ws, EditKind::Other, |buf, sels| quire_app::format_cmds::edit(cmd, buf, sels));
+        if !done && cmd == Command::InsertTable {
+            ws.notify(quire_app::workspace::NoticeLevel::Info, "The table is tidy already");
+        }
+        view.preferred_x = None;
+        self.scroll_to_caret = done;
+        self.request_focus = true;
+    }
+
     // ------------------------------------------------------------ the widget
 
     pub(crate) fn show(&mut self, ui: &mut Ui, ws: &mut Workspace, pal: &Palette, fonts: FontSupport) {
@@ -1423,6 +1439,10 @@ impl FastEditor {
     /// editor: it doesn't take pending focus or scroll requests.
     pub(crate) fn show_pane(&mut self, ui: &mut Ui, ws: &mut Workspace, pal: &Palette, fonts: FontSupport, primary: bool) {
         crate::theme::sync(ui.ctx(), ws);
+        let main_pane = primary;
+        if main_pane {
+            self.selection_rect = None;
+        }
         let Some(doc) = ws.active_doc() else { return };
         let doc_id = doc.id;
         let id = editor_id(doc_id);
@@ -2050,6 +2070,7 @@ impl FastEditor {
                 (!revealed).then(|| (f.clone(), true))
             };
             let mut figure_clicks: Vec<(Rect, usize, usize)> = Vec::new();
+            let mut open_figure: Option<(usize, usize)> = None;
             let preedit_chars = view.preedit.as_ref().map_or(0, |p| p.chars().count());
             let mut new_view_rects = Vec::new();
             let all = all_selections(doc.selection(), &view.extra);
@@ -2351,8 +2372,17 @@ impl FastEditor {
                             let size = p.size * scale;
                             let x = if f.kind == blocks::FigureKind::Math { x0 + (cx.wrap - size.x) / 2.0 } else { x0 };
                             let r = Rect::from_min_size(Pos2::new(x, base + 8.0), size);
-                            painter.image(p.texture.id(), r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
-                            figure_clicks.push((r, f.first_line, f.last_line));
+                            if f.kind == blocks::FigureKind::Diagram {
+                                // 0.11: drag, zoom and full screen; its button opens the source.
+                                // The editor leaves the pointer over it alone (like a view's).
+                                new_view_rects.push(r);
+                                if crate::diagram_ui::show(ui, r, p, &f.source, pal, true) == Some(crate::diagram_ui::Asked::Edit) {
+                                    open_figure = Some((f.first_line, f.last_line));
+                                }
+                            } else {
+                                painter.image(p.texture.id(), r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                                figure_clicks.push((r, f.first_line, f.last_line));
+                            }
                             h = if collapsed_here { size.y + 16.0 } else { h + size.y + 16.0 };
                         }
                         crate::typeset_ui::Out::Pending => {
@@ -2501,6 +2531,13 @@ impl FastEditor {
             }
             // Where you are, for when the note is opened again.
             top_line = Some((doc.selection().head, view.heights.line_at(vis_top)));
+            // 0.11: the floating toolbar goes above the selection's start (kept in view).
+            if main_pane && focused && !primary.is_empty() {
+                let shown = viewport.translate(origin.to_vec2());
+                let r = self.caret_rect(ui, &mut view, doc, &cx, origin, x0, primary.start());
+                let top = r.top().clamp(shown.top(), shown.bottom());
+                self.selection_rect = Some(Rect::from_min_size(Pos2::new(r.left(), top), r.size()));
+            }
             // Vim's Normal and Visual modes take keys, not text: no input method there.
             if focused && vim_block.is_none() {
                 let cr = caret_rect_primary.unwrap_or_else(|| Rect::from_min_size(origin, Vec2::new(2.0, cx.row_h())));
@@ -2545,6 +2582,15 @@ impl FastEditor {
             // Measurements changed the total: lay out again next frame.
             if (view.heights.total() + TOP_MARGIN + BOTTOM_MARGIN - total).abs() > 0.5 {
                 ctx.request_repaint();
+            }
+            // A diagram's "Edit source": the caret goes into its block.
+            if let Some((first, last)) = open_figure
+                && let Some(doc) = ws.active_doc()
+            {
+                let line = if first == last { first } else { first + 1 };
+                let at = doc.buffer().line_to_char(line.min(doc.buffer().len_lines().saturating_sub(1)));
+                Self::set_selections(&mut view, ws, vec![Selection::cursor(at)], at);
+                resp.request_focus();
             }
             // Embedded notes, now that nothing borrows the note.
             let host_path = ws.active_doc().and_then(|d| d.path.clone());

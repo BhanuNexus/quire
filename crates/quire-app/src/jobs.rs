@@ -193,7 +193,14 @@ impl JobRunner {
         self.shared.lock().jobs.push(Entry { job: Some(job), budget, status, next_at: now, minute_start: now, used_ms: 0 });
         if self.worker.is_none() {
             let shared = Arc::clone(&self.shared);
-            self.worker = std::thread::Builder::new().name("quire-jobs".into()).spawn(move || work(&shared)).ok();
+            self.worker = std::thread::Builder::new()
+                .name("quire-jobs".into())
+                .spawn(move || {
+                    // 0.11: jobs give way to typing.
+                    quire_index::background::lower_priority();
+                    work(&shared);
+                })
+                .ok();
         }
         self.shared.wake.notify_all();
     }

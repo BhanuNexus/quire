@@ -143,6 +143,9 @@ futures-core = { version = "0.3", default-features = false }
 # 0.10 voice notes: microphone capture in the desktop app (full edition;
 # links the system ALSA library on Linux).
 cpal = { version = "0.18.2", default-features = false }
+# 0.11 editor: background index threads run at the lowest priority (a safe
+# API over setpriority, pthread_setschedparam and SetThreadPriority).
+thread-priority = "3.1"
 # Dev-dependencies only (test oracles and interop clients).
 rrule = "0.14.0"
 fsrs = "6.6.2"
