@@ -8,10 +8,13 @@
 //! where: status != done and due < 2026-12-01 and author.name = Ada
 //! sort: due asc
 //! group: status
-//! layout: kanban            # table | list | kanban | calendar | agenda | timeline
+//! layout: kanban            # table | list | kanban | calendar | agenda | timeline | map
 //! fields: [title, status, due, tags]
 //! date: due
 //! new: Templates/Project.md # a "+ New" button: a note from this template
+//! swimlanes: priority       # kanban rows by a second property
+//! color.doing: blue         # a column's colour
+//! order.doing: [Tasks/B.md, Tasks/A.md]   # cards placed by hand, per column
 //! ```
 //! ````
 //!
@@ -19,7 +22,8 @@
 //! Markdown. [`run`] evaluates it against the read model. Fields may be
 //! dotted paths into nested front matter (`author.name`). `from: tasks`
 //! lists tasks instead of notes (fields `text, status, due, scheduled,
-//! start, done, priority, recurrence, path, note, tags`). Dates compare
+//! start, done, priority, recurrence, path, note, tags`, and for 0.11
+//! `time_spent, time_estimate, contexts, projects`). Dates compare
 //! against `today`, `tomorrow`, `yesterday` and `today+7d`.
 //!
 //! [`dataview`] and [`tasks_query`] translate Obsidian's Dataview and Tasks
@@ -47,6 +51,8 @@ pub enum Layout {
     Agenda,
     /// By date, oldest first.
     Timeline,
+    /// Pins on a world outline, from `lat`/`lng` or `location: [lat, lng]`.
+    Map,
 }
 
 impl Layout {
@@ -58,6 +64,7 @@ impl Layout {
             Self::Calendar => "calendar",
             Self::Agenda => "agenda",
             Self::Timeline => "timeline",
+            Self::Map => "map",
         }
     }
 }
@@ -107,6 +114,13 @@ pub struct ViewSpec {
     pub tasks: bool,
     /// Template for the "+ New" button (`new: Templates/Project.md`).
     pub new: Option<String>,
+    /// Kanban rows (swimlanes) by this field.
+    pub lanes: Option<String>,
+    /// Column colours (`color.doing: blue`), by column.
+    pub colors: Vec<(String, String)>,
+    /// Cards placed by hand (`order.doing: [a, b]`): card ids by column.
+    /// Cards not listed follow, in the view's sort order.
+    pub order: Vec<(String, Vec<String>)>,
 }
 
 impl Default for ViewSpec {
@@ -123,6 +137,9 @@ impl Default for ViewSpec {
             limit: None,
             tasks: false,
             new: None,
+            lanes: None,
+            colors: Vec::new(),
+            order: Vec::new(),
         }
     }
 }
@@ -156,6 +173,74 @@ fn list(v: &str) -> Vec<String> {
     inner.split(',').map(unquote).filter(|s| !s.is_empty()).map(|s| s.to_lowercase()).collect()
 }
 
+/// `key: value`, where a quoted part of the key (`order."a: b"`) may hold `:`.
+fn split_line(t: &str) -> Option<(&str, &str)> {
+    let mut quote = false;
+    for (i, c) in t.char_indices() {
+        match c {
+            '"' => quote = !quote,
+            ':' if !quote => return Some((&t[..i], &t[i + 1..])),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Card ids in `[a, "b, c"]`, case kept.
+fn id_list(v: &str) -> Vec<String> {
+    let v = v.trim();
+    let inner = v.strip_prefix('[').and_then(|x| x.strip_suffix(']')).unwrap_or(v);
+    let mut out = Vec::new();
+    let (mut cur, mut quote, mut esc) = (String::new(), false, false);
+    for c in inner.chars() {
+        match c {
+            _ if esc => {
+                cur.push(c);
+                esc = false;
+            }
+            '\\' if quote => esc = true,
+            '"' => quote = !quote,
+            ',' if !quote => out.push(std::mem::take(&mut cur)),
+            _ => cur.push(c),
+        }
+    }
+    out.push(cur);
+    out.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+}
+
+/// `[a, "b, c"]`: the value of an `order.<column>` line.
+pub fn format_id_list(ids: &[String]) -> String {
+    let items: Vec<String> = ids
+        .iter()
+        .map(|i| {
+            if i.contains([',', '"', '[', ']', '\\', '#']) || i != i.trim() {
+                format!("\"{}\"", i.replace('\\', "\\\\").replace('"', "\\\""))
+            } else {
+                i.clone()
+            }
+        })
+        .collect();
+    format!("[{}]", items.join(", "))
+}
+
+/// A column named in `order.<column>` / `color.<column>`: `(none)` is the
+/// column of rows without a value; quotes are taken off.
+fn column_name(raw: &str) -> String {
+    let c = unquote(raw.trim());
+    if c == "(none)" { String::new() } else { c }
+}
+
+/// How a column is written in `order.<column>` (the inverse of [`column_name`]).
+pub fn column_key(column: &str) -> String {
+    if column.is_empty() {
+        "(none)".into()
+    } else if column.contains([':', '#', '"', '\'']) || column != column.trim() {
+        format!("\"{}\"", column.replace('"', "'"))
+    } else {
+        column.to_string()
+    }
+}
+
 fn parse_filter(clause: &str) -> Result<Filter, String> {
     let c = clause.trim();
     for (word, op) in [(" exists", Op::Exists), (" missing", Op::Missing)] {
@@ -186,11 +271,21 @@ pub fn parse(src: &str) -> Result<ViewSpec, String> {
         if t.is_empty() || t.starts_with('#') {
             continue;
         }
-        let Some((k, v)) = t.split_once(':') else {
+        let Some((k, v)) = split_line(t) else {
             return Err(format!("expected “key: value”, found “{t}”"));
         };
         let v = strip_comment(v.trim());
-        match k.trim().to_lowercase().as_str() {
+        let key = k.trim();
+        let column = |p: &str| key.get(..p.len()).filter(|h| h.eq_ignore_ascii_case(p)).map(|_| column_name(&key[p.len()..]));
+        if let Some(col) = column("order.") {
+            spec.order.push((col, id_list(v)));
+            continue;
+        }
+        if let Some(col) = column("color.").or_else(|| column("colour.")) {
+            spec.colors.push((col, unquote(v)));
+            continue;
+        }
+        match key.to_lowercase().as_str() {
             "from" => {
                 spec.from = v
                     .split(" or ")
@@ -229,7 +324,8 @@ pub fn parse(src: &str) -> Result<ViewSpec, String> {
                     "calendar" => Layout::Calendar,
                     "agenda" => Layout::Agenda,
                     "timeline" => Layout::Timeline,
-                    other => return Err(format!("unknown layout “{other}” (table, list, kanban, calendar, agenda, timeline)")),
+                    "map" => Layout::Map,
+                    other => return Err(format!("unknown layout “{other}” (table, list, kanban, calendar, agenda, timeline, map)")),
                 }
             }
             "fields" | "columns_shown" => {
@@ -242,6 +338,7 @@ pub fn parse(src: &str) -> Result<ViewSpec, String> {
             "columns" => spec.columns = list(v).into_iter().map(|c| if c == "(none)" { String::new() } else { c }).collect(),
             "limit" => spec.limit = Some(v.trim().parse().map_err(|_| format!("limit must be a number, found “{v}”"))?),
             "new" => spec.new = Some(unquote(v)).filter(|t| !t.is_empty()),
+            "swimlanes" | "lanes" | "swimlane" => spec.lanes = Some(unquote(v).to_lowercase()).filter(|t| !t.is_empty()),
             other => return Err(format!("unknown key “{other}”")),
         }
     }
@@ -416,6 +513,33 @@ fn matches(r: &impl Fields, f: &Filter, today: &str) -> bool {
 struct TaskFields<'a> {
     note: &'a NoteRecord,
     task: Task,
+    /// For a task note: what the note says beyond the task.
+    info: Option<quire_plan::task_note::TaskNote>,
+}
+
+impl TaskFields<'_> {
+    /// Minutes spent: a note's sessions, or an inline task's `[time:: …]`.
+    fn spent(&self) -> Option<u32> {
+        match &self.info {
+            Some(n) => Some(n.spent(chrono::Local::now().fixed_offset())).filter(|m| *m > 0),
+            None => self.task.time_spent.as_deref().and_then(quire_plan::time::parse_duration),
+        }
+    }
+
+    fn estimate(&self) -> Option<u32> {
+        match &self.info {
+            Some(n) => n.estimate,
+            None => self.task.estimate.as_deref().and_then(quire_plan::time::parse_duration),
+        }
+    }
+
+    /// A note's own status (`doing`), else open or done.
+    fn status(&self) -> String {
+        match &self.info {
+            Some(n) if !n.status.is_empty() => n.status.clone(),
+            _ => if self.task.done { "done" } else { "open" }.to_string(),
+        }
+    }
 }
 
 impl Fields for TaskFields<'_> {
@@ -423,7 +547,13 @@ impl Fields for TaskFields<'_> {
         let t = &self.task;
         let v = match name {
             "text" | "description" | "title" => Some(t.text.clone()),
-            "status" => Some(if t.done { "done" } else { "open" }.to_string()),
+            "status" => Some(self.status()),
+            "time_spent" | "spent" => self.spent().map(quire_plan::time::format_duration),
+            "time_spent_minutes" => self.spent().map(|m| m.to_string()),
+            "time_estimate" | "estimate" => self.estimate().map(quire_plan::time::format_duration),
+            "time_estimate_minutes" => self.estimate().map(|m| m.to_string()),
+            "contexts" => self.info.as_ref().map(|n| n.contexts.join(", ")),
+            "projects" => self.info.as_ref().map(|n| n.projects.join(", ")),
             "completed" => Some(t.done.to_string()),
             "due" => t.due.clone(),
             "scheduled" => t.scheduled.clone(),
@@ -452,10 +582,15 @@ impl Fields for TaskFields<'_> {
         v.filter(|s| !s.is_empty())
     }
     fn list(&self, name: &str) -> Vec<String> {
-        if name == "tags" {
-            return task_tags(&self.task.text);
+        match (name, &self.info) {
+            ("tags", Some(n)) => n.tags.iter().cloned().chain(task_tags(&self.task.text)).collect(),
+            ("tags", None) => task_tags(&self.task.text),
+            // `status = open` and `status = done` still work on notes with their own statuses.
+            ("status", Some(_)) => vec![self.status(), if self.task.done { "done" } else { "open" }.to_string()],
+            ("contexts", Some(n)) => n.contexts.clone(),
+            ("projects", Some(n)) => n.projects.clone(),
+            _ => self.get(name).into_iter().collect(),
         }
-        self.get(name).into_iter().collect()
     }
 }
 
@@ -468,26 +603,23 @@ fn task_tags(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// A note with `type: task` as a task row (title is the text).
-fn note_as_task(r: &NoteRecord) -> Option<Task> {
-    let get = |k: &str| property(r, k).and_then(Value::as_str).map(str::to_string);
-    if !get("type").is_some_and(|t| t.eq_ignore_ascii_case("task")) {
-        return None;
-    }
-    let status = get("status").unwrap_or_default().to_ascii_lowercase();
-    Some(Task {
-        done: matches!(status.as_str(), "done" | "x" | "completed" | "complete" | "cancelled"),
-        text: r.title.clone(),
-        due: get("due"),
-        scheduled: get("scheduled"),
-        start: get("start"),
-        done_on: get("completion").or_else(|| get("done")),
-        created: get("created"),
-        recurrence: get("recurrence").or_else(|| get("repeat")),
-        priority: get("priority").and_then(|p| quire_markdown::tasks::parse_priority(&p)),
-        reminder: get("reminder"),
-        ..Task::default()
-    })
+/// A task note (`type: task`, or the `task` tag) as a task row (title is the text).
+fn note_as_task(r: &NoteRecord) -> Option<quire_plan::task_note::TaskNote> {
+    let prefs = quire_plan::task_note::TaskPrefs::default();
+    quire_plan::task_note::read(&r.properties, &r.title, &prefs, *chrono::Local::now().offset())
+}
+
+/// A note's place on a map: `lat` and `lng` (or `lon`, `latitude`,
+/// `longitude`), or `location: [lat, lng]` (also `coordinates`, or
+/// `"lat, lng"` text). `None` when missing or out of range.
+pub fn location(r: &NoteRecord) -> Option<(f64, f64)> {
+    let num = |names: &[&str]| names.iter().find_map(|n| property(r, n)).and_then(Value::as_str).and_then(|s| s.trim().parse::<f64>().ok());
+    let pair = num(&["lat", "latitude"]).zip(num(&["lng", "lon", "long", "longitude"])).or_else(|| {
+        let v = ["location", "coordinates", "coords"].iter().find_map(|n| property(r, n))?;
+        let parts: Vec<f64> = v.as_list().iter().filter_map(|x| x.trim().parse().ok()).collect();
+        (parts.len() == 2).then(|| (parts[0], parts[1]))
+    })?;
+    ((-90.0..=90.0).contains(&pair.0) && (-180.0..=180.0).contains(&pair.1)).then_some(pair)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -502,6 +634,11 @@ pub struct ViewRow {
     pub date: Option<String>,
     /// For a `from: tasks` row: the task.
     pub task: Option<TaskRow>,
+    /// Swimlane key (`swimlanes:`), "" when missing or not asked for.
+    pub lane: String,
+    /// What `order.<column>` lists: the note's path, or for an inline task
+    /// `path#text`.
+    pub id: String,
 }
 
 /// The task behind a row of a `from: tasks` view.
@@ -510,6 +647,11 @@ pub struct TaskRow {
     pub task: Task,
     /// A note with `type: task` rather than a checklist line.
     pub is_note: bool,
+    /// The note's status as written, or `open`/`done`.
+    pub status: String,
+    /// Minutes spent and estimated.
+    pub spent: Option<u32>,
+    pub estimate: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -519,6 +661,8 @@ pub struct ViewResult {
     pub groups: Vec<String>,
     /// Matches before `limit` was applied.
     pub total: usize,
+    /// Swimlanes in display order, when the spec asks for them.
+    pub lanes: Vec<String>,
 }
 
 /// Resolve `./x` against the folder of the note holding the view.
@@ -600,28 +744,31 @@ pub fn run(spec: &ViewSpec, index: &Index, today: &str, current: Option<&NotePat
     let mut rows: Vec<ViewRow> = if spec.tasks {
         let mut rows: Vec<(TaskFields<'_>, ViewRow)> = notes
             .flat_map(|r| {
-                let as_note = note_as_task(r).map(|t| (t, true));
-                r.tasks.iter().cloned().map(|t| (t, false)).chain(as_note).map(move |(task, is_note)| (r, task, is_note))
+                let as_note = note_as_task(r).map(|n| TaskFields { note: r, task: n.task.clone(), info: Some(n) });
+                r.tasks.iter().cloned().map(move |task| TaskFields { note: r, task, info: None }).chain(as_note)
             })
-            .map(|(r, task, is_note)| (TaskFields { note: r, task }, is_note))
-            .filter(|(t, _)| spec.filters.iter().all(|f| matches(t, f, today)))
-            .map(|(t, is_note)| {
+            .filter(|t| spec.filters.iter().all(|f| matches(t, f, today)))
+            .map(|t| {
                 let cells = spec.fields.iter().map(|f| t.get(f).unwrap_or_default()).collect();
                 let group = spec.group.as_deref().and_then(|g| t.list(g).into_iter().next()).unwrap_or_default();
+                let lane = spec.lanes.as_deref().and_then(|g| t.list(g).into_iter().next()).unwrap_or_default();
                 let date = date_of(&|d| t.get(d));
-                let row = ViewRow {
-                    path: t.note.path.clone(),
-                    title: t.task.text.clone(),
-                    cells,
-                    group,
-                    date,
-                    task: Some(TaskRow { task: t.task.clone(), is_note }),
-                };
+                let is_note = t.info.is_some();
+                let id = if is_note { t.note.path.as_str().to_string() } else { format!("{}#{}", t.note.path.as_str(), t.task.text) };
+                let task = TaskRow { task: t.task.clone(), is_note, status: t.status(), spent: t.spent(), estimate: t.estimate() };
+                let row = ViewRow { path: t.note.path.clone(), title: t.task.text.clone(), cells, group, date, task: Some(task), lane, id };
                 (t, row)
             })
             .collect();
-        // Priorities sort by rank (highest first), not by name.
-        sort_rows(&mut rows, spec, |t, f| t.get(if f == "priority" { "priority_rank" } else { f }));
+        // Priorities sort by rank (highest first), not by name; times by minutes.
+        sort_rows(&mut rows, spec, |t, f| {
+            t.get(match f {
+                "priority" => "priority_rank",
+                "time_spent" | "spent" => "time_spent_minutes",
+                "time_estimate" | "estimate" => "time_estimate_minutes",
+                f => f,
+            })
+        });
         rows.into_iter().map(|(_, r)| r).collect()
     } else {
         let mut rows: Vec<(&NoteRecord, ViewRow)> = notes
@@ -630,8 +777,10 @@ pub fn run(spec: &ViewSpec, index: &Index, today: &str, current: Option<&NotePat
             .map(|r| {
                 let cells = spec.fields.iter().map(|f| field(r, f).unwrap_or_default()).collect();
                 let group = spec.group.as_deref().and_then(|g| list_values(r, g).into_iter().next()).unwrap_or_default();
+                let lane = spec.lanes.as_deref().and_then(|g| list_values(r, g).into_iter().next()).unwrap_or_default();
                 let date = date_of(&|d| field(r, d));
-                (r, ViewRow { path: r.path.clone(), title: r.title.clone(), cells, group, date, task: None })
+                let id = r.path.as_str().to_string();
+                (r, ViewRow { path: r.path.clone(), title: r.title.clone(), cells, group, date, task: None, lane, id })
             })
             .collect();
         sort_rows(&mut rows, spec, |r, f| field(r, f));
@@ -646,6 +795,7 @@ pub fn run(spec: &ViewSpec, index: &Index, today: &str, current: Option<&NotePat
             }
         }
     }
+    apply_order(&mut rows, &spec.order);
     let total = rows.len();
     if let Some(l) = spec.limit {
         rows.truncate(l);
@@ -657,11 +807,76 @@ pub fn run(spec: &ViewSpec, index: &Index, today: &str, current: Option<&NotePat
         groups.extend(spec.columns.iter().cloned());
         let mut seen: Vec<String> =
             rows.iter().map(|r| r.group.clone()).filter(|g| !groups.iter().any(|c| c.eq_ignore_ascii_case(g))).collect();
-        seen.sort_by_key(|g| (g.is_empty(), g.to_lowercase()));
+        // Priorities by rank (highest first), else by name; no value last.
+        let by_rank = spec.group.as_deref() == Some("priority");
+        seen.sort_by_key(|g| {
+            let rank = if by_rank { quire_markdown::tasks::priority_rank(quire_markdown::tasks::parse_priority(g)) } else { 0 };
+            (g.is_empty(), rank, g.to_lowercase())
+        });
         seen.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
         groups.extend(seen);
     }
-    ViewResult { rows, groups, total }
+    let mut lanes = Vec::new();
+    if spec.lanes.is_some() {
+        lanes = rows.iter().map(|r| r.lane.clone()).collect();
+        lanes.sort_by_key(|g| {
+            (g.is_empty(), quire_markdown::tasks::priority_rank(quire_markdown::tasks::parse_priority(g)), g.to_lowercase())
+        });
+        lanes.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    }
+    ViewResult { rows, groups, total, lanes }
+}
+
+/// Put the cards `order` lists first in their column, in its order; the
+/// others keep their place after them. A card listed under another column
+/// than its own (it was moved since) is placed by its own column's list only.
+fn apply_order(rows: &mut [ViewRow], order: &[(String, Vec<String>)]) {
+    if order.is_empty() {
+        return;
+    }
+    let pos = |r: &ViewRow| {
+        order
+            .iter()
+            .filter(|(col, _)| col.eq_ignore_ascii_case(&r.group))
+            .find_map(|(_, ids)| ids.iter().position(|i| *i == r.id))
+            .unwrap_or(usize::MAX)
+    };
+    rows.sort_by_cached_key(pos);
+}
+
+/// The `order.<column>` list after dropping card `id` at `index`.
+///
+/// `cards` are the column's cards in the order they show, the moved card
+/// included or not. Ids no longer in the column are dropped, so the list
+/// stays short.
+pub fn reorder(cards: &[String], id: &str, index: usize) -> Vec<String> {
+    let mut v: Vec<String> = cards.iter().filter(|c| *c != id).cloned().collect();
+    v.insert(index.min(v.len()), id.to_string());
+    v
+}
+
+/// The note's text with the view block `block` changed: `key` set to
+/// `value` (a line replaced in place, or added before the closing fence),
+/// or removed with `None`. Other lines keep their bytes.
+pub fn set_block_key(src: &str, block: &ViewBlock, key: &str, value: Option<&str>) -> Option<String> {
+    let mut lines: Vec<&str> = src.split_inclusive('\n').collect();
+    if block.close_line >= lines.len() || block.open_line >= block.close_line {
+        return None;
+    }
+    let nl = if lines[block.open_line].ends_with("\r\n") { "\r\n" } else { "\n" };
+    let found = (block.open_line + 1..block.close_line)
+        .find(|&i| split_line(lines[i].trim()).is_some_and(|(k, _)| k.trim().eq_ignore_ascii_case(key)));
+    let indent: String = lines[block.open_line].chars().take_while(|c| c.is_whitespace()).collect();
+    let new_line = value.map(|v| format!("{indent}{key}: {v}{nl}"));
+    match (found, new_line.as_deref()) {
+        (Some(i), Some(l)) => lines[i] = l,
+        (Some(i), None) => {
+            lines.remove(i);
+        }
+        (None, Some(l)) => lines.insert(block.close_line, l),
+        (None, None) => return None,
+    }
+    Some(lines.concat())
 }
 
 /// A view block found in a note: the spec's text and where it sits.
@@ -1445,5 +1660,93 @@ mod tests {
         assert_eq!(b.len(), 2);
         assert_eq!((b[0].open_line, b[0].close_line, b[0].spec.as_str()), (1, 3, "from: Projects/\n"));
         assert_eq!((b[1].open_line, b[1].close_line), (5, 7));
+    }
+
+    #[test]
+    fn task_note_fields_and_times() {
+        let mut ix = Index::new();
+        ix.upsert(NotePath::new("Inbox.md"), "# Inbox\n- [ ] Call Bo [time:: 20m] [estimate:: 1h]\n");
+        ix.upsert(
+            NotePath::new("Tasks/Report.md"),
+            "---\ntype: task\nstatus: doing\ncontexts: [\"@desk\"]\nprojects: [\"[[Website]]\"]\ntime_estimate: 2h\ntime_entries:\n  - start: 2026-11-06T10:00:00+01:00\n    end: 2026-11-06T11:30:00+01:00\n---\n# Report\n",
+        );
+        ix.upsert(NotePath::new("Tasks/Calls.md"), "---\ntags: [task, phone]\nstatus: open\ntimeEstimate: 30\n---\n# Calls\n");
+        ix.refresh();
+        let r = run(
+            &parse("from: tasks\nfields: [text, status, time_spent, time_estimate, contexts]\nsort: time_spent desc").unwrap(),
+            &ix,
+            "2026-11-06",
+            None,
+        );
+        assert_eq!(titles(&r), vec!["Report", "Call Bo", "Calls"]);
+        assert_eq!(r.rows[0].cells, ["Report", "doing", "1h30m", "2h", "@desk"]);
+        assert_eq!(r.rows[1].cells, ["Call Bo", "open", "20m", "1h", ""]);
+        assert_eq!(r.rows[2].cells[3], "30m", "TaskNotes' minutes");
+        let t = r.rows[0].task.as_ref().unwrap();
+        assert_eq!((t.status.as_str(), t.spent, t.estimate), ("doing", Some(90), Some(120)));
+        let r = run(&parse("from: tasks\nwhere: contexts contains @desk").unwrap(), &ix, "2026-11-06", None);
+        assert_eq!(titles(&r), vec!["Report"]);
+        let r = run(&parse("from: tasks\nwhere: tags contains phone").unwrap(), &ix, "2026-11-06", None);
+        assert_eq!(titles(&r), vec!["Calls"], "front-matter tags of a task note");
+    }
+
+    /// Manual card order: parse, run, move a card, write the block back, run again.
+    #[test]
+    fn kanban_order_round_trip() {
+        let mut ix = Index::new();
+        for (name, status, prio) in
+            [("A", "todo", "high"), ("B", "todo", "low"), ("C", "todo", "high"), ("D", "doing", "low"), ("E", "todo", "")]
+        {
+            ix.upsert(NotePath::new(format!("P/{name}.md")), &format!("---\nstatus: {status}\npriority: {prio}\n---\n# {name}\n"));
+        }
+        ix.refresh();
+        let note = "# Board\n\n```quire-view\nfrom: P/\nlayout: kanban\nswimlanes: priority\ncolor.doing: blue\norder.todo: [P/C.md, P/A.md]\n```\nafter\n";
+        let block = &find_blocks(note)[0];
+        let spec = parse(&block.spec).unwrap();
+        assert_eq!(spec.colors, [("doing".to_string(), "blue".to_string())]);
+        let r = run(&spec, &ix, "2026-11-06", None);
+        let col = |r: &ViewResult, g: &str| r.rows.iter().filter(|x| x.group == g).map(|x| x.title.clone()).collect::<Vec<_>>();
+        assert_eq!(col(&r, "todo"), ["C", "A", "B", "E"], "listed first, the rest by title");
+        assert_eq!(r.lanes, ["high", "low", ""], "lanes by priority rank, empty last");
+        assert_eq!(r.rows.iter().find(|x| x.title == "D").unwrap().lane, "low");
+        // Drag E to the top of `todo`.
+        let ids: Vec<String> = r.rows.iter().filter(|x| x.group == "todo").map(|x| x.id.clone()).collect();
+        let order = reorder(&ids, "P/E.md", 0);
+        assert_eq!(order, ["P/E.md", "P/C.md", "P/A.md", "P/B.md"]);
+        let out = set_block_key(note, block, &format!("order.{}", column_key("todo")), Some(&format_id_list(&order))).unwrap();
+        assert_eq!(out, note.replace("order.todo: [P/C.md, P/A.md]", "order.todo: [P/E.md, P/C.md, P/A.md, P/B.md]"));
+        let r = run(&parse(&find_blocks(&out)[0].spec).unwrap(), &ix, "2026-11-06", None);
+        assert_eq!(col(&r, "todo"), ["E", "C", "A", "B"]);
+        // A new column's order goes before the fence; odd names are quoted and read back.
+        let out2 = set_block_key(
+            &out,
+            &find_blocks(&out)[0],
+            &format!("order.{}", column_key("to: do")),
+            Some(&format_id_list(&["a, b".to_string(), "P/x.md".into()])),
+        )
+        .unwrap();
+        assert!(out2.contains("order.\"to: do\": [\"a, b\", P/x.md]\n```\nafter"), "{out2}");
+        let spec = parse(&find_blocks(&out2)[0].spec).unwrap();
+        assert_eq!(spec.order[1], ("to: do".to_string(), vec!["a, b".to_string(), "P/x.md".to_string()]));
+        // Removing a key; the rest of the note is untouched.
+        let back = set_block_key(&out2, &find_blocks(&out2)[0], "order.\"to: do\"", None).unwrap();
+        assert_eq!(back, out);
+    }
+
+    #[test]
+    fn map_locations() {
+        let mut ix = Index::new();
+        ix.upsert(NotePath::new("Lisbon.md"), "---\nlat: 38.72\nlng: -9.14\n---\n");
+        ix.upsert(NotePath::new("Kyoto.md"), "---\nlocation: [35.01, 135.77]\n---\n");
+        ix.upsert(NotePath::new("Text.md"), "---\nlocation: \"51.5, -0.12\"\n---\n");
+        ix.upsert(NotePath::new("Bad.md"), "---\nlat: 123\nlng: 5\n---\n");
+        ix.upsert(NotePath::new("None.md"), "# none\n");
+        ix.refresh();
+        let at = |n: &str| location(ix.get(&NotePath::new(n)).unwrap());
+        assert_eq!(at("Lisbon.md"), Some((38.72, -9.14)));
+        assert_eq!(at("Kyoto.md"), Some((35.01, 135.77)));
+        assert_eq!(at("Text.md"), Some((51.5, -0.12)));
+        assert_eq!((at("Bad.md"), at("None.md")), (None, None));
+        assert_eq!(parse("layout: map").unwrap().layout, Layout::Map);
     }
 }

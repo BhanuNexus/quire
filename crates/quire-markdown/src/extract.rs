@@ -69,6 +69,10 @@ pub struct Task {
     pub time_block: Option<(String, String)>,
     /// Byte range (in the source) of the trailing metadata fields.
     pub meta_range: Option<Range<usize>>,
+    /// Time spent, `[time:: 1h25m]` (0.11; a task note keeps time entries instead).
+    pub time_spent: Option<String>,
+    /// Time estimate, `[estimate:: 2h]`.
+    pub estimate: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

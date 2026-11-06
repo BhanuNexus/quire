@@ -5,3 +5,5 @@ allow-expect-in-tests = true
 allow-print-in-tests = true
 avoid-breaking-exported-api = false
 too-many-arguments-threshold = 8
+# 0.11: the TaskNotes plugin's name in docs ("..": keep clippy's defaults).
+doc-valid-idents = ["TaskNotes", ".."]

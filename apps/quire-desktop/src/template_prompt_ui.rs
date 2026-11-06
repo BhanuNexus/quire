@@ -68,6 +68,11 @@ fn fields(ui: &mut Ui, id: Id, column: Option<Column<'_>>, prompts: &[Prompt], a
     enter
 }
 
+/// The folder a view's new notes go in (for a board's "+").
+pub(crate) fn folder_of(spec: &ViewSpec, from: Option<&NotePath>) -> Option<String> {
+    view_folder(spec, from)
+}
+
 /// The folder a view's new notes go in: its first folder source.
 fn view_folder(spec: &ViewSpec, from: Option<&NotePath>) -> Option<String> {
     spec.from.iter().find_map(|s| match s {
@@ -135,6 +140,7 @@ fn submit(ws: &Workspace, spec: &ViewSpec, from: Option<&NotePath>, template: &N
     }
     ws.plan_request(Action::New {
         template: template.clone(),
+        title: None,
         folder: view_folder(spec, from),
         answers: form.answers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
         preset,

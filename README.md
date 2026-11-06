@@ -111,6 +111,7 @@ cargo build --release -p quire-desktop --no-default-features   # ~41 MiB instead
 | Voice notes | Full edition: record from the microphone (only between Record and Stop) into the note or today's note; the recording is saved in the vault as WAV. Optional transcript through your provider (the recording is sent to it) or on this computer (experimental) |
 | Answers you can check | Ask says "Not found" when your notes don't answer; cites exact sentences; Save as note keeps quotes as footnotes and flags them when the cited text changes. Staleness digest, contradictions (Preview), thinking timeline (Preview) |
 | Planning | Tasks with dates, repeats and reminders (Obsidian Tasks emoji and Dataview fields), also while Quire is closed (a per-user job runs `quire-cli remind`), Agenda (Alt+A), Calendar, weekly/monthly/yearly notes, flashcards (FSRS, Ctrl+Alt+R), templates with questions |
+| Task notes & time | A note per task (TaskNotes' property names read and kept) with status, priority, contexts, projects and estimates; New task… (Alt+N). A timer on any task (Ctrl+Alt+T, the agenda, the status bar, `quire-cli tasks start`), pomodoros with notifications, time entries in the note's front matter, and a "time this week" report. The agenda shows task-note cards, a board by status and a calendar |
 | Canvas & drawing | `.canvas` files (JSON Canvas) with cards (rendered like the preview), connections and groups (Ctrl+Alt+C); pen, highlighter and shapes on a canvas or as a sketch in a note, saved as SVG. Excalidraw drawings (`.excalidraw`, `.excalidraw.md`) show as pictures in notes, the preview, canvases and HTML export |
 | PDFs & citations | PDF viewer with highlights kept in a Markdown note (full edition; Lite shows the text). PDF pages are searchable ("paper.pdf p. 3"). `[@key]` citations from a BibTeX library, rendered in preview, HTML, websites and PDF export |
 | Vim & themes | Vim keys (Normal, Insert, Visual and Visual-block, text objects, registers, macros, marks, `:s`), bundled and custom themes, a Git tab |
@@ -136,7 +137,7 @@ cargo build --release -p quire-desktop --no-default-features   # ~41 MiB instead
 | Projects | **+ New → Project…** (Ctrl+Alt+N) creates `Projects/<name>.md` with status, due date and owner, and adds a project board (kanban + due-date table) the first time. Add `Templates/Project.md` to change what new projects contain |
 | Publish | **Publish as a website** (command palette, or `quire-cli publish`): notes marked `publish: true` (or all of them) become a static site with links, backlinks, tags and search, ready for GitHub Pages, Netlify or any web server. Free, no account. Links to unpublished notes become plain text |
 | Files | Daily notes, templates (`{{title}} {{date}} {{cursor}}`), atomic writes, soft delete to `.trash/`, outside-change detection, HTML export |
-| Properties & views | Edit front matter in the Insights panel (types inferred: date, number, yes/no, list, text). ` ```quire-view ` blocks render live tables, lists, kanban boards (drag a card to change its field) and month calendars, and stay plain Markdown elsewhere. Obsidian `.base` files open with their formulas and summaries |
+| Properties & views | Edit front matter in the Insights panel (types inferred: date, number, yes/no, list, text). ` ```quire-view ` blocks render live tables, lists, kanban boards and month calendars, and stay plain Markdown elsewhere. Boards keep the order you drag cards into (in the view, not your notes), with swimlanes, coloured columns, cards you edit in place and + per column. Obsidian `.base` files open with their formulas, summaries, `groupBy`, kanban boards and map views (pins on a built-in offline world outline) |
 | Version history | Every save keeps a compressed snapshot in `.quire/history/` (thinned to hourly/daily/weekly, max 200 per note). Ctrl+Alt+H shows versions with a diff; restore is undoable. Board moves, vault-wide replace and AI edits are versioned too |
 | Import | Logseq graphs, Notion exports (.zip or folder, incl. database CSVs), Bear (.bear2bk / TextBundles), Evernote (.enex), any Markdown folder. Dry run first; never overwrites |
 | AI providers | Offline by default. Optional OpenAI-compatible (Ollama, LM Studio, OpenAI) or Anthropic, streaming and with tools, with *Test connection*. Optional neural embeddings from the same kind of endpoint, cached per passage, falling back to the built-in index |
@@ -173,6 +174,7 @@ cargo build --release -p quire-desktop --no-default-features   # ~41 MiB instead
 | Ctrl+Alt+Shift+Y | Accept all in this note | Alt+A | Agenda |
 | Ctrl+Alt+R | Review flashcards | Ctrl+Alt+C | New canvas |
 | Ctrl+Alt+Shift+L | Lock locked folders now | | |
+| Alt+N | New task | Ctrl+Alt+T | Start / stop the timer on this task |
 
 ## Views
 

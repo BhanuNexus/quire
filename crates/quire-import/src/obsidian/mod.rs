@@ -40,10 +40,10 @@ pub const COMPATIBILITY: &[(&str, &str, &str)] = &[
     ),
     (
         "Bases (.base)",
-        "table and cards views; filters (and / or / not, file.inFolder, file.hasTag, comparisons, dates); formulas with arithmetic, if, \
-         date, now, today, duration, file fields and string, number, date and list functions; summaries (Sum, Average, Earliest… and \
-         the base's own); order, sort, limit",
-        "grouping, map and list views, image, icon, html and other functions not listed",
+        "table, cards, kanban and map views; groupBy; filters (and / or / not, file.inFolder, file.hasTag, comparisons, dates); \
+         formulas with arithmetic, if, date, now, today, duration, file fields and string, number, date and list functions; summaries \
+         (Sum, Average, Earliest… and the base's own); order, sort, limit; Quire's own card order, swimlanes and column colours",
+        "other view types, image, icon, html and other functions not listed",
     ),
     ("JSON Canvas (.canvas)", "the canvas editor", "—"),
     ("Excalidraw (.excalidraw.md)", "shown as Markdown", "drawing"),

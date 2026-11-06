@@ -1002,6 +1002,73 @@ pub fn edit_list_items(src: &str, path: &[&str], mut f: impl FnMut(&str) -> Item
     }
 }
 
+/// `- first line` then the rest of `item`'s lines lined up under it, at `indent`.
+fn block_item(item: &str, indent: usize, nl: &str) -> String {
+    let pad = " ".repeat(indent);
+    let mut out = String::new();
+    for (i, l) in item.lines().enumerate() {
+        let lead = if i == 0 { format!("{pad}- ") } else { format!("{pad}  ") };
+        let _ = write!(out, "{lead}{l}{nl}");
+    }
+    out
+}
+
+/// Add one item to the end of a list field, as a block list item (`- …`).
+///
+/// `item` may span lines (`start: …` / `end: …` for a list of maps): the
+/// first line follows `- ` and the others line up under it. Existing items
+/// keep their bytes; a missing field, an empty one (`key:` or `key: []`) or
+/// a flow list (`key: [a, b]`) is written as a block list. `None` when the
+/// field holds something other than a list.
+pub fn append_list_item(src: &str, key: &str, item: &str) -> Option<Edit> {
+    let key = clean_key(key);
+    let Some(doc) = parse_doc(src) else {
+        return Some(Edit { range: 0..0, text: format!("---\n{}:\n{}---\n", yaml_scalar(&key), block_item(item, 2, "\n")) });
+    };
+    let nl = doc.nl;
+    let Some(e) = doc.entries.iter().rev().find(|e| e.key == key) else {
+        return Some(Edit { range: doc.close..doc.close, text: format!("{}:{nl}{}", yaml_scalar(&key), block_item(item, doc.unit, nl)) });
+    };
+    let range = entry_range(&doc, e);
+    match e.shape {
+        Shape::BlockList | Shape::Raw => {
+            let indent = doc.lines[e.line + 1..e.end].iter().find(|l| l.is_item()).map_or(e.indent + doc.unit, |l| l.indent);
+            // After the last line that belongs to the list (blank lines stay where they are).
+            let last = doc.lines[e.line..e.end].iter().rev().find(|l| !l.is_blank_or_comment()).map_or(range.end, |l| l.end);
+            let text = block_item(item, indent, nl);
+            let text = if src[..last].ends_with('\n') { text } else { format!("{nl}{text}") };
+            Some(Edit { range: last..last, text })
+        }
+        Shape::Empty | Shape::FlowList | Shape::Scalar => {
+            let items: Vec<String> = match (&e.shape, &e.value) {
+                (Shape::FlowList, _) => {
+                    let line = doc.lines[e.line].text;
+                    let v = line[split_key_offset(line)? + 1..].trim();
+                    split_flow(&v[1..v.len() - 1]).into_iter().map(|(_, s)| s.to_string()).collect()
+                }
+                (Shape::Scalar, Value::Str(s)) if !s.trim().is_empty() => return None,
+                _ => Vec::new(),
+            };
+            let indent = e.indent + doc.unit;
+            let mut text = format!("{}{}:{nl}", " ".repeat(e.indent), yaml_scalar(&e.key));
+            for i in items {
+                text.push_str(&block_item(&i, indent, nl));
+            }
+            text.push_str(&block_item(item, indent, nl));
+            Some(replace_lines(src, range, text, nl))
+        }
+        Shape::FlowMap | Shape::BlockMap | Shape::BlockScalar => None,
+    }
+}
+
+/// The raw text of every line of a field (`key:` and what belongs to it), for
+/// shapes the reader keeps as text (lists of maps). `None` when it isn't there.
+pub fn field_text<'a>(src: &'a str, key: &str) -> Option<&'a str> {
+    let doc = parse_doc(src)?;
+    let e = doc.entries.iter().rev().find(|e| e.key == key)?;
+    Some(&src[entry_range(&doc, e)])
+}
+
 /// Byte offset of the `:` after a line's key.
 fn split_key_offset(text: &str) -> Option<usize> {
     let t = text.trim_start();
@@ -1080,6 +1147,35 @@ mod tests {
             let out = set_field(src, "note", &Value::Str(tricky.into())).apply(src);
             assert_eq!(parse(&out).unwrap().get("note").and_then(Value::as_str), Some(tricky));
         }
+    }
+
+    #[test]
+    fn appends_list_items_keeping_other_bytes() {
+        let entry = "start: 2026-11-06T10:00:00+01:00\nend: 2026-11-06T10:30:00+01:00";
+        // A list of maps (kept as text by the reader) gets one more item.
+        let src = "---\ntype: task\ntime_entries:\n    - start: 2026-11-05T09:00:00+01:00   # morning\n      end: 2026-11-05T09:20:00+01:00\ndue: 2026-11-30\n---\nbody\n";
+        let out = append_list_item(src, "time_entries", entry).unwrap().apply(src);
+        assert_eq!(
+            out,
+            "---\ntype: task\ntime_entries:\n    - start: 2026-11-05T09:00:00+01:00   # morning\n      end: 2026-11-05T09:20:00+01:00\n    - start: 2026-11-06T10:00:00+01:00\n      end: 2026-11-06T10:30:00+01:00\ndue: 2026-11-30\n---\nbody\n"
+        );
+        // Missing: a new block list before the closing fence.
+        let src = "---\ntype: task\n---\nbody\n";
+        let out = append_list_item(src, "time_entries", entry).unwrap().apply(src);
+        assert_eq!(
+            out,
+            "---\ntype: task\ntime_entries:\n  - start: 2026-11-06T10:00:00+01:00\n    end: 2026-11-06T10:30:00+01:00\n---\nbody\n"
+        );
+        // Empty and flow lists become block lists; CRLF stays CRLF.
+        let src = "---\r\ntags: []\r\nk: v\r\n---\r\n";
+        assert_eq!(append_list_item(src, "tags", "a").unwrap().apply(src), "---\r\ntags:\r\n  - a\r\nk: v\r\n---\r\n");
+        let src = "---\ntags: [x, \"y, z\"]\n---\n";
+        assert_eq!(append_list_item(src, "tags", "a").unwrap().apply(src), "---\ntags:\n  - x\n  - \"y, z\"\n  - a\n---\n");
+        let src = "---\ntags:\n  - x\n\n# c\nk: v\n---\n";
+        assert_eq!(append_list_item(src, "tags", "a").unwrap().apply(src), "---\ntags:\n  - x\n  - a\n\n# c\nk: v\n---\n");
+        assert!(append_list_item("---\nk: text\n---\n", "k", "a").is_none());
+        assert_eq!(append_list_item("body", "k", "a").unwrap().apply("body"), "---\nk:\n  - a\n---\nbody");
+        assert_eq!(field_text("---\na: 1\nb:\n  - x\n---\n", "b"), Some("b:\n  - x\n"));
     }
 
     #[test]

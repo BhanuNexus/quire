@@ -680,6 +680,12 @@ fn capture(ctx: &egui::Context, text: &mut String, focused: &mut bool, minimize:
                 ws.request_ui(quire_app::workspace::UiRequest::Feature(Command::RecordVoiceNote));
                 close = true;
             }
+            // 0.11: the text as a task note instead.
+            if ws.vault().is_some() && ui.button("New task…").on_hover_text("Make this a task note (Alt+N)").clicked() {
+                ws.features.tasks.new_task_title = Some(text.trim().to_string());
+                ws.request_ui(quire_app::workspace::UiRequest::Feature(Command::NewTask));
+                close = true;
+            }
             ui.label(RichText::new(format!("From any app: {}", crate::capture_key::label())).size(11.5).color(pal.faint));
         });
     });

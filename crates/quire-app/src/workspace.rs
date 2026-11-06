@@ -1550,6 +1550,12 @@ impl Workspace {
             | C::RenameProperty
             | C::ConvertTaskToNote
             | C::ConvertToView
+            | C::ConvertNoteToTask
+            | C::NewTask
+            | C::StartStopTimer
+            | C::StartPomodoro
+            | C::StopTimer
+            | C::TimeReport
             | C::ToggleVim
             | C::ChooseTheme
             | C::GitCommitNow

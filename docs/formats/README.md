@@ -53,6 +53,9 @@ F0 is the foundation step, after which its files are frozen).
 | `.quire/shared/vault.toml` | TOML, format 1 | [vault-prefs.md](vault-prefs.md) | F0 (each section: its feature) | read and written |
 | `.quire/shared/srs/<device>.jsonl` | JSONL, v 1 | [srs.md](srs.md) | WS-E | written and replayed |
 | task fields in notes (`📅`, `[due:: …]`, `🔁`) | Markdown | [tasks.md](tasks.md) | WS-E | read and written |
+| task notes (`type: task`, `time_entries`, TaskNotes' names) | Markdown front matter | [tasks.md](tasks.md#task-notes) | 0.11 tasks | read and written |
+| `<config>/task-timer.json` | JSON, format 1 | [tasks.md](tasks.md#the-timer) | 0.11 tasks | written and read (app and CLI) |
+| board order, swimlanes, colours (`order.<column>`, `cardOrder`) | quire-view lines, `.base` view keys | [boards.md](boards.md) | 0.11 tasks | read and written |
 | `Templates/*.md` (`{{…}}`, `quire-template:`) | Markdown | [templates.md](templates.md) | WS-E | read |
 | flashcards in notes (`::`, `?`, `==cloze==`) | Markdown | [srs.md](srs.md#cards-in-notes) | WS-E | read; `^k-` ids written on request |
 | `*.canvas` | JSON Canvas 1.0, one object per line | [canvas.md](canvas.md) | WS-G | read and written |

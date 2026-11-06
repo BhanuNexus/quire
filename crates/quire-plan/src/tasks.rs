@@ -105,26 +105,10 @@ fn next_line(line: &str, marker: usize, task: &Task, delta: i64, today: NaiveDat
     tasks::set_done(&l, marker, false)
 }
 
-/// A note that is a task (`type: task`), as a [`Task`] for the agenda and views.
+/// A note that is a task (`type: task`, or the `task` tag), as a [`Task`]
+/// for the agenda and views. See [`crate::task_note`].
 pub fn note_task(props: &std::collections::BTreeMap<String, quire_markdown::Value>, title: &str) -> Option<Task> {
-    let get = |k: &str| props.iter().find(|(key, _)| key.eq_ignore_ascii_case(k)).and_then(|(_, v)| v.as_str()).map(str::to_string);
-    if !get("type").is_some_and(|t| t.eq_ignore_ascii_case("task")) {
-        return None;
-    }
-    let status = get("status").unwrap_or_default().to_ascii_lowercase();
-    Some(Task {
-        done: matches!(status.as_str(), "done" | "x" | "completed" | "complete" | "cancelled"),
-        text: title.to_string(),
-        due: get("due"),
-        scheduled: get("scheduled"),
-        start: get("start"),
-        done_on: get("completion").or_else(|| get("done")),
-        created: get("created"),
-        recurrence: get("recurrence").or_else(|| get("repeat")),
-        priority: get("priority").and_then(|p| tasks::parse_priority(&p)),
-        reminder: get("reminder").or_else(|| get("remind")),
-        ..Task::default()
-    })
+    crate::task_note::note_task(props, title)
 }
 
 #[cfg(test)]

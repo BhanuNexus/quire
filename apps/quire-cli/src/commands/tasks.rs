@@ -8,7 +8,13 @@
 
 use std::collections::HashMap;
 
+use std::fmt::Write as _;
+use std::path::Path;
+
+use chrono::{DateTime, FixedOffset};
 use quire_app::meta_refactor::{FileEdit, MetaOp, plan};
+use quire_app::plan::task_note::TaskPrefs;
+use quire_app::plan::timer::{Running, TaskRef};
 use quire_app::vault::{ContentHash, NotePath, Vault};
 
 use super::{CliCommand, load};
@@ -17,7 +23,7 @@ pub(crate) const COMMANDS: &[CliCommand] = &[
     CliCommand {
         name: "tasks",
         rank: 9,
-        usage: "  quire-cli tasks     <vault> [--agenda]      open tasks across the vault (--agenda: overdue, today, next 7 days)",
+        usage: "  quire-cli tasks     <vault> [--agenda]      open tasks across the vault (--agenda: overdue, today, next 7 days)\n  quire-cli tasks     <vault> start <task> [--pomodoro] | stop | status\n                                              time a task (a task note's name, or words of a task line); stop logs it\n  quire-cli tasks     <vault> log <task> <duration> | report [YYYY-MM-DD]\n                                              log time by hand (25m, 1h30m); time per task in a week",
         run: tasks,
     },
     CliCommand {
@@ -36,17 +42,31 @@ pub(crate) const COMMANDS: &[CliCommand] = &[
 
 fn tasks(args: &[String]) -> Result<(), String> {
     let arg = |i: usize| super::arg(args, i);
+    if let Some(sub @ ("start" | "stop" | "status" | "log" | "report")) = args.get(2).map(String::as_str) {
+        let file = quire_app::task_timer::default_timer_path().ok_or("no config folder for the timer")?;
+        return timer_cmd(arg(1)?, sub, &args[3..], &file, chrono::Local::now().fixed_offset()).map(|out| print!("{out}"));
+    }
     let (_, svc, _) = load(arg(1)?)?;
     if args.iter().any(|a| a == "--agenda") {
         let ix = svc.read();
-        let all: Vec<(String, quire_app::markdown::Task)> =
-            ix.records().flat_map(|r| r.tasks.iter().map(|t| (r.path.as_str().to_string(), t.clone()))).collect();
+        let all: Vec<(String, quire_app::markdown::Task)> = ix
+            .records()
+            .flat_map(|r| {
+                let note = quire_app::plan::task_note::note_task(&r.properties, &r.title);
+                r.tasks.iter().cloned().chain(note).map(|t| (r.path.as_str().to_string(), t))
+            })
+            .collect();
         let today = chrono::Local::now().date_naive();
         let a = quire_app::plan::agenda::build(all.iter().map(|(p, t)| (p.as_str(), t)), today, None);
         print!("{}", agenda_text(&a, today));
         return Ok(());
     }
-    let tasks = svc.read().tasks(false);
+    let mut tasks = svc.read().tasks(false);
+    // 0.11: open task notes too.
+    tasks.extend(svc.read().records().filter_map(|r| {
+        let t = quire_app::plan::task_note::note_task(&r.properties, &r.title)?;
+        (!t.done).then(|| (r.path.clone(), t))
+    }));
     for (p, t) in tasks {
         let mut extra = Vec::new();
         for (label, v) in [("due", &t.due), ("scheduled", &t.scheduled), ("starts", &t.start)] {
@@ -63,8 +83,177 @@ fn tasks(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// The task a name means: a task note by name or path, else the one open
+/// task line whose text holds all the words.
+fn find_task(vault: &Vault, ix: &quire_app::index::Index, query: &str, prefs: &TaskPrefs) -> Result<TaskRef, String> {
+    if let Some(p) = ix.resolve(query, None)
+        && let Some(r) = ix.get(&p)
+        && quire_app::plan::task_note::is_task_note(&r.properties, &prefs.tag)
+    {
+        return Ok(TaskRef { path: p.as_str().to_string(), line: None, title: r.title.clone() });
+    }
+    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    let mut hits: Vec<TaskRef> = Vec::new();
+    for r in ix.records() {
+        for t in r.tasks.iter().filter(|t| !t.done) {
+            let low = t.text.to_lowercase();
+            if words.iter().all(|w| low.contains(w)) {
+                hits.push(TaskRef { path: r.path.as_str().to_string(), line: Some(t.text.clone()), title: t.text.clone() });
+            }
+        }
+        if let Some(n) = quire_app::plan::task_note::read(&r.properties, &r.title, prefs, *chrono::Local::now().offset()) {
+            let low = n.task.text.to_lowercase();
+            if !n.task.done && words.iter().all(|w| low.contains(w)) {
+                hits.push(TaskRef { path: r.path.as_str().to_string(), line: None, title: n.task.text });
+            }
+        }
+    }
+    let _ = vault;
+    match hits.len() {
+        1 => Ok(hits.remove(0)),
+        0 => Err(format!("no open task matches “{query}”")),
+        n => {
+            let list: Vec<String> = hits.iter().take(8).map(|h| format!("  {}  ({})", h.title, h.path.trim_end_matches(".md"))).collect();
+            Err(format!("{n} tasks match “{query}”; say more:\n{}", list.join("\n")))
+        }
+    }
+}
+
+/// Write a note with its version before and after in history (as `tags --write` does).
+fn write_logged(vault: &Vault, path: &NotePath, before: &str, after: &str) -> Result<(), String> {
+    let now = quire_app::history_ops::now_ms();
+    vault.snapshot(path, before, now - 1, true).map_err(|e| e.to_string())?;
+    vault.write(path, after).map_err(|e| e.to_string())?;
+    vault.snapshot(path, after, now, true).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Record a session to its task.
+fn record(vault: &Vault, task: &TaskRef, entry: &quire_app::plan::time::TimeEntry, prefs: &TaskPrefs) -> Result<(), String> {
+    let path = NotePath::new(&task.path);
+    let src = vault.read(&path).map_err(|e| e.to_string())?;
+    let out = quire_app::plan::timer::record_entry(&src, task, entry, prefs.style())
+        .ok_or_else(|| format!("the task “{}” isn't in {} any more", task.title, task.path))?;
+    write_logged(vault, &path, &src, &out)
+}
+
+/// `tasks <vault> start|stop|status|log|report`, with the timer in `file`. Returns what to print.
+fn timer_cmd(root: &str, sub: &str, rest: &[String], file: &Path, now: DateTime<FixedOffset>) -> Result<String, String> {
+    use quire_app::plan::time::{self, format_clock, format_duration};
+    use quire_app::task_timer::{load_running, save_running};
+    let (vault, svc, _) = load(root)?;
+    let prefs = quire_app::task_timer::prefs(&vault);
+    let root_abs = Path::new(root).canonicalize().map_or_else(|_| root.to_string(), |p| p.to_string_lossy().into_owned());
+    let running = load_running(file);
+    let mut out = String::new();
+    let stop = |r: &Running, out: &mut String| -> Result<(), String> {
+        let here = Path::new(&r.vault).canonicalize().map_or_else(|_| r.vault.clone(), |p| p.to_string_lossy().into_owned()) == root_abs;
+        if !here {
+            return Err(format!("the timer is running in another vault: {}", r.vault));
+        }
+        save_running(file, None).map_err(|e| e.to_string())?;
+        match r.stop(now) {
+            Some(e) if e.seconds(now) < quire_app::task_timer::MIN_SECONDS => {
+                let _ = writeln!(out, "Stopped “{}” (under a minute isn't logged)", r.task.title);
+            }
+            Some(e) => {
+                record(&vault, &r.task, &e, &prefs)?;
+                let _ = writeln!(out, "Logged {} on “{}”", format_duration(e.minutes(now)), r.task.title);
+            }
+            None => {
+                let _ = writeln!(out, "Stopped “{}” (on a break; nothing to log)", r.task.title);
+            }
+        }
+        Ok(())
+    };
+    match sub {
+        "start" => {
+            let query = rest.iter().filter(|a| !a.starts_with("--")).cloned().collect::<Vec<_>>().join(" ");
+            if query.is_empty() {
+                return Err("start needs a task".into());
+            }
+            let task = find_task(&vault, &svc.read(), &query, &prefs)?;
+            if let Some(r) = &running {
+                stop(r, &mut out)?;
+            }
+            let pomodoro = rest.iter().any(|a| a == "--pomodoro");
+            let r = Running::new(root_abs, task, now, pomodoro);
+            save_running(file, Some(&r)).map_err(|e| e.to_string())?;
+            let _ = writeln!(
+                out,
+                "Timing “{}”{}",
+                r.task.title,
+                if pomodoro { format!(" ({}-minute pomodoro)", prefs.pomodoro.work) } else { String::new() }
+            );
+        }
+        "stop" => match &running {
+            Some(r) => stop(r, &mut out)?,
+            None => out.push_str("No timer is running.\n"),
+        },
+        "status" => match &running {
+            Some(r) => {
+                let secs = r.clock_seconds(now, &prefs.pomodoro);
+                let what =
+                    r.pomodoro.as_ref().map_or_else(|| "running".to_string(), |p| format!("{} left", p.phase.label().to_lowercase()));
+                let _ = writeln!(out, "{} {what}: “{}” ({})", format_clock(secs), r.task.title, r.task.path.trim_end_matches(".md"));
+            }
+            None => out.push_str("No timer is running.\n"),
+        },
+        "log" => {
+            let (dur, words) = rest.split_last().ok_or("log needs a task and a duration (25m, 1h30m)")?;
+            let mins = time::parse_duration(dur).filter(|m| *m > 0).ok_or_else(|| format!("“{dur}” isn't a duration (25m, 1h30m)"))?;
+            let task = find_task(&vault, &svc.read(), &words.join(" "), &prefs)?;
+            let e = time::session(time::trunc_seconds(now) - chrono::Duration::minutes(i64::from(mins)), time::trunc_seconds(now));
+            record(&vault, &task, &e, &prefs)?;
+            let _ = writeln!(out, "Logged {} on “{}”", format_duration(mins), task.title);
+        }
+        _ => {
+            let day = match rest.first() {
+                Some(d) => chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").map_err(|_| format!("“{d}” isn't a date (YYYY-MM-DD)"))?,
+                None => now.date_naive(),
+            };
+            let ix = svc.read();
+            let notes: Vec<(String, String, Vec<time::TimeEntry>)> = ix
+                .records()
+                .filter_map(|r| {
+                    quire_app::plan::task_note::read(&r.properties, &r.title, &prefs, *now.offset())
+                        .map(|n| (r.path.as_str().to_string(), r.title.clone(), n.entries))
+                })
+                .collect();
+            let monday = quire_app::task_timer::monday_of(day);
+            let rep = time::week_report(notes.iter().map(|(p, t, e)| (p.as_str(), t.as_str(), e.as_slice())), monday, now);
+            out.push_str(&report_text(&rep));
+        }
+    }
+    Ok(out)
+}
+
+/// The weekly report as a table.
+fn report_text(r: &quire_app::plan::time::WeekReport) -> String {
+    use quire_app::plan::time::format_duration;
+    let Some(monday) = r.monday else { return String::new() };
+    let mut s = format!("Week of {}\n", monday.format("%a %-d %b %Y"));
+    if r.rows.is_empty() {
+        s.push_str("No time logged on task notes this week.\n");
+        return s;
+    }
+    let cell = |m: u32| if m == 0 { "·".to_string() } else { format_duration(m) };
+    let _ = writeln!(
+        s,
+        "{:<32} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>7}",
+        "Task", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun", "Total"
+    );
+    for row in &r.rows {
+        let title: String = row.title.chars().take(32).collect();
+        let days: Vec<String> = row.days.iter().map(|m| format!("{:>6}", cell(*m))).collect();
+        let _ = writeln!(s, "{title:<32} {} {:>7}", days.join(" "), format_duration(row.total));
+    }
+    let days: Vec<String> = r.days.iter().map(|m| format!("{:>6}", cell(*m))).collect();
+    let _ = writeln!(s, "{:<32} {} {:>7}", "All tasks", days.join(" "), format_duration(r.total));
+    s
+}
+
 fn agenda_text(a: &quire_app::plan::agenda::Agenda, today: chrono::NaiveDate) -> String {
-    use std::fmt::Write as _;
     let mut s = String::new();
     let mut section = |title: &str, items: &[quire_app::plan::agenda::AgendaItem]| {
         if items.is_empty() {
@@ -203,7 +392,6 @@ fn refactor(root: &str, op: &MetaOp, write: bool) -> Result<(), String> {
 }
 
 fn preview_text(op: &MetaOp, edits: &[FileEdit]) -> String {
-    use std::fmt::Write as _;
     let mut s = format!("{}: {} note{}\n", op.title(), edits.len(), if edits.len() == 1 { "" } else { "s" });
     for e in edits {
         let _ = writeln!(s, "  {}", e.path.as_str());
@@ -242,5 +430,46 @@ mod tests {
         assert_eq!(vault.history(&"B.md".into()).len(), 2, "before and after");
         let agenda = agenda_text(&quire_app::plan::agenda::Agenda::default(), chrono::NaiveDate::from_ymd_opt(2026, 11, 3).unwrap());
         assert_eq!(agenda, "Nothing due in the next 7 days.\n");
+    }
+
+    /// `start`, a restart of the CLI (a new process reads the file), `stop`,
+    /// `log` and `report` against a real vault folder.
+    #[test]
+    fn timer_from_the_command_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = dir.path().join("v");
+        std::fs::create_dir_all(v.join("Tasks")).unwrap();
+        std::fs::write(v.join("Tasks/Write report.md"), "---\ntype: task\nstatus: doing\n---\n# Write report\n").unwrap();
+        std::fs::write(v.join("Day.md"), "# Day\n- [ ] Call Bo about the venue\n- [ ] Call Al\n").unwrap();
+        let root = v.to_str().unwrap();
+        let file = dir.path().join("task-timer.json");
+        let at = |s: &str| DateTime::parse_from_rfc3339(s).unwrap();
+        let out = timer_cmd(root, "start", &["Write report".into()], &file, at("2026-11-06T10:00:00+01:00")).unwrap();
+        assert_eq!(out, "Timing “Write report”\n");
+        let out = timer_cmd(root, "status", &[], &file, at("2026-11-06T10:01:05+01:00")).unwrap();
+        assert_eq!(out, "01:05 running: “Write report” (Tasks/Write report)\n");
+        // Starting another task stops and logs the first.
+        let out = timer_cmd(root, "start", &["call".into(), "venue".into()], &file, at("2026-11-06T10:25:00+01:00")).unwrap();
+        assert_eq!(out, "Logged 25m on “Write report”\nTiming “Call Bo about the venue”\n");
+        let note = std::fs::read_to_string(v.join("Tasks/Write report.md")).unwrap();
+        assert_eq!(
+            note,
+            "---\ntype: task\nstatus: doing\ntime_entries:\n  - start: 2026-11-06T10:00:00+01:00\n    end: 2026-11-06T10:25:00+01:00\n---\n# Write report\n"
+        );
+        let out = timer_cmd(root, "stop", &[], &file, at("2026-11-06T10:40:00+01:00")).unwrap();
+        assert_eq!(out, "Logged 15m on “Call Bo about the venue”\n");
+        assert_eq!(
+            std::fs::read_to_string(v.join("Day.md")).unwrap(),
+            "# Day\n- [ ] Call Bo about the venue [time:: 15m]\n- [ ] Call Al\n"
+        );
+        assert!(timer_cmd(root, "start", &["call".into()], &file, at("2026-11-06T11:00:00+01:00")).unwrap_err().contains("2 tasks match"));
+        let out =
+            timer_cmd(root, "log", &["Write".into(), "report".into(), "1h5m".into()], &file, at("2026-11-07T09:00:00+01:00")).unwrap();
+        assert_eq!(out, "Logged 1h5m on “Write report”\n");
+        let out = timer_cmd(root, "report", &["2026-11-04".into()], &file, at("2026-11-08T09:00:00+01:00")).unwrap();
+        assert!(out.starts_with("Week of Mon 2 Nov 2026\nTask"), "{out}");
+        assert!(out.contains("\nWrite report                          ·      ·      ·      ·    25m   1h5m      ·   1h30m\n"), "{out}");
+        assert_eq!(timer_cmd(root, "stop", &[], &file, at("2026-11-08T09:00:00+01:00")).unwrap(), "No timer is running.\n");
+        assert!(Vault::open_local(root).unwrap().history(&"Day.md".into()).len() >= 2, "before and after kept");
     }
 }

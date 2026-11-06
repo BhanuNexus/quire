@@ -255,6 +255,9 @@ pub(crate) const fn ui_target(cmd: Command) -> Option<UiTarget> {
         Command::ShowCalendar => UiTarget::Sidebar("calendar"),
         Command::RenameTag | Command::RenameProperty => UiTarget::Overlay(crate::meta_refactor_ui::RefactorOverlay::make),
         Command::StartReview | Command::ReviewThisNote => UiTarget::Overlay(crate::srs_ui::ReviewOverlay::make),
+        // ---- 0.11 tasks
+        Command::NewTask => UiTarget::Overlay(crate::task_ui::NewTaskDialog::make),
+        Command::TimeReport => UiTarget::Overlay(crate::task_ui::TimeReportOverlay::make),
         // ---- WS-F
         Command::ChooseTheme => UiTarget::Settings("appearance"),
         // ---- WS-G
@@ -370,6 +373,10 @@ pub(crate) fn layout_samples(ws: &mut Workspace) -> Vec<(&'static str, crate::ov
         ("review: answer", Overlay::Feature(Box::new(crate::srs_ui::ReviewOverlay::sample(true, false)))),
         ("review: done", Overlay::Feature(Box::new(crate::srs_ui::ReviewOverlay::sample(false, true)))),
         ("new note from template: questions", Overlay::Feature(Box::new(crate::template_prompt_ui::TemplateDialog::sample()))),
+        // ---- 0.11 tasks
+        ("new task", Overlay::Feature(Box::new(crate::task_ui::NewTaskDialog::sample(false)))),
+        ("new task: error", Overlay::Feature(Box::new(crate::task_ui::NewTaskDialog::sample(true)))),
+        ("time this week", Overlay::Feature(crate::task_ui::TimeReportOverlay::make(ws))),
         // ---- WS-F
         // ---- WS-G
         ("insert citation: no library", Overlay::Feature(Box::new(crate::cite_ui::CitePicker::sample(false)))),

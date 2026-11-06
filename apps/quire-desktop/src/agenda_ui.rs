@@ -25,6 +25,12 @@ use crate::theme::Palette;
 pub(crate) struct AgendaUi {
     /// Sections the person folded.
     folded: std::collections::HashSet<&'static str>,
+    /// 0.11: list, board, calendar or time.
+    mode: crate::task_ui::AgendaMode,
+    /// The calendar's month (year, month); `None` is this month.
+    month: Option<(i32, u32)>,
+    /// The time report's week (a day in it); `None` is this week.
+    week: Option<NaiveDate>,
 }
 
 /// Whether the tab is offered.
@@ -66,14 +72,34 @@ fn note_name(path: &str) -> &str {
 
 /// One task row: checkbox, priority, text (opens the note), details below.
 /// Returns (toggled, opened).
-fn task_row(ui: &mut Ui, pal: &Palette, task: &Task, detail: &str, strike: bool) -> (bool, bool) {
+/// `timer`: the workspace and note, for the ▶ timer button (0.11).
+fn task_row(ui: &mut Ui, pal: &Palette, task: &Task, detail: &str, strike: bool, timer: Option<(&Workspace, &str)>) -> (bool, bool) {
     let mut toggled = false;
     let mut opened = false;
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
+        if let Some((ws, path)) = timer.filter(|_| !task.done) {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                // Clear of the scroll bar.
+                ui.add_space(10.0);
+                let line = (task.offset != 0).then_some(task.text.as_str());
+                crate::task_ui::timer_button(ui, ws, pal, &NotePath::new(path), line, &task.text);
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+                    row_body(ui, pal, task, detail, strike, &mut toggled, &mut opened);
+                });
+            });
+            return;
+        }
+        row_body(ui, pal, task, detail, strike, &mut toggled, &mut opened);
+    });
+    (toggled, opened)
+}
+
+fn row_body(ui: &mut Ui, pal: &Palette, task: &Task, detail: &str, strike: bool, toggled: &mut bool, opened: &mut bool) {
+    {
         let mut done = task.done;
         if ui.checkbox(&mut done, "").on_hover_text(if task.done { "Mark not done" } else { "Mark done" }).changed() {
-            toggled = true;
+            *toggled = true;
         }
         ui.vertical(|ui| {
             ui.horizontal_wrapped(|ui| {
@@ -93,7 +119,7 @@ fn task_row(ui: &mut Ui, pal: &Palette, task: &Task, detail: &str, strike: bool)
                     .on_hover_text("Open the note at this task")
                     .clicked()
                 {
-                    opened = true;
+                    *opened = true;
                 }
                 if task.recurrence.is_some() {
                     ui.label(RichText::new("↻").size(12.0).color(pal.muted)).on_hover_text(task.recurrence.clone().unwrap_or_default());
@@ -103,8 +129,7 @@ fn task_row(ui: &mut Ui, pal: &Palette, task: &Task, detail: &str, strike: bool)
                 ui.label(RichText::new(detail).size(11.0).color(pal.muted));
             }
         });
-    });
-    (toggled, opened)
+    }
 }
 
 /// A small triangle: down when open, right when folded (the UI font has no triangle glyphs).
@@ -173,6 +198,46 @@ pub(crate) fn show(ui: &mut Ui, ws: &mut Workspace, st: &mut FeatureUi, pal: &Pa
             }
         });
     });
+    // 0.11: the running timer, and list / board / calendar / time.
+    crate::task_ui::timer_strip(ui, ws, pal);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        crate::task_ui::mode_switch(ui, &mut st.mode);
+        if ui.small_button("+ Task").on_hover_text("New task… (Alt+N)").clicked() {
+            out.run = Some(quire_app::Command::NewTask);
+        }
+    });
+    match st.mode {
+        crate::task_ui::AgendaMode::List => {}
+        crate::task_ui::AgendaMode::Board => {
+            egui::ScrollArea::vertical().id_salt("quire-agenda-board").auto_shrink([false, false]).show(ui, |ui| {
+                if let Some(p) = crate::task_ui::board(ui, ws, pal) {
+                    open = Some((p, 0));
+                }
+            });
+            return finish(ws, out, None, open);
+        }
+        crate::task_ui::AgendaMode::Calendar => {
+            use chrono::Datelike;
+            let mut month = st.month.unwrap_or_else(|| (today.year(), today.month()));
+            egui::ScrollArea::vertical().id_salt("quire-agenda-cal").auto_shrink([false, false]).show(ui, |ui| {
+                open = crate::task_ui::calendar(ui, ws, pal, &mut month);
+            });
+            st.month = Some(month);
+            return finish(ws, out, None, open);
+        }
+        crate::task_ui::AgendaMode::Time => {
+            let mut day = st.week.unwrap_or(today);
+            egui::ScrollArea::vertical().id_salt("quire-agenda-time").auto_shrink([false, false]).show(ui, |ui| {
+                if let Some(p) = crate::task_ui::report(ui, ws, pal, &mut day) {
+                    open = Some((p, 0));
+                }
+            });
+            st.week = Some(day);
+            return finish(ws, out, None, open);
+        }
+    }
+    let task_notes: Vec<_> = ws.task_notes().into_iter().filter(|(_, n)| !n.task.done).collect();
     egui::ScrollArea::vertical().id_salt("quire-agenda").auto_shrink([false, false]).show(ui, |ui| {
         // Reminders that came due (and missed ones).
         let reminders: Vec<_> = ws.features.tasks.reminders.active().into_iter().cloned().collect();
@@ -210,7 +275,7 @@ pub(crate) fn show(ui: &mut Ui, ws: &mut Workspace, st: &mut FeatureUi, pal: &Pa
         if !agenda.overdue.is_empty() && fold_header(ui, st, pal, "overdue", "Overdue", agenda.overdue.len(), Some(pal.danger)) {
             for i in &agenda.overdue {
                 let detail = format!("due {} · {}", relative(i.date, today), note_name(&i.path));
-                let (t, o) = task_row(ui, pal, &i.task, &detail, false);
+                let (t, o) = task_row(ui, pal, &i.task, &detail, false, Some((&*ws, i.path.as_str())));
                 if t {
                     toggle = Some((NotePath::new(&i.path), i.task.clone()));
                 }
@@ -227,7 +292,7 @@ pub(crate) fn show(ui: &mut Ui, ws: &mut Workspace, st: &mut FeatureUi, pal: &Pa
                 let when = if i.date < today { format!("scheduled {}", relative(i.date, today)) } else { i.when.label().to_string() };
                 let next = i.next.map(|n| format!(" · next {}", relative(n, today))).unwrap_or_default();
                 let detail = format!("{when} · {}{next}", note_name(&i.path));
-                let (t, o) = task_row(ui, pal, &i.task, &detail, false);
+                let (t, o) = task_row(ui, pal, &i.task, &detail, false, Some((&*ws, i.path.as_str())));
                 if t {
                     toggle = Some((NotePath::new(&i.path), i.task.clone()));
                 }
@@ -255,7 +320,7 @@ pub(crate) fn show(ui: &mut Ui, ws: &mut Workspace, st: &mut FeatureUi, pal: &Pa
                 }
                 let next = i.next.map(|n| format!(" · then {}", relative(n, today))).unwrap_or_default();
                 let detail = format!("{} · {}{next}", i.when.label(), note_name(&i.path));
-                let (t, o) = task_row(ui, pal, &i.task, &detail, false);
+                let (t, o) = task_row(ui, pal, &i.task, &detail, false, Some((&*ws, i.path.as_str())));
                 if t {
                     toggle = Some((NotePath::new(&i.path), i.task.clone()));
                 }
@@ -264,7 +329,13 @@ pub(crate) fn show(ui: &mut Ui, ws: &mut Workspace, st: &mut FeatureUi, pal: &Pa
                 }
             }
         }
-        if agenda.is_empty() && reminders.is_empty() {
+        // 0.11: open task notes as cards.
+        if !task_notes.is_empty() && fold_header(ui, st, pal, "task-notes", "Task notes", task_notes.len(), None)
+            && let Some(p) = crate::task_ui::note_cards(ui, ws, pal, &task_notes)
+        {
+            open = Some((p, 0));
+        }
+        if agenda.is_empty() && reminders.is_empty() && task_notes.is_empty() {
             ui.add_space(12.0);
             ui.label(
                 RichText::new("Tasks with dates show up here. Add one after a task, like [due:: 2026-11-20], [scheduled:: …] or [remind:: 2026-11-20 09:00] (the Tasks plugin's emoji work too), or start a task in a daily note with a time like 14:00 - 15:00.")
@@ -273,6 +344,11 @@ pub(crate) fn show(ui: &mut Ui, ws: &mut Workspace, st: &mut FeatureUi, pal: &Pa
             );
         }
     });
+    finish(ws, out, toggle, open)
+}
+
+/// Do what the tab asked for: tick a task, open a note.
+fn finish(ws: &mut Workspace, mut out: PanelOut, toggle: Option<(NotePath, Task)>, open: Option<(NotePath, usize)>) -> PanelOut {
     if let Some((path, task)) = toggle {
         // A checkbox is never at byte 0 of a note; offset 0 is a task note (`type: task`).
         if task.offset == 0 {
@@ -437,7 +513,7 @@ fn view_row(ui: &mut Ui, ws: &Workspace, pal: &Palette, spec: &ViewSpec, row: &V
             detail.extend(extra.iter().map(|s| (*s).to_string()));
             detail.push(note_name(row.path.as_str()).to_string());
             let _ = key;
-            let (toggled, opened) = task_row(ui, pal, &t.task, &detail.join(" · "), false);
+            let (toggled, opened) = task_row(ui, pal, &t.task, &detail.join(" · "), false, Some((ws, row.path.as_str())));
             if toggled {
                 if t.is_note {
                     ws.plan_request(Action::ToggleTaskNote { path: row.path.clone(), done: !t.task.done });
@@ -524,6 +600,9 @@ pub(crate) fn settings_tab(ui: &mut Ui, ws: &mut Workspace, st: &mut FeatureUi, 
         // 0.10: reminders while Quire is closed.
         ui.add_space(4.0);
         crate::remind_ui::settings(ui, ws, pal);
+        // 0.11: task notes, statuses and the pomodoro.
+        ui.add_space(12.0);
+        crate::task_ui::settings(ui, ws, pal);
         ui.add_space(12.0);
         crate::calendar_ui::periodic_settings(ui, ws, &mut st.calendar, pal);
         ui.add_space(12.0);

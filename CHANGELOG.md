@@ -24,6 +24,19 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 ### Changed
 - The agent policy's hard rules now also deny every path in a locked folder, every `.qenc` file and every key file, for agents and Quire's own background jobs.
 - Pasting or dropping a picture into a locked note is refused (it would be stored unencrypted in the attachments folder), and so is exporting a locked note to HTML or PDF (exports go to `Exports/` unencrypted); Copy as HTML still works.
+#### Task notes and time tracking
+- **Task notes, TaskNotes-style:** a note with `type: task` (or the `task` tag, as the TaskNotes plugin does) is a task with `status`, `priority`, `due`, `scheduled`, `contexts`, `projects`, `time_estimate` and `time_entries`. Quire reads TaskNotes' property names too (`timeEntries`, `timeEstimate`, `completedDate`, …) and keeps a note's own names when it writes, so a vault can move between the two. Statuses, done statuses, offered tags, the task folder and which names to write are set per vault (Settings → Planning, `[tasks]` in `.quire/shared/vault.toml`). Details: [docs/formats/tasks.md](docs/formats/tasks.md#task-notes).
+- **New task…** (Alt+N, "+ Task" in the agenda, or "New task…" in quick capture with what you typed): a task note with its properties in one dialog.
+- **Time tracking:** start and stop a timer on a task line or task note with Ctrl+Alt+T, ▶ in the agenda and on board cards, or `quire-cli tasks start|stop`. One timer runs per device and survives restarts; the status bar shows it (click to stop). Stopping writes one time entry (`start` and `end`, ISO 8601 with your offset) to the note, or adds to a task line's `[time:: 1h25m]`. `quire-cli tasks log <task> 25m` logs time by hand.
+- **Pomodoro:** "Start a pomodoro on this task" (or right-click ▶) counts down 25 minutes of work and a 5-minute break (a longer one every fourth), with a notification at each change; each work session is logged as it ends. Lengths are in Settings → Planning.
+- **Time this week:** minutes per task and day, from the command palette, the agenda's Time tab or `quire-cli tasks report`. `from: tasks` views gain `time_spent`, `time_estimate`, `contexts` and `projects`.
+- **Agenda:** task notes as cards (status, priority, due, contexts, projects, time against the estimate), a **Board** of task notes by status, and a **Calendar** of tasks by scheduled and due date.
+- **Convert task note back to a task line**, the reverse of "Convert task to note". Converting now keeps the line's indentation, bullet and block id, and carries tags, the estimate and time spent into the note; going back trashes the note only when it holds nothing but its properties.
+
+#### Boards and Bases
+- **Boards keep the order you drag cards into:** drag a card up or down in its column. The order is kept in the view (`order.<column>:`) or the base file (`cardOrder`), never by rewriting your notes. Format: [docs/formats/boards.md](docs/formats/boards.md).
+- **Swimlanes** (rows of columns by a second property, such as priority), **coloured columns** (right-click a column's heading), **cards you edit in place** (click status, priority or due), and **+ in each column** for a new note from the view's template, or a new task, with the column's value already set.
+- **Obsidian Bases:** `kanban` views are boards with all of the above; `groupBy` groups tables and cards; **map** views show notes with `lat`/`lng` or `location: [lat, lng]` as pins on a world outline you can pan and zoom (offline: Natural Earth's public-domain outline is built in, no map tiles are fetched). `layout: map` works in quire-views too. Quire's own keys in a `.base` file are written line by line: everything else in the file stays as it was.
 
 ## [0.10.2] - 2026-11-06
 

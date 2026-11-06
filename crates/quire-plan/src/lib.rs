@@ -10,10 +10,16 @@
 //! * [`periodic`] — daily, weekly, monthly and yearly notes
 //! * [`srs`] — flashcard review logs and the FSRS scheduler
 //! * [`tasks`] — completing tasks, recurring ones included
+//! * [`task_note`] — task notes, TaskNotes' property names, `[tasks]` prefs
+//! * [`time`] — time entries, durations and the weekly report
+//! * [`timer`] — the running timer and pomodoro cycles
 
 pub mod agenda;
 pub mod periodic;
 pub mod recur;
 pub mod reminders;
 pub mod srs;
+pub mod task_note;
 pub mod tasks;
+pub mod time;
+pub mod timer;
