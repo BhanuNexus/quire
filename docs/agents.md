@@ -192,6 +192,16 @@ run history under `.quire/shared/agent/`, and takes in the other devices'
 * `quire-cli agent log` and Activity show every device's runs;
   `quire-cli agent revert` and **Revert run** undo a run made on another
   device, keeping later edits.
+* Other devices' files are checked like an agent's input (0.10.1): every
+  path in them goes through the same path check (no hidden folders or
+  `.quire`, nothing outside the vault through a symlink), a device can only
+  speak for itself, and its name is shown as its own claim with its id.
+  Undoing another device's change to one of your notes (outside an agent
+  zone) is a suggestion to review, not a direct write. A suggestion that
+  was waiting here and was decided on another device says "decided on …"
+  under Resolved in the Inbox, and **Reopen** asks about it again here.
+  Files aren't signed yet: give the vault key only to devices you trust
+  ([design](design/0.10-agentsync.md#other-devices-files-are-untrusted-0101)).
 
 Read events stay on their device. With the option off (the default), all
 of this stays on the device where the agent ran, as in 0.9.
@@ -228,7 +238,10 @@ process, as the actor `panel:<provider>`, under the same policy: its edits
 to people's notes are suggestions, its runs appear in Agent activity, and
 "Revert run" undoes one. It runs on the provider set up in Settings → AI or
 on a model on the computer; small on-device models only chat about the
-open note. An external ACP agent (Claude Code, Codex…) can be connected to
+open note. A tool call is run only when the model finished it: one in a
+reply cut off at its length limit, or whose JSON the model never closed,
+is never run (brackets are never added for it); the model is asked once
+to write it again. An external ACP agent (Claude Code, Codex…) can be connected to
 the panel instead; its writes through Quire follow the policy too. It gets
 Quire's MCP tools (`quire-cli mcp <vault> --allow-write --client
 acp:<name>`), recorded as the same actor as its file requests, and its
