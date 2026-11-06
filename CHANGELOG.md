@@ -21,7 +21,7 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ### Changed
 - Formatting shortcuts (Ctrl+B, Ctrl+I, Ctrl+1…, Ctrl+L, Ctrl+Shift+.) act on every cursor, read the Markdown around the selection, and wrap a selection over several lines line by line (after the list marker).
-- Typing in a long note is smoother: the Insights panel's outline and links follow the note once typing pauses and draw only the rows in view, and indexing, the meaning index and background jobs run at the lowest thread priority on Windows, macOS and Linux.
+- Typing in a long note is smoother: the Insights panel's outline and links follow the note once typing pauses and draw only the rows in view, the editor keeps its headings between frames, and indexing, the meaning index and background jobs run at the lowest thread priority on Windows, macOS and Linux. On the 100 KB test note a keystroke takes 4.7 ms instead of 5.7 (median; 95th percentile 6.8 instead of 9.0 ms), and the CI budget for the 95th percentile is now 10 ms (was 12).
 
 ### Fixed
 - Vim: Ctrl+V starts Visual-block mode even with nothing on the clipboard (Quire now handles the copy, cut and paste keys itself, so the key reaches Vim in Normal and Visual mode; in Insert mode it still pastes).

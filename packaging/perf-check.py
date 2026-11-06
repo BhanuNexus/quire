@@ -44,7 +44,8 @@ BUDGETS = {
     ("startup", "vault_cost_ms"): (20, "Startup: what 10k notes add before the first frame"),
     ("typing", "indexing_p50_ms"): (None, "Keystroke to frame while 10k notes are first indexed (p50)"),
     ("typing", "p50_ms"): (None, "Keystroke to frame, 100 KB note, jobs on (p50)"),
-    ("typing", "p95_ms"): (12, "Keystroke to frame, 100 KB note, jobs on (p95)"),
+    # 0.11: 12 -> 10 ms (measured 6.8-7.2 ms on the 2-core VM; docs/design/0.11-editor.md §6).
+    ("typing", "p95_ms"): (10, "Keystroke to frame, 100 KB note, jobs on (p95)"),
     ("typing", "p99_ms"): (16, "Keystroke to frame, 100 KB note, jobs on (p99)"),
     ("canvas", "frame_p50_ms"): (8, "Canvas, 1,000 cards: pan/zoom frame (p50)"),
     ("canvas", "frame_max_ms"): (None, "Canvas, 1,000 cards: worst frame"),

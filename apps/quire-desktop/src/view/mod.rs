@@ -71,6 +71,8 @@ struct DocView {
     view_blocks: Option<(u64, Rc<Vec<ViewBlock>>)>,
     /// Display math and diagrams, for a revision.
     figures: Option<(u64, Rc<Vec<blocks::Figure>>)>,
+    /// 0.11: heading lines and levels for a revision (fold arrows, every frame).
+    headings: Option<(u64, HeadingLines)>,
     spell_menu: Option<SpellMenu>,
     /// `block_of` answers for a revision (it walks up through quotes).
     block_memo: (u64, HashMap<usize, Block>),
@@ -120,6 +122,7 @@ impl DocView {
             blocks: None,
             view_blocks: None,
             figures: None,
+            headings: None,
             spell_menu: None,
             block_memo: (u64::MAX, HashMap::new()),
             view_rects: Vec::new(),
@@ -421,11 +424,14 @@ fn hideable_marker(text: &str, line_start: bool) -> bool {
     !(bullet || task || html || rule || t.starts_with('>') || t.starts_with("```") || t.starts_with("~~~"))
 }
 
+/// [`heading_lines`] shared between frames.
+type HeadingLines = Rc<Vec<(usize, u8)>>;
+
 /// Heading lines and levels, from the note's outline (so headings inside
 /// code blocks don't count).
 fn heading_lines(doc: &Document) -> Vec<(usize, u8)> {
     let buf = doc.buffer();
-    doc.outline().iter().map(|h| (buf.char_to_line(doc.byte_to_char(h.offset)), h.level)).collect()
+    doc.extracted().headings.iter().map(|h| (buf.char_to_line(doc.byte_to_char(h.offset)), h.level)).collect()
 }
 
 /// The lines a folded heading hides: up to the next heading of the same or
@@ -698,6 +704,18 @@ impl FastEditor {
         let runs = Rc::new(blocks::highlight_window(&text, w.clone(), &bl));
         view.runs = Some((rev, w, Rc::clone(&runs)));
         runs
+    }
+
+    /// [`heading_lines`] for the note's revision, kept between frames.
+    fn headings_of(view: &mut DocView, doc: &Document) -> HeadingLines {
+        if let Some((rev, h)) = &view.headings
+            && *rev == doc.revision()
+        {
+            return Rc::clone(h);
+        }
+        let h = Rc::new(heading_lines(doc));
+        view.headings = Some((doc.revision(), Rc::clone(&h)));
+        h
     }
 
     /// Line ranges hidden by folds (merged, sorted).
@@ -2092,7 +2110,7 @@ impl FastEditor {
             let hidden = Self::hidden(&mut view, doc);
             // What features draw on this note (review hunks, drift markers…).
             let feature_decos = ws.decorations(doc_id);
-            let headings = if doc.large { Vec::new() } else { heading_lines(doc) };
+            let headings = if doc.large { Rc::default() } else { Self::headings_of(&mut view, doc) };
             let mut fold_toggles = Vec::new();
             let pointer = ui.input(|i| i.pointer.hover_pos());
             for line in first..=last {
