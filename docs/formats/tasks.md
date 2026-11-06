@@ -2,8 +2,9 @@
 
 Tasks are Markdown checklist items. Quire reads the fields Obsidian Tasks
 and Dataview write after a task's text, and writes them back in place.
-Owner: WS-E. Code: `quire_markdown::tasks` (syntax), `quire_plan`
-(dates, recurrence, agenda, reminders).
+Owner: WS-E (0.11: the tasks workstream). Code: `quire_markdown::tasks`
+(syntax), `quire_plan` (dates, recurrence, agenda, reminders,
+`task_note`, `time`, `timer`).
 
 ```markdown
 - [ ] Pay rent ⏫ 🔁 every month on the 1st ⏳ 2026-11-28 📅 2026-12-01 ⏰ 2026-11-30 09:00
@@ -57,7 +58,166 @@ RFC 5545 text: `RRULE:FREQ=MONTHLY;INTERVAL=2;BYDAY=-1FR;UNTIL=20271231`
 
 ## Task notes
 
-A note with `type: task` in its front matter is a task too: `status`
-(`done`, `x`, `completed` or `cancelled` count as done), `due`,
-`scheduled`, `start`, `recurrence` (or `repeat`), `priority`, `reminder`.
-"Convert task to note" makes `Tasks/<text>.md` and leaves `- [ ] [[<text>]]`.
+A note is a task when its front matter has `type: task`, or when its
+front-matter `tags` hold the task tag (`task` by default, as the TaskNotes
+plugin does; `[tasks] tag` in vault.toml, empty to turn it off). The title
+(`title:`, else the first heading, else the file name) is the task's text.
+
+```yaml
+---
+type: task
+status: doing
+priority: high
+due: 2026-11-20
+scheduled: 2026-11-18
+contexts: ["@desk"]
+projects: ["[[Website]]"]
+tags: [work]
+time_estimate: 1h30m
+time_entries:
+  - start: 2026-11-18T09:00:00+01:00
+    end: 2026-11-18T09:25:00+01:00
+  - start: 2026-11-18T14:10:00+01:00
+    end: 2026-11-18T14:35:00+01:00
+---
+# Write the report
+```
+
+| Meaning | Quire writes | Also read (TaskNotes, older names) | Value |
+|---|---|---|---|
+| status | `status` | | any word; done when it is one of `[tasks] done_statuses` or `done`, `x`, `completed`, `complete`, `cancelled`, `canceled`, `closed` |
+| priority | `priority` | | `highest`, `high`, `medium`, `normal`, `low`, `lowest` (or the emoji) |
+| due, scheduled, start | `due`, `scheduled`, `start` | | `YYYY-MM-DD`, a time after it is kept |
+| contexts | `contexts` | `context` | a list (`@home`) |
+| projects | `projects` | `project` | a list of links (`"[[Website]]"`) |
+| time estimate | `time_estimate` | `timeEstimate`, `estimate` | a duration (`1h30m`, `PT1H30M`) or minutes (`90`) |
+| time entries | `time_entries` | `timeEntries` | a list of `{start, end}` (or `{startTime, endTime}`), below |
+| time spent without entries | `time_spent` | `timeSpent` | a duration (an inline task's total, kept when it became a note) |
+| completed on | `completion` | `completedDate`, `done` | `YYYY-MM-DD` |
+| created | `created` | `dateCreated` | `YYYY-MM-DD` (or a date and time) |
+| repeats | `recurrence` | `repeat` | a rule (above), or RRULE text (`FREQ=WEEKLY;BYDAY=MO`, as TaskNotes writes it) |
+| done dates of a repeating task | `complete_instances` | | a list of dates |
+| reminder | `reminder` | `remind` | `YYYY-MM-DD HH:MM` |
+
+* Names are matched without regard to case. A note keeps the names it
+  already uses: logging time to a note with `timeEntries` appends there,
+  with `startTime` and `endTime`.
+* New properties use the vault's style, `[tasks] field_names`:
+  `quire` (the first column) or `tasknotes` (`timeEntries`, `timeEstimate`
+  in minutes, `completedDate`, `dateCreated`, no `type: task` but the task
+  tag). Both styles are always read, so a vault can switch either way.
+* Ticking a task note sets `status` to the first of `[tasks]
+  done_statuses` and `completion` to today; unticking sets the first open
+  status and removes `completion`. A note with `recurrence` stays open
+  instead: `due`, `scheduled` and `start` move by the same number of days
+  to the next occurrence, and today is added to `complete_instances`.
+* Every edit changes only the lines of the properties it touches; comments
+  and the other lines keep their bytes.
+
+### Time entries
+
+```yaml
+time_entries:
+  - start: 2026-11-18T09:00:00+01:00
+    end: 2026-11-18T09:25:00+01:00
+    description: first draft      # optional
+```
+
+* `start` and `end` are ISO 8601 with the offset in force where the time
+  was recorded (`+01:00`, or `Z`). An instant without an offset is read in
+  the device's local offset. Seconds are kept; fractions are dropped.
+* An entry without `end` is running (TaskNotes writes one while its timer
+  runs); it counts up to now. Quire's own timer writes an entry only when
+  it stops, so it never leaves an open one.
+* Totals add the entries (and `time_spent`). A session past midnight counts
+  on each day it touches, in its own offset.
+* Lists of maps are kept as written: Quire appends an item after the last
+  one with the same indentation and never rewrites the others.
+
+### `[tasks]` in vault.toml
+
+```toml
+[tasks]
+folder = "Tasks"                       # "New task…" and "Convert task to note"
+tag = "task"                           # a note with this front-matter tag is a task
+statuses = ["todo", "doing", "done"]   # board columns, in order; the first is a new task's
+done_statuses = ["done", "cancelled"]  # done (the first is what ticking sets)
+tags = ["work", "home"]                # offered in "New task…"
+field_names = "quire"                  # or "tasknotes"
+
+[tasks.pomodoro]
+work = 25
+short_break = 5
+long_break = 15
+long_every = 4                         # a long break after this many work sessions (0: never)
+auto_continue = true                   # start the next work session when a break ends
+```
+
+Every key is optional; unknown keys are kept. Settings → Planning edits
+this section.
+
+### TaskNotes compatibility
+
+TaskNotes (the Obsidian plugin) keeps one note per task with these default
+property names: `title`, `status` (`open`, `in-progress`, `done`),
+`priority` (`low`, `normal`, `high`), `due`, `scheduled`, `contexts`,
+`projects`, `tags` (with the `task` tag), `timeEstimate` (minutes),
+`timeEntries` (`startTime`, `endTime`, `description`), `recurrence`
+(RRULE), `completedDate`, `dateCreated`, `dateModified`,
+`complete_instances`, `reminders`, `blockedBy`. Quire reads all of the
+ones in the table above under either name. `dateModified`, `reminders`
+(TaskNotes' list of reminder objects), `blockedBy`, `pomodoros` and other
+keys are kept as they are and not used. To show TaskNotes' statuses as
+columns, set `statuses = ["open", "in-progress", "done"]`. Property names
+can be changed in TaskNotes' settings; Quire reads the defaults only.
+
+## Converting
+
+* **Convert task to note** (caret on a task line): makes
+  `<[tasks] folder>/<text>.md` with the task's dates, priority,
+  recurrence, reminder, tags (into `tags:`), `[estimate:: …]` and
+  `[time:: …]` (into `time_estimate` and `time_spent`), and `created`
+  (today, unless the line had one). The line becomes `- [ ] [[<text>]]`,
+  keeping its indentation, bullet, checkbox and `^block-id`. One undoable
+  edit. A line that already links to a note is left alone.
+* **Convert task note back to a task line** (caret on `- [ ] [[Note]]`):
+  the line gets the note's title, tags and fields in the `[tasks] format`
+  style, with time spent as `[time:: …]` and the estimate as
+  `[estimate:: …]`. The note goes to `.trash/` only if it holds nothing
+  but its front matter and its title heading; otherwise it is kept and a
+  notice says so. Its individual time entries stay in the note (or the
+  trashed copy); the line keeps their total.
+
+## Time on task lines
+
+A task line keeps only a total: `[time:: 1h25m]`, and optionally an
+estimate, `[estimate:: 2h]`. Stopping the timer on a line adds the
+session's minutes to its `[time:: …]` (adding the field if it isn't
+there); the rest of the line keeps its bytes. Durations are written
+`1h25m`, `25m` or `2h`; `PT1H25M`, `1:25`, `90m` and `1.5h` are read.
+Lines don't hold sessions, so the weekly report counts task notes only:
+convert a task to a note to see its time by day.
+
+## The timer
+
+One timer runs per device, in `<config>/task-timer.json` (format 1):
+
+```json
+{
+  "format": 1,
+  "vault": "/home/ada/Notes",
+  "task": { "path": "Tasks/Write the report.md", "title": "Write the report" },
+  "started": "2026-11-18T09:00:00+01:00",
+  "pomodoro": { "phase": "work", "phase_started": "2026-11-18T09:00:00+01:00", "done": 0 }
+}
+```
+
+`task.line` (an inline task's text) identifies a task line; it is absent
+for a task note. The app and `quire-cli tasks start|stop|status` share
+the file, so a timer survives restarts and either can stop it. Nothing
+is written to the vault until it stops (or a pomodoro's work session
+ends); then one entry is written to the task as above, through the same
+path as any edit (history before and after). A session under a minute
+(a timer started by mistake) isn't logged. Starting a timer stops and
+logs the running one. A timer started in another vault can only be
+stopped there.
