@@ -33,7 +33,7 @@ fn remind(args: &[String]) -> Result<(), String> {
             println!("{} for {}", if on { "Installed" } else { "Not installed" }, root.display());
             for l in remind_bg::describe(
                 backend,
-                &remind_bg::plan_install(backend, &std::env::current_exe().map_err(|e| e.to_string())?, &root, &env),
+                &remind_bg::plan_install(backend, &std::env::current_exe().map_err(|e| e.to_string())?, &root, &env)?,
             ) {
                 println!("  {l}");
             }

@@ -37,8 +37,11 @@ fn look(vault: &Path) -> State {
     let backend = remind_bg::detect();
     let (installed, lines) = match Env::current() {
         Some(env) => {
-            let plan = remind_bg::plan_install(backend, &cli_or_placeholder(), vault, &env);
-            (remind_bg::installed(backend, vault, &env), remind_bg::describe(backend, &plan))
+            let lines = match remind_bg::plan_install(backend, &cli_or_placeholder(), vault, &env) {
+                Ok(plan) => remind_bg::describe(backend, &plan),
+                Err(e) => vec![e],
+            };
+            (remind_bg::installed(backend, vault, &env), lines)
         }
         None => (false, vec!["No home folder was found.".into()]),
     };
@@ -65,7 +68,8 @@ fn toggle(st: &mut State, on: bool) {
             st.lines = if on {
                 remind_bg::describe(st.backend, &plan)
             } else {
-                remind_bg::describe(st.backend, &remind_bg::plan_install(st.backend, &cli_or_placeholder(), &st.vault, &env))
+                remind_bg::plan_install(st.backend, &cli_or_placeholder(), &st.vault, &env)
+                    .map_or_else(|e| vec![e], |plan| remind_bg::describe(st.backend, &plan))
             };
             st.message = Some((if on { "Installed. Reminders now show even when Quire is closed." } else { "Removed." }.into(), false));
         }
