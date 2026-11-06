@@ -28,6 +28,27 @@ pub struct Scene {
     pub files: BTreeMap<String, FileRef>,
 }
 
+/// What a drawing may hold before Quire shows "too large" instead
+/// (0.10.1 security review #7): a drawing comes from another device or an
+/// agent, and is drawn each time a note that embeds it is shown.
+pub mod limits {
+    /// The drawing's text (JSON, or the note), in bytes.
+    pub const MAX_TEXT: usize = 32 << 20;
+    /// UTF-16 units a compressed drawing may unpack to (32 MiB).
+    pub const MAX_UNPACKED: usize = 16 << 20;
+    /// Entries in the decompression dictionary.
+    pub const MAX_DICT: usize = 1 << 20;
+    /// Elements in one drawing.
+    pub const MAX_ELEMENTS: usize = 50_000;
+    /// Points in all the drawing's lines, arrows and freehand strokes.
+    pub const MAX_POINTS: usize = 1_000_000;
+    /// Pictures (files) in one drawing.
+    pub const MAX_FILES: usize = 1_000;
+}
+
+/// The error for a drawing over the [`limits`].
+pub const TOO_LARGE: &str = "drawing too large to show";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileRef {
     /// `data:image/png;base64,…`
@@ -167,8 +188,16 @@ fn element(v: &Value) -> Option<Element> {
 
 /// Read Excalidraw JSON (the `.excalidraw` file, or a note's drawing).
 pub fn parse_json(json: &str) -> Result<Scene, String> {
+    if json.len() > limits::MAX_TEXT {
+        return Err(TOO_LARGE.into());
+    }
     let v: Value = serde_json::from_str(json).map_err(|e| format!("the drawing can't be read: {e}"))?;
     let elements = v.get("elements").and_then(Value::as_array).ok_or("the drawing has no elements")?;
+    let points: usize = elements.iter().filter_map(|e| e.get("points").and_then(Value::as_array)).map(Vec::len).sum();
+    let files = v.get("files").and_then(Value::as_object).map_or(0, serde_json::Map::len);
+    if elements.len() > limits::MAX_ELEMENTS || points > limits::MAX_POINTS || files > limits::MAX_FILES {
+        return Err(TOO_LARGE.into());
+    }
     let background = v.pointer("/appState/viewBackgroundColor").and_then(Value::as_str).and_then(Rgba::parse);
     let mut files = BTreeMap::new();
     if let Some(fs) = v.get("files").and_then(Value::as_object) {
@@ -196,12 +225,19 @@ fn drawing_block(md: &str) -> Option<(&str, String)> {
 
 /// Read a `.excalidraw.md` note or a `.excalidraw` file.
 pub fn parse(text: &str) -> Result<Scene, String> {
+    if text.len() > limits::MAX_TEXT {
+        return Err(TOO_LARGE.into());
+    }
     if text.trim_start().starts_with('{') {
         return parse_json(text);
     }
     let (lang, body) = drawing_block(text).ok_or("this note has no ## Drawing section")?;
     let json = match lang {
-        "compressed-json" => lz_decompress_base64(&body).ok_or("the compressed drawing can't be read")?,
+        "compressed-json" => match lz_unpack_base64(&body) {
+            Ok(json) => json,
+            Err(Lz::TooLarge) => return Err(TOO_LARGE.into()),
+            Err(Lz::Invalid) => return Err("the compressed drawing can't be read".into()),
+        },
         _ => body,
     };
     let mut scene = parse_json(&json)?;
@@ -216,6 +252,9 @@ pub fn parse(text: &str) -> Result<Scene, String> {
                 && let Some(link) = target.trim().strip_prefix("[[").and_then(|t| t.strip_suffix("]]"))
             {
                 let link = link.split('|').next().unwrap_or(link);
+                if scene.files.len() >= limits::MAX_FILES {
+                    return Err(TOO_LARGE.into());
+                }
                 scene.files.entry(id.trim().to_string()).or_insert_with(|| FileRef::Vault(link.to_string()));
             }
         }
@@ -231,23 +270,68 @@ pub fn is_drawing(path: &str) -> bool {
 
 // ---------------------------------------------------------------- LZ-string
 
+/// Why a compressed drawing wasn't unpacked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lz {
+    /// Not LZ-string data.
+    Invalid,
+    /// Over [`limits::MAX_UNPACKED`] or [`limits::MAX_DICT`].
+    TooLarge,
+}
+
 /// LZ-string's `decompressFromBase64` (what Excalidraw and its Obsidian
-/// plugin use); whitespace in the input is ignored.
+/// plugin use); whitespace in the input is ignored. `None` when it can't be
+/// read or is over the [`limits`].
 pub fn lz_decompress_base64(input: &str) -> Option<String> {
+    lz_unpack_base64(input).ok()
+}
+
+/// [`lz_decompress_base64`], saying why it failed.
+pub fn lz_unpack_base64(input: &str) -> Result<String, Lz> {
     const KEY: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
     let vals: Vec<u32> = input
         .bytes()
         .filter(|b| !b.is_ascii_whitespace())
         .map(|b| KEY.iter().position(|k| *k == b).map(|i| i as u32))
-        .collect::<Option<_>>()?;
+        .collect::<Option<_>>()
+        .ok_or(Lz::Invalid)?;
     if vals.is_empty() {
-        return Some(String::new());
+        return Ok(String::new());
     }
     let units = lz_decompress(&vals, 32)?;
-    String::from_utf16(&units).ok()
+    String::from_utf16(&units).map_err(|_| Lz::Invalid)
 }
 
-fn lz_decompress(data: &[u32], reset: u32) -> Option<Vec<u16>> {
+/// A dictionary entry: the entry it extends (`NONE` for one unit), its
+/// last unit, its first unit and its length. Entries are never copied, so
+/// the dictionary grows by a few bytes per code however long they get
+/// (it used to hold a full copy of each, which grew quadratically).
+#[derive(Clone, Copy)]
+struct Entry {
+    prefix: u32,
+    last: u16,
+    first: u16,
+    len: u32,
+}
+
+const NONE: u32 = u32::MAX;
+
+/// Append entry `i` to `out`.
+fn spell(dict: &[Entry], i: usize, out: &mut Vec<u16>) {
+    let start = out.len();
+    let mut at = i;
+    loop {
+        let e = dict[at];
+        out.push(e.last);
+        if e.prefix == NONE {
+            break;
+        }
+        at = e.prefix as usize;
+    }
+    out[start..].reverse();
+}
+
+fn lz_decompress(data: &[u32], reset: u32) -> Result<Vec<u16>, Lz> {
     struct Bits<'a> {
         data: &'a [u32],
         val: u32,
@@ -273,58 +357,63 @@ fn lz_decompress(data: &[u32], reset: u32) -> Option<Vec<u16>> {
             bits
         }
     }
+    let single = |v: u16| Entry { prefix: NONE, last: v, first: v, len: 1 };
     let mut bits = Bits { data, val: data[0], pos: reset, index: 1, reset };
-    let mut dict: Vec<Vec<u16>> = vec![Vec::new(), Vec::new(), Vec::new()];
+    // Codes 0, 1 and 2 are markers, not entries.
+    let mut dict: Vec<Entry> = vec![single(0); 3];
     let mut enlarge: u32 = 4;
     let mut num_bits: u32 = 3;
     let first = match bits.read(2) {
         0 => bits.read(8) as u16,
         1 => bits.read(16) as u16,
-        _ => return Some(Vec::new()),
+        _ => return Ok(Vec::new()),
     };
-    dict.push(vec![first]);
-    let mut w = vec![first];
-    let mut out = w.clone();
+    dict.push(single(first));
+    let mut w = dict.len() - 1;
+    let mut out = vec![first];
     loop {
         if bits.index > data.len() + 1 {
-            return None;
+            return Err(Lz::Invalid);
         }
         let mut c = bits.read(num_bits) as usize;
         match c {
             0 | 1 => {
                 let v = bits.read(if c == 0 { 8 } else { 16 }) as u16;
-                dict.push(vec![v]);
+                dict.push(single(v));
                 c = dict.len() - 1;
                 enlarge -= 1;
             }
-            2 => return Some(out),
+            2 => return Ok(out),
             _ => {}
         }
         if enlarge == 0 {
             enlarge = 1 << num_bits;
             num_bits += 1;
         }
-        let entry = match c.cmp(&dict.len()) {
-            std::cmp::Ordering::Less => dict[c].clone(),
-            std::cmp::Ordering::Equal => {
-                let mut e = w.clone();
-                e.push(*w.first()?);
-                e
-            }
-            std::cmp::Ordering::Greater => return None,
+        let we = dict[w];
+        // The entry for `c`, and its first unit.
+        let (len, first) = match c.cmp(&dict.len()) {
+            std::cmp::Ordering::Less if c >= 3 => (dict[c].len, dict[c].first),
+            // KwKwK: w followed by w's first unit.
+            std::cmp::Ordering::Equal => (we.len + 1, we.first),
+            _ => return Err(Lz::Invalid),
         };
-        out.extend_from_slice(&entry);
-        let mut next = w;
-        next.push(*entry.first()?);
-        dict.push(next);
+        if out.len() + len as usize > limits::MAX_UNPACKED || dict.len() + 2 > limits::MAX_DICT {
+            return Err(Lz::TooLarge);
+        }
+        if c == dict.len() {
+            spell(&dict, w, &mut out);
+            out.push(we.first);
+        } else {
+            spell(&dict, c, &mut out);
+        }
+        dict.push(Entry { prefix: w as u32, last: first, first: we.first, len: we.len + 1 });
         enlarge -= 1;
-        w = entry;
+        // For KwKwK the entry pushed now is `c` itself.
+        w = c;
         if enlarge == 0 {
             enlarge = 1 << num_bits;
             num_bits += 1;
-        }
-        if out.len() > 64 << 20 {
-            return None;
         }
     }
 }
@@ -734,6 +823,161 @@ mod tests {
         assert_eq!(lz_decompress_base64("BIUwNmD2A0AECKBXAlgJxAQloYDIg===").as_deref(), Some("Hello, Quire! ☃"));
         assert_eq!(lz_decompress_base64(""), Some(String::new()));
         assert_eq!(lz_decompress_base64("!!"), None);
+    }
+
+    /// LZ-string's `compressToBase64`, for tests (a straight port of
+    /// lz-string 1.5.0's `_compress` with 6 bits per character).
+    fn lz_compress_base64(input: &[u16]) -> String {
+        use std::collections::{HashMap, HashSet};
+        const KEY: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
+        struct Out {
+            data: String,
+            val: u32,
+            pos: u32,
+        }
+        impl Out {
+            fn bit(&mut self, b: u32) {
+                self.val = (self.val << 1) | b;
+                if self.pos == 5 {
+                    self.pos = 0;
+                    self.data.push(KEY[self.val as usize] as char);
+                    self.val = 0;
+                } else {
+                    self.pos += 1;
+                }
+            }
+            fn bits(&mut self, mut v: u32, n: u32) {
+                for _ in 0..n {
+                    self.bit(v & 1);
+                    v >>= 1;
+                }
+            }
+        }
+        // Words as (code of the word without its last unit, last unit).
+        let mut singles: HashMap<u16, u32> = HashMap::new();
+        let mut words: HashMap<(u32, u16), u32> = HashMap::new();
+        let mut to_create: HashSet<u16> = HashSet::new();
+        let (mut enlarge, mut size, mut num_bits) = (2u32, 3u32, 2u32);
+        // The current word: its code, and its unit when it is one unit long.
+        let mut w: Option<(u32, Option<u16>)> = None;
+        let mut out = Out { data: String::new(), val: 0, pos: 0 };
+        let step = |enlarge: &mut u32, num_bits: &mut u32| {
+            *enlarge -= 1;
+            if *enlarge == 0 {
+                *enlarge = 1 << *num_bits;
+                *num_bits += 1;
+            }
+        };
+        let emit = |w: (u32, Option<u16>), out: &mut Out, to_create: &mut HashSet<u16>, enlarge: &mut u32, num_bits: &mut u32| {
+            match w.1 {
+                Some(c) if to_create.remove(&c) => {
+                    if c < 256 {
+                        out.bits(0, *num_bits);
+                        out.bits(u32::from(c), 8);
+                    } else {
+                        out.bits(1, *num_bits);
+                        out.bits(u32::from(c), 16);
+                    }
+                    step(enlarge, num_bits);
+                }
+                _ => out.bits(w.0, *num_bits),
+            }
+            step(enlarge, num_bits);
+        };
+        for &c in input {
+            if let std::collections::hash_map::Entry::Vacant(e) = singles.entry(c) {
+                e.insert(size);
+                size += 1;
+                to_create.insert(c);
+            }
+            match w {
+                None => w = Some((singles[&c], Some(c))),
+                Some(cur) => {
+                    if let Some(&code) = words.get(&(cur.0, c)) {
+                        w = Some((code, None));
+                    } else {
+                        emit(cur, &mut out, &mut to_create, &mut enlarge, &mut num_bits);
+                        words.insert((cur.0, c), size);
+                        size += 1;
+                        w = Some((singles[&c], Some(c)));
+                    }
+                }
+            }
+        }
+        if let Some(cur) = w {
+            emit(cur, &mut out, &mut to_create, &mut enlarge, &mut num_bits);
+        }
+        out.bits(2, num_bits);
+        loop {
+            out.val <<= 1;
+            if out.pos == 5 {
+                out.data.push(KEY[out.val as usize] as char);
+                break;
+            }
+            out.pos += 1;
+        }
+        while !out.data.len().is_multiple_of(4) {
+            out.data.push('=');
+        }
+        out.data
+    }
+
+    /// A small fixed-seed generator for the property tests.
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+    }
+
+    /// Property: whatever LZ-string packs, the (memory-bounded) unpacker
+    /// gives back, including runs that use `KwKwK` codes.
+    #[test]
+    fn lz_unpacks_whatever_lz_string_packs() {
+        assert_eq!(lz_compress_base64(&"Hello, Quire! ☃".encode_utf16().collect::<Vec<_>>()), "BIUwNmD2A0AECKBXAlgJxAQloYDIg===");
+        let alphabets: [&[char]; 3] = [&['a', 'b'], &['a', 'b', 'c', ' ', '{', '"'], &['x', 'é', '☃', '中', '\n']];
+        let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+        for case in 0..400 {
+            let alpha = alphabets[case % 3];
+            let len = (rng.next() % 3000) as usize;
+            let text: String =
+                (0..len)
+                    .map(|i| {
+                        if rng.next().is_multiple_of(4) {
+                            alpha[i % alpha.len()]
+                        } else {
+                            alpha[(rng.next() % alpha.len() as u64) as usize]
+                        }
+                    })
+                    .collect();
+            let packed = lz_compress_base64(&text.encode_utf16().collect::<Vec<_>>());
+            assert_eq!(lz_decompress_base64(&packed).as_deref(), Some(text.as_str()), "case {case}: {text:?}");
+        }
+        let run = "a".repeat(100_000);
+        assert_eq!(lz_decompress_base64(&lz_compress_base64(&run.encode_utf16().collect::<Vec<_>>())), Some(run));
+    }
+
+    /// 0.10.1 security review #7: a small compressed drawing that unpacks to
+    /// more than the limit is refused as "too large", without unpacking it.
+    #[test]
+    fn a_compressed_drawing_bomb_is_too_large_to_show() {
+        let n = limits::MAX_UNPACKED + 1_000;
+        let bomb = lz_compress_base64(&vec![u16::from(b'a'); n]);
+        assert!(bomb.len() < 40_000, "{} bytes", bomb.len());
+        let started = std::time::Instant::now();
+        assert_eq!(lz_unpack_base64(&bomb), Err(Lz::TooLarge));
+        assert!(started.elapsed() < std::time::Duration::from_secs(20));
+        let note = format!("# Excalidraw Data\n\n## Drawing\n```compressed-json\n{bomb}\n```\n");
+        assert_eq!(parse(&note).unwrap_err(), TOO_LARGE);
+        // Too many elements or points.
+        let many = format!("{{\"elements\": [{}]}}", vec!["{\"type\":\"rectangle\"}"; limits::MAX_ELEMENTS + 1].join(","));
+        assert_eq!(parse(&many).unwrap_err(), TOO_LARGE);
+        let pts = format!("{{\"elements\": [{{\"type\":\"line\",\"points\":[{}]}}]}}", vec!["[0,0]"; limits::MAX_POINTS + 1].join(","));
+        assert_eq!(parse(&pts).unwrap_err(), TOO_LARGE);
+        assert!(parse(&format!("{{\"elements\": [{}]}}", vec!["{\"type\":\"rectangle\"}"; 100].join(","))).is_ok());
     }
 
     #[test]
