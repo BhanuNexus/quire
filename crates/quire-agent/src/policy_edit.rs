@@ -121,6 +121,46 @@ impl PolicyDoc {
         }
     }
 
+    /// Revoke a client (0.11): denied everything, and its reads logged
+    /// from now on. `false` gives its access back (a widening).
+    pub fn set_revoked(&mut self, key: &str, on: bool) {
+        let c = self.client(key);
+        if on {
+            c["revoked"] = value(true);
+            c["log_reads"] = value(true);
+        } else {
+            c.remove("revoked");
+        }
+    }
+
+    /// Limit a client to tags and folders (`None`: no limit of that kind).
+    pub fn set_allow(&mut self, key: &str, tags: Option<&[String]>, folders: Option<&[String]>) {
+        let c = self.client(key);
+        for (k, v) in [("allow_tags", tags), ("allow_folders", folders)] {
+            match v {
+                Some(list) => {
+                    let mut a = toml_edit::Array::new();
+                    for x in list {
+                        a.push(x.as_str());
+                    }
+                    c[k] = value(a);
+                }
+                None => {
+                    c.remove(k);
+                }
+            }
+        }
+    }
+
+    /// "AI off" for the vault.
+    pub fn set_ai_off(&mut self, off: bool) {
+        if off {
+            self.doc["ai"] = value("off");
+        } else {
+            self.doc.remove("ai");
+        }
+    }
+
     pub fn remove_client(&mut self, key: &str) {
         if let Some(t) = self.doc.get_mut("clients").and_then(Item::as_table_mut) {
             t.remove(key);

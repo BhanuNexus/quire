@@ -874,3 +874,53 @@ fn mcp_shares_the_port_and_oauth_is_approved_in_the_web_app() {
     );
     assert_eq!(r.status, 401);
 }
+
+/// 0.11: a locked folder doesn't exist for the web app (serve holds no
+/// keys), nor do its encrypted files or its key file; and nothing plain can
+/// be saved into it from the web.
+#[test]
+fn locked_folders_dont_exist_for_the_web() {
+    let files: &[(&str, &str)] = &[
+        ("Welcome.md", "# Welcome\n\nSee [[Diary/Day]]. #start\n"),
+        ("Diary/Day.md", "# Day\n\nLocked thoughts about the café.\n"),
+        ("Diary/pic.png", "PNG"),
+    ];
+    let dir = tempfile::tempdir().unwrap();
+    let pre = dir.path().join("pre");
+    for (p, t) in files {
+        write(&pre, p, t);
+    }
+    let v = Vault::open_local(&pre).unwrap();
+    quire_app::vault::lock::lock_folder(&v, "Diary", Some("pass phrase"), quire_app::vault::lock::Kdf::TEST, 1).unwrap();
+    let locked: Vec<(String, Vec<u8>)> = ["Diary/Day.md.qenc", "Diary/pic.png.qenc", "Diary/quire-lock.json"]
+        .iter()
+        .map(|p| ((*p).to_string(), std::fs::read(pre.join(p)).unwrap()))
+        .collect();
+    let env = start_with(&[("Welcome.md", files[0].1)], false, |_| {});
+    for (p, b) in &locked {
+        std::fs::create_dir_all(env.root.join("Diary")).unwrap();
+        std::fs::write(env.root.join(p), b).unwrap();
+    }
+    let mut b = Browser::signed_in(&env);
+    for p in [
+        "/n/Diary/Day.md",
+        "/n/Diary/Day.md.qenc",
+        "/f/Diary/Day.md.qenc",
+        "/f/Diary/pic.png.qenc",
+        "/f/Diary/quire-lock.json",
+        "/d/Diary",
+        "/api/tree?dir=Diary",
+        "/edit/Diary/Day.md",
+    ] {
+        let r = b.get(p);
+        assert_eq!(r.status, 404, "{p}: {}", r.body);
+    }
+    let home = b.get("/");
+    assert!(!home.body.contains("Diary"), "{}", home.body);
+    let q = b.get("/api/quick?q=day");
+    assert!(!q.body.contains("Diary"), "{}", q.body);
+    let csrf = b.csrf();
+    let r = b.post("/new", &[("_csrf", &csrf), ("folder", "Diary"), ("title", "Sneak")]);
+    assert!(r.status >= 400 || !r.body.contains("Sneak"), "{} {}", r.status, r.body);
+    assert!(!env.root.join("Diary/Sneak.md").exists(), "nothing plain is written into a locked folder");
+}

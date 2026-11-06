@@ -271,6 +271,9 @@ enum Prepared {
 
 fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: &Sender<SemMsg>) {
     let write = || index.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    // The vault last loaded: a note in one of its locked folders (0.11) is
+    // never indexed, whoever sends it (a save, a watcher event, a job).
+    let mut loaded: Option<Vault> = None;
     while let Ok(first) = rx.recv() {
         shared.busy.store(true, Ordering::Relaxed);
         // Drain whatever else is queued so a burst of saves costs one graph rebuild.
@@ -285,6 +288,7 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
             match msg {
                 IndexMsg::Load(vault) => {
                     changed = true;
+                    loaded = Some(vault.clone());
                     let paths = vault.notes().unwrap_or_default();
                     shared.total.store(paths.len(), Ordering::Relaxed);
                     shared.indexed.store(0, Ordering::Relaxed);
@@ -293,6 +297,10 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                 }
                 IndexMsg::Upsert { path, source } => {
                     changed = true;
+                    if loaded.as_ref().is_some_and(|v| v.locked_folder(&path).is_some()) {
+                        prepared.push(Prepared::Remove(path));
+                        continue;
+                    }
                     prepared.push(Prepared::Note(Box::new((NoteRecord::from_source(path, &source), source, now_ms()))));
                 }
                 IndexMsg::Remove(path) => {
@@ -300,7 +308,13 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                     prepared.push(Prepared::Remove(path));
                 }
                 // Attachment text isn't in the semantic index yet: no rebuild.
-                IndexMsg::UpsertAttachment(text) => prepared.push(Prepared::Attachment(text)),
+                IndexMsg::UpsertAttachment(text) => {
+                    if loaded.as_ref().is_some_and(|v| v.locked_folder(&text.path).is_some()) {
+                        prepared.push(Prepared::RemoveAttachment(text.path));
+                    } else {
+                        prepared.push(Prepared::Attachment(text));
+                    }
+                }
                 IndexMsg::RemoveAttachment(path) => prepared.push(Prepared::RemoveAttachment(path)),
                 IndexMsg::Flush(reply) => waiters.push(reply),
                 IndexMsg::Shutdown => shutdown = true,

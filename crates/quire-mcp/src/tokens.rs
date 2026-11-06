@@ -402,6 +402,17 @@ impl TokenStore {
         })
     }
 
+    /// Delete every token that acts as `actor` (`token:<name>`,
+    /// `oauth:<client>`): Settings → Agents → Connections → Revoke (0.11).
+    /// Returns how many went.
+    pub fn revoke_actor(&self, actor: &str) -> Result<usize, String> {
+        self.update(|list| {
+            let before = list.len();
+            list.retain(|r| r.actor != actor);
+            Ok(before - list.len())
+        })
+    }
+
     /// RFC 7009: revoke the family of a presented token. Unknown tokens are fine.
     pub fn revoke_token(&self, token: &str) -> Result<(), String> {
         let h = hash(token);

@@ -193,8 +193,69 @@ pub struct ClientPolicy {
     pub default: Option<Mode>,
     pub zones: BTreeMap<String, Mode>,
     pub approve_in_client: bool,
+    /// Revoked in Settings → Agents → Connections (0.11): denied every path,
+    /// and a stdio server for this key refuses to start.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub revoked: bool,
+    /// Record this client's reads in the ledger even when the device
+    /// doesn't log reads (set on revoke, so a comeback is visible).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub log_reads: bool,
+    /// Only notes carrying one of these tags (0.11, Bear-style). Absent: no
+    /// tag limit. With `allow_folders`, a note in either passes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_tags: Option<Vec<String>>,
+    /// Only notes under one of these folders (0.11).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_folders: Option<Vec<String>>,
     #[serde(flatten)]
     pub other: toml::Table,
+}
+
+impl ClientPolicy {
+    /// Whether this client is limited to chosen tags or folders.
+    pub const fn limited(&self) -> bool {
+        self.allow_tags.is_some() || self.allow_folders.is_some()
+    }
+
+    /// Whether a note at `path` with `tags` is inside this client's allow
+    /// lists (always, when it has none). `#work/q4` counts as `work`.
+    pub fn allows(&self, path: &str, tags: &[String]) -> bool {
+        if !self.limited() {
+            return true;
+        }
+        let in_folder = self.allow_folders.as_ref().is_some_and(|fs| {
+            fs.iter().any(|f| {
+                let f = f.trim().trim_start_matches("./").trim_end_matches('/');
+                !f.is_empty() && zone_matches(&format!("{f}/"), path)
+            })
+        });
+        let tagged = self.allow_tags.as_ref().is_some_and(|want| {
+            want.iter().any(|w| {
+                let w = w.trim().trim_start_matches('#');
+                !w.is_empty()
+                    && tags.iter().any(|t| {
+                        let t = t.trim_start_matches('#');
+                        t.eq_ignore_ascii_case(w)
+                            || (t.len() > w.len()
+                                && t.is_char_boundary(w.len())
+                                && t[..w.len()].eq_ignore_ascii_case(w)
+                                && t.as_bytes()[w.len()] == b'/')
+                    })
+            })
+        });
+        in_folder || tagged
+    }
+}
+
+/// The vault's AI switch (0.11): `ai = "off"` blocks every agent and every
+/// AI provider for this vault.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AiSwitch {
+    #[default]
+    On,
+    Off,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -209,6 +270,9 @@ pub struct Policy {
     /// Write contracts (design §A.7), kept as written until WS-A types them.
     #[serde(rename = "contract")]
     pub contracts: Vec<toml::Table>,
+    /// "AI off" for this vault (0.11).
+    #[serde(skip_serializing_if = "is_on")]
+    pub ai: AiSwitch,
     #[serde(flatten)]
     pub other: toml::Table,
 }
@@ -225,9 +289,15 @@ impl Default for Policy {
             limits: Limits::default(),
             clients: BTreeMap::new(),
             contracts: Vec::new(),
+            ai: AiSwitch::On,
             other: toml::Table::new(),
         }
     }
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref, reason = "serde's skip_serializing_if passes a reference")]
+fn is_on(a: &AiSwitch) -> bool {
+    *a == AiSwitch::On
 }
 
 /// A hard rule that applies whatever the policy says.
@@ -276,6 +346,22 @@ impl Policy {
     /// Made by a newer Quire: read what we can, never rewrite.
     pub const fn is_newer(&self) -> bool {
         self.format > POLICY_FORMAT
+    }
+
+    /// Whether AI is off for this vault.
+    pub fn ai_off(&self) -> bool {
+        self.ai == AiSwitch::Off
+    }
+
+    /// The `[clients]` entry that governs `key`: its own, or for an
+    /// unverified client (`mcp:name?`) the entry of the name it reported.
+    pub fn client(&self, key: &str) -> Option<&ClientPolicy> {
+        self.clients.get(key).or_else(|| self.clients.get(key.strip_suffix('?')?))
+    }
+
+    /// Whether `key` was revoked (unverified keys by the name they report).
+    pub fn revoked(&self, key: &str) -> bool {
+        self.client(key).is_some_and(|c| c.revoked)
     }
 
     /// The zone that governs `path`: the longest literal prefix wins, and
@@ -478,6 +564,38 @@ pub fn widenings(old: &Policy, new: &Policy) -> Vec<Widening> {
     for (k, c) in &new.clients {
         if c.approve_in_client && !old.clients.get(k).is_some_and(|o| o.approve_in_client) {
             out.push(Widening { what: format!("Agent {k} could apply changes after approval in its own app") });
+        }
+    }
+    // 0.11: AI off, revoked clients, allow lists.
+    if old.ai_off() && !new.ai_off() {
+        out.push(Widening { what: "AI would be turned back on for this vault".into() });
+    }
+    for (k, o) in &old.clients {
+        let n = new.clients.get(k);
+        if o.revoked && !n.is_some_and(|n| n.revoked) {
+            out.push(Widening { what: format!("Agent {k} would get its access back (it was revoked)") });
+        }
+        if o.limited() {
+            let empty = ClientPolicy::default();
+            let n = n.unwrap_or(&empty);
+            let lists = |c: &ClientPolicy| {
+                let norm = |v: &Option<Vec<String>>| {
+                    v.as_ref().map(|v| {
+                        v.iter().map(|s| s.trim().trim_matches(['#', '/']).to_lowercase()).collect::<std::collections::BTreeSet<_>>()
+                    })
+                };
+                (norm(&c.allow_tags), norm(&c.allow_folders))
+            };
+            let ((old_tags, old_folders), (new_tags, new_folders)) = (lists(o), lists(n));
+            // Wider: a limit dropped, or a list gained an entry.
+            let gained = |a: &Option<std::collections::BTreeSet<String>>, b: &Option<std::collections::BTreeSet<String>>| match (a, b) {
+                (Some(a), Some(b)) => !b.is_subset(a),
+                (None, Some(b)) => !b.is_empty(),
+                _ => false,
+            };
+            if !n.limited() || gained(&old_tags, &new_tags) || gained(&old_folders, &new_folders) {
+                out.push(Widening { what: format!("Agent {k} could see notes outside the tags and folders it was limited to") });
+            }
         }
     }
     out

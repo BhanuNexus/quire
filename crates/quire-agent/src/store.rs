@@ -151,6 +151,9 @@ struct LastActors {
     imported: HashSet<NotePath>,
 }
 
+/// Tags per note, with the file's modification time when read.
+type TagCache = HashMap<NotePath, (Option<std::time::SystemTime>, Vec<String>)>;
+
 type CachedPolicy = Option<((Option<ContentHash>, Option<std::time::SystemTime>, u64), Arc<PolicyState>)>;
 
 struct Inner {
@@ -166,6 +169,8 @@ struct Inner {
     /// Held while a rate counter file is read and rewritten.
     rate: Mutex<()>,
     last: RwLock<LastActors>,
+    /// Tags per note for allow lists, by modification time (0.11).
+    tags: Mutex<TagCache>,
 }
 
 /// Agent state of one vault on this device. Cheap to clone.
@@ -298,7 +303,8 @@ impl AgentStore {
         let state = dir.map_or_else(|| StateStore::Memory(RwLock::default()), |d| StateStore::Dir(StateDir::new(d)));
         Self {
             inner: Arc::new(Inner {
-                vault: vault.clone(),
+                // No keys: agents never read a locked folder, even an unlocked one (0.11).
+                vault: vault.without_keys(),
                 device,
                 clock,
                 policy: RwLock::new(None),
@@ -307,6 +313,7 @@ impl AgentStore {
                 state: RwLock::new(Arc::new(state)),
                 rate: Mutex::new(()),
                 last: RwLock::new(LastActors::default()),
+                tags: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -463,9 +470,29 @@ impl AgentStore {
     fn candidates(&self, actor: &Actor, path: &NotePath) -> Vec<(Mode, String)> {
         let p = path.as_str();
         let mut candidates: Vec<(Mode, String)> = Vec::new();
+        // 0.11: locked folders are invisible to everyone but the person,
+        // locked or not, and so are encrypted files and key files anywhere.
+        if quire_vault::lock::is_encrypted_name(p)
+            || quire_vault::lock::is_key_file(p)
+            || quire_vault::lock::folder_of(self.inner.vault.storage().as_ref(), p).is_some()
+        {
+            candidates.push((Mode::Deny, "locked folder".into()));
+        }
         if actor.kind == ActorKind::Agent {
             for pol in self.policy_state().active() {
                 candidates.extend(pol.modes_for(Some(actor.policy_key()), actor.unverified, p));
+                // 0.11: AI off, revoked clients, allow lists.
+                if pol.ai_off() {
+                    candidates.push((Mode::Deny, "AI is off for this vault".into()));
+                }
+                if let Some(c) = pol.client(&actor.id) {
+                    if c.revoked {
+                        candidates.push((Mode::Deny, format!("access revoked ({})", actor.policy_key())));
+                    }
+                    if c.limited() && !c.allows(p, &self.tags_of(path)) {
+                        candidates.push((Mode::Deny, format!("outside the tags and folders {} may see", actor.policy_key())));
+                    }
+                }
             }
         } else {
             candidates.push((Mode::Direct, String::new()));
@@ -519,6 +546,15 @@ impl AgentStore {
         let raw =
             paths.iter().any(|p| st.active().iter().chain([&&Policy::default()]).any(|pol| pol.role_of(p.as_str()) == Some(ZoneRole::Raw)));
         if raw || paths.iter().any(|p| self.imported(p)) {
+            return Trust::Untrusted;
+        }
+        // 0.11: a skill installed from someone else (`quire-cli skill install --from`)
+        // has its source recorded beside it, and stays data.
+        let storage = self.inner.vault.storage();
+        if paths
+            .iter()
+            .any(|p| p.file_name().eq_ignore_ascii_case("skill.md") && storage.exists(&NotePath::join(p.folder(), "SKILL.source.json")))
+        {
             return Trust::Untrusted;
         }
         let owned = if text.is_none() { self.inner.vault.storage().read(path).ok() } else { None };
@@ -1316,9 +1352,78 @@ impl AgentStore {
         self.ledger().read(q)
     }
 
+    /// The tags of the note at `path` (front matter and inline), read from
+    /// the file itself and kept while its modification time stays.
+    fn tags_of(&self, path: &NotePath) -> Vec<String> {
+        if !path.is_markdown() {
+            return Vec::new();
+        }
+        let storage = self.inner.vault.storage();
+        let stamp = storage.modified(path).ok();
+        let mut cache = self.inner.tags.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((t, tags)) = cache.get(path)
+            && *t == stamp
+            && stamp.is_some()
+        {
+            return tags.clone();
+        }
+        let tags = storage.read(path).map(|text| quire_markdown::extract::extract(&text).tags).unwrap_or_default();
+        if cache.len() > 50_000 {
+            cache.clear();
+        }
+        cache.insert(path.clone(), (stamp, tags.clone()));
+        tags
+    }
+
+    /// Whether `actor`'s reads are logged: the device logs reads, or its
+    /// policy entry asks for it (a revoked client).
+    pub fn logs_reads_of(&self, actor: &Actor) -> bool {
+        actor.kind == ActorKind::Agent
+            && (self.device_state().log_reads
+                || self.policy_state().active().iter().any(|p| p.client(&actor.id).is_some_and(|c| c.log_reads)))
+    }
+
+    /// Delete this device's agent suggestions (pending and archived) that
+    /// touch a note under `folder`: they hold its text, and the folder was
+    /// just locked (0.11). Returns how many went.
+    pub fn forget_suggestions_under(&self, folder: &str) -> usize {
+        let prefix = format!("{}/", folder.trim_matches('/').to_lowercase());
+        let touches = |p: &Proposal| p.changes.iter().any(|c| c.paths().iter().any(|x| x.as_str().to_lowercase().starts_with(&prefix)));
+        let store = ProposalStore::new(self.inner.vault.clone());
+        let mut n = 0;
+        for p in store.list().iter().filter(|p| touches(p)) {
+            // Archived, then the archived copy deleted: nothing of it is left.
+            if store.archive(&p.id).is_ok() {
+                store.remove_archived(p);
+                n += 1;
+            }
+        }
+        for p in store.archived(self.now_ms()).iter().filter(|p| touches(p)) {
+            store.remove_archived(p);
+            n += 1;
+        }
+        n
+    }
+
+    /// Why `client` (a Quire-assigned key) may not connect at all: it was
+    /// revoked, or AI is off for the vault. Checked when a stdio server starts.
+    pub fn refused(&self, client: &str) -> Option<String> {
+        let st = self.policy_state();
+        if st.active().iter().any(|p| p.ai_off()) {
+            return Some("AI is off for this vault in Quire (Settings → Agents). No agent can use it until it is turned back on.".into());
+        }
+        if st.active().iter().any(|p| p.revoked(client)) {
+            let key = client.strip_suffix('?').unwrap_or(client);
+            return Some(format!(
+                "Access for {key} was revoked in Quire (Settings → Agents → Connections). Restore it there to connect again."
+            ));
+        }
+        None
+    }
+
     /// Record that `actor` read `path`, if this device logs reads.
     pub fn record_read(&self, actor: &Actor, path: &NotePath) {
-        if actor.kind == ActorKind::Agent && self.device_state().log_reads {
+        if self.logs_reads_of(actor) {
             self.record(&LedgerEntry::new(actor.clone(), Op::Read, self.now_ms()).path(path));
         }
     }

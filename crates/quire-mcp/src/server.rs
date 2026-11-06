@@ -178,6 +178,12 @@ impl std::fmt::Debug for Server {
 }
 
 impl Server {
+    /// Why the stdio client may not connect at all (0.11): its key was
+    /// revoked, or AI is off for the vault. The CLI exits with this.
+    pub fn refusal(&self) -> Option<String> {
+        self.core.refusal()
+    }
+
     /// Open the vault at `root` (stdio, 0.8's signature).
     pub fn open(root: &str, allow_write: bool) -> Result<Self, String> {
         Self::open_with(root, ServerConfig { allow_write, ..ServerConfig::default() })
@@ -439,6 +445,18 @@ impl Core {
         }
     }
 
+    /// Why this server's stdio client may not connect (revoked in
+    /// Settings → Agents → Connections, or AI off for the vault), checked
+    /// before serving; `None` when it may.
+    pub(crate) fn refusal(&self) -> Option<String> {
+        let id = self.config.client_key.as_deref().map(|k| client_actor_id(k).unwrap_or_else(|_| format!("mcp:{k}")));
+        let store = AgentStore::open(&self.vault, self.device.clone(), Arc::clone(&self.config.clock));
+        if let Some(d) = &self.config.state_dir {
+            store.set_state_dir(Some(d.clone()));
+        }
+        store.refused(id.as_deref().unwrap_or(""))
+    }
+
     /// Whether the agent policy file changed since last asked.
     fn policy_changed(&self) -> bool {
         let text = self.vault.storage().read(&NotePath::new(quire_agent::policy::POLICY_PATH)).unwrap_or_default();
@@ -595,6 +613,13 @@ impl Core {
             _ => {}
         }
         self.refresh();
+        // 0.11: a revoked client, or a vault with AI off, gets nothing.
+        if method != "server/discover" {
+            let actor = self.actor(conn, &params);
+            if let Some(why) = self.store(&actor, self.cap(conn)).refused(&actor.id) {
+                return Reply::Response(rpc_error(id, protocol::error(code::INVALID_REQUEST, &why)));
+            }
+        }
         let result = self.dispatch(&era, method, &params, conn, cancel);
         Reply::Response(match result {
             Ok(r) => rpc_result(id, if era.is_modern() { protocol::modern_result(r) } else { r }),
