@@ -25,14 +25,13 @@ pub(crate) struct ConnectionsUi {
     open: Option<String>,
     kinds: [bool; 4],
     filter: String,
-    confirm_revoke: Option<String>,
     /// (key, tags, folders) being edited.
     limits: Option<(String, String, String)>,
 }
 
 impl Default for ConnectionsUi {
     fn default() -> Self {
-        Self { cache: None, open: None, kinds: [true; 4], filter: String::new(), confirm_revoke: None, limits: None }
+        Self { cache: None, open: None, kinds: [true; 4], filter: String::new(), limits: None }
     }
 }
 
@@ -159,22 +158,19 @@ pub(crate) fn show(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut ConnectionsUi
                             st.cache = None;
                         }));
                     }
-                } else if st.confirm_revoke.as_deref() == Some(c.key.as_str()) {
-                    let what = if c.kind.uses_tokens() { "Its tokens are deleted" } else { "Its next start is refused" };
-                    ui.label(RichText::new(format!("Revoke {}? {what}.", c.label)).color(pal.danger));
-                    if ui.button(RichText::new("Revoke").color(pal.danger)).clicked() {
+                } else {
+                    let what = if c.kind.uses_tokens() {
+                        "Deletes its tokens: it must sign in again (and be approved) to come back."
+                    } else {
+                        "Its next start is refused and its reads are logged. Restore access undoes it."
+                    };
+                    if ui.button(RichText::new("Revoke").color(pal.danger)).on_hover_text(what).clicked() {
                         let c = c.clone();
                         later = Some(Box::new(move |ws, st| {
                             revoke(ws, &c);
-                            st.confirm_revoke = None;
                             st.cache = None;
                         }));
                     }
-                    if ui.button("Cancel").clicked() {
-                        st.confirm_revoke = None;
-                    }
-                } else if ui.button(RichText::new("Revoke").color(pal.danger)).clicked() {
-                    st.confirm_revoke = Some(c.key.clone());
                 }
             });
             if st.limits.as_ref().is_some_and(|(k, _, _)| *k == c.key) {
@@ -325,11 +321,7 @@ mod tests {
         let k = list.iter().find(|c| c.key == "mcp:claude-code").unwrap().clone();
         connections::set_allow(&store, &k, Some(&["work".to_string()]), Some(&["wiki/".to_string()])).unwrap();
         for (pal, width) in [(&crate::theme::LIGHT, 220.0_f32), (&crate::theme::DARK, 480.0)] {
-            let mut st = ConnectionsUi {
-                open: Some("mcp:claude-code".into()),
-                confirm_revoke: Some("mcp:claude-code".into()),
-                ..ConnectionsUi::default()
-            };
+            let mut st = ConnectionsUi { open: Some("mcp:claude-code".into()), ..ConnectionsUi::default() };
             let ctx = egui::Context::default();
             crate::theme::install_fonts(&ctx);
             let mut sizes = Vec::new();
