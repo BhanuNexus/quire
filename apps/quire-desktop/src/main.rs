@@ -17,6 +17,7 @@ mod audio_ui;
 mod base_surface;
 #[cfg(feature = "bench")]
 mod bench;
+mod board_ui;
 mod calendar_ui;
 mod canvas_ui;
 mod capture_key;
@@ -32,6 +33,7 @@ mod highlight;
 mod inbox_ui;
 #[cfg(test)]
 mod layout_check;
+mod map_ui;
 mod mcp_ui;
 mod meta_refactor_ui;
 mod onboarding_ui;
@@ -43,6 +45,7 @@ mod remind_ui;
 mod spell_ui;
 mod srs_ui;
 mod surfaces;
+mod task_ui;
 mod template_prompt_ui;
 mod theme;
 mod theme_ui;

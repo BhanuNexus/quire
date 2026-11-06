@@ -12,6 +12,8 @@ publish.workspace = true
 [dependencies]
 quire-markdown.workspace = true
 quire-vault.workspace = true
+# 0.11: task notes (TaskNotes names, time entries) in `from: tasks` views.
+quire-plan.workspace = true
 nucleo-matcher.workspace = true
 crossbeam-channel.workspace = true
 unicode-segmentation.workspace = true

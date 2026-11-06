@@ -36,6 +36,8 @@ pub enum Cell {
 pub struct TableRow {
     pub path: NotePath,
     pub cells: Vec<Cell>,
+    /// The `groupBy` value ("" when missing or not grouped).
+    pub group: String,
 }
 
 /// A base view, worked out.
@@ -50,6 +52,8 @@ pub struct Table {
     pub summaries: Vec<Option<(String, Result<String, String>)>>,
     /// The filter can't be used (a syntax error): nothing is shown.
     pub error: Option<String>,
+    /// `groupBy`: the groups in order (rows are sorted into them).
+    pub groups: Vec<String>,
 }
 
 /// A note as an expression sees it.
@@ -144,6 +148,7 @@ pub fn table(ws: &Workspace, base: &Base, view: usize, now: NaiveDateTime) -> Ta
     let Ok(found) = result.as_ref() else {
         return Table { error: result.as_ref().as_ref().err().cloned(), ..Table::default() };
     };
+    let group_of: std::collections::HashMap<NotePath, String> = found.rows.iter().map(|r| (r.path.clone(), r.group.clone())).collect();
     let ix = ws.index().read();
     let mut rows: Vec<(&NoteRecord, Option<i64>)> =
         found.rows.iter().filter_map(|r| ix.get(&r.path).map(|rec| (rec, ix.modified(&r.path)))).collect();
@@ -187,9 +192,21 @@ pub fn table(ws: &Workspace, base: &Base, view: usize, now: NaiveDateTime) -> Ta
                     }
                 })
                 .collect();
-            TableRow { path: r.path.clone(), cells }
+            let group = group_of.get(&r.path).cloned().unwrap_or_default();
+            TableRow { path: r.path.clone(), cells, group }
         })
         .collect();
+    // `groupBy`: rows by group (in the view's order of groups), keeping their order within.
+    let mut out_rows = out_rows;
+    let mut groups = Vec::new();
+    if let Some((_, desc)) = &v.group {
+        groups.clone_from(&found.groups);
+        if *desc {
+            groups.reverse();
+        }
+        let pos = |g: &str| groups.iter().position(|x| x.eq_ignore_ascii_case(g)).unwrap_or(usize::MAX);
+        out_rows.sort_by_key(|r| pos(&r.group));
+    }
     let summaries = v
         .columns
         .iter()
@@ -208,7 +225,7 @@ pub fn table(ws: &Workspace, base: &Base, view: usize, now: NaiveDateTime) -> Ta
         })
         .collect();
     let headings = v.columns.iter().map(|c| base.label(c)).collect();
-    Table { headings, rows: out_rows, total, summaries, error: None }
+    Table { headings, rows: out_rows, total, summaries, error: None, groups }
 }
 
 #[cfg(test)]

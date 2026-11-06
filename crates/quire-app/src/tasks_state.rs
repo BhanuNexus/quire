@@ -54,6 +54,8 @@ pub enum Action {
     /// "+ New" in a view, with the template's questions answered.
     New {
         template: NotePath,
+        /// 0.11: a title typed on a board ("+" in a column); else the template's `name:`.
+        title: Option<String>,
         folder: Option<String>,
         answers: Vec<(String, String)>,
         preset: Vec<(String, Value)>,
@@ -86,6 +88,58 @@ pub enum Action {
     OpenPeriod(Period, NaiveDate),
     /// Open an Obsidian `.base` as a note with quire-views.
     ConvertBase(NotePath),
+    /// 0.11: start (or with `None` stop) the task timer.
+    Timer {
+        task: Option<quire_plan::timer::TaskRef>,
+        pomodoro: bool,
+    },
+    /// 0.11: a task note's property set (`None` removes it), under the name the note uses.
+    SetTaskProperty {
+        path: NotePath,
+        prop: quire_plan::task_note::Prop,
+        value: Option<Value>,
+    },
+    /// 0.11: a board's setting changed (card order, swimlanes, a column colour).
+    ViewSetting {
+        target: BoardTarget,
+        setting: BoardSetting,
+    },
+    /// 0.11: a field of an inline task line set (`None` removes it).
+    SetTaskField {
+        path: NotePath,
+        offset: usize,
+        text: String,
+        field: quire_markdown::tasks::Field,
+        value: Option<String>,
+    },
+    /// 0.11: a plain note in `folder` with these properties ("+" on a board without a template).
+    NewNoteIn {
+        folder: String,
+        title: String,
+        preset: Vec<(String, Value)>,
+    },
+    /// 0.11: a new task note (and open it?).
+    NewTask(Box<quire_plan::task_note::NewTask>, bool),
+}
+
+/// Where a board's settings are written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BoardTarget {
+    /// A quire-view block in a note, found by its spec text.
+    Block { note: NotePath, spec: String },
+    /// View `view` of an Obsidian `.base` file.
+    Base { path: NotePath, view: usize },
+}
+
+/// A board setting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BoardSetting {
+    /// The hand-placed order of a column's cards (ids as `ViewRow::id`).
+    Order { column: String, ids: Vec<String> },
+    /// Swimlanes by a field, or none.
+    Lanes(Option<String>),
+    /// A column's colour, or none.
+    Color { column: String, color: Option<String> },
 }
 
 /// The agenda, for (index version, today).
@@ -104,6 +158,10 @@ pub struct TasksState {
     pub(crate) checked_new: HashSet<DocId>,
     /// The refactor dialog opens on this (tag?, name), from the caret.
     pub refactor_start: Option<(bool, String)>,
+    /// 0.11: the task timer and the vault's `[tasks]` prefs.
+    pub timer: crate::task_timer::TimerState,
+    /// 0.11: "New task…" from quick capture starts with this title.
+    pub new_task_title: Option<String>,
 }
 
 // Decoration action and widget ids: the kind in the top byte.
@@ -243,6 +301,36 @@ impl Workspace {
         }
     }
 
+    /// Set one field of an inline task (a card's due date or priority),
+    /// keeping the rest of its line.
+    pub fn set_task_field(
+        &mut self,
+        path: &NotePath,
+        offset: usize,
+        text: &str,
+        field: quire_markdown::tasks::Field,
+        value: Option<&str>,
+    ) -> bool {
+        let Some(src) = self.current_text(path) else { return false };
+        let Some(line_start) = find_task_line(&src, offset, text) else {
+            self.notify(NoticeLevel::Warn, format!("That task has moved in {}; open the note to change it", path.stem()));
+            return false;
+        };
+        let line_end = src[line_start..].find('\n').map_or(src.len(), |i| line_start + i);
+        let line = src[line_start..line_end].trim_end_matches('\r');
+        let Some(marker) = marker_in_line(line) else { return false };
+        let format = Format::from_setting(&self.settings.tasks.format);
+        let new_line = quire_markdown::tasks::set_field(line, marker, field, value, format);
+        let new_src = format!("{}{new_line}{}", &src[..line_start], &src[line_start + line.len()..]);
+        match self.write_note_with_history(path, &src, &new_src, crate::history_ops::now_ms()) {
+            Ok(_) => true,
+            Err(e) => {
+                self.notify(NoticeLevel::Error, e);
+                false
+            }
+        }
+    }
+
     /// The open document's recurring-task snapshot is stale after we edit it ourselves.
     fn forget_recurring(&mut self, path: &NotePath) {
         if let Some(d) = self.docs.iter().find(|d| d.path.as_ref() == Some(path)) {
@@ -251,8 +339,11 @@ impl Workspace {
         }
     }
 
-    /// "Convert task to note": the task on the caret's line becomes
-    /// `Tasks/<text>.md` (`type: task`) and the line links to it.
+    /// "Convert task to note": the task on the caret's line becomes a note
+    /// in the vault's task folder (`[tasks] folder`, `Tasks/`) and the line
+    /// links to it. Dates, priority, recurrence, reminder, tags, time spent
+    /// and the estimate carry over; the line keeps its indentation, bullet,
+    /// checkbox and `^block-id`. One undoable edit to the line.
     pub fn convert_task_to_note(&mut self) -> bool {
         let Some(doc) = self.active_doc() else { return false };
         let (line_no, _) = doc.buffer().line_col(doc.selection().head);
@@ -262,45 +353,86 @@ impl Workspace {
             self.notify(NoticeLevel::Info, "Put the caret on a task line (- [ ] …) to make it a note");
             return false;
         };
-        let title =
-            quire_vault::sanitize_title(&task.text.split_whitespace().filter(|w| !w.starts_with('#')).collect::<Vec<_>>().join(" "));
-        if title.is_empty() {
+        let new = quire_plan::task_note::from_inline(&task);
+        if quire_vault::sanitize_title(&new.title).trim().is_empty() {
             self.notify(NoticeLevel::Info, "This task has no text to name a note by");
             return false;
         }
-        let Some(vault) = self.vault().cloned() else { return false };
-        let Ok(path) = vault.unique_path("Tasks", &title) else { return false };
-        let mut fm = String::from("---\ntype: task\n");
-        let _ = writeln!(fm, "status: {}", if task.done { "done" } else { "todo" });
-        for (k, v) in [
-            ("due", &task.due),
-            ("scheduled", &task.scheduled),
-            ("start", &task.start),
-            ("recurrence", &task.recurrence),
-            ("reminder", &task.reminder),
-            ("completion", &task.done_on),
-        ] {
-            if let Some(v) = v {
-                fm.push_str(&quire_markdown::frontmatter::format_field(k, &Value::Str(v.clone())));
-            }
-        }
-        if task.priority.is_some() {
-            let _ = writeln!(fm, "priority: {}", quire_markdown::tasks::priority_word(task.priority));
-        }
-        let tags: Vec<&str> = task.text.split_whitespace().filter(|w| w.starts_with('#')).collect();
-        let body =
-            format!("{fm}---\n# {}\n{}", path.stem(), if tags.is_empty() { String::new() } else { format!("\n{}\n", tags.join(" ")) });
-        if let Err(e) = vault.write(&path, &body) {
-            self.notify(NoticeLevel::Error, e.to_string());
+        if task.text.trim_start().starts_with("[[") && task.text.trim_end().ends_with("]]") {
+            self.notify(NoticeLevel::Info, "This task already links to a note");
             return false;
         }
-        self.index.upsert(path.clone(), body);
-        let new_line = format!("{}[{}] [[{}]]", &line[..marker], if task.done { 'x' } else { ' ' }, path.stem());
+        let Some(path) = self.new_task(&new, false) else { return false };
+        let block_id = line
+            .trim_end()
+            .rsplit_once(" ^")
+            .map(|(_, id)| id)
+            .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'));
+        let mut new_line = format!("{}[{}] [[{}]]", &line[..marker], if task.done { 'x' } else { ' ' }, path.stem());
+        if let Some(id) = block_id {
+            let _ = write!(new_line, " ^{id}");
+        }
         let Some(doc) = self.active_doc_mut() else { return false };
         let start = doc.buffer().line_to_char(line_no);
         let end = start + line.chars().count();
         let _ = doc.apply(Transaction::replace(start, end, new_line), EditKind::Other);
-        self.notify(NoticeLevel::Info, format!("Made {}", path.as_str()));
+        true
+    }
+
+    /// "Convert task note back to a task line": on a line `- [ ] [[Note]]`
+    /// linking to a task note, the line becomes the task with its fields
+    /// (time spent as `[time:: …]`). The note goes to `.trash` only when it
+    /// holds nothing but its front matter and title; otherwise it stays, so
+    /// no text is lost.
+    pub fn convert_note_to_task(&mut self) -> bool {
+        let Some(doc) = self.active_doc() else { return false };
+        let from = doc.path.clone();
+        let (line_no, _) = doc.buffer().line_col(doc.selection().head);
+        let line = doc.buffer().line(line_no);
+        let line = line.trim_end_matches(['\n', '\r']).to_string();
+        let target = quire_plan::tasks::parse_line(&line).and_then(|(m, t)| {
+            let inner = t.text.trim().strip_prefix("[[")?.strip_suffix("]]")?;
+            let name = inner.split('|').next()?.split('#').next()?.trim().to_string();
+            Some((m, name))
+        });
+        let Some((marker, name)) = target else {
+            self.notify(NoticeLevel::Info, "Put the caret on a task line that links to a task note (- [ ] [[Note]])");
+            return false;
+        };
+        let found = self.index().read().resolve(&name, from.as_ref());
+        let Some(path) = found.or_else(|| self.vault()?.resolve(&name, from.as_ref())) else {
+            self.notify(NoticeLevel::Info, format!("There's no note “{name}”"));
+            return false;
+        };
+        let Some(note_text) = self.vault().and_then(|v| v.read(&path).ok()) else { return false };
+        let fm = quire_markdown::frontmatter::parse(&note_text);
+        let props = fm.as_ref().map(|f| f.fields.clone()).unwrap_or_default();
+        let title = self.index().read().get(&path).map_or_else(|| path.stem().to_string(), |r| r.title.clone());
+        let Some(note) = quire_plan::task_note::read(&props, &title, &self.task_prefs(), *Local::now().offset()) else {
+            self.notify(NoticeLevel::Info, format!("“{}” isn't a task note", path.stem()));
+            return false;
+        };
+        let format = Format::from_setting(&self.settings.tasks.format);
+        let new_line = quire_plan::task_note::to_inline(&line[..marker], &note, crate::task_timer::now(), format);
+        // Only an empty note goes: front matter, a heading with its title, nothing else.
+        let body = &note_text[fm.as_ref().map_or(0, |f| f.range.end)..];
+        let rest: Vec<&str> = body.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+        let empty =
+            rest.is_empty() || (rest.len() == 1 && rest[0].trim_start_matches('#').trim() == title.trim() && rest[0].starts_with("# "));
+        let Some(doc) = self.active_doc_mut() else { return false };
+        let start = doc.buffer().line_to_char(line_no);
+        let end = start + line.chars().count();
+        let _ = doc.apply(Transaction::replace(start, end, new_line), EditKind::Other);
+        if empty && !self.docs.iter().any(|d| d.path.as_ref() == Some(&path)) {
+            if let Some(v) = self.vault().cloned()
+                && v.trash(&path).is_ok()
+            {
+                self.index.remove(path.clone());
+                self.notify(NoticeLevel::Info, format!("Moved “{}” to .trash", path.stem()));
+            }
+        } else {
+            self.notify(NoticeLevel::Info, format!("Kept “{}”: it has more than its properties", path.stem()));
+        }
         true
     }
 
@@ -457,16 +589,39 @@ fn run_actions(ws: &mut Workspace) -> bool {
                 ws.toggle_task(&path, offset, &text);
             }
             Action::ToggleTaskNote { path, done } => {
-                ws.set_note_property(&path, "status", &Value::Str(if done { "done" } else { "todo" }.into()));
+                // 0.11: the vault's statuses; a recurring note moves to its next date.
+                let is_done = ws.task_notes().iter().find(|(p, _)| *p == path).is_some_and(|(_, n)| n.task.done);
+                if is_done != done {
+                    ws.toggle_task_note(&path);
+                }
+            }
+            Action::Timer { task, pomodoro } => match task {
+                Some(t) => {
+                    ws.start_timer(t, pomodoro);
+                }
+                None => {
+                    ws.stop_timer();
+                }
+            },
+            Action::SetTaskProperty { path, prop, value } => {
+                ws.set_task_property(&path, prop, value);
+            }
+            Action::ViewSetting { target, setting } => set_board(ws, &target, &setting),
+            Action::SetTaskField { path, offset, text, field, value } => {
+                ws.set_task_field(&path, offset, &text, field, value.as_deref());
+            }
+            Action::NewNoteIn { folder, title, preset } => new_note_in(ws, &folder, &title, &preset),
+            Action::NewTask(t, open) => {
+                ws.new_task(&t, open);
             }
             Action::OpenAt { path, offset } => {
                 if ws.open_note(&path).is_some() {
                     ws.jump_to_byte(offset);
                 }
             }
-            Action::New { template, folder, answers, preset } => {
+            Action::New { template, title, folder, answers, preset } => {
                 let answers: HashMap<String, String> = answers.into_iter().collect();
-                ws.new_note_from_template(&template, folder.as_deref(), &answers, &preset);
+                ws.new_note_from_template_titled(&template, title.as_deref(), folder.as_deref(), &answers, &preset);
             }
             Action::FillTemplate { doc, answers } => {
                 let answers: HashMap<String, String> = answers.into_iter().collect();
@@ -496,6 +651,99 @@ fn run_actions(ws: &mut Workspace) -> bool {
         }
     }
     true
+}
+
+/// Write a board setting: one line of a quire-view block, or Quire's keys
+/// in a `.base` view (`cardOrder`, `swimlaneBy`, `columnColors`); nothing
+/// else in the file changes, and no note is rewritten.
+fn set_board(ws: &mut Workspace, target: &BoardTarget, setting: &BoardSetting) {
+    match target {
+        BoardTarget::Block { note, spec } => {
+            let Some(src) = ws.current_text(note) else { return };
+            let Some(b) = views::find_blocks(&src).into_iter().find(|b| b.spec == *spec) else {
+                ws.notify(NoticeLevel::Warn, "The view changed; try again");
+                return;
+            };
+            let (key, value) = match setting {
+                BoardSetting::Order { column, ids } => {
+                    (format!("order.{}", views::column_key(column)), (!ids.is_empty()).then(|| views::format_id_list(ids)))
+                }
+                BoardSetting::Lanes(l) => ("swimlanes".to_string(), l.clone()),
+                BoardSetting::Color { column, color } => (format!("color.{}", views::column_key(column)), color.clone()),
+            };
+            let Some(out) = views::set_block_key(&src, &b, &key, value.as_deref()) else { return };
+            if out != src
+                && let Err(e) = ws.write_note_with_history(note, &src, &out, crate::history_ops::now_ms())
+            {
+                ws.notify(NoticeLevel::Error, e);
+            }
+        }
+        BoardTarget::Base { path, view } => {
+            use quire_import::obsidian::base::{self as qb, YamlValue};
+            let Some(vault) = ws.vault().cloned() else { return };
+            let Ok(text) = vault.read(path) else { return };
+            let Ok(base) = qb::parse(&text) else { return };
+            let Some(spec) = base.views.get(*view).and_then(|v| views::parse(&v.spec).ok()) else { return };
+            let out = match setting {
+                BoardSetting::Order { column, ids } => {
+                    let mut order = spec.order;
+                    match order.iter_mut().find(|(c, _)| c.eq_ignore_ascii_case(column)) {
+                        Some((_, v)) => v.clone_from(ids),
+                        None => order.push((column.clone(), ids.clone())),
+                    }
+                    order.retain(|(_, v)| !v.is_empty());
+                    let value = (!order.is_empty()).then(|| qb::card_order_yaml(&order));
+                    qb::set_view_key(&text, *view, "cardOrder", value.as_ref())
+                }
+                BoardSetting::Lanes(l) => {
+                    let value = l.as_ref().map(|l| YamlValue::Inline(quire_markdown::frontmatter::yaml_scalar(l)));
+                    qb::set_view_key(&text, *view, "swimlaneBy", value.as_ref())
+                }
+                BoardSetting::Color { column, color } => {
+                    let mut colors = spec.colors;
+                    colors.retain(|(c, _)| !c.eq_ignore_ascii_case(column));
+                    if let Some(c) = color {
+                        colors.push((column.clone(), c.clone()));
+                    }
+                    let value = (!colors.is_empty()).then(|| qb::colors_yaml(&colors));
+                    qb::set_view_key(&text, *view, "columnColors", value.as_ref())
+                }
+            };
+            let Some(out) = out else {
+                ws.notify(NoticeLevel::Warn, format!("{} keeps its views in a form Quire can't edit", path.stem()));
+                return;
+            };
+            if out != text {
+                let now = crate::history_ops::now_ms();
+                let _ = vault.snapshot(path, &text, now - 1, true);
+                match vault.write(path, &out) {
+                    Ok(()) => {
+                        let _ = vault.snapshot(path, &out, now, true);
+                        ws.features.decor_generation += 1;
+                    }
+                    Err(e) => ws.notify(NoticeLevel::Error, format!("Couldn't save {}: {e}", path.stem())),
+                }
+            }
+        }
+    }
+}
+
+/// A note with `preset` front matter and its title as a heading, not opened.
+fn new_note_in(ws: &mut Workspace, folder: &str, title: &str, preset: &[(String, Value)]) {
+    let Some(vault) = ws.vault().cloned() else { return };
+    let Ok(path) = vault.unique_path(folder, title) else { return };
+    let mut text = format!("# {}\n", path.stem());
+    for (k, v) in preset {
+        text = quire_markdown::frontmatter::set_field(&text, k, v).apply(&text);
+    }
+    match vault.write_if(&path, None, &text) {
+        Ok(true) => {
+            ws.index.upsert(path.clone(), text);
+            ws.notify(NoticeLevel::Info, format!("Made {}", path.as_str()));
+        }
+        Ok(false) => ws.notify(NoticeLevel::Warn, format!("{} already exists", path.as_str())),
+        Err(e) => ws.notify(NoticeLevel::Error, format!("Couldn't create {}: {e}", path.stem())),
+    }
 }
 
 fn kanban_move(ws: &mut Workspace, doc: DocId, from: usize, card: usize, to: usize, index: usize) {
@@ -543,6 +791,7 @@ pub(crate) fn tick(ws: &mut Workspace, now: Instant) -> bool {
     }
     changed |= crate::srs_state::poll_load(ws);
     changed |= crate::reminders::tick(ws);
+    changed |= ws.timer_tick();
     changed |= ws.features.meta.poll();
     changed |= run_actions(ws);
     changed |= complete_ticked(ws);
@@ -556,6 +805,11 @@ pub(crate) fn next_deadline(ws: &Workspace) -> Option<Instant> {
     let mut due = ws.features.tasks.reminders.next_due(now).map(|t| (t - now).to_std().unwrap_or_default());
     if ws.features.meta.busy() || !ws.features.tasks.pending.borrow().is_empty() {
         due = Some(due.map_or(Duration::from_millis(50), |d| d.min(Duration::from_millis(50))));
+    }
+    // 0.11: a running timer's clock ticks every second.
+    if ws.timer().is_some() {
+        let next = Duration::from_millis(1000 - u64::from(Local::now().timestamp_subsec_millis().min(999)));
+        due = Some(due.map_or(next, |d| d.min(next)));
     }
     due.map(|d| Instant::now() + d)
 }
@@ -602,7 +856,7 @@ pub(crate) fn run(ws: &mut Workspace, cmd: Command) -> Option<UiRequest> {
     use Command as C;
     let today = Local::now().date_naive();
     match cmd {
-        C::ShowAgenda | C::ShowCalendar => return Some(UiRequest::Feature(cmd)),
+        C::ShowAgenda | C::ShowCalendar | C::NewTask | C::TimeReport => return Some(UiRequest::Feature(cmd)),
         C::OpenWeeklyNote | C::OpenMonthlyNote | C::OpenYearlyNote => {
             let p = match cmd {
                 C::OpenWeeklyNote => Period::Weekly,
@@ -660,6 +914,20 @@ pub(crate) fn run(ws: &mut Workspace, cmd: Command) -> Option<UiRequest> {
         }
         C::ConvertTaskToNote => {
             ws.convert_task_to_note();
+        }
+        C::ConvertNoteToTask => {
+            ws.convert_note_to_task();
+        }
+        C::StartStopTimer => {
+            ws.toggle_timer_at_caret(false);
+        }
+        C::StartPomodoro => {
+            ws.toggle_timer_at_caret(true);
+        }
+        C::StopTimer => {
+            if ws.stop_timer().is_none() {
+                ws.notify(NoticeLevel::Info, "No timer is running");
+            }
         }
         C::ConvertToView => {
             if let Some(id) = ws.active_doc().map(|d| d.id) {
@@ -735,6 +1003,15 @@ pub(crate) fn vault_opened(ws: &mut Workspace) {
 pub(crate) fn status(ws: &Workspace, out: &mut Vec<StatusItem>) {
     if ws.vault().is_none() {
         return;
+    }
+    // 0.11: the running timer, and a click stops it.
+    if let (Some(r), Some((secs, phase))) = (ws.timer(), ws.timer_clock()) {
+        let clock = quire_plan::time::format_clock(secs);
+        let (text, tooltip) = match phase {
+            Some(p) => (format!("🍅 {clock} {}", r.task.title), format!("{} · {} — click to stop", p.label(), r.task.title)),
+            None => (format!("⏱ {clock} {}", r.task.title), format!("Timing “{}” — click to stop and log it", r.task.title)),
+        };
+        out.push(StatusItem { owner: Owner::Plan, text, tooltip, command: Some(Command::StopTimer), warn: false });
     }
     let reminders = ws.features.tasks.reminders.active().len();
     if reminders > 0 {
@@ -829,7 +1106,32 @@ mod tests {
         assert!(w.convert_task_to_note());
         assert!(w.doc(id).unwrap().text().contains("- [ ] [[Write report]]\n"));
         let made = w.vault().unwrap().read(&"Tasks/Write report.md".into()).unwrap();
-        assert_eq!(made, "---\ntype: task\nstatus: todo\ndue: 2026-11-20\npriority: high\n---\n# Write report\n\n#work\n");
+        let today = Local::now().format("%Y-%m-%d");
+        assert_eq!(
+            made,
+            format!(
+                "---\ntype: task\nstatus: todo\npriority: high\ndue: 2026-11-20\ncreated: {today}\ntags: [work]\n---\n# Write report\n"
+            )
+        );
+        // And back: the line gets its fields again, and the empty note goes to the trash.
+        let doc = w.active_doc_mut().unwrap();
+        let c = doc.buffer().line_to_char(1) + 8;
+        doc.set_selection(quire_text::Selection::cursor(c));
+        assert!(w.convert_note_to_task());
+        assert!(
+            w.doc(id).unwrap().text().contains(&format!("- [ ] Write report #work ⏫ ➕ {today} 📅 2026-11-20\n")),
+            "{}",
+            w.doc(id).unwrap().text()
+        );
+        assert!(!w.vault().unwrap().exists(&"Tasks/Write report.md".into()));
+        // A block id stays on the line.
+        let doc = w.active_doc_mut().unwrap();
+        let start = doc.buffer().line_to_char(1);
+        let end = start + doc.buffer().line(1).trim_end().chars().count();
+        let _ = doc.apply(Transaction::replace(start, end, "- [ ] Ship it ^ship".to_string()), EditKind::Other);
+        doc.set_selection(quire_text::Selection::cursor(start + 3));
+        assert!(w.convert_task_to_note());
+        assert!(w.doc(id).unwrap().text().contains("- [ ] [[Ship it]] ^ship\n"));
         let decos = w.decorations(id);
         assert!(decos.iter().any(|d| matches!(d.kind, crate::decor::DecorationKind::Widget { after_line: 4, .. })));
         assert!(w.convert_block(id, Some(0)));

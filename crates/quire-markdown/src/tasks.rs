@@ -329,6 +329,8 @@ pub fn parse_meta(line: &str, marker: usize, task: &mut Task) {
             Some(Field::Priority) => task.priority = parse_priority(&s.value),
             Some(Field::Reminder) => task.reminder = Some(s.value.replacen('T', " ", 1)),
             None if s.format == Format::Emoji && line[s.range.clone()].starts_with('#') => tags.push(line[s.range.clone()].to_string()),
+            None if span_key(line, s).is_some_and(|k| k.eq_ignore_ascii_case("time")) => task.time_spent = Some(s.value.clone()),
+            None if span_key(line, s).is_some_and(|k| k.eq_ignore_ascii_case("estimate")) => task.estimate = Some(s.value.clone()),
             None => {}
         }
     }
@@ -424,6 +426,60 @@ pub fn set_field(line: &str, marker: usize, field: Field, value: Option<&str>, f
             };
             let sep = if at > 0 && !line[..at].ends_with(' ') { " " } else { "" };
             format!("{}{sep}{t}{}", &line[..at], &line[at..])
+        }
+        (None, None) => line.to_string(),
+    }
+}
+
+/// The key of a Dataview span (`[time:: 1h]` → `time`).
+fn span_key<'a>(line: &'a str, s: &FieldSpan) -> Option<&'a str> {
+    if s.format != Format::Dataview {
+        return None;
+    }
+    let inner = &line[s.range.start + 1..s.range.end - 1];
+    inner.split_once("::").map(|(k, _)| k.trim())
+}
+
+/// The value of any Dataview field among a task line's fields
+/// (`[time:: 1h25m]`), by key, ignoring case.
+pub fn inline_field(line: &str, marker: usize, key: &str) -> Option<String> {
+    let body = body_start(line, marker);
+    field_spans(line, body).into_iter().find(|s| span_key(line, s).is_some_and(|k| k.eq_ignore_ascii_case(key))).map(|s| s.value)
+}
+
+/// Set or (with `None`) remove a Dataview field `[key:: value]` on a task
+/// line, keeping every other byte. A new field goes after the others
+/// (before a `^block-id`).
+pub fn set_inline_field(line: &str, marker: usize, key: &str, value: Option<&str>) -> String {
+    let body = body_start(line, marker);
+    let spans = field_spans(line, body);
+    let existing = spans.iter().find(|s| span_key(line, s).is_some_and(|k| k.eq_ignore_ascii_case(key)));
+    match (existing, value) {
+        (Some(e), Some(v)) => {
+            let k = span_key(line, e).unwrap_or(key);
+            let (open, close) = if line[e.range.clone()].starts_with('(') { ('(', ')') } else { ('[', ']') };
+            format!("{}{open}{k}:: {}{close}{}", &line[..e.range.start], v.trim(), &line[e.range.end..])
+        }
+        (Some(e), None) => {
+            let (mut a, mut b) = (e.range.start, e.range.end);
+            if line[..a].ends_with(' ') {
+                a -= 1;
+            } else if line[b..].starts_with(' ') {
+                b += 1;
+            }
+            format!("{}{}", &line[..a], &line[b..])
+        }
+        (None, Some(v)) => {
+            let content_end = line.trim_end_matches(['\n', '\r']).len();
+            let at = match (spans.last(), block_id_start(&line[body.min(content_end)..content_end])) {
+                (Some(l), _) => l.range.end,
+                (None, Some(b)) => line[..body + b].trim_end().len(),
+                (None, None) => line[..content_end].trim_end().len(),
+            };
+            let sep = if at > 0 && !line[..at].ends_with(' ') { " " } else { "" };
+            let after = &line[at..];
+            let gap = if after.starts_with(' ') || after.trim_end_matches(['\n', '\r']).is_empty() { "" } else { " " };
+            format!("{}{sep}[{key}:: {}]{gap}{after}", &line[..at], v.trim())
         }
         (None, None) => line.to_string(),
     }
@@ -596,5 +652,22 @@ mod tests {
         assert_eq!(parse_priority("⏬"), Some(4));
         assert!(parse_priority("Normal").is_none() && is_priority("Normal"));
         assert!(parse_priority("urgent").is_none() && !is_priority("urgent"));
+    }
+
+    #[test]
+    fn inline_fields_by_key() {
+        let line = "- [ ] Write report 📅 2026-11-20 [time:: 25m] ^rep";
+        assert_eq!(inline_field(line, 2, "time").as_deref(), Some("25m"));
+        assert_eq!(inline_field(line, 2, "estimate"), None);
+        assert_eq!(set_inline_field(line, 2, "time", Some("1h5m")), "- [ ] Write report 📅 2026-11-20 [time:: 1h5m] ^rep");
+        assert_eq!(set_inline_field(line, 2, "time", None), "- [ ] Write report 📅 2026-11-20 ^rep");
+        assert_eq!(set_inline_field("- [ ] Plain", 2, "time", Some("5m")), "- [ ] Plain [time:: 5m]");
+        assert_eq!(set_inline_field("- [ ] Id ^x1", 2, "time", Some("5m")), "- [ ] Id [time:: 5m] ^x1");
+        assert_eq!(set_inline_field("- [ ] Dates 📅 2026-11-20", 2, "time", Some("5m")), "- [ ] Dates 📅 2026-11-20 [time:: 5m]");
+        // The parsed task is unchanged apart from the field.
+        let t = parse("- [ ] Dates 📅 2026-11-20 [time:: 5m] [estimate:: 1h]");
+        assert_eq!((t.text.as_str(), t.due.as_deref()), ("Dates", Some("2026-11-20")));
+        assert_eq!((t.time_spent.as_deref(), t.estimate.as_deref()), (Some("5m"), Some("1h")));
+        assert_eq!(set_inline_field("- [ ] A (time:: 1m)", 2, "Time", Some("2m")), "- [ ] A (time:: 2m)");
     }
 }

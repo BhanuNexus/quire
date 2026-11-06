@@ -134,6 +134,13 @@ pub enum Command {
     RenameProperty,
     ConvertTaskToNote,
     ConvertToView,
+    // 0.11 tasks: task notes and time tracking
+    ConvertNoteToTask,
+    NewTask,
+    StartStopTimer,
+    StartPomodoro,
+    StopTimer,
+    TimeReport,
     // WS-F: editor and UI
     ToggleVim,
     ChooseTheme,
@@ -197,7 +204,13 @@ impl Command {
             | Self::RenameTag
             | Self::RenameProperty
             | Self::ConvertTaskToNote
-            | Self::ConvertToView => Owner::Plan,
+            | Self::ConvertToView
+            | Self::ConvertNoteToTask
+            | Self::NewTask
+            | Self::StartStopTimer
+            | Self::StartPomodoro
+            | Self::StopTimer
+            | Self::TimeReport => Owner::Plan,
             Self::ToggleVim
             | Self::ChooseTheme
             | Self::GitCommitNow
@@ -412,6 +425,12 @@ commands! {
     RenameProperty,   "Note",   "Rename property…",               [], false;
     ConvertTaskToNote,"Format", "Convert task to note",           [], true;
     ConvertToView,    "Format", "Convert to quire-view",          [], true;
+    ConvertNoteToTask,"Format", "Convert task note back to a task line", [], true;
+    NewTask,          "Note",   "New task…",                      [alt("N")], false;
+    StartStopTimer,   "Go",     "Start or stop the timer on this task", [cmd_alt("T")], false;
+    StartPomodoro,    "Go",     "Start a pomodoro on this task",  [], false;
+    StopTimer,        "Go",     "Stop the task timer",            [], false;
+    TimeReport,       "Go",     "Time this week",                 [], false;
     ToggleVim,        "Edit",   "Vim mode",                       [], false;
     ChooseTheme,      "View",   "Theme…",                         [], false;
     GitCommitNow,     "App",    "Commit now (git)",               [], false;

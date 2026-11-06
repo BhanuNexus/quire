@@ -108,12 +108,22 @@ pub(crate) fn show(ui: &mut Ui, ws: &Workspace, pal: &Palette, spec_src: &str, f
                 ui.label(RichText::new(format!("View error: {e}")).color(pal.danger).size(12.5));
             }
             Ok(r) => match spec.layout {
+                // 0.11: boards (task boards too) with order, swimlanes and colours; maps.
+                Layout::Kanban => {
+                    let target = from.map(|n| quire_app::tasks_state::BoardTarget::Block { note: n.clone(), spec: spec_src.to_string() });
+                    let b = crate::board_ui::Board { spec: &spec, result: r, target, from, key };
+                    act = crate::board_ui::show(ui, ws, pal, &b);
+                }
+                Layout::Map => {
+                    if let Some(p) = crate::map_ui::show(ui, ws, pal, r, key) {
+                        act = Some(ViewAction::Open(p));
+                    }
+                }
                 // WS-E: task rows, agenda and timeline layouts.
                 _ if spec.tasks => crate::agenda_ui::view(ui, ws, pal, &spec, r, key),
                 Layout::Agenda | Layout::Timeline => crate::agenda_ui::view(ui, ws, pal, &spec, r, key),
                 Layout::Table => table(ui, pal, &spec, r, key, &mut act),
                 Layout::List => list(ui, pal, &spec, r, &mut act),
-                Layout::Kanban => kanban(ui, pal, &spec, r, key, &mut act),
                 Layout::Calendar => calendar(ui, pal, r, key, &mut act),
             },
         }
@@ -131,6 +141,28 @@ fn table(ui: &mut Ui, pal: &Palette, spec: &ViewSpec, r: &ViewResult, key: Id, a
         ui.label(RichText::new("No notes match.").color(pal.muted).size(12.5));
         return;
     }
+    // 0.11: `group:` on a table gives one table per group, under its value.
+    if spec.group.is_some() && !r.groups.is_empty() {
+        for g in &r.groups {
+            let rows: Vec<_> = r.rows.iter().filter(|x| x.group.eq_ignore_ascii_case(g)).cloned().collect();
+            let shown = if g.is_empty() { "(none)" } else { g.as_str() };
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(format!("{} {shown} · {}", spec.group.as_deref().unwrap_or(""), rows.len()))
+                    .size(12.0)
+                    .color(pal.strong)
+                    .strong(),
+            );
+            let sub = ViewResult { total: rows.len(), rows, ..ViewResult::default() };
+            let flat = ViewSpec { group: None, ..spec.clone() };
+            table_rows(ui, pal, &flat, &sub, key.with(("group", g.as_str())), act);
+        }
+        return;
+    }
+    table_rows(ui, pal, spec, r, key, act);
+}
+
+fn table_rows(ui: &mut Ui, pal: &Palette, spec: &ViewSpec, r: &ViewResult, key: Id, act: &mut Option<ViewAction>) {
     let cols = spec.fields.len().max(1);
     let col_w = ((ui.available_width() - 8.0 * cols as f32) / cols as f32).max(60.0);
     egui::ScrollArea::horizontal().id_salt(key.with("h")).show(ui, |ui| {
@@ -178,84 +210,6 @@ fn list(ui: &mut Ui, pal: &Palette, spec: &ViewSpec, r: &ViewResult, act: &mut O
     if r.rows.is_empty() {
         ui.label(RichText::new("No notes match.").color(pal.muted).size(12.5));
     }
-}
-
-fn kanban(ui: &mut Ui, pal: &Palette, spec: &ViewSpec, r: &ViewResult, key: Id, act: &mut Option<ViewAction>) {
-    let field = spec.group.clone().unwrap_or_else(|| "status".into());
-    header(ui, pal, &format!("Board by {field}"), r);
-    let groups = if r.groups.is_empty() { vec![String::new()] } else { r.groups.clone() };
-    let n = groups.len();
-    // Each column frame adds 12px of margin; spacing between columns is 8px.
-    let col_w = ((ui.available_width() - 8.0 * (n as f32 - 1.0) - 12.0 * n as f32) / n as f32).clamp(140.0, 260.0);
-    // Equal-height columns, so a short column is still an easy drop target.
-    let tallest = groups.iter().map(|g| r.rows.iter().filter(|x| x.group.eq_ignore_ascii_case(g)).count()).max().unwrap_or(0);
-    let col_h = 24.0 + tallest.max(1) as f32 * 58.0;
-    egui::ScrollArea::horizontal().id_salt(key.with("kh")).show(ui, |ui| {
-        ui.horizontal_top(|ui| {
-            for g in &groups {
-                let frame = egui::Frame::NONE.fill(pal.bg).corner_radius(6.0).inner_margin(6.0);
-                let (_, dropped) = ui.dnd_drop_zone::<NotePath, ()>(frame, |ui| {
-                    ui.set_width(col_w);
-                    ui.set_min_height(col_h);
-                    ui.vertical(|ui| {
-                        let count = r.rows.iter().filter(|x| x.group.eq_ignore_ascii_case(g)).count();
-                        let name = if g.is_empty() { "(none)".to_string() } else { g.clone() };
-                        ui.label(RichText::new(format!("{name} · {count}")).size(12.0).color(pal.muted).strong());
-                        for row in r.rows.iter().filter(|x| x.group.eq_ignore_ascii_case(g)).take(MAX_ROWS) {
-                            card(ui, pal, spec, &field, row, key, col_w, act);
-                        }
-                    });
-                });
-                if let Some(path) = dropped {
-                    let current = r.rows.iter().find(|x| x.path == *path).map(|x| x.group.clone());
-                    if current.as_deref().is_some_and(|c| !c.eq_ignore_ascii_case(g)) {
-                        *act = Some(ViewAction::Move { path: (*path).clone(), field: field.clone(), value: g.clone() });
-                    }
-                }
-            }
-        });
-    });
-}
-
-fn card(
-    ui: &mut Ui,
-    pal: &Palette,
-    spec: &ViewSpec,
-    field: &str,
-    row: &quire_app::index::views::ViewRow,
-    key: Id,
-    col_w: f32,
-    act: &mut Option<ViewAction>,
-) {
-    let id = key.with(("card", row.path.as_str()));
-    egui::Frame::NONE.fill(pal.panel).stroke(egui::Stroke::new(1.0, pal.border)).corner_radius(4.0).inner_margin(6.0).show(ui, |ui| {
-        ui.set_width(col_w - 12.0);
-        ui.horizontal(|ui| {
-            // The handle drags; the title opens the note.
-            ui.dnd_drag_source(id, row.path.clone(), |ui| {
-                let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 14.0), Sense::hover());
-                for k in 0..3 {
-                    let y = r.top() + 3.0 + k as f32 * 4.0;
-                    ui.painter()
-                        .line_segment([egui::pos2(r.left() + 1.0, y), egui::pos2(r.right() - 1.0, y)], egui::Stroke::new(1.5, pal.faint));
-                }
-            })
-            .response
-            .on_hover_cursor(egui::CursorIcon::Grab)
-            .on_hover_text(format!("Drag to another column to change {field}"));
-            title_link(ui, pal, &row.title, &row.path, act);
-        });
-        let extra: Vec<&str> = spec
-            .fields
-            .iter()
-            .zip(&row.cells)
-            .filter(|(f, c)| *f != "title" && f.as_str() != field && !c.is_empty())
-            .map(|(_, c)| c.as_str())
-            .collect();
-        if !extra.is_empty() {
-            ui.add(egui::Label::new(RichText::new(extra.join(" · ")).size(11.5).color(pal.muted)).truncate());
-        }
-    });
 }
 
 /// Day of week, 0 = Monday (Sakamoto's method).

@@ -15,7 +15,7 @@ use quire_app::bases::{Cell, Table};
 use quire_app::decor::ActionId;
 use quire_app::document::DocId;
 use quire_app::markdown::Value;
-use quire_app::tasks_state::{Action, convert_action, kanban_move_action};
+use quire_app::tasks_state::{Action, BoardTarget, convert_action, kanban_move_action};
 use quire_app::vault::NotePath;
 use quire_import::obsidian::base::{self, Base, ViewKind};
 use quire_import::obsidian::kanban;
@@ -255,6 +255,42 @@ impl Surface for BaseSurface {
                 );
             }
             ui.add_space(6.0);
+            // 0.11: boards and maps run the view's spec directly.
+            if matches!(v.kind, ViewKind::Kanban | ViewKind::Map) {
+                let result = ws.run_view(&v.spec, None);
+                let spec = quire_app::index::views::parse(&v.spec).unwrap_or_default();
+                let key = Id::unique(("quire-base-view", self.path.as_str(), self.view));
+                let action = match result.as_ref() {
+                    Err(e) => {
+                        ui.label(RichText::new(e).color(pal.danger));
+                        None
+                    }
+                    Ok(r) if v.kind == ViewKind::Map => crate::map_ui::show(ui, ws, pal, r, key).map(ViewAction::Open),
+                    Ok(r) => {
+                        let target = Some(BoardTarget::Base { path: self.path.clone(), view });
+                        let b = crate::board_ui::Board { spec: &spec, result: r, target, from: None, key };
+                        egui::ScrollArea::vertical()
+                            .id_salt(("quire-base-board", self.path.as_str()))
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| crate::board_ui::show(ui, ws, pal, &b))
+                            .inner
+                    }
+                };
+                // The board may have written the file: read it again soon.
+                if ui.ctx().input(|i| i.pointer.any_released()) {
+                    self.read_at = Instant::now().checked_sub(Duration::from_millis(1700));
+                }
+                match action {
+                    Some(ViewAction::Open(p)) => {
+                        if ws.open_note(&p).is_some() {
+                            out.jumped = true;
+                        }
+                    }
+                    Some(a) => route(ws, a),
+                    None => {}
+                }
+                return;
+            }
             let table = self.table(ws, &base, view);
             if let Some(e) = &table.error {
                 ui.label(RichText::new(e).color(pal.danger));
@@ -263,8 +299,8 @@ impl Surface for BaseSurface {
             egui::ScrollArea::vertical().id_salt(("quire-base", self.path.as_str())).auto_shrink([false, false]).show(ui, |ui| {
                 let key = Id::unique(("quire-base-view", self.path.as_str(), self.view));
                 let action = match v.kind {
-                    ViewKind::Table => base_table(ui, pal, &table, key),
                     ViewKind::Cards => cards(ui, pal, &table),
+                    ViewKind::Table | ViewKind::Kanban | ViewKind::Map => base_table(ui, pal, &table, key),
                 };
                 if let Some(ViewAction::Open(p)) = &action {
                     if ws.open_note(p).is_some() {
@@ -321,7 +357,16 @@ fn base_table(ui: &mut Ui, pal: &Palette, t: &Table, key: Id) -> Option<ViewActi
                     ui.label(RichText::new(h).size(12.0).color(pal.muted).strong());
                 }
                 ui.end_row();
+                let mut last_group: Option<&str> = None;
                 for row in t.rows.iter().take(MAX_ROWS) {
+                    // 0.11 `groupBy`: a heading row where the group changes.
+                    if !t.groups.is_empty() && last_group != Some(row.group.as_str()) {
+                        last_group = Some(row.group.as_str());
+                        let n = t.rows.iter().filter(|r| r.group == row.group).count();
+                        let shown = if row.group.is_empty() { "(none)" } else { row.group.as_str() };
+                        ui.label(RichText::new(format!("{shown} · {n}")).size(12.5).color(pal.accent).strong());
+                        ui.end_row();
+                    }
                     for c in &row.cells {
                         ui.scope(|ui| {
                             ui.set_max_width(col_w.max(80.0));

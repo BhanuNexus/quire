@@ -1009,10 +1009,7 @@ pub(crate) fn surface_insights(ui: &mut egui::Ui, ws: &Workspace, path: &NotePat
                 Ok(b) => {
                     section(ui, pal, &format!("Views · {}", b.views.len()));
                     for v in &b.views {
-                        let kind = match v.kind {
-                            quire_import::obsidian::base::ViewKind::Table => "table",
-                            quire_import::obsidian::base::ViewKind::Cards => "cards",
-                        };
+                        let kind = v.kind.name();
                         let cols = v.columns.len();
                         ui.label(
                             RichText::new(format!("{} · {kind} · {cols} column{}", v.name, if cols == 1 { "" } else { "s" })).size(12.5),

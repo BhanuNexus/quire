@@ -5928,6 +5928,7 @@ dependencies = [
  "crossbeam-channel",
  "nucleo-matcher",
  "quire-markdown",
+ "quire-plan",
  "quire-vault",
  "tempfile",
  "unicode-normalization",
