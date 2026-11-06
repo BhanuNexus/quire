@@ -4,6 +4,29 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Added
+
+#### Editor: formatting toolbar and your own commands
+- **Formatting toolbar** (off by default: View: Formatting toolbar, or Settings → Toolbar): bold, italic, strikethrough, highlight, code, link, wikilink, a heading menu (H1–H6, paragraph), bulleted and numbered lists, task, quote, callout, table, math, footnote, horizontal rule, and insert image or attachment. Each button works on every cursor at once and is one undo step. Toggles read the Markdown: bolding bold text unbolds it, a caret in a word bolds the word, a caret in bold text unbolds it, and spaces at the edges of a selection stay outside the markers.
+- **Your own toolbar:** add any command or macro as a button, with an emoji or a few letters as its icon and a label; remove, reorder, separators, and back to the defaults (Settings → Toolbar).
+- **A small toolbar next to selected text** (Settings → Toolbar): bold, italic, strikethrough, highlight, code, math and links above the selection.
+- The toolbar from the keyboard: F10 moves to it, ← → move, Enter presses, Escape goes back to the note. Tooltips show each button's shortcut. It works in Vim's Insert mode too.
+- **Settings → Commands:** search every command, change its shortcuts (or add a second one, remove them, reset one or all). Shortcuts are checked against other commands and against what Windows, macOS and Linux keep for themselves (⌘Q, Alt+F4, Ctrl+Alt+arrows…), with a warning where AltGr (Windows) or Option (macOS) would type a character instead. Ctrl is ⌘ on macOS, so the same settings work everywhere.
+- **Pinned commands** show first in the command palette.
+- **Macros:** a name and a list of commands run one after another, no scripting. A macro can have a shortcut, be pinned, be a toolbar button and is in the command palette. It stops at a command that opens a dialog.
+- New commands: Heading 4–6, Toggle bulleted list, Toggle numbered list, Insert link [text](url), Insert callout, Insert table, Toggle inline math, Toggle math block, Toggle code block, Insert footnote, Insert horizontal rule, Insert image or attachment, Formatting toolbar, Move focus to the formatting toolbar (F10), Customize commands and shortcuts.
+- **Mermaid diagrams pan and zoom** in notes and the preview: drag to move, Ctrl+wheel (or pinch) to zoom, double-click to reset, and a full-screen view. A diagram's source opens with its "Edit source" button.
+- **Excalidraw drawings in PDF export:** `![[Plan.excalidraw]]` is the drawing, with its text, in the PDF.
+- **Canvas cards:** links in cards are clickable (a `[[wikilink]]` opens the note, a web link the browser), and `$math$` in cards is typeset.
+
+### Changed
+- Formatting shortcuts (Ctrl+B, Ctrl+I, Ctrl+1…, Ctrl+L, Ctrl+Shift+.) act on every cursor, read the Markdown around the selection, and wrap a selection over several lines line by line (after the list marker).
+- Typing in a long note is smoother: the Insights panel's outline and links follow the note once typing pauses and draw only the rows in view, and indexing, the meaning index and background jobs run at the lowest thread priority on Windows, macOS and Linux.
+
+### Fixed
+- Vim: Ctrl+V starts Visual-block mode even with nothing on the clipboard (Quire now handles the copy, cut and paste keys itself, so the key reaches Vim in Normal and Visual mode; in Insert mode it still pastes).
+- Vim: Ctrl+Q, Vim's other key for Visual-block mode, no longer closes the window in Normal and Visual mode on Windows and Linux (elsewhere Ctrl+Q still quits; ⌘Q on macOS always does).
+
 ## [0.10.2] - 2026-11-06
 
 The first published 0.10 release. (0.10.0 and 0.10.1 were tagged, but their release builds stopped before anything was published: 0.10.0's test job lacked the audio library voice notes use, and 0.10.1's Linux build was over its size budget (the app wasn't stripped of its symbol table) and its Windows build couldn't check the bundled AI engine against its hash.)
