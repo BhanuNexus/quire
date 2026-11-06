@@ -623,6 +623,7 @@ impl eframe::App for QuireApp {
             self.first_frame_shown = true;
             ctx.request_repaint();
         }
+        crate::drawing_ui::set_vault_root(self.ws.vault().and_then(|v| v.storage().absolute(&NotePath::new(""))));
         let now = Instant::now();
         let changed = self.ws.tick(now);
         trace("tick (autosave, watcher, results)", now);

@@ -190,9 +190,25 @@ pub(crate) fn render(scene: &Scene, image: &dyn Fn(&str) -> Option<image::RgbaIm
     (usize::from(w), usize::from(h), rgba)
 }
 
-/// A picture inside a drawing: a `data:` URL, or a file next to it (for
-/// `[[attachments/x.png]]`, the vault is one of the drawing's folders).
-fn load_file(f: &FileRef, drawing: &Path) -> Option<image::RgbaImage> {
+/// The open vault's folder, for the picture loader (which is given file
+/// paths, not the workspace). Set every frame by the app.
+static VAULT_ROOT: std::sync::RwLock<Option<std::path::PathBuf>> = std::sync::RwLock::new(None);
+
+/// The open vault changed (or none is open).
+pub(crate) fn set_vault_root(root: Option<std::path::PathBuf>) {
+    let same = VAULT_ROOT.read().is_ok_and(|r| *r == root);
+    if !same && let Ok(mut r) = VAULT_ROOT.write() {
+        *r = root;
+    }
+}
+
+/// A picture inside a drawing: a `data:` URL, or a file in the vault (for
+/// `[[attachments/x.png]]`, next to the drawing or in a folder above it).
+/// A vault file passes the same checks as everywhere else
+/// (`quire_app::drawings::embedded_file_at`): a picture, inside the vault
+/// even through symlinks, never in a hidden folder. A drawing outside the
+/// open vault embeds no files.
+fn load_file(f: &FileRef, drawing: &Path, root: Option<&Path>) -> Option<image::RgbaImage> {
     use base64::Engine as _;
     let bytes = match f {
         FileRef::DataUrl(u) => {
@@ -200,7 +216,10 @@ fn load_file(f: &FileRef, drawing: &Path) -> Option<image::RgbaImage> {
             base64::engine::general_purpose::STANDARD.decode(data.trim()).ok()?
         }
         FileRef::Vault(rel) => {
-            let found = drawing.ancestors().skip(1).map(|d| d.join(rel)).find(|p| p.is_file())?;
+            let root = root?.canonicalize().ok()?;
+            let at = drawing.canonicalize().ok()?;
+            let rel_drawing = at.strip_prefix(&root).ok()?.to_str()?.replace('\\', "/");
+            let found = quire_app::drawings::embedded_file_at(&root, &NotePath::new(rel_drawing), rel)?;
             std::fs::read(found).ok()?
         }
     };
@@ -209,9 +228,15 @@ fn load_file(f: &FileRef, drawing: &Path) -> Option<image::RgbaImage> {
 
 /// A drawing file as a picture.
 pub(crate) fn picture(text: &str, path: &Path) -> Result<ColorImage, String> {
+    let root = VAULT_ROOT.read().ok().and_then(|r| r.clone());
+    picture_in(text, path, root.as_deref())
+}
+
+/// [`picture`] for a drawing in the vault at `root`.
+pub(crate) fn picture_in(text: &str, path: &Path, root: Option<&Path>) -> Result<ColorImage, String> {
     let scene = excalidraw::parse(text)?;
     let files = scene.files.clone();
-    let (w, h, rgba) = render(&scene, &|id| load_file(files.get(id)?, path));
+    let (w, h, rgba) = render(&scene, &|id| load_file(files.get(id)?, path, root));
     let mut img = ColorImage::from_rgba_unmultiplied([w, h], &rgba);
     img.source_size = egui::Vec2::new(w as f32 / SCALE as f32, h as f32 / SCALE as f32);
     Ok(img)

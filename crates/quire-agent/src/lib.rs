@@ -48,7 +48,7 @@ pub use proposal::{
 pub use quire_vault::ContentHash;
 pub use revert::{RevertAction, RevertPlan, RevertReport, RevertSelector, RevertStep};
 pub use shared::ImportReport;
-pub use store::{AgentStore, PolicyState, Resolved, canonical_path};
+pub use store::{AgentStore, PolicyState, Resolved, canonical_path, resolve_at, resolve_in, vault_file, vault_file_at};
 
 #[cfg(test)]
 mod shared_tests;
