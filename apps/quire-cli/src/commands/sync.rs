@@ -210,7 +210,8 @@ fn join(vault: &Path, args: &[String]) -> Result<(), String> {
             }
         }
         let rk = vault_sync::sync_create_at(vault, &target, &pass, &device, &sel)?;
-        quire_app::atomic::write(&out, format!("{rk}\n").as_bytes(), true).map_err(|e| format!("can't write {}: {e}", out.display()))?;
+        quire_app::atomic::write_new_private(&out, format!("{rk}\n").as_bytes())
+            .map_err(|e| format!("can't write {}: {e}", out.display()))?;
         println!("Created a new sync vault and joined it as “{device}” ({}).", sel.describe());
         println!("The recovery key is in {} (readable only by you). Keep it somewhere safe and delete it here.", out.display());
         return Ok(());
