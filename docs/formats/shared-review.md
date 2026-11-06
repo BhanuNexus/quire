@@ -21,7 +21,7 @@ skips a file whose `format` (or a line whose `v`) is higher than it knows.
 No file grows past 4 MB (sync skips files over 10 MB, and would take one
 that grew past that for deleted).
 
-**Readers treat other devices' files as untrusted** (0.10.1). Files are
+**Readers treat other devices' files as untrusted** (0.10.2). Files are
 not signed yet, and any device with the vault key could write any of them,
 so a reader:
 

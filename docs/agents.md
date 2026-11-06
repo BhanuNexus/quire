@@ -192,7 +192,7 @@ run history under `.quire/shared/agent/`, and takes in the other devices'
 * `quire-cli agent log` and Activity show every device's runs;
   `quire-cli agent revert` and **Revert run** undo a run made on another
   device, keeping later edits.
-* Other devices' files are checked like an agent's input (0.10.1): every
+* Other devices' files are checked like an agent's input (0.10.2): every
   path in them goes through the same path check (no hidden folders or
   `.quire`, nothing outside the vault through a symlink), a device can only
   speak for itself, and its name is shown as its own claim with its id.
