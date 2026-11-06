@@ -110,6 +110,29 @@ impl AgentStore {
         ProposalStore::new(self.vault().clone())
     }
 
+    /// Whether accepting change `c` of `p` may write where it says (0.10.1
+    /// security review #2): every path passes [`crate::vault_file`] (a
+    /// proposal can come from another device), and the zone isn't one the
+    /// proposing agent is denied (a person accepting doesn't widen what an
+    /// agent may touch: private zones stay private).
+    fn may_accept(&self, p: &Proposal, c: &ProposalChange) -> Result<(), WriteError> {
+        use crate::policy::{OpKind, Route};
+        let op = match c.op {
+            ChangeOp::Create => OpKind::Create,
+            ChangeOp::Edit => OpKind::Edit,
+            ChangeOp::Rename => OpKind::Rename,
+            ChangeOp::Delete => OpKind::Delete,
+        };
+        for path in c.paths() {
+            let r = crate::store::vault_file(self.vault(), &path)?;
+            let (mode, zone) = self.effective(&p.actor, &r.path, op);
+            if mode.route(op) == Route::Deny {
+                return Err(WriteError::PermissionDenied { path: r.path, zone, mode });
+            }
+        }
+        Ok(())
+    }
+
     /// The hunks of `path`'s change in proposal `id`, rebased on `current`.
     /// Empty (but available) when the change is decided or isn't an edit.
     pub fn review(&self, id: &ProposalId, path: &NotePath, current: &str) -> Review {
@@ -210,6 +233,9 @@ impl AgentStore {
             updated: p.updated,
         };
         let Some(i) = change_index(&p, path) else { return Ok(unchanged(&p)) };
+        if decisions.iter().any(|d| d.action != HunkAction::Rejected) {
+            self.may_accept(&p, &p.changes[i])?;
+        }
         let Some((base, new)) = texts(&p.changes[i], current) else { return Ok(unchanged(&p)) };
         let hunks = self.visible_hunks(&p.changes[i], path, &base, current, &new);
         let now = self.now_ms().max(loaded + 1);
@@ -329,6 +355,9 @@ impl AgentStore {
         let Some(mut p) = store.load(id) else { return Err(WriteError::NotFound { path: subject.clone() }) };
         let Some(i) = p.changes.iter().position(|c| c.state.is_none() && c.subject() == Some(subject)) else { return Ok(None) };
         let c = p.changes[i].clone();
+        if accept {
+            self.may_accept(&p, &c)?;
+        }
         let vault = self.vault().clone();
         let edit_like = c.op == ChangeOp::Edit || (c.op == ChangeOp::Create && vault.exists(subject));
         if edit_like {

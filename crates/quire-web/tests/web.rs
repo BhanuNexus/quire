@@ -304,6 +304,13 @@ fn signing_in_sets_a_strict_session_cookie() {
     let token = c.get("/login").field("_login");
     let r = c.post("/login", &[("passphrase", PASS), ("_login", &token), ("next", "//evil.example/x")]);
     assert_eq!(r.header("location"), Some("/"));
+    // A tab or newline that a browser would drop isn't a local path either.
+    for next in ["/\t/evil.example/x", "/\n/evil.example", "/ /evil.example"] {
+        let mut c = Browser::new(&env);
+        let token = c.get("/login").field("_login");
+        let r = c.post("/login", &[("passphrase", PASS), ("_login", &token), ("next", next)]);
+        assert_eq!(r.header("location"), Some("/"), "{next:?}");
+    }
     // Signing out ends the session.
     let csrf = b.csrf();
     assert_eq!(b.post("/logout", &[("_csrf", &csrf)]).status, 303);
@@ -320,6 +327,44 @@ fn wrong_guesses_are_limited() {
     let r = b.login(PASS);
     assert_eq!(r.status, 429, "even the right passphrase waits");
     assert!(r.header("retry-after").is_some());
+    env.clock.fetch_add(1_500, Ordering::SeqCst);
+    assert_eq!(b.login(PASS).status, 303);
+}
+
+/// 0.10.1 security review #5: a burst of parallel guesses is checked and
+/// counted one by one, so it gets no more tries than guessing in turn.
+#[test]
+fn a_parallel_burst_of_guesses_gets_no_extra_tries() {
+    let env = start();
+    let mut forms: Vec<(Browser, String)> = (0..40)
+        .map(|_| {
+            let mut b = Browser::new(&env);
+            let token = b.get("/login").field("_login");
+            (b, token)
+        })
+        .collect();
+    let start = std::sync::Barrier::new(forms.len());
+    let codes: Vec<u16> = std::thread::scope(|s| {
+        let handles: Vec<_> = forms
+            .iter_mut()
+            .map(|(b, token)| {
+                let start = &start;
+                s.spawn(move || {
+                    start.wait();
+                    b.post("/login", &[("passphrase", "not it at all"), ("_login", token.as_str()), ("next", "/")]).status
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let checked = codes.iter().filter(|c| **c == 401).count();
+    assert!(checked <= 5, "{checked} guesses were checked: {codes:?}");
+    assert!(codes.iter().all(|c| *c == 401 || *c == 429), "{codes:?}");
+    // The right passphrase now waits too (the clock in these tests stands still).
+    let mut b = Browser::new(&env);
+    if checked == 5 {
+        assert_eq!(b.login(PASS).status, 429);
+    }
     env.clock.fetch_add(1_500, Ordering::SeqCst);
     assert_eq!(b.login(PASS).status, 303);
 }
@@ -686,7 +731,7 @@ fn voice_notes_play_drawings_show_and_pages_say_beta() {
     let r = b.get("/n/Daily.md");
     assert_eq!(r.status, 200, "{}", r.body);
     assert!(
-        r.body.contains("<audio controls preload=\"metadata\" src=\"/f/attachments/Voice%20note%202026-11-05%20153012.wav\">"),
+        r.body.contains("<audio controls=\"\" preload=\"metadata\" src=\"/f/attachments/Voice%20note%202026-11-05%20153012.wav\">"),
         "{}",
         r.body
     );

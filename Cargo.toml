@@ -64,6 +64,8 @@ quire-web = { path = "crates/quire-web" }
 
 ropey = "1.6"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+# 0.10.1: note HTML is cleaned to an allow-list for the web app and published sites.
+ammonia = "4.2"
 nucleo-matcher = "0.3"
 notify = "8"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }

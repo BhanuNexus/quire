@@ -222,8 +222,12 @@ pub(crate) fn proposals(store: &AgentStore, all: bool) -> String {
         let files: Vec<&str> = p.files.iter().map(NotePath::as_str).collect();
         let status = format!("{:?}", p.status).to_lowercase();
         let who = match &p.from_device {
-            Some((_, name)) => format!("{} on {name}", p.actor.label),
+            Some((id, name)) => format!("{} on {}", p.actor.label, quire_agent::device_label(id, name)),
             None => p.actor.label.clone(),
+        };
+        let who = match &p.settled_by {
+            Some(dev) => format!("{who}, decided on {}", store.device_label(dev)),
+            None => who,
         };
         let _ = writeln!(s, "{}  {status:<9} {:<16} {}  {}  ({})", p.id, who, quire_app::chrono_fmt(p.created), p.title, files.join(", "));
     }
@@ -271,7 +275,7 @@ fn log(store: &AgentStore, q: &LedgerQuery) -> String {
         let on = if e.actor.device.is_empty() || e.actor.device == store.device().id {
             String::new()
         } else {
-            format!("  [on {}]", names.get(&e.actor.device).map_or("another device", String::as_str))
+            format!("  [on {}]", quire_agent::device_label(&e.actor.device, names.get(&e.actor.device).map_or("", String::as_str)))
         };
         let _ = writeln!(
             s,

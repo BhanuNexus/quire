@@ -21,13 +21,33 @@ skips a file whose `format` (or a line whose `v`) is higher than it knows.
 No file grows past 4 MB (sync skips files over 10 MB, and would take one
 that grew past that for deleted).
 
+**Readers treat other devices' files as untrusted** (0.10.1). Files are
+not signed yet, and any device with the vault key could write any of them,
+so a reader:
+
+* takes a device to be the folder its files are in: `devices/<id>.json`
+  must contain `"id": "<id>"`, a proposal's `origin.id` and `actor.device`
+  must be the folder's device and its actor not a person (`kind` `human`),
+  a ledger line's `actor.device` must be the folder's device, and
+  decisions are recorded with the folder's device;
+* checks every path (proposal changes' `path`, `from`, `to`; ledger lines'
+  `path`, `to`) like a path an agent names, with no hidden segment at all
+  (`.quire` included), and inside the vault through symlinks: a proposal
+  with a bad path is skipped, a ledger line dropped;
+* may lower a mirrored proposal's `trust`, never raise it;
+* shows `name` as the device's own claim, with its id;
+* writes its own files from its local state, never from the shared copy of
+  its folder.
+
 ## `devices/<device>.json`
 
 ```json
 { "format": 1, "id": "d_7K2M9Q4W8XHZ", "name": "home server" }
 ```
 
-The name shown in the Inbox ("Claude · on home server") and Activity.
+The name shown in the Inbox and Activity, as the device's own claim:
+"Claude · on “home server” (self-reported name, device d_7K2M9Q…)". The
+file name must be `<id>.json` with the same `id`, or the file is ignored.
 
 ## `proposals/<device>/<id>.json`
 
@@ -86,6 +106,17 @@ text (`accepted`, `edited`) wins over `rejected`, then the earliest
 `partially_applied` > `rejected` > `superseded`), then the earliest. A
 device that takes in a decision never writes the note: the note arrives by
 sync from the device where the person decided.
+
+A proposal that was waiting on the reader and is settled by another
+device's decisions gets `"settled_by": {"device": "d_desk", "at": …}` in
+the reader's local copy (shown as "decided on …" in the Inbox) and a
+ledger entry. If the person reopens it there, the copy gets
+`"reopened_at": <ms>`: the other devices' states and hunk decisions are
+dropped from it, and their events with `at` up to then are ignored.
+
+The writer keeps what it exported in `.quire/agent/sent-decisions/<id>.json`
+(local, never synced) and adds new events to that, so events that appear
+in its shared copy from elsewhere are not passed on as its own.
 
 ## `ledger/<device>/<yyyy-mm>.jsonl`
 

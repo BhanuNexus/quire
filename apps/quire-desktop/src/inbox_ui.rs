@@ -588,11 +588,32 @@ fn resolved(ui: &mut egui::Ui, ws: &Workspace, pal: &Palette, act: &mut Option<A
                 ProposalStatus::Pending => "waiting",
             };
             let who = match &p.from_device {
-                Some((_, name)) => format!("{} on {name}", p.actor.label),
+                Some((id, name)) => format!("{} on {}", p.actor.label, quire_app::agent::device_label(id, name)),
                 None => p.actor.label.clone(),
             };
             ui.label(RichText::new(format!("{} · {who} · {status}", review_ui::short_time(p.updated))).size(11.5).color(pal.muted));
             ui.label(RichText::new(&p.title).size(12.0).color(pal.text));
+            // Settled here by decisions made on another device: say so,
+            // and let the person reopen it here (0.10.1 security review #11).
+            if let Some(dev) = &p.settled_by {
+                let on = ws.agent_store().map_or_else(|| quire_app::agent::device_label(dev, ""), |s| s.device_label(dev));
+                ui.label(RichText::new(format!("decided on {on}")).size(11.5).color(pal.warn));
+                let id = p.id.clone();
+                if ui
+                    .small_button("Reopen")
+                    .on_hover_text("Ask about it again here; what was decided elsewhere is set aside on this device")
+                    .clicked()
+                {
+                    *act = Some(Box::new(move |ws: &mut Workspace, _| {
+                        if let Some(store) = ws.agent_store().cloned()
+                            && let Err(e) = store.reopen_proposal(&id)
+                        {
+                            ws.notify(NoticeLevel::Error, format!("Couldn't reopen it: {e}"));
+                        }
+                        ws.features.agent.reload_inbox_soon();
+                    }));
+                }
+            }
             if p.status == ProposalStatus::Expired {
                 let id = p.id.clone();
                 if ui.small_button("Restore").clicked() {

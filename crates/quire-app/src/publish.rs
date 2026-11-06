@@ -261,11 +261,13 @@ pub fn render_note(
                 .filter(|p| quire_canvas::excalidraw::is_drawing(p.as_str()))
         {
             let allowed = if d.is_markdown() { (links.note)(&d) } else { (links.file)(&d) };
-            if allowed.is_none() {
+            if allowed.is_none() || quire_agent::vault_file(vault, &d).is_err() {
                 private.set(private.get() + 1);
                 return None;
             }
-            if let Some(svg) = crate::drawings::svg(vault, &d) {
+            // The pictures it embeds pass the same checks as any file the
+            // reader may see (0.10.1: they used to be read unchecked).
+            if let Some(svg) = crate::drawings::svg(vault, &d, &|f| (links.file)(f).is_some()) {
                 return Some(crate::drawings::data_url(&svg));
             }
         }
@@ -300,7 +302,9 @@ pub fn render_note(
             body = body.replace(&from, &to);
         }
     }
-    RenderedNote { html: body, files: embedded.into_inner(), private_links: private.get() }
+    // Raw HTML in the note is cleaned to an allow-list: no `<meta>`
+    // refresh, `<base>`, forms, frames or scripts (0.10.1 security review #4).
+    RenderedNote { html: crate::sanitize::note_html(&body), files: embedded.into_inner(), private_links: private.get() }
 }
 
 fn tag_anchor(t: &str) -> String {

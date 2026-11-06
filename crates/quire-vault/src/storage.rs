@@ -13,6 +13,18 @@ pub(crate) fn is_hidden(path: &str) -> bool {
     path.split('/').any(|seg| seg.starts_with('.') || seg == "node_modules")
 }
 
+/// A path that `root.join` would not keep under `root` on some system:
+/// rooted (`/x`, `\\x`), a drive (`C:`, `C:/x`, `c:x`) or another prefix
+/// (`\\\\?\\…`). On Windows `root.join("C:/…")` replaces the root.
+pub(crate) fn leaves_root(p: &str) -> bool {
+    let b = p.as_bytes();
+    let drive = b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':';
+    drive
+        || p.starts_with('/')
+        || p.starts_with('\\')
+        || Path::new(p).components().any(|c| matches!(c, std::path::Component::Prefix(_) | std::path::Component::RootDir))
+}
+
 /// Storage port. Paths are vault-relative.
 pub trait Storage: Send + Sync {
     /// Every visible file (not just Markdown), sorted.
@@ -124,7 +136,7 @@ impl LocalFs {
     }
 
     fn abs(&self, p: &NotePath) -> Result<PathBuf> {
-        if p.as_str().split('/').any(|s| s == "..") {
+        if p.as_str().split('/').any(|s| s == "..") || leaves_root(p.as_str()) {
             return Err(VaultError::InvalidName(p.to_string()));
         }
         Ok(self.root.join(p.as_str()))
@@ -395,6 +407,23 @@ impl Storage for MemFs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_fs_refuses_drive_and_rooted_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let fs = LocalFs::new(dir.path()).unwrap();
+        for p in ["C:/Users/me/Startup/x.cmd", "c:x.md", "C:\\x.md"] {
+            assert!(fs.absolute(&NotePath::new(p)).is_none(), "{p}");
+            assert!(fs.write_atomic(&NotePath::new(p), "x").is_err(), "{p}");
+        }
+        // A UNC or rooted path is read as a path inside the vault.
+        for p in ["\\\\server\\share\\x.md", "/etc/x.md"] {
+            assert!(fs.absolute(&NotePath::new(p)).unwrap().starts_with(fs.root()), "{p}");
+        }
+        assert!(leaves_root("/etc/passwd") && leaves_root("\\x"));
+        assert!(!leaves_root("Meeting: notes.md") && !leaves_root("a/C:/x.md"));
+        assert!(fs.absolute(&NotePath::new("Meeting: notes.md")).is_some());
+    }
 
     #[test]
     fn local_fs_round_trip() {

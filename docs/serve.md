@@ -212,7 +212,9 @@ name in the same step: two copies saved at once get two names.
 **Sessions** end after 8 hours without use and 7 days after signing in, or
 when you sign out or change the passphrase. After 5 wrong passphrases, each
 further try waits (1 second, doubling, up to 15 minutes) for everyone; a
-correct one clears it. Restarting the server signs everyone out.
+correct one clears it. After signing in you go back to the page you
+asked for, only ever a page of this server. Restarting the server signs
+everyone out.
 
 **Agents** connect to `https://notes.example.com/mcp`, exactly as with
 `quire-cli mcp serve-http` ([agents.md](agents.md)):
@@ -254,8 +256,10 @@ syncing notes only). Then, with `serve --sync` (or `sync watch`) running:
   decide the same suggestion at the same time, both devices end with the
   same outcome.
 * **Rejected stays rejected.** If the agent on the server writes again and
-  brings back a line you rejected (reworded a little, or with the lines
-  around it rewritten), it isn't shown again.
+  brings back a line you rejected (in other letter case or spacing, with
+  other closing punctuation, or with the lines around it rewritten), it
+  isn't shown again. A line with any word, number or date changed is a new
+  suggestion and is asked about: a corrected date is never hidden.
 * **Activity** shows the server's runs on their own lanes, under the
   server's name, and **Revert run** works from the desktop: the server
   carries the versions an undo needs, and your edits made since are kept
@@ -277,10 +281,27 @@ and kept out of git. Details: [design/0.10-agentsync.md](design/0.10-agentsync.m
   something carries a per-session token, and must come from this server's
   own address (`Origin`). Requests for another `Host` are refused
   (DNS rebinding).
-* Pages may run only this server's own scripts; HTML inside a note (a
-  captured web page, an agent's text) can't run scripts, load anything from
-  elsewhere, or be framed. Files from the vault are sent as downloads or in
-  a sandbox (PDFs excepted, so the browser's viewer works).
+* Pages may run only this server's own scripts. HTML inside a note (a
+  captured web page, an agent's text, a note from another device) is
+  cleaned to an allow-list before it is shown, here and on published sites:
+  formatting, tables, callouts, `details`, images and audio stay;
+  `<meta http-equiv>` (a refresh to another site), `<base>`, forms,
+  frames, `object`, `embed`, SVG and MathML in the note, scripts and
+  every `on…` attribute go, and links may only be `http(s)`, `mailto`,
+  `tel` or relative. The page's policy (CSP) also sets `base-uri 'none'`,
+  `form-action 'self'` and `frame-ancestors 'none'`. (CSP's `navigate-to`,
+  which would limit where a page goes, was dropped from the standard and no
+  browser supports it, so cleaning the HTML is what stops it.) Files from
+  the vault are sent as downloads or in a sandbox (PDFs excepted, so the
+  browser's viewer works).
+* An Excalidraw drawing's pictures pass the same path check as every
+  other file: a drawing can't pull in a file from a hidden folder, a
+  folder hidden from the web, `.quire`, or outside the vault through a
+  symlink.
+* Wrong passphrases are limited (see Sessions above). Each try is counted
+  before the passphrase is checked, so tries sent at once don't get extra
+  guesses, and at most two are checked at a time (each check takes about
+  19 MB); others are asked to wait a second.
 * Pages and vault files are sent with `Cache-Control: no-store`, which tells browsers
   and proxies not to keep a copy (only the app's own scripts and styles are cached).
 * What's not protected: anyone who controls the server, or gets the web

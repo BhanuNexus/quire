@@ -86,8 +86,11 @@ impl Section {
 pub struct Group<'a> {
     pub actor_label: &'a str,
     pub actor_id: &'a str,
-    /// The device the suggestions came from, when not this one.
+    /// The device the suggestions came from, when not this one: the name
+    /// it reported about itself ("" when none).
     pub device_name: Option<&'a str>,
+    /// That device's id.
+    pub device_id: Option<&'a str>,
     /// When the first of them was made.
     pub at_ms: i64,
     pub title: &'a str,
@@ -160,7 +163,8 @@ impl InboxData {
             let g = by_key.entry(key).or_insert_with(|| Group {
                 actor_label: &p.actor.label,
                 actor_id: &p.actor.id,
-                device_name: origin.map(|(_, name)| if name.is_empty() { "another device" } else { name }),
+                device_name: origin.map(|(_, name)| name),
+                device_id: origin.map(|(id, _)| id),
                 at_ms: p.created,
                 title: &p.title,
                 proposals: Vec::new(),

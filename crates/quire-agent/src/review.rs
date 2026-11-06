@@ -311,9 +311,11 @@ pub fn choices_from(decisions: &[HunkDecision]) -> impl Fn(&Hunk) -> Choice + '_
 
 // ------------------------------------------------------------ decided content
 
-/// Two normalised lines count as the same suggestion at or above this
-/// similarity (normalised Levenshtein, 0–1): "the launch is friday." and
-/// "The launch is on Friday" match; a different sentence doesn't.
+/// Similarity at which two normalised lines are at the same *place*.
+///
+/// Normalised Levenshtein, 0–1: the lines around a suggestion may be
+/// rewritten. Whether a line is the same *suggestion* is stricter
+/// ([`same_line`]).
 pub const DECIDED_LINE_SIMILARITY: f64 = 0.85;
 
 /// Hunks or records longer than this many lines are compared by exact
@@ -333,21 +335,38 @@ fn normalised(lines: &[String]) -> Vec<String> {
     lines.iter().map(|l| normalise_line(l)).filter(|l| !l.is_empty()).collect()
 }
 
-/// Lines shorter than this (in characters) must be equal apart from closing
-/// punctuation: one character is too much of a short line ("changed 7",
-/// "changed 78").
+/// Context lines shorter than this (in characters) must be equal apart
+/// from closing punctuation to mark the same place.
 pub const DECIDED_FUZZY_MIN_CHARS: usize = 20;
 
-fn similar(a: &str, b: &str, fuzzy: bool) -> bool {
-    if a == b {
+/// Whether two normalised lines are the same suggestion.
+///
+/// Equal apart from trivial differences only, which normalising already
+/// took out (letter case, spacing) or which are taken out here
+/// (punctuation at the end). Any other difference, a digit, a date, a number or a word, makes it a
+/// different suggestion, so a corrected value the agent brings back is
+/// always asked about (0.10.1 data review #7: "March 14" rejected must not
+/// hide "March 21", nor "$1,200" hide "$1,250").
+pub fn same_line(a: &str, b: &str) -> bool {
+    a == b || bare(a) == bare(b)
+}
+
+fn bare(s: &str) -> &str {
+    s.trim_end_matches(|c: char| c.is_whitespace() || matches!(c, '.' | ',' | ';' | ':' | '!' | '?' | '…'))
+}
+
+/// Whether two normalised lines are at the same place: the same line, or
+/// (for longer lines, when `fuzzy`) one rewritten a little. Used only to
+/// find where a decided change was, never to decide that two suggestions
+/// are the same.
+fn near(a: &str, b: &str, fuzzy: bool) -> bool {
+    if same_line(a, b) {
         return true;
     }
-    let bare = |s: &str| s.trim_end_matches(['.', ',', ';', ':', '!', '?']).trim_end().to_string();
     let (x, y) = (bare(a), bare(b));
-    x == y
-        || (fuzzy
-            && x.chars().count().min(y.chars().count()) >= DECIDED_FUZZY_MIN_CHARS
-            && strsim::normalized_levenshtein(&x, &y) >= DECIDED_LINE_SIMILARITY)
+    fuzzy
+        && x.chars().count().min(y.chars().count()) >= DECIDED_FUZZY_MIN_CHARS
+        && strsim::normalized_levenshtein(x, y) >= DECIDED_LINE_SIMILARITY
 }
 
 /// The content of a hunk the person decided.
@@ -402,12 +421,15 @@ impl DecidedContent {
     /// Whether hunk `h` (with `before`/`after`, its normalised context) only
     /// brings back this decided change at the same place:
     ///
-    /// * every line it adds matches a line this change added, and every
-    ///   line it removes matches a line this change would have replaced
-    ///   (each at [`DECIDED_LINE_SIMILARITY`]); a hunk that also adds or
-    ///   removes anything else is asked about again;
+    /// * every line it adds is a line this change added, and every line it
+    ///   removes is a line this change would have replaced, apart from
+    ///   letter case, spacing and closing punctuation ([`same_line`]); a
+    ///   hunk that adds or removes anything else (another word, digit,
+    ///   date or number included) is asked about again;
     /// * and it is at the same place: one of its replaced lines or its
-    ///   context matches one of this change's replaced lines or context.
+    ///   context matches one of this change's replaced lines or context
+    ///   (here a line rewritten a little still counts,
+    ///   [`DECIDED_LINE_SIMILARITY`]).
     pub fn covers(&self, h: &Hunk, before: Option<&str>, after: Option<&str>) -> bool {
         let old = normalised(&h.old_lines);
         let new = normalised(&h.new_lines);
@@ -418,10 +440,11 @@ impl DecidedContent {
             return false;
         }
         let fuzzy = old.len() + new.len() <= FUZZY_MAX_LINES && self.old.len() + self.new.len() <= FUZZY_MAX_LINES;
-        let within = |l: &str, set: &[String]| set.iter().any(|x| similar(l, x, fuzzy));
-        if !added.iter().all(|l| within(l, &self.new)) || !removed.iter().all(|l| within(l, &self.old)) {
+        let same = |l: &str, set: &[String]| set.iter().any(|x| same_line(l, x));
+        if !added.iter().all(|l| same(l, &self.new)) || !removed.iter().all(|l| same(l, &self.old)) {
             return false;
         }
+        let within = |l: &str, set: &[String]| set.iter().any(|x| near(l, x, fuzzy));
         let mine: Vec<&str> = old.iter().map(String::as_str).chain(before).chain(after).collect();
         let theirs: Vec<String> = self.old.iter().cloned().chain(self.before.clone()).chain(self.after.clone()).collect();
         // Nothing around either (a note that was empty): the same place.
@@ -444,19 +467,19 @@ impl DecidedContent {
         let new_n: Vec<String> = h.new_lines.iter().map(|l| normalise_line(l)).collect();
         let theirs: Vec<String> = self.old.iter().cloned().chain(self.before.clone()).chain(self.after.clone()).collect();
         let mine: Vec<&str> = old_n.iter().map(String::as_str).filter(|l| !l.is_empty()).chain(before).chain(after).collect();
-        let place = (mine.is_empty() && theirs.is_empty()) || mine.iter().any(|l| theirs.iter().any(|x| similar(l, x, true)));
+        let place = (mine.is_empty() && theirs.is_empty()) || mine.iter().any(|l| theirs.iter().any(|x| near(l, x, true)));
         if !place {
             return None;
         }
         // Lines the hunk removes that the rejected change would have replaced.
         let mut spare: Vec<usize> = (0..old_n.len())
-            .filter(|&i| !old_n[i].is_empty() && !new_n.contains(&old_n[i]) && self.old.iter().any(|x| similar(&old_n[i], x, true)))
+            .filter(|&i| !old_n[i].is_empty() && !new_n.contains(&old_n[i]) && self.old.iter().any(|x| same_line(&old_n[i], x)))
             .collect();
         let mut out = Vec::with_capacity(h.new_lines.len());
         let mut changed = false;
         for (j, line) in h.new_lines.iter().enumerate() {
             let n = &new_n[j];
-            let rejected = !n.is_empty() && !old_n.contains(n) && self.new.iter().any(|x| similar(n, x, true));
+            let rejected = !n.is_empty() && !old_n.contains(n) && self.new.iter().any(|x| same_line(n, x));
             if !rejected {
                 out.push(line.clone());
             } else if self.old.is_empty() {
@@ -790,6 +813,118 @@ mod tests {
         assert!(visible(base, hunks(&p(), base, base, agent), &[], &[mine], "d_server").is_empty(), "accepted on another device");
     }
 
+    /// The data review's case: a corrected date and time at the same place.
+    #[test]
+    fn a_corrected_date_or_number_is_asked_about_again() {
+        let base = "# Trip\nThe flight leaves on March 12, 2026 at 09:40.\nPack light.\n";
+        let wrong = "# Trip\nThe flight leaves on March 14, 2026 at 09:40.\nPack light.\n";
+        let right = "# Trip\nThe flight leaves on March 21, 2026 at 06:40.\nPack light.\n";
+        let rec = rejected(&hunks(&p(), base, base, wrong)[0], base);
+        assert_eq!(visible(base, hunks(&p(), base, base, right), &[], std::slice::from_ref(&rec), "d_desk").len(), 1);
+        let again = "# Trip\nTHE FLIGHT  leaves on March 14, 2026 at 09:40\nPack light.\n";
+        assert!(visible(base, hunks(&p(), base, base, again), &[], std::slice::from_ref(&rec), "d_desk").is_empty());
+        let accepted_elsewhere = DecidedContent { action: HunkAction::Accepted, device: Some("d_server".into()), ..rec };
+        assert_eq!(visible(base, hunks(&p(), base, base, right), &[], &[accepted_elsewhere], "d_desk").len(), 1);
+    }
+
+    /// A long line of words, numbers and dates for the properties below.
+    fn sentence(r: &mut Rng) -> Vec<String> {
+        const W: &[&str] = &[
+            "the", "flight", "invoice", "leaves", "total", "is", "due", "on", "for", "rent", "meeting", "starts", "at", "room", "budget",
+            "plan", "team", "review", "and", "with",
+        ];
+        const MONTHS: &[&str] = &["January", "March", "June", "October", "December"];
+        let mut out = Vec::new();
+        for _ in 0..6 + r.below(8) {
+            out.push(match r.below(6) {
+                0 => format!("{}", r.below(10_000)),
+                1 => format!("{} {}, 20{:02}", MONTHS[r.below(MONTHS.len())], 1 + r.below(28), r.below(40)),
+                2 => format!("{:02}:{:02}", r.below(24), r.below(60)),
+                3 => format!("${},{:03}.{:02}", 1 + r.below(99), r.below(1000), r.below(100)),
+                _ => W[r.below(W.len())].to_string(),
+            });
+        }
+        out
+    }
+
+    /// The test for both properties: `old` → `first` rejected, then the
+    /// agent writes `second` at the same place. Hidden or shown?
+    fn hidden_after_rejecting(first: &str, second: &str) -> bool {
+        let base = "# Notes\nKeep this line.\nThe old line here.\nAnd this one.\n".to_string();
+        let with = |l: &str| base.replace("The old line here.", l);
+        let rec = rejected(&hunks(&p(), &base, &base, &with(first))[0], &base);
+        visible(&base, hunks(&p(), &base, &base, &with(second)), &[], std::slice::from_ref(&rec), "d_desk").is_empty()
+    }
+
+    /// Property (0.10.1 data review #7): once a line is rejected, the agent
+    /// bringing it back with any digit, number, date or word changed is a
+    /// different suggestion and is always shown.
+    #[test]
+    fn property_a_changed_digit_date_number_or_word_is_never_hidden() {
+        let mut r = Rng(0xD47E_5EED);
+        for case in 0..3_000 {
+            let words = sentence(&mut r);
+            let first = words.join(" ");
+            let mut changed = words.clone();
+            let i = r.below(changed.len());
+            match r.below(4) {
+                // One digit somewhere in the line, +1.
+                0 => {
+                    let digits: Vec<usize> = first.char_indices().filter(|(_, c)| c.is_ascii_digit()).map(|(i, _)| i).collect();
+                    if digits.is_empty() {
+                        changed.insert(i, format!("{}", r.below(10)));
+                    } else {
+                        let at = digits[r.below(digits.len())];
+                        let mut s: Vec<char> = first.chars().collect();
+                        let ci = first[..at].chars().count();
+                        s[ci] = char::from(b'0' + (s[ci] as u8 - b'0' + 1) % 10);
+                        changed = vec![s.into_iter().collect()];
+                    }
+                }
+                // A word swapped for another, or a word added or taken out.
+                1 => changed[i] = format!("{}x", changed[i]),
+                2 => changed.insert(i, "not".into()),
+                _ if changed.len() > 1 => {
+                    changed.remove(i);
+                }
+                _ => changed.push("today".into()),
+            }
+            let second = changed.join(" ");
+            if normalise_line(&second).trim_end_matches(['.', ',', ';', ':', '!', '?'])
+                == normalise_line(&first).trim_end_matches(['.', ',', ';', ':', '!', '?'])
+            {
+                continue;
+            }
+            assert!(!hidden_after_rejecting(&first, &second), "case {case}: {first:?} rejected hid {second:?}");
+            // Reworded trivially as well, it is still a different suggestion.
+            assert!(!hidden_after_rejecting(&first, &format!("  {}.", second.to_uppercase())), "case {case}");
+        }
+    }
+
+    /// Property: rewording only in letter case, spacing or closing
+    /// punctuation is the same suggestion, and stays hidden.
+    #[test]
+    fn property_trivial_rewordings_stay_hidden() {
+        let mut r = Rng(0x7121_A1A1);
+        for case in 0..3_000 {
+            let first = sentence(&mut r).join(" ");
+            let mut second = match r.below(4) {
+                0 => first.to_uppercase(),
+                1 => first.to_lowercase(),
+                2 => first.replace(' ', "   "),
+                _ => format!("\t {first}  "),
+            };
+            match r.below(4) {
+                0 => second.push('.'),
+                1 => second.push_str("!?"),
+                2 => second.push_str(" …"),
+                _ => {}
+            }
+            assert!(hidden_after_rejecting(&first, &second), "case {case}: {first:?} rejected, {second:?} shown");
+            assert!(hidden_after_rejecting(&format!("{first}."), &second), "case {case}");
+        }
+    }
+
     #[test]
     fn property_a_rejected_hunk_brought_back_reworded_is_never_shown_again() {
         let mut r = Rng(0xA5A5_1234_5678_9ABC);
@@ -814,7 +949,7 @@ mod tests {
             let at = &h.range_in_current;
             for s in shown.iter().filter(|s| s.range_in_current.start <= at.end && at.start <= s.range_in_current.end) {
                 let added: Vec<String> = normalised(&s.new_lines).into_iter().filter(|l| !normalised(&s.old_lines).contains(l)).collect();
-                let all_rejected = !added.is_empty() && added.iter().all(|l| rec.new.iter().any(|x| similar(l, x, true)));
+                let all_rejected = !added.is_empty() && added.iter().all(|l| rec.new.iter().any(|x| same_line(l, x)));
                 assert!(!all_rejected, "case {case}: rejected lines shown again {s:?}\nbase {base:?}\nagain {again:?}");
             }
             checked += 1;
@@ -887,7 +1022,7 @@ mod tests {
             let count = |t: &str, l: &str| split_lines(t).into_iter().filter(|x| *x == l).count();
             for l in split_lines(&again) {
                 let n = normalise_line(l);
-                if n.is_empty() || rec.new.iter().any(|x| similar(&n, x, true)) {
+                if n.is_empty() || rec.new.iter().any(|x| same_line(&n, x)) {
                     continue;
                 }
                 assert!(count(&out, l) >= count(&again, l).min(1), "case {case}: lost {l:?}\nbase {base:?}\nagain {again:?}\nout {out:?}");

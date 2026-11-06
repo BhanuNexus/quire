@@ -20,6 +20,27 @@
 //! Every file has one writer, the device in its path, so two devices never
 //! write the same file and sync never has to merge one.
 //!
+//! **Other devices' files are untrusted input** (0.10.1 security review
+//! #2 and #11). Every device holds the vault key, so any of them could
+//! write any file here. Until per-device signatures exist (future work,
+//! `docs/design/0.10-agentsync.md`), this device checks what it can:
+//!
+//! * a device is the folder its files are in: a device file must be named
+//!   after the id inside it, a proposal's origin and actor must be that
+//!   device, a ledger line's actor too, and a decision is recorded with the
+//!   device whose folder it came from (never with this device);
+//! * every path in another device's proposal or ledger goes through the
+//!   same check as a path an agent names ([`crate::vault_file`]: canonical,
+//!   no hidden folder or `.quire`, inside the vault through symlinks); a
+//!   proposal with one bad path is not taken in, a ledger line is dropped;
+//! * a mirrored proposal's trust can only be lowered here, never raised;
+//! * what this device exports is built from its own local state, never
+//!   from the shared copy of its folder (which another device could edit);
+//! * a waiting proposal settled by another device's decisions keeps who
+//!   decided ("decided on …" in the Inbox), and the person can reopen it
+//!   ([`AgentStore::reopen_proposal`]); decisions made elsewhere before the
+//!   reopening are then ignored here.
+//!
 //! * [`AgentStore::export_shared`] (before each sync pass) writes this
 //!   device's files from its local state.
 //! * [`AgentStore::import_shared`] (after each pass) brings other devices'
@@ -63,6 +84,10 @@ pub(crate) const DECISIONS_DIR: &str = ".quire/shared/agent/decisions";
 /// Other devices' ledgers, read-only here.
 pub const SHARED_LEDGER_DIR: &str = ".quire/shared/agent/ledger";
 pub(crate) const TEXTS_DIR: &str = ".quire/shared/agent/texts";
+/// What this device last exported as its decisions, per proposal. Local
+/// (never synced): exports add to this, not to the shared copy, which
+/// another device could have edited.
+pub(crate) const SENT_DECISIONS_DIR: &str = ".quire/agent/sent-decisions";
 /// The format of every JSON file here; a reader skips higher ones.
 pub const SHARED_FORMAT: u32 = 1;
 
@@ -88,7 +113,7 @@ pub fn valid_device(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
-fn month_of(at_ms: i64) -> String {
+pub(crate) fn month_of(at_ms: i64) -> String {
     chrono::DateTime::from_timestamp_millis(at_ms).map_or_else(|| "1970-01".into(), |d| d.format("%Y-%m").to_string())
 }
 
@@ -108,7 +133,7 @@ fn recent_months(now_ms: i64, n: usize) -> Vec<String> {
     out
 }
 
-fn gzip_b64(bytes: &[u8]) -> String {
+pub(crate) fn gzip_b64(bytes: &[u8]) -> String {
     let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     let _ = e.write_all(bytes);
     base64::engine::general_purpose::STANDARD.encode(e.finish().unwrap_or_default())
@@ -403,9 +428,15 @@ impl AgentStore {
             }
             let name = format!("{}.json", p.id);
             let file = NotePath::new(format!("{folder}/{name}"));
+            let sent = NotePath::new(format!("{SENT_DECISIONS_DIR}/{name}"));
             // Events are only added: keep what an earlier export wrote (an
-            // undone acceptance stays decided on the other devices).
-            if let Some(old) = st.read_bytes(&file).ok().and_then(|b| serde_json::from_slice::<DecisionsFile>(&b).ok()) {
+            // undone acceptance stays decided on the other devices). From
+            // this device's own record; the shared copy only before there
+            // was one (an older Quire), and then only events of this device.
+            let earlier = st.read_bytes(&sent).ok().or_else(|| st.read_bytes(&file).ok());
+            if let Some(old) =
+                earlier.and_then(|b| serde_json::from_slice::<DecisionsFile>(&b).ok()).filter(|o| o.device == me && o.proposal == p.id)
+            {
                 f.absorb(old);
             }
             if f.is_empty() {
@@ -416,6 +447,7 @@ impl AgentStore {
                 && bytes.len() <= MAX_FILE
             {
                 n += usize::from(self.put(&file, &bytes));
+                self.put(&sent, &bytes);
             }
         }
         // Older decisions stay while recent; then they go with their proposal.
@@ -430,6 +462,7 @@ impl AgentStore {
                 .is_some_and(|d| now - d.updated <= KEEP_RESOLVED_MS);
             if !recent_file {
                 let _ = st.remove(&f);
+                let _ = st.remove(&NotePath::new(format!("{SENT_DECISIONS_DIR}/{}", f.file_name())));
             }
         }
         n
@@ -542,12 +575,28 @@ impl AgentStore {
             .list_under(DEVICES_DIR)
             .unwrap_or_default()
             .iter()
-            .filter_map(|f| serde_json::from_slice::<DeviceFile>(&st.read_bytes(f).ok()?).ok())
-            .filter(|d| d.format <= SHARED_FORMAT && valid_device(&d.id) && !d.name.trim().is_empty())
-            .map(|d| (d.id, d.name))
+            .filter_map(|f| {
+                let d = serde_json::from_slice::<DeviceFile>(&st.read_bytes(f).ok()?).ok()?;
+                // A device is the file it publishes: `devices/<id>.json`
+                // names `<id>` only, so no device can claim another's id.
+                (f.file_name().strip_suffix(".json") == Some(d.id.as_str())).then_some(d)
+            })
+            .filter(|d| d.format <= SHARED_FORMAT && valid_device(&d.id) && d.id != self.device().id)
+            .map(|d| (d.id, clean_name(&d.name)))
+            .filter(|(_, name)| !name.is_empty())
             .collect();
         out.insert(self.device().id.clone(), self.device().name.clone());
         out
+    }
+
+    /// Another device as people should read it: its self-reported name,
+    /// marked as such, and its id ("“home server” (self-reported name,
+    /// device `d_8f2c…`)"). This device is "this device".
+    pub fn device_label(&self, id: &str) -> String {
+        if id == self.device().id {
+            return "this device".into();
+        }
+        device_label(id, self.device_names().get(id).map_or("", String::as_str))
     }
 
     /// A text with this hash that another device carried for undoing its
@@ -576,10 +625,25 @@ impl AgentStore {
     }
 
     /// Other devices' ledgers (read-only copies), matching `q`.
+    ///
+    /// Untrusted input: a line counts only when its actor is the device
+    /// whose folder it is in, and every path it names passes
+    /// [`crate::vault_file`] (no hidden folders, `.quire`, symlinks out of
+    /// the vault, absolute or drive paths). Others are dropped.
     pub(crate) fn shared_log(&self, q: &LedgerQuery) -> Vec<LedgerEntry> {
         other_devices(self.vault(), &self.device().id)
             .iter()
-            .flat_map(|dev| crate::ledger::Ledger::read_folder(self.vault(), &format!("{SHARED_LEDGER_DIR}/{dev}"), q))
+            .flat_map(|dev| {
+                crate::ledger::Ledger::read_folder(self.vault(), &format!("{SHARED_LEDGER_DIR}/{dev}"), q)
+                    .into_iter()
+                    .filter(move |e| e.actor.device == *dev)
+                    .map(move |mut e| {
+                        // Where it came from, for revert (in memory only).
+                        e.other.insert(FROM_SHARED.into(), dev.clone().into());
+                        e
+                    })
+            })
+            .filter(|e| [&e.path, &e.to].into_iter().flatten().all(|p| crate::store::vault_file(self.vault(), p).is_ok()))
             .collect()
     }
 
@@ -615,6 +679,7 @@ impl AgentStore {
                 if f.file_name().strip_suffix(".json") != Some(p.id.as_str()) || p.origin().is_none_or(|(id, _)| id != dev) {
                     continue;
                 }
+                let Some(p) = self.checked_mirror(p, dev) else { continue };
                 self.import_proposal(p, &mut archived, &mut report);
             }
         }
@@ -628,6 +693,27 @@ impl AgentStore {
             }
         }
         report
+    }
+
+    /// Another device's proposal, if it may be taken in (untrusted input,
+    /// see the module docs): its actor is an agent, job or importer of
+    /// that device (never a person, never another device), every path in it
+    /// passes [`crate::vault_file`], and its trust is lowered when a source
+    /// is untrusted here.
+    fn checked_mirror(&self, mut p: Proposal, dev: &str) -> Option<Proposal> {
+        if p.actor.is_human() || p.actor.device != dev {
+            return None;
+        }
+        for c in &p.changes {
+            if c.subject().is_none() || c.paths().iter().any(|x| crate::store::vault_file(self.vault(), x).is_err()) {
+                return None;
+            }
+        }
+        if let Some(src) = self.untrusted_source(&p.sources) {
+            p.trust = crate::actor::Trust::Untrusted;
+            p.untrusted_source.get_or_insert(src);
+        }
+        Some(p)
     }
 
     /// Settle the waiting edits of `p` that have decisions and nothing left
@@ -724,8 +810,11 @@ impl AgentStore {
             },
         };
         let loaded = p.updated;
+        let was_pending = !archived && p.status == ProposalStatus::Pending;
+        // Reopened here: what was decided elsewhere before that is overruled.
+        let reopened = p.other.get(REOPENED_AT).and_then(serde_json::Value::as_i64).unwrap_or(i64::MIN);
         let mut touched: BTreeSet<NotePath> = BTreeSet::new();
-        for h in &d.hunks {
+        for h in d.hunks.iter().filter(|h| h.at > reopened) {
             let Some(c) = change_mut(&mut p, &h.path, None) else { continue };
             let mut dec = HunkDecision { hunk: h.hunk.clone(), action: h.action, at: h.at, text: h.text.clone(), other: Other::new() };
             dec = dec.on_device(&d.device);
@@ -734,7 +823,7 @@ impl AgentStore {
                 touched.insert(h.path.clone());
             }
         }
-        for x in &d.decided {
+        for x in d.decided.iter().filter(|x| x.content.at > reopened) {
             let Some(c) = change_mut(&mut p, &x.path, None) else { continue };
             let mut content = x.content.clone();
             content.device = Some(d.device.clone());
@@ -744,7 +833,7 @@ impl AgentStore {
             }
         }
         let mut states = false;
-        for s in &d.changes {
+        for s in d.changes.iter().filter(|s| s.at > reopened) {
             let Some(c) = change_mut(&mut p, &s.path, Some(s.op)) else { continue };
             let theirs = (s.state.rank(), std::cmp::Reverse((s.at, d.device.clone())));
             let ours = c.state.map(|st| {
@@ -800,14 +889,100 @@ impl AgentStore {
         if let Some(s) = p.settled_status() {
             p.status = s;
         }
+        if p.status != ProposalStatus::Pending && was_pending {
+            // Settled by another device: never silently. The Inbox shows
+            // it under "Resolved" as decided there, and the activity log
+            // has an entry for this device too.
+            p.other.insert(SETTLED_BY.into(), serde_json::json!({"device": d.device, "at": now}));
+        }
         if store.save_if(&p, loaded).unwrap_or(false) {
             report.decided += 1;
             if p.status != ProposalStatus::Pending {
                 report.settled += 1;
                 let _ = store.archive(&p.id);
+                if was_pending {
+                    let op = if p.status == ProposalStatus::Rejected { Op::Reject } else { Op::Accept };
+                    let mut e = LedgerEntry::new(crate::actor::Actor::human(&d.device), op, now);
+                    e.proposal = Some(p.id.clone());
+                    e.from = Some(p.actor.id.clone());
+                    e.path = p.changes.iter().find_map(|c| c.subject().cloned());
+                    e.other.insert("settled_from".into(), d.device.clone().into());
+                    self.record(&e);
+                }
             }
         }
     }
+
+    /// Put a proposal that another device's decisions settled back to
+    /// waiting here (the person's "Reopen" in the Inbox): the states and
+    /// hunk decisions other devices made are dropped from this copy, and
+    /// decisions they made before now are ignored when they arrive again.
+    /// What was decided on this device stays. The note is not touched.
+    pub fn reopen_proposal(&self, id: &ProposalId) -> Result<(), crate::change::WriteError> {
+        let store = ProposalStore::new(self.vault().clone());
+        let now = self.now_ms();
+        let me = self.device().id.clone();
+        let (mut p, archived) = match store.load(id) {
+            Some(p) => (p, None),
+            None => match store.archived(now).into_iter().find(|p| &p.id == id) {
+                Some(p) => (p.clone(), Some(p)),
+                None => return Err(crate::change::WriteError::NotFound { path: NotePath::new(id.to_string()) }),
+            },
+        };
+        for c in &mut p.changes {
+            c.decisions.retain(|d| d.device().is_none_or(|dev| dev == me));
+            c.decided.retain(|d| d.device.as_deref().is_none_or(|dev| dev == me));
+            if c.state_by().is_some_and(|(dev, _)| dev != me) {
+                c.state = None;
+                c.other.remove("state_device");
+                c.other.remove("state_at");
+            }
+            if c.state.is_none() && c.decisions.is_empty() {
+                c.review = None;
+            }
+        }
+        p.other.insert(REOPENED_AT.into(), now.into());
+        p.other.remove(SETTLED_BY);
+        p.updated = now.max(p.updated + 1);
+        p.status = p.settled_status().unwrap_or(ProposalStatus::Pending);
+        store.save(&p)?;
+        if let Some(old) = archived {
+            store.remove_archived(&old);
+        }
+        if p.status != ProposalStatus::Pending {
+            let _ = store.archive(&p.id);
+        }
+        let mut e = LedgerEntry::new(crate::actor::Actor::human(&me), Op::Revert, now);
+        e.proposal = Some(p.id.clone());
+        e.from = Some(p.actor.id.clone());
+        self.record(&e);
+        Ok(())
+    }
+}
+
+/// On a ledger entry read from another device's shared ledger (in memory,
+/// never written): that device.
+pub(crate) const FROM_SHARED: &str = "_from_shared";
+
+/// In a proposal: the device whose decisions settled it here, and when.
+pub const SETTLED_BY: &str = "settled_by";
+/// In a proposal: when the person reopened it here (decisions made
+/// elsewhere before then are ignored).
+pub const REOPENED_AT: &str = "reopened_at";
+
+/// Another device by id and the name it reported about itself, for
+/// people: "“home server” (self-reported name, device `d_8f2c4a…`)".
+pub fn device_label(id: &str, name: &str) -> String {
+    let short: String = id.chars().take(10).collect();
+    let more = if id.chars().count() > 10 { "…" } else { "" };
+    let name = clean_name(name);
+    if name.is_empty() { format!("device {short}{more}") } else { format!("“{name}” (self-reported name, device {short}{more})") }
+}
+
+/// A self-reported device name as shown: control characters out, at most
+/// 64 characters.
+fn clean_name(name: &str) -> String {
+    name.chars().filter(|c| !c.is_control()).take(64).collect::<String>().trim().to_string()
 }
 
 /// A proposal as another device shared it (`packed` or plain), if this

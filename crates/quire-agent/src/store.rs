@@ -224,6 +224,70 @@ pub fn canonical_path(p: &NotePath) -> Result<NotePath, WriteError> {
     Ok(NotePath::new(s))
 }
 
+/// Where `path` really leads, for any caller with a vault.
+///
+/// The body of [`AgentStore::resolve`]: canonical ([`canonical_path`]),
+/// with links on the way followed; the file they reach must be inside the
+/// vault and outside hidden folders. A link that leads nowhere is refused.
+pub fn resolve_in(vault: &Vault, path: &NotePath) -> Result<Resolved, WriteError> {
+    match vault.storage().absolute(&NotePath::new("")) {
+        Some(root) => resolve_at(&root, path),
+        None => canonical_path(path).map(|path| Resolved { real: path.clone(), path }),
+    }
+}
+
+/// [`resolve_in`] for a vault folder on disk.
+pub fn resolve_at(root: &std::path::Path, path: &NotePath) -> Result<Resolved, WriteError> {
+    let path = canonical_path(path)?;
+    let abs = root.join(path.as_str());
+    let outside = |why: &str| WriteError::InvalidPath { reason: format!("{path}: {why}") };
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    // The deepest part that exists, with links followed; the rest as named.
+    let mut probe = abs.as_path();
+    let mut tail: Vec<String> = Vec::new();
+    let found = loop {
+        match probe.canonicalize() {
+            Ok(c) => break c,
+            Err(_) if probe.symlink_metadata().is_ok() => return Err(outside("is a link that leads nowhere")),
+            Err(_) => {
+                let name = probe.file_name().and_then(|n| n.to_str()).ok_or_else(|| outside("leads outside the vault"))?;
+                tail.push(name.to_string());
+                probe = probe.parent().ok_or_else(|| outside("leads outside the vault"))?;
+            }
+        }
+    };
+    let rel = found.strip_prefix(&root).map_err(|_| outside("leads outside the vault"))?;
+    let mut segs: Vec<String> = Vec::new();
+    for c in rel.components() {
+        segs.push(c.as_os_str().to_str().ok_or_else(|| outside("leads to a file name Quire can't read"))?.to_string());
+    }
+    segs.extend(tail.into_iter().rev());
+    let real = canonical_path(&NotePath::new(segs.join("/"))).map_err(|_| outside("leads into a hidden folder"))?;
+    Ok(Resolved { path, real })
+}
+
+/// A file someone else named that Quire is about to read, show or write.
+///
+/// A picture a drawing embeds, a path in another device's shared review
+/// file: [`resolve_in`], and neither the path as named nor the file it
+/// reaches may be in any hidden folder, `.quire` included.
+pub fn vault_file(vault: &Vault, path: &NotePath) -> Result<Resolved, WriteError> {
+    not_hidden(resolve_in(vault, path)?)
+}
+
+/// [`vault_file`] for a vault folder on disk.
+pub fn vault_file_at(root: &std::path::Path, path: &NotePath) -> Result<Resolved, WriteError> {
+    not_hidden(resolve_at(root, path)?)
+}
+
+fn not_hidden(r: Resolved) -> Result<Resolved, WriteError> {
+    let hidden = |p: &NotePath| p.as_str().split('/').any(|s| s.starts_with('.') || s == "node_modules");
+    if hidden(&r.path) || hidden(&r.real) {
+        return Err(WriteError::InvalidPath { reason: format!("{}: is inside a hidden folder", r.path) });
+    }
+    Ok(r)
+}
+
 impl AgentStore {
     pub fn open(vault: &Vault, device: DeviceInfo, clock: Arc<dyn Clock>) -> Self {
         let dir = if cfg!(test) {
@@ -421,35 +485,7 @@ impl AgentStore {
     /// be inside the vault and outside hidden folders too. A link that leads
     /// nowhere is refused.
     pub fn resolve(&self, path: &NotePath) -> Result<Resolved, WriteError> {
-        let path = canonical_path(path)?;
-        let storage = self.inner.vault.storage();
-        let (Some(root), Some(abs)) = (storage.absolute(&NotePath::new("")), storage.absolute(&path)) else {
-            return Ok(Resolved { real: path.clone(), path });
-        };
-        let outside = |why: &str| WriteError::InvalidPath { reason: format!("{path}: {why}") };
-        let root = root.canonicalize().unwrap_or(root);
-        // The deepest part that exists, with links followed; the rest as named.
-        let mut probe = abs.as_path();
-        let mut tail: Vec<String> = Vec::new();
-        let found = loop {
-            match probe.canonicalize() {
-                Ok(c) => break c,
-                Err(_) if probe.symlink_metadata().is_ok() => return Err(outside("is a link that leads nowhere")),
-                Err(_) => {
-                    let name = probe.file_name().and_then(|n| n.to_str()).ok_or_else(|| outside("leads outside the vault"))?;
-                    tail.push(name.to_string());
-                    probe = probe.parent().ok_or_else(|| outside("leads outside the vault"))?;
-                }
-            }
-        };
-        let rel = found.strip_prefix(&root).map_err(|_| outside("leads outside the vault"))?;
-        let mut segs: Vec<String> = Vec::new();
-        for c in rel.components() {
-            segs.push(c.as_os_str().to_str().ok_or_else(|| outside("leads to a file name Quire can't read"))?.to_string());
-        }
-        segs.extend(tail.into_iter().rev());
-        let real = canonical_path(&NotePath::new(segs.join("/"))).map_err(|_| outside("leads into a hidden folder"))?;
-        Ok(Resolved { path, real })
+        resolve_in(&self.inner.vault, path)
     }
 
     /// The one path check for everything an agent names: MCP tools and

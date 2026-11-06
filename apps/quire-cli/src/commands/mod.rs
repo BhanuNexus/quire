@@ -17,6 +17,7 @@ mod lint;
 mod mcp;
 mod notes;
 mod remind;
+mod scope_check;
 mod search;
 mod serve;
 mod sync;

@@ -99,9 +99,16 @@ fn session(web: &Web, req: &Req) -> Option<Session> {
     web.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).check(&token, web.now(), web.cfg.limits, changed)
 }
 
-/// Only a path on this server (`/…`, not `//host`).
+/// Only a path on this server (`/…`, not `//host`). Control characters
+/// and spaces are refused too: browsers drop a tab or newline from a URL,
+/// so `/\t/evil.example` would be read as `//evil.example`.
 fn safe_next(next: &str) -> &str {
-    if next.starts_with('/') && !next.starts_with("//") && !next.contains('\\') && !next.starts_with("/login") { next } else { "/" }
+    let plain = !next.chars().any(|c| c.is_control() || c.is_whitespace());
+    if plain && next.starts_with('/') && !next.starts_with("//") && !next.contains('\\') && !next.starts_with("/login") {
+        next
+    } else {
+        "/"
+    }
 }
 
 /// On the sign-in page: Beta, and where the notes are readable.
@@ -133,23 +140,37 @@ fn login_page(web: &Web, req: &Req, status: StatusCode, message: &str) -> Res {
     Res::html(status, html::plain("Sign in", &body)).with(header::SET_COOKIE, web.cookie(LOGIN_COOKIE, &token, 3600))
 }
 
+/// A sign-in try begun with `Limiter::begin`, ended when dropped (also if
+/// the check panics, so its slot is never lost); `.1` is whether the
+/// passphrase was right.
+struct Try<'a>(&'a Web, bool);
+
+impl Drop for Try<'_> {
+    fn drop(&mut self) {
+        self.0.limiter.lock().unwrap_or_else(std::sync::PoisonError::into_inner).end(self.0.now(), self.1);
+    }
+}
+
 fn login(web: &Web, req: &Req) -> Res {
     let cookie = req.cookie(LOGIN_COOKIE).unwrap_or_default();
     if !web.same_origin(&req.headers) || cookie.is_empty() || !auth::same(&cookie, req.f("_login")) {
         return login_page(web, req, StatusCode::FORBIDDEN, "The sign-in form expired. Try again.");
     }
-    let now = web.now();
-    let allowed = web.limiter.lock().unwrap_or_else(std::sync::PoisonError::into_inner).check(now);
-    if let Err(wait) = allowed {
+    // Checked and counted in one step, with at most a couple of checks
+    // running at once (0.10.1 security review #5).
+    let began = web.limiter.lock().unwrap_or_else(std::sync::PoisonError::into_inner).begin(web.now());
+    if let Err(wait) = began {
         let secs = (wait + 999) / 1000;
         return login_page(web, req, StatusCode::TOO_MANY_REQUESTS, &format!("Too many wrong tries. Wait {secs} s and try again."))
             .with(header::RETRY_AFTER, secs.to_string());
     }
-    if !web.cfg.login.verify(req.f("passphrase")) {
-        web.limiter.lock().unwrap_or_else(std::sync::PoisonError::into_inner).failed(web.now());
+    let mut attempt = Try(web, false);
+    attempt.1 = web.cfg.login.verify(req.f("passphrase"));
+    let right = attempt.1;
+    drop(attempt);
+    if !right {
         return login_page(web, req, StatusCode::UNAUTHORIZED, "That passphrase isn't right.");
     }
-    web.limiter.lock().unwrap_or_else(std::sync::PoisonError::into_inner).succeeded();
     let Some((token, _)) = web.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).create(web.now()) else {
         return Res::html(StatusCode::INTERNAL_SERVER_ERROR, html::error_page("No randomness available."));
     };

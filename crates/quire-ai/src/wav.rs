@@ -33,6 +33,17 @@ pub fn encode_pcm16(samples: &[f32], rate: u32) -> Vec<u8> {
     out
 }
 
+/// Sample rates a WAV file may claim (0.10.1 security review #10): the
+/// player resamples to the speaker's rate, so a tiny claimed rate would
+/// ask for an enormous buffer.
+pub const MIN_RATE: u32 = 4_000;
+pub const MAX_RATE: u32 = 384_000;
+/// Channels a WAV file may have.
+pub const MAX_CHANNELS: u16 = 32;
+/// Samples Quire decodes or resamples to at most: 2²⁷ (512 MiB of
+/// `f32`, about 46 minutes at 48 kHz). Longer audio is cut there.
+pub const MAX_SAMPLES: usize = 1 << 27;
+
 /// Decoded audio: mono samples and their rate.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Audio {
@@ -69,6 +80,9 @@ pub fn decode(bytes: &[u8]) -> Result<Audio, String> {
         let end = body.saturating_add(len).min(bytes.len());
         match id {
             b"fmt " => {
+                if len < 16 {
+                    return Err("the WAV file's format chunk is too short".into());
+                }
                 let format = u16_at(bytes, body).ok_or("truncated fmt")?;
                 let channels = u16_at(bytes, body + 2).ok_or("truncated fmt")?;
                 let rate = u32_at(bytes, body + 4).ok_or("truncated fmt")?;
@@ -87,6 +101,21 @@ pub fn decode(bytes: &[u8]) -> Result<Audio, String> {
     if channels == 0 || rate == 0 {
         return Err("the WAV file has no channels".into());
     }
+    if channels > MAX_CHANNELS {
+        return Err(format!("the WAV file has {channels} channels; Quire plays up to {MAX_CHANNELS}"));
+    }
+    if !(MIN_RATE..=MAX_RATE).contains(&rate) {
+        return Err(format!("the WAV file's sample rate ({rate} Hz) is outside {MIN_RATE}–{MAX_RATE} Hz"));
+    }
+    let width = match bits {
+        16 => 2,
+        24 => 3,
+        32 => 4,
+        b => return Err(format!("unsupported WAV encoding (format {format}, {b} bits)")),
+    };
+    // Whole frames only, and no more than Quire decodes.
+    let frames = (data.len() / width / usize::from(channels)).min(MAX_SAMPLES);
+    let data = &data[..frames * width * usize::from(channels)];
     let frame: Vec<f32> = match (format, bits) {
         (1, 16) => data.chunks_exact(2).map(|c| f32::from(i16::from_le_bytes([c[0], c[1]])) / 32768.0).collect(),
         (1, 24) => data.chunks_exact(3).map(|c| (i32::from_le_bytes([0, c[0], c[1], c[2]]) >> 8) as f32 / 8_388_608.0).collect(),
@@ -104,6 +133,11 @@ pub fn decode(bytes: &[u8]) -> Result<Audio, String> {
 /// `samples` at `from` Hz resampled to `to` Hz (linear interpolation after a
 /// box low-pass when shrinking; enough for speech recognition).
 pub fn resample(samples: &[f32], from: u32, to: u32) -> Vec<f32> {
+    resample_at_most(samples, from, to, MAX_SAMPLES)
+}
+
+/// [`resample`] giving at most `cap` samples.
+fn resample_at_most(samples: &[f32], from: u32, to: u32, cap: usize) -> Vec<f32> {
     if from == to || samples.is_empty() || from == 0 || to == 0 {
         return samples.to_vec();
     }
@@ -123,7 +157,8 @@ pub fn resample(samples: &[f32], from: u32, to: u32) -> Vec<f32> {
     } else {
         samples.to_vec()
     };
-    let n = ((samples.len() as f64) / ratio).floor() as usize;
+    // Never more than [`MAX_SAMPLES`], whatever the rates say.
+    let n = (((samples.len() as f64) / ratio).floor() as usize).min(cap);
     (0..n)
         .map(|i| {
             let pos = i as f64 * ratio;
@@ -184,6 +219,50 @@ mod tests {
         assert_eq!((a.rate, a.samples), (48_000, vec![0.0, 0.5]));
         assert!(decode(b"RIFF\0\0\0\0WAVE").is_err());
         assert!(decode(b"OggS").is_err());
+    }
+
+    /// A WAV header in front of `data`: format, channels, rate, bits.
+    fn wav(format: u16, channels: u16, rate: u32, bits: u16, data: &[u8]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(b"RIFF\0\0\0\0WAVEfmt ");
+        b.extend_from_slice(&16u32.to_le_bytes());
+        b.extend_from_slice(&format.to_le_bytes());
+        b.extend_from_slice(&channels.to_le_bytes());
+        b.extend_from_slice(&rate.to_le_bytes());
+        b.extend_from_slice(&rate.wrapping_mul(u32::from(channels) * u32::from(bits / 8)).to_le_bytes());
+        b.extend_from_slice(&(channels * (bits / 8)).to_le_bytes());
+        b.extend_from_slice(&bits.to_le_bytes());
+        b.extend_from_slice(b"data");
+        b.extend_from_slice(&u32::try_from(data.len()).unwrap().to_le_bytes());
+        b.extend_from_slice(data);
+        b
+    }
+
+    /// 0.10.1 security review #10: a header can't make the player ask for
+    /// a huge buffer.
+    #[test]
+    fn untrusted_headers_are_checked_and_resampling_is_capped() {
+        let data = [0u8; 400];
+        for rate in [1, 100, 3_999, 384_001, u32::MAX] {
+            assert!(decode(&wav(1, 1, rate, 16, &data)).unwrap_err().contains("sample rate"), "{rate}");
+        }
+        assert!(decode(&wav(1, 1, 4_000, 16, &data)).is_ok());
+        assert!(decode(&wav(1, 1, 384_000, 16, &data)).is_ok());
+        assert!(decode(&wav(1, 33, 16_000, 16, &data)).unwrap_err().contains("channels"));
+        assert!(decode(&wav(1, 1, 16_000, 8, &data)).is_err());
+        assert!(decode(&wav(1, 1, 16_000, 0, &data)).is_err());
+        // A short format chunk.
+        let mut short = wav(1, 1, 16_000, 16, &data);
+        short[16..20].copy_from_slice(&8u32.to_le_bytes());
+        assert!(decode(&short).is_err());
+        // A data chunk claiming more than the file has, and odd trailing bytes.
+        let mut long = wav(1, 2, 16_000, 16, &[0u8; 7]);
+        let at = long.len() - 7 - 4;
+        long[at..at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(decode(&long).unwrap().samples.len(), 1);
+        // Resampling is bounded however far apart the rates are.
+        assert_eq!(resample_at_most(&[0.0; 10], 1, 48_000, 1_000_000).len(), 480_000, "within the cap it is exact");
+        assert_eq!(resample_at_most(&vec![0.0; 10_000], 1, 48_000, 1_000_000).len(), 1_000_000);
     }
 
     #[test]

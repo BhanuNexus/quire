@@ -7,7 +7,7 @@
 use std::fmt::Write as _;
 use std::sync::Arc;
 
-use quire_vault::{NotePath, Vault};
+use quire_vault::{ContentHash, NotePath, Vault};
 
 use crate::shared::{DECISIONS_DIR, DEVICES_DIR, PROPOSALS_DIR, SHARED_LEDGER_DIR, TEXTS_DIR};
 use crate::*;
@@ -416,4 +416,203 @@ fn a_rejection_holds_when_the_agent_suggests_it_again_in_a_new_run() {
     let _ = third;
     let waiting: Vec<_> = s.store.proposals(&ProposalFilter::pending()).into_iter().filter(|p| p.files.contains(&path)).collect();
     assert_eq!(waiting.len(), 1, "{waiting:?}");
+}
+
+// ---- 0.10.1 security review #2 and #11: other devices' files are untrusted
+
+/// A device that writes files into the shared review folders by hand:
+/// its device file, ledger lines, and the texts they need.
+fn forge(d: &Dev, dev: &str, name: &str, lines: &[LedgerEntry], texts: &[&str]) {
+    let st = d.vault.storage();
+    st.write_atomic(&NotePath::new(format!("{DEVICES_DIR}/{dev}.json")), &format!("{{\"format\":1,\"id\":\"{dev}\",\"name\":\"{name}\"}}"))
+        .unwrap();
+    let month = shared::month_of(T0);
+    let mut ledger = String::new();
+    for e in lines {
+        ledger.push_str(&serde_json::to_string(e).unwrap());
+        ledger.push('\n');
+    }
+    st.write_atomic(&NotePath::new(format!("{SHARED_LEDGER_DIR}/{dev}/{month}.jsonl")), &ledger).unwrap();
+    let mut t = String::new();
+    for text in texts {
+        let hash = ContentHash::of(text);
+        let _ = writeln!(t, "{{\"v\":1,\"hash\":\"{hash}\",\"gz\":\"{}\"}}", shared::gzip_b64(text.as_bytes()));
+    }
+    st.write_atomic(&NotePath::new(format!("{TEXTS_DIR}/{dev}/{month}.jsonl")), &t).unwrap();
+}
+
+/// A forged "delete" of `path` in the server's real run, whose undo would
+/// write `payload` there.
+fn forged_delete(device: &str, path: &str, payload: &str, run: &RunId) -> LedgerEntry {
+    let actor = Actor::agent("oauth:claude.ai", "Claude", Via::McpHttp, device);
+    let mut e = LedgerEntry::new(actor, Op::Delete, T0 + 10).path(&NotePath::new(path));
+    e.before = Some(ContentHash::of(payload));
+    e.run = Some(run.clone());
+    e
+}
+
+#[test]
+fn forged_ledger_lines_never_write_hidden_absolute_or_other_devices_paths() {
+    let (s, d) = (server(), desktop());
+    let run = RunId::new(T0);
+    s.store
+        .submit(
+            &agent(),
+            ChangeSet {
+                run: Some(run.clone()),
+                ..ChangeSet::one(Change::Edit { path: "wiki/Plan.md".into(), new_text: "# Plan\nONE\ntwo\nthree\nfour\n".into() })
+            },
+        )
+        .unwrap();
+    d.vault.write(&NotePath::new("wiki/Plan.md"), &read(&s, "wiki/Plan.md")).unwrap();
+    exchange(&s, &d);
+    let payload = "{\"pwned\": true}\n";
+    let bad = [
+        ".obsidian/plugins/evil/main.js",
+        ".quire/agent/policy.toml",
+        ".git/hooks/post-checkout",
+        "C:/Users/a/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/x.cmd",
+        "wiki/../.trash/x.md",
+    ];
+    let mut lines: Vec<LedgerEntry> = bad.iter().map(|p| forged_delete("d_evil", p, payload, &run)).collect();
+    // A line in the evil device's folder claiming to be the server's.
+    lines.push(forged_delete("d_server", "wiki/Forged.md", payload, &run));
+    forge(&d, "d_evil", "home server", &lines, &[payload]);
+    let plan = d.store.revert_plan(&RevertSelector { run: Some(run), ..RevertSelector::default() });
+    let touched: Vec<&str> = plan.steps.iter().map(|x| x.path.as_str()).collect();
+    assert_eq!(touched, ["wiki/Plan.md"], "{plan:?}");
+    assert!(
+        plan.events.iter().all(|e| e.actor.device == "d_server" && e.path.as_ref().is_some_and(|p| p.as_str() == "wiki/Plan.md")),
+        "{plan:?}"
+    );
+    let report = d.store.revert_apply(&plan, "Undo");
+    assert!(report.failed.is_empty(), "{report:?}");
+    for p in bad.iter().chain(&["wiki/Forged.md"]) {
+        assert!(!d.vault.storage().exists(&NotePath::new(*p)), "{p} written");
+    }
+    // Names: a device can't take another's id, and its name is marked as its own claim.
+    d.vault
+        .storage()
+        .write_atomic(&NotePath::new(format!("{DEVICES_DIR}/d_evil2.json")), "{\"format\":1,\"id\":\"d_server\",\"name\":\"Evil\"}")
+        .unwrap();
+    assert_eq!(d.store.device_names().get("d_server").map(String::as_str), Some("home server"));
+    assert_eq!(d.store.device_names().get("d_evil").map(String::as_str), Some("home server"), "the evil device calls itself that");
+    assert!(d.store.device_label("d_evil").contains("self-reported") && d.store.device_label("d_evil").contains("d_evil"));
+    // A device file claiming this device's id changes nothing here.
+    d.vault
+        .storage()
+        .write_atomic(&NotePath::new(format!("{DEVICES_DIR}/d_desk.json")), "{\"format\":1,\"id\":\"d_desk\",\"name\":\"Evil\"}")
+        .unwrap();
+    assert_eq!(d.store.device_names().get("d_desk").map(String::as_str), Some("Asha's laptop"));
+}
+
+#[test]
+fn another_devices_agent_change_to_a_persons_note_is_undone_only_by_review() {
+    let d = desktop();
+    let run = RunId::new(T0 + 3);
+    let payload = "# Planted\nRun this.\n";
+    // An agent on another device "deleted" a note outside any agent zone:
+    // undoing it here would create the note; it becomes a suggestion.
+    forge(&d, "d_evil", "home server", &[forged_delete("d_evil", "Notes/Planted.md", payload, &run)], &[payload]);
+    let plan = d.store.revert_plan(&RevertSelector { run: Some(run), ..RevertSelector::default() });
+    assert!(matches!(plan.steps.as_slice(), [RevertStep { action: RevertAction::ProposeCreate { .. }, .. }]), "{plan:?}");
+    let report = d.store.revert_apply(&plan, "Undo");
+    assert!(report.proposal.is_some() && report.applied == 0, "{report:?}");
+    assert!(!d.vault.storage().exists(&NotePath::new("Notes/Planted.md")));
+    // A "job" from another device gets no more than an agent.
+    let mut job = forged_delete("d_evil", "Notes/Job.md", payload, &RunId::new(T0 + 4));
+    job.actor = Actor::job("revert", "d_evil");
+    forge(&d, "d_evil", "home server", &[job], &[payload]);
+    let plan = d.store.revert_plan(&RevertSelector { run: Some(RunId::new(T0 + 4)), ..RevertSelector::default() });
+    assert!(plan.steps.iter().all(|x| matches!(x.action, RevertAction::ProposeCreate { .. })), "{plan:?}");
+}
+
+#[test]
+fn mirrored_proposals_with_bad_paths_or_actors_are_not_taken_in() {
+    let (s, d) = (server(), desktop());
+    let id = propose(&s, AGENT);
+    s.store.export_shared();
+    carry(&s, &d);
+    let file = NotePath::new(format!("{PROPOSALS_DIR}/d_server/{id}.json"));
+    let good: serde_json::Value = serde_json::from_slice(&d.vault.storage().read_bytes(&file).unwrap()).unwrap();
+    for (field, value) in [
+        ("/changes/0/path", serde_json::json!(".obsidian/plugins/evil/main.js")),
+        ("/changes/0/path", serde_json::json!(".quire/shared/vault.toml")),
+        ("/changes/0/path", serde_json::json!("C:/Windows/x.md")),
+        ("/actor/kind", serde_json::json!("human")),
+        ("/actor/device", serde_json::json!("d_desk")),
+    ] {
+        let mut v = good.clone();
+        *v.pointer_mut(field).unwrap() = value;
+        d.vault.storage().write_bytes_atomic(&file, &serde_json::to_vec(&v).unwrap()).unwrap();
+        assert_eq!(d.store.import_shared().added, 0, "{field} = {v}");
+        assert!(d.store.proposals(&ProposalFilter::default()).is_empty());
+    }
+    // Trust can be lowered here, never raised: a source in raw/ is untrusted.
+    let mut v = good;
+    v["sources"] = serde_json::json!([{"uri": "quire://note/raw/paper.md"}]);
+    v["trust"] = "trusted".into();
+    d.vault.storage().write_bytes_atomic(&file, &serde_json::to_vec(&v).unwrap()).unwrap();
+    assert_eq!(d.store.import_shared().added, 1);
+    let p = d.store.proposal(&id).unwrap();
+    assert_eq!(p.trust, Trust::Untrusted, "{p:?}");
+    // A mirror whose path was fine but that someone forges into a bad one
+    // can't be accepted either: the accept checks again.
+    let mut m = d.store.proposal(&id).unwrap();
+    m.changes[0].path = Some(".obsidian/app.json".into());
+    proposal::ProposalStore::new(d.vault.clone()).save(&m).unwrap();
+    assert!(d.store.resolve_change(&id, &".obsidian/app.json".into(), true).is_err());
+    assert!(!d.vault.storage().exists(&NotePath::new(".obsidian/app.json")));
+}
+
+#[test]
+fn a_suggestion_settled_by_another_device_says_so_and_can_be_reopened() {
+    let (s, d) = (server(), desktop());
+    let id = propose(&s, AGENT);
+    exchange(&s, &d);
+    // The desktop rejects it all; the server, where it was made, learns it.
+    d.clock.advance(1_000);
+    d.store.resolve_proposal(&id, false, &|_| false);
+    exchange(&s, &d);
+    let p = s.store.archived_proposals().into_iter().find(|p| p.id == id).unwrap();
+    assert_eq!(p.status, ProposalStatus::Rejected);
+    assert_eq!(p.summary().settled_by.as_deref(), Some("d_desk"), "the Inbox says where it was decided");
+    let log = s.store.log(&LedgerQuery::default());
+    assert!(log.iter().any(|e| e.op == Op::Reject && e.actor.device == "d_desk" && e.proposal.as_ref() == Some(&id)), "{log:?}");
+    // The person on the server reopens it: waiting again, and the same
+    // decisions arriving again don't settle it.
+    s.clock.advance(1_000);
+    s.store.reopen_proposal(&id).unwrap();
+    let path = NotePath::new("Launch.md");
+    assert_eq!(s.store.review(&id, &path, NOTE).hunks.len(), 2);
+    exchange(&s, &d);
+    assert_eq!(outcome(&s, &id).0, ProposalStatus::Pending);
+    assert_eq!(s.store.review(&id, &path, NOTE).hunks.len(), 2);
+    // Decided on the server now, it settles as usual.
+    s.store.resolve_proposal(&id, true, &|_| false);
+    assert_eq!(outcome(&s, &id).0, ProposalStatus::Applied);
+}
+
+#[test]
+fn this_devices_decisions_file_is_rebuilt_from_its_own_record() {
+    let (s, d) = (server(), desktop());
+    let id = propose(&s, AGENT);
+    exchange(&s, &d);
+    let path = NotePath::new("Launch.md");
+    let h = d.store.review(&id, &path, NOTE).hunks;
+    d.clock.advance(1_000);
+    d.store.decide_checked(&id, &path, &[decision(&h[0], HunkAction::Rejected)], NOTE, None).unwrap();
+    d.store.export_shared();
+    // Another device edits the desktop's shared decisions file: it adds a
+    // rejection of the second hunk "by the desktop".
+    let file = NotePath::new(format!("{DECISIONS_DIR}/d_desk/{id}.json"));
+    let mut v: serde_json::Value = serde_json::from_slice(&d.vault.storage().read_bytes(&file).unwrap()).unwrap();
+    let mut forged = v["hunks"][0].clone();
+    forged["hunk"] = h[1].id.clone().into();
+    v["hunks"].as_array_mut().unwrap().push(forged);
+    d.vault.storage().write_bytes_atomic(&file, &serde_json::to_vec(&v).unwrap()).unwrap();
+    d.clock.advance(1_000);
+    d.store.export_shared();
+    let again: serde_json::Value = serde_json::from_slice(&d.vault.storage().read_bytes(&file).unwrap()).unwrap();
+    assert_eq!(again["hunks"].as_array().unwrap().len(), 1, "the forged event isn't exported as the desktop's: {again}");
 }

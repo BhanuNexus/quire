@@ -187,6 +187,7 @@ fn join(vault: &Path, args: &[String]) -> Result<(), String> {
         (None, None) => return Err("say where the vault syncs: --folder DIR or --server URL".into()),
     };
     let sel = selection(args)?;
+    super::scope_check::warn(vault, &sel.only, &sel.exclude);
     let device = flag(args, "--device").map_or_else(vault_sync::default_device_name, str::to_string);
     if vault_sync::SyncConfig::load(vault).is_some() {
         return Err(format!(
@@ -418,6 +419,7 @@ fn scope(vault: &Path, args: &[String]) -> Result<(), String> {
         }
         s
     };
+    super::scope_check::warn(vault, &sel.only, &sel.exclude);
     let before = vault_sync::SyncConfig::load(vault).map(|c| c.selection());
     vault_sync::sync_set_selection_at(vault, &sel)?;
     print!("{}", scope_message(before.as_ref(), &sel));

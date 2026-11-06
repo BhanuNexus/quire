@@ -176,6 +176,8 @@ const CLOSE_CALL: &str = "</tool_call>";
 const OPEN_THINK: &str = "<think>";
 const CLOSE_THINK: &str = "</think>";
 const OPEN_RESPONSE: &str = "<tool_response>";
+/// Why a call in a reply that stopped at a limit isn't run.
+const CUT_OFF: &str = "the reply was cut off at its length limit";
 
 /// Tags found in plain text, in the order they are tried.
 const TAGS: [&str; 4] = [OPEN_CALL, OPEN_THINK, CLOSE_THINK, OPEN_RESPONSE];
@@ -217,17 +219,18 @@ impl ReplyParser {
             if self.in_call {
                 let close = self.pending.find(CLOSE_CALL);
                 let reopen = self.pending.find(OPEN_CALL);
-                let (end, skip) = match (close, reopen) {
-                    (Some(c), Some(o)) if o < c => (o, 0),
-                    (Some(c), _) => (c, CLOSE_CALL.len()),
-                    // A new call starts before this one closed: this one ended.
-                    (None, Some(o)) => (o, 0),
+                // A new call starts before this one closed: this one ended,
+                // but the model never closed it, so nothing is added to it.
+                let (end, skip, closed) = match (close, reopen) {
+                    (Some(c), Some(o)) if o < c => (o, 0, false),
+                    (Some(c), _) => (c, CLOSE_CALL.len(), true),
+                    (None, Some(o)) => (o, 0, false),
                     (None, None) => return out,
                 };
                 let body = self.pending[..end].to_string();
                 self.pending.drain(..end + skip);
                 self.in_call = false;
-                self.read_block(&body, true, &mut out);
+                self.read_block(&body, closed, &mut out);
                 continue;
             }
             if !self.started && !self.tools.is_empty() {
@@ -270,10 +273,14 @@ impl ReplyParser {
         }
     }
 
-    /// The end of the reply: whatever is left. An unclosed call is read
-    /// only if it is complete as it stands (nothing is added to a reply
-    /// that was cut off); otherwise it is a bad call.
-    pub fn finish(&mut self) -> Vec<Piece> {
+    /// The end of the reply: whatever is left. `ended_turn` says the model
+    /// ended its turn itself (not the token or context limit, nor a stop
+    /// sequence). An unclosed call is read only if it is complete as it
+    /// stands and the model ended its turn: nothing is added to a reply that
+    /// was cut off, and a call in a reply that stopped at a limit is a bad
+    /// call (0.10.1 security review #3). A reply that is only JSON never had
+    /// a closing tag, so it is never repaired with added brackets either.
+    pub fn finish(&mut self, ended_turn: bool) -> Vec<Piece> {
         let mut out = Vec::new();
         let rest = std::mem::take(&mut self.pending);
         if self.ended {
@@ -281,15 +288,26 @@ impl ReplyParser {
         }
         if self.in_call {
             self.in_call = false;
-            self.read_block(&rest, false, &mut out);
+            if ended_turn {
+                self.read_block(&rest, false, &mut out);
+            } else {
+                self.bad_call(&rest, CUT_OFF, &mut out);
+            }
         } else if self.holding {
             self.holding = false;
-            match quire_ai::toolcall::read_calls(&rest, true) {
-                Ok(calls) if calls.iter().all(|c| self.tools.contains(&c.name)) => {
+            let offered = |calls: &[quire_ai::toolcall::ToolCall]| calls.iter().all(|c| self.tools.contains(&c.name));
+            match quire_ai::toolcall::read_calls(&rest, false) {
+                Ok(calls) if offered(&calls) && ended_turn => {
                     for c in calls {
                         self.calls += 1;
                         out.push(Piece::ToolCall { id: format!("call_{}", self.calls), name: c.name, input: c.arguments });
                     }
+                }
+                Ok(calls) if offered(&calls) => self.bad_call(&rest, CUT_OFF, &mut out),
+                // Cut off, but it would name an offered tool: a bad call, so
+                // the model is asked to write it again (never run).
+                Err(e) if quire_ai::toolcall::read_calls(&rest, true).is_ok_and(|c| offered(&c)) => {
+                    self.bad_call(&rest, &e.message, &mut out);
                 }
                 _ => self.emit_text(&rest, &mut out),
             }
@@ -298,6 +316,11 @@ impl ReplyParser {
         }
         self.in_think = false;
         out
+    }
+
+    fn bad_call(&mut self, raw: &str, error: &str, out: &mut Vec<Piece>) {
+        self.calls += 1;
+        out.push(Piece::BadCall { id: format!("call_{}", self.calls), raw: raw.trim().to_string(), error: error.to_string() });
     }
 
     fn emit_text(&mut self, text: &str, out: &mut Vec<Piece>) {
@@ -321,10 +344,7 @@ impl ReplyParser {
                     out.push(Piece::ToolCall { id: format!("call_{}", self.calls), name: c.name, input: c.arguments });
                 }
             }
-            Err(e) => {
-                self.calls += 1;
-                out.push(Piece::BadCall { id: format!("call_{}", self.calls), raw: body.trim().to_string(), error: e.message });
-            }
+            Err(e) => self.bad_call(body, &e.message, out),
         }
     }
 }
@@ -376,7 +396,7 @@ mod tests {
         ] {
             got.extend(p.push(piece));
         }
-        got.extend(p.finish());
+        got.extend(p.finish(true));
         assert_eq!(
             got,
             vec![
@@ -391,15 +411,51 @@ mod tests {
         let mut p = ReplyParser::new();
         assert!(p.push("<tool_call>{\"name\": \"x\", \"arguments\": \"{\\\"a\\\": 1}\"}").is_empty());
         assert_eq!(
-            p.finish(),
+            p.finish(true),
             vec![Piece::ToolCall { id: "call_1".into(), name: "x".into(), input: json!({"a": 1}) }],
             "an unclosed but complete call at the end counts"
         );
         let mut p = ReplyParser::new();
         p.push("<tool_call>{broken");
-        assert!(matches!(&p.finish()[..], [Piece::BadCall { raw, .. }] if raw == "{broken"), "a cut-off call is never run");
+        assert!(matches!(&p.finish(true)[..], [Piece::BadCall { raw, .. }] if raw == "{broken"), "a cut-off call is never run");
         assert_eq!(longest_prefix_suffix("abc<to", "<tool_call>"), 3);
         assert_eq!(longest_prefix_suffix("é", "<think>"), 0);
+    }
+
+    /// 0.10.1 security review #3: a call is never repaired into running when
+    /// the model didn't close it, nor run when the reply hit its limit.
+    #[test]
+    fn cut_off_calls_are_never_run() {
+        let tools = || vec!["delete_lines".to_string()];
+        let only_bad = |pieces: &[Piece]| matches!(pieces, [Piece::BadCall { .. }]);
+        // Bare JSON missing its brackets: never closed for it.
+        let mut p = ReplyParser::with_tools(tools());
+        p.push("{\"name\":\"delete_lines\",\"arguments\":{\"path\":\"Plan.md\",\"lines\":[3,4");
+        let got = p.finish(true);
+        assert!(only_bad(&got), "{got:?}");
+        // Bare JSON that is complete, but the reply stopped at max_tokens.
+        let mut p = ReplyParser::with_tools(tools());
+        p.push("{\"name\":\"delete_lines\",\"arguments\":{\"path\":\"Plan.md\",\"lines\":[3,4]}}");
+        assert!(only_bad(&p.finish(false)));
+        // The same reply ended by the model is a call.
+        let mut p = ReplyParser::with_tools(tools());
+        p.push("{\"name\":\"delete_lines\",\"arguments\":{\"path\":\"Plan.md\",\"lines\":[3,4]}}");
+        assert!(matches!(&p.finish(true)[..], [Piece::ToolCall { .. }]));
+        // Tagged, unclosed and incomplete at the limit, or complete at the limit.
+        let mut p = ReplyParser::with_tools(tools());
+        p.push("<tool_call>{\"name\":\"delete_lines\",\"arguments\":{\"path\":\"Plan.md\",\"lines\":[3,4");
+        assert!(only_bad(&p.finish(false)));
+        let mut p = ReplyParser::with_tools(tools());
+        p.push("<tool_call>{\"name\":\"delete_lines\",\"arguments\":{\"path\":\"Plan.md\",\"lines\":[3,4]}}");
+        assert!(only_bad(&p.finish(false)));
+        // A block ended by the next `<tool_call>` was never closed: no brackets added.
+        let mut p = ReplyParser::with_tools(tools());
+        let mut got = p.push("<tool_call>{\"name\":\"delete_lines\",\"arguments\":{\"path\":\"Plan.md\",\"lines\":[3,4<tool_call>");
+        got.extend(p.push("{\"name\":\"delete_lines\",\"arguments\":{\"path\":\"A.md\",\"lines\":[1]}}</tool_call>"));
+        got.extend(p.finish(true));
+        assert!(matches!(&got[..], [Piece::BadCall { .. }, Piece::ToolCall { .. }]), "{got:?}");
+        // The library itself: brackets are added only for a closed block.
+        assert!(quire_ai::toolcall::read_calls("{\"name\":\"delete_lines\",\"arguments\":{\"lines\":[3,4", false).is_err());
     }
 }
 
@@ -425,7 +481,8 @@ mod fixtures {
             for chunk in reply.chunks(3) {
                 pieces.extend(p.push(&chunk.iter().collect::<String>()));
             }
-            pieces.extend(p.finish());
+            // `"stop": "max_tokens"`: the reply stopped at its limit.
+            pieces.extend(p.finish(case["stop"].as_str() != Some("max_tokens")));
             // Merge neighbouring text so the chunking doesn't matter.
             let mut got: Vec<Value> = Vec::new();
             for piece in pieces {

@@ -1089,7 +1089,7 @@ impl Workspace {
                     // 0.10: an Excalidraw drawing goes in as an SVG picture.
                     if l.embed
                         && quire_canvas::excalidraw::is_drawing(p.as_str())
-                        && let Some(svg) = vault.and_then(|v| crate::drawings::svg(v, &p))
+                        && let Some(svg) = vault.and_then(|v| crate::drawings::svg(v, &p, &|_| true))
                     {
                         return crate::drawings::data_url(&svg);
                     }

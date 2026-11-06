@@ -301,16 +301,41 @@ pub fn job_name(backend: Backend, vault: &Path) -> String {
     }
 }
 
-/// What installing does, without doing it.
-pub fn plan_install(backend: Backend, cli: &Path, vault: &Path, env: &Env) -> Plan {
+/// Why a path can't go into a job file, if it can't.
+///
+/// 0.10.1 security review #6: every format here is line-based or quoted, and a newline,
+/// carriage return, NUL or other control character in a folder's name
+/// would start a new systemd directive or crontab line. A `"` can't be
+/// quoted for Task Scheduler (Windows paths never contain one).
+pub fn unsafe_path(backend: Backend, p: &str) -> Option<String> {
+    if p.chars().any(char::is_control) {
+        return Some(format!("{}: the path contains a line break or another control character", p.escape_debug()));
+    }
+    if backend == Backend::TaskScheduler && p.contains('"') {
+        return Some(format!("{p}: the path contains a double quote"));
+    }
+    None
+}
+
+/// What installing does, without doing it. Refuses paths that can't be
+/// written safely into the job ([`unsafe_path`]).
+pub fn plan_install(backend: Backend, cli: &Path, vault: &Path, env: &Env) -> Result<Plan, String> {
     let name = job_name(backend, vault);
     let (cli_s, vault_s) = (s(cli), s(vault));
-    match backend {
+    for p in [&cli_s, &vault_s] {
+        if let Some(why) = unsafe_path(backend, p) {
+            return Err(format!("Reminders can't be scheduled for this vault: {why}."));
+        }
+    }
+    Ok(match backend {
         Backend::SystemdUser => {
             let service = format!(
                 "# Written by Quire (Settings → Planning → Remind me even when Quire is closed).\n\
-                 [Unit]\nDescription=Quire reminders for {vault_s}\n\n\
+                 [Unit]\nDescription=Quire reminders for {}\n\n\
                  [Service]\nType=oneshot\n{}ExecStart={} remind {}\n",
+                // The folder's name only, with systemd's `%` specifiers and
+                // `\` (a line continuation at the end) escaped.
+                vault.file_name().map_or_else(|| "a vault".to_string(), |n| n.to_string_lossy().replace('\\', "\\\\").replace('%', "%%")),
                 env.tz.as_ref().map(|t| format!("Environment=TZ={t}\n")).unwrap_or_default(),
                 systemd_quote(&cli_s),
                 systemd_quote(&vault_s)
@@ -384,7 +409,7 @@ pub fn plan_install(backend: Backend, cli: &Path, vault: &Path, env: &Env) -> Pl
                 cron_line: None,
             }
         }
-    }
+    })
 }
 
 /// What removing does.
@@ -489,13 +514,13 @@ pub fn installed(backend: Backend, vault: &Path, env: &Env) -> bool {
     match backend {
         Backend::Cron => crontab().lines().any(|l| l.trim_end().ends_with(&format!("# {name}"))),
         Backend::TaskScheduler => ok("schtasks", &["/Query", "/TN", &name]),
-        _ => plan_install(backend, Path::new("quire-cli"), vault, env).files.iter().all(|(p, _)| p.is_file()),
+        _ => plan_install(backend, Path::new("quire-cli"), vault, env).is_ok_and(|p| p.files.iter().all(|(p, _)| p.is_file())),
     }
 }
 
 /// Install the job; returns the plan carried out (what was put where).
 pub fn install(backend: Backend, cli: &Path, vault: &Path, env: &Env) -> Result<Plan, String> {
-    let plan = plan_install(backend, cli, vault, env);
+    let plan = plan_install(backend, cli, vault, env)?;
     for (p, text) in &plan.files {
         crate::atomic::write(p, text.as_bytes(), false).map_err(|e| format!("{} couldn't be written: {e}", p.display()))?;
     }
@@ -573,7 +598,7 @@ mod tests {
         let (cli, vault) = (Path::new("/opt/Quire/quire-cli"), Path::new("/home/ada/My Notes"));
         let k = vault_key(vault);
         assert_eq!(k.len(), 8);
-        let p = plan_install(Backend::SystemdUser, cli, vault, &env());
+        let p = plan_install(Backend::SystemdUser, cli, vault, &env()).unwrap();
         assert_eq!(p.files[0].0, PathBuf::from(format!("/home/ada/.config/systemd/user/quire-remind-{k}.service")));
         assert!(p.files[0].1.contains("ExecStart=\"/opt/Quire/quire-cli\" remind \"/home/ada/My Notes\"\n"), "{}", p.files[0].1);
         assert!(p.files[1].1.contains("OnCalendar=*-*-* *:*:00") && p.files[1].1.contains("WantedBy=timers.target"));
@@ -582,7 +607,7 @@ mod tests {
         assert_eq!(u.commands[0], ["systemctl", "--user", "disable", "--now", &format!("quire-remind-{k}.timer")]);
         assert_eq!(u.files.len(), 2);
 
-        let c = plan_install(Backend::Cron, cli, vault, &env());
+        let c = plan_install(Backend::Cron, cli, vault, &env()).unwrap();
         let line = c.cron_line.unwrap();
         assert_eq!(
             line,
@@ -594,17 +619,21 @@ mod tests {
         let tz = Env { tz: Some("Asia/Kolkata".into()), ..env() };
         assert!(
             plan_install(Backend::Cron, cli, vault, &tz)
+                .unwrap()
                 .cron_line
                 .unwrap()
                 .starts_with("* * * * * TZ=Asia/Kolkata DBUS_SESSION_BUS_ADDRESS=")
         );
-        assert!(plan_install(Backend::SystemdUser, cli, vault, &tz).files[0].1.contains("Environment=TZ=Asia/Kolkata\nExecStart="));
+        assert!(
+            plan_install(Backend::SystemdUser, cli, vault, &tz).unwrap().files[0].1.contains("Environment=TZ=Asia/Kolkata\nExecStart=")
+        );
         let l = plan_install(
             Backend::LaunchAgent,
             Path::new("/Applications/Quire.app/Contents/MacOS/quire-cli"),
             Path::new("/Users/ada/A&B"),
             &env(),
-        );
+        )
+        .unwrap();
         assert!(l.files[0].0.ends_with(format!("Library/LaunchAgents/dev.quire.remind.{}.plist", vault_key(Path::new("/Users/ada/A&B")))));
         assert!(l.files[0].1.contains("<string>/Users/ada/A&amp;B</string>") && l.files[0].1.contains("<integer>60</integer>"));
         assert_eq!(l.commands[0][..3], ["launchctl", "bootstrap", "gui/1000"]);
@@ -614,7 +643,8 @@ mod tests {
             Path::new(r"C:\Program Files\Quire\quire-cli.exe"),
             Path::new(r"C:\Users\ada\Notes"),
             &env(),
-        );
+        )
+        .unwrap();
         assert_eq!(w.commands[0][..7], ["schtasks", "/Create", "/F", "/SC", "MINUTE", "/MO", "1"]);
         assert_eq!(w.commands[0][10], r#""C:\Program Files\Quire\quire-cli.exe" remind "C:\Users\ada\Notes""#);
         assert_eq!(systemd_quote("/a b/50%$x\"y"), r#""/a b/50%%$$x\"y""#);
@@ -622,6 +652,43 @@ mod tests {
         let wu = plan_uninstall(Backend::TaskScheduler, Path::new(r"C:\Users\ada\Notes"), &env());
         assert_eq!(wu.commands[0][..4], ["schtasks", "/Delete", "/F", "/TN"]);
         assert!(describe(Backend::SystemdUser, &p).iter().any(|l| l.starts_with("File: /home/ada/.config/systemd/user/quire-remind-")));
+    }
+
+    /// 0.10.1 security review #6: a line break in a folder's name can't add
+    /// a systemd directive or a crontab line, in any format.
+    #[test]
+    fn paths_with_line_breaks_are_refused_and_others_quoted() {
+        let cli = Path::new("/opt/Quire/quire-cli");
+        for bad in [
+            "/home/ada/x\nExecStartPre=/bin/sh -c 'touch /tmp/pwned'",
+            "/home/ada/x\n* * * * * touch /tmp/pwned",
+            "/home/ada/x\ry",
+            "/home/ada/x\0y",
+            "/home/ada/x\u{85}y",
+        ] {
+            for b in [Backend::SystemdUser, Backend::Cron, Backend::LaunchAgent, Backend::TaskScheduler] {
+                let e = plan_install(b, cli, Path::new(bad), &env()).unwrap_err();
+                assert!(e.contains("control character"), "{e}");
+                assert!(plan_install(b, Path::new(bad), Path::new("/home/ada/Notes"), &env()).is_err(), "the program's path too");
+                assert!(install(b, cli, Path::new(bad), &env()).is_err());
+            }
+        }
+        assert!(plan_install(Backend::TaskScheduler, cli, Path::new(r#"C:\a"b"#), &env()).is_err());
+        // Odd but legal names stay one line and one argument in each format.
+        let odd = Path::new("/home/ada/50% \"it's\" $HOME;rm -rf ~ <x>&\\");
+        let p = plan_install(Backend::SystemdUser, cli, odd, &env()).unwrap();
+        let unit = &p.files[0].1;
+        assert_eq!(unit.lines().filter(|l| l.starts_with("ExecStart")).count(), 1, "{unit}");
+        assert!(unit.contains(r#"remind "/home/ada/50%% \"it's\" $$HOME;rm -rf ~ <x>&\\""#), "{unit}");
+        assert!(unit.contains("Description=Quire reminders for 50%% \"it's\" $HOME;rm -rf ~ <x>&\\\\\n"), "{unit}");
+        let line = plan_install(Backend::Cron, cli, odd, &env()).unwrap().cron_line.unwrap();
+        assert!(!line.contains('\n'));
+        assert!(line.contains(r#"remind '/home/ada/50\% "it'\''s" $HOME;rm -rf ~ <x>&\'"#), "{line}");
+        let plist = &plan_install(Backend::LaunchAgent, cli, odd, &env()).unwrap().files[0].1;
+        assert!(plist.contains("<string>/home/ada/50% &quot;it's&quot; $HOME;rm -rf ~ &lt;x&gt;&amp;\\</string>"), "{plist}");
+        let w = plan_install(Backend::TaskScheduler, Path::new(r"C:\Q\quire-cli.exe"), Path::new(r"C:\Users\ada\50% notes & more"), &env())
+            .unwrap();
+        assert_eq!(w.commands[0][10], r#""C:\Q\quire-cli.exe" remind "C:\Users\ada\50% notes & more""#);
     }
 
     #[test]

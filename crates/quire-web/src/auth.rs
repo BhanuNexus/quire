@@ -196,11 +196,24 @@ pub const FREE_TRIES: u32 = 5;
 /// The longest wait between tries.
 pub const MAX_WAIT_MS: i64 = 15 * 60_000;
 
+/// Passphrase checks running at once. Each takes Argon2's 19 MiB, so a
+/// burst of sign-ins can't grow memory past this (0.10.1 security review #5).
+pub const MAX_VERIFYING: u32 = 2;
+/// How long to ask a sign-in to wait while others are being checked.
+pub const BUSY_WAIT_MS: i64 = 1000;
+
 /// The limit on wrong passphrases (for everyone, see the module docs).
+///
+/// A try is checked and counted in one step under the lock ([`Self::begin`]):
+/// it counts as wrong until it turns out right ([`Self::end`]), so
+/// parallel guesses each use up a try instead of all passing the check
+/// before the first one is counted. At most [`MAX_VERIFYING`] are checked
+/// at once; the others are asked to wait.
 #[derive(Debug, Default)]
 pub struct Limiter {
     failures: u32,
     last_failure: i64,
+    verifying: u32,
 }
 
 impl Limiter {
@@ -217,6 +230,35 @@ impl Limiter {
         if now < until { Err(until - now) } else { Ok(()) }
     }
 
+    /// Start a try: `Err(ms)` to wait, or the try is counted (as wrong,
+    /// until [`Self::end`] says otherwise) and may be checked now. Every
+    /// `Ok` must be followed by one [`Self::end`].
+    pub fn begin(&mut self, now: i64) -> Result<(), i64> {
+        self.check(now)?;
+        if self.verifying >= MAX_VERIFYING {
+            return Err(BUSY_WAIT_MS);
+        }
+        self.verifying += 1;
+        self.failed(now);
+        Ok(())
+    }
+
+    /// A try begun with [`Self::begin`] is done; `right` when the
+    /// passphrase was right. A wrong one's wait counts from now.
+    pub fn end(&mut self, now: i64, right: bool) {
+        self.verifying = self.verifying.saturating_sub(1);
+        if right {
+            self.succeeded();
+        } else {
+            self.last_failure = self.last_failure.max(now);
+        }
+    }
+
+    /// Tries being checked right now.
+    pub const fn verifying(&self) -> u32 {
+        self.verifying
+    }
+
     pub fn failed(&mut self, now: i64) {
         self.failures = self.failures.saturating_add(1);
         self.last_failure = now;
@@ -230,6 +272,54 @@ impl Limiter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 0.10.1 security review #5: a parallel burst of guesses gets no more
+    /// tries than one at a time, and only a few are checked at once.
+    #[test]
+    fn a_parallel_burst_of_guesses_is_counted_and_capped() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::{Arc, Barrier, Mutex};
+        let limiter = Arc::new(Mutex::new(Limiter::default()));
+        let checked = Arc::new(AtomicU32::new(0));
+        let most = Arc::new(AtomicU32::new(0));
+        let start = Arc::new(Barrier::new(40));
+        let threads: Vec<_> = (0..40)
+            .map(|_| {
+                let (limiter, checked, most, start) = (Arc::clone(&limiter), Arc::clone(&checked), Arc::clone(&most), Arc::clone(&start));
+                std::thread::spawn(move || {
+                    start.wait();
+                    let began = {
+                        let mut l = limiter.lock().unwrap();
+                        let r = l.begin(1_000);
+                        most.fetch_max(l.verifying(), Ordering::SeqCst);
+                        r
+                    };
+                    if began.is_ok() {
+                        checked.fetch_add(1, Ordering::SeqCst);
+                        std::thread::sleep(std::time::Duration::from_millis(30)); // the slow verify
+                        limiter.lock().unwrap().end(1_030, false);
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert!(checked.load(Ordering::SeqCst) <= FREE_TRIES, "{} tries were checked", checked.load(Ordering::SeqCst));
+        assert!(most.load(Ordering::SeqCst) <= MAX_VERIFYING);
+        let mut l = limiter.lock().unwrap();
+        assert_eq!(l.verifying(), 0);
+        // Keep going one at a time: the free tries run out, then the wait applies.
+        while l.begin(1_100).is_ok() {
+            l.end(1_100, false);
+        }
+        assert!(l.begin(1_100).is_err());
+        let wait = l.begin(1_100).unwrap_err();
+        assert!(l.begin(1_100 + wait).is_ok(), "after the wait, one more try");
+        l.end(1_100 + wait, true);
+        assert!(l.begin(1_100 + wait).is_ok(), "a right passphrase clears the count");
+        l.end(1_100 + wait, true);
+    }
 
     #[test]
     fn passphrases_are_hashed_and_checked() {

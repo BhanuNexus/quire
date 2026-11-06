@@ -54,6 +54,60 @@ pub struct Clock {
 /// An expression's error, shown in the cell.
 pub type Error = String;
 
+/// How far an expression may go (0.10.1 security review #8): a `.base` file
+/// can come from another device, and is evaluated for every row on the
+/// desktop's UI thread. Past these, the cell shows an error.
+pub mod limits {
+    /// An expression's text, in bytes.
+    pub const MAX_SOURCE: usize = 64 * 1024;
+    /// Tokens in one expression.
+    pub const MAX_TOKENS: usize = 8_192;
+    /// Brackets and prefix operators inside each other, while parsing.
+    pub const MAX_NESTING: usize = 64;
+    /// Depth of the parsed expression (a long `a + b + …` chain counts too).
+    pub const MAX_DEPTH: usize = 256;
+    /// Evaluation steps for one cell, formulas it uses included.
+    pub const MAX_STEPS: u64 = 1_000_000;
+    /// Evaluation depth, through formulas that use other formulas.
+    pub const MAX_EVAL_DEPTH: usize = 512;
+    /// A value's size: text bytes, plus a little for each list item.
+    pub const MAX_VALUE: usize = 16 << 20;
+}
+
+const TOO_DEEP: &str = "the expression is nested too deeply";
+const TOO_LONG: &str = "the expression is too long";
+const TOO_SLOW: &str = "the expression takes too many steps";
+const TOO_BIG: &str = "the result is too large";
+
+/// About how many bytes a value takes.
+fn weight(v: &Val) -> usize {
+    match v {
+        Val::Str(s) => 24 + s.len(),
+        Val::List(l) => l.iter().fold(24, |n, x| n.saturating_add(weight(x))),
+        _ => 24,
+    }
+}
+
+/// `Err` when a value of about `bytes` bytes would be over the limit.
+fn room(bytes: usize) -> Result<(), Error> {
+    if bytes > limits::MAX_VALUE { Err(TOO_BIG.into()) } else { Ok(()) }
+}
+
+/// The depth of `e`, stopping as soon as it is over `limit`.
+fn deeper_than(e: &Expr, limit: usize) -> bool {
+    if limit == 0 {
+        return true;
+    }
+    let l = limit - 1;
+    match e {
+        Expr::Lit(_) | Expr::Name(_) => false,
+        Expr::List(items) | Expr::Call(_, items) => items.iter().any(|x| deeper_than(x, l)),
+        Expr::Field(b, _) | Expr::Unary(_, b) => deeper_than(b, l),
+        Expr::Index(a, b) | Expr::Bin(a, _, b) => deeper_than(a, l) || deeper_than(b, l),
+        Expr::Method(b, _, args) => deeper_than(b, l) || args.iter().any(|x| deeper_than(x, l)),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Lit(Val),
@@ -86,6 +140,9 @@ const OPS: [&str; 22] =
     ["&&", "||", "==", "!=", ">=", "<=", "=>", ">", "<", "+", "-", "*", "/", "%", "!", "(", ")", "[", "]", ",", ".", "?"];
 
 fn lex(src: &str) -> Result<Vec<Tok>, Error> {
+    if src.len() > limits::MAX_SOURCE {
+        return Err(TOO_LONG.into());
+    }
     let mut out = Vec::new();
     let chars: Vec<char> = src.chars().collect();
     let mut i = 0;
@@ -163,6 +220,8 @@ fn lex(src: &str) -> Result<Vec<Tok>, Error> {
 struct Parser {
     toks: Vec<Tok>,
     i: usize,
+    /// Brackets and prefix operators open right now.
+    nesting: usize,
 }
 
 impl Parser {
@@ -194,7 +253,18 @@ impl Parser {
     }
 
     fn or(&mut self) -> Result<Expr, Error> {
-        self.binary(&["||"], Self::and)
+        self.nested(|p| p.binary(&["||"], Self::and))
+    }
+
+    /// One more level of nesting, refused past [`limits::MAX_NESTING`].
+    fn nested(&mut self, f: impl FnOnce(&mut Self) -> Result<Expr, Error>) -> Result<Expr, Error> {
+        if self.nesting >= limits::MAX_NESTING {
+            return Err(TOO_DEEP.into());
+        }
+        self.nesting += 1;
+        let r = f(self);
+        self.nesting -= 1;
+        r
     }
 
     fn and(&mut self) -> Result<Expr, Error> {
@@ -215,10 +285,10 @@ impl Parser {
 
     fn unary(&mut self) -> Result<Expr, Error> {
         if self.eat("!") {
-            return Ok(Expr::Unary('!', Box::new(self.unary()?)));
+            return self.nested(|p| Ok(Expr::Unary('!', Box::new(p.unary()?))));
         }
         if self.eat("-") {
-            return Ok(Expr::Unary('-', Box::new(self.unary()?)));
+            return self.nested(|p| Ok(Expr::Unary('-', Box::new(p.unary()?))));
         }
         self.postfix()
     }
@@ -292,10 +362,17 @@ impl Parser {
 
 /// Parse an expression.
 pub fn parse(src: &str) -> Result<Expr, Error> {
-    let mut p = Parser { toks: lex(src)?, i: 0 };
+    let toks = lex(src)?;
+    if toks.len() > limits::MAX_TOKENS {
+        return Err(TOO_LONG.into());
+    }
+    let mut p = Parser { toks, i: 0, nesting: 0 };
     let e = p.or()?;
     if p.i < p.toks.len() {
         return Err(format!("unexpected “{}”", tok_text(&p.toks[p.i])));
+    }
+    if deeper_than(&e, limits::MAX_DEPTH) {
+        return Err(TOO_DEEP.into());
     }
     Ok(e)
 }
@@ -571,6 +648,15 @@ struct Scope<'r> {
     stack: Vec<String>,
     /// `value` and `index` inside `filter()` and `map()`; `values` in summaries.
     vars: Vec<(String, Val)>,
+    /// Steps taken, and how deep evaluation is now ([`limits`]).
+    steps: u64,
+    depth: usize,
+}
+
+impl<'r> Scope<'r> {
+    fn new(row: &'r dyn Row, vars: Vec<(String, Val)>) -> Self {
+        Self { row, stack: Vec::new(), vars, steps: 0, depth: 0 }
+    }
 }
 
 fn unsupported(what: &str) -> Error {
@@ -580,17 +666,17 @@ fn unsupported(what: &str) -> Error {
 impl Eval<'_> {
     /// One expression for one row.
     pub fn eval(&self, e: &Expr, row: &dyn Row) -> Result<Val, Error> {
-        self.eval_in(e, &mut Scope { row, stack: Vec::new(), vars: Vec::new() })
+        self.eval_in(e, &mut Scope::new(row, Vec::new()))
     }
 
     /// A formula by name for one row.
     pub fn formula(&self, name: &str, row: &dyn Row) -> Result<Val, Error> {
-        self.formula_in(name, &mut Scope { row, stack: Vec::new(), vars: Vec::new() })
+        self.formula_in(name, &mut Scope::new(row, Vec::new()))
     }
 
     /// A custom summary: the expression with `values` bound to a column.
     pub fn summary(&self, e: &Expr, values: Vec<Val>, row: &dyn Row) -> Result<Val, Error> {
-        self.eval_in(e, &mut Scope { row, stack: Vec::new(), vars: vec![("values".into(), Val::List(values))] })
+        self.eval_in(e, &mut Scope::new(row, vec![("values".into(), Val::List(values))]))
     }
 
     fn formula_in(&self, name: &str, sc: &mut Scope<'_>) -> Result<Val, Error> {
@@ -605,10 +691,39 @@ impl Eval<'_> {
         v
     }
 
+    /// One step: counted, depth-limited, and a value it builds size-checked.
     fn eval_in(&self, e: &Expr, sc: &mut Scope<'_>) -> Result<Val, Error> {
+        sc.steps += 1;
+        if sc.steps > limits::MAX_STEPS {
+            return Err(TOO_SLOW.into());
+        }
+        if sc.depth >= limits::MAX_EVAL_DEPTH {
+            return Err(TOO_DEEP.into());
+        }
+        sc.depth += 1;
+        let r = self.eval_step(e, sc);
+        sc.depth -= 1;
+        let v = r?;
+        if matches!(e, Expr::Bin(..) | Expr::Method(..) | Expr::Call(..) | Expr::List(_)) {
+            room(weight(&v))?;
+        }
+        Ok(v)
+    }
+
+    fn eval_step(&self, e: &Expr, sc: &mut Scope<'_>) -> Result<Val, Error> {
         match e {
             Expr::Lit(v) => Ok(v.clone()),
-            Expr::List(items) => Ok(Val::List(items.iter().map(|i| self.eval_in(i, sc)).collect::<Result<_, _>>()?)),
+            Expr::List(items) => {
+                let mut out = Vec::with_capacity(items.len());
+                let mut size = 24usize;
+                for i in items {
+                    let v = self.eval_in(i, sc)?;
+                    size = size.saturating_add(weight(&v));
+                    room(size)?;
+                    out.push(v);
+                }
+                Ok(Val::List(out))
+            }
             Expr::Name(n) => {
                 if let Some((_, v)) = sc.vars.iter().rev().find(|(k, _)| k == n) {
                     return Ok(v.clone());
@@ -732,17 +847,23 @@ impl Eval<'_> {
             return Ok(acc);
         }
         let mut out = Vec::new();
+        let mut size = 24usize;
         for (i, item) in items.iter().enumerate() {
             sc.vars.push(("value".into(), item.clone()));
             sc.vars.push(("index".into(), Val::Num(i as f64)));
             let r = self.eval_in(f, sc);
             sc.vars.truncate(sc.vars.len() - 2);
             let r = r?;
-            if name == "map" {
-                out.push(r);
+            let kept = if name == "map" {
+                r
             } else if r.truthy() {
-                out.push(item.clone());
-            }
+                item.clone()
+            } else {
+                continue;
+            };
+            size = size.saturating_add(weight(&kept));
+            room(size)?;
+            out.push(kept);
         }
         Ok(Val::List(out))
     }
@@ -861,9 +982,15 @@ fn binary(l: &Val, op: &str, r: &Val) -> Result<Val, Error> {
         (Val::Dur(a), "+", Val::Dur(b)) => Ok(Val::Dur(a + b)),
         (Val::Dur(a), "-", Val::Dur(b)) => Ok(Val::Dur(a - b)),
         (Val::Dur(a), "*" | "/", Val::Num(n)) => Ok(Val::Dur(if op == "*" { (*a as f64 * n) as i64 } else { (*a as f64 / n) as i64 })),
-        (Val::Str(a), "+", b) => Ok(Val::Str(format!("{a}{}", b.show()))),
+        (Val::Str(a), "+", b) => {
+            room(a.len().saturating_add(weight(b)))?;
+            Ok(Val::Str(format!("{a}{}", b.show())))
+        }
         (a, "+", Val::Str(b)) if !matches!(a, Val::Num(_)) || b.trim().parse::<f64>().is_err() => Ok(Val::Str(format!("{}{b}", a.show()))),
-        (Val::List(a), "+", Val::List(b)) => Ok(Val::List(a.iter().chain(b).cloned().collect())),
+        (Val::List(a), "+", Val::List(b)) => {
+            room(weight(l).saturating_add(weight(r)))?;
+            Ok(Val::List(a.iter().chain(b).cloned().collect()))
+        }
         _ => {
             let (Some(a), Some(b)) = (l.num(), r.num()) else {
                 return Err(format!("can't use “{op}” on a {} and a {}", l.type_name(), r.type_name()));
@@ -962,8 +1089,17 @@ fn method(v: &Val, name: &str, args: &[Val], clock: Clock) -> Result<Val, Error>
                         .join(" "),
                 ),
                 "trim" => Val::Str(s.trim().to_string()),
-                "replace" => Val::Str(s.replace(&a0, &arg_str(args, 1))),
-                "repeat" => Val::Str(s.repeat(arg_num(args, 0).unwrap_or(1.0).clamp(0.0, 10_000.0) as usize)),
+                "replace" => {
+                    let to = arg_str(args, 1);
+                    let hits = if a0.is_empty() { s.chars().count() + 1 } else { s.matches(a0.as_str()).count() };
+                    room(s.len().saturating_add(hits.saturating_mul(to.len())))?;
+                    Val::Str(s.replace(&a0, &to))
+                }
+                "repeat" => {
+                    let n = arg_num(args, 0).unwrap_or(1.0).clamp(0.0, 10_000.0) as usize;
+                    room(s.len().saturating_mul(n))?;
+                    Val::Str(s.repeat(n))
+                }
                 "reverse" => Val::Str(s.chars().rev().collect()),
                 "slice" => {
                     let chars: Vec<char> = s.chars().collect();
@@ -971,6 +1107,8 @@ fn method(v: &Val, name: &str, args: &[Val], clock: Clock) -> Result<Val, Error>
                     Val::Str(chars[a..b].iter().collect())
                 }
                 "split" => {
+                    let parts = if a0.is_empty() { s.chars().count() } else { s.matches(a0.as_str()).count() + 1 };
+                    room(s.len().saturating_add(parts.saturating_mul(48)))?;
                     let parts: Vec<Val> = if a0.is_empty() {
                         s.chars().map(|c| Val::Str(c.to_string())).collect()
                     } else {
@@ -1004,11 +1142,11 @@ fn method(v: &Val, name: &str, args: &[Val], clock: Clock) -> Result<Val, Error>
                 "contains" => Val::Bool(args.first().is_some_and(|a| l.iter().any(|x| equal(x, a)))),
                 "containsAll" => Val::Bool(args.iter().all(|a| l.iter().any(|x| equal(x, a)))),
                 "containsAny" => Val::Bool(args.iter().any(|a| l.iter().any(|x| equal(x, a)))),
-                "join" => Val::Str(l.iter().map(Val::show).collect::<Vec<_>>().join(&if args.is_empty() {
-                    ", ".into()
-                } else {
-                    arg_str(args, 0)
-                })),
+                "join" => {
+                    let sep = if args.is_empty() { ", ".into() } else { arg_str(args, 0) };
+                    room(weight(v).saturating_add(l.len().saturating_mul(sep.len())))?;
+                    Val::Str(l.iter().map(Val::show).collect::<Vec<_>>().join(&sep))
+                }
                 "reverse" => Val::List(l.iter().rev().cloned().collect()),
                 "sort" => {
                     let mut s = l.clone();
@@ -1239,6 +1377,38 @@ mod tests {
         assert_eq!(run("formula.nope"), "error: there is no formula “nope”");
         assert!(run("price * (qty").starts_with("error:"));
         assert!(run("price ** 2").starts_with("error:"));
+    }
+
+    /// 0.10.1 security review #8: a synced `.base` can't crash or hang the
+    /// app; each runaway expression is a cell error.
+    #[test]
+    fn runaway_expressions_are_cell_errors() {
+        let deep = format!("{}1{}", "(".repeat(50_000), ")".repeat(50_000));
+        assert_eq!(run(&deep), format!("error: {TOO_LONG}"));
+        let nested = format!("{}1{}", "(".repeat(100), ")".repeat(100));
+        assert_eq!(run(&nested), format!("error: {TOO_DEEP}"));
+        assert_eq!(run(&"!".repeat(5_000)), format!("error: {TOO_DEEP}"));
+        let chain = vec!["1"; 1_000].join(" + ");
+        assert_eq!(run(&chain), format!("error: {TOO_DEEP}"));
+        assert_eq!(run(&vec!["1"; 200].join(" + ")), "200", "a long but sensible sum still works");
+        assert_eq!(run("\"aaaaaaaaaa\".repeat(10000).repeat(10000).repeat(10000)"), format!("error: {TOO_BIG}"));
+        assert_eq!(run("\"ab\".repeat(10000).replace(\"\", \"xxxxxxxxxxxxxxxx\").repeat(100)"), format!("error: {TOO_BIG}"));
+        assert_eq!(
+            run("[\"x\".repeat(10000)].map([value, value, value, value]).flat().map(value.repeat(1000)).join(\"\")"),
+            format!("error: {TOO_BIG}")
+        );
+        assert_eq!(run("\"ab\".repeat(3).length"), "6");
+        // Formulas that use each other twice over: 2^30 steps without a budget.
+        let mut formulas = BTreeMap::new();
+        formulas.insert("f0".to_string(), parse("1"));
+        for i in 1..=30 {
+            formulas.insert(format!("f{i}"), parse(&format!("formula.f{0} + formula.f{0}", i - 1)));
+        }
+        let ev = Eval { formulas: &formulas, clock: Clock { now: NaiveDateTime::default() } };
+        let started = std::time::Instant::now();
+        assert_eq!(ev.formula("f30", &note()), Err(TOO_SLOW.to_string()));
+        assert!(started.elapsed() < std::time::Duration::from_secs(30));
+        assert_eq!(ev.formula("f10", &note()), Ok(Val::Num(1024.0)));
     }
 
     #[test]

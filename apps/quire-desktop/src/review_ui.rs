@@ -365,17 +365,25 @@ pub(crate) fn create_preview(ui: &mut egui::Ui, text: &str, pal: &Palette) {
 
 /// How a group of suggestions is introduced: "Claude Code · 14:02".
 pub(crate) fn group_line(g: &inbox::Group<'_>) -> String {
-    match g.device_name {
-        Some(d) => format!("{} · on {d} · {}", g.actor_label, short_time(g.at_ms)),
+    match g.device_id {
+        Some(id) => {
+            format!(
+                "{} · on {} · {}",
+                g.actor_label,
+                quire_app::agent::device_label(id, g.device_name.unwrap_or_default()),
+                short_time(g.at_ms)
+            )
+        }
         None => format!("{} · {}", g.actor_label, short_time(g.at_ms)),
     }
 }
 
-/// Who suggested `p`: "Claude", or "Claude (on home server)" when its agent
-/// ran on another device (shared review history).
+/// Who suggested `p`: "Claude", or "Claude · on “home server”
+/// (self-reported name, device d_…)" when its agent ran on another device
+/// (shared review history; the name is what that device says it is).
 pub(crate) fn who(p: &Proposal) -> String {
     match p.origin() {
-        Some((_, name)) => format!("{} (on {})", p.actor.label, if name.is_empty() { "another device" } else { name }),
+        Some((id, name)) => format!("{} · on {}", p.actor.label, quire_app::agent::device_label(id, name)),
         None => p.actor.label.clone(),
     }
 }

@@ -56,6 +56,8 @@ quire-canvas.workspace = true
 quire-pdf.workspace = true
 biblatex.workspace = true
 tempfile.workspace = true
+# 0.10 security: note HTML in the web app and published sites.
+ammonia.workspace = true
 
 [dev-dependencies]
 

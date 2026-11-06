@@ -234,7 +234,10 @@ fn sync_and_serve_through_a_quire_sync_server() {
         std::thread::sleep(Duration::from_millis(200));
     }
     assert!(note.contains("moved to Friday"), "{note}");
-    assert!(note.contains("<audio controls preload=\"metadata\" src=\"/f/attachments/Voice%20note%202026-11-05%20153012.wav\">"), "{note}");
+    assert!(
+        note.contains("<audio controls=\"\" preload=\"metadata\" src=\"/f/attachments/Voice%20note%202026-11-05%20153012.wav\">"),
+        "{note}"
+    );
     assert!(note.contains("<img src=\"data:image/svg+xml;base64,"), "the drawing is a picture: {note}");
     assert!(note.contains("<footer class=\"foot\"><span class=\"beta\">Beta</span>"), "{note}");
 
@@ -343,7 +346,8 @@ fn an_agent_on_the_server_is_reviewed_on_the_laptop() {
         serve.check();
         env.run("laptop", &["sync", "once", l]);
         waiting = env.run("laptop", &["agent", "proposals", l]);
-        waiting.contains("on home server")
+        // The name is the server's own claim, shown with its id.
+        waiting.contains("on “home server” (self-reported name, device d_")
     });
     let id = waiting.split_whitespace().find(|w| w.starts_with("p_")).unwrap().to_string();
     let accepted = env.run("laptop", &["agent", "accept", l, &id]);
@@ -364,7 +368,7 @@ fn an_agent_on_the_server_is_reviewed_on_the_laptop() {
 
     // The server's run on the laptop: listed with the device, and undone there.
     let log = env.run("laptop", &["agent", "log", l]);
-    assert!(log.contains("[on home server]") && log.contains("wiki/Venue.md"), "{log}");
+    assert!(log.contains("[on “home server” (self-reported name, device d_") && log.contains("wiki/Venue.md"), "{log}");
     let actor =
         log.lines().find(|x| x.contains("create") && x.contains("wiki/Venue.md")).unwrap().split_whitespace().nth(3).unwrap().to_string();
     wait_for("the agent's page reaches the laptop", || {
