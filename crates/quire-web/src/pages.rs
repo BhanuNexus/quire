@@ -745,9 +745,8 @@ impl Cx<'_> {
             }
             "copy" => {
                 let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-                let copy = edit::copy_path(self.web.guard.vault(), &path, &today);
-                return match edit::write(self.web, &copy, None, &text, quire_agent::Op::Create) {
-                    Ok(()) => Res::redirect(&note_href(&copy)),
+                return match edit::save_copy(self.web, &path, &today, &text) {
+                    Ok(copy) => Res::redirect(&note_href(&copy)),
                     Err(e) => self.failed(&e),
                 };
             }

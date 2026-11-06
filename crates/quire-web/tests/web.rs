@@ -519,6 +519,34 @@ fn concurrent_edits_merge_or_offer_a_copy_never_overwrite() {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "# Plan (laptop)\n");
 }
 
+/// Review finding 10: copies saved at the same moment (two tabs, a double
+/// submit) each get a name of their own; none replaces another.
+#[test]
+fn copies_saved_at_once_never_share_a_name() {
+    let env = start();
+    let texts: Vec<String> = (0..6).map(|i| format!("# Plan (tab {i})\n")).collect();
+    let mut browsers: Vec<Browser> = (0..texts.len()).map(|_| Browser::signed_in(&env)).collect();
+    let csrfs: Vec<String> = browsers.iter_mut().map(Browser::csrf).collect();
+    std::thread::scope(|s| {
+        for ((b, csrf), text) in browsers.iter_mut().zip(&csrfs).zip(&texts) {
+            s.spawn(move || {
+                let r = b.post("/edit/Projects/Plan.md", &[("_csrf", csrf), ("action", "copy"), ("text", text)]);
+                assert_eq!(r.status, 303, "{}", r.body);
+            });
+        }
+    });
+    let copies: Vec<String> = std::fs::read_dir(env.root.join("Projects"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().into_string().unwrap())
+        .filter(|n| n.starts_with("Plan (copy from the web"))
+        .collect();
+    assert_eq!(copies.len(), texts.len(), "{copies:?}");
+    let mut found: Vec<String> = copies.iter().map(|n| std::fs::read_to_string(env.root.join("Projects").join(n)).unwrap()).collect();
+    found.sort();
+    assert_eq!(found, texts);
+}
+
 #[test]
 fn web_edits_are_atomic_and_kept_in_history_with_who_made_them() {
     let env = start();
