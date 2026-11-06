@@ -4,10 +4,6 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
-### Added
-- **Word-count goal:** a `goal: 1500` property shows your progress in the status bar (`640 / 1,500 words · 43%`), and "✓ goal" once you get there. Word and character counts there are now grouped by thousands (#16).
-- **Copy as HTML:** the command palette, and right-click on a note or a tab, copy the note (or the selected part) as formatted HTML, with the Markdown as plain text, so it pastes into mail or a document with its formatting: callouts, tables, drawings, and in the full edition math and diagrams as pictures. Images and recordings point at their files on this computer (`file://`); links to other notes become their text. Where the clipboard takes plain text only, the HTML source is copied and Quire says so. `quire-cli html <vault> <note>` prints the same HTML (#17).
-
 ## [0.10.0] - 2026-11-06
 
 Quire 0.10 brings your vault to your browser and your agents, on a server you own (Beta), voice notes, much lighter on-device AI, and a round of things people asked for: Vim macros and block editing, reminders while Quire is closed, Excalidraw drawings, canvas cards that look like the preview, and Obsidian Bases formulas.
@@ -49,6 +45,10 @@ Quire 0.10 brings your vault to your browser and your agents, on a server you ow
 #### For developers
 - `quire-cli bench --suite …` measures design §9's speed budgets (index, search, section search, MCP `view`/`search` on 10,000 notes, PDF text, MCP start-up with 200 PDFs) as JSON lines, and the desktop app built with `--features bench` times start-up, typing and a 1,000-card canvas. A new CI job, `perf`, runs them on an optimised build and fails above budget × 1.25 (docs/design/0.10-perf.md).
 - `quire-cli eval` (development builds): an endpoint or offline mock embedder (`--embedder endpoint|mock`), a sweep of the "Not found" threshold, the sample vault as a suite, and a contradiction suite that scores the Inbox's precision and recall.
+
+#### Small additions
+- **Word-count goal:** a `goal: 1500` property shows your progress in the status bar (`640 / 1,500 words · 43%`), and "✓ goal" once you get there. Word and character counts there are now grouped by thousands (#16).
+- **Copy as HTML:** the command palette, and right-click on a note or a tab, copy the note (or the selected part) as formatted HTML, with the Markdown as plain text, so it pastes into mail or a document with its formatting: callouts, tables, drawings, and in the full edition math and diagrams as pictures. Images and recordings point at their files on this computer (`file://`); links to other notes become their text. Where the clipboard takes plain text only, the HTML source is copied and Quire says so. `quire-cli html <vault> <note>` prints the same HTML (#17).
 
 ### Changed
 - **On-device writing models use far less memory**: the Balanced model (Qwen3 1.7B) about 1.3 GB with a short prompt and 1.7 GB with a long one, down from about 5 GB. Quire now suggests Balanced on computers with 8 GB of memory or more (16 GB before), and reads the memory on Windows too (it suggested Small there before). Long prompts are read more slowly unless "Faster prompts, more memory" is on.
