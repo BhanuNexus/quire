@@ -688,7 +688,7 @@ mod tests {
             assert!(unit.contains("Description=Quire reminders for 50%% \"it's\" $HOME;rm -rf ~ <x>&\\\\\n"), "{unit}");
             let line = plan_install(Backend::Cron, cli, odd, &env()).unwrap().cron_line.unwrap();
             assert!(!line.contains('\n'));
-            assert!(line.contains(r#"remind '/home/ada/50\% "it'\''s" $HOME;rm -rf ~ <x>&\'"#), "{line}");
+            assert!(line.contains(r#"remind '/home/ada/50\% "it'\''s" $HOME;rm -rf ~ <x>&\'"#), "the cron line quotes the odd path");
             let plist = &plan_install(Backend::LaunchAgent, cli, odd, &env()).unwrap().files[0].1;
             assert!(plist.contains("<string>/home/ada/50% &quot;it's&quot; $HOME;rm -rf ~ &lt;x&gt;&amp;\\</string>"), "{plist}");
         }
