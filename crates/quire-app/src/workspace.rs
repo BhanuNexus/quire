@@ -266,7 +266,8 @@ impl Workspace {
     fn vault_attached(&mut self, vault: &Vault) {
         let agent = quire_agent::AgentStore::open(vault, self.device.clone(), Arc::new(quire_agent::SystemClock));
         self.jobs.set_context(Some(crate::jobs::JobCx {
-            vault: vault.clone(),
+            // No keys: background jobs never read a locked folder (0.11).
+            vault: vault.without_keys(),
             index: self.index.handle(),
             agent: agent.clone(),
             chat: None,
@@ -458,6 +459,11 @@ impl Workspace {
         }
         let text = match self.vault.as_ref()?.read(path) {
             Ok(t) => t,
+            // 0.11: a locked note shows the folder's lock screen instead.
+            Err(quire_vault::VaultError::Locked(_)) => {
+                self.request_ui(UiRequest::OpenFile(quire_vault::lock::stored(path)));
+                return None;
+            }
             Err(e) => {
                 self.notify(NoticeLevel::Error, e.to_string());
                 return None;
@@ -547,7 +553,8 @@ impl Workspace {
             return None;
         }
         let from = self.active_doc().and_then(|d| d.path.clone());
-        let resolved = self.index.read().resolve(target, from.as_ref());
+        // 0.11: a note in a locked folder isn't in the index; never make a new one in its place.
+        let resolved = self.index.read().resolve(target, from.as_ref()).or_else(|| crate::secure_state::resolve_locked(self, target));
         let id = match resolved {
             Some(p) => self.open_note(&p)?,
             None if target.trim().is_empty() => self.active_doc()?.id,
@@ -716,6 +723,8 @@ impl Workspace {
         // merged first, never overwritten. A file gone meanwhile is put back.
         let base = self.docs[i].disk_text();
         let written = match &base {
+            // 0.11: a locked folder's note is written encrypted, through its key.
+            Some(b) if vault.locked_folder(&path).is_some() => crate::secure_state::save_locked(vault, &path, b, &text),
             Some(b) => vault.storage().write_bytes_if(
                 &path,
                 &|now| now.is_none_or(|n| String::from_utf8_lossy(n.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(n)) == **b),
@@ -1079,6 +1088,9 @@ impl Workspace {
 
     /// Render the active note to standalone HTML in `Exports/` and return where it went.
     pub fn export_active_html(&mut self) -> Option<String> {
+        if crate::secure_state::refuse_export(self) {
+            return None;
+        }
         let doc = self.active_doc()?;
         let title = doc.title();
         // WS-G: `[@key]` citations as author-date text and a reference list.
@@ -1548,7 +1560,13 @@ impl Workspace {
             | C::NewCanvas
             | C::InsertSketch
             | C::InsertCitation
-            | C::ImportBibliography => return crate::features::run(self, cmd),
+            | C::ImportBibliography
+            | C::LockFolder
+            | C::UnlockFolder
+            | C::LockNow
+            | C::ChangeFolderPassphrase
+            | C::StopLockingFolder
+            | C::AgentConnections => return crate::features::run(self, cmd),
         }
         None
     }

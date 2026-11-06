@@ -171,6 +171,11 @@ pub fn move_note_in_order(
 /// What a note is called in lists and tabs: its title (`title:` or first
 /// heading) with display titles on, else its file name.
 pub fn display_name(ws: &Workspace, path: &NotePath) -> String {
+    // 0.11: a locked folder's note, by its plain name, with its lock.
+    if let Some(plain) = quire_vault::lock::plain_name(path).filter(NotePath::is_markdown) {
+        let open = ws.locked_folder_cached(&plain).is_some_and(|f| ws.is_unlocked(&f));
+        return format!("{} {}", if open { "🔓" } else { "🔒" }, plain.stem());
+    }
     if !path.is_markdown() {
         // A `.base`, canvas or PDF: the file name tells it from a note of the same name.
         return path.file_name().to_string();

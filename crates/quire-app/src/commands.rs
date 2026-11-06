@@ -147,6 +147,13 @@ pub enum Command {
     InsertSketch,
     InsertCitation,
     ImportBibliography,
+    // 0.11 security: locked folders, agent connections
+    LockFolder,
+    UnlockFolder,
+    LockNow,
+    ChangeFolderPassphrase,
+    StopLockingFolder,
+    AgentConnections,
 }
 
 /// Which workstream's module handles a 0.9 command (design §6.2).
@@ -161,6 +168,8 @@ pub enum Owner {
     Plan,
     Editor,
     Spatial,
+    /// 0.11 security (`secure_state.rs`).
+    Secure,
 }
 
 impl Command {
@@ -206,6 +215,12 @@ impl Command {
             | Self::ToggleTwoPaneBrowser
             | Self::OpenHomepage => Owner::Editor,
             Self::NewCanvas | Self::InsertSketch | Self::InsertCitation | Self::ImportBibliography => Owner::Spatial,
+            Self::LockFolder
+            | Self::UnlockFolder
+            | Self::LockNow
+            | Self::ChangeFolderPassphrase
+            | Self::StopLockingFolder
+            | Self::AgentConnections => Owner::Secure,
             _ => Owner::Core,
         }
     }
@@ -423,6 +438,13 @@ commands! {
     InsertSketch,     "Format", "Insert sketch",                  [], true;
     InsertCitation,   "Format", "Insert citation…",               [], true;
     ImportBibliography,"Note",  "Import bibliography…",           [], false;
+    // ---- 0.11 security
+    LockFolder,       "Security","Lock a folder (encrypt it)…",   [], false;
+    UnlockFolder,     "Security","Unlock a locked folder…",       [], false;
+    LockNow,          "Security","Lock locked folders now",       [cmd_alt_shift("L")], false;
+    ChangeFolderPassphrase,"Security","Change a locked folder's passphrase…", [], false;
+    StopLockingFolder,"Security","Stop locking a folder (decrypt it)…", [], false;
+    AgentConnections, "Agent",  "Agent connections…",             [], false;
 }
 
 impl Command {

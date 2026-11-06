@@ -222,6 +222,10 @@ impl Workspace {
 
     /// Transcribe a saved attachment with the configured transcription.
     pub fn transcribe_attachment(&self, path: &NotePath) -> Option<TranscribeJob> {
+        // 0.11: nothing goes to a provider or on-device AI from a vault with AI off.
+        if crate::secure_state::ai_off(self) {
+            return None;
+        }
         let t = transcription(&self.settings)?;
         let file = self.attachment_path(path.file_name())?;
         Some(t.start(file))

@@ -588,7 +588,9 @@ impl VaultStore {
         if quire_sync::engine::is_attachment(path) {
             self.vault.storage().read_bytes(&NotePath::new(path)).ok().map(|b| b64().encode(b))
         } else {
-            self.vault.read(&NotePath::new(path)).ok()
+            // The file as stored: sync never decrypts a locked folder's
+            // files (they travel as their `.qenc` bytes), 0.11.
+            self.vault.storage().read(&NotePath::new(path)).ok()
         }
     }
 
@@ -726,7 +728,7 @@ impl LocalStore for VaultStore {
                 }
                 b64().encode(self.vault.storage().read_bytes(&p).ok()?)
             } else if p.is_markdown() {
-                self.vault.read(&p).ok()?
+                self.vault.storage().read(&p).ok()?
             } else {
                 return None;
             };

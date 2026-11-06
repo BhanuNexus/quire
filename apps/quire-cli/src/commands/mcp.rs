@@ -101,6 +101,10 @@ fn stdio(args: &[String]) -> Result<(), String> {
         ..ServerConfig::default()
     };
     let srv = Server::open_with(arg(args, 1)?, cfg)?;
+    // 0.11: a revoked key (Settings → Agents → Connections) or AI off: refused here, clearly.
+    if let Some(why) = srv.refusal() {
+        return Err(format!("quire mcp: {why}"));
+    }
     srv.start_pump();
     let stdin = std::io::stdin();
     srv.serve(stdin.lock(), std::io::stdout()).map_err(|e| e.to_string())

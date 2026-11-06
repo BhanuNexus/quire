@@ -317,6 +317,12 @@ impl Workspace {
     /// Re-read AI settings and keys: swap the assistant, the semantic
     /// embedder and the chat model background jobs use.
     pub fn apply_ai_settings(&mut self) {
+        // 0.11: the vault's "AI off" wins over the settings.
+        if crate::secure_state::ai_off(self) {
+            self.features.secure.reapply_ai_switch();
+            self.apply_ai_switch();
+            return;
+        }
         self.assistant = make_assistant(&self.settings);
         self.chat = chat_model(&self.settings);
         self.chat_generation += 1;
@@ -336,7 +342,7 @@ impl Workspace {
     pub(crate) fn refresh_job_chat(&self) {
         if let (Some(vault), Some(agent)) = (&self.vault, &self.agent) {
             self.jobs.set_context(Some(crate::jobs::JobCx {
-                vault: vault.clone(),
+                vault: vault.without_keys(),
                 index: self.index.handle(),
                 agent: agent.clone(),
                 chat: self.chat.clone(),

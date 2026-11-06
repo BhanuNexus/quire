@@ -62,10 +62,26 @@ impl Workspace {
         self.insert_text(&t);
     }
 
+    /// 0.11: a picture or file for a locked note would go to the (plain)
+    /// attachments folder, so it is refused, with the reason.
+    fn refuse_attachment_in_locked_note(&mut self) -> bool {
+        let locked = self
+            .active_doc()
+            .and_then(|d| d.path.clone())
+            .is_some_and(|p| self.vault.as_ref().is_some_and(|v| v.locked_folder(&p).is_some()));
+        if locked {
+            self.notify(NoticeLevel::Info, "Pictures and files can't be added to a locked note yet: they would be stored unencrypted.");
+        }
+        locked
+    }
+
     /// Save a pasted image (straight RGBA8) and embed it at the caret.
     pub fn paste_image(&mut self, width: u32, height: u32, rgba: &[u8]) -> Option<NotePath> {
         let vault = self.vault.clone()?;
         self.active_doc()?;
+        if self.refuse_attachment_in_locked_note() {
+            return None;
+        }
         let png = match encode_png(width, height, rgba) {
             Ok(b) => b,
             Err(e) => {
@@ -91,6 +107,9 @@ impl Workspace {
     /// Bring dropped files into the vault and link them at the caret.
     pub fn import_files(&mut self, files: &[PathBuf]) -> usize {
         let Some(vault) = self.vault.clone() else { return 0 };
+        if self.refuse_attachment_in_locked_note() {
+            return 0;
+        }
         let root = self.vault_root().map(Path::to_path_buf);
         let mut links = Vec::new();
         for f in files {

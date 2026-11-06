@@ -37,6 +37,8 @@ quire-web.workspace = true
 tokio = { workspace = true, features = ["rt", "signal", "macros"] }
 # 0.10 perf: `bench --suite pdf` times text extraction (already linked through quire-app).
 quire-pdf.workspace = true
+# 0.11: `skill install --from` shows the SHA-256 of what it installs.
+sha2.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

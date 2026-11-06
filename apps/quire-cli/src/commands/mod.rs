@@ -4,7 +4,8 @@
 //! lists its commands in a `COMMANDS` table; [`all`] joins the tables and
 //! the help text is built from them. Owners: `search`, `notes`, `import`,
 //! `bench` (frozen after F0); `capture`, `mcp`, `agent`, `eval` (WS-B);
-//! `lint` (WS-A); `ai` (WS-D); `tasks` (WS-E); `sync`, `serve` (0.10 serve).
+//! `lint` (WS-A); `ai` (WS-D); `tasks` (WS-E); `sync`, `serve` (0.10 serve);
+//! `lock`, `unlock`, `status` (0.11 security).
 
 mod agent;
 mod ai;
@@ -14,6 +15,7 @@ mod capture;
 mod eval;
 mod import;
 mod lint;
+mod lock;
 mod mcp;
 mod notes;
 mod remind;
@@ -55,6 +57,7 @@ pub(crate) fn all() -> Vec<&'static CliCommand> {
         ai::COMMANDS,
         sync::COMMANDS,
         serve::COMMANDS,
+        lock::COMMANDS,
         #[cfg(feature = "eval")]
         eval::COMMANDS,
     ];

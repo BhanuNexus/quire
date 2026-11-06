@@ -32,6 +32,9 @@ pub fn export_pdf(vault: &Vault, title: &str, text: &str, out: &NotePath) -> Res
 impl Workspace {
     /// Start exporting the active note to `Exports/<title>.pdf`; a notice says when it's done.
     pub fn export_active_pdf(&mut self) {
+        if crate::secure_state::refuse_export(self) {
+            return;
+        }
         let (Some(doc), Some(vault)) = (self.active_doc(), self.vault.clone()) else { return };
         if self.pdf_job.is_some() {
             self.notify(NoticeLevel::Info, "Still making the last PDF…");

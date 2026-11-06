@@ -22,6 +22,7 @@ mod editing;
 mod jobs;
 mod mcp_http;
 mod onboarding;
+mod security;
 mod tasks;
 mod trust;
 mod voice;
@@ -35,6 +36,7 @@ pub use editing::EditingSettings;
 pub use jobs::JobSettings;
 pub use mcp_http::McpHttpSettings;
 pub use onboarding::OnboardingSettings;
+pub use security::SecuritySettings;
 use serde::{Deserialize, Serialize};
 pub use tasks::TaskSettings;
 pub use trust::TrustSettings;
@@ -115,6 +117,8 @@ pub struct Settings {
     pub jobs: JobSettings,
     /// 0.10: voice notes.
     pub voice: VoiceSettings,
+    /// 0.11: locked folders.
+    pub security: SecuritySettings,
     /// Settings this version doesn't know (written by a newer version, or
     /// the other edition), kept as they are so saving doesn't drop them.
     #[serde(flatten)]
@@ -162,6 +166,7 @@ impl Default for Settings {
             appearance: AppearanceSettings::default(),
             jobs: JobSettings::default(),
             voice: VoiceSettings::default(),
+            security: SecuritySettings::default(),
             other: toml::Table::new(),
         }
     }
