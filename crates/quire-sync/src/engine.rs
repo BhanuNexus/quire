@@ -974,6 +974,13 @@ impl Engine {
 
 /// `("Notes/Plan", ".md")`; `("README", "")` when there's no extension.
 fn split_ext(path: &str) -> (&str, &str) {
+    // A locked folder's encrypted file keeps its whole name's ending, so
+    // its conflict copy is still an encrypted note (`Day (conflict …).md.qenc`).
+    for two in [".md.qenc", ".markdown.qenc", ".txt.qenc"] {
+        if path.len() > two.len() && path.get(path.len() - two.len()..).is_some_and(|e| e.eq_ignore_ascii_case(two)) {
+            return path.split_at(path.len() - two.len());
+        }
+    }
     match path.rfind('.') {
         Some(i) if i > path.rfind('/').map_or(0, |s| s + 1) => (&path[..i], &path[i..]),
         _ => (path, ""),

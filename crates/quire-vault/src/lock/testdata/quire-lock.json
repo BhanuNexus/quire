@@ -1,0 +1,15 @@
+{
+  "format": 1,
+  "type": "quire-locked-folder",
+  "folder_id": "07070707070707070707070707070707",
+  "created": 1793000000000,
+  "kdf": {
+    "name": "argon2id",
+    "memory_kib": 64,
+    "iterations": 1,
+    "parallelism": 1
+  },
+  "salt": "0d0db6ff4263b17beae7e7f916a7b184",
+  "wrapped_key": "ea4c1ef275820f99ccedf9d0467a0f81040090f82b47dde57d29df03f0972b84ff8c988552213379cf7bb9f6b7523e51851cd99fc9664d92bf751c4b792c28e185edb194a713cc95",
+  "check": "1d924365e74f4bd2f3b70c4d26090006"
+}

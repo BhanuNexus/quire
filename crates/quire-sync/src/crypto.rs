@@ -89,6 +89,12 @@ impl VaultKey {
         Keys { content: expand(b"content"), blob_id: expand(b"blob-id") }
     }
 
+    /// The raw key, for a format that derives its own subkeys from a key
+    /// written as a recovery key (Quire's locked folders).
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
     pub fn recovery_key(&self) -> RecoveryKey {
         RecoveryKey::encode(&self.0)
     }

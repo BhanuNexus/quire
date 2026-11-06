@@ -7,6 +7,8 @@
 
 mod hash;
 mod history;
+pub mod lock;
+mod locked;
 mod note;
 pub mod prefs;
 mod refactor;
@@ -17,6 +19,7 @@ mod watch;
 
 pub use hash::ContentHash;
 pub use history::{Snapshot, retained};
+pub use locked::LockedFolderState;
 pub use note::{NotePath, sanitize_title};
 pub use prefs::{PrefsError, VaultPrefs};
 pub use refactor::{LinkRewrite, rewrite_links};
@@ -37,6 +40,14 @@ pub enum VaultError {
     InvalidName(String),
     #[error("watcher error: {0}")]
     Watch(String),
+    /// A locked folder (0.11): its notes can't be read or written until it
+    /// is unlocked, and nothing plain may be written into it.
+    #[error("{0}/ is locked")]
+    Locked(String),
+    /// An encrypted file that doesn't decrypt (damaged, changed, moved from
+    /// another locked folder).
+    #[error("{path} can't be decrypted: {reason}")]
+    Damaged { path: String, reason: String },
 }
 
 pub type Result<T> = std::result::Result<T, VaultError>;

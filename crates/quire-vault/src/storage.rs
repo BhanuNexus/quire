@@ -167,6 +167,7 @@ impl LocalFs {
     /// [`one_write_at_a_time`] held).
     fn persist(&self, path: &NotePath, contents: &[u8]) -> Result<()> {
         let abs = self.abs(path)?;
+        self.no_plain_into_locked(path)?;
         let dir = abs.parent().unwrap_or(&self.root);
         std::fs::create_dir_all(dir).map_err(io_err(path.to_string()))?;
         let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(io_err(path.to_string()))?;
@@ -182,6 +183,15 @@ impl LocalFs {
         }
         tmp.persist(&abs).map_err(|e| io_err(path.to_string())(e.error))?;
         Ok(())
+    }
+
+    /// Refuse a plain file in a locked folder (0.11): whoever writes, the
+    /// bytes of a note there are only ever stored encrypted.
+    fn no_plain_into_locked(&self, path: &NotePath) -> Result<()> {
+        match crate::lock::refuses_plain(path.as_str(), |p| self.root.join(p).exists()) {
+            Some(f) => Err(VaultError::Locked(f.path)),
+            None => Ok(()),
+        }
     }
 
     fn move_to_trash(&self, path: &NotePath) -> Result<()> {
@@ -234,6 +244,7 @@ impl Storage for LocalFs {
     fn rename(&self, from: &NotePath, to: &NotePath) -> Result<()> {
         let (a, b) = (self.abs(from)?, self.abs(to)?);
         let _one = one_write_at_a_time();
+        self.no_plain_into_locked(to)?;
         if b.exists() {
             return Err(VaultError::Exists(to.to_string()));
         }
@@ -282,6 +293,7 @@ impl Storage for LocalFs {
 
     fn append_line(&self, path: &NotePath, line: &str) -> Result<()> {
         let abs = self.abs(path)?;
+        self.no_plain_into_locked(path)?;
         if let Some(dir) = abs.parent() {
             std::fs::create_dir_all(dir).map_err(io_err(path.to_string()))?;
         }
@@ -321,8 +333,21 @@ impl MemFs {
         fs
     }
 
+    /// Every file, hidden ones (`.quire/`) included.
+    pub fn list_all(&self) -> Vec<NotePath> {
+        self.files.read().expect("lock").keys().cloned().collect()
+    }
+
     pub fn trashed(&self) -> Vec<NotePath> {
         self.trashed.read().expect("lock").clone()
+    }
+}
+
+/// [`LocalFs`]'s refusal of plain files in a locked folder, for [`MemFs`].
+fn mem_no_plain_into_locked(files: &BTreeMap<NotePath, (Vec<u8>, SystemTime)>, path: &NotePath) -> Result<()> {
+    match crate::lock::refuses_plain(path.as_str(), |p| files.contains_key(&NotePath::new(p))) {
+        Some(f) => Err(VaultError::Locked(f.path)),
+        None => Ok(()),
     }
 }
 
@@ -336,12 +361,15 @@ impl Storage for MemFs {
     }
 
     fn write_bytes_atomic(&self, path: &NotePath, contents: &[u8]) -> Result<()> {
-        self.files.write().expect("lock").insert(path.clone(), (contents.to_vec(), SystemTime::now()));
+        let mut files = self.files.write().expect("lock");
+        mem_no_plain_into_locked(&files, path)?;
+        files.insert(path.clone(), (contents.to_vec(), SystemTime::now()));
         Ok(())
     }
 
     fn write_bytes_if(&self, path: &NotePath, still: &dyn Fn(Option<&[u8]>) -> bool, bytes: &[u8]) -> Result<bool> {
         let mut files = self.files.write().expect("lock");
+        mem_no_plain_into_locked(&files, path)?;
         if !still(files.get(path).map(|(c, _)| c.as_slice())) {
             return Ok(false);
         }
@@ -361,6 +389,7 @@ impl Storage for MemFs {
 
     fn rename(&self, from: &NotePath, to: &NotePath) -> Result<()> {
         let mut files = self.files.write().expect("lock");
+        mem_no_plain_into_locked(&files, to)?;
         if files.contains_key(to) {
             return Err(VaultError::Exists(to.to_string()));
         }

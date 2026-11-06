@@ -34,7 +34,17 @@ pub struct Snapshot {
 }
 
 const SNAPSHOT_EXT: &str = ".md.gz";
+/// A snapshot of a note in a locked folder (0.11): the gzip, encrypted.
+const SEALED_EXT: &str = ".md.gz.qenc";
 const PROV_EXT: &str = ".prov.json";
+
+/// The time of a snapshot file, and whether it is encrypted.
+fn snapshot_time(name: &str) -> Option<(i64, bool)> {
+    if let Some(t) = name.strip_suffix(SEALED_EXT) {
+        return Some((t.parse().ok()?, true));
+    }
+    Some((name.strip_suffix(SNAPSHOT_EXT)?.parse().ok()?, false))
+}
 
 fn folder_for(note: &NotePath) -> String {
     // FNV-1a: stable across Rust versions (unlike DefaultHasher).
@@ -113,15 +123,18 @@ impl Vault {
         let files = self.storage().list_under(&folder_for(note)).unwrap_or_default();
         let provs: std::collections::HashMap<i64, NotePath> =
             files.iter().filter_map(|f| Some((f.file_name().strip_suffix(PROV_EXT)?.parse().ok()?, f.clone()))).collect();
-        let mut v: Vec<Snapshot> = files
+        // A conversion interrupted between writing one form and removing the
+        // other leaves both: the plain one is shown (same text).
+        let mut v: Vec<(Snapshot, bool)> = files
             .into_iter()
             .filter_map(|f| {
-                let at_ms = f.file_name().strip_suffix(SNAPSHOT_EXT)?.parse().ok()?;
-                Some(Snapshot { prov_file: provs.get(&at_ms).cloned(), file: f, at_ms })
+                let (at_ms, sealed) = snapshot_time(f.file_name())?;
+                Some((Snapshot { prov_file: provs.get(&at_ms).cloned(), file: f, at_ms }, sealed))
             })
             .collect();
-        v.sort_by_key(|s| std::cmp::Reverse(s.at_ms));
-        v
+        v.sort_by_key(|(s, sealed)| (std::cmp::Reverse(s.at_ms), *sealed));
+        v.dedup_by_key(|(s, _)| s.at_ms);
+        v.into_iter().map(|(s, _)| s).collect()
     }
 
     /// Who made a snapshot, as written by [`Vault::snapshot_with`]; `None`
@@ -131,9 +144,78 @@ impl Vault {
         serde_json::from_slice(&bytes).ok()
     }
 
+    /// A snapshot's text. One of a locked note needs its folder unlocked.
     pub fn read_snapshot(&self, s: &Snapshot) -> Result<String> {
-        let bytes = self.storage().read_bytes(&s.file)?;
+        let bytes = self.snapshot_gz(&s.file)?;
         gunzip(&bytes).map_err(|e| VaultError::Io { path: s.file.to_string(), source: e })
+    }
+
+    /// The gzip of a snapshot file, decrypted if it is encrypted.
+    fn snapshot_gz(&self, file: &NotePath) -> Result<Vec<u8>> {
+        let bytes = self.storage().read_bytes(file)?;
+        if !file.as_str().ends_with(SEALED_EXT) {
+            return Ok(bytes);
+        }
+        let h = crate::lock::format::Header::parse(&bytes).map_err(|e| crate::locked::damaged(file, &e))?;
+        let key = self.keys().by_id(h.folder).ok_or_else(|| VaultError::Locked("this note's folder".into()))?;
+        key.open(crate::lock::format::Kind::Snapshot, h.folder, &bytes).map_err(|e| crate::locked::damaged(file, &e))
+    }
+
+    /// Where `note`'s snapshots are written: plain, or encrypted with its
+    /// locked folder's key (`Err(Locked)` while that folder is locked).
+    fn snapshot_form(&self, note: &NotePath) -> Result<Option<(crate::lock::FolderId, crate::lock::FolderKey)>> {
+        match self.locked_folder(note) {
+            Some(f) if !f.unlocking => self.keys().get(&f.path).map(Some).ok_or(VaultError::Locked(f.path)),
+            _ => Ok(None),
+        }
+    }
+
+    /// Write one snapshot file for `note` at `at` from its gzip bytes, in
+    /// the form `note` needs. Returns the file written.
+    fn put_snapshot(&self, note: &NotePath, at: i64, gz: &[u8]) -> Result<NotePath> {
+        let folder = folder_for(note);
+        if let Some((id, key)) = self.snapshot_form(note)? {
+            let file = NotePath::new(format!("{folder}/{at}{SEALED_EXT}"));
+            let sealed = key.seal(crate::lock::format::Kind::Snapshot, id, gz).map_err(|e| crate::locked::damaged(&file, &e))?;
+            self.storage().write_bytes_atomic(&file, &sealed)?;
+            return Ok(file);
+        }
+        let file = NotePath::new(format!("{folder}/{at}{SNAPSHOT_EXT}"));
+        self.storage().write_bytes_atomic(&file, gz)?;
+        Ok(file)
+    }
+
+    /// Bring `from`'s history to `to` (the same note after a move, or the
+    /// same path after its folder was locked or unlocked), encrypting or
+    /// decrypting each snapshot to match where `to` is. Each file is
+    /// written and read back before its old form is removed, so an
+    /// interruption leaves a readable copy. Returns how many changed.
+    pub fn rehome_history(&self, from: &NotePath, to: &NotePath) -> Result<usize> {
+        let (a, b) = (folder_for(from), folder_for(to));
+        let want_sealed = self.snapshot_form(to)?.is_some();
+        let mut changed = 0;
+        for f in self.storage().list_under(&a)? {
+            let name = f.file_name().to_string();
+            if let Some((at, sealed)) = snapshot_time(&name) {
+                if sealed == want_sealed && a == b {
+                    continue;
+                }
+                let gz = self.snapshot_gz(&f)?;
+                let written = self.put_snapshot(to, at, &gz)?;
+                if self.snapshot_gz(&written)? != gz {
+                    return Err(VaultError::Damaged { path: written.to_string(), reason: "the copy didn't read back the same".into() });
+                }
+                if written != f {
+                    self.storage().remove(&f)?;
+                }
+                changed += 1;
+            } else if a != b {
+                let bytes = self.storage().read_bytes(&f)?;
+                self.storage().write_bytes_atomic(&NotePath::join(&b, &name), &bytes)?;
+                self.storage().remove(&f)?;
+            }
+        }
+        Ok(changed)
     }
 
     /// Record `content` as the latest version. Returns true if a snapshot was
@@ -171,12 +253,14 @@ impl Vault {
         let at = hist.first().map_or(now_ms, |n| now_ms.max(n.at_ms + 1));
         let folder = folder_for(note);
         let file = NotePath::new(format!("{folder}/{at}{SNAPSHOT_EXT}"));
+        // A locked note's provenance isn't written: it holds a hash of the text.
+        let prov = if self.locked_folder(note).is_some() { None } else { prov };
         if let Some(p) = prov {
             // Provenance first: a snapshot is never visible without the record of who made it.
             let bytes = serde_json::to_vec(p).map_err(|e| VaultError::Io { path: file.to_string(), source: std::io::Error::other(e) })?;
             self.storage().write_bytes_atomic(&NotePath::new(format!("{folder}/{at}{PROV_EXT}")), &bytes)?;
         }
-        self.storage().write_bytes_atomic(&file, &gzip(content))?;
+        self.put_snapshot(note, at, &gzip(content))?;
         self.prune_history(note, now_ms)?;
         Ok(true)
     }

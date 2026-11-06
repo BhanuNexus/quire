@@ -44,13 +44,15 @@ pub struct RenameReport {
 /// Repository over a [`Storage`].
 #[derive(Clone)]
 pub struct Vault {
-    storage: Arc<dyn Storage>,
+    pub(crate) storage: Arc<dyn Storage>,
     pub config: VaultConfig,
+    /// Keys of unlocked locked folders (0.11), shared by every clone.
+    pub(crate) keys: crate::lock::KeyRing,
 }
 
 impl Vault {
     pub fn new(storage: Arc<dyn Storage>) -> Self {
-        Self { storage, config: VaultConfig::default() }
+        Self { storage, config: VaultConfig::default(), keys: crate::lock::KeyRing::new() }
     }
 
     pub fn open_local(root: impl AsRef<Path>) -> Result<Self> {
@@ -65,18 +67,35 @@ impl Vault {
         &self.storage
     }
 
-    /// All Markdown notes, excluding templates.
+    /// All Markdown notes, excluding templates and every note in a locked
+    /// folder (0.11), locked or not: the index and everything built on it
+    /// never sees one ([`Self::locked_notes`] lists them).
     pub fn notes(&self) -> Result<Vec<NotePath>> {
         let tpl = format!("{}/", self.config.templates_folder);
-        Ok(self.storage.list()?.into_iter().filter(|p| p.is_markdown() && !p.as_str().starts_with(&tpl)).collect())
+        let all = self.storage.list()?;
+        let locked = crate::lock::folders_in(&all);
+        Ok(all
+            .into_iter()
+            .filter(|p| p.is_markdown() && !p.as_str().starts_with(&tpl) && !crate::lock::in_any(&locked, p.as_str()))
+            .collect())
     }
 
+    /// A note's text. In a locked folder it is decrypted (the folder must
+    /// be unlocked: [`crate::VaultError::Locked`] otherwise).
     pub fn read(&self, p: &NotePath) -> Result<String> {
-        self.storage.read(p)
+        match self.locked_folder(p) {
+            Some(f) => self.read_locked(&f, p).map(|b| crate::storage::decode(&b).into_owned()),
+            None => self.storage.read(p),
+        }
     }
 
+    /// Write a note. In a locked folder it is encrypted (the folder must be
+    /// unlocked).
     pub fn write(&self, p: &NotePath, content: &str) -> Result<()> {
-        self.storage.write_atomic(p, content)
+        match self.locked_folder(p) {
+            Some(f) => self.write_locked(&f, p, content.as_bytes()),
+            None => self.storage.write_atomic(p, content),
+        }
     }
 
     /// Write `content` only if the note is still `expected` (its text as
@@ -84,6 +103,9 @@ impl Vault {
     /// written as one step against every other write in this process (see
     /// [`Storage::write_bytes_if`]). Returns whether it wrote.
     pub fn write_if(&self, p: &NotePath, expected: Option<&str>, content: &str) -> Result<bool> {
+        if let Some(f) = self.locked_folder(p) {
+            return self.write_locked_if(&f, p, expected, content);
+        }
         let still = |now: Option<&[u8]>| match (now, expected) {
             (None, None) => true,
             (Some(b), Some(e)) => crate::storage::decode(b) == e,
@@ -92,8 +114,10 @@ impl Vault {
         self.storage.write_bytes_if(p, &still, content.as_bytes())
     }
 
+    /// Whether a note exists (in a locked folder: its encrypted file or a
+    /// plain one not converted yet; names aren't secret).
     pub fn exists(&self, p: &NotePath) -> bool {
-        self.storage.exists(p)
+        self.storage.exists(p) || (self.locked_folder(p).is_some() && self.storage.exists(&crate::lock::stored(p)))
     }
 
     /// First free `folder/Title.md`, then `Title 1.md`, `Title 2.md`…
@@ -103,7 +127,7 @@ impl Vault {
         let base = if base.is_empty() { "Untitled".to_string() } else { base };
         let mut candidate = NotePath::join(folder, &format!("{base}.md"));
         let mut n = 1;
-        while self.storage.exists(&candidate) {
+        while self.exists(&candidate) {
             candidate = NotePath::join(folder, &format!("{base} {n}.md"));
             n += 1;
         }
@@ -112,7 +136,7 @@ impl Vault {
 
     pub fn create_note(&self, folder: &str, title: &str, content: &str) -> Result<NotePath> {
         let p = self.unique_path(folder, title)?;
-        self.storage.write_atomic(&p, content)?;
+        self.write(&p, content)?;
         Ok(p)
     }
 
@@ -149,7 +173,7 @@ impl Vault {
     /// Open-or-create today's (or any day's) note. Returns (path, created).
     pub fn daily_note(&self, date: NaiveDate) -> Result<(NotePath, bool)> {
         let p = self.daily_path(date);
-        if self.storage.exists(&p) {
+        if self.exists(&p) {
             return Ok((p, false));
         }
         let title = p.stem().to_string();
@@ -161,7 +185,7 @@ impl Vault {
             }
             Err(_) => format!("# {title}\n\n"),
         };
-        self.storage.write_atomic(&p, &body)?;
+        self.write(&p, &body)?;
         Ok((p, true))
     }
 
@@ -175,13 +199,18 @@ impl Vault {
         if &to == from {
             return Ok(RenameReport { old_path: from.clone(), new_path: to, updated: vec![] });
         }
-        if self.storage.exists(&to) && !to.as_str().eq_ignore_ascii_case(from.as_str()) {
+        if self.exists(&to) && !to.as_str().eq_ignore_ascii_case(from.as_str()) {
             return Err(VaultError::Exists(to.to_string()));
         }
         // Read everything first so a failure leaves the vault untouched.
-        let notes = self.notes()?;
+        let plain = self.notes()?;
+        // A note in a locked folder isn't in `notes()`; links in plain notes still point at it.
+        let mut notes = plain.clone();
+        if !notes.contains(from) {
+            notes.push(from.clone());
+        }
         let mut rewrites = Vec::new();
-        for p in &notes {
+        for p in &plain {
             let src = self.storage.read(p)?;
             let check = |target: &str| resolve_in(&notes, target, Some(p)).as_ref() == Some(from);
             let rw = LinkRewrite {
@@ -195,12 +224,11 @@ impl Vault {
                 rewrites.push((p, new_src));
             }
         }
-        self.storage.rename(from, &to)?;
-        let _ = self.move_history(from, &to);
+        self.rename_file(from, &to)?;
         let mut updated = Vec::with_capacity(rewrites.len());
         for (p, content) in rewrites {
             let p = if p == from { to.clone() } else { p.clone() };
-            self.storage.write_atomic(&p, &content)?;
+            self.write(&p, &content)?;
             updated.push(p);
         }
         Ok(RenameReport { old_path: from.clone(), new_path: to, updated })
@@ -217,12 +245,17 @@ impl Vault {
         if &to == from {
             return Ok(RenameReport { old_path: from.clone(), new_path: to, updated: vec![] });
         }
-        if self.storage.exists(&to) {
+        if self.exists(&to) {
             return Err(VaultError::Exists(to.to_string()));
         }
-        let notes = self.notes()?;
+        let plain = self.notes()?;
+        // A note in a locked folder isn't in `notes()`; links in plain notes still point at it.
+        let mut notes = plain.clone();
+        if !notes.contains(from) {
+            notes.push(from.clone());
+        }
         let mut rewrites = Vec::new();
-        for p in &notes {
+        for p in &plain {
             let src = self.storage.read(p)?;
             let check = |target: &str| resolve_in(&notes, target, Some(p)).as_ref() == Some(from);
             let rw = LinkRewrite {
@@ -236,15 +269,25 @@ impl Vault {
                 rewrites.push((p, new_src));
             }
         }
-        self.storage.rename(from, &to)?;
-        let _ = self.move_history(from, &to);
+        self.rename_file(from, &to)?;
         let mut updated = Vec::with_capacity(rewrites.len());
         for (p, content) in rewrites {
             let p = if p == from { to.clone() } else { p.clone() };
-            self.storage.write_atomic(&p, &content)?;
+            self.write(&p, &content)?;
             updated.push(p);
         }
         Ok(RenameReport { old_path: from.clone(), new_path: to, updated })
+    }
+
+    /// Move a file and its history: a plain rename, or, when a locked
+    /// folder is at either end, decrypted or encrypted on the way (0.11).
+    fn rename_file(&self, from: &NotePath, to: &NotePath) -> Result<()> {
+        if self.locked_folder(from).is_some() || self.locked_folder(to).is_some() {
+            return self.move_locked(from, to).map(|_| ());
+        }
+        self.storage.rename(from, to)?;
+        let _ = self.move_history(from, to);
+        Ok(())
     }
 
     /// Folders that contain notes, for "Move to folder" suggestions.
@@ -290,7 +333,20 @@ impl Vault {
         files.iter().find(|p| p.as_str().to_lowercase() == t).or_else(|| files.iter().find(|p| p.file_name().to_lowercase() == t)).cloned()
     }
 
+    /// Move a note to `.trash/` (in a locked folder: its encrypted file,
+    /// so the trash never holds a locked note's plain text).
     pub fn trash(&self, p: &NotePath) -> Result<()> {
+        let stored = crate::lock::stored(p);
+        if let Some(f) = self.locked_folder(p)
+            && self.storage.exists(&stored)
+        {
+            if self.storage.exists(p) {
+                // A plain copy an interrupted conversion left: encrypted first.
+                let plain = self.storage.read_bytes(p)?;
+                self.write_locked(&f, p, &plain)?;
+            }
+            return self.storage.trash(&stored);
+        }
         self.storage.trash(p)
     }
 }
