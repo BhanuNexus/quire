@@ -70,6 +70,8 @@ pub(crate) struct PanelOut {
     pub skip_update: bool,
     /// Open this note in the other half of a split editor.
     pub open_side: Option<NotePath>,
+    /// Copy this note as HTML.
+    pub copy_html: Option<NotePath>,
 }
 
 fn section(ui: &mut egui::Ui, pal: &Palette, title: &str) {
@@ -122,6 +124,7 @@ enum NoteAction {
     Move,
     History,
     CopyLink,
+    CopyHtml,
     Reveal,
     Trash,
 }
@@ -136,6 +139,7 @@ fn note_menu(resp: &egui::Response) -> Option<NoteAction> {
             ("Move to folder…", NoteAction::Move),
             ("Version history…", NoteAction::History),
             ("Copy [[link]]", NoteAction::CopyLink),
+            ("Copy as HTML", NoteAction::CopyHtml),
             ("Show in folder", NoteAction::Reveal),
         ] {
             if ui.button(label).clicked() {
@@ -155,6 +159,7 @@ fn note_menu(resp: &egui::Response) -> Option<NoteAction> {
 fn apply_note_action(ctx: &egui::Context, ws: &mut Workspace, path: &NotePath, act: NoteAction, out: &mut PanelOut) {
     match act {
         NoteAction::OpenSide => out.open_side = Some(path.clone()),
+        NoteAction::CopyHtml => out.copy_html = Some(path.clone()),
         NoteAction::CopyLink => {
             ctx.copy_text(format!("[[{}]]", path.stem()));
             ws.notify(quire_app::workspace::NoticeLevel::Info, format!("Copied [[{}]]", path.stem()));

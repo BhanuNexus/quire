@@ -42,6 +42,11 @@ pub(crate) struct QuireApp {
     focus_find: bool,
     /// Text a command wants on the clipboard (copied at the end of the frame).
     clipboard: Option<String>,
+    /// HTML a command wants on the clipboard ("Copy as HTML").
+    clipboard_html: Option<quire_app::copy_html::CopiedHtml>,
+    /// The system clipboard for HTML, made on first use and kept: on Linux
+    /// the copy lasts only while it exists.
+    html_board: Option<arboard::Clipboard>,
     /// The global quick-capture shortcut while it's registered; `capture_key_failed`
     /// stops retrying after it couldn't be.
     capture_key: Option<crate::capture_key::CaptureKey>,
@@ -130,6 +135,8 @@ impl QuireApp {
             fast,
             focus_find: false,
             clipboard: None,
+            clipboard_html: None,
+            html_board: None,
             capture_key: None,
             capture_key_failed: false,
             sidebar: SidebarState::default(),
@@ -318,6 +325,10 @@ impl QuireApp {
                 self.clipboard = Some(text);
                 return;
             }
+            UiRequest::CopyHtml(c) => {
+                self.clipboard_html = Some(c);
+                return;
+            }
             UiRequest::Capture => Overlay::Capture { text: String::new(), focused: false, minimize: false },
             UiRequest::Import => {
                 if self.ws.vault().is_none() {
@@ -494,9 +505,34 @@ impl QuireApp {
         }
     }
 
+    /// "Copy as HTML": HTML with the Markdown as plain text, so a paste
+    /// into mail or a document keeps the formatting. Where the system
+    /// clipboard won't take HTML, the HTML source goes as text, and the
+    /// notice says so.
+    fn copy_html(&mut self, ctx: &egui::Context, c: quire_app::copy_html::CopiedHtml) {
+        let what = if c.selection { "the selection" } else { "the note" };
+        if self.html_board.is_none() {
+            self.html_board = arboard::Clipboard::new().ok();
+        }
+        let copied = self.html_board.as_mut().is_some_and(|b| b.set_html(c.html.as_str(), Some(c.text.as_str())).is_ok());
+        if copied {
+            self.ws.notify(NoticeLevel::Info, format!("Copied {what} as HTML: paste it into mail or a document"));
+        } else {
+            self.html_board = None;
+            ctx.copy_text(c.html);
+            self.ws.notify(
+                NoticeLevel::Info,
+                format!("Copied {what} as HTML source (plain text): this system's clipboard didn't take formatted text"),
+            );
+        }
+    }
+
     fn after_panel(&mut self, out: &PanelOut) {
         if let Some(p) = &out.open_side {
             self.open_side(p);
+        }
+        if let Some(p) = &out.copy_html {
+            self.clipboard_html = self.ws.copy_as_html(Some(p));
         }
         if out.skip_update {
             self.ws.skip_update();
@@ -675,6 +711,9 @@ impl eframe::App for QuireApp {
         }
         if let Some(text) = self.clipboard.take() {
             ui.ctx().copy_text(text);
+        }
+        if let Some(c) = self.clipboard_html.take() {
+            self.copy_html(ui.ctx(), c);
         }
         // QUIRE_TRACE=1 prints how long each frame's UI work took.
         if std::env::var_os("QUIRE_TRACE").is_some() {

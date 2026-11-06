@@ -117,6 +117,7 @@ cargo build --release -p quire-desktop --no-default-features   # ~40 MiB instead
 | Spelling | Red underlines, suggestions on right-click, a personal dictionary; English built in, other Hunspell dictionaries picked up from your system |
 | Quick capture | Ctrl+Alt+Space (⌘⇧Space) from any app adds a timestamped line to today's note; `quire-cli capture` too |
 | PDF export | Ctrl+Alt+E or `quire-cli pdf`: a typeset PDF with callouts, code, tables, images, math and diagrams |
+| Copy as HTML | "Copy as HTML" (command palette, or right-click a note or tab) puts the note, or the selected part, on the clipboard as formatted HTML with the Markdown as plain text, so a paste into mail or a document keeps headings, callouts, tables, drawings, and (full edition) math and diagrams as pictures. Images point at the files on this computer (`file://`); links to other notes become their text. `quire-cli html <vault> <note>` prints the same HTML |
 | Graph view | Your notes and links as a map, around the open note or the whole vault (Ctrl+G) |
 | Split & fold | Two notes side by side (Ctrl+Alt+\\, or right-click → Open to the side), and fold any section under its heading |
 | Editor | Fast virtualized editor: draws only visible lines, stays smooth on 10 MB / 100k-line files. Multiple cursors (Ctrl+D, Ctrl+Shift+L, Ctrl+Alt+↑/↓, Alt+click), word/line selection by double/triple click, IME input. Classic egui editor kept as a fallback |

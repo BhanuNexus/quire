@@ -6,6 +6,7 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ### Added
 - **Word-count goal:** a `goal: 1500` property shows your progress in the status bar (`640 / 1,500 words · 43%`), and "✓ goal" once you get there. Word and character counts there are now grouped by thousands (#16).
+- **Copy as HTML:** the command palette, and right-click on a note or a tab, copy the note (or the selected part) as formatted HTML, with the Markdown as plain text, so it pastes into mail or a document with its formatting: callouts, tables, drawings, and in the full edition math and diagrams as pictures. Images and recordings point at their files on this computer (`file://`); links to other notes become their text. Where the clipboard takes plain text only, the HTML source is copied and Quire says so. `quire-cli html <vault> <note>` prints the same HTML (#17).
 
 ## [0.10.0] - 2026-11-06
 

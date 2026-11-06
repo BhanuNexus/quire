@@ -25,7 +25,7 @@ pub(crate) fn note(web: &Web, ix: &Index, hidden: &[String], path: &NotePath, sr
     let library = quire_app::citations::vault_library(vault);
     let note = |p: &NotePath| Guard::listed(hidden, p).then(|| note_href(p));
     let file = |p: &NotePath| Guard::listed(hidden, p).then(|| file_href(p));
-    let tag = |t: &str| format!("/tags/{}", url_path(t));
+    let tag = |t: &str| Some(format!("/tags/{}", url_path(t)));
     let r = render_note(vault, ix, &library, path, src, &Links { note: &note, file: &file, tag: &tag });
     let html = relative_links(hidden, path, &r.html);
     typeset(&html)
@@ -93,87 +93,8 @@ fn rewrite(hidden: &[String], from: &NotePath, value: &str) -> String {
     if frag.is_empty() { crate::html::esc(&href) } else { crate::html::esc(&format!("{href}#{frag}")) }
 }
 
-#[cfg(feature = "typeset")]
-fn unescape(s: &str) -> String {
-    s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replace("&amp;", "&")
-}
-
-/// An SVG with its width and height in points; `None` when it failed.
-#[cfg(feature = "typeset")]
-type Svg = Option<(String, f32, f32)>;
-
-/// Math and Mermaid as SVG images (full edition). Errors leave the source.
-#[cfg(feature = "typeset")]
+/// Math and Mermaid diagrams as SVG images (full edition); Quire Lite
+/// shows them as their source.
 fn typeset(html: &str) -> String {
-    use base64::Engine as _;
-    use std::collections::HashMap;
-    use std::fmt::Write as _;
-    use std::sync::{Mutex, OnceLock};
-    static CACHE: OnceLock<Mutex<HashMap<String, Svg>>> = OnceLock::new();
-    let cache = CACHE.get_or_init(Mutex::default);
-    let render = |key: String, f: &dyn Fn() -> Svg| {
-        if let Some(v) = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&key) {
-            return v.clone();
-        }
-        let v = f();
-        let mut c = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if c.len() > 2000 {
-            c.clear();
-        }
-        c.insert(key, v.clone());
-        v
-    };
-    let img = |class: &str, svg: &str, w: f32, h: f32, alt: &str| {
-        let data = base64::engine::general_purpose::STANDARD.encode(svg.as_bytes());
-        format!(
-            "<img class=\"{class}\" src=\"data:image/svg+xml;base64,{data}\" width=\"{}\" height=\"{}\" alt=\"{}\">",
-            (w * 4.0 / 3.0).round(),
-            (h * 4.0 / 3.0).round(),
-            crate::html::esc(alt)
-        )
-    };
-    let mut out = html.to_string();
-    for (open, display) in [("<span class=\"math math-display\">", true), ("<span class=\"math math-inline\">", false)] {
-        let mut done = String::with_capacity(out.len());
-        let mut rest = out.as_str();
-        while let Some(i) = rest.find(open) {
-            let Some(len) = rest[i + open.len()..].find("</span>") else { break };
-            let latex = unescape(&rest[i + open.len()..i + open.len() + len]);
-            done.push_str(&rest[..i]);
-            let key = format!("{display}{latex}");
-            let style = quire_typeset::MathStyle::default();
-            match render(key, &|| quire_typeset::math_svg(&latex, display, &style).ok().map(|r| (r.svg, r.width_pt, r.height_pt))) {
-                Some((svg, w, h)) => done.push_str(&img(if display { "math display" } else { "math" }, &svg, w, h, &latex)),
-                None => done.push_str(&rest[i..i + open.len() + len + 7]),
-            }
-            rest = &rest[i + open.len() + len + 7..];
-        }
-        done.push_str(rest);
-        out = done;
-    }
-    let open = "<pre><code class=\"language-mermaid\">";
-    let mut done = String::with_capacity(out.len());
-    let mut rest = out.as_str();
-    while let Some(i) = rest.find(open) {
-        let Some(len) = rest[i..].find("</code></pre>") else { break };
-        let source = unescape(&rest[i + open.len()..i + len]);
-        done.push_str(&rest[..i]);
-        let svg = render(format!("mermaid{source}"), &|| quire_typeset::diagram_svg(&source, false).ok().map(|s| (s, 0.0, 0.0)));
-        match svg {
-            Some((svg, ..)) => {
-                let data = base64::engine::general_purpose::STANDARD.encode(svg.as_bytes());
-                let _ = write!(done, "<figure class=\"diagram\"><img src=\"data:image/svg+xml;base64,{data}\" alt=\"Diagram\"></figure>");
-            }
-            None => done.push_str(&rest[i..i + len + 13]),
-        }
-        rest = &rest[i + len + 13..];
-    }
-    done.push_str(rest);
-    done
-}
-
-/// Quire Lite shows math and diagrams as their source.
-#[cfg(not(feature = "typeset"))]
-fn typeset(html: &str) -> String {
-    html.to_string()
+    if cfg!(feature = "typeset") { quire_app::publish::typeset(html) } else { html.to_string() }
 }

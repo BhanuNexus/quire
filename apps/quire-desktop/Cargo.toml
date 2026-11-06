@@ -57,6 +57,8 @@ quire-pdf.workspace = true
 vello_cpu = { version = "0.2", default-features = false, features = ["std", "u8_pipeline"] }
 skrifa = { version = "0.44", default-features = false, features = ["std"] }
 base64 = "0.23"
+# "Copy as HTML" (#17): egui's clipboard takes text only.
+arboard.workspace = true
 
 [build-dependencies]
 winresource = "0.1"

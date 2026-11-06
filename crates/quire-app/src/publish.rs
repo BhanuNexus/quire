@@ -223,8 +223,8 @@ pub struct Links<'a> {
     pub note: &'a dyn Fn(&NotePath) -> Option<String>,
     /// An embedded file's URL (images, PDFs).
     pub file: &'a dyn Fn(&NotePath) -> Option<String>,
-    /// A tag's URL.
-    pub tag: &'a dyn Fn(&str) -> String,
+    /// A tag's URL; `None` leaves the tag as text.
+    pub tag: &'a dyn Fn(&str) -> Option<String>,
 }
 
 /// A note rendered to an HTML fragment.
@@ -297,14 +297,101 @@ pub fn render_note(
     let mut body = add_heading_ids(&html);
     if let Some(rec) = ix.get(path) {
         for t in &rec.tags {
+            let Some(href) = (links.tag)(t) else { continue };
             let from = format!("<span class=\"tag\">#{}</span>", escape_html(t));
-            let to = format!("<a class=\"tag\" href=\"{}\">#{}</a>", escape_html(&(links.tag)(t)), escape_html(t));
+            let to = format!("<a class=\"tag\" href=\"{}\">#{}</a>", escape_html(&href), escape_html(t));
             body = body.replace(&from, &to);
         }
     }
     // Raw HTML in the note is cleaned to an allow-list: no `<meta>`
     // refresh, `<base>`, forms, frames or scripts (0.10.1 security review #4).
     RenderedNote { html: crate::sanitize::note_html(&body), files: embedded.into_inner(), private_links: private.get() }
+}
+
+#[cfg(feature = "typeset")]
+fn unescape(s: &str) -> String {
+    s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replace("&amp;", "&")
+}
+
+/// An SVG with its width and height in points; `None` when it failed.
+#[cfg(feature = "typeset")]
+type Svg = Option<(String, f32, f32)>;
+
+/// Math and Mermaid diagrams in rendered note HTML as SVG images (full
+/// edition), for the web app and "Copy as HTML". Errors leave the source.
+#[cfg(feature = "typeset")]
+pub fn typeset(html: &str) -> String {
+    use base64::Engine as _;
+    use std::collections::HashMap;
+    use std::fmt::Write as _;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<String, Svg>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(Mutex::default);
+    let render = |key: String, f: &dyn Fn() -> Svg| {
+        if let Some(v) = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&key) {
+            return v.clone();
+        }
+        let v = f();
+        let mut c = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if c.len() > 2000 {
+            c.clear();
+        }
+        c.insert(key, v.clone());
+        v
+    };
+    let img = |class: &str, svg: &str, w: f32, h: f32, alt: &str| {
+        let data = base64::engine::general_purpose::STANDARD.encode(svg.as_bytes());
+        format!(
+            "<img class=\"{class}\" src=\"data:image/svg+xml;base64,{data}\" width=\"{}\" height=\"{}\" alt=\"{}\">",
+            (w * 4.0 / 3.0).round(),
+            (h * 4.0 / 3.0).round(),
+            escape_html(alt)
+        )
+    };
+    let mut out = html.to_string();
+    for (open, display) in [("<span class=\"math math-display\">", true), ("<span class=\"math math-inline\">", false)] {
+        let mut done = String::with_capacity(out.len());
+        let mut rest = out.as_str();
+        while let Some(i) = rest.find(open) {
+            let Some(len) = rest[i + open.len()..].find("</span>") else { break };
+            let latex = unescape(&rest[i + open.len()..i + open.len() + len]);
+            done.push_str(&rest[..i]);
+            let key = format!("{display}{latex}");
+            let style = quire_typeset::MathStyle::default();
+            match render(key, &|| quire_typeset::math_svg(&latex, display, &style).ok().map(|r| (r.svg, r.width_pt, r.height_pt))) {
+                Some((svg, w, h)) => done.push_str(&img(if display { "math display" } else { "math" }, &svg, w, h, &latex)),
+                None => done.push_str(&rest[i..i + open.len() + len + 7]),
+            }
+            rest = &rest[i + open.len() + len + 7..];
+        }
+        done.push_str(rest);
+        out = done;
+    }
+    let open = "<pre><code class=\"language-mermaid\">";
+    let mut done = String::with_capacity(out.len());
+    let mut rest = out.as_str();
+    while let Some(i) = rest.find(open) {
+        let Some(len) = rest[i..].find("</code></pre>") else { break };
+        let source = unescape(&rest[i + open.len()..i + len]);
+        done.push_str(&rest[..i]);
+        let svg = render(format!("mermaid{source}"), &|| quire_typeset::diagram_svg(&source, false).ok().map(|s| (s, 0.0, 0.0)));
+        match svg {
+            Some((svg, ..)) => {
+                let data = base64::engine::general_purpose::STANDARD.encode(svg.as_bytes());
+                let _ = write!(done, "<figure class=\"diagram\"><img src=\"data:image/svg+xml;base64,{data}\" alt=\"Diagram\"></figure>");
+            }
+            None => done.push_str(&rest[i..i + len + 13]),
+        }
+        rest = &rest[i + len + 13..];
+    }
+    done.push_str(rest);
+    done
+}
+
+/// Quire Lite shows math and diagrams as their source.
+#[cfg(not(feature = "typeset"))]
+pub fn typeset(html: &str) -> String {
+    html.to_string()
 }
 
 fn tag_anchor(t: &str) -> String {
@@ -400,7 +487,7 @@ pub fn publish(vault: &Vault, ix: &Index, out: &Path, site_title: &str, which: S
     let library = crate::citations::vault_library(vault);
     let note_url = |p: &NotePath| url.get(p).cloned();
     let file_url = |f: &NotePath| Some(format!("files/{}", render::encode_url(f.as_str())));
-    let tag_url = |t: &str| format!("tags.html#{}", tag_anchor(t));
+    let tag_url = |t: &str| Some(format!("tags.html#{}", tag_anchor(t)));
     let links = Links { note: &note_url, file: &file_url, tag: &tag_url };
     for rec in &chosen {
         let rendered = render_note(vault, ix, &library, &rec.path, ix.source(&rec.path).unwrap_or_default(), &links);

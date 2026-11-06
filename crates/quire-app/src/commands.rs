@@ -19,6 +19,7 @@ pub enum Command {
     RenameNote,
     DeleteNote,
     ExportHtml,
+    CopyAsHtml,
     ExportPdf,
     OpenVault,
     Scratchpad,
@@ -304,6 +305,7 @@ commands! {
     RenameNote,       "Note",   "Rename note (updates links)…",   [bare("F2")], true;
     DeleteNote,       "Note",   "Move note to trash",             [], true;
     ExportHtml,       "Note",   "Export as HTML",                 [cmd_shift("E")], true;
+    CopyAsHtml,       "Note",   "Copy as HTML",                   [], true;
     ExportPdf,        "Note",   "Export as PDF",                  [cmd_alt("E")], true;
     OpenVault,        "Note",   "Open vault folder…",             [cmd_shift("O")], false;
     Scratchpad,       "Note",   "Open scratchpad",                [alt("S")], false;

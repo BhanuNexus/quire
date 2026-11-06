@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Working with notes: vault-wide replace, export, PDF, publish, version
-//! history and the calculator. Frozen after F0.
+//! Working with notes: vault-wide replace, export, PDF, publish, HTML for
+//! pasting, version history and the calculator. Frozen after F0 (`html`
+//! came with issue #17).
 
 use quire_app::find::{FindOptions, compile, replace_in_string};
 use quire_app::intel::{Calculator, format_number};
@@ -35,6 +36,12 @@ pub(crate) const COMMANDS: &[CliCommand] = &[
         usage: "  quire-cli publish   <vault> <out> [--all] [--title T]
                       publish notes marked `publish: true` (or --all) as a static website",
         run: publish,
+    },
+    CliCommand {
+        name: "html",
+        rank: 19,
+        usage: "  quire-cli html      <vault> <note>          print a note as HTML (as \"Copy as HTML\" copies it)",
+        run: html,
     },
     CliCommand { name: "history", rank: 16, usage: "  quire-cli history   <vault> <note>          saved versions of a note", run: history },
     CliCommand { name: "calc", rank: 17, usage: "  quire-cli calc      <expr>                  inline calculator", run: calc },
@@ -76,6 +83,18 @@ fn export(args: &[String]) -> Result<(), String> {
     let out = args.get(3).cloned().unwrap_or_else(|| format!("{}.html", p.stem()));
     std::fs::write(&out, html).map_err(|e| e.to_string())?;
     println!("wrote {out}");
+    Ok(())
+}
+
+/// The note as an HTML fragment on stdout, rendered as "Copy as HTML" does
+/// (`export` writes a standalone page to a file instead).
+fn html(args: &[String]) -> Result<(), String> {
+    let arg = |i: usize| super::arg(args, i);
+    let (vault, svc, _) = load(arg(1)?)?;
+    let ix = svc.read();
+    let p = find_note(&ix, arg(2)?)?;
+    let library = quire_app::citations::vault_library(&vault);
+    print!("{}", quire_app::copy_html::render(&vault, &ix, &library, &p, ix.source(&p).unwrap_or_default()));
     Ok(())
 }
 

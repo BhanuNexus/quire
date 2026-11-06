@@ -100,6 +100,9 @@ pub enum UiRequest {
     Graph,
     /// Put this text on the clipboard.
     Copy(String),
+    /// Put this HTML on the clipboard, with its Markdown as the plain text
+    /// ("Copy as HTML"). The frontend says whether it went as HTML.
+    CopyHtml(crate::copy_html::CopiedHtml),
     /// The quick-capture box.
     Capture,
     /// A 0.9 feature's UI (a panel tab, a sidebar tab, a dialog); the
@@ -1112,6 +1115,31 @@ impl Workspace {
         }
     }
 
+    /// "Copy as HTML" (issue #17): the selection in the active note, or the
+    /// whole note; or the note at `path` (from a note's menu), as it is in
+    /// its tab if open. Rendered as published sites and the web app render
+    /// notes: see [`crate::copy_html`].
+    pub fn copy_as_html(&self, path: Option<&NotePath>) -> Option<crate::copy_html::CopiedHtml> {
+        let doc = match path {
+            Some(p) => self.docs.iter().find(|d| d.path.as_ref() == Some(p)),
+            None => self.active_doc(),
+        };
+        let (src, selection) = match doc {
+            Some(d) if path.is_none() && !d.selection().is_empty() => (d.buffer().slice(d.selection().range()), true),
+            Some(d) => (d.text().to_string(), false),
+            None => (self.vault.as_ref()?.read(path?).ok()?, false),
+        };
+        let note = path.cloned().or_else(|| doc.and_then(|d| d.path.clone()));
+        let html = match &self.vault {
+            Some(vault) => {
+                let note = note.unwrap_or_else(|| NotePath::new(format!("{}.md", doc.map(Document::title).unwrap_or_default())));
+                crate::copy_html::render(vault, &self.index.read(), &self.features.citations.library, &note, &src)
+            }
+            None => crate::copy_html::render_without_vault(&crate::citations::render_source(self, &src)),
+        };
+        Some(crate::copy_html::CopiedHtml { html, text: crate::copy_html::plain_text(&src), selection })
+    }
+
     // ------------------------------------------------------------------ editing
 
     fn edit_active(&mut self, f: impl FnOnce(&Document) -> Option<Transaction>) -> bool {
@@ -1351,6 +1379,7 @@ impl Workspace {
             C::ExportHtml => {
                 self.export_active_html();
             }
+            C::CopyAsHtml => return self.copy_as_html(None).map(UiRequest::CopyHtml),
             #[cfg(feature = "typeset")]
             C::ExportPdf => self.export_active_pdf(),
             #[cfg(not(feature = "typeset"))]

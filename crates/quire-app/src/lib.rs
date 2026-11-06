@@ -14,6 +14,7 @@ pub mod canvas_state;
 pub mod capture;
 pub mod citations;
 pub mod commands;
+pub mod copy_html;
 pub mod decor;
 pub mod device;
 pub mod document;

@@ -81,6 +81,9 @@ similar = "3"
 ureq = { version = "3", features = ["json", "platform-verifier"] }
 eframe = { version = "0.37", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "links", "glow", "x11", "wayland", "persistence"] }
 egui = "0.37"
+# "Copy as HTML": the system clipboard with HTML and a plain-text fallback.
+# Already in the tree through egui-winit (eframe's "clipboard"), same version.
+arboard = { version = "3.7", default-features = false }
 egui_commonmark = { version = "0.26", default-features = false, features = ["pulldown_cmark"] }
 rfd = "0.17"
 regex = "1"
