@@ -78,6 +78,8 @@ pub struct NavState {
     next_hidden: u64,
     /// Modified and created times for sorting, per index version.
     pub(crate) times: browse::TimesCache,
+    /// 0.11: a macro chosen in the palette, for the app to run.
+    pub run_macro: Option<String>,
 }
 
 impl NavState {
@@ -165,10 +167,18 @@ pub(crate) fn run(ws: &mut Workspace, cmd: Command) -> Option<UiRequest> {
             let _ = ws.settings.save();
         }
         Command::OpenHomepage => open_homepage(ws, true),
-        Command::ChooseTheme => return Some(UiRequest::Feature(cmd)),
+        // 0.11 editor: Settings → Commands, the attachment picker and the toolbar's keyboard focus are UI.
+        Command::ChooseTheme | Command::CustomizeCommands | Command::InsertAttachment | Command::FocusToolbar => {
+            return Some(UiRequest::Feature(cmd));
+        }
         Command::GitCommitNow => crate::git::commit_now(ws),
         Command::GitPull => crate::git::pull(ws),
         Command::GitPush => crate::git::push(ws),
+        // 0.11 editor (formatting commands run in `format_cmds` before this).
+        Command::ToggleToolbar => {
+            ws.settings.toolbar.show = !ws.settings.toolbar.show;
+            let _ = ws.settings.save();
+        }
         _ => ws.notify(NoticeLevel::Info, format!("{} isn't available yet", cmd.info().title.trim_end_matches('…'))),
     }
     None

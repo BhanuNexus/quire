@@ -13,6 +13,10 @@ use crate::workspace::NoticeLevel;
 pub fn export_pdf(vault: &Vault, title: &str, text: &str, out: &NotePath) -> Result<String, String> {
     let load = |target: &str| -> Option<Vec<u8>> {
         let t = target.split(['|', '#']).next().unwrap_or(target).trim();
+        // 0.11: an Excalidraw drawing goes in as its SVG picture (as in HTML export).
+        if let Some(d) = drawing(vault, t) {
+            return crate::drawings::svg(vault, &d, &|_| true).map(String::into_bytes);
+        }
         let p = vault.resolve_file(t).or_else(|| Some(NotePath::new(t.trim_start_matches("./"))))?;
         vault.storage().read_bytes(&p).ok()
     };
@@ -27,6 +31,22 @@ pub fn export_pdf(vault: &Vault, title: &str, text: &str, out: &NotePath) -> Res
     let bytes = quire_typeset::markdown_pdf(&text, &opts).map_err(|e| e.to_string())?;
     vault.storage().write_bytes_atomic(out, &bytes).map_err(|e| e.to_string())?;
     Ok(vault.storage().absolute(out).map_or_else(|| out.to_string(), |p| p.display().to_string()))
+}
+
+/// The drawing `![[target]]` embeds: `Plan.excalidraw` is the file of
+/// that name or the drawing note `Plan.excalidraw.md`.
+fn drawing(vault: &Vault, target: &str) -> Option<NotePath> {
+    let lower = target.to_ascii_lowercase();
+    if !quire_canvas::excalidraw::is_drawing(&lower) {
+        return None;
+    }
+    vault
+        .resolve_file(target)
+        .or_else(|| {
+            let md = std::path::Path::new(&lower).extension().is_some_and(|e| e.eq_ignore_ascii_case("md"));
+            (!md).then(|| vault.resolve_file(&format!("{target}.md"))).flatten()
+        })
+        .filter(|p| quire_canvas::excalidraw::is_drawing(p.as_str()))
 }
 
 impl Workspace {
@@ -89,5 +109,20 @@ mod tests {
         let path = export_pdf(&vault, "Report", text, &out).unwrap();
         let bytes = std::fs::read(path).unwrap();
         assert!(bytes.starts_with(b"%PDF-") && bytes.len() > 1000);
+    }
+
+    /// 0.11: `![[Plan.excalidraw]]` is the drawing's picture, text and all.
+    #[test]
+    fn drawings_are_pictures_in_pdf() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::open_local(dir.path()).unwrap();
+        let drawing = include_str!("../../quire-canvas/testdata/excalidraw/Plain.excalidraw.md");
+        vault.write(&NotePath::new("Sketches/Plan.excalidraw.md"), drawing).unwrap();
+        let out = NotePath::new("Exports/Report.pdf");
+        let path = export_pdf(&vault, "Report", "# Report\n\n![[Plan.excalidraw]]\n", &out).unwrap();
+        let pdf = quire_pdf::PdfDoc::open(std::fs::read(path).unwrap()).unwrap();
+        let text = pdf.page_text(0).unwrap().text();
+        assert!(text.contains("Idea"), "the drawing's text is in the PDF: {text}");
+        assert!(!text.contains("Plan.excalidraw"), "not the missing-picture box: {text}");
     }
 }

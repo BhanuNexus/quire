@@ -4,9 +4,11 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+Quire 0.11: tasks as notes with time tracking and pomodoros, boards you arrange (manual order, swimlanes, colours) and Bases maps; locked folders encrypted at rest; a Connections view to audit, limit and revoke each agent; and a formatting toolbar, your own shortcuts and macros, and smoother typing.
+
 ### Added
 
-#### Locked folders: encryption at rest, per folder (0.11 security)
+#### Locked folders: encryption at rest, per folder
 - **Lock a folder** ("Lock a folder (encrypt it)…" in the command palette, or `quire-cli lock <vault> <folder>`): its notes and files are stored encrypted on disk (XChaCha20-Poly1305, a key wrapped by your passphrase with Argon2id, the crypto Quire Sync uses), so a stolen disk, your cloud folder or a backup holds only ciphertext. The rest of the vault stays plain Markdown. A recovery key is shown once; it opens the folder if you forget the passphrase. File names stay visible. The format is documented ([docs/formats/locked-folders.md](docs/formats/locked-folders.md)) so other tools can read it.
 - **Unlock** with the passphrase (or the recovery key) in the app: notes are decrypted into memory only and saved encrypted; their history is encrypted too. Locked notes show 🔒 in the sidebar and open to a lock screen. Folders lock again on demand (Ctrl+Alt+Shift+L, or the 🔓 item in the status bar), after 15 minutes without use (Settings: `[security] lock_after_idle_minutes`), and when Quire quits. "Unlock automatically on this computer" keeps the key in the system keychain, only when there is one.
 - **Search covers unlocked locked notes** (search and quick open) from an index kept in memory only; while locked, search says the folder wasn't searched.
@@ -14,16 +16,13 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 - **Quire Sync and sync folders carry the encrypted files**, so the sync engine never sees their text; another device unlocks with the same passphrase. Two devices editing one locked note offline keep both versions (encrypted files can't be merged).
 - Converting a folder (to locked or back, "Stop locking a folder…" / `quire-cli unlock --convert`) is safe to interrupt at any point and finishes when run again; plain originals are removed only after every encrypted copy was read back and compared. Change the passphrase with "Change a locked folder's passphrase…" or `quire-cli lock … --change-passphrase`; `quire-cli status <vault>` lists locked folders and unfinished conversions; `quire-cli unlock … --check | --cat NOTE` tests a passphrase or prints one note.
 
-#### Agent connections: audit, revoke, tags (0.11 security)
+#### Agent connections: audit, revoke, tags
 - **Settings → Agents → Connections** ("Agent connections…"): every agent that used the vault in the last 90 days and every app with a token, with when it was last used, its reads and writes, its waiting suggestions and what it may do in each zone. **Activity** shows its log (reads when read logging is on, writes, suggestions, your decisions), filterable.
 - **Revoke in one click:** an HTTP app's tokens are deleted; an MCP client on this computer or an external agent is marked revoked in the agent policy, so its next start is refused with a clear message and its reads are logged. Leaving out `--client` doesn't get around it.
 - **Limit a connection to tags or folders** (`allow_tags`, `allow_folders` in the agent policy): it sees nothing else, in any tool, resource, search snippet, backlink or answer.
 - **AI off for this vault** (Settings → Agents): no agent and no AI provider or on-device AI may use it. Turning it back on needs approval on your other devices.
 - **Skills from elsewhere:** `quire-cli skill install <dir> --from <file>` shows the skill's source, size, SHA-256 and first lines and installs only with `--yes`; inside a vault, agents get such a skill as untrusted data.
 
-### Changed
-- The agent policy's hard rules now also deny every path in a locked folder, every `.qenc` file and every key file, for agents and Quire's own background jobs.
-- Pasting or dropping a picture into a locked note is refused (it would be stored unencrypted in the attachments folder), and so is exporting a locked note to HTML or PDF (exports go to `Exports/` unencrypted); Copy as HTML still works.
 #### Task notes and time tracking
 - **Task notes, TaskNotes-style:** a note with `type: task` (or the `task` tag, as the TaskNotes plugin does) is a task with `status`, `priority`, `due`, `scheduled`, `contexts`, `projects`, `time_estimate` and `time_entries`. Quire reads TaskNotes' property names too (`timeEntries`, `timeEstimate`, `completedDate`, …) and keeps a note's own names when it writes, so a vault can move between the two. Statuses, done statuses, offered tags, the task folder and which names to write are set per vault (Settings → Planning, `[tasks]` in `.quire/shared/vault.toml`). Details: [docs/formats/tasks.md](docs/formats/tasks.md#task-notes).
 - **New task…** (Alt+N, "+ Task" in the agenda, or "New task…" in quick capture with what you typed): a task note with its properties in one dialog.
@@ -37,6 +36,29 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 - **Boards keep the order you drag cards into:** drag a card up or down in its column. The order is kept in the view (`order.<column>:`) or the base file (`cardOrder`), never by rewriting your notes. Format: [docs/formats/boards.md](docs/formats/boards.md).
 - **Swimlanes** (rows of columns by a second property, such as priority), **coloured columns** (right-click a column's heading), **cards you edit in place** (click status, priority or due), and **+ in each column** for a new note from the view's template, or a new task, with the column's value already set.
 - **Obsidian Bases:** `kanban` views are boards with all of the above; `groupBy` groups tables and cards; **map** views show notes with `lat`/`lng` or `location: [lat, lng]` as pins on a world outline you can pan and zoom (offline: Natural Earth's public-domain outline is built in, no map tiles are fetched). `layout: map` works in quire-views too. Quire's own keys in a `.base` file are written line by line: everything else in the file stays as it was.
+
+#### Editor: formatting toolbar and your own commands
+- **Formatting toolbar** (off by default: View: Formatting toolbar, or Settings → Toolbar): bold, italic, strikethrough, highlight, code, link, wikilink, a heading menu (H1–H6, paragraph), bulleted and numbered lists, task, quote, callout, table, math, footnote, horizontal rule, and insert image or attachment. Each button works on every cursor at once and is one undo step. Toggles read the Markdown: bolding bold text unbolds it, a caret in a word bolds the word, a caret in bold text unbolds it, and spaces at the edges of a selection stay outside the markers.
+- **Your own toolbar:** add any command or macro as a button, with an emoji or a few letters as its icon and a label; remove, reorder, separators, and back to the defaults (Settings → Toolbar).
+- **A small toolbar next to selected text** (Settings → Toolbar): bold, italic, strikethrough, highlight, code, math and links above the selection.
+- The toolbar from the keyboard: F10 moves to it, ← → move, Enter presses, Escape goes back to the note. Tooltips show each button's shortcut. It works in Vim's Insert mode too.
+- **Settings → Commands:** search every command, change its shortcuts (or add a second one, remove them, reset one or all). Shortcuts are checked against other commands and against what Windows, macOS and Linux keep for themselves (⌘Q, Alt+F4, Ctrl+Alt+arrows…), with a warning where AltGr (Windows) or Option (macOS) would type a character instead. Ctrl is ⌘ on macOS, so the same settings work everywhere.
+- **Pinned commands** show first in the command palette.
+- **Macros:** a name and a list of commands run one after another, no scripting. A macro can have a shortcut, be pinned, be a toolbar button and is in the command palette. It stops at a command that opens a dialog.
+- New commands: Heading 4–6, Toggle bulleted list, Toggle numbered list, Insert link [text](url), Insert callout, Insert table, Toggle inline math, Toggle math block, Toggle code block, Insert footnote, Insert horizontal rule, Insert image or attachment, Formatting toolbar, Move focus to the formatting toolbar (F10), Customize commands and shortcuts.
+- **Mermaid diagrams pan and zoom** in notes and the preview: drag to move, Ctrl+wheel (or pinch) to zoom, double-click to reset, and a full-screen view. A diagram's source opens with its "Edit source" button.
+- **Excalidraw drawings in PDF export:** `![[Plan.excalidraw]]` is the drawing, with its text, in the PDF.
+- **Canvas cards:** links in cards are clickable (a `[[wikilink]]` opens the note, a web link the browser), and `$math$` in cards is typeset.
+
+### Changed
+- The agent policy's hard rules now also deny every path in a locked folder, every `.qenc` file and every key file, for agents and Quire's own background jobs.
+- Pasting or dropping a picture into a locked note is refused (it would be stored unencrypted in the attachments folder), and so is exporting a locked note to HTML or PDF (exports go to `Exports/` unencrypted); Copy as HTML still works.
+- Formatting shortcuts (Ctrl+B, Ctrl+I, Ctrl+1…, Ctrl+L, Ctrl+Shift+.) act on every cursor, read the Markdown around the selection, and wrap a selection over several lines line by line (after the list marker).
+- Typing in a long note is smoother: the Insights panel's outline and links follow the note once typing pauses and draw only the rows in view, the editor keeps its headings between frames, and indexing, the meaning index and background jobs run at the lowest thread priority on Windows, macOS and Linux. On the 100 KB test note a keystroke takes 4.7 ms instead of 5.7 (median; 95th percentile 6.8 instead of 9.0 ms), and the CI budget for the 95th percentile is now 10 ms (was 12).
+
+### Fixed
+- Vim: Ctrl+V starts Visual-block mode even with nothing on the clipboard (Quire now handles the copy, cut and paste keys itself, so the key reaches Vim in Normal and Visual mode; in Insert mode it still pastes).
+- Vim: Ctrl+Q, Vim's other key for Visual-block mode, no longer closes the window in Normal and Visual mode on Windows and Linux (elsewhere Ctrl+Q still quits; ⌘Q on macOS always does).
 
 ## [0.10.2] - 2026-11-06
 

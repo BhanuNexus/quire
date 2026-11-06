@@ -19,6 +19,8 @@ crossbeam-channel.workspace = true
 unicode-segmentation.workspace = true
 unicode-normalization.workspace = true
 chrono.workspace = true
+# 0.11: background threads at the lowest priority.
+thread-priority.workspace = true
 
 [lints]
 workspace = true

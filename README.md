@@ -112,10 +112,10 @@ cargo build --release -p quire-desktop --no-default-features   # ~41 MiB instead
 | Answers you can check | Ask says "Not found" when your notes don't answer; cites exact sentences; Save as note keeps quotes as footnotes and flags them when the cited text changes. Staleness digest, contradictions (Preview), thinking timeline (Preview) |
 | Planning | Tasks with dates, repeats and reminders (Obsidian Tasks emoji and Dataview fields), also while Quire is closed (a per-user job runs `quire-cli remind`), Agenda (Alt+A), Calendar, weekly/monthly/yearly notes, flashcards (FSRS, Ctrl+Alt+R), templates with questions |
 | Task notes & time | A note per task (TaskNotes' property names read and kept) with status, priority, contexts, projects and estimates; New task… (Alt+N). A timer on any task (Ctrl+Alt+T, the agenda, the status bar, `quire-cli tasks start`), pomodoros with notifications, time entries in the note's front matter, and a "time this week" report. The agenda shows task-note cards, a board by status and a calendar |
-| Canvas & drawing | `.canvas` files (JSON Canvas) with cards (rendered like the preview), connections and groups (Ctrl+Alt+C); pen, highlighter and shapes on a canvas or as a sketch in a note, saved as SVG. Excalidraw drawings (`.excalidraw`, `.excalidraw.md`) show as pictures in notes, the preview, canvases and HTML export |
+| Canvas & drawing | `.canvas` files (JSON Canvas) with cards (rendered like the preview), connections and groups (Ctrl+Alt+C); pen, highlighter and shapes on a canvas or as a sketch in a note, saved as SVG. Links in cards open notes and web pages. Excalidraw drawings (`.excalidraw`, `.excalidraw.md`) show as pictures in notes, the preview, canvases, HTML and PDF export |
 | PDFs & citations | PDF viewer with highlights kept in a Markdown note (full edition; Lite shows the text). PDF pages are searchable ("paper.pdf p. 3"). `[@key]` citations from a BibTeX library, rendered in preview, HTML, websites and PDF export |
 | Vim & themes | Vim keys (Normal, Insert, Visual and Visual-block, text objects, registers, macros, marks, `:s`), bundled and custom themes, a Git tab |
-| Math & diagrams | `$x^2$`, `$$ … $$` and ```` ```mermaid ```` render in place (Typst + a pure-Rust Mermaid renderer, no browser), in the preview and in PDFs |
+| Math & diagrams | `$x^2$`, `$$ … $$` and ```` ```mermaid ```` render in place (Typst + a pure-Rust Mermaid renderer, no browser), in the preview, canvas cards and PDFs. Diagrams pan (drag) and zoom (Ctrl+wheel), and open full screen |
 | Callouts & paragraph links | Obsidian callouts (`> [!tip] Title`) as coloured boxes everywhere; `[[Note#^id]]` links to a paragraph; Ctrl+Alt+L copies one |
 | Spelling | Red underlines, suggestions on right-click, a personal dictionary; English built in, other Hunspell dictionaries picked up from your system |
 | Quick capture | Ctrl+Alt+Space (⌘⇧Space) from any app adds a timestamped line to today's note; `quire-cli capture` too |
@@ -127,6 +127,8 @@ cargo build --release -p quire-desktop --no-default-features   # ~41 MiB instead
 | Writing | Live Markdown styling (heading sizes, bold, code, quotes, dimmed syntax), focus mode, preview pane, autosave with no save dialogs, scratchpad. A `goal: 1500` property shows your progress in the status bar (`640 / 1,500 words · 43%`) |
 | Find & replace | In-note bar (Ctrl+F / Ctrl+H) with match case, whole word, regex and `$1` captures; vault-wide replace (Ctrl+Shift+R) with a per-note preview you can untick |
 | Images & files | Paste a screenshot (Ctrl+V) or drop files: they're saved to `attachments/` and embedded; images show inline under the line and in the preview. Pasting a URL over selected text makes a link |
+| Formatting toolbar | Off by default (View: Formatting toolbar): bold, italic, strikethrough, highlight, code, links, headings, lists, task, quote, callout, table, math, footnote, rule, attachments, on every cursor, one undo step each, and bolding bold text unbolds it. Add any command or macro as a button with your own icon; a small toolbar next to selected text if you like; F10 for the keyboard |
+| Your commands | Settings → Commands: change any shortcut (conflicts checked for Windows, macOS and Linux, AltGr included), pin commands to the top of the palette, and macros: a list of commands under one name, with a shortcut or a toolbar button |
 | Smart editing | Type `/` for a menu of headings, lists, checklists, code, tables, views, dates and your templates; `#` suggests tags you already use. List/task/quote continuation on Enter, Tab/Shift-Tab list indent, toggle checklist, wrap selection, heading levels, table auto-format |
 | Inline intelligence | `12 * 4 =` + Enter → result (variables, `ans`, `%`, functions), `@tomorrow` / `@next friday` / `@in 3 days` → `[[2026-11-02]]` |
 | Linking | Type `[[` for a list of notes to link (or a new one). `[[wikilinks]]`, `[[note#heading|alias]]`, embeds, click/Alt+Enter to follow, unresolved links create notes, F2 rename rewrites every link |
@@ -175,6 +177,7 @@ cargo build --release -p quire-desktop --no-default-features   # ~41 MiB instead
 | Ctrl+Alt+R | Review flashcards | Ctrl+Alt+C | New canvas |
 | Ctrl+Alt+Shift+L | Lock locked folders now | | |
 | Alt+N | New task | Ctrl+Alt+T | Start / stop the timer on this task |
+| F10 | Formatting toolbar (← → Enter, Esc back) | Ctrl+/ | All shortcuts (change them in Settings → Commands) |
 
 ## Views
 

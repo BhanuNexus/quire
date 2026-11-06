@@ -97,7 +97,10 @@ impl IndexService {
             let sem_tx = sem_tx.clone();
             std::thread::Builder::new()
                 .name("quire-index".into())
-                .spawn(move || run(&rx, &index, &shared, &sem_tx))
+                .spawn(move || {
+                    crate::background::lower_priority();
+                    run(&rx, &index, &shared, &sem_tx);
+                })
                 .expect("spawn index worker")
         };
         let sem_worker = {
@@ -107,7 +110,10 @@ impl IndexService {
             let cfg = Arc::clone(&sem_config);
             std::thread::Builder::new()
                 .name("quire-semantic".into())
-                .spawn(move || run_semantic(&sem_rx, &index, &shared, &semantic, &cfg))
+                .spawn(move || {
+                    crate::background::lower_priority();
+                    run_semantic(&sem_rx, &index, &shared, &semantic, &cfg);
+                })
                 .expect("spawn semantic worker")
         };
         Self { index, tx, shared, worker: Some(worker), semantic, sem_tx, sem_worker: Some(sem_worker), sem_config }
@@ -240,6 +246,7 @@ fn parse_parallel(vault: &Vault, paths: &[NotePath], shared: &Shared) -> Vec<Par
             .chunks(chunk)
             .map(|part| {
                 s.spawn(move || {
+                    crate::background::lower_priority();
                     part.iter()
                         .filter_map(|p| {
                             let src = vault.read(p).ok()?;

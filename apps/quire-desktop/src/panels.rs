@@ -1045,15 +1045,84 @@ pub(crate) fn surface_insights(ui: &mut egui::Ui, ws: &Workspace, path: &NotePat
     });
 }
 
-pub(crate) fn insights(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> PanelOut {
+/// 0.11: the Insights panel's outline and links, kept between frames.
+///
+/// They follow the note once typing pauses ([`SETTLE`]), not on every
+/// keystroke, and only the rows in view are laid out and drawn: a 100 KB
+/// note has about a thousand of them.
+#[derive(Default)]
+pub(crate) struct InsightsRows {
+    /// (note, revision, index version) shown, and the latest seen with when it was first seen.
+    shown: Option<(quire_app::DocId, u64, u64)>,
+    seen: Option<((quire_app::DocId, u64, u64), std::time::Instant)>,
+    outline: std::rc::Rc<Vec<quire_app::markdown::Heading>>,
+    outgoing: std::rc::Rc<Vec<(String, Option<NotePath>)>>,
+    /// Where each link goes in the wrapped list, for a panel width.
+    links_at: Option<(f32, Vec<egui::Rect>, f32)>,
+}
+
+/// How long typing must pause before the outline and links follow it.
+const SETTLE: std::time::Duration = std::time::Duration::from_millis(300);
+
+impl InsightsRows {
+    /// Bring the rows up to date when the note changed and typing paused
+    /// (another note: at once).
+    fn refresh(&mut self, ws: &Workspace, ctx: &egui::Context) {
+        let Some(doc) = ws.active_doc() else { return };
+        let key = (doc.id, doc.revision(), ws.index().version());
+        let now = std::time::Instant::now();
+        if self.seen.is_none_or(|(k, _)| k != key) {
+            self.seen = Some((key, now));
+        }
+        if self.shown == Some(key) {
+            return;
+        }
+        let since = self.seen.map_or(SETTLE, |(_, t)| now.duration_since(t));
+        let other_note = self.shown.is_none_or(|(id, _, _)| id != doc.id);
+        if other_note || since >= SETTLE {
+            self.outline = std::rc::Rc::new(doc.outline());
+            self.outgoing = std::rc::Rc::new(ws.outgoing());
+            self.links_at = None;
+            self.shown = Some(key);
+        } else {
+            ctx.request_repaint_after(SETTLE.saturating_sub(since));
+        }
+    }
+}
+
+/// One clickable row of text in `r`, cut to fit.
+fn text_row(ui: &egui::Ui, r: egui::Rect, id: egui::Id, text: RichText, hover: egui::Color32) -> egui::Response {
+    let resp = ui.interact(r, id, egui::Sense::click());
+    let g = egui::WidgetText::from(text).into_galley(ui, Some(egui::TextWrapMode::Truncate), r.width(), egui::TextStyle::Body);
+    let pos = egui::pos2(r.left(), r.center().y - g.size().y / 2.0);
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        let line = egui::Rect::from_min_size(pos, g.size());
+        ui.painter().line_segment([line.left_bottom(), line.right_bottom()], egui::Stroke::new(1.0, hover));
+    }
+    ui.painter().galley(pos, g, hover);
+    resp
+}
+
+/// The range of `n` rows of height `h` from `top` that the clip rect shows.
+fn rows_in_view(ui: &egui::Ui, top: f32, h: f32, n: usize) -> std::ops::Range<usize> {
+    let clip = ui.clip_rect();
+    let first = ((clip.top() - top) / h).floor().max(0.0) as usize;
+    let last = (((clip.bottom() - top) / h).ceil().max(0.0) as usize).min(n);
+    first.min(last)..last
+}
+
+pub(crate) fn insights(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette, rows: &mut InsightsRows) -> PanelOut {
     let mut out = PanelOut::default();
-    let Some(doc) = ws.active_doc() else {
+    if ws.active_doc().is_none() {
         ui.label(RichText::new("Open a note to see its outline, backlinks and related notes.").color(pal.muted));
         return out;
-    };
-    let outline = doc.outline();
+    }
+    rows.refresh(ws, ui.ctx());
+    let doc = ws.active_doc().expect("checked");
+    let outline = std::rc::Rc::clone(&rows.outline);
     let ins = ws.insights();
-    let outgoing = ws.outgoing();
+    let outgoing = std::rc::Rc::clone(&rows.outgoing);
     let mut jump_byte = None;
     let mut open_link: Option<(String, Option<String>)> = None;
     let mut open_path: Option<(NotePath, Option<usize>)> = None;
@@ -1072,13 +1141,19 @@ pub(crate) fn insights(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> 
         }
         if !outline.is_empty() {
             section(ui, pal, "Outline");
-            for h in &outline {
-                ui.horizontal(|ui| {
-                    ui.add_space(f32::from(h.level.saturating_sub(1)) * 12.0);
-                    if ui.link(RichText::new(&h.text).color(pal.text)).clicked() {
-                        jump_byte = Some(h.offset);
-                    }
-                });
+            // Only the rows in view are laid out (a long note has hundreds).
+            let row_h = ui.text_style_height(&egui::TextStyle::Body) + 6.0;
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h * outline.len() as f32), egui::Sense::hover());
+            for i in rows_in_view(ui, rect.top(), row_h, outline.len()) {
+                let h = &outline[i];
+                let indent = f32::from(h.level.saturating_sub(1)) * 12.0;
+                let r = egui::Rect::from_min_max(
+                    egui::pos2(rect.left() + indent, rect.top() + row_h * i as f32),
+                    egui::pos2(rect.right(), rect.top() + row_h * (i + 1) as f32),
+                );
+                if text_row(ui, r, egui::Id::unique(("quire-outline-row", i)), RichText::new(&h.text).color(pal.text), pal.text).clicked() {
+                    jump_byte = Some(h.offset);
+                }
             }
         }
 
@@ -1096,15 +1171,43 @@ pub(crate) fn insights(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> 
 
         if !outgoing.is_empty() {
             section(ui, pal, "Links");
-            ui.horizontal_wrapped(|ui| {
-                for (target, resolved) in &outgoing {
-                    let label = RichText::new(target).color(if resolved.is_some() { pal.accent } else { pal.muted });
-                    let r = ui.link(label).on_hover_text(if resolved.is_some() { "Open" } else { "Not created yet — click to create" });
-                    if r.clicked() {
-                        open_link = Some((target.clone(), None));
+            // Wrapped like words; where each goes is worked out once per width.
+            let width = ui.available_width();
+            let row_h = ui.text_style_height(&egui::TextStyle::Body) + 6.0;
+            if rows.links_at.as_ref().is_none_or(|(w, _, _)| (w - width).abs() > 0.5) {
+                let (mut x, mut y) = (0.0_f32, 0.0_f32);
+                let gap = ui.spacing().item_spacing.x * 2.0;
+                let mut at = Vec::with_capacity(outgoing.len());
+                for (target, _) in outgoing.iter() {
+                    let w = egui::WidgetText::from(RichText::new(target))
+                        .into_galley(ui, Some(egui::TextWrapMode::Truncate), width, egui::TextStyle::Body)
+                        .size()
+                        .x
+                        .min(width);
+                    if x > 0.0 && x + w > width {
+                        x = 0.0;
+                        y += row_h;
                     }
+                    at.push(egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, row_h)));
+                    x += w + gap;
                 }
-            });
+                rows.links_at = Some((width, at, y + row_h));
+            }
+            let (_, at, height) = rows.links_at.as_ref().expect("just set");
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(width, *height), egui::Sense::hover());
+            let clip = ui.clip_rect();
+            for (i, ((target, resolved), r)) in outgoing.iter().zip(at).enumerate() {
+                let r = r.translate(rect.min.to_vec2());
+                if !clip.intersects(r) {
+                    continue;
+                }
+                let color = if resolved.is_some() { pal.accent } else { pal.muted };
+                let id = egui::Id::unique(("quire-outgoing-link", i));
+                let tip = if resolved.is_some() { "Open" } else { "Not created yet — click to create" };
+                if text_row(ui, r, id, RichText::new(target).color(color), color).on_hover_text(tip).clicked() {
+                    open_link = Some((target.clone(), None));
+                }
+            }
         }
 
         if !ins.link_suggestions.is_empty() {
@@ -1471,21 +1574,28 @@ pub(crate) fn preview(ui: &mut egui::Ui, ws: &mut Workspace, cache: &mut CommonM
     egui::ScrollArea::vertical().id_salt("preview").auto_shrink([false, false]).show(ui, |ui| {
         egui::Frame::NONE.inner_margin(egui::Margin::symmetric(18, 22)).show(ui, |ui| {
             let (text_color, dark, size) = (pal.text, pal.dark, ui.style().text_styles[&egui::TextStyle::Body].size);
+            let pal_c = *pal;
             let math = move |ui: &mut egui::Ui, src: &str, inline: bool| {
-                let job =
-                    match src.trim().strip_prefix("quire-diagram:").and_then(|n| n.parse::<usize>().ok()).and_then(|n| diagrams.get(n)) {
-                        Some(source) => crate::typeset_ui::Job::Diagram { source: source.clone(), dark },
-                        None => crate::typeset_ui::Job::Math {
-                            latex: src.trim().to_string(),
-                            display: !inline,
-                            size: size.round() as u32,
-                            color: crate::typeset_ui::rgba(text_color),
-                        },
-                    };
+                let diagram = src.trim().strip_prefix("quire-diagram:").and_then(|n| n.parse::<usize>().ok()).and_then(|n| diagrams.get(n));
+                let job = match diagram {
+                    Some(source) => crate::typeset_ui::Job::Diagram { source: source.clone(), dark },
+                    None => crate::typeset_ui::Job::Math {
+                        latex: src.trim().to_string(),
+                        display: !inline,
+                        size: size.round() as u32,
+                        color: crate::typeset_ui::rgba(text_color),
+                    },
+                };
                 match crate::typeset_ui::request(ui.ctx(), &job) {
                     crate::typeset_ui::Out::Ready(p) => {
                         let scale = (ui.available_width() / p.size.x).min(1.0);
-                        ui.image((p.texture.id(), p.size * scale));
+                        if let Some(source) = diagram {
+                            // 0.11: drag, zoom and full screen.
+                            let (r, _) = ui.allocate_exact_size(p.size * scale, egui::Sense::hover());
+                            let _ = crate::diagram_ui::show(ui, r, &p, source, &pal_c, false);
+                        } else {
+                            ui.image((p.texture.id(), p.size * scale));
+                        }
                     }
                     crate::typeset_ui::Out::Pending => {
                         ui.label(RichText::new("…").weak());

@@ -86,6 +86,8 @@ impl Overlay {
 #[derive(Clone)]
 enum Action {
     Run(Command),
+    /// 0.11: a macro, by name.
+    Macro(String),
     Open(NotePath),
     OpenAt(NotePath, usize),
     Create(String),
@@ -132,6 +134,17 @@ fn items(ws: &Workspace, mode: Mode, query: &str, mac: bool) -> Vec<Item> {
     match mode {
         Mode::Commands => {
             let has_doc = ws.active_doc().is_some();
+            // 0.11: shortcuts as Settings → Commands has them, pinned
+            // commands and macros first, and macros as entries.
+            let keymap = quire_app::keymap::Keymap::new(&ws.settings.commands);
+            let pinned = &ws.settings.commands.pinned;
+            let pin_rank = |id: &str| pinned.iter().position(|p| p == id);
+            let boost = |id: &str| match pin_rank(id) {
+                Some(i) if query.trim().is_empty() => 10_000 - i as i32,
+                Some(_) => 10,
+                None => 0,
+            };
+            let pin_mark = |id: &str| if pin_rank(id).is_some() { "📌 " } else { "" };
             let mut v: Vec<(i32, Item)> = COMMANDS
                 .iter()
                 .filter(|c| has_doc || !c.needs_doc)
@@ -139,10 +152,18 @@ fn items(ws: &Workspace, mode: Mode, query: &str, mac: bool) -> Vec<Item> {
                 .filter(|c| c.command != Command::CommandPalette)
                 .filter_map(|c| {
                     let s = fuzzy_score(&format!("{} {}", c.category, c.title), query)?;
-                    let keys = c.keys.first().map(|k| k.label(mac)).unwrap_or_default();
-                    Some((s, Item { label: format!("{}: {}", c.category, c.title), detail: keys, action: Action::Run(c.command) }))
+                    let keys = keymap.label(c.command, mac);
+                    let label = format!("{}: {}{}", c.category, pin_mark(c.id), c.title);
+                    Some((s + boost(c.id), Item { label, detail: keys, action: Action::Run(c.command) }))
                 })
                 .collect();
+            for m in &ws.settings.commands.macros {
+                let id = quire_app::settings::commands::macro_id(&m.name);
+                let Some(s) = fuzzy_score(&format!("Macro {}", m.name), query) else { continue };
+                let keys = keymap.keys(&quire_app::keymap::Action::Macro(m.name.clone())).first().map(|k| k.label(mac)).unwrap_or_default();
+                let label = format!("Macro: {}{}", pin_mark(&id), m.name);
+                v.push((s + boost(&id), Item { label, detail: keys, action: Action::Macro(m.name.clone()) }));
+            }
             v.sort_by_key(|x| std::cmp::Reverse(x.0));
             v.into_iter().map(|(_, i)| i).collect()
         }
@@ -235,7 +256,8 @@ pub(crate) struct OverlayResult {
 /// Draw the active overlay. Returns what the app should do next.
 pub(crate) fn show(ctx: &egui::Context, overlay: &mut Overlay, ws: &mut Workspace, pal: &Palette) -> OverlayResult {
     let mut res = OverlayResult::default();
-    if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+    // Settings → Commands waiting for a shortcut takes Escape to cancel it.
+    if !crate::commands_ui::recording(ctx) && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
         res.close = true;
         return res;
     }
@@ -351,6 +373,7 @@ pub(crate) fn show(ctx: &egui::Context, overlay: &mut Overlay, ws: &mut Workspac
                 res.close = true;
                 match action {
                     Action::Run(c) => res.run = Some(c),
+                    Action::Macro(name) => ws.features.nav.run_macro = Some(name),
                     Action::Open(p) => {
                         res.jumped = ws.open_note(&p).is_some();
                     }
@@ -598,12 +621,13 @@ fn shortcuts(ctx: &egui::Context, query: &mut String, focused: &mut bool, ws: &W
             });
         });
         ui.label(
-            RichText::new("Everything is also in the command palette (Ctrl+K), including commands without a shortcut.")
+            RichText::new("Everything is also in the command palette (Ctrl+K), including commands without a shortcut. Change shortcuts in Settings → Commands.")
                 .size(12.0)
                 .color(pal.muted),
         );
         ui.separator();
         let q = query.trim().to_lowercase();
+        let keymap = quire_app::keymap::Keymap::new(&ws.settings.commands);
         // Two columns when there's room for a title and its keys side by side.
         let ncols = if w >= 720.0 { 2 } else { 1 };
         let col_w = (w - 24.0) / ncols as f32;
@@ -613,7 +637,7 @@ fn shortcuts(ctx: &egui::Context, query: &mut String, focused: &mut bool, ws: &W
                 for cat in CATEGORIES {
                     let cmds: Vec<_> = COMMANDS
                         .iter()
-                        .filter(|c| c.category == cat && !c.keys.is_empty() && ws.command_available(c.command))
+                        .filter(|c| c.category == cat && !keymap.keys_of(c.command).is_empty() && ws.command_available(c.command))
                         .filter(|c| q.is_empty() || c.title.to_lowercase().contains(&q) || cat.to_lowercase().contains(&q))
                         .collect();
                     if cmds.is_empty() {
@@ -632,7 +656,7 @@ fn shortcuts(ctx: &egui::Context, query: &mut String, focused: &mut bool, ws: &W
                                 ui.set_min_width(label_w);
                                 ui.add(egui::Label::new(RichText::new(c.title.trim_end_matches('…')).color(pal.text)).truncate());
                             });
-                            let keys: Vec<String> = c.keys.iter().map(|k| k.label(mac)).collect();
+                            let keys: Vec<String> = keymap.keys_of(c.command).iter().map(|k| k.label(mac)).collect();
                             ui.label(RichText::new(keys.join("  ·  ")).monospace().size(12.5).color(pal.accent));
                             ui.end_row();
                         }

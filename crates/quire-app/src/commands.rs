@@ -161,6 +161,25 @@ pub enum Command {
     ChangeFolderPassphrase,
     StopLockingFolder,
     AgentConnections,
+    // 0.11 editor: the formatting toolbar and command customisation
+    // (`format_cmds.rs`, `keymap.rs`).
+    Heading4,
+    Heading5,
+    Heading6,
+    BulletList,
+    NumberedList,
+    InsertMarkdownLink,
+    InsertCallout,
+    InsertTable,
+    InlineMath,
+    MathBlock,
+    CodeBlock,
+    InsertFootnote,
+    InsertRule,
+    InsertAttachment,
+    ToggleToolbar,
+    FocusToolbar,
+    CustomizeCommands,
 }
 
 /// Which workstream's module handles a 0.9 command (design §6.2).
@@ -226,7 +245,25 @@ impl Command {
             | Self::GitPull
             | Self::GitPush
             | Self::ToggleTwoPaneBrowser
-            | Self::OpenHomepage => Owner::Editor,
+            | Self::OpenHomepage
+            // 0.11 editor
+            | Self::Heading4
+            | Self::Heading5
+            | Self::Heading6
+            | Self::BulletList
+            | Self::NumberedList
+            | Self::InsertMarkdownLink
+            | Self::InsertCallout
+            | Self::InsertTable
+            | Self::InlineMath
+            | Self::MathBlock
+            | Self::CodeBlock
+            | Self::InsertFootnote
+            | Self::InsertRule
+            | Self::InsertAttachment
+            | Self::ToggleToolbar
+            | Self::FocusToolbar
+            | Self::CustomizeCommands => Owner::Editor,
             Self::NewCanvas | Self::InsertSketch | Self::InsertCitation | Self::ImportBibliography => Owner::Spatial,
             Self::LockFolder
             | Self::UnlockFolder
@@ -295,6 +332,8 @@ impl KeyCombo {
             "Minus" => "-",
             "Backspace" => "Backspace",
             "ArrowLeft" => "←",
+            "ArrowUp" => "↑",
+            "ArrowDown" => "↓",
             "ArrowRight" => "→",
             k => k,
         });
@@ -305,6 +344,8 @@ impl KeyCombo {
 #[derive(Debug, Clone, Copy)]
 pub struct CommandInfo {
     pub command: Command,
+    /// Stable name for settings (`"Bold"`): the variant's name.
+    pub id: &'static str,
     pub title: &'static str,
     pub category: &'static str,
     pub keys: &'static [KeyCombo],
@@ -315,7 +356,7 @@ pub struct CommandInfo {
 macro_rules! commands {
     ($( $cmd:ident, $cat:literal, $title:literal, [$($k:expr),*], $doc:literal; )*) => {
         pub static COMMANDS: &[CommandInfo] = &[
-            $( CommandInfo { command: Command::$cmd, title: $title, category: $cat, keys: &[$($k),*], needs_doc: $doc }, )*
+            $( CommandInfo { command: Command::$cmd, id: stringify!($cmd), title: $title, category: $cat, keys: &[$($k),*], needs_doc: $doc }, )*
         ];
     };
 }
@@ -464,11 +505,178 @@ commands! {
     ChangeFolderPassphrase,"Security","Change a locked folder's passphrase…", [], false;
     StopLockingFolder,"Security","Stop locking a folder (decrypt it)…", [], false;
     AgentConnections, "Agent",  "Agent connections…",             [], false;
+    // ---- 0.11 editor: new commands have no default keys (Settings → Commands binds them).
+    Heading4,         "Format", "Heading 4",                      [], true;
+    Heading5,         "Format", "Heading 5",                      [], true;
+    Heading6,         "Format", "Heading 6",                      [], true;
+    BulletList,       "Format", "Toggle bulleted list",           [], true;
+    NumberedList,     "Format", "Toggle numbered list",           [], true;
+    InsertMarkdownLink,"Format","Insert link [text](url)",        [], true;
+    InsertCallout,    "Format", "Insert callout",                 [], true;
+    InsertTable,      "Format", "Insert table",                   [], true;
+    InlineMath,       "Format", "Toggle inline math",             [], true;
+    MathBlock,        "Format", "Toggle math block",              [], true;
+    CodeBlock,        "Format", "Toggle code block",              [], true;
+    InsertFootnote,   "Format", "Insert footnote",                [], true;
+    InsertRule,       "Format", "Insert horizontal rule",         [], true;
+    InsertAttachment, "Format", "Insert image or attachment…",    [], true;
+    ToggleToolbar,    "View",   "Formatting toolbar",             [], false;
+    FocusToolbar,     "View",   "Move focus to the formatting toolbar", [bare("F10")], true;
+    CustomizeCommands,"App",    "Customize commands and shortcuts…", [], false;
 }
 
 impl Command {
     pub fn info(self) -> &'static CommandInfo {
         COMMANDS.iter().find(|c| c.command == self).expect("every command is registered")
+    }
+
+    /// The stable name settings use for this command (`"Bold"`).
+    pub fn id(self) -> &'static str {
+        self.info().id
+    }
+
+    /// The command named `id` in settings, if this version has it.
+    pub fn from_id(id: &str) -> Option<Self> {
+        COMMANDS.iter().find(|c| c.id == id).map(|c| c.command)
+    }
+}
+
+/// Key names a shortcut can use, as the frontend names them, with other
+/// spellings people type (`"="`, `"Up"`).
+const KEY_NAMES: &[(&str, &[&str])] = &[
+    ("ArrowUp", &["Up", "⏶"]),
+    ("ArrowDown", &["Down", "⏷"]),
+    ("ArrowLeft", &["Left", "←", "⏴"]),
+    ("ArrowRight", &["Right", "→", "⏵"]),
+    ("Escape", &["Esc"]),
+    ("Tab", &[]),
+    ("Backspace", &[]),
+    ("Enter", &["Return"]),
+    ("Space", &[" "]),
+    ("Insert", &[]),
+    ("Delete", &["Del"]),
+    ("Home", &[]),
+    ("End", &[]),
+    ("PageUp", &[]),
+    ("PageDown", &[]),
+    ("Comma", &[","]),
+    ("Minus", &["-"]),
+    ("Period", &["."]),
+    ("Plus", &["+"]),
+    ("Equals", &["=", "Equal"]),
+    ("Semicolon", &[";"]),
+    ("Colon", &[":"]),
+    ("Backslash", &["\\"]),
+    ("Slash", &["/"]),
+    ("OpenBracket", &["[", "BracketLeft"]),
+    ("CloseBracket", &["]", "BracketRight"]),
+    ("Backtick", &["`", "Grave", "Backquote"]),
+    ("Quote", &["'"]),
+    ("A", &[]),
+    ("B", &[]),
+    ("C", &[]),
+    ("D", &[]),
+    ("E", &[]),
+    ("F", &[]),
+    ("G", &[]),
+    ("H", &[]),
+    ("I", &[]),
+    ("J", &[]),
+    ("K", &[]),
+    ("L", &[]),
+    ("M", &[]),
+    ("N", &[]),
+    ("O", &[]),
+    ("P", &[]),
+    ("Q", &[]),
+    ("R", &[]),
+    ("S", &[]),
+    ("T", &[]),
+    ("U", &[]),
+    ("V", &[]),
+    ("W", &[]),
+    ("X", &[]),
+    ("Y", &[]),
+    ("Z", &[]),
+    ("0", &[]),
+    ("1", &[]),
+    ("2", &[]),
+    ("3", &[]),
+    ("4", &[]),
+    ("5", &[]),
+    ("6", &[]),
+    ("7", &[]),
+    ("8", &[]),
+    ("9", &[]),
+    ("F1", &[]),
+    ("F2", &[]),
+    ("F3", &[]),
+    ("F4", &[]),
+    ("F5", &[]),
+    ("F6", &[]),
+    ("F7", &[]),
+    ("F8", &[]),
+    ("F9", &[]),
+    ("F10", &[]),
+    ("F11", &[]),
+    ("F12", &[]),
+    ("F13", &[]),
+    ("F14", &[]),
+    ("F15", &[]),
+    ("F16", &[]),
+    ("F17", &[]),
+    ("F18", &[]),
+    ("F19", &[]),
+    ("F20", &[]),
+];
+
+impl KeyCombo {
+    /// A key name in the spelling shortcuts use, or `None` for a key that
+    /// can't be part of one.
+    pub fn key_name(name: &str) -> Option<&'static str> {
+        KEY_NAMES
+            .iter()
+            .find(|(k, alts)| k.eq_ignore_ascii_case(name) || alts.iter().any(|a| a.eq_ignore_ascii_case(name)))
+            .map(|(k, _)| *k)
+    }
+
+    /// Read a shortcut as settings write it: `"Ctrl+Shift+B"`. `Ctrl`,
+    /// `Cmd`, `⌘` and `Mod` all mean Ctrl (⌘ on macOS); `Alt` and `Option`
+    /// are the same key.
+    pub fn parse(spec: &str) -> Option<Self> {
+        let mut k = Self { cmd: false, shift: false, alt: false, key: "" };
+        let spec = spec.trim();
+        // "Ctrl++" is Ctrl and the plus key.
+        let (mods, key) = match spec.strip_suffix("++") {
+            Some(m) => (m, "+"),
+            None => spec.rsplit_once('+').unwrap_or(("", spec)),
+        };
+        for m in mods.split('+').map(str::trim).filter(|m| !m.is_empty()) {
+            match m.to_ascii_lowercase().as_str() {
+                "ctrl" | "control" | "cmd" | "command" | "mod" | "⌘" | "super" => k.cmd = true,
+                "shift" | "⇧" => k.shift = true,
+                "alt" | "option" | "opt" | "⌥" => k.alt = true,
+                _ => return None,
+            }
+        }
+        k.key = Self::key_name(key.trim())?;
+        Some(k)
+    }
+
+    /// The shortcut as settings store it (`parse` reads it back).
+    pub fn spec(&self) -> String {
+        let mut s = String::new();
+        if self.cmd {
+            s.push_str("Ctrl+");
+        }
+        if self.alt {
+            s.push_str("Alt+");
+        }
+        if self.shift {
+            s.push_str("Shift+");
+        }
+        s.push_str(self.key);
+        s
     }
 }
 
@@ -509,6 +717,24 @@ mod tests {
         // 0.8 bindings are unchanged.
         assert_eq!(label(Command::ToggleInsights), "Ctrl+Shift+I");
         assert_eq!(label(Command::InsertDate), "Ctrl+Shift+D");
+    }
+
+    #[test]
+    fn commands_have_stable_ids_and_shortcuts_read_back() {
+        assert_eq!(Command::Bold.id(), "Bold");
+        assert_eq!(Command::from_id("InsertFootnote"), Some(Command::InsertFootnote));
+        assert_eq!(Command::from_id("NoSuchCommand"), None);
+        for c in COMMANDS {
+            assert_eq!(Command::from_id(c.id), Some(c.command));
+            for k in c.keys {
+                assert_eq!(KeyCombo::parse(&k.spec()), Some(*k), "{}", k.spec());
+            }
+        }
+        assert_eq!(KeyCombo::parse("cmd+shift+="), Some(KeyCombo { cmd: true, shift: true, alt: false, key: "Equals" }));
+        assert_eq!(KeyCombo::parse("Ctrl++").map(|k| k.key), Some("Plus"));
+        assert_eq!(KeyCombo::parse("Option+Up").map(|k| k.label(true)), Some("⌥↑".into()));
+        assert_eq!(KeyCombo::parse("Hyper+B"), None);
+        assert_eq!(KeyCombo::parse("Ctrl+NotAKey"), None);
     }
 
     #[test]

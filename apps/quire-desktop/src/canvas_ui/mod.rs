@@ -143,7 +143,7 @@ pub(crate) struct CanvasSurface {
     grid: bool,
     snap: bool,
     /// Text cards drawn by the note preview's renderer, by node: (key, shapes).
-    galleys: HashMap<String, (u64, Arc<Vec<egui::Shape>>)>,
+    galleys: HashMap<String, (u64, Arc<text::CardPicture>)>,
     /// The preview renderer's cache (parsed blocks, link hooks).
     md: egui_commonmark::CommonMarkCache,
     previews: Previews,
@@ -713,7 +713,7 @@ impl CanvasSurface {
 
     /// A text card as the note preview draws it (0.10), laid out once per
     /// text, width, zoom and theme; later frames only move the shapes.
-    fn card_shapes(&mut self, ui: &egui::Ui, ws: &Workspace, n: &Node, width: f32, pal: &Palette) -> Arc<Vec<egui::Shape>> {
+    fn card_shapes(&mut self, ui: &egui::Ui, ws: &Workspace, n: &Node, width: f32, pal: &Palette) -> Arc<text::CardPicture> {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         n.text.hash(&mut h);
@@ -729,16 +729,46 @@ impl CanvasSurface {
         }
         let src = n.text.as_deref().unwrap_or_default();
         let md = quire_app::markdown::render::for_preview(src, &|t| ws.attachment_path(t).map(|p| format!("file://{}", p.display())));
-        let shapes = Arc::new(text::render_markdown(ui, &mut self.md, &md, width, self.zoom, &n.id));
-        if ui.ctx().will_discard() {
-            // A table measured itself this pass; the next pass draws it.
-            return shapes;
+        let picture = Arc::new(text::render_markdown(ui, &mut self.md, &md, width, self.zoom, &n.id));
+        if ui.ctx().will_discard() || !picture.complete {
+            // A table measured itself this pass, or math is still being
+            // typeset (the typesetter repaints when it's done): draw again.
+            return picture;
         }
         if self.galleys.len() > self.canvas.nodes.len() * 2 + 64 {
             self.galleys.clear();
         }
-        self.galleys.insert(n.id.clone(), (key, Arc::clone(&shapes)));
-        shapes
+        self.galleys.insert(n.id.clone(), (key, Arc::clone(&picture)));
+        picture
+    }
+
+    /// 0.11: the link under `p` (screen) in a text card, if there is one:
+    /// its URL (`quire://note/…` for a wikilink).
+    fn link_at(&self, rect: Rect, p: Pos2) -> Option<String> {
+        if self.zoom < DETAIL_ZOOM {
+            return None;
+        }
+        let cp = self.to_canvas(rect, p);
+        let i = geom::node_at(&self.canvas, cp, false)?;
+        let n = &self.canvas.nodes[i];
+        if n.node_kind() != NodeKind::Text || matches!(&self.editing, Some(Editing::Text { id, .. }) if *id == n.id) {
+            return None;
+        }
+        let r = self.screen_rect(rect, n.rect());
+        let inner = r.shrink((12.0 * self.zoom).clamp(3.0, 14.0));
+        let (_, pic) = self.galleys.get(&n.id)?;
+        pic.links.iter().find(|l| l.rect.translate(inner.min.to_vec2()).expand(2.0).contains(p)).map(|l| l.url.clone())
+    }
+
+    /// Open a card's link: a note in Quire, a web page in the browser.
+    fn follow_link(ws: &mut Workspace, ctx: &egui::Context, url: &str) -> bool {
+        if let Some((target, heading)) = quire_app::markdown::render::parse_note_url(url) {
+            return ws.open_link(&target, heading.as_deref()).is_some();
+        }
+        if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("mailto:") {
+            ctx.open_url(egui::OpenUrl::new_tab(url));
+        }
+        false
     }
 
     fn note_preview(&mut self, ws: &Workspace, path: &NotePath) -> String {
@@ -903,8 +933,8 @@ impl CanvasSurface {
                         let src = n.text.as_deref().unwrap_or_default();
                         let drawn = text::mermaid(src).is_some_and(|m| self.paint_diagram(ui, &clip, inner, m, pal));
                         if !drawn {
-                            let shapes = self.card_shapes(ui, ws, &n, inner.width(), pal);
-                            clip.extend(shapes.iter().map(|s| text::moved(s, inner.min.to_vec2())));
+                            let picture = self.card_shapes(ui, ws, &n, inner.width(), pal);
+                            clip.extend(picture.shapes.iter().map(|s| text::moved(s, inner.min.to_vec2())));
                         }
                     }
                 }
@@ -1410,6 +1440,23 @@ impl CanvasSurface {
 
         let canvas_p = pointer.map(|p| self.to_canvas(rect, p));
         let hovered_node = canvas_p.and_then(|p| geom::node_at(&self.canvas, p, false));
+        // 0.11: links in cards are clickable: the hand, and where it goes.
+        if self.mode == Mode::Select
+            && self.drag.is_none()
+            && let Some(p) = pointer
+            && let Some(url) = self.link_at(rect, p)
+        {
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+            let shown = quire_app::markdown::render::parse_note_url(&url).map_or_else(
+                || url.clone(),
+                |(t, h)| match h {
+                    Some(h) => format!("{t} › {h}"),
+                    None => t,
+                },
+            );
+            egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), Id::unique("quire-card-link"), egui::PopupAnchor::Pointer)
+                .show(|ui| ui.label(format!("Open {shown}")));
+        }
 
         // Side handles to start a connection, on the card under the pointer.
         if self.mode == Mode::Select
@@ -1482,6 +1529,15 @@ impl CanvasSurface {
                     None => self.add_text_card(cp),
                 },
             }
+        } else if resp.clicked()
+            && self.mode == Mode::Select
+            && !mods.shift
+            && !mods.command
+            && let Some(url) = pointer.and_then(|p| self.link_at(rect, p))
+        {
+            // 0.11: a link in a card opens (a note here, a web page in the browser).
+            self.finish_editing();
+            out.jumped |= Self::follow_link(ws, ui.ctx(), &url);
         } else if resp.clicked()
             && let Some(cp) = canvas_p
             && self.mode == Mode::Select
@@ -2188,7 +2244,7 @@ mod tests {
         frame(&ctx, &mut s, &mut ws, raw());
         let (_, shapes) = s.galleys.get("t").cloned().expect("the card was drawn");
         let mut all = String::new();
-        shapes.iter().for_each(|x| texts(x, &mut all));
+        shapes.shapes.iter().for_each(|x| texts(x, &mut all));
         for want in ["Plan", "Ship it", "a", "2", "done", "Rope Notes"] {
             assert!(all.contains(want), "{want:?} in {all:?}");
         }

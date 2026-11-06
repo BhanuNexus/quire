@@ -24,12 +24,15 @@ pub mod drawings;
 pub mod export_pdf;
 pub mod features;
 pub mod find;
+// 0.11 editor: formatting commands on every cursor, and the shortcuts in effect.
 mod find_state;
+pub mod format_cmds;
 pub mod geo;
 pub mod git;
 pub mod graph;
 pub mod history_ops;
 pub mod jobs;
+pub mod keymap;
 pub mod mcp_state;
 pub mod meta_refactor;
 pub mod nav;

@@ -9,6 +9,7 @@
 
 mod actor;
 pub mod attach;
+pub mod background;
 pub mod chunk;
 mod fulltext;
 mod fuzzy;

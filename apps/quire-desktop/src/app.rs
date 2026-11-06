@@ -7,9 +7,10 @@ use std::time::{Duration, Instant};
 
 use egui::{Key, KeyboardShortcut, Modifiers};
 use egui_commonmark::CommonMarkCache;
+use quire_app::keymap::{Action, Keymap};
 use quire_app::vault::NotePath;
 use quire_app::workspace::{NoticeLevel, UiRequest};
-use quire_app::{COMMANDS, Command, DocId, Session, Settings, Theme, Workspace};
+use quire_app::{Command, DocId, Session, Settings, Theme, Workspace};
 
 use crate::editor::EditorState;
 use crate::overlays::{self, Mode, Overlay};
@@ -250,6 +251,20 @@ impl QuireApp {
     }
 
     fn run(&mut self, cmd: Command) {
+        // 0.11: formatting goes to every cursor of the fast editor, as one undo step.
+        if quire_app::format_cmds::handles(cmd) && !self.classic() && self.surfaces.active.is_none() && self.ws.active_doc().is_some() {
+            self.fast.format(cmd, &mut self.ws);
+            self.focus_editor();
+            return;
+        }
+        match cmd {
+            Command::InsertAttachment => return self.insert_attachment(),
+            Command::FocusToolbar => {
+                self.features.toolbar.focus_first();
+                return;
+            }
+            _ => {}
+        }
         if let Some(req) = self.ws.run(cmd) {
             self.request(req);
         } else {
@@ -269,6 +284,63 @@ impl QuireApp {
                 self.reveal_caret();
             }
         }
+    }
+
+    /// A shortcut, toolbar button or palette entry: a command or a macro.
+    fn run_action(&mut self, action: Action) {
+        match action {
+            Action::Command(c) => self.run(c),
+            Action::Macro(name) => self.run_macro(&name),
+        }
+    }
+
+    /// Run a macro's commands in order. It stops at a command that opens
+    /// a dialog (the rest would run behind it) and skips commands this
+    /// version doesn't have.
+    fn run_macro(&mut self, name: &str) {
+        let Some(m) = self.ws.settings.commands.macros.iter().find(|m| m.name == name).cloned() else {
+            self.ws.notify(NoticeLevel::Warn, format!("There's no macro called “{name}” any more"));
+            return;
+        };
+        for (i, id) in m.steps.iter().enumerate() {
+            let Some(cmd) = Command::from_id(id).filter(|c| self.ws.command_available(*c)) else {
+                self.ws.notify(NoticeLevel::Info, format!("Macro “{name}”: skipped “{id}”, which isn't available"));
+                continue;
+            };
+            if cmd.info().needs_doc && self.ws.active_doc().is_none() {
+                self.ws.notify(NoticeLevel::Info, format!("Macro “{name}” stopped at “{}”: no note is open", cmd.info().title));
+                return;
+            }
+            let had_dialog = self.overlay.is_some();
+            self.run(cmd);
+            if !had_dialog && self.overlay.is_some() && i + 1 < m.steps.len() {
+                self.ws.notify(NoticeLevel::Info, format!("Macro “{name}” stopped at “{}”: it opened a dialog", cmd.info().title));
+                return;
+            }
+        }
+    }
+
+    /// Insert image or attachment: pick files, copy them into the vault,
+    /// link them at the caret.
+    fn insert_attachment(&mut self) {
+        if self.ws.vault().is_none() || self.ws.active_doc().is_none() {
+            self.ws.notify(NoticeLevel::Info, "Open a note first, then insert into it");
+            return;
+        }
+        if let Some(files) = rfd::FileDialog::new().set_title("Insert image or attachment").pick_files() {
+            self.ws.import_files(&files);
+        }
+        self.focus_editor();
+    }
+
+    /// Vim's Normal and Visual modes take Ctrl+V (Visual block) for
+    /// themselves while the note has the keyboard.
+    fn vim_takes_ctrl_v(&self, ctx: &egui::Context) -> bool {
+        self.ws.settings.editing.vim
+            && !self.ws.features.nav.vim.typing()
+            && self.overlay.is_none()
+            && !self.classic()
+            && self.ws.active_doc().is_some_and(|d| ctx.memory(|m| m.has_focus(crate::view::editor_id(d.id))))
     }
 
     /// Show what a command or a feature asked for.
@@ -370,43 +442,55 @@ impl QuireApp {
         let editor = self.ws.active_doc().map(|d| crate::editor::editor_id(d.id));
         let other_field_focused = ctx.memory(egui::Memory::focused).is_some_and(|f| Some(f) != editor);
         // egui ignores extra Shift/Alt when matching, so try the most specific combos first.
-        let mut combos: Vec<(u8, Command, KeyboardShortcut)> = Vec::new();
-        for info in COMMANDS {
-            if other_field_focused && matches!(info.category, "Edit" | "Format" | "Review") {
+        // 0.11: the shortcuts in effect (Settings → Commands), macros included.
+        let keymap = Keymap::new(&self.ws.settings.commands);
+        let vim_keys = self.vim_takes_ctrl_v(ctx);
+        let mut combos: Vec<(u8, Action, KeyboardShortcut)> = Vec::new();
+        for (k, action) in keymap.bindings() {
+            match action {
+                Action::Command(c) => {
+                    let info = c.info();
+                    if other_field_focused && matches!(info.category, "Edit" | "Format" | "Review") {
+                        continue;
+                    }
+                    // Features that aren't ready have no keys yet.
+                    if !self.ws.command_available(*c) {
+                        continue;
+                    }
+                }
+                Action::Macro(_) if other_field_focused => continue,
+                Action::Macro(_) => {}
+            }
+            // Vim's Normal mode keeps Ctrl+V and Ctrl+Q (Visual block).
+            if vim_keys && k.cmd && !k.alt && !k.shift && matches!(k.key, "V" | "Q") {
                 continue;
             }
-            // Features that aren't ready have no keys yet.
-            if !self.ws.command_available(info.command) {
+            let Some(key) = Key::from_name(k.key) else {
                 continue;
+            };
+            let mut m = Modifiers::NONE;
+            if k.cmd {
+                m |= Modifiers::COMMAND;
             }
-            for k in info.keys {
-                let Some(key) = Key::from_name(k.key) else {
-                    continue;
-                };
-                let mut m = Modifiers::NONE;
-                if k.cmd {
-                    m |= Modifiers::COMMAND;
-                }
-                if k.shift {
-                    m |= Modifiers::SHIFT;
-                }
-                if k.alt {
-                    m |= Modifiers::ALT;
-                }
-                combos.push((u8::from(k.shift) + u8::from(k.alt) + u8::from(k.cmd), info.command, KeyboardShortcut::new(m, key)));
+            if k.shift {
+                m |= Modifiers::SHIFT;
             }
+            if k.alt {
+                m |= Modifiers::ALT;
+            }
+            combos.push((u8::from(k.shift) + u8::from(k.alt) + u8::from(k.cmd), action.clone(), KeyboardShortcut::new(m, key)));
         }
         combos.sort_by_key(|c| std::cmp::Reverse(c.0));
         let mut fired = Vec::new();
         let typed = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(t) if !t.is_empty())));
         let mut alt_only = false;
         ctx.input_mut(|i| {
-            for (_, cmd, sc) in &combos {
+            for (_, action, sc) in &combos {
                 if altgr_typed(sc.modifiers, typed) {
                     continue;
                 }
                 if i.consume_shortcut(sc) {
-                    fired.push(*cmd);
+                    fired.push(action.clone());
                     alt_only |= sc.modifiers.alt && !sc.modifiers.command;
                 }
             }
@@ -422,8 +506,8 @@ impl QuireApp {
             self.drop_alt_text -= 1;
             ctx.input_mut(|i| drop_typed_text(&mut i.events));
         }
-        for cmd in fired {
-            self.run(cmd);
+        for action in fired {
+            self.run_action(action);
         }
     }
 
@@ -642,12 +726,32 @@ impl QuireApp {
 }
 
 impl eframe::App for QuireApp {
-    #[cfg(feature = "bench")]
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        #[cfg(feature = "bench")]
         if let Some(b) = &mut self.bench {
             let index = self.ws.index();
             let indexed = !index.status().busy && !index.semantic_busy() && index.semantic_version() > 0;
             b.input(raw_input, indexed);
+        }
+        // egui closes the window on Ctrl+Q (⌘Q on macOS) at the end of every
+        // frame (`Options::quit_shortcuts`), after Vim has seen the key. In
+        // Vim's Normal and Visual mode Ctrl+Q is Visual block on Windows and
+        // Linux, so it doesn't quit then; ⌘Q on macOS always does.
+        let vim_keys = self.vim_takes_ctrl_v(ctx);
+        let quit =
+            if vim_keys && !cfg!(target_os = "macos") { Vec::new() } else { vec![KeyboardShortcut::new(Modifiers::COMMAND, Key::Q)] };
+        ctx.options_mut(|o| o.quit_shortcuts = quit);
+        // Copy, cut and paste keys (main.rs turns off egui-winit's own handling).
+        let keep = if crate::commands_ui::recording(ctx) {
+            ClipboardKeys::KeepAll
+        } else if vim_keys {
+            ClipboardKeys::KeepPaste
+        } else {
+            ClipboardKeys::Translate
+        };
+        if clipboard_keys(&mut raw_input.events, keep) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+            ctx.request_repaint();
         }
     }
 
@@ -729,6 +833,18 @@ impl eframe::App for QuireApp {
 }
 
 impl QuireApp {
+    /// A toolbar button was pressed, or the keyboard left the toolbar.
+    fn toolbar_pressed(&mut self, pressed: Option<crate::toolbar_ui::Pressed>) {
+        match pressed {
+            Some(crate::toolbar_ui::Pressed::Run(a)) => {
+                self.run_action(a);
+                self.focus_editor();
+            }
+            Some(crate::toolbar_ui::Pressed::Leave) => self.focus_editor(),
+            None => {}
+        }
+    }
+
     /// Keep the global shortcut registered as the setting says, and answer it:
     /// bring the window up with the capture box.
     fn quick_capture_key(&mut self, ctx: &egui::Context) {
@@ -909,6 +1025,22 @@ impl QuireApp {
                     self.after_panel(&out);
                 }
             }
+            // 0.11: the formatting toolbar.
+            if self.surfaces.active.is_none() && self.ws.active_doc().is_some() && !focus && self.features.toolbar.visible(&self.ws) {
+                let keymap = Keymap::new(&self.ws.settings.commands);
+                let pressed = egui::Panel::top("quire-toolbar")
+                    .frame(
+                        egui::Frame::NONE
+                            .fill(pal.panel)
+                            .inner_margin(egui::Margin::symmetric(10, 3))
+                            .stroke(egui::Stroke::new(1.0, pal.border)),
+                    )
+                    .show(ui, |ui| crate::toolbar_ui::bar(ui, &self.ws, &keymap, pal, &mut self.features.toolbar))
+                    .inner;
+                self.toolbar_pressed(pressed);
+            } else {
+                self.features.toolbar.keyboard = false;
+            }
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(pal.bg)).show(ui, |ui| {
                 if let Some(out) = self.surfaces.show_active(ui, &mut self.ws, pal) {
                     // `jumped` (a note opened from a `.base`) gives notes the panel again.
@@ -948,6 +1080,23 @@ impl QuireApp {
             });
         }
 
+        // 0.11: a diagram's full-screen button.
+        if let Some(source) = crate::diagram_ui::take_fullscreen(&ctx) {
+            self.set_overlay(Some(Overlay::Feature(Box::new(crate::diagram_ui::DiagramOverlay::new(source)))));
+        }
+        // 0.11: the small toolbar above selected text.
+        if self.ws.settings.toolbar.floating
+            && self.overlay.is_none()
+            && !self.classic()
+            && self.surfaces.active.is_none()
+            && let Some(at) = self.fast.selection_rect.or_else(|| self.features.toolbar.floating_held(&ctx))
+            && let Some(doc) = self.ws.active_doc().map(|d| d.id)
+            && !ctx.is_being_dragged(crate::view::editor_id(doc))
+        {
+            let keymap = Keymap::new(&self.ws.settings.commands);
+            let pressed = crate::toolbar_ui::floating(&ctx, at, &keymap, pal, &mut self.features.toolbar);
+            self.toolbar_pressed(pressed);
+        }
         // What panels and widgets asked for while drawing.
         self.take_ui_requests();
         // First run: a short tour once there's a vault to look at.
@@ -983,6 +1132,10 @@ impl QuireApp {
                 self.run(c);
             }
         }
+        // 0.11: a macro chosen in the command palette.
+        if let Some(name) = self.ws.features.nav.run_macro.take() {
+            self.run_macro(&name);
+        }
         overlays::toasts(&ctx, &self.ws, pal);
         self.last_active = self.ws.active_doc().map(|d| d.id);
         let ids: Vec<_> = self.ws.docs().iter().map(|d| d.id).collect();
@@ -1003,6 +1156,55 @@ fn altgr_typed(m: Modifiers, typed: bool) -> bool {
 /// Ctrl+Alt on Windows and types real characters), it is the shortcut key's.
 fn drop_typed_text(events: &mut Vec<egui::Event>) {
     events.retain(|e| !matches!(e, egui::Event::Text(_)));
+}
+
+/// What [`clipboard_keys`] leaves as keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClipboardKeys {
+    /// Copy, cut and paste become clipboard events (what egui-winit does).
+    Translate,
+    /// Vim's Normal mode: Ctrl+V stays a key (Visual block), even with
+    /// nothing on the clipboard; copy and cut are translated.
+    KeepPaste,
+    /// Settings → Commands is recording a shortcut: every key stays a key.
+    KeepAll,
+}
+
+/// The copy, cut and paste keys, as egui-winit would handle them, except
+/// what `keep` says. egui-winit turns Ctrl+V into a paste of the clipboard
+/// and drops the key, and with an empty clipboard sends nothing at all, so
+/// Vim never saw Ctrl+V; `main.rs` turns that off and this takes its
+/// place. Returns true when the clipboard should be pasted
+/// (`ViewportCommand::RequestPaste`).
+fn clipboard_keys(events: &mut Vec<egui::Event>, keep: ClipboardKeys) -> bool {
+    if keep == ClipboardKeys::KeepAll {
+        return false;
+    }
+    let windows = cfg!(target_os = "windows");
+    let mut paste = false;
+    let old = std::mem::take(events);
+    for e in old {
+        if let egui::Event::Key { key, pressed, modifiers, .. } = &e {
+            let only = modifiers.command_only();
+            let cut = *key == Key::Cut || (only && *key == Key::X) || (windows && modifiers.shift && *key == Key::Delete);
+            let copy = *key == Key::Copy || (only && *key == Key::C) || (windows && modifiers.ctrl && *key == Key::Insert);
+            let paste_key = *key == Key::Paste || (only && *key == Key::V) || (windows && modifiers.shift && *key == Key::Insert);
+            if *pressed && (cut || copy || paste_key) {
+                if paste_key && keep == ClipboardKeys::KeepPaste {
+                    events.push(e);
+                } else if cut {
+                    events.push(egui::Event::Cut);
+                } else if copy {
+                    events.push(egui::Event::Copy);
+                } else {
+                    paste = true;
+                }
+                continue;
+            }
+        }
+        events.push(e);
+    }
+    paste
 }
 
 /// With `QUIRE_TRACE` set, report sections slower than 8 ms.
@@ -1031,6 +1233,32 @@ mod tests {
         assert!(!altgr_typed(ctrl_alt, false), "no text: it's the shortcut");
         assert!(!altgr_typed(Modifiers::ALT, true));
         assert!(!altgr_typed(Modifiers::COMMAND | Modifiers::SHIFT, true));
+    }
+
+    #[test]
+    fn ctrl_v_reaches_vim_even_with_an_empty_clipboard() {
+        let key = |k: Key, m: Modifiers| egui::Event::Key { key: k, physical_key: None, pressed: true, repeat: false, modifiers: m };
+        let typed = || {
+            vec![
+                key(Key::V, Modifiers::COMMAND),
+                key(Key::C, Modifiers::COMMAND),
+                key(Key::X, Modifiers::COMMAND),
+                key(Key::V, Modifiers::NONE),
+            ]
+        };
+        let mut ev = typed();
+        assert!(clipboard_keys(&mut ev, ClipboardKeys::Translate), "Ctrl+V pastes");
+        assert_eq!(ev, vec![egui::Event::Copy, egui::Event::Cut, key(Key::V, Modifiers::NONE)]);
+        let mut ev = typed();
+        assert!(!clipboard_keys(&mut ev, ClipboardKeys::KeepPaste), "Vim's Normal mode: no paste");
+        assert_eq!(ev, vec![key(Key::V, Modifiers::COMMAND), egui::Event::Copy, egui::Event::Cut, key(Key::V, Modifiers::NONE)]);
+        let mut ev = typed();
+        assert!(!clipboard_keys(&mut ev, ClipboardKeys::KeepAll));
+        assert_eq!(ev, typed(), "recording a shortcut: keys stay keys");
+        // Ctrl+Shift+V isn't paste (egui-winit's rule too).
+        let mut ev = vec![key(Key::V, Modifiers::COMMAND | Modifiers::SHIFT)];
+        assert!(!clipboard_keys(&mut ev, ClipboardKeys::Translate));
+        assert_eq!(ev.len(), 1);
     }
 
     #[test]

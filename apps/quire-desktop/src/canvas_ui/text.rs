@@ -197,18 +197,116 @@ pub(crate) fn render_markdown(
     width: f32,
     zoom: f32,
     salt: &str,
-) -> Vec<egui::Shape> {
+) -> CardPicture {
     let id = egui::Id::unique(("quire-card-md", salt));
     let layer = egui::LayerId::new(egui::Order::Background, id);
-    draw_markdown(ui, cache, md, width, zoom, id, layer);
-    ui.ctx().graphics_mut(|g| {
+    let pending = draw_markdown(ui, cache, md, width, zoom, id, layer);
+    let shapes: Vec<egui::Shape> = ui.ctx().graphics_mut(|g| {
         let list = g.entry(layer);
         let shapes = list.all_entries().map(|c| c.shape.clone()).collect();
         *list = egui::layers::PaintList::default();
         shapes
-    })
+    });
+    let links = card_links(&shapes, md, ui.visuals().hyperlink_color);
+    CardPicture { shapes, links, complete: !pending }
 }
 
+/// A card as drawn: its shapes at (0, 0), where its links are, and
+/// whether everything in it was ready (math still being typeset isn't).
+#[derive(Default)]
+pub(crate) struct CardPicture {
+    pub shapes: Vec<egui::Shape>,
+    pub links: Vec<CardLink>,
+    pub complete: bool,
+}
+
+/// A link in a card (0.11): where it goes and where it is, from the card's
+/// top-left at the zoom it was drawn at.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CardLink {
+    pub url: String,
+    pub rect: egui::Rect,
+}
+
+/// `[text](url)` links in Markdown, in order: (text without emphasis marks, url).
+fn md_links(md: &str) -> Vec<(String, String)> {
+    let chars: Vec<char> = md.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '[' && (i == 0 || chars[i - 1] != '!') {
+            let mut depth = 0;
+            let mut close = None;
+            for (j, c) in chars.iter().enumerate().skip(i) {
+                match c {
+                    '[' => depth += 1,
+                    ']' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(j);
+                            break;
+                        }
+                    }
+                    '\n' if j > i && chars.get(j + 1) == Some(&'\n') => break,
+                    _ => {}
+                }
+            }
+            if let Some(c) = close
+                && chars.get(c + 1) == Some(&'(')
+                && let Some(end) = chars[c + 2..].iter().position(|x| *x == ')' || *x == '\n')
+                && chars[c + 2 + end] == ')'
+            {
+                let text: String = chars[i + 1..c].iter().filter(|x| !matches!(x, '*' | '_' | '`' | '=' | '~')).collect();
+                let url: String = chars[c + 2..c + 2 + end].iter().collect();
+                let url = url.split_whitespace().next().unwrap_or_default().trim_matches(['<', '>']).to_string();
+                out.push((text.split_whitespace().collect::<Vec<_>>().join(" "), url));
+                i = c + 2 + end + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Where the links are among a card's shapes. Each link is a text shape
+/// in the link colour, in reading order, so the n-th is the n-th link of
+/// the Markdown; a link whose text matches a later one skips ahead.
+fn card_links(shapes: &[egui::Shape], md: &str, link_color: Color32) -> Vec<CardLink> {
+    fn texts(s: &egui::Shape, color: Color32, out: &mut Vec<(String, egui::Rect)>) {
+        match s {
+            egui::Shape::Text(t) if t.fallback_color == color && t.override_text_color.is_none() => {
+                out.push((t.galley.text().split_whitespace().collect::<Vec<_>>().join(" "), t.galley.rect.translate(t.pos.to_vec2())));
+            }
+            egui::Shape::Vec(v) => v.iter().for_each(|x| texts(x, color, out)),
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    for s in shapes {
+        texts(s, link_color, &mut found);
+    }
+    let links = md_links(md);
+    let mut next = 0;
+    let mut out = Vec::new();
+    for (text, rect) in found {
+        let url = if let Some(k) = (next..links.len()).find(|k| links[*k].0 == text) {
+            next = k + 1;
+            links[k].1.clone()
+        } else if text.starts_with("http://") || text.starts_with("https://") {
+            text.clone()
+        } else if let Some(l) = links.get(next) {
+            next += 1;
+            l.1.clone()
+        } else {
+            continue;
+        };
+        out.push(CardLink { url, rect });
+    }
+    out
+}
+
+/// Returns true when math in it is still being typeset.
 fn draw_markdown(
     ui: &egui::Ui,
     cache: &mut egui_commonmark::CommonMarkCache,
@@ -217,7 +315,7 @@ fn draw_markdown(
     zoom: f32,
     id: egui::Id,
     layer: egui::LayerId,
-) {
+) -> bool {
     let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width.max(10.0), 1.0e5));
     let mut child = egui::Ui::new(ui.ctx().clone(), id, egui::UiBuilder::new().layer_id(layer).max_rect(rect));
     child.set_style(std::sync::Arc::clone(ui.style()));
@@ -233,10 +331,37 @@ fn draw_markdown(
         st.spacing.icon_spacing *= zoom;
     }
     child.set_clip_rect(rect);
+    // 0.11: `$math$` and `$$math$$` in cards, as in the preview.
+    let pending = std::rc::Rc::new(std::cell::Cell::new(false));
+    let (color, size) = (ui.visuals().text_color(), child.style().text_styles[&egui::TextStyle::Body].size);
+    let flag = std::rc::Rc::clone(&pending);
+    let math = move |ui: &mut egui::Ui, src: &str, inline: bool| {
+        let job = crate::typeset_ui::Job::Math {
+            latex: src.trim().to_string(),
+            display: !inline,
+            size: size.round() as u32,
+            color: crate::typeset_ui::rgba(color),
+        };
+        match crate::typeset_ui::request(ui.ctx(), &job) {
+            crate::typeset_ui::Out::Ready(p) => {
+                let scale = (ui.available_width() / p.size.x).min(1.0);
+                ui.image((p.texture.id(), p.size * scale));
+            }
+            crate::typeset_ui::Out::Pending => {
+                flag.set(true);
+                ui.label(egui::RichText::new(src).monospace().weak());
+            }
+            crate::typeset_ui::Out::Failed(_) => {
+                ui.label(egui::RichText::new(src).monospace().weak());
+            }
+        }
+    };
     egui_commonmark::CommonMarkViewer::new()
         .alerts(crate::panels::callout_alerts())
         .max_image_width(Some(width.max(10.0) as usize))
+        .render_math_fn(crate::typeset_ui::AVAILABLE.then_some(&math as &egui_commonmark::RenderMathFn))
         .show(&mut child, cache, md);
+    pending.get()
 }
 
 /// A shape moved by `d` (text keeps its laid-out galley).
@@ -266,6 +391,32 @@ pub(crate) fn mermaid(src: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_links_in_order_and_by_text() {
+        let md = "See [**Plan**](quire://note/Plan) and [the site](https://x.org \"t\"), ![img](a.png) [Plan](quire://note/Plan2)";
+        assert_eq!(
+            md_links(md),
+            vec![
+                ("Plan".to_string(), "quire://note/Plan".to_string()),
+                ("the site".to_string(), "https://x.org".to_string()),
+                ("Plan".to_string(), "quire://note/Plan2".to_string()),
+            ]
+        );
+        let link = |t: &str, y: f32| {
+            let ctx = egui::Context::default();
+            let mut g = None;
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                g = Some(ui.painter().layout_no_wrap(t.into(), FontId::proportional(12.0), Color32::RED));
+            });
+            out.textures_delta.clear();
+            egui::Shape::Text(egui::epaint::TextShape::new(egui::pos2(0.0, y), g.expect("laid out"), Color32::BLUE))
+        };
+        // The first "Plan" link wasn't drawn as a link (say it was cut off): text decides.
+        let found = card_links(&[link("the site", 0.0), link("Plan", 20.0)], md, Color32::BLUE);
+        assert_eq!(found.iter().map(|l| l.url.as_str()).collect::<Vec<_>>(), ["https://x.org", "quire://note/Plan2"]);
+        assert!(found[1].rect.top() >= 20.0);
+    }
 
     #[test]
     fn renders_the_common_syntax() {
