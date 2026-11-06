@@ -4,6 +4,8 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-06
+
 Quire 0.10 brings your vault to your browser and your agents, on a server you own (Beta), voice notes, much lighter on-device AI, and a round of things people asked for: Vim macros and block editing, reminders while Quire is closed, Excalidraw drawings, canvas cards that look like the preview, and Obsidian Bases formulas.
 
 ### Added
@@ -364,7 +366,8 @@ Downloads for Windows, macOS (universal) and Linux are attached to the release, 
 ### Added
 - First version: live Markdown styling, wikilinks with rename refactoring, backlinks, related notes, daily notes, templates, command palette, quick open, inline calculator and natural-language dates.
 
-[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/BhanuNexus/quire/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/BhanuNexus/quire/compare/v0.8.0...v0.9.1
 [0.8.0]: https://github.com/BhanuNexus/quire/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/BhanuNexus/quire/compare/v0.6.0...v0.7.0
