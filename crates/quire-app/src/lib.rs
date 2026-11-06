@@ -38,6 +38,7 @@ pub mod properties;
 pub mod publish;
 pub mod remind_bg;
 pub mod reminders;
+pub mod sanitize;
 pub mod secrets;
 pub mod session;
 pub mod settings;

@@ -658,7 +658,7 @@ fn voice_notes_play_drawings_show_and_pages_say_beta() {
     let r = b.get("/n/Daily.md");
     assert_eq!(r.status, 200, "{}", r.body);
     assert!(
-        r.body.contains("<audio controls preload=\"metadata\" src=\"/f/attachments/Voice%20note%202026-11-05%20153012.wav\">"),
+        r.body.contains("<audio controls=\"\" preload=\"metadata\" src=\"/f/attachments/Voice%20note%202026-11-05%20153012.wav\">"),
         "{}",
         r.body
     );

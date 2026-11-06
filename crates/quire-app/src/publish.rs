@@ -302,7 +302,9 @@ pub fn render_note(
             body = body.replace(&from, &to);
         }
     }
-    RenderedNote { html: body, files: embedded.into_inner(), private_links: private.get() }
+    // Raw HTML in the note is cleaned to an allow-list: no `<meta>`
+    // refresh, `<base>`, forms, frames or scripts (0.10.1 security review #4).
+    RenderedNote { html: crate::sanitize::note_html(&body), files: embedded.into_inner(), private_links: private.get() }
 }
 
 fn tag_anchor(t: &str) -> String {

@@ -234,7 +234,10 @@ fn sync_and_serve_through_a_quire_sync_server() {
         std::thread::sleep(Duration::from_millis(200));
     }
     assert!(note.contains("moved to Friday"), "{note}");
-    assert!(note.contains("<audio controls preload=\"metadata\" src=\"/f/attachments/Voice%20note%202026-11-05%20153012.wav\">"), "{note}");
+    assert!(
+        note.contains("<audio controls=\"\" preload=\"metadata\" src=\"/f/attachments/Voice%20note%202026-11-05%20153012.wav\">"),
+        "{note}"
+    );
     assert!(note.contains("<img src=\"data:image/svg+xml;base64,"), "the drawing is a picture: {note}");
     assert!(note.contains("<footer class=\"foot\"><span class=\"beta\">Beta</span>"), "{note}");
 
