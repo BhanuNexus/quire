@@ -494,8 +494,10 @@ fn history_list(ui: &mut egui::Ui, ws: &Workspace, p: &mut AgentPanelUi, pal: &P
 
 fn composer(ui: &mut egui::Ui, ws: &Workspace, p: &mut AgentPanelUi, pal: &Palette, ext: Option<&AcpAgent>, model: Option<&PanelModel>) {
     ui.separator();
-    let note = ws.active_doc().and_then(|d| d.path.clone());
-    let selection = ws.active_doc().map(|d| d.buffer().slice(d.selection().range())).filter(|s| !s.trim().is_empty());
+    // 0.11: nothing from a locked folder's note goes to an agent, the selection included.
+    let locked = ws.active_doc().and_then(|d| d.path.clone()).is_some_and(|p| ws.locked_folder_of(&p).is_some());
+    let note = ws.active_doc().and_then(|d| d.path.clone()).filter(|_| !locked);
+    let selection = ws.active_doc().map(|d| d.buffer().slice(d.selection().range())).filter(|s| !s.trim().is_empty() && !locked);
     ui.horizontal_wrapped(|ui| {
         if let Some(n) = &note {
             chip(ui, pal, &mut p.chip_note, &format!("📄 {}", n.stem()));

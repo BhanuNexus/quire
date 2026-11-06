@@ -1607,6 +1607,10 @@ impl Workspace {
     }
 
     pub fn start_assist(&mut self, task: Assist) {
+        // 0.11: a locked note's text never goes to an AI provider.
+        if crate::secure_state::refuse_ai_for_active(self) {
+            return;
+        }
         let Some(doc) = self.active_doc() else { return };
         let sel = doc.selection();
         let text = if sel.is_empty() { doc.text().to_string() } else { doc.buffer().slice(sel.range()) };

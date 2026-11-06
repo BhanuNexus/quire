@@ -116,6 +116,19 @@ pub(crate) fn refuse_export(ws: &mut Workspace) -> bool {
     locked
 }
 
+/// Writing help (summarize, rewrite…) through an AI provider on a locked
+/// note: refused, with the reason, so its text never reaches the provider.
+/// The offline assistant is fine. Returns whether it refused.
+pub(crate) fn refuse_ai_for_active(ws: &mut Workspace) -> bool {
+    let locked =
+        ws.active_doc().and_then(|d| d.path.clone()).is_some_and(|p| ws.vault.as_ref().is_some_and(|v| v.locked_folder(&p).is_some()));
+    let provider = ws.settings.ai_provider != "local";
+    if locked && provider {
+        ws.notify(NoticeLevel::Info, "Writing help through your AI provider is off for locked notes: their text isn't sent anywhere.");
+    }
+    locked && provider
+}
+
 /// A note in a locked folder a link names (names aren't secret): for links
 /// to locked notes, which the vault index doesn't hold.
 pub(crate) fn resolve_locked(ws: &Workspace, target: &str) -> Option<NotePath> {
