@@ -11,8 +11,10 @@
 //!
 //! **Safety.** A call is returned only when the repaired text is a whole
 //! JSON object with a tool name. Missing closing brackets are added only
-//! when the model closed the block itself (`closed`), never for a reply
-//! that was cut off. Anything else is an error, and the caller must not run
+//! when the model closed the block itself (`closed`: a `</tool_call>` it
+//! wrote), never for a reply that was cut off, a block ended by the next
+//! `<tool_call>`, or a reply that is only JSON. Callers also refuse every
+//! call of a reply that stopped at its token limit. Anything else is an error, and the caller must not run
 //! any part of it.
 
 use serde_json::{Map, Value};

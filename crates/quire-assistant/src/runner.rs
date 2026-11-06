@@ -347,7 +347,14 @@ pub fn run(spec: &RunSpec<'_>, conversation: &mut Vec<ChatMessage>, cancel: &Can
         }
         // A call that couldn't be read is never run, nor is anything else in
         // the same turn: the model gets one short correction and tries again.
-        if let Some(why) = unreadable(&calls) {
+        // A reply cut off at its length limit counts as unreadable: its last
+        // call may be missing arguments (0.10.1 security review #3).
+        let why = if stop == StopReason::MaxTokens && !calls.is_empty() {
+            Some("the reply was cut off at its length limit".to_string())
+        } else {
+            unreadable(&calls)
+        };
+        if let Some(why) = why {
             let raw = calls.iter().find_map(|(_, _, i)| i[quire_ai::toolcall::UNPARSED].as_str()).unwrap_or_default();
             let id = format!("repair_{step}");
             sink(RunEvent::ToolStarted { id: id.clone(), name: String::new(), summary: "Reading the model's tool call".into() });
@@ -682,5 +689,33 @@ mod tests {
         run(&spec, &mut vec![ChatMessage::user("hi")], &CancelFlag::new(), &mut |e| events.push(e));
         assert!(matches!(events.last(), Some(RunEvent::Failed(m)) if m.contains("Nothing was run")), "{events:?}");
         assert_eq!(model.remaining(), 0);
+    }
+
+    /// 0.10.1 security review #3: a call in a reply that stopped at its
+    /// token limit is never run, even when it reads as complete JSON.
+    #[test]
+    fn a_call_cut_off_at_the_token_limit_is_never_run() {
+        let cut_call =
+            || ChatEvent::ToolUse { id: "call_1".into(), name: "delete_lines".into(), input: json!({"path": "Plan.md", "lines": [3, 4]}) };
+        let limit = || ChatEvent::Done { stop: StopReason::MaxTokens, usage: Usage::default() };
+        let actor = panel_actor("device", "Agent panel", None, "d_1");
+        let model = ScriptedChat::new(vec![vec![cut_call(), limit()], vec![ChatEvent::Text { text: "Done.".into() }]]);
+        let spec = RunSpec {
+            model: &model,
+            host: None,
+            actor: &actor,
+            capability: Capability::Full,
+            core_tools: true,
+            read_only: false,
+            limits: RunLimits::default(),
+            system: "sys".into(),
+            max_reply_tokens: 100,
+        };
+        let mut events = Vec::new();
+        run(&spec, &mut vec![ChatMessage::user("tidy Plan")], &CancelFlag::new(), &mut |e| events.push(e));
+        assert!(!events.iter().any(|e| matches!(e, RunEvent::ToolStarted { name, .. } if name == "delete_lines")), "{events:?}");
+        let second = &model.requests()[1].messages;
+        assert!(second.last().is_some_and(|m| m.text().contains("cut off at its length limit")), "{second:?}");
+        assert!(matches!(events.last(), Some(RunEvent::Done { steps: 2, .. })), "{events:?}");
     }
 }

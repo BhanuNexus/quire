@@ -281,7 +281,7 @@ impl Backend for RealBackend {
             let input = Tensor::new(&[next], &m.device).and_then(|t| t.unsqueeze(0)).map_err(failed)?;
             logits = m.model.forward(&input, pos + out_ids.len() - 1).map_err(failed)?;
         }
-        emit_pieces(parser.finish(), emit);
+        emit_pieces(parser.finish(stop == StopKind::EndTurn), emit);
         if parser.calls() > 0 && stop == StopKind::EndTurn {
             stop = StopKind::ToolUse;
         }
