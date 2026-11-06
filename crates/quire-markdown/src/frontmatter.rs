@@ -120,6 +120,25 @@ impl FrontMatter {
     pub fn aliases(&self) -> Vec<String> {
         ["aliases", "alias"].iter().filter_map(|k| self.get(k)).flat_map(Value::as_list).collect()
     }
+
+    /// The note's word-count goal (`goal: 1500`), shown in the status bar.
+    /// `None` unless it is a positive number.
+    pub fn word_goal(&self) -> Option<usize> {
+        self.get("goal").and_then(Value::as_str).and_then(parse_goal)
+    }
+}
+
+/// A word-count goal: a positive number, digits optionally grouped with
+/// `,` or `_` (`1500`, `1,500`, `1500.0`), rounded to a whole word count.
+/// Anything else (text, zero, negative, `inf`) is no goal.
+pub fn parse_goal(s: &str) -> Option<usize> {
+    let s: String = s.trim().chars().filter(|c| !matches!(c, ',' | '_')).collect();
+    if !s.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+        return None;
+    }
+    let n = s.parse::<f64>().ok().filter(|n| n.is_finite())?.round();
+    // Below 2^52, so the cast is exact.
+    (1.0..4_503_599_627_370_496.0).contains(&n).then_some(n as usize)
 }
 
 fn unquote(s: &str) -> String {
@@ -1061,6 +1080,21 @@ mod tests {
             let out = set_field(src, "note", &Value::Str(tricky.into())).apply(src);
             assert_eq!(parse(&out).unwrap().get("note").and_then(Value::as_str), Some(tricky));
         }
+    }
+
+    #[test]
+    fn word_goals() {
+        let goal = |src: &str| parse(src).and_then(|fm| fm.word_goal());
+        assert_eq!(goal("---\ngoal: 1500\n---\n"), Some(1500));
+        assert_eq!(goal("---\ngoal: \"1,500\"\n---\n"), Some(1500));
+        assert_eq!(goal("---\ngoal: 2_000\n---\n"), Some(2000));
+        assert_eq!(goal("---\ngoal: 750.4\n---\n"), Some(750));
+        assert_eq!(goal("---\ntitle: x\n---\n"), None);
+        for bad in ["0", "-5", "0.2", "lots", "inf", "NaN", "1e3", "", "[1500]"] {
+            assert_eq!(goal(&format!("---\ngoal: {bad}\n---\n")), None, "{bad}");
+        }
+        assert_eq!(goal("---\ngoal:\n  - 1500\n---\n"), None, "a list is no goal");
+        assert_eq!(parse_goal(" 640 "), Some(640));
     }
 
     #[test]

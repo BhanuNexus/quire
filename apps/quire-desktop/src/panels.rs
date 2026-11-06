@@ -1241,6 +1241,30 @@ pub(crate) fn insights(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> 
 
 // ---------------------------------------------------------------- status bar
 
+/// `640 / 1,500 words · 43% · 3,812 chars · 3 min read`, with "✓ goal" in
+/// the success colour once a `goal` property is reached (issue #16).
+fn word_count(ui: &mut egui::Ui, pal: &Palette, st: &quire_app::markdown::Stats, goal: Option<usize>) {
+    use quire_app::word_goal;
+    let wc = word_goal::word_count(st.words, goal);
+    let font = FontId::proportional(12.0);
+    let fmt = |color: egui::Color32| TextFormat { font_id: font.clone(), color, ..Default::default() };
+    let mut job = LayoutJob::default();
+    job.append(&wc.text, 0.0, fmt(pal.muted));
+    if wc.reached {
+        // Inter has U+2713; a theme's own UI font may not, and then egui
+        // would draw a box, so say it in words instead.
+        let check = ui.fonts_mut(|f| f.has_glyph(&font, '✓'));
+        job.append(" · ", 0.0, fmt(pal.muted));
+        job.append(if check { word_goal::REACHED } else { word_goal::REACHED_TEXT }, 0.0, fmt(pal.added));
+    }
+    let rest = format!(" · {} chars · {} min read", word_goal::count(st.chars), st.reading_minutes.max(1));
+    job.append(&rest, 0.0, fmt(pal.muted));
+    let r = ui.label(job);
+    if let Some(g) = goal {
+        r.on_hover_text(format!("Goal: {} words (the note's goal property)", word_goal::count(g)));
+    }
+}
+
 /// `surface`: a base, canvas or PDF has the central panel, so the note
 /// open before it isn't described.
 pub(crate) fn status_bar(ui: &mut egui::Ui, ws: &Workspace, pal: &Palette, surface: bool) -> PanelOut {
@@ -1253,8 +1277,9 @@ pub(crate) fn status_bar(ui: &mut egui::Ui, ws: &Workspace, pal: &Palette, surfa
                 let b = doc.buffer();
                 ui.label(small(format!("{} lines · {} chars", b.len_lines(), b.len_chars())));
             } else {
-                let st = doc.extracted().stats;
-                ui.label(small(format!("{} words · {} chars · {} min read", st.words, st.chars, st.reading_minutes.max(1))));
+                let ex = doc.extracted();
+                let st = ex.stats;
+                word_count(ui, pal, &st, ex.front_matter.as_ref().and_then(quire_app::markdown::FrontMatter::word_goal));
             }
             ui.separator();
             ui.label(small(format!("Ln {l}, Col {c}")));

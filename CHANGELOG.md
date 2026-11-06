@@ -4,6 +4,9 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Added
+- **Word-count goal:** a `goal: 1500` property shows your progress in the status bar (`640 / 1,500 words · 43%`), and "✓ goal" once you get there. Word and character counts there are now grouped by thousands (#16).
+
 ## [0.10.0] - 2026-11-06
 
 Quire 0.10 brings your vault to your browser and your agents, on a server you own (Beta), voice notes, much lighter on-device AI, and a round of things people asked for: Vim macros and block editing, reminders while Quire is closed, Excalidraw drawings, canvas cards that look like the preview, and Obsidian Bases formulas.
