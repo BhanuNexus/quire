@@ -46,7 +46,8 @@ env:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The workspace tests build candle for the AI engine (as CI's test job does).
+    timeout-minutes: 50
     permissions:
       contents: read
     outputs:
@@ -82,6 +83,8 @@ jobs:
           fi
       - name: Install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
+      - name: ALSA headers (the full edition records voice notes through cpal)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
       - run: cargo test --workspace --locked
 
   # The on-device AI engine (design §D.3): built per target first, so each
