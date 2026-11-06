@@ -9,6 +9,11 @@
 //! changed meanwhile (another device, an agent, sync), nothing is written:
 //! the person sees the three-way merge when it is clean, or both versions
 //! and the choice to save theirs as a copy.
+//!
+//! "Still has that hash" is checked at the moment of writing, as one step
+//! with the write ([`Vault::write_if`]): sync (`serve --sync`), MCP and
+//! agents write through the same storage in this process, so none of their
+//! writes can land between the check and the write.
 
 use quire_agent::{Actor, Op, Provenance, Via};
 use quire_app::vault::{ContentHash, NotePath, Vault, VaultError};
@@ -37,20 +42,28 @@ fn actor(web: &Web) -> Actor {
     a
 }
 
-/// Write `text` to `path` and keep it in history with its provenance,
-/// keeping the version it replaces first.
-pub(crate) fn write(web: &Web, path: &NotePath, before: Option<&str>, text: &str, op: Op) -> Result<(), String> {
+/// Write `text` to `path` if the note is still exactly `before` (`None`:
+/// it doesn't exist yet), and keep it in history with its provenance,
+/// keeping the version it replaces first. Returns false, writing nothing,
+/// when the note changed meanwhile.
+fn write(web: &Web, path: &NotePath, before: Option<&str>, text: &str, op: Op) -> Result<bool, String> {
     let vault = web.guard.vault();
     let now = web.now();
+    if !vault.write_if(path, before, text).map_err(|e| e.to_string())? {
+        return Ok(false);
+    }
     if let Some(b) = before {
         // Synced and outside edits aren't always in history yet.
         let _ = vault.snapshot(path, b, now - 1, true);
     }
-    vault.write(path, text).map_err(|e| e.to_string())?;
     let prov = Provenance::new(actor(web), op, text, now);
     vault.snapshot_with(path, text, now, true, Some(&prov.to_json())).map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(true)
 }
+
+/// How often a save starts again when the note changes between reading it
+/// and writing (another write each time; then the person decides).
+const ATTEMPTS: usize = 3;
 
 fn read(vault: &Vault, path: &NotePath) -> Result<Option<String>, String> {
     match vault.read(path) {
@@ -64,41 +77,62 @@ fn read(vault: &Vault, path: &NotePath) -> Result<Option<String>, String> {
 /// of `orig`, the text the editor started from).
 pub(crate) fn save(web: &Web, path: &NotePath, base: &str, orig: &str, mine: &str) -> Result<Saved, String> {
     let _one_at_a_time = web.writing.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    for _ in 1..ATTEMPTS {
+        if let Some(saved) = save_once(web, path, base, orig, mine)? {
+            return Ok(saved);
+        }
+    }
+    // Still changing under us: show the person the note as it is now.
+    let current = read(web.guard.vault(), path)?.unwrap_or_default().replace("\r\n", "\n");
+    Ok(Saved::Conflict { current, merged: None })
+}
+
+/// One attempt at [`save`]; `None` when the note changed between reading
+/// it and writing (nothing written).
+fn save_once(web: &Web, path: &NotePath, base: &str, orig: &str, mine: &str) -> Result<Option<Saved>, String> {
     let current = read(web.guard.vault(), path)?;
     let Some(current) = current else {
         // Deleted (or moved) since: put it back with this text only if the
         // editor started from nothing; otherwise show the person.
         if base.is_empty() {
-            write(web, path, None, mine, Op::Create)?;
-            return Ok(Saved::Written);
+            return Ok(write(web, path, None, mine, Op::Create)?.then_some(Saved::Written));
         }
-        return Ok(Saved::Conflict { current: String::new(), merged: None });
+        return Ok(Some(Saved::Conflict { current: String::new(), merged: None }));
     };
     // Browsers send lines ending in CR LF; the editor works in LF and the
     // note keeps the line endings it had.
     let crlf = current.contains("\r\n");
     let now_lf = current.replace("\r\n", "\n");
     if now_lf == mine {
-        return Ok(Saved::Unchanged);
+        return Ok(Some(Saved::Unchanged));
     }
     let base_ok = ContentHash::of(orig).as_str() == base;
     if base_ok && ContentHash::of(&now_lf).as_str() == base {
         let text = if crlf { mine.replace('\n', "\r\n") } else { mine.to_string() };
-        write(web, path, Some(&current), &text, Op::Write)?;
-        return Ok(Saved::Written);
+        return Ok(write(web, path, Some(&current), &text, Op::Write)?.then_some(Saved::Written));
     }
     let merged = base_ok
         .then(|| quire_app::text::merge::merge3(orig, &now_lf, mine))
         .filter(quire_app::text::merge::MergeResult::is_clean)
         .map(|m| m.text);
-    Ok(Saved::Conflict { current: now_lf, merged })
+    Ok(Some(Saved::Conflict { current: now_lf, merged }))
 }
 
-/// A free name next to `path` for the editor's text: "Plan (copy from the
-/// web 2026-11-05).md".
-pub(crate) fn copy_path(vault: &Vault, path: &NotePath, today: &str) -> NotePath {
+/// "Save mine as a copy": the editor's text as a new note at a free name
+/// next to `path`, "Plan (copy from the web 2026-11-05).md". The name is
+/// taken as one step with the write, so two copies saved at once never
+/// share it (the second gets "… 1.md").
+pub(crate) fn save_copy(web: &Web, path: &NotePath, today: &str, text: &str) -> Result<NotePath, String> {
+    let _one_at_a_time = web.writing.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let vault = web.guard.vault();
     let stem = path.stem().to_string();
-    vault.unique_path(path.folder(), &format!("{stem} (copy from the web {today})")).unwrap_or_else(|_| path.clone())
+    for _ in 0..100 {
+        let p = vault.unique_path(path.folder(), &format!("{stem} (copy from the web {today})")).map_err(|e| e.to_string())?;
+        if write(web, &p, None, text, Op::Create)? {
+            return Ok(p);
+        }
+    }
+    Err("Couldn't find a free name for the copy.".into())
 }
 
 /// A new note, `# Title` and nothing else, at a free name in `folder`.
@@ -109,7 +143,11 @@ pub(crate) fn create(web: &Web, folder: &str, title: &str) -> Result<NotePath, S
     if title.is_empty() {
         return Err("Give the note a name.".into());
     }
-    let p = vault.unique_path(folder, title).map_err(|e| e.to_string())?;
-    write(web, &p, None, &format!("# {title}\n\n"), Op::Create)?;
-    Ok(p)
+    for _ in 0..100 {
+        let p = vault.unique_path(folder, title).map_err(|e| e.to_string())?;
+        if write(web, &p, None, &format!("# {title}\n\n"), Op::Create)? {
+            return Ok(p);
+        }
+    }
+    Err("Couldn't find a free name for the note.".into())
 }

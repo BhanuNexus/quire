@@ -56,6 +56,18 @@ Quire 0.10 brings your vault to your browser and your agents, on a server you ow
 - **A large vault starts and types faster:** with 10,000 notes the window appears before the vault is read, typing in a long note no longer redraws the whole file list every frame, and indexing is almost twice as fast (2,000 notes in about 360 ms, from 690 ms on the same machine).
 - `quire-cli mcp` and `serve` answer at once in a vault with many PDFs: PDF text is read in the background, and while it is, `search` over attachments says so (`indexing: {done, total}` and a sentence in the text).
 
+### Fixed
+- **Selective sync never duplicates or renames notes when the selection grows** (`quire-cli sync scope --all` after `--only`): notes are fetched as they are now instead of replaying their history, which used to copy every note edited more than once to `Name (2).md` and could rename the note living at an old path, on every device. A copy left on the server that was changed meanwhile is merged; an unchanged old copy of a note that moved or was deleted elsewhere goes to `.trash/`. The same holds when a device starts from a fresh sync state over a folder that already has the notes.
+- **`sync scope` can't change the folders under a running sync:** it refuses while the app, `sync watch` or `serve --sync` syncs the vault on that machine (stop it, change the folders, start it again), and says exactly what happens to the files left out and the notes now included. Before, a running `watch`/`serve` kept the old selection, so deleting a folder just left out deleted it on every device.
+- **A note deleted on a selective device is sent as deleted**, never as a "move" onto another note outside the selection that happens to have the same text (an empty note, or one made from a template).
+- **One sync per vault on a machine:** the app, `sync watch`, `serve --sync` and `sync once` no longer sync the same vault folder at once (which duplicated new notes on every device). A second one says "Quire is already syncing this vault (the app or `quire-cli serve`)", waits and takes over when the first stops; `sync once` and `sync scope` refuse.
+- **A note sync changes while Quire is starting is merged into your open tab**, never overwritten by its autosave: sync now starts after the folder watcher, open notes are checked against the disk when it starts, and a save never replaces a change on disk it hasn't taken in.
+- **Web app saves can't overwrite sync or agent writes:** the "still the version you started from" check is made as one step with the write, against every write in the `serve` process (sync, MCP, agents). "Save mine as a copy" saved twice at once now makes two copies instead of one replacing the other.
+- **An agent's new note accepted on two devices before they synced** ends up as one note, not `Name (2).md`, when both have the same text.
+- With a selection set, Quire 0.9 shows sync as off for that vault instead of syncing it from an empty state (which duplicated notes).
+- A note moved out of a device's selection elsewhere while it was edited on that device now takes the edit along when the changes merge, instead of leaving it behind as a separate note.
+- The recovery key written by `quire-cli sync join --create --recovery-key-file` goes straight into a new file readable only by you, and app state files are saved through temporary files with unpredictable names that are always created new.
+
 ## [0.9.1] - 2026-11-04
 
 The first published 0.9 release. (0.9.0 was tagged, but its release build stopped on two packaging problems before anything was published.)

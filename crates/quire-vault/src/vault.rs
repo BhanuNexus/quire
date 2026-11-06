@@ -79,6 +79,19 @@ impl Vault {
         self.storage.write_atomic(p, content)
     }
 
+    /// Write `content` only if the note is still `expected` (its text as
+    /// [`Self::read`] gives it; `None`: it must not exist yet), checked and
+    /// written as one step against every other write in this process (see
+    /// [`Storage::write_bytes_if`]). Returns whether it wrote.
+    pub fn write_if(&self, p: &NotePath, expected: Option<&str>, content: &str) -> Result<bool> {
+        let still = |now: Option<&[u8]>| match (now, expected) {
+            (None, None) => true,
+            (Some(b), Some(e)) => crate::storage::decode(b) == e,
+            _ => false,
+        };
+        self.storage.write_bytes_if(p, &still, content.as_bytes())
+    }
+
     pub fn exists(&self, p: &NotePath) -> bool {
         self.storage.exists(p)
     }

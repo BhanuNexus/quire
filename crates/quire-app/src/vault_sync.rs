@@ -152,6 +152,10 @@ pub enum SyncStatus {
     Waiting(String),
     /// Something needs the user (wrong token, missing key…).
     Error(String),
+    /// Another Quire process syncs this vault on this device (the app,
+    /// `quire-cli serve --sync` or `sync watch`); this one waits and takes
+    /// over when it stops. Says so in words.
+    Elsewhere(String),
 }
 
 impl SyncStatus {
@@ -163,6 +167,7 @@ impl SyncStatus {
             Self::Offline(_) => "Offline".into(),
             Self::Waiting(_) => "Waiting for files".into(),
             Self::Error(_) => "Sync needs attention".into(),
+            Self::Elsewhere(_) => "Synced by another Quire".into(),
         }
     }
 }
@@ -286,12 +291,108 @@ impl SyncConfig {
 
     pub fn load(root: &Path) -> Option<Self> {
         let s = std::fs::read_to_string(sync_dir(root).join("config.json")).ok()?;
-        serde_json::from_str(&s).ok()
+        let mut v: serde_json::Value = serde_json::from_str(&s).ok()?;
+        if let Some(o) = v.as_object_mut()
+            && !o.contains_key("device")
+            && let Some(d) = o.remove(PARTIAL_DEVICE)
+        {
+            o.insert("device".into(), d);
+        }
+        serde_json::from_value(v).ok()
     }
 
     fn save(&self, root: &Path) -> Result<(), String> {
-        let text = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        let mut v = serde_json::to_value(self).map_err(|e| e.to_string())?;
+        if !self.selection().is_everything()
+            && let Some(o) = v.as_object_mut()
+            && let Some(d) = o.remove("device")
+        {
+            // Quire 0.9 can't read this file then, so it shows sync as off
+            // for this vault rather than sync it from an empty state.
+            o.insert(PARTIAL_DEVICE.into(), d);
+        }
+        let text = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
         crate::atomic::write(&sync_dir(root).join("config.json"), text.as_bytes(), false).map_err(|e| e.to_string())
+    }
+}
+
+/// Where `config.json` keeps the device id while a selection is set: Quire
+/// 0.9 needs `device`, so it doesn't take the file for a sync setup. 0.9
+/// knows nothing of selections and keeps no state for them; syncing such a
+/// folder it would start afresh over the notes already there.
+const PARTIAL_DEVICE: &str = "partial_device";
+
+/// What another Quire process syncing the same vault on this device says.
+pub const ALREADY_SYNCING: &str = "Quire is already syncing this vault (the app or `quire-cli serve`)";
+
+/// One sync process per vault and device.
+///
+/// An exclusive lock on `.quire/sync/lock`, held while a worker runs (the
+/// app, `sync watch`, `serve --sync`) or for one `sync once` / `sync scope`.
+/// Two processes with their own engine state would each send a new note as
+/// a note of its own. The OS lets go of the lock when the process ends,
+/// however it ends.
+#[derive(Debug)]
+pub struct SyncLock {
+    _file: std::fs::File,
+    root: PathBuf,
+}
+
+/// Vaults this process holds the sync lock for: a worker being replaced
+/// lets go after its pass, and the new one waits quietly for that.
+static LOCKED_HERE: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+fn locked_here() -> std::sync::MutexGuard<'static, Vec<PathBuf>> {
+    LOCKED_HERE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+impl Drop for SyncLock {
+    fn drop(&mut self) {
+        let mut here = locked_here();
+        if let Some(i) = here.iter().position(|r| *r == self.root) {
+            here.swap_remove(i);
+        }
+    }
+}
+
+/// Why [`lock_sync`] didn't get the lock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LockError {
+    /// Another process (or another worker in this one) syncs the vault.
+    Busy {
+        in_this_process: bool,
+    },
+    Io(String),
+}
+
+impl std::fmt::Display for LockError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Busy { .. } => f.write_str(ALREADY_SYNCING),
+            Self::Io(e) => write!(f, "can't lock the sync state: {e}"),
+        }
+    }
+}
+
+/// Take the sync lock for the vault at `root`, without waiting.
+pub fn lock_sync(root: &Path) -> Result<SyncLock, LockError> {
+    let dir = sync_dir(root);
+    std::fs::create_dir_all(&dir).map_err(|e| LockError::Io(e.to_string()))?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(dir.join("lock"))
+        .map_err(|e| LockError::Io(e.to_string()))?;
+    let key = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    match file.try_lock() {
+        Ok(()) => {
+            locked_here().push(key.clone());
+            Ok(SyncLock { _file: file, root: key })
+        }
+        Err(std::fs::TryLockError::WouldBlock) => Err(LockError::Busy { in_this_process: locked_here().contains(&key) }),
+        Err(std::fs::TryLockError::Error(e)) => Err(LockError::Io(e.to_string())),
     }
 }
 
@@ -370,6 +471,11 @@ pub struct VaultStore {
     incoming: Option<(quire_vault::ContentHash, quire_sync::ActorRef, String)>,
     /// Selective sync: the folders this device holds.
     selection: Selection,
+    /// The files outside the selection after the last pass that finished:
+    /// a note that went missing can only have been moved out to one that
+    /// appeared since (see [`LocalStore::moved_out`]). `None` before the
+    /// first pass of this process.
+    outside_before: Option<std::collections::HashSet<String>>,
 }
 
 fn b64() -> base64::engine::GeneralPurpose {
@@ -386,7 +492,25 @@ impl VaultStore {
             lane: Lane::Mixed,
             incoming: None,
             selection: Selection::default(),
+            outside_before: None,
         }
+    }
+
+    /// The files outside the selection: unselected notes and attachments.
+    fn unselected(&self) -> Vec<NotePath> {
+        if self.selection.is_everything() || self.lane == Lane::Shared {
+            return Vec::new();
+        }
+        self.vault.storage().list().unwrap_or_default().into_iter().filter(|p| !self.selection.includes(p.as_str())).collect()
+    }
+
+    /// After a pass that finished: remember which files are outside the
+    /// selection now.
+    fn remember_unselected(&mut self) {
+        if self.selection.is_everything() || self.lane == Lane::Shared {
+            return;
+        }
+        self.outside_before = Some(self.unselected().into_iter().map(|p| p.as_str().to_string()).collect());
     }
 
     /// Notes and attachments only: `.quire/shared/` is never listed, read,
@@ -493,6 +617,28 @@ impl VaultStore {
         out
     }
 
+    /// What a write or removal may replace: the file exactly as the engine
+    /// read it at the start of the pass (or no file). Checked as one step
+    /// with the write ([`quire_vault::Storage::write_bytes_if`]), so a save
+    /// from the editor, the web app or an agent in between is never
+    /// overwritten (the engine retries on its next pass instead).
+    fn as_read(&self, path: &str) -> impl Fn(Option<&[u8]>) -> bool + use<> {
+        use base64::Engine as _;
+        let expected = self.seen.get(path).cloned().flatten();
+        let attachment = quire_sync::engine::is_attachment(path);
+        let path = path.to_string();
+        move |now: Option<&[u8]>| {
+            let now = now.map(|b| {
+                if attachment {
+                    quire_sync::engine::fingerprint(&path, &b64().encode(b))
+                } else {
+                    String::from_utf8_lossy(b.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(b)).into_owned()
+                }
+            });
+            now == expected
+        }
+    }
+
     fn unchanged_since_read(&self, path: &str) -> Result<(), String> {
         // A path the engine didn't see at the start of the pass must still not exist.
         let expected = self.seen.get(path).cloned().flatten();
@@ -564,14 +710,16 @@ impl LocalStore for VaultStore {
         !self.outside_lane(path)
     }
 
-    fn moved_out(&self, base: &str) -> Option<(String, String)> {
+    fn moved_out(&self, base: &str, skip: &std::collections::BTreeSet<String>) -> Option<(String, String)> {
         use base64::Engine as _;
-        if self.selection.is_everything() || self.lane == Lane::Shared {
-            return None;
-        }
         // Only when a selected note went missing; the unselected files on
-        // this device are few or none (a server holding some folders).
-        self.vault.storage().list().ok()?.into_iter().filter(|p| !self.selection.includes(p.as_str())).find_map(|p| {
+        // this device are few or none (a server holding some folders). A
+        // file another synced note has, or one that was already here at the
+        // end of the last pass, is another note with the same text: the
+        // note was deleted, not moved there.
+        let fresh =
+            |p: &NotePath| !skip.contains(p.as_str()) && self.outside_before.as_ref().is_none_or(|before| !before.contains(p.as_str()));
+        self.unselected().into_iter().filter(fresh).find_map(|p| {
             let text = if quire_sync::engine::is_attachment(p.as_str()) {
                 if self.size_and_time(p.as_str()).is_none_or(|(n, _)| n > MAX_ATTACHMENT_BYTES) {
                     return None;
@@ -582,7 +730,7 @@ impl LocalStore for VaultStore {
             } else {
                 return None;
             };
-            (quire_sync::engine::fingerprint(p.as_str(), &text) == base).then(|| (p.as_str().to_string(), text))
+            (!text.trim().is_empty() && quire_sync::engine::fingerprint(p.as_str(), &text) == base).then(|| (p.as_str().to_string(), text))
         })
     }
 
@@ -609,7 +757,6 @@ impl LocalStore for VaultStore {
             // never written, so never deleted here either.
             return Ok(());
         }
-        self.unchanged_since_read(path)?;
         if path.starts_with(SHARED_PREFIX) {
             if path.contains("/.") || path.contains("..") {
                 return Err("not a vault settings file".into());
@@ -618,16 +765,20 @@ impl LocalStore for VaultStore {
             // this one must list them too, or it would pass on deletions.
             self.shared = true;
         }
+        let changed = || "it changed while syncing".to_string();
+        let still = self.as_read(path);
         if quire_sync::engine::is_attachment(path) {
             let bytes = b64().decode(text).map_err(|e| format!("damaged attachment: {e}"))?;
-            self.vault.storage().write_bytes_atomic(&NotePath::new(path), &bytes).map_err(|e| e.to_string())?;
+            if !self.vault.storage().write_bytes_if(&NotePath::new(path), &still, &bytes).map_err(|e| e.to_string())? {
+                return Err(changed());
+            }
             self.seen.insert(path.to_string(), Some(quire_sync::engine::fingerprint(path, text)));
             return Ok(());
         }
-        if path.starts_with(SHARED_PREFIX) {
-            self.vault.storage().write_atomic(&NotePath::new(path), text).map_err(|e| e.to_string())?;
-        } else {
-            self.vault.write(&NotePath::new(path), text).map_err(|e| e.to_string())?;
+        if !self.vault.storage().write_bytes_if(&NotePath::new(path), &still, text.as_bytes()).map_err(|e| e.to_string())? {
+            return Err(changed());
+        }
+        if !path.starts_with(SHARED_PREFIX) {
             self.keep_provenance(path, text);
         }
         self.seen.insert(path.to_string(), Some(text.to_string()));
@@ -647,7 +798,9 @@ impl LocalStore for VaultStore {
             return Ok(());
         }
         // Deleted elsewhere: goes to the vault's trash, so it can come back.
-        self.vault.trash(&NotePath::new(path)).map_err(|e| e.to_string())?;
+        if !self.vault.storage().trash_if(&NotePath::new(path), &self.as_read(path)).map_err(|e| e.to_string())? {
+            return Err("it changed while syncing".into());
+        }
         self.seen.insert(path.to_string(), None);
         Ok(())
     }
@@ -714,6 +867,8 @@ struct Session {
     lane: Option<(FolderTransport, Engine, VaultStore)>,
     /// This device's agent store, to share review history (0.10).
     agent: quire_agent::AgentStore,
+    /// Held for the session's life: no other process syncs this vault here.
+    _lock: SyncLock,
 }
 
 /// The outcome of one pass, and when to try again without a nudge.
@@ -724,7 +879,7 @@ struct Pass {
 }
 
 impl Session {
-    fn new(root: PathBuf, vault: Vault, cfg: SyncConfig, token: &str, key: VaultKey) -> Self {
+    fn new(root: PathBuf, vault: Vault, cfg: SyncConfig, token: &str, key: VaultKey, lock: SyncLock) -> Self {
         let link = Link::new(&cfg, token, Some(&sync_dir(&root)));
         let engine = Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), key.keys(), load_state(&root, &cfg));
         // In a sync folder, vault settings travel in a lane of their own,
@@ -741,7 +896,7 @@ impl Session {
             device.name = cfg.device_name.trim().to_string();
         }
         let agent = quire_agent::AgentStore::open(&vault, device, Arc::new(quire_agent::SystemClock));
-        Self { root, vault, cfg, key, link, engine, store, lane: None, agent }
+        Self { root, vault, cfg, key, link, engine, store, lane: None, agent, _lock: lock }
     }
 
     /// Whether `.quire/shared/` travels on this device now (turned on here,
@@ -772,6 +927,9 @@ impl Session {
         snapshot_reads(&mut self.store);
         let mut res = self.engine.sync(&mut self.store, self.link.transport(), &today());
         let _ = save_state(root, cfg, &self.engine.state);
+        if res.is_ok() {
+            self.store.remember_unselected();
+        }
         if self.lane.is_none()
             && runs_shared_lane(root, cfg)
             && let Some(dir) = &cfg.folder
@@ -810,7 +968,11 @@ impl Session {
         // Another device turned on sharing vault settings: remember it here.
         if self.store.shared && !self.cfg.shared_state {
             self.cfg.shared_state = true;
-            let _ = self.cfg.save(&self.root);
+            // Only that switch: the rest of the file stays as it is now.
+            if let Some(mut now) = SyncConfig::load(&self.root) {
+                now.shared_state = true;
+                let _ = now.save(&self.root);
+            }
         }
         if res.is_ok() && self.shares_state() {
             import_review(&self.agent);
@@ -883,6 +1045,7 @@ impl LastPass {
             SyncStatus::Waiting(w) => ("waiting", w.clone()),
             SyncStatus::Offline(e) => ("offline", e.clone()),
             SyncStatus::Error(e) => ("error", e.clone()),
+            SyncStatus::Elsewhere(e) => ("elsewhere", e.clone()),
             SyncStatus::Syncing | SyncStatus::Off => ("syncing", String::new()),
         };
         let last = Self {
@@ -985,7 +1148,35 @@ impl SyncWorker {
         let worker_stop = Arc::clone(&stop);
         let thread = std::thread::spawn(move || {
             let stop = worker_stop;
-            let mut session = Session::new(root, vault, cfg, &token, key);
+            // One sync per vault and device: while another process syncs
+            // this vault, wait (saying so) and take over when it stops.
+            let mut told = false;
+            let since = Instant::now();
+            let lock = loop {
+                match lock_sync(&root) {
+                    Ok(l) => break l,
+                    Err(e) => {
+                        // A worker of this process being replaced lets go after
+                        // its pass: wait for that quietly, for a while.
+                        let quiet = matches!(e, LockError::Busy { in_this_process: true }) && since.elapsed() < Duration::from_secs(3);
+                        if !quiet && !told {
+                            let what = match &e {
+                                LockError::Busy { .. } => {
+                                    SyncStatus::Elsewhere(format!("{ALREADY_SYNCING}. This one takes over when it stops."))
+                                }
+                                LockError::Io(_) => SyncStatus::Error(e.to_string()),
+                            };
+                            let _ = events.send(SyncEvent::Status(what));
+                            told = true;
+                        }
+                        let wait = if quiet { Duration::from_millis(200) } else { Duration::from_secs(5) };
+                        if matches!(msgs.recv_timeout(wait), Ok(Msg::Stop)) || stop.load(Ordering::Relaxed) {
+                            return;
+                        }
+                    }
+                }
+            };
+            let mut session = Session::new(root, vault, cfg, &token, key, lock);
             // A server that needs a newer Quire says so plainly instead of failing each pass.
             if let Some(notice) = session.too_old() {
                 let _ = events.send(SyncEvent::Status(SyncStatus::Error(notice)));
@@ -1074,7 +1265,11 @@ fn open_parts(root: &Path) -> Result<(Vault, SyncConfig, String, VaultKey), Stri
 /// One sync pass of the vault at `root`, in this thread (`quire-cli sync once`).
 pub fn sync_once_at(root: &Path) -> Result<Report, String> {
     let (vault, cfg, token, key) = open_parts(root)?;
-    let mut session = Session::new(root.to_path_buf(), vault, cfg, &token, key);
+    let lock = lock_sync(root).map_err(|e| match e {
+        LockError::Busy { .. } => format!("{ALREADY_SYNCING}; it keeps this vault in sync, nothing to do here."),
+        LockError::Io(_) => e.to_string(),
+    })?;
+    let mut session = Session::new(root.to_path_buf(), vault, cfg, &token, key, lock);
     if let Some(notice) = session.too_old() {
         return Err(notice);
     }
@@ -1082,7 +1277,7 @@ pub fn sync_once_at(root: &Path) -> Result<Report, String> {
     match pass.status {
         SyncStatus::Synced(_) | SyncStatus::Waiting(_) => Ok(pass.report.unwrap_or_default()),
         SyncStatus::Syncing => Err("a note changed while syncing, or other devices were busy; run it again".into()),
-        SyncStatus::Offline(e) | SyncStatus::Error(e) => Err(e),
+        SyncStatus::Offline(e) | SyncStatus::Error(e) | SyncStatus::Elsewhere(e) => Err(e),
         SyncStatus::Off => Err("sync is off".into()),
     }
 }
@@ -1222,8 +1417,20 @@ pub fn sync_join_at(
 /// Change which folders the vault at `root` syncs. The engine's state
 /// moves with it, so notes now included are fetched and notes now left out
 /// are never sent as deletes.
+///
+/// Refused while a sync process runs for the vault on this device: it
+/// would go on with the old selection (and its own copy of the state)
+/// until restarted.
 pub fn sync_set_selection_at(root: &Path, selection: &Selection) -> Result<(), String> {
     let mut cfg = SyncConfig::load(root).ok_or("Sync isn't set up for this vault")?;
+    let _lock = lock_sync(root).map_err(|e| match e {
+        LockError::Busy { .. } => {
+            format!(
+                "{ALREADY_SYNCING}. Stop it first (quit the app, or stop `quire-cli sync watch` / `serve --sync`), then change the folders."
+            )
+        }
+        LockError::Io(_) => e.to_string(),
+    })?;
     let from = state_file(&cfg);
     cfg.only.clone_from(&selection.only);
     cfg.exclude.clone_from(&selection.exclude);
@@ -1638,6 +1845,111 @@ mod tests {
         // A one-off pass works too, and finds nothing left to do.
         let r = sync_once_at(&vb).unwrap();
         assert_eq!(r.pushed, 0);
+    }
+
+    /// Review finding 5: one sync process per vault and device. A second
+    /// worker (the app next to `serve --sync`) waits and says so, then takes
+    /// over; one-off commands refuse.
+    #[test]
+    fn one_sync_process_per_vault_and_device() {
+        let dir = tempfile::tempdir().unwrap();
+        let (va, shared) = (dir.path().join("Vault"), dir.path().join("Syncthing"));
+        for d in [&va, &shared] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(va.join("Plan.md"), "# Plan\n").unwrap();
+        sync_create_at(&va, &SyncTarget::Folder(shared), "correct horse battery", "server", &Selection::default()).unwrap();
+        let first = SyncWorker::start_headless(&va, Duration::from_mins(1)).unwrap();
+        let synced = |w: &SyncWorker, what: &str| {
+            let start = Instant::now();
+            loop {
+                assert!(start.elapsed() < Duration::from_secs(30), "{what}");
+                if let Some(SyncEvent::Status(SyncStatus::Synced(_))) = w.next_event(Duration::from_millis(100)) {
+                    return;
+                }
+            }
+        };
+        synced(&first, "the first worker never synced");
+        assert!(matches!(lock_sync(&va), Err(LockError::Busy { .. })));
+        let once = sync_once_at(&va).unwrap_err();
+        assert!(once.contains(ALREADY_SYNCING), "{once}");
+        let scope = sync_set_selection_at(&va, &Selection::new(&["Work".into()], &[]).unwrap()).unwrap_err();
+        assert!(scope.contains(ALREADY_SYNCING) && scope.contains("Stop it first"), "{scope}");
+        assert!(SyncConfig::load(&va).unwrap().selection().is_everything(), "nothing changed");
+
+        let second = SyncWorker::start_headless(&va, Duration::from_mins(1)).unwrap();
+        let start = Instant::now();
+        loop {
+            assert!(start.elapsed() < Duration::from_secs(30), "the second worker never said why it waits");
+            match second.next_event(Duration::from_millis(100)) {
+                Some(SyncEvent::Status(SyncStatus::Elsewhere(e))) => {
+                    assert!(e.contains(ALREADY_SYNCING), "{e}");
+                    break;
+                }
+                Some(SyncEvent::Status(SyncStatus::Synced(_))) => panic!("two workers synced the same vault"),
+                _ => {}
+            }
+        }
+        first.stop_and_wait();
+        synced(&second, "the second worker never took over");
+        second.stop_and_wait();
+        sync_once_at(&va).unwrap();
+        // The lock goes with the process; the file stays, harmlessly.
+        assert!(sync_dir(&va).join("lock").exists());
+        drop(lock_sync(&va).unwrap());
+    }
+
+    /// Quire 0.9 needs `device` in config.json: with a selection set, it
+    /// doesn't find it, so it shows sync as off instead of syncing the
+    /// folder from an empty state. Quire 0.10 reads both.
+    #[test]
+    fn a_selective_config_is_off_limits_to_0_9() {
+        #[derive(Deserialize)]
+        #[allow(dead_code, reason = "only parsed")]
+        struct Config09 {
+            space: SpaceId,
+            device: DeviceId,
+            device_name: String,
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = SyncConfig {
+            server: String::new(),
+            folder: Some(dir.path().join("f")),
+            space: SpaceId::random().unwrap(),
+            device: DeviceId::random().unwrap(),
+            device_name: "server".into(),
+            shared_state: false,
+            only: vec!["Work/".into()],
+            exclude: Vec::new(),
+        };
+        cfg.save(dir.path()).unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(sync_dir(dir.path()).join("config.json")).unwrap()).unwrap();
+        assert!(raw.get("device").is_none() && raw.get(PARTIAL_DEVICE).is_some());
+        assert!(serde_json::from_value::<Config09>(raw).is_err(), "0.9 can't load it");
+        assert_eq!(SyncConfig::load(dir.path()), Some(cfg.clone()));
+        cfg.only.clear();
+        cfg.save(dir.path()).unwrap();
+        let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(sync_dir(dir.path()).join("config.json")).unwrap()).unwrap();
+        assert!(serde_json::from_value::<Config09>(raw).is_ok(), "everything again: 0.9 syncs it as before");
+        assert_eq!(SyncConfig::load(dir.path()), Some(cfg));
+    }
+
+    /// A note changed by the editor (or the web app, or an agent) after the
+    /// pass read it is never overwritten by sync, even between its check and
+    /// its write.
+    #[test]
+    fn sync_writes_check_the_file_as_one_step() {
+        let vault = Vault::in_memory(&[("Plan.md", "one\n")]);
+        let mut store = VaultStore::new(vault.clone());
+        snapshot_reads(&mut store);
+        vault.write(&NotePath::new("Plan.md"), "one, saved meanwhile\n").unwrap();
+        assert!(store.write("Plan.md", "from sync\n").is_err());
+        assert!(store.remove("Plan.md").is_err());
+        assert_eq!(vault.read(&NotePath::new("Plan.md")).unwrap(), "one, saved meanwhile\n");
+        snapshot_reads(&mut store);
+        store.write("Plan.md", "from sync\n").unwrap();
+        assert_eq!(vault.read(&NotePath::new("Plan.md")).unwrap(), "from sync\n");
+        assert!(store.write("New.md", "new\n").is_ok(), "a new file, where none was read");
     }
 
     #[test]

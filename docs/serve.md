@@ -64,8 +64,16 @@ folders on the server; `--exclude Journal` leaves one out. Notes outside the
 selection are never written there and are never sent as deleted: the other
 devices keep them whatever happens on the server. A note moved into an
 unselected folder on the server is sent as a move. Change it later with
-`quire-cli sync scope ~/vault --only …` or `--all`; widening fetches the
-notes now included. Folder names are compared exactly, letter case included.
+`quire-cli sync scope ~/vault --only …` or `--all`, while nothing syncs the
+vault on this machine: `scope` refuses while `sync watch`, `serve --sync` or
+the app runs (stop it, change the folders, start it again). Narrowing
+deletes nothing: the files left out stay on this disk, and nothing done to
+them is sent while they're left out. Widening fetches the notes now
+included as they are on the other devices; a copy here that was changed
+meanwhile is merged with them (or kept beside them if the changes overlap),
+and an unchanged old copy of a note that moved or was deleted elsewhere goes
+to the vault's `.trash/`. Folder names are compared exactly, letter case
+included.
 
 Then:
 
@@ -79,6 +87,16 @@ Conflicts, history and "who wrote this" work as in the app: overlapping
 edits keep both versions (`Note (conflict from laptop 2026-11-05).md`), an
 edit beats a delete. `watch` stops on Ctrl+C or SIGTERM after finishing the
 pass under way, so no file is left half-written.
+
+**One sync per vault on a machine.** Only one process syncs a vault folder
+at a time (a lock on `.quire/sync/lock`): two would each send a new note as a
+note of its own, and every device would get it twice. If the Quire app on
+the same machine already syncs `~/vault`, `sync watch` and `serve --sync`
+say "Quire is already syncing this vault (the app or `quire-cli serve`)",
+wait, and take over when it stops; the app does the same next to a running
+`serve --sync` (Settings → Sync shows "Synced by another Quire"). Either way
+the files are synced once, and each sees the other's changes on disk.
+`sync once` and `sync scope` refuse instead.
 
 ## 2. Serve it
 
@@ -100,7 +118,7 @@ quire-cli serve ~/vault --sync --public-url https://notes.example.com
 | `--port N` | Port (default 7311). |
 | `--bind ADDR` | Address to listen on (default `127.0.0.1`). Anything else prints a warning; every address (`0.0.0.0`) also needs `--public-url`. |
 | `--public-url URL` | The address people and apps use, behind your proxy. Needed for OAuth and for `Origin`/`Host` checks to accept it. |
-| `--sync [--poll 60s]` | Run `sync watch` in the same process. |
+| `--sync [--poll 60s]` | Run `sync watch` in the same process (it waits while the app or another `quire-cli` syncs this vault here). |
 | `--read-only` | No editing in the web app and no writes over MCP. |
 | `--hide FOLDER` | Hide a folder from the web app (repeatable). |
 | `--allow-private-urls` | Let MCP's `capture_url` fetch private and loopback addresses. |
@@ -185,7 +203,11 @@ Saving checks that the note hasn't changed since you opened it. If it has
 don't overlap you get both combined to check and save; when they do, you
 see what differs and can save yours as a copy. Every save is written
 atomically and kept in the note's history as "You · via web · home server",
-with the version before it, so it can be undone in the app.
+with the version before it, so it can be undone in the app. The check that
+the note is still the version you started from is made at the moment of
+writing, as one step with the write, so a sync pass or an agent writing at
+that instant is never overwritten. "Save mine as a copy" picks the copy's
+name in the same step: two copies saved at once get two names.
 
 **Sessions** end after 8 hours without use and 7 days after signing in, or
 when you sign out or change the passphrase. After 5 wrong passphrases, each

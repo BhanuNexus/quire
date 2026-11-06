@@ -251,12 +251,49 @@ mod tests {
         assert_eq!(&*w.active_doc().expect("doc").text(), "# N\nONE\ntwo\nthree\n");
     }
 
+    /// Review finding 6: the app opens its startup vault deferred; a note
+    /// sync (or anything else) changed before the watcher ran is merged into
+    /// the restored tab, never overwritten by its autosave.
+    #[test]
+    fn a_change_before_the_deferred_watcher_starts_is_merged() {
+        let dir = tempfile::tempdir().expect("dir");
+        std::fs::write(dir.path().join("Plan.md"), "# Plan\n").expect("write");
+        let mut w = Workspace::new(Settings::default());
+        w.open_vault_deferred(dir.path()).expect("open");
+        let p = NotePath::new("Plan.md");
+        let id = w.open_note(&p).expect("open note");
+        // The phone's edit arrives before the first frame is drawn.
+        std::fs::write(dir.path().join("Plan.md"), "# Plan\none\n").expect("write");
+        w.start_deferred();
+        w.insert_text("typed ");
+        assert!(w.save(id));
+        assert_eq!(std::fs::read_to_string(dir.path().join("Plan.md")).expect("read"), "typed # Plan\none\n");
+    }
+
+    /// A save never replaces a change on disk it hasn't taken in (a watcher
+    /// event missed or not handled yet): the change is merged first.
+    #[test]
+    fn a_save_never_overwrites_a_change_it_has_not_seen() {
+        let mut w = ws(&[("N.md", "# N\none\ntwo\nthree\n")]);
+        let p = NotePath::new("N.md");
+        let id = w.open_note(&p).expect("open");
+        w.active_doc_mut().expect("doc").replace_minimally("# N\nONE\ntwo\nthree\n");
+        w.vault().expect("vault").write(&p, "# N\none\ntwo\nthree (phone)\n").expect("write");
+        assert!(!w.save(id), "not over the phone's edit");
+        assert_eq!(w.vault().expect("vault").read(&p).expect("read"), "# N\none\ntwo\nthree (phone)\n");
+        assert_eq!(&*w.active_doc().expect("doc").text(), "# N\nONE\ntwo\nthree (phone)\n", "merged");
+        assert!(w.save(id));
+        assert_eq!(w.vault().expect("vault").read(&p).expect("read"), "# N\nONE\ntwo\nthree (phone)\n");
+    }
+
     #[test]
     fn conflicting_outside_change_waits_for_a_decision() {
         let mut w = ws(&[("N.md", "a\nb\n")]);
         let p = NotePath::new("N.md");
         let id = w.open_note(&p).expect("open");
         w.active_doc_mut().expect("doc").replace_minimally("a\nmine\n");
+        // The file changed on disk (what the watcher reports).
+        w.vault().expect("vault").write(&p, "a\ntheirs\n").expect("write");
         assert!(!w.absorb_external_change(&p, "a\ntheirs\n"));
         let doc = w.active_doc().expect("doc");
         assert!(doc.conflict, "autosave pauses until resolved");
@@ -274,6 +311,7 @@ mod tests {
         let id = w.open_note(&NotePath::new("N.md")).expect("open");
         // Simulate: we edited line b, the file changed b differently elsewhere.
         w.active_doc_mut().expect("doc").replace_minimally("a\nmine\n");
+        w.vault().expect("vault").write(&NotePath::new("N.md"), "a\ntheirs\n").expect("write");
         let r = merge::merge3("a\nb\n", "a\nmine\n", "a\ntheirs\n");
         w.active_doc_mut().expect("doc").pending_merge =
             Some(crate::PendingMerge { theirs: "a\ntheirs\n".into(), merged: r.text, conflicts: 1 });

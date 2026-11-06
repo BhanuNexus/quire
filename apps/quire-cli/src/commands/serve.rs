@@ -215,6 +215,7 @@ but use HTTPS (a reverse proxy or tunnel) for anything beyond your own network."
                     SyncEvent::Status(SyncStatus::Offline(e)) => format!("Sync offline: {e} (retrying)"),
                     SyncEvent::Status(SyncStatus::Error(e)) => format!("Sync needs attention: {e}"),
                     SyncEvent::Status(SyncStatus::Waiting(w)) => format!("Sync waiting for files: {w}"),
+                    SyncEvent::Status(SyncStatus::Elsewhere(e)) => format!("Sync paused: {e}"),
                     SyncEvent::Report(r) => {
                         for p in &r.conflict_copies {
                             eprintln!("Sync conflict: the other version was saved as “{p}”.");

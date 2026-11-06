@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{Mutex, MutexGuard, PoisonError, RwLock};
 use std::time::SystemTime;
 
 use crate::{NotePath, Result, VaultError, io_err};
@@ -57,6 +57,51 @@ pub trait Storage: Send + Sync {
         bytes.push(b'\n');
         self.write_bytes_atomic(path, &bytes)
     }
+    /// Write `bytes` only if the file is still what `still` accepts (its
+    /// bytes now; `None` when it doesn't exist): a compare-and-swap. Returns
+    /// whether it wrote. [`LocalFs`] checks and writes as one step against
+    /// every other write through this process's storage (sync, the web app,
+    /// agents, the editor); other programs can't be held off. `still` must
+    /// not write to storage itself.
+    fn write_bytes_if(&self, path: &NotePath, still: &dyn Fn(Option<&[u8]>) -> bool, bytes: &[u8]) -> Result<bool> {
+        if !still(read_if_exists(self, path)?.as_deref()) {
+            return Ok(false);
+        }
+        self.write_bytes_atomic(path, bytes)?;
+        Ok(true)
+    }
+    /// [`Self::trash`] only if the file is still what `still` accepts, as
+    /// one step like [`Self::write_bytes_if`]. Returns whether it did.
+    fn trash_if(&self, path: &NotePath, still: &dyn Fn(Option<&[u8]>) -> bool) -> Result<bool> {
+        if !still(read_if_exists(self, path)?.as_deref()) {
+            return Ok(false);
+        }
+        self.trash(path)?;
+        Ok(true)
+    }
+}
+
+/// A file's bytes, `None` when it doesn't exist.
+fn read_if_exists(s: &(impl Storage + ?Sized), path: &NotePath) -> Result<Option<Vec<u8>>> {
+    match s.read_bytes(path) {
+        Ok(b) => Ok(Some(b)),
+        Err(VaultError::NotFound(_)) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Text as [`Storage::read`] gives it: a UTF-8 BOM dropped, decoded lossily.
+pub(crate) fn decode(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
+    String::from_utf8_lossy(bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes))
+}
+
+/// One write to vault files at a time in this process, so a write that
+/// checks the file first ([`Storage::write_bytes_if`]) can't be overtaken
+/// between its check and its write. Held only for the write itself.
+static WRITES: Mutex<()> = Mutex::new(());
+
+fn one_write_at_a_time() -> MutexGuard<'static, ()> {
+    WRITES.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 // ---------------------------------------------------------------- LocalFs
@@ -105,24 +150,10 @@ impl LocalFs {
         }
         Ok(())
     }
-}
 
-impl Storage for LocalFs {
-    fn list(&self) -> Result<Vec<NotePath>> {
-        let mut out = Vec::new();
-        self.walk(&self.root, &mut out)?;
-        out.sort();
-        Ok(out)
-    }
-
-    fn read_bytes(&self, path: &NotePath) -> Result<Vec<u8>> {
-        let abs = self.abs(path)?;
-        std::fs::read(&abs).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound { VaultError::NotFound(path.to_string()) } else { io_err(path.to_string())(e) }
-        })
-    }
-
-    fn write_bytes_atomic(&self, path: &NotePath, contents: &[u8]) -> Result<()> {
+    /// Write `contents` to `path` through a temporary file (call with
+    /// [`one_write_at_a_time`] held).
+    fn persist(&self, path: &NotePath, contents: &[u8]) -> Result<()> {
         let abs = self.abs(path)?;
         let dir = abs.parent().unwrap_or(&self.root);
         std::fs::create_dir_all(dir).map_err(io_err(path.to_string()))?;
@@ -141,8 +172,56 @@ impl Storage for LocalFs {
         Ok(())
     }
 
+    fn move_to_trash(&self, path: &NotePath) -> Result<()> {
+        let src = self.abs(path)?;
+        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+        let dest = self.root.join(".trash").join(format!("{stamp} {}", path.file_name()));
+        std::fs::create_dir_all(dest.parent().unwrap_or(&self.root)).map_err(io_err(".trash"))?;
+        std::fs::rename(&src, &dest).map_err(io_err(path.to_string()))
+    }
+}
+
+impl Storage for LocalFs {
+    fn list(&self) -> Result<Vec<NotePath>> {
+        let mut out = Vec::new();
+        self.walk(&self.root, &mut out)?;
+        out.sort();
+        Ok(out)
+    }
+
+    fn read_bytes(&self, path: &NotePath) -> Result<Vec<u8>> {
+        let abs = self.abs(path)?;
+        std::fs::read(&abs).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound { VaultError::NotFound(path.to_string()) } else { io_err(path.to_string())(e) }
+        })
+    }
+
+    fn write_bytes_atomic(&self, path: &NotePath, contents: &[u8]) -> Result<()> {
+        let _one = one_write_at_a_time();
+        self.persist(path, contents)
+    }
+
+    fn write_bytes_if(&self, path: &NotePath, still: &dyn Fn(Option<&[u8]>) -> bool, bytes: &[u8]) -> Result<bool> {
+        let _one = one_write_at_a_time();
+        if !still(read_if_exists(self, path)?.as_deref()) {
+            return Ok(false);
+        }
+        self.persist(path, bytes)?;
+        Ok(true)
+    }
+
+    fn trash_if(&self, path: &NotePath, still: &dyn Fn(Option<&[u8]>) -> bool) -> Result<bool> {
+        let _one = one_write_at_a_time();
+        if !still(read_if_exists(self, path)?.as_deref()) {
+            return Ok(false);
+        }
+        self.move_to_trash(path)?;
+        Ok(true)
+    }
+
     fn rename(&self, from: &NotePath, to: &NotePath) -> Result<()> {
         let (a, b) = (self.abs(from)?, self.abs(to)?);
+        let _one = one_write_at_a_time();
         if b.exists() {
             return Err(VaultError::Exists(to.to_string()));
         }
@@ -153,11 +232,8 @@ impl Storage for LocalFs {
     }
 
     fn trash(&self, path: &NotePath) -> Result<()> {
-        let src = self.abs(path)?;
-        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-        let dest = self.root.join(".trash").join(format!("{stamp} {}", path.file_name()));
-        std::fs::create_dir_all(dest.parent().unwrap_or(&self.root)).map_err(io_err(".trash"))?;
-        std::fs::rename(&src, &dest).map_err(io_err(path.to_string()))
+        let _one = one_write_at_a_time();
+        self.move_to_trash(path)
     }
 
     fn exists(&self, path: &NotePath) -> bool {
@@ -188,6 +264,7 @@ impl Storage for LocalFs {
 
     fn remove(&self, path: &NotePath) -> Result<()> {
         let abs = self.abs(path)?;
+        let _one = one_write_at_a_time();
         std::fs::remove_file(&abs).map_err(io_err(path.to_string()))
     }
 
@@ -249,6 +326,25 @@ impl Storage for MemFs {
     fn write_bytes_atomic(&self, path: &NotePath, contents: &[u8]) -> Result<()> {
         self.files.write().expect("lock").insert(path.clone(), (contents.to_vec(), SystemTime::now()));
         Ok(())
+    }
+
+    fn write_bytes_if(&self, path: &NotePath, still: &dyn Fn(Option<&[u8]>) -> bool, bytes: &[u8]) -> Result<bool> {
+        let mut files = self.files.write().expect("lock");
+        if !still(files.get(path).map(|(c, _)| c.as_slice())) {
+            return Ok(false);
+        }
+        files.insert(path.clone(), (bytes.to_vec(), SystemTime::now()));
+        Ok(true)
+    }
+
+    fn trash_if(&self, path: &NotePath, still: &dyn Fn(Option<&[u8]>) -> bool) -> Result<bool> {
+        let mut files = self.files.write().expect("lock");
+        if !still(files.get(path).map(|(c, _)| c.as_slice())) {
+            return Ok(false);
+        }
+        files.remove(path).ok_or_else(|| VaultError::NotFound(path.to_string()))?;
+        self.trashed.write().expect("lock").push(path.clone());
+        Ok(true)
     }
 
     fn rename(&self, from: &NotePath, to: &NotePath) -> Result<()> {
@@ -334,5 +430,58 @@ mod tests {
             fs.write_atomic(&p, "b").unwrap();
             assert_eq!(std::fs::metadata(&abs).unwrap().permissions().mode() & 0o777, 0o640);
         }
+    }
+
+    #[test]
+    fn writes_that_check_first_never_overwrite_a_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = LocalFs::new(dir.path()).unwrap();
+        let mem = MemFs::new();
+        for fs in [&local as &dyn Storage, &mem] {
+            let p = NotePath::new("Plan.md");
+            let is = |want: &'static str| move |now: Option<&[u8]>| now == Some(want.as_bytes());
+            // Must not exist yet.
+            assert!(fs.write_bytes_if(&p, &|now| now.is_none(), b"one").unwrap());
+            assert!(!fs.write_bytes_if(&p, &|now| now.is_none(), b"two").unwrap());
+            assert!(fs.write_bytes_if(&p, &is("one"), b"two").unwrap());
+            assert!(!fs.write_bytes_if(&p, &is("one"), b"three").unwrap());
+            assert_eq!(fs.read(&p).unwrap(), "two");
+            assert!(!fs.trash_if(&p, &is("one")).unwrap());
+            assert!(fs.trash_if(&p, &is("two")).unwrap());
+            assert!(!fs.exists(&p));
+        }
+    }
+
+    #[test]
+    fn a_check_and_its_write_are_one_step_against_other_writes() {
+        // Many threads add one line each through a read-check-write loop:
+        // with the check and the write as one step, no line is lost.
+        let dir = tempfile::tempdir().unwrap();
+        let fs = std::sync::Arc::new(LocalFs::new(dir.path()).unwrap());
+        let p = NotePath::new("Log.md");
+        fs.write_atomic(&p, "").unwrap();
+        let threads: Vec<_> = (0..8)
+            .map(|i| {
+                let (fs, p) = (std::sync::Arc::clone(&fs), p.clone());
+                std::thread::spawn(move || {
+                    for j in 0..10 {
+                        loop {
+                            let now = fs.read_bytes(&p).unwrap();
+                            let mut next = now.clone();
+                            next.extend_from_slice(format!("{i}-{j}\n").as_bytes());
+                            if fs.write_bytes_if(&p, &|cur| cur == Some(now.as_slice()), &next).unwrap() {
+                                break;
+                            }
+                        }
+                        // Plain writes elsewhere go on meanwhile.
+                        fs.write_atomic(&NotePath::new(format!("other {i}.md").as_str()), "x").unwrap();
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(fs.read(&p).unwrap().lines().count(), 80);
     }
 }

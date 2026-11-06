@@ -314,11 +314,14 @@ impl Workspace {
         Ok(())
     }
 
-    /// [`Self::open_vault`], except that reading every note into the index
-    /// and watching the folder wait for [`Self::start_deferred`]. The app
-    /// opens its startup vault this way and starts them after its first
-    /// frame, so a large vault doesn't delay the window (design §9: nothing
-    /// but settings is read before the first frame).
+    /// [`Self::open_vault`], except that reading every note into the index,
+    /// watching the folder and syncing wait for [`Self::start_deferred`].
+    /// The app opens its startup vault this way and starts them after its
+    /// first frame, so a large vault doesn't delay the window (design §9:
+    /// nothing but settings is read before the first frame).
+    ///
+    /// Sync starts only once the watcher runs, so every note it writes is
+    /// seen and merged into the notes open here, never overwritten by them.
     pub fn open_vault_deferred(&mut self, root: &Path) -> Result<(), String> {
         let vault = Vault::open_local(root).map_err(|e| e.to_string())?;
         self.save_all();
@@ -332,7 +335,6 @@ impl Workspace {
         self.settings.last_vault = self.vault_root.clone();
         // The neural embedding cache lives inside the vault.
         self.apply_embedder();
-        self.start_sync();
         Ok(())
     }
 
@@ -350,7 +352,27 @@ impl Workspace {
                 None
             }
         };
+        // Notes opened before the watcher ran (the restored session) may have
+        // changed on disk since they were read: take those changes in now.
+        self.recheck_open_notes();
         self.index.load(vault);
+        // Only now: what sync writes from here on reaches the open notes.
+        self.start_sync();
+    }
+
+    /// Bring every open note up to date with its file on disk, as if the
+    /// watcher had seen it change (merged into unsaved edits, or reloaded).
+    fn recheck_open_notes(&mut self) {
+        let Some(vault) = self.vault.clone() else { return };
+        let open: Vec<NotePath> = self.docs.iter().filter_map(|d| d.path.clone()).collect();
+        for p in open {
+            if let Ok(content) = vault.read(&p)
+                && self.docs.iter().any(|d| d.path.as_ref() == Some(&p) && d.disk_text().is_some() && !d.matches_disk(&content))
+            {
+                self.history.keep(&vault, &p, &content, crate::history_ops::now_ms(), true);
+                self.absorb_external_change(&p, &content);
+            }
+        }
     }
 
     /// Use an existing vault (tests, demos, in-memory scratch vaults).
@@ -686,7 +708,32 @@ impl Workspace {
             p.at_ms = now;
             p.to_json()
         });
-        match vault.write(&path, &text) {
+        // Written only over what this note last read or wrote: a change that
+        // landed meanwhile (sync, another program) and wasn't taken in yet is
+        // merged first, never overwritten. A file gone meanwhile is put back.
+        let base = self.docs[i].disk_text();
+        let written = match &base {
+            Some(b) => vault.storage().write_bytes_if(
+                &path,
+                &|now| now.is_none_or(|n| String::from_utf8_lossy(n.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(n)) == **b),
+                text.as_bytes(),
+            ),
+            None => vault.write(&path, &text).map(|()| true),
+        };
+        let written = match written {
+            Ok(false) => {
+                if let Ok(content) = vault.read(&path) {
+                    let vault = vault.clone();
+                    self.history.keep(&vault, &path, &content, now, true);
+                    self.absorb_external_change(&path, &content);
+                }
+                return false;
+            }
+            Ok(true) => Ok(()),
+            Err(e) => Err(e),
+        };
+        let Some(vault) = self.vault.as_ref() else { return false };
+        match written {
             Ok(()) => {
                 self.history.keep_with(vault, &path, &text, now, false, prov);
                 self.docs[i].next_save_provenance = None;
