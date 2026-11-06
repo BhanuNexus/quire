@@ -26,7 +26,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.10.1"
+version = "0.10.2"
 edition = "2024"
 rust-version = "1.97"
 license = "AGPL-3.0-or-later"
@@ -248,8 +248,15 @@ opt-level = "s"
 opt-level = "s"
 [profile.release.package.quire-typeset]
 opt-level = "s"
+# The two binaries say `strip = true` again: when a binary's package has a
+# `[profile.release.package.X]` override that doesn't set `strip`, Cargo
+# (1.97) links it with `-C strip=debuginfo`, not the `strip = true` above.
+# The symbol tables were then 16 MiB of the Lite binary, and 0.10.1's
+# release build failed the size budget at 57 MiB (docs/design/0.10-perf.md
+# §2). `packaging/check-size.sh` now also fails on an unstripped binary.
 [profile.release.package.quire-cli]
 opt-level = "s"
+strip = true
 # The app's state and its UI: what a frame runs is mostly egui and the
 # editor crates (quire-text, quire-markdown, quire-index), which stay at 3;
 # the typing and canvas budgets are checked by the perf job.
@@ -257,6 +264,7 @@ opt-level = "s"
 opt-level = "s"
 [profile.release.package.quire-desktop]
 opt-level = "s"
+strip = true
 
 [profile.release.package.egui]
 opt-level = 3
@@ -435,6 +443,11 @@ opt-level = 3
 inherits = "release"
 lto = false
 codegen-units = 16
+strip = false
+# The release overrides strip these two; keep their symbols for profiling.
+[profile.perf.package.quire-cli]
+strip = false
+[profile.perf.package.quire-desktop]
 strip = false
 
 [profile.dev.package."*"]

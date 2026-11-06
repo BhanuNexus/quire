@@ -54,7 +54,8 @@ if [[ -n "$engine" && "$edition" != full ]]; then
 fi
 if [[ -n "$engine" ]]; then
   [[ -f "$engine" ]] || { echo "ENGINE_BIN: no file at $engine" >&2; exit 1; }
-  sha256sum "$engine" | cut -d' ' -f1 > "$engine_pin"
+  # From stdin, so a file name never changes the output (packaging/unpack-engine.sh).
+  sha256sum < "$engine" | cut -c1-64 > "$engine_pin"
   # Only these builds embed it; a later development build must not.
   trap 'rm -f "$engine_pin"' EXIT
   echo "Bundling the engine $engine ($(cat "$engine_pin"))"

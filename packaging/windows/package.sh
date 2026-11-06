@@ -64,7 +64,7 @@ if [[ -n "$engine" ]]; then
   cp "$engine" "$stage/quire-ai-engine.exe"
   # Signed before it is hashed: the app pins the file exactly as shipped.
   sign "$stage/quire-ai-engine.exe"
-  sha256sum "$stage/quire-ai-engine.exe" | cut -d' ' -f1 > "$engine_pin"
+  sha256sum < "$stage/quire-ai-engine.exe" | cut -c1-64 > "$engine_pin"
   # Only these builds embed it; a later development build must not.
   trap 'rm -f "$engine_pin"' EXIT
   echo "Bundling the engine $engine ($(cat "$engine_pin"))"

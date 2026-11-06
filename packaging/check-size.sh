@@ -20,3 +20,11 @@ if [ "$mib" -gt "$budget" ]; then
   echo "::error::$bin is ${mib} MiB, over the ${budget} MiB budget for $edition"
   exit 1
 fi
+# An ELF binary must be stripped: a symbol table is a sign that a profile
+# override lost `strip = true` (0.10.1: 16 MiB of the Lite binary; see the
+# comment above [profile.release.package.quire-cli] in Cargo.toml).
+if command -v readelf > /dev/null && readelf -h "$bin" > /dev/null 2>&1 \
+  && readelf -S -W "$bin" | grep -q ' \.symtab '; then
+  echo "::error::$bin has a symbol table; release binaries are stripped (strip = true)"
+  exit 1
+fi

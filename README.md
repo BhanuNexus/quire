@@ -34,7 +34,7 @@ Download from [Releases](https://github.com/BhanuNexus/quire/releases). Each rel
 | Export as PDF | ✓ | — |
 | On-device AI engine (about 18 MB) | included | downloaded when you turn on-device AI on |
 | Voice notes (record from the microphone) | ✓ | — |
-| App size (Linux) | ~68 MiB | ~40 MiB |
+| App size (Linux) | ~68 MiB | ~41 MiB |
 | File names | `Quire-<version>-…` | `Quire-Lite-<version>-…` |
 
 They're the same app working on the same files and settings. Installing one replaces the other, so you can switch either way at any time and your notes, settings and sync carry over. Settings → About says which one you have. Not sure which to take? Take **Quire**.
@@ -83,7 +83,7 @@ Settings live in `~/.config/quire/settings.toml` (Linux), `~/Library/Application
 **Quire Lite.** Math, Mermaid diagrams and PDF export use Typst, which is about 28 MB of the app. To build without them (they show as their Markdown source instead; everything else is the same), add `--no-default-features`:
 
 ```sh
-cargo build --release -p quire-desktop --no-default-features   # ~40 MiB instead of ~68 MiB
+cargo build --release -p quire-desktop --no-default-features   # ~41 MiB instead of ~68 MiB
 ```
 
 ## What it does

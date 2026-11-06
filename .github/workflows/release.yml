@@ -130,7 +130,8 @@ jobs:
           exe=""; case "$TARGET" in *windows*) exe=".exe" ;; esac
           bin="target/$TARGET/release/quire-ai-engine$exe"
           gzip -9 -n -c "$bin" > "dist/quire-ai-engine-$TARGET.gz"
-          sha() { if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
+          # From stdin: only the 64 hex digits, never a "*" marker or an escaped file name.
+          sha() { if command -v sha256sum >/dev/null; then sha256sum < "$1"; else shasum -a 256 < "$1"; fi | cut -c1-64; }
           size=$(wc -c < "dist/quire-ai-engine-$TARGET.gz" | tr -d ' ')
           echo "$(sha "dist/quire-ai-engine-$TARGET.gz") $size $(sha "$bin")" > "pins/engine.sha256.$TARGET"
           cat "pins/engine.sha256.$TARGET"

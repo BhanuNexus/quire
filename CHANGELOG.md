@@ -4,9 +4,9 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
-## [0.10.1] - 2026-11-06
+## [0.10.2] - 2026-11-06
 
-The first published 0.10 release. (0.10.0 was tagged, but its release build stopped before anything was published: the release's test job lacked the audio library voice notes use.)
+The first published 0.10 release. (0.10.0 and 0.10.1 were tagged, but their release builds stopped before anything was published: 0.10.0's test job lacked the audio library voice notes use, and 0.10.1's Linux build was over its size budget (the app wasn't stripped of its symbol table) and its Windows build couldn't check the bundled AI engine against its hash.)
 
 Quire 0.10 brings your vault to your browser and your agents, on a server you own (Beta), voice notes, much lighter on-device AI, and a round of things people asked for: Vim macros and block editing, reminders while Quire is closed, Excalidraw drawings, canvas cards that look like the preview, and Obsidian Bases formulas.
 
@@ -60,7 +60,7 @@ Quire 0.10 brings your vault to your browser and your agents, on a server you ow
 - The full edition's Linux packages now depend on the ALSA library (`libasound2`), for recording.
 - **A suggestion you rejected stays rejected** when the agent writes it again reworded a little (letter case, spacing, a full stop), rewrites the lines around it, or suggests it again in a later run within 30 days: Quire compares what the lines say, not only the exact change, and still asks about anything new.
 - With an Obsidian Base, canvas or PDF open, Insights describes that file (for a base: its views, columns and formulas) instead of showing the note that was open before, and the status bar no longer counts that note's words.
-- **Smaller downloads:** the app is about a fifth smaller (Quire 68 MiB, Quire Lite 40 MiB on Linux, from 84 and 48), with every feature kept: code off the hot path is optimised for size, the full edition no longer carries its fonts twice, and the Linux build folds identical code.
+- **Smaller downloads:** the app is 16–19 % smaller (Quire 68 MiB, Quire Lite 41 MiB on Linux, from 84 and 48), with every feature kept: code off the hot path is optimised for size, the full edition no longer carries its fonts twice, and the Linux build folds identical code.
 - **A large vault starts and types faster:** with 10,000 notes the window appears before the vault is read, typing in a long note no longer redraws the whole file list every frame, and indexing is almost twice as fast (2,000 notes in about 360 ms, from 690 ms on the same machine).
 - `quire-cli mcp` and `serve` answer at once in a vault with many PDFs: PDF text is read in the background, and while it is, `search` over attachments says so (`indexing: {done, total}` and a sentence in the text).
 
@@ -372,8 +372,8 @@ Downloads for Windows, macOS (universal) and Linux are attached to the release, 
 ### Added
 - First version: live Markdown styling, wikilinks with rename refactoring, backlinks, related notes, daily notes, templates, command palette, quick open, inline calculator and natural-language dates.
 
-[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.10.1...HEAD
-[0.10.1]: https://github.com/BhanuNexus/quire/compare/v0.9.1...v0.10.1
+[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.10.2...HEAD
+[0.10.2]: https://github.com/BhanuNexus/quire/compare/v0.9.1...v0.10.2
 [0.9.1]: https://github.com/BhanuNexus/quire/compare/v0.8.0...v0.9.1
 [0.8.0]: https://github.com/BhanuNexus/quire/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/BhanuNexus/quire/compare/v0.6.0...v0.7.0
