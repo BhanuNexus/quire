@@ -61,6 +61,8 @@ pub struct SecureState {
     folders: std::cell::RefCell<Option<(Instant, Vec<String>)>>,
     /// "Agent connections…": the Agents tab opens on its Connections view.
     pub show_connections: bool,
+    /// [`ai_off`], as last read.
+    ai_cache: std::cell::Cell<Option<(Instant, bool)>>,
 }
 
 impl std::fmt::Debug for SecureState {
@@ -87,9 +89,18 @@ pub fn system_keychain() -> bool {
     crate::secrets::store().kind() == "system keychain"
 }
 
-/// Whether AI is off for the open vault (agent policy `ai = "off"`).
+/// Whether AI is off for the open vault (agent policy `ai = "off"`), read
+/// from the policy at most once a second (the UI asks every frame).
 pub fn ai_off(ws: &Workspace) -> bool {
-    ws.agent.as_ref().is_some_and(|a| a.policy_state().active().iter().any(|p| p.ai_off()))
+    let cache = &ws.features.secure.ai_cache;
+    if let Some((at, off)) = cache.get()
+        && at.elapsed() < Duration::from_secs(1)
+    {
+        return off;
+    }
+    let off = ws.agent.as_ref().is_some_and(|a| a.policy_state().active().iter().any(|p| p.ai_off()));
+    cache.set(Some((Instant::now(), off)));
+    off
 }
 
 /// Save a note of a locked folder over what it last read (`base`): the
@@ -459,6 +470,7 @@ impl Workspace {
         let mut doc = quire_agent::policy_edit::PolicyDoc::parse(text.as_deref())?;
         doc.set_ai_off(off);
         store.write_policy(&doc.text())?;
+        self.features.secure.ai_cache.set(None);
         self.apply_ai_switch();
         Ok(())
     }
