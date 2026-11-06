@@ -72,6 +72,7 @@ jobs:
         with:
           persist-credentials: false
       - name: ALSA headers (the full edition records voice notes through cpal)
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
       - name: Install the pinned toolchain (rust-toolchain.toml)
         shell: bash
