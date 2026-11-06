@@ -211,10 +211,11 @@ pub mod activity {
     }
 }
 
-/// "Claude", or "Claude (on home server)" for a suggestion made on another device.
+/// "Claude", or "Claude · on “home server” (self-reported name, device
+/// d_…)" for a suggestion made on another device.
 fn reviewer_label(p: &quire_agent::Proposal) -> String {
     match p.origin() {
-        Some((_, name)) => format!("{} (on {})", p.actor.label, if name.is_empty() { "another device" } else { name }),
+        Some((id, name)) => format!("{} · on {}", p.actor.label, quire_agent::device_label(id, name)),
         None => p.actor.label.clone(),
     }
 }

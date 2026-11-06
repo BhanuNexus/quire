@@ -30,6 +30,7 @@ use crate::actor::{Actor, ActorKind, Op, Provenance};
 use crate::change::WriteError;
 use crate::ids::{BatchId, ProposalId, RunId};
 use crate::ledger::{LedgerEntry, LedgerQuery};
+use crate::policy::{OpKind, Route};
 use crate::proposal::{Proposal, ProposalChange, ProposalStatus, ProposalStore};
 use crate::store::AgentStore;
 
@@ -71,6 +72,9 @@ pub enum RevertAction {
     Propose { base: String, text: String },
     /// A note the agent created was edited since: propose deleting it.
     ProposeDelete,
+    /// Bring back a deleted note, for review: the delete was made on
+    /// another device where the agent couldn't have written directly.
+    ProposeCreate { text: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +94,7 @@ impl RevertStep {
             RevertAction::Undelete { .. } => format!("Bring back “{name}”"),
             RevertAction::Propose { .. } => format!("“{name}” was edited since: suggest the undo for review"),
             RevertAction::ProposeDelete => format!("Suggest deleting “{name}” (created by the agent and maybe edited since), for review"),
+            RevertAction::ProposeCreate { .. } => format!("Suggest bringing back “{name}”, for review"),
         }
     }
 }
@@ -125,6 +130,18 @@ const fn is_write(op: Op) -> bool {
 fn creates(e: &LedgerEntry) -> bool {
     e.op == Op::Create || (e.op == Op::Accept && e.before.is_none() && e.snap_before.is_none())
 }
+
+/// The kind of write a ledger op was, for policy.
+const fn op_kind(op: Op) -> OpKind {
+    match op {
+        Op::Create => OpKind::Create,
+        Op::Rename => OpKind::Rename,
+        Op::Delete => OpKind::Delete,
+        _ => OpKind::Edit,
+    }
+}
+
+const BAD_PATH: &str = "the path isn't one Quire may write (hidden, outside the vault, or not a vault path)";
 
 const BEFORE_GONE: &str = "the version before the change isn't in history any more";
 const AFTER_GONE: &str = "the agent's version isn't in history any more";
@@ -281,6 +298,21 @@ impl AgentStore {
         }
     }
 
+    /// Whether undoing `evs` at `path` may be written directly. Events
+    /// from this device's own ledger: yes (the person asked, and the texts are this
+    /// device's own history). Events from another device's shared ledger are
+    /// untrusted input (0.10.1 security review #2): only where each was an
+    /// agent's change that the agent could have made directly here; anywhere
+    /// else (a person's note, a job or an import, or a zone where agents
+    /// suggest) the undo is a suggestion to review.
+    fn may_undo_directly(&self, path: &NotePath, evs: &[&LedgerEntry]) -> bool {
+        evs.iter().all(|e| {
+            !e.other.contains_key(crate::shared::FROM_SHARED)
+                || (e.actor.kind == ActorKind::Agent
+                    && self.effective(&e.actor, path, op_kind(e.op)).0.route(op_kind(e.op)) == Route::Apply)
+        })
+    }
+
     /// A dry run of undoing the selected events.
     pub fn revert_plan(&self, sel: &RevertSelector) -> RevertPlan {
         let events = self.revert_events(sel);
@@ -296,6 +328,14 @@ impl AgentStore {
         for e in events.iter().rev().filter(|e| e.op == Op::Rename) {
             let (Some(from), Some(to)) = (&e.path, &e.to) else { continue };
             let now_at = renamed.get(to).cloned().unwrap_or_else(|| to.clone());
+            if crate::store::vault_file(vault, from).is_err() || crate::store::vault_file(vault, &now_at).is_err() {
+                plan.skipped.push((now_at, BAD_PATH.into()));
+                continue;
+            }
+            if !self.may_undo_directly(&now_at, &[e]) {
+                plan.skipped.push((now_at, "it was renamed on another device; rename it back yourself if you want".into()));
+                continue;
+            }
             if !vault.exists(&now_at) {
                 plan.skipped.push((to.clone(), "it isn't there any more".into()));
                 continue;
@@ -332,9 +372,26 @@ impl AgentStore {
             let here = now_at.get(&path).unwrap_or(&path);
             let mut where_ = vec![here, &path];
             where_.extend(recorded.iter().copied());
+            if crate::store::vault_file(vault, &path).is_err() || crate::store::vault_file(vault, here).is_err() {
+                plan.skipped.push((path, BAD_PATH.into()));
+                continue;
+            }
             let current = vault.read(here).ok();
+            let direct = self.may_undo_directly(&path, &evs);
             match self.plan_note(&where_, &evs, current) {
-                Ok(Some(action)) => plan.steps.push(RevertStep { path, action }),
+                Ok(Some(action)) => {
+                    let action = if direct {
+                        action
+                    } else {
+                        match action {
+                            RevertAction::Restore { text, from } => RevertAction::Propose { base: from, text },
+                            RevertAction::Trash { .. } => RevertAction::ProposeDelete,
+                            RevertAction::Undelete { text } => RevertAction::ProposeCreate { text },
+                            other => other,
+                        }
+                    };
+                    plan.steps.push(RevertStep { path, action });
+                }
                 Ok(None) => {}
                 Err(why) => plan.skipped.push((path, why)),
             }
@@ -371,6 +428,12 @@ impl AgentStore {
             let mut e = LedgerEntry::new(actor.clone(), Op::Revert, now).path(&s.path);
             e.batch = Some(batch.clone());
             let r: Result<(), WriteError> = (|| {
+                // The same check again where it writes (a plan can be made
+                // by anyone holding a `RevertPlan`).
+                crate::store::vault_file(&vault, &s.path)?;
+                if let RevertAction::RenameBack { to } = &s.action {
+                    crate::store::vault_file(&vault, to)?;
+                }
                 match &s.action {
                     RevertAction::Restore { text, from } => {
                         let cur = vault.read(&s.path)?;
@@ -436,6 +499,10 @@ impl AgentStore {
                         proposed.push(ProposalChange::delete(&s.path));
                         return Ok(());
                     }
+                    RevertAction::ProposeCreate { text } => {
+                        proposed.push(ProposalChange::create(&s.path, text));
+                        return Ok(());
+                    }
                 }
                 self.record(&e);
                 report.applied += 1;
@@ -487,7 +554,7 @@ impl AgentStore {
                 RevertAction::Propose { base, text } => ProposalChange::edit(&s.path, base, text),
                 RevertAction::Trash { .. } | RevertAction::ProposeDelete => ProposalChange::delete(&s.path),
                 RevertAction::RenameBack { to } => ProposalChange::rename(&s.path, to, true),
-                RevertAction::Undelete { text } => ProposalChange::create(&s.path, text),
+                RevertAction::Undelete { text } | RevertAction::ProposeCreate { text } => ProposalChange::create(&s.path, text),
             });
         }
         if changes.is_empty() {

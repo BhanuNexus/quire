@@ -388,7 +388,14 @@ impl Proposal {
             pending_files: self.pending_changes().filter_map(ProposalChange::subject).cloned().collect(),
             untrusted_source: self.untrusted_source.clone(),
             from_device: self.origin().map(|(id, name)| (id.to_string(), name.to_string())),
+            settled_by: self.settled_by().map(str::to_string),
         }
+    }
+
+    /// The device whose decisions settled this proposal here, when it was
+    /// waiting here and another device decided it (shared review history).
+    pub fn settled_by(&self) -> Option<&str> {
+        self.other.get(crate::shared::SETTLED_BY)?.get("device")?.as_str()
     }
 }
 
@@ -412,8 +419,12 @@ pub struct ProposalSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub untrusted_source: Option<String>,
     /// The device (id, name) the proposal came from, when not this one.
+    /// The name is the one that device reported about itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_device: Option<(String, String)>,
+    /// The device whose decisions settled it here (it was waiting here).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settled_by: Option<String>,
 }
 
 /// Which proposals to list; empty fields match everything.

@@ -402,7 +402,11 @@ fn run_card(ui: &mut egui::Ui, ws: &Workspace, a: &mut ActivityUi, r: &Run, runs
             } else {
                 short_time(r.start)
             };
-            let who = if r.device_name.is_empty() { r.actor_label.clone() } else { format!("{} · on {}", r.actor_label, r.device_name) };
+            let who = if r.device.is_empty() {
+                r.actor_label.clone()
+            } else {
+                format!("{} · on {}", r.actor_label, quire_app::agent::device_label(&r.device, &r.device_name))
+            };
             ui.label(RichText::new(format!("{who} · {when}")).color(pal.strong));
             ui.label(RichText::new(summary(r)).size(12.0).color(pal.muted));
             ui.horizontal_wrapped(|ui| {
