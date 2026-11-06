@@ -303,7 +303,7 @@ pub fn job_name(backend: Backend, vault: &Path) -> String {
 
 /// Why a path can't go into a job file, if it can't.
 ///
-/// 0.10.1 security review #6: every format here is line-based or quoted, and a newline,
+/// 0.10 security review #6: every format here is line-based or quoted, and a newline,
 /// carriage return, NUL or other control character in a folder's name
 /// would start a new systemd directive or crontab line. A `"` can't be
 /// quoted for Task Scheduler (Windows paths never contain one).
@@ -651,10 +651,12 @@ mod tests {
         assert_eq!(cron_quote("/it's/100%"), r"'/it'\''s/100\%'");
         let wu = plan_uninstall(Backend::TaskScheduler, Path::new(r"C:\Users\ada\Notes"), &env());
         assert_eq!(wu.commands[0][..4], ["schtasks", "/Delete", "/F", "/TN"]);
+        // systemd only runs on Linux; on Windows the path would be joined with `\`.
+        #[cfg(unix)]
         assert!(describe(Backend::SystemdUser, &p).iter().any(|l| l.starts_with("File: /home/ada/.config/systemd/user/quire-remind-")));
     }
 
-    /// 0.10.1 security review #6: a line break in a folder's name can't add
+    /// 0.10 security review #6: a line break in a folder's name can't add
     /// a systemd directive or a crontab line, in any format.
     #[test]
     fn paths_with_line_breaks_are_refused_and_others_quoted() {
@@ -674,18 +676,22 @@ mod tests {
             }
         }
         assert!(plan_install(Backend::TaskScheduler, cli, Path::new(r#"C:\a"b"#), &env()).is_err());
-        // Odd but legal names stay one line and one argument in each format.
-        let odd = Path::new("/home/ada/50% \"it's\" $HOME;rm -rf ~ <x>&\\");
-        let p = plan_install(Backend::SystemdUser, cli, odd, &env()).unwrap();
-        let unit = &p.files[0].1;
-        assert_eq!(unit.lines().filter(|l| l.starts_with("ExecStart")).count(), 1, "{unit}");
-        assert!(unit.contains(r#"remind "/home/ada/50%% \"it's\" $$HOME;rm -rf ~ <x>&\\""#), "{unit}");
-        assert!(unit.contains("Description=Quire reminders for 50%% \"it's\" $HOME;rm -rf ~ <x>&\\\\\n"), "{unit}");
-        let line = plan_install(Backend::Cron, cli, odd, &env()).unwrap().cron_line.unwrap();
-        assert!(!line.contains('\n'));
-        assert!(line.contains(r#"remind '/home/ada/50\% "it'\''s" $HOME;rm -rf ~ <x>&\'"#), "{line}");
-        let plist = &plan_install(Backend::LaunchAgent, cli, odd, &env()).unwrap().files[0].1;
-        assert!(plist.contains("<string>/home/ada/50% &quot;it's&quot; $HOME;rm -rf ~ &lt;x&gt;&amp;\\</string>"), "{plist}");
+        // Odd but legal Unix names stay one line and one argument in each Unix
+        // format (on Windows the trailing `\` would be a separator).
+        #[cfg(unix)]
+        {
+            let odd = Path::new("/home/ada/50% \"it's\" $HOME;rm -rf ~ <x>&\\");
+            let p = plan_install(Backend::SystemdUser, cli, odd, &env()).unwrap();
+            let unit = &p.files[0].1;
+            assert_eq!(unit.lines().filter(|l| l.starts_with("ExecStart")).count(), 1, "{unit}");
+            assert!(unit.contains(r#"remind "/home/ada/50%% \"it's\" $$HOME;rm -rf ~ <x>&\\""#), "{unit}");
+            assert!(unit.contains("Description=Quire reminders for 50%% \"it's\" $HOME;rm -rf ~ <x>&\\\\\n"), "{unit}");
+            let line = plan_install(Backend::Cron, cli, odd, &env()).unwrap().cron_line.unwrap();
+            assert!(!line.contains('\n'));
+            assert!(line.contains(r#"remind '/home/ada/50\% "it'\''s" $HOME;rm -rf ~ <x>&\'"#), "{line}");
+            let plist = &plan_install(Backend::LaunchAgent, cli, odd, &env()).unwrap().files[0].1;
+            assert!(plist.contains("<string>/home/ada/50% &quot;it's&quot; $HOME;rm -rf ~ &lt;x&gt;&amp;\\</string>"), "{plist}");
+        }
         let w = plan_install(Backend::TaskScheduler, Path::new(r"C:\Q\quire-cli.exe"), Path::new(r"C:\Users\ada\50% notes & more"), &env())
             .unwrap();
         assert_eq!(w.commands[0][10], r#""C:\Q\quire-cli.exe" remind "C:\Users\ada\50% notes & more""#);
