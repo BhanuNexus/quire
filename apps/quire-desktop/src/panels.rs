@@ -447,6 +447,10 @@ fn folder_menu(ui: &mut egui::Ui, ws: &Workspace, folder: &str, shown: &[NotePat
 
 /// A folder's name with its icon.
 fn folder_label(ws: &Workspace, folder: &str) -> String {
+    // 0.11: a locked folder shows its lock (crate::lock_ui).
+    if let Some(badge) = crate::lock_ui::folder_badge(ws, folder) {
+        return format!("{badge} {folder}");
+    }
     match ws.features.themes.folder_icon(folder) {
         Some(icon) => format!("{icon} {folder}"),
         None => folder.to_string(),
@@ -828,6 +832,10 @@ pub(crate) fn sidebar(
                         let at = term.and_then(|t| ix.source(&h.path).and_then(|s| s.to_lowercase().find(&t))).or(h.offset);
                         open = Some((h.path.clone(), at));
                     }
+                }
+                // 0.11: notes of unlocked locked folders (crate::lock_ui).
+                if let Some(p) = crate::lock_ui::search_section(ui, ws, &st.query, pal) {
+                    open = Some((p, None));
                 }
                 let mut open_page = None;
                 for h in &st.page_hits {

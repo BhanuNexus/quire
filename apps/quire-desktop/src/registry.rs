@@ -236,7 +236,8 @@ pub(crate) const fn ui_target(cmd: Command) -> Option<UiTarget> {
         Command::OpenInbox | Command::LintVault => UiTarget::Right("inbox"),
         Command::ShowAgentActivity => UiTarget::Right("activity"),
         Command::UndoAgentChanges => UiTarget::Overlay(crate::activity_ui::RevertOverlay::make),
-        Command::AgentSettings => UiTarget::Settings("agents"),
+        // 0.11: Connections is a view of the Agents tab (`secure_state` picks it).
+        Command::AgentSettings | Command::AgentConnections => UiTarget::Settings("agents"),
         // ---- WS-B
         Command::ConnectAgent => UiTarget::Settings("mcp"),
         Command::CaptureWebPage => UiTarget::Overlay(crate::mcp_ui::CaptureDialog::make),
@@ -259,6 +260,11 @@ pub(crate) const fn ui_target(cmd: Command) -> Option<UiTarget> {
         // ---- WS-G
         Command::InsertCitation => UiTarget::Overlay(crate::cite_ui::CitePicker::make),
         Command::ImportBibliography => UiTarget::Overlay(crate::cite_ui::ImportDialog::make),
+        // ---- 0.11 security
+        Command::LockFolder => UiTarget::Overlay(crate::lock_ui::LockDialog::make_lock),
+        Command::UnlockFolder => UiTarget::Overlay(crate::lock_ui::LockDialog::make_unlock),
+        Command::ChangeFolderPassphrase => UiTarget::Overlay(crate::lock_ui::LockDialog::make_change),
+        Command::StopLockingFolder => UiTarget::Overlay(crate::lock_ui::LockDialog::make_stop),
         _ => return None,
     })
 }
@@ -312,6 +318,8 @@ pub(crate) fn open_surface(path: &NotePath) -> Option<Box<dyn crate::surfaces::S
         "svg" => Some(Box::new(crate::canvas_ui::SketchSurface::new(path))),
         // ---- 0.10 people: Excalidraw drawings (`.excalidraw.md` opens as a note with its picture)
         "excalidraw" => Some(Box::new(crate::drawing_ui::DrawingSurface::new(path))),
+        // ---- 0.11 security: a locked folder's file opens to its lock screen
+        "qenc" => Some(Box::new(crate::lock_ui::LockedSurface::new(path))),
         _ => None,
     }
 }
@@ -368,5 +376,11 @@ pub(crate) fn layout_samples(ws: &mut Workspace) -> Vec<(&'static str, crate::ov
         ("insert citation", Overlay::Feature(Box::new(crate::cite_ui::CitePicker::sample(true)))),
         ("import bibliography", Overlay::Feature(Box::new(crate::cite_ui::ImportDialog::sample(false)))),
         ("import bibliography: dry run", Overlay::Feature(Box::new(crate::cite_ui::ImportDialog::sample(true)))),
+        // ---- 0.11 security
+        ("lock a folder", Overlay::Feature(Box::new(crate::lock_ui::LockDialog::sample(0)))),
+        ("unlock a folder: wrong passphrase", Overlay::Feature(Box::new(crate::lock_ui::LockDialog::sample(1)))),
+        ("change a folder's passphrase", Overlay::Feature(Box::new(crate::lock_ui::LockDialog::sample(2)))),
+        ("stop locking a folder", Overlay::Feature(Box::new(crate::lock_ui::LockDialog::sample(3)))),
+        ("locked folder: recovery key", Overlay::Feature(Box::new(crate::lock_ui::LockDialog::sample(4)))),
     ]
 }

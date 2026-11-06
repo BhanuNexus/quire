@@ -22,6 +22,11 @@ pub(crate) trait Surface {
     }
     /// Draw into the central panel.
     fn show(&mut self, ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> PanelOut;
+    /// It has done its job and its tab goes away (a locked note's lock
+    /// screen, once the note is open).
+    fn done(&self) -> bool {
+        false
+    }
 }
 
 /// For a file Quire can't edit yet: say so, and offer the system's viewer.
@@ -103,8 +108,14 @@ impl Surfaces {
 
     /// Draw the active surface; false when notes have the central panel.
     pub(crate) fn show_active(&mut self, ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> Option<PanelOut> {
-        let s = self.open.get_mut(self.active?)?;
-        Some(s.show(ui, ws, pal))
+        let i = self.active?;
+        let s = self.open.get_mut(i)?;
+        let out = s.show(ui, ws, pal);
+        if s.done() {
+            self.open.remove(i);
+            self.active = None;
+        }
+        Some(out)
     }
 }
 

@@ -21,6 +21,7 @@ mod calendar_ui;
 mod canvas_ui;
 mod capture_key;
 mod cite_ui;
+mod connections_ui;
 mod decor;
 mod dialogs;
 mod drawing_ui;
@@ -32,6 +33,7 @@ mod highlight;
 mod inbox_ui;
 #[cfg(test)]
 mod layout_check;
+mod lock_ui;
 mod mcp_ui;
 mod meta_refactor_ui;
 mod onboarding_ui;

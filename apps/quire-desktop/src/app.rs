@@ -692,6 +692,10 @@ impl eframe::App for QuireApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let started = Instant::now();
+        // 0.11: idle locking of locked folders counts from the last input.
+        if ui.ctx().input(|i| i.events.iter().any(|e| !matches!(e, egui::Event::WindowFocused(_)))) {
+            self.ws.note_user_activity();
+        }
         let now = (self.ws.active_doc().map(|d| d.id), self.ws.docs().len());
         // A different note became active and none was closed: it was opened.
         if now.0.is_some() && now.0 != self.front_note.0 && now.1 >= self.front_note.1 {

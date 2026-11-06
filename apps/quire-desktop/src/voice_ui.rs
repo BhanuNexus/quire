@@ -267,7 +267,8 @@ impl OverlayView for VoiceDialog {
         if matches!(self.state, State::Recording { .. }) {
             ctx.request_repaint_after(Duration::from_millis(50));
         }
-        let transcription = voice::transcription(&ws.settings);
+        // 0.11: a vault with AI off sends no recording anywhere.
+        let transcription = if quire_app::secure_state::ai_off(ws) { None } else { voice::transcription(&ws.settings) };
         egui::Modal::new(egui::Id::unique("quire-voice")).frame(egui::Frame::popup(&ctx.global_style()).fill(pal.panel)).show(ctx, |ui| {
             let w = 460.0_f32.min(ctx.content_rect().width() - 48.0);
             ui.set_width(w);

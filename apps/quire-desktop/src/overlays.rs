@@ -176,6 +176,12 @@ fn items(ws: &Workspace, mode: Mode, query: &str, mac: bool) -> Vec<Item> {
                     action: Action::Open(h.path),
                 }
             }));
+            // 0.11: notes of unlocked locked folders (crate::lock_ui).
+            v.extend(crate::lock_ui::quick_open(ws, query).into_iter().map(|(label, detail, p)| Item {
+                label,
+                detail,
+                action: Action::Open(p),
+            }));
             let q = query.trim();
             if !q.is_empty() {
                 // Files with an editor of their own: `.base`, canvases, PDFs.
@@ -183,11 +189,12 @@ fn items(ws: &Workspace, mode: Mode, query: &str, mac: bool) -> Vec<Item> {
                     .other_files()
                     .into_iter()
                     .filter(crate::registry::has_surface)
+                    .filter(|p| crate::lock_ui::list_file(ws, p))
                     .filter_map(|p| Some((fuzzy_score(p.as_str(), q)?, p)))
                     .collect();
                 files.sort_by_key(|(sc, _)| std::cmp::Reverse(*sc));
                 v.extend(files.into_iter().take(10).map(|(_, p)| Item {
-                    label: p.file_name().to_string(),
+                    label: quire_app::nav::display_name(ws, &p),
                     detail: p.folder().to_string(),
                     action: Action::OpenFile(p),
                 }));

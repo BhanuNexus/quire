@@ -29,11 +29,21 @@ pub(crate) struct AgentsSettingsUi {
     new_role: ZoneRole,
     error: Option<String>,
     show_file: bool,
+    /// 0.11: the Connections view instead of the rules.
+    connections: bool,
+    pub(crate) conn: crate::connections_ui::ConnectionsUi,
 }
 
 impl Default for AgentsSettingsUi {
     fn default() -> Self {
-        Self { new_folder: String::new(), new_role: ZoneRole::Agent, error: None, show_file: false }
+        Self {
+            new_folder: String::new(),
+            new_role: ZoneRole::Agent,
+            error: None,
+            show_file: false,
+            connections: false,
+            conn: crate::connections_ui::ConnectionsUi::default(),
+        }
     }
 }
 
@@ -61,6 +71,30 @@ const DEFAULT_MODES: [(Mode, &str); 4] =
 
 pub(crate) fn show(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pal: &Palette) -> PanelOut {
     let st = &mut st.agents_settings;
+    // 0.11: "Agent connections…" opens this tab on its Connections view.
+    if std::mem::take(&mut ws.features.secure.show_connections) {
+        st.connections = true;
+    }
+    if ws.agent_store().is_some() {
+        ui.horizontal_wrapped(|ui| {
+            ui.selectable_value(&mut st.connections, false, "Rules");
+            ui.selectable_value(&mut st.connections, true, "Connections");
+            ui.add_space(12.0);
+            let mut off = quire_app::secure_state::ai_off(ws);
+            if ui
+                .checkbox(&mut off, "AI off for this vault")
+                .on_hover_text("No agent (MCP, external, the agent panel) and no AI provider may use this vault. Other devices follow; turning it back on needs approval there.")
+                .changed()
+                && let Err(e) = ws.set_ai_off(off)
+            {
+                ws.notify(NoticeLevel::Error, e);
+            }
+        });
+        ui.separator();
+        if st.connections {
+            return crate::connections_ui::show(ui, ws, &mut st.conn, pal);
+        }
+    }
     let Some(store) = ws.agent_store().cloned() else {
         ui.label(RichText::new("Open a vault first; agent settings are per vault.").color(pal.muted));
         return PanelOut::default();

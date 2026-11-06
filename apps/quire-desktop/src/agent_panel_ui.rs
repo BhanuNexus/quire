@@ -184,6 +184,21 @@ pub(crate) fn show(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pa
     if p.running.is_some() {
         ui.ctx().request_repaint_after(Duration::from_millis(60));
     }
+    // 0.11: "AI off" for this vault: no model, no external agent.
+    if quire_app::secure_state::ai_off(ws) {
+        ui.add_space(12.0);
+        ui.label(RichText::new("AI is off for this vault").size(16.0).color(pal.strong));
+        ui.add(
+            egui::Label::new(
+                RichText::new("No agent or AI provider can use these notes. Turn it back on in Settings → Agents.").color(pal.muted),
+            )
+            .wrap(),
+        );
+        if ui.button("Agent settings…").clicked() {
+            out.run = Some(Command::AgentSettings);
+        }
+        return out;
+    }
     let ext = external(ws);
     let model = if ext.is_some() { None } else { p.model(ws) };
     if let Some(req) = ws.features.trust.reconcile.take() {
