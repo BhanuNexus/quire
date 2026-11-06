@@ -1293,6 +1293,7 @@ pub(crate) fn status_bar(ui: &mut egui::Ui, ws: &Workspace, pal: &Palette, surfa
                         SyncStatus::Offline(e) => (pal.warn, format!("Can't sync right now; will keep trying.\n{e}")),
                         SyncStatus::Waiting(e) => (pal.warn, e.clone()),
                         SyncStatus::Error(e) => (pal.danger, e.clone()),
+                        SyncStatus::Elsewhere(e) => (pal.muted, e.clone()),
                         SyncStatus::Off => (pal.muted, String::new()),
                     };
                     if ui

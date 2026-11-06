@@ -168,4 +168,58 @@ fn join_watch_and_stop_with_sigterm_leaves_whole_files() {
     assert!(!config.contains(recovery.trim()) && !config.contains(PASS));
 }
 
+/// Review findings 1 and 5: one process syncs a vault on a machine. With
+/// `watch` running, `once` and `scope` refuse and say why; a second `watch`
+/// waits and takes over when the first stops.
+#[test]
+fn one_sync_per_vault_and_scope_waits_for_it() {
+    let env = Env::new();
+    let (a, dropbox, key) = (env.path("A"), env.path("Dropbox"), env.path("recovery.txt"));
+    let a_s = a.to_str().unwrap();
+    std::fs::create_dir_all(a.join("Work")).unwrap();
+    std::fs::write(a.join("Work/Plan.md"), "# Plan\n").unwrap();
+    std::fs::write(a.join("Home.md"), "# Home\n").unwrap();
+    env.run(&["sync", "join", a_s, "--folder", dropbox.to_str().unwrap(), "--create", "--recovery-key-file", key.to_str().unwrap()]);
+    let busy = "Quire is already syncing this vault (the app or `quire-cli serve`)";
+    let stop = |child: &mut std::process::Child| {
+        assert!(Command::new("kill").args(["-TERM", &child.id().to_string()]).status().unwrap().success());
+        let start = Instant::now();
+        while child.try_wait().unwrap().is_none() {
+            assert!(start.elapsed() < Duration::from_mins(1), "watch didn't stop");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+
+    let mut first = env.cmd(&["sync", "watch", a_s, "--poll", "5s"]).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let start = Instant::now();
+    while !a.join(".quire/sync/last.json").exists() {
+        assert!(start.elapsed() < Duration::from_mins(1), "the first watch never synced");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let once = env.cmd(&["sync", "once", a_s]).output().unwrap();
+    assert!(!once.status.success() && text(&once).contains(busy), "{}", text(&once));
+    let scope = env.cmd(&["sync", "scope", a_s, "--only", "Work"]).output().unwrap();
+    assert!(!scope.status.success() && text(&scope).contains(busy) && text(&scope).contains("Stop it first"), "{}", text(&scope));
+    assert!(text(&env.run(&["sync", "status", a_s])).contains("Folders: everything"), "nothing changed");
+
+    let mut second = env.cmd(&["sync", "watch", a_s, "--poll", "5s"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    std::thread::sleep(Duration::from_secs(2));
+    stop(&mut first);
+    // It takes the lock within a few seconds and syncs.
+    std::thread::sleep(Duration::from_secs(8));
+    std::fs::write(a.join("Later.md"), "# Later\n").unwrap();
+    std::thread::sleep(Duration::from_secs(3));
+    stop(&mut second);
+    let said = text(&second.wait_with_output().unwrap());
+    assert!(said.contains(&format!("Waiting: {busy}")), "{said}");
+    assert!(said.contains("Synced"), "the second watch never took over: {said}");
+
+    // Nothing syncs now: the folders can change, and it says what that means.
+    let out = text(&env.run(&["sync", "scope", a_s, "--only", "Work"]));
+    assert!(out.contains("This device now syncs only Work/") && out.contains("stay on this disk"), "{out}");
+    let out = text(&env.run(&["sync", "scope", a_s, "--all"]));
+    assert!(out.contains("now syncs everything") && out.contains("Notes now included are fetched"), "{out}");
+    env.run(&["sync", "once", a_s]);
+}
+
 use std::os::unix::fs::PermissionsExt as _;

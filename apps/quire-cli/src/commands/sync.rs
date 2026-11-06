@@ -35,7 +35,7 @@ pub(crate) const COMMANDS: &[CliCommand] = &[CliCommand {
   quire-cli sync once   <vault>                 one sync pass
   quire-cli sync watch  <vault> [--poll 60s]    keep syncing until Ctrl+C or SIGTERM
   quire-cli sync status <vault>                 how sync is set up and how the last pass went
-  quire-cli sync scope  <vault> (--only FOLDER… [--exclude FOLDER…] | --all)   change which folders sync
+  quire-cli sync scope  <vault> (--only FOLDER… [--exclude FOLDER…] | --all)   change which folders sync (not while a sync runs)
   quire-cli sync share  <vault> on|off          also sync vault settings and review history (agents' suggestions
                         and runs reach your other devices; every device needs Quire 0.9 or later)",
     run,
@@ -333,6 +333,7 @@ pub(crate) fn watch_until(vault: &Path, poll: Duration, stop: &mpsc::Receiver<&'
                 SyncEvent::Status(SyncStatus::Offline(e)) => format!("Offline: {e} (retrying)"),
                 SyncEvent::Status(SyncStatus::Waiting(w)) => format!("Waiting for files: {w}"),
                 SyncEvent::Status(SyncStatus::Error(e)) => format!("Needs attention: {e}"),
+                SyncEvent::Status(SyncStatus::Elsewhere(e)) => format!("Waiting: {e}"),
                 SyncEvent::Report(r) => {
                     last_change = Instant::now();
                     for p in &r.conflict_copies {
@@ -391,6 +392,7 @@ fn status(vault: &Path) -> String {
                 "waiting" => format!("waiting for files: {}", l.detail),
                 "offline" => format!("offline: {}", l.detail),
                 "error" => format!("needs attention: {}", l.detail),
+                "elsewhere" => format!("waiting: {}", l.detail),
                 other => other.to_string(),
             };
             let _ = write!(out, "Last pass {}: {what}", quire_app::chrono_fmt(l.at));
@@ -416,9 +418,30 @@ fn scope(vault: &Path, args: &[String]) -> Result<(), String> {
         }
         s
     };
+    let before = vault_sync::SyncConfig::load(vault).map(|c| c.selection());
     vault_sync::sync_set_selection_at(vault, &sel)?;
-    println!("This device now syncs {}. Notes left out stay where they are on other devices.", sel.describe());
+    print!("{}", scope_message(before.as_ref(), &sel));
     Ok(())
+}
+
+/// What `sync scope` tells the person: only what is true once the next sync
+/// starts (no sync runs meanwhile: `sync scope` refuses while one does).
+fn scope_message(before: Option<&Selection>, after: &Selection) -> String {
+    let mut out = format!("This device now syncs {}. The next `sync once`, `sync watch` or `serve --sync` uses it.\n", after.describe());
+    if !after.is_everything() && before != Some(after) {
+        out.push_str(
+            "Files left out stay on this disk and stop syncing: other devices keep their copies, and nothing done to \
+these files here is sent while they're left out. A note moved here into a folder left out is sent as a move.\n",
+        );
+    }
+    if before.is_some_and(|b| !b.is_everything()) && before != Some(after) {
+        out.push_str(
+            "Notes now included are fetched as they are on the other devices. A copy here that was changed meanwhile is \
+merged with them, or kept beside them if the changes overlap; an unchanged old copy of a note that moved or was deleted \
+elsewhere goes to this vault's .trash. Nothing is deleted on other devices.\n",
+        );
+    }
+    out
 }
 
 #[cfg(test)]

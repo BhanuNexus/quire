@@ -276,6 +276,7 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
             SyncStatus::Offline(e) => ("Offline, will keep trying".to_string(), e.clone(), pal.warn),
             SyncStatus::Waiting(e) => ("Waiting for files".to_string(), e.clone(), pal.warn),
             SyncStatus::Error(e) => ("Needs attention".to_string(), e.clone(), pal.danger),
+            SyncStatus::Elsewhere(e) => ("Synced by another Quire".to_string(), e.clone(), pal.muted),
         };
         egui::Grid::new("sync-status").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
             ui.label("Status");
