@@ -272,6 +272,16 @@ small (a few hundred KB for most vaults; nothing over 4 MB per file),
 kept for 30 days after a suggestion is resolved and three months for runs,
 and kept out of git. Details: [design/0.10-agentsync.md](design/0.10-agentsync.md).
 
+## Locked folders
+
+Folders locked in the Quire app ([design](design/0.11-secure.md)) don't
+exist for `serve`: the web app doesn't list, search, show or accept new
+notes in them, and agents never see them. `serve` holds no key, so it
+can't decrypt them, and nothing plain can be written into them. They still
+sync as their encrypted files (`--sync`), so the server keeps an encrypted
+copy. Unlocking in the browser isn't offered: it would put the key on the
+server; the planned end-to-end encrypted Quire Web is where it belongs.
+
 ## Security, in short
 
 * Every request needs the web passphrase (a session) or an MCP token, on

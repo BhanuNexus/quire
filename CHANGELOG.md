@@ -4,6 +4,27 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Added
+
+#### Locked folders: encryption at rest, per folder (0.11 security)
+- **Lock a folder** ("Lock a folder (encrypt it)…" in the command palette, or `quire-cli lock <vault> <folder>`): its notes and files are stored encrypted on disk (XChaCha20-Poly1305, a key wrapped by your passphrase with Argon2id, the crypto Quire Sync uses), so a stolen disk, your cloud folder or a backup holds only ciphertext. The rest of the vault stays plain Markdown. A recovery key is shown once; it opens the folder if you forget the passphrase. File names stay visible. The format is documented ([docs/formats/locked-folders.md](docs/formats/locked-folders.md)) so other tools can read it.
+- **Unlock** with the passphrase (or the recovery key) in the app: notes are decrypted into memory only and saved encrypted; their history is encrypted too. Locked notes show 🔒 in the sidebar and open to a lock screen. Folders lock again on demand (Ctrl+Alt+Shift+L, or the 🔓 item in the status bar), after 15 minutes without use (Settings: `[security] lock_after_idle_minutes`), and when Quire quits. "Unlock automatically on this computer" keeps the key in the system keychain, only when there is one.
+- **Search covers unlocked locked notes** (search and quick open) from an index kept in memory only; while locked, search says the folder wasn't searched.
+- **Agents never see a locked folder**, locked or not: MCP (stdio and HTTP), external agents and the agent panel. The web app of `quire-cli serve` doesn't show locked folders either; it holds no keys.
+- **Quire Sync and sync folders carry the encrypted files**, so the sync engine never sees their text; another device unlocks with the same passphrase. Two devices editing one locked note offline keep both versions (encrypted files can't be merged).
+- Converting a folder (to locked or back, "Stop locking a folder…" / `quire-cli unlock --convert`) is safe to interrupt at any point and finishes when run again; plain originals are removed only after every encrypted copy was read back and compared. Change the passphrase with "Change a locked folder's passphrase…" or `quire-cli lock … --change-passphrase`; `quire-cli status <vault>` lists locked folders and unfinished conversions; `quire-cli unlock … --check | --cat NOTE` tests a passphrase or prints one note.
+
+#### Agent connections: audit, revoke, tags (0.11 security)
+- **Settings → Agents → Connections** ("Agent connections…"): every agent that used the vault in the last 90 days and every app with a token, with when it was last used, its reads and writes, its waiting suggestions and what it may do in each zone. **Activity** shows its log (reads when read logging is on, writes, suggestions, your decisions), filterable.
+- **Revoke in one click:** an HTTP app's tokens are deleted; an MCP client on this computer or an external agent is marked revoked in the agent policy, so its next start is refused with a clear message and its reads are logged. Leaving out `--client` doesn't get around it.
+- **Limit a connection to tags or folders** (`allow_tags`, `allow_folders` in the agent policy): it sees nothing else, in any tool, resource, search snippet, backlink or answer.
+- **AI off for this vault** (Settings → Agents): no agent and no AI provider or on-device AI may use it. Turning it back on needs approval on your other devices.
+- **Skills from elsewhere:** `quire-cli skill install <dir> --from <file>` shows the skill's source, size, SHA-256 and first lines and installs only with `--yes`; inside a vault, agents get such a skill as untrusted data.
+
+### Changed
+- The agent policy's hard rules now also deny every path in a locked folder, every `.qenc` file and every key file, for agents and Quire's own background jobs.
+- Pasting or dropping a picture into a locked note is refused (it would be stored unencrypted in the attachments folder), and so is exporting a locked note to HTML or PDF (exports go to `Exports/` unencrypted); Copy as HTML still works.
+
 ## [0.10.2] - 2026-11-06
 
 The first published 0.10 release. (0.10.0 and 0.10.1 were tagged, but their release builds stopped before anything was published: 0.10.0's test job lacked the audio library voice notes use, and 0.10.1's Linux build was over its size budget (the app wasn't stripped of its symbol table) and its Windows build couldn't check the bundled AI engine against its hash.)

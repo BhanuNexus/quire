@@ -255,6 +255,55 @@ agent zone), links from the person's notes are suggestions, and
 `wiki/index.md` and `wiki/log.md` are updated
 ([formats](formats/wiki-index-log.md)).
 
+## Connections
+
+Settings → Agents → **Connections** (or "Agent connections…" in the
+command palette) lists every agent that used this vault in the last 90
+days, and every app holding an HTTP token: MCP clients on this computer by
+their `--client` key (or, unverified, by the name they report), apps signed
+in with OAuth, personal tokens, external ACP agents and the agent panel.
+Each row shows when it was last used, its reads (when read logging is on)
+and writes, its suggestions waiting for review, and **what it may do in
+each zone**, worked out by the same check that enforces it.
+
+* **Activity and permissions** opens its log from the ledger (all devices'
+  copies with shared review history): reads, writes, suggestions and your
+  decisions on them, filterable by kind and path.
+* **Revoke**: an HTTP connection's tokens are deleted; a stdio or ACP
+  connection is marked `revoked` in the agent policy, so its next start is
+  refused ("Access for mcp:claude-code was revoked in Quire…") and its
+  reads are logged from then on. A revoked key is denied every path, and an
+  unverified client is matched by the name it reports, so leaving out
+  `--client` doesn't get around it. **Restore access** undoes it (other
+  devices approve that first).
+* **Limit to tags or folders** (Bear-style): the client sees only notes
+  with one of the tags (`#work/q4` counts as `work`) or under one of the
+  folders. Everything else doesn't exist for it: `list`, `search` and its
+  snippets, `neighbors`, backlinks, resources and `ask` leave it out.
+* **AI off for this vault** (top of Settings → Agents): no agent may use the
+  vault (every MCP request gets an error saying so), and Quire sends
+  nothing from it to an AI provider or on-device AI. It travels with the
+  vault; turning it back on needs approval on your other devices.
+
+The policy keys are in [formats/policy.md](formats/policy.md#connections-allow-lists-and-ai-off).
+
+### Locked folders
+
+Folders you lock in Quire (encrypted on disk, see the
+[design](design/0.11-secure.md)) are **invisible to agents, always**, even
+while you have them unlocked in the app: no tool, resource, search hit,
+backlink or `ask` source comes from them, and agents can't write into them.
+
+### Skills
+
+`quire-cli skill install <dir>` installs Quire's own skill. To install
+someone else's, `quire-cli skill install <dir> --from SKILL.md` first shows
+where it comes from (path, size, SHA-256) and its first lines, as data, and
+installs it only with `--yes`. It writes `SKILL.source.json` beside it. A
+skill like that inside a vault is untrusted: agents get it inside the
+`<untrusted-source>` block, and changes to it are suggestions, like any
+`SKILL.md`.
+
 ## The command line
 
 ```
@@ -266,6 +315,7 @@ quire-cli agent revert <vault> --actor ID [--since 2h] [--write]
 quire-cli sync share <vault> on|off               share suggestions and runs between devices
 quire-cli agents-md init <vault>                 a starter AGENTS.md
 quire-cli skill print | install ~/.claude/skills/quire
+quire-cli skill install <dir> --from <file> [--yes]   someone else's skill, after showing its source
 ```
 
 ## Measuring retrieval

@@ -63,7 +63,10 @@ know survive) and approves the result on that device.
      ends in `?`, which is ignored when looking up its entry) can be
      narrowed by its entry but never widened.
 4. **Hard rules**: `.quire/**` is `deny`; root `AGENTS.md` and `CLAUDE.md`,
-   any `SKILL.md` and the templates folder are at most `propose`.
+   any `SKILL.md` and the templates folder are at most `propose`. Since
+   0.11, every path in a locked folder ([locked-folders.md](locked-folders.md)),
+   every `*.qenc` file and every `quire-lock*.json` key file is `deny`, for
+   agents and Quire's own jobs alike, whether the folder is locked or not.
 5. **The grant**: stdio without `--allow-write` is `read`; HTTP tokens are
    capped by their scopes.
 
@@ -98,6 +101,43 @@ defaults, put it in a `raw` zone.
 Approving names the file that was shown (its hash): if the file changed in
 between (a sync landed), the approval is refused and the new file is shown.
 `AGENTS.md` and `CLAUDE.md` are approved the same way.
+
+## Connections: allow lists and AI off
+
+0.11 (Settings → Agents → Connections):
+
+```toml
+ai = "off"                              # no agent may use the vault; providers aren't used either
+
+[clients."mcp:claude-code"]
+revoked = true                          # denied every path; `quire-cli mcp --client claude-code` refuses to start
+log_reads = true                        # its reads go to the ledger even when the device doesn't log reads
+
+[clients."mcp:cursor"]
+allow_tags = ["work"]                   # only notes tagged #work (or #work/…) …
+allow_folders = ["Projects/"]           # … or under Projects/
+```
+
+* `ai = "off"` (absent: on) makes every path `deny` for every agent, and
+  every request to the MCP server (stdio or HTTP) is answered with an error
+  saying AI is off. The app also stops using AI providers and on-device AI
+  for the vault.
+* `revoked`: every path is `deny` for the key; a request gets an error
+  naming the revoke; `quire-cli mcp --client <key>` exits at start. An
+  unverified client (`mcp:<name>?`) is matched by the name it reports, so
+  starting without `--client` doesn't get around it. Revoking a client from
+  Settings writes `revoked` and `log_reads` together.
+* `allow_tags` / `allow_folders`: when either is present, a note the client
+  may see must carry one of the tags (front matter `tags` or inline, read
+  from the file; `#work/q4` counts as `work`) or be under one of the
+  folders; everything else is `deny` for that client. This is part of the
+  same check as zones, so `list`, `search` (and its snippets), `neighbors`,
+  backlinks, resources and `ask` sources leave the rest out.
+* All of these narrow, so they take effect on every device at once. Turning
+  AI back on, removing `revoked`, and dropping or widening an allow list
+  are widenings: other devices wait for approval.
+* Older Quire versions don't know these keys and ignore them (they keep them
+  in the file): a vault shared with Quire 0.10 devices isn't limited there.
 
 ## Limits
 

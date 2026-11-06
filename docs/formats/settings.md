@@ -20,6 +20,7 @@ workstream; every key defaults to off or unchanged.
 | `[tasks]` | WS-E | `reminders`, `new_occurrence`, `format` |
 | `[appearance]` | WS-F | `theme_file` (a bundled theme's name or a file in `<config>/themes/`, [themes.md](themes.md)), `accent` (`#RRGGBB`) |
 | `[jobs]` | F0 | `pause_on_typing_ms`, `max_threads` |
+| `[security]` | 0.11 security | `lock_after_idle_minutes` (default 15; 0 never): unlocked locked folders lock after this long without input |
 
 * Keys and tables a version doesn't know are kept (`other` at the top level
   and in every table), from 0.9 on.

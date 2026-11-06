@@ -104,6 +104,8 @@ cargo build --release -p quire-desktop --no-default-features   # ~41 MiB instead
 | Area | Features |
 |---|---|
 | AI agents, under review | Agents' edits to your notes arrive as suggestions shown in the note (struck-through lines, their version underneath) to accept, reject or edit change by change. The Inbox (Alt+I) collects them; Agent activity shows every run with "Revert run". Per-folder permissions, `AGENTS.md` approval, vault checks |
+| Locked folders | Lock a folder (say `Journal/`) and its notes and files are stored encrypted on disk with your passphrase (XChaCha20-Poly1305, Argon2id); the rest of the vault stays plain Markdown. Unlocked notes are decrypted in memory only; folders lock on demand, after idle time and on quit. A recovery key is shown once. Agents and the web app never see a locked folder; sync carries the encrypted files ([how it works](docs/design/0.11-secure.md)) |
+| Agent connections | Settings → Agents → Connections: every agent that used the vault, when, its reads, writes and waiting suggestions, its permissions per zone and an activity log. Revoke one in a click, limit one to chosen tags or folders, or turn AI off for the vault |
 | Agent panel | Ctrl+Shift+J: ask about your notes or ask for changes, with `@note` and `#tag` context. Runs on your provider (on-device models are coming in an update); connect Claude Code or Codex (ACP) instead. "Ingest into wiki" turns a source into cited `wiki/` pages |
 | On-device AI (coming in an update) | Behind an experimental switch (Settings → AI → Advanced): models that download once and run offline in a separate process, for meaning search, writing help, the agent, OCR of images and scanned PDFs, and voice-note transcripts. The Balanced writing model uses about 1.3–1.7 GB of memory. To keep everything on your computer today, use a provider such as Ollama or LM Studio |
 | Voice notes | Full edition: record from the microphone (only between Record and Stop) into the note or today's note; the recording is saved in the vault as WAV. Optional transcript through your provider (the recording is sent to it) or on this computer (experimental) |
@@ -170,6 +172,7 @@ cargo build --release -p quire-desktop --no-default-features   # ~41 MiB instead
 | Ctrl+Alt+Y | Accept suggested change | Ctrl+Alt+Backspace | Reject suggested change |
 | Ctrl+Alt+Shift+Y | Accept all in this note | Alt+A | Agenda |
 | Ctrl+Alt+R | Review flashcards | Ctrl+Alt+C | New canvas |
+| Ctrl+Alt+Shift+L | Lock locked folders now | | |
 
 ## Views
 
@@ -227,6 +230,8 @@ quire-cli tasks   ./sample-vault --agenda            # overdue, today and the ne
 quire-cli remind  ./sample-vault --install           # reminders as notifications, even when Quire is closed
 quire-cli sync    once ./vault                       # one sync pass without the app (after `sync join`)
 quire-cli serve   ./vault --sync                     # Beta: web app + MCP for agents, on a server you own
+quire-cli lock    ./vault Journal --recovery-key-file ~/journal-key.txt   # encrypt a folder (asks for a passphrase)
+quire-cli status  ./vault                            # locked folders and unfinished conversions
 quire-cli ai      models                             # on-device models (experimental)
 quire-cli bench   10                                 # performance on a 10 MB note
 ```
@@ -277,6 +282,9 @@ clients.
 - Reminders while Quire is closed need `quire-cli` next to the app or on the PATH. The job was run for real with cron on Linux; the systemd, launchd and Task Scheduler jobs were checked by unit tests only.
 - Excalidraw drawings are pictures only (no editing), drawn in a clean style rather than Excalidraw's hand-drawn one, with the bundled fonts. When a drawing changes in Excalidraw, its own note shows the new picture at once; pictures of it in other notes and canvases update after Quire restarts. Canvas cards don't render math, and their links aren't clickable.
 - **`quire-cli serve` is Beta.** Its server holds a decrypted copy of the notes it serves; it does no TLS itself (put a reverse proxy or tunnel in front); a restart signs everyone out; the web app doesn't rename, move or delete notes, upload attachments or review agents' suggestions (review them in the app once synced).
+- **Locked folders protect files on disk, not a running, unlocked Quire.** While a folder is unlocked, anyone using your computer account can read it, and the operating system may page memory to disk (use full-disk encryption too). File and folder names, sizes and times stay visible. Copies made before a folder was locked (backups, git history, a cloud provider's version history, other devices' history and caches, old disk blocks) aren't changed. Two devices editing one locked note offline keep both versions instead of merging them.
+- Locked notes are in search and quick open while unlocked, but not in tasks, the agenda, Bases views, the graph, backlinks, reminders, flashcards or any AI feature; renaming a plain note doesn't update links inside locked notes. Pictures in a locked folder are stored encrypted but not shown yet, and pasting a picture into a locked note is refused. The CLI and `quire-cli serve` can't unlock a folder for reading beyond `quire-cli unlock --cat`.
+- Connections, allow lists, revoking and "AI off" are enforced by Quire 0.11; a Quire 0.10 device sharing the vault ignores them (it keeps them in the policy file).
 - Bases: no grouping, map or list views, `this`, `image`, `icon`, `html` or regular expressions. `file.ctime` is the last change (Quire keeps no creation time) and `file.size` counts characters.
 
 ## Contributing
