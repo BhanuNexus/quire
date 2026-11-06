@@ -439,3 +439,63 @@ fn a_failed_write_is_retried_not_skipped() {
     b.sync(&mut sb, &server, TODAY).unwrap();
     assert_eq!(sb.inner.read("A.md").unwrap(), "one\n");
 }
+
+/// Review finding 9: an agent's "create" suggestion accepted on two devices
+/// before they synced. Both pushed the note as new; it must end up as one
+/// note, never `Plan (2).md`, whichever device syncs first.
+#[test]
+fn the_same_new_note_with_the_same_text_on_two_devices_is_one_note() {
+    for attempt in 0..12 {
+        // Device 3 joins only at the end.
+        let (server, mut devs) = devices(4);
+        let text = "# Plan\nWritten by the agent.\n";
+        put(&mut devs[0], "Plan.md", text);
+        put(&mut devs[1], "Plan.md", text);
+        let (first, rest) = devs.split_at_mut(1);
+        let other = &mut rest[0];
+        let racing = Racing {
+            inner: &server,
+            before_first_push: std::cell::RefCell::new(Some(|| {
+                other.engine.sync(&mut other.store, &server, TODAY).unwrap();
+            })),
+        };
+        // Device 0 pulls nothing, device 1 pushes its note, device 0 pushes its own.
+        first[0].engine.sync(&mut first[0].store, &racing, TODAY).unwrap();
+        settle(&mut devs[..3], &server);
+        for d in &devs[..3] {
+            assert_eq!(d.store.list(), ["Plan.md"], "attempt {attempt}: {:?}", d.store);
+            assert_eq!(d.store.read("Plan.md").as_deref(), Some(text));
+        }
+        // Edits still travel, through the note that kept the name.
+        put(&mut devs[2], "Plan.md", "# Plan\nWritten by the agent.\nThen by me.\n");
+        settle(&mut devs[..3], &server);
+        for d in &devs[..3] {
+            assert_eq!(d.store.read("Plan.md").as_deref(), Some("# Plan\nWritten by the agent.\nThen by me.\n"));
+            assert_eq!(d.store.list().len(), 1, "attempt {attempt}: {:?}", d.store);
+        }
+        // A device that joins now sees one note too.
+        sync(&mut devs[3], &server);
+        assert_eq!(devs[3].store, devs[0].store, "attempt {attempt}");
+    }
+}
+
+/// Texts that differ stay two notes (nothing typed is ever dropped).
+#[test]
+fn the_same_new_name_with_different_texts_on_racing_devices_keeps_both() {
+    let (server, mut devs) = devices(2);
+    put(&mut devs[0], "Plan.md", "# Plan\nfrom laptop\n");
+    put(&mut devs[1], "Plan.md", "# Plan\nfrom phone\n");
+    let (first, rest) = devs.split_at_mut(1);
+    let other = &mut rest[0];
+    let racing = Racing {
+        inner: &server,
+        before_first_push: std::cell::RefCell::new(Some(|| {
+            other.engine.sync(&mut other.store, &server, TODAY).unwrap();
+        })),
+    };
+    first[0].engine.sync(&mut first[0].store, &racing, TODAY).unwrap();
+    settle(&mut devs, &server);
+    assert_eq!(devs[0].store, devs[1].store);
+    let all: String = devs[0].store.0.values().cloned().collect();
+    assert!(all.contains("from laptop") && all.contains("from phone"), "{all}");
+}

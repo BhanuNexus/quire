@@ -370,6 +370,11 @@ pub struct VaultStore {
     incoming: Option<(quire_vault::ContentHash, quire_sync::ActorRef, String)>,
     /// Selective sync: the folders this device holds.
     selection: Selection,
+    /// The files outside the selection after the last pass that finished:
+    /// a note that went missing can only have been moved out to one that
+    /// appeared since (see [`LocalStore::moved_out`]). `None` before the
+    /// first pass of this process.
+    outside_before: Option<std::collections::HashSet<String>>,
 }
 
 fn b64() -> base64::engine::GeneralPurpose {
@@ -386,7 +391,25 @@ impl VaultStore {
             lane: Lane::Mixed,
             incoming: None,
             selection: Selection::default(),
+            outside_before: None,
         }
+    }
+
+    /// The files outside the selection: unselected notes and attachments.
+    fn unselected(&self) -> Vec<NotePath> {
+        if self.selection.is_everything() || self.lane == Lane::Shared {
+            return Vec::new();
+        }
+        self.vault.storage().list().unwrap_or_default().into_iter().filter(|p| !self.selection.includes(p.as_str())).collect()
+    }
+
+    /// After a pass that finished: remember which files are outside the
+    /// selection now.
+    fn remember_unselected(&mut self) {
+        if self.selection.is_everything() || self.lane == Lane::Shared {
+            return;
+        }
+        self.outside_before = Some(self.unselected().into_iter().map(|p| p.as_str().to_string()).collect());
     }
 
     /// Notes and attachments only: `.quire/shared/` is never listed, read,
@@ -493,6 +516,28 @@ impl VaultStore {
         out
     }
 
+    /// What a write or removal may replace: the file exactly as the engine
+    /// read it at the start of the pass (or no file). Checked as one step
+    /// with the write ([`quire_vault::Storage::write_bytes_if`]), so a save
+    /// from the editor, the web app or an agent in between is never
+    /// overwritten (the engine retries on its next pass instead).
+    fn as_read(&self, path: &str) -> impl Fn(Option<&[u8]>) -> bool + use<> {
+        use base64::Engine as _;
+        let expected = self.seen.get(path).cloned().flatten();
+        let attachment = quire_sync::engine::is_attachment(path);
+        let path = path.to_string();
+        move |now: Option<&[u8]>| {
+            let now = now.map(|b| {
+                if attachment {
+                    quire_sync::engine::fingerprint(&path, &b64().encode(b))
+                } else {
+                    String::from_utf8_lossy(b.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(b)).into_owned()
+                }
+            });
+            now == expected
+        }
+    }
+
     fn unchanged_since_read(&self, path: &str) -> Result<(), String> {
         // A path the engine didn't see at the start of the pass must still not exist.
         let expected = self.seen.get(path).cloned().flatten();
@@ -564,14 +609,16 @@ impl LocalStore for VaultStore {
         !self.outside_lane(path)
     }
 
-    fn moved_out(&self, base: &str) -> Option<(String, String)> {
+    fn moved_out(&self, base: &str, skip: &std::collections::BTreeSet<String>) -> Option<(String, String)> {
         use base64::Engine as _;
-        if self.selection.is_everything() || self.lane == Lane::Shared {
-            return None;
-        }
         // Only when a selected note went missing; the unselected files on
-        // this device are few or none (a server holding some folders).
-        self.vault.storage().list().ok()?.into_iter().filter(|p| !self.selection.includes(p.as_str())).find_map(|p| {
+        // this device are few or none (a server holding some folders). A
+        // file another synced note has, or one that was already here at the
+        // end of the last pass, is another note with the same text: the
+        // note was deleted, not moved there.
+        let fresh =
+            |p: &NotePath| !skip.contains(p.as_str()) && self.outside_before.as_ref().is_none_or(|before| !before.contains(p.as_str()));
+        self.unselected().into_iter().filter(fresh).find_map(|p| {
             let text = if quire_sync::engine::is_attachment(p.as_str()) {
                 if self.size_and_time(p.as_str()).is_none_or(|(n, _)| n > MAX_ATTACHMENT_BYTES) {
                     return None;
@@ -582,7 +629,7 @@ impl LocalStore for VaultStore {
             } else {
                 return None;
             };
-            (quire_sync::engine::fingerprint(p.as_str(), &text) == base).then(|| (p.as_str().to_string(), text))
+            (!text.trim().is_empty() && quire_sync::engine::fingerprint(p.as_str(), &text) == base).then(|| (p.as_str().to_string(), text))
         })
     }
 
@@ -609,7 +656,6 @@ impl LocalStore for VaultStore {
             // never written, so never deleted here either.
             return Ok(());
         }
-        self.unchanged_since_read(path)?;
         if path.starts_with(SHARED_PREFIX) {
             if path.contains("/.") || path.contains("..") {
                 return Err("not a vault settings file".into());
@@ -618,16 +664,20 @@ impl LocalStore for VaultStore {
             // this one must list them too, or it would pass on deletions.
             self.shared = true;
         }
+        let changed = || "it changed while syncing".to_string();
+        let still = self.as_read(path);
         if quire_sync::engine::is_attachment(path) {
             let bytes = b64().decode(text).map_err(|e| format!("damaged attachment: {e}"))?;
-            self.vault.storage().write_bytes_atomic(&NotePath::new(path), &bytes).map_err(|e| e.to_string())?;
+            if !self.vault.storage().write_bytes_if(&NotePath::new(path), &still, &bytes).map_err(|e| e.to_string())? {
+                return Err(changed());
+            }
             self.seen.insert(path.to_string(), Some(quire_sync::engine::fingerprint(path, text)));
             return Ok(());
         }
-        if path.starts_with(SHARED_PREFIX) {
-            self.vault.storage().write_atomic(&NotePath::new(path), text).map_err(|e| e.to_string())?;
-        } else {
-            self.vault.write(&NotePath::new(path), text).map_err(|e| e.to_string())?;
+        if !self.vault.storage().write_bytes_if(&NotePath::new(path), &still, text.as_bytes()).map_err(|e| e.to_string())? {
+            return Err(changed());
+        }
+        if !path.starts_with(SHARED_PREFIX) {
             self.keep_provenance(path, text);
         }
         self.seen.insert(path.to_string(), Some(text.to_string()));
@@ -647,7 +697,9 @@ impl LocalStore for VaultStore {
             return Ok(());
         }
         // Deleted elsewhere: goes to the vault's trash, so it can come back.
-        self.vault.trash(&NotePath::new(path)).map_err(|e| e.to_string())?;
+        if !self.vault.storage().trash_if(&NotePath::new(path), &self.as_read(path)).map_err(|e| e.to_string())? {
+            return Err("it changed while syncing".into());
+        }
         self.seen.insert(path.to_string(), None);
         Ok(())
     }
@@ -772,6 +824,9 @@ impl Session {
         snapshot_reads(&mut self.store);
         let mut res = self.engine.sync(&mut self.store, self.link.transport(), &today());
         let _ = save_state(root, cfg, &self.engine.state);
+        if res.is_ok() {
+            self.store.remember_unselected();
+        }
         if self.lane.is_none()
             && runs_shared_lane(root, cfg)
             && let Some(dir) = &cfg.folder
