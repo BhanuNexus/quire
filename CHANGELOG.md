@@ -4,6 +4,8 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-08
+
 Quire 0.11: tasks as notes with time tracking and pomodoros, boards you arrange (manual order, swimlanes, colours) and Bases maps; locked folders encrypted at rest; a Connections view to audit, limit and revoke each agent; and a formatting toolbar, your own shortcuts and macros, and smoother typing.
 
 ### Added
@@ -430,7 +432,8 @@ Downloads for Windows, macOS (universal) and Linux are attached to the release, 
 ### Added
 - First version: live Markdown styling, wikilinks with rename refactoring, backlinks, related notes, daily notes, templates, command palette, quick open, inline calculator and natural-language dates.
 
-[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.10.2...HEAD
+[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/BhanuNexus/quire/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/BhanuNexus/quire/compare/v0.9.1...v0.10.2
 [0.9.1]: https://github.com/BhanuNexus/quire/compare/v0.8.0...v0.9.1
 [0.8.0]: https://github.com/BhanuNexus/quire/compare/v0.7.0...v0.8.0
