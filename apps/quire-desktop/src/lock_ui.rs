@@ -195,6 +195,9 @@ impl LockDialog {
         let text = if self.shown_again {
             ui.heading(format!("{folder}/: recovery key"));
             "It opens the folder if you forget the passphrase, or if its key file is lost. Anyone who has it can read the folder: store it somewhere safe, away from this computer."
+        } else if self.mode == Mode::Change {
+            ui.heading(format!("{folder}/ has a new key"));
+            "This is its new recovery key: the old one no longer opens the folder. Store it somewhere safe, away from this computer."
         } else {
             ui.heading(format!("{folder}/ is locked"));
             "This is its recovery key. It opens the folder if you forget the passphrase, or if its key file is lost. Store it somewhere safe, away from this computer. \
