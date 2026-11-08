@@ -7,8 +7,11 @@
 //! press is one undo step. The toggles read the Markdown around each
 //! selection: bolding bold text unbolds it, a caret inside `**word**`
 //! unbolds the word, and a caret inside a plain word bolds the word.
-//! Text is only ever wrapped or unwrapped, never dropped. Positions are
-//! chars.
+//! Text is only ever wrapped or unwrapped, never dropped: the only
+//! characters added or taken away are markers, and whole fence lines.
+//! Which markers pair up is the Markdown parser's call, so stars in code,
+//! math or `2*3` are never touched. Positions are chars, clamped to the
+//! text.
 
 use quire_text::{Assoc, Buffer, Change, Selection, Transaction, multi};
 
@@ -113,7 +116,39 @@ fn chars_of(buf: &Buffer, line: usize) -> Vec<char> {
 }
 
 fn is_word(c: char) -> bool {
-    c.is_alphanumeric() || c == '\'' || c == '-'
+    c.is_alphanumeric() || c == '\'' || c == '-' || c == '_'
+}
+
+/// Whether markers put at `a` and `b` would run into the same character
+/// next to them (a backtick next to two more makes a fence, `~~` next to
+/// `~~` makes `~~~~`).
+fn glued_to(line: &[char], a: usize, b: usize, m: &str) -> bool {
+    let c = m.chars().next();
+    a.checked_sub(1).and_then(|i| line.get(i)).copied() == c || line.get(b).copied() == c
+}
+
+/// The marker to wrap `line[a..b]` in: italic is `_`, except next to a
+/// letter, digit or `_`, where `_` wouldn't be emphasis (`snake_case`), so
+/// it is `*`.
+fn wrap_marker(kind: Inline, line: &[char], a: usize, b: usize) -> &'static str {
+    let glued = |c: Option<&char>| c.is_some_and(|c| c.is_alphanumeric() || *c == '_');
+    let edge = |i: usize| line.get(i) == Some(&'_');
+    let inner = b > a && (edge(a) || edge(b - 1));
+    if kind == Inline::Italic && (inner || glued(a.checked_sub(1).and_then(|i| line.get(i))) || glued(line.get(b))) {
+        "*"
+    } else {
+        kind.marker()
+    }
+}
+
+/// Code, math, strike and highlight markers can't touch the same character
+/// (`` ` `` + `` `x` `` would make a fence, `$` + `$x$` display math).
+fn clashes(kind: Inline, line: &[char], a: usize, b: usize) -> bool {
+    if matches!(kind, Inline::Bold | Inline::Italic) {
+        return false;
+    }
+    let c = kind.marker().chars().next();
+    glued_to(line, a, b, kind.marker()) || (b > a && (line.get(a).copied() == c || line.get(b - 1).copied() == c))
 }
 
 // ------------------------------------------------------------ inline spans
@@ -136,66 +171,104 @@ impl Span {
     }
 }
 
-/// Spans of `kind` on a line. Bold and italic read runs of `*` and `_`:
-/// a run of 2 or more holds bold, an odd run holds italic (`***` is both).
-fn spans(line: &[char], kind: Inline) -> Vec<Span> {
-    match kind {
-        Inline::Bold | Inline::Italic => {
-            let k = if kind == Inline::Bold { 2 } else { 1 };
-            let mut out = Vec::new();
-            for ch in ['*', '_'] {
-                let mut tokens = Vec::new();
-                let mut i = 0;
-                while i < line.len() {
-                    if line[i] != ch {
-                        i += 1;
-                        continue;
-                    }
-                    let start = i;
-                    while i < line.len() && line[i] == ch {
-                        i += 1;
-                    }
-                    let len = i - start;
-                    let before = start.checked_sub(1).map(|j| line[j]);
-                    let after = line.get(i).copied();
-                    // `* item` at the start of a line is a bullet, `***` alone a rule.
-                    let at_start = line[..start].iter().all(|c| *c == ' ' || *c == '\t');
-                    if at_start && (after == Some(' ') || after.is_none()) {
-                        continue;
-                    }
-                    // snake_case: underscores inside a word aren't emphasis.
-                    if ch == '_' && before.is_some_and(char::is_alphanumeric) && after.is_some_and(char::is_alphanumeric) {
-                        continue;
-                    }
-                    let holds = if k == 2 { len >= 2 } else { len % 2 == 1 };
-                    if holds {
-                        tokens.push((start, len));
-                    }
-                }
-                for pair in tokens.chunks(2) {
-                    if let [(os, ol), (cs, _)] = *pair {
-                        out.push(Span { open: os + ol - k, close: cs, len: k });
-                    }
-                }
-            }
-            out.sort_by_key(|s| s.open);
-            out
+/// What the Markdown parser found in the whole text, in chars: the
+/// formatted spans (only these are ever unwrapped) and the verbatim ranges
+/// (code, math, HTML, link destinations), where nothing is wrapped.
+///
+/// Pairing markers by hand got code spans, math, escapes and literal
+/// stars (`2*3`) wrong and unwrapped spans that weren't there (0.11
+/// review H3).
+struct Marks {
+    /// (kind, start, end, marker length), absolute chars.
+    spans: Vec<(Inline, usize, usize, usize)>,
+    verbatim: Vec<std::ops::Range<usize>>,
+}
+
+impl Marks {
+    fn of(buf: &Buffer) -> Self {
+        use pulldown_cmark::{Event, Parser, Tag};
+        let text = buf.to_string();
+        let parsed = crate::parse_source(&text);
+        let mut verbatim = crate::scan::Verbatim::default();
+        let mut raw: Vec<(Inline, std::ops::Range<usize>)> = Vec::new();
+        for (ev, range) in Parser::new_ext(&parsed, crate::options()).into_offset_iter() {
+            verbatim.event(&text, &ev, &range);
+            let kind = match ev {
+                Event::Start(Tag::Strong) => Inline::Bold,
+                Event::Start(Tag::Emphasis) => Inline::Italic,
+                Event::Start(Tag::Strikethrough) => Inline::Strike,
+                Event::Code(_) => Inline::Code,
+                Event::InlineMath(_) | Event::DisplayMath(_) => Inline::Math,
+                _ => continue,
+            };
+            raw.push((kind, range));
         }
-        _ => {
-            let m: Vec<char> = kind.marker().chars().collect();
-            let mut found = Vec::new();
-            let mut i = 0;
-            while i + m.len() <= line.len() {
-                if line[i..i + m.len()] == m[..] {
-                    found.push(i);
-                    i += m.len();
-                } else {
-                    i += 1;
-                }
+        let verbatim_bytes = verbatim.finish();
+        for inline in crate::scan::scan_with(&text, &verbatim_bytes) {
+            if let crate::scan::Inline::Highlight { range } = inline {
+                raw.push((Inline::Highlight, range));
             }
-            found.chunks(2).filter_map(|p| if let [o, c] = *p { Some(Span { open: o, close: c, len: m.len() }) } else { None }).collect()
+        }
+        let chars: Vec<char> = text.chars().collect();
+        let mut spans = Vec::new();
+        for (kind, r) in raw {
+            let (st, en) = (buf.byte_to_char(r.start), buf.byte_to_char(r.end));
+            if let Some(len) = marker_len(&chars, kind, st, en) {
+                spans.push((kind, st, en, len));
+            }
+        }
+        let verbatim = verbatim_bytes.into_iter().map(|r| buf.byte_to_char(r.start)..buf.byte_to_char(r.end)).collect();
+        Self { spans, verbatim }
+    }
+
+    /// `pos` is strictly inside a verbatim range (code, math, …).
+    fn in_verbatim(&self, pos: usize) -> bool {
+        self.verbatim.iter().any(|r| r.start < pos && pos < r.end)
+    }
+
+    /// Spans of `kind` that lie on the line `ls..le`, in line columns.
+    fn on_line(&self, kind: Inline, ls: usize, le: usize) -> Vec<Span> {
+        self.spans
+            .iter()
+            .filter(|(k, st, en, _)| *k == kind && ls <= *st && *en <= le)
+            .map(|&(_, st, en, len)| Span { open: st - ls, close: en - len - ls, len })
+            .collect()
+    }
+}
+
+/// The marker length of a parsed span at `st..en`, or `None` when its
+/// ends aren't markers Quire can take away (or, for `*`, are inside a
+/// word: `2*3 and 4*5` is read as literal stars).
+fn marker_len(chars: &[char], kind: Inline, st: usize, en: usize) -> Option<usize> {
+    let run = |c: char| chars.get(st..en).map_or(0, |s| s.iter().take_while(|x| **x == c).count());
+    let len = match kind {
+        Inline::Bold | Inline::Highlight => 2,
+        Inline::Italic => 1,
+        Inline::Strike => run('~').min(2),
+        Inline::Code => run('`'),
+        Inline::Math => run('$').min(2),
+    };
+    if len == 0 || en < st + 2 * len {
+        return None;
+    }
+    let open = chars.get(st..st + len)?;
+    let close = chars.get(en - len..en)?;
+    let c = open[0];
+    let ok_char = match kind {
+        Inline::Bold | Inline::Italic => c == '*' || c == '_',
+        _ => kind.marker().starts_with(c),
+    };
+    if !ok_char || open.iter().chain(close).any(|x| *x != c) {
+        return None;
+    }
+    if c == '*' {
+        let alnum = |i: Option<usize>| i.and_then(|i| chars.get(i)).is_some_and(|x| x.is_alphanumeric());
+        let intraword = |a: usize, b: usize| alnum(a.checked_sub(1)) && alnum(Some(b));
+        if intraword(st, st + len) && intraword(en - len, en) {
+            return None;
         }
     }
+    Some(len)
 }
 
 /// Columns where a line's text starts after list, task, quote and heading markers.
@@ -230,11 +303,23 @@ fn content_start(line: &[char]) -> usize {
 
 /// One line's part of an inline toggle: the span around `a..b` (columns),
 /// if there is one.
-fn span_around(line: &[char], kind: Inline, a: usize, b: usize) -> Option<Span> {
-    spans(line, kind).into_iter().find(|s| {
+fn span_around(spans: &[Span], a: usize, b: usize) -> Option<Span> {
+    spans.iter().copied().find(|s| {
         let (cs, ce) = s.content();
         (cs <= a && b <= ce) || (s.open == a && s.end() == b) || (a == b && s.open < a && a < s.end())
     })
+}
+
+/// Selections clamped to the text, with no end between a `\r` and its
+/// `\n` (0.11 review L4: such positions made the toggles panic).
+fn prep(buf: &Buffer, sels: &[Selection]) -> Vec<Selection> {
+    let len = buf.len_chars();
+    let fix = |p: usize| {
+        let p = p.min(len);
+        let l = buf.char_to_line(p);
+        p.min(buf.line_range(l).end.max(buf.line_to_char(l)))
+    };
+    multi::normalize(sels.iter().map(|s| Selection::new(fix(s.anchor), fix(s.head))).collect())
 }
 
 /// Toggle inline formatting on every selection.
@@ -242,29 +327,37 @@ pub fn toggle_inline(buf: &Buffer, sels: &[Selection], kind: Inline) -> Option<E
     let mut plan = Plan::default();
     let m = kind.marker();
     let ml = m.chars().count();
-    for sel in multi::normalize(sels.to_vec()) {
+    let marks = Marks::of(buf);
+    let fences = Fences::of(buf);
+    for sel in prep(buf, sels) {
         let (s, e) = (sel.start(), sel.end());
         let (l1, l2) = (buf.char_to_line(s), buf.char_to_line(e));
         if l1 != l2 && matches!(kind, Inline::Code | Inline::Math) {
             let fence = if kind == Inline::Code { "```" } else { "$$" };
-            let (changes, a, h) = fence_block(buf, sel, fence);
+            let (changes, a, h) = fence_block(buf, &fences, sel, fence);
             plan.push(changes, a, h);
             continue;
         }
         if l1 != l2 {
-            inline_lines(buf, sel, kind, &mut plan);
+            inline_lines(buf, &marks, sel, kind, &mut plan);
             continue;
         }
         let ls = buf.line_to_char(l1);
         let line = chars_of(buf, l1);
-        let (a, b) = (s - ls, e - ls);
+        let (a, b) = ((s - ls).min(line.len()), (e - ls).min(line.len()));
         // Unwrap the span the selection is in (or is).
-        if let Some(sp) = span_around(&line, kind, a, b) {
+        if let Some(sp) = span_around(&marks.on_line(kind, ls, ls + line.len()), a, b) {
             let changes = vec![Change::new(ls + sp.open, ls + sp.open + sp.len, ""), Change::new(ls + sp.close, ls + sp.end(), "")];
             let (cs, ce) = sp.content();
             let (ns, ne) = if s == e { (s.clamp(ls + cs, ls + ce), s.clamp(ls + cs, ls + ce)) } else { (s.max(ls + cs), e.min(ls + ce)) };
             let (an, hd) = directed(sel, at(ns, Assoc::After), at(ne, Assoc::Before));
             plan.push(changes, an, hd);
+            continue;
+        }
+        // Inside code or math, or on a fence line: markers there would be
+        // literal text, or stop the fence being one.
+        if marks.in_verbatim(s) || marks.in_verbatim(e) || fence_line(&buf.line(l1)).is_some() {
+            plan.push(Vec::new(), at(sel.anchor, Assoc::After), at(sel.head, Assoc::After));
             continue;
         }
         if s == e {
@@ -285,10 +378,15 @@ pub fn toggle_inline(buf: &Buffer, sels: &[Selection], kind: Inline) -> Option<E
             while we < line.len() && is_word(line[we]) {
                 we += 1;
             }
-            if ws < we {
+            if ws < we && clashes(kind, &line, ws, we) {
+                plan.push(Vec::new(), at(s, Assoc::After), at(s, Assoc::After));
+            } else if ws < we {
+                let m = wrap_marker(kind, &line, ws, we);
                 let changes = vec![Change::new(ls + ws, ls + ws, m), Change::new(ls + we, ls + we, m)];
                 let t = if a == we { at(s, Assoc::Before) } else { at(s, Assoc::After) };
                 plan.push(changes, t, t);
+            } else if glued_to(&line, a, a, m) {
+                plan.push(Vec::new(), at(s, Assoc::After), at(s, Assoc::After));
             } else {
                 let changes = vec![Change::new(s, s, m.repeat(2))];
                 let t = plus(s, Assoc::Before, ml);
@@ -306,11 +404,20 @@ pub fn toggle_inline(buf: &Buffer, sels: &[Selection], kind: Inline) -> Option<E
             tb -= 1;
         }
         if ta == tb {
+            if glued_to(&line, a, a, m) {
+                plan.push(Vec::new(), at(sel.anchor, Assoc::After), at(sel.head, Assoc::After));
+                continue;
+            }
             let changes = vec![Change::new(s, s, m.repeat(2))];
             let t = plus(s, Assoc::Before, ml);
             plan.push(changes, t, t);
             continue;
         }
+        if clashes(kind, &line, ta, tb) {
+            plan.push(Vec::new(), at(sel.anchor, Assoc::After), at(sel.head, Assoc::After));
+            continue;
+        }
+        let m = wrap_marker(kind, &line, ta, tb);
         let changes = vec![Change::new(ls + ta, ls + ta, m), Change::new(ls + tb, ls + tb, m)];
         let (an, hd) = directed(sel, at(ls + ta, Assoc::After), at(ls + tb, Assoc::Before));
         plan.push(changes, an, hd);
@@ -321,14 +428,14 @@ pub fn toggle_inline(buf: &Buffer, sels: &[Selection], kind: Inline) -> Option<E
 /// Inline formatting over several lines: each line's text is wrapped on
 /// its own (Markdown emphasis doesn't cross paragraphs). All wrapped
 /// already: unwrap them all.
-fn inline_lines(buf: &Buffer, sel: Selection, kind: Inline, plan: &mut Plan) {
+fn inline_lines(buf: &Buffer, marks: &Marks, sel: Selection, kind: Inline, plan: &mut Plan) {
     let m = kind.marker();
     let (s, e) = (sel.start(), sel.end());
     let mut segments = Vec::new();
     for l in buf.char_to_line(s)..=buf.char_to_line(e) {
         let ls = buf.line_to_char(l);
         let line = chars_of(buf, l);
-        let mut a = s.saturating_sub(ls).min(line.len()).max(content_start(&line));
+        let mut a = s.saturating_sub(ls).min(line.len()).max(content_start(&line)).min(line.len());
         let mut b = e.saturating_sub(ls).min(line.len());
         while a < b && line[a].is_whitespace() {
             a += 1;
@@ -336,16 +443,18 @@ fn inline_lines(buf: &Buffer, sel: Selection, kind: Inline, plan: &mut Plan) {
         while b > a && line[b - 1].is_whitespace() {
             b -= 1;
         }
-        if a < b {
-            segments.push((ls, a, b, span_around(&line, kind, a, b)));
+        // Code and math lines (fenced blocks too) are left as they are.
+        if a < b && !marks.in_verbatim(ls + a) && !marks.in_verbatim(ls + b) && !clashes(kind, &line, a, b) {
+            let m = if wrap_marker(kind, &line, a, b) == "*" { "*" } else { m };
+            segments.push((ls, a, b, m, span_around(&marks.on_line(kind, ls, ls + line.len()), a, b)));
         }
     }
     if segments.is_empty() {
         return;
     }
-    let unwrap = segments.iter().all(|x| x.3.is_some());
+    let unwrap = segments.iter().all(|x| x.4.is_some());
     let mut changes = Vec::new();
-    for (ls, a, b, sp) in segments {
+    for (ls, a, b, m, sp) in segments {
         match sp {
             Some(sp) if unwrap => {
                 changes.push(Change::new(ls + sp.open, ls + sp.open + sp.len, ""));
@@ -373,37 +482,117 @@ fn lines_of(buf: &Buffer, sel: Selection) -> std::ops::RangeInclusive<usize> {
     first..=last
 }
 
+/// The line break to write after line `l`: its own, or else the one the
+/// text's first line has (`\r\n` text stays `\r\n`).
+fn line_break(buf: &Buffer, l: usize) -> &'static str {
+    let crlf = |l: usize| buf.char_at(buf.line_range(l).end) == Some('\r');
+    let own = l + 1 < buf.len_lines();
+    if (own && crlf(l)) || (!own && buf.len_lines() > 1 && crlf(0)) { "\r\n" } else { "\n" }
+}
+
+/// Fenced blocks, paired from the top of the text: (opening line, closing
+/// line, fence family). A fence line holds only the fence (```` ``` ```` or
+/// `~~~`, three or more, with an optional info string on the opener) or
+/// only `$$`; a line that merely starts with one (`$$a$$ is the sum`) is
+/// text (0.11 review H3).
+struct Fences(Vec<(usize, usize, &'static str)>);
+
+/// A fence line: (family, char, run length, has an info string).
+fn fence_line(line: &str) -> Option<(&'static str, char, usize, bool)> {
+    let indent = line.chars().take_while(|c| *c == ' ').count();
+    if indent > 3 {
+        return None;
+    }
+    let t = line[indent..].trim_end();
+    if t == "$$" {
+        return Some(("$$", '$', 2, false));
+    }
+    let c = t.chars().next()?;
+    if c != '`' && c != '~' {
+        return None;
+    }
+    let run = t.chars().take_while(|x| *x == c).count();
+    let info = t[run..].trim();
+    if run < 3 || (c == '`' && info.contains('`')) {
+        return None;
+    }
+    Some(("```", c, run, !info.is_empty()))
+}
+
+impl Fences {
+    fn of(buf: &Buffer) -> Self {
+        let mut out = Vec::new();
+        let mut open: Option<(usize, &'static str, char, usize)> = None;
+        for l in 0..buf.len_lines() {
+            let Some((family, c, run, info)) = fence_line(&buf.line(l)) else { continue };
+            match open {
+                None => open = Some((l, family, c, run)),
+                Some((ol, of, oc, orun)) if of == family && oc == c && run >= orun && !info => {
+                    out.push((ol, l, family));
+                    open = None;
+                }
+                Some(_) => {}
+            }
+        }
+        Self(out)
+    }
+
+    /// The block of `family` that opens on `open` and closes on `close`.
+    fn pair(&self, open: usize, close: usize, family: &str) -> bool {
+        self.0.iter().any(|&(o, c, f)| o == open && c == close && f == family)
+    }
+}
+
+/// Take a fenced block's opening and closing lines out, with their line
+/// breaks (so `\r\n` stays `\r\n`).
+fn unfence(buf: &Buffer, open: usize, close: usize) -> Vec<Change> {
+    let line_with_break = |l: usize| {
+        let s = buf.line_to_char(l);
+        if l + 1 < buf.len_lines() { s..buf.line_to_char(l + 1) } else { s..buf.line_range(l).end }
+    };
+    let a = line_with_break(open);
+    let mut z = line_with_break(close);
+    if close + 1 >= buf.len_lines() && close > open + 1 {
+        // The last line has no break of its own: take the one before it.
+        z.start = buf.line_range(close - 1).end;
+    }
+    if z.start <= a.end {
+        return vec![Change::new(a.start, z.end, "")];
+    }
+    vec![Change::new(a.start, a.end, ""), Change::new(z.start, z.end, "")]
+}
+
 /// Wrap whole lines in a fence (```` ``` ```` or `$$`), or take the fences
-/// away when the lines are fenced already.
-fn fence_block(buf: &Buffer, sel: Selection, fence: &str) -> (Vec<Change>, Target, Target) {
+/// away when the lines are a fenced block or its inside.
+fn fence_block(buf: &Buffer, fences: &Fences, sel: Selection, fence: &str) -> (Vec<Change>, Target, Target) {
     let lines = lines_of(buf, sel);
     let (first, last) = (*lines.start(), *lines.end());
-    let is_fence = |l: usize| buf.line(l).trim_start().starts_with(fence);
-    if first < last && is_fence(first) && is_fence(last) {
-        // Fences selected: remove both lines.
-        let a = buf.line_to_char(first);
-        let a_end = buf.line_to_char(first + 1);
-        let z = buf.line_range(last);
-        let z_start = if last > 0 { buf.line_range(last - 1).end } else { z.start };
-        let changes = vec![Change::new(a, a_end, ""), Change::new(z_start, z.end, "")];
-        return (changes, at(a_end, Assoc::After), at(z_start, Assoc::Before));
-    }
-    if first > 0 && last + 1 < buf.len_lines() && is_fence(first - 1) && is_fence(last + 1) && !is_fence(first) {
-        let a = buf.line_to_char(first - 1);
-        let changes =
-            vec![Change::new(a, buf.line_to_char(first), ""), Change::new(buf.line_range(last).end, buf.line_range(last + 1).end, "")];
+    if first < last && fences.pair(first, last, fence) {
+        // A whole block selected: remove its fences.
+        let changes = unfence(buf, first, last);
         let (an, hd) = directed(sel, at(sel.start(), Assoc::After), at(sel.end(), Assoc::Before));
         return (changes, an, hd);
     }
+    if first > 0 && fences.pair(first - 1, last + 1, fence) {
+        let changes = unfence(buf, first - 1, last + 1);
+        let (an, hd) = directed(sel, at(sel.start(), Assoc::After), at(sel.end(), Assoc::Before));
+        return (changes, an, hd);
+    }
+    let nl = line_break(buf, last);
     let start = buf.line_to_char(first);
     let end = buf.line_range(last).end;
-    let changes = vec![Change::new(start, start, format!("{fence}\n")), Change::new(end, end, format!("\n{fence}"))];
+    let changes = vec![Change::new(start, start, format!("{fence}{nl}")), Change::new(end, end, format!("{nl}{fence}"))];
     if start == end {
-        let t = plus(start, Assoc::Before, fence.chars().count() + 1);
+        let t = plus(start, Assoc::Before, fence.chars().count() + nl.chars().count());
         return (changes, t, t);
     }
-    let (an, hd) = directed(sel, at(sel.start().max(start), Assoc::After), at(sel.end().min(end), Assoc::Before));
-    (changes, an, hd)
+    // Inside the fences: past the opener at the line's start, before the
+    // closer at its end.
+    let inside = |p: usize| {
+        let p = p.clamp(start, end);
+        at(p, if p == end { Assoc::Before } else { Assoc::After })
+    };
+    (changes, inside(sel.anchor), inside(sel.head))
 }
 
 // ------------------------------------------------------------ lines
@@ -440,6 +629,7 @@ fn heading_level(line: &str) -> usize {
 /// Set the heading level of every selected line (0 makes paragraphs).
 /// Lines all at `level` already go back to paragraphs.
 pub fn set_heading(buf: &Buffer, sels: &[Selection], level: u8) -> Option<Edit> {
+    let sels = &prep(buf, sels);
     let lines = content_lines(buf, sels);
     let level = usize::from(level.min(6));
     let all_there = lines.iter().all(|l| heading_level(&buf.line(*l)) == level);
@@ -462,6 +652,7 @@ pub fn set_heading(buf: &Buffer, sels: &[Selection], level: u8) -> Option<Edit> 
 /// lines when they all are that list already. Tasks become bullets.
 pub fn toggle_list(buf: &Buffer, sels: &[Selection], kind: List) -> Option<Edit> {
     use crate::editing::{Prefix, parse_prefix};
+    let sels = &prep(buf, sels);
     let lines = content_lines(buf, sels);
     let is_kind = |l: usize| match parse_prefix(&buf.line(l)).map(|p| p.kind) {
         Some(Prefix::Bullet(_)) => kind == List::Bullet,
@@ -498,6 +689,7 @@ pub fn toggle_list(buf: &Buffer, sels: &[Selection], kind: List) -> Option<Edit>
 
 /// `- [ ]` on lines that aren't tasks; a task's box is ticked or cleared.
 pub fn toggle_task(buf: &Buffer, sels: &[Selection]) -> Option<Edit> {
+    let sels = &prep(buf, sels);
     let mut changes = Vec::new();
     for l in content_lines(buf, sels) {
         let start = buf.line_to_char(l);
@@ -510,6 +702,7 @@ pub fn toggle_task(buf: &Buffer, sels: &[Selection]) -> Option<Edit> {
 
 /// `> ` on every selected line, or off when they all have it.
 pub fn toggle_quote(buf: &Buffer, sels: &[Selection]) -> Option<Edit> {
+    let sels = &prep(buf, sels);
     let lines = all_lines(buf, sels);
     let quoted = |l: usize| buf.line(l).starts_with('>');
     let remove = lines.iter().all(|l| quoted(*l));
@@ -528,7 +721,7 @@ pub fn toggle_quote(buf: &Buffer, sels: &[Selection]) -> Option<Edit> {
 /// out of one when the selection starts at its first line.
 pub fn toggle_callout(buf: &Buffer, sels: &[Selection], kind: &str) -> Option<Edit> {
     let mut plan = Plan::default();
-    for sel in multi::normalize(sels.to_vec()) {
+    for sel in prep(buf, sels) {
         let lines = lines_of(buf, sel);
         let (first, last) = (*lines.start(), *lines.end());
         // The callout the first line is in: its header is above, on quoted lines.
@@ -625,7 +818,7 @@ fn looks_like_url(t: &str) -> bool {
 /// selection is in one.
 pub fn toggle_link(buf: &Buffer, sels: &[Selection]) -> Option<Edit> {
     let mut plan = Plan::default();
-    for sel in multi::normalize(sels.to_vec()) {
+    for sel in prep(buf, sels) {
         let (s, e) = (sel.start(), sel.end());
         let l = buf.char_to_line(s);
         let ls = buf.line_to_char(l);
@@ -652,7 +845,7 @@ pub fn toggle_link(buf: &Buffer, sels: &[Selection]) -> Option<Edit> {
 /// `[[selection]]`, or the link back to its text when the selection is in one.
 pub fn toggle_wikilink(buf: &Buffer, sels: &[Selection]) -> Option<Edit> {
     let mut plan = Plan::default();
-    for sel in multi::normalize(sels.to_vec()) {
+    for sel in prep(buf, sels) {
         let (s, e) = (sel.start(), sel.end());
         let l = buf.char_to_line(s);
         let ls = buf.line_to_char(l);
@@ -682,7 +875,7 @@ pub fn toggle_wikilink(buf: &Buffer, sels: &[Selection]) -> Option<Edit> {
 /// select afterwards (char range in `block`).
 fn insert_block(buf: &Buffer, sels: &[Selection], block: &str, select: std::ops::Range<usize>, gap_after: bool) -> Option<Edit> {
     let mut plan = Plan::default();
-    for sel in multi::normalize(sels.to_vec()) {
+    for sel in prep(buf, sels) {
         let l = buf.char_to_line(sel.end());
         let r = buf.line_range(l);
         let blank = buf.line(l).trim().is_empty();
@@ -712,8 +905,9 @@ pub fn insert_rule(buf: &Buffer, sels: &[Selection]) -> Option<Edit> {
 /// ```` ``` ```` fences around the selected lines (or off), or an empty block.
 pub fn toggle_code_block(buf: &Buffer, sels: &[Selection]) -> Option<Edit> {
     let mut plan = Plan::default();
-    for sel in multi::normalize(sels.to_vec()) {
-        let (c, a, h) = fence_block(buf, sel, "```");
+    let fences = Fences::of(buf);
+    for sel in prep(buf, sels) {
+        let (c, a, h) = fence_block(buf, &fences, sel, "```");
         plan.push(c, a, h);
     }
     plan.finish()
@@ -722,8 +916,9 @@ pub fn toggle_code_block(buf: &Buffer, sels: &[Selection]) -> Option<Edit> {
 /// `$$` fences around the selected lines (or off), or an empty block.
 pub fn toggle_math_block(buf: &Buffer, sels: &[Selection]) -> Option<Edit> {
     let mut plan = Plan::default();
-    for sel in multi::normalize(sels.to_vec()) {
-        let (c, a, h) = fence_block(buf, sel, "$$");
+    let fences = Fences::of(buf);
+    for sel in prep(buf, sels) {
+        let (c, a, h) = fence_block(buf, &fences, sel, "$$");
         plan.push(c, a, h);
     }
     plan.finish()
@@ -747,7 +942,7 @@ fn next_footnote(buf: &Buffer) -> u64 {
 /// A footnote reference after each selection (`[^1]`) and its definition
 /// at the end of the note. With one caret, it moves to the definition.
 pub fn insert_footnote(buf: &Buffer, sels: &[Selection]) -> Option<Edit> {
-    let sels = multi::normalize(sels.to_vec());
+    let sels = prep(buf, sels);
     let first = next_footnote(buf);
     let len = buf.len_chars();
     let text = buf.to_string();
@@ -917,6 +1112,76 @@ mod tests {
         assert_eq!(check("x|", insert_table), "x\n\n| «Column 1» | Column 2 |\n| --- | --- |\n|  |  |");
         assert_eq!(check("|", toggle_math_block), "$$\n|\n$$");
         assert_eq!(check("«a»", toggle_math_block), "$$\n«a»\n$$");
+    }
+
+    // 0.11 review H3 and L4/L5: toggles never drop or garble text.
+    #[test]
+    fn a_line_that_starts_with_a_fence_is_text() {
+        let math = |b: &Buffer, s: &[Selection]| toggle_inline(b, s, Inline::Math);
+        assert_eq!(
+            check("«$$a+b$$ is the sum\nsome text\n$$c$$ another»\n", math),
+            "$$\n«$$a+b$$ is the sum\nsome text\n$$c$$ another»\n$$\n"
+        );
+        let code = |b: &Buffer, s: &[Selection]| toggle_inline(b, s, Inline::Code);
+        assert_eq!(check("«```js``` inline\nx\n```js``` too»", code), "```\n«```js``` inline\nx\n```js``` too»\n```");
+    }
+
+    #[test]
+    fn a_code_block_between_two_blocks_stays_separate() {
+        assert_eq!(
+            check("```\nA\n```\n«plain»\n```python\nB\n```\n", toggle_code_block),
+            "```\nA\n```\n```\n«plain»\n```\n```python\nB\n```\n"
+        );
+        assert_eq!(check("```python\nB\n```\n«x»", toggle_code_block), "```python\nB\n```\n```\n«x»\n```");
+        assert_eq!(check("```python\n«B»\n```\n", toggle_code_block), "«B»\n", "inside its own block: the fences go");
+        assert_eq!(check("~~~\n«B»\n~~~", toggle_code_block), "«B»");
+    }
+
+    #[test]
+    fn emphasis_skips_code_math_and_literal_stars() {
+        assert_eq!(check("`a**b` an|d **c** x", bold), "`a**b` **an|d** **c** x");
+        assert_eq!(check("$a*b*c$ and word|", italic), "$a*b*c$ and _word|_");
+        assert_eq!(check("$a*|b*c$ and word", italic), "(no change) $a*|b*c$ and word", "a caret in math: no change");
+        assert_eq!(check("2*3 an|d 4*5", italic), "2*3 _an|d_ 4*5");
+        assert_eq!(check("\\*a|b\\*", italic), "\\*_a|b_\\*");
+        assert_eq!(check("`co|de` x", bold), "(no change) `co|de` x", "a caret in code: no change");
+        assert_eq!(check("[t](u**r|l**)", bold), "(no change) [t](u**r|l**)", "link destinations are left alone");
+        assert_eq!(check("`co|de`", |b, s| toggle_inline(b, s, Inline::Code)), "co|de");
+        assert_eq!(check("$x|$", |b, s| toggle_inline(b, s, Inline::Math)), "x|");
+        assert_eq!(check("~~x|~~", |b, s| toggle_inline(b, s, Inline::Strike)), "x|");
+    }
+
+    #[test]
+    fn positions_off_the_text_are_clamped() {
+        let buf = Buffer::from("a\r\nbc\r\n");
+        let kinds = [Inline::Bold, Inline::Italic, Inline::Strike, Inline::Highlight, Inline::Code, Inline::Math];
+        for p in 0..12 {
+            for q in 0..12 {
+                let sels = [Selection::new(p, q)];
+                for k in kinds {
+                    let _ = toggle_inline(&buf, &sels, k);
+                }
+                let _ = toggle_code_block(&buf, &sels);
+                let _ = toggle_math_block(&buf, &sels);
+                let _ = toggle_link(&buf, &sels);
+                let _ = toggle_wikilink(&buf, &sels);
+                let _ = set_heading(&buf, &sels, 2);
+                let _ = toggle_list(&buf, &sels, List::Bullet);
+                let _ = toggle_quote(&buf, &sels);
+                let _ = toggle_task(&buf, &sels);
+                let _ = toggle_callout(&buf, &sels, "note");
+                let _ = insert_footnote(&buf, &sels);
+                let _ = insert_rule(&buf, &sels);
+            }
+        }
+    }
+
+    #[test]
+    fn fences_keep_crlf() {
+        assert_eq!(check("```\r\n«a»\r\n```\r\nb\r\n", toggle_code_block), "«a»\r\nb\r\n");
+        assert_eq!(check("x\r\n```\r\n«a»\r\n```", toggle_code_block), "x\r\n«a»");
+        assert_eq!(check("«a»\r\nb\r\n", toggle_code_block), "```\r\n«a»\r\n```\r\nb\r\n");
+        assert_eq!(check("```\n|\n```", toggle_code_block), "|");
     }
 
     #[test]
