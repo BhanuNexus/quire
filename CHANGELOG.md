@@ -59,6 +59,7 @@ Quire 0.11: tasks as notes with time tracking and pomodoros, boards you arrange 
 ### Fixed
 - Vim: Ctrl+V starts Visual-block mode even with nothing on the clipboard (Quire now handles the copy, cut and paste keys itself, so the key reaches Vim in Normal and Visual mode; in Insert mode it still pastes).
 - Vim: Ctrl+Q, Vim's other key for Visual-block mode, no longer closes the window in Normal and Visual mode on Windows and Linux (elsewhere Ctrl+Q still quits; ⌘Q on macOS always does).
+- A note open in the editor keeps your selection and caret where they were when Quire writes to it in the background (a timer's `[time:: …]`, a board edit, a sync).
 
 ## [0.10.2] - 2026-11-06
 

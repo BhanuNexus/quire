@@ -272,7 +272,8 @@ pub fn merge3(base: &str, mine: &str, theirs: &str) -> MergeResult {
 
 /// The line edits that turn `old` into `new`.
 ///
-/// They are char-index [`Change`]s against `old`. Applying them (instead of
+/// They are char-index [`Change`]s against `old`, each cut down to the
+/// chars that differ within its lines. Applying them (instead of
 /// replacing the whole text) keeps the caret, folds and undo history meaningful.
 pub fn line_changes(old: &str, new: &str) -> Vec<Change> {
     let (lo, ln) = (lines(old), lines(new));
@@ -292,7 +293,16 @@ pub fn line_changes(old: &str, new: &str) -> Vec<Change> {
             DiffOp::Insert { old_index, new_index, new_len } => (old_index, old_index, new_index..new_index + new_len),
             DiffOp::Replace { old_index, old_len, new_index, new_len } => (old_index, old_index + old_len, new_index..new_index + new_len),
         };
-        out.push(Change::new(starts[s], starts[e], ln[new_range].concat()));
+        // Only the chars that differ: a caret or selection in a changed
+        // line keeps its place (0.11 review M3: a selection end inside a
+        // task line jumped past it when a timer rewrote `[time:: …]`).
+        let was: Vec<char> = lo[s..e].concat().chars().collect();
+        let now: Vec<char> = ln[new_range].concat().chars().collect();
+        let pre = was.iter().zip(&now).take_while(|(a, b)| a == b).count();
+        let room = was.len().min(now.len()) - pre;
+        let suf = was.iter().rev().zip(now.iter().rev()).take(room).take_while(|(a, b)| a == b).count();
+        let text: String = now[pre..now.len() - suf].iter().collect();
+        out.push(Change::new(starts[s] + pre, starts[e] - suf, text));
     }
     out
 }
@@ -566,6 +576,30 @@ mod tests {
             let tx = Transaction::new(line_changes(old, new)).expect("non-overlapping");
             tx.apply(&mut buf).expect("in range");
             assert_eq!(buf.to_string(), new);
+        }
+    }
+
+    /// 0.11 review M3: a background write into a task line (a timer's
+    /// `[time:: …]`) leaves the person's selection and caret where they were.
+    #[test]
+    fn line_changes_keep_selections_in_changed_lines() {
+        use crate::Selection;
+        let (old, new) = ("a\n- [ ] Call Bo [time:: 10m]\nnext\n", "a\n- [ ] Call Bo [time:: 30m]\nnext\n");
+        let tx = Transaction::new(line_changes(old, new)).unwrap();
+        let in_call = old.find("Call").unwrap() + 2;
+        assert_eq!(tx.map_selection(Selection::new(0, in_call)), Selection::new(0, in_call), "the selection doesn't grow");
+        assert_eq!(tx.map_selection(Selection::cursor(in_call)), Selection::cursor(in_call), "the caret stays in the line");
+        let end = old.find("next").unwrap();
+        assert_eq!(tx.map_selection(Selection::cursor(end)), Selection::cursor(end));
+        // A longer total: positions after it move by the difference.
+        let longer = "a\n- [ ] Call Bo [time:: 1h10m]\nnext\n";
+        let tx = Transaction::new(line_changes(old, longer)).unwrap();
+        assert_eq!(tx.map_selection(Selection::cursor(in_call)), Selection::cursor(in_call));
+        assert_eq!(tx.map_selection(Selection::cursor(end)), Selection::cursor(end + 2));
+        for (o, n) in [("ab\r\n", "ab\n"), ("aXb\n", "ab\n"), ("aa\n", "aaa\n"), ("x\ny\n", "y\nx\n")] {
+            let mut buf = Buffer::from(o);
+            Transaction::new(line_changes(o, n)).unwrap().apply(&mut buf).unwrap();
+            assert_eq!(buf.to_string(), n);
         }
     }
 
