@@ -32,6 +32,7 @@ const KDF: Kdf = if cfg!(test) { Kdf::TEST } else { Kdf::DEFAULT };
 enum Done {
     Locked { folder: String, recovery: Option<String>, remember: bool, conflicts: usize },
     Unlocked { folder: String, id: String },
+    Rekeyed { folder: String, recovery: Option<String>, remembered: bool },
     Failed { folder: String, error: String, recovery: Option<String> },
 }
 
@@ -54,7 +55,7 @@ pub struct SecureState {
     last_input: Option<Instant>,
     job: Option<Job>,
     /// Shown once after a folder is locked: (folder, recovery key).
-    recovery: Option<(String, String)>,
+    recovery: Option<(String, lock::zeroize::Zeroizing<String>)>,
     /// AI-off as last applied to the chat model and embedder.
     ai_off_applied: bool,
     /// Idle locking waits until then (a folder kept unlocked because a note
@@ -512,7 +513,7 @@ impl Workspace {
 
     /// The recovery key of the folder just locked, once: (folder, key).
     pub fn take_recovery_key(&mut self) -> Option<(String, String)> {
-        self.features.secure.recovery.take()
+        self.features.secure.recovery.take().map(|(f, k)| (f, k.to_string()))
     }
 
     /// `folder`'s recovery key, to show again (it is the folder key in
@@ -559,6 +560,45 @@ impl Workspace {
         Ok(())
     }
 
+    /// Start giving `folder` a new key and passphrase in the background
+    /// ([`lock::change_key`]): every file is encrypted again, and old
+    /// copies of the key file and the old recovery key stop opening it. The
+    /// new recovery key is then offered once ([`Self::take_recovery_key`]).
+    /// `current_or_recovery` unlocks it first if needed.
+    pub fn start_changing_key(&mut self, folder: &str, current_or_recovery: &str, new: &str) -> Result<(), String> {
+        let vault = self.vault.clone().ok_or("No vault is open")?;
+        let folder = folder.trim().trim_matches('/').to_string();
+        if self.features.secure.job.is_some() {
+            return Err("A folder is already being converted; wait for it to finish.".into());
+        }
+        if new.chars().count() < lock::MIN_PASSPHRASE {
+            return Err("The passphrase must be at least 8 characters.".into());
+        }
+        let (_, kf) = vault.key_file(&folder).map_err(|e| unlock_error(&vault, &folder, &e))?;
+        let key = match FolderKey::from_recovery_key(current_or_recovery) {
+            Ok(k) => k,
+            Err(_) => kf.unwrap_key(current_or_recovery).map_err(|e| match e {
+                lock::LockError::WrongPassphrase => "Wrong passphrase.".to_string(),
+                e => e.to_string(),
+            })?,
+        };
+        vault.unlock_with_key(&folder, key).map_err(|e| unlock_error(&vault, &folder, &e))?;
+        self.save_open_notes();
+        let remembered = self.remembers_folder(&folder);
+        let new = lock::zeroize::Zeroizing::new(new.to_string());
+        let (tx, rx) = bounded(1);
+        let f = folder.clone();
+        std::thread::spawn(move || {
+            let done = match lock::change_key(&vault, &f, &new, crate::history_ops::now_ms()) {
+                Ok(r) => Done::Rekeyed { folder: f, recovery: r.recovery_key, remembered },
+                Err(e) => Done::Failed { folder: f, error: e.to_string(), recovery: None },
+            };
+            let _ = tx.send(done);
+        });
+        self.features.secure.job = Some(Job { label: format!("Changing the key of {folder}/…"), rx });
+        Ok(())
+    }
+
     /// Whether this computer unlocks `folder` automatically.
     pub fn remembers_folder(&self, folder: &str) -> bool {
         let (Some(root), Some(v)) = (self.vault_root(), &self.vault) else { return false };
@@ -580,7 +620,7 @@ impl Workspace {
         }
         let root = self.vault_root().ok_or("No vault is open")?.to_path_buf();
         let (_, kf) = self.vault.as_ref().ok_or("No vault is open")?.key_file(folder).map_err(|e| e.to_string())?;
-        crate::secrets::store().set(&keychain_name(&root, &kf.folder_id), &key.to_hex())
+        crate::secrets::store().set(&keychain_name(&root, &kf.folder_id), &lock::zeroize::Zeroizing::new(key.to_hex()))
     }
 
     /// Search the notes of unlocked locked folders (never the vault index).
@@ -801,7 +841,7 @@ fn finished(ws: &mut Workspace, done: Done) {
                 }
             }
             if let Some(rk) = recovery {
-                ws.features.secure.recovery = Some((folder.clone(), rk));
+                ws.features.secure.recovery = Some((folder.clone(), rk.into()));
                 ws.request_ui(UiRequest::Feature(Command::LockFolder));
             }
             ws.rebuild_locked_index();
@@ -811,6 +851,24 @@ fn finished(ws: &mut Workspace, done: Done) {
             {
                 plain_left_notice(ws, &left);
             }
+        }
+        Done::Rekeyed { folder, recovery, remembered } => {
+            // The key this computer kept is the old one: keep the new one instead.
+            if remembered
+                && let Some((_, key)) = ws.vault.as_ref().and_then(|v| v.keys().get(&folder))
+                && let Err(e) = ws.remember_key(&folder, &key)
+            {
+                ws.notify(NoticeLevel::Warn, e);
+            }
+            ws.notify(
+                NoticeLevel::Info,
+                format!("{folder}/ has a new key and passphrase: every file was encrypted again. Old copies of its key file and the old recovery key no longer open it."),
+            );
+            if let Some(rk) = recovery {
+                ws.features.secure.recovery = Some((folder, rk.into()));
+                ws.request_ui(UiRequest::Feature(Command::LockFolder));
+            }
+            ws.rebuild_locked_index();
         }
         Done::Unlocked { folder, id } => {
             if let Some(root) = ws.vault_root() {
@@ -832,7 +890,7 @@ fn finished(ws: &mut Workspace, done: Done) {
                 format!("Converting {folder}/ stopped: {error}. No plain file was removed before its encrypted copy was checked; run it again to finish. {key}"),
             );
             if let Some(rk) = recovery {
-                ws.features.secure.recovery = Some((folder, rk));
+                ws.features.secure.recovery = Some((folder, rk.into()));
                 ws.request_ui(UiRequest::Feature(Command::LockFolder));
             }
         }
@@ -935,6 +993,18 @@ pub(crate) fn vault_event(ws: &mut Workspace, ev: &VaultEvent) {
                 // A folder was locked or unlocked elsewhere (another device, the CLI).
                 let folder = p.folder().to_string();
                 let new = !vault.known_locked().contains(&folder);
+                // The key was changed on another device: the one held here is the old one.
+                let stale = ws.features.secure.job.is_none()
+                    && vault
+                        .keys()
+                        .get(&folder)
+                        .is_some_and(|(_, k)| vault.key_file(&folder).is_ok_and(|(_, kf)| kf.check_key(&k).is_err()));
+                if stale && ws.lock_folder_now(&folder).is_some() {
+                    ws.notify(
+                        NoticeLevel::Warn,
+                        format!("{folder}/ got a new key on another device: unlock it again with its new passphrase."),
+                    );
+                }
                 if vault.note_locked_folder(&folder).is_ok() && new {
                     // What this device derived from its notes while they were plain goes too.
                     forget_derived(ws, &folder);
@@ -994,7 +1064,7 @@ pub(crate) fn vault_opened(ws: &mut Workspace) {
         let store = crate::secrets::store();
         for f in vault.locked_folders() {
             let Ok((_, kf)) = vault.key_file(&f.folder.path) else { continue };
-            if let Some(hex) = store.get(&keychain_name(&root, &kf.folder_id))
+            if let Some(hex) = store.get(&keychain_name(&root, &kf.folder_id)).map(lock::zeroize::Zeroizing::new)
                 && let Some(key) = FolderKey::from_hex(&hex)
                 && vault.unlock_with_key(&f.folder.path, key).is_err()
             {

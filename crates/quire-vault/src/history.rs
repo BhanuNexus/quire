@@ -164,7 +164,38 @@ impl Vault {
         }
         let h = crate::lock::format::Header::parse(&bytes).map_err(|e| crate::locked::damaged(file, &e))?;
         let key = self.keys().by_id(h.folder).ok_or_else(|| VaultError::Locked("this note's folder".into()))?;
-        key.open(crate::lock::format::Kind::Snapshot, h.folder, &bytes).map_err(|e| crate::locked::damaged(file, &e))
+        let kind = crate::lock::format::Kind::Snapshot;
+        key.open(kind, h.folder, &bytes)
+            .or_else(|e| self.keys().previous_by_id(h.folder).ok_or(e).and_then(|p| p.open(kind, h.folder, &bytes)))
+            .map_err(|e| crate::locked::damaged(file, &e))
+    }
+
+    /// Encrypt `note`'s snapshots that are still under `old` (a folder's
+    /// key before a key change) with `new`. Returns how many changed.
+    pub(crate) fn reseal_history(
+        &self,
+        note: &NotePath,
+        id: crate::lock::FolderId,
+        old: &crate::lock::FolderKey,
+        new: &crate::lock::FolderKey,
+    ) -> Result<usize> {
+        let kind = crate::lock::format::Kind::Snapshot;
+        let mut n = 0;
+        for f in self.storage().list_under(&folder_for(note))?.into_iter().filter(|f| f.as_str().ends_with(SEALED_EXT)) {
+            let data = self.storage().read_bytes(&f)?;
+            if crate::lock::format::Header::parse(&data).map(|h| h.folder) != Ok(id) || new.open(kind, id, &data).is_ok() {
+                continue;
+            }
+            let gz = old.open(kind, id, &data).map_err(|e| crate::locked::damaged(&f, &e))?;
+            let sealed = new.seal(kind, id, &gz).map_err(|e| crate::locked::damaged(&f, &e))?;
+            if self.storage().write_bytes_if(&f, &|cur| cur == Some(data.as_slice()), &sealed)? {
+                if new.open(kind, id, &self.storage().read_bytes(&f)?).ok().as_deref() != Some(gz.as_slice()) {
+                    return Err(VaultError::Damaged { path: f.to_string(), reason: "the copy didn't read back the same".into() });
+                }
+                n += 1;
+            }
+        }
+        Ok(n)
     }
 
     /// Where `note`'s snapshots are written: plain, or encrypted with its

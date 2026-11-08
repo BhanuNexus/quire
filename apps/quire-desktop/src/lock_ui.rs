@@ -46,6 +46,8 @@ pub(crate) struct LockDialog {
     saved: bool,
     /// The key is shown again on request, not right after locking.
     shown_again: bool,
+    /// Change mode: also give the folder a new key.
+    new_key: bool,
 }
 
 impl LockDialog {
@@ -65,6 +67,7 @@ impl LockDialog {
             shown_key: None,
             saved: false,
             shown_again: false,
+            new_key: false,
         }
     }
 
@@ -109,6 +112,7 @@ impl LockDialog {
     #[cfg(test)]
     pub(crate) fn sample(i: usize) -> Self {
         let modes = [Mode::Lock, Mode::Unlock, Mode::Change, Mode::Stop, Mode::Lock, Mode::ShowKey, Mode::Unlock];
+        // (Sample 2, the passphrase change, shows the "change the key" choice.)
         let mut d = Self::new(modes[i % modes.len()], "Journal".into());
         if i == 4 {
             d.shown_key = Some(("Journal".into(), "58N2-MAHA-58N2-MAHA-58N2-MAHA-58N2-MAHA-58N2-MAHA-58N2-MAHA-58N0-ME2E".into()));
@@ -217,6 +221,21 @@ impl LockDialog {
     }
 }
 
+/// Passphrases and keys typed or shown here are wiped when the dialog goes
+/// (egui's own text buffers may keep copies; memory isn't protected, see
+/// docs/design/0.11-secure.md).
+impl Drop for LockDialog {
+    fn drop(&mut self) {
+        use quire_app::vault::lock::zeroize::Zeroize as _;
+        for s in [&mut self.pass, &mut self.pass2, &mut self.current, &mut self.recovery] {
+            s.zeroize();
+        }
+        if let Some((_, k)) = &mut self.shown_key {
+            k.zeroize();
+        }
+    }
+}
+
 impl OverlayView for LockDialog {
     fn show(&mut self, ctx: &egui::Context, ws: &mut Workspace, pal: &Palette) -> OverlayResult {
         let mut res = OverlayResult::default();
@@ -311,6 +330,7 @@ impl OverlayView for LockDialog {
                     let r2 = field(ui, "Type it again", &mut self.pass2, "");
                     go |= r2.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     ui.add(egui::Label::new(RichText::new(OLD_KEY_FILES).size(11.5).color(pal.faint)).wrap());
+                    ui.checkbox(&mut self.new_key, "Also change the folder's key (encrypts every file again; gives a new recovery key)");
                     r
                 }
                 Mode::ShowKey => {
@@ -391,7 +411,12 @@ impl LockDialog {
                 if self.pass != self.pass2 {
                     return Err("The new passphrases differ.".into());
                 }
-                ws.change_folder_passphrase(&folder, &self.current, &self.pass)?;
+                if self.new_key {
+                    ws.start_changing_key(&folder, &self.current, &self.pass)?;
+                    self.started = true;
+                } else {
+                    ws.change_folder_passphrase(&folder, &self.current, &self.pass)?;
+                }
             }
             Mode::Stop => {
                 let pass = Some(self.pass.as_str()).filter(|p| !p.is_empty());
@@ -439,8 +464,8 @@ impl LockDialog {
 }
 
 /// What "Change passphrase" doesn't change (security review S-M8).
-const OLD_KEY_FILES: &str = "Only the key file changes: the folder's key stays the same, so the recovery key keeps working, and so does an old copy of the key file \
-(in a backup, git history or a cloud folder's version history) with the old passphrase. If the passphrase leaked, also choose “Change the folder's key” below.";
+const OLD_KEY_FILES: &str = "A new passphrase alone keeps the folder's key: the recovery key keeps working, and so does an old copy of the key file \
+(in a backup, git history or a cloud folder's version history) with the old passphrase. If the passphrase or the recovery key leaked, also change the key.";
 
 /// How many plain files sit next to an encrypted version in `folder`.
 fn conflicts(ws: &Workspace, folder: &str) -> usize {
@@ -466,6 +491,13 @@ pub(crate) struct LockedSurface {
 impl LockedSurface {
     pub(crate) fn new(path: &NotePath) -> Self {
         Self { path: path.clone(), pass: String::new(), remember: false, error: None, focused: false, done: false }
+    }
+}
+
+impl Drop for LockedSurface {
+    fn drop(&mut self) {
+        use quire_app::vault::lock::zeroize::Zeroize as _;
+        self.pass.zeroize();
     }
 }
 

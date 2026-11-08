@@ -138,8 +138,29 @@ impl Vault {
             e => damaged(&f.key_file(), &e),
         })?;
         let id = kf.id().map_err(|e| damaged(&f.key_file(), &e))?;
+        let previous = kf.previous(&key).map_err(|e| damaged(&f.key_file(), &e))?;
         self.keys.insert(&f.path, id, key.clone());
+        self.keys.set_previous(&f.path, previous);
         Ok(key)
+    }
+
+    /// Open a `.qenc` file of `folder` with its key, or, for a file not
+    /// encrypted again yet after a key change, its previous key.
+    pub(crate) fn open_sealed(
+        &self,
+        folder: &str,
+        kind: Kind,
+        id: lock::FolderId,
+        key: &FolderKey,
+        data: &[u8],
+    ) -> std::result::Result<Vec<u8>, LockError> {
+        match key.open(kind, id, data) {
+            Err(LockError::Damaged) => match self.keys.previous(folder) {
+                Some(prev) => prev.open(kind, id, data).map_err(|_| LockError::Damaged),
+                None => Err(LockError::Damaged),
+            },
+            r => r,
+        }
     }
 
     /// Unlock `folder` with its key (a recovery key, the OS keychain). When
@@ -151,7 +172,9 @@ impl Vault {
             Ok((f, kf)) => {
                 kf.check_key(&key).map_err(|e| damaged(&f.key_file(), &e))?;
                 let id = kf.id().map_err(|e| damaged(&f.key_file(), &e))?;
+                let previous = kf.previous(&key).map_err(|e| damaged(&f.key_file(), &e))?;
                 self.keys.insert(&f.path, id, key);
+                self.keys.set_previous(&f.path, previous);
             }
             Err(VaultError::NotFound(_)) if self.known.contains(folder) => {
                 let id = self.check_key_without_key_file(folder, &key)?;
@@ -259,7 +282,7 @@ impl Vault {
             Err(e) => return Err(e),
         };
         let (id, key) = self.keys.get(&f.path).ok_or_else(|| VaultError::Locked(f.path.clone()))?;
-        key.open(Kind::File, id, &data).map_err(|e| damaged(&stored, &e))
+        self.open_sealed(&f.path, Kind::File, id, &key, &data).map_err(|e| damaged(&stored, &e))
     }
 
     /// Store a file of a locked folder, encrypted (plain while the folder
@@ -316,7 +339,7 @@ impl Vault {
             None
         };
         let now = match (&raw, &plain) {
-            (Some(b), _) => Some(key.open(Kind::File, id, b).map_err(|e| damaged(&stored, &e))?),
+            (Some(b), _) => Some(self.open_sealed(&f.path, Kind::File, id, &key, b).map_err(|e| damaged(&stored, &e))?),
             (None, Some(b)) => Some(b.clone()),
             (None, None) => None,
         };

@@ -22,6 +22,8 @@ const AAD_LEN: usize = 4 + 1 + 1 + ID_LEN;
 pub const HEADER_LEN: usize = AAD_LEN + NONCE_LEN;
 /// Associated data of the wrapped key, followed by the folder id.
 const WRAP_AAD: &[u8] = b"quire-lock key v1";
+/// Associated data of the previous key (after a key change), followed by the folder id.
+const PREVIOUS_AAD: &[u8] = b"quire-lock previous key v1";
 /// HKDF salt of the folder key's subkeys.
 const HKDF_SALT: &[u8] = b"quire-lock v1";
 
@@ -348,6 +350,16 @@ pub struct KeyFile {
     pub wrapped_key: String,
     /// Hex: the first 16 bytes of HKDF(folder key, "check").
     pub check: String,
+    /// After "Change the folder's key": hex of nonce (24 bytes) ‖ the
+    /// previous folder key, sealed with a subkey of this one. Opens the
+    /// files still encrypted with the previous key (only for someone who
+    /// has the current key).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_key: Option<String>,
+    /// A key change is under way: some files may still be encrypted with
+    /// the previous key. Running it again finishes it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rotating: bool,
     #[serde(flatten)]
     pub other: serde_json::Map<String, serde_json::Value>,
 }
@@ -373,6 +385,8 @@ impl KeyFile {
             salt: String::new(),
             wrapped_key: String::new(),
             check: key.check(),
+            previous_key: None,
+            rotating: false,
             other: serde_json::Map::new(),
         };
         kf.rewrap(key, passphrase)?;
@@ -448,6 +462,40 @@ impl KeyFile {
         // A key file whose check doesn't match its own key was tampered with.
         self.check_key(&key).map_err(|_| LockError::KeyFile("its check value doesn't match its key".into()))?;
         Ok(key)
+    }
+
+    /// The previous folder key ([`Self::previous_key`]), opened with the
+    /// current one.
+    pub fn previous(&self, key: &FolderKey) -> Result<Option<FolderKey>, LockError> {
+        let Some(h) = &self.previous_key else { return Ok(None) };
+        let id = self.id()?;
+        let data = unhex(h).ok_or_else(|| LockError::KeyFile("bad previous_key".into()))?;
+        if data.len() != NONCE_LEN + 32 + TAG_LEN {
+            return Err(LockError::KeyFile("previous_key has the wrong length".into()));
+        }
+        let (nonce, ct) = data.split_at(NONCE_LEN);
+        let mut k = key.subkey(b"previous");
+        let cipher = XChaCha20Poly1305::new((&k).into());
+        k.zeroize();
+        let aad = [PREVIOUS_AAD, &id.0].concat();
+        let nonce = XNonce::try_from(nonce).map_err(|_| LockError::KeyFile("bad nonce".into()))?;
+        let mut plain = cipher.decrypt(&nonce, Payload { msg: ct, aad: &aad }).map_err(|_| LockError::Damaged)?;
+        let arr: Option<[u8; 32]> = plain.as_slice().try_into().ok();
+        plain.zeroize();
+        Ok(Some(FolderKey(arr.ok_or(LockError::Damaged)?)))
+    }
+
+    /// Keep `previous` in this key file, sealed with `key` (the current one).
+    pub fn set_previous(&mut self, key: &FolderKey, previous: &FolderKey) -> Result<(), LockError> {
+        let id = self.id()?;
+        let nonce: [u8; NONCE_LEN] = random()?;
+        let mut k = key.subkey(b"previous");
+        let cipher = XChaCha20Poly1305::new((&k).into());
+        k.zeroize();
+        let aad = [PREVIOUS_AAD, &id.0].concat();
+        let ct = cipher.encrypt(&XNonce::from(nonce), Payload { msg: &previous.0, aad: &aad }).map_err(|_| LockError::Damaged)?;
+        self.previous_key = Some(hex(&[nonce.as_slice(), &ct].concat()));
+        Ok(())
     }
 
     /// Whether `key` (from a recovery key or the keychain) is this folder's.

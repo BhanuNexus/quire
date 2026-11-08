@@ -31,7 +31,10 @@ pub(crate) const COMMANDS: &[CliCommand] = &[
   quire-cli lock      <vault> <folder> --keep-both [--passphrase-file F]
                         plain files next to an encrypted version: encrypt each under a new name
   quire-cli lock      <vault> <folder> --change-passphrase [--recovery-key] [--new-passphrase-file F]
-                        a new passphrase (with the current one, or the recovery key)",
+                        a new passphrase (with the current one, or the recovery key)
+  quire-cli lock      <vault> <folder> --change-key --recovery-key-file F [--passphrase-file F] [--new-passphrase-file F]
+                        a new key and passphrase: every file is encrypted again, so old key files and the
+                        old recovery key stop opening it; the new recovery key goes to F; again: finish",
         run: lock_cmd,
     },
     CliCommand {
@@ -92,6 +95,9 @@ fn lock_cmd(args: &[String]) -> Result<(), String> {
     let folder = folder_arg(args)?;
     if has(args, "--change-passphrase") {
         return change_passphrase(&vault, &folder, args);
+    }
+    if has(args, "--change-key") {
+        return change_key(&root, &vault, &folder, args);
     }
     if has(args, "--keep-both") {
         let pass = passphrase(&format!("Passphrase of {folder}/"), args)?;
@@ -215,6 +221,52 @@ fn change_passphrase(vault: &Vault, folder: &str, args: &[String]) -> Result<(),
     println!(
         "{folder}/ has a new passphrase. Its files didn't change: the recovery key still works, and so does an old copy of the key file \
          (a backup, git history) with the old passphrase."
+    );
+    Ok(())
+}
+
+fn change_key(root: &Path, vault: &Vault, folder: &str, args: &[String]) -> Result<(), String> {
+    let (_, kf) = vault.key_file(folder).map_err(|e| e.to_string())?;
+    let out = if kf.rotating {
+        None
+    } else {
+        let f =
+            flag(args, "--recovery-key-file").ok_or("--change-key needs --recovery-key-file F: the new recovery key is written there")?;
+        let out = PathBuf::from(f);
+        if out.exists() {
+            return Err(format!("{} already exists; pick a new file for the recovery key", out.display()));
+        }
+        Some(out)
+    };
+    let cur = passphrase(&format!("Current passphrase of {folder}/"), args)?;
+    vault.unlock(folder, &cur).map_err(|e| match e {
+        quire_app::vault::VaultError::Locked(_) => "Wrong passphrase.".to_string(),
+        e => e.to_string(),
+    })?;
+    let new = if kf.rotating {
+        Zeroizing::new(String::new())
+    } else {
+        Zeroizing::new(read_secret(
+            "New passphrase (8 characters or more)",
+            "QUIRE_LOCK_NEW_PASSPHRASE",
+            flag(args, "--new-passphrase-file"),
+        )?)
+    };
+    let r = lock::change_key(vault, folder, &new, now_ms()).map_err(|e| {
+        format!("{e}. Run `quire-cli lock {} {folder} --change-key` again to finish (with the new passphrase).", root.display())
+    })?;
+    if let (Some(out), Some(rk)) = (&out, &r.recovery_key) {
+        write_recovery_key(out, rk).map_err(|e| {
+            format!("{folder}/ has a new key, but {e}. Show it with `quire-cli unlock {} {folder} --recovery-key-file F`.", root.display())
+        })?;
+        println!("The new recovery key is in {} (readable only by you). Keep it somewhere safe and delete it here.", out.display());
+    }
+    println!(
+        "{folder}/ has a new key: {} file{} and {} history version{} encrypted again. Old copies of its key file and the old recovery key no longer open it.",
+        r.files,
+        plural(r.files),
+        r.history,
+        plural(r.history)
     );
     Ok(())
 }

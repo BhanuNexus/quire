@@ -704,3 +704,80 @@ fn hidden_folders_inside_a_locked_folder_are_part_of_it() {
     assert!(matches!(fs.write_atomic(&np("Journal/.drafts/x.md"), SECRET), Err(VaultError::Locked(_))));
     assert!(fs.write_atomic(&np(".quire/cache/y"), "ok").is_ok());
 }
+
+/// Security review S-M8: a new folder key, so an old key file with a leaked
+/// passphrase (or the old recovery key) opens nothing written since.
+#[test]
+fn changing_the_key_shuts_out_old_key_files_and_old_recovery_keys() {
+    let (v, fs) = vault_with(&journal());
+    let day = np("Journal/Day 1.md");
+    v.snapshot(&day, "# Day 1\nMARKER-diary-7f3a v0\n", 1, true).unwrap();
+    let old_rk = lock(&v).recovery_key.unwrap();
+    let old_key_file = fs.read(&np("Journal/quire-lock.json")).unwrap();
+    let r = change_key(&v, "Journal", "a new passphrase", 9).unwrap();
+    assert_eq!((r.files, r.history), (3, 1));
+    let new_rk = r.recovery_key.unwrap();
+    assert_ne!(new_rk, old_rk);
+    // The old key (from the old key file and passphrase) opens none of the files now.
+    let old_key = KeyFile::parse(&old_key_file).unwrap().unwrap_key(PASS).unwrap();
+    let id = KeyFile::parse(&old_key_file).unwrap().id().unwrap();
+    for p in fs.list().unwrap().into_iter().filter(|p| is_encrypted_name(p.as_str())) {
+        assert!(old_key.open(Kind::File, id, &fs.read_bytes(&p).unwrap()).is_err(), "{p}");
+    }
+    let fresh = Vault::new(Arc::clone(&fs) as Arc<dyn Storage>);
+    assert!(fresh.unlock("Journal", PASS).is_err());
+    assert!(fresh.unlock_with_key("Journal", FolderKey::from_recovery_key(&old_rk).unwrap()).is_err());
+    fresh.unlock("Journal", "a new passphrase").unwrap();
+    assert!(fresh.read(&day).unwrap().contains(SECRET));
+    assert!(fresh.read_snapshot(&fresh.history(&day)[0]).unwrap().contains("v0"));
+    // A device still holding the old key writes a note: still readable here (the previous key is kept).
+    let late = old_key.seal(Kind::File, id, b"written with the old key").unwrap();
+    fs.write_bytes_atomic(&np("Journal/Late.md.qenc"), &late).unwrap();
+    assert_eq!(fresh.read(&np("Journal/Late.md")).unwrap(), "written with the old key");
+    assert_no_marker_in(&fs);
+}
+
+#[test]
+fn changing_the_key_interrupted_at_any_step_finishes() {
+    let files = journal();
+    let mut n = 0;
+    loop {
+        let fs = Arc::new(MemFs::with_files(files.iter().copied()));
+        let v = Vault::new(Arc::clone(&fs) as Arc<dyn Storage>);
+        lock(&v);
+        let crashing = Vault::new(Arc::new(Crash { inner: Arc::clone(&fs), left: AtomicUsize::new(n) }));
+        crashing.unlock("Journal", PASS).unwrap();
+        let done = change_key(&crashing, "Journal", "a new passphrase", 9).is_ok();
+        // Whatever happened, every file opens with one passphrase or the other, and running it again finishes.
+        let again = Vault::new(Arc::clone(&fs) as Arc<dyn Storage>);
+        if again.unlock("Journal", "a new passphrase").is_err() {
+            again.unlock("Journal", PASS).unwrap();
+            assert!(!done);
+            continue_or_finish(&again, &files, &fs);
+        } else {
+            for (p, text) in &files {
+                assert_eq!(again.read_file(&np(p)).unwrap(), text.as_bytes(), "{p}");
+            }
+            if !done {
+                change_key(&again, "Journal", "unused", 10).unwrap();
+            }
+            assert!(!again.key_file("Journal").unwrap().1.rotating);
+        }
+        if done {
+            break;
+        }
+        n += 1;
+        assert!(n < 200);
+    }
+    assert!(n > 3, "{n}");
+}
+
+fn continue_or_finish(v: &Vault, files: &[(&str, &str)], fs: &Arc<MemFs>) {
+    // The key file wasn't replaced: nothing changed yet; change it now.
+    let r = change_key(v, "Journal", "a new passphrase", 10).unwrap();
+    assert!(r.recovery_key.is_some());
+    for (p, text) in files {
+        assert_eq!(v.read_file(&np(p)).unwrap(), text.as_bytes(), "{p}");
+    }
+    assert_no_marker_in(fs);
+}

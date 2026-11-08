@@ -423,3 +423,25 @@ fn ai_off_applies_before_any_embedder() {
     assert!(!ws.index().has_semantic_builder());
     assert!(ws.chat.is_none());
 }
+
+/// Security review S-M8: changing the key from the app gives a new
+/// recovery key; the old passphrase and recovery key stop working.
+#[test]
+fn changing_a_folders_key_from_the_app() {
+    let (_d, root) = vault_dir(&[("Journal/Day.md", "# Day\nMARKER-9d1f\n")]);
+    let mut ws = open(&root);
+    let old_rk = lock_and_wait(&mut ws, "Journal");
+    ws.lock_folder_now("Journal");
+    assert_eq!(ws.start_changing_key("Journal", "wrong horse", "a new passphrase").unwrap_err(), "Wrong passphrase.");
+    ws.start_changing_key("Journal", PASS, "a new passphrase").unwrap();
+    until(&mut [&mut ws], "the key change", |w| w[0].lock_job().is_none());
+    let (f, new_rk) = ws.take_recovery_key().expect("a new recovery key is offered");
+    assert_eq!(f, "Journal");
+    assert_ne!(new_rk, old_rk);
+    ws.lock_folder_now("Journal");
+    assert_eq!(ws.unlock_folder("Journal", PASS, false).unwrap_err(), "Wrong passphrase.");
+    assert!(ws.unlock_with_recovery_key("Journal", &old_rk, None).is_err());
+    ws.unlock_with_recovery_key("Journal", &new_rk, None).unwrap();
+    assert!(ws.vault().unwrap().read(&np("Journal/Day.md")).unwrap().contains(MARK));
+    assert!(leaks(&root, MARK).is_empty());
+}
