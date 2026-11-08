@@ -109,7 +109,9 @@ fn a_client_limited_to_tags_and_folders_never_sees_the_rest() {
             notes.push(Note { path, marker: format!("zqx{i}secret"), tags });
         }
         for (i, note) in notes.iter().enumerate() {
-            let fm = note.tags.first().map(|t| format!("---\ntags: [{t}]\n---\n")).unwrap_or_default();
+            // A property holding the marker too: views group by it (`query_view`).
+            let tags_line = note.tags.first().map(|t| format!("tags: [{t}]\n")).unwrap_or_default();
+            let fm = format!("---\n{tags_line}owner: {}\n---\n", note.marker);
             let mut inline = String::new();
             for t in note.tags.iter().skip(1) {
                 let _ = write!(inline, " #{t}");
@@ -152,6 +154,8 @@ fn a_client_limited_to_tags_and_folders_never_sees_the_rest() {
             call("list_notes", &json!({})),
             call("list_tags", &json!({})),
             call("ask_notes", &json!({"question": "shared words"})),
+            call("query_view", &json!({"spec": "group: owner"})),
+            call("query_view", &json!({"spec": "from: #work\ngroup: owner\nlayout: board"})),
             ("resources/list".into(), json!({})),
         ];
         let mut named: Vec<Option<usize>> = vec![None; calls.len()];
@@ -271,4 +275,32 @@ fn ai_off_refuses_every_client() {
     assert!(srv.refusal().unwrap().contains("AI is off"));
     let r = run(&srv, &[call("search", &json!({"query": "plan"})), ("resources/list".into(), json!({}))]);
     assert!(r.iter().all(|x| x["error"]["message"].as_str().is_some_and(|m| m.contains("AI is off"))), "{r:?}");
+}
+
+/// Security review S-M2: a view's groups and total count only the notes the
+/// client may see.
+#[test]
+fn query_view_groups_and_totals_count_only_visible_notes() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("vault");
+    std::fs::create_dir_all(root.join(".quire/shared")).unwrap();
+    std::fs::create_dir_all(root.join("Public")).unwrap();
+    std::fs::create_dir_all(root.join("Private")).unwrap();
+    std::fs::write(root.join("Public/A.md"), "---\nclient: Open Co\n---\n# A\n").unwrap();
+    std::fs::write(root.join("Private/B.md"), "---\nclient: zqxSecretClient\n---\n# B\n").unwrap();
+    std::fs::write(
+        root.join(".quire/shared/agent-policy.toml"),
+        "format = 1\ndefault = \"read\"\n[clients.\"mcp:probe\"]\nallow_folders = [\"Public/\"]\n",
+    )
+    .unwrap();
+    let srv = server(&root, Some("probe"));
+    let replies = run(
+        &srv,
+        &[call("query_view", &json!({"spec": "group: client"})), call("query_view", &json!({"spec": "lanes: client\ngroup: client"}))],
+    );
+    let all: String = replies.iter().map(Value::to_string).collect();
+    assert!(!all.contains("zqxSecretClient"), "{all}");
+    assert!(all.contains("Open Co"));
+    let r = replies.iter().find(|r| r["id"] == 1).unwrap();
+    assert_eq!(r["result"]["structuredContent"]["total"], 1, "{r}");
 }

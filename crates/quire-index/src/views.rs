@@ -728,9 +728,16 @@ fn sort_rows<T>(rows: &mut [(T, ViewRow)], spec: &ViewSpec, get: impl Fn(&T, &st
 /// `current` is the note holding the view: it's left out of the results,
 /// and `from: ./Folder/` is relative to it.
 pub fn run(spec: &ViewSpec, index: &Index, today: &str, current: Option<&NotePath>) -> ViewResult {
+    run_over(spec, index, today, current, &|_| true)
+}
+
+/// [`run`] over only the notes `keep` accepts: rows, groups, lanes and the
+/// total are all computed from those (an agent's view never counts or
+/// groups by notes it may not see).
+pub fn run_over(spec: &ViewSpec, index: &Index, today: &str, current: Option<&NotePath>, keep: &dyn Fn(&NotePath) -> bool) -> ViewResult {
     let folders: Vec<Option<String>> =
         spec.from.iter().map(|s| if let Source::Folder(f) = s { Some(resolve_folder(f, current)) } else { None }).collect();
-    let notes = index.records().filter(|r| {
+    let notes = index.records().filter(|r| keep(&r.path)).filter(|r| {
         spec.from.is_empty()
             || spec.from.iter().zip(&folders).any(|(s, folder)| match s {
                 Source::All => true,

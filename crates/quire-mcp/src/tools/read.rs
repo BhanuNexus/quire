@@ -1076,10 +1076,11 @@ fn query_view(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     };
     let max = int(a, "max_rows", 100, 1, 1000);
     let ix = cx.index.read();
-    let res = views::run(&spec, &ix, &chrono::Local::now().format("%Y-%m-%d").to_string(), None);
+    // Only notes this client may see count: rows, groups and the total alike.
+    let res = views::run_over(&spec, &ix, &chrono::Local::now().format("%Y-%m-%d").to_string(), None, &|p| visible(cx, p));
     let mut columns = vec!["path".to_string()];
     columns.extend(spec.fields.iter().cloned());
-    let rows: Vec<_> = res.rows.iter().filter(|r| visible(cx, &r.path)).take(max).collect();
+    let rows: Vec<_> = res.rows.iter().take(max).collect();
     let mut text = format!("| {} |\n|{}|\n", columns.join(" | "), " --- |".repeat(columns.len()));
     for r in &rows {
         let _ = writeln!(text, "| {} | {} |", r.path, r.cells.iter().map(|c| c.replace('|', "\\|")).collect::<Vec<_>>().join(" | "));
