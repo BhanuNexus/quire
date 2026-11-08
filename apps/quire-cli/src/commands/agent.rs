@@ -232,18 +232,27 @@ fn install_imported(dir: &Path, from: &Path, yes: bool) -> Result<(), String> {
     });
     println!("Skill from {}", source.display());
     println!("  {} bytes, SHA-256 {sha}", bytes.len());
-    println!("  It begins (shown as data; it hasn't run):");
-    for line in text.lines().take(12) {
-        let shown: String = line.chars().filter(|c| !c.is_control()).take(120).collect();
+    println!("  Its text (shown as data; it hasn't run):");
+    let lines: Vec<&str> = text.lines().collect();
+    for line in lines.iter().take(SHOWN_LINES) {
+        let shown: String = line.chars().filter(|c| !c.is_control()).take(160).collect();
         println!("  | {shown}");
     }
+    if lines.len() > SHOWN_LINES {
+        println!("  … {} more lines: read the whole file before installing it.", lines.len() - SHOWN_LINES);
+    }
     println!("A skill is instructions an agent follows. Install only one you've read and trust.");
+    let file = dir.join("SKILL.md");
+    if file.exists() {
+        return Err(format!("{} already exists; nothing was changed. Remove it first to replace it.", file.display()));
+    }
     if !yes {
         return Err("Not installed. Read it, then run again with --yes to install it.".into());
     }
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let file = dir.join("SKILL.md");
-    std::fs::write(&file, &bytes).map_err(|e| format!("{}: {e}", file.display()))?;
+    // Marked in the file itself too, so a copy or a renamed folder (without
+    // SKILL.source.json) stays untrusted: front matter can only lower trust.
+    std::fs::write(&file, mark_untrusted(&text)).map_err(|e| format!("{}: {e}", file.display()))?;
     let meta = serde_json::json!({
         "format": 1,
         "source": source.to_string_lossy(),
@@ -259,6 +268,22 @@ fn install_imported(dir: &Path, from: &Path, yes: bool) -> Result<(), String> {
         println!("It is inside a Quire vault: agents get it as untrusted data, and changes to it are suggestions.");
     }
     Ok(())
+}
+
+/// How much of an imported skill `skill install --from` shows.
+const SHOWN_LINES: usize = 200;
+
+/// `text` with `trust: untrusted` in its front matter (added, or put first
+/// in the front matter it has; an existing `trust:` line is replaced).
+fn mark_untrusted(text: &str) -> String {
+    let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let Some(rest) = text.strip_prefix("---\r\n").or_else(|| text.strip_prefix("---\n")) else {
+        return format!("---{nl}trust: untrusted{nl}---{nl}{text}");
+    };
+    let end = rest.find(&format!("{nl}---")).map_or(0, |i| i + nl.len());
+    let (fm, body) = rest.split_at(end);
+    let fm: String = fm.split_inclusive('\n').filter(|l| !l.trim_start().to_lowercase().starts_with("trust:")).collect();
+    format!("---{nl}trust: untrusted{nl}{fm}{body}")
 }
 
 /// One line per proposal: id, status, who, when, title and files.
@@ -408,6 +433,17 @@ mod tests {
         assert!(skill(&args(&["skill", "install", "x", "--from", "https://example.com/SKILL.md", "--yes"])).is_err());
         // Agents get it as untrusted data.
         assert_eq!(st.trust_of(&NotePath::new("skills/helper/SKILL.md"), None), quire_agent::Trust::Untrusted);
+        // Security review S-L7: the file itself says so, so a copy or a renamed folder stays untrusted.
+        let installed = std::fs::read_to_string(dest.join("SKILL.md")).unwrap();
+        assert!(installed.starts_with("---\ntrust: untrusted\nname: helper\n---\n"), "{installed}");
+        std::fs::create_dir_all(vault.join("skills/renamed")).unwrap();
+        std::fs::copy(dest.join("SKILL.md"), vault.join("skills/renamed/SKILL.md")).unwrap();
+        assert_eq!(st.trust_of(&NotePath::new("skills/renamed/SKILL.md"), None), quire_agent::Trust::Untrusted);
+        // And an existing SKILL.md is never overwritten.
+        let e = skill(&args(&["skill", "install", dest.to_str().unwrap(), "--from", t, "--yes"])).unwrap_err();
+        assert!(e.contains("already exists"), "{e}");
+        assert_eq!(mark_untrusted("# x\n"), "---\ntrust: untrusted\n---\n# x\n");
+        assert_eq!(mark_untrusted("---\ntrust: trusted\na: b\n---\nx"), "---\ntrust: untrusted\na: b\n---\nx");
         // Every tool the skill names exists.
         let reg = quire_mcp::ToolRegistry::standard();
         for t in reg.all().map(|t| t.spec().name).filter(|n| !quire_mcp::tools::legacy::NAMES.contains(n)) {
