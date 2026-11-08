@@ -787,8 +787,13 @@ mod tests {
         assert_eq!(p.as_str(), "Tasks/Plan trip.md");
         w.index().flush();
         assert!(w.task_notes().iter().any(|(path, n)| *path == p && n.task.due.as_deref() == Some("2026-12-01")));
-        let r = w.week_report(Local::now().date_naive());
-        assert_eq!(r.rows.first().map(|x| (x.title.as_str(), x.total)), Some(("Gym", 25)));
+        // The session may straddle midnight into a new week: count both weeks then.
+        let gym = |day: NaiveDate| w.week_report(day).rows.iter().filter(|x| x.title == "Gym").map(|x| x.total).sum::<u32>();
+        let today = Local::now().date_naive();
+        let began = (Local::now() - chrono::Duration::minutes(30)).date_naive();
+        let same_week = began.iso_week() == today.iso_week();
+        let total = if same_week { gym(today) } else { gym(today) + gym(began) };
+        assert_eq!(total, 25);
     }
 
     /// The running timer started `minutes` ago, as another process would
