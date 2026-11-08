@@ -48,11 +48,14 @@ pub struct Vault {
     pub config: VaultConfig,
     /// Keys of unlocked locked folders (0.11), shared by every clone.
     pub(crate) keys: crate::lock::KeyRing,
+    /// Locked folders remembered apart from their key files, shared by
+    /// every clone (keyless ones too).
+    pub(crate) known: crate::lock::Known,
 }
 
 impl Vault {
     pub fn new(storage: Arc<dyn Storage>) -> Self {
-        Self { storage, config: VaultConfig::default(), keys: crate::lock::KeyRing::new() }
+        Self { storage, config: VaultConfig::default(), keys: crate::lock::KeyRing::new(), known: crate::lock::Known::default() }
     }
 
     pub fn open_local(root: impl AsRef<Path>) -> Result<Self> {
@@ -76,7 +79,12 @@ impl Vault {
         let locked = crate::lock::folders_in(&all);
         Ok(all
             .into_iter()
-            .filter(|p| p.is_markdown() && !p.as_str().starts_with(&tpl) && !crate::lock::in_any(&locked, p.as_str()))
+            .filter(|p| {
+                p.is_markdown()
+                    && !p.as_str().starts_with(&tpl)
+                    && !crate::lock::in_any(&locked, p.as_str())
+                    && self.known.folder_of(p.as_str()).is_none()
+            })
             .collect())
     }
 
@@ -337,14 +345,9 @@ impl Vault {
     /// so the trash never holds a locked note's plain text).
     pub fn trash(&self, p: &NotePath) -> Result<()> {
         let stored = crate::lock::stored(p);
-        if let Some(f) = self.locked_folder(p)
-            && self.storage.exists(&stored)
-        {
-            if self.storage.exists(p) {
-                // A plain copy an interrupted conversion left: encrypted first.
-                let plain = self.storage.read_bytes(p)?;
-                self.write_locked(&f, p, &plain)?;
-            }
+        if self.locked_folder(p).is_some() && self.storage.exists(&stored) {
+            // The note is its encrypted file. A plain file next to it (a
+            // conflict) is never sealed over it; it stays to be looked at.
             return self.storage.trash(&stored);
         }
         self.storage.trash(p)

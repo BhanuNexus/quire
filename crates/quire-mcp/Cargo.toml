@@ -37,6 +37,7 @@ tokio = { workspace = true, optional = true, features = ["rt-multi-thread", "net
 futures-core = { workspace = true, optional = true }
 
 [dev-dependencies]
+quire-app = { workspace = true, features = ["weak-kdf"] }
 tempfile.workspace = true
 quire-agent.workspace = true
 

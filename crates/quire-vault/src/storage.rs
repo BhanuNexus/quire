@@ -82,6 +82,11 @@ pub trait Storage: Send + Sync {
         self.write_bytes_atomic(path, bytes)?;
         Ok(true)
     }
+    /// The locked folders the vault remembers apart from their key files
+    /// ([`crate::lock::Known`]): plain writes there stay refused even while
+    /// a key file is missing. Adapters that refuse plain writes into locked
+    /// folders keep the list; the default ignores it.
+    fn set_locked_folders(&self, _folders: &[String]) {}
     /// [`Self::trash`] only if the file is still what `still` accepts, as
     /// one step like [`Self::write_bytes_if`]. Returns whether it did.
     fn trash_if(&self, path: &NotePath, still: &dyn Fn(Option<&[u8]>) -> bool) -> Result<bool> {
@@ -121,6 +126,8 @@ fn one_write_at_a_time() -> MutexGuard<'static, ()> {
 #[derive(Debug, Clone)]
 pub struct LocalFs {
     root: PathBuf,
+    /// [`Storage::set_locked_folders`].
+    locked: std::sync::Arc<RwLock<Vec<String>>>,
 }
 
 impl LocalFs {
@@ -128,7 +135,7 @@ impl LocalFs {
         let root = root.into();
         std::fs::create_dir_all(&root).map_err(io_err(root.display().to_string()))?;
         let root = root.canonicalize().map_err(io_err(root.display().to_string()))?;
-        Ok(Self { root })
+        Ok(Self { root, locked: std::sync::Arc::default() })
     }
 
     pub fn root(&self) -> &Path {
@@ -188,7 +195,8 @@ impl LocalFs {
     /// Refuse a plain file in a locked folder (0.11): whoever writes, the
     /// bytes of a note there are only ever stored encrypted.
     fn no_plain_into_locked(&self, path: &NotePath) -> Result<()> {
-        match crate::lock::refuses_plain(path.as_str(), |p| self.root.join(p).exists()) {
+        let known = self.locked.read().unwrap_or_else(PoisonError::into_inner);
+        match crate::lock::refuses_plain(path.as_str(), |p| self.root.join(p).exists(), &known) {
             Some(f) => Err(VaultError::Locked(f.path)),
             None => Ok(()),
         }
@@ -204,6 +212,10 @@ impl LocalFs {
 }
 
 impl Storage for LocalFs {
+    fn set_locked_folders(&self, folders: &[String]) {
+        *self.locked.write().unwrap_or_else(PoisonError::into_inner) = folders.to_vec();
+    }
+
     fn list(&self) -> Result<Vec<NotePath>> {
         let mut out = Vec::new();
         self.walk(&self.root, &mut out)?;
@@ -318,6 +330,7 @@ impl Storage for LocalFs {
 pub struct MemFs {
     files: RwLock<BTreeMap<NotePath, (Vec<u8>, SystemTime)>>,
     trashed: RwLock<Vec<NotePath>>,
+    locked: RwLock<Vec<String>>,
 }
 
 impl MemFs {
@@ -344,14 +357,24 @@ impl MemFs {
 }
 
 /// [`LocalFs`]'s refusal of plain files in a locked folder, for [`MemFs`].
-fn mem_no_plain_into_locked(files: &BTreeMap<NotePath, (Vec<u8>, SystemTime)>, path: &NotePath) -> Result<()> {
-    match crate::lock::refuses_plain(path.as_str(), |p| files.contains_key(&NotePath::new(p))) {
+fn mem_no_plain_into_locked(files: &BTreeMap<NotePath, (Vec<u8>, SystemTime)>, known: &[String], path: &NotePath) -> Result<()> {
+    match crate::lock::refuses_plain(path.as_str(), |p| files.contains_key(&NotePath::new(p)), known) {
         Some(f) => Err(VaultError::Locked(f.path)),
         None => Ok(()),
     }
 }
 
+impl MemFs {
+    fn known(&self) -> Vec<String> {
+        self.locked.read().expect("lock").clone()
+    }
+}
+
 impl Storage for MemFs {
+    fn set_locked_folders(&self, folders: &[String]) {
+        *self.locked.write().expect("lock") = folders.to_vec();
+    }
+
     fn list(&self) -> Result<Vec<NotePath>> {
         Ok(self.files.read().expect("lock").keys().filter(|p| !is_hidden(p.as_str())).cloned().collect())
     }
@@ -362,14 +385,14 @@ impl Storage for MemFs {
 
     fn write_bytes_atomic(&self, path: &NotePath, contents: &[u8]) -> Result<()> {
         let mut files = self.files.write().expect("lock");
-        mem_no_plain_into_locked(&files, path)?;
+        mem_no_plain_into_locked(&files, &self.known(), path)?;
         files.insert(path.clone(), (contents.to_vec(), SystemTime::now()));
         Ok(())
     }
 
     fn write_bytes_if(&self, path: &NotePath, still: &dyn Fn(Option<&[u8]>) -> bool, bytes: &[u8]) -> Result<bool> {
         let mut files = self.files.write().expect("lock");
-        mem_no_plain_into_locked(&files, path)?;
+        mem_no_plain_into_locked(&files, &self.known(), path)?;
         if !still(files.get(path).map(|(c, _)| c.as_slice())) {
             return Ok(false);
         }
@@ -389,7 +412,7 @@ impl Storage for MemFs {
 
     fn rename(&self, from: &NotePath, to: &NotePath) -> Result<()> {
         let mut files = self.files.write().expect("lock");
-        mem_no_plain_into_locked(&files, to)?;
+        mem_no_plain_into_locked(&files, &self.known(), to)?;
         if files.contains_key(to) {
             return Err(VaultError::Exists(to.to_string()));
         }

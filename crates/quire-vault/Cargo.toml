@@ -9,6 +9,11 @@ repository.workspace = true
 homepage.workspace = true
 publish.workspace = true
 
+[features]
+# Accept the fast Argon2id settings of tests in key files. Only other crates'
+# tests turn it on (as a dev-dependency feature); a build never has it.
+weak-kdf = []
+
 [dependencies]
 quire-markdown.workspace = true
 chrono.workspace = true

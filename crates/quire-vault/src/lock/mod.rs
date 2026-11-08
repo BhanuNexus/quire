@@ -17,11 +17,15 @@
 
 mod convert;
 pub mod format;
+mod known;
 mod ring;
 
-pub use convert::{ConvertReport, PlainLeft, lock_folder, plain_left, refuse_to_lock, unlock_folder_permanently};
+pub use convert::{ConvertReport, PlainLeft, begin_lock, keep_both, lock_folder, plain_left, refuse_to_lock, unlock_folder_permanently};
 pub use format::{FolderId, FolderKey, Header, Kdf, KeyFile, Kind, LockError, MIN_PASSPHRASE};
+pub use known::{Known, KnownFolder, LOCAL_RECORD, SHARED_RECORD};
 pub use ring::KeyRing;
+/// For callers that hold passphrases and recovery keys (`Zeroizing<String>`).
+pub use zeroize;
 
 use crate::{NotePath, Storage};
 
@@ -130,18 +134,41 @@ pub fn in_any(folders: &[LockedFolder], path: &str) -> bool {
     folders.iter().any(|f| f.contains(path))
 }
 
+/// Whether `path` is under one of the vault's own hidden folders at the
+/// top (`.quire/`, `.trash/`, `.git/`…), which never belong to a locked
+/// folder. A hidden folder *inside* a locked folder (`Journal/.drafts/`)
+/// is part of it.
+fn app_data(path: &str) -> bool {
+    path.split('/').next().is_some_and(|s| s.starts_with('.'))
+}
+
 /// The locked folder a plain write to `path` would land in, if any.
 ///
-/// Encrypted files and the folder's own key file are fine, and so is
-/// anything under a hidden folder (`.quire/`, `.trash/`).
-pub fn refuses_plain(path: &str, exists: impl Fn(&str) -> bool) -> Option<LockedFolder> {
-    if is_encrypted_name(path) || path.split('/').any(|s| s.starts_with('.')) {
+/// `known` are the locked folders the vault remembers apart from their key
+/// files ([`Known`]): a plain write there is refused even while the key
+/// file is missing or renamed to the `unlocking` name. And a plain `X` is
+/// refused wherever `X.qenc` exists, unless the folder is being unlocked
+/// for good.
+///
+/// Encrypted files and the folder's own key file are fine, and so is the
+/// vault's app data at the top (`.quire/`, `.trash/`).
+pub fn refuses_plain(path: &str, exists: impl Fn(&str) -> bool, known: &[String]) -> Option<LockedFolder> {
+    if is_encrypted_name(path) || app_data(path) {
         return None;
     }
-    let f = folder_of_with(path, &exists)?;
-    if f.unlocking {
-        return None;
-    }
+    let remembered = known.iter().find(|k| LockedFolder { path: (*k).clone(), unlocking: false }.contains(path));
+    let f = match (folder_of_with(path, &exists), remembered) {
+        (Some(f), _) if !f.unlocking => f,
+        (_, Some(k)) => LockedFolder { path: k.clone(), unlocking: false },
+        (Some(_), None) => return None,
+        (None, None) => {
+            // No key file: the note's encrypted copy alone says this was locked.
+            if !exists(&format!("{path}{EXT}")) {
+                return None;
+            }
+            LockedFolder { path: path.rsplit_once('/').map_or_else(String::new, |(d, _)| d.to_string()), unlocking: false }
+        }
+    };
     if is_key_file(path) && path.rsplit_once('/').is_some_and(|(dir, _)| dir == f.path) {
         return None;
     }

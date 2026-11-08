@@ -46,6 +46,12 @@ fn snapshot_time(name: &str) -> Option<(i64, bool)> {
     Some((name.strip_suffix(SNAPSHOT_EXT)?.parse().ok()?, false))
 }
 
+/// Which note each history folder is for (`{"dir":…,"path":…}` per line,
+/// appended when a folder gets its first snapshot): the folder names are
+/// hashes, so without it the history of a note that was deleted or renamed
+/// can't be found by its old path (locking a folder encrypts that too).
+const PATHS_LOG: &str = ".quire/history/paths.jsonl";
+
 fn folder_for(note: &NotePath) -> String {
     // FNV-1a: stable across Rust versions (unlike DefaultHasher).
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -174,6 +180,10 @@ impl Vault {
     /// the form `note` needs. Returns the file written.
     fn put_snapshot(&self, note: &NotePath, at: i64, gz: &[u8]) -> Result<NotePath> {
         let folder = folder_for(note);
+        if self.storage().list_under(&folder).is_ok_and(|v| v.is_empty()) {
+            let line = serde_json::json!({ "dir": folder.rsplit('/').next().unwrap_or_default(), "path": note.as_str() });
+            self.storage().append_line(&NotePath::new(PATHS_LOG), &line.to_string())?;
+        }
         if let Some((id, key)) = self.snapshot_form(note)? {
             let file = NotePath::new(format!("{folder}/{at}{SEALED_EXT}"));
             let sealed = key.seal(crate::lock::format::Kind::Snapshot, id, gz).map_err(|e| crate::locked::damaged(&file, &e))?;
@@ -216,6 +226,22 @@ impl Vault {
             }
         }
         Ok(changed)
+    }
+
+    /// Notes under `folder` that have (or had) history here, as the path log
+    /// recorded them: notes since deleted or renamed included.
+    pub fn history_paths_under(&self, folder: &str) -> Vec<NotePath> {
+        let inside = crate::lock::LockedFolder { path: folder.trim_matches('/').to_string(), unlocking: false };
+        let text = self.storage().read(&NotePath::new(PATHS_LOG)).unwrap_or_default();
+        let mut out: Vec<NotePath> = text
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter_map(|v| v["path"].as_str().map(NotePath::new))
+            .filter(|p| inside.contains(p.as_str()) && !self.storage().list_under(&folder_for(p)).unwrap_or_default().is_empty())
+            .collect();
+        out.sort();
+        out.dedup();
+        out
     }
 
     /// Record `content` as the latest version. Returns true if a snapshot was
@@ -294,7 +320,12 @@ impl Vault {
         if a == b {
             return Ok(());
         }
-        for f in self.storage().list_under(&a)? {
+        let files = self.storage().list_under(&a)?;
+        if !files.is_empty() && self.storage().list_under(&b).is_ok_and(|v| v.is_empty()) {
+            let line = serde_json::json!({ "dir": b.rsplit('/').next().unwrap_or_default(), "path": to.as_str() });
+            self.storage().append_line(&NotePath::new(PATHS_LOG), &line.to_string())?;
+        }
+        for f in files {
             let bytes = self.storage().read_bytes(&f)?;
             self.storage().write_bytes_atomic(&NotePath::join(&b, f.file_name()), &bytes)?;
             self.storage().remove(&f)?;

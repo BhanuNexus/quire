@@ -20,6 +20,8 @@ update-check = ["dep:ureq"]
 # Math, Mermaid diagrams and PDF export (Typst). About 40 MB of the full app;
 # Quire Lite is built without it.
 typeset = ["dep:quire-typeset", "quire-pdf/render"]
+# Tests only: locked folders with fast Argon2id settings (quire-vault/weak-kdf).
+weak-kdf = ["quire-vault/weak-kdf"]
 
 [dependencies]
 quire-text.workspace = true
@@ -60,6 +62,7 @@ tempfile.workspace = true
 ammonia.workspace = true
 
 [dev-dependencies]
+quire-vault = { workspace = true, features = ["weak-kdf"] }
 
 [lints]
 workspace = true

@@ -143,7 +143,9 @@ impl FolderKey {
     /// HKDF-SHA256 subkey (RFC 5869; one block, so `T(1)` only).
     fn subkey(&self, info: &[u8]) -> [u8; 32] {
         let (prk, _) = hkdf::Hkdf::<Sha256>::extract(Some(HKDF_SALT), &self.0);
+        let mut prk: [u8; 32] = prk.into();
         let mut mac = Hmac::<Sha256>::new_from_slice(&prk).unwrap_or_else(|_| unreachable!("HMAC takes any key length"));
+        prk.zeroize();
         mac.update(info);
         mac.update(&[1]);
         mac.finalize().into_bytes().into()
@@ -155,6 +157,23 @@ impl FolderKey {
         let out = hex(&c[..16]);
         c.zeroize();
         out
+    }
+
+    /// Whether this key gives `check` (a key file's check value, hex).
+    pub fn matches_check(&self, check: &str) -> bool {
+        constant_eq(self.check().as_bytes(), check.as_bytes())
+    }
+
+    /// A keyed fingerprint of `bytes` (hex, 16 bytes of HMAC-SHA256 under a
+    /// subkey): tells whether a file is the one a conversion recorded
+    /// without keeping its text, or a hash anyone could test guesses
+    /// against.
+    pub fn tag(&self, bytes: &[u8]) -> String {
+        let mut k = self.subkey(b"journal");
+        let mut mac = Hmac::<Sha256>::new_from_slice(&k).unwrap_or_else(|_| unreachable!("HMAC takes any key length"));
+        k.zeroize();
+        mac.update(bytes);
+        hex(&mac.finalize().into_bytes()[..16])
     }
 
     /// Encrypt `plain` as a `.qenc` file of `folder`.
@@ -249,10 +268,60 @@ impl<'de> Deserialize<'de> for Argon2id {
 impl Kdf {
     /// 64 MiB, 3 passes: Quire Sync's setting, about half a second.
     pub const DEFAULT: Self = Self { name: Argon2id, memory_kib: 64 * 1024, iterations: 3, parallelism: 1 };
-    /// Fast settings for tests only.
+    /// Fast settings for tests only: refused in a key file outside tests
+    /// ([`Self::check_bounds`]).
+    #[doc(hidden)]
     pub const TEST: Self = Self { name: Argon2id, memory_kib: 64, iterations: 1, parallelism: 1 };
+    /// The most a key file may ask for: 4 GiB, 64 passes, 16 lanes.
+    pub const MAX: Self = Self { name: Argon2id, memory_kib: 4 * 1024 * 1024, iterations: 64, parallelism: 16 };
+
+    /// The weakest settings a key file may hold: [`Self::DEFAULT`] (anyone
+    /// who can write the key file could otherwise lower them, so that a new
+    /// passphrase is cheap to guess), or [`Self::TEST`] in Quire's own
+    /// tests (the `weak-kdf` feature, which only tests turn on).
+    const fn floor() -> Self {
+        if cfg!(any(test, feature = "weak-kdf")) { Self::TEST } else { Self::DEFAULT }
+    }
+
+    /// Refuse settings below [`Self::floor`] or above [`Self::MAX`]: weak
+    /// ones make a passphrase cheap to guess, huge ones make every unlock
+    /// hang or run out of memory.
+    pub fn check_bounds(&self) -> Result<(), LockError> {
+        self.check_bounds_from(Self::floor())
+    }
+
+    fn check_bounds_from(&self, lo: Self) -> Result<(), LockError> {
+        let hi = Self::MAX;
+        let ok = |v: u32, lo: u32, hi: u32| (lo..=hi).contains(&v);
+        if ok(self.memory_kib, lo.memory_kib, hi.memory_kib)
+            && ok(self.iterations, lo.iterations, hi.iterations)
+            && ok(self.parallelism, 1, hi.parallelism)
+            && self.memory_kib >= 8 * self.parallelism
+        {
+            Ok(())
+        } else {
+            Err(LockError::KeyFile(format!(
+                "its Argon2id settings ({} KiB, {} passes, {} lanes) are outside what Quire accepts ({}–{} KiB, {}–{} passes); \
+                 someone may have changed the file. Restore it from a backup, or use the recovery key",
+                self.memory_kib, self.iterations, self.parallelism, lo.memory_kib, hi.memory_kib, lo.iterations, hi.iterations
+            )))
+        }
+    }
+
+    /// The stronger of these settings and `lo`, per field: what a new
+    /// passphrase is wrapped with, so it never keeps settings someone
+    /// lowered in the key file.
+    fn at_least(self, lo: Self) -> Self {
+        Self {
+            name: Argon2id,
+            memory_kib: self.memory_kib.max(lo.memory_kib),
+            iterations: self.iterations.max(lo.iterations),
+            parallelism: self.parallelism.max(lo.parallelism),
+        }
+    }
 
     fn derive(&self, passphrase: &str, salt: &[u8]) -> Result<[u8; 32], LockError> {
+        self.check_bounds()?;
         let params = argon2::Params::new(self.memory_kib, self.iterations, self.parallelism, Some(32))
             .map_err(|e| LockError::KeyFile(format!("argon2 settings: {e}")))?;
         let argon = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
@@ -320,6 +389,9 @@ impl KeyFile {
             return Err(LockError::BadRecoveryKey);
         }
         let id = self.id()?;
+        // A new passphrase never keeps weaker settings than today's default
+        // (the file's might have been lowered by someone who can write it).
+        self.kdf = self.kdf.at_least(Kdf::floor());
         let salt: [u8; 16] = random()?;
         let mut wrap = self.kdf.derive(passphrase, &salt)?;
         let nonce: [u8; NONCE_LEN] = random()?;
@@ -341,6 +413,7 @@ impl KeyFile {
             return Err(LockError::Newer(u8::try_from(kf.format).unwrap_or(u8::MAX)));
         }
         kf.id()?;
+        kf.kdf.check_bounds()?;
         Ok(kf)
     }
 
@@ -476,6 +549,30 @@ mod tests {
         assert!(KeyFile::parse(&json.replace("quire-locked-folder", "other")).is_err());
         assert!(KeyFile::parse(&json.replace("argon2id", "scrypt")).is_err());
         assert!(format!("{key:?}").find(&hex(&key.0)[..8]).is_none(), "keys don't print");
+    }
+
+    #[test]
+    fn argon2_settings_out_of_bounds_are_refused_and_never_kept() {
+        let key = FolderKey::generate().unwrap();
+        let kf = KeyFile::new(FolderId([1; 16]), &key, "correct horse", Kdf::TEST, 0).unwrap();
+        // Absurd settings (an unlock would hang or run out of memory): refused on read, before any work.
+        for (m, t, p) in [(u32::MAX, 3, 1), (65536, u32::MAX, 1), (65536, 3, 0), (65536, 3, 1000), (8, 1, 1), (64, 0, 1)] {
+            let json = kf
+                .to_json()
+                .replace("\"memory_kib\": 64", &format!("\"memory_kib\": {m}"))
+                .replace("\"iterations\": 1,", &format!("\"iterations\": {t},"));
+            let json = json.replace("\"parallelism\": 1", &format!("\"parallelism\": {p}"));
+            let e = KeyFile::parse(&json).unwrap_err();
+            assert!(matches!(&e, LockError::KeyFile(m) if m.contains("Argon2id settings")), "{m} {t} {p}: {e}");
+        }
+        // Outside tests the floor is the default: test settings are refused there.
+        assert!(Kdf::TEST.check_bounds_from(Kdf::DEFAULT).is_err());
+        assert!(Kdf::DEFAULT.check_bounds_from(Kdf::DEFAULT).is_ok());
+        // A new passphrase never keeps settings below the floor.
+        let weak = Kdf { memory_kib: 8, iterations: 1, ..Kdf::DEFAULT };
+        assert_eq!(weak.at_least(Kdf::DEFAULT), Kdf::DEFAULT);
+        let strong = Kdf { memory_kib: 1 << 20, ..Kdf::DEFAULT };
+        assert_eq!(strong.at_least(Kdf::DEFAULT), strong);
     }
 
     /// Files written by 0.11 must stay readable by every later version.

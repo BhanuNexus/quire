@@ -41,6 +41,7 @@ quire-pdf.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
+quire-app = { workspace = true, features = ["weak-kdf"] }
 tempfile.workspace = true
 # 0.10 integration: `sync` and `serve --sync` against a real Quire Sync
 # server, in the test process.

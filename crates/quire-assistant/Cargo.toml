@@ -20,6 +20,7 @@ serde_json.workspace = true
 chrono.workspace = true
 
 [dev-dependencies]
+quire-app = { workspace = true, features = ["weak-kdf"] }
 tempfile.workspace = true
 # The panel's end-to-end test talks to a loopback OpenAI-compatible server.
 quire-intel = { workspace = true, features = ["remote-llm"] }
