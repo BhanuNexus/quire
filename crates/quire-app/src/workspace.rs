@@ -1041,6 +1041,8 @@ impl Workspace {
     /// Re-index and re-point open documents after a rename or move.
     /// Returns how many other notes had links rewritten.
     fn apply_path_change(&mut self, vault: &Vault, report: &quire_vault::RenameReport) -> usize {
+        // 0.11: a running timer follows its note.
+        self.timer_path_moved(&report.old_path, &report.new_path);
         for r in &mut self.recent {
             if *r == report.old_path {
                 r.clone_from(&report.new_path);

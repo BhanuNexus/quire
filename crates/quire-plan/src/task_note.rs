@@ -471,6 +471,182 @@ pub fn to_inline(prefix: &str, n: &TaskNote, now: chrono::DateTime<FixedOffset>,
     line
 }
 
+/// What "Convert task to note" leaves on the line (0.11 review M4).
+///
+/// A task note has no place for these: the checkbox character (`[/]`
+/// stays `[/]`), a Day Planner time at the start, fields Quire doesn't use
+/// (`[client:: Acme]`, `🆔 abc`, `⛔ xyz`, `🏁 …`, `❌ …`, kept verbatim),
+/// and the `^block-id`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LineRest {
+    pub checkbox: char,
+    pub time_block: Option<String>,
+    pub fields: Vec<String>,
+    pub block_id: Option<String>,
+}
+
+impl LineRest {
+    /// What `line` (a task line, its `[` at `marker`) keeps.
+    pub fn of(line: &str, marker: usize) -> Self {
+        use quire_markdown::tasks::{Format, field_spans};
+        let checkbox = line[marker..].chars().nth(1).unwrap_or(' ');
+        let after = (marker + 3).min(line.len());
+        let body = after + line[after..].len() - line[after..].trim_start().len();
+        let mut rest = Self { checkbox, ..Self::default() };
+        rest.time_block = quire_markdown::tasks::time_block_text(&line[body..]).map(str::to_string);
+        for f in field_spans(line, body) {
+            let text = &line[f.range.clone()];
+            let used = match f.format {
+                Format::Dataview => {
+                    let key = text[1..text.len() - 1].split_once("::").map_or("", |(k, _)| k.trim()).to_lowercase();
+                    f.field.is_some() || key == "time" || key == "estimate"
+                }
+                Format::Emoji => f.field.is_some() || text.starts_with('#'),
+            };
+            if !used {
+                rest.fields.push(text.to_string());
+            }
+        }
+        let content = line.trim_end();
+        if let Some((_, id)) = content.rsplit_once(" ^")
+            && !id.is_empty()
+            && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            rest.block_id = Some(id.to_string());
+        }
+        rest
+    }
+
+    /// The line linking to the note `stem`, with what stays on it.
+    pub fn link_line(&self, prefix: &str, stem: &str) -> String {
+        let mut line = format!("{prefix}[{}] ", self.checkbox);
+        if let Some(t) = &self.time_block {
+            line.push_str(t);
+            line.push(' ');
+        }
+        line.push_str("[[");
+        line.push_str(stem);
+        line.push_str("]]");
+        for f in &self.fields {
+            line.push(' ');
+            line.push_str(f);
+        }
+        if let Some(id) = &self.block_id {
+            line.push_str(" ^");
+            line.push_str(id);
+        }
+        line
+    }
+
+    /// Put what stayed on the line back on a line [`to_inline`] wrote
+    /// (before its `^block-id`, which `to_inline` doesn't write). The
+    /// checkbox follows the note's `status` (`[/]` for the second status,
+    /// `[-]` for cancelled); an open note keeps a checkbox of its own
+    /// (`[?]`, `[>]`).
+    pub fn restore(&self, new_line: &str, marker: usize, status: &str, prefs: &TaskPrefs) -> String {
+        let mut out = new_line.to_string();
+        let c = self.checkbox;
+        let own = (!matches!(c, ' ' | 'x' | 'X' | '/' | '-') && !prefs.is_done(status)).then_some(c);
+        let want = checkbox_for_status(status, prefs).filter(|c| *c != 'x').or(own);
+        if let Some(c) = want
+            && out.is_char_boundary(marker + 1)
+            && out[marker..].starts_with("[ ]")
+        {
+            out.replace_range(marker + 1..marker + 2, &c.to_string());
+        }
+        if let Some(t) = &self.time_block {
+            let at = marker + 4;
+            if out.is_char_boundary(at) {
+                out.insert_str(at, &format!("{t} "));
+            }
+        }
+        for f in &self.fields {
+            out.push(' ');
+            out.push_str(f);
+        }
+        if let Some(id) = &self.block_id {
+            out.push_str(" ^");
+            out.push_str(id);
+        }
+        out
+    }
+}
+
+/// The note status a checkbox character means: done for `x`, the second
+/// status (`doing`) for `/` (in progress), a done status named
+/// `cancelled` for `-`, else the open status.
+pub fn status_for_checkbox(c: char, prefs: &TaskPrefs) -> Option<String> {
+    match c {
+        'x' | 'X' => Some(prefs.done_status()),
+        '/' => prefs.statuses.get(1).filter(|s| !prefs.is_done(s)).cloned(),
+        '-' => prefs.done_statuses.iter().find(|s| s.eq_ignore_ascii_case("cancelled") || s.eq_ignore_ascii_case("canceled")).cloned(),
+        _ => None,
+    }
+}
+
+/// The checkbox character a note status means on a task line (the
+/// reverse of [`status_for_checkbox`]); `None` for the open status.
+pub fn checkbox_for_status(status: &str, prefs: &TaskPrefs) -> Option<char> {
+    if status.eq_ignore_ascii_case("cancelled") || status.eq_ignore_ascii_case("canceled") {
+        return Some('-');
+    }
+    if prefs.is_done(status) {
+        return Some('x');
+    }
+    prefs.statuses.get(1).filter(|s| s.eq_ignore_ascii_case(status)).map(|_| '/')
+}
+
+/// The front-matter keys "Convert note to task" can't put on a line.
+///
+/// The note must stay when there are any (0.11 review M5). Empty when the
+/// line carries everything: `type`, a status that is the open one or a done one, the
+/// dates, priority, recurrence, reminder, tags, the estimate, time spent,
+/// and time entries without descriptions. A key in YAML comments or a
+/// shape the reader doesn't take counts as left over too.
+pub fn left_on_note(props: &BTreeMap<String, Value>, raw_front_matter: &str, prefs: &TaskPrefs) -> Vec<String> {
+    let carried = |k: &str| {
+        let low = k.to_ascii_lowercase();
+        if matches!(low.as_str(), "type" | "tags" | "tag" | "title") {
+            return true;
+        }
+        [
+            Prop::Priority,
+            Prop::Due,
+            Prop::Scheduled,
+            Prop::Start,
+            Prop::Estimate,
+            Prop::Spent,
+            Prop::Completed,
+            Prop::Created,
+            Prop::Recurrence,
+            Prop::Reminder,
+            Prop::Entries,
+            Prop::Status,
+        ]
+        .iter()
+        .any(|p| p.names().iter().any(|n| n.eq_ignore_ascii_case(k)))
+    };
+    let mut out: Vec<String> = props.keys().filter(|k| !carried(k)).cloned().collect();
+    if let Some(s) = get_str(props, Prop::Status)
+        && checkbox_for_status(&s, prefs).is_none()
+        && !s.eq_ignore_ascii_case(&prefs.open_status())
+    {
+        out.push(format!("status ({s})"));
+    }
+    if let Some((k, Value::Str(raw))) = get(props, Prop::Entries)
+        && raw.lines().any(|l| {
+            let t = l.trim_start().trim_start_matches("- ").trim_start();
+            !(t.is_empty() || ["start", "end", "startTime", "endTime", "duration"].iter().any(|f| t.starts_with(&format!("{f}:"))))
+        })
+    {
+        out.push(format!("{k} (descriptions)"));
+    }
+    if raw_front_matter.lines().any(|l| l.trim_start().starts_with('#') || l.contains(" #")) {
+        out.push("comments".to_string());
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

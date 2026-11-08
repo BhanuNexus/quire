@@ -384,7 +384,7 @@ fn card(
             }
             if let Some(t) = &row.task {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let line = (!t.is_note).then_some(t.task.text.as_str());
+                    let line = (!t.is_note).then_some((t.task.offset, t.task.text.as_str()));
                     crate::task_ui::timer_button(ui, ws, pal, &row.path, line, &t.task.text);
                 });
             }

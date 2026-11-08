@@ -251,18 +251,21 @@ pub fn total_minutes(entries: &[TimeEntry], now: DateTime<FixedOffset>) -> u32 {
     u32::try_from(secs / 60).unwrap_or(u32::MAX)
 }
 
-/// Seconds of an entry on each local day it touches (in the entry's own
-/// offset), so a session past midnight counts on both days.
-pub fn split_by_day(e: &TimeEntry, now: DateTime<FixedOffset>) -> Vec<(NaiveDate, i64)> {
-    let end = e.end.unwrap_or(now).with_timezone(&e.start.timezone());
+/// Seconds of an entry on each day it touches in `tz`.
+///
+/// `tz` is the person's local time: an entry written in UTC, as TaskNotes
+/// does, counts on the day it was there (0.11 review L6), and a session
+/// past midnight counts on both days. Midnights are found in `tz`, so a DST
+/// change is followed.
+pub fn split_by_day<Tz: TimeZone>(e: &TimeEntry, now: DateTime<FixedOffset>, tz: &Tz) -> Vec<(NaiveDate, i64)> {
+    let end = e.end.unwrap_or(now).with_timezone(tz);
     let mut out = Vec::new();
-    let mut at = e.start;
+    let mut at = e.start.with_timezone(tz);
     while at < end {
         let day = at.date_naive();
-        let next_midnight =
-            day.succ_opt().and_then(|d| d.and_hms_opt(0, 0, 0)).and_then(|n| e.start.timezone().from_local_datetime(&n).single());
-        let stop = next_midnight.map_or(end, |m| m.min(end));
-        out.push((day, (stop - at).num_seconds()));
+        let next_midnight = day.succ_opt().and_then(|d| d.and_hms_opt(0, 0, 0)).and_then(|n| tz.from_local_datetime(&n).earliest());
+        let stop = next_midnight.map_or_else(|| end.clone(), |m| m.min(end.clone()));
+        out.push((day, (stop.clone() - at.clone()).num_seconds()));
         if stop <= at {
             break;
         }
@@ -292,19 +295,21 @@ pub struct WeekReport {
     pub total: u32,
 }
 
-/// The weekly report over `(path, title, entries)`. Seconds are summed per
-/// day before rounding down to minutes.
-pub fn week_report<'a>(
+/// The weekly report over `(path, title, entries)`, days in `tz` (pass
+/// `&chrono::Local`). Seconds are summed per day before rounding down to
+/// minutes.
+pub fn week_report<'a, Tz: TimeZone>(
     tasks: impl IntoIterator<Item = (&'a str, &'a str, &'a [TimeEntry])>,
     monday: NaiveDate,
     now: DateTime<FixedOffset>,
+    tz: &Tz,
 ) -> WeekReport {
     let mut rows = Vec::new();
     let mut day_secs = [0i64; 7];
     for (path, title, entries) in tasks {
         let mut secs = [0i64; 7];
         for e in entries {
-            for (d, s) in split_by_day(e, now) {
+            for (d, s) in split_by_day(e, now, tz) {
                 let i = (d - monday).num_days();
                 if (0..7).contains(&i) {
                     secs[i as usize] += s;
@@ -422,13 +427,32 @@ mod tests {
         ];
         let b = [session(at("2026-11-04T09:00:00+01:00"), at("2026-11-04T11:00:00+01:00"))];
         let none: [TimeEntry; 0] = [];
-        let r = week_report([("A.md", "A", &a[..]), ("B.md", "B", &b[..]), ("C.md", "C", &none[..])], monday, at("2026-11-10T00:00:00Z"));
+        let r = week_report(
+            [("A.md", "A", &a[..]), ("B.md", "B", &b[..]), ("C.md", "C", &none[..])],
+            monday,
+            at("2026-11-10T00:00:00Z"),
+            &off(1),
+        );
         assert_eq!(r.rows.len(), 2);
         assert_eq!(r.rows[0].title, "B");
         assert_eq!(r.rows[1].days, [30, 45, 0, 0, 0, 0, 10]);
         assert_eq!(r.rows[1].total, 85);
         assert_eq!(r.days, [30, 45, 120, 0, 0, 0, 10]);
         assert_eq!(r.total, 205);
+    }
+
+    /// 0.11 review L6: a UTC entry (TaskNotes writes `…Z`) counts on the
+    /// day it was where the person is, not in UTC.
+    #[test]
+    fn weekly_report_buckets_in_local_time() {
+        let monday = NaiveDate::from_ymd_opt(2026, 11, 2).unwrap();
+        // 17:00-18:00 on Monday in UTC-8 is 01:00-02:00 on Tuesday in UTC.
+        let a = [session(at("2026-11-03T01:00:00Z"), at("2026-11-03T02:00:00Z"))];
+        let pacific = FixedOffset::west_opt(8 * 3600).unwrap();
+        let r = week_report([("A.md", "A", &a[..])], monday, at("2026-11-10T00:00:00Z"), &pacific);
+        assert_eq!(r.days, [60, 0, 0, 0, 0, 0, 0]);
+        let r = week_report([("A.md", "A", &a[..])], monday, at("2026-11-10T00:00:00Z"), &off(0));
+        assert_eq!(r.days, [0, 60, 0, 0, 0, 0, 0]);
     }
 
     /// Seeded property tests: writing and reading entries, totals and the
@@ -463,7 +487,7 @@ mod tests {
             // A session's days add up to its length, and none is negative.
             let now = base + Duration::days(500);
             for e in &entries {
-                let parts = split_by_day(e, now);
+                let parts = split_by_day(e, now, &offset);
                 assert_eq!(parts.iter().map(|p| p.1).sum::<i64>(), e.seconds(now));
                 assert!(parts.iter().all(|p| p.1 >= 0));
                 assert!(parts.windows(2).all(|w| w[0].0 < w[1].0), "days in order");
@@ -474,7 +498,7 @@ mod tests {
             assert!(total >= sum && total <= sum + n as u32, "{total} vs {sum}");
             // A week's report never counts more than the sessions hold.
             let monday = NaiveDate::from_ymd_opt(2026, 1, 5).unwrap() + Duration::weeks(rnd(55) as i64);
-            let r = week_report([("t.md", "t", &entries[..])], monday, now);
+            let r = week_report([("t.md", "t", &entries[..])], monday, now, &offset);
             assert!(r.total <= total + 7, "{} > {total}", r.total);
             // Durations round-trip.
             let m = rnd(100_000) as u32;

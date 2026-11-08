@@ -93,6 +93,11 @@ pub enum Action {
         task: Option<quire_plan::timer::TaskRef>,
         pomodoro: bool,
     },
+    /// 0.11: log a session that couldn't be logged to this task (`None`:
+    /// its own task, again).
+    LogUnlogged(Option<quire_plan::timer::TaskRef>),
+    /// 0.11: throw an unlogged session away.
+    DiscardUnlogged,
     /// 0.11: a task note's property set (`None` removes it), under the name the note uses.
     SetTaskProperty {
         path: NotePath,
@@ -343,9 +348,17 @@ impl Workspace {
     /// in the vault's task folder (`[tasks] folder`, `Tasks/`) and the line
     /// links to it. Dates, priority, recurrence, reminder, tags, time spent
     /// and the estimate carry over; the line keeps its indentation, bullet,
-    /// checkbox and `^block-id`. One undoable edit to the line.
+    /// checkbox character, a Day Planner time, the fields a note has no
+    /// place for (`[client:: …]`, `🆔`, `⛔`) and its `^block-id`. One
+    /// undoable edit to the line.
+    ///
+    /// A task in a locked folder becomes a note in that folder's task
+    /// folder, sealed like any note there, named by date rather than by its
+    /// words (0.11 review M7).
     pub fn convert_task_to_note(&mut self) -> bool {
         let Some(doc) = self.active_doc() else { return false };
+        let doc_id = doc.id;
+        let from = doc.path.clone();
         let (line_no, _) = doc.buffer().line_col(doc.selection().head);
         let line = doc.buffer().line(line_no);
         let line = line.trim_end_matches(['\n', '\r']).to_string();
@@ -353,7 +366,12 @@ impl Workspace {
             self.notify(NoticeLevel::Info, "Put the caret on a task line (- [ ] …) to make it a note");
             return false;
         };
-        let new = quire_plan::task_note::from_inline(&task);
+        let rest = quire_plan::task_note::LineRest::of(&line, marker);
+        let prefs = self.task_prefs();
+        let mut new = quire_plan::task_note::from_inline(&task);
+        if let Some(s) = quire_plan::task_note::status_for_checkbox(rest.checkbox, &prefs) {
+            new.status = Some(s);
+        }
         if quire_vault::sanitize_title(&new.title).trim().is_empty() {
             self.notify(NoticeLevel::Info, "This task has no text to name a note by");
             return false;
@@ -362,17 +380,23 @@ impl Workspace {
             self.notify(NoticeLevel::Info, "This task already links to a note");
             return false;
         }
-        let Some(path) = self.new_task(&new, false) else { return false };
-        let block_id = line
-            .trim_end()
-            .rsplit_once(" ^")
-            .map(|(_, id)| id)
-            .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'));
-        let mut new_line = format!("{}[{}] [[{}]]", &line[..marker], if task.done { 'x' } else { ' ' }, path.stem());
-        if let Some(id) = block_id {
-            let _ = write!(new_line, " ^{id}");
-        }
-        let Some(doc) = self.active_doc_mut() else { return false };
+        let locked = from.as_ref().and_then(|p| self.locked_folder_of(p));
+        let made = match &locked {
+            Some(f) if !self.is_unlocked(&f.path) => {
+                self.notify(NoticeLevel::Info, format!("Unlock {}/ first", f.path));
+                return false;
+            }
+            Some(f) => {
+                let folder = format!("{}/{}", f.path, prefs.folder.trim_matches('/'));
+                let name = format!("Task {}", Local::now().format("%Y-%m-%d"));
+                self.new_task_in(&new, folder.trim_end_matches('/'), Some(&name), false)
+            }
+            None => self.new_task(&new, false),
+        };
+        let Some(path) = made else { return false };
+        let link = if locked.is_some() { format!("{}|{}", path.stem(), new.title) } else { path.stem().to_string() };
+        let new_line = rest.link_line(&line[..marker], &link);
+        let Some(doc) = self.docs.iter_mut().find(|d| d.id == doc_id) else { return false };
         let start = doc.buffer().line_to_char(line_no);
         let end = start + line.chars().count();
         let _ = doc.apply(Transaction::replace(start, end, new_line), EditKind::Other);
@@ -381,11 +405,14 @@ impl Workspace {
 
     /// "Convert task note back to a task line": on a line `- [ ] [[Note]]`
     /// linking to a task note, the line becomes the task with its fields
-    /// (time spent as `[time:: …]`). The note goes to `.trash` only when it
-    /// holds nothing but its front matter and title; otherwise it stays, so
-    /// no text is lost.
+    /// (time spent as `[time:: …]`), keeping what the line had besides the
+    /// link. The note goes to `.trash` only when the line carries all of
+    /// it: nothing in its body but its title, and no property a line can't
+    /// hold (contexts, projects, other statuses, session notes, comments,
+    /// any other key). Otherwise it stays, and the notice says why.
     pub fn convert_note_to_task(&mut self) -> bool {
         let Some(doc) = self.active_doc() else { return false };
+        let doc_id = doc.id;
         let from = doc.path.clone();
         let (line_no, _) = doc.buffer().line_col(doc.selection().head);
         let line = doc.buffer().line(line_no);
@@ -404,32 +431,53 @@ impl Workspace {
             self.notify(NoticeLevel::Info, format!("There's no note “{name}”"));
             return false;
         };
-        let Some(note_text) = self.vault().and_then(|v| v.read(&path).ok()) else { return false };
+        // A locked note's task goes only into a note of the same locked folder.
+        let (note_locked, line_locked) = (self.locked_folder_of(&path), from.as_ref().and_then(|p| self.locked_folder_of(p)));
+        if note_locked.as_ref().is_some_and(|n| line_locked.as_ref().is_none_or(|l| l.path != n.path)) {
+            self.notify(NoticeLevel::Info, format!("“{}” is in a locked folder; its task can only go into a note there", path.stem()));
+            return false;
+        }
+        let Some(note_text) = self.note_text_now_pub(&path) else { return false };
         let fm = quire_markdown::frontmatter::parse(&note_text);
         let props = fm.as_ref().map(|f| f.fields.clone()).unwrap_or_default();
-        let title = self.index().read().get(&path).map_or_else(|| path.stem().to_string(), |r| r.title.clone());
-        let Some(note) = quire_plan::task_note::read(&props, &title, &self.task_prefs(), *Local::now().offset()) else {
+        let prefs = self.task_prefs();
+        let title = match props.iter().find(|(k, _)| k.eq_ignore_ascii_case("title")).and_then(|(_, v)| v.as_str()) {
+            Some(t) if !t.trim().is_empty() => t.trim().to_string(),
+            _ => self.index().read().get(&path).map_or_else(|| path.stem().to_string(), |r| r.title.clone()),
+        };
+        // The heading is the title for a note named by date (a locked one).
+        let body_start = fm.as_ref().map_or(0, |f| f.range.end);
+        let body = &note_text[body_start..];
+        let heading = body.lines().map(str::trim).find(|l| !l.is_empty()).and_then(|l| l.strip_prefix("# ")).map(str::trim);
+        let title = heading.filter(|_| note_locked.is_some()).map_or(title, str::to_string);
+        let Some(note) = quire_plan::task_note::read(&props, &title, &prefs, *Local::now().offset()) else {
             self.notify(NoticeLevel::Info, format!("“{}” isn't a task note", path.stem()));
             return false;
         };
         let format = Format::from_setting(&self.settings.tasks.format);
+        let rest = quire_plan::task_note::LineRest::of(&line, marker);
         let new_line = quire_plan::task_note::to_inline(&line[..marker], &note, crate::task_timer::now(), format);
-        // Only an empty note goes: front matter, a heading with its title, nothing else.
-        let body = &note_text[fm.as_ref().map_or(0, |f| f.range.end)..];
-        let rest: Vec<&str> = body.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
-        let empty =
-            rest.is_empty() || (rest.len() == 1 && rest[0].trim_start_matches('#').trim() == title.trim() && rest[0].starts_with("# "));
-        let Some(doc) = self.active_doc_mut() else { return false };
+        let new_line = rest.restore(&new_line, marker, &note.status, &prefs);
+        // Only a note the line carries all of goes: front matter whose
+        // keys the line holds, a heading with its title, nothing else.
+        let rest_lines: Vec<&str> = body.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+        let body_empty = rest_lines.is_empty()
+            || (rest_lines.len() == 1 && rest_lines[0].trim_start_matches('#').trim() == title.trim() && rest_lines[0].starts_with("# "));
+        let raw_fm = &note_text[..body_start];
+        let left = quire_plan::task_note::left_on_note(&props, raw_fm, &prefs);
+        let Some(doc) = self.docs.iter_mut().find(|d| d.id == doc_id) else { return false };
         let start = doc.buffer().line_to_char(line_no);
         let end = start + line.chars().count();
         let _ = doc.apply(Transaction::replace(start, end, new_line), EditKind::Other);
-        if empty && !self.docs.iter().any(|d| d.path.as_ref() == Some(&path)) {
+        if body_empty && left.is_empty() && !self.docs.iter().any(|d| d.path.as_ref() == Some(&path)) {
             if let Some(v) = self.vault().cloned()
                 && v.trash(&path).is_ok()
             {
                 self.index.remove(path.clone());
                 self.notify(NoticeLevel::Info, format!("Moved “{}” to .trash", path.stem()));
             }
+        } else if !left.is_empty() {
+            self.notify(NoticeLevel::Info, format!("Kept “{}”: a task line can't hold its {}", path.stem(), left.join(", ")));
         } else {
             self.notify(NoticeLevel::Info, format!("Kept “{}”: it has more than its properties", path.stem()));
         }
@@ -603,6 +651,12 @@ fn run_actions(ws: &mut Workspace) -> bool {
                     ws.stop_timer();
                 }
             },
+            Action::LogUnlogged(task) => {
+                ws.log_unlogged_to(task);
+            }
+            Action::DiscardUnlogged => {
+                ws.discard_unlogged();
+            }
             Action::SetTaskProperty { path, prop, value } => {
                 ws.set_task_property(&path, prop, value);
             }
@@ -620,6 +674,10 @@ fn run_actions(ws: &mut Workspace) -> bool {
                 }
             }
             Action::New { template, title, folder, answers, preset } => {
+                if let Some(Err(why)) = folder.as_deref().map(safe_new_note_folder) {
+                    ws.notify(NoticeLevel::Warn, why);
+                    continue;
+                }
                 let answers: HashMap<String, String> = answers.into_iter().collect();
                 ws.new_note_from_template_titled(&template, title.as_deref(), folder.as_deref(), &answers, &preset);
             }
@@ -716,11 +774,13 @@ fn set_board(ws: &mut Workspace, target: &BoardTarget, setting: &BoardSetting) {
             if out != text {
                 let now = crate::history_ops::now_ms();
                 let _ = vault.snapshot(path, &text, now - 1, true);
-                match vault.write(path, &out) {
-                    Ok(()) => {
+                // Only over the text it was worked out from (0.11 review L8).
+                match vault.write_if(path, Some(&text), &out) {
+                    Ok(true) => {
                         let _ = vault.snapshot(path, &out, now, true);
                         ws.features.decor_generation += 1;
                     }
+                    Ok(false) => ws.notify(NoticeLevel::Warn, format!("{} changed just now; try again", path.stem())),
                     Err(e) => ws.notify(NoticeLevel::Error, format!("Couldn't save {}: {e}", path.stem())),
                 }
             }
@@ -728,9 +788,26 @@ fn set_board(ws: &mut Workspace, target: &BoardTarget, setting: &BoardSetting) {
     }
 }
 
+/// Whether a view's folder is one new notes may go to: inside the vault,
+/// with no hidden segment (`.quire/`, `.trash/`, `.git/`, `x/.drafts/`).
+pub(crate) fn safe_new_note_folder(folder: &str) -> Result<(), String> {
+    let f = folder.replace('\\', "/");
+    let bad = f.starts_with('/')
+        || f.contains(':')
+        || f.split('/').any(|seg| seg == ".." || seg.starts_with('.') || seg.chars().any(char::is_control));
+    if bad { Err(format!("New notes can't go in “{folder}”: pick a folder inside the vault that isn't hidden")) } else { Ok(()) }
+}
+
 /// A note with `preset` front matter and its title as a heading, not opened.
 fn new_note_in(ws: &mut Workspace, folder: &str, title: &str, preset: &[(String, Value)]) {
     let Some(vault) = ws.vault().cloned() else { return };
+    // The folder comes from a view, which can come from a shared file: never
+    // into `.quire/`, another hidden folder, or out of the vault (0.11
+    // security review, board "+").
+    if let Err(why) = safe_new_note_folder(folder) {
+        ws.notify(NoticeLevel::Warn, why);
+        return;
+    }
     let Ok(path) = vault.unique_path(folder, title) else { return };
     let mut text = format!("# {}\n", path.stem());
     for (k, v) in preset {
@@ -925,8 +1002,11 @@ pub(crate) fn run(ws: &mut Workspace, cmd: Command) -> Option<UiRequest> {
             ws.toggle_timer_at_caret(true);
         }
         C::StopTimer => {
-            if ws.stop_timer().is_none() {
+            ws.timer_load();
+            if ws.timer().is_none() {
                 ws.notify(NoticeLevel::Info, "No timer is running");
+            } else {
+                ws.stop_timer();
             }
         }
         C::ConvertToView => {
@@ -1008,6 +1088,13 @@ pub(crate) fn status(ws: &Workspace, out: &mut Vec<StatusItem>) {
     if let (Some(r), Some((secs, phase))) = (ws.timer(), ws.timer_clock()) {
         let clock = quire_plan::time::format_clock(secs);
         let (text, tooltip) = match phase {
+            _ if r.unlogged.is_some() => (
+                format!("⚠ {clock} not logged"),
+                format!(
+                    "A session on “{}” couldn't be logged — click to try again, or put the caret on a task and press Start/stop timer to log it there",
+                    r.task.title
+                ),
+            ),
             Some(p) => (format!("🍅 {clock} {}", r.task.title), format!("{} · {} — click to stop", p.label(), r.task.title)),
             None => (format!("⏱ {clock} {}", r.task.title), format!("Timing “{}” — click to stop and log it", r.task.title)),
         };
@@ -1138,6 +1225,65 @@ mod tests {
         let t = w.doc(id).unwrap().text().to_string();
         assert!(t.contains("```quire-view\n# Converted from a Dataview query\n# Not converted: FLATTEN\nfrom: #a\nwhere: x = 1\n"), "{t}");
         assert!(views::parse(&views::find_blocks(&t)[0].spec).is_ok());
+    }
+
+    fn caret_on_line(w: &mut Workspace, line: usize) {
+        let doc = w.active_doc_mut().unwrap();
+        let c = doc.buffer().line_to_char(line) + 3;
+        doc.set_selection(quire_text::Selection::cursor(c));
+    }
+
+    /// 0.11 review M4 and M5: nothing on the line is dropped going to a
+    /// note, and a note with more than a line can hold isn't trashed.
+    #[test]
+    fn conversions_keep_what_doesnt_fit() {
+        let mut w = ws(&[("N.md", "# N\n- [/] 14:00 - 15:00 Call Bo [client:: Acme] 📅 2026-11-20 🆔 abc123 ⛔ xyz789 ^b1\n")]);
+        let id = w.open_note(&"N.md".into()).unwrap();
+        caret_on_line(&mut w, 1);
+        assert!(w.convert_task_to_note());
+        let line = w.doc(id).unwrap().buffer().line(1);
+        assert_eq!(line, "- [/] 14:00 - 15:00 [[Call Bo]] [client:: Acme] 🆔 abc123 ⛔ xyz789 ^b1");
+        let made = w.vault().unwrap().read(&"Tasks/Call Bo.md".into()).unwrap();
+        assert!(made.contains("status: doing\n") && made.contains("due: 2026-11-20\n"), "{made}");
+        // Back: the fields come back, and the note (all of it on the line) goes.
+        caret_on_line(&mut w, 1);
+        assert!(w.convert_note_to_task());
+        let line = w.doc(id).unwrap().buffer().line(1);
+        assert!(line.starts_with("- [/] 14:00 - 15:00 Call Bo"), "{line}");
+        assert!(line.contains("📅 2026-11-20") && line.ends_with(" [client:: Acme] 🆔 abc123 ⛔ xyz789 ^b1"), "{line}");
+        assert!(!w.vault().unwrap().exists(&"Tasks/Call Bo.md".into()), "the line holds all of it");
+        // A note with properties a line can't hold stays.
+        let v = w.vault().unwrap().clone();
+        for extra in
+            ["contexts: [\"@home\"]\n", "client: Acme\n", "status: blocked\n", "complete_instances: [2026-11-01]\n", "# a comment\n"]
+        {
+            let note = format!("---\ntype: task\n{extra}---\n# Keep\n");
+            v.write(&"Tasks/Keep.md".into(), &note).unwrap();
+            w.index().upsert("Tasks/Keep.md".into(), note.clone());
+            w.index().flush();
+            let doc = w.active_doc_mut().unwrap();
+            let start = doc.buffer().line_to_char(1);
+            let end = start + doc.buffer().line(1).chars().count();
+            let _ = doc.apply(Transaction::replace(start, end, "- [ ] [[Keep]]".to_string()), EditKind::Other);
+            caret_on_line(&mut w, 1);
+            assert!(w.convert_note_to_task());
+            assert_eq!(v.read(&"Tasks/Keep.md".into()).unwrap(), note, "{extra} keeps the note");
+        }
+    }
+
+    /// 0.11 security review: board "+" never makes notes in hidden folders
+    /// or outside the vault.
+    #[test]
+    fn board_plus_stays_in_the_vault() {
+        for bad in [".quire/agent", "a/.drafts", "../x", "/etc", "C:/x", "a/../../b", ".trash"] {
+            assert!(safe_new_note_folder(bad).is_err(), "{bad}");
+        }
+        for ok in ["", "Tasks", "Projects/2026", "Notes with spaces"] {
+            assert!(safe_new_note_folder(ok).is_ok(), "{ok}");
+        }
+        let mut w = ws(&[("A.md", "x\n")]);
+        new_note_in(&mut w, ".quire/agent", "Plan", &[]);
+        assert!(!w.vault().unwrap().exists(&".quire/agent/Plan.md".into()));
     }
 
     #[test]

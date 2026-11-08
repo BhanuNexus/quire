@@ -12,16 +12,25 @@ use quire_app::Workspace;
 use quire_app::index::views;
 use quire_app::plan::task_note::{NewTask, TaskNote};
 use quire_app::plan::time::{format_clock, format_duration, parse_duration};
-use quire_app::plan::timer::TaskRef;
 use quire_app::tasks_state::Action;
 use quire_app::vault::NotePath;
 
 use crate::overlays::{OverlayResult, OverlayView};
 use crate::theme::Palette;
 
-/// ▶ (start the timer on this task) or ■ with the clock (stop it).
-pub(crate) fn timer_button(ui: &mut Ui, ws: &Workspace, pal: &Palette, path: &NotePath, line: Option<&str>, title: &str) {
-    let timing = ws.is_timing(path, line);
+/// ▶ (start the timer on this task) or ■ with the clock (stop it). `line`:
+/// an inline task's byte offset in the note and its words; `None` for a
+/// task note. With a session that couldn't be logged, "Log here".
+pub(crate) fn timer_button(ui: &mut Ui, ws: &Workspace, pal: &Palette, path: &NotePath, line: Option<(usize, &str)>, title: &str) {
+    let task = || ws.task_ref(path, line.map(|l| l.0), title);
+    if ws.timer().is_some_and(|r| r.unlogged.is_some()) {
+        let r = ui.add(egui::Button::new(RichText::new("⤓ Log here").size(11.0).color(pal.accent)).small().frame(false));
+        if r.on_hover_text("Log the session that couldn't be logged to this task").clicked() {
+            ws.plan_request(Action::LogUnlogged(Some(task())));
+        }
+        return;
+    }
+    let timing = ws.is_timing(path, line.map(|l| l.1));
     if timing {
         let secs = ws.timer_clock().map_or(0, |c| c.0);
         let r =
@@ -31,19 +40,18 @@ pub(crate) fn timer_button(ui: &mut Ui, ws: &Workspace, pal: &Palette, path: &No
         }
     } else {
         let r = ui.add(egui::Button::new(RichText::new("▶").size(11.0).color(pal.muted)).small().frame(false));
-        let task = TaskRef { path: path.as_str().to_string(), line: line.map(str::to_string), title: title.to_string() };
         let r = r.on_hover_text("Start the timer on this task (right-click: a pomodoro)");
         if r.clicked() {
-            ws.plan_request(Action::Timer { task: Some(task.clone()), pomodoro: false });
+            ws.plan_request(Action::Timer { task: Some(task()), pomodoro: false });
         }
         r.context_menu(|ui| {
             if ui.button("Start timer").clicked() {
-                ws.plan_request(Action::Timer { task: Some(task.clone()), pomodoro: false });
+                ws.plan_request(Action::Timer { task: Some(task()), pomodoro: false });
                 ui.close();
             }
             let work = ws.task_prefs().pomodoro.work;
             if ui.button(format!("Start a {work}-minute pomodoro")).clicked() {
-                ws.plan_request(Action::Timer { task: Some(task.clone()), pomodoro: true });
+                ws.plan_request(Action::Timer { task: Some(task()), pomodoro: true });
                 ui.close();
             }
         });
@@ -51,23 +59,41 @@ pub(crate) fn timer_button(ui: &mut Ui, ws: &Workspace, pal: &Palette, path: &No
 }
 
 /// The running timer at the top of the agenda: the task, the clock, stop.
+/// A session that couldn't be logged: try again, or discard it.
 pub(crate) fn timer_strip(ui: &mut Ui, ws: &Workspace, pal: &Palette) {
     let (Some(r), Some((secs, phase))) = (ws.timer(), ws.timer_clock()) else { return };
+    let unlogged = r.unlogged.is_some();
     egui::Frame::NONE.fill(pal.active_bg).corner_radius(6.0).inner_margin(8.0).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal_wrapped(|ui| {
-            let what = phase.map_or_else(|| "Timing".to_string(), |p| format!("🍅 {}", p.label()));
-            ui.label(RichText::new(format_clock(secs)).size(18.0).monospace().color(pal.strong));
+            let what = if unlogged {
+                "Not logged yet: “Log here” on a task".to_string()
+            } else {
+                phase.map_or_else(|| "Timing".to_string(), |p| format!("🍅 {}", p.label()))
+            };
+            ui.label(RichText::new(format_clock(secs)).size(18.0).monospace().color(if unlogged { pal.danger } else { pal.strong }));
             ui.vertical(|ui| {
                 ui.label(RichText::new(what).size(11.0).color(pal.muted));
                 ui.add(egui::Label::new(RichText::new(&r.task.title).color(pal.text)).truncate());
             });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Stop").on_hover_text("Stop and log the time to the task").clicked() {
-                    ws.plan_request(Action::Timer { task: None, pomodoro: false });
+            if !unlogged {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Stop").on_hover_text("Stop and log the time to the task").clicked() {
+                        ws.plan_request(Action::Timer { task: None, pomodoro: false });
+                    }
+                });
+            }
+        });
+        if unlogged {
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Try again").on_hover_text("Log it to its own task again").clicked() {
+                    ws.plan_request(Action::LogUnlogged(None));
+                }
+                if ui.button("Discard").on_hover_text("Throw this session away").clicked() {
+                    ws.plan_request(Action::DiscardUnlogged);
                 }
             });
-        });
+        }
     });
     ui.add_space(4.0);
 }

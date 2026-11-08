@@ -129,8 +129,10 @@ time_entries:
 * An entry without `end` is running (TaskNotes writes one while its timer
   runs); it counts up to now. Quire's own timer writes an entry only when
   it stops, so it never leaves an open one.
-* Totals add the entries (and `time_spent`). A session past midnight counts
-  on each day it touches, in its own offset.
+* Totals add the entries (and `time_spent`). The weekly report counts a
+  session on the days it touches in your local time (an entry written in
+  UTC, as TaskNotes does, counts on the day it was where you are); a
+  session past midnight counts on each day.
 * Lists of maps are kept as written: Quire appends an item after the last
   one with the same indentation and never rewrites the others.
 
@@ -177,16 +179,32 @@ can be changed in TaskNotes' settings; Quire reads the defaults only.
   `<[tasks] folder>/<text>.md` with the task's dates, priority,
   recurrence, reminder, tags (into `tags:`), `[estimate:: …]` and
   `[time:: …]` (into `time_estimate` and `time_spent`), and `created`
-  (today, unless the line had one). The line becomes `- [ ] [[<text>]]`,
-  keeping its indentation, bullet, checkbox and `^block-id`. One undoable
-  edit. A line that already links to a note is left alone.
+  (today, unless the line had one). A `[/]` box makes the note's status
+  the second status (`doing`), `[-]` `cancelled`. The line becomes
+  `- [ ] [[<text>]]`, keeping its indentation, bullet, checkbox character,
+  a Day Planner time at the start, the fields a note has no place for
+  (`[client:: Acme]`, `🆔 abc`, `⛔ xyz`, `🏁`, `❌`, verbatim) and its
+  `^block-id`. One undoable edit. A line that already links to a note is
+  left alone.
+* A task in a **locked folder** becomes a note in that folder's own task
+  folder (`Journal/Tasks/`), encrypted like any note there, named
+  `Task <date>.md` rather than by its words (names in a locked folder are
+  visible); the line links to it as `[[Task <date>|<text>]]`. Nothing is
+  converted while the folder is locked.
 * **Convert task note back to a task line** (caret on `- [ ] [[Note]]`):
   the line gets the note's title, tags and fields in the `[tasks] format`
   style, with time spent as `[time:: …]` and the estimate as
-  `[estimate:: …]`. The note goes to `.trash/` only if it holds nothing
-  but its front matter and its title heading; otherwise it is kept and a
-  notice says so. Its individual time entries stay in the note (or the
-  trashed copy); the line keeps their total.
+  `[estimate:: …]`, and keeps what else it had (its time, other fields,
+  block id). The checkbox follows the status as above. The note goes to
+  `.trash/` only if the line carries all of it: nothing in its body but
+  its title heading, and only properties a line holds (`type`, `title`,
+  an open, `[/]`, `[-]` or done status, dates, priority, recurrence,
+  reminder, tags, estimate, time spent, and time entries without notes).
+  Otherwise (contexts, projects, another status, `complete_instances`,
+  session descriptions, YAML comments, any other key) it is kept and a
+  notice names what stayed. Its individual time entries stay in the note
+  (or the trashed copy); the line keeps their total. A task note in a
+  locked folder only goes back into a note in that folder.
 
 ## Time on task lines
 
@@ -212,12 +230,33 @@ One timer runs per device, in `<config>/task-timer.json` (format 1):
 }
 ```
 
-`task.line` (an inline task's text) identifies a task line; it is absent
-for a task note. The app and `quire-cli tasks start|stop|status` share
-the file, so a timer survives restarts and either can stop it. Nothing
-is written to the vault until it stops (or a pomodoro's work session
-ends); then one entry is written to the task as above, through the same
-path as any edit (history before and after). A session under a minute
-(a timer started by mistake) isn't logged. Starting a timer stops and
-logs the running one. A timer started in another vault can only be
-stopped there.
+`task.line` (an inline task's text) and `task.at` (the line's number
+when the timer started and hashes of the line, of its task and dates and
+of its words, plus its `^block-id`) identify a task line; both are absent
+for a task note. Stopping finds the line by its block id, else the same
+line nearest where it was, else the same task and dates (a completed
+recurring task, not its next occurrence), else the same words. For a task
+in a **locked folder**, the file holds no words at all: no `line`, and
+`title` is "a task in <note>"; notifications say the same.
+
+The app and `quire-cli tasks start|stop|status` share the file, so a
+timer survives restarts and either can stop it: the app reads it again
+whenever it changes, and each side changes it only if it still holds
+what that side last read. Nothing is written to the vault until it stops
+(or a pomodoro's work session ends); then one entry is written to the
+task as above, through the same path as any edit (history before and
+after), and only then is the timer cleared. A session under a minute (a
+timer started by mistake) isn't logged. Starting a timer stops and logs
+the running one. A timer started in another vault can only be stopped
+there.
+
+When the entry can't be written (the note was moved or deleted outside
+Quire, its folder is locked, the line is gone, its `time_entries` has a
+form Quire doesn't change), or the session is over 8 hours (a timer left
+running), the session isn't lost: the file keeps it with `"unlogged":
+"<end>"`, the status bar shows it, and it waits until it is logged to a
+task ("Try again", "Log here" on a task, Start/stop timer with the caret
+on a task, `quire-cli tasks stop [--to <task>]`) or discarded ("Discard",
+`stop --discard`). A timer file that can't be read is moved aside to
+`task-timer.json.bad` and Quire says so. A rename in Quire takes the
+timer's task along.

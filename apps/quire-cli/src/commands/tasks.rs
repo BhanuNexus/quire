@@ -23,7 +23,7 @@ pub(crate) const COMMANDS: &[CliCommand] = &[
     CliCommand {
         name: "tasks",
         rank: 9,
-        usage: "  quire-cli tasks     <vault> [--agenda]      open tasks across the vault (--agenda: overdue, today, next 7 days)\n  quire-cli tasks     <vault> start <task> [--pomodoro] | stop | status\n                                              time a task (a task note's name, or words of a task line); stop logs it\n  quire-cli tasks     <vault> log <task> <duration> | report [YYYY-MM-DD]\n                                              log time by hand (25m, 1h30m); time per task in a week",
+        usage: "  quire-cli tasks     <vault> [--agenda]      open tasks across the vault (--agenda: overdue, today, next 7 days)\n  quire-cli tasks     <vault> start <task> [--pomodoro] | stop [--to <task> | --discard] | status\n                                              time a task (a task note's name, or words of a task line); stop logs it\n  quire-cli tasks     <vault> log <task> <duration> | report [YYYY-MM-DD]\n                                              log time by hand (25m, 1h30m); time per task in a week",
         run: tasks,
     },
     CliCommand {
@@ -90,25 +90,28 @@ fn find_task(vault: &Vault, ix: &quire_app::index::Index, query: &str, prefs: &T
         && let Some(r) = ix.get(&p)
         && quire_app::plan::task_note::is_task_note(&r.properties, &prefs.tag)
     {
-        return Ok(TaskRef { path: p.as_str().to_string(), line: None, title: r.title.clone() });
+        let locked = vault.locked_folder(&p).is_some();
+        let title = if locked { quire_app::plan::timer::locked_title(p.as_str()) } else { r.title.clone() };
+        return Ok(TaskRef::note(p.as_str(), &title));
     }
     let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
     let mut hits: Vec<TaskRef> = Vec::new();
     for r in ix.records() {
+        let locked = vault.locked_folder(&r.path).is_some();
         for t in r.tasks.iter().filter(|t| !t.done) {
             let low = t.text.to_lowercase();
             if words.iter().all(|w| low.contains(w)) {
-                hits.push(TaskRef { path: r.path.as_str().to_string(), line: Some(t.text.clone()), title: t.text.clone() });
+                hits.push(inline_ref(vault, &r.path, t, locked));
             }
         }
         if let Some(n) = quire_app::plan::task_note::read(&r.properties, &r.title, prefs, *chrono::Local::now().offset()) {
             let low = n.task.text.to_lowercase();
             if !n.task.done && words.iter().all(|w| low.contains(w)) {
-                hits.push(TaskRef { path: r.path.as_str().to_string(), line: None, title: n.task.text });
+                let title = if locked { quire_app::plan::timer::locked_title(r.path.as_str()) } else { n.task.text };
+                hits.push(TaskRef::note(r.path.as_str(), &title));
             }
         }
     }
-    let _ = vault;
     match hits.len() {
         1 => Ok(hits.remove(0)),
         0 => Err(format!("no open task matches “{query}”")),
@@ -119,11 +122,31 @@ fn find_task(vault: &Vault, ix: &quire_app::index::Index, query: &str, prefs: &T
     }
 }
 
+/// An inline task with its line's identity (so the time goes to that line,
+/// not another with the same words), or by its words when the note can't
+/// be read.
+fn inline_ref(vault: &Vault, path: &NotePath, t: &quire_app::markdown::Task, locked: bool) -> TaskRef {
+    if let Ok(src) = vault.read(path) {
+        let off = t.offset.min(src.len());
+        if src.is_char_boundary(off) {
+            let start = src[..off].rfind('\n').map_or(0, |i| i + 1);
+            let end = src[off..].find('\n').map_or(src.len(), |i| off + i);
+            if let Some(r) = TaskRef::inline(path.as_str(), src[..start].matches('\n').count(), &src[start..end], locked) {
+                return r;
+            }
+        }
+    }
+    let title = if locked { quire_app::plan::timer::locked_title(path.as_str()) } else { t.text.clone() };
+    TaskRef { path: path.as_str().to_string(), line: Some(t.text.clone()), title, at: None }
+}
+
 /// Write a note with its version before and after in history (as `tags --write` does).
 fn write_logged(vault: &Vault, path: &NotePath, before: &str, after: &str) -> Result<(), String> {
     let now = quire_app::history_ops::now_ms();
     vault.snapshot(path, before, now - 1, true).map_err(|e| e.to_string())?;
-    vault.write(path, after).map_err(|e| e.to_string())?;
+    if !vault.write_if(path, Some(before), after).map_err(|e| e.to_string())? {
+        return Err(format!("{} changed while it was being written; try again", path.as_str()));
+    }
     vault.snapshot(path, after, now, true).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -144,23 +167,51 @@ fn timer_cmd(root: &str, sub: &str, rest: &[String], file: &Path, now: DateTime<
     let (vault, svc, _) = load(root)?;
     let prefs = quire_app::task_timer::prefs(&vault);
     let root_abs = Path::new(root).canonicalize().map_or_else(|_| root.to_string(), |p| p.to_string_lossy().into_owned());
-    let running = load_running(file);
+    let running = load_running(file)?;
     let mut out = String::new();
-    let stop = |r: &Running, out: &mut String| -> Result<(), String> {
+    // Every change to the timer file is a compare-and-swap: the app may
+    // have changed it since it was read (0.11 review M2).
+    let swap = |expected: &Running, new: Option<&Running>| -> Result<(), String> {
+        match load_running(file)? {
+            Some(now_r) if now_r.same_timer(expected) => save_running(file, new).map_err(|e| e.to_string()),
+            _ => Err("the timer was changed by Quire while this ran; nothing was changed".into()),
+        }
+    };
+    // Log first, then clear the timer; when the entry can't be written the
+    // session is kept, unlogged (0.11 review M1).
+    let stop = |r: &Running, to: Option<&TaskRef>, out: &mut String| -> Result<(), String> {
         let here = Path::new(&r.vault).canonicalize().map_or_else(|_| r.vault.clone(), |p| p.to_string_lossy().into_owned()) == root_abs;
         if !here {
             return Err(format!("the timer is running in another vault: {}", r.vault));
         }
-        save_running(file, None).map_err(|e| e.to_string())?;
+        let task = to.unwrap_or(&r.task);
         match r.stop(now) {
-            Some(e) if e.seconds(now) < quire_app::task_timer::MIN_SECONDS => {
+            Some(e) if e.seconds(now) < quire_app::task_timer::MIN_SECONDS && r.unlogged.is_none() => {
+                swap(r, None)?;
                 let _ = writeln!(out, "Stopped “{}” (under a minute isn't logged)", r.task.title);
             }
             Some(e) => {
-                record(&vault, &r.task, &e, &prefs)?;
-                let _ = writeln!(out, "Logged {} on “{}”", format_duration(e.minutes(now)), r.task.title);
+                let long = r.unlogged.is_none() && e.seconds(now) > quire_app::task_timer::LONG_SECONDS;
+                let recorded = if long {
+                    Err(format!("it ran {}; was it left running? `stop` again logs it all", format_duration(e.minutes(now))))
+                } else {
+                    record(&vault, task, &e, &prefs)
+                };
+                if let Err(why) = recorded {
+                    let mut kept = r.clone();
+                    kept.keep_unlogged(&e);
+                    swap(r, Some(&kept))?;
+                    return Err(format!(
+                        "couldn't log {} to “{}”: {why}\nThe session is kept: `tasks <vault> stop --to <task>` logs it to another task, `stop --discard` throws it away",
+                        format_duration(e.minutes(now)),
+                        task.title
+                    ));
+                }
+                swap(r, None)?;
+                let _ = writeln!(out, "Logged {} on “{}”", format_duration(e.minutes(now)), task.title);
             }
             None => {
+                swap(r, None)?;
                 let _ = writeln!(out, "Stopped “{}” (on a break; nothing to log)", r.task.title);
             }
         }
@@ -174,7 +225,13 @@ fn timer_cmd(root: &str, sub: &str, rest: &[String], file: &Path, now: DateTime<
             }
             let task = find_task(&vault, &svc.read(), &query, &prefs)?;
             if let Some(r) = &running {
-                stop(r, &mut out)?;
+                if r.unlogged.is_some() {
+                    return Err(format!(
+                        "a session on “{}” isn't logged yet: `stop --to <task>` logs it, `stop --discard` throws it away",
+                        r.task.title
+                    ));
+                }
+                stop(r, None, &mut out)?;
             }
             let pomodoro = rest.iter().any(|a| a == "--pomodoro");
             let r = Running::new(root_abs, task, now, pomodoro);
@@ -187,14 +244,27 @@ fn timer_cmd(root: &str, sub: &str, rest: &[String], file: &Path, now: DateTime<
             );
         }
         "stop" => match &running {
-            Some(r) => stop(r, &mut out)?,
+            Some(r) if rest.iter().any(|a| a == "--discard") => {
+                swap(r, None)?;
+                let _ = writeln!(out, "Discarded the session on “{}”", r.task.title);
+            }
+            Some(r) => {
+                let to = match rest.iter().position(|a| a == "--to") {
+                    Some(i) => Some(find_task(&vault, &svc.read(), &rest[i + 1..].join(" "), &prefs)?),
+                    None => None,
+                };
+                stop(r, to.as_ref(), &mut out)?;
+            }
             None => out.push_str("No timer is running.\n"),
         },
         "status" => match &running {
             Some(r) => {
                 let secs = r.clock_seconds(now, &prefs.pomodoro);
-                let what =
-                    r.pomodoro.as_ref().map_or_else(|| "running".to_string(), |p| format!("{} left", p.phase.label().to_lowercase()));
+                let what = if r.unlogged.is_some() {
+                    "stopped, not logged yet (stop --to <task> | --discard)".to_string()
+                } else {
+                    r.pomodoro.as_ref().map_or_else(|| "running".to_string(), |p| format!("{} left", p.phase.label().to_lowercase()))
+                };
                 let _ = writeln!(out, "{} {what}: “{}” ({})", format_clock(secs), r.task.title, r.task.path.trim_end_matches(".md"));
             }
             None => out.push_str("No timer is running.\n"),
@@ -221,7 +291,7 @@ fn timer_cmd(root: &str, sub: &str, rest: &[String], file: &Path, now: DateTime<
                 })
                 .collect();
             let monday = quire_app::task_timer::monday_of(day);
-            let rep = time::week_report(notes.iter().map(|(p, t, e)| (p.as_str(), t.as_str(), e.as_slice())), monday, now);
+            let rep = time::week_report(notes.iter().map(|(p, t, e)| (p.as_str(), t.as_str(), e.as_slice())), monday, now, &chrono::Local);
             out.push_str(&report_text(&rep));
         }
     }
