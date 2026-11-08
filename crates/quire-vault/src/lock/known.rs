@@ -172,10 +172,40 @@ impl crate::Vault {
     /// Returns the remembered folders whose key file is missing (or renamed
     /// to the `unlocking` name, which this process didn't do).
     pub fn remember_locked_folders(&self, local: Option<&Path>) -> Vec<String> {
+        self.remember_locked_folders_in(local, &self.storage.list().unwrap_or_default())
+    }
+
+    /// Start remembering at once, without listing the vault (for opening it
+    /// before the first frame): every folder either record names is taken
+    /// as locked, until [`Self::remember_locked_folders_in`] (run later, off
+    /// the UI thread) checks them against the disk. Taking too many is safe:
+    /// a plain write is refused there for a moment longer.
+    pub fn remember_locked_records(&self, local: Option<&Path>) {
         let shared = self.storage.read(&NotePath::new(SHARED_RECORD)).map(|t| Record::parse(&t)).unwrap_or_default();
         let mine = local.and_then(|p| std::fs::read_to_string(p).ok()).map(|t| Record::parse(&t)).unwrap_or_default();
-        let listing = self.storage.list().unwrap_or_default();
-        let on_disk = folders_in(&listing);
+        {
+            let mut st = self.known.0.write().unwrap_or_else(PoisonError::into_inner);
+            for k in mine.into_iter().chain(shared) {
+                if !st.folders.iter().any(|o| o.folder == k.folder) {
+                    st.folders.push(k);
+                }
+            }
+            st.folders.sort_by(|a, b| a.folder.cmp(&b.folder));
+            if local.is_some() {
+                st.local = local.map(Path::to_path_buf);
+            }
+        }
+        self.storage.set_locked_folders(&self.known.hint());
+    }
+
+    /// [`Self::remember_locked_folders`] over a listing of the vault
+    /// ([`crate::Storage::list`]) the caller already has.
+    pub fn remember_locked_folders_in(&self, local: Option<&Path>, listing: &[NotePath]) -> Vec<String> {
+        let shared = self.storage.read(&NotePath::new(SHARED_RECORD)).map(|t| Record::parse(&t)).unwrap_or_default();
+        let local = local.map(Path::to_path_buf).or_else(|| self.known.local());
+        let local = local.as_deref();
+        let mine = local.and_then(|p| std::fs::read_to_string(p).ok()).map(|t| Record::parse(&t)).unwrap_or_default();
+        let on_disk = folders_in(listing);
         let mut all: Vec<KnownFolder> = Vec::new();
         // Key files on disk (not ones being unlocked: only a record can say those were locked).
         for f in on_disk.iter().filter(|f| !f.unlocking) {

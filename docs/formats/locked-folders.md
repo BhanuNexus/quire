@@ -153,7 +153,10 @@ key. A new key file is written only for a recovery key that opens one of
 the folder's encrypted files, or, with none left, matches `check`. A
 folder is forgotten only when nothing of it is left: no key file under
 either name, no longer in the vault's record (the device that unlocked it
-for good removed it there), and no `.qenc` file in it.
+for good removed it there), and no `.qenc` file in it. The app applies
+both records as soon as it opens a vault, before its first frame, and
+checks them against the disk (one listing of the vault) in the
+background; until then every recorded folder counts as locked.
 
 ## What a conversion keeps on this device
 

@@ -152,7 +152,7 @@ pub struct Workspace {
     pub(crate) index: IndexService,
     pub(crate) watcher: Option<VaultWatcher>,
     /// The watcher and the index load wait for `start_deferred`.
-    deferred_start: bool,
+    pub(crate) deferred_start: bool,
     pub(crate) docs: Vec<Document>,
     pub(crate) active: Option<usize>,
     next_id: u64,
@@ -330,7 +330,7 @@ impl Workspace {
     /// seen and merged into the notes open here, never overwritten by them.
     pub fn open_vault_deferred(&mut self, root: &Path) -> Result<(), String> {
         // 0.11: the vault's locked folders are remembered on this device, apart from their key files.
-        let vault = crate::secure_state::open_vault(root)?;
+        let vault = crate::secure_state::open_vault_now(root)?;
         self.save_all();
         self.docs.retain(|d| d.path.is_none());
         self.active = if self.docs.is_empty() { None } else { Some(0) };
@@ -353,6 +353,8 @@ impl Workspace {
             return;
         }
         let (Some(vault), Some(root)) = (self.vault.clone(), self.vault_root.clone()) else { return };
+        // 0.11: the locked folders are checked against the disk, in the background.
+        crate::secure_state::start_pass(self);
         self.watcher = match VaultWatcher::start(&root) {
             Ok(w) => Some(w),
             Err(e) => {

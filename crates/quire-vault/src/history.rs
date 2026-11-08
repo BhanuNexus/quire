@@ -182,7 +182,12 @@ impl Vault {
         let kind = crate::lock::format::Kind::Snapshot;
         let mut n = 0;
         for f in self.storage().list_under(&folder_for(note))?.into_iter().filter(|f| f.as_str().ends_with(SEALED_EXT)) {
-            let data = self.storage().read_bytes(&f)?;
+            let data = match self.storage().read_bytes(&f) {
+                Ok(d) => d,
+                // Pruned by a save meanwhile.
+                Err(VaultError::NotFound(_)) => continue,
+                Err(e) => return Err(e),
+            };
             if crate::lock::format::Header::parse(&data).map(|h| h.folder) != Ok(id) || new.open(kind, id, &data).is_ok() {
                 continue;
             }
@@ -241,7 +246,12 @@ impl Vault {
                 if sealed == want_sealed && a == b {
                     continue;
                 }
-                let gz = self.snapshot_gz(&f)?;
+                let gz = match self.snapshot_gz(&f) {
+                    Ok(gz) => gz,
+                    // Pruned by a save meanwhile.
+                    Err(VaultError::NotFound(_)) => continue,
+                    Err(e) => return Err(e),
+                };
                 let written = self.put_snapshot(to, at, &gz)?;
                 if self.snapshot_gz(&written)? != gz {
                     return Err(VaultError::Damaged { path: written.to_string(), reason: "the copy didn't read back the same".into() });
@@ -366,7 +376,15 @@ impl Vault {
             self.storage().append_line(&NotePath::new(PATHS_LOG), &line.to_string())?;
         }
         for f in files {
-            let bytes = self.storage().read_bytes(&f)?;
+            // A temporary file is a write still in flight; one gone meanwhile was pruned.
+            if f.file_name().starts_with(".tmp") {
+                continue;
+            }
+            let bytes = match self.storage().read_bytes(&f) {
+                Ok(b) => b,
+                Err(VaultError::NotFound(_)) => continue,
+                Err(e) => return Err(e),
+            };
             self.storage().write_bytes_atomic(&NotePath::join(&b, f.file_name()), &bytes)?;
             self.storage().remove(&f)?;
         }

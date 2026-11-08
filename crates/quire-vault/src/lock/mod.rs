@@ -21,7 +21,8 @@ mod known;
 mod ring;
 
 pub use convert::{
-    ConvertReport, PlainLeft, begin_lock, change_key, keep_both, lock_folder, plain_left, refuse_to_lock, unlock_folder_permanently,
+    ConvertReport, PlainLeft, begin_lock, change_key, keep_both, lock_folder, plain_left, plain_left_in, refuse_to_lock,
+    unlock_folder_permanently,
 };
 pub use format::{FolderId, FolderKey, Header, Kdf, KeyFile, Kind, LockError, MIN_PASSPHRASE};
 pub use known::{Known, KnownFolder, LOCAL_RECORD, SHARED_RECORD};

@@ -437,9 +437,14 @@ fn copy_name(vault: &Vault, p: &NotePath, what: &str) -> NotePath {
 /// Plain files in locked folders (not counting folders being unlocked for
 /// good): what an interrupted lock or another program left.
 pub fn plain_left(vault: &Vault) -> Vec<PlainLeft> {
-    let all = vault.storage().list().unwrap_or_default();
+    plain_left_in(vault, &vault.storage().list().unwrap_or_default())
+}
+
+/// [`plain_left`] over a listing of the vault (sorted, as
+/// [`crate::Storage::list`] gives it) the caller already has.
+pub fn plain_left_in(vault: &Vault, all: &[NotePath]) -> Vec<PlainLeft> {
     vault
-        .locked_folders()
+        .locked_folders_in(all)
         .into_iter()
         .map(|s| s.folder)
         .filter(|f| !f.unlocking)

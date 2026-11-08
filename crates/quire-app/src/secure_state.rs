@@ -66,7 +66,8 @@ pub struct SecureState {
     quit_confirmed: bool,
     quit_now: bool,
     /// The locked folders, read at most once a second (sidebar rows).
-    folders: std::cell::RefCell<Option<(Instant, Vec<String>)>>,
+    /// The pass over a newly opened vault (one listing, off the UI thread).
+    opening: Option<Receiver<Opened>>,
     /// "Agent connections…": the Agents tab opens on its Connections view.
     pub show_connections: bool,
     /// [`ai_off`], as last read.
@@ -102,6 +103,22 @@ pub fn open_vault(root: &std::path::Path) -> Result<Vault, String> {
     let v = Vault::open_local(root).map_err(|e| e.to_string())?;
     v.remember_locked_folders(local_record(root).as_deref());
     Ok(v)
+}
+
+/// [`open_vault`] for the app, before its first frame: the records of the
+/// vault's locked folders are applied at once, without listing the vault;
+/// checking them against the disk waits for a background pass
+/// ([`vault_opened`]). Until then every recorded folder counts as locked.
+pub(crate) fn open_vault_now(root: &std::path::Path) -> Result<Vault, String> {
+    let v = Vault::open_local(root).map_err(|e| e.to_string())?;
+    v.remember_locked_records(local_record(root).as_deref());
+    Ok(v)
+}
+
+/// What the background pass over a newly opened vault found.
+struct Opened {
+    states: Vec<LockedFolderState>,
+    left: Vec<lock::PlainLeft>,
 }
 
 /// What to tell the person about a locked folder whose key file is missing.
@@ -205,16 +222,25 @@ impl Workspace {
         self.vault.as_ref()?.locked_folder(&plain)
     }
 
-    /// The locked folder `path` is in, from a list of locked folders read
-    /// at most once a second (cheap enough for every row of the sidebar).
+    /// The locked folder `path` is in, from the folders this process knows
+    /// are locked ([`lock::Known`], kept in memory: cheap enough for every
+    /// row of the sidebar, and never a walk of the vault). It learns of a
+    /// folder when it is opened (records first, then the disk, in the
+    /// background), locked, unlocked for good, or when a key file arrives.
     pub fn locked_folder_cached(&self, path: &NotePath) -> Option<String> {
-        let mut c = self.features.secure.folders.borrow_mut();
-        if c.as_ref().is_none_or(|(at, _)| at.elapsed() > Duration::from_secs(1)) {
-            let list = self.vault.as_ref().map(|v| v.locked_folders().into_iter().map(|f| f.folder.path).collect()).unwrap_or_default();
-            *c = Some((Instant::now(), list));
-        }
-        let list = &c.as_ref()?.1;
-        list.iter().find(|f| path.as_str().strip_prefix(f.as_str()).is_some_and(|r| r.starts_with('/'))).cloned()
+        self.vault.as_ref()?.known_locked().folder_of(path.as_str())
+    }
+
+    /// The locked folders this process knows of and whether each is
+    /// unlocked (no walk of the vault; see [`Self::locked_folder_cached`]).
+    pub fn known_locked_folders(&self) -> Vec<(String, bool)> {
+        let Some(v) = &self.vault else { return Vec::new() };
+        v.known_locked().folders().into_iter().map(|k| (k.folder.clone(), v.keys().is_unlocked(&k.folder))).collect()
+    }
+
+    /// Whether the background pass over the vault just opened is still running.
+    pub fn locked_pass_pending(&self) -> bool {
+        self.features.secure.opening.is_some()
     }
 
     /// Whether `folder` is a locked folder (cached as [`Self::locked_folder_cached`]).
@@ -637,7 +663,6 @@ impl Workspace {
     /// the background), or drop it when nothing is unlocked.
     fn rebuild_locked_index(&mut self) {
         let st = &mut self.features.secure;
-        *st.folders.borrow_mut() = None;
         st.indexed.clear();
         st.locked_version += 1;
         let Some(vault) = self.vault.clone() else {
@@ -730,6 +755,11 @@ fn unlock_error(vault: &Vault, folder: &str, e: &VaultError) -> String {
 pub(crate) fn tick(ws: &mut Workspace, now: Instant) -> bool {
     let mut changed = false;
     ws.apply_ai_switch();
+    if let Some(o) = ws.features.secure.opening.as_ref().and_then(|rx| rx.try_recv().ok()) {
+        ws.features.secure.opening = None;
+        opened(ws, &o);
+        changed = true;
+    }
     // A finished conversion.
     if let Some(done) = ws.features.secure.job.as_ref().and_then(|j| j.rx.try_recv().ok()) {
         ws.features.secure.job = None;
@@ -957,7 +987,7 @@ pub fn clear_caches(root: &std::path::Path) {
 }
 
 pub(crate) fn next_deadline(ws: &Workspace) -> Option<Instant> {
-    let busy = ws.features.secure.job.is_some() || ws.features.secure.building.is_some();
+    let busy = ws.features.secure.job.is_some() || ws.features.secure.building.is_some() || ws.features.secure.opening.is_some();
     let poll = busy.then(|| Instant::now() + Duration::from_millis(100));
     poll.into_iter().chain(idle_deadline(ws)).min()
 }
@@ -1041,7 +1071,6 @@ pub(crate) fn vault_event(ws: &mut Workspace, ev: &VaultEvent) {
                 && vault.locked_folders().iter().any(|f| f.folder.path == folder && f.key_missing)
             {
                 ws.notify(NoticeLevel::Warn, key_missing_text(folder));
-                ws.features.secure.folders.replace(None);
             }
             if let Some(plain) = lock::plain_name(p) {
                 let st = &mut ws.features.secure;
@@ -1055,22 +1084,43 @@ pub(crate) fn vault_event(ws: &mut Workspace, ev: &VaultEvent) {
     }
 }
 
-/// A vault was opened: folders this computer remembers unlock, and plain
-/// files left in locked folders are reported.
+/// A vault was opened. Nothing here lists the vault (it runs before the
+/// first frame): one pass in the background checks the remembered locked
+/// folders against the disk; [`tick`] then unlocks the folders this
+/// computer remembers and reports plain files and missing key files.
 pub(crate) fn vault_opened(ws: &mut Workspace) {
     ws.features.secure = SecureState::default();
+    // The app opens its startup vault deferred: the pass then starts with
+    // the rest of the deferred work, after the first frame.
+    if !ws.deferred_start {
+        start_pass(ws);
+    }
+}
+
+/// Start the background pass over the vault just opened ([`vault_opened`]).
+pub(crate) fn start_pass(ws: &mut Workspace) {
     let Some(vault) = ws.vault.clone() else { return };
-    // One walk of the vault for everything below (it runs before the first
-    // frame), and the sidebar's cache starts from it too.
-    let states = vault.locked_folders();
-    *ws.features.secure.folders.borrow_mut() = Some((Instant::now(), states.iter().map(|f| f.folder.path.clone()).collect()));
-    if states.is_empty() {
-        ws.rebuild_locked_index();
+    let local = ws.vault_root().and_then(local_record);
+    let (tx, rx) = bounded(1);
+    std::thread::spawn(move || {
+        let listing = vault.storage().list().unwrap_or_default();
+        vault.remember_locked_folders_in(local.as_deref(), &listing);
+        let states = vault.locked_folders_in(&listing);
+        let left = if states.is_empty() { Vec::new() } else { lock::plain_left_in(&vault, &listing) };
+        let _ = tx.send(Opened { states, left });
+    });
+    ws.features.secure.opening = Some(rx);
+}
+
+/// The background pass over a newly opened vault is done.
+fn opened(ws: &mut Workspace, o: &Opened) {
+    let Some(vault) = ws.vault.clone() else { return };
+    if o.states.is_empty() {
         return;
     }
     if let Some(root) = ws.vault_root().map(std::path::Path::to_path_buf) {
         let store = crate::secrets::store();
-        for f in &states {
+        for f in o.states.iter().filter(|f| !f.unlocked) {
             let Ok((_, kf)) = vault.key_file(&f.folder.path) else { continue };
             if let Some(hex) = store.get(&keychain_name(&root, &kf.folder_id)).map(lock::zeroize::Zeroizing::new)
                 && let Some(key) = FolderKey::from_hex(&hex)
@@ -1080,13 +1130,15 @@ pub(crate) fn vault_opened(ws: &mut Workspace) {
             }
         }
     }
-    for f in states.iter().filter(|f| f.key_missing) {
+    for f in o.states.iter().filter(|f| f.key_missing) {
         ws.notify(NoticeLevel::Warn, key_missing_text(&f.folder.path));
     }
-    for left in lock::plain_left(&vault) {
-        plain_left_notice(ws, &left);
+    for left in &o.left {
+        plain_left_notice(ws, left);
     }
-    ws.rebuild_locked_index();
+    if !vault.keys().is_empty() {
+        ws.rebuild_locked_index();
+    }
 }
 
 pub(crate) fn status(ws: &Workspace, out: &mut Vec<StatusItem>) {

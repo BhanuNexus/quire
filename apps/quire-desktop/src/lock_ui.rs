@@ -48,6 +48,51 @@ pub(crate) struct LockDialog {
     shown_again: bool,
     /// Change mode: also give the folder a new key.
     new_key: bool,
+    /// The vault's locked folders as last read (one walk of the vault, not
+    /// one per frame); read again after anything that changes them.
+    seen: Option<Seen>,
+}
+
+/// What the dialog needs to know about the vault's folders.
+#[derive(Default)]
+struct Seen {
+    locked: Vec<quire_app::vault::LockedFolderState>,
+    left: Vec<lock::PlainLeft>,
+    /// Folders that could be locked.
+    lockable: Vec<String>,
+}
+
+impl Seen {
+    fn read(ws: &Workspace) -> Self {
+        let Some(vault) = ws.vault() else { return Self::default() };
+        let listing = vault.storage().list().unwrap_or_default();
+        let locked = vault.locked_folders_in(&listing);
+        let left = lock::plain_left_in(vault, &listing);
+        let mut v: Vec<String> = vault.folders();
+        // Top-level folders too (a folder holding only subfolders).
+        let tops: Vec<String> = v.iter().filter_map(|f| f.split('/').next().map(str::to_string)).collect();
+        v.extend(tops);
+        v.retain(|f| !locked.iter().any(|l| *f == l.folder.path || f.starts_with(&format!("{}/", l.folder.path))));
+        // Locked folders with plain files left: running it again finishes.
+        v.extend(left.iter().map(|p| p.folder.clone()));
+        v.sort_by_key(|f| f.to_lowercase());
+        v.dedup();
+        Self { locked, left, lockable: v }
+    }
+
+    /// How many plain files sit next to an encrypted version in `folder`.
+    fn conflicts(&self, folder: &str) -> usize {
+        self.left.iter().filter(|l| l.folder == folder).map(|l| l.conflicts.len()).sum()
+    }
+
+    /// Whether `folder` is remembered as locked but its key file is missing.
+    fn key_missing(&self, folder: &str) -> bool {
+        self.locked.iter().any(|f| f.folder.path == folder && f.key_missing)
+    }
+
+    fn is_locked(&self, folder: &str) -> bool {
+        self.locked.iter().any(|f| f.folder.path == folder)
+    }
 }
 
 impl LockDialog {
@@ -68,6 +113,7 @@ impl LockDialog {
             saved: false,
             shown_again: false,
             new_key: false,
+            seen: None,
         }
     }
 
@@ -137,23 +183,9 @@ impl LockDialog {
     }
 
     fn folder_picker(&mut self, ui: &mut egui::Ui, ws: &Workspace, w: f32) {
-        let choices: Vec<String> = if self.mode == Mode::Lock {
-            let locked: Vec<String> = ws.locked_folders().into_iter().map(|f| f.folder.path).collect();
-            let mut v: Vec<String> = ws.vault().map(quire_app::vault::Vault::folders).unwrap_or_default();
-            // Top-level folders too (a folder holding only subfolders).
-            let tops: Vec<String> = v.iter().filter_map(|f| f.split('/').next().map(str::to_string)).collect();
-            v.extend(tops);
-            v.retain(|f| !locked.iter().any(|l| f == l || f.starts_with(&format!("{l}/"))));
-            // Locked folders with plain files left: running it again finishes.
-            if let Some(vault) = ws.vault() {
-                v.extend(lock::plain_left(vault).into_iter().map(|p| p.folder));
-            }
-            v.sort_by_key(|f| f.to_lowercase());
-            v.dedup();
-            v
-        } else {
-            ws.locked_folders().into_iter().map(|f| f.folder.path).collect()
-        };
+        let seen = self.seen.get_or_insert_with(|| Seen::read(ws));
+        let choices: Vec<String> =
+            if self.mode == Mode::Lock { seen.lockable.clone() } else { seen.locked.iter().map(|f| f.folder.path.clone()).collect() };
         if choices.is_empty() {
             let msg = if self.mode == Mode::Lock {
                 "No folders yet: make a folder with a note in it first."
@@ -245,12 +277,16 @@ impl OverlayView for LockDialog {
         // A conversion this dialog started has finished.
         if self.started && ws.lock_job().is_none() {
             self.started = false;
+            // The conversion changed the folders: read them again.
+            self.seen = Some(Seen::read(ws));
             if let Some(k) = ws.take_recovery_key() {
                 self.shown_key = Some(k);
-            } else if self.mode != Mode::Lock || (ws.is_unlocked(&self.folder) && conflicts(ws, &self.folder) == 0) {
+            } else if self.mode != Mode::Lock
+                || (ws.is_unlocked(&self.folder) && self.seen.as_ref().map_or(0, |s| s.conflicts(&self.folder)) == 0)
+            {
                 res.close = true;
                 return res;
-            } else if conflicts(ws, &self.folder) == 0 {
+            } else if self.seen.as_ref().map_or(0, |s| s.conflicts(&self.folder)) == 0 {
                 self.error = Some("The conversion stopped; see the message below the editor. Run it again to finish.".into());
             }
         }
@@ -290,7 +326,7 @@ impl OverlayView for LockDialog {
                 Mode::Unlock if self.use_recovery => {
                     ui.label("Recovery key");
                     let r = ui.add(TextEdit::singleline(&mut self.recovery).hint_text("XXXX-XXXX-…").desired_width(w.min(420.0)));
-                    if key_missing(ws, &self.folder) {
+                    if self.seen.as_ref().is_some_and(|s| s.key_missing(&self.folder)) {
                         ui.add(
                             egui::Label::new(
                                 RichText::new("The folder's key file is missing: a new passphrase makes a new one, once the recovery key has opened the folder's files.")
@@ -372,6 +408,7 @@ impl OverlayView for LockDialog {
                 };
                 if (ui.button(label).clicked() || go) && !self.folder.is_empty() {
                     self.error = self.act(ws).err();
+                    self.seen = None;
                     if self.error.is_none() && !self.started && self.shown_key.is_none() {
                         res.close = true;
                     }
@@ -393,7 +430,7 @@ impl LockDialog {
                 if self.pass != self.pass2 {
                     return Err("The passphrases differ.".into());
                 }
-                if self.pass.chars().count() < lock::MIN_PASSPHRASE && !ws.locked_folders().iter().any(|f| f.folder.path == folder) {
+                if self.pass.chars().count() < lock::MIN_PASSPHRASE && !self.seen.as_ref().is_some_and(|s| s.is_locked(&folder)) {
                     return Err("The passphrase must be at least 8 characters.".into());
                 }
                 ws.start_locking(&folder, &self.pass, self.remember)?;
@@ -403,7 +440,7 @@ impl LockDialog {
                 if !self.pass.is_empty() && self.pass != self.pass2 {
                     return Err("The new passphrases differ.".into());
                 }
-                if self.pass.is_empty() && key_missing(ws, &folder) {
+                if self.pass.is_empty() && self.seen.as_ref().is_some_and(|s| s.key_missing(&folder)) {
                     return Err("The key file is missing: choose a new passphrase to make a new one.".into());
                 }
                 let new = Some(self.pass.as_str()).filter(|p| !p.is_empty());
@@ -439,7 +476,7 @@ impl LockDialog {
     /// Plain files next to their encrypted versions in the chosen folder:
     /// both are kept, the plain one encrypted under a new name.
     fn conflicts_view(&mut self, ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) {
-        let n = conflicts(ws, &self.folder);
+        let n = self.seen.as_ref().map_or(0, |s| s.conflicts(&self.folder));
         if n == 0 {
             return;
         }
@@ -458,10 +495,11 @@ impl LockDialog {
             .wrap(),
         );
         let unlocked = ws.is_unlocked(&self.folder);
-        if ui.add_enabled(unlocked, egui::Button::new("Keep both")).on_disabled_hover_text("Unlock the folder first.").clicked()
-            && let Err(e) = ws.keep_both_copies(&self.folder)
-        {
-            self.error = Some(e);
+        if ui.add_enabled(unlocked, egui::Button::new("Keep both")).on_disabled_hover_text("Unlock the folder first.").clicked() {
+            if let Err(e) = ws.keep_both_copies(&self.folder) {
+                self.error = Some(e);
+            }
+            self.seen = None;
         }
     }
 }
@@ -469,16 +507,6 @@ impl LockDialog {
 /// What "Change passphrase" doesn't change (security review S-M8).
 const OLD_KEY_FILES: &str = "A new passphrase alone keeps the folder's key: the recovery key keeps working, and so does an old copy of the key file \
 (in a backup, git history or a cloud folder's version history) with the old passphrase. If the passphrase or the recovery key leaked, also change the key.";
-
-/// How many plain files sit next to an encrypted version in `folder`.
-fn conflicts(ws: &Workspace, folder: &str) -> usize {
-    ws.vault().map_or(0, |v| lock::plain_left(v).into_iter().filter(|l| l.folder == folder).map(|l| l.conflicts.len()).sum())
-}
-
-/// Whether `folder` is remembered as locked but its key file is missing.
-fn key_missing(ws: &Workspace, folder: &str) -> bool {
-    ws.locked_folders().iter().any(|f| f.folder.path == folder && f.key_missing)
-}
 
 /// What a `.qenc` file opens to: the folder's lock screen while it is
 /// locked; the note itself once it is unlocked.
@@ -602,8 +630,8 @@ pub(crate) fn search_section(ui: &mut egui::Ui, ws: &Workspace, query: &str, pal
             open = Some(h.path.clone());
         }
     }
-    for f in ws.locked_folders().into_iter().filter(|f| !f.unlocked) {
-        ui.label(RichText::new(format!("🔒 {}/ is locked and wasn't searched", f.folder.path)).size(11.5).color(pal.faint));
+    for (f, _) in ws.known_locked_folders().into_iter().filter(|(_, unlocked)| !unlocked) {
+        ui.label(RichText::new(format!("🔒 {f}/ is locked and wasn't searched")).size(11.5).color(pal.faint));
     }
     open
 }

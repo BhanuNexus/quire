@@ -52,8 +52,13 @@ impl Vault {
     /// Every locked folder of the vault and whether it is unlocked here,
     /// remembered ones whose key file is missing included.
     pub fn locked_folders(&self) -> Vec<LockedFolderState> {
-        let all = self.storage.list().unwrap_or_default();
-        let on_disk = lock::folders_in(&all);
+        self.locked_folders_in(&self.storage.list().unwrap_or_default())
+    }
+
+    /// [`Self::locked_folders`] over a listing of the vault the caller
+    /// already has.
+    pub fn locked_folders_in(&self, listing: &[NotePath]) -> Vec<LockedFolderState> {
+        let on_disk = lock::folders_in(listing);
         let mut out: Vec<LockedFolderState> = on_disk
             .iter()
             .map(|f| {

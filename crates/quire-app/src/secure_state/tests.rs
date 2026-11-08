@@ -31,6 +31,13 @@ fn open(root: &Path) -> Workspace {
     let mut ws = Workspace::new(crate::Settings::default());
     ws.open_vault(root).unwrap();
     ws.index().flush();
+    // The locked-folder pass runs in the background; it ends in a tick.
+    let start = Instant::now();
+    while ws.locked_pass_pending() {
+        assert!(start.elapsed() < Duration::from_secs(20), "the locked-folder pass never ended");
+        ws.tick(Instant::now());
+        std::thread::sleep(Duration::from_millis(5));
+    }
     ws
 }
 
