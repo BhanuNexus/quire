@@ -1060,9 +1060,17 @@ pub(crate) fn vault_event(ws: &mut Workspace, ev: &VaultEvent) {
 pub(crate) fn vault_opened(ws: &mut Workspace) {
     ws.features.secure = SecureState::default();
     let Some(vault) = ws.vault.clone() else { return };
+    // One walk of the vault for everything below (it runs before the first
+    // frame), and the sidebar's cache starts from it too.
+    let states = vault.locked_folders();
+    *ws.features.secure.folders.borrow_mut() = Some((Instant::now(), states.iter().map(|f| f.folder.path.clone()).collect()));
+    if states.is_empty() {
+        ws.rebuild_locked_index();
+        return;
+    }
     if let Some(root) = ws.vault_root().map(std::path::Path::to_path_buf) {
         let store = crate::secrets::store();
-        for f in vault.locked_folders() {
+        for f in &states {
             let Ok((_, kf)) = vault.key_file(&f.folder.path) else { continue };
             if let Some(hex) = store.get(&keychain_name(&root, &kf.folder_id)).map(lock::zeroize::Zeroizing::new)
                 && let Some(key) = FolderKey::from_hex(&hex)
@@ -1072,7 +1080,7 @@ pub(crate) fn vault_opened(ws: &mut Workspace) {
             }
         }
     }
-    for f in vault.locked_folders().into_iter().filter(|f| f.key_missing) {
+    for f in states.iter().filter(|f| f.key_missing) {
         ws.notify(NoticeLevel::Warn, key_missing_text(&f.folder.path));
     }
     for left in lock::plain_left(&vault) {

@@ -251,7 +251,16 @@ impl Vault {
                 }
                 changed += 1;
             } else if a != b {
-                let bytes = self.storage().read_bytes(&f)?;
+                // A temporary file is another write still in flight (it is
+                // renamed into place or removed in a moment): not ours to move.
+                if name.starts_with(".tmp") {
+                    continue;
+                }
+                let bytes = match self.storage().read_bytes(&f) {
+                    Ok(b) => b,
+                    Err(VaultError::NotFound(_)) => continue,
+                    Err(e) => return Err(e),
+                };
                 self.storage().write_bytes_atomic(&NotePath::join(&b, &name), &bytes)?;
                 self.storage().remove(&f)?;
             }

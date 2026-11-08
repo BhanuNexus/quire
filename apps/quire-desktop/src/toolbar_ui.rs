@@ -145,10 +145,10 @@ const HEADINGS: [(&str, &str); 7] = [
 ];
 
 /// Draw one row of buttons. Returns what was pressed.
-fn buttons(ui: &mut Ui, items: &[ToolbarItem], keymap: &Keymap, pal: &Palette, st: &mut ToolbarUi, salt: &str) -> Option<Pressed> {
+fn buttons(ui: &mut Ui, items: &[ToolbarItem], keymap: &Keymap, pal: &Palette, st: &mut ToolbarUi, place: &str) -> Option<Pressed> {
     let mac = cfg!(target_os = "macos");
     let mut pressed = None;
-    let ids: Vec<egui::Id> = (0..items.len()).map(|i| egui::Id::unique(("quire-toolbar", salt, i))).collect();
+    let ids: Vec<egui::Id> = (0..items.len()).map(|i| egui::Id::unique(("quire-toolbar", place, i))).collect();
     let focusable: Vec<usize> = items.iter().enumerate().filter(|(_, it)| !it.is_separator()).map(|(i, _)| i).collect();
     // Keyboard: which button has focus, and moving between them.
     let focused = ui.memory(egui::Memory::focused).and_then(|f| ids.iter().position(|i| *i == f));
