@@ -749,7 +749,14 @@ impl eframe::App for QuireApp {
         } else {
             ClipboardKeys::Translate
         };
-        if clipboard_keys(&mut raw_input.events, keep) {
+        // Ctrl+Shift+X cuts too, unless the note has focus and a shortcut
+        // owns it (Strikethrough, by default).
+        let editor = self.ws.active_doc().map(|d| crate::editor::editor_id(d.id));
+        let in_editor = editor.is_some() && ctx.memory(egui::Memory::focused) == editor;
+        let shift_x_bound =
+            Keymap::new(&self.ws.settings.commands).bindings().iter().any(|(k, _)| k.cmd && k.shift && !k.alt && k.key == "X");
+        let shift_x_cuts = !(in_editor && shift_x_bound);
+        if clipboard_keys(&mut raw_input.events, keep, shift_x_cuts) {
             ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
             ctx.request_repaint();
         }
@@ -1176,7 +1183,12 @@ enum ClipboardKeys {
 /// Vim never saw Ctrl+V; `main.rs` turns that off and this takes its
 /// place. Returns true when the clipboard should be pasted
 /// (`ViewportCommand::RequestPaste`).
-fn clipboard_keys(events: &mut Vec<egui::Event>, keep: ClipboardKeys) -> bool {
+///
+/// With Shift too, as terminals and many editors take them: Ctrl+Shift+C
+/// copies and Ctrl+Shift+V pastes (Quire pastes plain text either way);
+/// Ctrl+Shift+X cuts when `shift_x_cuts` (in the note it is Strikethrough
+/// by default).
+fn clipboard_keys(events: &mut Vec<egui::Event>, keep: ClipboardKeys, shift_x_cuts: bool) -> bool {
     if keep == ClipboardKeys::KeepAll {
         return false;
     }
@@ -1186,9 +1198,14 @@ fn clipboard_keys(events: &mut Vec<egui::Event>, keep: ClipboardKeys) -> bool {
     for e in old {
         if let egui::Event::Key { key, pressed, modifiers, .. } = &e {
             let only = modifiers.command_only();
-            let cut = *key == Key::Cut || (only && *key == Key::X) || (windows && modifiers.shift && *key == Key::Delete);
-            let copy = *key == Key::Copy || (only && *key == Key::C) || (windows && modifiers.ctrl && *key == Key::Insert);
+            let with_shift = modifiers.command && modifiers.shift && !modifiers.alt;
+            let cut = *key == Key::Cut
+                || (only && *key == Key::X)
+                || (shift_x_cuts && with_shift && *key == Key::X)
+                || (windows && modifiers.shift && *key == Key::Delete);
+            let copy = *key == Key::Copy || ((only || with_shift) && *key == Key::C) || (windows && modifiers.ctrl && *key == Key::Insert);
             let paste_key = *key == Key::Paste || (only && *key == Key::V) || (windows && modifiers.shift && *key == Key::Insert);
+            let paste_key = paste_key || (with_shift && *key == Key::V);
             if *pressed && (cut || copy || paste_key) {
                 if paste_key && keep == ClipboardKeys::KeepPaste {
                     events.push(e);
@@ -1247,17 +1264,29 @@ mod tests {
             ]
         };
         let mut ev = typed();
-        assert!(clipboard_keys(&mut ev, ClipboardKeys::Translate), "Ctrl+V pastes");
+        assert!(clipboard_keys(&mut ev, ClipboardKeys::Translate, true), "Ctrl+V pastes");
         assert_eq!(ev, vec![egui::Event::Copy, egui::Event::Cut, key(Key::V, Modifiers::NONE)]);
         let mut ev = typed();
-        assert!(!clipboard_keys(&mut ev, ClipboardKeys::KeepPaste), "Vim's Normal mode: no paste");
+        assert!(!clipboard_keys(&mut ev, ClipboardKeys::KeepPaste, true), "Vim's Normal mode: no paste");
         assert_eq!(ev, vec![key(Key::V, Modifiers::COMMAND), egui::Event::Copy, egui::Event::Cut, key(Key::V, Modifiers::NONE)]);
         let mut ev = typed();
-        assert!(!clipboard_keys(&mut ev, ClipboardKeys::KeepAll));
+        assert!(!clipboard_keys(&mut ev, ClipboardKeys::KeepAll, true));
         assert_eq!(ev, typed(), "recording a shortcut: keys stay keys");
-        // Ctrl+Shift+V isn't paste (egui-winit's rule too).
-        let mut ev = vec![key(Key::V, Modifiers::COMMAND | Modifiers::SHIFT)];
-        assert!(!clipboard_keys(&mut ev, ClipboardKeys::Translate));
+        // 0.11 review L3: with Shift too (Ctrl+Shift+V pastes plain text).
+        let cs = Modifiers::COMMAND | Modifiers::SHIFT;
+        let mut ev = vec![key(Key::V, cs), key(Key::C, cs), key(Key::X, cs)];
+        assert!(clipboard_keys(&mut ev, ClipboardKeys::Translate, true));
+        assert_eq!(ev, vec![egui::Event::Copy, egui::Event::Cut]);
+        // In the note, Ctrl+Shift+X is Strikethrough's when it is bound.
+        let mut ev = vec![key(Key::X, cs)];
+        assert!(!clipboard_keys(&mut ev, ClipboardKeys::Translate, false));
+        assert_eq!(ev, vec![key(Key::X, cs)]);
+        // Vim's Normal mode keeps Ctrl+Shift+V a key too; Alt combos stay keys.
+        let mut ev = vec![key(Key::V, cs)];
+        assert!(!clipboard_keys(&mut ev, ClipboardKeys::KeepPaste, true));
+        assert_eq!(ev, vec![key(Key::V, cs)]);
+        let mut ev = vec![key(Key::V, Modifiers::COMMAND | Modifiers::ALT)];
+        assert!(!clipboard_keys(&mut ev, ClipboardKeys::Translate, true));
         assert_eq!(ev.len(), 1);
     }
 
