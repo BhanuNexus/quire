@@ -896,31 +896,58 @@ impl AgentPanelUi {
             .filter(|n| note.is_none_or(|x| x.as_str() != *n))
             .collect();
         let tags: Vec<&str> = mentions.iter().filter_map(|m| if let Mention::Tag(t) = m { Some(t.as_str()) } else { None }).collect();
-        let read = |n: &str| -> String {
+        // An open note's text as typed (unsaved edits included).
+        let open_text = |n: &str| -> Option<String> {
             let p = NotePath::new(n);
-            ws.docs()
-                .iter()
-                .find(|d| d.path.as_ref() == Some(&p))
-                .map(|d| d.text().to_string())
-                .or_else(|| ws.vault().and_then(|v| v.read(&p).ok()))
-                .unwrap_or_default()
+            ws.docs().iter().find(|d| d.path.as_ref() == Some(&p)).map(|d| d.text().to_string())
         };
         let (Some(vault), Some(agent)) = (ws.vault().cloned(), ws.agent_store().cloned()) else { return };
         let root = ws.vault_root().map(PathBuf::from);
+        let device = ws.device().id.clone();
+        // 0.11: the context goes through the same policy check as every
+        // agent path (revoke, AI off, allow lists, deny zones, locked folders).
+        let actor = match (&ext, &model) {
+            (Some(a), _) => a.actor(&device),
+            (None, Some((m, provider, _))) => {
+                runner::panel_actor(provider, &format!("Agent panel ({})", m.name()), Some(m.name()), &device)
+            }
+            (None, None) => return,
+        };
+        let chat_only =
+            ext.is_none() && model.as_ref().is_some_and(|(m, _, tier)| Capability::for_model(m.as_ref(), *tier) == Capability::ChatOnly);
+        let cx = match runner::panel_context(&agent, &actor, note.map(NotePath::as_str), selection, &notes, chat_only, &open_text) {
+            Ok(cx) => cx,
+            Err(why) => {
+                self.conv.items.push(Item::Notice { text: why, error: true });
+                return;
+            }
+        };
+        let notes: Vec<&str> = cx.mentions.iter().map(String::as_str).collect();
+        if !cx.left_out.is_empty() {
+            let names: Vec<String> = cx.left_out.iter().map(|p| NotePath::new(p).stem().to_string()).collect();
+            self.conv.items.push(Item::Notice {
+                text: format!(
+                    "Not sent ({} may not read {}): {}",
+                    actor.policy_key(),
+                    if names.len() == 1 { "it" } else { "them" },
+                    names.join(", ")
+                ),
+                error: false,
+            });
+        }
         self.history = None;
         self.conv.set_title_from(text);
         self.conv.items.push(Item::User { text: text.to_string() });
         let (tx, rx) = channel();
         let cancel = CancelFlag::new();
         self.running = Some(Running { rx, cancel: cancel.clone(), stop_at: None });
-        let device = ws.device().id.clone();
         if let Some(a) = ext {
             self.conv.model = format!("External: {}", a.label);
             let Some(root) = root else {
                 let _ = tx.send(Msg::Finished { messages: None, error: Some("An external agent needs a vault folder on disk.".into()) });
                 return;
             };
-            let mut prompt = runner::context_message(note.map(NotePath::as_str), selection, None);
+            let mut prompt = runner::context_message(cx.note.as_deref(), cx.selection.as_deref(), None);
             prompt.push_str(&runner::mentions_message(&notes, &tags, &[]));
             prompt.push_str(text);
             let slot = Arc::clone(&self.acp);
@@ -930,16 +957,8 @@ impl AgentPanelUi {
         let Some((model, provider, tier)) = model else { return };
         self.conv.model = model.name().to_string();
         let cap = Capability::for_model(model.as_ref(), tier);
-        let note_text = if cap == Capability::ChatOnly {
-            note.and_then(|n| {
-                ws.docs().iter().find(|d| d.path.as_ref() == Some(n)).map(|d| d.text().to_string()).or_else(|| vault.read(n).ok())
-            })
-        } else {
-            None
-        };
-        let mut content = runner::context_message(note.map(NotePath::as_str), selection, note_text.as_deref());
-        let texts: Vec<String> = if cap == Capability::ChatOnly { notes.iter().map(|n| read(n)).collect() } else { Vec::new() };
-        content.push_str(&runner::mentions_message(&notes, &tags, &texts));
+        let mut content = runner::context_message(cx.note.as_deref(), cx.selection.as_deref(), cx.note_text.as_deref());
+        content.push_str(&runner::mentions_message(&notes, &tags, &cx.texts));
         if !content.is_empty() {
             content.push('\n');
         }

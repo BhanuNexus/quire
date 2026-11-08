@@ -536,6 +536,70 @@ pub fn grant(agent: &AgentStore, actor: &Actor, cap: Capability) {
     agent.set_cap(&actor.id, if cap == Capability::ChatOnly { Mode::Read } else { Mode::Direct });
 }
 
+/// What of the person's context may go to `actor`, a panel agent.
+///
+/// The open note, the selection and the `@`-mentioned notes each go
+/// through the one policy check every agent path goes through
+/// ([`AgentStore::effective_mode`]: revoke, AI off, allow lists, deny
+/// zones, locked folders).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PanelContext {
+    /// The open note, if the agent may read it.
+    pub note: Option<String>,
+    /// Its text (when asked for: chat-only models).
+    pub note_text: Option<String>,
+    /// The selection, if the agent may read the open note.
+    pub selection: Option<String>,
+    /// The mentioned notes it may read, and (when asked for) their texts.
+    pub mentions: Vec<String>,
+    pub texts: Vec<String>,
+    /// Notes left out because the agent may not read them.
+    pub left_out: Vec<String>,
+}
+
+/// Build [`PanelContext`].
+///
+/// Refused outright (with the reason) when the client was revoked or AI is
+/// off for the vault. `open_text` gives an open note's text as typed
+/// (unsaved edits); other notes are read through the agent store's vault,
+/// which holds no keys.
+pub fn panel_context(
+    agent: &AgentStore,
+    actor: &Actor,
+    note: Option<&str>,
+    selection: Option<&str>,
+    mentions: &[&str],
+    with_text: bool,
+    open_text: &dyn Fn(&str) -> Option<String>,
+) -> Result<PanelContext, String> {
+    if let Some(why) = agent.refused(&actor.id) {
+        return Err(why);
+    }
+    let may_read = |p: &str| agent.effective_mode(actor, &p.into(), quire_agent::OpKind::Read) != Mode::Deny;
+    let text = |p: &str| open_text(p).or_else(|| agent.vault().read(&p.into()).ok()).unwrap_or_default();
+    let mut cx = PanelContext::default();
+    if let Some(n) = note {
+        if may_read(n) {
+            cx.note = Some(n.to_string());
+            cx.selection = selection.map(str::to_string);
+            cx.note_text = with_text.then(|| text(n));
+        } else {
+            cx.left_out.push(n.to_string());
+        }
+    }
+    for m in mentions {
+        if !may_read(m) {
+            cx.left_out.push((*m).to_string());
+            continue;
+        }
+        cx.mentions.push((*m).to_string());
+        if with_text {
+            cx.texts.push(text(m));
+        }
+    }
+    Ok(cx)
+}
+
 /// The context line for the open note and selection (the panel's chips).
 pub fn context_message(note: Option<&str>, selection: Option<&str>, note_text: Option<&str>) -> String {
     let mut s = String::new();

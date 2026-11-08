@@ -62,7 +62,9 @@ pub(crate) const fn available(ws: &Workspace, cmd: Command) -> bool {
     match cmd {
         Command::AiSetup => true,
         Command::ToggleAgentPanel => ws.settings.agent_panel.enabled,
-        Command::IngestIntoWiki | Command::ConnectExternalAgent => ws.agent.is_some(),
+        // 0.11: with AI off for the vault, nothing is ingested (the source would go to a model).
+        Command::IngestIntoWiki => ws.agent.is_some() && !crate::secure_state::ai_off_applied(ws),
+        Command::ConnectExternalAgent => ws.agent.is_some(),
         Command::RecordVoiceNote => ws.vault.is_some() && ws.features.ai.voice.can_record,
         _ => false,
     }

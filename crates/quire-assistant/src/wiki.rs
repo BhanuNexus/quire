@@ -290,6 +290,15 @@ pub struct Ingest<'a> {
 /// Run an ingest. Nothing is written until every model call is done; then
 /// the two change sets are submitted.
 pub fn ingest(job: &Ingest<'_>, cancel: &CancelFlag, progress: &mut dyn FnMut(IngestEvent)) -> Result<IngestReport, String> {
+    // 0.11: the source goes to the model only if this client may read it:
+    // not revoked, AI not off, inside its allow lists and outside deny zones
+    // and locked folders (the same check as every agent read).
+    if let Some(why) = job.agent.refused(&job.actor.id) {
+        return Err(why);
+    }
+    job.agent
+        .guard(job.actor, &job.source, quire_agent::OpKind::Read)
+        .map_err(|e| format!("{} isn't sent to the model: {e}", job.source))?;
     let vault = job.agent.vault();
     let source_text = vault.read(&job.source).map_err(|e| format!("couldn't read {}: {e}", job.source))?;
     let title = quire_app::markdown::extract(&source_text).title().map_or_else(|| job.source.stem().to_string(), str::to_string);

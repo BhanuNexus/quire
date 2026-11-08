@@ -169,3 +169,93 @@ fn estimates_and_bad_replies() {
     assert!(r.is_err_and(|e| e.contains("expected format")));
     assert_eq!(vault.notes().unwrap().len(), 1, "nothing written when the model fails");
 }
+
+/// A vault with `raw/Ropes paper.md`, `Journal/` locked and the policy
+/// `policy` (approved on this device).
+#[expect(clippy::unwrap_used, reason = "a test helper: any failure should fail the test")]
+fn guarded_vault(root: &Path, policy: &str) -> (Vault, AgentStore) {
+    std::fs::create_dir_all(root.join("raw")).unwrap();
+    std::fs::create_dir_all(root.join("wiki")).unwrap();
+    std::fs::create_dir_all(root.join("Journal")).unwrap();
+    std::fs::create_dir_all(root.join(".quire/shared")).unwrap();
+    std::fs::write(root.join("raw/Ropes paper.md"), SOURCE).unwrap();
+    std::fs::write(root.join("wiki/Ropes.md"), "# Ropes\nzqx-wiki-text\n").unwrap();
+    std::fs::write(root.join("Journal/Day.md"), "# Day\nzqx-diary-text\n").unwrap();
+    std::fs::write(root.join(".quire/shared/agent-policy.toml"), policy).unwrap();
+    let vault = Vault::open_local(root).unwrap();
+    quire_app::vault::lock::lock_folder(&vault, "Journal", Some("correct horse"), quire_app::vault::lock::Kdf::TEST, 1).unwrap();
+    let agent = AgentStore::open(&vault, DeviceInfo { id: "d_test".into(), name: "Test".into() }, Arc::new(SystemClock));
+    agent.set_state_dir(Some(root.parent().unwrap().join("state")));
+    let shown = agent.policy_state().file_hash();
+    agent.approve_policy(shown.as_ref()).unwrap();
+    (vault, agent)
+}
+
+/// Security review S-M1: with AI off, a revoked client, or a source the
+/// client may not read, ingest stops before any model call.
+#[test]
+fn ingest_sends_nothing_the_client_may_not_read() {
+    for (policy, why) in [
+        ("format = 1\nai = \"off\"\n", "AI is off"),
+        ("format = 1\n[clients.\"panel:anthropic\"]\nrevoked = true\n", "revoked"),
+        ("format = 1\n[[zone]]\npath = \"raw/\"\nrole = \"private\"\nmode = \"deny\"\n", "isn't sent"),
+        ("format = 1\n[clients.\"panel:anthropic\"]\nallow_folders = [\"wiki/\"]\n", "isn't sent"),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("vault");
+        let (_vault, agent) = guarded_vault(&root, policy);
+        // A model with no answers: any call would fail with another error.
+        let model = ScriptedChat::texts(Vec::<String>::new());
+        let actor = Actor::agent("panel:anthropic", "Ingest", Via::App, "d_test");
+        let job = Ingest {
+            model: &model,
+            agent: &agent,
+            actor: &actor,
+            source: "raw/Ropes paper.md".into(),
+            today: "2026-11-03".into(),
+            now: "2026-11-03 10:00".into(),
+        };
+        let e = ingest(&job, &CancelFlag::new(), &mut |_| {}).unwrap_err();
+        assert!(e.contains(why), "{policy}: {e}");
+    }
+}
+
+/// Security review S-H3: the agent panel's context (open note, selection,
+/// mentions) goes through the policy check: revoke and AI off refuse, allow
+/// lists, deny zones and locked folders leave notes out, and mentions are
+/// read without keys.
+#[test]
+fn the_agent_panel_sends_only_what_the_client_may_read() {
+    use quire_assistant::runner::{panel_actor, panel_context};
+    let actor = panel_actor("anthropic", "Agent panel", Some("m"), "d_test");
+    let no_open = |_: &str| None;
+    for (policy, refused) in
+        [("format = 1\nai = \"off\"\n", "AI is off"), ("format = 1\n[clients.\"panel:anthropic\"]\nrevoked = true\n", "revoked")]
+    {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_v, agent) = guarded_vault(&tmp.path().join("vault"), policy);
+        let e = panel_context(&agent, &actor, Some("wiki/Ropes.md"), Some("sel"), &[], true, &no_open).unwrap_err();
+        assert!(e.contains(refused), "{e}");
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let (vault, agent) = guarded_vault(
+        &tmp.path().join("vault"),
+        "format = 1\ndefault = \"read\"\n[clients.\"panel:anthropic\"]\nallow_folders = [\"wiki/\", \"Journal/\"]\n",
+    );
+    // The person's vault holds the key; the panel's reads don't.
+    vault.unlock("Journal", "correct horse").unwrap();
+    let cx =
+        panel_context(&agent, &actor, Some("raw/Ropes paper.md"), Some("Ropes are"), &["wiki/Ropes.md", "Journal/Day.md"], true, &no_open)
+            .unwrap();
+    assert_eq!(cx.note, None, "outside the allow list");
+    assert_eq!(cx.selection, None, "the selection goes with its note");
+    assert_eq!(cx.mentions, ["wiki/Ropes.md"]);
+    assert!(cx.texts[0].contains("zqx-wiki-text"));
+    assert_eq!(cx.left_out, ["raw/Ropes paper.md", "Journal/Day.md"]);
+    let open = |p: &str| (p == "wiki/Ropes.md").then(|| "typed, unsaved".to_string());
+    let cx = panel_context(&agent, &actor, Some("wiki/Ropes.md"), Some("sel"), &[], true, &open).unwrap();
+    assert_eq!(
+        (cx.note.as_deref(), cx.selection.as_deref(), cx.note_text.as_deref()),
+        (Some("wiki/Ropes.md"), Some("sel"), Some("typed, unsaved"))
+    );
+}
