@@ -565,7 +565,10 @@ impl Workspace {
             }
             return Ok(None);
         }
-        vault.write(path, text).map_err(|e| format!("Couldn't write {}: {e}", path.stem()))?;
+        // Only over the text the change was worked out from (0.11 review L8).
+        if !vault.write_if(path, Some(before), text).map_err(|e| format!("Couldn't write {}: {e}", path.stem()))? {
+            return Err(format!("{} changed just now; nothing was written to it", path.stem()));
+        }
         self.history.keep_with(&vault, path, text, now, true, Some(prov(text).to_json()));
         self.index.upsert(path.clone(), text.to_string());
         Ok(Some((now - 1, now)))
