@@ -82,7 +82,7 @@ fn task_row(ui: &mut Ui, pal: &Palette, task: &Task, detail: &str, strike: bool,
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
                 // Clear of the scroll bar.
                 ui.add_space(10.0);
-                let line = (task.offset != 0).then_some(task.text.as_str());
+                let line = (task.offset != 0).then_some((task.offset, task.text.as_str()));
                 crate::task_ui::timer_button(ui, ws, pal, &NotePath::new(path), line, &task.text);
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
                     row_body(ui, pal, task, detail, strike, &mut toggled, &mut opened);

@@ -176,8 +176,11 @@ fn list(v: &str) -> Vec<String> {
 /// `key: value`, where a quoted part of the key (`order."a: b"`) may hold `:`.
 fn split_line(t: &str) -> Option<(&str, &str)> {
     let mut quote = false;
+    let mut esc = false;
     for (i, c) in t.char_indices() {
         match c {
+            _ if esc => esc = false,
+            '\\' if quote => esc = true,
             '"' => quote = !quote,
             ':' if !quote => return Some((&t[..i], &t[i + 1..])),
             _ => {}
@@ -226,7 +229,25 @@ pub fn format_id_list(ids: &[String]) -> String {
 /// A column named in `order.<column>` / `color.<column>`: `(none)` is the
 /// column of rows without a value; quotes are taken off.
 fn column_name(raw: &str) -> String {
-    let c = unquote(raw.trim());
+    let raw = raw.trim();
+    let c = match raw.strip_prefix('"').and_then(|r| r.strip_suffix('"')) {
+        Some(inner) if raw.len() >= 2 => {
+            let mut out = String::new();
+            let mut esc = false;
+            for ch in inner.chars() {
+                match ch {
+                    _ if esc => {
+                        out.push(ch);
+                        esc = false;
+                    }
+                    '\\' => esc = true,
+                    _ => out.push(ch),
+                }
+            }
+            out
+        }
+        _ => unquote(raw),
+    };
     if c == "(none)" { String::new() } else { c }
 }
 
@@ -234,8 +255,10 @@ fn column_name(raw: &str) -> String {
 pub fn column_key(column: &str) -> String {
     if column.is_empty() {
         "(none)".into()
-    } else if column.contains([':', '#', '"', '\'']) || column != column.trim() {
-        format!("\"{}\"", column.replace('"', "'"))
+    } else if column.contains([':', '#', '"', '\'', '\\']) || column != column.trim() {
+        // Quotes and backslashes are escaped, so every name reads back as
+        // itself (0.11 review L11: `"` became `'`, and its order was lost).
+        format!("\"{}\"", column.replace('\\', "\\\\").replace('"', "\\\""))
     } else {
         column.to_string()
     }
@@ -1755,5 +1778,17 @@ mod tests {
         assert_eq!(at("Text.md"), Some((51.5, -0.12)));
         assert_eq!((at("Bad.md"), at("None.md")), (None, None));
         assert_eq!(parse("layout: map").unwrap().layout, Layout::Map);
+    }
+
+    /// 0.11 review L11: a column whose name holds `"` or `\\` keeps its
+    /// order (its key reads back as the same name).
+    #[test]
+    fn column_keys_read_back() {
+        for col in ["todo", "to: do", "say \"hi\"", "a\\b", " pad", "it's", "#x", ""] {
+            let line = format!("order.{}: [A.md]\ncolor.{}: blue", column_key(col), column_key(col));
+            let spec = parse(&format!("from: P/\nlayout: kanban\n{line}\n")).unwrap();
+            assert_eq!(spec.order, vec![(col.to_string(), vec!["A.md".to_string()])], "{line}");
+            assert_eq!(spec.colors, vec![(col.to_string(), "blue".to_string())], "{line}");
+        }
     }
 }

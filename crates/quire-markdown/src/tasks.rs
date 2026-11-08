@@ -357,6 +357,12 @@ pub fn parse_meta(line: &str, marker: usize, task: &mut Task) {
     task.text = desc;
 }
 
+/// The Day Planner time (`14:00 - 15:30`, `9:00`) at the start of a task's
+/// text, as written.
+pub fn time_block_text(s: &str) -> Option<&str> {
+    time_block(s).map(|(_, len)| s[..len].trim_end())
+}
+
 /// `14:00 - 15:30 ` or `9:00 ` at the start of the text: (start, end) and
 /// the bytes it takes. A lone time has an empty end.
 fn time_block(s: &str) -> Option<((String, String), usize)> {

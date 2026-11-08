@@ -111,7 +111,7 @@ cargo build --release -p quire-desktop --no-default-features   # ~41 MiB instead
 | Voice notes | Full edition: record from the microphone (only between Record and Stop) into the note or today's note; the recording is saved in the vault as WAV. Optional transcript through your provider (the recording is sent to it) or on this computer (experimental) |
 | Answers you can check | Ask says "Not found" when your notes don't answer; cites exact sentences; Save as note keeps quotes as footnotes and flags them when the cited text changes. Staleness digest, contradictions (Preview), thinking timeline (Preview) |
 | Planning | Tasks with dates, repeats and reminders (Obsidian Tasks emoji and Dataview fields), also while Quire is closed (a per-user job runs `quire-cli remind`), Agenda (Alt+A), Calendar, weekly/monthly/yearly notes, flashcards (FSRS, Ctrl+Alt+R), templates with questions |
-| Task notes & time | A note per task (TaskNotes' property names read and kept) with status, priority, contexts, projects and estimates; New task… (Alt+N). A timer on any task (Ctrl+Alt+T, the agenda, the status bar, `quire-cli tasks start`), pomodoros with notifications, time entries in the note's front matter, and a "time this week" report. The agenda shows task-note cards, a board by status and a calendar |
+| Task notes & time | A note per task (TaskNotes' property names read and kept) with status, priority, contexts, projects and estimates; New task… (Ctrl+Shift+K). A timer on any task (Ctrl+Shift+M, the agenda, the status bar, `quire-cli tasks start`), pomodoros with notifications, time entries in the note's front matter, and a "time this week" report. The agenda shows task-note cards, a board by status and a calendar |
 | Canvas & drawing | `.canvas` files (JSON Canvas) with cards (rendered like the preview), connections and groups (Ctrl+Alt+C); pen, highlighter and shapes on a canvas or as a sketch in a note, saved as SVG. Links in cards open notes and web pages. Excalidraw drawings (`.excalidraw`, `.excalidraw.md`) show as pictures in notes, the preview, canvases, HTML and PDF export |
 | PDFs & citations | PDF viewer with highlights kept in a Markdown note (full edition; Lite shows the text). PDF pages are searchable ("paper.pdf p. 3"). `[@key]` citations from a BibTeX library, rendered in preview, HTML, websites and PDF export |
 | Vim & themes | Vim keys (Normal, Insert, Visual and Visual-block, text objects, registers, macros, marks, `:s`), bundled and custom themes, a Git tab |
@@ -175,8 +175,8 @@ cargo build --release -p quire-desktop --no-default-features   # ~41 MiB instead
 | Ctrl+Alt+Y | Accept suggested change | Ctrl+Alt+Backspace | Reject suggested change |
 | Ctrl+Alt+Shift+Y | Accept all in this note | Alt+A | Agenda |
 | Ctrl+Alt+R | Review flashcards | Ctrl+Alt+C | New canvas |
-| Ctrl+Alt+Shift+L | Lock locked folders now | | |
-| Alt+N | New task | Ctrl+Alt+T | Start / stop the timer on this task |
+| Ctrl+Shift+B | Lock locked folders now | | |
+| Ctrl+Shift+K | New task | Ctrl+Shift+M | Start / stop the timer on this task |
 | F10 | Formatting toolbar (← → Enter, Esc back) | Ctrl+/ | All shortcuts (change them in Settings → Commands) |
 
 ## Views

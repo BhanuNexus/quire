@@ -497,7 +497,9 @@ pub fn colors_yaml(colors: &[(String, String)]) -> YamlValue {
 /// Only the lines of that key change: comments, key order, unknown keys and
 /// the other views keep their bytes, so a base edited in Obsidian and
 /// Quire keeps what each wrote. `None` when the file's `views` isn't a block
-/// list Quire can find view `view` in (a flow list `views: [{…}]`, say).
+/// list Quire can find view `view` in (a flow list `views: [{…}]`, a view
+/// written as a flow map `- {type: kanban}`, say), or when the result
+/// wouldn't read back as the same views: a `.base` is never left invalid.
 pub fn set_view_key(text: &str, view: usize, key: &str, value: Option<&YamlValue>) -> Option<String> {
     let lines = ylines(text);
     let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
@@ -525,6 +527,11 @@ pub fn set_view_key(text: &str, view: usize, key: &str, value: Option<&YamlValue
     let dash = dash?;
     let first = *items.get(view)?;
     let last = items.get(view + 1).copied().unwrap_or(end);
+    // A view written as a flow map (`- {type: kanban, …}`) has no block
+    // lines to add a key to: leave it (0.11 review M6).
+    if lines[first].text.trim_start_matches('-').trim_start().starts_with(['{', '[', '&', '*', '!', '|', '>']) {
+        return None;
+    }
     let key_indent = dash + 2;
     // The key's lines inside the item: its line and deeper ones after it.
     let mut found: Option<(usize, usize)> = None;
@@ -572,7 +579,14 @@ pub fn set_view_key(text: &str, view: usize, key: &str, value: Option<&YamlValue
             (at, at, t)
         }
     };
-    Some(format!("{}{text_new}{}", &text[..from], &text[to..]))
+    let out = format!("{}{text_new}{}", &text[..from], &text[to..]);
+    // Whatever shape the YAML had, never write a base that doesn't read
+    // back, or that lost a view.
+    let views = |t: &str| YamlLoader::load_from_str(t).ok().map(|d| d.first().map_or(0, |d| d["views"].as_vec().map_or(0, Vec::len)));
+    match (views(text), views(&out)) {
+        (Some(a), Some(b)) if a == b => Some(out),
+        _ => None,
+    }
 }
 
 /// What a note made by [`to_note`] can't carry over from this view.
@@ -810,5 +824,24 @@ views:
         let crlf = BOARD.replace('\n', "\r\n");
         let out = set_view_key(&crlf, 0, "swimlaneBy", Some(&YamlValue::Inline("priority".into()))).unwrap();
         assert!(out.contains("    swimlaneBy: priority\r\n  - type: table") && !out.replace("\r\n", "").contains('\n'));
+    }
+
+    /// 0.11 review M6: a view written as a flow map is left alone, and no
+    /// edit ever leaves a base that doesn't read back.
+    #[test]
+    fn flow_style_views_are_never_broken() {
+        let order = card_order_yaml(&[("todo".into(), vec!["A.md".into()])]);
+        let flow = "views:\n  - {type: kanban, name: B, groupBy: status}\n";
+        assert!(set_view_key(flow, 0, "cardOrder", Some(&order)).is_none());
+        assert!(parse(flow).is_ok(), "still readable");
+        // A multi-line flow map, an anchor and an alias: refused too.
+        for text in ["views:\n  - {type: kanban,\n     name: B}\n", "views:\n  - &v\n    type: kanban\n  - *v\n"] {
+            if let Some(out) = set_view_key(text, 0, "cardOrder", Some(&order)) {
+                assert!(YamlLoader::load_from_str(&out).is_ok(), "{out}");
+            }
+        }
+        // A value that would break the YAML is refused, not written.
+        let bad = YamlValue::Block(vec!["{".into()]);
+        assert!(set_view_key(BOARD, 0, "cardOrder", Some(&bad)).is_none());
     }
 }
