@@ -135,7 +135,7 @@ candle-transformers = "0.11.1"
 tokenizers = { version = "0.23.2", default-features = false }
 ocrs = "0.13.1"
 # ocrs 0.13.1 is built on rten 0.26 (the design named 0.27); one copy, not two.
-rten = "0.26"
+rten = "0.27"
 # Encryption of sync data (quire-sync) and of MCP request states (quire-mcp).
 chacha20poly1305 = "0.11"
 # The `Stream` trait for MCP event streams (already in the tree through axum).
