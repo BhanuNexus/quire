@@ -274,12 +274,17 @@ each zone**, worked out by the same check that enforces it.
   refused ("Access for mcp:claude-code was revoked in Quire…") and its
   reads are logged from then on. A revoked key is denied every path, and an
   unverified client is matched by the name it reports, so leaving out
-  `--client` doesn't get around it. **Restore access** undoes it (other
-  devices approve that first).
+  `--client` doesn't get around it. (A local stdio process could report
+  another name, and can read the vault's files anyway: give clients you may
+  need to shut out a `--client` key or an HTTP token.) Revoking the agent
+  panel (`panel:<provider>`) stops it sending anything, the open note and
+  the selection included. **Restore access** undoes it (other devices
+  approve that first).
 * **Limit to tags or folders** (Bear-style): the client sees only notes
   with one of the tags (`#work/q4` counts as `work`) or under one of the
   folders. Everything else doesn't exist for it: `list`, `search` and its
-  snippets, `neighbors`, backlinks, resources and `ask` leave it out.
+  snippets, `neighbors`, backlinks, views (rows, groups and counts),
+  resources and `ask` leave it out, and so does the agent panel's context.
 * **AI off for this vault** (top of Settings → Agents): no agent may use the
   vault (every MCP request gets an error saying so), and Quire sends
   nothing from it to an AI provider or on-device AI. It travels with the

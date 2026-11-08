@@ -81,6 +81,8 @@ F0 is the foundation step, after which its files are frozen).
 | Quire Sync: `/v1/info`, `actor`, `space.json` `min_reader`, `config.json` `shared_state` | protocol 2 | [sync-protocol.md](sync-protocol.md) | WS-B | in use |
 | `.quire/cache/**` | rebuildable; formats are private to their job | — | the job's owner | — |
 | `<folder>/quire-lock.json`, `*.qenc`, `.quire/history/<fnv>/<ms>.md.gz.qenc` | JSON format 1; binary, version 1 | [locked-folders.md](locked-folders.md) | 0.11 security | written (locked folders) |
+| `.quire/shared/locked-folders.json`, `<config>/vaults/<key>/locked-folders.json` | JSON, format 1 | [locked-folders.md](locked-folders.md#remembered-locked-folders) | 0.11 security | written and read |
+| `.quire/lock/<folder id>.json` (while locking), `.quire/history/paths.jsonl` | JSON format 1, JSONL | [locked-folders.md](locked-folders.md#what-a-conversion-keeps-on-this-device) | 0.11 security | written |
 | `agent-policy.toml`: `ai`, `[clients]` `revoked`, `log_reads`, `allow_tags`, `allow_folders` | TOML, format 1 | [policy.md](policy.md#connections-allow-lists-and-ai-off) | 0.11 security | read; written by Settings → Agents |
 | `<config>/settings.toml` `[security]` | TOML | [settings.md](settings.md) | 0.11 security | read and written |
 | `SKILL.source.json` beside an installed `SKILL.md` | JSON, format 1 | [agents.md](../agents.md#skills) | 0.11 security | written by `quire-cli skill install --from` |

@@ -125,14 +125,17 @@ allow_folders = ["Projects/"]           # … or under Projects/
 * `revoked`: every path is `deny` for the key; a request gets an error
   naming the revoke; `quire-cli mcp --client <key>` exits at start. An
   unverified client (`mcp:<name>?`) is matched by the name it reports, so
-  starting without `--client` doesn't get around it. Revoking a client from
-  Settings writes `revoked` and `log_reads` together.
+  starting without `--client` doesn't get around it (a client that reports
+  another name does: for unverified stdio clients, revoke is advisory).
+  Revoking a client from Settings writes `revoked` and `log_reads`
+  together.
 * `allow_tags` / `allow_folders`: when either is present, a note the client
   may see must carry one of the tags (front matter `tags` or inline, read
   from the file; `#work/q4` counts as `work`) or be under one of the
   folders; everything else is `deny` for that client. This is part of the
   same check as zones, so `list`, `search` (and its snippets), `neighbors`,
-  backlinks, resources and `ask` sources leave the rest out.
+  backlinks, `query_view` (rows, groups and totals), resources, `ask`
+  sources and the agent panel's context leave the rest out.
 * All of these narrow, so they take effect on every device at once. Turning
   AI back on, removing `revoked`, and dropping or widening an allow list
   are widenings: other devices wait for approval.
