@@ -230,7 +230,7 @@ fn column_name(raw: &str) -> String {
     if c == "(none)" { String::new() } else { c }
 }
 
-/// How a column is written in `order.<column>` (the inverse of [`column_name`]).
+/// How a column is written in `order.<column>` (the inverse of `column_name`).
 pub fn column_key(column: &str) -> String {
     if column.is_empty() {
         "(none)".into()
