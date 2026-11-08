@@ -285,7 +285,7 @@ impl Kdf {
         if cfg!(any(test, feature = "weak-kdf")) { Self::TEST } else { Self::DEFAULT }
     }
 
-    /// Refuse settings below [`Self::floor`] or above [`Self::MAX`]: weak
+    /// Refuse settings below [`Self::DEFAULT`] (in tests, `TEST`) or above [`Self::MAX`]: weak
     /// ones make a passphrase cheap to guess, huge ones make every unlock
     /// hang or run out of memory.
     pub fn check_bounds(&self) -> Result<(), LockError> {
