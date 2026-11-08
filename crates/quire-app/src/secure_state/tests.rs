@@ -116,7 +116,7 @@ fn locking_a_folder_in_the_app_and_using_it() {
     assert_eq!(opened, Some(id));
     // Lock now: the note closes, search forgets, opening shows the lock screen.
     let closed = ws.lock_folder_now("Journal");
-    assert_eq!(closed, 1);
+    assert_eq!(closed, Some(1));
     assert!(ws.docs().iter().all(|d| d.path.as_ref() != Some(&np("Journal/Day.md"))));
     assert!(ws.locked_search("second", 5).is_empty());
     let _ = ws.take_ui_requests();
@@ -247,4 +247,179 @@ fn two_devices_through_a_sync_folder() {
         let found = leaks(root, MARK);
         assert!(found.is_empty(), "plain text in {}: {found:#?}", root.display());
     }
+}
+
+// ------------------------------------------------------------ review 0.11
+
+fn notices(ws: &Workspace) -> String {
+    ws.notices(Duration::from_mins(10)).map(|n| n.text.clone()).collect::<Vec<_>>().join("\n")
+}
+
+/// Security review S-H1: a deleted key file never makes a save plain, and
+/// the person is told.
+#[test]
+fn a_deleted_key_file_keeps_saves_encrypted_and_is_reported() {
+    let (_d, root) = vault_dir(&[("Journal/Day.md", "# Day\nMARKER-9d1f\n")]);
+    let mut ws = open(&root);
+    lock_and_wait(&mut ws, "Journal");
+    let id = ws.open_note(&np("Journal/Day.md")).unwrap();
+    std::fs::remove_file(root.join("Journal/quire-lock.json")).unwrap();
+    ws.active_doc_mut().unwrap().replace_minimally("# Day\nMARKER-9d1f typed after the key file went\n");
+    assert!(ws.save(id));
+    ws.history.flush();
+    assert!(!root.join("Journal/Day.md").exists(), "never plain");
+    assert!(leaks(&root, MARK).is_empty());
+    // Another window on this device: still locked, and says why.
+    let mut other = open(&root);
+    assert!(notices(&other).contains("key file"), "{}", notices(&other));
+    assert!(other.locked_folders().iter().any(|f| f.key_missing));
+    assert!(other.vault().unwrap().write(&np("Journal/New.md"), "MARKER-9d1f").is_err());
+    let e = other.unlock_folder("Journal", PASS, false).unwrap_err();
+    assert!(e.contains("key file"), "{e}");
+    other.shutdown();
+}
+
+/// Data review H1: a wrong recovery key, with the key file missing, writes
+/// nothing; the right one rebuilds the key file.
+#[test]
+fn a_wrong_recovery_key_writes_no_key_file() {
+    let (_d, root) = vault_dir(&[("Journal/Day.md", "# Day\nx\n")]);
+    let mut ws = open(&root);
+    let rk = lock_and_wait(&mut ws, "Journal");
+    ws.lock_folder_now("Journal");
+    std::fs::remove_file(root.join("Journal/quire-lock.json")).unwrap();
+    let wrong = quire_vault::lock::FolderKey::generate().unwrap().recovery_key();
+    let e = ws.unlock_with_recovery_key("Journal", &wrong, Some("new passphrase")).unwrap_err();
+    assert_eq!(e, "That key doesn't open this folder.");
+    assert!(!root.join("Journal/quire-lock.json").exists());
+    ws.unlock_with_recovery_key("Journal", &rk, Some("new passphrase")).unwrap();
+    assert!(root.join("Journal/quire-lock.json").exists());
+    ws.lock_folder_now("Journal");
+    ws.unlock_folder("Journal", "new passphrase", false).unwrap();
+}
+
+/// Data review H2: the recovery key can be shown again, and a conversion
+/// that stops after the key file was written still hands it over.
+#[test]
+fn the_recovery_key_is_never_lost() {
+    let (_d, root) = vault_dir(&[("Journal/Day.md", "# Day\nx\n"), ("Box/A.md", "a")]);
+    let mut ws = open(&root);
+    let rk = lock_and_wait(&mut ws, "Journal");
+    assert_eq!(ws.folder_recovery_key("Journal", "wrong horse").unwrap_err(), "Wrong passphrase.");
+    assert_eq!(ws.folder_recovery_key("Journal", PASS).unwrap(), rk);
+    // A file the conversion can't handle (its encrypted name is taken by a folder): it stops.
+    std::fs::create_dir_all(root.join("Box/A.md.qenc/x")).unwrap();
+    ws.start_locking("Box", PASS, false).unwrap();
+    until(&mut [&mut ws], "the conversion", |w| w[0].lock_job().is_none());
+    let text = notices(&ws);
+    assert!(text.contains("Converting Box/ stopped") && !text.contains("Nothing was lost"), "{text}");
+    let (f, shown) = ws.take_recovery_key().expect("shown although the conversion stopped");
+    assert_eq!(f, "Box");
+    assert_eq!(ws.folder_recovery_key("Box", PASS).unwrap(), shown);
+}
+
+/// Data review H4: edits that can't be saved are never lost to a lock or a
+/// quit, and never written plain.
+#[test]
+fn unsaved_edits_in_a_locked_folder_survive_locking_and_quitting() {
+    let (_d, root) = vault_dir(&[("Journal/Day.md", "# Day\nx\n")]);
+    let mut ws = open(&root);
+    lock_and_wait(&mut ws, "Journal");
+    let id = ws.open_note(&np("Journal/Day.md")).unwrap();
+    // Saving fails from now on (its encrypted file's name is taken by a folder).
+    std::fs::remove_file(root.join("Journal/Day.md.qenc")).unwrap();
+    std::fs::create_dir_all(root.join("Journal/Day.md.qenc/x")).unwrap();
+    ws.active_doc_mut().unwrap().replace_minimally("# Day\nMARKER-9d1f unsaved words\n");
+    assert!(!ws.save(id));
+    // Idle locking: not while the note can't be saved.
+    ws.settings.security.lock_after_idle_minutes = 1;
+    ws.note_user_activity();
+    ws.tick(Instant::now() + Duration::from_secs(61));
+    assert!(ws.is_unlocked("Journal"), "not locked over unsaved edits");
+    assert!(notices(&ws).contains("wasn't locked after the idle time"));
+    // Locking now: the edits are kept, encrypted, beside the note.
+    assert_eq!(ws.lock_folder_now("Journal"), Some(1));
+    assert!(!ws.is_unlocked("Journal"));
+    ws.unlock_folder("Journal", PASS, false).unwrap();
+    let v = ws.vault().unwrap().clone();
+    let copy = v.locked_notes("Journal").into_iter().find(|p| p.stem().starts_with("Day (unsaved")).expect("a copy");
+    assert!(v.read(&copy).unwrap().contains("unsaved words"));
+    // Quitting: the same, for an unsaveable note still open.
+    let id = ws.open_note(&copy).unwrap();
+    std::fs::rename(root.join(format!("{copy}.qenc")), root.join("moved.bin")).unwrap();
+    std::fs::create_dir_all(root.join(format!("{copy}.qenc/x"))).unwrap();
+    ws.active_doc_mut().unwrap().replace_minimally("# Day\nMARKER-9d1f typed before quitting\n");
+    assert!(!ws.save(id));
+    ws.shutdown();
+    let kept: Vec<String> = v.locked_notes("Journal").into_iter().filter_map(|p| v.read(&p).ok()).collect();
+    assert!(kept.iter().any(|t| t.contains("typed before quitting")), "{kept:?}");
+    assert!(leaks(&root, MARK).is_empty());
+}
+
+/// Data review H4: a note whose folder was locked elsewhere (no key here)
+/// is listed, so the app asks before quitting.
+#[test]
+fn notes_that_cant_be_saved_are_listed_before_quitting() {
+    let (_d, root) = vault_dir(&[("Journal/Day.md", "# Day\nx\n")]);
+    let mut ws = open(&root);
+    lock_and_wait(&mut ws, "Journal");
+    ws.open_note(&np("Journal/Day.md")).unwrap();
+    ws.active_doc_mut().unwrap().replace_minimally("# Day\nnot saved\n");
+    // Locked behind the window's back (another device, the CLI): no key here.
+    ws.vault().unwrap().lock_folder_now("Journal");
+    assert_eq!(ws.unsaveable_locked_notes(), ["Day"]);
+    assert!(!ws.quit_confirmed());
+    ws.confirm_quit();
+    assert!(ws.quit_confirmed() && ws.take_quit_request() && !ws.take_quit_request());
+}
+
+/// Security review S-M4: a new note in a locked folder keeps a neutral name.
+#[test]
+fn notes_in_a_locked_folder_are_not_named_from_their_text() {
+    let (_d, root) = vault_dir(&[("Journal/Day.md", "# Day\nx\n")]);
+    let mut ws = open(&root);
+    lock_and_wait(&mut ws, "Journal");
+    ws.new_note_in("Journal").unwrap();
+    ws.active_doc_mut().unwrap().replace_minimally("# I think I'm leaving\n\nMARKER-9d1f\n");
+    ws.save_all();
+    let names: Vec<String> =
+        std::fs::read_dir(root.join("Journal")).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    assert!(names.iter().any(|n| n == "Untitled.md.qenc"), "{names:?}");
+    assert!(!names.iter().any(|n| n.contains("leaving")), "{names:?}");
+}
+
+/// Security review S-M6: moving a plain note into a locked folder, or a
+/// folder locked on another device, clears what this device derived from
+/// the plain text.
+#[test]
+fn derived_data_goes_when_a_note_moves_in_or_a_folder_locks_elsewhere() {
+    let (_d, root) = vault_dir(&[("Journal/Day.md", "# Day\nx\n"), ("Plain.md", "# Plain\nMARKER-9d1f\n")]);
+    let mut ws = open(&root);
+    lock_and_wait(&mut ws, "Journal");
+    let cache = root.join(".quire/cache/claims/x");
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(cache.join("c.json"), "MARKER-9d1f").unwrap();
+    ws.open_note(&np("Plain.md")).unwrap();
+    ws.move_active("Journal").unwrap();
+    assert!(!cache.exists(), "content-keyed caches are cleared");
+    // Device B: a plain Journal/ with caches, then A's key file arrives.
+    let (_e, b_root) = vault_dir(&[("Journal/Day.md", "# Day\nMARKER-9d1f\n")]);
+    let mut b = open(&b_root);
+    let b_cache = b_root.join(".quire/cache/claims/y");
+    std::fs::create_dir_all(&b_cache).unwrap();
+    std::fs::copy(root.join("Journal/quire-lock.json"), b_root.join("Journal/quire-lock.json")).unwrap();
+    super::vault_event(&mut b, &quire_vault::VaultEvent::AttachmentChanged(np("Journal/quire-lock.json")));
+    assert!(!b_cache.exists());
+    assert!(b.vault().unwrap().known_locked().contains("Journal"));
+}
+
+/// Security review S-M10: a vault with AI off never gets an embedder, not
+/// even before the first tick.
+#[test]
+fn ai_off_applies_before_any_embedder() {
+    let (_d, root) = vault_dir(&[("Plan.md", "# Plan\n"), (".quire/shared/agent-policy.toml", "format = 1\nai = \"off\"\n")]);
+    let mut ws = Workspace::new(crate::Settings { embeddings: "endpoint".into(), ..crate::Settings::default() });
+    ws.open_vault_deferred(&root).unwrap();
+    assert!(!ws.index().has_semantic_builder());
+    assert!(ws.chat.is_none());
 }

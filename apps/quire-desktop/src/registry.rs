@@ -275,6 +275,7 @@ pub(crate) const fn ui_target(cmd: Command) -> Option<UiTarget> {
         Command::UnlockFolder => UiTarget::Overlay(crate::lock_ui::LockDialog::make_unlock),
         Command::ChangeFolderPassphrase => UiTarget::Overlay(crate::lock_ui::LockDialog::make_change),
         Command::StopLockingFolder => UiTarget::Overlay(crate::lock_ui::LockDialog::make_stop),
+        Command::ShowRecoveryKey => UiTarget::Overlay(crate::lock_ui::LockDialog::make_show_key),
         // ---- 0.11 editor
         Command::CustomizeCommands => UiTarget::Settings("commands"),
         _ => return None,
@@ -400,5 +401,11 @@ pub(crate) fn layout_samples(ws: &mut Workspace) -> Vec<(&'static str, crate::ov
         ("change a folder's passphrase", Overlay::Feature(Box::new(crate::lock_ui::LockDialog::sample(2)))),
         ("stop locking a folder", Overlay::Feature(Box::new(crate::lock_ui::LockDialog::sample(3)))),
         ("locked folder: recovery key", Overlay::Feature(Box::new(crate::lock_ui::LockDialog::sample(4)))),
+        ("show a locked folder's recovery key", Overlay::Feature(Box::new(crate::lock_ui::LockDialog::sample(5)))),
+        ("unlock with the recovery key", Overlay::Feature(Box::new(crate::lock_ui::LockDialog::sample(6)))),
+        (
+            "quit with unsaved locked notes",
+            Overlay::Feature(Box::new(crate::lock_ui::QuitDialog::new(vec!["2026-11-08".into(), "Letter to Sam".into()]))),
+        ),
     ]
 }

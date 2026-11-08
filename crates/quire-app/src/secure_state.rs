@@ -30,9 +30,9 @@ const KDF: Kdf = if cfg!(test) { Kdf::TEST } else { Kdf::DEFAULT };
 
 /// What a background conversion finished with.
 enum Done {
-    Locked { folder: String, recovery: Option<String>, remember: bool },
+    Locked { folder: String, recovery: Option<String>, remember: bool, conflicts: usize },
     Unlocked { folder: String, id: String },
-    Failed { folder: String, error: String },
+    Failed { folder: String, error: String, recovery: Option<String> },
 }
 
 struct Job {
@@ -57,6 +57,13 @@ pub struct SecureState {
     recovery: Option<(String, String)>,
     /// AI-off as last applied to the chat model and embedder.
     ai_off_applied: bool,
+    /// Idle locking waits until then (a folder kept unlocked because a note
+    /// in it couldn't be saved).
+    idle_retry: Option<Instant>,
+    /// The person chose to quit although notes in locked folders can't be
+    /// saved; and the window should close now.
+    quit_confirmed: bool,
+    quit_now: bool,
     /// The locked folders, read at most once a second (sidebar rows).
     folders: std::cell::RefCell<Option<(Instant, Vec<String>)>>,
     /// "Agent connections…": the Agents tab opens on its Connections view.
@@ -76,6 +83,33 @@ impl SecureState {
     pub(crate) const fn reapply_ai_switch(&mut self) {
         self.ai_off_applied = false;
     }
+}
+
+/// This device's record of the vault's locked folders
+/// (`<config>/vaults/<key>/locked-folders.json`), kept outside the vault so
+/// nobody who only reaches the vault can change it.
+pub fn local_record(root: &std::path::Path) -> Option<std::path::PathBuf> {
+    quire_agent::approval::default_state_dir(root).map(|d| d.join(lock::LOCAL_RECORD))
+}
+
+/// Open the vault at `root`, remembering its locked folders on this device.
+///
+/// A locked folder whose key file disappears stays locked
+/// (docs/formats/locked-folders.md#remembered-locked-folders). Use it
+/// wherever a vault on disk is opened to be written.
+pub fn open_vault(root: &std::path::Path) -> Result<Vault, String> {
+    let v = Vault::open_local(root).map_err(|e| e.to_string())?;
+    v.remember_locked_folders(local_record(root).as_deref());
+    Ok(v)
+}
+
+/// What to tell the person about a locked folder whose key file is missing.
+pub fn key_missing_text(folder: &str) -> String {
+    format!(
+        "{folder}/ is locked, but its key file ({}) is missing or was renamed. Quire keeps it locked and writes nothing plain there. \
+         Restore the key file (from a backup, git or another device), or unlock it with the recovery key and a new passphrase to make a new one.",
+        lock::KEY_FILE
+    )
 }
 
 /// The keychain entry of a folder's key ("unlock automatically").
@@ -101,6 +135,12 @@ pub fn ai_off(ws: &Workspace) -> bool {
     let off = ws.agent.as_ref().is_some_and(|a| a.policy_state().active().iter().any(|p| p.ai_off()));
     cache.set(Some((Instant::now(), off)));
     off
+}
+
+/// Whether AI is off for the open vault, as last applied (each tick and
+/// when the vault opens): for checks that can't read the policy.
+pub(crate) const fn ai_off_applied(ws: &Workspace) -> bool {
+    ws.features.secure.ai_off_applied
 }
 
 /// Save a note of a locked folder over what it last read (`base`): the
@@ -195,7 +235,7 @@ impl Workspace {
     /// OS keychain so this computer unlocks it at start.
     pub fn unlock_folder(&mut self, folder: &str, passphrase: &str, remember: bool) -> Result<(), String> {
         let vault = self.vault.clone().ok_or("No vault is open")?;
-        let key = vault.unlock(folder, passphrase).map_err(|e| unlock_error(folder, &e))?;
+        let key = vault.unlock(folder, passphrase).map_err(|e| unlock_error(&vault, folder, &e))?;
         if remember {
             self.remember_key(folder, &key)?;
         }
@@ -208,10 +248,12 @@ impl Workspace {
     pub fn unlock_with_recovery_key(&mut self, folder: &str, recovery: &str, new_passphrase: Option<&str>) -> Result<(), String> {
         let vault = self.vault.clone().ok_or("No vault is open")?;
         let key = FolderKey::from_recovery_key(recovery).map_err(|e| e.to_string())?;
+        // Checked before anything is written: against the key file, or, with
+        // the key file lost, against the folder's encrypted files.
+        vault.unlock_with_key(folder, key.clone()).map_err(|e| unlock_error(&vault, folder, &e))?;
         if let Some(p) = new_passphrase {
-            vault.change_passphrase(folder, Some(key.clone()), p, crate::history_ops::now_ms()).map_err(|e| e.to_string())?;
+            vault.change_passphrase(folder, Some(key), p, crate::history_ops::now_ms()).map_err(|e| e.to_string())?;
         }
-        vault.unlock_with_key(folder, key).map_err(|e| unlock_error(folder, &e))?;
         self.after_unlock(folder);
         Ok(())
     }
@@ -229,32 +271,41 @@ impl Workspace {
         self.recheck_locked_docs();
         let n = self.vault.as_ref().map_or(0, |v| v.locked_notes(folder).len());
         self.notify(NoticeLevel::Info, format!("Unlocked {folder}/ ({n} note{})", if n == 1 { "" } else { "s" }));
+        if let Some(v) = self.vault.clone() {
+            // A folder locked on another device: this device's own history of
+            // its notes (plain, from before) is encrypted now, in the background.
+            let f = folder.to_string();
+            std::thread::spawn(move || {
+                for note in v.locked_notes(&f).into_iter().chain(v.history_paths_under(&f)) {
+                    let _ = v.rehome_history(&note, &note);
+                }
+            });
+        }
         if let Some(v) = &self.vault
-            && lock::plain_left(v).iter().any(|p| p.folder == folder)
+            && let Some(left) = lock::plain_left(v).into_iter().find(|p| p.folder == folder)
         {
-            self.notify(
-                NoticeLevel::Warn,
-                format!("{folder}/ has files that aren't encrypted yet. Run “Lock a folder” on it again to finish."),
-            );
+            plain_left_notice(self, &left);
         }
     }
 
     /// Lock `folder` now: its open notes are saved and closed, their text
-    /// and search entries dropped, and the key forgotten. Returns how many
-    /// notes were closed.
-    pub fn lock_folder_now(&mut self, folder: &str) -> usize {
-        let open: Vec<_> = self
-            .docs
-            .iter()
-            .filter(|d| {
-                d.path.as_ref().is_some_and(|p| lock::LockedFolder { path: folder.to_string(), unlocking: false }.contains(p.as_str()))
-            })
-            .map(|d| d.id)
-            .collect();
+    /// and search entries dropped, and the key forgotten. A note that can't
+    /// be saved (it changed on disk meanwhile, say) is kept as an encrypted
+    /// copy beside it (`Day (unsaved 2026-11-08 14.30).md`), never in plain
+    /// text; if even that fails the folder stays unlocked. Returns how many
+    /// notes were closed, or `None` when the folder was kept unlocked.
+    pub fn lock_folder_now(&mut self, folder: &str) -> Option<usize> {
+        let open = self.docs_in(folder);
         for id in &open {
             self.save(*id);
         }
-        // A note that couldn't be saved stays open with its edits (never lost).
+        for id in &open {
+            if self.doc(*id).is_some_and(Document::is_dirty) && !self.keep_unsaved_copy(*id) {
+                let title = self.doc(*id).map(Document::title).unwrap_or_default();
+                self.notify(NoticeLevel::Warn, format!("{folder}/ stays unlocked: “{title}” has edits that couldn't be saved."));
+                return None;
+            }
+        }
         let mut closed = 0;
         for id in open {
             if self.doc(id).is_some_and(|d| !d.is_dirty()) {
@@ -265,17 +316,132 @@ impl Workspace {
         if let Some(v) = &self.vault {
             v.lock_folder_now(folder);
         }
+        self.forget_unlocked_text();
         self.rebuild_locked_index();
-        closed
+        Some(closed)
     }
 
-    /// Lock every unlocked folder now.
+    /// The open notes (tabs and hidden ones) in `folder`.
+    fn docs_in(&self, folder: &str) -> Vec<crate::document::DocId> {
+        let f = lock::LockedFolder { path: folder.to_string(), unlocking: false };
+        self.docs.iter().filter(|d| d.path.as_ref().is_some_and(|p| f.contains(p.as_str()))).map(|d| d.id).collect()
+    }
+
+    /// Keep the unsaved text of open note `id` (in an unlocked locked
+    /// folder) as an encrypted copy beside it, and mark the note saved.
+    /// Returns whether it did.
+    fn keep_unsaved_copy(&mut self, id: crate::document::DocId) -> bool {
+        let (Some(vault), Some(doc)) = (self.vault.clone(), self.doc(id)) else { return false };
+        let Some(path) = doc.path.clone() else { return false };
+        let Some(f) = vault.locked_folder(&path).filter(|f| !f.unlocking && vault.keys().is_unlocked(&f.path)) else { return false };
+        let text = doc.text().to_string();
+        let stamp = chrono::Local::now().format("%Y-%m-%d %H.%M");
+        let Ok(copy) = vault.unique_path(path.folder(), &format!("{} (unsaved {stamp})", path.stem())) else { return false };
+        match vault.write_if(&copy, None, &text) {
+            Ok(true) if vault.read(&copy).is_ok_and(|t| t == text) => {
+                if let Some(d) = self.docs.iter_mut().find(|d| d.id == id) {
+                    d.conflict = false;
+                    d.pending_merge = None;
+                    d.mark_saved(&text);
+                }
+                self.notify(
+                    NoticeLevel::Warn,
+                    format!(
+                        "“{}” couldn't be saved before {}/ was locked: your edits are in “{}”, encrypted.",
+                        path.stem(),
+                        f.path,
+                        copy.stem()
+                    ),
+                );
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Lock every unlocked folder now. Returns the folders locked.
     pub fn lock_all_now(&mut self) -> Vec<String> {
         let unlocked = self.vault.as_ref().map(|v| v.keys().unlocked()).unwrap_or_default();
-        for f in &unlocked {
-            self.lock_folder_now(f);
+        unlocked.into_iter().filter(|f| self.lock_folder_now(f).is_some()).collect()
+    }
+
+    /// Idle locking: like [`Self::lock_all_now`], except that a folder with
+    /// a note that can't be saved isn't locked yet (its edits stay where
+    /// they are, and idle locking tries again in a minute).
+    fn lock_idle(&mut self) -> Vec<String> {
+        let unlocked = self.vault.as_ref().map(|v| v.keys().unlocked()).unwrap_or_default();
+        let mut locked = Vec::new();
+        for f in unlocked {
+            let open = self.docs_in(&f);
+            for id in &open {
+                self.save(*id);
+            }
+            if open.iter().any(|id| self.doc(*id).is_some_and(Document::is_dirty)) {
+                self.features.secure.idle_retry = Some(Instant::now() + Duration::from_mins(1));
+                self.notify(
+                    NoticeLevel::Warn,
+                    format!("{f}/ wasn't locked after the idle time: a note in it has edits that couldn't be saved yet. Save or close it."),
+                );
+                continue;
+            }
+            if self.lock_folder_now(&f).is_some() {
+                locked.push(f);
+            }
         }
-        unlocked
+        locked
+    }
+
+    /// Drop what the window keeps of notes no longer readable: the
+    /// insights of the open note and other per-note caches.
+    fn forget_unlocked_text(&mut self) {
+        self.clear_note_caches();
+        self.features.decor_generation += 1;
+    }
+
+    /// Notes in locked folders with edits that can't be saved or kept: the
+    /// folder is locked here (by another device or the CLI) and this
+    /// process has no key. Their edits are lost when Quire quits, so the
+    /// app asks first.
+    pub fn unsaveable_locked_notes(&self) -> Vec<String> {
+        let Some(v) = &self.vault else { return Vec::new() };
+        self.docs
+            .iter()
+            .filter(|d| d.is_dirty())
+            .filter(|d| d.path.as_ref().and_then(|p| v.locked_folder(p)).is_some_and(|f| !f.unlocking && !v.keys().is_unlocked(&f.path)))
+            .map(Document::title)
+            .collect()
+    }
+
+    /// The person confirmed quitting without the notes
+    /// [`Self::unsaveable_locked_notes`] lists.
+    pub const fn confirm_quit(&mut self) {
+        self.features.secure.quit_confirmed = true;
+        self.features.secure.quit_now = true;
+    }
+
+    /// Whether quitting was confirmed ([`Self::confirm_quit`]).
+    pub const fn quit_confirmed(&self) -> bool {
+        self.features.secure.quit_confirmed
+    }
+
+    /// Whether the window should close now (once).
+    pub const fn take_quit_request(&mut self) -> bool {
+        std::mem::replace(&mut self.features.secure.quit_now, false)
+    }
+
+    /// Before quitting: notes in unlocked locked folders that couldn't be
+    /// saved are kept as encrypted copies beside them.
+    pub(crate) fn keep_unsaved_locked(&mut self) {
+        let Some(v) = self.vault.clone() else { return };
+        let dirty: Vec<_> = self
+            .docs
+            .iter()
+            .filter(|d| d.is_dirty() && d.path.as_ref().is_some_and(|p| v.locked_folder(p).is_some()))
+            .map(|d| d.id)
+            .collect();
+        for id in dirty {
+            self.keep_unsaved_copy(id);
+        }
     }
 
     /// Start making `folder` a locked folder (or finishing that) in the
@@ -296,9 +462,15 @@ impl Workspace {
         let (tx, rx) = bounded(1);
         let f = folder.clone();
         std::thread::spawn(move || {
-            let done = match lock::lock_folder(&vault, &f, Some(&pass), KDF, crate::history_ops::now_ms()) {
-                Ok(r) => Done::Locked { folder: f, recovery: r.recovery_key, remember },
-                Err(e) => Done::Failed { folder: f, error: e.to_string() },
+            let pass = lock::zeroize::Zeroizing::new(pass);
+            // The key file first, and its recovery key back before any file is
+            // converted: if the conversion then stops, the key is still shown.
+            let done = match lock::begin_lock(&vault, &f, Some(&pass), KDF, crate::history_ops::now_ms()) {
+                Err(e) => Done::Failed { folder: f, error: e.to_string(), recovery: None },
+                Ok(recovery) => match lock::lock_folder(&vault, &f, Some(&pass), KDF, crate::history_ops::now_ms()) {
+                    Ok(r) => Done::Locked { folder: f, recovery, remember, conflicts: r.conflicts.len() },
+                    Err(e) => Done::Failed { folder: f, error: e.to_string(), recovery },
+                },
             };
             let _ = tx.send(done);
         });
@@ -316,7 +488,7 @@ impl Workspace {
         }
         if !vault.keys().is_unlocked(&folder) {
             let p = passphrase.ok_or_else(|| format!("{folder}/ is locked; enter its passphrase."))?;
-            vault.unlock(&folder, p).map_err(|e| unlock_error(&folder, &e))?;
+            vault.unlock(&folder, p).map_err(|e| unlock_error(&vault, &folder, &e))?;
         }
         self.save_open_notes();
         let id = vault.key_file(&folder).map(|(_, kf)| kf.folder_id).unwrap_or_default();
@@ -325,7 +497,7 @@ impl Workspace {
         std::thread::spawn(move || {
             let done = match lock::unlock_folder_permanently(&vault, &f, None) {
                 Ok(_) => Done::Unlocked { folder: f, id },
-                Err(e) => Done::Failed { folder: f, error: e.to_string() },
+                Err(e) => Done::Failed { folder: f, error: e.to_string(), recovery: None },
             };
             let _ = tx.send(done);
         });
@@ -341,6 +513,32 @@ impl Workspace {
     /// The recovery key of the folder just locked, once: (folder, key).
     pub fn take_recovery_key(&mut self) -> Option<(String, String)> {
         self.features.secure.recovery.take()
+    }
+
+    /// `folder`'s recovery key, to show again (it is the folder key in
+    /// another form). Asks for the passphrase, even while the folder is
+    /// unlocked, so someone at an unlocked computer can't take it away.
+    pub fn folder_recovery_key(&self, folder: &str, passphrase: &str) -> Result<String, String> {
+        let vault = self.vault.clone().ok_or("No vault is open")?;
+        let (_, kf) = vault.key_file(folder).map_err(|e| unlock_error(&vault, folder, &e))?;
+        let key = kf.unwrap_key(passphrase).map_err(|e| match e {
+            lock::LockError::WrongPassphrase => "Wrong passphrase.".to_string(),
+            e => e.to_string(),
+        })?;
+        Ok(key.recovery_key())
+    }
+
+    /// Keep both sides of the plain files that sit next to an encrypted
+    /// copy in `folder` (see [`lock::keep_both`]). Needs it unlocked.
+    pub fn keep_both_copies(&mut self, folder: &str) -> Result<usize, String> {
+        let vault = self.vault.clone().ok_or("No vault is open")?;
+        let kept = lock::keep_both(&vault, folder).map_err(|e| e.to_string())?;
+        self.rebuild_locked_index();
+        self.notify(
+            NoticeLevel::Info,
+            format!("Kept {} plain cop{} in {folder}/, now encrypted", kept.len(), if kept.len() == 1 { "y" } else { "ies" }),
+        );
+        Ok(kept.len())
     }
 
     /// A new passphrase for `folder`, with the current one or the recovery key.
@@ -476,10 +674,12 @@ impl Workspace {
     }
 }
 
-fn unlock_error(folder: &str, e: &VaultError) -> String {
+fn unlock_error(vault: &Vault, folder: &str, e: &VaultError) -> String {
     match e {
         VaultError::Locked(m) if m.contains("wrong passphrase") => "Wrong passphrase.".into(),
         VaultError::Damaged { reason, .. } if reason.contains("recovery key") => "That key doesn't open this folder.".into(),
+        VaultError::NotFound(m) if m.contains("no encrypted file") => format!("{m}."),
+        VaultError::NotFound(_) if vault.known_locked().contains(folder) => key_missing_text(folder),
         VaultError::NotFound(_) => format!("{folder}/ isn't a locked folder (its key file, {}, is missing).", lock::KEY_FILE),
         e => e.to_string(),
     }
@@ -511,8 +711,10 @@ pub(crate) fn tick(ws: &mut Workspace, now: Instant) -> bool {
             .filter_map(|d| {
                 let p = d.path.clone()?;
                 let rev = d.revision();
-                (ws.features.secure.indexed.get(&p) != Some(&rev) && ws.vault.as_ref()?.locked_folder(&p).is_some())
-                    .then(|| (p, rev, d.text().to_string()))
+                let v = ws.vault.as_ref()?;
+                // Only notes of folders still unlocked: an edit kept open after its folder locked stays out.
+                let unlocked = v.locked_folder(&p).is_some_and(|f| v.keys().is_unlocked(&f.path));
+                (ws.features.secure.indexed.get(&p) != Some(&rev) && unlocked).then(|| (p, rev, d.text().to_string()))
             })
             .collect();
         for (p, rev, text) in edited {
@@ -543,7 +745,9 @@ pub(crate) fn tick(ws: &mut Workspace, now: Instant) -> bool {
             let (title, folder) = (ws.docs[i].title(), ws.docs[i].path.as_ref().map(|p| p.folder().to_string()).unwrap_or_default());
             ws.notify(
                 NoticeLevel::Warn,
-                format!("“{title}” is in {folder}/, which is locked now. Unlock it to save your edits; they're kept until then."),
+                format!(
+                    "“{title}” is in {folder}/, which is locked now. Unlock it to save your edits; they're kept until then (Quire asks before quitting)."
+                ),
             );
             changed = true;
         }
@@ -552,7 +756,8 @@ pub(crate) fn tick(ws: &mut Workspace, now: Instant) -> bool {
     if let Some(at) = idle_deadline(ws)
         && now >= at
     {
-        let locked = ws.lock_all_now();
+        ws.features.secure.idle_retry = None;
+        let locked = ws.lock_idle();
         if !locked.is_empty() {
             let mins = ws.settings.security.lock_after_idle_minutes;
             ws.notify(NoticeLevel::Info, format!("Locked {} after {mins} minutes without use", folders_words(&locked)));
@@ -575,12 +780,13 @@ fn idle_deadline(ws: &Workspace) -> Option<Instant> {
     }
     let typed = ws.docs.iter().filter_map(Document::last_edit).max();
     let last = ws.features.secure.last_input.into_iter().chain(typed).max()?;
-    Some(last + Duration::from_secs(u64::from(mins) * 60))
+    let at = last + Duration::from_secs(u64::from(mins) * 60);
+    Some(ws.features.secure.idle_retry.map_or(at, |r| r.max(at)))
 }
 
 fn finished(ws: &mut Workspace, done: Done) {
     match done {
-        Done::Locked { folder, recovery, remember } => {
+        Done::Locked { folder, recovery, remember, conflicts } => {
             if let Some(v) = ws.vault.clone() {
                 // Out of the vault index and everything built on it.
                 for p in v.locked_notes(&folder) {
@@ -600,6 +806,11 @@ fn finished(ws: &mut Workspace, done: Done) {
             }
             ws.rebuild_locked_index();
             ws.notify(NoticeLevel::Info, format!("{folder}/ is locked: its notes are encrypted on disk"));
+            if conflicts > 0
+                && let Some(left) = ws.vault.as_ref().and_then(|v| lock::plain_left(v).into_iter().find(|l| l.folder == folder))
+            {
+                plain_left_notice(ws, &left);
+            }
         }
         Done::Unlocked { folder, id } => {
             if let Some(root) = ws.vault_root() {
@@ -609,17 +820,58 @@ fn finished(ws: &mut Workspace, done: Done) {
             ws.rebuild_locked_index();
             ws.notify(NoticeLevel::Info, format!("{folder}/ is an ordinary folder again (the encrypted files are in the trash)"));
         }
-        Done::Failed { folder, error } => {
+        Done::Failed { folder, error, recovery } => {
             ws.rebuild_locked_index();
-            ws.notify(NoticeLevel::Error, format!("Converting {folder}/ stopped: {error}. Nothing was lost; run it again to finish."));
+            let key = if recovery.is_some() {
+                "Its recovery key is shown now: store it."
+            } else {
+                "To see its recovery key, use “Show a locked folder's recovery key…”."
+            };
+            ws.notify(
+                NoticeLevel::Error,
+                format!("Converting {folder}/ stopped: {error}. No plain file was removed before its encrypted copy was checked; run it again to finish. {key}"),
+            );
+            if let Some(rk) = recovery {
+                ws.features.secure.recovery = Some((folder, rk));
+                ws.request_ui(UiRequest::Feature(Command::LockFolder));
+            }
         }
+    }
+}
+
+/// Tell the person about plain files in a locked folder.
+fn plain_left_notice(ws: &mut Workspace, left: &lock::PlainLeft) {
+    let s = |n: usize| if n == 1 { "" } else { "s" };
+    if !left.files.is_empty() {
+        let n = left.files.len();
+        ws.notify(
+            NoticeLevel::Warn,
+            format!(
+                "{}/ is locked but holds {n} file{} that aren't encrypted. Run “Lock a folder” on it again to encrypt them.",
+                left.folder,
+                s(n)
+            ),
+        );
+    }
+    if !left.conflicts.is_empty() {
+        let n = left.conflicts.len();
+        let first = left.conflicts[0].file_name();
+        ws.notify(
+            NoticeLevel::Warn,
+            format!(
+                "{}/ has {n} plain file{} next to its encrypted version ({first}). Quire shows the encrypted one and never saves over either. \
+                 Open “Lock a folder…” on it to keep both (the plain one is encrypted under a new name).",
+                left.folder,
+                s(n)
+            ),
+        );
     }
 }
 
 /// What this device derived from a folder's notes before it was locked:
 /// agents' suggestions about them (they hold text), and the caches built
 /// from plain text (content-keyed, so cleared whole; they're rebuilt).
-fn forget_derived(ws: &mut Workspace, folder: &str) {
+pub(crate) fn forget_derived(ws: &mut Workspace, folder: &str) {
     if let Some(agent) = ws.agent.clone() {
         let n = agent.forget_suggestions_under(folder);
         if n > 0 {
@@ -682,6 +934,11 @@ pub(crate) fn vault_event(ws: &mut Workspace, ev: &VaultEvent) {
             if lock::is_key_file(p.as_str()) {
                 // A folder was locked or unlocked elsewhere (another device, the CLI).
                 let folder = p.folder().to_string();
+                let new = !vault.known_locked().contains(&folder);
+                if vault.note_locked_folder(&folder).is_ok() && new {
+                    // What this device derived from its notes while they were plain goes too.
+                    forget_derived(ws, &folder);
+                }
                 for n in vault.locked_notes(&folder) {
                     ws.index.remove(n);
                 }
@@ -708,6 +965,14 @@ pub(crate) fn vault_event(ws: &mut Workspace, ev: &VaultEvent) {
             }
         }
         VaultEvent::AttachmentRemoved(p) => {
+            let folder = p.folder();
+            if lock::is_key_file(p.as_str())
+                && ws.features.secure.job.is_none()
+                && vault.locked_folders().iter().any(|f| f.folder.path == folder && f.key_missing)
+            {
+                ws.notify(NoticeLevel::Warn, key_missing_text(folder));
+                ws.features.secure.folders.replace(None);
+            }
             if let Some(plain) = lock::plain_name(p) {
                 let st = &mut ws.features.secure;
                 if let Some(ix) = st.locked_index.as_mut() {
@@ -737,16 +1002,11 @@ pub(crate) fn vault_opened(ws: &mut Workspace) {
             }
         }
     }
+    for f in vault.locked_folders().into_iter().filter(|f| f.key_missing) {
+        ws.notify(NoticeLevel::Warn, key_missing_text(&f.folder.path));
+    }
     for left in lock::plain_left(&vault) {
-        ws.notify(
-            NoticeLevel::Warn,
-            format!(
-                "{}/ is locked but holds {} file{} that aren't encrypted. Run “Lock a folder” on it again to encrypt them.",
-                left.folder,
-                left.files.len(),
-                if left.files.len() == 1 { "" } else { "s" }
-            ),
-        );
+        plain_left_notice(ws, &left);
     }
     ws.rebuild_locked_index();
 }

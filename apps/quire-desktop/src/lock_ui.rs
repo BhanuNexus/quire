@@ -24,6 +24,8 @@ enum Mode {
     Unlock,
     Change,
     Stop,
+    /// Show the recovery key again (asks for the passphrase).
+    ShowKey,
 }
 
 /// The dialog for every locked-folder action.
@@ -42,6 +44,8 @@ pub(crate) struct LockDialog {
     /// After locking: (folder, recovery key), until the person confirms.
     shown_key: Option<(String, String)>,
     saved: bool,
+    /// The key is shown again on request, not right after locking.
+    shown_again: bool,
 }
 
 impl LockDialog {
@@ -60,6 +64,7 @@ impl LockDialog {
             focused: false,
             shown_key: None,
             saved: false,
+            shown_again: false,
         }
     }
 
@@ -97,14 +102,22 @@ impl LockDialog {
         Box::new(Self::new(Mode::Stop, Self::initial(ws, true)))
     }
 
+    pub(crate) fn make_show_key(ws: &mut Workspace) -> Box<dyn OverlayView> {
+        Box::new(Self::new(Mode::ShowKey, Self::initial(ws, true)))
+    }
+
     #[cfg(test)]
     pub(crate) fn sample(i: usize) -> Self {
-        let mut d = Self::new([Mode::Lock, Mode::Unlock, Mode::Change, Mode::Stop, Mode::Lock][i % 5], "Journal".into());
+        let modes = [Mode::Lock, Mode::Unlock, Mode::Change, Mode::Stop, Mode::Lock, Mode::ShowKey, Mode::Unlock];
+        let mut d = Self::new(modes[i % modes.len()], "Journal".into());
         if i == 4 {
             d.shown_key = Some(("Journal".into(), "58N2-MAHA-58N2-MAHA-58N2-MAHA-58N2-MAHA-58N2-MAHA-58N2-MAHA-58N0-ME2E".into()));
         }
         if i == 1 {
             d.error = Some("Wrong passphrase.".into());
+        }
+        if i == 6 {
+            d.use_recovery = true;
         }
         d
     }
@@ -115,6 +128,7 @@ impl LockDialog {
             Mode::Unlock => "Unlock a folder",
             Mode::Change => "Change a locked folder's passphrase",
             Mode::Stop => "Stop locking a folder",
+            Mode::ShowKey => "Show a locked folder's recovery key",
         }
     }
 
@@ -174,16 +188,15 @@ impl LockDialog {
 
     fn recovery_view(&mut self, ui: &mut egui::Ui, w: f32, pal: &Palette, res: &mut OverlayResult) {
         let Some((folder, key)) = self.shown_key.clone() else { return };
-        ui.heading(format!("{folder}/ is locked"));
-        ui.add(
-            egui::Label::new(
-                RichText::new(
-                    "This is its recovery key. It opens the folder if you forget the passphrase, and it is shown only now: Quire doesn't keep it. Store it somewhere safe, away from this computer.",
-                )
-                .color(pal.muted),
-            )
-            .wrap(),
-        );
+        let text = if self.shown_again {
+            ui.heading(format!("{folder}/: recovery key"));
+            "It opens the folder if you forget the passphrase, or if its key file is lost. Anyone who has it can read the folder: store it somewhere safe, away from this computer."
+        } else {
+            ui.heading(format!("{folder}/ is locked"));
+            "This is its recovery key. It opens the folder if you forget the passphrase, or if its key file is lost. Store it somewhere safe, away from this computer. \
+             (While the folder is unlocked, “Show a locked folder's recovery key…” shows it again, after asking for the passphrase.)"
+        };
+        ui.add(egui::Label::new(RichText::new(text).color(pal.muted)).wrap());
         ui.add_space(8.0);
         egui::Frame::new().fill(pal.code_bg).corner_radius(6.0).inner_margin(10.0).show(ui, |ui| {
             ui.set_width(w - 24.0);
@@ -212,11 +225,11 @@ impl OverlayView for LockDialog {
             self.started = false;
             if let Some(k) = ws.take_recovery_key() {
                 self.shown_key = Some(k);
-            } else if self.mode != Mode::Lock || ws.is_unlocked(&self.folder) {
+            } else if self.mode != Mode::Lock || (ws.is_unlocked(&self.folder) && conflicts(ws, &self.folder) == 0) {
                 res.close = true;
                 return res;
-            } else {
-                self.error = Some("The conversion stopped; see the message below the editor. Nothing was lost.".into());
+            } else if conflicts(ws, &self.folder) == 0 {
+                self.error = Some("The conversion stopped; see the message below the editor. Run it again to finish.".into());
             }
         }
         if self.started {
@@ -255,7 +268,22 @@ impl OverlayView for LockDialog {
                 Mode::Unlock if self.use_recovery => {
                     ui.label("Recovery key");
                     let r = ui.add(TextEdit::singleline(&mut self.recovery).hint_text("XXXX-XXXX-…").desired_width(w.min(420.0)));
-                    field(ui, "New passphrase (optional)", &mut self.pass, "keep the current one");
+                    if key_missing(ws, &self.folder) {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new("The folder's key file is missing: a new passphrase makes a new one, once the recovery key has opened the folder's files.")
+                                    .size(11.5)
+                                    .color(pal.warn),
+                            )
+                            .wrap(),
+                        );
+                        field(ui, "New passphrase (8 characters or more)", &mut self.pass, "");
+                    } else {
+                        field(ui, "New passphrase (optional)", &mut self.pass, "keep the current one");
+                    }
+                    if !self.pass.is_empty() {
+                        field(ui, "Type it again", &mut self.pass2, "");
+                    }
                     r
                 }
                 Mode::Unlock | Mode::Stop => {
@@ -282,9 +310,22 @@ impl OverlayView for LockDialog {
                     field(ui, "New passphrase (8 characters or more)", &mut self.pass, "");
                     let r2 = field(ui, "Type it again", &mut self.pass2, "");
                     go |= r2.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    ui.add(egui::Label::new(RichText::new(OLD_KEY_FILES).size(11.5).color(pal.faint)).wrap());
+                    r
+                }
+                Mode::ShowKey => {
+                    let r = field(ui, "Passphrase", &mut self.pass, "");
+                    go |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    ui.add(
+                        egui::Label::new(RichText::new("Asked again so that nobody at an unlocked computer can take the key away.").size(11.5).color(pal.faint))
+                            .wrap(),
+                    );
                     r
                 }
             };
+            if self.mode == Mode::Lock && !self.started {
+                self.conflicts_view(ui, ws, pal);
+            }
             if !self.focused {
                 first.request_focus();
                 self.focused = true;
@@ -304,6 +345,7 @@ impl OverlayView for LockDialog {
                     Mode::Unlock => "Unlock",
                     Mode::Change => "Change passphrase",
                     Mode::Stop => "Decrypt folder",
+                    Mode::ShowKey => "Show recovery key",
                 };
                 if (ui.button(label).clicked() || go) && !self.folder.is_empty() {
                     self.error = self.act(ws).err();
@@ -335,6 +377,12 @@ impl LockDialog {
                 self.started = true;
             }
             Mode::Unlock if self.use_recovery => {
+                if !self.pass.is_empty() && self.pass != self.pass2 {
+                    return Err("The new passphrases differ.".into());
+                }
+                if self.pass.is_empty() && key_missing(ws, &folder) {
+                    return Err("The key file is missing: choose a new passphrase to make a new one.".into());
+                }
                 let new = Some(self.pass.as_str()).filter(|p| !p.is_empty());
                 ws.unlock_with_recovery_key(&folder, &self.recovery, new)?;
             }
@@ -350,9 +398,58 @@ impl LockDialog {
                 ws.start_unlocking_for_good(&folder, pass)?;
                 self.started = true;
             }
+            Mode::ShowKey => {
+                let key = ws.folder_recovery_key(&folder, &self.pass)?;
+                self.pass.clear();
+                self.shown_key = Some((folder, key));
+                self.shown_again = true;
+            }
         }
         Ok(())
     }
+
+    /// Plain files next to their encrypted versions in the chosen folder:
+    /// both are kept, the plain one encrypted under a new name.
+    fn conflicts_view(&mut self, ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) {
+        let n = conflicts(ws, &self.folder);
+        if n == 0 {
+            return;
+        }
+        ui.add_space(6.0);
+        ui.add(
+            egui::Label::new(
+                RichText::new(format!(
+                    "{n} plain file{} here sit{} next to an encrypted version with other content. Quire shows the encrypted one and never saves over either. \
+                     Keep both: each plain one is encrypted under a new name (“… (plain copy)”), for you to compare.",
+                    if n == 1 { "" } else { "s" },
+                    if n == 1 { "s" } else { "" }
+                ))
+                .size(12.0)
+                .color(pal.warn),
+            )
+            .wrap(),
+        );
+        let unlocked = ws.is_unlocked(&self.folder);
+        if ui.add_enabled(unlocked, egui::Button::new("Keep both")).on_disabled_hover_text("Unlock the folder first.").clicked()
+            && let Err(e) = ws.keep_both_copies(&self.folder)
+        {
+            self.error = Some(e);
+        }
+    }
+}
+
+/// What "Change passphrase" doesn't change (security review S-M8).
+const OLD_KEY_FILES: &str = "Only the key file changes: the folder's key stays the same, so the recovery key keeps working, and so does an old copy of the key file \
+(in a backup, git history or a cloud folder's version history) with the old passphrase. If the passphrase leaked, also choose “Change the folder's key” below.";
+
+/// How many plain files sit next to an encrypted version in `folder`.
+fn conflicts(ws: &Workspace, folder: &str) -> usize {
+    ws.vault().map_or(0, |v| lock::plain_left(v).into_iter().filter(|l| l.folder == folder).map(|l| l.conflicts.len()).sum())
+}
+
+/// Whether `folder` is remembered as locked but its key file is missing.
+fn key_missing(ws: &Workspace, folder: &str) -> bool {
+    ws.locked_folders().iter().any(|f| f.folder.path == folder && f.key_missing)
 }
 
 /// What a `.qenc` file opens to: the folder's lock screen while it is
@@ -488,4 +585,59 @@ pub(crate) fn quick_open(ws: &Workspace, query: &str) -> Vec<(String, String, No
 /// folder is listed as its note instead).
 pub(crate) fn list_file(ws: &Workspace, p: &NotePath) -> bool {
     !(lock::is_encrypted_name(p.as_str()) && ws.locked_folder_cached(p).is_some_and(|f| ws.is_unlocked(&f)))
+}
+
+/// Asked when the window is closed while notes in locked folders have
+/// edits that can't be saved (their folder was locked, here or on another
+/// device, and Quire has no key): unlock to save them, or quit without them.
+pub(crate) struct QuitDialog {
+    notes: Vec<String>,
+}
+
+impl QuitDialog {
+    pub(crate) const fn new(notes: Vec<String>) -> Self {
+        Self { notes }
+    }
+}
+
+impl OverlayView for QuitDialog {
+    fn show(&mut self, ctx: &egui::Context, ws: &mut Workspace, pal: &Palette) -> OverlayResult {
+        let mut res = OverlayResult::default();
+        egui::Modal::new(egui::Id::unique("quire-quit-locked")).show(ctx, |ui| {
+            ui.set_width(460.0_f32.min(ctx.content_rect().width() - 48.0));
+            ui.heading("Edits that can't be saved");
+            let n = self.notes.len();
+            ui.add(
+                egui::Label::new(
+                    RichText::new(format!(
+                        "{n} note{} in a locked folder {} edits that weren't saved: the folder was locked, and Quire has no key to encrypt them. \
+                         Unlock the folder to save them. Quitting now loses them (nothing is written in plain text).",
+                        if n == 1 { "" } else { "s" },
+                        if n == 1 { "has" } else { "have" }
+                    ))
+                    .color(pal.muted),
+                )
+                .wrap(),
+            );
+            ui.add_space(6.0);
+            for t in self.notes.iter().take(8) {
+                ui.label(RichText::new(format!("• {t}")).color(pal.strong));
+            }
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if ui.button(RichText::new("Unlock…").strong()).clicked() {
+                    res.close = true;
+                    res.run = Some(Command::UnlockFolder);
+                }
+                if ui.button("Cancel").clicked() {
+                    res.close = true;
+                }
+                if ui.button(RichText::new("Quit without them").color(pal.danger)).clicked() {
+                    ws.confirm_quit();
+                    res.close = true;
+                }
+            });
+        });
+        res
+    }
 }

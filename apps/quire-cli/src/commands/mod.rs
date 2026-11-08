@@ -87,7 +87,7 @@ pub(crate) fn arg(args: &[String], i: usize) -> Result<&str, String> {
 }
 
 pub(crate) fn load(vault: &str) -> Result<(Vault, IndexService, f64), String> {
-    let v = Vault::open_local(vault).map_err(|e| e.to_string())?;
+    let v = quire_app::secure_state::open_vault(std::path::Path::new(vault))?;
     let t = Instant::now();
     let svc = IndexService::spawn();
     svc.load(v.clone());

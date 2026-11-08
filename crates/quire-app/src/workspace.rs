@@ -263,8 +263,8 @@ impl Workspace {
     }
 
     /// Set up what 0.9 features need for a newly opened vault.
-    fn vault_attached(&mut self, vault: &Vault) {
-        let agent = quire_agent::AgentStore::open(vault, self.device.clone(), Arc::new(quire_agent::SystemClock));
+    fn vault_attached(&mut self, vault: Vault) {
+        let agent = quire_agent::AgentStore::open(&vault, self.device.clone(), Arc::new(quire_agent::SystemClock));
         self.jobs.set_context(Some(crate::jobs::JobCx {
             // No keys: background jobs never read a locked folder (0.11).
             vault: vault.without_keys(),
@@ -276,6 +276,8 @@ impl Workspace {
         }));
         self.agent = Some(agent);
         self.features.decor_generation += 1;
+        // The features see the vault that was just opened.
+        self.vault = Some(vault);
         crate::features::vault_opened(self);
     }
 
@@ -327,18 +329,20 @@ impl Workspace {
     /// Sync starts only once the watcher runs, so every note it writes is
     /// seen and merged into the notes open here, never overwritten by them.
     pub fn open_vault_deferred(&mut self, root: &Path) -> Result<(), String> {
-        let vault = Vault::open_local(root).map_err(|e| e.to_string())?;
+        // 0.11: the vault's locked folders are remembered on this device, apart from their key files.
+        let vault = crate::secure_state::open_vault(root)?;
         self.save_all();
         self.docs.retain(|d| d.path.is_none());
         self.active = if self.docs.is_empty() { None } else { Some(0) };
         self.vault_root = Some(root.canonicalize().unwrap_or_else(|_| root.to_path_buf()));
         self.watcher = None;
         self.deferred_start = true;
-        self.vault_attached(&vault);
-        self.vault = Some(vault);
+        self.vault_attached(vault);
         self.settings.last_vault = self.vault_root.clone();
-        // The neural embedding cache lives inside the vault.
+        // The neural embedding cache lives inside the vault. 0.11: a vault
+        // with AI off gets no embedder or chat model, from the start.
         self.apply_embedder();
+        self.apply_ai_switch();
         Ok(())
     }
 
@@ -382,8 +386,7 @@ impl Workspace {
     /// Use an existing vault (tests, demos, in-memory scratch vaults).
     pub fn attach_vault(&mut self, vault: Vault) {
         self.index.load(vault.clone());
-        self.vault_attached(&vault);
-        self.vault = Some(vault);
+        self.vault_attached(vault);
     }
 
     /// Re-read every note (after a bulk change such as an import).
@@ -790,6 +793,11 @@ impl Workspace {
     pub(crate) fn auto_name(&mut self, id: DocId, force: bool) {
         let Some(doc) = self.doc(id) else { return };
         let Some(path) = doc.path.clone().filter(|_| doc.auto_name && !doc.conflict) else { return };
+        // 0.11: a note in a locked folder keeps its neutral name: its first
+        // line is its text, and file names aren't encrypted.
+        if self.vault.as_ref().is_some_and(|v| v.locked_folder(&path).is_some()) {
+            return;
+        }
         let text = doc.text();
         let Some((title, title_line)) = title_from_text(&text) else { return };
         let caret_line = doc.buffer().char_to_line(doc.selection().head);
@@ -1064,7 +1072,20 @@ impl Workspace {
             doc.path = Some(report.new_path.clone());
         }
         crate::agent_state::path_changed(self, &report.old_path, &report.new_path);
+        // 0.11: a plain note moved into a locked folder: what this device
+        // derived from its plain text (agent suggestions, caches) goes.
+        if vault.locked_folder(&report.old_path).is_none()
+            && let Some(f) = vault.locked_folder(&report.new_path)
+        {
+            crate::secure_state::forget_derived(self, &f.path);
+        }
         report.updated.iter().filter(|p| **p != report.new_path).count()
+    }
+
+    /// Forget the per-note caches the window keeps (insights), e.g. after a
+    /// locked folder was locked.
+    pub(crate) fn clear_note_caches(&self) {
+        *self.insights_cache.borrow_mut() = None;
     }
 
     pub fn trash_active(&mut self) {
@@ -1576,7 +1597,8 @@ impl Workspace {
             | C::LockNow
             | C::ChangeFolderPassphrase
             | C::StopLockingFolder
-            | C::AgentConnections => return crate::features::run(self, cmd),
+            | C::AgentConnections
+            | C::ShowRecoveryKey => return crate::features::run(self, cmd),
             // 0.11 editor: formatting runs in `format_cmds` above; the rest in `nav`.
             C::Heading4
             | C::Heading5
@@ -1797,6 +1819,8 @@ impl Workspace {
     pub fn shutdown(&mut self) {
         self.jobs.set_context(None);
         self.save_all();
+        // 0.11: edits in a locked folder that couldn't be saved are kept encrypted.
+        self.keep_unsaved_locked();
         self.history.flush();
         if let Some(p) = Session::path() {
             let _ = self.session().save_to(&p);

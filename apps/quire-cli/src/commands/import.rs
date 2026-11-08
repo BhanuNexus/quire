@@ -4,8 +4,6 @@
 
 use std::path::Path;
 
-use quire_app::vault::Vault;
-
 use super::{CliCommand, arg};
 
 pub(crate) const COMMANDS: &[CliCommand] = &[CliCommand {
@@ -44,7 +42,7 @@ pub(crate) fn run(source: &str, vault: &str, folder: &str, write: bool) -> Resul
         println!("Dry run. Re-run with --write to import into {target}.");
         return Ok(());
     }
-    let vault = Vault::open_local(vault).map_err(|e| e.to_string())?;
+    let vault = quire_app::secure_state::open_vault(Path::new(vault))?;
     let report = quire_import::apply(&plan, &vault, folder)?;
     println!("Imported {} notes and {} files into {target}.", report.notes, report.files);
     for (from, to) in &report.renamed {

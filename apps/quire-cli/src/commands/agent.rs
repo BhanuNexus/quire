@@ -9,7 +9,7 @@ use std::path::Path;
 
 use quire_agent::proposal::{ChangeOp, HunkAction, HunkDecision};
 use quire_agent::{AgentStore, LedgerQuery, ProposalFilter, ProposalId, RevertSelector, SystemClock};
-use quire_app::vault::{NotePath, Vault};
+use quire_app::vault::NotePath;
 
 use super::{CliCommand, arg};
 
@@ -44,7 +44,7 @@ pub(crate) const COMMANDS: &[CliCommand] = &[
 ];
 
 fn store(vault: &str) -> Result<AgentStore, String> {
-    let v = Vault::open_local(vault).map_err(|e| e.to_string())?;
+    let v = quire_app::secure_state::open_vault(Path::new(vault))?;
     Ok(AgentStore::open(&v, quire_app::device::this_device(), std::sync::Arc::new(SystemClock)))
 }
 

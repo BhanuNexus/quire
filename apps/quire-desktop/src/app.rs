@@ -813,6 +813,7 @@ impl eframe::App for QuireApp {
             self.open_file(&NotePath::new(note));
         }
         self.ui_inner(ui, frame);
+        self.ask_before_losing_locked_edits(ui.ctx());
         #[cfg(feature = "bench")]
         if let Some(b) = &mut self.bench {
             b.frame_done(ui.ctx());
@@ -833,6 +834,24 @@ impl eframe::App for QuireApp {
 }
 
 impl QuireApp {
+    /// 0.11: closing the window while notes in a locked folder have edits
+    /// that can't be saved (the folder was locked and Quire has no key)
+    /// asks first: unlock to save them, or quit without them.
+    fn ask_before_losing_locked_edits(&mut self, ctx: &egui::Context) {
+        if self.ws.take_quit_request() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+        if !ctx.input(|i| i.viewport().close_requested()) || self.ws.quit_confirmed() {
+            return;
+        }
+        let notes = self.ws.unsaveable_locked_notes();
+        if !notes.is_empty() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.set_overlay(Some(Overlay::Feature(Box::new(crate::lock_ui::QuitDialog::new(notes)))));
+        }
+    }
+
     /// A toolbar button was pressed, or the keyboard left the toolbar.
     fn toolbar_pressed(&mut self, pressed: Option<crate::toolbar_ui::Pressed>) {
         match pressed {

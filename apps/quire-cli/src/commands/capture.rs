@@ -22,7 +22,7 @@ fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
 
 fn capture(args: &[String]) -> Result<(), String> {
     let arg = |i: usize| super::arg(args, i);
-    let v = Vault::open_local(arg(1)?).map_err(|e| e.to_string())?;
+    let v = quire_app::secure_state::open_vault(std::path::Path::new(arg(1)?))?;
     if let Some(url) = flag(args, "--url") {
         return capture_url(&v, url, args);
     }

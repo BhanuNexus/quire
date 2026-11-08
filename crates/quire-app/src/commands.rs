@@ -161,6 +161,7 @@ pub enum Command {
     ChangeFolderPassphrase,
     StopLockingFolder,
     AgentConnections,
+    ShowRecoveryKey,
     // 0.11 editor: the formatting toolbar and command customisation
     // (`format_cmds.rs`, `keymap.rs`).
     Heading4,
@@ -270,7 +271,8 @@ impl Command {
             | Self::LockNow
             | Self::ChangeFolderPassphrase
             | Self::StopLockingFolder
-            | Self::AgentConnections => Owner::Secure,
+            | Self::AgentConnections
+            | Self::ShowRecoveryKey => Owner::Secure,
             _ => Owner::Core,
         }
     }
@@ -505,6 +507,7 @@ commands! {
     ChangeFolderPassphrase,"Security","Change a locked folder's passphrase…", [], false;
     StopLockingFolder,"Security","Stop locking a folder (decrypt it)…", [], false;
     AgentConnections, "Agent",  "Agent connections…",             [], false;
+    ShowRecoveryKey,  "Security","Show a locked folder's recovery key…", [], false;
     // ---- 0.11 editor: new commands have no default keys (Settings → Commands binds them).
     Heading4,         "Format", "Heading 4",                      [], true;
     Heading5,         "Format", "Heading 5",                      [], true;

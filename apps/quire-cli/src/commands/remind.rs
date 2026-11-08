@@ -10,7 +10,6 @@
 use std::path::PathBuf;
 
 use quire_app::remind_bg::{self, Env, FiredLog};
-use quire_app::vault::Vault;
 
 use super::CliCommand;
 
@@ -51,7 +50,7 @@ fn remind(args: &[String]) -> Result<(), String> {
         }
         return Ok(());
     }
-    let vault = Vault::open_local(&root).map_err(|e| e.to_string())?;
+    let vault = quire_app::secure_state::open_vault(&root)?;
     let all = remind_bg::vault_reminders(&vault);
     let now = chrono::Local::now().naive_local();
     // Held from reading the list to saving it, so the app (or another run)

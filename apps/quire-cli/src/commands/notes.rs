@@ -7,7 +7,6 @@
 use quire_app::find::{FindOptions, compile, replace_in_string};
 use quire_app::intel::{Calculator, format_number};
 use quire_app::markdown::render;
-use quire_app::vault::Vault;
 
 use super::{CliCommand, find_note, load};
 
@@ -49,7 +48,7 @@ pub(crate) const COMMANDS: &[CliCommand] = &[
 
 fn replace(args: &[String]) -> Result<(), String> {
     let arg = |i: usize| super::arg(args, i);
-    let vault = Vault::open_local(arg(1)?).map_err(|e| e.to_string())?;
+    let vault = quire_app::secure_state::open_vault(std::path::Path::new(arg(1)?))?;
     let opts = FindOptions { regex: args.iter().any(|a| a == "--regex"), ..Default::default() };
     let write = args.iter().any(|a| a == "--write");
     let re = compile(arg(2)?, opts)?;
@@ -144,7 +143,7 @@ fn history(args: &[String]) -> Result<(), String> {
     let arg = |i: usize| super::arg(args, i);
     let (_, svc, _) = load(arg(1)?)?;
     let p = find_note(&svc.read(), arg(2)?)?;
-    let v = Vault::open_local(arg(1)?).map_err(|e| e.to_string())?;
+    let v = quire_app::secure_state::open_vault(std::path::Path::new(arg(1)?))?;
     for s in v.history(&p) {
         let when = quire_app::chrono_fmt(s.at_ms);
         let len = v.read_snapshot(&s).map_or(0, |t| t.chars().count());

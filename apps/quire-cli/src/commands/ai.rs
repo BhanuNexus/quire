@@ -15,7 +15,7 @@ use quire_ai::download::{Control, Downloader, Installed1, Progress, install_from
 use quire_app::Settings;
 use quire_app::agent::{Actor, AgentStore, SystemClock, Via};
 use quire_app::intel::chat::{CancelFlag, Locality};
-use quire_app::vault::{NotePath, Vault};
+use quire_app::vault::NotePath;
 use quire_assistant::wiki::{Ingest, IngestEvent, estimate, ingest};
 
 use super::{CliCommand, arg};
@@ -154,7 +154,7 @@ fn run_ai(args: &[String]) -> Result<(), String> {
 }
 
 fn run_ingest(args: &[String]) -> Result<(), String> {
-    let vault = Vault::open_local(arg(args, 1)?).map_err(|e| e.to_string())?;
+    let vault = quire_app::secure_state::open_vault(std::path::Path::new(arg(args, 1)?))?;
     let source = arg(args, 2)?;
     let yes = args.iter().any(|a| a == "--yes" || a == "-y");
     let dry = args.iter().any(|a| a == "--dry-run");

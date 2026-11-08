@@ -129,6 +129,11 @@ impl IndexService {
         let _ = self.sem_tx.send(SemMsg::Rebuild);
     }
 
+    /// Whether an embedder other than the built-in LSA is set.
+    pub fn has_semantic_builder(&self) -> bool {
+        self.sem_config.read().unwrap_or_else(std::sync::PoisonError::into_inner).builder.is_some()
+    }
+
     /// Why the configured embedder couldn't be used last time, if it failed.
     pub fn semantic_error(&self) -> Option<String> {
         self.sem_config.read().unwrap_or_else(std::sync::PoisonError::into_inner).last_error.clone()

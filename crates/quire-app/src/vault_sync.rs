@@ -409,6 +409,29 @@ fn load_state(root: &Path, cfg: &SyncConfig) -> SyncState {
     load_state_named(root, state_file(cfg))
 }
 
+/// 0.11: no plain text of a locked folder's notes stays in the sync state.
+/// A note that was plain there (before the folder was locked, or before it
+/// was moved in) is gone from its path once the delete is sent, and its
+/// text with it; what can stay longer is cleared here: the last synced text
+/// of deleted notes and of copies kept outside the selection, at paths in
+/// a locked folder.
+fn scrub_locked_text(vault: &Vault, state: &mut SyncState) {
+    let locked = |p: &str| !quire_sync::engine::is_attachment(p) && vault.locked_folder(&NotePath::new(p)).is_some();
+    for t in state.files.values_mut() {
+        if t.deleted && locked(&t.path) {
+            t.base.clear();
+        }
+        if let Some(k) = t.kept.as_mut().filter(|k| locked(&k.path)) {
+            k.base.clear();
+        }
+    }
+    for (p, left) in &mut state.left {
+        if locked(p) {
+            left.base = None;
+        }
+    }
+}
+
 fn save_state(root: &Path, cfg: &SyncConfig, state: &SyncState) -> Result<(), String> {
     save_state_named(root, state_file(cfg), state)
 }
@@ -928,6 +951,7 @@ impl Session {
         let (root, cfg) = (&self.root, &self.cfg);
         snapshot_reads(&mut self.store);
         let mut res = self.engine.sync(&mut self.store, self.link.transport(), &today());
+        scrub_locked_text(&self.store.vault, &mut self.engine.state);
         let _ = save_state(root, cfg, &self.engine.state);
         if res.is_ok() {
             self.store.remember_unselected();
@@ -1253,7 +1277,7 @@ impl SyncWorker {
 /// The vault, configuration and secrets that syncing `root` needs.
 fn open_parts(root: &Path) -> Result<(Vault, SyncConfig, String, VaultKey), String> {
     let cfg = SyncConfig::load(root).ok_or("Sync isn't set up for this vault. Run `quire-cli sync join` first.")?;
-    let vault = Vault::open_local(root).map_err(|e| e.to_string())?;
+    let vault = crate::secure_state::open_vault(root)?;
     let store = secrets::store();
     // A folder needs no token.
     let token = if cfg.folder.is_some() { Some(String::new()) } else { store.get(&token_name(&cfg.space)) };

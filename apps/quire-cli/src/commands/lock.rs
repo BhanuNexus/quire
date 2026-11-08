@@ -14,6 +14,7 @@
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
+use quire_app::vault::lock::zeroize::Zeroizing;
 use quire_app::vault::lock::{self, FolderKey, Kdf};
 use quire_app::vault::{NotePath, Vault};
 
@@ -27,6 +28,8 @@ pub(crate) const COMMANDS: &[CliCommand] = &[
         usage: "  quire-cli lock      <vault> <folder> [--recovery-key-file F] [--passphrase-file F]
                         lock a folder: its notes and files are encrypted on disk (a new one needs
                         --recovery-key-file F: the recovery key is written there, never shown); again: finish
+  quire-cli lock      <vault> <folder> --keep-both [--passphrase-file F]
+                        plain files next to an encrypted version: encrypt each under a new name
   quire-cli lock      <vault> <folder> --change-passphrase [--recovery-key] [--new-passphrase-file F]
                         a new passphrase (with the current one, or the recovery key)",
         run: lock_cmd,
@@ -36,7 +39,9 @@ pub(crate) const COMMANDS: &[CliCommand] = &[
         rank: 46,
         usage: "  quire-cli unlock    <vault> <folder> --check | --cat NOTE | --convert [--passphrase-file F]
                         test the passphrase, print one note, or decrypt the folder for good
-                        (its encrypted files go to .trash/)",
+                        (its encrypted files go to .trash/)
+  quire-cli unlock    <vault> <folder> --recovery-key-file F [--passphrase-file F]
+                        write the folder's recovery key to a new file F, readable only by you",
         run: unlock_cmd,
     },
     CliCommand {
@@ -60,7 +65,7 @@ fn open(args: &[String]) -> Result<(PathBuf, Vault), String> {
     if !root.is_dir() {
         return Err(format!("{} isn't a folder", root.display()));
     }
-    let v = Vault::open_local(&root).map_err(|e| e.to_string())?;
+    let v = quire_app::secure_state::open_vault(&root)?;
     Ok((root, v))
 }
 
@@ -72,8 +77,14 @@ fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
-fn passphrase(what: &str, args: &[String]) -> Result<String, String> {
-    read_secret(what, "QUIRE_LOCK_PASSPHRASE", flag(args, "--passphrase-file"))
+fn passphrase(what: &str, args: &[String]) -> Result<Zeroizing<String>, String> {
+    read_secret(what, "QUIRE_LOCK_PASSPHRASE", flag(args, "--passphrase-file")).map(Zeroizing::new)
+}
+
+/// Write a recovery key to a new file only this user can read.
+fn write_recovery_key(out: &Path, rk: &str) -> Result<(), String> {
+    let line = Zeroizing::new(format!("{rk}\n"));
+    quire_app::atomic::write_new_private(out, line.as_bytes()).map_err(|e| format!("couldn't write {}: {e}", out.display()))
 }
 
 fn lock_cmd(args: &[String]) -> Result<(), String> {
@@ -81,6 +92,16 @@ fn lock_cmd(args: &[String]) -> Result<(), String> {
     let folder = folder_arg(args)?;
     if has(args, "--change-passphrase") {
         return change_passphrase(&vault, &folder, args);
+    }
+    if has(args, "--keep-both") {
+        let pass = passphrase(&format!("Passphrase of {folder}/"), args)?;
+        vault.unlock(&folder, &pass).map_err(|e| e.to_string())?;
+        let kept = lock::keep_both(&vault, &folder).map_err(|e| e.to_string())?;
+        for k in &kept {
+            println!("kept the plain copy as {k} (encrypted)");
+        }
+        println!("{} plain cop{} encrypted under new names.", kept.len(), if kept.len() == 1 { "y" } else { "ies" });
+        return Ok(());
     }
     if let Some(why) = lock::refuse_to_lock(&vault, &folder) {
         return Err(why);
@@ -108,7 +129,7 @@ fn lock_cmd(args: &[String]) -> Result<(), String> {
             && std::env::var_os("QUIRE_LOCK_PASSPHRASE").is_none()
         {
             let again = prompt_hidden("Type it again: ")?;
-            if again != p {
+            if *Zeroizing::new(again) != *p {
                 return Err("The passphrases differ; nothing was changed.".into());
             }
         }
@@ -116,12 +137,21 @@ fn lock_cmd(args: &[String]) -> Result<(), String> {
     } else {
         passphrase(&format!("Passphrase of {folder}/"), args)?
     };
-    let report = lock::lock_folder(&vault, &folder, Some(&pass), Kdf::DEFAULT, now_ms()).map_err(|e| e.to_string())?;
-    if let (Some(out), Some(rk)) = (&out, &report.recovery_key) {
-        quire_app::atomic::write_new_private(out, format!("{rk}\n").as_bytes()).map_err(|e| {
-            format!("{folder}/ is locked, but the recovery key couldn't be written to {}: {e}. Keep the passphrase safe.", out.display())
+    // The key file first; its recovery key is written out before any file is
+    // converted, so a conversion that stops can't lose it.
+    let rk = lock::begin_lock(&vault, &folder, Some(&pass), Kdf::DEFAULT, now_ms()).map_err(|e| e.to_string())?.map(Zeroizing::new);
+    if let (Some(out), Some(rk)) = (&out, &rk) {
+        write_recovery_key(out, rk).map_err(|e| {
+            format!(
+                "{folder}/ has its key file now, but the recovery key wasn't saved: {e}. Write it with `quire-cli unlock {} {folder} --recovery-key-file F`, then run this again.",
+                root.display()
+            )
         })?;
     }
+    let report = lock::lock_folder(&vault, &folder, Some(&pass), Kdf::DEFAULT, now_ms()).map_err(|e| {
+        let saved = out.as_ref().map(|o| format!(" The recovery key is in {}.", o.display())).unwrap_or_default();
+        format!("{e}. Run the same command again to finish.{saved}")
+    })?;
     // What this device kept that came from the plain notes.
     let device = quire_app::device::this_device();
     let store = quire_app::agent::AgentStore::open(&vault, device, std::sync::Arc::new(quire_app::agent::SystemClock));
@@ -137,10 +167,26 @@ fn lock_cmd(args: &[String]) -> Result<(), String> {
     if gone > 0 {
         println!("Removed {gone} agent suggestion{} about its notes (they held their text).", plural(gone));
     }
+    if !report.conflicts.is_empty() {
+        println!(
+            "{} plain file{} next to an encrypted version with other content {} left as {} (the encrypted one is the note):",
+            report.conflicts.len(),
+            plural(report.conflicts.len()),
+            if report.conflicts.len() == 1 { "was" } else { "were" },
+            if report.conflicts.len() == 1 { "it is" } else { "they are" }
+        );
+        for c in &report.conflicts {
+            println!("  {c}");
+        }
+        println!("Keep both with `quire-cli lock {} {folder} --keep-both`.", root.display());
+    }
     if let Some(out) = out {
         println!("The recovery key is in {} (readable only by you). Keep it somewhere safe and delete it here.", out.display());
     }
-    println!("Copies made before locking (backups, git history, other devices' history) aren't changed.");
+    println!(
+        "Copies made before locking aren't changed: backups, git history, a cloud folder's version history, other devices' history, \
+         and notes already in .trash/ (empty the trash to remove those)."
+    );
     Ok(())
 }
 
@@ -150,24 +196,56 @@ fn plural(n: usize) -> &'static str {
 
 fn change_passphrase(vault: &Vault, folder: &str, args: &[String]) -> Result<(), String> {
     let key = if has(args, "--recovery-key") {
-        let rk = read_secret("Recovery key", "QUIRE_LOCK_RECOVERY_KEY", flag(args, "--recovery-key-file"))?;
-        FolderKey::from_recovery_key(&rk).map_err(|e| e.to_string())?
+        let rk = Zeroizing::new(read_secret("Recovery key", "QUIRE_LOCK_RECOVERY_KEY", flag(args, "--recovery-key-file"))?);
+        let key = FolderKey::from_recovery_key(&rk).map_err(|e| e.to_string())?;
+        // Checked before anything is written (against the key file, or the folder's encrypted files).
+        vault.unlock_with_key(folder, key.clone()).map_err(|e| e.to_string())?;
+        key
     } else {
         let (_, kf) = vault.key_file(folder).map_err(|e| e.to_string())?;
         let cur = passphrase(&format!("Current passphrase of {folder}/"), args)?;
         kf.unwrap_key(&cur).map_err(|e| e.to_string())?
     };
-    let new = read_secret("New passphrase (8 characters or more)", "QUIRE_LOCK_NEW_PASSPHRASE", flag(args, "--new-passphrase-file"))?;
+    let new = Zeroizing::new(read_secret(
+        "New passphrase (8 characters or more)",
+        "QUIRE_LOCK_NEW_PASSPHRASE",
+        flag(args, "--new-passphrase-file"),
+    )?);
     vault.change_passphrase(folder, Some(key), &new, now_ms()).map_err(|e| e.to_string())?;
-    println!("{folder}/ has a new passphrase. Its files didn't change; the recovery key still works.");
+    println!(
+        "{folder}/ has a new passphrase. Its files didn't change: the recovery key still works, and so does an old copy of the key file \
+         (a backup, git history) with the old passphrase."
+    );
     Ok(())
 }
 
 fn unlock_cmd(args: &[String]) -> Result<(), String> {
     let (_, vault) = open(args)?;
     let folder = folder_arg(args)?;
-    let (f, _) = vault.key_file(&folder).map_err(|_| format!("{folder}/ isn't a locked folder"))?;
+    let (f, kf) = vault.key_file(&folder).map_err(|_| {
+        if vault.known_locked().contains(&folder) {
+            quire_app::secure_state::key_missing_text(&folder)
+        } else {
+            format!("{folder}/ isn't a locked folder")
+        }
+    })?;
     let pass = passphrase(&format!("Passphrase of {folder}/"), args)?;
+    if let Some(out) = flag(args, "--recovery-key-file").filter(|_| !has(args, "--convert")) {
+        let out = PathBuf::from(out);
+        if out.exists() {
+            return Err(format!("{} already exists; pick a new file for the recovery key", out.display()));
+        }
+        let key = kf.unwrap_key(&pass).map_err(|e| match e {
+            lock::LockError::WrongPassphrase => "Wrong passphrase.".to_string(),
+            e => e.to_string(),
+        })?;
+        write_recovery_key(&out, &Zeroizing::new(key.recovery_key()))?;
+        println!(
+            "The recovery key of {folder}/ is in {} (readable only by you). Keep it somewhere safe and delete it here.",
+            out.display()
+        );
+        return Ok(());
+    }
     if !f.unlocking {
         vault.unlock(&folder, &pass).map_err(|e| match e {
             quire_app::vault::VaultError::Locked(_) => "Wrong passphrase.".to_string(),
@@ -223,16 +301,30 @@ pub(crate) fn status(root: &Path, vault: &Vault) -> String {
         let files = vault.locked_files(path);
         let notes = files.iter().filter(|p| p.is_markdown()).count();
         let _ = write!(s, "  {path}/  {notes} note{}, {} other file{}", plural(notes), files.len() - notes, plural(files.len() - notes));
-        if f.folder.unlocking {
+        if f.key_missing {
+            let _ =
+                write!(s, "  — its key file ({}) is missing: restore it, or set a new passphrase with the recovery key", lock::KEY_FILE);
+        } else if f.folder.unlocking {
             let _ = write!(s, "  — being decrypted for good; finish with `quire-cli unlock {} {path} --convert`", root.display());
         } else if let Some(l) = left.iter().find(|l| &l.folder == path) {
-            let _ = write!(
-                s,
-                "  — {} file{} not encrypted yet; finish with `quire-cli lock {} {path}`",
-                l.files.len(),
-                plural(l.files.len()),
-                root.display()
-            );
+            if !l.files.is_empty() {
+                let _ = write!(
+                    s,
+                    "  — {} file{} not encrypted yet; finish with `quire-cli lock {} {path}`",
+                    l.files.len(),
+                    plural(l.files.len()),
+                    root.display()
+                );
+            }
+            if !l.conflicts.is_empty() {
+                let _ = write!(
+                    s,
+                    "  — {} plain file{} next to an encrypted version; keep both with `quire-cli lock {} {path} --keep-both`",
+                    l.conflicts.len(),
+                    plural(l.conflicts.len()),
+                    root.display()
+                );
+            }
         }
         s.push('\n');
     }

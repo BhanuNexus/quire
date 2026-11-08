@@ -353,6 +353,11 @@ impl Workspace {
     }
 
     pub(crate) fn apply_embedder(&self) {
+        // 0.11: with AI off for the vault, no embedder at all (nothing is sent).
+        if crate::secure_state::ai_off(self) {
+            self.index.set_semantic_builder(None);
+            return;
+        }
         let cache_dir = self.vault_root().map(|r| r.join(".quire").join("cache"));
         if self.settings.embeddings == "local"
             && self.settings.ai_local.embeddings_on()

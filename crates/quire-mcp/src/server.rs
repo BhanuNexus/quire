@@ -190,7 +190,7 @@ impl Server {
     }
 
     pub fn open_with(root: &str, mut config: ServerConfig) -> Result<Self, String> {
-        let vault = Vault::open_local(root).map_err(|e| e.to_string())?;
+        let vault = quire_app::secure_state::open_vault(Path::new(root))?;
         let watcher = VaultWatcher::start(&PathBuf::from(root).canonicalize().map_err(|e| e.to_string())?).ok();
         if config.state_dir.is_none() {
             config.state_dir = instructions::state_dir(&vault);
