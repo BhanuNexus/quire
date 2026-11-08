@@ -300,6 +300,39 @@ mod tests {
         assert!(km.duplicates().is_empty(), "the defaults have no duplicates");
     }
 
+    /// 0.11 review L2: no default shortcut is one the checker says can't
+    /// work on some platform, and the 0.11 ones have no conflict at all
+    /// (Ctrl+Alt+T opens a terminal on Linux, Option+N types ñ on a Mac,
+    /// AltGr+Shift+L types Ł in Poland).
+    #[test]
+    fn defaults_work_everywhere() {
+        let km = Keymap::new(&CommandSettings::default());
+        // Older defaults the checker flags on one platform, kept as they were.
+        let known = [
+            Command::AddCursorAbove,
+            Command::AddCursorBelow,
+            Command::NextTab,
+            Command::PrevTab,
+            Command::InlineCode,
+            Command::FindReplace,
+        ];
+        let flagged: Vec<String> = km
+            .bindings()
+            .iter()
+            .filter(|(combo, action)| km.conflicts(combo, action).iter().any(Conflict::blocks))
+            .filter(|(_, action)| !matches!(action, Action::Command(c) if known.contains(c)))
+            .map(|(combo, action)| format!("{} for {action:?}", combo.label(false)))
+            .collect();
+        assert!(flagged.is_empty(), "{flagged:?}");
+        for cmd in [Command::NewTask, Command::StartStopTimer, Command::LockNow] {
+            let keys = km.keys_of(cmd);
+            assert!(!keys.is_empty(), "{cmd:?} has a key");
+            for combo in keys {
+                assert_eq!(km.conflicts(&combo, &Action::Command(cmd)), vec![], "{cmd:?}: {}", combo.label(false));
+            }
+        }
+    }
+
     #[test]
     fn actions_round_trip_through_ids() {
         for a in [Action::Command(Command::InsertTable), Action::Macro("Clean up".into())] {

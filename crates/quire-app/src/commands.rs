@@ -482,8 +482,8 @@ commands! {
     ConvertTaskToNote,"Format", "Convert task to note",           [], true;
     ConvertToView,    "Format", "Convert to quire-view",          [], true;
     ConvertNoteToTask,"Format", "Convert task note back to a task line", [], true;
-    NewTask,          "Note",   "New task…",                      [alt("N")], false;
-    StartStopTimer,   "Go",     "Start or stop the timer on this task", [cmd_alt("T")], false;
+    NewTask,          "Note",   "New task…",                      [cmd_shift("K")], false;
+    StartStopTimer,   "Go",     "Start or stop the timer on this task", [cmd_shift("M")], false;
     StartPomodoro,    "Go",     "Start a pomodoro on this task",  [], false;
     StopTimer,        "Go",     "Stop the task timer",            [], false;
     TimeReport,       "Go",     "Time this week",                 [], false;
@@ -501,7 +501,7 @@ commands! {
     // ---- 0.11 security
     LockFolder,       "Security","Lock a folder (encrypt it)…",   [], false;
     UnlockFolder,     "Security","Unlock a locked folder…",       [], false;
-    LockNow,          "Security","Lock locked folders now",       [cmd_alt_shift("L")], false;
+    LockNow,          "Security","Lock locked folders now",       [cmd_shift("B")], false;
     ChangeFolderPassphrase,"Security","Change a locked folder's passphrase…", [], false;
     StopLockingFolder,"Security","Stop locking a folder (decrypt it)…", [], false;
     AgentConnections, "Agent",  "Agent connections…",             [], false;
