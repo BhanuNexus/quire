@@ -1129,7 +1129,8 @@ impl QuireApp {
             && !ctx.is_being_dragged(crate::view::editor_id(doc))
         {
             let keymap = Keymap::new(&self.ws.settings.commands);
-            let pressed = crate::toolbar_ui::floating(&ctx, at, &keymap, pal, &mut self.features.toolbar);
+            let items = self.ws.settings.toolbar.floating_items();
+            let pressed = crate::toolbar_ui::floating(&ctx, at, &items, &keymap, pal, &mut self.features.toolbar);
             self.toolbar_pressed(pressed);
         }
         // What panels and widgets asked for while drawing.

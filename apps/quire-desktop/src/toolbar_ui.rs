@@ -3,7 +3,8 @@
 //! The formatting toolbar (0.11): a row of buttons above the editor and a
 //! compact one next to the selection. Both are off by default (View:
 //! Formatting toolbar, Settings → Toolbar). A button runs a command or a
-//! macro; the app sends formatting to every cursor as one undo step.
+//! macro; the app sends formatting to every cursor as one undo step. Each
+//! bar has its own buttons, customised the same way (0.12 for the small one).
 //!
 //! Keyboard: F10 (Move focus to the formatting toolbar) puts the focus on
 //! the first button, even while the toolbar is off; ← → (and Tab) Home End
@@ -13,7 +14,6 @@ use egui::{Key, Modifiers, RichText, Ui};
 use quire_app::Workspace;
 use quire_app::keymap::{Action, Keymap};
 use quire_app::settings::ToolbarItem;
-use quire_app::settings::toolbar::FLOATING_ITEMS;
 
 use crate::theme::Palette;
 
@@ -265,10 +265,23 @@ pub(crate) fn bar(ui: &mut Ui, ws: &Workspace, keymap: &Keymap, pal: &Palette, s
     pressed
 }
 
-/// The compact toolbar above the selection (`at` is the selection's start).
-pub(crate) fn floating(ctx: &egui::Context, at: egui::Rect, keymap: &Keymap, pal: &Palette, st: &mut ToolbarUi) -> Option<Pressed> {
-    let items: Vec<ToolbarItem> = FLOATING_ITEMS.iter().map(|c| ToolbarItem::new(c)).collect();
-    let width = 32.0 * items.len() as f32;
+/// The compact toolbar above the selection (`at` is the selection's
+/// start), with `items` (0.12: `[toolbar] floating_items`, Settings →
+/// Toolbar). No buttons: no bar.
+pub(crate) fn floating(
+    ctx: &egui::Context,
+    at: egui::Rect,
+    items: &[ToolbarItem],
+    keymap: &Keymap,
+    pal: &Palette,
+    st: &mut ToolbarUi,
+) -> Option<Pressed> {
+    if items.is_empty() {
+        st.last_floating = None;
+        return None;
+    }
+    // Its width as last drawn (icons can be words), else an estimate.
+    let width = st.last_floating.map_or(32.0 * items.len() as f32, |(_, bar)| bar.width());
     let screen = ctx.content_rect();
     let x = at.left().clamp(screen.left() + 4.0, (screen.right() - width - 8.0).max(screen.left() + 4.0));
     let above = at.top() - 40.0;
@@ -279,7 +292,7 @@ pub(crate) fn floating(ctx: &egui::Context, at: egui::Rect, keymap: &Keymap, pal
         .show(ctx, |ui| {
             egui::Frame::popup(ui.style())
                 .inner_margin(egui::Margin::symmetric(4, 2))
-                .show(ui, |ui| ui.horizontal(|ui| buttons(ui, &items, keymap, pal, st, "floating")).inner)
+                .show(ui, |ui| ui.horizontal(|ui| buttons(ui, items, keymap, pal, st, "floating")).inner)
                 .inner
         });
     st.last_floating = Some((at, shown.response.rect));
@@ -292,7 +305,7 @@ mod tests {
 
     #[test]
     fn every_default_button_has_an_icon_and_a_title() {
-        for c in quire_app::settings::toolbar::DEFAULT_ITEMS.iter().chain(FLOATING_ITEMS) {
+        for c in quire_app::settings::toolbar::DEFAULT_ITEMS.iter().chain(quire_app::settings::toolbar::FLOATING_ITEMS) {
             let item = ToolbarItem::new(c);
             if item.is_separator() {
                 continue;

@@ -12,7 +12,7 @@
 use egui::{Key, RichText, Ui};
 use quire_app::keymap::{self, Action, Conflict, Keymap};
 use quire_app::settings::commands::macro_id;
-use quire_app::settings::toolbar::SEPARATOR;
+use quire_app::settings::toolbar::{Bar, SEPARATOR};
 use quire_app::settings::{Macro, ToolbarItem};
 use quire_app::{COMMANDS, KeyCombo, Workspace};
 
@@ -30,6 +30,16 @@ pub(crate) struct CommandsUi {
     pending: Option<(Action, KeyCombo, bool, Vec<Conflict>)>,
     /// Settings → Toolbar: what to look for among the commands to add.
     add_pick: String,
+    /// Settings → Toolbar: which bar's buttons are being edited (0.12).
+    bar: Bar,
+}
+
+impl CommandsUi {
+    /// Settings → Toolbar edits the small toolbar's buttons (layout checks).
+    #[cfg(test)]
+    pub(crate) const fn edit_floating_bar(&mut self) {
+        self.bar = Bar::Floating;
+    }
 }
 
 const RECORDING: &str = "quire-recording-keys";
@@ -293,7 +303,7 @@ fn rename_macro(ws: &mut Workspace, old: &str, new: &str) {
             p.clone_from(&new_id);
         }
     }
-    if let Some(items) = &mut s.toolbar.items {
+    for items in s.toolbar.all_stored_mut() {
         for it in items.iter_mut().filter(|i| i.command == old_id) {
             it.command.clone_from(&new_id);
         }
@@ -396,7 +406,7 @@ fn macros(ui: &mut Ui, ws: &mut Workspace, st: &mut CommandsUi, keymap: &Keymap,
         let id = macro_id(&name);
         ws.settings.commands.keys.remove(&id);
         ws.settings.commands.pinned.retain(|p| *p != id);
-        if let Some(items) = &mut ws.settings.toolbar.items {
+        for items in ws.settings.toolbar.all_stored_mut() {
             items.retain(|t| t.command != id);
         }
     }
@@ -423,11 +433,20 @@ fn toolbar_settings(ui: &mut Ui, ws: &mut Workspace, st: &mut CommandsUi, pal: &
     ui.checkbox(&mut t.show, RichText::new("Formatting toolbar above the editor").strong());
     note(ui, pal, "Also View: Formatting toolbar. F10 moves the keyboard to it (← → to move, Enter to press, Escape to go back).");
     ui.checkbox(&mut t.floating, RichText::new("Small toolbar next to selected text").strong());
-    note(ui, pal, "Bold, italic, strikethrough, highlight, code, math and links, shown while text is selected.");
+    note(
+        ui,
+        pal,
+        "Shown while text is selected. Its buttons are its own: bold, italic, strikethrough, highlight, code, math and links at first.",
+    );
     ui.add_space(8.0);
     ui.label(RichText::new("BUTTONS").size(11.0).color(pal.muted).strong());
+    ui.horizontal_wrapped(|ui| {
+        ui.selectable_value(&mut st.bar, Bar::Main, "Above the editor");
+        ui.selectable_value(&mut st.bar, Bar::Floating, "Next to selected text");
+    });
     note(ui, pal, "Any command or macro can be a button. The icon can be an emoji or a few letters; the label is the tooltip.");
-    let mut items = ws.settings.toolbar.items();
+    let bar = st.bar;
+    let mut items = ws.settings.toolbar.items_of(bar);
     let before = items.clone();
     let mut op: Option<(usize, i32)> = None;
     let n = items.len();
@@ -478,10 +497,11 @@ fn toolbar_settings(ui: &mut Ui, ws: &mut Workspace, st: &mut CommandsUi, pal: &
         }
     }
     ui.add_space(6.0);
-    let mut choices = vec![
-        (SEPARATOR.to_string(), "Separator".to_string()),
-        (crate::toolbar_ui::HEADING_MENU.to_string(), "Heading level menu".to_string()),
-    ];
+    let mut choices = vec![(SEPARATOR.to_string(), "Separator".to_string())];
+    // The heading menu opens a menu, which the small bar can't hold open.
+    if bar == Bar::Main {
+        choices.push((crate::toolbar_ui::HEADING_MENU.to_string(), "Heading level menu".to_string()));
+    }
     choices.extend(ws.settings.commands.macros.iter().map(|m| (macro_id(&m.name), format!("Macro: {}", m.name))));
     choices.extend(command_choices(ws));
     let w = ui.available_width().min(240.0);
@@ -493,11 +513,11 @@ fn toolbar_settings(ui: &mut Ui, ws: &mut Workspace, st: &mut CommandsUi, pal: &
         items.push(ToolbarItem::new(&id));
     }
     if items != before {
-        ws.settings.toolbar.items = Some(items);
+        *ws.settings.toolbar.stored_mut(bar) = Some(items);
     }
     ui.add_space(6.0);
-    if ws.settings.toolbar.items.is_some() && ui.button("Reset to the default buttons").clicked() {
-        ws.settings.toolbar.items = None;
+    if ws.settings.toolbar.stored_mut(bar).is_some() && ui.button("Reset to the default buttons").clicked() {
+        *ws.settings.toolbar.stored_mut(bar) = None;
     }
 }
 
@@ -525,10 +545,12 @@ mod tests {
         ws.settings.commands.keys.insert("macro:A".into(), vec!["F9".into()]);
         ws.settings.commands.pinned.push("macro:A".into());
         ws.settings.toolbar.items = Some(vec![ToolbarItem::new("macro:A")]);
+        ws.settings.toolbar.floating_items = Some(vec![ToolbarItem::new("Bold"), ToolbarItem::new("macro:A")]);
         rename_macro(&mut ws, "A", "B");
         ws.settings.commands.macros[0].name = "B".into();
         assert_eq!(Keymap::new(&ws.settings.commands).keys(&Action::Macro("B".into())), vec![KeyCombo::parse("F9").unwrap()]);
         assert_eq!(ws.settings.commands.pinned, ["macro:B"]);
         assert_eq!(ws.settings.toolbar.items()[0].command, "macro:B");
+        assert_eq!(ws.settings.toolbar.floating_items()[1].command, "macro:B", "the small bar's button too");
     }
 }

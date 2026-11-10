@@ -226,6 +226,46 @@ fn feature_tabs_keep_their_size() {
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
+/// 0.12: Settings → Toolbar while the small toolbar's own buttons are
+/// edited keeps its size, with the defaults and with a custom list.
+#[test]
+fn toolbar_settings_for_the_floating_bar_keep_their_size() {
+    let tab = crate::registry::SETTINGS_TABS.iter().find(|t| t.id == "toolbar").expect("the Toolbar tab");
+    let mut failures = Vec::new();
+    for custom in [false, true] {
+        for width in [220.0_f32, 480.0] {
+            let mut ws = workspace_with(false);
+            if custom {
+                ws.settings.toolbar.floating_items =
+                    Some(vec![quire_app::settings::ToolbarItem::new("Bold"), quire_app::settings::ToolbarItem::new("Save")]);
+            }
+            let mut fui = crate::registry::FeatureUi::default();
+            fui.commands.edit_floating_bar();
+            let ctx = egui::Context::default();
+            theme::install_fonts(&ctx);
+            ctx.global_style_mut(theme::style);
+            let mut sizes = Vec::new();
+            for frame in 0..30 {
+                let mut out = ctx.run_ui(input(Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 820.0)), frame), |ui| {
+                    let r = ui
+                        .allocate_ui(Vec2::new(width, 700.0), |ui| {
+                            let _ = (tab.show)(ui, &mut ws, &mut fui, &theme::DARK);
+                        })
+                        .response
+                        .rect;
+                    sizes.push(r.size());
+                });
+                out.textures_delta.clear();
+            }
+            if sizes[10..].iter().any(|s| (s.y - sizes[10].y).abs() > 0.5 || s.x > width + 0.5) {
+                failures.push(format!("custom {custom} at width {width}: {:?}", &sizes[10..]));
+            }
+            assert_eq!(ws.settings.toolbar.items, None, "editing the small bar leaves the main one alone");
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
 /// Every piece of text drawn in `out`.
 fn drawn_text(out: &egui::FullOutput) -> String {
     fn walk(shape: &egui::Shape, into: &mut String) {
@@ -344,7 +384,8 @@ fn toolbars_keep_their_size_and_fit_the_window() {
             let mut st = crate::toolbar_ui::ToolbarUi::default();
             for frame in 0..5 {
                 let mut out = ctx.run_pass(input(screen, frame), |ctx| {
-                    let _ = crate::toolbar_ui::floating(ctx, sel, &keymap, &theme::DARK, &mut st);
+                    let items = quire_app::settings::toolbar::default_floating_items();
+                    let _ = crate::toolbar_ui::floating(ctx, sel, &items, &keymap, &theme::DARK, &mut st);
                 });
                 out.textures_delta.clear();
             }
