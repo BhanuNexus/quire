@@ -63,11 +63,19 @@ impl SettingsState {
             ("settings: sync", SettingsTab::Sync),
             ("settings: about", SettingsTab::About),
         ];
-        builtin
+        let mut all: Vec<(&'static str, Self)> = builtin
             .into_iter()
             .chain(crate::registry::SETTINGS_TABS.iter().map(|t| ("settings: feature tab", SettingsTab::Feature(t.id))))
             .map(|(name, tab)| (name, Self { tab, force_tab: true, ..Default::default() }))
-            .collect()
+            .collect();
+        // 0.12: the S3 and WebDAV forms, with a long error and a test result.
+        for (name, via) in [("settings: sync s3", SyncVia::S3), ("settings: sync webdav", SyncVia::WebDav)] {
+            let mut sync = SyncForm { via, ..Default::default() };
+            sync.test_result = Some(Err("The storage refused the access key: SignatureDoesNotMatch (The request signature we calculated does not match the signature you provided.)".into()));
+            sync.mode = SyncMode::Join;
+            all.push((name, Self { tab: SettingsTab::Sync, force_tab: true, sync, ..Default::default() }));
+        }
+        all
     }
 }
 
@@ -97,7 +105,20 @@ enum SyncVia {
     #[default]
     Folder,
     Server,
+    /// 0.12: AWS S3, Cloudflare R2, Backblaze B2, Wasabi, MinIO…
+    S3,
+    /// 0.12: Nextcloud, ownCloud, Fastmail, Synology, rclone…
+    WebDav,
 }
+
+/// S3 providers: a starting endpoint and region.
+const S3_PRESETS: &[(&str, &str, &str)] = &[
+    ("AWS", "https://s3.us-east-1.amazonaws.com", "us-east-1"),
+    ("Cloudflare R2", "https://ACCOUNT_ID.r2.cloudflarestorage.com", "auto"),
+    ("Backblaze B2", "https://s3.us-west-004.backblazeb2.com", "us-west-004"),
+    ("Wasabi", "https://s3.us-east-1.wasabisys.com", "us-east-1"),
+    ("MinIO", "http://127.0.0.1:9000", "us-east-1"),
+];
 
 #[derive(Default)]
 struct SyncForm {
@@ -120,6 +141,90 @@ struct SyncForm {
     confirm_stop: bool,
     /// "Also sync vault settings…" turned on: the sync server is being asked.
     shared_pending: Option<(bool, Receiver<Result<(), String>>)>,
+    // 0.12: S3-compatible storage and WebDAV.
+    s3_endpoint: String,
+    s3_region: String,
+    s3_bucket: String,
+    s3_prefix: String,
+    s3_access_key: String,
+    s3_secret: String,
+    dav_url: String,
+    dav_user: String,
+    dav_password: String,
+    /// `http://` to a computer on the network.
+    allow_http: bool,
+    /// "Test connection" running, and its last result.
+    test: Option<Receiver<Result<String, String>>>,
+    test_result: Option<Result<String, String>>,
+    /// "Update credentials" open, for a vault set up with S3 or WebDAV.
+    edit_credentials: bool,
+    /// New credentials being checked and saved.
+    saving_credentials: Option<Receiver<Result<String, String>>>,
+}
+
+impl SyncForm {
+    fn remote_secret(&self, s3: bool) -> quire_app::vault_sync::RemoteSecret {
+        use quire_app::vault_sync::RemoteSecret;
+        if s3 {
+            RemoteSecret::S3 {
+                access_key: self.s3_access_key.trim().to_string(),
+                secret_key: self.s3_secret.trim().to_string(),
+                session_token: None,
+            }
+        } else {
+            RemoteSecret::Webdav { user: self.dav_user.trim().to_string(), password: self.dav_password.clone() }
+        }
+    }
+
+    fn clear_secrets(&mut self) {
+        self.s3_secret.clear();
+        self.dav_password.clear();
+        self.token.clear();
+    }
+
+    /// After sync was set up: secrets and the last test go.
+    fn done_setting_up(&mut self) {
+        self.clear_secrets();
+        self.test_result = None;
+    }
+
+    /// Start "Test connection" for `target` in the background.
+    fn start_test(&mut self, target: quire_app::vault_sync::SyncTarget) {
+        self.test_result = None;
+        self.test = Some(Workspace::sync_test_in_background(target));
+    }
+
+    /// The test's result, once it's in; asks for repaints meanwhile.
+    fn poll_test(&mut self, ui: &Ui) {
+        if let Some(rx) = &self.test {
+            match rx.try_recv() {
+                Ok(r) => {
+                    self.test_result = Some(r);
+                    self.test = None;
+                }
+                Err(crossbeam_channel::TryRecvError::Empty) => ui.ctx().request_repaint_after(std::time::Duration::from_millis(100)),
+                Err(crossbeam_channel::TryRecvError::Disconnected) => self.test = None,
+            }
+        }
+    }
+
+    fn show_test(&self, ui: &mut Ui, pal: &Palette) {
+        if self.test.is_some() {
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new().size(12.0));
+                ui.label(RichText::new("Testing…").size(12.0).color(pal.muted));
+            });
+        }
+        match &self.test_result {
+            Some(Ok(m)) => {
+                ui.add(egui::Label::new(RichText::new(m).size(12.5).color(pal.accent)).wrap());
+            }
+            Some(Err(e)) => {
+                ui.add(egui::Label::new(RichText::new(e).size(12.5).color(pal.danger)).wrap());
+            }
+            None => {}
+        }
+    }
 }
 
 /// Returns whether the dialog should close, and a command a tab asked for.
@@ -287,7 +392,10 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
                 }
             });
             ui.end_row();
-            if let Some(dir) = &cfg.folder {
+            if cfg.remote.is_some() {
+                ui.label("Storage");
+                ui.add(egui::Label::new(cfg.transport_label()).wrap());
+            } else if let Some(dir) = &cfg.folder {
                 ui.label("Sync folder");
                 ui.add(egui::Label::new(dir.display().to_string()).wrap());
             } else {
@@ -327,6 +435,9 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
         {
             ui.add(egui::Label::new(RichText::new(k).monospace()).wrap());
         }
+        if let Some(profile) = cfg.remote.clone() {
+            remote_configured(ui, f, ws, &cfg, &profile, pal);
+        }
         ui.add_space(4.0);
         let mut shared = f.shared_pending.as_ref().map_or(cfg.shared_state, |(on, _)| *on);
         if let Some((on, rx)) = &f.shared_pending {
@@ -358,7 +469,9 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
             }
         });
         ui.label(
-            RichText::new(if cfg.folder.is_some() {
+            RichText::new(if cfg.remote.is_some() {
+                "Settings travel with the notes, to every device of this vault."
+            } else if cfg.folder.is_some() {
                 "Devices still on Quire 0.8 keep syncing notes; settings reach devices on 0.9 or later."
             } else {
                 "Every device needs Quire 0.9 or later."
@@ -367,7 +480,9 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
             .color(pal.muted),
         );
         ui.label(
-            RichText::new(if cfg.folder.is_some() {
+            RichText::new(if cfg.remote.is_some() {
+                "Stopping leaves your notes here as they are, and the storage copy for your other devices."
+            } else if cfg.folder.is_some() {
                 "Stopping leaves your notes here as they are, and the sync folder for your other devices."
             } else {
                 "Stopping leaves your notes here as they are, and the server copy for your other devices."
@@ -391,9 +506,17 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
     );
     ui.add_space(4.0);
     ui.horizontal_wrapped(|ui| {
-        ui.selectable_value(&mut f.via, SyncVia::Folder, "Through a folder you already sync (free)");
-        ui.selectable_value(&mut f.via, SyncVia::Server, "Through a Quire Sync server");
+        let before = f.via;
+        ui.selectable_value(&mut f.via, SyncVia::Folder, "A synced folder (free)");
+        ui.selectable_value(&mut f.via, SyncVia::Server, "Quire Sync server");
+        ui.selectable_value(&mut f.via, SyncVia::S3, "S3-compatible storage");
+        ui.selectable_value(&mut f.via, SyncVia::WebDav, "WebDAV");
+        if f.via != before {
+            f.spaces = None;
+            f.test_result = None;
+        }
     });
+    f.poll_test(ui);
     match f.via {
         SyncVia::Folder => {
             ui.label(
@@ -407,6 +530,23 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
         }
         SyncVia::Server => {
             ui.hyperlink_to(RichText::new("Run your own server").size(12.5), format!("{SOURCE_URL}/blob/main/docs/self-hosting.md"));
+        }
+        SyncVia::S3 | SyncVia::WebDav => {
+            ui.label(
+                RichText::new(if f.via == SyncVia::S3 {
+                    "AWS S3, Cloudflare R2, Backblaze B2, Wasabi, MinIO or any S3-compatible bucket. The storage sees only \
+                     encrypted files with random names. Use a key that can reach only this bucket."
+                } else {
+                    "Nextcloud, ownCloud, Fastmail, Synology, rclone or any WebDAV folder. The server sees only encrypted \
+                     files with random names. Use an app password if the server has them."
+                })
+                .size(12.0)
+                .color(pal.muted),
+            );
+            ui.hyperlink_to(
+                RichText::new("Setup, permissions and costs per provider").size(12.5),
+                format!("{SOURCE_URL}/blob/main/docs/sync-backends.md"),
+            );
         }
     }
     ui.add_space(6.0);
@@ -455,6 +595,20 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
                 ui.add(egui::TextEdit::singleline(&mut f.token).password(true).desired_width(320.0));
                 ui.end_row();
             }
+            SyncVia::S3 => s3_fields(ui, f, pal),
+            SyncVia::WebDav => dav_fields(ui, f),
+        }
+        if matches!(f.via, SyncVia::S3 | SyncVia::WebDav) {
+            ui.label("");
+            ui.vertical(|ui| {
+                ui.checkbox(&mut f.allow_http, "Allow http:// (a server on your own network only)");
+                if ui.add_enabled(f.test.is_none() && remote_ready(f), egui::Button::new("Test connection")).clicked() {
+                    let t = sync_target(f);
+                    f.start_test(t);
+                }
+                f.show_test(ui, pal);
+            });
+            ui.end_row();
         }
         ui.label("This device");
         ui.add(egui::TextEdit::singleline(&mut f.device).desired_width(320.0));
@@ -477,17 +631,23 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
             SyncMode::Join => {
                 ui.label("Vault");
                 ui.vertical(|ui| {
-                    let find = if f.via == SyncVia::Folder { "Find vaults in the folder" } else { "Find vaults on the server" };
+                    let find = match f.via {
+                        SyncVia::Folder => "Find vaults in the folder",
+                        SyncVia::Server => "Find vaults on the server",
+                        SyncVia::S3 | SyncVia::WebDav => "Find vaults in the storage",
+                    };
                     if ui.button(find).clicked() {
                         f.spaces = Some(Workspace::sync_list(&sync_target(f)));
                         f.chosen = f.spaces.as_ref().and_then(|s| s.as_ref().ok()).filter(|l| l.len() == 1).map(|_| 0);
                     }
                     match &f.spaces {
                         Some(Ok(list)) if list.is_empty() => {
-                            let none = if f.via == SyncVia::Folder {
-                                "No Quire vaults in this folder yet. Start one from another device, and let the folder finish syncing."
-                            } else {
-                                "No vaults on this server yet. Start one from another device."
+                            let none = match f.via {
+                                SyncVia::Folder => {
+                                    "No Quire vaults in this folder yet. Start one from another device, and let the folder finish syncing."
+                                }
+                                SyncVia::Server => "No vaults on this server yet. Start one from another device.",
+                                SyncVia::S3 | SyncVia::WebDav => "No Quire vaults in this storage yet. Start one from another device.",
                             };
                             ui.label(RichText::new(none).color(pal.muted));
                         }
@@ -517,6 +677,7 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
     let reachable = match f.via {
         SyncVia::Folder => !f.folder.trim().is_empty(),
         SyncVia::Server => !f.server.trim().is_empty() && !f.token.trim().is_empty(),
+        SyncVia::S3 | SyncVia::WebDav => remote_ready(f),
     };
     let ready = reachable && !f.device.trim().is_empty();
     match f.mode {
@@ -529,6 +690,7 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
                             f.recovery = Some(rk.to_string());
                             f.pass.clear();
                             f.pass2.clear();
+                            f.done_setting_up();
                         }
                         Err(e) => f.error = Some(e),
                     }
@@ -549,7 +711,10 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
             {
                 f.error = None;
                 match ws.sync_join(&sync_target(f), &s.space, &f.secret, &f.device) {
-                    Ok(()) => f.secret.clear(),
+                    Ok(()) => {
+                        f.secret.clear();
+                        f.done_setting_up();
+                    }
                     Err(e) => f.error = Some(e),
                 }
             }
@@ -566,11 +731,169 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
 }
 
 fn sync_target(f: &SyncForm) -> quire_app::vault_sync::SyncTarget {
-    use quire_app::vault_sync::SyncTarget;
+    use quire_app::vault_sync::{RemoteProfile, SyncTarget, s3_virtual_hosted_default};
     match f.via {
         SyncVia::Folder => SyncTarget::Folder(std::path::PathBuf::from(f.folder.trim())),
         SyncVia::Server => SyncTarget::Server { url: f.server.trim().to_string(), token: f.token.trim().to_string() },
+        SyncVia::S3 => SyncTarget::Remote {
+            profile: RemoteProfile::S3 {
+                endpoint: f.s3_endpoint.trim().to_string(),
+                region: f.s3_region.trim().to_string(),
+                bucket: f.s3_bucket.trim().to_string(),
+                prefix: f.s3_prefix.trim().to_string(),
+                virtual_hosted: s3_virtual_hosted_default(f.s3_endpoint.trim(), f.s3_bucket.trim()),
+                allow_http: f.allow_http,
+            },
+            secret: f.remote_secret(true),
+        },
+        SyncVia::WebDav => SyncTarget::Remote {
+            profile: RemoteProfile::Webdav { url: f.dav_url.trim().to_string(), allow_http: f.allow_http },
+            secret: f.remote_secret(false),
+        },
     }
+}
+
+/// Every S3 or WebDAV field filled in.
+fn remote_ready(f: &SyncForm) -> bool {
+    match f.via {
+        SyncVia::S3 => [&f.s3_endpoint, &f.s3_region, &f.s3_bucket, &f.s3_access_key, &f.s3_secret].iter().all(|s| !s.trim().is_empty()),
+        SyncVia::WebDav => [&f.dav_url, &f.dav_user].iter().all(|s| !s.trim().is_empty()) && !f.dav_password.is_empty(),
+        _ => false,
+    }
+}
+
+fn s3_fields(ui: &mut Ui, f: &mut SyncForm, pal: &Palette) {
+    ui.label("Provider");
+    ui.horizontal_wrapped(|ui| {
+        for (name, endpoint, region) in S3_PRESETS {
+            if ui.small_button(*name).on_hover_text(*endpoint).clicked() {
+                f.s3_endpoint = (*endpoint).to_string();
+                f.s3_region = (*region).to_string();
+                f.allow_http = endpoint.starts_with("http://");
+                f.test_result = None;
+            }
+        }
+    });
+    ui.end_row();
+    ui.label("Endpoint");
+    ui.vertical(|ui| {
+        ui.add(egui::TextEdit::singleline(&mut f.s3_endpoint).hint_text("https://s3.us-east-1.amazonaws.com").desired_width(320.0));
+        if f.s3_endpoint.contains("ACCOUNT_ID") {
+            ui.label(RichText::new("Put your Cloudflare account ID in the address.").size(12.0).color(pal.muted));
+        }
+    });
+    ui.end_row();
+    ui.label("Region");
+    ui.add(egui::TextEdit::singleline(&mut f.s3_region).hint_text("us-east-1 (R2: auto)").desired_width(320.0));
+    ui.end_row();
+    ui.label("Bucket");
+    ui.add(egui::TextEdit::singleline(&mut f.s3_bucket).hint_text("my-notes").desired_width(320.0));
+    ui.end_row();
+    ui.label("Folder in bucket");
+    ui.add(egui::TextEdit::singleline(&mut f.s3_prefix).hint_text("optional").desired_width(320.0));
+    ui.end_row();
+    s3_secret_fields(ui, f);
+}
+
+fn s3_secret_fields(ui: &mut Ui, f: &mut SyncForm) {
+    ui.label("Access key ID");
+    ui.add(egui::TextEdit::singleline(&mut f.s3_access_key).desired_width(320.0));
+    ui.end_row();
+    ui.label("Secret access key");
+    ui.add(egui::TextEdit::singleline(&mut f.s3_secret).password(true).desired_width(320.0));
+    ui.end_row();
+}
+
+fn dav_fields(ui: &mut Ui, f: &mut SyncForm) {
+    ui.label("WebDAV folder");
+    ui.add(
+        egui::TextEdit::singleline(&mut f.dav_url)
+            .hint_text("https://cloud.example.com/remote.php/dav/files/me/Quire")
+            .desired_width(320.0),
+    );
+    ui.end_row();
+    dav_secret_fields(ui, f);
+}
+
+fn dav_secret_fields(ui: &mut Ui, f: &mut SyncForm) {
+    ui.label("User name");
+    ui.add(egui::TextEdit::singleline(&mut f.dav_user).desired_width(320.0));
+    ui.end_row();
+    ui.label("Password");
+    ui.add(egui::TextEdit::singleline(&mut f.dav_password).password(true).hint_text("an app password").desired_width(320.0));
+    ui.end_row();
+}
+
+/// A vault set up with S3 or WebDAV: test the connection, or enter new
+/// credentials (they expired, or were rotated).
+fn remote_configured(
+    ui: &mut Ui,
+    f: &mut SyncForm,
+    ws: &mut Workspace,
+    cfg: &quire_app::vault_sync::SyncConfig,
+    profile: &quire_app::vault_sync::RemoteProfile,
+    pal: &Palette,
+) {
+    use quire_app::vault_sync::{RemoteProfile, sync_target_of};
+    let s3 = matches!(profile, RemoteProfile::S3 { .. });
+    f.poll_test(ui);
+    ui.horizontal_wrapped(|ui| {
+        if ui.add_enabled(f.test.is_none(), egui::Button::new("Test connection")).clicked() {
+            match sync_target_of(cfg) {
+                Ok(t) => f.start_test(t),
+                Err(e) => f.test_result = Some(Err(e)),
+            }
+        }
+        let label = if f.edit_credentials { "Cancel" } else { "Update credentials…" };
+        if ui.button(label).clicked() {
+            f.edit_credentials = !f.edit_credentials;
+            f.clear_secrets();
+        }
+    });
+    if f.edit_credentials {
+        egui::Grid::new("sync-credentials").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
+            if s3 {
+                s3_secret_fields(ui, f);
+            } else {
+                dav_secret_fields(ui, f);
+            }
+        });
+        let ready = if s3 {
+            !f.s3_access_key.trim().is_empty() && !f.s3_secret.trim().is_empty()
+        } else {
+            !f.dav_user.trim().is_empty() && !f.dav_password.is_empty()
+        };
+        if ui.add_enabled(ready && f.saving_credentials.is_none(), egui::Button::new("Check and save")).clicked() {
+            match ws.sync_set_remote_secret_in_background(f.remote_secret(s3)) {
+                Ok(rx) => {
+                    f.test_result = None;
+                    f.saving_credentials = Some(rx);
+                }
+                Err(e) => f.test_result = Some(Err(e)),
+            }
+        }
+    }
+    if let Some(rx) = &f.saving_credentials {
+        match rx.try_recv() {
+            Ok(Ok(m)) => {
+                f.test_result = Some(Ok(format!("{m} Saved; syncing again.")));
+                f.edit_credentials = false;
+                f.saving_credentials = None;
+                f.clear_secrets();
+                ws.start_sync();
+            }
+            Ok(Err(e)) => {
+                f.test_result = Some(Err(e));
+                f.saving_credentials = None;
+            }
+            Err(crossbeam_channel::TryRecvError::Empty) => {
+                ui.add(egui::Spinner::new().size(12.0));
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+            }
+            Err(crossbeam_channel::TryRecvError::Disconnected) => f.saving_credentials = None,
+        }
+    }
+    f.show_test(ui, pal);
 }
 
 /// The math font's licence, in builds that include it.
