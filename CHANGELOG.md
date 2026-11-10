@@ -4,6 +4,15 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Added
+
+#### Sync through S3-compatible storage and WebDAV
+- **Quire Sync straight to a bucket or a WebDAV folder you own:** AWS S3, Cloudflare R2, Backblaze B2, Wasabi, MinIO or any S3-compatible storage, and Nextcloud, ownCloud, Fastmail, Synology or `rclone serve webdav`. Settings → Sync → *S3-compatible storage* / *WebDAV* (provider presets, **Test connection**, plain errors for a wrong key, expired credentials, the clock, the region), or `quire-cli sync join --s3 ENDPOINT --bucket B --region R` / `--webdav URL --user U`. Setup, a minimal IAM policy and costs per provider: [docs/sync-backends.md](docs/sync-backends.md).
+- **End-to-end encrypted like every Quire Sync:** the storage holds only ciphertext under ids and numbers. What it can see (counts, sizes, timing) is listed in [docs/design/0.12-sync.md](docs/design/0.12-sync.md#2-what-the-storage-can-see).
+- **Two devices syncing at once never lose a revision**, on any of these services, with or without conditional writes (`If-None-Match`; B2 has none): each device writes only its own files, once, and concurrent edits merge line by line or keep a conflict copy, as with folder sync. Changes are kept on the device until uploaded, so an upload cut short resumes on the next pass. Selective sync, the sync lock, locked folders (still ciphertext) and shared review history work as before.
+- Credentials stay in the system keychain, never in the vault; `quire-cli sync credentials` (or *Update credentials…*) replaces expired ones after testing them. `quire-cli sync test` checks the storage; `sync status` names it. Requests are signed with SigV4 (checked against AWS's and botocore's test vectors), over rustls with the system's certificates, with retries and backoff; redirects are never followed and `http://` is refused except to this computer unless allowed.
+- **`quire-cli sync move <vault> --s3 …|--webdav …|--folder …|--server …`** moves a vault to another place: a last pass, then a new sync vault there; other devices join it and their notes are recognised, not copied.
+
 ## [0.11.0] - 2026-11-08
 
 Quire 0.11: tasks as notes with time tracking and pomodoros, boards you arrange (manual order, swimlanes, colours) and Bases maps; locked folders encrypted at rest; a Connections view to audit, limit and revoke each agent; and a formatting toolbar, your own shortcuts and macros, and smoother typing.

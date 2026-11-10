@@ -45,6 +45,10 @@ mkdir -p ~/vault
 quire-cli sync join ~/vault --server https://sync.example.com --device "home server"
 # Or through a folder Syncthing/Dropbox keeps on this machine:
 quire-cli sync join ~/vault --folder ~/Sync --device "home server"
+# Or straight to S3-compatible storage or WebDAV (0.12; docs/sync-backends.md):
+QUIRE_S3_SECRET_ACCESS_KEY=… quire-cli sync join ~/vault --s3 https://s3.eu-central-1.amazonaws.com \
+    --region eu-central-1 --bucket my-notes --access-key-id AKIA… --device "home server"
+QUIRE_WEBDAV_PASSWORD=… quire-cli sync join ~/vault --webdav https://cloud.example.com/remote.php/dav/files/me/Quire --user me
 ```
 
 * The sync passphrase comes from a prompt (not shown as you type),

@@ -146,7 +146,7 @@ cargo build --release -p quire-desktop --no-default-features   # ~41 MiB instead
 | MCP server | `quire-cli mcp <vault>` (stdio) or over HTTP with OAuth: AI apps search by section, read line ranges, and edit precisely. Read-only unless started with `--allow-write`, which writes per the vault's agent policy (suggestions outside `wiki/`). See [docs/agents.md](docs/agents.md) |
 | History | Undo tree: undo, type something else, and the old branch is still reachable |
 | Your server, for agents and a browser (Beta) | `quire-cli serve`: a web app (read, search, light editing with conflict checks, voice notes and drawings shown in place) and MCP for agents on one port of a machine you own, behind a sign-in. It keeps the vault in sync with `--sync` (or `quire-cli sync`, also selective with `--only`). That machine holds a decrypted copy of the notes it serves ([setup](docs/serve.md)) |
-| Quire Sync (beta) | Optional end-to-end encrypted sync, free through a folder you already sync (Dropbox, iCloud Drive, Google Drive, OneDrive, Syncthing), or through a server you run yourself ([guide](docs/self-hosting.md)). Only ciphertext leaves your device; concurrent edits merge line by line and never overwrite each other. A managed service is planned |
+| Quire Sync (beta) | Optional end-to-end encrypted sync, free through a folder you already sync (Dropbox, iCloud Drive, Google Drive, OneDrive, Syncthing), straight to S3-compatible storage (AWS S3, Cloudflare R2, Backblaze B2, Wasabi, MinIO) or a WebDAV folder (Nextcloud, Fastmail, Synology, rclone) ([setup and costs](docs/sync-backends.md)), or through a server you run yourself ([guide](docs/self-hosting.md)). Only ciphertext leaves your device; concurrent edits merge line by line and never overwrite each other. A managed service is planned |
 | Sync safety | Works with any folder sync (iCloud, Dropbox, Syncthing, Nextcloud, Git). A note changed elsewhere while you edit is merged line by line; overlapping edits pause autosave and let you keep yours, take theirs or keep both. Conflict copies made by sync tools are found and merged back |
 | Updates | Optional daily check for a new release (Settings → About). Sends nothing about you; nothing installs itself |
 
@@ -259,7 +259,7 @@ only on a machine you trust, and give it just the folders it needs
 runs in the browser is planned separately.
 
 ```bash
-quire-cli sync join ~/vault --server https://sync.example.com --only Work   # or --folder ~/Sync
+quire-cli sync join ~/vault --server https://sync.example.com --only Work   # or --folder ~/Sync, --s3 …, --webdav …
 quire-cli serve passwd                                                       # the web app's passphrase
 quire-cli serve ~/vault --sync --public-url https://notes.example.com        # behind Caddy/nginx for HTTPS
 ```

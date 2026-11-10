@@ -2,7 +2,7 @@
 
 *Status: beta. Your notes stay plain files on every device, so nothing is lost if sync misbehaves, but tell us about anything odd.*
 
-> **You may not need a server.** Quire Sync also works through a folder that Dropbox, iCloud Drive, Google Drive, OneDrive or Syncthing already keeps on your devices: **Settings → Sync → Through a folder you already sync**. It's free, encrypted the same way, and there's nothing to run. A server is worth it when you want changes to show up within a second, or don't use a file sync service.
+> **You may not need a server.** Quire Sync also works through a folder that Dropbox, iCloud Drive, Google Drive, OneDrive or Syncthing already keeps on your devices: **Settings → Sync → A synced folder (free)**. It's free, encrypted the same way, and there's nothing to run. A server is worth it when you want changes to show up within a second, or don't use a file sync service.
 
 Quire Sync keeps your vault the same on every device. The server only ever stores encrypted data: it can't read your notes, their names or your folder names. The design is in [design/sync.md](design/sync.md).
 
