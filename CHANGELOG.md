@@ -4,6 +4,8 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-11
+
 Quire 0.12: switching tools (import from more apps and undo it, tidy notes, a Home page), typed links and a hierarchy you can browse (Dataview and Breadcrumbs syntax), sync straight to S3-compatible storage or WebDAV, an import wizard with five more sources, a Markdown tidier and a Home tab, locked folders' notes and pictures in every view while unlocked, and a faster start.
 
 ### Added
@@ -496,7 +498,8 @@ Downloads for Windows, macOS (universal) and Linux are attached to the release, 
 ### Added
 - First version: live Markdown styling, wikilinks with rename refactoring, backlinks, related notes, daily notes, templates, command palette, quick open, inline calculator and natural-language dates.
 
-[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/BhanuNexus/quire/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/BhanuNexus/quire/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/BhanuNexus/quire/compare/v0.9.1...v0.10.2
 [0.9.1]: https://github.com/BhanuNexus/quire/compare/v0.8.0...v0.9.1
