@@ -17,7 +17,7 @@ use egui::{Event, MouseWheelSource, MouseWheelUnit, Pos2, RawInput, Rect, TouchP
 use quire_app::Workspace;
 use quire_app::vault::{NotePath, Vault};
 
-use crate::dialogs::{FolderMode, FolderState, HistoryState, ImportState, ProjectState, PublishState, SettingsState};
+use crate::dialogs::{FolderMode, FolderState, HistoryState, ProjectState, PublishState, SettingsState};
 use crate::overlays::{Mode, Overlay};
 use crate::theme;
 
@@ -76,10 +76,18 @@ fn overlays(ws: &mut Workspace) -> Vec<(&'static str, Overlay)> {
         ("delete", Overlay::ConfirmDelete),
         ("open vault", Overlay::OpenVault { input: String::new() }),
         ("replace", Overlay::VaultReplace { focused: false }),
-        ("history", Overlay::History(HistoryState::new(ws))),
-        ("history: all devices", Overlay::History(HistoryState::all_devices(ws, Ok(sync_versions())))),
-        ("history: all devices, error", Overlay::History(HistoryState::all_devices(ws, Err("The sync server is too old. ".repeat(8))))),
-        ("import", Overlay::Import(ImportState::default())),
+        ("history", Overlay::History(Box::new(HistoryState::new(ws)))),
+        ("history: all devices", Overlay::History(Box::new(HistoryState::all_devices(ws, Ok(sync_versions()))))),
+        (
+            "history: all devices, error",
+            Overlay::History(Box::new(HistoryState::all_devices(ws, Err("The sync server is too old. ".repeat(8))))),
+        ),
+        ("import: source", Overlay::Feature(Box::new(crate::import_ui::ImportWizard::sample(0)))),
+        ("import: preview", Overlay::Feature(Box::new(crate::import_ui::ImportWizard::sample(1)))),
+        ("import: folder", Overlay::Feature(Box::new(crate::import_ui::ImportWizard::sample(2)))),
+        ("import: running", Overlay::Feature(Box::new(crate::import_ui::ImportWizard::sample(3)))),
+        ("import: report", Overlay::Feature(Box::new(crate::import_ui::ImportWizard::sample(4)))),
+        ("import: error", Overlay::Feature(Box::new(crate::import_ui::ImportWizard::sample(6)))),
         ("new project", Overlay::NewProject(ProjectState::default())),
         ("publish", Overlay::Publish(PublishState::new(ws))),
         ("new note folder", Overlay::Folder(FolderState::new(ws, FolderMode::NewNote))),
@@ -221,6 +229,46 @@ fn feature_tabs_keep_their_size() {
                     failures.push(format!("{table} tab {} at width {width}: {:?}", tab.id, &sizes[10..]));
                 }
             }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// 0.12: Home draws every section, with a full vault, at three window sizes
+/// without changing size from frame to frame or leaving the window.
+#[test]
+fn home_page_keeps_its_size() {
+    use crate::surfaces::Surface;
+    let mut failures = Vec::new();
+    for (w, h) in [(1280.0_f32, 820.0_f32), (900.0, 560.0), (760.0, 480.0)] {
+        let mut ws = workspace_with(false);
+        let home = quire_app::switch_state::HomeConfig {
+            sections: quire_app::switch_state::HOME_SECTIONS.iter().map(|(id, _)| (*id).to_string()).collect(),
+            word_goal: 500,
+            pinned: vec!["Long.md".into()],
+            view: "from: #project".into(),
+            ..Default::default()
+        };
+        ws.set_home_config(home);
+        let mut page = crate::home_ui::sample();
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        ctx.global_style_mut(theme::style);
+        let mut sizes = Vec::new();
+        for frame in 0..30 {
+            let mut out = ctx.run_ui(input(Rect::from_min_size(Pos2::ZERO, Vec2::new(w, h)), frame), |ui| {
+                let r = ui
+                    .allocate_ui(Vec2::new(w, h), |ui| {
+                        let _ = page.show(ui, &mut ws, &theme::LIGHT);
+                    })
+                    .response
+                    .rect;
+                sizes.push(r.size());
+            });
+            out.textures_delta.clear();
+        }
+        if sizes[10..].iter().any(|s| (s.y - sizes[10].y).abs() > 0.5 || s.x > w + 0.5 || s.y > h + 0.5) {
+            failures.push(format!("home at {w}x{h}: {:?}", &sizes[10..]));
         }
     }
     assert!(failures.is_empty(), "{failures:#?}");

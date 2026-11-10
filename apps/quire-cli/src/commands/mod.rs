@@ -5,7 +5,7 @@
 //! the help text is built from them. Owners: `search`, `notes`, `import`,
 //! `bench` (frozen after F0); `capture`, `mcp`, `agent`, `eval` (WS-B);
 //! `lint` (WS-A); `ai` (WS-D); `tasks` (WS-E); `sync`, `serve` (0.10 serve);
-//! `lock`, `unlock`, `status` (0.11 security); `links`, `tree` (0.12 typed links).
+//! `lock`, `unlock`, `status` (0.11 security); `links`, `tree` (0.12 typed links); `format` (0.12 switching tools).
 
 mod agent;
 mod ai;
@@ -13,6 +13,7 @@ mod bench;
 mod capture;
 #[cfg(feature = "eval")]
 mod eval;
+mod format;
 mod import;
 mod lint;
 // 0.12: typed links (`links`, `tree`).
@@ -64,6 +65,7 @@ pub(crate) fn all() -> Vec<&'static CliCommand> {
         lock::COMMANDS,
         links::COMMANDS,
         prefs::COMMANDS,
+        format::COMMANDS,
         #[cfg(feature = "eval")]
         eval::COMMANDS,
     ];

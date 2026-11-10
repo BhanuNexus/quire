@@ -6,7 +6,9 @@ use std::collections::{HashMap, HashSet};
 
 use quire_vault::{NotePath, sanitize_title};
 
-use crate::{ImportPlan, PlannedFile, PlannedNote, Tree, attachment, file_name, rewrite_links};
+use crate::convert::{iso, parse_time};
+use crate::yaml::{Field, front_matter};
+use crate::{ImportPlan, PlannedFile, PlannedNote, Stamp, Tree, attachment, file_name, rewrite_links};
 
 pub(crate) fn plan(tree: &Tree) -> ImportPlan {
     let mut plan = ImportPlan::default();
@@ -32,7 +34,7 @@ pub(crate) fn plan(tree: &Tree) -> ImportPlan {
             let rel = &path[bundle.len() + 1..];
             let target = attachment(&mut taken_files, rel);
             assets.insert(rel.to_string(), file_name(&target).to_string());
-            plan.files.push(PlannedFile { path: NotePath::new(target), bytes: bytes.to_vec() });
+            plan.files.push(PlannedFile { path: NotePath::new(target), bytes: bytes.to_vec(), times: tree.stamp(path) });
         }
         let body = rewrite_links(&text, |l| {
             let target = assets.get(l.dest.trim_start_matches("./"))?;
@@ -49,12 +51,37 @@ pub(crate) fn plan(tree: &Tree) -> ImportPlan {
             .unwrap_or_else(|| sanitize_title(bundle_name));
         let title = if title.is_empty() { "Untitled".to_string() } else { title };
         let path = crate::unique_name(&mut taken_notes, &format!("{title}.md"));
-        plan.notes.push(PlannedNote { path: NotePath::new(path), content: body });
+        plan.notes.push(PlannedNote {
+            path: NotePath::new(path),
+            content: front_matter_with_dates(tree, &bundle, body),
+            times: Stamp::default(),
+        });
     }
     if plan.notes.is_empty() {
         plan.warnings.push("no TextBundles found".into());
     }
     plan
+}
+
+/// The note's text, with its creation and modification dates from the
+/// bundle's `info.json` (Bear writes them under `net.shinyfrog.bear`) as front matter.
+fn front_matter_with_dates(tree: &Tree, bundle: &str, body: String) -> String {
+    let Some(info) = tree.text(&format!("{bundle}/info.json")) else { return body };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&info) else { return body };
+    let bear = v.get("net.shinyfrog.bear").unwrap_or(&v);
+    let get = |k: &str| bear.get(k).and_then(serde_json::Value::as_str).and_then(parse_time);
+    let mut fields = Vec::new();
+    if let Some(c) = get("creationDate") {
+        fields.push(("created".to_string(), Field::One(iso(c))));
+    }
+    if let Some(m) = get("modificationDate") {
+        fields.push(("updated".to_string(), Field::One(iso(m))));
+    }
+    // A note that already has front matter keeps it as it is.
+    if fields.is_empty() || body.starts_with("---\n") {
+        return body;
+    }
+    format!("{}{body}", front_matter(&fields))
 }
 
 /// Bear's `#multi word tag#` → `#multi-word-tag`. Single-word and nested

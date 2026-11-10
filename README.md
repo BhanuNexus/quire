@@ -143,7 +143,9 @@ cargo build --release -p quire-desktop --no-default-features   # ~41 MiB instead
 | Files | Daily notes, templates (`{{title}} {{date}} {{cursor}}`), atomic writes, soft delete to `.trash/`, outside-change detection, HTML export |
 | Properties & views | Edit front matter in the Insights panel (types inferred: date, number, yes/no, list, text). ` ```quire-view ` blocks render live tables, lists, kanban boards and month calendars, and stay plain Markdown elsewhere. Boards keep the order you drag cards into (in the view, not your notes), with swimlanes, coloured columns, cards you edit in place and + per column. Obsidian `.base` files open with their formulas, summaries, `groupBy`, kanban boards and map views (pins on a built-in offline world outline) |
 | Version history | Every save keeps a compressed snapshot in `.quire/history/` (thinned to hourly/daily/weekly, max 200 per note). Ctrl+Alt+H shows versions with a diff; restore is undoable. Board moves, vault-wide replace and AI edits are versioned too |
-| Import | Logseq graphs, Notion exports (.zip or folder, incl. database CSVs), Bear (.bear2bk / TextBundles), Evernote (.enex), any Markdown folder. Dry run first; never overwrites |
+| Import | File → Import… in five steps: Logseq, Notion (.zip or folder, incl. database CSVs), Bear, Evernote (.enex), Roam (JSON), Google Keep (Takeout), Joplin (.jex), Day One (JSON), HTML folders (Apple Notes, OneNote exports) and any Markdown folder. Attachments, dates, tags and links kept; dry-run preview; never overwrites; one click to undo the whole import. Safe on hostile archives ([guide](docs/import.md)) |
+| Tidy notes | A Markdown linter and formatter (Settings → Linter): headings, lists, blank lines, spacing, front matter, line endings. Per note (one undo step), on save (off by default) or over a folder with a diff preview and one batch undo. Never touches code, math or HTML ([settings](docs/formats/lint-format.md)) |
+| Home | An optional start page: recent and pinned notes, today's tasks, a view or Base, the Inbox, quick capture, a random note, writing counts. Opens at start if you choose ([settings](docs/formats/home.md)) |
 | AI providers | Offline by default. Optional OpenAI-compatible (Ollama, LM Studio, OpenAI) or Anthropic, streaming and with tools, with *Test connection*. Optional neural embeddings from the same kind of endpoint, cached per passage, falling back to the built-in index |
 | MCP server | `quire-cli mcp <vault>` (stdio) or over HTTP with OAuth: AI apps search by section, read line ranges, and edit precisely. Read-only unless started with `--allow-write`, which writes per the vault's agent policy (suggestions outside `wiki/`). See [docs/agents.md](docs/agents.md) |
 | History | Undo tree: undo, type something else, and the old branch is still reachable |
@@ -163,6 +165,9 @@ Quire reads what these plugins write, in place, so a vault works in both.
 | Tasks | Emoji and Dataview task fields, recurrence, reminders, the agenda |
 | TaskNotes | Task notes with TaskNotes' property names, read and kept |
 | Bases (core) | `.base` files with formulas, summaries, `groupBy`, kanban and map views |
+| Linter | Tidy notes: per note, on save or over a folder with a diff, every rule a switch in `[lint.format]`; heading levels, list markers, spacing, front matter order and tags, line endings, date modified. Not read: Linter's custom regex replacements and YAML-title rules ([settings](docs/formats/lint-format.md)) |
+| Importer | Import…: Obsidian-style vaults are just folders; Notion, Evernote, Roam, Keep, Joplin, Day One, Bear, Logseq and HTML exports with an undoable dry run ([guide](docs/import.md)) |
+| Homepage, Hearth, Apex Dashboard | Home: an optional start page from `[home]`: recent, pinned, today, a view or `.base`, Inbox, capture, daily note, writing stats. Not read: widgets, custom CSS and plugin-specific layouts ([settings](docs/formats/home.md)) |
 
 ## Keyboard
 
@@ -241,6 +246,8 @@ quire-cli search  ./sample-vault rope undo           # ≈ marks results found b
 quire-cli ask     ./sample-vault why do editors use ropes
 quire-cli replace ./sample-vault "old" "new" --write # dry run without --write
 quire-cli import  ~/Downloads/notion.zip ./vault --into Imported   # dry run; add --write
+quire-cli import  --undo last ./vault                # undo the last import
+quire-cli format  ./vault Projects                   # tidy a folder: diff first; add --write
 quire-cli history ./sample-vault "Quire Roadmap"     # saved versions of a note
 quire-cli mcp     ./sample-vault                     # MCP server on stdio (read-only)
 quire-cli agent   proposals ./sample-vault           # suggestions agents made, waiting for review

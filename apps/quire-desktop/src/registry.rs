@@ -72,6 +72,8 @@ pub(crate) struct FeatureUi {
     pub insights: crate::panels::InsightsRows,
     // ---- 0.12 typed links: the Hierarchy tab
     pub hierarchy: crate::links_ui::HierarchyUi,
+    // ---- 0.12 switching tools: Settings → Linter and Home
+    pub switch: crate::lint_ui::SwitchUi,
     // ---- app
     /// The file of the surface in the central panel (a `.base`, a canvas,
     /// a PDF), set each frame; `None` while a note is shown.
@@ -159,6 +161,9 @@ pub(crate) const SETTINGS_TABS: &[TabDef] = &[
     // ---- 0.11 editor
     TabDef { id: "commands", label: label!("Commands"), available: crate::commands_ui::available, show: crate::commands_ui::show },
     TabDef { id: "toolbar", label: label!("Toolbar"), available: crate::commands_ui::available, show: crate::commands_ui::toolbar_tab },
+    // ---- 0.12 switching tools
+    TabDef { id: "linter", label: label!("Linter"), available: crate::lint_ui::available, show: crate::lint_ui::settings_tab },
+    TabDef { id: "home", label: label!("Home"), available: crate::home_ui::available, show: crate::home_ui::settings_tab },
 ];
 
 /// A bar drawn above the note, below the find bar: full width, as tall as
@@ -245,6 +250,8 @@ pub(crate) enum UiTarget {
     /// A dialog in its own file, shown as `Overlay::Feature` (background
     /// jobs pause while it is open; Escape closes it).
     Overlay(MakeOverlay),
+    /// A page in the tab bar (Home), shown like a `.base` file.
+    Surface(fn() -> Box<dyn crate::surfaces::Surface>),
 }
 
 /// The UI a `UiRequest::Feature(cmd)` opens, by workstream.
@@ -292,6 +299,9 @@ pub(crate) const fn ui_target(cmd: Command) -> Option<UiTarget> {
         // ---- 0.12 typed links
         Command::AddTypedLink => UiTarget::Overlay(crate::links_ui::AddLinkDialog::make),
         Command::ShowHierarchy => UiTarget::Sidebar("hierarchy"),
+        // ---- 0.12 switching tools
+        Command::LintFolder => UiTarget::Overlay(crate::lint_ui::LintFolderDialog::make),
+        Command::OpenHome => UiTarget::Surface(crate::home_ui::HomeSurface::make),
         _ => return None,
     })
 }
@@ -424,5 +434,9 @@ pub(crate) fn layout_samples(ws: &mut Workspace) -> Vec<(&'static str, crate::ov
         // ---- 0.12 typed links
         ("add typed link: type", Overlay::Feature(Box::new(crate::links_ui::AddLinkDialog::sample(0)))),
         ("add typed link: note", Overlay::Feature(Box::new(crate::links_ui::AddLinkDialog::sample(1)))),
+        // ---- 0.12 switching tools
+        ("tidy a folder: choose", Overlay::Feature(Box::new(crate::lint_ui::LintFolderDialog::sample(0)))),
+        ("tidy a folder: review", Overlay::Feature(Box::new(crate::lint_ui::LintFolderDialog::sample(1)))),
+        ("tidy a folder: done", Overlay::Feature(Box::new(crate::lint_ui::LintFolderDialog::sample(2)))),
     ]
 }

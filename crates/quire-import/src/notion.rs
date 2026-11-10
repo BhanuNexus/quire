@@ -13,7 +13,7 @@ use std::fmt::Write as _;
 use quire_vault::NotePath;
 
 use crate::yaml::{Field, front_matter};
-use crate::{ImportPlan, PlannedFile, PlannedNote, Tree, attachment, file_name, rewrite_links};
+use crate::{ImportPlan, PlannedFile, PlannedNote, Stamp, Tree, attachment, file_name, rewrite_links};
 
 /// Does any path segment end with a Notion id?
 pub(crate) fn has_id(path: &str) -> bool {
@@ -71,7 +71,7 @@ pub(crate) fn plan(tree: &Tree) -> ImportPlan {
         }
         let target = attachment(&mut taken_files, &split_id(file_name(p)).0);
         files.insert(p.to_string(), file_name(&target).to_string());
-        plan.files.push(PlannedFile { path: NotePath::new(target), bytes: bytes.to_vec() });
+        plan.files.push(PlannedFile { path: NotePath::new(target), bytes: bytes.to_vec(), times: tree.stamp(p) });
     }
 
     let mut notes: Vec<(String, String)> = Vec::new();
@@ -148,7 +148,7 @@ pub(crate) fn plan(tree: &Tree) -> ImportPlan {
     }
 
     for (p, content) in notes {
-        plan.notes.push(PlannedNote { path: NotePath::new(p), content });
+        plan.notes.push(PlannedNote { path: NotePath::new(p), content, times: Stamp::default() });
     }
     plan
 }

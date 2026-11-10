@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 use quire_vault::NotePath;
 
 use crate::yaml::{Field, front_matter};
-use crate::{ImportPlan, PlannedFile, PlannedNote, Tree, attachment, file_name, percent_decode, rewrite_links};
+use crate::{ImportPlan, PlannedFile, PlannedNote, Stamp, Tree, attachment, file_name, percent_decode, rewrite_links};
 
 /// One note before link rewriting.
 struct Page {
@@ -85,7 +85,7 @@ pub(crate) fn plan(tree: &Tree) -> ImportPlan {
         if let Some(rest) = path.strip_prefix("assets/") {
             let target = attachment(&mut taken, rest);
             assets.insert(rest.to_string(), file_name(&target).to_string());
-            plan.files.push(PlannedFile { path: NotePath::new(target), bytes: bytes.to_vec() });
+            plan.files.push(PlannedFile { path: NotePath::new(target), bytes: bytes.to_vec(), times: tree.stamp(path) });
         }
     }
 
@@ -105,7 +105,7 @@ pub(crate) fn plan(tree: &Tree) -> ImportPlan {
             })
         });
         let fm = front_matter(&p.props);
-        plan.notes.push(PlannedNote { path: NotePath::new(p.path), content: format!("{fm}{body}") });
+        plan.notes.push(PlannedNote { path: NotePath::new(p.path), content: format!("{fm}{body}"), times: Stamp::default() });
     }
     if unresolved > 0 {
         plan.warnings.push(format!("{unresolved} block references point to blocks that weren't in the export"));
@@ -305,7 +305,7 @@ fn is_uuid(s: &str) -> bool {
 }
 
 /// Logseq's default journal title `Nov 1st, 2026` → `2026-11-01`.
-fn title_date(s: &str) -> Option<String> {
+pub(crate) fn title_date(s: &str) -> Option<String> {
     const MONTHS: [&str; 12] = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
     let (md, year) = s.split_once(", ")?;
     let (month, day) = md.split_once(' ')?;
