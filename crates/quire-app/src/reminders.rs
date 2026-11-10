@@ -54,6 +54,10 @@ pub struct RemindersState {
     /// 0.12: reminders of notes in unlocked folders seen this session
     /// (memory only; never in the fired list on disk).
     locked_seen: HashSet<String>,
+    /// 0.12: reminders of locked notes already shown this session (fired, or
+    /// listed as missed), by note and time only: not the task's words, and
+    /// they survive lock and unlock and edits to the task's text. Memory only.
+    locked_done: HashSet<String>,
 }
 
 impl Default for RemindersState {
@@ -69,6 +73,7 @@ impl Default for RemindersState {
             dismissed: HashSet::new(),
             replies: unbounded(),
             locked_seen: HashSet::new(),
+            locked_done: HashSet::new(),
         }
     }
 }
@@ -96,10 +101,28 @@ impl RemindersState {
         self.checked = Some(at);
     }
 
+    /// Which of `unlocked` (reminders of notes in unlocked folders now) came
+    /// due unseen: not seen before this unlock, and not already shown this
+    /// session. Remembers them all as seen.
+    fn take_new_locked(&mut self, unlocked: &[Reminder], now: NaiveDateTime) -> Vec<Reminder> {
+        let fresh: Vec<Reminder> = unlocked.iter().filter(|r| !self.locked_seen.contains(&r.key())).cloned().collect();
+        let new: Vec<Reminder> = fresh.iter().filter(|r| !self.locked_done.contains(&shown_key(r))).cloned().collect();
+        self.locked_seen.extend(fresh.iter().map(Reminder::key));
+        let missed: Vec<Reminder> = reminders::missed(&new, now, None).into_iter().cloned().collect();
+        // What is listed now is shown; what isn't due yet fires later and is marked then.
+        self.locked_done.extend(missed.iter().map(shown_key));
+        missed
+    }
+
     pub fn snooze(&mut self, r: &Reminder, now: NaiveDateTime) {
         self.dismissed.insert(r.key());
         self.snoozed.insert(r.key(), (now + Duration::minutes(SNOOZE_MINUTES), r.clone()));
     }
+}
+
+/// A locked reminder's identity for "already shown": its note and time.
+fn shown_key(r: &Reminder) -> String {
+    format!("{}\u{1f}{}", r.path, r.at.format("%Y-%m-%d %H:%M"))
 }
 
 /// Desktop notifications are off in tests and when `QUIRE_NO_NOTIFICATIONS` is set.
@@ -160,19 +183,16 @@ pub(crate) fn tick(ws: &mut Workspace) -> bool {
             reminders::schedule(tasks.iter().map(|(p, t)| (p.as_str(), t)))
         });
         forget_locked_reminders(ws);
-        let locked_new: Vec<Reminder> =
-            schedule.iter().filter(|r| locked(ws, r) && !ws.features.tasks.reminders.locked_seen.contains(&r.key())).cloned().collect();
+        let in_locked: Vec<Reminder> = schedule.iter().filter(|r| locked(ws, r)).cloned().collect();
         let st = &mut ws.features.tasks.reminders;
         st.schedule = schedule;
         st.version = Some(key);
+        // A folder was unlocked: its reminders missed in the last week (while it was
+        // locked, or Quire closed) are listed, once a session: never again after a
+        // lock and unlock, or an edit to the task's words.
+        let missed = st.take_new_locked(&in_locked, now);
         if st.missed_done {
-            // A folder was unlocked: its reminders missed in the last week
-            // (while it was locked, or Quire closed) are listed, once a session.
-            let missed: Vec<Reminder> = reminders::missed(&locked_new, now, None).into_iter().cloned().collect();
-            st.locked_seen.extend(locked_new.iter().map(Reminder::key));
             st.missed.extend(missed);
-        } else {
-            st.locked_seen.extend(locked_new.iter().map(Reminder::key));
         }
         if !st.missed_done {
             st.missed_done = true;
@@ -241,6 +261,9 @@ pub(crate) fn tick(ws: &mut Workspace) -> bool {
     let desktop = ws.settings.tasks.reminders && desktop_allowed();
     for r in due {
         let in_locked = locked(ws, &r);
+        if in_locked {
+            ws.features.tasks.reminders.locked_done.insert(shown_key(&r));
+        }
         ws.features.tasks.reminders.fired.push(Fired { reminder: r.clone(), at: now });
         ws.notify(NoticeLevel::Info, format!("Reminder: {} ({})", r.text, r.path.trim_end_matches(".md")));
         if desktop {
@@ -343,5 +366,30 @@ mod tests {
         w.snooze_reminder(&r);
         assert_eq!(w.features.tasks.reminders.active().len(), 1);
         assert!(w.features.tasks.reminders.next_due(Local::now().naive_local()).is_some());
+    }
+
+    /// 0.12 review M8: a locked note's reminder that was shown is not listed as "came due
+    /// while Quire was closed" after its folder locks and unlocks, or after its text is edited.
+    #[test]
+    fn a_shown_locked_reminder_is_not_announced_again() {
+        let at = reminders::parse_at("2026-11-10 09:00").unwrap();
+        let now = reminders::parse_at("2026-11-10 12:00").unwrap();
+        let r = Reminder { at, path: "Journal/Day.md".into(), offset: 6, text: "call the clinic".into() };
+        let mut st = RemindersState::default();
+        // Unlocked for the first time: it came due while locked, so it is listed once.
+        assert_eq!(st.take_new_locked(std::slice::from_ref(&r), now), vec![r.clone()]);
+        // Unlocked again: still seen, nothing new.
+        assert!(st.take_new_locked(std::slice::from_ref(&r), now).is_empty());
+        // The folder locked: what it kept is dropped (as `forget_locked_reminders` does).
+        st.locked_seen.clear();
+        assert!(st.take_new_locked(std::slice::from_ref(&r), now).is_empty(), "not announced again after lock and unlock");
+        // The task's words changed (another key, same note and time): not again.
+        let edited = Reminder { text: "call the clinic at noon".into(), offset: 9, ..r.clone() };
+        assert!(st.take_new_locked(&[edited], now).is_empty());
+        // A different time is a new reminder.
+        let later = Reminder { at: reminders::parse_at("2026-11-10 10:00").unwrap(), ..r };
+        assert_eq!(st.take_new_locked(std::slice::from_ref(&later), now), vec![later]);
+        // Shown_key holds no words.
+        assert!(st.locked_done.iter().all(|k| !k.contains("clinic")));
     }
 }

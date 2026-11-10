@@ -227,6 +227,24 @@ impl Relations {
         r
     }
 
+    /// The typed links as written (not the implied edges): `(from, field, to)`.
+    pub fn written(&self) -> impl Iterator<Item = (&NotePath, &str, &NotePath)> {
+        // Notes in path order, each note's links in the order written: the same edges give the same result.
+        let mut notes: Vec<(&NotePath, &Vec<Relation>)> = self.out.iter().collect();
+        notes.sort_by(|a, b| a.0.cmp(b.0));
+        notes.into_iter().flat_map(|(from, list)| list.iter().filter(|e| !e.implied).map(move |e| (from, e.field.as_str(), &e.to)))
+    }
+
+    /// The edges of several indexes read as one: what each wrote, and
+    /// `cross`, the typed links between them. Implied edges are worked out
+    /// again, so a link written on one side shows on the other.
+    pub fn merged(parts: &[&Self], cross: Vec<(NotePath, String, NotePath)>, cfg: &LinkConfig) -> Self {
+        let mut edges: Vec<(NotePath, String, NotePath)> =
+            parts.iter().flat_map(|r| r.written().map(|(f, field, t)| (f.clone(), field.to_string(), t.clone()))).collect();
+        edges.extend(cross);
+        Self::build(edges, cfg)
+    }
+
     /// Every typed edge from `p`, its own first.
     pub fn of(&self, p: &NotePath) -> &[Relation] {
         self.out.get(p).map_or(&[], Vec::as_slice)

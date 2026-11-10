@@ -30,7 +30,10 @@ folder = "Weekly"
 `quire-cli prefs-copy <from-vault> <to-vault> [section]...` replaces sections
 of the destination's `vault.toml` with the source's. With no section named it
 copies the ones that make sense in any vault: `periodic`, `tags`, `git`,
-`lint`, `staleness`, `citations`, `links`, `tasks`. `sort`, `order`, `icons`
+`lint`, `staleness`, `citations`, `links`, `tasks`. Three `[git]` keys are
+never copied, even when `git` is named: `auto_commit`, `pull_on_start` and
+`push_after_commit` act on a remote, and copying them could start sending
+notes somewhere nobody chose. The destination keeps its own values. `sort`, `order`, `icons`
 and `web` are about one vault's own folders and notes: name them to copy
 them. Other sections and comments in the destination stay. A destination
 written by a newer Quire, or a source that can't be parsed, is left as it is.

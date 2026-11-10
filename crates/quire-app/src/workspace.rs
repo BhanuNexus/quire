@@ -1093,9 +1093,12 @@ impl Workspace {
 
     /// Recently opened notes including the open one (Home is a tab of its own, so the note you
     /// just left is one of the notes to come back to).
-    pub(crate) fn recent_with_active(&self, limit: usize) -> Vec<NotePath> {
-        let ix = self.index.read();
-        self.recent.iter().filter(|p| ix.get(p).is_some()).take(limit).cloned().collect()
+    ///
+    /// Never waits for the index worker (this runs every frame while Home is
+    /// open): `None` while it holds the write lock.
+    pub(crate) fn recent_with_active(&self, limit: usize) -> Option<Vec<NotePath>> {
+        let ix = self.index.try_read()?;
+        Some(self.recent.iter().filter(|p| ix.get(p).is_some()).take(limit).cloned().collect())
     }
 
     /// Re-index and re-point open documents after a rename or move.

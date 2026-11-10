@@ -569,11 +569,14 @@ impl Workspace {
     /// Undo one import by id. Returns what was trashed and what stayed (edited since).
     pub fn undo_import(&mut self, id: &str) -> Option<crate::import_run::UndoPlan> {
         let vault = self.vault.clone()?;
+        // Typing that autosave hasn't written yet must reach the file first: then
+        // the note differs from what the import wrote, and stays.
+        self.save_open_notes();
         match crate::import_run::undo(&vault, id, crate::history_ops::now_ms()) {
             Ok((rec, plan)) => {
-                // Close tabs of notes that went away; the index follows.
+                // Close tabs of notes that went away (never one with unsaved text); the index follows.
                 for p in &plan.trash {
-                    if let Some(i) = self.docs.iter().position(|d| d.path.as_ref() == Some(p)) {
+                    if let Some(i) = self.docs.iter().position(|d| d.path.as_ref() == Some(p) && !d.is_dirty()) {
                         self.docs.remove(i);
                         self.active = if self.docs.is_empty() { None } else { Some(self.active.map_or(0, |a| a.min(self.docs.len() - 1))) };
                     }
@@ -581,7 +584,15 @@ impl Workspace {
                 }
                 self.index.flush();
                 let kept = if plan.edited.is_empty() { String::new() } else { format!("; {} edited since stay", plan.edited.len()) };
-                self.notify(NoticeLevel::Info, format!("Undid {}: {} moved to .trash{kept}", rec.title(), plan.trash.len()));
+                let lost = match plan.missing.as_slice() {
+                    [] => String::new(),
+                    [one] => format!("; {one} isn't where the import put it (renamed, moved or deleted), so the import stays open"),
+                    many => format!(
+                        "; {} notes or files aren't where the import put them (renamed, moved or deleted), so the import stays open",
+                        many.len()
+                    ),
+                };
+                self.notify(NoticeLevel::Info, format!("Undid {}: {} moved to .trash{kept}{lost}", rec.title(), plan.trash.len()));
                 Some(plan)
             }
             Err(e) => {
@@ -643,13 +654,17 @@ impl Workspace {
         {
             return s.clone();
         }
-        let (mut notes, mut words, mut open_tasks) = (0, 0, 0);
+        let (mut notes, mut words, mut open_tasks, mut plain_words) = (0, 0, 0, 0);
         self.with_notes(|n| {
             for r in n.records() {
                 notes += 1;
                 words += r.stats.words;
                 open_tasks += r.tasks.iter().filter(|t| !t.done).count();
             }
+            // The baseline is written to disk and compared across sessions, so it counts only
+            // the notes of the vault index: a locked folder's words never reach the file, and
+            // unlocking or locking a folder doesn't move "today".
+            plain_words = n.main().records().map(|r| r.stats.words).sum();
         });
         // This device's count from the first time Home was drawn today.
         let day = today.format("%Y-%m-%d").to_string();
@@ -665,15 +680,15 @@ impl Workspace {
                     if let Some(dir) = p.parent() {
                         let _ = std::fs::create_dir_all(dir);
                     }
-                    let json = serde_json::to_string(&Baseline { day: day.clone(), words }).unwrap_or_default();
+                    let json = serde_json::to_string(&Baseline { day: day.clone(), words: plain_words }).unwrap_or_default();
                     let _ = crate::atomic::write(p, json.as_bytes(), false);
                 }
-                words
+                plain_words
             },
             |b| b.words,
         );
         let stats =
-            HomeStats { notes, words, open_tasks, words_today: i64::try_from(words).unwrap_or(0) - i64::try_from(base).unwrap_or(0) };
+            HomeStats { notes, words, open_tasks, words_today: i64::try_from(plain_words).unwrap_or(0) - i64::try_from(base).unwrap_or(0) };
         *self.features.switch.stats.borrow_mut() = Some((key, stats.clone()));
         stats
     }
@@ -683,6 +698,10 @@ impl Workspace {
         let prefs = self.switch_prefs();
         let cfg = &prefs.home;
         let today = Local::now().date_naive();
+        // Never wait for the index worker on a frame: while it applies a batch, keep what Home showed.
+        let Some(recent) = self.recent_with_active(cfg.recent.clamp(1, MAX_RECENT)) else {
+            return self.features.switch.home.borrow().as_ref().map(|(_, d)| Rc::clone(d)).unwrap_or_default();
+        };
         let agent = &self.features.agent.inbox;
         let pending: Vec<&quire_agent::Proposal> =
             agent.pending.iter().filter(|p| !agent.snoozed(&crate::agent_state::inbox::proposal_fingerprint(p))).collect();
@@ -690,7 +709,7 @@ impl Workspace {
             version: self.notes_version(),
             today,
             prefs: Rc::as_ptr(&prefs) as usize,
-            recent: self.recent_with_active(cfg.recent.clamp(1, MAX_RECENT)),
+            recent,
             inbox: (pending.len(), agent.findings.len(), agent.loaded_at_ms),
             active: self.active_doc().and_then(|d| d.path.clone()),
         };
@@ -944,5 +963,27 @@ mod tests {
         assert_eq!(undone.trash.len(), 1);
         assert!(!vault.exists(&"Imported/N.md".into()));
         assert!(vault.exists(&"Keep.md".into()));
+    }
+
+    #[test]
+    fn undo_keeps_a_note_with_unsaved_typing_and_its_tab() {
+        let mut w = ws(&[]);
+        let vault = w.vault().expect("vault").clone();
+        let plan = quire_import::ImportPlan {
+            notes: vec![quire_import::PlannedNote::new("N.md", "# N\n"), quire_import::PlannedNote::new("M.md", "# M\n")],
+            ..Default::default()
+        };
+        let (_, rec) =
+            crate::import_run::run(&vault, &plan, "Imported", std::path::Path::new("x"), "dev", 1_000, None, &mut |_| {}).expect("run");
+        w.reload_index();
+        w.open_note(&"Imported/M.md".into()).expect("opens");
+        w.open_note(&"Imported/N.md".into()).expect("opens");
+        w.insert_text("typed, not saved yet ");
+        assert!(w.docs.iter().any(Document::is_dirty));
+        let undone = w.undo_import(&rec.id).expect("undone");
+        assert_eq!((undone.trash.len(), undone.edited.len()), (1, 1), "{undone:?}");
+        assert!(vault.read(&"Imported/N.md".into()).unwrap().contains("typed, not saved yet"), "the typing reached the file");
+        assert!(w.docs.iter().any(|d| d.path.as_ref().is_some_and(|p| p.as_str() == "Imported/N.md")), "its tab stays");
+        assert!(!w.docs.iter().any(|d| d.path.as_ref().is_some_and(|p| p.as_str() == "Imported/M.md")), "the trashed note's tab closes");
     }
 }

@@ -101,7 +101,7 @@ pub(crate) fn insights_groups(ui: &mut egui::Ui, rel: &NoteRelations, pal: &Pale
 // ------------------------------------------------------------------ hierarchy tab
 
 /// (index version, generation, around note).
-type RowsKey = (u64, u64, Option<NotePath>);
+type RowsKey = ((u64, u64), u64, Option<NotePath>);
 /// (step, query, index version).
 type ItemsKey = (u8, String, u64);
 /// The dialog's rows: (value, label detail).
@@ -126,33 +126,35 @@ pub(crate) fn hierarchy_available(ws: &Workspace) -> bool {
 impl HierarchyUi {
     fn rows(&mut self, ws: &Workspace) -> Rc<Vec<TreeRow>> {
         let focus = if self.this_note { ws.active_doc().and_then(|d| d.path.clone()) } else { None };
-        let key = (ws.index().version(), self.generation, focus.clone());
+        let key = (ws.notes_version(), self.generation, focus.clone());
         if let Some((k, r)) = &self.rows
             && *k == key
         {
             return Rc::clone(r);
         }
         // Never wait for the index worker on a frame: show the rows we have.
-        let Some(ix) = ws.index().try_read() else {
+        // Over the vault index and, while unlocked, a locked folder's notes (memory only).
+        let open = &mut self.open;
+        let Some(rows) = ws.try_with_notes(|ix| {
+            let roots: Vec<NotePath> = match &focus {
+                // The top of the open note's first trail (or the note itself).
+                Some(p) => {
+                    let rel = ix.relations();
+                    let top = rel.trails(p, 1, 64).first().and_then(|t| t.first().cloned()).unwrap_or_else(|| p.clone());
+                    // Open the way down to the note, once.
+                    if let Some(t) = rel.trails(p, 1, 64).first() {
+                        for q in &t[..t.len() - 1] {
+                            open.insert(q.clone());
+                        }
+                    }
+                    vec![top]
+                }
+                None => links_state::tree_roots_in(ix).into_iter().map(|(p, _)| p).collect(),
+            };
+            Rc::new(links_state::tree_rows_in(ix, &roots, open))
+        }) else {
             return self.rows.as_ref().map(|(_, r)| Rc::clone(r)).unwrap_or_default();
         };
-        let roots: Vec<NotePath> = match &focus {
-            // The top of the open note's first trail (or the note itself).
-            Some(p) => {
-                let rel = ix.relations();
-                let top = rel.trails(p, 1, 64).first().and_then(|t| t.first().cloned()).unwrap_or_else(|| p.clone());
-                // Open the way down to the note, once.
-                if let Some(t) = rel.trails(p, 1, 64).first() {
-                    for q in &t[..t.len() - 1] {
-                        self.open.insert(q.clone());
-                    }
-                }
-                vec![top]
-            }
-            None => links_state::tree_roots(&ix).into_iter().map(|(p, _)| p).collect(),
-        };
-        let rows = Rc::new(links_state::tree_rows(&ix, &roots, &self.open));
-        drop(ix);
         self.rows = Some((key, Rc::clone(&rows)));
         rows
     }
@@ -274,7 +276,7 @@ pub(crate) struct AddLinkDialog {
 
 impl AddLinkDialog {
     pub(crate) fn make(ws: &mut Workspace) -> Box<dyn OverlayView> {
-        let names = links_state::field_names(&ws.index().read());
+        let names = ws.with_notes(links_state::field_names_in);
         Box::new(Self {
             field: String::new(),
             query: String::new(),

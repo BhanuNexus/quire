@@ -118,7 +118,13 @@ pub(crate) fn run(source: &str, vault: &str, from: Option<Source>, folder: &str,
     if report.skipped_files > 0 {
         println!("  {} attachments already existed and were kept.", report.skipped_files);
     }
+    for (from, to) in &report.renamed_files {
+        println!("  attachment {from} was taken by a different file; saved as {to} (links follow)");
+    }
     println!("Undo with: quire-cli import --undo {} <vault>", rec.id);
+    if let Some(e) = &report.error {
+        return Err(format!("the import stopped early: {e}. What was written is recorded and can be undone"));
+    }
     Ok(())
 }
 
@@ -146,6 +152,12 @@ fn undo(id: &str, vault: &str) -> Result<(), String> {
     println!("Undid {}: {} moved to .trash.", rec.title(), plan.trash.len());
     for p in &plan.edited {
         println!("  {p} was edited since the import; it stays");
+    }
+    for p in &plan.missing {
+        println!("  {p} isn't where the import put it (renamed, moved or deleted); not touched");
+    }
+    if !plan.missing.is_empty() {
+        println!("  The import stays open: put those back and run the undo again.");
     }
     Ok(())
 }

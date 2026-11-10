@@ -110,6 +110,7 @@ pub(crate) fn plan(tree: &Tree) -> ImportPlan {
     // Resources: id → stored file name and bytes.
     let mut taken_files = HashSet::new();
     let mut resources: HashMap<String, String> = HashMap::new();
+    let mut copied: HashMap<String, String> = HashMap::new();
     for r in by_type(&all, "4") {
         let Some(id) = r.meta.get("id") else { continue };
         let bytes = tree.iter().find(|(p, _)| {
@@ -117,6 +118,11 @@ pub(crate) fn plan(tree: &Tree) -> ImportPlan {
             p.starts_with("resources/") && stem == id
         });
         let Some((src, bytes)) = bytes else { continue };
+        // One copy per source file, even when the export lists a resource twice.
+        if let Some(stored) = copied.get(src) {
+            resources.insert(id.clone(), stored.clone());
+            continue;
+        }
         let name = r
             .meta
             .get("filename")
@@ -126,6 +132,7 @@ pub(crate) fn plan(tree: &Tree) -> ImportPlan {
             .unwrap_or_else(|| file_name(src).to_string());
         let target = attachment(&mut taken_files, &name);
         resources.insert(id.clone(), file_name(&target).to_string());
+        copied.insert(src.to_string(), file_name(&target).to_string());
         plan.files.push(PlannedFile { path: NotePath::new(target), bytes: bytes.to_vec(), times: tree.stamp(src) });
     }
     // First pass: where each note will be, so links can name them.
@@ -201,7 +208,7 @@ pub(crate) fn plan(tree: &Tree) -> ImportPlan {
                 fields.push(("completed".to_string(), Field::One(iso(d))));
             }
             if let Some(d) = time(n, &["todo_due"]) {
-                fields.push(("due".to_string(), Field::One(iso(d)[..10].to_string())));
+                fields.push(("due".to_string(), Field::One(iso(d).get(..10).unwrap_or_default().to_string())));
             }
         }
         plan.notes.push(PlannedNote {

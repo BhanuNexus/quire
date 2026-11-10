@@ -47,6 +47,7 @@ pub(crate) fn plan(tree: &Tree) -> ImportPlan {
     let mut plan = ImportPlan::default();
     let mut taken_notes = HashSet::new();
     let mut taken_files = HashSet::new();
+    let mut copied: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let (mut trashed, mut unreadable, mut missing) = (0, 0, 0);
     for file in notes(tree) {
         let Ok(v) = serde_json::from_slice::<Value>(tree.get(file).unwrap_or_default()) else {
@@ -82,11 +83,17 @@ pub(crate) fn plan(tree: &Tree) -> ImportPlan {
                 missing += 1;
                 continue;
             };
-            let target = attachment(&mut taken_files, name);
-            let stored = file_name(&target).to_string();
+            // One copy per source file, however many notes or entries name it.
+            let stored = copied
+                .entry(src.clone())
+                .or_insert_with(|| {
+                    let target = attachment(&mut taken_files, name);
+                    plan.files.push(PlannedFile { path: NotePath::new(target.clone()), bytes: bytes.to_vec(), times: tree.stamp(&src) });
+                    file_name(&target).to_string()
+                })
+                .clone();
             let image = a.get("mimetype").and_then(Value::as_str).is_some_and(|m| m.starts_with("image/"));
             let _ = writeln!(embeds, "{}[[{stored}]]", if image { "!" } else { "" });
-            plan.files.push(PlannedFile { path: NotePath::new(target), bytes: bytes.to_vec(), times: tree.stamp(&src) });
         }
         if !embeds.is_empty() {
             body = format!("{embeds}\n{body}");
@@ -120,7 +127,7 @@ pub(crate) fn plan(tree: &Tree) -> ImportPlan {
             })
             .map(|t| sanitize_title(&t))
             .filter(|t| !t.is_empty())
-            .or_else(|| edited.map(|e| format!("Keep note {}", &iso(e)[..10])))
+            .or_else(|| edited.map(|e| format!("Keep note {}", iso(e).get(..10).unwrap_or_default())))
             .unwrap_or_else(|| "Keep note".into());
         let mut fields = Vec::new();
         if let Some(c) = created {

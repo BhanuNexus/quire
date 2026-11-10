@@ -18,6 +18,7 @@ use quire_vault::NotePath;
 use crate::graph::Backlink;
 use crate::index::Index;
 use crate::record::NoteRecord;
+use crate::relations::{LinkConfig, Relations};
 
 /// The line around a link (for a backlink's context).
 fn line_around(src: &str, range: &std::ops::Range<usize>) -> String {
@@ -33,6 +34,8 @@ fn line_around(src: &str, range: &std::ops::Range<usize>) -> String {
 pub struct CrossLinks {
     /// (target, the backlink), in the order found.
     links: Vec<(NotePath, Backlink)>,
+    /// Typed links and the hierarchy over both sides (memory only, like the rest).
+    relations: Relations,
 }
 
 impl CrossLinks {
@@ -65,7 +68,9 @@ impl CrossLinks {
         for r in extra.records() {
             add(r, extra.source(&r.path), extra, main);
         }
-        Self { links }
+        let typed = links.iter().filter_map(|(to, b)| Some((b.from.clone(), b.link.field.clone()?, to.clone()))).collect();
+        let relations = Relations::merged(&[main.relations(), extra.relations()], typed, main.link_config());
+        Self { links, relations }
     }
 
     pub const fn len(&self) -> usize {
@@ -110,6 +115,16 @@ impl<'a> Joined<'a> {
     /// Whether `p` is a note of an unlocked folder.
     pub fn is_extra(&self, p: &NotePath) -> bool {
         self.extra().is_some_and(|e| e.get(p).is_some())
+    }
+
+    /// Typed links and the hierarchy of both sides, with the links between them.
+    pub fn relations(&self) -> &'a Relations {
+        self.extra.map_or_else(|| self.main.relations(), |(_, c)| &c.relations)
+    }
+
+    /// The vault's `[links]` settings.
+    pub fn link_config(&self) -> &'a LinkConfig {
+        self.main.link_config()
     }
 
     /// Every note of both sides.
@@ -233,5 +248,28 @@ mod tests {
         assert!(m.backlinks(&NotePath::new("Plain.md")).iter().all(|b| !b.from.as_str().starts_with("Journal/")));
         assert_eq!(m.tasks(false).len(), 1);
         assert!(m.get(&NotePath::new("Journal/Day.md")).is_none());
+    }
+
+    #[test]
+    fn typed_links_and_the_hierarchy_cross_the_two_sides() {
+        let p = |s: &str| NotePath::new(s);
+        let main = index(&[("Plain.md", "---\nup: \"[[Day]]\"\n---\n# Plain\n"), ("Own.md", "---\nup: \"[[Plain]]\"\n---\n# Own\n")]);
+        let extra = index(&[("Journal/Day.md", "# Day\nsupports:: [[Plain]]\n"), ("Journal/Kid.md", "---\nup: \"[[Day]]\"\n---\n# Kid\n")]);
+        let cross = CrossLinks::build(&main, &extra);
+        let j = Joined::new(&main, &extra, &cross);
+        let r = j.relations();
+        // A plain note's `up` to a note of an unlocked folder, and the other way round.
+        assert_eq!(r.parents(&p("Plain.md")), [&p("Journal/Day.md")]);
+        let mut kids: Vec<&NotePath> = r.children(&p("Journal/Day.md"));
+        kids.sort();
+        assert_eq!(kids, [&p("Journal/Kid.md"), &p("Plain.md")]);
+        assert_eq!(r.incoming(&p("Plain.md")).iter().filter(|e| e.field == "supports").count(), 1);
+        // Trails and siblings run through both sides.
+        assert_eq!(r.trails(&p("Own.md"), 3, 10), [vec![p("Journal/Day.md"), p("Plain.md"), p("Own.md")]]);
+        assert_eq!(r.siblings(&p("Plain.md")), [p("Journal/Kid.md")]);
+        // The vault index alone knows nothing of the locked side.
+        let m = Joined::main_only(&main);
+        assert!(m.relations().parents(&p("Plain.md")).is_empty());
+        assert!(m.relations().trails(&p("Own.md"), 3, 10).iter().all(|t| t.iter().all(|q| !q.as_str().starts_with("Journal/"))));
     }
 }

@@ -254,7 +254,13 @@ impl ImportWizard {
                     match &r {
                         Ok((rep, rec)) => {
                             ws.reload_index();
-                            let msg = if rep.cancelled { "Import cancelled" } else { "Imported" };
+                            let msg = if rep.cancelled {
+                                "Import cancelled"
+                            } else if rep.error.is_some() {
+                                "Import stopped"
+                            } else {
+                                "Imported"
+                            };
                             ws.notify(
                                 NoticeLevel::Info,
                                 format!("{msg}: {} notes and {} files in {}", rep.notes, rep.files, folder_label(&rec.folder)),
@@ -506,6 +512,16 @@ impl ImportWizard {
                         if rep.renamed.len() == 1 { "" } else { "s" }
                     ));
                 }
+                if !rep.renamed_files.is_empty() {
+                    facts.push(format!(
+                        "{} attachment{} saved under another name because a different file had the name; the links follow",
+                        rep.renamed_files.len(),
+                        if rep.renamed_files.len() == 1 { "" } else { "s" }
+                    ));
+                }
+                if let Some(e) = &rep.error {
+                    facts.push(format!("stopped early: {e}. What was written can be undone"));
+                }
                 if rep.skipped_files > 0 {
                     facts.push(format!(
                         "{} attachment{} already existed and {} kept",
@@ -539,7 +555,12 @@ impl ImportWizard {
                         RichText::new(format!(
                             "Undone: {} files moved to .trash{}",
                             plan.trash.len(),
-                            if plan.edited.is_empty() { String::new() } else { format!("; {} you edited since stay", plan.edited.len()) }
+                            match (plan.edited.len(), plan.missing.len()) {
+                                (0, 0) => String::new(),
+                                (e, 0) => format!("; {e} you edited since stay"),
+                                (0, m) => format!("; {m} renamed, moved or deleted since were not touched, so the import stays open"),
+                                (e, m) => format!("; {e} you edited since stay and {m} renamed, moved or deleted were not touched, so the import stays open"),
+                            }
                         ))
                         .color(pal.added),
                     );

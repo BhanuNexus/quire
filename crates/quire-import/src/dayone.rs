@@ -75,6 +75,7 @@ pub(crate) fn plan(tree: &Tree) -> ImportPlan {
     let mut plan = ImportPlan::default();
     let mut taken_notes = HashSet::new();
     let mut taken_files = HashSet::new();
+    let mut copied: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut missing = 0;
     let many = journals(tree).len() > 1;
     for file in journals(tree) {
@@ -101,13 +102,20 @@ pub(crate) fn plan(tree: &Tree) -> ImportPlan {
                         missing += 1;
                         continue;
                     };
-                    let target = attachment(&mut taken_files, file_name(src));
-                    kept.push((id.to_string(), file_name(&target).to_string(), image));
-                    plan.files.push(PlannedFile {
-                        path: NotePath::new(target),
-                        bytes: bytes.to_vec(),
-                        times: Stamp { created, modified: created },
-                    });
+                    // One copy per source file, however many entries list it.
+                    let stored = copied
+                        .entry(src.to_string())
+                        .or_insert_with(|| {
+                            let target = attachment(&mut taken_files, file_name(src));
+                            plan.files.push(PlannedFile {
+                                path: NotePath::new(target.clone()),
+                                bytes: bytes.to_vec(),
+                                times: Stamp { created, modified: created },
+                            });
+                            file_name(&target).to_string()
+                        })
+                        .clone();
+                    kept.push((id.to_string(), stored, image));
                 }
             }
             let mut body = unescape(text);
@@ -143,10 +151,13 @@ pub(crate) fn plan(tree: &Tree) -> ImportPlan {
                 .find(|l| !l.is_empty() && !l.starts_with("![[") && !l.starts_with("[["))
                 .map(|l| shorten(l, 50))
                 .unwrap_or_default();
-            let day = created.map_or_else(|| "undated".to_string(), |c| iso(c)[..10].to_string());
+            let day = created.map_or_else(|| "undated".to_string(), |c| iso(c).get(..10).unwrap_or_default().to_string());
             let title = sanitize_title(&first);
-            let title =
-                if title.is_empty() { created.map_or_else(|| "Entry".to_string(), |c| iso(c)[11..16].replace(':', ".")) } else { title };
+            let title = if title.is_empty() {
+                created.map_or_else(|| "Entry".to_string(), |c| iso(c).get(11..16).unwrap_or_default().replace(':', "."))
+            } else {
+                title
+            };
             let rel = crate::unique_name(&mut taken_notes, &format!("{journal}/{day} {title}.md"));
             let mut fields = Vec::new();
             if let Some(c) = created {

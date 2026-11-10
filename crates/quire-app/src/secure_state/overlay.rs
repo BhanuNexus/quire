@@ -39,18 +39,29 @@ impl Workspace {
     /// MCP, a background job or anything that writes to disk.
     pub fn with_notes<R>(&self, f: impl FnOnce(&Joined<'_>) -> R) -> R {
         let main = self.index.read();
+        self.joined_over(&main, f)
+    }
+
+    /// [`Self::with_notes`] for a frame: `None` while the index worker holds
+    /// the write lock (it never waits; keep what was shown).
+    pub fn try_with_notes<R>(&self, f: impl FnOnce(&Joined<'_>) -> R) -> Option<R> {
+        let main = self.index.try_read()?;
+        Some(self.joined_over(&main, f))
+    }
+
+    fn joined_over<R>(&self, main: &quire_index::Index, f: impl FnOnce(&Joined<'_>) -> R) -> R {
         let st = &self.features.secure;
         let Some(extra) = st.locked_index.as_ref().filter(|ix| !ix.is_empty()) else {
-            return f(&Joined::main_only(&main));
+            return f(&Joined::main_only(main));
         };
         let key = (self.index.version(), st.locked_version);
         let cached = st.cross.borrow().as_ref().filter(|(k, _)| *k == key).map(|(_, c)| Rc::clone(c));
         let cross = cached.unwrap_or_else(|| {
-            let c = Rc::new(CrossLinks::build(&main, extra));
+            let c = Rc::new(CrossLinks::build(main, extra));
             *st.cross.borrow_mut() = Some((key, Rc::clone(&c)));
             c
         });
-        f(&Joined::new(&main, extra, &cross))
+        f(&Joined::new(main, extra, &cross))
     }
 
     /// Backlinks of `p` from the notes of unlocked folders, and to a note
