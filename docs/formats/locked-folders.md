@@ -11,6 +11,7 @@ Journal/                          the locked folder (any depth below the vault r
   2026-11-06.md.qenc              the note 2026-11-06.md, encrypted
   Trips/Lisbon.md.qenc            subfolders belong to the locked folder
   photo.jpg.qenc                  an attachment
+  attachments/Pasted image….png.qenc   a picture pasted into one of its notes (0.12)
 .quire/history/<fnv>/<ms>.md.gz.qenc   a history snapshot of one of its notes
 ```
 
@@ -184,6 +185,15 @@ background; until then every recorded folder counts as locked.
 * Agents never see a locked folder, or any `*.qenc` or key file.
 * Quire Sync carries the `.qenc` files and the key file as attachments
   (opaque bytes); they are never merged.
+* (0.12) A picture or file pasted or dropped into a note of a locked
+  folder goes into the folder's own attachments subfolder (the vault's
+  attachments folder name, inside the locked folder: `Journal/attachments/`),
+  encrypted. An embed `![[photo.png]]` finds `photo.png.qenc` by its plain
+  name. Its bytes are decrypted into memory only, while the folder is
+  unlocked; nothing plain is written (no thumbnail, no cache).
+* (0.12) While a folder is unlocked, its notes are in the app's tasks,
+  agenda, views, graph, backlinks and reminders from a second index kept
+  in memory and dropped on lock; the vault index never holds them.
 
 ## Test vectors
 

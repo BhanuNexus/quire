@@ -4,6 +4,22 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Added
+- **Notes of an unlocked locked folder are in your tasks, agenda, views and Bases, graph, backlinks and reminders** while the folder is unlocked, from a second index kept in memory only and dropped when it locks. Agents, MCP, `quire-cli serve`, background jobs and every cache still never see them, and nothing about them is written to disk in plain text. Their reminders fire only while the folder is unlocked; the desktop notification then names only the note, never the task's words, and they never go into the list of shown reminders on disk.
+- **Pictures in locked folders:** embedded pictures in a locked folder show in notes and the preview while it is unlocked, decrypted into memory only. A picture you paste or a file you drop into a locked note is stored encrypted in that folder's own attachments subfolder (`Journal/attachments/`), never in the plain attachments folder. Export and publish still leave locked notes out.
+- **Zoomed diagrams stay sharp:** a Mermaid diagram zoomed in a note, the preview or full screen is drawn again at the zoom's scale once the zoom rests (a quarter of a second), instead of stretching the picture; a few such pictures are kept.
+- **The small toolbar next to selected text has its own buttons**, customised like the main toolbar in Settings → Toolbar ("Next to selected text"), stored in `[[toolbar.floating_items]]`.
+- **Vim keys:** Ctrl+D and Ctrl+U move half a page; in Normal and Visual mode Ctrl+B, F, D and U now scroll as in Vim instead of running Bold, Find and Add cursor. A setting (Settings → Editing, `[editing] vim_ctrl_scroll`), on by default.
+- **The agenda's board keeps the order you drag cards into**, and its column colours and swimlanes, on this device (`<config>/vaults/<key>/agenda-board.json`).
+
+### Changed
+- **Faster start with a large vault:** nothing lists the vault before the first frame any more. The list of files that aren't notes (attachments, PDFs, boards) and the PDFs to read are gathered on a thread of their own after the first frame, and the task timer is read from then on too. What a 10,000-note vault adds before the first frame went from about 20 ms (CPU time, optimised build; CI measured 19.9 ms for 0.11) to nothing measurable ([details](docs/design/0.12-loose.md#1-startup-headroom)).
+
+### Fixed
+- The on-device AI engine ran at the lowest priority (nice 19) when a background job was the first to need it, on Linux; it is now always started from a thread at normal priority (nice 10, as intended).
+- The task timer's settings were read from the vault's prefs file every frame; now only while a timer runs.
+- Lint called a link to a note in a locked folder broken; it now counts it by name (it still never reads the note).
+
 ## [0.11.0] - 2026-11-08
 
 Quire 0.11: tasks as notes with time tracking and pomodoros, boards you arrange (manual order, swimlanes, colours) and Bases maps; locked folders encrypted at rest; a Connections view to audit, limit and revoke each agent; and a formatting toolbar, your own shortcuts and macros, and smoother typing.
