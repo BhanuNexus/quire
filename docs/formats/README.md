@@ -51,6 +51,9 @@ F0 is the foundation step, after which its files are frozen).
 | `.quire/agent/rate/<hash>.txt` | Unix ms per line (a counter) | [policy.md](policy.md#limits) | WS-A | written |
 | `<config>/vaults/<key>/state.toml` (+ approved copies) | TOML, format 1 | [agent-state.md](agent-state.md) | WS-A | written |
 | `.quire/shared/vault.toml` | TOML, format 1 | [vault-prefs.md](vault-prefs.md) | F0 (each section: its feature) | read and written |
+| `[lint.format]` in vault.toml (the Markdown linter's rules) | TOML | [lint-format.md](lint-format.md) | 0.12 switching tools | read; written by Settings → Linter |
+| `[home]` in vault.toml (the Home page) and `<config>/vaults/<key>/home-stats.json` | TOML, JSON | [home.md](home.md) | 0.12 switching tools | read and written |
+| `.quire/imports/<id>.json` | JSON, format 1 | [import-record.md](import-record.md) | 0.12 switching tools | written by every import; read by undo |
 | `.quire/shared/srs/<device>.jsonl` | JSONL, v 1 | [srs.md](srs.md) | WS-E | written and replayed |
 | task fields in notes (`📅`, `[due:: …]`, `🔁`) | Markdown | [tasks.md](tasks.md) | WS-E | read and written |
 | task notes (`type: task`, `time_entries`, TaskNotes' names) | Markdown front matter | [tasks.md](tasks.md#task-notes) | 0.11 tasks | read and written |

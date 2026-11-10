@@ -58,6 +58,19 @@ Which link fields make the hierarchy, whether they imply their reverse and
 when the breadcrumbs trail shows. Quire reads this section and never writes
 it. See [links.md](links.md#hierarchy).
 
+## `[lint]` and `[lint.format]` (0.12 switching tools)
+
+`[lint]` holds the vault check's keys (`exclude`, a level per check).
+`[lint.format]` holds the rules of the Markdown linter. Quire reads both and
+writes `[lint.format]` from Settings → Linter, keeping the other keys. See
+[lint-format.md](lint-format.md).
+
+## `[home]` (0.12 switching tools)
+
+The Home page: its sections, pinned notes, the view, the daily word goal and
+whether it opens at start. Read, and written by Settings → Linter & Home and
+"Pin to Home". See [home.md](home.md).
+
 ## `[citations]` (WS-G)
 
 ```toml
