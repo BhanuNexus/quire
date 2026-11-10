@@ -179,11 +179,11 @@ fn ext_for(mime: &str) -> &str {
 
 /// `20261101T120000Z` → `2026-11-01T12:00:00Z`.
 fn enex_time(s: &str) -> Option<String> {
-    let b = s.as_bytes();
-    if s.len() < 15 || b[8] != b'T' || !s[..8].bytes().all(|c| c.is_ascii_digit()) {
+    let head = s.get(..15).filter(|h| h.is_ascii())?;
+    if head.as_bytes()[8] != b'T' || !head[..8].bytes().all(|c| c.is_ascii_digit()) {
         return None;
     }
-    Some(format!("{}-{}-{}T{}:{}:{}Z", &s[0..4], &s[4..6], &s[6..8], &s[9..11], &s[11..13], &s[13..15]))
+    Some(format!("{}-{}-{}T{}:{}:{}Z", &head[0..4], &head[4..6], &head[6..8], &head[9..11], &head[11..13], &head[13..15]))
 }
 
 #[cfg(test)]

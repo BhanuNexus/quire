@@ -114,13 +114,34 @@ struct Cx<'a> {
     blocks: &'a Blocks,
     unresolved: usize,
     macros: HashSet<String>,
+    /// Bytes of referenced text still allowed to be copied in (all pages together).
+    budget: usize,
+    /// References left as `((uid))` because the budget ran out.
+    cut: usize,
 }
+
+/// The most text one `((uid))` or embed copies; the rest becomes "…".
+const MAX_REF_CHARS: usize = 300;
+/// The most referenced text copied into the notes of one import. A
+/// reference never expands another reference (the depth is one), so this is
+/// the only bound on the output a hostile export can ask for.
+const MAX_EXPANSION: usize = 4 << 20;
 
 impl Cx<'_> {
     fn block_ref(&mut self, uid: &str, out: &mut String) {
         if let Some((text, page)) = self.blocks.by_uid.get(uid) {
             let name = title_date(page).or_else(|| page_path(page)).unwrap_or_else(|| page.clone());
-            let _ = write!(out, "“{}” ([[{name}]])", text.replace('\n', " "));
+            let mut quoted: String = text.chars().take(MAX_REF_CHARS).map(|c| if c == '\n' { ' ' } else { c }).collect();
+            if text.chars().nth(MAX_REF_CHARS).is_some() {
+                quoted.push('…');
+            }
+            if quoted.len() > self.budget {
+                self.cut += 1;
+                let _ = write!(out, "(({uid}))");
+                return;
+            }
+            self.budget -= quoted.len();
+            let _ = write!(out, "“{quoted}” ([[{name}]])");
         } else {
             self.unresolved += 1;
             let _ = write!(out, "(({uid}))");
@@ -256,6 +277,8 @@ pub(crate) fn plan(tree: &Tree) -> ImportPlan {
     let mut plan = ImportPlan::default();
     let mut taken = HashSet::new();
     let mut unresolved = 0;
+    let mut cut = 0;
+    let mut budget = MAX_EXPANSION;
     let mut macros: HashSet<String> = HashSet::new();
     for file in json_files(tree) {
         let value: Value = match serde_json::from_slice(tree.get(file).unwrap_or_default()) {
@@ -286,7 +309,7 @@ pub(crate) fn plan(tree: &Tree) -> ImportPlan {
                 }
             };
             let rel = crate::unique_name(&mut taken, &rel);
-            let mut cx = Cx { blocks: &blocks, unresolved: 0, macros: HashSet::new() };
+            let mut cx = Cx { blocks: &blocks, unresolved: 0, macros: HashSet::new(), budget, cut: 0 };
             let mut body = String::new();
             let mut deep = false;
             if let Some(c) = p.get("children").and_then(Value::as_array) {
@@ -296,6 +319,8 @@ pub(crate) fn plan(tree: &Tree) -> ImportPlan {
                 plan.warnings.push(format!("{title}: blocks nested more than {MAX_DEPTH} deep are written at that depth"));
             }
             unresolved += cx.unresolved;
+            cut += cx.cut;
+            budget = cx.budget;
             macros.extend(cx.macros);
             let mut fields = Vec::new();
             if let Some(c) = created {
@@ -316,6 +341,9 @@ pub(crate) fn plan(tree: &Tree) -> ImportPlan {
     }
     if unresolved > 0 {
         plan.warnings.push(format!("{unresolved} block references point to blocks that weren't in the export"));
+    }
+    if cut > 0 {
+        plan.warnings.push(format!("{cut} block references were left as written: copying their text would make the import too large"));
     }
     if !macros.is_empty() {
         let mut m: Vec<_> = macros.into_iter().collect();

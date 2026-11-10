@@ -26,10 +26,10 @@ fn split_id(seg: &str) -> (String, Option<&str>) {
         Some((s, e)) if e.len() <= 8 && !e.contains(' ') => (s, Some(e)),
         _ => (seg, None),
     };
-    if stem.len() > 33 && stem.is_char_boundary(stem.len() - 33) {
-        let (name, id) = stem.split_at(stem.len() - 33);
+    if let Some(at) = stem.len().checked_sub(33).filter(|&at| at > 0 && stem.is_char_boundary(at) && stem.as_bytes()[at] == b' ') {
+        let (name, id) = stem.split_at(at);
         let id = &id[1..];
-        if stem.as_bytes()[stem.len() - 33] == b' ' && id.len() == 32 && id.chars().all(|c| c.is_ascii_hexdigit()) {
+        if id.len() == 32 && id.chars().all(|c| c.is_ascii_hexdigit()) {
             let clean = match ext {
                 Some(e) => format!("{}.{e}", name.trim()),
                 None => name.trim().to_string(),

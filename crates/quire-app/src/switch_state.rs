@@ -569,11 +569,14 @@ impl Workspace {
     /// Undo one import by id. Returns what was trashed and what stayed (edited since).
     pub fn undo_import(&mut self, id: &str) -> Option<crate::import_run::UndoPlan> {
         let vault = self.vault.clone()?;
+        // Typing that autosave hasn't written yet must reach the file first: then
+        // the note differs from what the import wrote, and stays.
+        self.save_open_notes();
         match crate::import_run::undo(&vault, id, crate::history_ops::now_ms()) {
             Ok((rec, plan)) => {
-                // Close tabs of notes that went away; the index follows.
+                // Close tabs of notes that went away (never one with unsaved text); the index follows.
                 for p in &plan.trash {
-                    if let Some(i) = self.docs.iter().position(|d| d.path.as_ref() == Some(p)) {
+                    if let Some(i) = self.docs.iter().position(|d| d.path.as_ref() == Some(p) && !d.is_dirty()) {
                         self.docs.remove(i);
                         self.active = if self.docs.is_empty() { None } else { Some(self.active.map_or(0, |a| a.min(self.docs.len() - 1))) };
                     }
@@ -581,7 +584,15 @@ impl Workspace {
                 }
                 self.index.flush();
                 let kept = if plan.edited.is_empty() { String::new() } else { format!("; {} edited since stay", plan.edited.len()) };
-                self.notify(NoticeLevel::Info, format!("Undid {}: {} moved to .trash{kept}", rec.title(), plan.trash.len()));
+                let lost = match plan.missing.as_slice() {
+                    [] => String::new(),
+                    [one] => format!("; {one} isn't where the import put it (renamed, moved or deleted), so the import stays open"),
+                    many => format!(
+                        "; {} notes or files aren't where the import put them (renamed, moved or deleted), so the import stays open",
+                        many.len()
+                    ),
+                };
+                self.notify(NoticeLevel::Info, format!("Undid {}: {} moved to .trash{kept}{lost}", rec.title(), plan.trash.len()));
                 Some(plan)
             }
             Err(e) => {
@@ -944,5 +955,27 @@ mod tests {
         assert_eq!(undone.trash.len(), 1);
         assert!(!vault.exists(&"Imported/N.md".into()));
         assert!(vault.exists(&"Keep.md".into()));
+    }
+
+    #[test]
+    fn undo_keeps_a_note_with_unsaved_typing_and_its_tab() {
+        let mut w = ws(&[]);
+        let vault = w.vault().expect("vault").clone();
+        let plan = quire_import::ImportPlan {
+            notes: vec![quire_import::PlannedNote::new("N.md", "# N\n"), quire_import::PlannedNote::new("M.md", "# M\n")],
+            ..Default::default()
+        };
+        let (_, rec) =
+            crate::import_run::run(&vault, &plan, "Imported", std::path::Path::new("x"), "dev", 1_000, None, &mut |_| {}).expect("run");
+        w.reload_index();
+        w.open_note(&"Imported/M.md".into()).expect("opens");
+        w.open_note(&"Imported/N.md".into()).expect("opens");
+        w.insert_text("typed, not saved yet ");
+        assert!(w.docs.iter().any(|d| d.is_dirty()));
+        let undone = w.undo_import(&rec.id).expect("undone");
+        assert_eq!((undone.trash.len(), undone.edited.len()), (1, 1), "{undone:?}");
+        assert!(vault.read(&"Imported/N.md".into()).unwrap().contains("typed, not saved yet"), "the typing reached the file");
+        assert!(w.docs.iter().any(|d| d.path.as_ref().is_some_and(|p| p.as_str() == "Imported/N.md")), "its tab stays");
+        assert!(!w.docs.iter().any(|d| d.path.as_ref().is_some_and(|p| p.as_str() == "Imported/M.md")), "the trashed note's tab closes");
     }
 }
