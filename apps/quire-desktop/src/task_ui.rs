@@ -452,9 +452,10 @@ pub(crate) fn mode_switch(ui: &mut Ui, mode: &mut AgendaMode) {
 /// The board of task notes (and open task lines with a status): a quire-view
 /// `from: tasks`, `layout: kanban`, grouped by status.
 pub(crate) fn board(ui: &mut Ui, ws: &Workspace, pal: &Palette) -> Option<NotePath> {
-    let spec_src = "from: tasks\nlayout: kanban\ngroup: status\nfields: [text, priority, due, time_spent, time_estimate, contexts]\n";
-    let Ok(spec) = views::parse(spec_src) else { return None };
-    let result = ws.run_view(spec_src, None);
+    // 0.12: card order, colours and lanes as kept on this device.
+    let spec_src = ws.agenda_board_spec();
+    let Ok(spec) = views::parse(&spec_src) else { return None };
+    let result = ws.run_view(&spec_src, None);
     let Ok(r) = result.as_ref() else { return None };
     // Only task notes: lines in notes have no status beyond open and done.
     let mut r = r.clone();
@@ -468,7 +469,8 @@ pub(crate) fn board(ui: &mut Ui, ws: &Workspace, pal: &Palette) -> Option<NotePa
         );
         return None;
     }
-    let b = crate::board_ui::Board { spec: &spec, result: &r, target: None, from: None, key: Id::unique("quire-agenda-board") };
+    let target = Some(quire_app::tasks_state::BoardTarget::Agenda);
+    let b = crate::board_ui::Board { spec: &spec, result: &r, target, from: None, key: Id::unique("quire-agenda-board") };
     match crate::board_ui::show(ui, ws, pal, &b) {
         Some(crate::view_ui::ViewAction::Open(p)) => Some(p),
         _ => None,
