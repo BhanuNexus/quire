@@ -255,7 +255,10 @@ impl ImportWizard {
                         Ok((rep, rec)) => {
                             ws.reload_index();
                             let msg = if rep.cancelled { "Import cancelled" } else { "Imported" };
-                            ws.notify(NoticeLevel::Info, format!("{msg}: {} notes and {} files ({})", rep.notes, rep.files, rec.title()));
+                            ws.notify(
+                                NoticeLevel::Info,
+                                format!("{msg}: {} notes and {} files in {}", rep.notes, rep.files, folder_label(&rec.folder)),
+                            );
                         }
                         Err(e) => ws.notify(NoticeLevel::Error, format!("Import failed: {e}")),
                     }
@@ -497,13 +500,26 @@ impl ImportWizard {
                 );
                 let mut facts = Vec::new();
                 if !rep.renamed.is_empty() {
-                    facts.push(format!("{} notes saved under another name because theirs was taken", rep.renamed.len()));
+                    facts.push(format!(
+                        "{} note{} saved under another name because the name was taken",
+                        rep.renamed.len(),
+                        if rep.renamed.len() == 1 { "" } else { "s" }
+                    ));
                 }
                 if rep.skipped_files > 0 {
-                    facts.push(format!("{} attachments already existed and were kept", rep.skipped_files));
+                    facts.push(format!(
+                        "{} attachment{} already existed and {} kept",
+                        rep.skipped_files,
+                        if rep.skipped_files == 1 { "" } else { "s" },
+                        if rep.skipped_files == 1 { "was" } else { "were" }
+                    ));
                 }
                 if rep.times_set > 0 {
-                    facts.push(format!("created and modified dates kept on {} files", rep.times_set));
+                    facts.push(format!(
+                        "created and modified dates kept on {} file{}",
+                        rep.times_set,
+                        if rep.times_set == 1 { "" } else { "s" }
+                    ));
                 }
                 if !rep.refused.is_empty() {
                     facts.push(format!("{} refused as unsafe", rep.refused.len()));
@@ -521,7 +537,7 @@ impl ImportWizard {
                 if let Some(plan) = &self.undone {
                     ui.label(
                         RichText::new(format!(
-                            "Undone: {} moved to .trash{}",
+                            "Undone: {} files moved to .trash{}",
                             plan.trash.len(),
                             if plan.edited.is_empty() { String::new() } else { format!("; {} you edited since stay", plan.edited.len()) }
                         ))
@@ -561,73 +577,76 @@ impl OverlayView for ImportWizard {
         let mut cancel_run = false;
         let mut start_read = false;
         let mut start_run = false;
-        egui::Modal::new(egui::Id::unique("quire-import-wizard")).show(ctx, |ui| {
-            let w = 620.0_f32.min(ctx.content_rect().width() - 48.0);
-            ui.set_width(w);
-            ui.set_max_width(w);
-            ui.heading("Import notes");
-            self.steps_bar(ui, pal);
-            ui.separator();
-            // One step's content in a box of its own, so the buttons stay put.
-            match self.step {
-                Step::Source => self.source_step(ui, pal),
-                Step::Preview => self.preview_step(ui, pal, ctx.content_rect().height()),
-                Step::Folder => self.folder_step(ui, ws, pal),
-                Step::Importing => self.importing_step(ui, pal),
-                Step::Report => self.report_step(ui, ws, pal),
-            }
-            ui.add_space(8.0);
-            ui.separator();
-            ui.horizontal(|ui| match self.step {
-                Step::Source => {
-                    if ui.add_enabled(!self.typed.trim().is_empty(), egui::Button::new("Read it")).clicked() {
-                        start_read = true;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        close = true;
-                    }
+        egui::Modal::new(egui::Id::unique("quire-import-wizard")).frame(egui::Frame::popup(&ctx.global_style()).fill(pal.panel)).show(
+            ctx,
+            |ui| {
+                let w = 620.0_f32.min(ctx.content_rect().width() - 48.0);
+                ui.set_width(w);
+                ui.set_max_width(w);
+                ui.heading("Import notes");
+                self.steps_bar(ui, pal);
+                ui.separator();
+                // One step's content in a box of its own, so the buttons stay put.
+                match self.step {
+                    Step::Source => self.source_step(ui, pal),
+                    Step::Preview => self.preview_step(ui, pal, ctx.content_rect().height()),
+                    Step::Folder => self.folder_step(ui, ws, pal),
+                    Step::Importing => self.importing_step(ui, pal),
+                    Step::Report => self.report_step(ui, ws, pal),
                 }
-                Step::Preview => {
-                    if ui.button("Back").clicked() {
-                        go = Some(Step::Source);
+                ui.add_space(8.0);
+                ui.separator();
+                ui.horizontal(|ui| match self.step {
+                    Step::Source => {
+                        if ui.add_enabled(!self.typed.trim().is_empty(), egui::Button::new("Read it")).clicked() {
+                            start_read = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
                     }
-                    let ready = self.plan.as_ref().is_some_and(|p| !p.notes.is_empty());
-                    if ui.add_enabled(ready, egui::Button::new("Choose folder")).clicked() {
-                        go = Some(Step::Folder);
+                    Step::Preview => {
+                        if ui.button("Back").clicked() {
+                            go = Some(Step::Source);
+                        }
+                        let ready = self.plan.as_ref().is_some_and(|p| !p.notes.is_empty());
+                        if ui.add_enabled(ready, egui::Button::new("Choose folder")).clicked() {
+                            go = Some(Step::Folder);
+                        }
+                        if self.plan.as_ref().is_some_and(|p| p.notes.is_empty()) {
+                            ui.label(RichText::new("Nothing to import was found.").color(pal.warn));
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
                     }
-                    if self.plan.as_ref().is_some_and(|p| p.notes.is_empty()) {
-                        ui.label(RichText::new("Nothing to import was found.").color(pal.warn));
+                    Step::Folder => {
+                        if ui.button("Back").clicked() {
+                            go = Some(Step::Preview);
+                        }
+                        if ui.add_enabled(self.clash_rx.is_none(), egui::Button::new("Import")).clicked() {
+                            start_run = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
                     }
-                    if ui.button("Cancel").clicked() {
-                        close = true;
+                    Step::Importing => {
+                        if ui.button("Cancel import").clicked() {
+                            cancel_run = true;
+                        }
                     }
-                }
-                Step::Folder => {
-                    if ui.button("Back").clicked() {
-                        go = Some(Step::Preview);
+                    Step::Report => {
+                        if ui.button("Close").clicked() {
+                            close = true;
+                        }
+                        if self.result.as_ref().is_some_and(Result::is_err) && ui.button("Back to the start").clicked() {
+                            go = Some(Step::Source);
+                        }
                     }
-                    if ui.add_enabled(self.clash_rx.is_none(), egui::Button::new("Import")).clicked() {
-                        start_run = true;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        close = true;
-                    }
-                }
-                Step::Importing => {
-                    if ui.button("Cancel import").clicked() {
-                        cancel_run = true;
-                    }
-                }
-                Step::Report => {
-                    if ui.button("Close").clicked() {
-                        close = true;
-                    }
-                    if self.result.as_ref().is_some_and(Result::is_err) && ui.button("Back to the start").clicked() {
-                        go = Some(Step::Source);
-                    }
-                }
-            });
-        });
+                });
+            },
+        );
         if start_read {
             self.start_reading();
         }

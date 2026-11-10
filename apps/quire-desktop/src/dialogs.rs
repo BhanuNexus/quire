@@ -267,30 +267,33 @@ pub(crate) fn settings(ctx: &egui::Context, st: &mut SettingsState, ws: &mut Wor
             ui.set_height(body_h);
             // Scrolls on a short window: there are more tabs than 480 points hold.
             egui::ScrollArea::vertical().id_salt("quire-settings-tabs").max_height(body_h).auto_shrink([true, false]).show(ui, |ui| {
-                ui.set_width(132.0);
-                let mut tab = |ui: &mut Ui, value: SettingsTab, label: String| {
-                    let r = crate::theme::row(ui, st.tab == value, 28.0, pal, |painter, rect| {
-                        painter.text(
-                            egui::pos2(rect.left() + 8.0, rect.center().y),
-                            egui::Align2::LEFT_CENTER,
-                            label,
-                            egui::FontId::proportional(13.5),
-                            if st.tab == value { pal.strong } else { pal.text },
-                        );
-                    });
-                    if r.clicked() {
-                        st.tab = value;
+                // The scroll area keeps the parent's (sideways) layout: stack the tabs.
+                ui.vertical(|ui| {
+                    ui.set_width(132.0);
+                    let mut tab = |ui: &mut Ui, value: SettingsTab, label: String| {
+                        let r = crate::theme::row(ui, st.tab == value, 28.0, pal, |painter, rect| {
+                            painter.text(
+                                egui::pos2(rect.left() + 8.0, rect.center().y),
+                                egui::Align2::LEFT_CENTER,
+                                label,
+                                egui::FontId::proportional(13.5),
+                                if st.tab == value { pal.strong } else { pal.text },
+                            );
+                        });
+                        if r.clicked() {
+                            st.tab = value;
+                        }
+                    };
+                    tab(ui, SettingsTab::Editor, "Editor".into());
+                    if !ai_replaced {
+                        tab(ui, SettingsTab::Ai, "AI & search".into());
                     }
-                };
-                tab(ui, SettingsTab::Editor, "Editor".into());
-                if !ai_replaced {
-                    tab(ui, SettingsTab::Ai, "AI & search".into());
-                }
-                tab(ui, SettingsTab::Sync, "Sync".into());
-                for t in &feature_tabs {
-                    tab(ui, SettingsTab::Feature(t.id), (t.label)(ws));
-                }
-                tab(ui, SettingsTab::About, "About".into());
+                    tab(ui, SettingsTab::Sync, "Sync".into());
+                    for t in &feature_tabs {
+                        tab(ui, SettingsTab::Feature(t.id), (t.label)(ws));
+                    }
+                    tab(ui, SettingsTab::About, "About".into());
+                });
             });
             ui.separator();
             ui.vertical(|ui| {

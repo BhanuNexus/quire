@@ -132,6 +132,8 @@ fn show_page(ui: &mut Ui, ws: &mut Workspace, pal: &Palette, st: &mut HomeUi) ->
     // `/` goes to quick capture, unless something is being typed.
     if cfg.shows("capture") && !ui.ctx().egui_wants_keyboard_input() && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Slash)) {
         ui.memory_mut(|m| m.request_focus(capture_id));
+        // The key's own text event would be typed into the box.
+        ui.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Text(t) if t == "/")));
     }
     egui::ScrollArea::vertical().id_salt("quire-home").auto_shrink([false, false]).show(ui, |ui| {
         ui.vertical_centered(|ui| {

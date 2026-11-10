@@ -367,10 +367,11 @@ impl OverlayView for LintFolderDialog {
         if self.rx.is_some() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
-        let mut go_read = false;
+        // Enter in the folder box previews.
+        let mut go_read = self.stage == Stage::Choose && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
         let mut go_write = false;
         let mut undo = false;
-        egui::Modal::new(egui::Id::unique("quire-lint-folder")).show(ctx, |ui| {
+        egui::Modal::new(egui::Id::unique("quire-lint-folder")).frame(egui::Frame::popup(&ctx.global_style()).fill(pal.panel)).show(ctx, |ui| {
             let w = 680.0_f32.min(ctx.content_rect().width() - 48.0);
             ui.set_width(w);
             ui.set_max_width(w);
@@ -400,7 +401,7 @@ impl OverlayView for LintFolderDialog {
                         ui.label("Reading the notes…");
                     });
                 }
-                Stage::Review => self.review(ui, pal, (ctx.content_rect().height() - 300.0).clamp(70.0, 220.0)),
+                Stage::Review => self.review(ui, pal, (ctx.content_rect().height() - 300.0).clamp(70.0, 320.0)),
                 Stage::Writing => {
                     let n = self.to_write.len();
                     let done = ws.features.switch.apply.as_ref().map_or(n, |a| a.next);
@@ -508,7 +509,7 @@ impl LintFolderDialog {
             }
         });
         let n = plan.files.len();
-        let row_h = ui.text_style_height(&egui::TextStyle::Body) + 6.0;
+        let row_h = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
         // The list above, the diff of the chosen note below: side by side
         // the list's scroll area measured wider than its column.
         let list_h = (body_h * 0.4).max(56.0);
@@ -522,15 +523,17 @@ impl LintFolderDialog {
                     ui.horizontal(|ui| {
                         ui.checkbox(&mut self.ticked[i], "");
                         let p = &plan.files[i].path;
-                        let w = ui.available_width().max(20.0);
-                        if ui
-                            .add_sized(
-                                [w, row_h - 4.0],
-                                Button::selectable(self.shown == i, RichText::new(p.as_str()).size(12.5)).truncate(),
-                            )
-                            .on_hover_text(p.as_str())
-                            .clicked()
-                        {
+                        let selected = self.shown == i;
+                        let bg = ui.painter().add(egui::Shape::Noop);
+                        let label =
+                            egui::Label::new(RichText::new(p.as_str()).size(12.5).color(if selected { pal.accent } else { pal.text }))
+                                .truncate()
+                                .sense(egui::Sense::click());
+                        let r = ui.add(label).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(p.as_str());
+                        if selected {
+                            ui.painter().set(bg, egui::Shape::rect_filled(r.rect.expand2(egui::vec2(4.0, 1.0)), 4.0, pal.hover));
+                        }
+                        if r.clicked() {
                             self.shown = i;
                             self.diff = None;
                         }

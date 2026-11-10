@@ -998,9 +998,12 @@ pub(crate) fn sidebar(
 pub(crate) fn surface_insights(ui: &mut egui::Ui, ws: &Workspace, path: &NotePath, pal: &Palette) {
     egui::ScrollArea::vertical().id_salt("quire-surface-insights").auto_shrink([false, false]).show(ui, |ui| {
         ui.add_space(6.0);
-        ui.label(RichText::new(path.file_name()).strong().color(pal.strong));
         let ext = path.as_str().rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+        // Home has no file: its name is a label, not a path.
+        let name = if ext == "quire-home" { "Home" } else { path.file_name() };
+        ui.label(RichText::new(name).strong().color(pal.strong));
         let what = match ext.as_str() {
+            "quire-home" => "Your start page: recent and pinned notes, today, the Inbox, quick capture. Set it up in Settings → Home",
             "base" => "Obsidian Base: a saved view of notes and their properties",
             "canvas" => "Canvas",
             "pdf" => "PDF",
