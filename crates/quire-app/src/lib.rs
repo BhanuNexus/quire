@@ -55,6 +55,7 @@ pub mod session;
 pub mod settings;
 pub mod srs_state;
 pub mod suggest;
+pub mod switch_state;
 pub mod sync;
 pub mod task_timer;
 pub mod tasks_state;

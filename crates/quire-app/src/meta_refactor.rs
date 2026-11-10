@@ -474,7 +474,7 @@ impl Workspace {
 
     /// Current text of a note: the open document's, else the file's (not
     /// the index's copy, which can lag behind a change made elsewhere).
-    fn note_text(&self, p: &NotePath) -> Option<String> {
+    pub(crate) fn note_text(&self, p: &NotePath) -> Option<String> {
         if let Some(d) = self.docs.iter().find(|d| d.path.as_ref() == Some(p)) {
             return Some(d.text().to_string());
         }
@@ -616,7 +616,7 @@ impl Workspace {
         Some(batch)
     }
 
-    fn record_batch_entry(
+    pub(crate) fn record_batch_entry(
         &self,
         batch: &str,
         title: &str,

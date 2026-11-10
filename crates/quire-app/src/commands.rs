@@ -187,6 +187,12 @@ pub enum Command {
     GoToNextSibling,
     GoToPrevSibling,
     ShowHierarchy,
+    // 0.12 switching tools (`switch_state.rs`)
+    LintNote,
+    LintFolder,
+    OpenHome,
+    PinToHome,
+    UndoImport,
 }
 
 /// Which workstream's module handles a 0.9 command (design §6.2).
@@ -205,6 +211,8 @@ pub enum Owner {
     Secure,
     /// 0.12 typed links and hierarchy (`links_state.rs`).
     Links,
+    /// 0.12 switching tools (`switch_state.rs`).
+    Switch,
 }
 
 impl Command {
@@ -282,6 +290,7 @@ impl Command {
             | Self::AgentConnections
             | Self::ShowRecoveryKey => Owner::Secure,
             Self::AddTypedLink | Self::GoToParent | Self::GoToNextSibling | Self::GoToPrevSibling | Self::ShowHierarchy => Owner::Links,
+            Self::LintNote | Self::LintFolder | Self::OpenHome | Self::PinToHome | Self::UndoImport => Owner::Switch,
             _ => Owner::Core,
         }
     }
@@ -394,7 +403,7 @@ commands! {
     NewInFolder,      "Note",   "New note in folder…",            [], false;
     ResolveSyncConflicts,"Note","Resolve sync conflicts…",        [], false;
     MoveNote,         "Note",   "Move to folder…",                [], true;
-    ImportNotes,      "Note",   "Import notes (Logseq, Notion, Bear, Evernote)…", [], false;
+    ImportNotes,      "Note",   "Import notes…", [], false;
     PublishSite,      "Note",   "Publish as a website…",          [], false;
     OpenSettings,     "App",    "Settings…",                      [cmd("Comma")], false;
     SyncSettings,     "App",    "Sync settings…",                 [], false;
@@ -541,6 +550,12 @@ commands! {
     GoToNextSibling,  "Go",     "Go to next sibling",             [], false;
     GoToPrevSibling,  "Go",     "Go to previous sibling",         [], false;
     ShowHierarchy,    "View",   "Show hierarchy",                 [], false;
+    // ---- 0.12 switching tools: no default keys (Settings → Commands binds them).
+    LintNote,         "Note",   "Tidy this note (lint)",          [], true;
+    LintFolder,       "Note",   "Tidy notes in a folder…",        [], false;
+    OpenHome,         "Go",     "Home",                           [], false;
+    PinToHome,        "Note",   "Pin to Home (or unpin)",         [], true;
+    UndoImport,       "Note",   "Undo the last import",           [], false;
 }
 
 impl Command {

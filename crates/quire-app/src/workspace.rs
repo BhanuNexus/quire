@@ -440,7 +440,7 @@ impl Workspace {
         self.docs.iter().find(|d| d.id == id)
     }
 
-    fn doc_pos(&self, id: DocId) -> Option<usize> {
+    pub(crate) fn doc_pos(&self, id: DocId) -> Option<usize> {
         self.docs.iter().position(|d| d.id == id)
     }
 
@@ -1040,7 +1040,7 @@ impl Workspace {
     const RECENT_CAP: usize = 30;
 
     /// Put the active note at the front of the recent list.
-    fn track_recent(&mut self) {
+    pub(crate) fn track_recent(&mut self) {
         let Some(p) = self.active_doc().and_then(|d| d.path.clone()) else { return };
         if self.recent.first() != Some(&p) {
             self.recent.retain(|r| r != &p);
@@ -1055,6 +1055,13 @@ impl Workspace {
         let active = self.active_doc().and_then(|d| d.path.as_ref());
         let ix = self.index.read();
         self.recent.iter().filter(|p| Some(*p) != active && ix.get(p).is_some()).take(limit).cloned().collect()
+    }
+
+    /// Recently opened notes including the open one (Home is a tab of its own, so the note you
+    /// just left is one of the notes to come back to).
+    pub(crate) fn recent_with_active(&self, limit: usize) -> Vec<NotePath> {
+        let ix = self.index.read();
+        self.recent.iter().filter(|p| ix.get(p).is_some()).take(limit).cloned().collect()
     }
 
     /// Re-index and re-point open documents after a rename or move.
@@ -1415,6 +1422,8 @@ impl Workspace {
             }
             C::Save => {
                 if let Some(id) = self.active_doc().map(|d| d.id) {
+                    // 0.12: `[lint.format] on-save` tidies the note first (explicit saves only).
+                    self.lint_before_save(id);
                     self.save(id);
                 }
             }
@@ -1637,6 +1646,8 @@ impl Workspace {
             C::AddTypedLink | C::GoToParent | C::GoToNextSibling | C::GoToPrevSibling | C::ShowHierarchy => {
                 return crate::features::run(self, cmd);
             }
+            // 0.12 switching tools (`switch_state`).
+            C::LintNote | C::LintFolder | C::OpenHome | C::PinToHome | C::UndoImport => return crate::features::run(self, cmd),
         }
         None
     }

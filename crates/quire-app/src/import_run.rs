@@ -140,7 +140,7 @@ pub fn list(vault: &Vault) -> Vec<ImportRecord> {
         .list_under(RECORD_DIR)
         .unwrap_or_default()
         .iter()
-        .filter(|p| p.as_str().ends_with(".json"))
+        .filter(|p| std::path::Path::new(p.as_str()).extension().is_some_and(|e| e.eq_ignore_ascii_case("json")))
         .filter_map(|p| serde_json::from_str::<ImportRecord>(&vault.storage().read(p).ok()?).ok())
         .filter(|r| r.format <= RECORD_FORMAT && valid_id(&r.id))
         .collect();
