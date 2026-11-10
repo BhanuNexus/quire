@@ -38,6 +38,23 @@ tags: [meeting]
 `quire-template:` is left out of the notes made from the template (and the
 whole front matter, if it was the only field).
 
+## The default template for new notes
+
+`applies_to: ["*"]` makes a template the vault's default: every new note
+that no other template names gets it. A folder's own template wins over the
+default (`applies_to: [Meetings/]` in `Meetings/` and below; the deepest
+folder wins). They apply to:
+
+* **Ctrl+N** (a new empty note, in the open note's folder or the vault's top,
+  per Settings → Editing);
+* **a click on a link to a note that doesn't exist yet** (`[[Brand New]]`, or
+  or the "New note" row in Quick Open). That note is made at the top of the
+  vault, so the default applies, not a folder's template. Without a default
+  template it starts as `# Brand New`.
+
+Notes inside the templates folder are never templated. `quire-template:`
+questions without a default stay as `{{prompt:…}}` for you to fill in.
+
 ## Views
 
 `new: Templates/Project.md` in a `quire-view` block adds **+ New**, which
