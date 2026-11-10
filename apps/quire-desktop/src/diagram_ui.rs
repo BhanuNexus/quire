@@ -4,6 +4,8 @@
 //! preview, drag to pan, Ctrl+wheel (or a pinch) to zoom, double-click to
 //! reset; the buttons on the corner zoom, reset, show the diagram full
 //! screen (where the wheel zooms) and, in the editor, open its source.
+//! 0.12: a zoomed diagram is drawn again at the zoom's scale (once the zoom
+//! rests), so it stays sharp past 2×.
 
 use egui::{Color32, CursorIcon, Id, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 
@@ -47,6 +49,60 @@ impl Pan {
     fn is_default(&self) -> bool {
         *self == Self::default()
     }
+}
+
+/// How long the zoom has to rest before a diagram is drawn again at it.
+const REDRAW_AFTER: f64 = 0.25;
+
+/// What a zoomed diagram is drawn with (egui's temporary data, per diagram).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct Sharp {
+    /// The scale step the zoom asks for, and since when (egui time).
+    want: Option<f32>,
+    since: f64,
+    /// The last step drawn and shown (the engine keeps its picture).
+    shown: Option<f32>,
+}
+
+/// 0.12: the texture to draw `pic` with when it shows at `factor` times
+/// its size in points. A zoomed diagram is drawn again at the zoom's scale
+/// step ([`crate::typeset_ui::zoom_bucket`]) once the zoom has rested for
+/// [`REDRAW_AFTER`]; until then the sharpest picture drawn so far is
+/// stretched. The engine keeps a few such pictures (bounded).
+fn sharp_texture(ctx: &egui::Context, id: Id, pic: &Picture, job: &Job, factor: f32) -> egui::TextureId {
+    let key = id.with("sharp");
+    let mut st: Sharp = ctx.data(|d| d.get_temp(key)).unwrap_or_default();
+    let now = ctx.input(|i| i.time);
+    let want = crate::typeset_ui::zoom_bucket(factor);
+    if want != st.want {
+        st.want = want;
+        st.since = now;
+    }
+    let mut texture = pic.texture.id();
+    if let Some(b) = want {
+        let waited = now - st.since;
+        if waited >= REDRAW_AFTER {
+            match crate::typeset_ui::request_zoomed(ctx, job, b) {
+                Out::Ready(p) => {
+                    st.shown = Some(b);
+                    texture = p.texture.id();
+                }
+                Out::Pending => ctx.request_repaint_after(std::time::Duration::from_millis(50)),
+                Out::Failed(_) => {}
+            }
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(REDRAW_AFTER - waited));
+        }
+        // Meanwhile: the step shown before, if the engine still has it.
+        if texture == pic.texture.id()
+            && let Some(prev) = st.shown
+            && let Out::Ready(p) = crate::typeset_ui::request_zoomed(ctx, job, prev)
+        {
+            texture = p.texture.id();
+        }
+    }
+    ctx.data_mut(|d| d.insert_temp(key, st));
+    texture
 }
 
 /// What a click on a diagram's buttons asked for.
@@ -107,7 +163,9 @@ pub(crate) fn show(ui: &Ui, frame: Rect, pic: &Picture, source: &str, pal: &Pale
     // The picture, cut to its frame.
     let painter = ui.painter().with_clip_rect(frame.intersect(ui.clip_rect()));
     let shown = Rect::from_min_size(frame.min + pan.offset, frame.size() * pan.zoom);
-    painter.image(pic.texture.id(), shown, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+    let job = Job::Diagram { source: source.to_string(), dark: pal.dark };
+    let texture = sharp_texture(ctx, id, pic, &job, shown.width() / pic.size.x.max(1.0));
+    painter.image(texture, shown, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
     if !pan.is_default() {
         painter.rect_stroke(frame, 4.0, Stroke::new(1.0, pal.border), egui::StrokeKind::Inside);
     }
@@ -204,8 +262,9 @@ impl OverlayView for DiagramOverlay {
                     }
                     self.pan.keep_in(base, frame.size());
                     let shown = Rect::from_min_size(origin + self.pan.offset, base * self.pan.zoom);
+                    let texture = sharp_texture(ctx, Id::unique("quire-diagram-full-sharp"), &p, &job, shown.width() / p.size.x.max(1.0));
                     ui.painter().with_clip_rect(frame).image(
-                        p.texture.id(),
+                        texture,
                         shown,
                         Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
                         Color32::WHITE,
@@ -256,5 +315,45 @@ mod tests {
         let mut far = Pan { zoom: 1.0, offset: Vec2::new(5000.0, -5000.0) };
         far.keep_in(Vec2::new(300.0, 200.0), Vec2::new(300.0, 200.0));
         assert!(far.offset.x <= 260.0 && far.offset.y >= -160.0, "some of the picture stays in view: {far:?}");
+    }
+
+    /// 0.12: the stretched picture while zooming, a sharper one once the zoom rests.
+    #[cfg(feature = "typeset")]
+    #[test]
+    fn a_zoomed_diagram_is_drawn_again_once_the_zoom_rests() {
+        let ctx = egui::Context::default();
+        let job = Job::Diagram { source: "graph TD\n  Zoom --> Rest".into(), dark: false };
+        let frame = |t: f64, f: &mut dyn FnMut(&egui::Context)| {
+            let mut out = ctx.run_pass(egui::RawInput { time: Some(t), ..egui::RawInput::default() }, |c| f(c));
+            out.textures_delta.clear();
+        };
+        let start = std::time::Instant::now();
+        let base = loop {
+            let mut out = None;
+            frame(0.0, &mut |c| out = Some(crate::typeset_ui::request(c, &job)));
+            if let Some(Out::Ready(p)) = out {
+                break p;
+            }
+            assert!(start.elapsed().as_secs() < 60, "rendering took too long");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        let id = Id::unique("zoom-test");
+        let at = |t: f64, factor: f32| {
+            let mut tex = None;
+            frame(t, &mut |c| tex = Some(sharp_texture(c, id, &base, &job, factor)));
+            tex.unwrap()
+        };
+        assert_eq!(at(1.0, 1.2), base.texture.id(), "not zoomed past 1.5×: the picture as it is");
+        assert_eq!(at(1.1, 4.0), base.texture.id(), "just zoomed: stretched");
+        assert_eq!(at(1.2, 4.0), base.texture.id(), "still zooming");
+        let mut t = 1.5;
+        while at(t, 4.0) == base.texture.id() {
+            assert!(start.elapsed().as_secs() < 60, "never drawn again");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            t += 0.05;
+        }
+        // Zooming on to another step: the sharp picture stays until the new one is drawn.
+        let sharp = at(t, 4.0);
+        assert_eq!(at(t + 0.01, 7.0), sharp);
     }
 }

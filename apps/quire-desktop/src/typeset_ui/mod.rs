@@ -17,12 +17,24 @@ pub(crate) const AVAILABLE: bool = cfg!(feature = "typeset");
 #[cfg(feature = "typeset")]
 mod engine;
 #[cfg(feature = "typeset")]
-pub(crate) use engine::request;
+pub(crate) use engine::{request, request_zoomed, zoom_bucket};
 
 /// Quire Lite: nothing is ever drawn (callers check [`AVAILABLE`] first).
 #[cfg(not(feature = "typeset"))]
 pub(crate) fn request(_ctx: &egui::Context, _job: &Job) -> Out {
     Out::Pending
+}
+
+/// Quire Lite: nothing is drawn, so nothing is zoomed.
+#[cfg(not(feature = "typeset"))]
+pub(crate) fn request_zoomed(_ctx: &egui::Context, _job: &Job, _bucket: f32) -> Out {
+    Out::Pending
+}
+
+/// Quire Lite: no diagram is drawn again.
+#[cfg(not(feature = "typeset"))]
+pub(crate) const fn zoom_bucket(_factor: f32) -> Option<f32> {
+    None
 }
 
 /// What to draw.

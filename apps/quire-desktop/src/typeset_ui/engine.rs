@@ -30,6 +30,11 @@ struct Entry {
 pub(crate) struct Typesetter {
     ctx: egui::Context,
     cache: HashMap<u64, Entry>,
+    /// 0.12: diagrams drawn again for a zoom level, by (source hash, scale
+    /// bucket); a few of them, apart from `cache` so zooming never pushes
+    /// the note's other pictures out.
+    zoomed: HashMap<u64, Entry>,
+    zoomed_bytes: usize,
     clock: u64,
     bytes: usize,
     jobs: Sender<(u64, Job, f32)>,
@@ -42,6 +47,21 @@ const MAX_PIXELS: f32 = 4096.0;
 /// the least recently used go.
 const MAX_CACHED: usize = 600;
 const MAX_BYTES: usize = 256 * 1024 * 1024;
+/// Diagrams kept drawn for a zoom level, at most, and their texture memory.
+const MAX_ZOOMED: usize = 6;
+const MAX_ZOOMED_BYTES: usize = 160 * 1024 * 1024;
+
+/// The scale a zoomed diagram is drawn again at, for `factor` (its size on
+/// screen over its size in points): the next step up, so zooming within a
+/// step reuses one picture. `None` while the ordinary picture (drawn at
+/// 1.5×) is sharp enough.
+pub(crate) fn zoom_bucket(factor: f32) -> Option<f32> {
+    const STEPS: [f32; 6] = [2.0, 3.0, 4.0, 6.0, 8.0, 12.0];
+    if !factor.is_finite() || factor <= 1.5 {
+        return None;
+    }
+    Some(STEPS.iter().copied().find(|s| *s >= factor).unwrap_or(STEPS[STEPS.len() - 1]))
+}
 
 fn fontdb() -> Arc<usvg::fontdb::Database> {
     static DB: OnceLock<Arc<usvg::fontdb::Database>> = OnceLock::new();
@@ -112,7 +132,7 @@ impl Typesetter {
                 }
             })
             .expect("spawn the typesetting thread");
-        Self { ctx: ctx.clone(), cache: HashMap::new(), clock: 0, bytes: 0, jobs, done }
+        Self { ctx: ctx.clone(), cache: HashMap::new(), zoomed: HashMap::new(), zoomed_bytes: 0, clock: 0, bytes: 0, jobs, done }
     }
 
     /// Collect finished pictures. Call once per frame.
@@ -131,9 +151,46 @@ impl Typesetter {
                 self.bytes = self.bytes - e.bytes + bytes;
                 e.out = out;
                 e.bytes = bytes;
+            } else if let Some(e) = self.zoomed.get_mut(&d.key) {
+                self.zoomed_bytes = self.zoomed_bytes - e.bytes + bytes;
+                e.out = out;
+                e.bytes = bytes;
             }
         }
         self.evict();
+        self.evict_zoomed();
+    }
+
+    /// Keep at most [`MAX_ZOOMED`] zoomed pictures and [`MAX_ZOOMED_BYTES`]:
+    /// the least recently used go (pending ones stay).
+    fn evict_zoomed(&mut self) {
+        while self.zoomed.len() > MAX_ZOOMED || self.zoomed_bytes > MAX_ZOOMED_BYTES {
+            let oldest = self.zoomed.iter().filter(|(_, e)| !matches!(e.out, Out::Pending)).min_by_key(|(_, e)| e.used).map(|(k, _)| *k);
+            let Some(k) = oldest else { break };
+            if let Some(e) = self.zoomed.remove(&k) {
+                self.zoomed_bytes -= e.bytes;
+            }
+        }
+    }
+
+    /// A diagram drawn again at `bucket` times its size ([`zoom_bucket`]),
+    /// queued the first time it's asked for.
+    pub(crate) fn get_zoomed(&mut self, job: &Job, bucket: f32) -> Out {
+        let scale = self.ctx.pixels_per_point().max(1.0) * bucket;
+        let key = {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            ("zoomed", job).hash(&mut h);
+            scale.to_bits().hash(&mut h);
+            h.finish()
+        };
+        self.clock += 1;
+        if let Some(e) = self.zoomed.get_mut(&key) {
+            e.used = self.clock;
+            return e.out.clone();
+        }
+        self.zoomed.insert(key, Entry { out: Out::Pending, bytes: 0, used: self.clock });
+        let _ = self.jobs.send((key, job.clone(), scale));
+        Out::Pending
     }
 
     /// Drop the least recently used pictures until under both limits.
@@ -190,6 +247,14 @@ pub(crate) fn request(ctx: &egui::Context, job: &Job) -> Out {
     t.get(job)
 }
 
+/// [`Typesetter::get_zoomed`] on the app's one typesetter.
+pub(crate) fn request_zoomed(ctx: &egui::Context, job: &Job, bucket: f32) -> Out {
+    let mut slot = shared().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let t = slot.get_or_insert_with(|| Typesetter::new(ctx));
+    t.poll();
+    t.get_zoomed(job, bucket)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,5 +308,51 @@ mod tests {
         assert!(matches!(t.get(&bad), Out::Failed(_)));
         let Out::Ready(d) = t.get(&diagram) else { panic!("diagram should render") };
         assert!(d.size.x > 20.0 && d.size.y > 20.0);
+    }
+
+    #[test]
+    fn zoomed_diagrams_are_drawn_again_sharper_and_kept_few() {
+        assert_eq!(zoom_bucket(1.0), None);
+        assert_eq!(zoom_bucket(1.5), None);
+        assert_eq!(zoom_bucket(1.6), Some(2.0));
+        assert_eq!(zoom_bucket(2.5), Some(3.0));
+        assert_eq!(zoom_bucket(7.9), Some(8.0));
+        assert_eq!(zoom_bucket(50.0), Some(12.0));
+        assert_eq!(zoom_bucket(f32::NAN), None);
+        let ctx = egui::Context::default();
+        let mut t = Typesetter::new(&ctx);
+        let wait = |t: &mut Typesetter, job: &Job, bucket: Option<f32>| {
+            let start = std::time::Instant::now();
+            loop {
+                t.poll();
+                let out = match bucket {
+                    Some(b) => t.get_zoomed(job, b),
+                    None => t.get(job),
+                };
+                match out {
+                    Out::Ready(p) => return p,
+                    Out::Failed(e) => panic!("{e}"),
+                    Out::Pending => {}
+                }
+                assert!(start.elapsed().as_secs() < 60, "rendering took too long");
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        };
+        let job = Job::Diagram { source: "graph TD\n  A --> B --> C".into(), dark: false };
+        let base = wait(&mut t, &job, None);
+        let sharp = wait(&mut t, &job, Some(4.0));
+        // The same picture in points, with more pixels.
+        assert_eq!(sharp.size, base.size);
+        let (bw, sw) = (base.texture.size()[0] as f32, sharp.texture.size()[0] as f32);
+        assert!(sw > bw * 2.4, "{bw} → {sw}");
+        // Many zoom levels of many diagrams: only a few are kept.
+        for i in 0..MAX_ZOOMED + 4 {
+            let j = Job::Diagram { source: format!("graph TD\n  A{i} --> B"), dark: false };
+            let _ = wait(&mut t, &j, Some(2.0));
+        }
+        t.evict_zoomed();
+        assert!(t.zoomed.len() <= MAX_ZOOMED);
+        assert_eq!(t.zoomed.values().map(|e| e.bytes).sum::<usize>(), t.zoomed_bytes);
+        assert!(!t.cache.is_empty(), "the ordinary pictures stay");
     }
 }
