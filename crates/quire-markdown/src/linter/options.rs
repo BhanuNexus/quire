@@ -100,6 +100,15 @@ choice! {
     TagsCase { #[default] Keep = "keep", Lower = "lower" }
 }
 
+impl Options {
+    /// Whether `format` is fit to build the "date modified" value from: it
+    /// has text, no line break or other control character (which could write
+    /// more front matter lines), and doesn't open with `:`.
+    pub fn date_format_ok(format: &str) -> bool {
+        !format.trim().is_empty() && !format.chars().any(char::is_control) && !format.trim_start().starts_with(':')
+    }
+}
+
 impl Default for Options {
     fn default() -> Self {
         Self {

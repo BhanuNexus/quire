@@ -99,6 +99,12 @@ pub(super) struct Analysis {
     pub emphasis: Vec<Emph>,
     /// Inline code, inline math, inline HTML and link destinations.
     pub inline_protected: Vec<Range<usize>>,
+    /// The parser found a metadata block that doesn't start the note (a
+    /// `---` line near the start can do this). Code can then look like text,
+    /// so the linter leaves such a note alone.
+    pub stray_metadata: bool,
+    /// `[[...]]` spans (found by text, so also inside code; harmless there).
+    pub wikilinks: Vec<Range<usize>>,
 }
 
 impl Analysis {
@@ -114,6 +120,10 @@ impl Analysis {
             end -= 1;
         }
         self.line_of(end)
+    }
+
+    pub(super) fn in_wikilink(&self, byte: usize) -> bool {
+        self.wikilinks.iter().any(|r| r.start <= byte && byte < r.end)
     }
 
     pub(super) fn in_inline_protected(&self, byte: usize) -> bool {
@@ -146,6 +156,8 @@ pub(super) fn analyze(text: &str) -> Analysis {
         hard_breaks: HashSet::new(),
         emphasis: Vec::new(),
         inline_protected: Vec::new(),
+        stray_metadata: false,
+        wikilinks: Vec::new(),
     };
     let protect = |a: &mut Analysis, r: &Range<usize>| {
         let (f, l) = (a.line_of(r.start), a.last_line(text, r));
@@ -181,10 +193,16 @@ pub(super) fn analyze(text: &str) -> Analysis {
                         let (f, l) = (a.line_of(range.start), a.last_line(text, &range));
                         if range.start == 0 {
                             a.front = Some((f, l));
+                        } else {
+                            a.stray_metadata = true;
                         }
                         protect(&mut a, &range);
                     }
-                    Tag::MetadataBlock(_) | Tag::HtmlBlock => protect(&mut a, &range),
+                    Tag::MetadataBlock(_) => {
+                        a.stray_metadata |= range.start != 0;
+                        protect(&mut a, &range);
+                    }
+                    Tag::HtmlBlock => protect(&mut a, &range),
                     Tag::CodeBlock(_) => {
                         // Blank lines at the end of an unclosed fence are code too.
                         let (f, l) = (a.line_of(range.start), a.line_of(range.end.max(1) - 1));
@@ -297,6 +315,14 @@ pub(super) fn analyze(text: &str) -> Analysis {
             for &i in items.iter().filter(|i| **i != usize::MAX) {
                 a.items[i].list_adjacent = true;
             }
+        }
+    }
+    // Wikilink targets are names, not prose: no rule may edit inside `[[...]]`.
+    for (start, _) in text.match_indices("[[") {
+        let rest = &text[start + 2..];
+        let line_end = rest.find('\n').unwrap_or(rest.len());
+        if let Some(close) = rest[..line_end].find("]]") {
+            a.wikilinks.push(start..start + 2 + close + 2);
         }
     }
     a.inline_protected.sort_by_key(|r| r.start);

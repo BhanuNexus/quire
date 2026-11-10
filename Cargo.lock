@@ -5971,6 +5971,7 @@ dependencies = [
  "serde_json",
  "unicode-segmentation",
  "unicode-width",
+ "yaml-rust2",
 ]
 
 [[package]]

@@ -131,7 +131,12 @@ impl EditOp {
                 }
                 let style = quire_app::markdown::fields::preferred_style(text);
                 // Already linked this way: no change.
-                Ok(quire_app::markdown::fields::add_link(text, field, target, style).map_or_else(|| text.to_string(), |e| e.apply(text)))
+                match quire_app::markdown::fields::try_add_link(text, field, target, style) {
+                    Ok(edit) => Ok(edit.map_or_else(|| text.to_string(), |e| e.apply(text))),
+                    Err(why) => Err(EditError::Invalid(format!(
+                        "Can't add a “{field}” link without rewriting what the note has there ({why}); change that property by hand."
+                    ))),
+                }
             }
             Self::Properties { set, remove } => {
                 let mut out = text.to_string();

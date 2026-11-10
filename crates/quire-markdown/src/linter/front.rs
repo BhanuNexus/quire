@@ -5,6 +5,10 @@
 //! reader doesn't know pass through byte for byte. Front matter that doesn't
 //! look like plain `key: value` lines is left exactly as it is.
 
+use std::collections::BTreeMap;
+
+use yaml_rust2::{Yaml, YamlLoader};
+
 use crate::frontmatter::{self, Value};
 
 use super::options::{Options, Sort, TagsCase, TagsFormat};
@@ -110,6 +114,18 @@ fn entries(body: &str) -> Option<(Vec<Entry>, Vec<Line>)> {
     Some((out, lead))
 }
 
+/// A `&anchor`, `*alias` or `<<` merge key anywhere in the front matter.
+fn has_anchor_or_alias(body: &str) -> bool {
+    body.lines().any(|l| {
+        let t = l.trim_start();
+        if t.starts_with("<<:") || t.starts_with("- <<:") {
+            return true;
+        }
+        let b = l.as_bytes();
+        b.iter().enumerate().any(|(i, c)| matches!(c, b'&' | b'*') && (i == 0 || matches!(b[i - 1], b' ' | b'\t' | b'[' | b',' | b'{')))
+    })
+}
+
 fn tidy_key_line(line: &str) -> String {
     let Some((key, rest)) = key_of(line) else { return line.trim_end().to_string() };
     let value = rest.trim();
@@ -140,11 +156,11 @@ fn render_tags(key: &str, tags: &[String], flow: bool, eol: &str) -> Vec<(String
         return vec![(format!("{key}: []"), eol.to_string())];
     }
     if flow {
-        let items: Vec<String> = tags.iter().map(|t| frontmatter::yaml_scalar(t)).collect();
+        let items: Vec<String> = tags.iter().map(|t| frontmatter::yaml_text_scalar(t)).collect();
         return vec![(format!("{key}: [{}]", items.join(", ")), eol.to_string())];
     }
     let mut v = vec![(format!("{key}:"), eol.to_string())];
-    v.extend(tags.iter().map(|t| (format!("  - {}", frontmatter::yaml_scalar(t)), eol.to_string())));
+    v.extend(tags.iter().map(|t| (format!("  - {}", frontmatter::yaml_text_scalar(t)), eol.to_string())));
     v
 }
 
@@ -182,22 +198,19 @@ pub(super) fn tidy(text: &str, o: &Options) -> Result {
                 block.push_str(t);
                 block.push_str(if el.is_empty() { "\n" } else { el });
             }
-            let Some(fm) = frontmatter::parse(&format!("---\n{block}---\n")) else { continue };
-            let Some(raw) = fm.get("tags") else { continue };
-            if matches!(raw, Value::Map(_)) {
-                continue;
-            }
+            let Some(raw) = real_tags(&block) else { continue };
             let was_flow = e.lines[0].0.split_once(':').is_some_and(|(_, v)| v.trim_start().starts_with('['));
             let flow = match o.tags_format {
                 TagsFormat::Flow => true,
                 TagsFormat::List => false,
                 TagsFormat::Keep => was_flow,
             };
-            e.lines = render_tags(&e.key, &tag_items(raw, o.tags_case), flow, eol);
+            e.lines = render_tags(&e.key, &tag_items(&raw, o.tags_case), flow, eol);
         }
     }
 
-    let mut dup = false;
+    // YAML needs an anchor before its aliases, and sorting could swap them.
+    let mut dup = has_anchor_or_alias(&text[start..end]);
     for (i, e) in list.iter().enumerate() {
         dup |= list[..i].iter().any(|p| p.key == e.key);
     }
@@ -235,6 +248,10 @@ pub(super) fn tidy(text: &str, o: &Options) -> Result {
 /// Set `key` to `stamp` in the front matter (adding the key, or the front
 /// matter, if there is none).
 pub(super) fn set_modified(text: &str, key: &str, stamp: &str, eol: &str) -> Result {
+    // A stamp with a line break would write front matter lines of its own.
+    if stamp.chars().any(char::is_control) || key.chars().any(char::is_control) {
+        return Result::Unreadable;
+    }
     match locate(text) {
         None => {
             let rest = if text.trim().is_empty() { String::new() } else { format!("{eol}{text}") };
@@ -252,20 +269,108 @@ pub(super) fn set_modified(text: &str, key: &str, stamp: &str, eol: &str) -> Res
     }
 }
 
-fn normal_tags(fm: &frontmatter::FrontMatter) -> Vec<String> {
-    let mut v: Vec<String> = fm.get("tags").map(|t| tag_items(t, TagsCase::Lower)).unwrap_or_default();
-    v.sort();
-    v
+/// The `tags` entry as a real YAML parser reads it, if that is a plain
+/// string or a list of plain strings and nothing in the text would be lost
+/// by writing it again: no comment, anchor, alias, tag, block scalar or
+/// flow map. Anything else is left byte for byte.
+fn real_tags(block: &str) -> Option<Value> {
+    if block.contains(['&', '*', '!', '{', '}', '|', '>']) {
+        return None;
+    }
+    // A `#` that starts a word may be a comment. Quotes aren't tracked: a note that
+    // quotes a `#` is left alone too, which is the safe side.
+    if block.lines().any(|l| l.trim_start().starts_with('#') || l.contains(" #") || l.contains("\t#")) {
+        return None;
+    }
+    let docs = YamlLoader::load_from_str(block).ok()?;
+    let [Yaml::Hash(h)] = docs.as_slice() else { return None };
+    if h.len() != 1 {
+        return None;
+    }
+    let (_, v) = h.iter().next()?;
+    match v {
+        Yaml::String(s) if !s.contains(['\n', '\r']) => Some(Value::Str(s.clone())),
+        Yaml::Array(items) => {
+            let mut out = Vec::new();
+            for i in items {
+                match i {
+                    Yaml::String(s) if !s.contains(['\n', '\r']) => out.push(s.clone()),
+                    _ => return None,
+                }
+            }
+            Some(Value::List(out))
+        }
+        _ => None,
+    }
 }
 
-/// The front matter before and after means the same: the same keys and
-/// values, and the same tags once written one way.
-pub(super) fn same_meaning(before: &str, after: &str) -> bool {
-    let (Some(a), Some(b)) = (frontmatter::parse(before), frontmatter::parse(after)) else { return false };
-    let strip = |fm: &frontmatter::FrontMatter| {
-        let mut f = fm.fields.clone();
-        f.remove("tags");
-        f
+/// The front matter as a real YAML parser reads it: top-level keys to values.
+fn real_map(text: &str) -> Option<BTreeMap<String, Yaml>> {
+    let (start, end) = locate(text)?;
+    let docs = YamlLoader::load_from_str(&text[start..end]).ok()?;
+    let mut out = BTreeMap::new();
+    match docs.as_slice() {
+        [] | [Yaml::Null] => {}
+        [Yaml::Hash(h)] => {
+            for (k, v) in h {
+                // Same key written twice: don't guess which one wins.
+                if out.insert(format!("{k:?}"), v.clone()).is_some() {
+                    return None;
+                }
+            }
+        }
+        _ => return None,
+    }
+    Some(out)
+}
+
+/// Whether the front matter is valid YAML (a note that isn't is left alone).
+pub(super) fn is_valid_yaml(text: &str) -> bool {
+    real_map(text).is_some()
+}
+
+/// Tags written one way: items split, `#` and spaces tidied, lower-cased,
+/// sorted. Items that aren't strings keep their type, so `true` is not `"true"`.
+fn normal_tags(v: &Yaml) -> Option<Vec<String>> {
+    let norm = |s: &str| {
+        let items = Value::Str(s.to_string()).as_list();
+        tag_items(&Value::List(items), TagsCase::Lower)
     };
-    strip(&a) == strip(&b) && normal_tags(&a) == normal_tags(&b)
+    let mut out = match v {
+        Yaml::String(s) => norm(s).into_iter().map(|t| format!("S:{t}")).collect::<Vec<_>>(),
+        Yaml::Array(items) => {
+            let mut out = Vec::new();
+            for i in items {
+                match i {
+                    Yaml::String(s) => {
+                        out.extend(tag_items(&Value::List(vec![s.clone()]), TagsCase::Lower).into_iter().map(|t| format!("S:{t}")));
+                    }
+                    other => out.push(format!("{other:?}")),
+                }
+            }
+            out
+        }
+        Yaml::Null => Vec::new(),
+        _ => return None,
+    };
+    out.sort();
+    out.dedup();
+    Some(out)
+}
+
+/// The front matter before and after means the same, as a real YAML parser
+/// reads it: every key has the same value. The one exception is `tags` when
+/// a tags rule is on: those need the same tags once written one way.
+pub(super) fn same_meaning(before: &str, after: &str, o: &Options) -> bool {
+    let (Some(a), Some(b)) = (real_map(before), real_map(after)) else { return false };
+    let tags_rule = o.tags_format != TagsFormat::Keep || o.tags_case != TagsCase::Keep;
+    let tags_key = format!("{:?}", Yaml::String("tags".into()));
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().all(|(k, va)| {
+        b.get(k).is_some_and(|vb| {
+            if tags_rule && *k == tags_key { matches!((normal_tags(va), normal_tags(vb)), (Some(x), Some(y)) if x == y) } else { va == vb }
+        })
+    })
 }

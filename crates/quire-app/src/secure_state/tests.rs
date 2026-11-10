@@ -671,3 +671,20 @@ fn walk(root: &Path) -> Vec<String> {
     }
     out
 }
+
+#[test]
+fn tidy_leaves_notes_in_locked_folders_alone() {
+    let (_d, root) = vault_dir(&[("Journal/Day.md", "# Day\ntext   \n"), ("Plain.md", "# Plain\n")]);
+    let mut ws = open(&root);
+    lock_and_wait(&mut ws, "Journal");
+    let id = ws.open_note(&np("Journal/Day.md")).unwrap();
+    ws.active_doc_mut().unwrap().replace_minimally("# Day\ntext   \nmore   \n");
+    ws.lint_active_note();
+    assert_eq!(&*ws.active_doc().unwrap().text(), "# Day\ntext   \nmore   \n");
+    // Nor on save, with "tidy on save" on.
+    let mut lint = ws.switch_prefs().lint.clone();
+    lint.on_save = true;
+    assert!(ws.set_lint_options(lint));
+    assert!(ws.save(id));
+    assert_eq!(&*ws.vault().unwrap().read(&np("Journal/Day.md")).unwrap(), "# Day\ntext   \nmore   \n");
+}

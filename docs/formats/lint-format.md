@@ -30,7 +30,7 @@ tags-format = "keep"         # "flow": tags: [a, b]; "list": one per line; "keep
 tags-case = "keep"           # "lower"
 date-modified = false        # set a property when a note is tidied or saved
 date-modified-key = "modified"
-date-format = "%Y-%m-%dT%H:%M"   # strftime
+date-format = "%Y-%m-%dT%H:%M"   # strftime; no line breaks, not starting with ":"
 link-spacing = true          # [[ Note | alias ]] becomes [[Note|alias]]
 emphasis = "keep"            # "asterisk" (*x*) or "underscore" (_x_)
 strong = "keep"              # "asterisk" (**x**) or "underscore" (__x__)
@@ -45,8 +45,17 @@ unreadable section and the defaults are used, as for every section.
 
 * code blocks (fenced and indented), inline code, math (`$…$`, `$$…$$`),
   HTML (blocks and inline), and the destinations of links;
-* front matter it can't read as plain `key: value` lines (comments and values
-  it doesn't know pass through byte for byte);
+* front matter it can't read as plain `key: value` lines, or that isn't valid
+  YAML (comments and values it doesn't know pass through byte for byte). Tags
+  are rewritten only when they are plain text items: a `tags` value with a
+  comment, an anchor or alias, a flow map or a block scalar is left as it is.
+  A tag YAML would read as something else (`"true"`, `"123"`, a date, an item
+  with a comma) is written quoted;
+* a note where the parser finds a front matter block that doesn't start the
+  note (a `---` line near the start can do that), and a file that isn't
+  UTF-8 text;
+* with `front-matter-sort`, a front matter that has anchors or aliases (their
+  order matters in YAML);
 * a note whose front matter has `lint: false`, notes in `exclude`, templates,
   and notes in locked folders;
 * a file with old Mac line endings (a lone CR).
@@ -65,7 +74,9 @@ notes, that
 * nothing but whitespace and markup changes, and no rule needs that check;
 * code, math and HTML come out as they went in;
 * CRLF stays CRLF, and lines the linter adds use the file's majority ending;
-* unreadable front matter comes out as it went in.
+* unreadable front matter comes out as it went in;
+* the front matter's YAML, read by a real YAML parser, means the same after
+  tidying (apart from the keys a rule is for: tags, the "date modified" key).
 
 "Date modified" is set only when the note was edited by hand (saved) or some
 other rule changed it, so tidying a tidy note changes nothing. The line

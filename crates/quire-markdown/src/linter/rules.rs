@@ -315,7 +315,7 @@ pub(super) fn emphasis(text: &str, a: &Analysis, o: &Options) -> String {
         if target == '_' && (is_word(before) || is_word(after)) {
             continue;
         }
-        if a.in_inline_protected(s) {
+        if a.in_inline_protected(s) || a.in_wikilink(s) || a.in_wikilink(end - 1) {
             continue;
         }
         edits.push((s, n, target));

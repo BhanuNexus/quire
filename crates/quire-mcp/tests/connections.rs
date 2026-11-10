@@ -399,3 +399,38 @@ fn typed_links_and_hierarchy_for_a_limited_client() {
     let hidden = replies.iter().find(|r| r["id"] == 8).unwrap().to_string();
     assert!(hidden.contains("not_found"), "{hidden}");
 }
+
+/// Two visible notes that share only a hidden parent are not reported as
+/// siblings, and `next`/`previous` don't step through that parent either.
+#[test]
+fn siblings_under_a_hidden_parent_are_not_reported() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("vault");
+    std::fs::create_dir_all(root.join(".quire/shared")).unwrap();
+    let files = [
+        ("Hidden.md", "# Hidden zqxhidden\n"),
+        ("Apple.md", "# Apple #ok\nup:: [[Hidden]]\n"),
+        ("Berry.md", "# Berry #ok\nup:: [[Hidden]]\n"),
+        ("Shown.md", "# Shown #ok\n"),
+        ("Cherry.md", "# Cherry #ok\nup:: [[Shown]]\n"),
+        ("Date.md", "# Date #ok\nup:: [[Shown]]\nsame:: [[Apple]]\n"),
+    ];
+    for (p, t) in files {
+        std::fs::write(root.join(p), t).unwrap();
+    }
+    std::fs::write(root.join(".quire/shared/agent-policy.toml"), "format = 1\n[clients.\"mcp:probe\"]\nallow_tags = [\"ok\"]\n").unwrap();
+    let srv = server(&root, Some("probe"));
+    let replies = run(&srv, &[call("hierarchy", &json!({"path": "Apple.md"})), call("hierarchy", &json!({"path": "Cherry.md"}))]);
+    let by_id = |id: u64| replies.iter().find(|r| r["id"] == id).unwrap()["result"]["structuredContent"].clone();
+    let apple = by_id(1);
+    // Only the explicit `same` link (between two visible notes) is a sibling.
+    let sibs: Vec<&str> = apple["siblings"].as_array().unwrap().iter().filter_map(|d| d["path"].as_str()).collect();
+    assert_eq!(sibs, ["Date.md"], "{apple}");
+    assert!(apple["next"].is_null() && apple["previous"].is_null(), "{apple}");
+    // Under a visible parent, siblings are as before.
+    let cherry = by_id(2);
+    let sibs: Vec<&str> = cherry["siblings"].as_array().unwrap().iter().filter_map(|d| d["path"].as_str()).collect();
+    assert_eq!(sibs, ["Date.md"], "{cherry}");
+    assert_eq!(cherry["next"], "Date.md");
+    assert!(!replies.iter().map(Value::to_string).collect::<String>().contains("zqx"));
+}

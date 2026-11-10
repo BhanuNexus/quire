@@ -630,6 +630,35 @@ pub fn yaml_scalar(s: &str) -> String {
     if risky { format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")) } else { s.to_string() }
 }
 
+/// Whether the front matter at the start of `src` is valid YAML, read by a
+/// real YAML parser (the reader here is lenient). `None` without front matter.
+pub fn yaml_valid(src: &str) -> Option<bool> {
+    let fm = parse(src)?;
+    let block = &src[..fm.range.end];
+    let mut lines: Vec<&str> = block.split_inclusive('\n').collect();
+    lines.remove(0);
+    lines.pop();
+    Some(yaml_rust2::YamlLoader::load_from_str(&lines.concat()).is_ok())
+}
+
+/// Like [`yaml_scalar`], for a value that is text (a tag).
+///
+/// A word that YAML would read as a boolean, number, date or null is quoted,
+/// and so is one with a character that ends an item in a flow list (`,` `[`
+/// `]` `{` `}`).
+pub fn yaml_text_scalar(s: &str) -> String {
+    let t = s.trim();
+    let lower = t.to_ascii_lowercase();
+    let typed = matches!(lower.as_str(), "true" | "false" | "on" | "off" | "y" | "n" | "yes" | "no" | "null" | "~")
+        || t.parse::<f64>().is_ok()
+        || lower.starts_with("0x")
+        || lower.starts_with("0o")
+        || lower.starts_with(['.', '+', '-']) && lower[1..].starts_with(|c: char| c.is_ascii_digit() || c == '.' || c == 'i' || c == 'n')
+        || is_date(t)
+        || t.contains([',', '[', ']', '{', '}']);
+    if typed && !t.chars().any(needs_escape) { format!("\"{}\"", t.replace('\\', "\\\\").replace('"', "\\\"")) } else { yaml_scalar(t) }
+}
+
 /// Characters a scalar can't hold as they are: line breaks (including
 /// Unicode's) and other control characters.
 fn needs_escape(c: char) -> bool {
