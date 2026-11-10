@@ -1,0 +1,31 @@
+[
+  {
+    "title": "Project/Quire",
+    "uid": "pg0000001",
+    "create-time": 1793527200000,
+    "edit-time": 1793613600000,
+    "children": [
+      {"string": "# A heading block", "uid": "blk000001", "heading": 1},
+      {"string": "{{[[TODO]]}} ship the importer", "uid": "blk000002"},
+      {"string": "{{[[DONE]]}} write tests", "uid": "blk000003",
+        "children": [
+          {"string": "Nested child with __italic__ and ^^highlight^^", "uid": "blk000004"}
+        ]
+      },
+      {"string": "Fast editor", "uid": "blk000005"},
+      {"string": "Shipped on [[November 1st, 2026]] #[[big win]] see [the language]([[Rust lang]])", "uid": "blk000006"},
+      {"string": "Status:: active", "uid": "blk000007"},
+      {"string": "Code `__init__` and `((uid))` stay", "uid": "blk000008"},
+      {"string": "{{[[kanban]]}}", "uid": "blk000009"},
+      {"string": "Missing ((nothere01)) ref", "uid": "blk000010"}
+    ]
+  },
+  {
+    "title": "November 1st, 2026",
+    "uid": "11-01-2026",
+    "children": [
+      {"string": "Met about ((blk000005))", "uid": "blk000011"},
+      {"string": "{{[[embed]]: [[Project/Quire]]}}", "uid": "blk000012"}
+    ]
+  }
+]

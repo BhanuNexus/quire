@@ -10,7 +10,7 @@ use quire_vault::{NotePath, sanitize_title};
 
 use crate::html::{to_markdown, unescape};
 use crate::yaml::{Field, front_matter};
-use crate::{ImportPlan, PlannedFile, PlannedNote, Tree, attachment, file_name};
+use crate::{ImportPlan, PlannedFile, PlannedNote, Stamp, Tree, attachment, file_name};
 
 struct Resource {
     bytes: Vec<u8>,
@@ -49,7 +49,7 @@ pub(crate) fn plan(tree: &Tree) -> ImportPlan {
                 let embed_name = file_name(&target).to_string();
                 let embed = if r.mime.starts_with("image/") { format!("![[{embed_name}]]") } else { format!("[[{embed_name}]]") };
                 by_hash.insert(hash, embed);
-                plan.files.push(PlannedFile { path: NotePath::new(target), bytes: r.bytes });
+                plan.files.push(PlannedFile { path: NotePath::new(target), bytes: r.bytes, times: Stamp::default() });
             }
 
             let content = first(note, "content").map(cdata).unwrap_or_default();
@@ -86,7 +86,11 @@ pub(crate) fn plan(tree: &Tree) -> ImportPlan {
             let name = if name.is_empty() { "Untitled".into() } else { name };
             let rel = if folder.is_empty() { format!("{name}.md") } else { format!("{folder}/{name}.md") };
             let rel = crate::unique_name(&mut taken_notes, &rel);
-            plan.notes.push(PlannedNote { path: NotePath::new(rel), content: format!("{}# {title}\n\n{body}", front_matter(&fields)) });
+            plan.notes.push(PlannedNote {
+                path: NotePath::new(rel),
+                content: format!("{}# {title}\n\n{body}", front_matter(&fields)),
+                times: Stamp::default(),
+            });
         }
         if count == 0 {
             plan.warnings.push(format!("{path}: no notes found"));

@@ -1,0 +1,12 @@
+{
+  "color": "DEFAULT",
+  "isTrashed": false,
+  "isPinned": false,
+  "isArchived": true,
+  "textContent": "An idea about importers\nsecond line",
+  "title": "",
+  "userEditedTimestampUsec": 1793613600000000,
+  "createdTimestampUsec": 1793527200000000,
+  "attachments": [{"filePath": "photo.jpg", "mimetype": "image/jpeg"}, {"filePath": "gone.png", "mimetype": "image/png"}],
+  "annotations": [{"description": "", "source": "WEBLINK", "title": "Rust book", "url": "https://doc.rust-lang.org/book/"}]
+}

@@ -1,6 +1,6 @@
 [package]
 name = "quire-import"
-description = "Import notes from Logseq, Bear, Notion, Evernote and Markdown folders into a Quire vault"
+description = "Import notes from Logseq, Bear, Notion, Evernote, Roam, Google Keep, Joplin, Day One, HTML and Markdown folders into a Quire vault"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -27,6 +27,8 @@ image.workspace = true
 yaml-rust2.workspace = true
 # 0.10: dates in Bases formulas
 chrono.workspace = true
+# 0.12: Roam, Keep and Day One exports are JSON (already in the tree).
+serde_json.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

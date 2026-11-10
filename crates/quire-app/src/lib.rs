@@ -31,6 +31,8 @@ pub mod geo;
 pub mod git;
 pub mod graph;
 pub mod history_ops;
+// 0.12 switching tools: imports with a record, and the Markdown linter's app side.
+pub mod import_run;
 pub mod jobs;
 pub mod keymap;
 // 0.12: typed links and hierarchy.

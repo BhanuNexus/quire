@@ -5917,6 +5917,7 @@ dependencies = [
  "md5",
  "quire-markdown",
  "quire-vault",
+ "serde_json",
  "sha2",
  "tempfile",
  "ureq",

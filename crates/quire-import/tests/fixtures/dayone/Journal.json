@@ -1,0 +1,23 @@
+{
+  "metadata": {"version": "1.0"},
+  "entries": [
+    {
+      "uuid": "E1",
+      "creationDate": "2026-11-01T10:00:00Z",
+      "modificationDate": "2026-11-01T11:00:00Z",
+      "starred": true,
+      "tags": ["walk", "river day"],
+      "location": {"placeName": "Gasworks Park", "localityName": "Seattle", "administrativeArea": "Washington", "country": "United States", "latitude": 47.6456, "longitude": -122.3345},
+      "weather": {"conditionsDescription": "Clear", "temperatureCelsius": 12.2},
+      "photos": [{"identifier": "PH1", "md5": "abc123", "type": "jpeg"}, {"identifier": "PH2", "md5": "missing", "type": "jpeg"}],
+      "text": "# A walk by the river\n\n![](dayone-moment://PH1)\n\nHello\\! It was 1\\. nice \\(really\\)\n\n1\\. Not a list\n"
+    },
+    {
+      "uuid": "E2",
+      "creationDate": "2026-11-02T09:30:00Z",
+      "modificationDate": "2026-11-02T09:30:00Z",
+      "audios": [{"identifier": "def456", "format": "m4a"}],
+      "text": ""
+    }
+  ]
+}
