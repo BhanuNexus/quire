@@ -24,6 +24,8 @@ pub mod fields;
 // 0.11: the formatting toolbar and the Format commands, on every cursor.
 pub mod format;
 pub mod frontmatter;
+// 0.12: the Markdown linter and formatter.
+pub mod linter;
 pub mod outline;
 pub mod render;
 mod scan;
