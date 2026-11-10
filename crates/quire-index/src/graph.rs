@@ -8,6 +8,7 @@ use quire_markdown::Link;
 use quire_vault::NotePath;
 
 use crate::record::NoteRecord;
+use crate::relations::{LinkConfig, Relations};
 use crate::tokenize::fold_str;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,6 +122,8 @@ pub struct LinkGraph {
     outgoing: HashMap<NotePath, Vec<NotePath>>,
     backlinks: HashMap<NotePath, Vec<Backlink>>,
     unresolved: HashMap<String, Vec<NotePath>>,
+    /// 0.12: typed links and the hierarchy, built in the same pass.
+    relations: Relations,
 }
 
 fn line_around(src_plain_free: &str, link: &Link) -> String {
@@ -130,10 +133,16 @@ fn line_around(src_plain_free: &str, link: &Link) -> String {
 }
 
 impl LinkGraph {
-    /// `sources` provides raw text for backlink context lines.
-    pub fn build<'a>(records: impl Iterator<Item = &'a NoteRecord> + Clone, source: &dyn Fn(&NotePath) -> Option<&'a str>) -> Self {
+    /// `sources` provides raw text for backlink context lines; `cfg` says
+    /// which typed links are hierarchy edges.
+    pub fn build<'a>(
+        records: impl Iterator<Item = &'a NoteRecord> + Clone,
+        source: &dyn Fn(&NotePath) -> Option<&'a str>,
+        cfg: &LinkConfig,
+    ) -> Self {
         let resolver = Resolver::build(records.clone());
         let mut g = Self { resolver, ..Default::default() };
+        let mut typed: Vec<(NotePath, String, NotePath)> = Vec::new();
         for rec in records {
             let src = source(&rec.path);
             let mut seen = HashSet::new();
@@ -143,6 +152,9 @@ impl LinkGraph {
                 }
                 match g.resolver.resolve(&link.target, Some(&rec.path)) {
                     Some(to) => {
+                        if let Some(field) = &link.field {
+                            typed.push((rec.path.clone(), field.clone(), to.clone()));
+                        }
                         if seen.insert(to.clone()) {
                             g.outgoing.entry(rec.path.clone()).or_default().push(to.clone());
                         }
@@ -160,7 +172,13 @@ impl LinkGraph {
                 }
             }
         }
+        g.relations = Relations::build(typed, cfg);
         g
+    }
+
+    /// Typed links and the hierarchy (0.12).
+    pub const fn relations(&self) -> &Relations {
+        &self.relations
     }
 
     pub fn backlinks(&self, p: &NotePath) -> &[Backlink] {

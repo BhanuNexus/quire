@@ -5933,8 +5933,10 @@ dependencies = [
  "quire-markdown",
  "quire-plan",
  "quire-vault",
+ "serde",
  "tempfile",
  "thread-priority",
+ "toml 1.1.8+spec-1.1.0",
  "unicode-normalization",
  "unicode-segmentation",
 ]

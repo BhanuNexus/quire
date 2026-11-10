@@ -39,6 +39,8 @@ pub enum IndexMsg {
     /// The text of a PDF or image (from the PDF-text or OCR job).
     UpsertAttachment(crate::attach::AttachmentText),
     RemoveAttachment(NotePath),
+    /// 0.12: new typed-link settings (`[links]` in vault.toml).
+    LinkConfig(crate::relations::LinkConfig),
     /// Replies once everything queued before it has been applied.
     Flush(Sender<()>),
     Shutdown,
@@ -191,6 +193,12 @@ impl IndexService {
         self.send(IndexMsg::RemoveAttachment(path));
     }
 
+    /// Use these typed-link settings. A `load` reads the vault's own, on
+    /// the worker thread; this is for a change while the vault is open.
+    pub fn set_link_config(&self, cfg: crate::relations::LinkConfig) {
+        self.send(IndexMsg::LinkConfig(cfg));
+    }
+
     /// The shared model, for background jobs that outlive a borrow of the
     /// service. Hold the read lock briefly (design §9: at most 2 ms).
     pub fn handle(&self) -> Arc<RwLock<Index>> {
@@ -200,6 +208,17 @@ impl IndexService {
     /// Read access to the current model. Hold briefly.
     pub fn read(&self) -> RwLockReadGuard<'_, Index> {
         self.index.read().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Read access if no batch is being applied right now (`None` while the
+    /// worker holds the write lock): for per-frame UI that can show what it
+    /// had a moment longer instead of waiting.
+    pub fn try_read(&self) -> Option<RwLockReadGuard<'_, Index>> {
+        match self.index.try_read() {
+            Ok(g) => Some(g),
+            Err(std::sync::TryLockError::Poisoned(p)) => Some(p.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        }
     }
 
     /// Increments after every applied batch.
@@ -296,11 +315,14 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
         let mut shutdown = false;
         let mut waiters = Vec::new();
         let mut changed = false;
+        let mut link_config: Option<crate::relations::LinkConfig> = None;
         for msg in batch {
             match msg {
                 IndexMsg::Load(vault) => {
                     changed = true;
                     loaded = Some(vault.clone());
+                    // 0.12: read here, off the UI thread, with the notes.
+                    link_config = Some(crate::relations::LinkConfig::load(&vault));
                     let paths = vault.notes().unwrap_or_default();
                     shared.total.store(paths.len(), Ordering::Relaxed);
                     shared.indexed.store(0, Ordering::Relaxed);
@@ -328,6 +350,7 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                     }
                 }
                 IndexMsg::RemoveAttachment(path) => prepared.push(Prepared::RemoveAttachment(path)),
+                IndexMsg::LinkConfig(cfg) => link_config = Some(cfg),
                 IndexMsg::Flush(reply) => waiters.push(reply),
                 IndexMsg::Shutdown => shutdown = true,
             }
@@ -335,7 +358,10 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
         {
             let mut ix = write();
             if let Some(all) = reload {
+                let cfg = ix.link_config().clone();
                 *ix = Index::new();
+                // Without a refresh: the one below builds the graph.
+                ix.set_link_config_quiet(link_config.take().unwrap_or(cfg));
                 for (rec, src, modified) in all {
                     let path = rec.path.clone();
                     ix.insert_record(rec, src);
@@ -354,6 +380,9 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                     Prepared::Attachment(text) => ix.upsert_attachment(text),
                     Prepared::RemoveAttachment(path) => ix.remove_attachment(&path),
                 }
+            }
+            if let Some(cfg) = link_config {
+                ix.set_link_config_quiet(cfg);
             }
             ix.refresh();
         }

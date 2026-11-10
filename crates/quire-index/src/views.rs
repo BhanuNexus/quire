@@ -390,9 +390,61 @@ pub fn field(r: &NoteRecord, name: &str) -> Option<String> {
         "done_tasks" => r.tasks.iter().filter(|t| t.done).count().to_string(),
         "words" => r.stats.words.to_string(),
         "links" => r.links.len().to_string(),
-        _ => return property(r, name).map(Value::display).filter(|s| !s.is_empty()),
+        "outlinks" | "file.links" | "file.outlinks" => {
+            let v = outlinks(r, None);
+            return (!v.is_empty()).then(|| v.join(", "));
+        }
+        _ => {
+            return property(r, name).map(Value::display).filter(|s| !s.is_empty()).or_else(|| {
+                // 0.12: an inline field holding links (`up:: [[X]]`) reads as its targets.
+                let v = typed_targets(r, name);
+                (!v.is_empty()).then(|| v.join(", "))
+            });
+        }
     };
     Some(v)
+}
+
+/// The notes a note links to (names as written, each once); with `field`,
+/// only links in that field (`up`, `supports`).
+pub fn outlinks(r: &NoteRecord, field: Option<&str>) -> Vec<String> {
+    let mut v: Vec<String> = Vec::new();
+    for l in r.links.iter().filter(|l| l.is_internal() && !l.target.is_empty()) {
+        if field.is_some_and(|f| l.field.as_deref() != Some(f)) {
+            continue;
+        }
+        if !v.iter().any(|t| t.eq_ignore_ascii_case(&l.target)) {
+            v.push(l.target.clone());
+        }
+    }
+    v
+}
+
+/// The targets of the links in field `name` (front matter or inline;
+/// `outlinks.<type>` for one type), each once.
+pub fn typed_targets(r: &NoteRecord, name: &str) -> Vec<String> {
+    let key = quire_markdown::fields::normalize_key(name);
+    if let Some(f) = key.strip_prefix("outlinks.").or_else(|| key.strip_prefix("file.links.")) {
+        return outlinks(r, Some(f));
+    }
+    if !r.links.iter().any(|l| l.field.as_deref() == Some(key.as_str())) {
+        return Vec::new();
+    }
+    outlinks(r, Some(&key))
+}
+
+/// Equal ignoring case, or naming the same note (`[[Rope|r]]` = `Rope`).
+fn same_value(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b) || link_target(a).eq_ignore_ascii_case(link_target(b))
+}
+
+/// A value as a link target: `[[X|y]]` and `[[X#h]]` → `X`; other text as it is.
+fn link_target(v: &str) -> &str {
+    let t = v.trim().trim_start_matches('!');
+    match t.strip_prefix("[[").and_then(|x| x.strip_suffix("]]")) {
+        Some(inner) => inner.split(['|', '#']).next().unwrap_or(inner).trim(),
+        None => v,
+    }
 }
 
 /// A front-matter value by name or dotted path (`author.name`), ignoring case.
@@ -414,10 +466,16 @@ fn list_values(r: &NoteRecord, name: &str) -> Vec<String> {
     if name == "tags" {
         return r.tags.clone();
     }
+    if matches!(name, "outlinks" | "file.links" | "file.outlinks") {
+        return outlinks(r, None);
+    }
     match property(r, name) {
         Some(Value::List(v)) => v.clone(),
         Some(v) => vec![v.display()],
-        None => field(r, name).into_iter().collect(),
+        None => {
+            let typed = typed_targets(r, name);
+            if typed.is_empty() { field(r, name).into_iter().collect() } else { typed }
+        }
     }
 }
 
@@ -512,11 +570,11 @@ fn matches(r: &impl Fields, f: &Filter, today: &str) -> bool {
         Op::Contains => {
             let w = want.to_lowercase();
             let w = w.trim_start_matches('#');
-            r.list(&f.field).iter().any(|v| v.to_lowercase().trim_start_matches('#') == w)
+            r.list(&f.field).iter().any(|v| v.to_lowercase().trim_start_matches('#') == w || same_value(v, w))
                 || have.is_some_and(|h| h.to_lowercase().contains(w))
         }
-        Op::Ne => have.is_none_or(|h| !h.eq_ignore_ascii_case(&want) && !r.list(&f.field).iter().any(|v| v.eq_ignore_ascii_case(&want))),
-        Op::Eq => have.is_some_and(|h| h.eq_ignore_ascii_case(&want) || r.list(&f.field).iter().any(|v| v.eq_ignore_ascii_case(&want))),
+        Op::Ne => have.is_none_or(|h| !same_value(&h, &want) && !r.list(&f.field).iter().any(|v| same_value(v, &want))),
+        Op::Eq => have.is_some_and(|h| same_value(&h, &want) || r.list(&f.field).iter().any(|v| same_value(v, &want))),
         Op::Gt | Op::Lt | Op::Ge | Op::Le => {
             let Some(h) = have else { return false };
             // Dates compare by their day so `due < 2026-12-01` works with times.
@@ -1026,6 +1084,8 @@ pub mod dataview {
             "file.folder" => "folder".into(),
             "file.path" => "path".into(),
             "file.tags" | "file.etags" => "tags".into(),
+            // 0.12: links, and the links in a typed field (`file.outlinks`, `up`).
+            "file.outlinks" | "file.links" => "outlinks".into(),
             "completed" if tasks => "status".into(),
             "text" if tasks => "text".into(),
             "completion" if tasks => "done".into(),
@@ -1045,6 +1105,12 @@ pub mod dataview {
     /// A literal: `"text"`, `date(today)`, `date(2026-12-01)`, a number or word.
     fn literal(v: &str) -> Option<String> {
         let v = v.trim();
+        // 0.12: a link literal `[[Note]]` compares by its target.
+        if let Some(inner) = v.strip_prefix("[[").and_then(|r| r.strip_suffix("]]"))
+            && !inner.contains(['[', ']'])
+        {
+            return Some(inner.split(['|', '#']).next().unwrap_or(inner).trim().to_string());
+        }
         if let Some(inner) = v.strip_prefix("date(").and_then(|r| r.strip_suffix(')')) {
             let inner = inner.trim().trim_matches('"');
             return match inner.to_ascii_lowercase().as_str() {
@@ -1644,6 +1710,35 @@ mod tests {
             assert_eq!(t.spec, want, "{q}");
             assert_eq!(t.unsupported.len(), skipped, "{q}: {:?}", t.unsupported);
             assert!(parse(&t.spec).is_ok(), "{}", t.spec);
+        }
+    }
+
+    #[test]
+    fn typed_links_filter_and_group() {
+        let mut ix = Index::new();
+        for (p, src) in [
+            ("Root.md", "# Root\n"),
+            ("Other.md", "# Other\n"),
+            ("A.md", "---\nup: \"[[Root]]\"\n---\n# A\n"),
+            ("B.md", "# B\nparent:: [[Root|the root]]\n[supports:: [[Other]]]\n"),
+            ("C.md", "# C\nup:: [[Other]]\nSee [[Root]].\n"),
+        ] {
+            ix.insert_record(NoteRecord::from_source(NotePath::new(p), src), src.to_string());
+        }
+        ix.refresh();
+        let run_spec = |spec: &str| run(&parse(spec).unwrap(), &ix, "2026-11-10", None);
+        assert_eq!(titles(&run_spec("where: up = Root")), ["A"]);
+        assert_eq!(titles(&run_spec("where: up = \"[[Root]]\"")), ["A"]);
+        assert_eq!(titles(&run_spec("where: parent = Root")), ["B"]);
+        assert_eq!(titles(&run_spec("where: supports exists")), ["B"]);
+        assert_eq!(titles(&run_spec("where: outlinks contains Root")), ["A", "B", "C"]);
+        assert_eq!(titles(&run_spec("where: outlinks.up = Other")), ["C"]);
+        let grouped = run_spec("where: up exists\ngroup: up\nsort: title");
+        assert_eq!(grouped.groups, ["[[Root]]", "Other"]);
+        for (q, want) in [("LIST WHERE up = [[Root]]", vec!["A"]), ("LIST WHERE contains(file.outlinks, [[Other]])", vec!["B", "C"])] {
+            let t = dataview::translate(q);
+            assert!(t.unsupported.is_empty(), "{:?}", t.unsupported);
+            assert_eq!(titles(&run_spec(&t.spec)), want, "{q}: {}", t.spec);
         }
     }
 
