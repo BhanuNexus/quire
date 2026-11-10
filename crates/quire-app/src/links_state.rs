@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
-use quire_index::{Hier, Index, LinkConfig, TrailMode};
+use quire_index::{Hier, Index, Joined, LinkConfig, TrailMode};
 use quire_markdown::fields::{self, FieldStyle};
 use quire_text::{EditKind, Selection, Transaction};
 use quire_vault::{NotePath, VaultEvent, VaultPrefs};
@@ -81,7 +81,7 @@ pub struct TreeRow {
     pub repeat: bool,
 }
 
-type RelCache = RefCell<Option<((u64, Option<NotePath>), Rc<NoteRelations>)>>;
+type RelCache = RefCell<Option<(((u64, u64), Option<NotePath>), Rc<NoteRelations>)>>;
 
 #[derive(Default)]
 pub struct LinksState {
@@ -94,7 +94,7 @@ pub struct LinksState {
 const MAX_TRAILS: usize = 4;
 const MAX_TRAIL_DEPTH: usize = 32;
 
-fn title_of(ix: &Index, p: &NotePath) -> String {
+fn title_of(ix: &Joined<'_>, p: &NotePath) -> String {
     ix.get(p).map_or_else(|| p.stem().to_string(), |r| r.title.clone())
 }
 
@@ -114,8 +114,14 @@ fn free_rank(field: &str) -> (u8, String) {
     }
 }
 
-/// The groups and trails of `p`.
+/// The groups and trails of `p` in the vault index alone.
 pub fn relations_of(ix: &Index, p: &NotePath) -> NoteRelations {
+    relations_in(&Joined::main_only(ix), p)
+}
+
+/// The groups and trails of `p` over the vault index and, while a locked
+/// folder is unlocked, its notes (memory only).
+pub fn relations_in(ix: &Joined<'_>, p: &NotePath) -> NoteRelations {
     let rel = ix.relations();
     let cfg = ix.link_config();
     let mut hier: Vec<RelGroup> = Vec::new();
@@ -185,6 +191,11 @@ pub fn relations_of(ix: &Index, p: &NotePath) -> NoteRelations {
 
 /// The top of each hierarchy: notes with children and no parents, by title.
 pub fn tree_roots(ix: &Index) -> Vec<(NotePath, String)> {
+    tree_roots_in(&Joined::main_only(ix))
+}
+
+/// [`tree_roots`] over both sides.
+pub fn tree_roots_in(ix: &Joined<'_>) -> Vec<(NotePath, String)> {
     let rel = ix.relations();
     let mut v: Vec<(NotePath, String)> = ix
         .paths()
@@ -204,8 +215,17 @@ pub fn tree_roots(ix: &Index) -> Vec<(NotePath, String)> {
 /// Only expanded branches are walked, so the cost follows what is shown;
 /// a note already on the branch above (a cycle) isn't expanded again.
 pub fn tree_rows<S: std::hash::BuildHasher>(ix: &Index, roots: &[NotePath], open: &std::collections::HashSet<NotePath, S>) -> Vec<TreeRow> {
+    tree_rows_in(&Joined::main_only(ix), roots, open)
+}
+
+/// [`tree_rows`] over both sides.
+pub fn tree_rows_in<S: std::hash::BuildHasher>(
+    ix: &Joined<'_>,
+    roots: &[NotePath],
+    open: &std::collections::HashSet<NotePath, S>,
+) -> Vec<TreeRow> {
     fn walk<S: std::hash::BuildHasher>(
-        ix: &Index,
+        ix: &Joined<'_>,
         p: &NotePath,
         depth: usize,
         open: &std::collections::HashSet<NotePath, S>,
@@ -236,6 +256,11 @@ pub fn tree_rows<S: std::hash::BuildHasher>(ix: &Index, roots: &[NotePath], open
 /// Field names to offer: the hierarchy names in the settings, then every
 /// other field that holds links in this vault, most used first.
 pub fn field_names(ix: &Index) -> Vec<String> {
+    field_names_in(&Joined::main_only(ix))
+}
+
+/// [`field_names`] over both sides.
+pub fn field_names_in(ix: &Joined<'_>) -> Vec<String> {
     let cfg = ix.link_config();
     let mut v: Vec<String> = Hier::ALL.iter().map(|h| cfg.field_for(*h)).collect();
     for (f, _) in ix.relations().fields() {
@@ -281,14 +306,13 @@ pub fn field_value_query(before: &str) -> Option<(String, usize, String)> {
 impl Workspace {
     /// Whether `field` holds links: a hierarchy field or a type used in the vault.
     pub fn is_link_field(&self, field: &str) -> bool {
-        let ix = self.index.read();
-        ix.link_config().kind(field).is_some() || field_names(&ix).iter().any(|f| f == field)
+        self.with_notes(|ix| ix.link_config().kind(field).is_some() || field_names_in(ix).iter().any(|f| f == field))
     }
 
     /// Typed links of the active note, cached per index version. Cheap to call every frame.
     pub fn note_relations(&self) -> Rc<NoteRelations> {
         let path = self.active_doc().and_then(|d| d.path.clone());
-        let key = (self.index.version(), path);
+        let key = (self.notes_version(), path);
         let st = &self.features.links;
         if let Some((k, v)) = st.cache.borrow().as_ref()
             && *k == key
@@ -298,11 +322,9 @@ impl Workspace {
         let Some(p) = key.1.as_ref() else { return Rc::default() };
         // Never wait for the index worker on a frame: keep the last result
         // (or nothing) until it has finished its batch.
-        let Some(ix) = self.index.try_read() else {
+        let Some(rc) = self.try_with_notes(|ix| Rc::new(relations_in(ix, p))) else {
             return st.cache.borrow().as_ref().filter(|(k, _)| k.1 == key.1).map(|(_, v)| Rc::clone(v)).unwrap_or_default();
         };
-        let rc = Rc::new(relations_of(&ix, p));
-        drop(ix);
         *st.cache.borrow_mut() = Some((key, Rc::clone(&rc)));
         rc
     }
@@ -332,22 +354,26 @@ impl Workspace {
     /// How to name `target` in a link from `from`: its name, or its path
     /// when the name alone would find another note.
     fn link_name(&self, target: &NotePath, from: Option<&NotePath>) -> String {
-        let ix = self.index.read();
-        if ix.resolve(target.stem(), from).as_ref() == Some(target) { target.stem().to_string() } else { target.without_ext().to_string() }
+        self.with_notes(|ix| {
+            if ix.resolve(target.stem(), from).as_ref() == Some(target) {
+                target.stem().to_string()
+            } else {
+                target.without_ext().to_string()
+            }
+        })
     }
 
     /// Open the active note's first parent ("Go to parent").
     fn go_to_parent(&mut self) {
         let Some(p) = self.active_doc().and_then(|d| d.path.clone()) else { return };
-        let parent = {
-            let ix = self.index.read();
+        let parent = self.with_notes(|ix| {
             let rel = ix.relations();
             // The parent on the first trail, so it matches what the trail shows.
             rel.trails(&p, 1, MAX_TRAIL_DEPTH)
                 .first()
                 .and_then(|t| t.iter().rev().nth(1).cloned())
                 .or_else(|| rel.parents(&p).first().map(|q| (*q).clone()))
-        };
+        });
         match parent {
             Some(q) => {
                 self.open_note(&q);
@@ -358,7 +384,7 @@ impl Workspace {
 
     fn go_to_sibling(&mut self, forward: bool) {
         let Some(p) = self.active_doc().and_then(|d| d.path.clone()) else { return };
-        let next = self.index.read().relations().step(&p, forward);
+        let next = self.with_notes(|ix| ix.relations().step(&p, forward));
         match next {
             Some(q) => {
                 self.open_note(&q);

@@ -120,9 +120,9 @@ impl Graph {
         let edges: Vec<(usize, usize)> = edges.into_iter().collect();
         // A typed link either way names the edge (the note's own link first).
         // Typed edges from the vault index and, while unlocked, a locked folder's own notes.
-        let rels: Vec<_> = std::iter::once(ix.main()).chain(ix.extra()).map(Index::relations).collect();
-        let typed =
-            |a: &NotePath, b: &NotePath| rels.iter().flat_map(|r| r.of(a)).find(|e| !e.implied && e.to == *b).map(|e| e.field.clone());
+        // Over both sides at once, so a typed link between a plain note and a note of an unlocked folder counts.
+        let rel = ix.relations();
+        let typed = |a: &NotePath, b: &NotePath| rel.of(a).iter().find(|e| !e.implied && e.to == *b).map(|e| e.field.clone());
         let edge_types: Vec<Option<String>> =
             edges.iter().map(|&(a, b)| typed(paths[a], paths[b]).or_else(|| typed(paths[b], paths[a]))).collect();
         let mut counts: HashMap<&str, usize> = HashMap::new();

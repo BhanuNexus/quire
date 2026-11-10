@@ -786,6 +786,40 @@ impl Workspace {
     }
 }
 
+/// What the agenda board may keep in its device file ([`AGENDA_BOARD_FILE`], plain text) of
+/// `setting`: nothing that comes from a locked note. A card of a locked note leaves the
+/// order lists (its column would show in `order.<column>`), and a column that only locked
+/// notes make (a free-form `status`) isn't named in the file at all. `None`: keep nothing.
+fn agenda_setting_without_locked(
+    ws: &mut Workspace,
+    setting: &BoardSetting,
+    key: String,
+    value: Option<String>,
+) -> Option<(String, Option<String>)> {
+    let vault = ws.vault().cloned()?;
+    let locked = |p: &str| vault.locked_folder(&NotePath::new(p)).is_some();
+    let column = match setting {
+        BoardSetting::Order { column, .. } | BoardSetting::Color { column, .. } => column,
+        BoardSetting::Lanes(_) => return Some((key, value)),
+    };
+    if !column.is_empty() && !ws.task_prefs().statuses.iter().any(|s| s.eq_ignore_ascii_case(column)) {
+        let spec = ws.agenda_board_spec();
+        let from_plain_note =
+            ws.run_view(&spec, None).as_ref().as_ref().is_ok_and(|r| r.rows.iter().any(|x| x.group == *column && !locked(x.path.as_str())));
+        if !from_plain_note {
+            ws.notify(NoticeLevel::Info, "A column made only by locked notes isn't remembered on this device");
+            return None;
+        }
+    }
+    match setting {
+        BoardSetting::Order { ids, .. } => {
+            let plain: Vec<String> = ids.iter().filter(|id| !locked(id)).cloned().collect();
+            Some((key, (!plain.is_empty()).then(|| views::format_id_list(&plain))))
+        }
+        _ => Some((key, value)),
+    }
+}
+
 /// Write a board setting: one line of a quire-view block, or Quire's keys
 /// in a `.base` view (`cardOrder`, `swimlaneBy`, `columnColors`); nothing
 /// else in the file changes, and no note is rewritten. The agenda's board
@@ -799,6 +833,7 @@ fn set_board(ws: &mut Workspace, target: &BoardTarget, setting: &BoardSetting) {
         BoardSetting::Color { column, color } => (format!("color.{}", views::column_key(column)), color.clone()),
     };
     if *target == BoardTarget::Agenda {
+        let Some((key, value)) = agenda_setting_without_locked(ws, setting, key, value) else { return };
         ws.set_agenda_board(&key, value.as_deref());
         return;
     }
@@ -1392,6 +1427,37 @@ mod tests {
         w2.features.tasks.agenda_board_file = Some(file);
         assert_eq!(order(&w2), ["C", "A", "B"]);
         assert!(w2.agenda_board_spec().contains("color.open: teal"));
+    }
+
+    /// 0.12 review (locked-overlay low): the agenda board's file is plain text on this device.
+    /// A locked task note's free-form status never becomes a column name in it, and the card
+    /// leaves the order lists.
+    #[test]
+    fn the_agenda_boards_file_keeps_nothing_of_a_locked_note() {
+        let note = |s: &str| format!("---\ntype: task\nstatus: {s}\n---\n# T\n");
+        let mut w = ws(&[("Tasks/A.md", &note("open")), ("Journal/T.md", &note("waiting for Dr Smith"))]);
+        let vault = w.vault().unwrap().clone();
+        quire_vault::lock::lock_folder(&vault, "Journal", Some("a passphrase for the test"), quire_vault::lock::Kdf::TEST, 1).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(AGENDA_BOARD_FILE);
+        w.features.tasks.agenda_board_file = Some(file.clone());
+        let ids = |l: &[&str]| l.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        // A column only a locked note makes: nothing is written.
+        set_board(
+            &mut w,
+            &BoardTarget::Agenda,
+            &BoardSetting::Order { column: "waiting for Dr Smith".into(), ids: ids(&["Journal/T.md"]) },
+        );
+        set_board(&mut w, &BoardTarget::Agenda, &BoardSetting::Color { column: "waiting for Dr Smith".into(), color: Some("teal".into()) });
+        assert!(!file.exists(), "{:?}", std::fs::read_to_string(&file));
+        // A column of plain notes keeps its order, without the locked card in it.
+        set_board(&mut w, &BoardTarget::Agenda, &BoardSetting::Order { column: "open".into(), ids: ids(&["Journal/T.md", "Tasks/A.md"]) });
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.contains("order.open") && text.contains("Tasks/A.md"), "{text}");
+        assert!(!text.contains("Journal") && !text.contains("Smith"), "{text}");
+        // Only locked cards in the list: no order line at all.
+        set_board(&mut w, &BoardTarget::Agenda, &BoardSetting::Order { column: "open".into(), ids: ids(&["Journal/T.md"]) });
+        assert!(!std::fs::read_to_string(&file).unwrap().contains("order.open"));
     }
 
     #[test]

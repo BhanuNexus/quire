@@ -571,6 +571,36 @@ fn reminders_of_locked_notes_fire_only_while_unlocked() {
     assert!(leaks(&root, MARK).is_empty());
 }
 
+/// 0.12 review (locked-overlay low): typed links, the hierarchy and the trail read the same
+/// joined notes as backlinks do, in memory only, and let go when the folder locks.
+#[test]
+fn typed_links_and_hierarchy_cross_the_overlay() {
+    let (_d, root) = vault_dir(&[
+        ("Plain.md", "---\nup: \"[[Day]]\"\n---\n# Plain\n"),
+        ("Journal/Day.md", "# Day\nsupports:: [[Plain]]\n"),
+        ("Journal/Kid.md", "---\nup: \"[[Plain]]\"\n---\n# Kid\n"),
+    ]);
+    let mut ws = open(&root);
+    lock_and_wait(&mut ws, "Journal");
+    until(&mut [&mut ws], "the in-memory index", |w| w[0].has_locked_overlay());
+    ws.open_note(&np("Plain.md")).unwrap();
+    let rel = ws.note_relations();
+    let items = |g: &str| -> Vec<String> {
+        rel.groups.iter().filter(|x| x.label == g).flat_map(|x| x.items.iter().map(|i| i.path.as_str().to_string())).collect()
+    };
+    assert_eq!(items("Parents"), ["Journal/Day.md"], "{:?}", rel.groups);
+    assert_eq!(items("Children"), ["Journal/Kid.md"], "{:?}", rel.groups);
+    assert_eq!(rel.trails, [vec![(np("Journal/Day.md"), "Day".to_string()), (np("Plain.md"), "Plain".to_string())]]);
+    // The graph names the typed edge between the two sides.
+    let g = ws.link_graph(&crate::graph::Scope::All { orphans: true });
+    assert!(g.types.iter().any(|t| t == "supports"), "{:?}", g.types);
+    // Locked: the links to and from the folder go with it.
+    ws.lock_folder_now("Journal");
+    let rel = ws.note_relations();
+    assert!(rel.groups.iter().all(|g| g.items.iter().all(|i| !i.path.as_str().starts_with("Journal/"))), "{:?}", rel.groups);
+    assert!(rel.trails.is_empty());
+}
+
 /// 0.12: pictures in a locked folder show from memory while it is
 /// unlocked; a picture pasted or dropped into a locked note is stored
 /// encrypted in the folder's own attachments subfolder, never in the plain

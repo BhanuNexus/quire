@@ -339,8 +339,9 @@ fn closed_locked_folder(vault: &Vault, p: &NotePath) -> Option<String> {
     (!f.unlocking && !vault.keys().is_unlocked(&f.path)).then_some(f.path)
 }
 
-/// Like [`apply_with`], but a failure does not discard what was already
-/// written: it comes back in [`ImportReport::error`] next to the report's
+/// Like [`apply_with`], but a failure keeps what was already written.
+///
+/// The error comes back in [`ImportReport::error`] next to the report's
 /// `created` list. `written` is called after every file that was created,
 /// so the caller can keep a record that survives a crash.
 ///

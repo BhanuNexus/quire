@@ -654,13 +654,17 @@ impl Workspace {
         {
             return s.clone();
         }
-        let (mut notes, mut words, mut open_tasks) = (0, 0, 0);
+        let (mut notes, mut words, mut open_tasks, mut plain_words) = (0, 0, 0, 0);
         self.with_notes(|n| {
             for r in n.records() {
                 notes += 1;
                 words += r.stats.words;
                 open_tasks += r.tasks.iter().filter(|t| !t.done).count();
             }
+            // The baseline is written to disk and compared across sessions, so it counts only
+            // the notes of the vault index: a locked folder's words never reach the file, and
+            // unlocking or locking a folder doesn't move "today".
+            plain_words = n.main().records().map(|r| r.stats.words).sum();
         });
         // This device's count from the first time Home was drawn today.
         let day = today.format("%Y-%m-%d").to_string();
@@ -676,15 +680,15 @@ impl Workspace {
                     if let Some(dir) = p.parent() {
                         let _ = std::fs::create_dir_all(dir);
                     }
-                    let json = serde_json::to_string(&Baseline { day: day.clone(), words }).unwrap_or_default();
+                    let json = serde_json::to_string(&Baseline { day: day.clone(), words: plain_words }).unwrap_or_default();
                     let _ = crate::atomic::write(p, json.as_bytes(), false);
                 }
-                words
+                plain_words
             },
             |b| b.words,
         );
         let stats =
-            HomeStats { notes, words, open_tasks, words_today: i64::try_from(words).unwrap_or(0) - i64::try_from(base).unwrap_or(0) };
+            HomeStats { notes, words, open_tasks, words_today: i64::try_from(plain_words).unwrap_or(0) - i64::try_from(base).unwrap_or(0) };
         *self.features.switch.stats.borrow_mut() = Some((key, stats.clone()));
         stats
     }
@@ -694,6 +698,10 @@ impl Workspace {
         let prefs = self.switch_prefs();
         let cfg = &prefs.home;
         let today = Local::now().date_naive();
+        // Never wait for the index worker on a frame: while it applies a batch, keep what Home showed.
+        let Some(recent) = self.recent_with_active(cfg.recent.clamp(1, MAX_RECENT)) else {
+            return self.features.switch.home.borrow().as_ref().map(|(_, d)| Rc::clone(d)).unwrap_or_default();
+        };
         let agent = &self.features.agent.inbox;
         let pending: Vec<&quire_agent::Proposal> =
             agent.pending.iter().filter(|p| !agent.snoozed(&crate::agent_state::inbox::proposal_fingerprint(p))).collect();
@@ -701,7 +709,7 @@ impl Workspace {
             version: self.notes_version(),
             today,
             prefs: Rc::as_ptr(&prefs) as usize,
-            recent: self.recent_with_active(cfg.recent.clamp(1, MAX_RECENT)),
+            recent,
             inbox: (pending.len(), agent.findings.len(), agent.loaded_at_ms),
             active: self.active_doc().and_then(|d| d.path.clone()),
         };
@@ -971,7 +979,7 @@ mod tests {
         w.open_note(&"Imported/M.md".into()).expect("opens");
         w.open_note(&"Imported/N.md".into()).expect("opens");
         w.insert_text("typed, not saved yet ");
-        assert!(w.docs.iter().any(|d| d.is_dirty()));
+        assert!(w.docs.iter().any(Document::is_dirty));
         let undone = w.undo_import(&rec.id).expect("undone");
         assert_eq!((undone.trash.len(), undone.edited.len()), (1, 1), "{undone:?}");
         assert!(vault.read(&"Imported/N.md".into()).unwrap().contains("typed, not saved yet"), "the typing reached the file");

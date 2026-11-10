@@ -63,7 +63,14 @@ tested with a fixture that breaks it:
 - A file hundreds of times larger than its compressed size is a zip bomb and
   is skipped.
 - Nothing in an export is ever run, and HTML is converted, not rendered.
-- Writing never overwrites: a taken name becomes `Name 2.md`.
+- Writing never overwrites: every file is created only if its name is free. A
+  taken note name becomes `Name 1.md`; an attachment whose name a different
+  file has gets a new name and the imported notes' links follow; an identical
+  attachment is not copied again.
+- An attachment named by many notes is copied once per file in the export.
+- Importing into a locked folder works while it is unlocked (notes and
+  attachments are sealed, never written in plain) and is refused, before
+  anything is written, while it is locked.
 
 ## Undo
 

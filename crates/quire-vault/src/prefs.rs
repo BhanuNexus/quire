@@ -23,6 +23,13 @@ pub const VAULT_PREFS_PATH: &str = ".quire/shared/vault.toml";
 /// which are about one vault's own folders and notes (name them to copy them).
 pub const COPY_SECTIONS: [&str; 8] = ["periodic", "tags", "git", "lint", "staleness", "citations", "links", "tasks"];
 
+/// Keys that are never copied between vaults, by section.
+///
+/// They act on a remote or on this device (committing, pulling and pushing by
+/// themselves), and copying them could start sending notes somewhere nobody
+/// chose. The destination keeps its own values for them.
+pub const NOT_COPIED: [(&str, &[&str]); 1] = [("git", &["auto_commit", "pull_on_start", "push_after_commit"])];
+
 /// The format this version writes and fully understands.
 pub const VAULT_PREFS_FORMAT: i64 = 1;
 
@@ -137,11 +144,26 @@ impl VaultPrefs {
                 continue;
             }
             if let Some(item) = from.doc.get(name) {
-                self.doc.insert(name, item.clone());
+                let item = self.without_not_copied(name, item);
+                self.doc.insert(name, item);
                 copied.push(name.to_string());
             }
         }
         Ok(copied)
+    }
+
+    /// `item` (section `name` of another vault) without the [`NOT_COPIED`]
+    /// keys, which keep their value here (or are absent, as here).
+    fn without_not_copied(&self, name: &str, item: &Item) -> Item {
+        let Some((_, keys)) = NOT_COPIED.iter().find(|(n, _)| *n == name) else { return item.clone() };
+        let Ok(mut table) = item.clone().into_table() else { return item.clone() };
+        for key in *keys {
+            table.remove(key);
+            if let Some(mine) = self.doc.get(name).and_then(Item::as_table_like).and_then(|t| t.get(key)) {
+                table.insert(key, mine.clone());
+            }
+        }
+        Item::Table(table)
     }
 
     /// The file's text as it would be saved.
@@ -262,6 +284,26 @@ level = 3
         assert_eq!(p.section::<Periodic>("periodic").folder, "D");
         assert!(matches!(p.set_section("periodic", &Periodic::default()), Err(PrefsError::NewerFormat(2))));
         assert!(matches!(p.save(&v), Err(PrefsError::NewerFormat(2))));
+    }
+
+    #[test]
+    fn git_settings_that_push_or_commit_by_themselves_are_not_copied() {
+        let from = VaultPrefs::parse(
+            "format = 1\n[git]\nauto_commit = true\npush_after_commit = true\npull_on_start = true\nmessage = \"M {{count}}\"\ncommit_after_idle_s = 30\n",
+        )
+        .unwrap();
+        // A destination with no git section gets only the harmless keys.
+        let mut to = VaultPrefs::parse("format = 1\n").unwrap();
+        assert_eq!(to.copy_from(&from, &[]).unwrap(), ["git"]);
+        let out = to.to_text();
+        assert!(out.contains("message") && out.contains("commit_after_idle_s = 30"), "{out}");
+        assert!(!out.contains("auto_commit") && !out.contains("push_after_commit") && !out.contains("pull_on_start"), "{out}");
+        // Naming the section doesn't change that, and the destination keeps its own values.
+        let mut to = VaultPrefs::parse("format = 1\n[git]\nauto_commit = false\npush_after_commit = true\nmessage = \"mine\"\n").unwrap();
+        assert_eq!(to.copy_from(&from, &["git"]).unwrap(), ["git"]);
+        let out = to.to_text();
+        assert!(out.contains("auto_commit = false") && out.contains("push_after_commit = true"), "{out}");
+        assert!(out.contains("M {{count}}") && !out.contains("pull_on_start"), "{out}");
     }
 
     #[test]

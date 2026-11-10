@@ -101,8 +101,9 @@ fn origin_name(source: &std::path::Path) -> String {
 /// How many files are written between saves of the record while importing.
 const SAVE_EVERY: usize = 20;
 
-/// Import `plan` into `folder`. Notes get a history snapshot saying where they
-/// came from. The record exists before the first file is written and is saved
+/// Import `plan` into `folder`.
+///
+/// Notes get a history snapshot saying where they came from. The record exists before the first file is written and is saved
 /// every few files, at the end, and when the import fails or is cancelled, so
 /// whatever was written can be undone. A failure part way comes back as
 /// `report.error` next to what was written, not as an `Err`; `Err` means

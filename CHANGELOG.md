@@ -61,6 +61,9 @@ Quire 0.12: switching tools (import from more apps and undo it, tidy notes, a Ho
 - The on-device AI engine ran at the lowest priority (nice 19) when a background job was the first to need it, on Linux; it is now always started from a thread at normal priority (nice 10, as intended).
 - The task timer's settings were read from the vault's prefs file every frame; now only while a timer runs.
 - Lint called a link to a note in a locked folder broken; it now counts it by name (it still never reads the note).
+- **Import is safer and undoable after a failure:** the record is written before the first file and kept up to date, so an import that fails or is killed can be undone. Notes and attachments are created, never overwritten, even when a name appears during the import; an attachment whose name a different file has gets a new name and the notes' links follow. Importing into a locked folder works while it is unlocked (sealed, never plain) and is refused while it is locked; the record no longer holds a hash of a locked note's text. An attachment used by many notes is copied once, Roam block references are bounded, and importers no longer panic on hostile dates or `%` escapes. Undo saves open notes first, never closes a tab with unsaved text, and lists renamed or moved notes instead of marking the import undone.
+- **`prefs-copy` no longer copies `[git]` `auto_commit`, `pull_on_start` or `push_after_commit`**, which could start sending notes to a remote nobody chose for the new vault.
+- Reminders of locked notes are not announced again after the folder locks and unlocks. Typed links, the hierarchy and the trail include notes of unlocked folders. The agenda board's device file no longer holds a locked note's status. Home's word-count baseline leaves locked notes out, and Home no longer waits for the index while it updates.
 
 ## [0.11.0] - 2026-11-08
 
