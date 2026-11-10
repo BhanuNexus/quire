@@ -933,7 +933,8 @@ pub(crate) fn sidebar(
             }
         }
         SidebarTab::Tasks => {
-            let tasks = ws.index().read().tasks(false);
+            // 0.12: with the tasks of unlocked folders (memory only).
+            let tasks = ws.with_notes(|n| n.tasks(false));
             ui.label(RichText::new(format!("{} open", tasks.len())).color(pal.muted).size(11.5));
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 let mut last: Option<NotePath> = None;

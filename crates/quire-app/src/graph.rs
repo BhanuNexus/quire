@@ -11,7 +11,7 @@
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 
-use quire_index::Index;
+use quire_index::{Index, Joined};
 use quire_vault::NotePath;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,11 +42,17 @@ pub enum Scope {
 
 impl Graph {
     pub fn build(ix: &Index, scope: &Scope) -> Self {
+        Self::build_joined(&Joined::main_only(ix), scope)
+    }
+
+    /// [`Self::build`] over the vault index joined with the notes of
+    /// unlocked folders (0.12).
+    pub fn build_joined(ix: &Joined<'_>, scope: &Scope) -> Self {
         // Undirected neighbours from resolved links, skipping self-links.
         let mut adj: HashMap<NotePath, BTreeSet<NotePath>> = HashMap::new();
         for p in ix.paths() {
             adj.entry(p.clone()).or_default();
-            for t in ix.graph().outgoing(&p) {
+            for t in &ix.outgoing(&p) {
                 if *t != p && ix.get(t).is_some() {
                     adj.entry(p.clone()).or_default().insert(t.clone());
                     adj.entry(t.clone()).or_default().insert(p.clone());
@@ -270,7 +276,8 @@ impl Layout {
 impl crate::workspace::Workspace {
     /// The graph to draw: everything, or the notes around the open one.
     pub fn link_graph(&self, scope: &Scope) -> Graph {
-        let mut g = Graph::build(&self.index().read(), scope);
+        // 0.12: notes of unlocked folders are in it too (memory only).
+        let mut g = self.with_notes(|n| Graph::build_joined(n, scope));
         // Titles only with Settings → Editing → "Show note titles"; file names otherwise.
         if !self.settings.editing.display_titles {
             for n in &mut g.nodes {

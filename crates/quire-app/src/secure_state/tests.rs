@@ -452,3 +452,192 @@ fn changing_a_folders_key_from_the_app() {
     assert!(ws.vault().unwrap().read(&np("Journal/Day.md")).unwrap().contains(MARK));
     assert!(leaks(&root, MARK).is_empty());
 }
+
+/// 0.12: while a folder is unlocked its notes are in tasks, the agenda,
+/// views and Bases, the graph, backlinks and reminders, from memory only;
+/// agents, jobs and every cache still never see them, and nothing of them
+/// reaches the disk in plain text. Locking takes them out again.
+#[test]
+fn unlocked_notes_join_the_features_from_memory_only() {
+    let soon = (chrono::Local::now() + chrono::Duration::hours(3)).format("%Y-%m-%d %H:%M").to_string();
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let day = format!(
+        "---\nstatus: doing\nlocation: [38.7, -9.1]\n---\n# Day\nMARKER-9d1f see [[Plain]].\n- [ ] MARKER-9d1f call Bo 📅 {today}\n- [ ] MARKER-9d1f ship ⏰ {soon}\n"
+    );
+    let (dir, root) = vault_dir(&[
+        ("Journal/Day.md", &day),
+        ("Journal/Task.md", "---\ntype: task\nstatus: open\n---\n# MARKER-9d1f task note\n"),
+        ("Plain.md", "# Plain\nLinks to [[Day]].\n- [ ] plain task\n"),
+        ("Board.md", "# Board\n```quire-view\nfrom: all\nwhere: status = doing\n```\n"),
+        ("Bills.base", "views:\n  - type: table\n    name: All\n    order: [file.name, status]\n"),
+    ]);
+    let mut ws = open(&root);
+    lock_and_wait(&mut ws, "Journal");
+    ws.index().flush();
+    until(&mut [&mut ws], "the in-memory index", |w| w[0].has_locked_overlay());
+    let day_p = np("Journal/Day.md");
+    // Tasks and the agenda.
+    let tasks = ws.with_notes(|n| n.tasks(false));
+    assert!(tasks.iter().any(|(p, t)| *p == day_p && t.text.contains("call Bo")), "{tasks:?}");
+    let agenda = ws.agenda();
+    assert!(agenda.today.iter().chain(&agenda.overdue).any(|i| i.path == day_p.as_str()), "{agenda:?}");
+    assert!(ws.task_notes().iter().any(|(p, _)| p.as_str() == "Journal/Task.md"));
+    // A view and a Base.
+    let view = ws.run_view("from: all\nwhere: status = doing", None);
+    assert!(view.as_ref().as_ref().unwrap().rows.iter().any(|r| r.path == day_p));
+    let base = quire_import::obsidian::base::parse(&std::fs::read_to_string(root.join("Bills.base")).unwrap()).unwrap();
+    let table = crate::bases::table(&ws, &base, 0, chrono::Local::now().naive_local());
+    assert!(table.rows.iter().any(|r| r.path == day_p), "{:?}", table.rows.iter().map(|r| &r.path).collect::<Vec<_>>());
+    let pins = crate::geo::pins(&ws, &view.as_ref().as_ref().unwrap().rows);
+    assert_eq!(pins.len(), 1);
+    // The graph and backlinks, both ways.
+    let g = ws.link_graph(&crate::graph::Scope::All { orphans: false });
+    let ix = |p: &str| g.nodes.iter().position(|n| n.path.as_str() == p).unwrap();
+    let (a, b) = (ix("Plain.md"), ix("Journal/Day.md"));
+    assert!(g.edges.contains(&(a.min(b), a.max(b))), "{g:?}");
+    ws.open_note(&np("Plain.md")).unwrap();
+    assert!(ws.insights().backlinks.iter().any(|b| b.from == day_p));
+    assert!(ws.overlay_backlinks(&day_p).iter().any(|b| b.from.as_str() == "Plain.md"));
+    // Reminders: scheduled from memory.
+    crate::reminders::tick(&mut ws);
+    assert!(ws.features.tasks.reminders.schedule.iter().any(|r| r.path == day_p.as_str()));
+    // Agents, MCP, jobs and caches read the vault index and the vault
+    // without keys: nothing of the folder is there.
+    let main = ws.index().read();
+    assert!(main.paths().iter().all(|p| !p.as_str().starts_with("Journal/")));
+    assert!(main.search("MARKER", 5).is_empty());
+    assert!(main.backlinks(&np("Plain.md")).is_empty());
+    drop(main);
+    assert!(ws.vault().unwrap().without_keys().read(&day_p).is_err());
+    let store = ws.agent_store().unwrap().clone();
+    for client in ["mcp:claude-code", "panel:anthropic", "acp:zed"] {
+        let a = quire_agent::Actor::agent(client, client, quire_agent::Via::Panel, "d");
+        assert_eq!(store.effective_mode(&a, &day_p, quire_agent::OpKind::Read), quire_agent::Mode::Deny, "{client}");
+    }
+    // The task timer on a locked task: its file outside the vault holds no text.
+    let timer = dir.path().join("config").join("task-timer.json");
+    ws.features.tasks.timer = crate::task_timer::TimerState::with_file(timer.clone());
+    let offset = day.find("- [ ] MARKER-9d1f call").unwrap();
+    let task = ws.task_ref(&day_p, Some(offset), "call Bo");
+    assert!(ws.start_timer(task, false));
+    assert!(timer.exists());
+    assert!(leaks(&dir.path().join("config"), MARK).is_empty(), "{}", std::fs::read_to_string(&timer).unwrap());
+    // Lint (a job: the vault without keys) doesn't call a link to a locked note broken.
+    let lint_notes = [quire_agent::lint::LintNote::from_source(np("Plain.md"), "# Plain\nLinks to [[Day]].\n".into())];
+    let found = crate::agent_state::lint::check_vault(&ws.vault().unwrap().without_keys(), &store, &lint_notes);
+    assert!(found.iter().all(|f| f.check != quire_agent::inbox::LintCheck::BrokenLink), "{found:?}");
+    // Nothing plain on disk, with every feature having read the folder.
+    ws.save_all();
+    ws.history.flush();
+    let found = leaks(&root, MARK);
+    assert!(found.is_empty(), "plain text on disk: {found:#?}");
+    // Locking takes the notes out of every feature, and out of memory.
+    ws.lock_folder_now("Journal");
+    assert!(!ws.has_locked_overlay());
+    assert!(ws.with_notes(|n| n.tasks(false)).iter().all(|(p, _)| *p != day_p));
+    assert!(ws.agenda().today.iter().chain(&ws.agenda().overdue).all(|i| i.path != day_p.as_str()));
+    assert!(ws.run_view("from: all\nwhere: status = doing", None).as_ref().as_ref().unwrap().rows.is_empty());
+    assert!(ws.link_graph(&crate::graph::Scope::All { orphans: true }).nodes.iter().all(|n| n.path != day_p));
+    assert!(ws.overlay_backlinks(&np("Plain.md")).is_empty());
+    crate::reminders::tick(&mut ws);
+    assert!(ws.features.tasks.reminders.schedule.iter().all(|r| r.path != day_p.as_str()));
+}
+
+/// 0.12: a reminder of a note in an unlocked folder fires from memory: it
+/// never goes into the fired list on disk, and a snoozed one doesn't fire
+/// once its folder is locked.
+#[test]
+fn reminders_of_locked_notes_fire_only_while_unlocked() {
+    let soon = (chrono::Local::now() + chrono::Duration::hours(3)).format("%Y-%m-%d %H:%M").to_string();
+    let (_d, root) = vault_dir(&[("Journal/Day.md", &format!("# Day\n- [ ] MARKER-9d1f ship ⏰ {soon}\n")), ("Plain.md", "# Plain\n")]);
+    let mut ws = open(&root);
+    lock_and_wait(&mut ws, "Journal");
+    until(&mut [&mut ws], "the in-memory index", |w| w[0].has_locked_overlay());
+    crate::reminders::tick(&mut ws);
+    // Pretend time passed: it is due.
+    let st = &mut ws.features.tasks.reminders;
+    st.schedule[0].at = chrono::Local::now().naive_local() - chrono::Duration::minutes(1);
+    st.checked_for_test(chrono::Local::now().naive_local() - chrono::Duration::minutes(2));
+    let r = st.schedule[0].clone();
+    assert!(crate::reminders::tick(&mut ws));
+    assert_eq!(ws.features.tasks.reminders.fired.len(), 1);
+    assert!(notices(&ws).contains("ship"));
+    // Snoozed, then locked: it never fires, and its text leaves memory.
+    ws.snooze_reminder(&r);
+    ws.lock_folder_now("Journal");
+    crate::reminders::tick(&mut ws);
+    assert!(ws.features.tasks.reminders.fired.is_empty());
+    assert!(ws.features.tasks.reminders.active().is_empty());
+    assert!(leaks(&root, MARK).is_empty());
+}
+
+/// 0.12: pictures in a locked folder show from memory while it is
+/// unlocked; a picture pasted or dropped into a locked note is stored
+/// encrypted in the folder's own attachments subfolder, never in the plain
+/// attachments folder; export stays refused; nothing plain reaches the disk.
+#[test]
+fn pictures_in_locked_folders() {
+    let png_with_marker = |extra: &str| {
+        let mut b = b"\x89PNG\r\n\x1a\n".to_vec();
+        b.extend_from_slice(extra.as_bytes());
+        b
+    };
+    let (dir, root) = vault_dir(&[("Journal/Day.md", "# Day\n![[photo.png]]\n"), ("Plain.md", "# Plain\n")]);
+    std::fs::write(root.join("Journal/photo.png"), png_with_marker("MARKER-9d1f photo")).unwrap();
+    let mut ws = open(&root);
+    lock_and_wait(&mut ws, "Journal");
+    assert!(root.join("Journal/photo.png.qenc").exists() && !root.join("Journal/photo.png").exists());
+    // Resolved by its plain name, read only from memory.
+    let src = ws.attachment_source("photo.png").unwrap();
+    assert_eq!(src, crate::attach::AttachmentSource::Locked(np("Journal/photo.png")));
+    assert!(ws.attachment_path("photo.png").is_none(), "never a path to read as it is");
+    assert_eq!(ws.read_locked_attachment(&np("Journal/photo.png")).unwrap(), png_with_marker("MARKER-9d1f photo"));
+    // Pasting into the open locked note.
+    ws.open_note(&np("Journal/Day.md")).unwrap();
+    let pasted = ws.paste_image(1, 1, &[1, 2, 3, 255]).unwrap();
+    assert!(pasted.as_str().starts_with("Journal/attachments/Pasted image "), "{pasted}");
+    assert!(root.join(format!("{pasted}.qenc")).exists() && !root.join(pasted.as_str()).exists());
+    assert!(!root.join("attachments").exists(), "nothing in the plain attachments folder");
+    assert!(ws.active_doc().unwrap().text().contains(&format!("![[{}]]", pasted.file_name())));
+    assert!(ws.read_locked_attachment(&pasted).unwrap().starts_with(b"\x89PNG"));
+    // Dropping a file from outside the vault.
+    let outside = dir.path().join("drop.png");
+    std::fs::write(&outside, png_with_marker("MARKER-9d1f dropped")).unwrap();
+    assert_eq!(ws.import_files(&[outside]), 1);
+    assert!(root.join("Journal/attachments/drop.png.qenc").exists());
+    assert_eq!(ws.attachment_source("drop.png"), Some(crate::attach::AttachmentSource::Locked(np("Journal/attachments/drop.png"))));
+    // A plain note's export never finds the picture.
+    assert!(super::refuse_export(&mut ws), "the locked note isn't exported");
+    ws.save_all();
+    ws.history.flush();
+    let found = leaks(&root, MARK);
+    assert!(found.is_empty(), "plain text on disk: {found:#?}");
+    let plain_pngs: Vec<String> = walk(&root)
+        .into_iter()
+        .filter(|p| {
+            !Path::new(p).extension().is_some_and(|e| e.eq_ignore_ascii_case("qenc"))
+                && std::fs::read(p).is_ok_and(|b| b.starts_with(b"\x89PNG"))
+        })
+        .collect();
+    assert!(plain_pngs.is_empty(), "{plain_pngs:?}");
+    // Locked: nothing to show, nothing to add.
+    ws.lock_folder_now("Journal");
+    assert!(ws.read_locked_attachment(&np("Journal/photo.png")).is_none());
+    ws.open_note(&np("Plain.md")).unwrap();
+    assert!(ws.paste_image(1, 1, &[1, 2, 3, 255]).unwrap().as_str().starts_with("attachments/"), "a plain note's go where they did");
+}
+
+fn walk(root: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut todo = vec![root.to_path_buf()];
+    while let Some(d) = todo.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            if e.path().is_dir() {
+                todo.push(e.path());
+            } else {
+                out.push(e.path().display().to_string());
+            }
+        }
+    }
+    out
+}

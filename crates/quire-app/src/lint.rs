@@ -125,7 +125,16 @@ pub fn run_checks(cx: &JobCx, notes: &[LintNote]) -> Vec<Finding> {
 }
 
 pub fn check_vault(vault: &quire_vault::Vault, agent: &quire_agent::AgentStore, notes: &[LintNote]) -> Vec<Finding> {
-    let files: Vec<NotePath> = vault.storage().list().unwrap_or_default().into_iter().filter(|p| !p.is_markdown()).collect();
+    let mut files: Vec<NotePath> = vault.storage().list().unwrap_or_default().into_iter().filter(|p| !p.is_markdown()).collect();
+    // 0.12: a link to a note of a locked folder isn't broken. Only its name
+    // is used (names aren't secret); the lint never reads it.
+    let locked: Vec<NotePath> = files
+        .iter()
+        .filter_map(quire_vault::lock::plain_name)
+        .filter(|p| p.is_markdown() && vault.locked_folder(p).is_some())
+        .map(|p| NotePath::new(p.without_ext()))
+        .collect();
+    files.extend(locked);
     let policy = agent.policy();
     let contracts = agent.contracts();
     let prefs = prefs(vault);

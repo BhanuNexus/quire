@@ -149,83 +149,87 @@ pub fn table(ws: &Workspace, base: &Base, view: usize, now: NaiveDateTime) -> Ta
         return Table { error: result.as_ref().as_ref().err().cloned(), ..Table::default() };
     };
     let group_of: std::collections::HashMap<NotePath, String> = found.rows.iter().map(|r| (r.path.clone(), r.group.clone())).collect();
-    let ix = ws.index().read();
-    let mut rows: Vec<(&NoteRecord, Option<i64>)> =
-        found.rows.iter().filter_map(|r| ix.get(&r.path).map(|rec| (rec, ix.modified(&r.path)))).collect();
-    if let Some(f) = &filter {
-        rows.retain(|(r, m)| ev.eval(f, &RecordRow { r, modified: *m }).is_ok_and(|v| v.truthy()));
-    }
-    if let Some((key, desc)) = &v.sort {
-        let mut keyed: Vec<(Val, (&NoteRecord, Option<i64>))> =
-            rows.into_iter().map(|(r, m)| (column_value(&ev, key, &RecordRow { r, modified: m }).unwrap_or(Val::Null), (r, m))).collect();
-        keyed.sort_by(|a, b| {
-            let o = expr::compare(&a.0, &b.0);
-            if *desc { o.reverse() } else { o }
-        });
-        rows = keyed.into_iter().map(|(_, r)| r).collect();
-    }
-    let total = rows.len();
-    if let Some(l) = v.limit.filter(|_| v.filter.is_some() || v.sort.is_some()) {
-        rows.truncate(l);
-    }
-    let mut columns_vals: Vec<Vec<Val>> = vec![Vec::new(); v.columns.len()];
-    let out_rows: Vec<TableRow> = rows
-        .iter()
-        .map(|(r, m)| {
-            let row = RecordRow { r, modified: *m };
-            let cells = v
-                .columns
-                .iter()
-                .enumerate()
-                .map(|(i, c)| {
-                    let val = column_value(&ev, c, &row);
-                    columns_vals[i].push(val.clone().unwrap_or(Val::Null));
-                    match (c.as_str(), val) {
-                        ("file.name" | "file.basename", _) => Cell::Name(r.title.clone()),
-                        (_, Err(e)) => Cell::Error(e),
-                        (c, Ok(val)) if c.starts_with("formula.") || c.starts_with("file.") => Cell::Computed(val.show()),
-                        (c, Ok(_)) => {
-                            let field = c.strip_prefix("note.").unwrap_or(c).to_string();
-                            let value = quire_index::views::field(r, &field).unwrap_or_default();
-                            Cell::Property { field, value }
-                        }
-                    }
-                })
-                .collect();
-            let group = group_of.get(&r.path).cloned().unwrap_or_default();
-            TableRow { path: r.path.clone(), cells, group }
-        })
-        .collect();
-    // `groupBy`: rows by group (in the view's order of groups), keeping their order within.
-    let mut out_rows = out_rows;
-    let mut groups = Vec::new();
-    if let Some((_, desc)) = &v.group {
-        groups.clone_from(&found.groups);
-        if *desc {
-            groups.reverse();
+    // 0.12: notes of unlocked folders are rows too (memory only).
+    ws.with_notes(|ix| {
+        let mut rows: Vec<(&NoteRecord, Option<i64>)> =
+            found.rows.iter().filter_map(|r| ix.get(&r.path).map(|rec| (rec, ix.modified(&r.path)))).collect();
+        if let Some(f) = &filter {
+            rows.retain(|(r, m)| ev.eval(f, &RecordRow { r, modified: *m }).is_ok_and(|v| v.truthy()));
         }
-        let pos = |g: &str| groups.iter().position(|x| x.eq_ignore_ascii_case(g)).unwrap_or(usize::MAX);
-        out_rows.sort_by_key(|r| pos(&r.group));
-    }
-    let summaries = v
-        .columns
-        .iter()
-        .enumerate()
-        .map(|(i, c)| {
-            let name = v.summaries.iter().find(|(k, _)| k == c || k.strip_prefix("note.") == Some(c.as_str()))?.1.clone();
-            let vals = &columns_vals[i];
-            let res = match expr::summarize(&name, vals) {
-                Some(r) => r.map(|v| v.show()),
-                None => match base.custom_summaries.iter().find(|(k, _)| *k == name) {
-                    Some((_, src)) => expr::parse(src).and_then(|e| ev.summary(&e, vals.clone(), &NoRow)).map(|v| v.show()),
-                    None => Err(format!("“{name}” isn't a summary")),
-                },
-            };
-            Some((name, res))
-        })
-        .collect();
-    let headings = v.columns.iter().map(|c| base.label(c)).collect();
-    Table { headings, rows: out_rows, total, summaries, error: None, groups }
+        if let Some((key, desc)) = &v.sort {
+            let mut keyed: Vec<(Val, (&NoteRecord, Option<i64>))> = rows
+                .into_iter()
+                .map(|(r, m)| (column_value(&ev, key, &RecordRow { r, modified: m }).unwrap_or(Val::Null), (r, m)))
+                .collect();
+            keyed.sort_by(|a, b| {
+                let o = expr::compare(&a.0, &b.0);
+                if *desc { o.reverse() } else { o }
+            });
+            rows = keyed.into_iter().map(|(_, r)| r).collect();
+        }
+        let total = rows.len();
+        if let Some(l) = v.limit.filter(|_| v.filter.is_some() || v.sort.is_some()) {
+            rows.truncate(l);
+        }
+        let mut columns_vals: Vec<Vec<Val>> = vec![Vec::new(); v.columns.len()];
+        let out_rows: Vec<TableRow> = rows
+            .iter()
+            .map(|(r, m)| {
+                let row = RecordRow { r, modified: *m };
+                let cells = v
+                    .columns
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| {
+                        let val = column_value(&ev, c, &row);
+                        columns_vals[i].push(val.clone().unwrap_or(Val::Null));
+                        match (c.as_str(), val) {
+                            ("file.name" | "file.basename", _) => Cell::Name(r.title.clone()),
+                            (_, Err(e)) => Cell::Error(e),
+                            (c, Ok(val)) if c.starts_with("formula.") || c.starts_with("file.") => Cell::Computed(val.show()),
+                            (c, Ok(_)) => {
+                                let field = c.strip_prefix("note.").unwrap_or(c).to_string();
+                                let value = quire_index::views::field(r, &field).unwrap_or_default();
+                                Cell::Property { field, value }
+                            }
+                        }
+                    })
+                    .collect();
+                let group = group_of.get(&r.path).cloned().unwrap_or_default();
+                TableRow { path: r.path.clone(), cells, group }
+            })
+            .collect();
+        // `groupBy`: rows by group (in the view's order of groups), keeping their order within.
+        let mut out_rows = out_rows;
+        let mut groups = Vec::new();
+        if let Some((_, desc)) = &v.group {
+            groups.clone_from(&found.groups);
+            if *desc {
+                groups.reverse();
+            }
+            let pos = |g: &str| groups.iter().position(|x| x.eq_ignore_ascii_case(g)).unwrap_or(usize::MAX);
+            out_rows.sort_by_key(|r| pos(&r.group));
+        }
+        let summaries = v
+            .columns
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let name = v.summaries.iter().find(|(k, _)| k == c || k.strip_prefix("note.") == Some(c.as_str()))?.1.clone();
+                let vals = &columns_vals[i];
+                let res = match expr::summarize(&name, vals) {
+                    Some(r) => r.map(|v| v.show()),
+                    None => match base.custom_summaries.iter().find(|(k, _)| *k == name) {
+                        Some((_, src)) => expr::parse(src).and_then(|e| ev.summary(&e, vals.clone(), &NoRow)).map(|v| v.show()),
+                        None => Err(format!("“{name}” isn't a summary")),
+                    },
+                };
+                Some((name, res))
+            })
+            .collect();
+        let headings = v.columns.iter().map(|c| base.label(c)).collect();
+        Table { headings, rows: out_rows, total, summaries, error: None, groups }
+    })
 }
 
 #[cfg(test)]

@@ -42,13 +42,20 @@ fn split_list(s: &str) -> Vec<String> {
     s.split(',').map(|x| x.trim().trim_matches('"').to_string()).filter(|x| !x.is_empty()).collect()
 }
 
-/// Memoized view results, keyed by index version and spec text.
+/// Memoized view results, keyed by the notes' version and spec text.
 type ViewKey = (String, Option<NotePath>);
-type ViewEntry = (u64, String, Rc<Result<ViewResult, String>>);
+type ViewEntry = ((u64, u64), String, Rc<Result<ViewResult, String>>);
 
 #[derive(Default)]
 pub struct ViewCache {
     entries: RefCell<HashMap<ViewKey, ViewEntry>>,
+}
+
+impl ViewCache {
+    /// Forget every result (a locked folder locked: rows may hold its text).
+    pub(crate) fn clear(&self) {
+        self.entries.borrow_mut().clear();
+    }
 }
 
 impl Workspace {
@@ -147,7 +154,8 @@ impl Workspace {
 
     /// Evaluate a view spec (memoized until the index changes).
     pub fn run_view(&self, spec: &str, from: Option<&NotePath>) -> Rc<Result<ViewResult, String>> {
-        let version = self.index.version();
+        // 0.12: notes of unlocked folders are in views too (memory only).
+        let version = self.notes_version();
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
         let key = (spec.to_string(), from.cloned());
         if let Some((v, d, r)) = self.view_cache.entries.borrow().get(&key)
@@ -156,7 +164,7 @@ impl Workspace {
         {
             return Rc::clone(r);
         }
-        let result = Rc::new(views::parse(spec).map(|s| views::run(&s, &self.index.read(), &today, from)));
+        let result = Rc::new(views::parse(spec).map(|s| self.with_notes(|n| views::run_in(&s, n.records(), &today, from, &|_| true))));
         let mut cache = self.view_cache.entries.borrow_mut();
         if cache.len() > 64 {
             cache.clear();

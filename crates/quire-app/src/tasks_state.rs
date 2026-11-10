@@ -172,8 +172,8 @@ pub enum BoardSetting {
     Color { column: String, color: Option<String> },
 }
 
-/// The agenda, for (index version, today).
-type AgendaCache = RefCell<Option<((u64, NaiveDate), Rc<Agenda>)>>;
+/// The agenda, for (the notes' version, today).
+type AgendaCache = RefCell<Option<(((u64, u64), NaiveDate), Rc<Agenda>)>>;
 
 /// WS-E's state, kept in `ws.features.tasks`.
 #[derive(Debug, Default)]
@@ -264,23 +264,24 @@ impl Workspace {
     /// Overdue, today, the next seven days and today's time blocks; cached until the index changes.
     pub fn agenda(&self) -> Rc<Agenda> {
         let today = Local::now().date_naive();
-        let key = (self.index.version(), today);
+        // 0.12: with the notes of unlocked folders (memory only).
+        let key = (self.notes_version(), today);
         if let Some((k, a)) = self.features.tasks.agenda.borrow().as_ref()
             && *k == key
         {
             return Rc::clone(a);
         }
-        let ix = self.index.read();
         let daily = self.period_path(Period::Daily, today);
         let mut tasks: Vec<(String, quire_markdown::Task)> = Vec::new();
-        for r in ix.records() {
-            let p = r.path.as_str();
-            tasks.extend(r.tasks.iter().map(|t| (p.to_string(), t.clone())));
-            if let Some(t) = quire_plan::tasks::note_task(&r.properties, &r.title) {
-                tasks.push((p.to_string(), t));
+        self.with_notes(|n| {
+            for r in n.records() {
+                let p = r.path.as_str();
+                tasks.extend(r.tasks.iter().map(|t| (p.to_string(), t.clone())));
+                if let Some(t) = quire_plan::tasks::note_task(&r.properties, &r.title) {
+                    tasks.push((p.to_string(), t));
+                }
             }
-        }
-        drop(ix);
+        });
         let a = Rc::new(quire_plan::agenda::build(tasks.iter().map(|(p, t)| (p.as_str(), t)), today, Some(daily.as_str())));
         *self.features.tasks.agenda.borrow_mut() = Some((key, Rc::clone(&a)));
         a
