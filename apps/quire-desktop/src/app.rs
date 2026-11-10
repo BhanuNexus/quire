@@ -180,6 +180,7 @@ impl QuireApp {
                 let view = make(&mut self.ws);
                 self.set_overlay(Some(Overlay::Feature(view)));
             }
+            Some(UiTarget::Surface(make)) => self.surfaces.open(make()),
             _ => crate::registry::not_available(&mut self.ws, cmd),
         }
     }
@@ -383,7 +384,7 @@ impl QuireApp {
             UiRequest::SyncConflicts => Overlay::SyncConflicts,
             UiRequest::NewInFolder => Overlay::Folder(crate::dialogs::FolderState::new(&self.ws, crate::dialogs::FolderMode::NewNote)),
             UiRequest::MoveNote => Overlay::Folder(crate::dialogs::FolderState::new(&self.ws, crate::dialogs::FolderMode::Move)),
-            UiRequest::History => Overlay::History(crate::dialogs::HistoryState::new(&self.ws)),
+            UiRequest::History => Overlay::History(Box::new(crate::dialogs::HistoryState::new(&self.ws))),
             UiRequest::Graph => Overlay::Graph(Box::new(crate::graph_view::GraphState::new(&self.ws))),
             UiRequest::Split => {
                 self.toggle_split();
@@ -407,7 +408,7 @@ impl QuireApp {
                     self.ws.notify(NoticeLevel::Info, "Open a vault first, then import into it");
                     return;
                 }
-                Overlay::Import(crate::dialogs::ImportState::default())
+                Overlay::Feature(crate::import_ui::ImportWizard::make(&mut self.ws))
             }
             UiRequest::Feature(c) => {
                 self.show_feature(c);

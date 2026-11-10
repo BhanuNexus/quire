@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Settings, version history and import dialogs.
 
-use std::path::Path;
-
 use crossbeam_channel::Receiver;
 use egui::{RichText, Ui};
 use quire_app::history_ops::{DiffKind, diff, diff_stats};
@@ -267,7 +265,8 @@ pub(crate) fn settings(ctx: &egui::Context, st: &mut SettingsState, ws: &mut Wor
         ui.separator();
         ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), body_h), egui::Layout::left_to_right(egui::Align::Min), |ui| {
             ui.set_height(body_h);
-            ui.vertical(|ui| {
+            // Scrolls on a short window: there are more tabs than 480 points hold.
+            egui::ScrollArea::vertical().id_salt("quire-settings-tabs").max_height(body_h).auto_shrink([true, false]).show(ui, |ui| {
                 ui.set_width(132.0);
                 let mut tab = |ui: &mut Ui, value: SettingsTab, label: String| {
                     let r = crate::theme::row(ui, st.tab == value, 28.0, pal, |painter, rect| {
@@ -1512,110 +1511,6 @@ fn provenance_words(p: &quire_app::agent::Provenance) -> String {
         (ActorKind::Job, _) => format!("Quire ({})", p.actor.label),
         (ActorKind::Human, _) => "You".into(),
     }
-}
-
-// ------------------------------------------------------------------ import
-
-#[derive(Default)]
-pub(crate) struct ImportState {
-    source: String,
-    folder: String,
-    plan: Option<Result<quire_import::ImportPlan, String>>,
-    planned_for: String,
-}
-
-pub(crate) fn import(ctx: &egui::Context, st: &mut ImportState, ws: &mut Workspace, pal: &Palette) -> bool {
-    let mut close = false;
-    let mut apply = false;
-    if st.folder.is_empty() && st.plan.is_none() {
-        st.folder = "Imported".into();
-    }
-    modal(ctx, "quire-import", pal).show(ctx, |ui| {
-        let w = modal_width(ctx, 600.0);
-        ui.set_width(w);
-        ui.set_max_width(w);
-        ui.heading("Import notes");
-        ui.label(
-            RichText::new(
-                "Logseq graph · Notion export (.zip or folder) · Bear (.bear2bk, TextBundles) · Evernote (.enex) · any Markdown folder",
-            )
-            .size(12.0)
-            .color(pal.muted),
-        );
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut st.source).hint_text("folder or file to import").desired_width(300.0));
-            if ui.button("Folder…").clicked()
-                && let Some(p) = rfd::FileDialog::new().pick_folder()
-            {
-                st.source = p.display().to_string();
-            }
-            if ui.button("File…").clicked()
-                && let Some(p) = rfd::FileDialog::new().add_filter("Exports", &["zip", "enex", "bear2bk", "md"]).pick_file()
-            {
-                st.source = p.display().to_string();
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.label("Into folder");
-            ui.add(egui::TextEdit::singleline(&mut st.folder).hint_text("vault root").desired_width(180.0));
-        });
-        if !st.source.trim().is_empty() && st.planned_for != st.source {
-            st.planned_for.clone_from(&st.source);
-            st.plan = Some(quire_import::plan(Path::new(st.source.trim())));
-        }
-        ui.separator();
-        match &st.plan {
-            None => {
-                ui.label(
-                    RichText::new("Pick an export to see what will be imported. Nothing is written until you confirm.").color(pal.muted),
-                );
-            }
-            Some(Err(e)) => {
-                ui.label(RichText::new(e).color(pal.danger));
-            }
-            Some(Ok(plan)) => {
-                ui.label(RichText::new(plan.summary()).strong());
-                egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
-                    for n in plan.notes.iter().take(300) {
-                        ui.add(egui::Label::new(RichText::new(n.path.as_str()).size(12.5)).truncate());
-                    }
-                    if plan.notes.len() > 300 {
-                        ui.label(RichText::new(format!("… and {} more", plan.notes.len() - 300)).color(pal.muted));
-                    }
-                    for wmsg in &plan.warnings {
-                        ui.label(RichText::new(format!("⚠ {wmsg}")).size(12.0).color(pal.warn));
-                    }
-                });
-            }
-        }
-        ui.separator();
-        ui.horizontal(|ui| {
-            let ready = matches!(&st.plan, Some(Ok(p)) if !p.notes.is_empty());
-            if ui.add_enabled(ready, egui::Button::new("Import")).clicked() {
-                apply = true;
-            }
-            if ui.button("Cancel").clicked() {
-                close = true;
-            }
-            ui.label(RichText::new("Existing notes are never overwritten.").size(12.0).color(pal.muted));
-        });
-    });
-    if apply
-        && let Some(Ok(plan)) = &st.plan
-        && let Some(vault) = ws.vault().cloned()
-    {
-        match quire_import::apply(plan, &vault, st.folder.trim()) {
-            Ok(r) => {
-                let renamed = if r.renamed.is_empty() { String::new() } else { format!(" ({} renamed to avoid clashes)", r.renamed.len()) };
-                ws.notify(NoticeLevel::Info, format!("Imported {} notes and {} files{renamed}", r.notes, r.files));
-                ws.reload_index();
-                close = true;
-            }
-            Err(e) => ws.notify(NoticeLevel::Error, format!("Import failed: {e}")),
-        }
-    }
-    close
 }
 
 // ------------------------------------------------------------------ projects

@@ -33,11 +33,14 @@ mod embed_edit;
 mod git_ui;
 mod graph_view;
 mod highlight;
+mod home_ui;
+mod import_ui;
 mod inbox_ui;
 #[cfg(test)]
 mod layout_check;
 // 0.12: typed links, trail, hierarchy.
 mod links_ui;
+mod lint_ui;
 mod lock_ui;
 mod locked_media;
 mod map_ui;
