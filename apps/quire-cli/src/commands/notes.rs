@@ -76,9 +76,12 @@ fn export(args: &[String]) -> Result<(), String> {
     let p = find_note(&ix, arg(2)?)?;
     // WS-G: `[@key]` citations as author-date text and a reference list.
     let src = quire_app::citations::render_with_vault(&vault, ix.source(&p).unwrap_or_default());
-    let html = render::to_html_document(p.stem(), &src, &|l| {
+    // 0.12: the note's own HTML is cleaned (no scripts, event handlers or `javascript:` links),
+    // so the page is safe to open whatever the note holds.
+    let body = quire_app::sanitize::note_html(&render::to_html(&src, &|l| {
         ix.resolve(&l.target, Some(&p)).map(|t| format!("{}.html", render::encode_url(t.stem())))
-    });
+    }));
+    let html = render::html_document(p.stem(), &body);
     let out = args.get(3).cloned().unwrap_or_else(|| format!("{}.html", p.stem()));
     std::fs::write(&out, html).map_err(|e| e.to_string())?;
     println!("wrote {out}");

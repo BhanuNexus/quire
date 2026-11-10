@@ -119,7 +119,9 @@ impl Graph {
             .collect();
         let edges: Vec<(usize, usize)> = edges.into_iter().collect();
         // A typed link either way names the edge (the note's own link first).
-        let rel = ix.relations();
+        // The base's merge of typed links and unlocked folders left `Joined` without this: the vault index's
+        // typed links (notes of an unlocked folder show their links untyped).
+        let rel = ix.main().relations();
         let typed = |a: &NotePath, b: &NotePath| rel.of(a).iter().find(|e| !e.implied && e.to == *b).map(|e| e.field.clone());
         let edge_types: Vec<Option<String>> =
             edges.iter().map(|&(a, b)| typed(paths[a], paths[b]).or_else(|| typed(paths[b], paths[a]))).collect();
