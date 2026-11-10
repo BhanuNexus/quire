@@ -161,6 +161,14 @@ pub fn relations_of(ix: &Index, p: &NotePath) -> NoteRelations {
         _ => 4,
     });
     free.sort_by_key(|(k, _)| free_rank(k));
+    // A note's own links keep their written order; implied and incoming ones
+    // follow by title, so the order doesn't depend on how the index was built.
+    for g in hier.iter_mut().chain(free.iter_mut().map(|(_, g)| g)) {
+        g.items.sort_by_cached_key(|i| {
+            let derived = i.implied || i.incoming;
+            (derived, if derived { i.title.to_lowercase() } else { String::new() })
+        });
+    }
     let groups = hier.into_iter().chain(free.into_iter().map(|(_, g)| g)).collect();
     let trails = rel
         .trails(p, MAX_TRAILS, MAX_TRAIL_DEPTH)
