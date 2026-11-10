@@ -100,8 +100,9 @@ fn run(args: &[String]) -> Result<(), String> {
             let cfg = vault_sync::SyncConfig::load(&vault).ok_or("Sync isn't set up for this vault.")?;
             let profile = cfg.remote.ok_or("This vault doesn't sync through S3 or WebDAV; nothing to update.")?;
             let secret = remote_secret(&profile, args)?;
-            println!("{}", vault_sync::sync_set_remote_secret_at(&vault, &secret)?);
-            println!("Saved the new credentials on this computer.");
+            // The storage's own summary isn't printed: it comes from a call made with the secret.
+            vault_sync::sync_set_remote_secret_at(&vault, &secret)?;
+            println!("The storage accepted the new credentials. Saved them on this computer.");
             Ok(())
         }
         "move" => move_vault(&vault, args),

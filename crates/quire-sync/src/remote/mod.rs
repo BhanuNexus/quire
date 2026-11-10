@@ -1259,12 +1259,15 @@ impl ObjectStore for MemoryObjects {
         if create_only && self.no_conditional.load(Ordering::Relaxed) {
             return Err(StoreError::NoConditional);
         }
-        let left = self.writes_left.load(Ordering::Relaxed);
-        if left == 0 {
+        // One atomic step: uploads run in parallel, and a separate load and
+        // decrement let several through on the last write (and wrapped).
+        let took = self.writes_left.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |left| match left {
+            0 => None,
+            u64::MAX => Some(u64::MAX),
+            n => Some(n - 1),
+        });
+        if took.is_err() {
             return Err(StoreError::Offline("simulated: connection cut".into()));
-        }
-        if left != u64::MAX {
-            self.writes_left.fetch_sub(1, Ordering::Relaxed);
         }
         let mut o = self.objects.lock().unwrap_or_else(PoisonError::into_inner);
         if create_only && o.contains_key(key) {

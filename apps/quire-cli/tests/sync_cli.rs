@@ -280,14 +280,14 @@ fn s3_and_webdav_from_the_command_line() {
     let mut c = env.cmd(&[&["sync", "credentials", &a][..], &["--user", "asha"][..]].concat());
     c.env("QUIRE_WEBDAV_PASSWORD", "DAV-PASSWORD-xyz");
     let creds = c.output().unwrap();
-    assert!(creds.status.success() && text(&creds).contains("Saved the new credentials"), "{}", text(&creds));
+    assert!(creds.status.success() && text(&creds).contains("Saved them on this computer"), "{}", text(&creds));
     let all_output = [&bad, &ok, &created, &joined, &moved, &creds].iter().map(|o| text(o)).collect::<String>() + &status;
     let in_vault: String = ["A/.quire/sync/config.json", "B/.quire/sync/config.json"]
         .iter()
         .filter_map(|p| std::fs::read_to_string(env.path(p)).ok())
         .collect();
-    for secret in ["S3-SECRET-xyz", "DAV-PASSWORD-xyz", PASS] {
-        assert!(!all_output.contains(secret) && !in_vault.contains(secret), "{secret} leaked");
+    for (i, secret) in ["S3-SECRET-xyz", "DAV-PASSWORD-xyz", PASS].into_iter().enumerate() {
+        assert!(!all_output.contains(secret) && !in_vault.contains(secret), "secret {i} leaked");
     }
     // 0.12 review L6: the AWS variables are taken only with a note saying so.
     let mut c = env.cmd(&[&["sync", "test", &a][..], &s3_args[..]].concat());

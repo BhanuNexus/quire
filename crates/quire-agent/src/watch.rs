@@ -56,7 +56,10 @@ mod tests {
     fn notices_a_new_proposal_file() {
         let dir = tempfile::tempdir().unwrap();
         let w = AgentWatcher::start(dir.path()).unwrap();
-        assert!(!w.take());
+        // macOS (FSEvents) can report the folders `start` made a moment
+        // later; let those arrive and drop them before the real test.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let _ = w.take();
         std::fs::write(dir.path().join(".quire/agent/proposals/p_X.json"), "{}").unwrap();
         let t = std::time::Instant::now();
         while !w.take() {
