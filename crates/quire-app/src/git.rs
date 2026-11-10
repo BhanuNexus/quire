@@ -772,6 +772,7 @@ mod tests {
             shared_state: false,
             only: Vec::new(),
             exclude: Vec::new(),
+            remote: None,
         });
         assert!(!can_pull_push(&ws));
         let n = ws.notices.len();

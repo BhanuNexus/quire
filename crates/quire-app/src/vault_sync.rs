@@ -6,12 +6,14 @@
 //! writes notes like any other program would, so the editor's existing
 //! outside-change handling (merge into unsaved edits, or reload) applies.
 //!
-//! A vault syncs either through a folder that Dropbox, iCloud Drive and the
-//! like already sync (free, nothing to run), or through a Quire Sync server.
+//! A vault syncs through a folder that Dropbox, iCloud Drive and the like
+//! already sync (free, nothing to run), through a Quire Sync server, or
+//! (0.12) straight to S3-compatible storage or a WebDAV folder.
 //!
 //! Per vault, `.quire/sync/config.json` holds where it syncs and its ids, and
 //! `.quire/sync/state.json` the engine's state. The vault key (and a server's
-//! token) live in the OS keychain (or the private secrets file).
+//! token, or the storage's credentials) live in the OS keychain (or the
+//! private secrets file), never in the vault.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -27,6 +29,7 @@ pub use quire_sync::SpaceInfo;
 pub use quire_sync::Version as SyncVersion;
 use quire_sync::folder::{self, FolderTransport};
 pub use quire_sync::protocol::RevId as SyncRevId;
+use quire_sync::remote::{self, ObjectStore, RemoteTransport};
 use quire_sync::{
     DeviceId, Engine, HttpTransport, KdfParams, LocalStore, RecoveryKey, Report, SpaceId, SyncState, Transport, VaultKey, WrappedKey,
 };
@@ -62,6 +65,112 @@ pub struct SyncConfig {
     /// Selective sync: never these folders.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclude: Vec<String>,
+    /// 0.12: S3-compatible storage or a WebDAV folder, when syncing that way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<RemoteProfile>,
+}
+
+/// Where in S3-compatible storage or WebDAV a vault syncs (no secrets: the
+/// credentials are in the keychain, see [`RemoteSecret`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum RemoteProfile {
+    S3 {
+        endpoint: String,
+        region: String,
+        bucket: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        prefix: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        virtual_hosted: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        allow_http: bool,
+    },
+    Webdav {
+        url: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        allow_http: bool,
+    },
+}
+
+/// The storage's credentials, as kept in the keychain (JSON).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum RemoteSecret {
+    S3 {
+        access_key: String,
+        secret_key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_token: Option<String>,
+    },
+    Webdav {
+        user: String,
+        password: String,
+    },
+}
+
+impl std::fmt::Debug for RemoteSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::S3 { access_key, .. } => f.debug_struct("S3").field("access_key", access_key).finish_non_exhaustive(),
+            Self::Webdav { user, .. } => f.debug_struct("Webdav").field("user", user).finish_non_exhaustive(),
+        }
+    }
+}
+
+impl RemoteProfile {
+    /// "S3 bucket notes at https://…", "WebDAV folder https://…".
+    pub fn describe(&self) -> String {
+        match self {
+            Self::S3 { endpoint, bucket, prefix, .. } => {
+                let p = if prefix.trim_matches('/').is_empty() { String::new() } else { format!("/{}", prefix.trim_matches('/')) };
+                format!("S3 bucket {bucket}{p} at {endpoint}")
+            }
+            Self::Webdav { url, .. } => format!("WebDAV folder {url}"),
+        }
+    }
+
+    /// A client for the storage, checking the address and credentials' shape.
+    pub fn open(&self, secret: &RemoteSecret) -> Result<Arc<dyn ObjectStore>, String> {
+        use quire_sync::remote::Zeroizing;
+        match (self, secret) {
+            (
+                Self::S3 { endpoint, region, bucket, prefix, virtual_hosted, allow_http },
+                RemoteSecret::S3 { access_key, secret_key, session_token },
+            ) => {
+                let cfg = remote::S3Config {
+                    endpoint: endpoint.clone(),
+                    region: region.clone(),
+                    bucket: bucket.clone(),
+                    prefix: prefix.clone(),
+                    virtual_hosted: *virtual_hosted,
+                    allow_http: *allow_http,
+                };
+                let creds = remote::S3Credentials {
+                    access_key: access_key.trim().to_string(),
+                    secret_key: Zeroizing::new(secret_key.trim().to_string()),
+                    session_token: session_token.as_ref().filter(|t| !t.trim().is_empty()).map(|t| Zeroizing::new(t.trim().to_string())),
+                };
+                Ok(Arc::new(remote::S3Store::new(cfg, creds).map_err(|e| e.to_string())?))
+            }
+            (Self::Webdav { url, allow_http }, RemoteSecret::Webdav { user, password }) => {
+                let cfg = remote::WebDavConfig { url: url.clone(), allow_http: *allow_http };
+                let creds = remote::WebDavCredentials { user: user.trim().to_string(), password: Zeroizing::new(password.clone()) };
+                Ok(Arc::new(remote::WebDavStore::new(&cfg, &creds).map_err(|e| e.to_string())?))
+            }
+            _ => Err("The saved credentials are for another kind of storage; enter them again.".into()),
+        }
+    }
+}
+
+impl RemoteSecret {
+    fn to_json(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+
+    fn from_json(s: &str) -> Result<Self, String> {
+        serde_json::from_str(s).map_err(|_| "The storage credentials on this device are unreadable; enter them again.".to_string())
+    }
 }
 
 /// Which folders a device syncs (`quire-cli sync --only/--exclude`), so a
@@ -197,6 +306,55 @@ pub enum SyncTarget {
         url: String,
         token: String,
     },
+    /// 0.12: S3-compatible storage or a WebDAV folder.
+    Remote {
+        profile: RemoteProfile,
+        secret: RemoteSecret,
+    },
+}
+
+impl SyncTarget {
+    fn store(&self) -> Result<Option<Arc<dyn ObjectStore>>, String> {
+        match self {
+            Self::Remote { profile, secret } => profile.open(secret).map(Some),
+            _ => Ok(None),
+        }
+    }
+}
+
+/// Whether an S3 endpoint wants `bucket.host` URLs (AWS) rather than paths.
+pub fn s3_virtual_hosted_default(endpoint: &str, bucket: &str) -> bool {
+    remote::S3Config::default_virtual_hosted(endpoint, bucket)
+}
+
+/// The place a vault syncs with, secrets included (for "Test connection"
+/// on a vault that's set up).
+pub fn sync_target_of(cfg: &SyncConfig) -> Result<SyncTarget, String> {
+    let token = secrets::store().get(&token_name(&cfg.space));
+    match (&cfg.remote, &cfg.folder) {
+        (Some(profile), _) => Ok(SyncTarget::Remote {
+            profile: profile.clone(),
+            secret: RemoteSecret::from_json(&token.ok_or("This device is missing the storage credentials.")?)?,
+        }),
+        (None, Some(dir)) => Ok(SyncTarget::Folder(dir.clone())),
+        (None, None) => Ok(SyncTarget::Server { url: cfg.server.clone(), token: token.ok_or("This device is missing the sync token.")? }),
+    }
+}
+
+/// "Test connection": can Quire list, write, read and delete there, and
+/// does the storage support conditional writes. For S3 and WebDAV; folders
+/// and servers say whether they're reachable.
+pub fn sync_test(target: &SyncTarget) -> Result<String, String> {
+    match target {
+        SyncTarget::Remote { profile, secret } => {
+            let store = profile.open(secret)?;
+            remote::probe(&*store).map(|p| p.summary()).map_err(|e| e.to_string())
+        }
+        SyncTarget::Folder(_) | SyncTarget::Server { .. } => {
+            let n = sync_list(target)?.len();
+            Ok(format!("Connected: {n} Quire vault(s) there."))
+        }
+    }
 }
 
 /// A vault that a new device can join.
@@ -280,6 +438,15 @@ fn sync_folder_root(chosen: &Path, vault_root: &Path) -> Result<PathBuf, String>
 }
 
 impl SyncConfig {
+    /// Where this vault syncs, in words ("folder …", "server …", "S3 bucket …").
+    pub fn transport_label(&self) -> String {
+        match (&self.remote, &self.folder) {
+            (Some(r), _) => r.describe(),
+            (None, Some(f)) => format!("folder {}", f.display()),
+            (None, None) => format!("server {}", self.server),
+        }
+    }
+
     /// The folders this device syncs.
     pub fn selection(&self) -> Selection {
         Selection::new(&self.only, &self.exclude).unwrap_or_else(|_| Selection {
@@ -292,11 +459,13 @@ impl SyncConfig {
     pub fn load(root: &Path) -> Option<Self> {
         let s = std::fs::read_to_string(sync_dir(root).join("config.json")).ok()?;
         let mut v: serde_json::Value = serde_json::from_str(&s).ok()?;
-        if let Some(o) = v.as_object_mut()
-            && !o.contains_key("device")
-            && let Some(d) = o.remove(PARTIAL_DEVICE)
-        {
-            o.insert("device".into(), d);
+        for alias in [PARTIAL_DEVICE, REMOTE_DEVICE] {
+            if let Some(o) = v.as_object_mut()
+                && !o.contains_key("device")
+                && let Some(d) = o.remove(alias)
+            {
+                o.insert("device".into(), d);
+            }
         }
         serde_json::from_value(v).ok()
     }
@@ -311,6 +480,14 @@ impl SyncConfig {
             // for this vault rather than sync it from an empty state.
             o.insert(PARTIAL_DEVICE.into(), d);
         }
+        if self.remote.is_some()
+            && let Some(o) = v.as_object_mut()
+            && let Some(d) = o.remove("device").or_else(|| o.remove(PARTIAL_DEVICE))
+        {
+            // Quire 0.11 and older can't read this file then (they'd take
+            // it for a server with no address), so they show sync as off.
+            o.insert(REMOTE_DEVICE.into(), d);
+        }
         let text = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
         crate::atomic::write(&sync_dir(root).join("config.json"), text.as_bytes(), false).map_err(|e| e.to_string())
     }
@@ -321,6 +498,8 @@ impl SyncConfig {
 /// knows nothing of selections and keeps no state for them; syncing such a
 /// folder it would start afresh over the notes already there.
 const PARTIAL_DEVICE: &str = "partial_device";
+/// Where `config.json` keeps the device id for S3 or WebDAV sync (0.12).
+const REMOTE_DEVICE: &str = "remote_device";
 
 /// What another Quire process syncing the same vault on this device says.
 pub const ALREADY_SYNCING: &str = "Quire is already syncing this vault (the app or `quire-cli serve`)";
@@ -860,20 +1039,40 @@ pub enum SyncEvent {
 enum Link {
     Server(HttpTransport),
     Folder(Box<FolderTransport>),
+    Remote(Box<RemoteTransport>),
+}
+
+/// Where S3 and WebDAV sync keep their mirror (`.quire/sync/remote`).
+fn remote_dir(root: &Path) -> PathBuf {
+    sync_dir(root).join("remote")
+}
+
+/// The storage client for a config, with the credentials in `secret` (JSON).
+fn open_store(profile: &RemoteProfile, secret: &str) -> Result<Arc<dyn ObjectStore>, String> {
+    profile.open(&RemoteSecret::from_json(secret)?)
 }
 
 impl Link {
-    fn new(cfg: &SyncConfig, token: &str, state_dir: Option<&Path>) -> Self {
-        match &cfg.folder {
-            Some(root) => Self::Folder(Box::new(FolderTransport::new(root, &cfg.space, cfg.device.clone(), state_dir))),
-            None => Self::Server(HttpTransport::new(&cfg.server, cfg.space.clone(), token)),
+    /// `token` is a server's token, or the storage's credentials (JSON).
+    /// `root` is the vault folder (for a remote mirror), when syncing.
+    fn new(cfg: &SyncConfig, token: &str, state_dir: Option<&Path>, root: Option<&Path>) -> Result<Self, String> {
+        if let Some(profile) = &cfg.remote {
+            let store = open_store(profile, token)?;
+            let mirror = root.map(remote_dir);
+            let t = RemoteTransport::new(store, &cfg.space, cfg.device.clone(), mirror.as_deref()).map_err(|e| e.to_string())?;
+            return Ok(Self::Remote(Box::new(t)));
         }
+        Ok(match &cfg.folder {
+            Some(dir) => Self::Folder(Box::new(FolderTransport::new(dir, &cfg.space, cfg.device.clone(), state_dir))),
+            None => Self::Server(HttpTransport::new(&cfg.server, cfg.space.clone(), token)),
+        })
     }
 
     fn transport(&self) -> &dyn Transport {
         match self {
             Self::Server(t) => t,
             Self::Folder(t) => &**t,
+            Self::Remote(t) => &**t,
         }
     }
 }
@@ -904,8 +1103,8 @@ struct Pass {
 }
 
 impl Session {
-    fn new(root: PathBuf, vault: Vault, cfg: SyncConfig, token: &str, key: VaultKey, lock: SyncLock) -> Self {
-        let link = Link::new(&cfg, token, Some(&sync_dir(&root)));
+    fn new(root: PathBuf, vault: Vault, cfg: SyncConfig, token: &str, key: VaultKey, lock: SyncLock) -> Result<Self, String> {
+        let link = Link::new(&cfg, token, Some(&sync_dir(&root)), Some(&root))?;
         let engine = Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), key.keys(), load_state(&root, &cfg));
         // In a sync folder, vault settings travel in a lane of their own,
         // which 0.8 never reads; the notes lane never touches them.
@@ -921,7 +1120,7 @@ impl Session {
             device.name = cfg.device_name.trim().to_string();
         }
         let agent = quire_agent::AgentStore::open(&vault, device, Arc::new(quire_agent::SystemClock));
-        Self { root, vault, cfg, key, link, engine, store, lane: None, agent, _lock: lock }
+        Ok(Self { root, vault, cfg, key, link, engine, store, lane: None, agent, _lock: lock })
     }
 
     /// Whether `.quire/shared/` travels on this device now (turned on here,
@@ -951,6 +1150,15 @@ impl Session {
         let (root, cfg) = (&self.root, &self.cfg);
         snapshot_reads(&mut self.store);
         let mut res = self.engine.sync(&mut self.store, self.link.transport(), &today());
+        // S3 and WebDAV: upload what the pass pushed (kept here until then).
+        if let Link::Remote(t) = &self.link {
+            let flushed = t.flush();
+            if res.is_ok()
+                && let Err(e) = flushed
+            {
+                res = Err(quire_sync::SyncError::Transport(e));
+            }
+        }
         scrub_locked_text(&self.store.vault, &mut self.engine.state);
         let _ = save_state(root, cfg, &self.engine.state);
         if res.is_ok() {
@@ -1011,11 +1219,21 @@ impl Session {
                         (None, Some(w)) => SyncStatus::Waiting(w),
                         (None, None) => SyncStatus::Synced(Instant::now()),
                     },
+                    Link::Remote(t) => match (t.problem(), t.waiting()) {
+                        (Some(p), _) => SyncStatus::Error(p),
+                        (None, Some(w)) => SyncStatus::Waiting(w),
+                        (None, None) => SyncStatus::Synced(Instant::now()),
+                    },
                     Link::Server(_) => SyncStatus::Synced(Instant::now()),
                 };
                 (status, report.changed_anything().then_some(report), poll)
             }
             Err(quire_sync::SyncError::Transport(quire_sync::TransportError::Offline(e))) => {
+                let e = match &self.link {
+                    // "3 change(s) saved here, not uploaded yet: <why>".
+                    Link::Remote(t) => t.pending().unwrap_or(e),
+                    _ => e,
+                };
                 (SyncStatus::Offline(e), None, Duration::from_secs(30).min(poll))
             }
             // A note changed mid-pass, or other devices are busy: try again soon.
@@ -1121,6 +1339,9 @@ fn today() -> String {
 
 /// How often the app syncs without a reason to (a save, another device's change).
 pub const APP_POLL: Duration = Duration::from_mins(2);
+/// How often S3 and WebDAV are checked for other devices' changes (or the
+/// poll interval, when that's longer than the app's).
+pub const REMOTE_POLL: Duration = Duration::from_mins(1);
 
 impl SyncWorker {
     fn start(root: PathBuf, vault: Vault, cfg: SyncConfig, token: String, key: VaultKey, poll: Duration) -> Self {
@@ -1132,9 +1353,32 @@ impl SyncWorker {
         // Watch thread: tells the worker when another device pushed.
         {
             let (tx, stop, known) = (tx.clone(), Arc::clone(&stop), Arc::clone(&known));
-            match Link::new(&cfg, &token, Some(&sync_dir(&root))) {
+            match Link::new(&cfg, &token, Some(&sync_dir(&root)), None) {
+                // Can't even make a client (a bad address): the worker says why.
+                Err(_) => std::thread::spawn(|| {}),
+                // S3 and WebDAV: one listing of the devices' tips a minute
+                // (see docs/sync-backends.md for what that costs).
+                Ok(Link::Remote(t)) => std::thread::spawn(move || {
+                    // Less often when asked (`sync watch --poll 5m`).
+                    let every = if poll > APP_POLL { poll } else { REMOTE_POLL };
+                    let mut last = t.fingerprint().ok();
+                    let _ = tx.send(Msg::Remote);
+                    while !stop.load(Ordering::Relaxed) {
+                        for _ in 0..every.as_secs() {
+                            if stop.load(Ordering::Relaxed) {
+                                return;
+                            }
+                            std::thread::sleep(Duration::from_secs(1));
+                        }
+                        let now = t.fingerprint().ok();
+                        if now.is_some() && now != last {
+                            last = now;
+                            let _ = tx.send(Msg::Remote);
+                        }
+                    }
+                }),
                 // A server answers a long poll as soon as something changes.
-                Link::Server(http) => std::thread::spawn(move || {
+                Ok(Link::Server(http)) => std::thread::spawn(move || {
                     while !stop.load(Ordering::Relaxed) {
                         match http.wait(known.load(Ordering::Relaxed), 25) {
                             Ok(latest) if latest > known.load(Ordering::Relaxed) => {
@@ -1148,7 +1392,7 @@ impl SyncWorker {
                 }),
                 // A folder is checked every couple of seconds (sizes and
                 // times only, so it's cheap).
-                Link::Folder(dir) => {
+                Ok(Link::Folder(dir)) => {
                     let lane =
                         cfg.folder.as_ref().map(|r| FolderTransport::lane(r, &cfg.space, cfg.device.clone(), None, folder::SHARED_LANE));
                     std::thread::spawn(move || {
@@ -1202,7 +1446,13 @@ impl SyncWorker {
                     }
                 }
             };
-            let mut session = Session::new(root, vault, cfg, &token, key, lock);
+            let mut session = match Session::new(root, vault, cfg, &token, key, lock) {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = events.send(SyncEvent::Status(SyncStatus::Error(e)));
+                    return;
+                }
+            };
             // A server that needs a newer Quire says so plainly instead of failing each pass.
             if let Some(notice) = session.too_old() {
                 let _ = events.send(SyncEvent::Status(SyncStatus::Error(notice)));
@@ -1282,6 +1532,12 @@ fn open_parts(root: &Path) -> Result<(Vault, SyncConfig, String, VaultKey), Stri
     // A folder needs no token.
     let token = if cfg.folder.is_some() { Some(String::new()) } else { store.get(&token_name(&cfg.space)) };
     let key = store.get(&key_name(&cfg.space)).and_then(|k| VaultKey::from_recovery_key(&k).ok());
+    if cfg.remote.is_some() && token.is_none() && key.is_some() {
+        return Err(format!(
+            "This device is missing the storage credentials ({}). Enter them again: `quire-cli sync credentials`, or Settings → Sync.",
+            secrets::store().kind()
+        ));
+    }
     match (token, key) {
         (Some(t), Some(k)) => Ok((vault, cfg, t, k)),
         _ => Err(format!("This device is missing the sync key ({}). Join the vault again.", secrets::store().kind())),
@@ -1295,7 +1551,7 @@ pub fn sync_once_at(root: &Path) -> Result<Report, String> {
         LockError::Busy { .. } => format!("{ALREADY_SYNCING}; it keeps this vault in sync, nothing to do here."),
         LockError::Io(_) => e.to_string(),
     })?;
-    let mut session = Session::new(root.to_path_buf(), vault, cfg, &token, key, lock);
+    let mut session = Session::new(root.to_path_buf(), vault, cfg, &token, key, lock)?;
     if let Some(notice) = session.too_old() {
         return Err(notice);
     }
@@ -1346,6 +1602,10 @@ pub fn default_device_name() -> String {
 /// its `list` skips hidden paths). On a server, only Quire 0.9 or later may
 /// connect from now on.
 fn raise_min_reader(cfg: &SyncConfig) -> Result<(), String> {
+    // S3 and WebDAV vaults are new in 0.12: no older device can read them.
+    if cfg.remote.is_some() {
+        return Ok(());
+    }
     if let Some(dir) = &cfg.folder {
         return folder::open_lane(dir, &cfg.space, folder::SHARED_LANE).map_err(|e| e.to_string());
     }
@@ -1358,9 +1618,10 @@ fn raise_min_reader(cfg: &SyncConfig) -> Result<(), String> {
 }
 
 fn sync_config_for(root: &Path, target: &SyncTarget, space: SpaceId, device_name: &str, sel: &Selection) -> Result<SyncConfig, String> {
-    let (server, folder) = match target {
-        SyncTarget::Folder(chosen) => (String::new(), Some(sync_folder_root(chosen, root)?)),
-        SyncTarget::Server { url, .. } => (url.trim().to_string(), None),
+    let (server, folder, remote) = match target {
+        SyncTarget::Folder(chosen) => (String::new(), Some(sync_folder_root(chosen, root)?), None),
+        SyncTarget::Server { url, .. } => (url.trim().to_string(), None, None),
+        SyncTarget::Remote { profile, .. } => (String::new(), None, Some(profile.clone())),
     };
     Ok(SyncConfig {
         server,
@@ -1371,13 +1632,16 @@ fn sync_config_for(root: &Path, target: &SyncTarget, space: SpaceId, device_name
         shared_state: false,
         only: sel.only.clone(),
         exclude: sel.exclude.clone(),
+        remote,
     })
 }
 
 fn store_sync_secrets(cfg: &SyncConfig, target: &SyncTarget, key: &VaultKey) -> Result<(), String> {
     let store = secrets::store();
-    if let SyncTarget::Server { token, .. } = target {
-        store.set(&token_name(&cfg.space), token.trim())?;
+    match target {
+        SyncTarget::Server { token, .. } => store.set(&token_name(&cfg.space), token.trim())?,
+        SyncTarget::Remote { secret, .. } => store.set(&token_name(&cfg.space), &secret.to_json())?,
+        SyncTarget::Folder(_) => {}
     }
     store.set(&key_name(&cfg.space), &key.recovery_key().to_string())
 }
@@ -1399,6 +1663,10 @@ pub fn sync_create_at(
     let cfg = sync_config_for(root, target, SpaceId::random().map_err(|e| e.to_string())?, device_name, selection)?;
     let wrapped = WrappedKey::wrap(&key, passphrase, KDF).map_err(|e| e.to_string())?;
     match (target, &cfg.folder) {
+        (SyncTarget::Remote { .. }, _) => {
+            let store = target.store()?.ok_or("No storage")?;
+            remote::create_space(&*store, &cfg.space, &wrapped).map_err(|e| e.to_string())?;
+        }
         (_, Some(dir)) => folder::create_space(dir, &cfg.space, &wrapped).map_err(|e| e.to_string())?,
         (SyncTarget::Server { url, token }, None) => {
             HttpTransport::new(url.trim(), cfg.space.clone(), token.trim()).create_space(&wrapped).map_err(|e| e.to_string())?;
@@ -1408,6 +1676,7 @@ pub fn sync_create_at(
     store_sync_secrets(&cfg, target, &key)?;
     cfg.save(root)?;
     let _ = save_state(root, &cfg, &SyncState::default());
+    let _ = std::fs::remove_dir_all(remote_dir(root));
     Ok(key.recovery_key())
 }
 
@@ -1427,6 +1696,7 @@ pub fn sync_join_at(
         k
     } else {
         let wrapped = match (target, &cfg.folder) {
+            (SyncTarget::Remote { .. }, _) => remote::wrapped_key(&*target.store()?.ok_or("No storage")?, space),
             (_, Some(dir)) => folder::wrapped_key(dir, space),
             (SyncTarget::Server { url, token }, None) => HttpTransport::new(url.trim(), space.clone(), token.trim()).wrapped_key(),
             (SyncTarget::Folder(_), None) => return Err("No sync folder".into()),
@@ -1437,7 +1707,61 @@ pub fn sync_join_at(
     cfg.save(root)?;
     let _ = save_state(root, &cfg, &SyncState::default());
     let _ = std::fs::remove_file(sync_dir(root).join("folder-seq"));
+    // A new device id: a mirror from an earlier setup holds nothing to send.
+    let _ = std::fs::remove_dir_all(remote_dir(root));
     Ok(())
+}
+
+/// New credentials for the S3 or WebDAV storage of the vault at `root`
+/// (they expired, or were rotated). Checked against the storage first.
+pub fn sync_set_remote_secret_at(root: &Path, secret: &RemoteSecret) -> Result<String, String> {
+    let cfg = SyncConfig::load(root).ok_or("Sync isn't set up for this vault")?;
+    let profile = cfg.remote.as_ref().ok_or("This vault doesn't sync through S3 or WebDAV")?;
+    let summary = remote::probe(&*profile.open(secret)?).map_err(|e| e.to_string())?.summary();
+    secrets::store().set(&token_name(&cfg.space), &secret.to_json())?;
+    Ok(summary)
+}
+
+/// Stop syncing the vault at `root` on this device: its sync settings,
+/// state and secrets go; notes stay as they are, and so does the copy
+/// other devices sync with.
+pub fn sync_stop_at(root: &Path) {
+    if let Some(cfg) = SyncConfig::load(root) {
+        let store = secrets::store();
+        let _ = store.delete(&token_name(&cfg.space));
+        let _ = store.delete(&key_name(&cfg.space));
+    }
+    let dir = sync_dir(root);
+    for f in ["config.json", "state.json", "state-partial.json", "state-shared.json", "last.json", "folder-seq"] {
+        let _ = std::fs::remove_file(dir.join(f));
+    }
+    let _ = std::fs::remove_dir_all(remote_dir(root));
+}
+
+/// Move the vault at `root` to another place (a folder, a server, S3 or WebDAV).
+///
+/// One last pass where it syncs now, then a new sync vault there, from
+/// this device's notes. Other devices join the new vault (their notes are
+/// adopted, not copied). Returns the new vault's recovery key, and the last
+/// pass's problem if it had one.
+pub fn sync_move_at(root: &Path, target: &SyncTarget, passphrase: &str) -> Result<(RecoveryKey, Option<String>), String> {
+    let cfg = SyncConfig::load(root).ok_or("Sync isn't set up for this vault")?;
+    if passphrase.chars().count() < 8 {
+        return Err("Use a passphrase of at least 8 characters".into());
+    }
+    // Check the new place before leaving the old one.
+    sync_test(target)?;
+    let last = sync_once_at(root).err();
+    if last.as_deref().is_some_and(|e| e.starts_with(ALREADY_SYNCING)) {
+        return Err(format!("{ALREADY_SYNCING}. Stop it first, then move the vault."));
+    }
+    let _lock = lock_sync(root).map_err(|e| e.to_string())?;
+    sync_stop_at(root);
+    let rk = sync_create_at(root, target, passphrase, &cfg.device_name, &cfg.selection())?;
+    if cfg.shared_state {
+        let _ = sync_share_at(root, true);
+    }
+    Ok((rk, last))
 }
 
 /// Change which folders the vault at `root` syncs. The engine's state
@@ -1525,6 +1849,15 @@ impl Workspace {
                     detail: if s.devices == 1 { "1 device".into() } else { format!("{} devices", s.devices) },
                 })
                 .collect()),
+            SyncTarget::Remote { .. } => Ok(remote::list_spaces(&*target.store()?.ok_or("No storage")?)
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .map(|s| SyncVaultInfo {
+                    space: s.space,
+                    created: s.created,
+                    detail: if s.devices == 1 { "1 device".into() } else { format!("{} devices", s.devices) },
+                })
+                .collect()),
             SyncTarget::Server { url, token } => Ok(HttpTransport::list_spaces(url.trim(), token.trim())
                 .map_err(|e| e.to_string())?
                 .into_iter()
@@ -1565,6 +1898,11 @@ impl Workspace {
         // A folder needs no token.
         let token = if cfg.folder.is_some() { Some(String::new()) } else { store.get(&token_name(&cfg.space)) };
         let key = store.get(&key_name(&cfg.space)).and_then(|k| VaultKey::from_recovery_key(&k).ok());
+        if cfg.remote.is_some() && token.is_none() && key.is_some() {
+            self.sync.config = Some(cfg);
+            self.sync.status = SyncStatus::Error("This device is missing the storage credentials. Enter them in Settings → Sync.".into());
+            return;
+        }
         let (Some(token), Some(key)) = (token, key) else {
             self.sync.config = Some(cfg);
             self.sync.status = SyncStatus::Error("This device is missing the sync key. Join the vault again in Settings → Sync.".into());
@@ -1636,7 +1974,37 @@ impl Workspace {
         let _ = std::fs::remove_file(dir.join("state-partial.json"));
         let _ = std::fs::remove_file(dir.join("last.json"));
         let _ = std::fs::remove_file(dir.join("folder-seq"));
+        let _ = std::fs::remove_dir_all(remote_dir(&root));
         Ok(())
+    }
+
+    /// "Test connection" off the UI thread.
+    pub fn sync_test_in_background(target: SyncTarget) -> Receiver<Result<String, String>> {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = tx.send(sync_test(&target));
+        });
+        rx
+    }
+
+    /// New credentials for this vault's S3 or WebDAV storage, checked
+    /// first; sync restarts with them.
+    pub fn sync_set_remote_secret(&mut self, secret: &RemoteSecret) -> Result<String, String> {
+        let (root, _) = self.sync_parts()?;
+        let summary = sync_set_remote_secret_at(&root, secret)?;
+        self.start_sync();
+        Ok(summary)
+    }
+
+    /// [`Self::sync_set_remote_secret`] off the UI thread: checks and saves
+    /// in the background; call [`Self::start_sync`] when it says `Ok`.
+    pub fn sync_set_remote_secret_in_background(&self, secret: RemoteSecret) -> Result<Receiver<Result<String, String>>, String> {
+        let (root, _) = self.sync_parts()?;
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = tx.send(sync_set_remote_secret_at(&root, &secret));
+        });
+        Ok(rx)
     }
 
     /// Every version of `path` the sync server or folder holds, from every
@@ -1650,9 +2018,15 @@ impl Workspace {
         let (tx, rx) = crossbeam_channel::bounded(1);
         let path = path.as_str().to_string();
         std::thread::spawn(move || {
-            let link = Link::new(&cfg, &token, None);
+            // S3 and WebDAV: read the mirror the worker keeps, not the storage.
+            let link = if cfg.remote.is_some() {
+                let mirror = RemoteTransport::mirror_root(&remote_dir(&root));
+                Ok(Link::Folder(Box::new(FolderTransport::new(&mirror, &cfg.space, cfg.device.clone(), None))))
+            } else {
+                Link::new(&cfg, &token, None, None)
+            };
             let engine = Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), key.keys(), load_state(&root, &cfg));
-            let _ = tx.send(engine.history(link.transport(), &path).map_err(|e| e.to_string()));
+            let _ = tx.send(link.and_then(|l| engine.history(l.transport(), &path).map_err(|e| e.to_string())));
         });
         Some(rx)
     }
@@ -1873,6 +2247,135 @@ mod tests {
         assert_eq!(r.pushed, 0);
     }
 
+    fn remote_targets() -> Vec<(remote::mock::MockServer, SyncTarget)> {
+        use quire_sync::remote::mock::{Kind, MockServer};
+        let s3 = MockServer::start(Kind::S3 {
+            bucket: "notes".into(),
+            access_key: "AK".into(),
+            secret_key: "SK/+".into(),
+            region: "auto".into(),
+        });
+        let s3_target = SyncTarget::Remote {
+            profile: RemoteProfile::S3 {
+                endpoint: s3.origin(),
+                region: "auto".into(),
+                bucket: "notes".into(),
+                prefix: "q".into(),
+                virtual_hosted: false,
+                allow_http: false,
+            },
+            secret: RemoteSecret::S3 { access_key: "AK".into(), secret_key: "SK/+".into(), session_token: None },
+        };
+        let dav = MockServer::start(Kind::WebDav { user: "asha".into(), password: "pw".into() });
+        let dav_target = SyncTarget::Remote {
+            profile: RemoteProfile::Webdav { url: dav.dav_url(), allow_http: false },
+            secret: RemoteSecret::Webdav { user: "asha".into(), password: "pw".into() },
+        };
+        vec![(s3, s3_target), (dav, dav_target)]
+    }
+
+    /// 0.12: a vault syncs through S3 and WebDAV as through a folder: create,
+    /// join (a wrong passphrase refused), selective sync, settings, new
+    /// credentials, and no secret in the vault.
+    #[test]
+    fn s3_and_webdav_vaults_sync_end_to_end() {
+        for (srv, target) in remote_targets() {
+            let dir = tempfile::tempdir().unwrap();
+            let (va, vb, vc) = (dir.path().join("A"), dir.path().join("B"), dir.path().join("C"));
+            for d in [&va, &vb, &vc] {
+                std::fs::create_dir_all(d.join("Work")).unwrap();
+            }
+            std::fs::write(va.join("Plan.md"), "# Plan\none\n").unwrap();
+            std::fs::write(va.join("Work/Task.md"), "work\n").unwrap();
+            assert!(sync_test(&target).unwrap().starts_with("Connected"));
+            sync_create_at(&va, &target, "correct horse battery", "laptop", &Selection::default()).unwrap();
+            sync_once_at(&va).unwrap();
+            let space = sync_list(&target).unwrap().remove(0).space;
+            assert!(sync_join_at(&vb, &target, &space, "wrong passphrase", "phone", &Selection::default()).is_err());
+            sync_join_at(&vb, &target, &space, "correct horse battery", "phone", &Selection::default()).unwrap();
+            let only_work = Selection::new(&["Work".into()], &[]).unwrap();
+            sync_join_at(&vc, &target, &space, "correct horse battery", "server", &only_work).unwrap();
+            for v in [&vb, &vc] {
+                sync_once_at(v).unwrap();
+            }
+            assert_eq!(files(&va), files(&vb));
+            assert_eq!(files(&vc), ["Work/Task.md"], "selective sync holds only Work/");
+            // Edits both ways, and the settings switch (no older readers to keep out).
+            std::fs::write(vb.join("From phone.md"), "hi\n").unwrap();
+            std::fs::write(vc.join("Work/Task.md"), "work\ndone\n").unwrap();
+            sync_share_at(&va, true).unwrap();
+            for _ in 0..2 {
+                for v in [&va, &vb, &vc] {
+                    sync_once_at(v).unwrap();
+                }
+            }
+            assert_eq!(files(&va), files(&vb));
+            assert_eq!(std::fs::read_to_string(va.join("Work/Task.md")).unwrap(), "work\ndone\n");
+            assert!(!vc.join("Plan.md").exists());
+            // config.json holds no secret, and Quire 0.11 can't take it for a server.
+            let cfg_text = std::fs::read_to_string(va.join(".quire/sync/config.json")).unwrap();
+            for secret in ["SK/+", "\"pw\"", "correct horse"] {
+                assert!(!cfg_text.contains(secret), "{cfg_text}");
+            }
+            assert!(cfg_text.contains("remote_device") && !cfg_text.contains("\"device\""), "{cfg_text}");
+            let summary = sync_summary_at(&va).unwrap();
+            assert!(summary.has_secrets);
+            assert!(summary.config.transport_label().contains("S3 bucket notes/q") || summary.config.transport_label().contains("WebDAV"));
+            // Expired credentials say so; new ones are checked before they're kept.
+            srv.state.expired.store(true, Ordering::Relaxed);
+            let e = sync_once_at(&va).unwrap_err();
+            assert!(e.contains("expired") || e.contains("user name or password"), "{e}");
+            srv.state.expired.store(false, Ordering::Relaxed);
+            let SyncTarget::Remote { secret, .. } = &target else { unreachable!() };
+            let wrong = match secret {
+                RemoteSecret::S3 { access_key, .. } => {
+                    RemoteSecret::S3 { access_key: access_key.clone(), secret_key: "nope".into(), session_token: None }
+                }
+                RemoteSecret::Webdav { user, .. } => RemoteSecret::Webdav { user: user.clone(), password: "nope".into() },
+            };
+            assert!(sync_set_remote_secret_at(&va, &wrong).is_err());
+            assert!(sync_set_remote_secret_at(&va, secret).unwrap().starts_with("Connected"));
+            sync_once_at(&va).unwrap();
+            // The storage only ever saw ciphertext and ids.
+            for (k, v) in srv.objects() {
+                assert!(!k.contains("Plan") && !String::from_utf8_lossy(&v).contains("Plan"), "{k}");
+            }
+        }
+    }
+
+    /// `sync move`: from a synced folder to WebDAV; the other device joins
+    /// the new vault and its notes are adopted, not doubled.
+    #[test]
+    fn a_vault_moves_from_a_folder_to_webdav() {
+        let (_srv, dav) = remote_targets().pop().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let (va, vb, shared) = (dir.path().join("A"), dir.path().join("B"), dir.path().join("Dropbox"));
+        for d in [&va, &vb, &shared] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(va.join("Plan.md"), "# Plan\n").unwrap();
+        let folder = SyncTarget::Folder(shared);
+        sync_create_at(&va, &folder, "correct horse battery", "laptop", &Selection::default()).unwrap();
+        sync_once_at(&va).unwrap();
+        let space = sync_list(&folder).unwrap().remove(0).space;
+        sync_join_at(&vb, &folder, &space, "correct horse battery", "phone", &Selection::default()).unwrap();
+        sync_once_at(&vb).unwrap();
+        std::fs::write(va.join("Late.md"), "written just before the move\n").unwrap();
+        let (_rk, last) = sync_move_at(&va, &dav, "another passphrase").unwrap();
+        assert!(last.is_none());
+        assert!(SyncConfig::load(&va).unwrap().transport_label().starts_with("WebDAV"));
+        sync_once_at(&va).unwrap();
+        // B (here in the same test process, so A's stop took the shared
+        // key from this secrets file too): stop, then join the new vault.
+        sync_stop_at(&vb);
+        let new_space = sync_list(&dav).unwrap().remove(0).space;
+        sync_join_at(&vb, &dav, &new_space, "another passphrase", "phone", &Selection::default()).unwrap();
+        sync_once_at(&vb).unwrap();
+        sync_once_at(&va).unwrap();
+        assert_eq!(files(&va), ["Late.md", "Plan.md"]);
+        assert_eq!(files(&va), files(&vb), "adopted, no copies");
+    }
+
     /// Review finding 5: one sync process per vault and device. A second
     /// worker (the app next to `serve --sync`) waits and says so, then takes
     /// over; one-off commands refuse.
@@ -1947,6 +2450,7 @@ mod tests {
             shared_state: false,
             only: vec!["Work/".into()],
             exclude: Vec::new(),
+            remote: None,
         };
         cfg.save(dir.path()).unwrap();
         let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(sync_dir(dir.path()).join("config.json")).unwrap()).unwrap();
@@ -2113,6 +2617,7 @@ mod tests {
             shared_state: false,
             only: Vec::new(),
             exclude: Vec::new(),
+            remote: None,
         };
         cfg.save(dir.path()).unwrap();
         assert!(!std::fs::read_to_string(sync_dir(dir.path()).join("config.json")).unwrap().contains("shared_state"), "unchanged for 0.8");
@@ -2214,6 +2719,7 @@ mod tests {
             shared_state: false,
             only: Vec::new(),
             exclude: Vec::new(),
+            remote: None,
         };
         cfg.save(vault_dir.path()).unwrap();
         ws.sync_share_vault_settings(true).unwrap();

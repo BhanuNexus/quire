@@ -223,3 +223,70 @@ fn one_sync_per_vault_and_scope_waits_for_it() {
 }
 
 use std::os::unix::fs::PermissionsExt as _;
+
+/// 0.12: S3 and WebDAV from the command line, against in-process servers.
+/// Secrets come from the environment and are never printed or written to
+/// the vault; `test`, `status`, `credentials` and `move` say what they did.
+#[test]
+fn s3_and_webdav_from_the_command_line() {
+    use quire_sync::remote::mock::{Kind, MockServer};
+    let s3 = MockServer::start(Kind::S3 {
+        bucket: "notes".into(),
+        access_key: "AKIDCLI".into(),
+        secret_key: "S3-SECRET-xyz".into(),
+        region: "us-east-1".into(),
+    });
+    let dav = MockServer::start(Kind::WebDav { user: "asha".into(), password: "DAV-PASSWORD-xyz".into() });
+    let env = Env::new();
+    std::fs::write(env.path("A/Plan.md"), "# Plan\n").unwrap();
+    let a = env.path("A").display().to_string();
+    let b = env.path("B").display().to_string();
+    let rk = env.path("rk.txt").display().to_string();
+    let s3_args = ["--s3", &s3.origin(), "--bucket", "notes", "--region", "us-east-1", "--prefix", "q", "--access-key-id", "AKIDCLI"];
+    let with_s3 = |args: &[&str]| {
+        let mut c = env.cmd(args);
+        c.env("QUIRE_S3_SECRET_ACCESS_KEY", "S3-SECRET-xyz");
+        c.output().unwrap()
+    };
+    // A wrong secret: a plain error, before anything is set up.
+    let mut c = env.cmd(&[&["sync", "test", &a][..], &s3_args[..]].concat());
+    c.env("QUIRE_S3_SECRET_ACCESS_KEY", "wrong");
+    let bad = c.output().unwrap();
+    assert!(!bad.status.success() && text(&bad).contains("secret access key is wrong"), "{}", text(&bad));
+    let ok = with_s3(&[&["sync", "test", &a][..], &s3_args[..]].concat());
+    assert!(ok.status.success() && text(&ok).contains("conditional writes supported"), "{}", text(&ok));
+    let created = with_s3(&[&["sync", "join", &a, "--create", "--recovery-key-file", &rk][..], &s3_args[..]].concat());
+    assert!(created.status.success(), "{}", text(&created));
+    env.run(&["sync", "once", &a]);
+    let joined = with_s3(&[&["sync", "join", &b][..], &s3_args[..]].concat());
+    assert!(joined.status.success(), "{}", text(&joined));
+    env.run(&["sync", "once", &b]);
+    assert_eq!(std::fs::read_to_string(env.path("B/Plan.md")).unwrap(), "# Plan\n");
+    let status = text(&env.run(&["sync", "status", &b]));
+    assert!(status.contains("Syncs through S3 bucket notes/q at http://127.0.0.1"), "{status}");
+    // Move A to WebDAV; B joins it.
+    let rk2 = env.path("rk2.txt").display().to_string();
+    let url = dav.dav_url();
+    let dav_args = ["--webdav", url.as_str(), "--user", "asha"];
+    let mv = |vault: &str, extra: &[&str]| {
+        let mut c = env.cmd(&[&["sync", "move", vault][..], &dav_args[..], extra].concat());
+        c.env("QUIRE_WEBDAV_PASSWORD", "DAV-PASSWORD-xyz");
+        c.output().unwrap()
+    };
+    let moved = mv(&a, &["--recovery-key-file", &rk2]);
+    assert!(moved.status.success(), "{}", text(&moved));
+    assert!(text(&moved).contains("now syncs through WebDAV folder"), "{}", text(&moved));
+    env.run(&["sync", "once", &a]);
+    let mut c = env.cmd(&[&["sync", "credentials", &a][..], &["--user", "asha"][..]].concat());
+    c.env("QUIRE_WEBDAV_PASSWORD", "DAV-PASSWORD-xyz");
+    let creds = c.output().unwrap();
+    assert!(creds.status.success() && text(&creds).contains("Saved the new credentials"), "{}", text(&creds));
+    let all_output = [&bad, &ok, &created, &joined, &moved, &creds].iter().map(|o| text(o)).collect::<String>() + &status;
+    let in_vault: String = ["A/.quire/sync/config.json", "B/.quire/sync/config.json"]
+        .iter()
+        .filter_map(|p| std::fs::read_to_string(env.path(p)).ok())
+        .collect();
+    for secret in ["S3-SECRET-xyz", "DAV-PASSWORD-xyz", PASS] {
+        assert!(!all_output.contains(secret) && !in_vault.contains(secret), "{secret} leaked");
+    }
+}

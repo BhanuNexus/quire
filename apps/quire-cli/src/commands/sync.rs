@@ -11,8 +11,11 @@
 //!
 //! Secrets never go on the command line or the screen: the passphrase
 //! comes from a prompt, `QUIRE_SYNC_PASSPHRASE` or `--passphrase-file`; a
-//! server token from a prompt, `QUIRE_SYNC_TOKEN` or `--token-file`. The
-//! vault key and token are kept in the keychain or the private secrets file
+//! server token from a prompt, `QUIRE_SYNC_TOKEN` or `--token-file`; an S3
+//! secret key from `QUIRE_S3_SECRET_ACCESS_KEY` (or `AWS_SECRET_ACCESS_KEY`),
+//! `--secret-file` or a prompt; a WebDAV password from
+//! `QUIRE_WEBDAV_PASSWORD`, `--password-file` or a prompt. The vault key and
+//! credentials are kept in the keychain or the private secrets file
 //! (`QUIRE_SECRETS_FILE` picks another), as the app keeps them.
 
 use std::fmt::Write as _;
@@ -21,20 +24,33 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use quire_app::vault_sync::{self, Selection, SyncEvent, SyncStatus, SyncTarget, SyncWorker};
+use quire_app::vault_sync::{self, RemoteProfile, RemoteSecret, Selection, SyncEvent, SyncStatus, SyncTarget, SyncWorker};
 
 use super::{CliCommand, arg};
 
 pub(crate) const COMMANDS: &[CliCommand] = &[CliCommand {
     name: "sync",
     rank: 40,
-    usage: "  quire-cli sync join   <vault> (--folder DIR | --server URL) [--space ID | --create] [--device NAME]
-                        [--passphrase-file F] [--token-file F] [--only FOLDER]… [--exclude FOLDER]…
+    usage: "  quire-cli sync join   <vault> WHERE [--space ID | --create] [--device NAME]
+                        [--passphrase-file F] [--only FOLDER]… [--exclude FOLDER]…
                         set this folder up to sync (passphrase: prompt, QUIRE_SYNC_PASSPHRASE or the file;
-                        server token: prompt, QUIRE_SYNC_TOKEN or the file; --create needs --recovery-key-file F)
+                        --create needs --recovery-key-file F). WHERE is one of:
+                          --folder DIR
+                          --server URL [--token-file F]          (token: prompt, QUIRE_SYNC_TOKEN or the file)
+                          --s3 ENDPOINT --bucket B --region R [--prefix P] [--virtual-hosted] [--access-key-id ID]
+                               [--secret-file F]                 (secret: QUIRE_S3_SECRET_ACCESS_KEY, AWS_SECRET_ACCESS_KEY,
+                                                                  the file or a prompt; QUIRE_S3_SESSION_TOKEN optional)
+                          --webdav URL --user NAME [--password-file F]   (password: QUIRE_WEBDAV_PASSWORD, the file or a prompt)
+                        --allow-http allows http:// to a computer on your network (S3, WebDAV)
   quire-cli sync once   <vault>                 one sync pass
   quire-cli sync watch  <vault> [--poll 60s]    keep syncing until Ctrl+C or SIGTERM
   quire-cli sync status <vault>                 how sync is set up and how the last pass went
+  quire-cli sync test   <vault> [WHERE]         check the storage (or the one this vault syncs with): sign-in,
+                        writing, reading back, conditional writes
+  quire-cli sync credentials <vault>            new S3 or WebDAV credentials (expired, rotated), checked first
+  quire-cli sync move   <vault> WHERE --recovery-key-file F [--passphrase-file F]
+                        a last pass where it syncs now, then a new sync vault in WHERE from this device's
+                        notes; other devices then `sync join` it
   quire-cli sync scope  <vault> (--only FOLDER… [--exclude FOLDER…] | --all)   change which folders sync (not while a sync runs)
   quire-cli sync share  <vault> on|off          also sync vault settings and review history (agents' suggestions
                         and runs reach your other devices; every device needs Quire 0.9 or later)",
@@ -71,6 +87,23 @@ fn run(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         "scope" => scope(&vault, args),
+        "test" => {
+            let target = match target_from_args(args)? {
+                Some(t) => t,
+                None => configured_target(&vault)?,
+            };
+            println!("{}", vault_sync::sync_test(&target)?);
+            Ok(())
+        }
+        "credentials" => {
+            let cfg = vault_sync::SyncConfig::load(&vault).ok_or("Sync isn't set up for this vault.")?;
+            let profile = cfg.remote.ok_or("This vault doesn't sync through S3 or WebDAV; nothing to update.")?;
+            let secret = remote_secret(&profile, args)?;
+            println!("{}", vault_sync::sync_set_remote_secret_at(&vault, &secret)?);
+            println!("Saved the new credentials on this computer.");
+            Ok(())
+        }
+        "move" => move_vault(&vault, args),
         "share" => {
             let on = match arg(args, 3)? {
                 "on" => true,
@@ -165,16 +198,130 @@ fn prompt_line(prompt: &str) -> Result<String, String> {
     Ok(line.trim().to_string())
 }
 
-fn join(vault: &Path, args: &[String]) -> Result<(), String> {
-    let interactive = std::io::stdin().is_terminal();
-    let target = match (flag(args, "--folder"), flag(args, "--server")) {
-        (Some(_), Some(_)) => return Err("use --folder or --server, not both".into()),
-        (Some(f), None) => SyncTarget::Folder(PathBuf::from(f)),
+/// `QUIRE_…`, else the AWS variable, else a file or a prompt.
+fn read_secret_or_aws(what: &str, env: &str, aws: &str, file: Option<&str>) -> Result<String, String> {
+    match std::env::var(env).ok().filter(|v| !v.is_empty()).or_else(|| std::env::var(aws).ok().filter(|v| !v.is_empty())) {
+        Some(v) if file.is_none() => Ok(v),
+        _ => read_secret(what, env, file),
+    }
+}
+
+/// The storage's credentials, from the environment, files or prompts.
+fn remote_secret(profile: &RemoteProfile, args: &[String]) -> Result<RemoteSecret, String> {
+    match profile {
+        RemoteProfile::S3 { .. } => {
+            let access_key = match flag(args, "--access-key-id") {
+                Some(k) => k.to_string(),
+                None => match std::env::var("QUIRE_S3_ACCESS_KEY_ID").or_else(|_| std::env::var("AWS_ACCESS_KEY_ID")) {
+                    Ok(k) if !k.is_empty() => k,
+                    _ => prompt_line("Access key ID: ")?,
+                },
+            };
+            let secret_key = read_secret_or_aws(
+                "Secret access key",
+                "QUIRE_S3_SECRET_ACCESS_KEY",
+                "AWS_SECRET_ACCESS_KEY",
+                flag(args, "--secret-file"),
+            )?;
+            let session_token =
+                std::env::var("QUIRE_S3_SESSION_TOKEN").or_else(|_| std::env::var("AWS_SESSION_TOKEN")).ok().filter(|t| !t.is_empty());
+            Ok(RemoteSecret::S3 { access_key, secret_key, session_token })
+        }
+        RemoteProfile::Webdav { .. } => {
+            let user = match flag(args, "--user") {
+                Some(u) => u.to_string(),
+                None => match std::env::var("QUIRE_WEBDAV_USER") {
+                    Ok(u) if !u.is_empty() => u,
+                    _ => prompt_line("WebDAV user name: ")?,
+                },
+            };
+            let password = read_secret(
+                "WebDAV password (an app password, if the server has them)",
+                "QUIRE_WEBDAV_PASSWORD",
+                flag(args, "--password-file"),
+            )?;
+            Ok(RemoteSecret::Webdav { user, password })
+        }
+    }
+}
+
+/// `--s3 …` or `--webdav …` as a profile (no secrets).
+fn remote_profile(args: &[String]) -> Result<Option<RemoteProfile>, String> {
+    let allow_http = has(args, "--allow-http");
+    match (flag(args, "--s3"), flag(args, "--webdav")) {
+        (Some(_), Some(_)) => Err("use --s3 or --webdav, not both".into()),
+        (Some(endpoint), None) => {
+            let bucket = flag(args, "--bucket").ok_or("--s3 needs --bucket NAME")?.to_string();
+            let region = flag(args, "--region").ok_or("--s3 needs --region (us-east-1; R2: auto)")?.to_string();
+            let virtual_hosted = has(args, "--virtual-hosted") || vault_sync::s3_virtual_hosted_default(endpoint, &bucket);
+            Ok(Some(RemoteProfile::S3 {
+                endpoint: endpoint.to_string(),
+                region,
+                bucket,
+                prefix: flag(args, "--prefix").unwrap_or_default().to_string(),
+                virtual_hosted,
+                allow_http,
+            }))
+        }
+        (None, Some(url)) => Ok(Some(RemoteProfile::Webdav { url: url.to_string(), allow_http })),
+        (None, None) => Ok(None),
+    }
+}
+
+/// Where to sync, from `--folder`, `--server`, `--s3` or `--webdav`; `None` if none is given.
+fn target_from_args(args: &[String]) -> Result<Option<SyncTarget>, String> {
+    let given = ["--folder", "--server", "--s3", "--webdav"].iter().filter(|f| flag(args, f).is_some()).count();
+    if given > 1 {
+        return Err("say one place to sync: --folder, --server, --s3 or --webdav".into());
+    }
+    if let Some(profile) = remote_profile(args)? {
+        let secret = remote_secret(&profile, args)?;
+        return Ok(Some(SyncTarget::Remote { profile, secret }));
+    }
+    Ok(match (flag(args, "--folder"), flag(args, "--server")) {
+        (Some(f), _) => Some(SyncTarget::Folder(PathBuf::from(f))),
         (None, Some(url)) => {
             let token = read_secret("Sync server token", "QUIRE_SYNC_TOKEN", flag(args, "--token-file"))?;
-            SyncTarget::Server { url: url.to_string(), token }
+            Some(SyncTarget::Server { url: url.to_string(), token })
         }
-        (None, None) if interactive => {
+        (None, None) => None,
+    })
+}
+
+/// The place the vault at `vault` syncs with now (for `sync test`).
+fn configured_target(vault: &Path) -> Result<SyncTarget, String> {
+    let cfg = vault_sync::SyncConfig::load(vault).ok_or("Sync isn't set up for this vault; say where to test: --s3 or --webdav…")?;
+    vault_sync::sync_target_of(&cfg)
+}
+
+fn move_vault(vault: &Path, args: &[String]) -> Result<(), String> {
+    let before = vault_sync::SyncConfig::load(vault).ok_or("Sync isn't set up for this vault; use `sync join --create`.")?;
+    let target = target_from_args(args)?.ok_or("say where to move it: --folder, --server, --s3 or --webdav")?;
+    let out = PathBuf::from(
+        flag(args, "--recovery-key-file").ok_or("move needs --recovery-key-file F: the new vault's recovery key is written there")?,
+    );
+    if out.exists() {
+        return Err(format!("{} already exists; pick a new file for the recovery key", out.display()));
+    }
+    let pass =
+        read_secret("Passphrase for the new sync vault (8 characters or more)", "QUIRE_SYNC_PASSPHRASE", flag(args, "--passphrase-file"))?;
+    let (rk, last) = vault_sync::sync_move_at(vault, &target, &pass)?;
+    quire_app::atomic::write_new_private(&out, format!("{rk}\n").as_bytes()).map_err(|e| format!("can't write {}: {e}", out.display()))?;
+    if let Some(e) = last {
+        println!("The last pass through {} didn't finish ({e}); this device's notes are what moves.", before.transport_label());
+    }
+    let after = vault_sync::SyncConfig::load(vault).map(|c| c.transport_label()).unwrap_or_default();
+    println!("This vault now syncs through {after}, as a new sync vault. The next `sync once` or `sync watch` uploads its notes.");
+    println!("On each other device: `quire-cli sync join` the new vault (or Settings → Sync → Join); notes already there are kept.");
+    println!("The recovery key is in {} (readable only by you).", out.display());
+    Ok(())
+}
+
+fn join(vault: &Path, args: &[String]) -> Result<(), String> {
+    let interactive = std::io::stdin().is_terminal();
+    let target = match target_from_args(args)? {
+        Some(t) => t,
+        None if interactive => {
             let answer =
                 prompt_line("Sync through a folder (Dropbox, Syncthing…) or a Quire Sync server? Type a folder path or an https:// URL: ")?;
             if answer.starts_with("http://") || answer.starts_with("https://") {
@@ -184,7 +331,7 @@ fn join(vault: &Path, args: &[String]) -> Result<(), String> {
                 SyncTarget::Folder(PathBuf::from(answer))
             }
         }
-        (None, None) => return Err("say where the vault syncs: --folder DIR or --server URL".into()),
+        None => return Err("say where the vault syncs: --folder DIR, --server URL, --s3 ENDPOINT or --webdav URL".into()),
     };
     let sel = selection(args)?;
     super::scope_check::warn(vault, &sel.only, &sel.exclude);
@@ -373,8 +520,7 @@ fn status(vault: &Path) -> String {
     };
     let c = &s.config;
     let mut out = String::new();
-    let via = c.folder.as_ref().map_or_else(|| format!("server {}", c.server), |f| format!("folder {}", f.display()));
-    let _ = writeln!(out, "Syncs through {via}");
+    let _ = writeln!(out, "Syncs through {}", c.transport_label());
     let _ = writeln!(out, "Vault {}  device “{}”", c.space.0, c.device_name);
     let _ = writeln!(out, "Folders: {}", c.selection().describe());
     if c.shared_state {

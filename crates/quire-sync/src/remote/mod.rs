@@ -67,6 +67,8 @@ use crate::transport::{Transport, TransportError};
 
 pub use s3::{S3Config, S3Credentials, S3Store};
 pub use webdav::{WebDavConfig, WebDavCredentials, WebDavStore};
+/// Secrets in memory are wiped when dropped.
+pub use zeroize::Zeroizing;
 
 /// The folder Quire keeps in the bucket or WebDAV folder.
 pub const ROOT: &str = "quire-sync";

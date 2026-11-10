@@ -49,6 +49,8 @@ quire-sync-server = { path = "../quire-sync-server" }
 axum = "0.8"
 tokio = { workspace = true, features = ["rt-multi-thread", "net"] }
 ureq.workspace = true
+# 0.12: in-process S3 and WebDAV servers for `sync --s3/--webdav` tests.
+quire-sync = { workspace = true, features = ["mock-server"] }
 
 [build-dependencies]
 winresource = "0.1"
