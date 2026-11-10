@@ -60,6 +60,11 @@ pub struct WebDavStore {
 }
 
 impl WebDavStore {
+    /// The HTTP client (to check how it's set up).
+    pub const fn http(&self) -> &Http {
+        &self.http
+    }
+
     pub fn new(cfg: &WebDavConfig, creds: &WebDavCredentials) -> Result<Self, StoreError> {
         let url = cfg.url.trim();
         check_scheme(url, cfg.allow_http)?;
@@ -79,9 +84,10 @@ impl WebDavStore {
         let basic = base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", creds.user, creds.password.as_str()));
         let scheme = uri.scheme_str().unwrap_or("https");
         let host = uri.host().unwrap_or_default().to_string();
-        let authority = uri.authority().map_or_else(|| host.clone(), |a| a.as_str().rsplit('@').next().unwrap_or_default().to_string());
+        // `check_scheme` refused any `user@` part.
+        let authority = uri.authority().map_or_else(|| host.clone(), |a| a.as_str().to_string());
         Ok(Self {
-            http: Http::new(Duration::from_mins(2)),
+            http: Http::new(Duration::from_mins(2), scheme == "http"),
             origin: format!("{scheme}://{authority}"),
             host,
             base_path,

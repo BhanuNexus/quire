@@ -40,7 +40,16 @@
 //! Nothing read from the storage is trusted: only names that are ids are
 //! used, every reply has a size limit, XML has no DTDs, redirects are
 //! refused, and a revision must say it's from the device whose folder it
-//! is in.
+//! is in. With the vault's keys ([`RemoteTransport::with_keys`]) every
+//! revision is also decrypted before it's mirrored, and revisions are
+//! sealed with their whole header bound ([`crate::Content::seal_bound`]),
+//! so the storage can't change which revision one builds on.
+//!
+//! **A lost or damaged object** doesn't stop sync. A reader skips it once a
+//! later object of that device is there, records it, says so
+//! ([`RemoteTransport::waiting`]), and tries it again whenever that device
+//! syncs; the device that wrote it checks its own objects once per session
+//! and uploads again any that are missing or cut short.
 
 pub mod net;
 pub mod s3;
@@ -57,12 +66,13 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::crypto::WrappedKey;
+use crate::crypto::{Keys, WrappedKey};
 use crate::folder::FolderTransport;
-use crate::protocol::{DeviceId, FileId, PushOutcome, RevId, Revision, SpaceId};
+use crate::protocol::{Content, DeviceId, FileId, PushOutcome, RevId, Revision, SpaceId};
 use crate::transport::{Transport, TransportError};
 
 pub use s3::{S3Config, S3Credentials, S3Store};
@@ -82,6 +92,19 @@ const MAX_SMALL: u64 = 256 * 1024;
 const PARALLEL: usize = 8;
 /// Revisions fetched in one pass, at most (the rest come next pass).
 const MAX_FETCH_PER_PASS: u64 = 50_000;
+/// Objects fetched before they're written to the mirror (each at most
+/// [`MAX_OBJECT`], usually a few KB), so memory stays bounded.
+const BATCH: u64 = 32;
+/// Bytes fetched in one pass, at most; the rest come in the next pass.
+const PASS_BYTES: u64 = 256 * 1024 * 1024;
+/// Skipped revisions of a device tried again each time it syncs.
+const RETRY_LOST: usize = 16;
+/// How long a revision a tip announces may be missing before the status
+/// calls it missing instead of "waiting".
+const MISSING_AFTER: Duration = Duration::from_mins(10);
+/// A lost mirror is restored only if the storage holds about as many of
+/// this device's objects as its tip says (a tip far ahead is refused).
+const RESTORE_SLACK: u64 = 64;
 /// Devices in one vault, at most.
 const MAX_DEVICES: usize = 1000;
 /// The first line of a revision object.
@@ -129,6 +152,8 @@ pub struct Entry {
     pub etag: String,
     /// Size and time, for servers without `ETag`s.
     pub stamp: String,
+    /// The size in bytes, if the listing gave it.
+    pub size: Option<u64>,
 }
 
 /// How a write went.
@@ -381,11 +406,91 @@ impl Drop for TempDir {
     }
 }
 
+/// How far another device's objects have been mirrored (`progress.json`
+/// in the mirror; without it, the number of lines in its mirrored log).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct Progress {
+    /// Objects `1..=done` are mirrored, or skipped as lost.
+    done: u64,
+    /// The numbers skipped as missing or damaged, as inclusive ranges.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    lost: Vec<(u64, u64)>,
+}
+
+impl Progress {
+    fn lose(&mut self, from: u64, to: u64) {
+        if from > to {
+            return;
+        }
+        match self.lost.last_mut() {
+            Some(last) if last.1 + 1 == from => last.1 = to,
+            _ => self.lost.push((from, to)),
+        }
+    }
+
+    fn found(&mut self, n: u64) {
+        let Some(i) = self.lost.iter().position(|&(a, b)| (a..=b).contains(&n)) else { return };
+        let (a, b) = self.lost.remove(i);
+        let parts = [(a, n.saturating_sub(1)), (n + 1, b)];
+        for (j, (x, y)) in parts.into_iter().filter(|(x, y)| x <= y).enumerate() {
+            self.lost.insert(i + j, (x, y));
+        }
+    }
+
+    fn lost_count(&self) -> u64 {
+        self.lost.iter().map(|(a, b)| b - a + 1).sum()
+    }
+
+    /// The first `k` lost numbers.
+    fn lost_numbers(&self, k: usize) -> Vec<u64> {
+        self.lost.iter().flat_map(|&(a, b)| a..=b).take(k).collect()
+    }
+}
+
+/// A line in this device's own mirrored log for an own revision that was
+/// gone from the storage when the mirror was restored: it keeps the
+/// numbering. The folder transport skips it as a damaged line.
+#[derive(Debug, Serialize, Deserialize)]
+struct LostLine {
+    lost: u64,
+}
+
+/// What a fetched object turned out to be.
+enum Got {
+    Missing,
+    Bad,
+    Rev(Revision),
+}
+
+/// The first 8 digits of a device id, for messages.
+fn short(d: &DeviceId) -> &str {
+    d.0.get(..8).unwrap_or(&d.0)
+}
+
+/// The object numbers listed in a device's folder.
+fn numbers(entries: &[Entry]) -> HashMap<u64, Option<u64>> {
+    entries
+        .iter()
+        .filter(|e| !e.dir)
+        .filter_map(|e| {
+            let n = e.name.strip_suffix(".rev").filter(|n| n.len() == 12 && n.bytes().all(|b| b.is_ascii_digit()))?;
+            Some((n.parse().ok()?, e.size))
+        })
+        .collect()
+}
+
 #[derive(Debug, Default)]
 struct Mirror {
     started: bool,
-    /// Revisions mirrored from each other device.
-    fetched: HashMap<DeviceId, u64>,
+    /// How far each other device is mirrored.
+    fetched: HashMap<DeviceId, Progress>,
+    /// The writer (`w`) of each device's tip when its lost revisions were
+    /// last tried, so they're tried again when it syncs again.
+    tried: HashMap<DeviceId, String>,
+    /// Devices whose revision `n` a tip announces but isn't there, since when.
+    stuck: HashMap<DeviceId, (u64, Instant)>,
+    /// The pass stopped at its byte budget: more to fetch now.
+    more: bool,
     /// The tips' `ETag`s when last read in full.
     seen: HashMap<String, String>,
     /// Revisions in this device's own log here.
@@ -397,8 +502,6 @@ struct Mirror {
     /// Own revisions not yet uploaded, by number.
     outbox: Vec<(u64, Revision)>,
     problem: Option<String>,
-    /// Devices whose newest revisions haven't arrived in the storage yet.
-    waiting: usize,
     /// Why the outbox couldn't be uploaded, last time.
     upload_error: Option<String>,
 }
@@ -416,6 +519,9 @@ pub struct RemoteTransport {
     /// Who wrote a tip: this process (random), to notice another computer.
     nonce: String,
     conditional: AtomicBool,
+    /// The vault's keys: every fetched revision is decrypted before it's
+    /// mirrored, so a damaged one is skipped instead of stopping the engine.
+    keys: Option<Keys>,
     _temp: Option<TempDir>,
 }
 
@@ -427,9 +533,10 @@ fn shared_identity() -> String {
     "Another computer is syncing as this one (a copy of this vault's .quire folder?). Turn sync off and on again on one of them.".into()
 }
 
-/// Revision lines in a device's mirrored logs, in order. Torn or damaged
-/// lines are skipped, as the folder transport skips them.
-fn read_logs(dir: &Path) -> Vec<Revision> {
+/// The lines of a device's mirrored logs, in order: a revision, or `None`
+/// for a [`LostLine`]. Torn or damaged lines are skipped, as the folder
+/// transport skips them.
+fn read_logs(dir: &Path) -> Vec<Option<Revision>> {
     let Ok(rd) = fs::read_dir(dir) else { return Vec::new() };
     let mut files: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "jsonl")).collect();
     files.sort();
@@ -438,17 +545,33 @@ fn read_logs(dir: &Path) -> Vec<Revision> {
         let Ok(bytes) = fs::read(&f) else { continue };
         for line in bytes.split(|&b| b == b'\n') {
             if let Ok(r) = serde_json::from_slice::<Revision>(line) {
-                out.push(r);
+                out.push(Some(r));
+            } else if serde_json::from_slice::<LostLine>(line).is_ok() {
+                out.push(None);
             }
         }
     }
     out
 }
 
+fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    let mut f = fs::File::create(&tmp)?;
+    f.write_all(bytes)?;
+    f.sync_data()?;
+    fs::rename(&tmp, path)
+}
+
 /// Append whole lines to a device's mirrored log, starting a fresh line
-/// after a torn one, and a new segment past 1 MiB.
+/// after a torn one, and a new segment past 1 MiB. If the write fails, the
+/// file is cut back to where it was, so no part of the batch stays.
 fn append_lines(dir: &Path, revs: &[Revision]) -> Result<(), TransportError> {
-    if revs.is_empty() {
+    let lines: Vec<Vec<u8>> = revs.iter().map(|r| serde_json::to_vec(&Revision { seq: 0, ..r.clone() }).unwrap_or_default()).collect();
+    append_raw(dir, &lines)
+}
+
+fn append_raw(dir: &Path, lines: &[Vec<u8>]) -> Result<(), TransportError> {
+    if lines.is_empty() {
         return Ok(());
     }
     let werr = |e: std::io::Error| io_err("can't write the sync mirror", &e);
@@ -475,12 +598,15 @@ fn append_lines(dir: &Path, revs: &[Revision]) -> Result<(), TransportError> {
             buf.push(b'\n');
         }
     }
-    for r in revs {
-        buf.extend_from_slice(&serde_json::to_vec(&Revision { seq: 0, ..r.clone() }).unwrap_or_default());
+    for l in lines {
+        buf.extend_from_slice(l);
         buf.push(b'\n');
     }
-    f.write_all(&buf).map_err(werr)?;
-    f.sync_data().map_err(werr)
+    if let Err(e) = f.write_all(&buf).and_then(|()| f.sync_data()) {
+        let _ = f.set_len(len);
+        return Err(werr(e));
+    }
+    Ok(())
 }
 
 /// Run `f` over `items` on up to [`PARALLEL`] threads; results in order.
@@ -520,8 +646,19 @@ impl RemoteTransport {
             state: Mutex::new(Mirror::default()),
             nonce,
             conditional: AtomicBool::new(true),
+            keys: None,
             _temp: temp,
         })
+    }
+
+    /// Decrypt every revision fetched with the vault's keys before it's
+    /// mirrored: one that doesn't is skipped as damaged, so it can't stop
+    /// the engine. Revisions are sealed with their header bound anyway
+    /// ([`Transport::binds_header`]); without keys only their shape is checked.
+    #[must_use]
+    pub fn with_keys(mut self, keys: Keys) -> Self {
+        self.keys = Some(keys);
+        self
     }
 
     /// Where the mirror of `space` is, under a state folder (for reading
@@ -547,11 +684,59 @@ impl RemoteTransport {
         self.lock().problem.clone().or_else(|| self.folder.problem())
     }
 
-    /// Other devices' revisions that their tips announce but that aren't
-    /// readable in the storage yet.
+    /// Other devices' revisions that aren't all here, and why: still
+    /// uploading, missing for a while, or skipped as missing or damaged
+    /// (naming the device and the revision numbers).
     pub fn waiting(&self) -> Option<String> {
-        let n = self.lock().waiting;
-        (n > 0).then(|| format!("Waiting for {n} device(s)' latest changes to finish uploading to the storage."))
+        let m = self.lock();
+        let now = Instant::now();
+        let mut out = Vec::new();
+        let mut stuck: Vec<(&DeviceId, &(u64, Instant))> = m.stuck.iter().collect();
+        stuck.sort_by_key(|(d, _)| *d);
+        let slow = stuck.iter().filter(|(_, (_, since))| now.duration_since(*since) < MISSING_AFTER).count();
+        if slow > 0 {
+            out.push(format!("Waiting for {slow} device(s)' latest changes to finish uploading to the storage."));
+        }
+        for (d, (n, _)) in stuck.iter().filter(|(_, (_, since))| now.duration_since(*since) >= MISSING_AFTER) {
+            out.push(format!(
+                "Revision {n} of device {} is missing from the storage; that device's later changes arrive when it next syncs and uploads it again.",
+                short(d)
+            ));
+        }
+        let mut lost: Vec<(&DeviceId, &Progress)> = m.fetched.iter().filter(|(_, p)| !p.lost.is_empty()).collect();
+        lost.sort_by_key(|(d, _)| *d);
+        if !lost.is_empty() {
+            let total: u64 = lost.iter().map(|(_, p)| p.lost_count()).sum();
+            let which: Vec<String> = lost
+                .iter()
+                .take(3)
+                .map(|(d, p)| {
+                    let nums: Vec<String> = p.lost_numbers(3).iter().map(u64::to_string).collect();
+                    let more = if p.lost_count() > 3 { ", …" } else { "" };
+                    format!("device {} revision {}{more}", short(d), nums.join(", "))
+                })
+                .collect();
+            out.push(format!(
+                "Skipped {total} revision(s) missing or damaged in the storage ({}); later changes are synced, and the skipped ones are fetched again when their device next syncs.",
+                which.join("; ")
+            ));
+        }
+        if m.more {
+            out.push("Still downloading other devices' changes.".into());
+        }
+        (!out.is_empty()).then(|| out.join(" "))
+    }
+
+    /// Revisions made here and not uploaded yet; `None` before the mirror
+    /// was first read (offline from the start).
+    pub fn unsent(&self) -> Option<usize> {
+        let m = self.lock();
+        m.started.then_some(m.outbox.len())
+    }
+
+    /// A pass stopped at its byte budget with more to fetch: run another soon.
+    pub fn more_to_fetch(&self) -> bool {
+        self.lock().more
     }
 
     /// Changes made here that aren't uploaded yet, and why, if they should be by now.
@@ -561,35 +746,65 @@ impl RemoteTransport {
         m.upload_error.as_ref().filter(|_| n > 0).map(|e| format!("{n} change(s) saved here, not uploaded yet: {e}"))
     }
 
+    fn progress_path(&self) -> PathBuf {
+        self.mirror.join("progress.json")
+    }
+
+    fn save_progress(&self, m: &Mirror) -> Result<(), TransportError> {
+        let map: std::collections::BTreeMap<&str, &Progress> = m.fetched.iter().map(|(d, p)| (d.0.as_str(), p)).collect();
+        let json = serde_json::to_vec(&map).unwrap_or_default();
+        write_atomically(&self.progress_path(), &json).map_err(|e| io_err("can't write the sync mirror", &e))
+    }
+
     /// Read the counts and the outbox from the mirror; restore this
-    /// device's own revisions from the storage if the mirror lost them.
+    /// device's own revisions from the storage if the mirror lost them, and
+    /// put back any of its objects the storage lost.
     fn start(&self, m: &mut Mirror) -> Result<(), TransportError> {
         if m.started {
             return Ok(());
+        }
+        let saved: HashMap<String, Progress> =
+            fs::read(self.progress_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        for (name, p) in saved {
+            if is_id(&name) && name != self.device.0 {
+                m.fetched.insert(DeviceId(name), p);
+            }
         }
         let devices = fs::read_dir(self.mirror.join("devices")).map_err(|e| io_err("can't read the sync mirror", &e))?;
         for d in devices.flatten() {
             let Some(name) = d.file_name().to_str().filter(|n| is_id(n)).map(str::to_string) else { continue };
             let id = DeviceId(name);
-            if id != self.device {
-                m.fetched.insert(id.clone(), read_logs(&d.path()).len() as u64);
+            if id != self.device && !m.fetched.contains_key(&id) {
+                // A mirror from before `progress.json`: one line per object.
+                m.fetched.insert(id, Progress { done: read_logs(&d.path()).len() as u64, lost: Vec::new() });
             }
         }
-        let own = read_logs(&self.device_dir(&self.device));
+        let mut own = read_logs(&self.device_dir(&self.device));
         m.own = own.len() as u64;
         let tip = self.read_tip(&self.device)?.map_or(0, |t| t.n);
-        // The mirror lost revisions this device uploaded: fetch them back
-        // before the folder transport first reads its own log.
-        while tip > m.own {
-            let got = self.fetch_range(&self.device, m.own, tip)?;
-            if got.is_empty() {
-                return Err(TransportError::Offline("this device's own revisions aren't all readable in the storage yet".into()));
+        // This device's objects, listed once per session.
+        let listed = if tip > 0 {
+            match self.store.list(&format!("{}devices/{}/", space_dir(&self.space), self.device)) {
+                Ok(l) => Some(numbers(&l)),
+                Err(StoreError::Offline(e)) => return Err(TransportError::Offline(e)),
+                // Too many to list, or refused: no repair this session.
+                Err(_) => None,
             }
-            append_lines(&self.device_dir(&self.device), &got)?;
-            m.own += got.len() as u64;
+        } else {
+            None
+        };
+        if tip > m.own {
+            // The mirror lost revisions this device uploaded: fetch them back
+            // before the folder transport first reads its own log.
+            self.restore(m, tip, listed.as_ref())?;
+            own = read_logs(&self.device_dir(&self.device));
+            m.own = own.len() as u64;
         }
         m.uploaded = tip;
-        m.outbox = own.into_iter().zip(1u64..).filter(|(_, n)| *n > tip).map(|(r, n)| (n, r)).collect();
+        m.outbox = own.iter().zip(1u64..).filter(|(_, n)| *n > tip).filter_map(|(r, n)| r.clone().map(|r| (n, r))).collect();
+        if let Some(l) = &listed {
+            self.repair(m, &own, tip, l)?;
+        }
         m.started = true;
         Ok(())
     }
@@ -598,36 +813,223 @@ impl RemoteTransport {
         Ok(self.store.get(&tip_key(&self.space, d), MAX_SMALL)?.and_then(|b| serde_json::from_slice::<Tip>(&b).ok()))
     }
 
-    /// Revisions `after+1 ..= upto` of device `d`, in order, up to the
-    /// first that isn't there (yet) or isn't valid.
-    fn fetch_range(&self, d: &DeviceId, after: u64, upto: u64) -> Result<Vec<Revision>, TransportError> {
-        let upto = upto.min(after.saturating_add(MAX_FETCH_PER_PASS));
-        let mut out = Vec::new();
-        let mut next = after + 1;
-        while next <= upto {
-            let batch: Vec<u64> = (next..=upto.min(next + 63)).collect();
-            let got = parallel(&batch, |n| self.store.get(&object_key(&self.space, d, *n), MAX_OBJECT));
-            for r in got {
-                match r? {
-                    Some(bytes) => match decode_object(&bytes) {
-                        Some(rev) if rev.device == *d => out.push(rev),
-                        // Damaged, or claims another device: never used.
-                        _ => return Ok(out),
-                    },
-                    None => return Ok(out),
-                }
+    /// What fetched bytes are: a revision of device `d` (and, with the
+    /// vault's keys, one that decrypts), or damaged.
+    fn check(&self, bytes: &[u8], d: &DeviceId) -> Got {
+        match decode_object(bytes) {
+            Some(r) if r.device == *d && self.keys.as_ref().is_none_or(|k| Content::open_hinted(k, &self.space, &r, true).is_ok()) => {
+                Got::Rev(r)
             }
-            next += batch.len() as u64;
+            _ => Got::Bad,
+        }
+    }
+
+    /// Objects `nums` of device `d`, in order. An object the storage won't
+    /// give (too big) counts as damaged; being offline is an error.
+    fn get_many(&self, d: &DeviceId, nums: &[u64], budget: &mut u64) -> Result<Vec<Got>, TransportError> {
+        let got = parallel(nums, |n| self.store.get(&object_key(&self.space, d, *n), MAX_OBJECT));
+        let mut out = Vec::with_capacity(got.len());
+        for r in got {
+            out.push(match r {
+                Ok(None) => Got::Missing,
+                Ok(Some(bytes)) => {
+                    *budget = budget.saturating_sub(bytes.len() as u64);
+                    self.check(&bytes, d)
+                }
+                Err(StoreError::Refused(_)) => Got::Bad,
+                Err(e) => return Err(e.into()),
+            });
         }
         Ok(out)
+    }
+
+    /// Fetch this device's own objects `m.own+1 ..= tip` back into its
+    /// mirrored log. One the storage no longer has (the listing says so) or
+    /// that is damaged gets a [`LostLine`], so the numbering holds. A tip far
+    /// beyond the objects there is refused rather than followed.
+    fn restore(&self, m: &mut Mirror, tip: u64, listed: Option<&HashMap<u64, Option<u64>>>) -> Result<(), TransportError> {
+        if let Some(l) = listed {
+            let there = l.keys().filter(|&&n| n > m.own && n <= tip).count() as u64;
+            if tip - m.own > there + RESTORE_SLACK {
+                return Err(TransportError::Refused(format!(
+                    "This device's tip in the storage says it uploaded {tip} revisions, but the storage holds only {there} of the {} missing here. Turn sync off and on again on this device.",
+                    tip - m.own
+                )));
+            }
+        }
+        let dir = self.device_dir(&self.device);
+        let mut budget = u64::MAX;
+        while m.own < tip {
+            let nums: Vec<u64> = (m.own + 1..=tip.min(m.own + BATCH)).collect();
+            let got = self.get_many(&self.device, &nums, &mut budget)?;
+            let mut lines = Vec::new();
+            let mut stopped = false;
+            for (n, g) in nums.iter().zip(got) {
+                match g {
+                    Got::Rev(r) => lines.push(serde_json::to_vec(&Revision { seq: 0, ..r }).unwrap_or_default()),
+                    // Without a listing, a gap may be one still arriving.
+                    _ if listed.is_none() => {
+                        stopped = true;
+                        break;
+                    }
+                    _ => lines.push(serde_json::to_vec(&LostLine { lost: *n }).unwrap_or_default()),
+                }
+            }
+            append_raw(&dir, &lines)?;
+            m.own += lines.len() as u64;
+            if stopped {
+                return Err(TransportError::Offline("this device's own revisions aren't all readable in the storage yet".into()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Put back this device's objects `1..=upto` that the listing shows
+    /// missing or of the wrong size, from its mirrored log.
+    fn repair(
+        &self,
+        m: &mut Mirror,
+        own: &[Option<Revision>],
+        upto: u64,
+        listed: &HashMap<u64, Option<u64>>,
+    ) -> Result<(), TransportError> {
+        let mut todo = Vec::new();
+        for (r, n) in own.iter().zip(1u64..).take_while(|(_, n)| *n <= upto) {
+            let Some(r) = r else { continue };
+            let body = encode_object(r);
+            match listed.get(&n) {
+                None => todo.push((n, r, body, false)),
+                Some(Some(size)) if *size != body.len() as u64 => todo.push((n, r, body, true)),
+                Some(_) => {}
+            }
+        }
+        let res = parallel(&todo, |(n, r, body, there)| self.place(&object_key(&self.space, &self.device, *n), r, body, *there));
+        for r in res {
+            match r {
+                Ok(true) => {}
+                Ok(false) => m.problem = Some(shared_identity()),
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(())
+    }
+
+    /// Make sure this device's object `key` holds `body` (revision `r`).
+    /// Bytes cut short or damaged, or another copy of the same revision, are
+    /// written over: it's this device's own object. A different revision
+    /// there means another computer writes as this device: `false`.
+    fn place(&self, key: &str, r: &Revision, body: &[u8], known_there: bool) -> Result<bool, StoreError> {
+        if !known_there && put_new(&*self.store, key, body, &self.conditional)? == Put::Done {
+            return Ok(true);
+        }
+        let existing = match self.store.get(key, MAX_OBJECT) {
+            Ok(b) => b,
+            // Too big to be one of Quire's: damaged.
+            Err(StoreError::Refused(_)) => Some(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        match existing {
+            Some(b) if b == body => Ok(true),
+            Some(b) if decode_object(&b).is_some_and(|o| o.rev != r.rev) => Ok(false),
+            _ => self.store.put(key, body, false).map(|_| true),
+        }
+    }
+
+    /// Fetch device `d`'s objects after those mirrored, up to `upto`, writing
+    /// each batch to the mirror as it arrives. An object that's missing or
+    /// damaged is skipped (and recorded) once a later one is there; at a gap
+    /// with nothing after it, fetching stops ("waiting"). `true` if it
+    /// stopped at this pass's limits instead.
+    fn fetch_into(&self, m: &mut Mirror, d: &DeviceId, upto: u64, budget: &mut u64) -> Result<bool, TransportError> {
+        let first = m.fetched.get(d).map_or(0, |p| p.done);
+        let cap = upto.min(first.saturating_add(MAX_FETCH_PER_PASS));
+        let dir = self.device_dir(d);
+        let mut listed: Option<HashMap<u64, Option<u64>>> = None;
+        loop {
+            let done = m.fetched.get(d).map_or(0, |p| p.done);
+            if done >= cap {
+                return Ok(done < upto);
+            }
+            if *budget == 0 {
+                return Ok(true);
+            }
+            let nums: Vec<u64> = (done + 1..=cap.min(done + BATCH)).collect();
+            let got = self.get_many(d, &nums, budget)?;
+            let cut = if let Some(i) = got.iter().rposition(|g| !matches!(g, Got::Missing)) {
+                nums[i]
+            } else {
+                // A gap a whole batch long: is anything after it? One
+                // listing, only in this case.
+                if listed.is_none() {
+                    listed = Some(numbers(&self.store.list(&format!("{}devices/{d}/", space_dir(&self.space)))?));
+                }
+                match listed.iter().flat_map(HashMap::keys).copied().filter(|&k| k > done + 1 && k <= cap).min() {
+                    Some(k) => k - 1,
+                    None => return Ok(false),
+                }
+            };
+            let mut revs = Vec::new();
+            let mut lost = Vec::new();
+            for (n, g) in nums.iter().zip(got) {
+                if *n > cut {
+                    break;
+                }
+                match g {
+                    Got::Rev(r) => revs.push(r),
+                    Got::Missing | Got::Bad => lost.push(*n),
+                }
+            }
+            append_lines(&dir, &revs)?;
+            let p = m.fetched.entry(d.clone()).or_default();
+            for n in lost {
+                p.lose(n, n);
+            }
+            p.lose(nums.last().map_or(done, |l| *l) + 1, cut);
+            p.done = cut;
+            self.save_progress(m)?;
+        }
+    }
+
+    /// Try device `d`'s skipped revisions again, [`RETRY_LOST`] at a time
+    /// while they keep turning up.
+    fn retry_lost(&self, m: &mut Mirror, d: &DeviceId, budget: &mut u64) -> Result<(), TransportError> {
+        loop {
+            let nums = m.fetched.get(d).map(|p| p.lost_numbers(RETRY_LOST)).unwrap_or_default();
+            if nums.is_empty() {
+                return Ok(());
+            }
+            let got = self.get_many(d, &nums, budget)?;
+            let mut revs = Vec::new();
+            let mut found = Vec::new();
+            for (n, g) in nums.iter().zip(got) {
+                if let Got::Rev(r) = g {
+                    revs.push(r);
+                    found.push(*n);
+                }
+            }
+            if found.is_empty() {
+                return Ok(());
+            }
+            append_lines(&self.device_dir(d), &revs)?;
+            if let Some(p) = m.fetched.get_mut(d) {
+                for n in &found {
+                    p.found(*n);
+                }
+            }
+            self.save_progress(m)?;
+            if found.len() < nums.len() {
+                return Ok(());
+            }
+        }
     }
 
     /// Mirror what other devices uploaded since last time.
     fn download(&self, m: &mut Mirror) -> Result<(), TransportError> {
         let tips = self.store.list(&format!("{}tips/", space_dir(&self.space)))?;
         let trust_etags = self.store.etag_tracks_content();
-        let mut waiting = 0;
+        let mut budget = PASS_BYTES;
         let mut devices = 0;
+        m.more = false;
         for e in tips.into_iter().filter(|e| !e.dir && is_id(&e.name)) {
             devices += 1;
             if devices > MAX_DEVICES {
@@ -646,20 +1048,29 @@ impl RemoteTransport {
                 m.seen.insert(e.name, e.etag);
                 continue;
             }
-            let have = m.fetched.get(&d).copied().unwrap_or(0);
-            if tip.n > have {
-                let got = self.fetch_range(&d, have, tip.n)?;
-                append_lines(&self.device_dir(&d), &got)?;
-                let now = have + got.len() as u64;
-                m.fetched.insert(d, now);
+            // That device synced again (a new writer): its skipped revisions
+            // may be back.
+            if m.tried.get(&d) != Some(&tip.w) {
+                self.retry_lost(m, &d, &mut budget)?;
+                m.tried.insert(d.clone(), tip.w.clone());
+            }
+            let done = m.fetched.get(&d).map_or(0, |p| p.done);
+            if tip.n > done {
+                let limited = self.fetch_into(m, &d, tip.n, &mut budget)?;
+                let now = m.fetched.get(&d).map_or(0, |p| p.done);
                 if now < tip.n {
-                    waiting += 1;
+                    if limited {
+                        m.more = true;
+                        m.stuck.remove(&d);
+                    } else if m.stuck.get(&d).is_none_or(|(n, _)| *n != now + 1) {
+                        m.stuck.insert(d, (now + 1, Instant::now()));
+                    }
                     continue;
                 }
             }
+            m.stuck.remove(&d);
             m.seen.insert(e.name, e.etag);
         }
-        m.waiting = waiting;
         Ok(())
     }
 
@@ -669,14 +1080,10 @@ impl RemoteTransport {
             return Err(TransportError::Refused(p.clone()));
         }
         let res = parallel(&m.outbox, |(n, r)| {
-            let key = object_key(&self.space, &self.device, *n);
-            let body = encode_object(r);
-            match put_new(&*self.store, &key, &body, &self.conditional)? {
-                Put::Done => Ok(true),
-                // Uploaded before the tip was (a crash, a lost reply): the
-                // same bytes are fine; anything else is another computer.
-                Put::Exists => Ok(self.store.get(&key, MAX_OBJECT)?.is_some_and(|b| b == body)),
-            }
+            // Uploaded before the tip was (a crash, a lost reply): the same
+            // bytes are fine, bytes cut short are replaced; another revision
+            // there is another computer.
+            self.place(&object_key(&self.space, &self.device, *n), r, &encode_object(r), false)
         });
         let mut done = 0;
         let mut err = None;
@@ -778,6 +1185,12 @@ impl Transport for RemoteTransport {
         self.folder.fork_base(file, ours, theirs)
     }
 
+    /// No Quire before 0.12 reads this storage, so revisions bind their
+    /// whole header.
+    fn binds_header(&self) -> bool {
+        true
+    }
+
     fn history(&self, file: &FileId) -> Result<Vec<Revision>, TransportError> {
         self.refresh()?;
         self.folder.history(file)
@@ -871,13 +1284,19 @@ impl ObjectStore for MemoryObjects {
             let Some(rest) = k.strip_prefix(dir) else { break };
             if let Some((d, _)) = rest.split_once('/') {
                 if dirs.insert(d.to_string()) {
-                    out.push(Entry { name: d.to_string(), dir: true, etag: String::new(), stamp: String::new() });
+                    out.push(Entry { name: d.to_string(), dir: true, etag: String::new(), stamp: String::new(), size: None });
                 }
             } else {
                 use std::hash::{Hash, Hasher};
                 let mut h = std::collections::hash_map::DefaultHasher::new();
                 v.hash(&mut h);
-                out.push(Entry { name: rest.to_string(), dir: false, etag: format!("{:x}", h.finish()), stamp: v.len().to_string() });
+                out.push(Entry {
+                    name: rest.to_string(),
+                    dir: false,
+                    etag: format!("{:x}", h.finish()),
+                    stamp: v.len().to_string(),
+                    size: Some(v.len() as u64),
+                });
             }
         }
         Ok(out)
@@ -1082,6 +1501,50 @@ mod tests {
             let _ = one.pull(0);
             assert!(two.push(&rev(&FileId::random().unwrap(), &[], &d)).is_err());
         }
+    }
+
+    #[test]
+    fn fetched_objects_go_to_the_mirror_a_batch_at_a_time_within_a_budget() {
+        let store: Arc<MemoryObjects> = Arc::new(MemoryObjects::new());
+        let s = space(&store);
+        let db = DeviceId::random().unwrap();
+        let b = RemoteTransport::new(Arc::<MemoryObjects>::clone(&store), &s, db.clone(), None).unwrap();
+        b.pull(0).unwrap();
+        for _ in 0..(BATCH * 3) {
+            b.push(&rev(&FileId::random().unwrap(), &[], &db)).unwrap();
+        }
+        b.flush().unwrap();
+        let a = RemoteTransport::new(Arc::<MemoryObjects>::clone(&store), &s, DeviceId::random().unwrap(), None).unwrap();
+        let mut m = a.lock();
+        a.start(&mut m).unwrap();
+        // A budget smaller than one batch: one batch is fetched, written to
+        // the mirror, and the pass stops there with more to come.
+        let mut budget = 1;
+        assert!(a.fetch_into(&mut m, &db, BATCH * 3, &mut budget).unwrap());
+        assert_eq!(m.fetched[&db].done, BATCH);
+        assert_eq!(read_logs(&a.device_dir(&db)).len() as u64, BATCH);
+        let saved: HashMap<String, Progress> = serde_json::from_slice(&fs::read(a.progress_path()).unwrap()).unwrap();
+        assert_eq!(saved[&db.0].done, BATCH);
+        drop(m);
+        a.pull(0).unwrap();
+        assert!(!a.more_to_fetch());
+        assert_eq!(a.lock().fetched[&db].done, BATCH * 3);
+    }
+
+    #[test]
+    fn lost_ranges_split_and_merge() {
+        let mut p = Progress::default();
+        p.lose(2, 2);
+        p.lose(3, 3);
+        p.lose(7, 9);
+        assert_eq!(p.lost, [(2, 3), (7, 9)]);
+        p.found(8);
+        assert_eq!(p.lost, [(2, 3), (7, 7), (9, 9)]);
+        p.found(2);
+        p.found(7);
+        assert_eq!((p.lost_count(), p.lost_numbers(5)), (2, vec![3, 9]));
+        p.lose(5, 4);
+        assert_eq!(p.lost.len(), 2);
     }
 
     #[test]

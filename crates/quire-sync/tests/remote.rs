@@ -425,6 +425,12 @@ fn real_servers() {
         eprintln!("moto: {}", p.summary());
         assert!(p.conditional_writes);
         concurrent_rounds(&s3_store, 6);
+        // The documented policy lets the key delete only the probe, not a revision.
+        let rev = remote::list_spaces(&*s3_store).unwrap()[0].space.clone();
+        let devices = s3_store.list(&format!("{}/{rev}/devices/", remote::ROOT)).unwrap();
+        let first = format!("{}/{rev}/devices/{}/000000000001.rev", remote::ROOT, devices[0].name);
+        assert!(matches!(s3_store.delete(&first), Err(StoreError::Auth(_))), "{:?}", s3_store.delete(&first));
+        assert!(s3_store.get(&first, remote::MAX_OBJECT).unwrap().is_some());
     });
     let _ = wsgidav.kill();
     let _ = moto.kill();
@@ -438,7 +444,7 @@ fn real_servers() {
 fn real_moto_store(python: &std::ffi::OsStr, port: u16) -> (Arc<dyn ObjectStore>, S3Store) {
     // boto3 makes the bucket, and a user with the minimal policy of
     // docs/sync-backends.md; Quire then signs its own requests.
-    let policy = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:ListBucket","Resource":"arn:aws:s3:::notes","Condition":{"StringLike":{"s3:prefix":["vault/quire-sync/*"]}}},{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject"],"Resource":"arn:aws:s3:::notes/vault/quire-sync/*"}]}"#;
+    let policy = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:ListBucket","Resource":"arn:aws:s3:::notes","Condition":{"StringLike":{"s3:prefix":["vault/quire-sync/*"]}}},{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject"],"Resource":"arn:aws:s3:::notes/vault/quire-sync/*"},{"Effect":"Allow","Action":"s3:DeleteObject","Resource":"arn:aws:s3:::notes/vault/quire-sync/.probe-*"}]}"#;
     let script = format!(
         "import boto3\nkw=dict(endpoint_url='http://127.0.0.1:{port}', region_name='eu-central-1', aws_access_key_id='x', aws_secret_access_key='x')\n\
 boto3.client('s3', **kw).create_bucket(Bucket='notes', CreateBucketConfiguration={{'LocationConstraint':'eu-central-1'}})\n\

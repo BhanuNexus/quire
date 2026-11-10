@@ -35,6 +35,14 @@ pub trait Transport {
         None
     }
 
+    /// Whether revisions sent here are sealed with their whole header bound
+    /// ([`crate::Content::seal_bound`]): only where no Quire older than 0.12
+    /// reads them (S3 and WebDAV). A server and a sync folder keep the old
+    /// sealing, which 0.8–0.11 devices read.
+    fn binds_header(&self) -> bool {
+        false
+    }
+
     /// Every revision of `file` this server holds, in log order.
     fn history(&self, file: &FileId) -> Result<Vec<Revision>, TransportError> {
         let _ = file;

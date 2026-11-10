@@ -136,20 +136,54 @@ fn aad(space: &SpaceId, file: &FileId, rev: &RevId) -> Vec<u8> {
     format!("quire-sync/rev/v1/{space}/{file}/{rev}").into_bytes()
 }
 
+/// The associated data of a revision whose whole header is bound: its
+/// `device` and `parents` too, so whoever stores it can't change which
+/// revision it builds on or who wrote it (S3 and WebDAV, design 0.12).
+fn aad_bound(space: &SpaceId, r: &Revision) -> Vec<u8> {
+    let parents: Vec<&str> = r.parents.iter().map(|p| p.0.as_str()).collect();
+    format!("quire-sync/rev/v2/{space}/{}/{}/{}/{}", r.file, r.rev, r.device, parents.join(",")).into_bytes()
+}
+
 impl Content {
     /// Encrypt into the bytes a [`Revision`] carries.
     pub fn seal(&self, keys: &Keys, space: &SpaceId, file: &FileId, rev: &RevId) -> Result<Vec<u8>, CryptoError> {
+        let plain = self.padded()?;
+        keys.seal(&plain, &aad(space, file, rev))
+    }
+
+    /// Encrypt for `r` (its `sealed` is ignored), binding its whole header:
+    /// `parents` and `device` as well as `file` and `rev`. Only Quire 0.12
+    /// and later read these, so only transports no older Quire reads use
+    /// them ([`crate::Transport::binds_header`]).
+    pub fn seal_bound(&self, keys: &Keys, space: &SpaceId, r: &Revision) -> Result<Vec<u8>, CryptoError> {
+        let plain = self.padded()?;
+        keys.seal(&plain, &aad_bound(space, r))
+    }
+
+    fn padded(&self) -> Result<Vec<u8>, CryptoError> {
         let json = serde_json::to_vec(self).unwrap_or_default();
         let len = u32::try_from(json.len()).map_err(|_| CryptoError::Truncated)?;
         let mut plain = Vec::with_capacity(padded_len(json.len() + 4));
         plain.extend_from_slice(&len.to_le_bytes());
         plain.extend_from_slice(&json);
         plain.resize(padded_len(json.len() + 4), 0);
-        keys.seal(&plain, &aad(space, file, rev))
+        Ok(plain)
     }
 
+    /// Decrypt a revision sealed either way ([`Self::seal`] or
+    /// [`Self::seal_bound`]). A revision sealed with its header bound fails
+    /// both ways if anything in that header was changed: it never opens
+    /// under the shorter associated data.
     pub fn open(keys: &Keys, space: &SpaceId, r: &Revision) -> Result<Self, CryptoError> {
-        let plain = keys.open(&r.sealed, &aad(space, &r.file, &r.rev))?;
+        Self::open_hinted(keys, space, r, false)
+    }
+
+    /// [`Self::open`], trying the bound form first when `bound_first`
+    /// (it's what that transport writes), to decrypt once in the usual case.
+    pub fn open_hinted(keys: &Keys, space: &SpaceId, r: &Revision, bound_first: bool) -> Result<Self, CryptoError> {
+        let (short, bound) = (aad(space, &r.file, &r.rev), aad_bound(space, r));
+        let (first, second) = if bound_first { (&bound, &short) } else { (&short, &bound) };
+        let plain = keys.open(&r.sealed, first).or_else(|_| keys.open(&r.sealed, second))?;
         let len_bytes: [u8; 4] = plain.get(..4).and_then(|b| b.try_into().ok()).ok_or(CryptoError::Truncated)?;
         let len = u32::from_le_bytes(len_bytes) as usize;
         let json = plain.get(4..4 + len).ok_or(CryptoError::Truncated)?;
@@ -197,6 +231,39 @@ mod tests {
         assert!(Content::open(&keys, &space, &moved).is_err());
         let json = serde_json::to_string(&r).unwrap();
         assert_eq!(serde_json::from_str::<Revision>(&json).unwrap(), r);
+    }
+
+    #[test]
+    fn a_bound_header_cant_be_changed_and_old_revisions_still_open() {
+        let keys = VaultKey::generate().unwrap().keys();
+        let space = SpaceId::random().unwrap();
+        let c = Content { path: "A.md".into(), deleted: false, text: "old text".into(), from: "laptop".into(), at: 1, actor: None };
+        let parent = RevId::random().unwrap();
+        let mut r = Revision {
+            file: FileId::random().unwrap(),
+            rev: RevId::random().unwrap(),
+            parents: vec![parent],
+            seq: 0,
+            device: DeviceId::random().unwrap(),
+            sealed: Vec::new(),
+        };
+        r.sealed = c.seal_bound(&keys, &space, &r).unwrap();
+        for hint in [true, false] {
+            assert_eq!(Content::open_hinted(&keys, &space, &r, hint).unwrap(), c);
+        }
+        // The storage points it at another parent (a rollback), drops the
+        // parent, or says another device wrote it: it never opens.
+        let newest = Revision { parents: vec![RevId::random().unwrap()], ..r.clone() };
+        let orphan = Revision { parents: vec![], ..r.clone() };
+        let other = Revision { device: DeviceId::random().unwrap(), ..r.clone() };
+        for bad in [newest, orphan, other] {
+            assert!(Content::open(&keys, &space, &bad).is_err());
+            assert!(Content::open_hinted(&keys, &space, &bad, true).is_err());
+        }
+        // Revisions sealed the old way still open, either way round.
+        let old = Revision { sealed: c.seal(&keys, &space, &r.file, &r.rev).unwrap(), ..r };
+        assert_eq!(Content::open_hinted(&keys, &space, &old, true).unwrap(), c);
+        assert_eq!(Content::open(&keys, &space, &old).unwrap(), c);
     }
 
     /// Quire 0.8's `Content`, field for field.

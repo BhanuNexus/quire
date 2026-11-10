@@ -61,7 +61,16 @@ pub struct Http {
 
 /// `https://`, or `http://` to this computer only, unless the person asked
 /// for plain HTTP on their network (a NAS, `rclone serve`).
+///
+/// An address with a user or password in it (`https://user:pass@host/`) is
+/// refused, and never echoed: those go in their own fields, which are kept
+/// in the keychain rather than in `config.json` or status lines.
 pub fn check_scheme(url: &str, allow_http: bool) -> Result<(), StoreError> {
+    if has_userinfo(url) {
+        return Err(StoreError::Config(
+            "Leave the user name and password out of the address: put them in their own fields (they're kept in the keychain).".into(),
+        ));
+    }
     let uri: ureq::http::Uri = url.parse().map_err(|_| StoreError::Config(format!("“{url}” isn't a web address")))?;
     match uri.scheme_str() {
         Some("https") => Ok(()),
@@ -81,9 +90,24 @@ pub fn check_scheme(url: &str, allow_http: bool) -> Result<(), StoreError> {
     }
 }
 
+/// Whether the authority of `url` has a `user[:password]@` part.
+pub fn has_userinfo(url: &str) -> bool {
+    let rest = url.trim().split_once("://").map_or(url, |(_, r)| r);
+    rest.split(['/', '?', '#']).next().is_some_and(|authority| authority.contains('@'))
+}
+
 impl Http {
-    pub fn new(timeout: Duration) -> Self {
-        let agent = ureq::Agent::config_builder()
+    /// `plain_http`: the store's address is `http://` (this computer, or a
+    /// host on the person's network). Then no proxy from the environment
+    /// (`HTTP_PROXY`, `ALL_PROXY`) is used: a proxy would carry the login
+    /// and the requests in the clear past the one hop the person allowed.
+    /// `https://` goes through such a proxy as usual (TLS end to end).
+    pub fn new(timeout: Duration, plain_http: bool) -> Self {
+        let mut config = ureq::Agent::config_builder();
+        if plain_http {
+            config = config.proxy(None);
+        }
+        let agent = config
             .timeout_global(Some(timeout))
             .timeout_connect(Some(Duration::from_secs(15)))
             .http_status_as_error(false)
@@ -97,6 +121,11 @@ impl Http {
             .build()
             .into();
         Self { agent, retry: Retry::DEFAULT }
+    }
+
+    /// Whether requests go through a proxy.
+    pub fn proxied(&self) -> bool {
+        self.agent.config().proxy().is_some()
     }
 
     /// One request, without retries. `limit` bounds the reply's body.
@@ -206,6 +235,35 @@ mod tests {
         assert!(check_scheme("http://nas.local/dav", true).is_ok());
         assert!(check_scheme("ftp://x", true).is_err());
         assert!(check_scheme("not a url", true).is_err());
+    }
+
+    #[test]
+    fn logins_in_addresses_are_refused_and_never_echoed() {
+        for url in ["https://asha:hunter2@cloud.example.com/dav", "https://asha@cloud.example.com", "http://u:hunter2@127.0.0.1:9000/"] {
+            let e = check_scheme(url, true).unwrap_err().to_string();
+            assert!(e.contains("own fields") && !e.contains("hunter2") && !e.contains("asha"), "{e}");
+        }
+        assert!(!has_userinfo("https://cloud.example.com/dav/a@b"), "an @ in the path is fine");
+        assert!(check_scheme("https://cloud.example.com/dav/a@b", false).is_ok());
+    }
+
+    #[test]
+    fn plain_http_never_goes_through_an_environment_proxy() {
+        let plain = Http::new(Duration::from_secs(5), true);
+        assert!(plain.agent.config().proxy().is_none());
+        // Through the stores: an http:// address gets such an agent.
+        let creds =
+            super::super::S3Credentials { access_key: "a".into(), secret_key: zeroize::Zeroizing::new("b".into()), session_token: None };
+        let cfg = |endpoint: &str| super::super::S3Config {
+            endpoint: endpoint.into(),
+            bucket: "notes".into(),
+            region: "us-east-1".into(),
+            ..super::super::S3Config::default()
+        };
+        assert!(!super::super::S3Store::new(cfg("http://127.0.0.1:9000"), creds).unwrap().http().proxied());
+        let dav = super::super::WebDavCredentials { user: "u".into(), password: zeroize::Zeroizing::new("p".into()) };
+        let local = super::super::WebDavConfig { url: "http://localhost:8080/dav".into(), allow_http: false };
+        assert!(!super::super::WebDavStore::new(&local, &dav).unwrap().http().proxied());
     }
 
     #[test]

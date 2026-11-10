@@ -264,6 +264,11 @@ impl Engine {
         Self { space, device, device_name: device_name.into(), keys, state }
     }
 
+    /// Decrypt a revision from `server`, in the form it writes first.
+    fn open(&self, server: &dyn Transport, r: &Revision) -> Result<Content, CryptoError> {
+        Content::open_hinted(&self.keys, &self.space, r, server.binds_header())
+    }
+
     /// Pull, merge and push until this device and the server agree.
     /// `today` (e.g. `2026-11-01`) goes into conflict copy names.
     pub fn sync(&mut self, local: &mut dyn LocalStore, server: &dyn Transport, today: &str) -> Result<Report, SyncError> {
@@ -415,9 +420,9 @@ impl Engine {
         if self.state.files.get(file).is_some_and(|t| !t.deleted && t.base == print) {
             return true;
         }
-        server.history(file).is_ok_and(|revs| {
-            revs.iter().any(|r| Content::open(&self.keys, &self.space, r).is_ok_and(|c| !c.deleted && fingerprint(path, &c.text) == print))
-        })
+        server
+            .history(file)
+            .is_ok_and(|revs| revs.iter().any(|r| self.open(server, r).is_ok_and(|c| !c.deleted && fingerprint(path, &c.text) == print)))
     }
 
     /// A note inside the selection that is tracked but not here yet (see
@@ -454,7 +459,7 @@ impl Engine {
             revs.iter().enumerate().filter(|(i, r)| latest.get(&r.file).is_some_and(|l| l != i)).map(|(_, r)| &r.file).collect();
         for (i, r) in revs.iter().enumerate() {
             if several.contains(&r.file) {
-                opened.insert(i, Content::open(&self.keys, &self.space, r)?);
+                opened.insert(i, self.open(server, r)?);
             }
         }
         let mut old: Vec<(String, String)> = Vec::new();
@@ -485,7 +490,7 @@ impl Engine {
             if wanted {
                 let c = match opened.remove(&i) {
                     Some(c) => c,
-                    None => Content::open(&self.keys, &self.space, &r)?,
+                    None => self.open(server, &r)?,
                 };
                 // If applying fails (say the file changed underneath us), the
                 // cursor stays put and this revision is applied next time.
@@ -545,7 +550,7 @@ impl Engine {
         let lost_tie = shared.is_some();
         let (base, base_deleted) = match shared {
             Some(shared) => {
-                let s = Content::open(&self.keys, &self.space, &shared)?;
+                let s = self.open(server, &shared)?;
                 (s.text, s.deleted)
             }
             None => (t.base.clone(), t.deleted),
@@ -698,7 +703,7 @@ impl Engine {
             .history(file)?
             .into_iter()
             .map(|r| {
-                let c = Content::open(&self.keys, &self.space, &r)?;
+                let c = self.open(server, &r)?;
                 Ok(Version { rev: r.rev, seq: r.seq, at: c.at, device: c.from, path: c.path, deleted: c.deleted, text: c.text })
             })
             .collect::<Result<_, CryptoError>>()?;
@@ -939,14 +944,18 @@ impl Engine {
         let at =
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(0));
         let content = &Content { from: self.device_name.clone(), at, ..content.clone() };
-        let sealed = content.seal(&self.keys, &self.space, file, &rev)?;
-        let r = Revision {
+        let mut r = Revision {
             file: file.clone(),
             rev,
             parents: parent.into_iter().cloned().collect(),
             seq: 0,
             device: self.device.clone(),
-            sealed,
+            sealed: Vec::new(),
+        };
+        r.sealed = if server.binds_header() {
+            content.seal_bound(&self.keys, &self.space, &r)?
+        } else {
+            content.seal(&self.keys, &self.space, file, &r.rev)?
         };
         match server.push(&r)? {
             PushOutcome::Accepted { seq } => {

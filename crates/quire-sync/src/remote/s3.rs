@@ -74,6 +74,11 @@ pub struct S3Store {
 }
 
 impl S3Store {
+    /// The HTTP client (to check how it's set up).
+    pub const fn http(&self) -> &Http {
+        &self.http
+    }
+
     pub fn new(cfg: S3Config, creds: S3Credentials) -> Result<Self, StoreError> {
         let endpoint = cfg.endpoint.trim().trim_end_matches('/').to_string();
         check_scheme(&endpoint, cfg.allow_http)?;
@@ -102,7 +107,14 @@ impl S3Store {
         let host = port.map_or_else(|| host.clone(), |p| format!("{host}:{p}"));
         let bucket_path = if cfg.virtual_hosted { String::new() } else { format!("/{bucket}") };
         let cfg = S3Config { prefix: super::clean_prefix(&cfg.prefix)?, endpoint, ..cfg };
-        Ok(Self { origin: format!("{scheme}://{host}"), host, bucket_path, http: Http::new(Duration::from_mins(2)), creds, cfg })
+        Ok(Self {
+            origin: format!("{scheme}://{host}"),
+            host,
+            bucket_path,
+            http: Http::new(Duration::from_mins(2), scheme == "http"),
+            creds,
+            cfg,
+        })
     }
 
     /// Faster retries (tests).

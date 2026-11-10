@@ -61,7 +61,8 @@ pub fn s3_list(body: &[u8], prefix: &str) -> Result<S3Page, StoreError> {
                 }
                 let etag = child_text(n, "ETag").unwrap_or_default().to_string();
                 let stamp = format!("{}|{}", child_text(n, "Size").unwrap_or_default(), child_text(n, "LastModified").unwrap_or_default());
-                page.entries.push(Entry { name: name.to_string(), dir: false, etag, stamp });
+                let size = child_text(n, "Size").and_then(|s| s.trim().parse().ok());
+                page.entries.push(Entry { name: name.to_string(), dir: false, etag, stamp, size });
             }
             "CommonPrefixes" => {
                 let Some(name) = child_text(n, "Prefix").and_then(|k| k.strip_prefix(prefix)).and_then(|k| k.strip_suffix('/')) else {
@@ -70,7 +71,7 @@ pub fn s3_list(body: &[u8], prefix: &str) -> Result<S3Page, StoreError> {
                 if name.is_empty() || name.contains('/') {
                     continue;
                 }
-                page.entries.push(Entry { name: name.to_string(), dir: true, etag: String::new(), stamp: String::new() });
+                page.entries.push(Entry { name: name.to_string(), dir: true, etag: String::new(), stamp: String::new(), size: None });
             }
             _ => {}
         }
@@ -134,7 +135,7 @@ pub fn dav_list(body: &[u8], host: &str, dir_path: &str) -> Result<Vec<Entry>, S
         }
         // Properties from the `200 OK` propstat only.
         let mut dir = rest.ends_with('/');
-        let (mut etag, mut stamp) = (String::new(), String::new());
+        let (mut etag, mut stamp, mut size) = (String::new(), String::new(), None);
         for ps in resp.children().filter(|n| is(n, "propstat")) {
             let ok = ps.children().find(|n| is(n, "status")).and_then(|n| n.text()).is_none_or(|s| s.contains(" 200"));
             let Some(prop) = ps.children().find(|n| is(n, "prop")).filter(|_| ok) else { continue };
@@ -143,6 +144,9 @@ pub fn dav_list(body: &[u8], host: &str, dir_path: &str) -> Result<Vec<Entry>, S
                     "resourcetype" => dir |= p.children().any(|c| is(&c, "collection")),
                     "getetag" => etag = p.text().unwrap_or_default().trim().to_string(),
                     "getcontentlength" | "getlastmodified" => {
+                        if p.tag_name().name() == "getcontentlength" {
+                            size = p.text().and_then(|t| t.trim().parse().ok());
+                        }
                         stamp.push_str(p.text().unwrap_or_default().trim());
                         stamp.push('|');
                     }
@@ -150,7 +154,7 @@ pub fn dav_list(body: &[u8], host: &str, dir_path: &str) -> Result<Vec<Entry>, S
                 }
             }
         }
-        out.push(Entry { name: name.to_string(), dir, etag, stamp });
+        out.push(Entry { name: name.to_string(), dir, etag, stamp, size: if dir { None } else { size } });
     }
     Ok(out)
 }
@@ -178,6 +182,7 @@ mod tests {
         // `..` is returned as a name; the transport only ever accepts ids.
         assert_eq!(names, [("space.json", false), ("devices", true), ("..", true)]);
         assert_eq!((page.entries[0].etag.as_str(), page.entries[0].stamp.as_str()), ("\"abc\"", "12|"));
+        assert_eq!(page.entries[0].size, Some(12));
         let err = br"<Error><Code>SignatureDoesNotMatch</Code><Message>nope</Message></Error>";
         assert_eq!(s3_error(err), Some(("SignatureDoesNotMatch".into(), "nope".into())));
         assert_eq!(s3_error(b"<html>busy</html>"), None);
@@ -219,6 +224,7 @@ mod tests {
         let names: Vec<(&str, bool)> = list.iter().map(|e| (e.name.as_str(), e.dir)).collect();
         assert_eq!(names, [("tips", true), ("space.json", false), ("..", false)]);
         assert_eq!((list[1].etag.as_str(), list[1].stamp.as_str()), ("\"e1\"", "10|"));
+        assert_eq!(list[1].size, Some(10));
         assert_eq!(percent_decode("a%20b%C3%BC"), Some("a bü".into()));
         assert_eq!(percent_decode("%ff"), None);
         assert_eq!(percent_decode("%2"), None);
