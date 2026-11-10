@@ -209,13 +209,14 @@ pub(crate) fn hierarchy(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureU
                 let expanded = st.open.contains(&row.path);
                 let r = ui.interact(arrow, egui::Id::unique(("quire-tree-arrow", i)), Sense::click());
                 let color = if r.hovered() { pal.strong } else { pal.muted };
-                ui.painter().text(
-                    arrow.center(),
-                    egui::Align2::CENTER_CENTER,
-                    if expanded { "▾" } else { "▸" },
-                    egui::FontId::proportional(12.0),
-                    color,
-                );
+                // A small triangle (the UI font has no ▸): right when closed, down when open.
+                let c = arrow.center();
+                let pts = if expanded {
+                    vec![c + egui::vec2(-4.0, -2.0), c + egui::vec2(4.0, -2.0), c + egui::vec2(0.0, 3.0)]
+                } else {
+                    vec![c + egui::vec2(-2.0, -4.0), c + egui::vec2(3.0, 0.0), c + egui::vec2(-2.0, 4.0)]
+                };
+                ui.painter().add(egui::Shape::convex_polygon(pts, color, egui::Stroke::NONE));
                 if r.on_hover_text(if expanded { "Collapse" } else { "Expand" }).clicked() {
                     toggle = Some(row.path.clone());
                 }
@@ -226,7 +227,7 @@ pub(crate) fn hierarchy(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureU
             if here || r.hovered() {
                 ui.painter().rect_filled(text_rect, 4.0, if here { pal.active_bg } else { pal.hover });
             }
-            let label = if row.repeat { format!("{} ↻", row.title) } else { row.title.clone() };
+            let label = if row.repeat { format!("{} (again)", row.title) } else { row.title.clone() };
             let color = if here { pal.strong } else { pal.text };
             let g = egui::WidgetText::from(RichText::new(label).color(color)).into_galley(
                 ui,

@@ -57,11 +57,12 @@ impl EdgeFilter {
     }
 }
 
-/// A steady colour for a link type: one of the heading colours, by the
-/// type's place in the graph's list (most used first).
+/// A steady colour for a link type, by the type's place in the graph's
+/// list (most used first), from the theme's distinct hues.
 fn type_color(g: &Graph, t: &str, pal: &Palette) -> egui::Color32 {
+    let hues = [pal.accent, pal.tag, pal.warn, pal.added, pal.danger, pal.link, pal.quote];
     let i = g.types.iter().position(|x| x == t).unwrap_or(0);
-    pal.h[i % pal.h.len()]
+    hues[i % hues.len()]
 }
 
 /// Distance from `p` to the segment `a`–`b`.
