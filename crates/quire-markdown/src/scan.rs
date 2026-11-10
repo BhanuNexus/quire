@@ -130,14 +130,14 @@ pub(crate) fn scan_with(src: &str, verbatim: &[Range<usize>]) -> Vec<Inline> {
         }
         match bytes[i] {
             b'[' if bytes.get(i + 1) == Some(&b'[') => {
-                if let Some((inline, end)) = wikilink(src, i) {
+                if let Some((inline, end)) = wikilink_at(src, i) {
                     out.push(inline);
                     i = end;
                     continue;
                 }
             }
             b'!' if src[i..].starts_with("![[") => {
-                if let Some((inline, end)) = wikilink(src, i + 1) {
+                if let Some((inline, end)) = wikilink_at(src, i + 1) {
                     if let Inline::WikiLink { range, mut link } = inline {
                         link.embed = true;
                         out.push(Inline::WikiLink { range: i..range.end, link });
@@ -181,7 +181,8 @@ pub(crate) fn scan_with(src: &str, verbatim: &[Range<usize>]) -> Vec<Inline> {
     out
 }
 
-fn wikilink(src: &str, start: usize) -> Option<(Inline, usize)> {
+/// The wikilink starting at `start` (its `[[`), and the byte after it.
+pub(crate) fn wikilink_at(src: &str, start: usize) -> Option<(Inline, usize)> {
     let body_start = start + 2;
     let rest = &src[body_start..];
     let close = rest.find("]]")?;
