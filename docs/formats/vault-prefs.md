@@ -22,6 +22,7 @@ folder = "Weekly"
 [lint]            # WS-A
 [staleness]       # WS-C
 [citations]       # WS-G
+[links]           # 0.12 typed links (read only)
 ```
 
 ## `[periodic]` (WS-E)
@@ -50,6 +51,12 @@ can't parse back are matched against the 30 years around today).
 * A file with `format` above 1, or one that can't be parsed, is read as far
   as possible and never saved over (`PrefsError::NewerFormat`,
   `PrefsError::Unreadable`).
+
+## `[links]` (0.12 typed links)
+
+Which link fields make the hierarchy, whether they imply their reverse and
+when the breadcrumbs trail shows. Quire reads this section and never writes
+it. See [links.md](links.md#hierarchy).
 
 ## `[citations]` (WS-G)
 

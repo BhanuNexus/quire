@@ -4,6 +4,24 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Added
+
+#### Typed links and hierarchy
+- **Typed links, as Dataview and Breadcrumbs write them:** a link in a field has that field's name as its type. Inline fields on their own line (`parent:: [[Rope]]`), bracketed anywhere (`[supports:: [[Theory]]]`, `(source:: [[Book]])`), and front-matter properties holding links (`up: "[[Projects]]"`, lists of links). Front-matter links are now links everywhere: backlinks, the graph, renames, vault checks. Format and the mapping from both plugins: [docs/formats/links.md](docs/formats/links.md).
+- **Hierarchy:** `up`/`parent`, `down`/`child`, `same`/`sibling`, `next` and `prev` are hierarchy links (set your own names in `[links]` of `.quire/shared/vault.toml`); A `up` B makes B's child A without writing it twice (turn off with `implied = false`). Every other field is a type of its own: `supports`, `contradicts`, `source`…
+- **Breadcrumbs trail** above a note ("Maths › Calculus › Limits"), one line per path when a note has several parents, stopping at cycles. On by default only in vaults that use hierarchy fields (`trail = "on" | "off" | "auto"`).
+- **Insights groups links by type:** Parents, Children, Siblings, Previous, Next, Supports, Contradicts and other types, then the untyped backlinks. Implied links are dimmed; `←` marks links from other notes.
+- **Hierarchy** sidebar tab ("Show hierarchy"): the up/down tree from each top note, or just the open note's, with expand and collapse; cycles are shown once (↻).
+- **Graph:** typed links are coloured by type, can be filtered (all, typed, one type), and show their type on hover.
+- **Add typed link…**: pick a type, then a note; it is written the way the note already writes typed links (inline field or property), as one undoable edit. **Go to parent**, **Go to next sibling** and **Go to previous sibling** (no default keys; bind them in Settings → Commands).
+- **Suggestions:** after `parent:: ` (any field that holds links) the notes to link; `[[` at the start of a line also offers the vault's typed fields (`up:: [[…]]`).
+- **Views, Dataview and Bases by type:** `where: up = Projects` (also matching `up: "[[Projects]]"`), `group: up`, `outlinks` and `outlinks.<type>`; Dataview's `WHERE up = [[X]]` and `contains(file.outlinks, [[X]])` translate; in a `.base` an inline typed field is a property.
+- **Agents (MCP):** `links` (a note's links and backlinks with their types), `hierarchy` (ancestors, descendants, siblings, previous/next and trails, depth-limited) and `add_link` (through the usual review: applied in agent zones, a suggestion elsewhere); `neighbors` edges carry their type and can follow chosen types. Clients limited to tags or folders, and locked folders, stay hidden in all of them, field names included.
+- **CLI:** `quire-cli links <vault> <note> [--type T]` and `quire-cli tree <vault> <note> [--depth N]`.
+
+### Changed
+- Renaming or moving a note also rewrites links to it in front-matter properties; only the link text changes, every other byte of the note stays.
+
 ## [0.11.0] - 2026-11-08
 
 Quire 0.11: tasks as notes with time tracking and pomodoros, boards you arrange (manual order, swimlanes, colours) and Bases maps; locked folders encrypted at rest; a Connections view to audit, limit and revoke each agent; and a formatting toolbar, your own shortcuts and macros, and smoother typing.
