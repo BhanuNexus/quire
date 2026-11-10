@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Link-preserving refactors.
 
+use quire_markdown::fields::{FmContext, front_matter_context};
+use quire_markdown::frontmatter;
 use quire_markdown::render::encode_url;
 use quire_markdown::{LinkKind, extract};
 
@@ -46,33 +48,98 @@ impl LinkRewrite<'_> {
 ///
 /// 0.12: links in front-matter properties (`up: "[[Old]]"`) are rewritten
 /// too; only the target inside `[[…]]` changes, so every other byte of the
-/// note stays as it was. In a single-quoted YAML value, a `'` in the new
-/// name is doubled so the property still reads back.
+/// note stays as it was. The new name is written the way YAML needs it
+/// where the link sits: a `'` is doubled in single quotes; `\` and `"` are
+/// escaped in double quotes. In an unquoted value a name that YAML would
+/// read differently (`Smith, John`, `@Work`, `Ada's`) gets the whole value
+/// quoted. If the front matter was valid YAML and would not be after the
+/// change, its links are left as they were.
 pub fn rewrite_links(src: &str, rw: &LinkRewrite<'_>) -> Option<String> {
-    let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
     let ex = extract(src);
     let fm_end = ex.front_matter.as_ref().map_or(0, |f| f.range.end);
-    for link in ex.links {
+    let (body, front) = edits_for(src, &ex.links, fm_end, rw);
+    let mut out = apply(src, body.iter().chain(&front))?;
+    if !front.is_empty() && frontmatter::yaml_valid(src) == Some(true) && frontmatter::yaml_valid(&out) != Some(true) {
+        out = apply(src, body.iter())?;
+    }
+    (out != src).then_some(out)
+}
+
+type Edits = Vec<(std::ops::Range<usize>, String)>;
+
+fn apply<'a>(src: &str, edits: impl Iterator<Item = &'a (std::ops::Range<usize>, String)>) -> Option<String> {
+    let mut edits: Vec<_> = edits.collect();
+    if edits.is_empty() {
+        return None;
+    }
+    edits.sort_by_key(|(r, _)| r.start);
+    let mut out = String::with_capacity(src.len() + edits.len() * 8);
+    let mut pos = 0;
+    for (r, s) in edits {
+        out.push_str(&src[pos..r.start]);
+        out.push_str(s);
+        pos = r.end;
+    }
+    out.push_str(&src[pos..]);
+    Some(out)
+}
+
+/// A name YAML could read differently in an unquoted value.
+fn needs_quotes(name: &str) -> bool {
+    name.contains([',', ':', '#', '\'', '"', '@', '`', '!', '&', '*', '%', '{', '}', '[', ']', '|', '>', '\\'])
+        || name.starts_with(['-', '?', '~', '<', '='])
+        || name.contains(" -")
+        || name != name.trim()
+        || name.chars().any(char::is_control)
+}
+
+fn dq(s: &str) -> String {
+    let mut q = String::with_capacity(s.len() + 2);
+    q.push('"');
+    for c in s.chars() {
+        match c {
+            '\\' => q.push_str("\\\\"),
+            '"' => q.push_str("\\\""),
+            c if c.is_control() => {
+                let _ = std::fmt::Write::write_fmt(&mut q, format_args!("\\u{:04X}", u32::from(c)));
+            }
+            c => q.push(c),
+        }
+    }
+    q.push('"');
+    q
+}
+
+/// Links in one unquoted value: its byte range, to (link range, new text, name needs quotes).
+type PlainGroups = std::collections::BTreeMap<(usize, usize), Vec<(std::ops::Range<usize>, String, bool)>>;
+
+/// The edits for the body and for the front matter, apart.
+fn edits_for(src: &str, links: &[quire_markdown::Link], fm_end: usize, rw: &LinkRewrite<'_>) -> (Edits, Edits) {
+    let (mut body, mut front): (Edits, Edits) = (Vec::new(), Vec::new());
+    // Unquoted values hold links to quote together: scalar range -> (link range, new text).
+    let mut plain: PlainGroups = std::collections::BTreeMap::new();
+    for link in links {
         if !link.is_internal() || !rw.matches(&link.target) {
             continue;
         }
+        let in_front = link.range.end <= fm_end;
         let raw = &src[link.range.clone()];
         let mut new_target = rw.new_target(&link.target);
-        if link.range.end <= fm_end && new_target.contains('\'') && in_single_quotes(src, link.range.start) {
-            new_target = new_target.replace('\'', "''");
+        let ctx = in_front.then(|| front_matter_context(src, fm_end, link.range.start));
+        match &ctx {
+            Some(FmContext::Single) => new_target = new_target.replace('\'', "''"),
+            Some(FmContext::Double) => new_target = new_target.replace('\\', "\\\\").replace('"', "\\\""),
+            // A later line of a multi-line value: only a name that is safe anywhere.
+            Some(FmContext::Unknown) if needs_quotes(&new_target) => continue,
+            _ => {}
         }
-        match link.kind {
+        let text = match link.kind {
             LinkKind::Wiki | LinkKind::Embed => {
                 let open = if link.kind == LinkKind::Embed { 3 } else { 2 };
                 let inner = &raw[open..raw.len() - 2];
                 // Replace only the target part, keeping `#heading` and `|alias`.
                 let cut = inner.find(['#', '|']).unwrap_or(inner.len());
-                let mut s = String::with_capacity(raw.len() + 8);
-                s.push_str(&raw[..open]);
-                s.push_str(&new_target);
-                s.push_str(&inner[cut..]);
-                s.push_str("]]");
-                edits.push((link.range.clone(), s));
+                format!("{}{new_target}{}]]", &raw[..open], &inner[cut..])
             }
             LinkKind::Relative => {
                 let Some(paren) = raw.rfind("](") else {
@@ -85,33 +152,36 @@ pub fn rewrite_links(src: &str, rw: &LinkRewrite<'_>) -> Option<String> {
                 };
                 let anchor = dest_core.find('#').map_or("", |i| &dest_core[i..]);
                 let ext = if dest_core.contains(".md") { ".md" } else { "" };
-                let s = format!("{}]({}{ext}{anchor}{title})", &raw[..paren], encode_url(&new_target));
-                edits.push((link.range.clone(), s));
+                format!("{}]({}{ext}{anchor}{title})", &raw[..paren], encode_url(&new_target))
             }
-            LinkKind::External => {}
+            LinkKind::External => continue,
+        };
+        match ctx {
+            Some(FmContext::Flow) if needs_quotes(&new_target) => front.push((link.range.clone(), dq(&text))),
+            Some(FmContext::Plain(r)) => {
+                plain.entry((r.start, r.end)).or_default().push((link.range.clone(), text, needs_quotes(&new_target)));
+            }
+            Some(_) => front.push((link.range.clone(), text)),
+            None => body.push((link.range.clone(), text)),
         }
     }
-    if edits.is_empty() {
-        return None;
+    for ((start, end), items) in plain {
+        if !items.iter().any(|(_, _, q)| *q) {
+            front.extend(items.into_iter().map(|(r, t, _)| (r, t)));
+            continue;
+        }
+        // The whole value, with the new names in it, as one double-quoted scalar.
+        let mut text = String::new();
+        let mut pos = start;
+        for (r, t, _) in &items {
+            text.push_str(&src[pos..r.start]);
+            text.push_str(t);
+            pos = r.end;
+        }
+        text.push_str(&src[pos..end]);
+        front.push((start..end, dq(&text)));
     }
-    let mut out = String::with_capacity(src.len() + edits.len() * 8);
-    let mut pos = 0;
-    for (r, s) in edits {
-        out.push_str(&src[pos..r.start]);
-        out.push_str(&s);
-        pos = r.end;
-    }
-    out.push_str(&src[pos..]);
-    Some(out)
-}
-
-/// Whether byte `at` of a front-matter line is inside a single-quoted
-/// YAML scalar.
-fn in_single_quotes(src: &str, at: usize) -> bool {
-    let start = src[..at].rfind('\n').map_or(0, |i| i + 1);
-    let line = &src[start..at];
-    let value = line.find(": ").map_or(line, |i| &line[i + 1..]);
-    quire_markdown::fields::yaml_quote_at(value) == Some('\'')
+    (body, front)
 }
 
 #[cfg(test)]
@@ -136,7 +206,98 @@ mod tests {
             out,
             "---\r\nup: \"[[Ada's]]\"   # parent\r\nrelated: ['[[Ada''s|o]]', \"[[Keep]]\"]\r\ndown:\r\n  - \"[[Folder/Ada's#H]]\"\r\n---\r\nparent:: [[Ada's]]\r\n[supports:: [[Ada's]]]\r\n"
         );
-        let fm = quire_markdown::frontmatter::parse(&out).unwrap();
+        let fm = frontmatter::parse(&out).unwrap();
         assert_eq!(fm.get("related").unwrap().as_list()[0], "[[Ada's|o]]");
+    }
+
+    /// Rename over YAML link values with hostile names: the front matter
+    /// always still parses, and only the link target changes.
+    #[test]
+    fn hostile_new_names_never_break_the_yaml() {
+        let names = [
+            "Smith, John",
+            "@Work",
+            "`tick",
+            "!bang",
+            "Bob's",
+            "a: b",
+            "say \"hi\"",
+            "back\\slash",
+            "{curly}",
+            "%pct",
+            "&amp",
+            "*star",
+            "- dash",
+            "?ask",
+            ">fold",
+            "x y z",
+            "'quoted'",
+            "tab\there",
+            "Ada's \"best\"",
+            "plain",
+        ];
+        let values = [
+            "up: [[Old]]",
+            "up: x [[Old]]",
+            "up: Bob's [[Old]]",
+            "up: \"[[Old]]\"",
+            "up: '[[Old]]'",
+            "up: [\"[[Old]]\", b]",
+            "up: ['[[Old]]', \"[[Keep]]\"]",
+            "up: [[[Old]], [[Keep]]]",
+            "up:\n  - [[Old]]",
+            "up:\n  - \"[[Old]]\"\n  - '[[Old|alias]]'",
+            "up: \"[[Old#H]]\"",
+            "up: see [[Old]] and [[Old]]",
+            "up: |\n  text [[Old]]\n  more",
+            "up: [\n  \"[[Old]]\",  # why\n  b\n]",
+        ];
+        for eol in ["\n", "\r\n"] {
+            for v in values {
+                for comment in ["", "   # trailing"] {
+                    let value = if v.contains('\n') && !comment.is_empty() { v.to_string() } else { format!("{v}{comment}") };
+                    let src = format!("---\ntitle: T\n{value}\nz: 1\n---\nbody [[Old]]\n").replace('\n', eol);
+                    assert_eq!(frontmatter::yaml_valid(&src), Some(true), "bad template {src:?}");
+                    for name in names {
+                        let rw = LinkRewrite { old_stem: "Old", old_path: "Old", new_stem: name, resolves: None, new_path: None };
+                        let out = rewrite_links(&src, &rw).unwrap();
+                        assert_eq!(frontmatter::yaml_valid(&out), Some(true), "YAML broke: {name:?}\nin  {src:?}\nout {out:?}");
+                        // The same links, in the same fields, now pointing at the new name.
+                        let (b, a) = (extract(&src).links, extract(&out).links);
+                        // Two links with a backtick in the name pair up as a code span, which no reader sees as links.
+                        if name.contains('`') {
+                            continue;
+                        }
+                        assert_eq!(b.len(), a.len(), "{name:?}\nin  {src:?}\nout {out:?}");
+                        for (x, y) in b.iter().zip(&a) {
+                            assert_eq!(x.field, y.field, "{name:?}\nout {out:?}");
+                            let want = if x.target == "Old" { name } else { x.target.as_str() };
+                            assert_eq!(y.target, want, "{name:?}\nin  {src:?}\nout {out:?}");
+                            assert_eq!(x.heading, y.heading);
+                        }
+                        // Nothing else changed: the comment, the other keys and the body.
+                        assert!(out.contains("title: T") && out.contains("z: 1"));
+                        assert!(out.ends_with(&format!("body [[{name}]]{eol}")), "{out:?}");
+                        if v.contains('\n') && v.contains("# why") {
+                            assert!(out.contains("# why"));
+                        }
+                        if !comment.is_empty() && !v.contains('\n') {
+                            assert!(out.contains("# trailing"), "{out:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_unquoted_value_is_quoted_whole_when_the_new_name_needs_it() {
+        let rw = |n| LinkRewrite { old_stem: "Old", old_path: "Old", new_stem: n, resolves: None, new_path: None };
+        assert_eq!(rewrite_links("---\nup: [[Old]]\n---\n", &rw("Smith, John")).unwrap(), "---\nup: \"[[Smith, John]]\"\n---\n");
+        assert_eq!(rewrite_links("---\nrel: Bob's [[Old]]\n---\n", &rw("N'M")).unwrap(), "---\nrel: \"Bob's [[N'M]]\"\n---\n");
+        // A name that is safe unquoted is written as it is.
+        assert_eq!(rewrite_links("---\nup: [[Old]]\n---\n", &rw("New")).unwrap(), "---\nup: [[New]]\n---\n");
+        // Comments and code spans are not links.
+        assert!(rewrite_links("---\nup: x # see [[Old]]\n---\n", &rw("New")).is_none());
     }
 }

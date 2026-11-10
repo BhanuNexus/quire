@@ -14,7 +14,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::fmt::Write as _;
 
-use quire_app::index::{Hier, Index};
+use quire_app::index::{Hier, Index, Relations};
 use quire_app::vault::NotePath;
 use serde_json::{Value, json};
 
@@ -191,6 +191,38 @@ fn walk(cx: &ToolCx<'_>, ix: &Index, start: &NotePath, h: Hier, depth: usize, li
     (out, cut)
 }
 
+/// Siblings of `p` the caller may know about: its explicit `same` links, then the
+/// other children of its *visible* parents. Two notes that share only a parent the
+/// caller can't see aren't reported as siblings (that would reveal the parent).
+fn visible_siblings(cx: &ToolCx<'_>, rel: &Relations, p: &NotePath) -> Vec<NotePath> {
+    let mut v: Vec<NotePath> = rel.related(p, Hier::Same).into_iter().filter(|q| visible(cx, q)).cloned().collect();
+    for parent in rel.parents(p).into_iter().filter(|q| visible(cx, q)) {
+        let mut kids: Vec<&NotePath> = rel.children(parent);
+        kids.sort();
+        for k in kids {
+            if k != p && visible(cx, k) && !v.contains(k) {
+                v.push(k.clone());
+            }
+        }
+    }
+    v
+}
+
+/// The note before or after `p`: its explicit `prev`/`next` link, else its neighbour
+/// by name under its first visible parent (hidden notes aren't counted).
+fn visible_step(cx: &ToolCx<'_>, rel: &Relations, p: &NotePath, forward: bool) -> Option<NotePath> {
+    let h = if forward { Hier::Next } else { Hier::Prev };
+    if let Some(n) = rel.related(p, h).first() {
+        return Some((*n).clone()).filter(|q| visible(cx, q));
+    }
+    let parent = *rel.parents(p).iter().find(|q| visible(cx, q))?;
+    let mut kids: Vec<&NotePath> = rel.children(parent).into_iter().filter(|k| visible(cx, k)).collect();
+    kids.sort_by_key(|k| k.stem().to_lowercase());
+    let i = kids.iter().position(|k| *k == p)?;
+    let j = if forward { i + 1 } else { i.checked_sub(1)? };
+    kids.get(j).map(|k| (*k).clone())
+}
+
 fn hierarchy(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let p = match existing(cx, a, "path") {
         Ok(p) => p,
@@ -216,11 +248,11 @@ fn hierarchy(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     }
     if want("siblings") {
         let sibs: Vec<Value> =
-            rel.siblings(&p).iter().filter(|q| visible(cx, q)).take(limit).map(|q| json!({"path": q, "title": title(&ix, q)})).collect();
+            visible_siblings(cx, rel, &p).iter().take(limit).map(|q| json!({"path": q, "title": title(&ix, q)})).collect();
         let names: Vec<&str> = sibs.iter().filter_map(|r| r["path"].as_str()).collect();
         let _ = writeln!(text, "siblings: {}", if names.is_empty() { "none".to_string() } else { names.join(", ") });
         st["siblings"] = sibs.into();
-        let step = |forward: bool| rel.step(&p, forward).filter(|q| visible(cx, q));
+        let step = |forward: bool| visible_step(cx, rel, &p, forward);
         st["previous"] = json!(step(false));
         st["next"] = json!(step(true));
     }

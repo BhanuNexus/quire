@@ -186,7 +186,9 @@ pub struct LintApply {
 fn stamp_now(format: &str) -> String {
     use std::fmt::Write as _;
     let mut s = String::new();
-    if write!(s, "{}", Local::now().format(format)).is_err() || s.is_empty() {
+    // A format with a line break or another control character, or one that opens
+    // with `:`, could write more than a value into the front matter: not used.
+    if !Options::date_format_ok(format) || write!(s, "{}", Local::now().format(format)).is_err() || s.is_empty() {
         s = Local::now().format("%Y-%m-%dT%H:%M").to_string();
     }
     s
@@ -240,6 +242,11 @@ pub fn plan_folder<S: std::hash::BuildHasher>(
         }
         let Ok(before) = vault.read(&path) else { continue };
         plan.checked += 1;
+        if !is_utf8_note(vault, &path) {
+            plan.skipped += 1;
+            plan.notes.push((path, "The file isn't UTF-8 text; it was left alone".into()));
+            continue;
+        }
         if skip_reason(opts, &path, &before).is_some() {
             plan.skipped += 1;
             continue;
@@ -252,6 +259,16 @@ pub fn plan_folder<S: std::hash::BuildHasher>(
         }
     }
     plan
+}
+
+/// Whether the note's bytes are UTF-8 (a BOM aside). Reading others replaces
+/// what it can't decode, and writing that back would lose it. Notes in a
+/// locked folder aren't tidied in batches, so only plain files are looked at.
+fn is_utf8_note(vault: &Vault, path: &NotePath) -> bool {
+    if vault.locked_folder(path).is_some() {
+        return true;
+    }
+    vault.storage().read_bytes(path).is_ok_and(|b| std::str::from_utf8(b.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&b)).is_ok())
 }
 
 /// "3 fixes (trailing spaces, blank lines)".
@@ -320,6 +337,9 @@ pub fn lint_options(vault: &Vault) -> Options {
 /// (the new version with provenance), and only over the text the change was
 /// made from. `Ok(false)` when the note changed meanwhile and nothing was written.
 pub fn write_tidied(vault: &Vault, path: &NotePath, before: &str, after: &str, device: &str, now_ms: i64) -> Result<bool, String> {
+    if !is_utf8_note(vault, path) {
+        return Err(format!("{} isn't UTF-8 text; it was left alone", path.stem()));
+    }
     let prov = quire_agent::Provenance::new(quire_agent::Actor::human(device), quire_agent::Op::Write, after, now_ms).to_json();
     let _ = vault.snapshot(path, before, now_ms - 1, true);
     if !vault.write_if(path, Some(before), after).map_err(|e| format!("couldn't write {}: {e}", path.stem()))? {
@@ -444,6 +464,19 @@ impl Workspace {
 
     // ----------------------------------------------------------------- tidy
 
+    /// Notes the linter never touches, however it is asked: templates (they are
+    /// patterns, not notes) and notes in locked folders.
+    fn lint_blocked(&self, path: &NotePath) -> Option<&'static str> {
+        let vault = self.vault.as_ref()?;
+        if vault.is_template(path) {
+            Some("a template")
+        } else if vault.locked_folder(path).is_some() {
+            Some("in a locked folder")
+        } else {
+            None
+        }
+    }
+
     /// Tidy the active note: one undo step.
     pub fn lint_active_note(&mut self) {
         let opts = self.switch_prefs().lint.clone();
@@ -453,6 +486,10 @@ impl Workspace {
             return;
         };
         let (text, dirty) = (doc.text(), doc.is_dirty());
+        if let Some(why) = self.lint_blocked(&path) {
+            self.notify(NoticeLevel::Info, format!("“{}” isn't tidied: it is {why}", path.stem()));
+            return;
+        }
         if let Some(why) = skip_reason(&opts, &path, &text) {
             self.notify(NoticeLevel::Info, format!("“{}” isn't tidied: it is {why}", path.stem()));
             return;
@@ -484,6 +521,9 @@ impl Workspace {
             return;
         }
         let (Some(path), text) = (doc.path.clone(), doc.text()) else { return };
+        if self.lint_blocked(&path).is_some() {
+            return;
+        }
         let out = lint_text(&opts, &path, &text, true);
         if out.text != *text
             && let Some(i) = self.doc_pos(id)
@@ -833,6 +873,40 @@ mod tests {
         assert_eq!(&*w.active_doc().expect("open").text(), "# A\n\ntext\n\n- a\n");
         w.run(Command::Undo);
         assert_eq!(&*w.active_doc().expect("open").text(), "# A\ntext   \n* a\n", "one undo restores it");
+    }
+
+    #[test]
+    fn templates_are_never_tidied_by_hand_or_on_save() {
+        let mut w = ws(&[("Templates/T.md", "# T\ntext   \n"), ("A.md", "a\n")]);
+        let t = NotePath::new("Templates/T.md");
+        w.open_note(&t);
+        w.lint_active_note();
+        assert_eq!(&*w.active_doc().expect("open").text(), "# T\ntext   \n");
+        let mut p = (*w.switch_prefs()).clone();
+        p.lint.on_save = true;
+        assert!(w.save_switch_prefs(&p));
+        w.active_doc_mut().expect("open").replace_minimally("# T\ntext   \nmore   \n");
+        let id = w.active_doc().expect("open").id;
+        assert!(w.save(id));
+        assert_eq!(w.vault().expect("vault").read(&t).expect("read"), "# T\ntext   \nmore   \n");
+    }
+
+    #[test]
+    fn a_note_that_is_not_utf8_is_not_rewritten() {
+        let w = ws(&[("A.md", "a   \n")]);
+        let vault = w.vault().expect("vault").clone();
+        let bad = NotePath::new("Latin.md");
+        let bytes = b"na\xEFve   \n";
+        vault.storage().write_bytes_atomic(&bad, bytes).expect("write");
+        let plan = plan_folder(&vault, "", &Options::default(), &HashSet::new(), &AtomicBool::new(false));
+        assert!(plan.files.iter().all(|f| f.path != bad), "{plan:?}");
+        assert!(plan.notes.iter().any(|(p, _)| *p == bad));
+        // Nor through a write with a plan made some other way.
+        let before = vault.read(&bad).expect("read");
+        assert!(write_tidied(&vault, &bad, &before, "na\u{FFFD}ve\n", "dev", 1).is_err());
+        assert_eq!(vault.storage().read_bytes(&bad).expect("bytes"), bytes);
+        // A plain UTF-8 note, with a BOM, still goes through.
+        assert!(plan.files.iter().any(|f| f.path == NotePath::new("A.md")));
     }
 
     #[test]

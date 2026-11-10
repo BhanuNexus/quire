@@ -178,7 +178,10 @@ fn tags_are_written_one_way() {
         o.tags_format = TagsFormat::List;
         o.tags_case = TagsCase::Lower;
     });
-    assert_eq!(run("---\ntags: #Alpha, beta gamma, alpha\n---\n", &o), "---\ntags:\n  - alpha\n  - beta-gamma\n---\n");
+    assert_eq!(run("---\ntags: Alpha, beta gamma, alpha\n---\n", &o), "---\ntags:\n  - alpha\n  - beta-gamma\n---\n");
+    // `#Alpha` after `tags:` is a YAML comment, not a tag: left alone.
+    let comment = "---\ntags: #Alpha, beta gamma, alpha\n---\n";
+    assert_eq!(run(comment, &o), comment);
     let flow = only(|o| o.tags_format = TagsFormat::Flow);
     assert_eq!(run("---\ntags:\n  - a\n  - \"#b\"\n---\n", &flow), "---\ntags: [a, b]\n---\n");
     assert_eq!(run("---\ntags: []\n---\n", &flow), "---\ntags: []\n---\n");
@@ -303,6 +306,9 @@ const PIECES: &[&str] = &[
     "Term\n: definition",
     "[^1]: footnote  ",
     "line with ünïcode  and emoji 😀  ",
+    "---\n\n---\n```md\n---\nfoo: bar\n---\n```",
+    "text\n---\nnot front matter: x\n---\n```\n---\nk: v\n---\n```",
+    "$$\n---\nx *  y\n---\n$$",
 ];
 
 const FRONTS: &[&str] = &[
@@ -316,6 +322,9 @@ const FRONTS: &[&str] = &[
     "---\nauthor:\n  name: Ada  \n  tags: [a]\ntags: []\n---",
     "---\nunclosed: 1\n",
     "---\na: 1\na: 2\n---",
+    "---\ntags: [A, b]  # keep me\ntitle: \"x: y\"\n---",
+    "---\ntags:\n  - A # first\n  - \"true\"\nz: &x [1, 2]\na: *x\n---",
+    "---\ntags: \"quoted, one\"\nnote: >\n  folded   \n  text\n---",
 ];
 
 fn make_note(r: &mut Rng) -> String {
@@ -503,4 +512,219 @@ fn nothing_panics_on_junk() {
         let o = make_options(&mut r);
         let _ = lint(&s, &o, &cx(true));
     }
+}
+
+#[test]
+fn tags_with_comments_flow_syntax_or_lookalikes_are_not_corrupted() {
+    let o = only(|o| {
+        o.tags_format = TagsFormat::List;
+        o.tags_case = TagsCase::Lower;
+    });
+    for src in [
+        "---\ntags: [a, b]  # c\n---\n",
+        "---\ntags: a # c\n---\n",
+        "---\ntags:\n  - A # first\n  - b\n---\n",
+        "---\ntags: [A: b]\n---\n",
+        "---\ntags: &t [A, b]\nother: *t\n---\n",
+    ] {
+        assert_eq!(run(src, &o), src, "{src:?}");
+    }
+    // A quoted `"true"` stays text; so do numbers, dates and words with a comma.
+    let list = only(|o| o.tags_format = TagsFormat::List);
+    assert_eq!(
+        run("---\ntags: [\"true\", \"123\", \"2024-01-01\", \"a,b\", \"null\"]\n---\n", &list),
+        "---\ntags:\n  - \"true\"\n  - \"123\"\n  - \"2024-01-01\"\n  - \"a,b\"\n  - \"null\"\n---\n"
+    );
+    let flow = only(|o| o.tags_format = TagsFormat::Flow);
+    assert_eq!(run("---\ntags:\n  - \"a,b\"\n  - c\n---\n", &flow), "---\ntags: [\"a,b\", c]\n---\n");
+    // A real tag list of booleans is not text.
+    let src = "---\ntags: [true, x]\n---\n";
+    assert_eq!(run(src, &list), src);
+}
+
+#[test]
+fn front_matter_that_is_not_yaml_is_left_alone() {
+    let src = "---\ntitle: Foo: bar\nb:   1   \n---\nbody  \n";
+    let out = lint(src, &only(|o| o.front_matter = true), &Cx::default());
+    assert_eq!(out.text, src);
+    assert!(!out.notes.is_empty());
+}
+
+#[test]
+fn sorting_never_moves_an_alias_before_its_anchor() {
+    let o = only(|o| o.front_matter_sort = Sort::Alpha);
+    let src = "---\nz: &x [1, 2]\na: *x\n---\n";
+    assert_eq!(run(src, &o), src);
+}
+
+#[test]
+fn a_dash_line_near_the_start_does_not_make_code_editable() {
+    let src = "---\n\n---\n```md\n---\nfoo: bar\n---\n```\n";
+    let out = lint(src, &Options::default(), &Cx::default());
+    assert_eq!(out.text, src);
+}
+
+#[test]
+fn emphasis_rule_leaves_wikilink_targets_alone() {
+    let o = only(|o| o.emphasis = Emphasis::Underscore);
+    let src = "see [[a *b* c]] and *d*\n";
+    assert_eq!(run(src, &o), "see [[a *b* c]] and _d_\n");
+}
+
+// ---- front matter grammar: the YAML means the same after tidying
+
+fn yaml_value(r: &mut Rng, anchors: &mut Vec<&'static str>) -> String {
+    let plain = ["x", "Hello world", "2026-11-05", "42", "true", "null", "~", "a:b", "it's", "[[Note]]"];
+    match r.below(12) {
+        0 => (*r.pick(&plain)).to_string(),
+        1 => "\"quoted: yes # not a comment\"".to_string(),
+        2 => "'it''s'".to_string(),
+        3 => "[a, b]  # trailing comment".to_string(),
+        4 => "[a, \"b c\", 3]".to_string(),
+        5 => "\n  - one # why\n  # between\n  - \"two\"\n  - 3".to_string(),
+        6 => "\n  - [nested, list]\n  - k: v".to_string(),
+        7 => "|\n  literal   \n  text".to_string(),
+        8 => ">\n  folded\n  text".to_string(),
+        9 if !anchors.is_empty() => format!("*{}", r.pick(anchors)),
+        9 => "{a: 1, b: [2]}".to_string(),
+        10 => {
+            let name = *r.pick(&["p", "q"]);
+            if anchors.contains(&name) {
+                "plain".to_string()
+            } else {
+                anchors.push(name);
+                format!("&{name} [1, 2]")
+            }
+        }
+        _ => "\"true\"".to_string(),
+    }
+}
+
+fn yaml_note(r: &mut Rng) -> String {
+    let keys = ["zeta", "alpha", "title", "tags", "status", "up", "k b", "mid"];
+    let mut anchors = Vec::new();
+    let mut s = String::from("---\n");
+    let eol = if r.chance(30) { "\r\n" } else { "\n" };
+    let mut used: Vec<&str> = Vec::new();
+    for _ in 0..=r.below(6) {
+        let k = *r.pick(&keys);
+        if used.contains(&k) {
+            continue;
+        }
+        used.push(k);
+        if r.chance(25) {
+            s.push_str("# a comment  \n");
+        }
+        let v = if k == "tags" && r.chance(70) {
+            (*r.pick(&["[A, b]", "[a, b]  # c", "a, B", "\n  - A\n  - \"true\"", "\n  - a # c", "[\"x,y\", Z]", "[true, a]", "\"123\""]))
+                .to_string()
+        } else {
+            yaml_value(r, &mut anchors)
+        };
+        s.push_str(k);
+        s.push(':');
+        if !v.starts_with('\n') {
+            s.push(' ');
+        }
+        s.push_str(&v);
+        if r.chance(30) && !v.contains('\n') {
+            s.push_str("   ");
+        }
+        s.push('\n');
+    }
+    s.push_str("---\n");
+    let mut note = s;
+    for _ in 0..=r.below(4) {
+        note.push_str(r.pick(PIECES));
+        note.push('\n');
+    }
+    if eol == "\r\n" { note.replace('\n', "\r\n") } else { note }
+}
+
+fn real_front(text: &str) -> Option<Vec<(String, yaml_rust2::Yaml)>> {
+    let t = text.replace("\r\n", "\n");
+    let rest = t.strip_prefix("---\n")?;
+    let end = rest.find("\n---\n").map(|i| i + 1).or_else(|| rest.starts_with("---\n").then_some(0))?;
+    let docs = yaml_rust2::YamlLoader::load_from_str(&rest[..end]).ok()?;
+    match docs.first() {
+        Some(yaml_rust2::Yaml::Hash(h)) => Some(h.iter().map(|(k, v)| (format!("{k:?}"), v.clone())).collect()),
+        _ => Some(Vec::new()),
+    }
+}
+
+fn flat_tags(v: &yaml_rust2::Yaml) -> Vec<String> {
+    use yaml_rust2::Yaml;
+    let mut out: Vec<String> = match v {
+        Yaml::String(s) => s
+            .split(',')
+            .map(str::trim)
+            .filter(|x| !x.is_empty())
+            .map(|x| format!("S:{}", x.trim_start_matches('#').split_whitespace().collect::<Vec<_>>().join("-").to_lowercase()))
+            .collect(),
+        Yaml::Array(items) => items
+            .iter()
+            .map(|i| match i {
+                Yaml::String(s) => {
+                    format!("S:{}", s.trim_start_matches('#').split_whitespace().collect::<Vec<_>>().join("-").to_lowercase())
+                }
+                other => format!("{other:?}"),
+            })
+            .collect(),
+        other => vec![format!("{other:?}")],
+    };
+    out.sort();
+    out.dedup();
+    out
+}
+
+#[test]
+fn yaml_means_the_same_after_tidying() {
+    let mut r = Rng(0x5EED_1234_ABCD_9876);
+    for case in 0..CASES {
+        let note = yaml_note(&mut r);
+        let o = make_options(&mut r);
+        let out = lint(&note, &o, &cx(false));
+        let two = lint(&out.text, &o, &cx(false));
+        assert_eq!(two.text, out.text, "case {case}: not idempotent\noptions {o:?}\nnote {note:?}");
+        let before = real_front(&note);
+        let after = real_front(&out.text);
+        if before.is_none() {
+            // Not valid YAML to begin with: the front matter is left as it was.
+            assert!(out.text.starts_with(note.split("---").take(2).collect::<Vec<_>>().join("---").as_str()) || out.text == note);
+            continue;
+        }
+        let (Some(mut b), Some(mut a)) = (before, after) else {
+            panic!("case {case}: YAML stopped parsing\noptions {o:?}\nnote {note:?}\nout {:?}", out.text)
+        };
+        let tags_rule = o.tags_format != TagsFormat::Keep || o.tags_case != TagsCase::Keep;
+        let key = format!("{:?}", yaml_rust2::Yaml::String("tags".into()));
+        let modified = format!("{:?}", yaml_rust2::Yaml::String(o.date_modified_key.clone()));
+        let tags = |v: &[(String, yaml_rust2::Yaml)]| v.iter().find(|(k, _)| *k == key).map(|(_, y)| flat_tags(y));
+        if tags_rule {
+            assert_eq!(tags(&b), tags(&a), "case {case}: tags changed\noptions {o:?}\nnote {note:?}\nout {:?}", out.text);
+            b.retain(|(k, _)| *k != key);
+            a.retain(|(k, _)| *k != key);
+        }
+        if o.date_modified {
+            b.retain(|(k, _)| *k != modified);
+            a.retain(|(k, _)| *k != modified);
+        }
+        b.sort_by(|x, y| x.0.cmp(&y.0));
+        a.sort_by(|x, y| x.0.cmp(&y.0));
+        assert_eq!(b, a, "case {case}: YAML changed\noptions {o:?}\nnote {note:?}\nout {:?}", out.text);
+    }
+}
+
+#[test]
+fn a_date_format_cannot_inject_front_matter() {
+    assert!(Options::date_format_ok("%Y-%m-%dT%H:%M"));
+    assert!(!Options::date_format_ok("%Y\nevil: 1"));
+    assert!(!Options::date_format_ok(":x"));
+    assert!(!Options::date_format_ok("  "));
+    let o = only(|o| o.date_modified = true);
+    let out = lint("a\n", &o, &Cx { stamp: "2026\nevil: 1", edited: true });
+    assert!(!out.text.contains("evil"), "{:?}", out.text);
+    // A stamp with a colon and a space is quoted.
+    let out = lint("a\n", &o, &Cx { stamp: "x: y", edited: true });
+    assert!(out.text.contains("modified: \"x: y\""), "{:?}", out.text);
 }

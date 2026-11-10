@@ -254,69 +254,268 @@ fn fm_key(line: &str) -> Option<(Range<usize>, usize)> {
     Some((lead..lead + key.trim_end().len(), lead + colon + 1))
 }
 
-/// The YAML quote (`'` or `"`) still open at the end of `value`, if any.
-///
-/// `value` is the text of a property's value up to some point. In single
-/// quotes `''` is a quote; in double quotes `\` escapes the next character.
-pub fn yaml_quote_at(value: &str) -> Option<char> {
-    let mut open: Option<char> = None;
-    let mut chars = value.chars().peekable();
-    while let Some(c) = chars.next() {
-        match (open, c) {
-            (None, '\'' | '"') => open = Some(c),
-            (Some('\''), '\'') => {
-                if chars.peek() == Some(&'\'') {
-                    chars.next();
+/// What a left-to-right read of a property's value text found.
+struct ValueScan {
+    /// The quote (`'` or `"`) still open at the end.
+    quote: Option<char>,
+    /// Where a `# comment` starts (a `#` after a space, outside quotes).
+    comment: Option<usize>,
+    /// Where the flow list or map that opens the value closes, if it does.
+    close: Option<usize>,
+}
+
+/// Read `value` (text of a property's value, from where it starts) the way
+/// YAML does. A quote opens only at the start of a scalar (at the start,
+/// after `[`, `{`, `,` or a list dash), so the apostrophe in `Bob's` opens
+/// nothing. In single quotes `''` is a quote; in double quotes `\` escapes
+/// the next character.
+fn scan_value(value: &str) -> ValueScan {
+    scan(value, false)
+}
+
+/// [`scan_value`]; with `lines`, a comment ends at its line and the read goes on.
+fn scan(value: &str, lines: bool) -> ValueScan {
+    let mut close = None;
+    let chars: Vec<(usize, char)> = value.char_indices().collect();
+    let ws_after = |k: usize| chars.get(k + 1).is_none_or(|(_, c)| c.is_whitespace());
+    let (mut open, mut at_start, mut depth, mut prev): (Option<char>, bool, usize, Option<char>) = (None, true, 0, None);
+    let mut k = 0;
+    while k < chars.len() {
+        let (i, c) = chars[k];
+        if let Some(q) = open {
+            if q == '\'' && c == '\'' {
+                if chars.get(k + 1).is_some_and(|(_, n)| *n == '\'') {
+                    k += 1;
                 } else {
                     open = None;
+                    at_start = false;
+                }
+            } else if q == '"' && c == '\\' {
+                k += 1;
+            } else if q == '"' && c == '"' {
+                open = None;
+                at_start = false;
+            }
+            k += 1;
+            continue;
+        }
+        match c {
+            ' ' | '\t' | '\n' | '\r' => {}
+            '#' if prev.is_none_or(char::is_whitespace) => {
+                if !lines {
+                    return ValueScan { quote: None, comment: Some(i), close };
+                }
+                while chars.get(k + 1).is_some_and(|(_, n)| *n != '\n') {
+                    k += 1;
                 }
             }
-            (Some('"'), '\\') => {
-                chars.next();
+            '\'' | '"' if at_start => open = Some(c),
+            '[' | '{' if at_start => {
+                depth += 1;
+                at_start = true;
             }
-            (Some('"'), '"') => open = None,
-            _ => {}
+            ',' if depth > 0 => at_start = true,
+            ']' | '}' if depth > 0 => {
+                depth -= 1;
+                at_start = false;
+                if depth == 0 && close.is_none() {
+                    close = Some(i);
+                }
+            }
+            ':' if depth > 0 && ws_after(k) => at_start = true,
+            '-' | '?' if at_start && depth == 0 && ws_after(k) => {}
+            _ => at_start = false,
+        }
+        prev = Some(c);
+        k += 1;
+    }
+    ValueScan { quote: open, comment: None, close }
+}
+
+/// The YAML quote (`'` or `"`) still open at the end of `value`, if any.
+///
+/// `value` is the text of a property's value up to some point (see
+/// [`front_matter_context`] for a whole note).
+pub fn yaml_quote_at(value: &str) -> Option<char> {
+    scan_value(value).quote
+}
+
+/// The text of a double-quoted YAML scalar's body (`\"`, `\\`, `\t`, `\uXXXX`).
+fn unescape_dq(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('t') => out.push('\t'),
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('u') => {
+                let hex: String = it.by_ref().take(4).collect();
+                if let Some(ch) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                    out.push(ch);
+                } else {
+                    out.push_str("\\u");
+                    out.push_str(&hex);
+                }
+            }
+            Some(other) => out.push(other),
+            None => out.push('\\'),
         }
     }
-    open
+    out
+}
+
+/// One line of front matter, by what it can hold.
+enum LineKind {
+    /// Blank, or only a comment: nothing to read.
+    Skip,
+    /// `key: value`: the key's range and where its value starts.
+    Key(Range<usize>, usize),
+    /// `- value`.
+    Item(usize),
+    /// Inside a block scalar (`|` or `>`): plain text, no comments or quotes.
+    Literal,
+    /// Anything else: a later line of a multi-line value.
+    Cont,
+}
+
+struct FmLine<'a> {
+    start: usize,
+    text: &'a str,
+    kind: LineKind,
+}
+
+fn fm_lines(src: &str, end: usize) -> Vec<FmLine<'_>> {
+    let block = &src[..end.min(src.len())];
+    let mut out = Vec::new();
+    let mut literal_in: Option<usize> = None;
+    let mut at = 0;
+    for (n, raw) in block.split_inclusive('\n').enumerate() {
+        let start = at;
+        at += raw.len();
+        let text = raw.trim_end_matches(['\n', '\r']);
+        if n == 0 || text.trim_end() == "---" || text.trim_end() == "..." {
+            continue;
+        }
+        let lead = text.len() - text.trim_start().len();
+        let t = &text[lead..];
+        if let Some(k) = literal_in {
+            if t.is_empty() || lead > k {
+                out.push(FmLine { start, text, kind: LineKind::Literal });
+                continue;
+            }
+            literal_in = None;
+        }
+        let kind = if t.is_empty() || t.starts_with('#') {
+            LineKind::Skip
+        } else if let Some((k, v)) = fm_key(text) {
+            LineKind::Key(k, v)
+        } else if t == "-" || t.starts_with("- ") {
+            LineKind::Item(lead + 1 + t[1..].len() - t[1..].trim_start().len())
+        } else {
+            LineKind::Cont
+        };
+        let value_from = match &kind {
+            LineKind::Key(_, v) | LineKind::Item(v) => Some(*v),
+            _ => None,
+        };
+        if value_from.is_some_and(|v| text[v.min(text.len())..].trim_start().starts_with(['|', '>'])) {
+            literal_in = Some(lead);
+        }
+        out.push(FmLine { start, text, kind });
+    }
+    out
+}
+
+/// Byte ranges (in `s`) of backtick code spans.
+fn code_spans(s: &str) -> Vec<Range<usize>> {
+    let b = s.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] != b'`' {
+            i += 1;
+            continue;
+        }
+        let run = b[i..].iter().take_while(|c| **c == b'`').count();
+        let mut j = i + run;
+        let mut found = None;
+        while j < b.len() {
+            if b[j] == b'`' {
+                let r = b[j..].iter().take_while(|c| **c == b'`').count();
+                if r == run {
+                    found = Some(j + r);
+                    break;
+                }
+                j += r;
+            } else {
+                j += 1;
+            }
+        }
+        match found {
+            Some(e) => {
+                out.push(i..e);
+                i = e;
+            }
+            None => i += run,
+        }
+    }
+    out
 }
 
 /// The links in front-matter values, each typed by its property's name
 /// (the nearest key above it, for list items and nested maps). `end` is
 /// where the front-matter block ends.
+///
+/// Comments (`# …` after a value, or on a line of their own) and code
+/// spans are not read. Only wikilinks and embeds count; Markdown links in
+/// properties are not links (docs/formats/links.md).
 pub(crate) fn front_matter_links(src: &str, end: usize) -> Vec<Link> {
     let mut out = Vec::new();
-    let block = &src[..end.min(src.len())];
-    if !block.contains("[[") {
+    if !src[..end.min(src.len())].contains("[[") {
         return out;
     }
     let mut key: Option<String> = None;
-    let mut at = 0;
-    for (n, raw) in block.split_inclusive('\n').enumerate() {
-        let start = at;
-        at += raw.len();
-        let line = raw.trim_end_matches(['\n', '\r']);
-        if n == 0 || line.trim_end() == "---" || line.trim_end() == "..." {
-            continue;
-        }
-        let value_from = match fm_key(line) {
-            Some((k, v)) => {
-                key = Some(normalize_key(&line[k]));
-                v
+    for l in fm_lines(src, end) {
+        let value_from = match &l.kind {
+            LineKind::Skip => continue,
+            LineKind::Key(k, v) => {
+                key = Some(normalize_key(&l.text[k.clone()]));
+                *v
             }
-            None => 0,
+            LineKind::Item(v) => *v,
+            LineKind::Literal | LineKind::Cont => 0,
         };
         let Some(name) = key.as_ref().filter(|k| !k.is_empty()) else { continue };
+        let value_from = value_from.min(l.text.len());
+        let limit = if matches!(l.kind, LineKind::Literal) {
+            l.text.len()
+        } else {
+            scan_value(&l.text[value_from..]).comment.map_or(l.text.len(), |c| value_from + c)
+        };
+        let spans = code_spans(&l.text[..limit]);
         let mut i = value_from;
-        while let Some(off) = line[i.min(line.len())..].find("[[") {
+        while let Some(off) = l.text[i.min(limit)..limit].find("[[") {
             let open = i + off;
-            let embed = open > 0 && line.as_bytes()[open - 1] == b'!';
-            match wikilink_at(src, start + open) {
-                Some((Inline::WikiLink { range, link }, end)) => {
+            let embed = open > 0 && l.text.as_bytes()[open - 1] == b'!';
+            if spans.iter().any(|r| r.contains(&open)) {
+                i = open + 2;
+                continue;
+            }
+            match wikilink_at(src, l.start + open) {
+                Some((Inline::WikiLink { range, link }, end)) if end - l.start <= limit => {
                     let range = if embed { range.start - 1..range.end } else { range };
-                    // In a single-quoted YAML value, `''` is one `'`.
-                    let quoted = yaml_quote_at(&line[value_from..open]) == Some('\'');
-                    let unq = |s: &str| if quoted { s.replace("''", "'") } else { s.to_string() };
+                    let q = scan_value(&l.text[value_from..open]).quote;
+                    let unq = |s: &str| match q {
+                        // In a single-quoted YAML value, `''` is one `'`.
+                        Some('\'') => s.replace("''", "'"),
+                        Some(_) => unescape_dq(s),
+                        None => s.to_string(),
+                    };
                     out.push(Link {
                         kind: if embed { LinkKind::Embed } else { LinkKind::Wiki },
                         display: unq(link.display()),
@@ -325,13 +524,68 @@ pub(crate) fn front_matter_links(src: &str, end: usize) -> Vec<Link> {
                         range,
                         field: Some(name.clone()),
                     });
-                    i = end - start;
+                    i = end - l.start;
                 }
                 _ => i = open + 2,
             }
         }
     }
     out
+}
+
+/// How YAML reads the text at a place in front matter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FmContext {
+    /// Inside single quotes (`'` is written `''`).
+    Single,
+    /// Inside double quotes (`\` and `"` are escaped).
+    Double,
+    /// Inside a block scalar: text as it is.
+    Literal,
+    /// In a flow list or map, not in quotes.
+    Flow,
+    /// An unquoted scalar, in block context: the bytes it spans (without
+    /// trailing space and comment).
+    Plain(Range<usize>),
+    /// A later line of a multi-line value: can't be told.
+    Unknown,
+}
+
+/// How YAML reads byte `at` of `src`, a position inside the front matter
+/// that ends at byte `end`.
+pub fn front_matter_context(src: &str, end: usize, at: usize) -> FmContext {
+    for l in fm_lines(src, end) {
+        if at < l.start || at > l.start + l.text.len() {
+            continue;
+        }
+        let value_from = match l.kind {
+            LineKind::Literal => return FmContext::Literal,
+            LineKind::Skip => return FmContext::Unknown,
+            // A later line of a multi-line value: a quote can still be read from the line's own start.
+            LineKind::Cont => {
+                return match scan_value(&l.text[..(at - l.start).min(l.text.len())]).quote {
+                    Some('\'') => FmContext::Single,
+                    Some(_) => FmContext::Double,
+                    None => FmContext::Unknown,
+                };
+            }
+            LineKind::Key(_, v) | LineKind::Item(v) => v.min(l.text.len()),
+        };
+        let rel = at - l.start;
+        let value = &l.text[value_from..];
+        if let Some(q) = scan_value(&l.text[value_from..rel.max(value_from)]).quote {
+            return if q == '\'' { FmContext::Single } else { FmContext::Double };
+        }
+        let value_end = scan_value(value).comment.map_or(l.text.len(), |c| value_from + c);
+        let trimmed = l.text[..value_end].trim_end();
+        let first = value.trim_start();
+        let begin = l.text.len() - first.len();
+        if first.starts_with(['[', '{']) {
+            return FmContext::Flow;
+        }
+        return FmContext::Plain(l.start + begin..l.start + trimmed.len().max(begin));
+    }
+    FmContext::Unknown
 }
 
 /// Give each link inside an inline field's value that field's name.
@@ -352,29 +606,6 @@ pub(crate) fn type_links(links: &mut [Link], fields: &[InlineField]) {
     }
 }
 
-/// The `]` closing a one-line flow list `key: [ … ]`, optionally followed
-/// by a comment, as a byte offset in `line`.
-fn flow_close(line: &str) -> Option<usize> {
-    let (_, value_at) = fm_key(line.trim_end_matches(['\n', '\r']))?;
-    let value = &line[value_at..];
-    // `[[X]]` unquoted is a link YAML reads as nested lists, not a list to extend.
-    if !value.trim_start().starts_with('[') || value.trim_start().starts_with("[[") {
-        return None;
-    }
-    let mut close = None;
-    for (i, c) in value.char_indices() {
-        if c == ']' && yaml_quote_at(&value[..i]).is_none() {
-            close = Some(i);
-        }
-        if c == '#' && yaml_quote_at(&value[..i]).is_none() && value[..i].ends_with([' ', '\t']) {
-            break;
-        }
-    }
-    let close = close?;
-    let after = value[close + 1..].trim_start();
-    (after.is_empty() || after.starts_with('#')).then_some(value_at + close)
-}
-
 /// How a note already writes its typed links: in front matter or as inline fields.
 ///
 /// A note with neither uses front matter (Obsidian's properties,
@@ -392,56 +623,66 @@ pub fn preferred_style(src: &str) -> FieldStyle {
     }
 }
 
+/// A double-quoted YAML scalar holding `s`.
+fn dq(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// `raw` (one plain scalar) as an item of a flow list.
+fn flow_item(raw: &str) -> String {
+    let t = crate::frontmatter::yaml_scalar(raw);
+    if !t.starts_with('"') && t.contains([',', '[', ']', '{', '}']) { dq(&t) } else { t }
+}
+
 /// The edit that adds a link to `target` in field `field` of a note.
 ///
 /// `target` is a note name (written `[[target]]`), `field` a name as
 /// [`is_field_name`] allows, `style` [`FieldStyle::Line`] or
 /// [`FieldStyle::FrontMatter`]. `None` when the note already has that link
-/// in that field. Only the field's own line(s) change.
+/// in that field, or when it can't be added without rewriting what the
+/// note has there ([`try_add_link`] says which).
 ///
-/// * Front matter: a list field gets another item (in its own style: `[…,
-///   "[[X]]"]` or `- "[[X]]"`); a single link becomes a list of two; a
-///   missing field is added as `field: "[[X]]"`.
+/// * Front matter: a list field gets another item in its own style (`[…,
+///   "[[X]]"]`, also over several lines, or `- "[[X]]"`); a single value
+///   becomes a list of two, with its text and trailing comment as they were;
+///   a missing field is added as `field: "[[X]]"`.
 /// * Inline: an existing `field:: …` line gets `, [[X]]`; else a new line
 ///   `field:: [[X]]` goes after the last line field, or after the title
 ///   heading, or at the top of the body.
 pub fn add_link(src: &str, field: &str, target: &str, style: FieldStyle) -> Option<crate::frontmatter::Edit> {
+    try_add_link(src, field, target, style).ok().flatten()
+}
+
+/// [`add_link`] that says why it didn't: `Ok(None)` is "already linked";
+/// `Err` is a value it won't rewrite (a block scalar, a multi-line text,
+/// an anchor, a nested map) or a front matter it can't read.
+pub fn try_add_link(src: &str, field: &str, target: &str, style: FieldStyle) -> Result<Option<crate::frontmatter::Edit>, &'static str> {
     use crate::frontmatter::{self, Edit, Value};
     let name = normalize_key(field);
     let link = format!("[[{}]]", target.trim());
     let ex = crate::extract(src);
     let already = ex.links.iter().any(|l| l.field.as_deref() == Some(name.as_str()) && l.target.eq_ignore_ascii_case(target.trim()));
-    if already || !is_key(field) || target.trim().is_empty() || target.contains(['[', ']', '|', '\n']) {
-        return None;
+    if already {
+        return Ok(None);
+    }
+    if !is_key(field) || target.trim().is_empty() || target.contains(['[', ']', '|']) || target.chars().any(char::is_control) {
+        return Ok(None);
     }
     let nl = if src.contains("\r\n") { "\r\n" } else { "\n" };
     if style == FieldStyle::FrontMatter {
         let fm = ex.front_matter.as_ref();
         let key = fm.and_then(|f| f.fields.keys().find(|k| normalize_key(k) == name).cloned()).unwrap_or_else(|| field.trim().to_string());
-        // `key: [a, b]` on one line (maybe with a `# comment`): add before its `]`.
-        if let Some(text) = frontmatter::field_text(src, &key).filter(|t| t.trim_end().lines().count() == 1)
-            && let Some(close) = flow_close(text)
-        {
-            // `text` is a slice of `src`: its offset there.
-            let at = text.as_ptr() as usize - src.as_ptr() as usize;
-            let open = text.find('[').unwrap_or(close);
-            let sep = if text[open + 1..close].trim().is_empty() { "" } else { ", " };
-            return Some(Edit { range: at + close..at + close, text: format!("{sep}\"{link}\"") });
+        let item = dq(&link);
+        let edit = match frontmatter::field_text(src, &key) {
+            None => frontmatter::set_field(src, &key, &Value::Str(link)),
+            Some(text) => add_to_field(src, text, &key, &item, fm.and_then(|f| f.fields.get(&key)))?,
+        };
+        // Never hand back front matter that no longer parses.
+        let out = edit.apply(src);
+        if frontmatter::yaml_valid(src) == Some(true) && frontmatter::yaml_valid(&out) != Some(true) {
+            return Err("the result wouldn't be valid YAML");
         }
-        let fm_end = fm.map_or(0, |f| f.range.end);
-        let written: Vec<String> = ex
-            .links
-            .iter()
-            .filter(|l| l.range.end <= fm_end && l.field.as_deref() == Some(name.as_str()))
-            .map(|l| src[l.range.clone()].to_string())
-            .collect();
-        let block = frontmatter::field_text(src, &key).is_some_and(|t| t.trim_end().lines().count() > 1);
-        return Some(match fm.and_then(|f| f.fields.get(&key)) {
-            Some(Value::List(_)) if block => frontmatter::append_list_item(src, &key, &format!("\"{link}\""))?,
-            _ if !written.is_empty() => frontmatter::set_field(src, &key, &Value::List(written.into_iter().chain([link]).collect())),
-            Some(Value::Str(old)) if !old.trim().is_empty() => frontmatter::set_field(src, &key, &Value::List(vec![old.clone(), link])),
-            _ => frontmatter::set_field(src, &key, &Value::Str(link)),
-        });
+        return Ok(Some(edit));
     }
     let fields = inline_fields(src);
     let line_fields: Vec<&InlineField> = fields.iter().filter(|f| f.style == FieldStyle::Line).collect();
@@ -449,7 +690,7 @@ pub fn add_link(src: &str, field: &str, target: &str, style: FieldStyle) -> Opti
         let sep = if f.value_range.is_empty() { "" } else { ", " };
         let at = f.value_range.end.max(f.key_range.end + 2);
         let lead = if f.value_range.is_empty() && !src[..at].ends_with(' ') { " " } else { "" };
-        return Some(Edit { range: at..at, text: format!("{lead}{sep}{link}") });
+        return Ok(Some(Edit { range: at..at, text: format!("{lead}{sep}{link}") }));
     }
     let key = field.trim();
     let body = ex.front_matter.as_ref().map_or(0, |f| f.range.end);
@@ -462,7 +703,79 @@ pub fn add_link(src: &str, field: &str, target: &str, style: FieldStyle) -> Opti
         if first.starts_with("# ") { first.find('\n').map_or(src.len(), |i| body + skipped + i + 1) } else { body }
     };
     let pre = if at > 0 && !src[..at].ends_with('\n') { nl } else { "" };
-    Some(Edit { range: at..at, text: format!("{pre}{key}:: {link}{nl}") })
+    Ok(Some(Edit { range: at..at, text: format!("{pre}{key}:: {link}{nl}") }))
+}
+
+/// The edit that adds the YAML item `item` to an existing property whose
+/// lines are `text` (a slice of `src`).
+fn add_to_field(
+    src: &str,
+    text: &str,
+    key: &str,
+    item: &str,
+    value: Option<&crate::frontmatter::Value>,
+) -> Result<crate::frontmatter::Edit, &'static str> {
+    use crate::frontmatter::{self, Edit, Value};
+    // `text` is a slice of `src`: its offset there.
+    let at = text.as_ptr() as usize - src.as_ptr() as usize;
+    // Blank and comment lines after the value aren't part of it.
+    let mut content = text.trim_end_matches(['\n', '\r']);
+    while let Some(i) = content.rfind('\n') {
+        let last = content[i + 1..].trim();
+        if last.is_empty() || last.starts_with('#') {
+            content = content[..i].trim_end_matches('\r');
+        } else {
+            break;
+        }
+    }
+    let first_end = content.find('\n').unwrap_or(content.len());
+    let first = content[..first_end].trim_end_matches('\r');
+    let multiline = first_end < content.len();
+    let (_, vfrom) = fm_key(first).ok_or("its line isn't `key: value`")?;
+    let vfrom = vfrom.min(first.len());
+    let vend = scan_value(&first[vfrom..]).comment.map_or(first.len(), |c| vfrom + c);
+    let raw = &first[vfrom..vend];
+    let vtext = raw.trim();
+    let vstart = vfrom + raw.len() - raw.trim_start().len();
+    if vtext.is_empty() {
+        if !multiline {
+            return Ok(Edit { range: at + vfrom..at + vfrom, text: format!(" {item}") });
+        }
+        return match value {
+            Some(Value::List(_)) => {
+                frontmatter::append_list_item(src, key, item).ok_or("it is a list written in a way that can't be extended")
+            }
+            _ => Err("it holds nested properties"),
+        };
+    }
+    if vtext.starts_with('[') && !vtext.starts_with("[[") {
+        // A flow list, maybe over several lines, maybe with comments inside.
+        let open = at + vstart;
+        let list = &src[open..at + content.len()];
+        let close = scan(list, true).close.ok_or("its list isn't closed on a line the reader can follow")?;
+        let before = list[..close].trim_end();
+        let last_line = before.rfind('\n').map_or(0, |i| i + 1);
+        if scan(&before[last_line..], false).comment.is_some() {
+            return Err("its last item is followed by a comment");
+        }
+        let sep = match before.chars().next_back() {
+            Some('[') => "",
+            Some(',') => " ",
+            _ => ", ",
+        };
+        let ins = open + before.len();
+        return Ok(Edit { range: ins..ins, text: format!("{sep}{item}") });
+    }
+    if multiline || vtext.starts_with(['|', '>', '&', '*', '!']) {
+        return Err("it is a multi-line text, block scalar, anchor or alias");
+    }
+    // One value on one line: make it a list of two, leaving its text and the comment alone.
+    let quoted = vtext.len() >= 2
+        && vtext.starts_with(['"', '\''])
+        && vtext.ends_with(vtext.chars().next().unwrap_or('"'))
+        && scan_value(vtext).quote.is_none();
+    let old = if quoted { vtext.to_string() } else { flow_item(vtext) };
+    Ok(Edit { range: at + vstart..at + vstart + vtext.len(), text: format!("[{old}, {item}]") })
 }
 
 #[cfg(test)]
@@ -585,10 +898,52 @@ mod tests {
     fn yaml_quotes() {
         assert_eq!(yaml_quote_at(" [\"[[A's]]\", '"), Some('\''));
         assert_eq!(yaml_quote_at(" 'it''s "), Some('\''));
-        assert_eq!(yaml_quote_at(" 'a', \"b\\\"c"), Some('"'));
+        assert_eq!(yaml_quote_at(" ['a', \"b\\\"c"), Some('"'));
+        // An apostrophe inside a plain value opens nothing.
+        assert_eq!(yaml_quote_at(" Bob's "), None);
+        assert_eq!(yaml_quote_at(" a 'b "), None);
         assert_eq!(yaml_quote_at(" 'a' "), None);
         let links = extract("---\nup: [\"[[A's]]\", '[[B''s|x]]']\n---\n").links;
         assert_eq!(links.iter().map(|l| l.target.as_str()).collect::<Vec<_>>(), ["A's", "B's"]);
+    }
+
+    #[test]
+    fn front_matter_links_skip_comments_and_code_spans() {
+        let src = "---\nup: x # see [[Old]]\n# [[Whole line]]\nrel: \"[[Kept # not a comment]]\"  # [[Gone]]\ncode: \"`[[In code]]`\"\nlist:\n  - \"[[A]]\" # [[B]]\n  # [[C]]\n  - '[[D]]'\nlit: |\n  # [[Literal]] stays\n---\n";
+        let got: Vec<_> = extract(src).links.into_iter().map(|l| l.target).collect();
+        assert_eq!(got, ["Kept", "A", "D", "Literal"]);
+        // A Markdown link in a property is not a typed link (docs/formats/links.md).
+        assert!(typed("---\nup: \"[P](Projects.md)\"\n---\n").is_empty());
+    }
+
+    #[test]
+    fn adding_a_link_keeps_comments_layout_and_nesting() {
+        let add = |src: &str, f: &str, t: &str| try_add_link(src, f, t, FieldStyle::FrontMatter).map(|e| e.map(|e| e.apply(src)));
+        // Trailing comment survives; the value keeps its own quotes.
+        assert_eq!(
+            add("---\nup: \"[[A]]\"   # parent\n---\n", "up", "X").unwrap().unwrap(),
+            "---\nup: [\"[[A]]\", \"[[X]]\"]   # parent\n---\n"
+        );
+        assert_eq!(add("---\nup: 'a'  # c\n---\n", "up", "X").unwrap().unwrap(), "---\nup: ['a', \"[[X]]\"]  # c\n---\n");
+        // A multi-line flow list stays multi-line.
+        let multi = "---\nup: [\n  \"[[A]]\",   # first\n  \"[[B]]\"\n]\nz: 1\n---\n";
+        assert_eq!(add(multi, "up", "X").unwrap().unwrap(), "---\nup: [\n  \"[[A]]\",   # first\n  \"[[B]]\", \"[[X]]\"\n]\nz: 1\n---\n");
+        // Block scalars and the like are refused, not collapsed.
+        assert!(add("---\nup: >\n  folded\n---\n", "up", "X").is_err());
+        assert!(add("---\nup: &a x\n---\n", "up", "X").is_err());
+        // A nested key's link doesn't become a top-level property of its own.
+        let nested = "---\nmeta:\n  up: \"[[A]]\"\n---\n";
+        assert_eq!(add(nested, "up", "X").unwrap().unwrap(), "---\nmeta:\n  up: \"[[A]]\"\nup: \"[[X]]\"\n---\n");
+        // With the key twice, only the one being changed changes.
+        let dup = "---\nup: \"[[A]]\"\nup: \"[[B]]\"\n---\n";
+        let out = add(dup, "up", "X").unwrap().unwrap();
+        assert!(out.contains("up: \"[[A]]\"\n") && !out.contains("[[A]]\", \"[[B]]"), "{out}");
+        // A target with a quote or backslash is escaped, in every form.
+        for src in ["---\nz: 1\n---\n", "---\nup: [\"[[A]]\"]\n---\n", "---\nup:\n  - \"[[A]]\"\n---\n", "---\nup: \"[[A]]\"\n---\n"] {
+            let out = add(src, "up", "Say \"hi\" \\ there").unwrap().unwrap();
+            assert_eq!(crate::frontmatter::yaml_valid(&out), Some(true), "{out}");
+            assert!(extract(&out).links.iter().any(|l| l.target == "Say \"hi\" \\ there"), "{out}");
+        }
     }
 
     #[test]

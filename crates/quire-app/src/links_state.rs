@@ -318,12 +318,22 @@ impl Workspace {
         let text = doc.text();
         let style = fields::preferred_style(&text);
         let name = self.link_name(target, doc.path.as_ref());
-        let Some(edit) = fields::add_link(&text, field, &name, style) else {
-            self.notify(
-                NoticeLevel::Info,
-                format!("{} already links to {} as {}", doc.title(), target.stem(), fields::normalize_key(field)),
-            );
-            return false;
+        let edit = match fields::try_add_link(&text, field, &name, style) {
+            Ok(Some(edit)) => edit,
+            Err(why) => {
+                self.notify(
+                    NoticeLevel::Warn,
+                    format!("Can't add a “{field}” link without rewriting what the note has there ({why}). Change that property by hand."),
+                );
+                return false;
+            }
+            Ok(None) => {
+                self.notify(
+                    NoticeLevel::Info,
+                    format!("{} already links to {} as {}", doc.title(), target.stem(), fields::normalize_key(field)),
+                );
+                return false;
+            }
         };
         let doc = self.active_doc_mut().expect("checked");
         apply_edit(doc, &edit)

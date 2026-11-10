@@ -32,9 +32,12 @@ A claim [supports:: [[Theory]]] in a sentence, and (source:: [[Book]]).
 | Paren field | `(key:: value)`; reading views hide the key in Dataview. | Dataview |
 | Property | A front-matter property whose value holds `[[links]]`: a single value, a flow list or a block list. Nested maps take the name of the nearest key. Obsidian needs the quotes (`"[[X]]"`); Quire reads `up: [[X]]` too. | Obsidian properties, Breadcrumbs |
 
-Each `[[link]]`, `![[embed]]` and `[text](note.md)` inside the value is one
-typed link. Text in the value that isn't a link is ignored. Links in code
-spans, code blocks and math are never typed (or links).
+Each `[[link]]` and `![[embed]]` inside the value is one typed link. A
+Markdown link (`[text](note.md)`) in a property is **not** a link: write
+`"[[note|text]]"`. (In the note's text, Markdown links are typed in inline
+fields as before.) Text in the value that isn't a link is ignored, and so is
+a YAML comment (`up: x  # see [[Old]]`, or a line that starts with `#`).
+Links in code spans, code blocks and math are never typed (or links).
 
 **Keys.** As in Dataview: letters, digits, `-`, `_`, `/` and spaces (other
 non-ASCII characters, such as emoji, too), starting with a letter or digit,
@@ -112,13 +115,23 @@ typed links than property ones (or inline fields and no typed links at
 all), else properties. Only the field's own lines change:
 
 * a property list gets another item in its own style (`[…, "[[X]]"]` before
-  the `]` and any comment, or a new `- "[[X]]"` line); a single link becomes
-  a flow list of two; a missing property is added as `key: "[[X]]"` at the
-  end of the front matter (which is created when there is none);
+  the `]`, also when the list runs over several lines, or a new `- "[[X]]"`
+  line); a single value becomes a flow list of two, with its own text and
+  its trailing comment kept; a missing property is added as `key: "[[X]]"`
+  at the end of the front matter (which is created when there is none). A
+  `"` or `\` in the target is escaped. A property that is a block scalar
+  (`|`, `>`), a multi-line text, an anchor or alias, or nested properties is
+  not rewritten: the tool says so and nothing changes. A nested key's link
+  (`meta:` then `up:`) is not copied to a top-level property;
 * an inline field line gets `, [[X]]`; a new field goes on its own line
   after the note's last line field, else after its first `# ` heading, else
   at the top of the body.
 
 **Renames and moves** rewrite typed links like any other link: only the
-target inside `[[…]]` changes, every other byte of the note stays. In a
-single-quoted YAML value a `'` in the new name is written `''`.
+target inside `[[…]]` changes, every other byte of the note stays. The new
+name is written as YAML needs it where the link sits: in single quotes a
+`'` is written `''`, in double quotes `\` and `"` are escaped, and in an
+unquoted value a name YAML could read differently (`Smith, John`, `@Work`,
+`Ada's`) gets the whole value quoted (`up: "[[Smith, John]]"`). If the front
+matter was valid YAML and the change would make it invalid, its links are
+left as they were.

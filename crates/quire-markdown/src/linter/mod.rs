@@ -102,7 +102,14 @@ pub fn lint(text: &str, opts: &Options, cx: &Cx<'_>) -> Outcome {
     let mut cur = text.to_string();
 
     // Only what the parser reads as front matter is treated as such.
-    let fm_read = analyze(&cur).front.is_some();
+    let first = analyze(&cur);
+    if first.stray_metadata {
+        out.notes.push(
+            "The parser reads a front matter block in the middle of the note (a `---` line near the start); it was left alone".into(),
+        );
+        return out;
+    }
+    let fm_read = first.front.is_some();
     let fence_first = cur.lines().next().is_some_and(|l| l.trim_end() == "---");
     if fm_read
         && (opts.front_matter
@@ -151,7 +158,7 @@ pub fn lint(text: &str, opts: &Options, cx: &Cx<'_>) -> Outcome {
                     // The new key takes its place in the order.
                     if (!opts.front_matter_order.is_empty() || opts.front_matter_sort != Sort::Keep)
                         && let front::Result::Changed(sorted) = front::tidy(&cur, opts)
-                        && front::same_meaning(&cur, &sorted)
+                        && front::same_meaning(&cur, &sorted, opts)
                         && analyze(&sorted).front.is_some()
                     {
                         cur = sorted;
@@ -172,10 +179,14 @@ pub fn lint(text: &str, opts: &Options, cx: &Cx<'_>) -> Outcome {
 
 /// Front matter: spacing, tags and order, checked to mean the same.
 fn tidy_front(cur: &mut String, opts: &Options, out: &mut Outcome) {
+    if !front::is_valid_yaml(cur) {
+        out.notes.push("The front matter isn't valid YAML; it was left alone".into());
+        return;
+    }
     match front::tidy(cur, opts) {
         front::Result::Same => {}
         front::Result::Changed(new) => {
-            if front::same_meaning(cur, &new) && analyze(&new).front.is_some() {
+            if front::same_meaning(cur, &new, opts) && analyze(&new).front.is_some() {
                 out.fixes.push(Fix { rule: "front-matter", lines: changed_lines(cur, &new) });
                 *cur = new;
             } else {
