@@ -6,4 +6,5 @@ allow-print-in-tests = true
 avoid-breaking-exported-api = false
 too-many-arguments-threshold = 8
 # 0.11: the TaskNotes plugin's name in docs ("..": keep clippy's defaults).
-doc-valid-idents = ["TaskNotes", ".."]
+# 0.12 sync: storage names in docs.
+doc-valid-idents = ["TaskNotes", "WebDAV", "SigV4", "MinIO", "ownCloud", ".."]

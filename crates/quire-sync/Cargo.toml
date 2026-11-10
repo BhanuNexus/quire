@@ -13,6 +13,10 @@ publish.workspace = true
 default = []
 # A Transport that talks to quire-sync-server over HTTPS.
 http = ["dep:ureq"]
+# 0.12: transports for S3-compatible storage and WebDAV (docs/design/0.12-sync.md).
+remote = ["http", "dep:roxmltree", "dep:chrono", "dep:base64"]
+# An in-process S3 and WebDAV server for tests of this crate and its users.
+mock-server = ["remote"]
 
 [dependencies]
 quire-text.workspace = true
@@ -27,9 +31,19 @@ sha2 = "0.11"
 getrandom = "0.4"
 zeroize = { version = "1", features = ["derive"] }
 ureq = { workspace = true, optional = true }
+# Listings from S3 (ListObjectsV2) and WebDAV (PROPFIND). Already in the tree
+# through usvg; rejects DTDs by default, so no entity expansion.
+roxmltree = { version = "0.21", optional = true }
+# SigV4 dates and the clock-skew check.
+chrono = { workspace = true, optional = true }
+# WebDAV Basic authentication.
+base64 = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
+# The remote transports and their in-process test servers, for this
+# crate's own tests (tests/remote.rs).
+quire-sync = { path = ".", features = ["mock-server"] }
 
 [lints]
 workspace = true

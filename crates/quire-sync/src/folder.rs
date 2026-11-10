@@ -54,7 +54,7 @@ use crate::transport::{Transport, TransportError};
 pub const FOLDER_NAME: &str = "Quire Sync";
 /// A device starts a new log file past this size, so tools that upload whole
 /// files on every change don't re-send a growing log.
-const SEGMENT_LIMIT: u64 = 1 << 20;
+pub(crate) const SEGMENT_LIMIT: u64 = 1 << 20;
 /// The lane vault settings sync in (`<space>/shared/`), which 0.8 never reads.
 pub const SHARED_LANE: &str = "shared";
 /// The format new spaces are written in; 0.8 reads it.
@@ -103,7 +103,7 @@ fn unix_now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
-fn is_segment_name(name: &str) -> bool {
+pub(crate) fn is_segment_name(name: &str) -> bool {
     name.len() == 12 && name.is_char_boundary(6) && &name[6..] == ".jsonl" && name[..6].bytes().all(|b| b.is_ascii_digit())
 }
 

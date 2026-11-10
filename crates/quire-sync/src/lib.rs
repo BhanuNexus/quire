@@ -8,6 +8,8 @@
 //! * [`engine`]: pull, merge three-way, push; never drops text
 //! * [`folder`]: sync through a folder Dropbox, iCloud Drive or similar already syncs
 //! * `http` (feature `http`): a transport for `quire-sync-server`
+//! * `remote` (feature `remote`): S3-compatible storage and WebDAV, the
+//!   folder transport's rules over object storage
 //!
 //! The design is in `docs/design/sync.md`.
 
@@ -17,6 +19,8 @@ pub mod folder;
 #[cfg(feature = "http")]
 pub mod http;
 pub mod protocol;
+#[cfg(feature = "remote")]
+pub mod remote;
 pub mod transport;
 
 pub use crypto::{CryptoError, KdfParams, Keys, RecoveryKey, VaultKey, WrappedKey};
