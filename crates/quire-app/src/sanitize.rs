@@ -92,12 +92,16 @@ fn filter<'u>(element: &str, attribute: &str, value: &'u str) -> Option<Cow<'u, 
             return None;
         }
     }
-    let v = value.trim_start();
+    // The scheme as a browser (and ammonia's URL parser) reads it: tabs
+    // and line breaks anywhere are ignored, and so are control characters
+    // and spaces in front, so `da&#9;ta:` and `&#1;data:` are `data:`.
+    let v: String = value.chars().filter(|c| !matches!(c, '\t' | '\n' | '\r')).collect();
+    let v = v.trim_start_matches(|c: char| c <= ' ');
     if v.get(..5).is_some_and(|s| s.eq_ignore_ascii_case("data:")) {
         let media = matches!((element, attribute), ("img" | "audio" | "video" | "source", "src") | ("video", "poster"));
         let kind = v[5..].get(..6).unwrap_or_default().to_ascii_lowercase();
         let ok = media && (kind.starts_with("image/") || kind.starts_with("audio/") || kind.starts_with("video/"));
-        return ok.then_some(Cow::Borrowed(value));
+        return ok.then(|| Cow::Owned(v.to_string()));
     }
     Some(Cow::Borrowed(value))
 }
@@ -122,6 +126,10 @@ mod tests {
             "<embed src=\"https://evil.example/x\">",
             "<a href=\"javascript:alert(1)\">x</a>",
             "<a href=\"data:text/html,<script>alert(1)</script>\">x</a>",
+            "<a href=\"da&#9;ta:text/html,<script>alert(1)</script>\">x</a>",
+            "<a href=\"&#1;data:text/html,<script>alert(1)</script>\">x</a>",
+            "<a href=\" &#10;DaTa&#13;:text/html,x\">x</a>",
+            "<img src=\"da&#9;ta:text/html,x\">",
             "<img src=\"x\" onerror=\"alert(1)\">",
             "<script>location='https://evil.example/'</script>",
             "<svg><a href=\"https://evil.example/\"><text>x</text></a></svg>",
@@ -131,7 +139,7 @@ mod tests {
             "<p style=\"background:url(https://evil.example/x.png)\">x</p>",
         ] {
             let out = note_html(bad);
-            let low = out.to_lowercase();
+            let low: String = out.to_lowercase().chars().filter(|c| !c.is_ascii_control()).collect();
             for word in [
                 "<meta",
                 "<base",
@@ -199,6 +207,7 @@ mod tests {
 <img src=\"x\" onerror=\"alert('img')\"> <img src=x onerror=alert(1)//\n\n\
 <a href=\"javascript:alert('a')\">js</a> <a href=\" JaVaScRiPt:alert(1)\">js2</a> <a href=\"&#106;avascript:alert(1)\">js3</a> <a href=\"java&#9;script:alert(1)\">js4</a> <a href=\"vbscript:msgbox(1)\">vb</a>\n\n\
 [md](javascript:alert('md')) [md2](JAVASCRIPT:alert(1)) <javascript:alert(1)> ![img](javascript:alert(1)) [ref][1] [data](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==)\n\n\
+<a href=\"da&#9;ta:text/html,<script>alert('tab')</script>\">d1</a> <a href=\"&#1;data:text/html,<script>alert('c0')</script>\">d2</a>\n\n\
 [1]: javascript:alert('ref')\n\n\
 <iframe src=\"https://evil.example\"></iframe> <iframe srcdoc=\"<script>alert(1)</script>\"></iframe> <object data=\"javascript:alert(1)\"></object> <embed src=\"x.swf\">\n\n\
 <svg onload=alert(1)><script>alert(1)</script></svg> <svg/onload=alert(1)> <math><mtext><script>alert(1)</script></mtext></math>\n\n\
@@ -221,7 +230,9 @@ mod tests {
         while let Some(i) = rest.find('<') {
             let Some(len) = rest[i..].find('>') else { break };
             let tag = &rest[i..=i + len];
-            let lower = tag.to_ascii_lowercase();
+            // As a URL parser reads it: no tabs, line breaks or other controls.
+            let lower: String = tag.to_ascii_lowercase().chars().filter(|c| !c.is_ascii_control() || *c == '\n').collect();
+            let lower = lower.replace("&#9;", "").replace("&#x9;", "");
             let name: String = lower.trim_start_matches(['<', '/']).chars().take_while(char::is_ascii_alphanumeric).collect();
             assert!(!FORBIDDEN.contains(&name.as_str()), "{what}: <{name}> in the page: {tag}\n{html}");
             for bad in ["javascript:", "vbscript:", "srcdoc", "formaction", "expression(", "data:text/html"] {
@@ -234,7 +245,8 @@ mod tests {
     }
 
     /// Every way a note becomes HTML a browser opens: the published site and
-    /// `quire-cli serve` (`render_note`), "Copy as HTML", and `quire-cli export`.
+    /// `quire-cli serve` (`render_note`), "Copy as HTML", `quire-cli export`,
+    /// and the app's File → Export as HTML.
     #[test]
     fn hostile_notes_are_inert_in_every_html_output() {
         use quire_index::{Index, NoteRecord};
@@ -263,6 +275,18 @@ mod tests {
         let page_lower = page.to_ascii_lowercase();
         assert_eq!(page_lower.matches("<script").count(), 0, "{page}");
         assert_inert("export", &body);
+        // The app's File → Export as HTML (0.12 review H1): the page written
+        // to `Exports/`, head and all.
+        let mut ws = crate::Workspace::new(crate::Settings::default());
+        ws.attach_vault(Vault::in_memory(&[("Evil.md", HOSTILE)]));
+        ws.index().flush();
+        ws.open_note(&path);
+        ws.export_active_html().unwrap();
+        let exported = ws.vault().unwrap().read(&NotePath::new("Exports/Evil.html")).unwrap();
+        let article = &exported[exported.find("<article>").unwrap()..exported.find("</article>").unwrap()];
+        assert_inert("Export as HTML (app)", article);
+        assert_eq!(exported.to_ascii_lowercase().matches("<script").count(), 0, "{exported}");
+        assert!(exported.contains("dv.pages().length"));
         // The plain renderer does not clean (so it must never be served as it is).
         assert!(quire_markdown::render::to_html(HOSTILE, &|_| None).contains("<script>alert('raw')"));
     }
