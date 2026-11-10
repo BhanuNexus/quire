@@ -1157,11 +1157,26 @@ pub(crate) fn insights(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette, row
             }
         }
 
-        section(ui, pal, &format!("Backlinks · {}", ins.backlinks.len()));
-        if ins.backlinks.is_empty() {
-            ui.label(RichText::new("No notes link here yet.").color(pal.muted).size(12.5));
+        // 0.12: typed links first, grouped by type; the backlinks below are the untyped ones.
+        let rel = ws.note_relations();
+        if !rel.is_empty() {
+            section(ui, pal, "Links by type");
+            if let Some(p) = crate::links_ui::insights_groups(ui, &rel, pal) {
+                open_path = Some((p, None));
+            }
         }
-        for b in &ins.backlinks {
+        let untyped: Vec<&quire_app::index::Backlink> = ins.backlinks.iter().filter(|b| b.link.field.is_none()).collect();
+        let typed = ins.backlinks.len() - untyped.len();
+        let title = if typed > 0 { format!("Backlinks · {} untyped", untyped.len()) } else { format!("Backlinks · {}", untyped.len()) };
+        section(ui, pal, &title);
+        if untyped.is_empty() {
+            ui.label(
+                RichText::new(if typed > 0 { "Every link here is typed (above)." } else { "No notes link here yet." })
+                    .color(pal.muted)
+                    .size(12.5),
+            );
+        }
+        for b in untyped {
             if ui.link(RichText::new(b.from.stem()).strong()).clicked() {
                 open_path = Some((b.from.clone(), Some(b.link.range.start)));
             }

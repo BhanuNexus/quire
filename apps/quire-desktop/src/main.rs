@@ -36,6 +36,8 @@ mod highlight;
 mod inbox_ui;
 #[cfg(test)]
 mod layout_check;
+// 0.12: typed links, trail, hierarchy.
+mod links_ui;
 mod lock_ui;
 mod map_ui;
 mod mcp_ui;

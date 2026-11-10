@@ -26,6 +26,53 @@ pub(crate) struct GraphState {
     /// Keep the whole graph in view while it settles, until the user zooms or pans.
     follow: bool,
     dragging: Option<usize>,
+    /// 0.12: which links to draw: all, typed only, or one type.
+    filter: EdgeFilter,
+}
+
+/// Which links the graph draws (0.12).
+#[derive(Clone, PartialEq, Eq, Default)]
+enum EdgeFilter {
+    #[default]
+    All,
+    Typed,
+    Type(String),
+}
+
+impl EdgeFilter {
+    fn keeps(&self, t: Option<&String>) -> bool {
+        match self {
+            Self::All => true,
+            Self::Typed => t.is_some(),
+            Self::Type(x) => t == Some(x),
+        }
+    }
+
+    fn label(&self) -> String {
+        match self {
+            Self::All => "All links".into(),
+            Self::Typed => "Typed links".into(),
+            Self::Type(t) => t.clone(),
+        }
+    }
+}
+
+/// A steady colour for a link type: one of the heading colours, by the
+/// type's place in the graph's list (most used first).
+fn type_color(g: &Graph, t: &str, pal: &Palette) -> egui::Color32 {
+    let i = g.types.iter().position(|x| x == t).unwrap_or(0);
+    pal.h[i % pal.h.len()]
+}
+
+/// Distance from `p` to the segment `a`–`b`.
+fn to_segment(p: Pos2, a: Pos2, b: Pos2) -> f32 {
+    let ab = b - a;
+    let len2 = ab.length_sq();
+    if len2 <= f32::EPSILON {
+        return p.distance(a);
+    }
+    let t = ((p - a).dot(ab) / len2).clamp(0.0, 1.0);
+    p.distance(a + ab * t)
 }
 
 impl GraphState {
@@ -46,6 +93,7 @@ impl GraphState {
             fitted: false,
             follow: true,
             dragging: None,
+            filter: EdgeFilter::All,
         }
     }
 
@@ -75,6 +123,11 @@ impl GraphState {
             }
             self.fitted = false;
             self.follow = true;
+        }
+        if let EdgeFilter::Type(t) = &self.filter
+            && !g.types.contains(t)
+        {
+            self.filter = EdgeFilter::All;
         }
         self.graph = g;
         self.layout = layout;
@@ -130,6 +183,19 @@ pub(crate) fn show(ctx: &egui::Context, st: &mut GraphState, ws: &mut Workspace,
                     }
                 } else {
                     ui.checkbox(&mut st.orphans, "Notes without links");
+                }
+                // 0.12: draw every link, the typed ones, or one type.
+                if !st.graph.types.is_empty() {
+                    ui.add_space(8.0);
+                    let types = st.graph.types.clone();
+                    egui::ComboBox::from_id_salt("quire-graph-edge-filter").selected_text(st.filter.label()).show_ui(ui, |ui| {
+                        ui.selectable_value(&mut st.filter, EdgeFilter::All, "All links");
+                        ui.selectable_value(&mut st.filter, EdgeFilter::Typed, "Typed links");
+                        for t in types {
+                            let label = RichText::new(format!("● {t}")).color(type_color(&st.graph, &t, pal));
+                            ui.selectable_value(&mut st.filter, EdgeFilter::Type(t), label);
+                        }
+                    });
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("Close").clicked() {
@@ -226,19 +292,59 @@ pub(crate) fn show(ctx: &egui::Context, st: &mut GraphState, ws: &mut Workspace,
             let lit: Vec<usize> = hovered.map(|h| st.graph.neighbours(h).collect()).unwrap_or_default();
             let focus_i = focus.as_ref().and_then(|f| st.graph.nodes.iter().position(|n| n.path == *f));
             let dim = hovered.is_some();
-            for &(a, b) in &st.graph.edges {
+            // 0.12: the typed link under the pointer (when no note is), for its label.
+            let mut edge_hover: Option<(usize, f32)> = None;
+            let mut labels: Vec<(Pos2, String, egui::Color32)> = Vec::new();
+            for (k, &(a, b)) in st.graph.edges.iter().enumerate() {
+                let t = st.graph.edge_types.get(k).and_then(Option::as_ref);
+                if !st.filter.keeps(t) {
+                    continue;
+                }
+                let (pa, pb) = (st.to_screen(rect, st.layout.pos[a]), st.to_screen(rect, st.layout.pos[b]));
                 let on = hovered.is_some_and(|h| h == a || h == b);
-                let color = if on {
-                    pal.accent.gamma_multiply(0.8)
-                } else if dim {
-                    pal.border.gamma_multiply(0.5)
-                } else {
-                    pal.faint.gamma_multiply(0.7)
+                let typed = t.map(|t| type_color(&st.graph, t, pal));
+                let color = match (on, typed) {
+                    (true, Some(c)) => c,
+                    (true, None) => pal.accent.gamma_multiply(0.8),
+                    (false, Some(c)) if !dim => c.gamma_multiply(0.75),
+                    _ if dim => pal.border.gamma_multiply(0.5),
+                    _ => pal.faint.gamma_multiply(0.7),
                 };
                 painter.line_segment(
-                    [st.to_screen(rect, st.layout.pos[a]), st.to_screen(rect, st.layout.pos[b])],
-                    Stroke::new(if on { 1.6 } else { 1.0 }, color),
+                    [pa, pb],
+                    Stroke::new(
+                        if on {
+                            1.6
+                        } else if typed.is_some() {
+                            1.3
+                        } else {
+                            1.0
+                        },
+                        color,
+                    ),
                 );
+                if let Some(t) = t {
+                    if on {
+                        labels.push((pa.lerp(pb, 0.5), t.clone(), color));
+                    } else if hovered.is_none()
+                        && let Some(p) = pointer
+                    {
+                        let d = to_segment(p, pa, pb);
+                        if d < 5.0 && edge_hover.is_none_or(|(_, best)| d < best) {
+                            edge_hover = Some((k, d));
+                        }
+                    }
+                }
+            }
+            if let Some((k, _)) = edge_hover
+                && let Some(t) = st.graph.edge_types[k].as_ref()
+            {
+                let (a, b) = st.graph.edges[k];
+                let (pa, pb) = (st.to_screen(rect, st.layout.pos[a]), st.to_screen(rect, st.layout.pos[b]));
+                let color = type_color(&st.graph, t, pal);
+                painter.line_segment([pa, pb], Stroke::new(2.0, color));
+                let words = format!("{} · {} — {}", t, st.graph.nodes[a].title, st.graph.nodes[b].title);
+                labels.push((pa.lerp(pb, 0.5), words, color));
             }
             // Small graphs: every title. Big ones: the hubs once zoomed in.
             let small = st.graph.nodes.len() <= 40;
@@ -284,6 +390,14 @@ pub(crate) fn show(ctx: &egui::Context, st: &mut GraphState, ws: &mut Workspace,
                     painter.rect_filled(bg, 3.0, pal.panel.gamma_multiply(0.85));
                     painter.galley(Pos2::new(pos.x - galley.size().x / 2.0, pos.y), galley, color);
                 }
+            }
+            // Link type labels, over everything.
+            for (at, text, color) in labels {
+                let galley = painter.layout_no_wrap(text, FontId::proportional(11.0), color);
+                let bg = Rect::from_center_size(at, galley.size() + Vec2::new(8.0, 4.0));
+                painter.rect_filled(bg, 3.0, pal.panel);
+                painter.rect_stroke(bg, 3.0, Stroke::new(1.0, color.gamma_multiply(0.6)), egui::StrokeKind::Inside);
+                painter.galley(at - galley.size() / 2.0, galley, color);
             }
             painter.text(
                 rect.left_bottom() + Vec2::new(10.0, -8.0),
