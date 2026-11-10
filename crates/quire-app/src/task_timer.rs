@@ -523,9 +523,15 @@ impl Workspace {
     /// Move a pomodoro on; record finished work and say what's next.
     /// Returns whether anything changed.
     pub(crate) fn timer_tick(&mut self) -> bool {
+        // 0.12: nothing before the first frame (the app opens its vault deferred).
+        if self.deferred_start {
+            return false;
+        }
         let reread = self.timer_poll();
-        let prefs = self.task_prefs().pomodoro;
         let Some(before) = self.features.tasks.timer.running.clone() else { return reread };
+        // Read only while a timer runs: the vault's prefs aren't cached, so
+        // this read the vault's prefs file every frame.
+        let prefs = self.task_prefs().pomodoro;
         let mut r = before.clone();
         let Some(t) = r.advance(now(), &prefs) else { return reread };
         let Transition { finished, next, record, stopped } = t;
@@ -658,9 +664,10 @@ impl Workspace {
     pub fn task_notes(&self) -> Vec<(NotePath, task_note::TaskNote)> {
         let prefs = self.task_prefs();
         let offset = *Local::now().offset();
-        let ix = self.index().read();
-        let mut v: Vec<(NotePath, task_note::TaskNote)> =
-            ix.records().filter_map(|r| task_note::read(&r.properties, &r.title, &prefs, offset).map(|n| (r.path.clone(), n))).collect();
+        // 0.12: with the task notes of unlocked folders (memory only).
+        let mut v: Vec<(NotePath, task_note::TaskNote)> = self.with_notes(|ix| {
+            ix.records().filter_map(|r| task_note::read(&r.properties, &r.title, &prefs, offset).map(|n| (r.path.clone(), n))).collect()
+        });
         // Open first, then by date (due, else scheduled; undated last), then by title.
         v.sort_by(|(pa, a), (pb, b)| {
             let key = |n: &task_note::TaskNote| {

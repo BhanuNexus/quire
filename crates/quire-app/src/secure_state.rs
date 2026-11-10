@@ -72,6 +72,9 @@ pub struct SecureState {
     pub show_connections: bool,
     /// [`ai_off`], as last read.
     ai_cache: std::cell::Cell<Option<(Instant, bool)>>,
+    /// 0.12: links between plain notes and notes of unlocked folders, by
+    /// (vault index version, `locked_version`). Memory only.
+    cross: overlay::CrossCache,
 }
 
 impl std::fmt::Debug for SecureState {
@@ -662,6 +665,7 @@ impl Workspace {
     /// Read the notes of every unlocked folder into the in-memory index (in
     /// the background), or drop it when nothing is unlocked.
     fn rebuild_locked_index(&mut self) {
+        self.forget_overlay_links();
         let st = &mut self.features.secure;
         st.indexed.clear();
         st.locked_version += 1;
@@ -675,13 +679,25 @@ impl Workspace {
             st.building = None;
             return;
         }
+        // 0.12: notes of a folder that locked leave the overlay now, not
+        // when the new one is built (the features read it).
+        if let Some(ix) = st.locked_index.as_mut() {
+            let gone: Vec<NotePath> =
+                ix.paths().into_iter().filter(|p| vault.locked_folder(p).is_none_or(|f| !vault.keys().is_unlocked(&f.path))).collect();
+            if !gone.is_empty() {
+                for p in &gone {
+                    ix.remove_no_refresh(p);
+                }
+                ix.refresh();
+            }
+        }
         let (tx, rx) = bounded(1);
         std::thread::spawn(move || {
             let mut ix = Index::new();
             for f in &unlocked {
                 for p in vault.locked_notes(f) {
                     if let Ok(text) = vault.read(&p) {
-                        ix.upsert(p, &text);
+                        ix.insert_record(quire_index::NoteRecord::from_source(p, &text), text);
                     }
                 }
             }
@@ -1162,6 +1178,8 @@ pub(crate) fn status(ws: &Workspace, out: &mut Vec<StatusItem>) {
         });
     }
 }
+
+mod overlay;
 
 #[cfg(test)]
 mod tests;

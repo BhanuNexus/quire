@@ -314,8 +314,31 @@ impl Vault {
         Ok(candidate)
     }
 
+    /// Store bytes as an attachment of a note in locked folder `folder`
+    /// (0.12): in the folder's own attachments subfolder
+    /// (`Journal/attachments/`), encrypted, never in the vault's plain
+    /// attachments folder. Refused while the folder is locked.
+    pub fn save_locked_attachment(&self, folder: &str, file_name: &str, bytes: &[u8]) -> Result<NotePath> {
+        let folder = folder.trim_matches('/');
+        let probe = NotePath::join(folder, "x");
+        let f = self.locked_folder(&probe).ok_or_else(|| VaultError::NotFound(format!("{folder}/ isn't a locked folder")))?;
+        if !f.unlocking && !self.keys().is_unlocked(&f.path) {
+            return Err(VaultError::Locked(f.path));
+        }
+        let into = NotePath::join(folder, &self.config.attachments_folder);
+        let candidate = self.free_attachment_path(into.as_str(), file_name);
+        self.write_file(&candidate, bytes)?;
+        Ok(candidate)
+    }
+
     /// A free, link-safe path for a new attachment named `file_name`.
     pub fn attachment_path(&self, file_name: &str) -> NotePath {
+        self.free_attachment_path(&self.config.attachments_folder.clone(), file_name)
+    }
+
+    /// A free, link-safe name for `file_name` in `folder` (free also of an
+    /// encrypted file of that name).
+    fn free_attachment_path(&self, folder: &str, file_name: &str) -> NotePath {
         let (stem, ext) = match file_name.rsplit_once('.') {
             Some((s, e)) if !s.is_empty() => (s, format!(".{}", e.to_ascii_lowercase())),
             _ => (file_name, String::new()),
@@ -324,11 +347,11 @@ impl Vault {
         if base.is_empty() {
             base = "attachment".into();
         }
-        let folder = self.config.attachments_folder.clone();
-        let mut candidate = NotePath::join(&folder, &format!("{base}{ext}"));
+        let taken = |p: &NotePath| self.storage.exists(p) || self.storage.exists(&crate::lock::stored(p));
+        let mut candidate = NotePath::join(folder, &format!("{base}{ext}"));
         let mut n = 1;
-        while self.storage.exists(&candidate) {
-            candidate = NotePath::join(&folder, &format!("{base} {n}{ext}"));
+        while taken(&candidate) {
+            candidate = NotePath::join(folder, &format!("{base} {n}{ext}"));
             n += 1;
         }
         candidate

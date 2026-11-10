@@ -412,10 +412,12 @@ fn chips(ui: &mut Ui, ws: &Workspace, pal: &Palette, b: &Board<'_>, field: &str,
     let (status, priority, due) = if let Some(t) = &row.task {
         (Some(t.status.clone()), Some(quire_app::markdown::tasks::priority_word(t.task.priority).to_string()), t.task.due.clone())
     } else {
-        let ix = ws.index().read();
-        let rec = ix.get(&row.path);
-        let prop = |n: &str| rec.and_then(|r| quire_app::index::views::property(r, n)).map(Value::display).filter(|s| !s.is_empty());
-        (prop("status"), prop("priority"), prop("due"))
+        // 0.12: a card may be a note of an unlocked folder.
+        ws.with_notes(|ix| {
+            let rec = ix.get(&row.path);
+            let prop = |n: &str| rec.and_then(|r| quire_app::index::views::property(r, n)).map(Value::display).filter(|s| !s.is_empty());
+            (prop("status"), prop("priority"), prop("due"))
+        })
     };
     // Status (unless the columns are the status).
     if field != "status"

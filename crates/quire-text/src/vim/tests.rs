@@ -459,3 +459,25 @@ fn a_block_is_one_selection_a_row() {
     assert_eq!(s.show(), "|--abc\n--def\n--ghi");
     assert_eq!(s.run("u"), "|abc\ndef\nghi");
 }
+
+/// 0.12: Ctrl+D and Ctrl+U move half a page (the host's page is 20 lines
+/// here), or `count` lines; Ctrl+F and Ctrl+B a page.
+#[test]
+fn half_and_whole_pages() {
+    let text = (0..60).fold(String::new(), |mut t, i| {
+        t.push_str("line ");
+        t.push_str(&i.to_string());
+        t.push('\n');
+        t
+    });
+    let at = |s: &str| s[..s.find('|').unwrap()].matches('\n').count();
+    let start = format!("|{text}");
+    assert_eq!(at(&run(&start, "<C-d>")), 10);
+    assert_eq!(at(&run(&start, "<C-d><C-d>")), 20);
+    assert_eq!(at(&run(&start, "3<C-d>")), 3);
+    assert_eq!(at(&run(&start, "<C-f>")), 20);
+    assert_eq!(at(&run(&start, "<C-f><C-u>")), 10);
+    assert_eq!(at(&run(&start, "<C-f><C-b>")), 0);
+    let last = at(&run(&start, "G"));
+    assert_eq!(at(&run(&start, "G<C-u>")), last - 10);
+}

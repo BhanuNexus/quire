@@ -327,7 +327,14 @@ impl VimState {
                         self.dollar = true;
                         p
                     }
-                    Motion::Up | Motion::Down | Motion::PageUp | Motion::PageDown | Motion::DisplayUp | Motion::DisplayDown => {
+                    Motion::Up
+                    | Motion::Down
+                    | Motion::PageUp
+                    | Motion::PageDown
+                    | Motion::HalfPageUp
+                    | Motion::HalfPageDown
+                    | Motion::DisplayUp
+                    | Motion::DisplayDown => {
                         let l = m::line_of(&buf, p);
                         if self.dollar { m::line_last(&buf, l) } else { at_vcol(&buf, l, self.block_col, ts) }
                     }

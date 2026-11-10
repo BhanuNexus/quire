@@ -16,8 +16,23 @@ pub struct ToolbarSettings {
     /// ([`default_items`]). Present and empty: no buttons.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub items: Option<Vec<ToolbarItem>>,
+    /// 0.12: the buttons of the toolbar next to a selection, in order.
+    /// Missing: the default set ([`FLOATING_ITEMS`]); present and empty: no
+    /// buttons (the bar isn't shown).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub floating_items: Option<Vec<ToolbarItem>>,
     #[serde(flatten)]
     pub other: toml::Table,
+}
+
+/// Which toolbar's buttons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Bar {
+    /// The toolbar above the editor (`items`).
+    #[default]
+    Main,
+    /// The toolbar next to a selection (`floating_items`).
+    Floating,
 }
 
 /// One button: a command id (`"Bold"`), a macro (`"macro:Clean up"`) or
@@ -81,9 +96,40 @@ pub fn default_items() -> Vec<ToolbarItem> {
     DEFAULT_ITEMS.iter().map(|c| ToolbarItem::new(c)).collect()
 }
 
+/// The buttons of a new floating toolbar.
+pub fn default_floating_items() -> Vec<ToolbarItem> {
+    FLOATING_ITEMS.iter().map(|c| ToolbarItem::new(c)).collect()
+}
+
 impl ToolbarSettings {
     /// The buttons to show.
     pub fn items(&self) -> Vec<ToolbarItem> {
         self.items.clone().unwrap_or_else(default_items)
+    }
+
+    /// The buttons of the toolbar next to a selection.
+    pub fn floating_items(&self) -> Vec<ToolbarItem> {
+        self.floating_items.clone().unwrap_or_else(default_floating_items)
+    }
+
+    /// The buttons of `bar`.
+    pub fn items_of(&self, bar: Bar) -> Vec<ToolbarItem> {
+        match bar {
+            Bar::Main => self.items(),
+            Bar::Floating => self.floating_items(),
+        }
+    }
+
+    /// The stored list of `bar` (`None`: the defaults).
+    pub const fn stored_mut(&mut self, bar: Bar) -> &mut Option<Vec<ToolbarItem>> {
+        match bar {
+            Bar::Main => &mut self.items,
+            Bar::Floating => &mut self.floating_items,
+        }
+    }
+
+    /// Every stored button of both bars (to rename or remove a macro's).
+    pub fn all_stored_mut(&mut self) -> impl Iterator<Item = &mut Vec<ToolbarItem>> {
+        self.items.iter_mut().chain(self.floating_items.iter_mut())
     }
 }

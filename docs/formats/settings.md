@@ -16,11 +16,12 @@ workstream; every key defaults to off or unchanged.
 | `[agent_panel]` | WS-D | `enabled`, `backend`, `model` (`""`, `"provider"` or `"device"`), `max_steps`, `acp_command`, `acp_args`, `acp_risk_ack` |
 | `[trust]` | WS-C | `contradictions`, `claims_daily_cap`, `ask_before_tell`, `staleness`, `verify_citations` |
 | `[mcp_http]` | WS-B | `enabled`, `bind`, `port`, `public_url` |
-| `[editing]` | WS-F | `vim`, `tab_mode` (`"reuse"` or `"new"`), `display_titles`, `homepage` (a note's name or path), `two_pane`, `new_note_folder` (`"current"` or `"root"`) |
+| `[editing]` | WS-F | `vim`, `vim_ctrl_scroll` (0.12, default on: with Vim keys, Ctrl+B, F, D and U scroll in Normal and Visual mode instead of running Quire's commands; not on macOS, where those are ⌘ keys), `tab_mode` (`"reuse"` or `"new"`), `display_titles`, `homepage` (a note's name or path), `two_pane`, `new_note_folder` (`"current"` or `"root"`) |
 | `[tasks]` | WS-E | `reminders`, `new_occurrence`, `format` |
 | `[appearance]` | WS-F | `theme_file` (a bundled theme's name or a file in `<config>/themes/`, [themes.md](themes.md)), `accent` (`#RRGGBB`) |
 | `[jobs]` | F0 | `pause_on_typing_ms`, `max_threads` |
 | `[security]` | 0.11 security | `lock_after_idle_minutes` (default 15; 0 never): unlocked locked folders lock after this long without input |
+| `[toolbar]` | 0.11 editor | `show`, `floating`, `[[toolbar.items]]` (the toolbar above the editor) and, from 0.12, `[[toolbar.floating_items]]` (the toolbar next to a selection): each `command` (a command id, `macro:<name>`, `\|` for a separator, `menu:headings`), `icon`, `label`. A missing list is the default buttons; an empty one (`floating_items = []`) none. Design: [0.11-editor.md](../design/0.11-editor.md#12-the-toolbar-toolbar_uirs) |
 
 * Keys and tables a version doesn't know are kept (`other` at the top level
   and in every table), from 0.9 on.

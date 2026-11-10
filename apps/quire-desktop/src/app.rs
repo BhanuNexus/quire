@@ -461,8 +461,9 @@ impl QuireApp {
                 Action::Macro(_) if other_field_focused => continue,
                 Action::Macro(_) => {}
             }
-            // Vim's Normal mode keeps Ctrl+V and Ctrl+Q (Visual block).
-            if vim_keys && k.cmd && !k.alt && !k.shift && matches!(k.key, "V" | "Q") {
+            // Vim's Normal mode keeps Ctrl+V and Ctrl+Q (Visual block), and
+            // (0.12, a setting, on by default) Ctrl+B, F, D and U to scroll.
+            if vim_keys && k.cmd && !k.alt && !k.shift && vim_keeps(k.key, self.ws.settings.editing.vim_ctrl_scroll) {
                 continue;
             }
             let Some(key) = Key::from_name(k.key) else {
@@ -725,6 +726,14 @@ impl QuireApp {
     }
 }
 
+/// Whether Vim's Normal and Visual mode keep Ctrl with `key` from Quire's
+/// shortcuts: Ctrl+V and Ctrl+Q always; Ctrl+B, F, D and U (page and half
+/// page) with `scroll` (Settings → Editing). On macOS Quire's shortcuts are
+/// ⌘ and Vim's keys ⌃, so only V and Q ever meet.
+pub(crate) fn vim_keeps(key: &str, scroll: bool) -> bool {
+    matches!(key, "V" | "Q") || (scroll && !cfg!(target_os = "macos") && matches!(key, "B" | "F" | "D" | "U"))
+}
+
 impl eframe::App for QuireApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         #[cfg(feature = "bench")]
@@ -820,6 +829,8 @@ impl eframe::App for QuireApp {
             self.open_file(&NotePath::new(note));
         }
         self.ui_inner(ui, frame);
+        // 0.12: pictures of folders locked again leave memory.
+        crate::locked_media::sweep(ui.ctx(), &self.ws);
         self.ask_before_losing_locked_edits(ui.ctx());
         #[cfg(feature = "bench")]
         if let Some(b) = &mut self.bench {
@@ -1120,7 +1131,8 @@ impl QuireApp {
             && !ctx.is_being_dragged(crate::view::editor_id(doc))
         {
             let keymap = Keymap::new(&self.ws.settings.commands);
-            let pressed = crate::toolbar_ui::floating(&ctx, at, &keymap, pal, &mut self.features.toolbar);
+            let items = self.ws.settings.toolbar.floating_items();
+            let pressed = crate::toolbar_ui::floating(&ctx, at, &items, &keymap, pal, &mut self.features.toolbar);
             self.toolbar_pressed(pressed);
         }
         // What panels and widgets asked for while drawing.
@@ -1260,6 +1272,19 @@ impl Drop for QuireApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 0.12: Vim keeps Ctrl+B, F, D and U for scrolling (a setting, on by default).
+    #[test]
+    fn vim_keeps_its_scroll_keys_unless_told_not_to() {
+        assert!(vim_keeps("V", false) && vim_keeps("Q", false));
+        assert!(!vim_keeps("B", false) && !vim_keeps("D", false), "off: Quire's Bold and Add cursor");
+        let mac = cfg!(target_os = "macos");
+        for k in ["B", "F", "D", "U"] {
+            assert_eq!(vim_keeps(k, true), !mac, "{k}");
+        }
+        assert!(!vim_keeps("S", true));
+        assert!(Settings::default().editing.vim_ctrl_scroll, "on by default");
+    }
 
     #[test]
     fn altgr_text_wins_over_ctrl_alt_shortcuts() {

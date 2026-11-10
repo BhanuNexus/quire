@@ -134,6 +134,31 @@ pub enum BoardTarget {
     Block { note: NotePath, spec: String },
     /// View `view` of an Obsidian `.base` file.
     Base { path: NotePath, view: usize },
+    /// 0.12: the agenda's own board. Its settings stay on this device
+    /// ([`AGENDA_BOARD_FILE`]): it has no view in the vault to keep them in.
+    Agenda,
+}
+
+/// The agenda board's settings on this device.
+///
+/// In the vault's state folder (`<config>/vaults/<key>/`): card order,
+/// column colours and swimlanes, as the lines of a view
+/// (`order.todo: [Tasks/A.md, Tasks/B.md]`). Card ids are note paths,
+/// never task text.
+pub const AGENDA_BOARD_FILE: &str = "agenda-board.json";
+
+/// The agenda board's view, before this device's settings.
+pub const AGENDA_BOARD_SPEC: &str =
+    "from: tasks\nlayout: kanban\ngroup: status\nfields: [text, priority, due, time_spent, time_estimate, contexts]\n";
+
+/// The agenda board's settings file.
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct AgendaBoardFile {
+    #[serde(default)]
+    format: u32,
+    /// View lines this device added to [`AGENDA_BOARD_SPEC`].
+    #[serde(default)]
+    view: String,
 }
 
 /// A board setting.
@@ -147,15 +172,19 @@ pub enum BoardSetting {
     Color { column: String, color: Option<String> },
 }
 
-/// The agenda, for (index version, today).
-type AgendaCache = RefCell<Option<((u64, NaiveDate), Rc<Agenda>)>>;
+/// The agenda, for (the notes' version, today).
+type AgendaCache = RefCell<Option<(((u64, u64), NaiveDate), Rc<Agenda>)>>;
 
 /// WS-E's state, kept in `ws.features.tasks`.
 #[derive(Debug, Default)]
 pub struct TasksState {
     ready: bool,
     pub reminders: crate::reminders::RemindersState,
-    agenda: AgendaCache,
+    pub(crate) agenda: AgendaCache,
+    /// 0.12: the agenda board's settings on this device, once read
+    /// ([`AGENDA_BOARD_FILE`]); `agenda_board_file` overrides where (tests).
+    agenda_board: RefCell<Option<String>>,
+    pub agenda_board_file: Option<std::path::PathBuf>,
     /// Open recurring tasks per document at its last revision, to notice one being ticked.
     recurring: HashMap<DocId, (u64, Vec<String>)>,
     pending: RefCell<Vec<Action>>,
@@ -235,23 +264,24 @@ impl Workspace {
     /// Overdue, today, the next seven days and today's time blocks; cached until the index changes.
     pub fn agenda(&self) -> Rc<Agenda> {
         let today = Local::now().date_naive();
-        let key = (self.index.version(), today);
+        // 0.12: with the notes of unlocked folders (memory only).
+        let key = (self.notes_version(), today);
         if let Some((k, a)) = self.features.tasks.agenda.borrow().as_ref()
             && *k == key
         {
             return Rc::clone(a);
         }
-        let ix = self.index.read();
         let daily = self.period_path(Period::Daily, today);
         let mut tasks: Vec<(String, quire_markdown::Task)> = Vec::new();
-        for r in ix.records() {
-            let p = r.path.as_str();
-            tasks.extend(r.tasks.iter().map(|t| (p.to_string(), t.clone())));
-            if let Some(t) = quire_plan::tasks::note_task(&r.properties, &r.title) {
-                tasks.push((p.to_string(), t));
+        self.with_notes(|n| {
+            for r in n.records() {
+                let p = r.path.as_str();
+                tasks.extend(r.tasks.iter().map(|t| (p.to_string(), t.clone())));
+                if let Some(t) = quire_plan::tasks::note_task(&r.properties, &r.title) {
+                    tasks.push((p.to_string(), t));
+                }
             }
-        }
-        drop(ix);
+        });
         let a = Rc::new(quire_plan::agenda::build(tasks.iter().map(|(p, t)| (p.as_str(), t)), today, Some(daily.as_str())));
         *self.features.tasks.agenda.borrow_mut() = Some((key, Rc::clone(&a)));
         a
@@ -711,23 +741,74 @@ fn run_actions(ws: &mut Workspace) -> bool {
     true
 }
 
+impl Workspace {
+    fn agenda_board_path(&self) -> Option<std::path::PathBuf> {
+        if let Some(p) = &self.features.tasks.agenda_board_file {
+            return Some(p.clone());
+        }
+        if cfg!(test) {
+            return None;
+        }
+        Some(quire_agent::approval::default_state_dir(self.vault_root()?)?.join(AGENDA_BOARD_FILE))
+    }
+
+    /// The agenda board's view: [`AGENDA_BOARD_SPEC`] and this device's
+    /// settings (read once a vault).
+    pub fn agenda_board_spec(&self) -> String {
+        let mut cached = self.features.tasks.agenda_board.borrow_mut();
+        let extra = cached.get_or_insert_with(|| {
+            let read = self.agenda_board_path().and_then(|p| std::fs::read_to_string(p).ok());
+            read.and_then(|t| serde_json::from_str::<AgendaBoardFile>(&t).ok()).map(|f| f.view).unwrap_or_default()
+        });
+        format!("{AGENDA_BOARD_SPEC}{extra}")
+    }
+
+    /// Set one of the agenda board's view lines on this device.
+    fn set_agenda_board(&mut self, key: &str, value: Option<&str>) {
+        let spec = self.agenda_board_spec();
+        let src = format!("```quire-view\n{spec}```\n");
+        let Some(b) = views::find_blocks(&src).into_iter().next() else { return };
+        let Some(out) = views::set_block_key(&src, &b, key, value) else { return };
+        let body = out.strip_prefix("```quire-view\n").and_then(|o| o.strip_suffix("```\n")).unwrap_or_default();
+        let extra = body.strip_prefix(AGENDA_BOARD_SPEC).unwrap_or(body).to_string();
+        if let Some(p) = self.agenda_board_path() {
+            let file = AgendaBoardFile { format: 1, view: extra.clone() };
+            let saved = p.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| {
+                let json = serde_json::to_string_pretty(&file).map_err(std::io::Error::other)?;
+                crate::atomic::write(&p, json.as_bytes(), false)
+            });
+            if let Err(e) = saved {
+                self.notify(NoticeLevel::Warn, format!("Couldn't keep the board's order: {e}"));
+            }
+        }
+        *self.features.tasks.agenda_board.borrow_mut() = Some(extra);
+        self.features.decor_generation += 1;
+    }
+}
+
 /// Write a board setting: one line of a quire-view block, or Quire's keys
 /// in a `.base` view (`cardOrder`, `swimlaneBy`, `columnColors`); nothing
-/// else in the file changes, and no note is rewritten.
+/// else in the file changes, and no note is rewritten. The agenda's board
+/// keeps them on this device.
 fn set_board(ws: &mut Workspace, target: &BoardTarget, setting: &BoardSetting) {
+    let (key, value) = match setting {
+        BoardSetting::Order { column, ids } => {
+            (format!("order.{}", views::column_key(column)), (!ids.is_empty()).then(|| views::format_id_list(ids)))
+        }
+        BoardSetting::Lanes(l) => ("swimlanes".to_string(), l.clone()),
+        BoardSetting::Color { column, color } => (format!("color.{}", views::column_key(column)), color.clone()),
+    };
+    if *target == BoardTarget::Agenda {
+        ws.set_agenda_board(&key, value.as_deref());
+        return;
+    }
     match target {
+        BoardTarget::Agenda => {}
         BoardTarget::Block { note, spec } => {
             let Some(src) = ws.current_text(note) else { return };
             let Some(b) = views::find_blocks(&src).into_iter().find(|b| b.spec == *spec) else {
                 ws.notify(NoticeLevel::Warn, "The view changed; try again");
                 return;
-            };
-            let (key, value) = match setting {
-                BoardSetting::Order { column, ids } => {
-                    (format!("order.{}", views::column_key(column)), (!ids.is_empty()).then(|| views::format_id_list(ids)))
-                }
-                BoardSetting::Lanes(l) => ("swimlanes".to_string(), l.clone()),
-                BoardSetting::Color { column, color } => (format!("color.{}", views::column_key(column)), color.clone()),
             };
             let Some(out) = views::set_block_key(&src, &b, &key, value.as_deref()) else { return };
             if out != src
@@ -1284,6 +1365,33 @@ mod tests {
         let mut w = ws(&[("A.md", "x\n")]);
         new_note_in(&mut w, ".quire/agent", "Plan", &[]);
         assert!(!w.vault().unwrap().exists(&".quire/agent/Plan.md".into()));
+    }
+
+    #[test]
+    fn the_agenda_boards_order_stays_on_this_device() {
+        let note = |s: &str| format!("---\ntype: task\nstatus: open\n---\n# {s}\n");
+        let (a, b, c) = (note("A"), note("B"), note("C"));
+        let mut w = ws(&[("Tasks/A.md", &a), ("Tasks/B.md", &b), ("Tasks/C.md", &c)]);
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(AGENDA_BOARD_FILE);
+        w.features.tasks.agenda_board_file = Some(file.clone());
+        let order = |w: &Workspace| -> Vec<String> {
+            let r = w.run_view(&w.agenda_board_spec(), None);
+            r.as_ref().as_ref().unwrap().rows.iter().filter(|x| x.group == "open").map(|x| x.path.stem().to_string()).collect()
+        };
+        assert_eq!(order(&w), ["A", "B", "C"]);
+        let ids = vec!["Tasks/C.md".to_string(), "Tasks/A.md".to_string()];
+        set_board(&mut w, &BoardTarget::Agenda, &BoardSetting::Order { column: "open".into(), ids });
+        set_board(&mut w, &BoardTarget::Agenda, &BoardSetting::Color { column: "open".into(), color: Some("teal".into()) });
+        assert_eq!(order(&w), ["C", "A", "B"]);
+        // Kept in the device's file, not in any note.
+        assert!(std::fs::read_to_string(&file).unwrap().contains("order.open"));
+        assert_eq!(w.vault().unwrap().read(&NotePath::new("Tasks/A.md")).unwrap(), a);
+        // Another window on this device reads it.
+        let mut w2 = ws(&[("Tasks/A.md", &a), ("Tasks/B.md", &b), ("Tasks/C.md", &c)]);
+        w2.features.tasks.agenda_board_file = Some(file);
+        assert_eq!(order(&w2), ["C", "A", "B"]);
+        assert!(w2.agenda_board_spec().contains("color.open: teal"));
     }
 
     #[test]

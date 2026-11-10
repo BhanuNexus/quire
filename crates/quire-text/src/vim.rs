@@ -881,8 +881,17 @@ impl VimState {
         let n = count.unwrap_or(1);
         let line = m::line_of(buf, pos);
         let last = m::last_line(buf);
-        let keeps_col =
-            matches!(mo, Motion::Up | Motion::Down | Motion::PageUp | Motion::PageDown | Motion::DisplayUp | Motion::DisplayDown);
+        let keeps_col = matches!(
+            mo,
+            Motion::Up
+                | Motion::Down
+                | Motion::PageUp
+                | Motion::PageDown
+                | Motion::HalfPageUp
+                | Motion::HalfPageDown
+                | Motion::DisplayUp
+                | Motion::DisplayDown
+        );
         if !keeps_col {
             self.want_col = None;
         }
@@ -906,15 +915,23 @@ impl VimState {
                 }
                 ((pos + n).min(limit), Kind::Exclusive)
             }
-            Motion::Down | Motion::PageDown => {
-                let n = if *mo == Motion::PageDown { n * host.page_lines() } else { n };
+            Motion::Down | Motion::PageDown | Motion::HalfPageDown => {
+                let n = match mo {
+                    Motion::PageDown => n * host.page_lines(),
+                    Motion::HalfPageDown => count.unwrap_or_else(|| (host.page_lines() / 2).max(1)),
+                    _ => n,
+                };
                 if line >= last {
                     return None;
                 }
                 (vertical(self, (line + n).min(last)), Kind::Linewise)
             }
-            Motion::Up | Motion::PageUp => {
-                let n = if *mo == Motion::PageUp { n * host.page_lines() } else { n };
+            Motion::Up | Motion::PageUp | Motion::HalfPageUp => {
+                let n = match mo {
+                    Motion::PageUp => n * host.page_lines(),
+                    Motion::HalfPageUp => count.unwrap_or_else(|| (host.page_lines() / 2).max(1)),
+                    _ => n,
+                };
                 if line == 0 {
                     return None;
                 }

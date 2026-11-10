@@ -51,6 +51,9 @@ pub struct RemindersState {
     snoozed: HashMap<String, (NaiveDateTime, Reminder)>,
     pub dismissed: HashSet<String>,
     replies: (Sender<Reply>, Receiver<Reply>),
+    /// 0.12: reminders of notes in unlocked folders seen this session
+    /// (memory only; never in the fired list on disk).
+    locked_seen: HashSet<String>,
 }
 
 impl Default for RemindersState {
@@ -65,6 +68,7 @@ impl Default for RemindersState {
             snoozed: HashMap::new(),
             dismissed: HashSet::new(),
             replies: unbounded(),
+            locked_seen: HashSet::new(),
         }
     }
 }
@@ -86,6 +90,12 @@ impl RemindersState {
         v
     }
 
+    /// Reminders count as checked up to `at` (tests: time passes).
+    #[cfg(test)]
+    pub(crate) const fn checked_for_test(&mut self, at: NaiveDateTime) {
+        self.checked = Some(at);
+    }
+
     pub fn snooze(&mut self, r: &Reminder, now: NaiveDateTime) {
         self.dismissed.insert(r.key());
         self.snoozed.insert(r.key(), (now + Duration::minutes(SNOOZE_MINUTES), r.clone()));
@@ -99,8 +109,13 @@ fn desktop_allowed() -> bool {
 
 /// Show a desktop notification on its own thread (the system call can
 /// block); the answer comes back on `tx`.
-fn notify_desktop(r: &Reminder, tx: Sender<Reply>) {
-    let (key, text, note) = (r.key(), r.text.clone(), r.path.trim_end_matches(".md").to_string());
+///
+/// `locked`: the task is in a locked folder. The system may keep its
+/// notifications on disk, so it gets only the note's name (visible on disk
+/// anyway), never the task's text.
+fn notify_desktop(r: &Reminder, tx: Sender<Reply>, locked: bool) {
+    let note = r.path.trim_end_matches(".md").to_string();
+    let (key, text) = (r.key(), if locked { "A reminder in a locked note".to_string() } else { r.text.clone() });
     let _ = std::thread::Builder::new().name("quire-reminder".into()).spawn(move || {
         let mut n = notify_rust::Notification::new();
         n.summary("Quire reminder").body(&format!("{text}\n{note}")).appname("Quire");
@@ -134,16 +149,31 @@ pub(crate) fn tick(ws: &mut Workspace) -> bool {
     let mut changed = false;
     let version = ws.index.version();
     let ready = !ws.index.status().busy && version > 0;
-    if ws.features.tasks.reminders.version != Some(version) && ready {
-        let schedule = {
-            let ix = ws.index.read();
+    // 0.12: tasks of notes in unlocked folders have reminders too, from the
+    // in-memory overlay; they leave the schedule when the folder locks.
+    let (_, overlay) = ws.notes_version();
+    let key = version.wrapping_mul(0x0001_0000_0001) ^ overlay.rotate_left(32);
+    if ws.features.tasks.reminders.version != Some(key) && ready {
+        let schedule = ws.with_notes(|ix| {
             let tasks: Vec<(String, quire_markdown::Task)> =
                 ix.records().flat_map(|r| r.tasks.iter().map(|t| (r.path.as_str().to_string(), t.clone()))).collect();
             reminders::schedule(tasks.iter().map(|(p, t)| (p.as_str(), t)))
-        };
+        });
+        forget_locked_reminders(ws);
+        let locked_new: Vec<Reminder> =
+            schedule.iter().filter(|r| locked(ws, r) && !ws.features.tasks.reminders.locked_seen.contains(&r.key())).cloned().collect();
         let st = &mut ws.features.tasks.reminders;
         st.schedule = schedule;
-        st.version = Some(version);
+        st.version = Some(key);
+        if st.missed_done {
+            // A folder was unlocked: its reminders missed in the last week
+            // (while it was locked, or Quire closed) are listed, once a session.
+            let missed: Vec<Reminder> = reminders::missed(&locked_new, now, None).into_iter().cloned().collect();
+            st.locked_seen.extend(locked_new.iter().map(Reminder::key));
+            st.missed.extend(missed);
+        } else {
+            st.locked_seen.extend(locked_new.iter().map(Reminder::key));
+        }
         if !st.missed_done {
             st.missed_done = true;
             st.missed = reminders::missed(&st.schedule, now, None).into_iter().cloned().collect();
@@ -185,9 +215,16 @@ pub(crate) fn tick(ws: &mut Workspace) -> bool {
     }
     let root = ws.vault_root().map(std::path::Path::to_path_buf);
     let st = &mut ws.features.tasks.reminders;
-    let due: Vec<Reminder> = reminders::due_in(&st.schedule, after, now).into_iter().cloned().collect();
+    let due = reminders::due_in(&st.schedule, after, now).into_iter().cloned();
+    // 0.12: a reminder of a note in an unlocked folder never goes into the
+    // fired list on disk (it holds the task's text); `quire-cli remind`
+    // can't read such notes, so it never shows one either.
+    let (in_locked, plain): (Vec<Reminder>, Vec<Reminder>) =
+        due.partition(|r| ws.vault.as_ref().is_some_and(|v| v.locked_folder(&NotePath::new(&r.path)).is_some()));
     // 0.10: `quire-cli remind` may have shown some already (and learns of these).
-    let mut due = crate::remind_bg::not_yet_shown(root.as_deref(), due, now);
+    let mut due = crate::remind_bg::not_yet_shown(root.as_deref(), plain, now);
+    due.extend(in_locked);
+    let st = &mut ws.features.tasks.reminders;
     let woke: Vec<String> = st.snoozed.iter().filter(|(_, (t, _))| *t <= now).map(|(k, _)| k.clone()).collect();
     for k in woke {
         if let Some((_, r)) = st.snoozed.remove(&k) {
@@ -196,18 +233,64 @@ pub(crate) fn tick(ws: &mut Workspace) -> bool {
         }
     }
     st.checked = Some(now);
+    // Reminders of notes in locked folders fire only while the folder is unlocked.
+    due.retain(|r| !locked(ws, r) || ws.in_unlocked_folder(&NotePath::new(&r.path)));
     if due.is_empty() {
         return changed;
     }
     let desktop = ws.settings.tasks.reminders && desktop_allowed();
     for r in due {
+        let in_locked = locked(ws, &r);
         ws.features.tasks.reminders.fired.push(Fired { reminder: r.clone(), at: now });
         ws.notify(NoticeLevel::Info, format!("Reminder: {} ({})", r.text, r.path.trim_end_matches(".md")));
         if desktop {
-            notify_desktop(&r, ws.features.tasks.reminders.replies.0.clone());
+            notify_desktop(&r, ws.features.tasks.reminders.replies.0.clone(), in_locked);
         }
     }
     true
+}
+
+/// Whether `r` is a task of a note in a locked folder (unlocked or not).
+fn locked(ws: &Workspace, r: &Reminder) -> bool {
+    ws.vault().is_some_and(|v| v.locked_folder(&NotePath::new(&r.path)).is_some())
+}
+
+/// Reminders of notes in folders that are locked now leave memory: shown,
+/// missed and snoozed ones (they hold the task's text).
+fn forget_locked_reminders(ws: &mut Workspace) {
+    let gone = |ws: &Workspace, r: &Reminder| locked(ws, r) && !ws.in_unlocked_folder(&NotePath::new(&r.path));
+    let fired: Vec<bool> = ws.features.tasks.reminders.fired.iter().map(|f| gone(ws, &f.reminder)).collect();
+    let missed: Vec<bool> = ws.features.tasks.reminders.missed.iter().map(|r| gone(ws, r)).collect();
+    let snoozed: Vec<String> =
+        ws.features.tasks.reminders.snoozed.iter().filter(|(_, (_, r))| gone(ws, r)).map(|(k, _)| k.clone()).collect();
+    let seen: Vec<String> = ws
+        .features
+        .tasks
+        .reminders
+        .locked_seen
+        .iter()
+        .filter(|k| k.split('\u{1f}').next().is_none_or(|p| !ws.in_unlocked_folder(&NotePath::new(p))))
+        .cloned()
+        .collect();
+    let st = &mut ws.features.tasks.reminders;
+    for k in seen {
+        st.locked_seen.remove(&k);
+    }
+    let mut i = 0;
+    st.fired.retain(|_| {
+        i += 1;
+        !fired[i - 1]
+    });
+    let mut i = 0;
+    st.missed.retain(|_| {
+        i += 1;
+        !missed[i - 1]
+    });
+    for k in snoozed {
+        st.snoozed.remove(&k);
+        st.dismissed.remove(&k);
+        st.locked_seen.remove(&k);
+    }
 }
 
 /// Open the note of a reminder at its task.

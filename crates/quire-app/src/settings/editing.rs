@@ -15,6 +15,10 @@ use serde::{Deserialize, Serialize};
 pub struct EditingSettings {
     /// Vim keys in the editor.
     pub vim: bool,
+    /// 0.12: with Vim keys, Ctrl+B, F, D and U scroll in Normal and Visual
+    /// mode (a page and half a page), as in Vim, instead of running
+    /// Quire's commands on those keys (Bold, Find, Add cursor…). On by default.
+    pub vim_ctrl_scroll: bool,
     /// `"reuse"` (a preview tab is replaced) or `"new"`.
     pub tab_mode: String,
     /// Show `title:` instead of file names.
@@ -34,6 +38,7 @@ impl Default for EditingSettings {
     fn default() -> Self {
         Self {
             vim: false,
+            vim_ctrl_scroll: true,
             tab_mode: "reuse".into(),
             display_titles: false,
             homepage: String::new(),

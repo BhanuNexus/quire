@@ -131,15 +131,16 @@ pub struct Pin {
 
 /// The pins of a view's rows (notes without a place are left out).
 pub fn pins(ws: &crate::Workspace, rows: &[quire_index::views::ViewRow]) -> Vec<Pin> {
-    let ix = ws.index().read();
-    let mut out: Vec<Pin> = rows
-        .iter()
-        .filter_map(|r| {
-            let rec = ix.get(&r.path)?;
-            let (lat, lng) = quire_index::views::location(rec)?;
-            Some(Pin { path: r.path.clone(), title: r.title.clone(), lat, lng })
-        })
-        .collect();
+    // 0.12: a row may be a note of an unlocked folder.
+    let mut out: Vec<Pin> = ws.with_notes(|ix| {
+        rows.iter()
+            .filter_map(|r| {
+                let rec = ix.get(&r.path)?;
+                let (lat, lng) = quire_index::views::location(rec)?;
+                Some(Pin { path: r.path.clone(), title: r.title.clone(), lat, lng })
+            })
+            .collect()
+    });
     out.dedup_by(|a, b| a.path == b.path);
     out
 }

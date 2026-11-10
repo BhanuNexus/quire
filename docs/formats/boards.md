@@ -85,6 +85,21 @@ views:
   saves a base. If it drops them, only the board's order, lanes and
   colours are lost.
 
+## The agenda's board (0.12)
+
+The agenda's own board (task notes by status) has no view in the vault,
+so its card order, column colours and swimlanes stay on the device, in
+the vault's state folder: `<config>/vaults/<key>/agenda-board.json`.
+
+```json
+{ "format": 1, "view": "order.open: [Tasks/B.md, Tasks/A.md]\ncolor.open: teal\n" }
+```
+
+`view` holds the lines Quire adds to the board's view, with the keys of a
+`quire-view` block above (`order.<column>`, `color.<column>`,
+`swimlanes`). Card ids are note paths, never a task's text. A device
+without the file shows the board in its default order.
+
 ## "+" in a column
 
 Typing a title after a column's "+" makes, in this order of preference:

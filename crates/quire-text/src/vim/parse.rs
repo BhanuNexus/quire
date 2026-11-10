@@ -43,6 +43,9 @@ pub(super) enum Motion {
     SearchNext(bool),
     PageDown,
     PageUp,
+    /// Ctrl+D and Ctrl+U: half a page down or up (a count: that many lines).
+    HalfPageDown,
+    HalfPageUp,
     /// `` `a `` (to the mark itself) and `'a` (to its line's first non-blank).
     Mark(char, bool),
 }
@@ -235,6 +238,8 @@ fn motion_key(c: &mut Cursor<'_>, k: Key) -> Step<Motion> {
         Key::Char('N') => Motion::SearchNext(true),
         Key::PageDown | Key::Ctrl('f') => Motion::PageDown,
         Key::PageUp | Key::Ctrl('b') => Motion::PageUp,
+        Key::Ctrl('d') => Motion::HalfPageDown,
+        Key::Ctrl('u') => Motion::HalfPageUp,
         Key::Char(q @ ('`' | '\'')) => {
             return match c.next() {
                 None => Ok(None),

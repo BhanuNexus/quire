@@ -758,9 +758,21 @@ pub fn run(spec: &ViewSpec, index: &Index, today: &str, current: Option<&NotePat
 /// total are all computed from those (an agent's view never counts or
 /// groups by notes it may not see).
 pub fn run_over(spec: &ViewSpec, index: &Index, today: &str, current: Option<&NotePath>, keep: &dyn Fn(&NotePath) -> bool) -> ViewResult {
+    run_in(spec, index.records(), today, current, keep)
+}
+
+/// [`run_over`] over any set of notes (0.12: the vault index joined with
+/// the notes of unlocked locked folders, [`crate::Joined::records`]).
+pub fn run_in<'a>(
+    spec: &ViewSpec,
+    records: impl Iterator<Item = &'a NoteRecord>,
+    today: &str,
+    current: Option<&NotePath>,
+    keep: &dyn Fn(&NotePath) -> bool,
+) -> ViewResult {
     let folders: Vec<Option<String>> =
         spec.from.iter().map(|s| if let Source::Folder(f) = s { Some(resolve_folder(f, current)) } else { None }).collect();
-    let notes = index.records().filter(|r| keep(&r.path)).filter(|r| {
+    let notes = records.filter(|r| keep(&r.path)).filter(|r| {
         spec.from.is_empty()
             || spec.from.iter().zip(&folders).any(|(s, folder)| match s {
                 Source::All => true,

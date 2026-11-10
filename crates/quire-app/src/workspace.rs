@@ -136,7 +136,7 @@ pub struct AssistResult {
 }
 
 type PendingAssist = (DocId, Selection, Assist, Receiver<Result<String, LlmError>>);
-type InsightsKey = (DocId, u64, u64);
+type InsightsKey = (DocId, u64, u64, u64);
 type InsightsCache = RefCell<Option<(InsightsKey, Rc<Insights>)>>;
 /// Insights for a big note, being worked out on another thread.
 type InsightsJob = RefCell<Option<(InsightsKey, Arc<std::sync::Mutex<Option<Insights>>>)>>;
@@ -353,6 +353,9 @@ impl Workspace {
             return;
         }
         let (Some(vault), Some(root)) = (self.vault.clone(), self.vault_root.clone()) else { return };
+        // 0.12: the on-device AI engine is started from a thread made here, at
+        // normal priority (a job thread's nice 19 would carry over to it).
+        quire_ai::engine::prepare_spawner();
         // 0.11: the locked folders are checked against the disk, in the background.
         crate::secure_state::start_pass(self);
         self.watcher = match VaultWatcher::start(&root) {
@@ -853,6 +856,11 @@ impl Workspace {
             changed |= self.doc(id).and_then(|d| d.path.clone()) != before;
         }
         changed |= self.process_vault_events();
+        // 0.12: the vault's file list arrives from its own thread.
+        if self.file_list_pending() {
+            self.refresh_file_cache();
+            changed |= !self.file_list_pending();
+        }
         changed |= self.poll_assist();
         changed |= self.poll_ask();
         self.maybe_check_updates();
@@ -870,7 +878,8 @@ impl Workspace {
         let delay = Duration::from_millis(self.settings.autosave_ms);
         let autosave =
             self.docs.iter().filter(|d| d.path.is_some() && d.is_dirty()).filter_map(Document::last_edit).map(|t| t + delay).min();
-        autosave.into_iter().chain(crate::features::next_deadline(self)).min()
+        let listing = self.file_list_pending().then(|| Instant::now() + Duration::from_millis(50));
+        autosave.into_iter().chain(listing).chain(crate::features::next_deadline(self)).min()
     }
 
     fn process_vault_events(&mut self) -> bool {
@@ -1090,6 +1099,9 @@ impl Workspace {
     /// locked folder was locked.
     pub(crate) fn clear_note_caches(&self) {
         *self.insights_cache.borrow_mut() = None;
+        // 0.12: views and the agenda may hold text of notes of unlocked folders.
+        self.view_cache.clear();
+        self.features.tasks.agenda.borrow_mut().take();
     }
 
     pub fn trash_active(&mut self) {
@@ -1719,7 +1731,7 @@ impl Workspace {
         let Some(doc) = self.active_doc() else {
             return Rc::default();
         };
-        let key = (doc.id, self.index.version(), self.index.semantic_version());
+        let key = (doc.id, self.index.version(), self.index.semantic_version(), self.features.secure.locked_version);
         if let Some((k, v)) = &*self.insights_cache.borrow()
             && *k == key
         {
@@ -1731,7 +1743,10 @@ impl Workspace {
         let plain = doc.extracted().plain.clone();
         if text.len() <= INSIGHTS_SYNC_BYTES {
             let ix = self.index.read();
-            let rc = Rc::new(compute_insights(&ix, self.index.semantic().as_deref(), path.as_ref(), &text, &plain, large));
+            let mut ins = compute_insights(&ix, self.index.semantic().as_deref(), path.as_ref(), &text, &plain, large);
+            drop(ix);
+            self.add_overlay_insights(&mut ins, path.as_ref());
+            let rc = Rc::new(ins);
             *self.insights_cache.borrow_mut() = Some((key, Rc::clone(&rc)));
             return rc;
         }
@@ -1739,8 +1754,9 @@ impl Workspace {
         // are worked out, so typing never waits on them.
         let mut job = self.insights_job.borrow_mut();
         let done = job.as_ref().filter(|(k, _)| *k == key).and_then(|(_, slot)| slot.lock().ok()?.take());
-        if let Some(ins) = done {
+        if let Some(mut ins) = done {
             *job = None;
+            self.add_overlay_insights(&mut ins, path.as_ref());
             let rc = Rc::new(ins);
             *self.insights_cache.borrow_mut() = Some((key, Rc::clone(&rc)));
             return rc;
@@ -1764,6 +1780,14 @@ impl Workspace {
         }
     }
 
+    /// 0.12: backlinks the vault index can't give (from or to notes of
+    /// unlocked folders), from the in-memory overlay.
+    fn add_overlay_insights(&self, ins: &mut Insights, path: Option<&NotePath>) {
+        if let Some(p) = path {
+            ins.backlinks.extend(self.overlay_backlinks(p));
+        }
+    }
+
     /// True while insights for a big note are being worked out.
     pub fn insights_pending(&self) -> bool {
         self.insights_job.borrow().is_some()
@@ -1774,15 +1798,17 @@ impl Workspace {
         let Some(doc) = self.active_doc() else {
             return vec![];
         };
-        let ix = self.index.read();
         let mut seen = std::collections::HashSet::new();
-        doc.extracted()
-            .links
-            .iter()
-            .filter(|l| matches!(l.kind, LinkKind::Wiki | LinkKind::Relative) && !l.target.is_empty())
-            .filter(|l| seen.insert(l.target.to_lowercase()))
-            .map(|l| (l.target.clone(), ix.resolve(&l.target, doc.path.as_ref())))
-            .collect()
+        // 0.12: links to and from notes of unlocked folders resolve too.
+        self.with_notes(|ix| {
+            doc.extracted()
+                .links
+                .iter()
+                .filter(|l| matches!(l.kind, LinkKind::Wiki | LinkKind::Relative) && !l.target.is_empty())
+                .filter(|l| seen.insert(l.target.to_lowercase()))
+                .map(|l| (l.target.clone(), ix.resolve(&l.target, doc.path.as_ref())))
+                .collect()
+        })
     }
 
     // ------------------------------------------------------------------ session

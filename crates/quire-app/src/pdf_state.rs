@@ -104,13 +104,26 @@ fn is_pdf(p: &NotePath) -> bool {
     p.as_str().to_ascii_lowercase().ends_with(".pdf")
 }
 
-/// Start the text job and queue every PDF in the vault.
+/// Start the text job and queue every PDF in the vault. 0.12: the vault is
+/// listed on a thread of its own, after the deferred start (it was one of
+/// the two walks of the vault before the first frame).
 fn start(ws: &mut Workspace) {
     let Some(vault) = ws.vault.clone() else { return };
     let (qtx, qrx) = crossbeam_channel::unbounded();
     let (dtx, drx) = crossbeam_channel::unbounded();
-    for p in vault.storage().list().unwrap_or_default().into_iter().filter(is_pdf) {
-        let _ = qtx.send(p);
+    let lister = qtx.clone();
+    let listed = move || {
+        for p in vault.storage().list().unwrap_or_default().into_iter().filter(is_pdf) {
+            let _ = lister.send(p);
+        }
+    };
+    if cfg!(test) {
+        listed();
+    } else {
+        let _ = std::thread::Builder::new().name("quire-pdf-list".into()).spawn(move || {
+            quire_index::background::lower_priority();
+            listed();
+        });
     }
     ws.jobs.add(Box::new(PdfTextJob { queue: qrx, pending: VecDeque::new(), done: dtx, current: None }));
     ws.features.pdf.queue_tx = Some(qtx);
@@ -118,7 +131,8 @@ fn start(ws: &mut Workspace) {
 }
 
 pub(crate) fn tick(ws: &mut Workspace, _now: Instant) -> bool {
-    if std::mem::take(&mut ws.features.pdf.needs_start) {
+    // Not before the vault's deferred start (after the first frame).
+    if !ws.deferred_start && std::mem::take(&mut ws.features.pdf.needs_start) {
         start(ws);
     }
     let mut changed = false;

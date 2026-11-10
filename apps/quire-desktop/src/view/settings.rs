@@ -35,6 +35,14 @@ fn editing(ui: &mut Ui, ws: &mut Workspace, pal: &Palette) {
          (Ctrl+V, with I, A, c, d, y, p, r and $). Not supported: a vimrc, :normal, Ctrl+A and Ctrl+X. \
          Vim keys work in the fast editor (not the classic one); embedded notes are edited without them.",
     );
+    if e.vim && !cfg!(target_os = "macos") {
+        ui.checkbox(&mut e.vim_ctrl_scroll, "Ctrl+B, F, D and U scroll, as in Vim");
+        note(
+            ui,
+            pal,
+            "In Normal and Visual mode: a page back and forward, half a page down and up. Off: those keys run Quire's commands (Bold, Find…).",
+        );
+    }
 
     ui.add_space(10.0);
     ui.label(RichText::new("Opening notes").strong());

@@ -351,6 +351,23 @@ mod tests {
         }
         // No `items` key: the default buttons.
         assert!(Settings::default().toolbar.items().len() > 10);
+        assert_eq!(Settings::default().toolbar.floating_items().len(), toolbar::FLOATING_ITEMS.len());
+    }
+
+    /// 0.12: the floating toolbar has its own buttons, stored apart.
+    #[test]
+    fn the_floating_toolbar_has_its_own_buttons() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.toml");
+        std::fs::write(&p, "[toolbar]\nfloating = true\n[[toolbar.floating_items]]\ncommand = \"Bold\"\n[[toolbar.floating_items]]\ncommand = \"macro:Tidy\"\nicon = \"T\"\n").unwrap();
+        let mut s = Settings::load_from(&p);
+        assert_eq!(s.toolbar.floating_items().iter().map(|i| i.command.as_str()).collect::<Vec<_>>(), ["Bold", "macro:Tidy"]);
+        assert!(s.toolbar.items.is_none(), "the main bar keeps its defaults");
+        *s.toolbar.stored_mut(toolbar::Bar::Floating) = Some(Vec::new());
+        s.save_to(&p).unwrap();
+        let back = Settings::load_from(&p);
+        assert!(back.toolbar.floating_items().is_empty(), "present and empty: no buttons");
+        assert!(std::fs::read_to_string(&p).unwrap().contains("floating_items = []"));
     }
 
     #[test]
