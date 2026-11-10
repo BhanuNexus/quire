@@ -48,9 +48,10 @@ pub(crate) const COMMANDS: &[CliCommand] = &[CliCommand {
   quire-cli sync test   <vault> [WHERE]         check the storage (or the one this vault syncs with): sign-in,
                         writing, reading back, conditional writes
   quire-cli sync credentials <vault>            new S3 or WebDAV credentials (expired, rotated), checked first
-  quire-cli sync move   <vault> WHERE --recovery-key-file F [--passphrase-file F]
+  quire-cli sync move   <vault> WHERE --recovery-key-file F [--passphrase-file F] [--force]
                         a last pass where it syncs now, then a new sync vault in WHERE from this device's
-                        notes; other devices then `sync join` it
+                        notes; other devices then `sync join` it. Changes not yet uploaded to S3 or WebDAV
+                        stop the move unless --force
   quire-cli sync scope  <vault> (--only FOLDER… [--exclude FOLDER…] | --all)   change which folders sync (not while a sync runs)
   quire-cli sync share  <vault> on|off          also sync vault settings and review history (agents' suggestions
                         and runs reach your other devices; every device needs Quire 0.9 or later)",
@@ -198,11 +199,26 @@ fn prompt_line(prompt: &str) -> Result<String, String> {
     Ok(line.trim().to_string())
 }
 
-/// `QUIRE_…`, else the AWS variable, else a file or a prompt.
+/// The variable `quire` if set, else `aws` (an AWS CLI variable), saying
+/// so on stderr: those are often broader credentials than the key limited
+/// to Quire's folder that the setup guide asks for.
+fn env_or_aws(quire: &str, aws: &str) -> Option<String> {
+    if let Some(v) = std::env::var(quire).ok().filter(|v| !v.is_empty()) {
+        return Some(v);
+    }
+    let v = std::env::var(aws).ok().filter(|v| !v.is_empty())?;
+    eprintln!("Using {aws} from the environment (set {quire} to use another).");
+    Some(v)
+}
+
+/// `QUIRE_…`, else the AWS variable (announced), else a file or a prompt.
 fn read_secret_or_aws(what: &str, env: &str, aws: &str, file: Option<&str>) -> Result<String, String> {
-    match std::env::var(env).ok().filter(|v| !v.is_empty()).or_else(|| std::env::var(aws).ok().filter(|v| !v.is_empty())) {
-        Some(v) if file.is_none() => Ok(v),
-        _ => read_secret(what, env, file),
+    if file.is_some() {
+        return read_secret(what, env, file);
+    }
+    match env_or_aws(env, aws) {
+        Some(v) => Ok(v),
+        None => read_secret(what, env, file),
     }
 }
 
@@ -212,9 +228,9 @@ fn remote_secret(profile: &RemoteProfile, args: &[String]) -> Result<RemoteSecre
         RemoteProfile::S3 { .. } => {
             let access_key = match flag(args, "--access-key-id") {
                 Some(k) => k.to_string(),
-                None => match std::env::var("QUIRE_S3_ACCESS_KEY_ID").or_else(|_| std::env::var("AWS_ACCESS_KEY_ID")) {
-                    Ok(k) if !k.is_empty() => k,
-                    _ => prompt_line("Access key ID: ")?,
+                None => match env_or_aws("QUIRE_S3_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID") {
+                    Some(k) => k,
+                    None => prompt_line("Access key ID: ")?,
                 },
             };
             let secret_key = read_secret_or_aws(
@@ -223,8 +239,7 @@ fn remote_secret(profile: &RemoteProfile, args: &[String]) -> Result<RemoteSecre
                 "AWS_SECRET_ACCESS_KEY",
                 flag(args, "--secret-file"),
             )?;
-            let session_token =
-                std::env::var("QUIRE_S3_SESSION_TOKEN").or_else(|_| std::env::var("AWS_SESSION_TOKEN")).ok().filter(|t| !t.is_empty());
+            let session_token = env_or_aws("QUIRE_S3_SESSION_TOKEN", "AWS_SESSION_TOKEN");
             Ok(RemoteSecret::S3 { access_key, secret_key, session_token })
         }
         RemoteProfile::Webdav { .. } => {
@@ -305,7 +320,13 @@ fn move_vault(vault: &Path, args: &[String]) -> Result<(), String> {
     }
     let pass =
         read_secret("Passphrase for the new sync vault (8 characters or more)", "QUIRE_SYNC_PASSPHRASE", flag(args, "--passphrase-file"))?;
-    let (rk, last) = vault_sync::sync_move_at(vault, &target, &pass)?;
+    // The recovery key file must be writable before anything moves: after
+    // the move it's the only copy outside the keychain.
+    let probe = out.with_extension("quire-probe");
+    quire_app::atomic::write_new_private(&probe, b"").map_err(|e| format!("can't write the recovery key to {}: {e}", out.display()))?;
+    let _ = std::fs::remove_file(&probe);
+    let (rk, last) = vault_sync::sync_move_at(vault, &target, &pass, has(args, "--force"))
+        .map_err(|e| if e.contains("force the move") { format!("{e} (--force)") } else { e })?;
     quire_app::atomic::write_new_private(&out, format!("{rk}\n").as_bytes()).map_err(|e| format!("can't write {}: {e}", out.display()))?;
     if let Some(e) = last {
         println!("The last pass through {} didn't finish ({e}); this device's notes are what moves.", before.transport_label());
@@ -521,7 +542,7 @@ fn status(vault: &Path) -> String {
     let c = &s.config;
     let mut out = String::new();
     let _ = writeln!(out, "Syncs through {}", c.transport_label());
-    let _ = writeln!(out, "Vault {}  device “{}”", c.space.0, c.device_name);
+    let _ = writeln!(out, "Vault {}  device “{}” (id {})", c.space.0, c.device_name, c.device.0);
     let _ = writeln!(out, "Folders: {}", c.selection().describe());
     if c.shared_state {
         out.push_str("Vault settings and review history sync too.\n");

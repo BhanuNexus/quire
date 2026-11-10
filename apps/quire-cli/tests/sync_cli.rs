@@ -289,4 +289,23 @@ fn s3_and_webdav_from_the_command_line() {
     for secret in ["S3-SECRET-xyz", "DAV-PASSWORD-xyz", PASS] {
         assert!(!all_output.contains(secret) && !in_vault.contains(secret), "{secret} leaked");
     }
+    // 0.12 review L6: the AWS variables are taken only with a note saying so.
+    let mut c = env.cmd(&[&["sync", "test", &a][..], &s3_args[..]].concat());
+    c.env("AWS_SECRET_ACCESS_KEY", "S3-SECRET-xyz").env_remove("QUIRE_S3_SECRET_ACCESS_KEY");
+    let aws = c.output().unwrap();
+    assert!(aws.status.success() && text(&aws).contains("Using AWS_SECRET_ACCESS_KEY from the environment"), "{}", text(&aws));
+    // L3: a login in the address is refused, and never repeated back.
+    let with_login = url.replace("http://", "http://asha:DAV-PASSWORD-xyz@");
+    let mut c = env.cmd(&["sync", "test", &a, "--webdav", &with_login, "--user", "asha"]);
+    c.env("QUIRE_WEBDAV_PASSWORD", "DAV-PASSWORD-xyz");
+    let login = c.output().unwrap();
+    assert!(!login.status.success() && text(&login).contains("own fields"), "{}", text(&login));
+    assert!(!text(&login).contains("DAV-PASSWORD-xyz"));
+    // L4: a recovery key file that can't be written stops a move before it starts.
+    let space = |v: &str| std::fs::read_to_string(env.path(&format!("{v}/.quire/sync/config.json"))).unwrap();
+    let before = space("A");
+    let nowhere = env.path("missing/rk.txt").display().to_string();
+    let refused = mv(&a, &["--recovery-key-file", &nowhere]);
+    assert!(!refused.status.success() && text(&refused).contains("can't write the recovery key"), "{}", text(&refused));
+    assert_eq!(space("A"), before);
 }

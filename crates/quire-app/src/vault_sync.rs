@@ -118,6 +118,18 @@ impl std::fmt::Debug for RemoteSecret {
     }
 }
 
+/// `url` without a `user:password@` part, for status lines. (Such an
+/// address is refused when sync is set up; this covers a hand-edited
+/// `config.json`.)
+fn without_userinfo(url: &str) -> String {
+    let (scheme, rest) = url.split_once("://").unwrap_or(("", url));
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    match rest[..end].rfind('@') {
+        Some(at) => format!("{scheme}://{}", &rest[at + 1..]),
+        None => url.to_string(),
+    }
+}
+
 impl RemoteProfile {
     /// "S3 bucket notes at https://…", "WebDAV folder https://…".
     pub fn describe(&self) -> String {
@@ -126,7 +138,7 @@ impl RemoteProfile {
                 let p = if prefix.trim_matches('/').is_empty() { String::new() } else { format!("/{}", prefix.trim_matches('/')) };
                 format!("S3 bucket {bucket}{p} at {endpoint}")
             }
-            Self::Webdav { url, .. } => format!("WebDAV folder {url}"),
+            Self::Webdav { url, .. } => format!("WebDAV folder {}", without_userinfo(url)),
         }
     }
 
@@ -1104,7 +1116,12 @@ struct Pass {
 
 impl Session {
     fn new(root: PathBuf, vault: Vault, cfg: SyncConfig, token: &str, key: VaultKey, lock: SyncLock) -> Result<Self, String> {
-        let link = Link::new(&cfg, token, Some(&sync_dir(&root)), Some(&root))?;
+        let link = match Link::new(&cfg, token, Some(&sync_dir(&root)), Some(&root))? {
+            // Every revision fetched is decrypted before it's mirrored, so a
+            // damaged one is skipped rather than stopping sync.
+            Link::Remote(t) => Link::Remote(Box::new(t.with_keys(key.keys()))),
+            link => link,
+        };
         let engine = Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), key.keys(), load_state(&root, &cfg));
         // In a sync folder, vault settings travel in a lane of their own,
         // which 0.8 never reads; the notes lane never touches them.
@@ -1226,7 +1243,12 @@ impl Session {
                     },
                     Link::Server(_) => SyncStatus::Synced(Instant::now()),
                 };
-                (status, report.changed_anything().then_some(report), poll)
+                // A pass stops at its download budget: the next one soon.
+                let again = match &self.link {
+                    Link::Remote(t) if t.more_to_fetch() => Duration::from_secs(1),
+                    _ => poll,
+                };
+                (status, report.changed_anything().then_some(report), again)
             }
             Err(quire_sync::SyncError::Transport(quire_sync::TransportError::Offline(e))) => {
                 let e = match &self.link {
@@ -1656,6 +1678,20 @@ pub fn sync_create_at(
     device_name: &str,
     selection: &Selection,
 ) -> Result<RecoveryKey, String> {
+    create_at(root, target, passphrase, device_name, selection).map(|(rk, _)| rk)
+}
+
+/// [`sync_create_at`]: the new vault is made in the storage and its secrets
+/// stored (under its own space id) before anything of an earlier setup in
+/// `root` is touched; then that setup's files go and the new config is
+/// saved. Returns the new config too.
+fn create_at(
+    root: &Path,
+    target: &SyncTarget,
+    passphrase: &str,
+    device_name: &str,
+    selection: &Selection,
+) -> Result<(RecoveryKey, SyncConfig), String> {
     if passphrase.chars().count() < 8 {
         return Err("Use a passphrase of at least 8 characters".into());
     }
@@ -1674,10 +1710,10 @@ pub fn sync_create_at(
         (SyncTarget::Folder(_), None) => return Err("No sync folder".into()),
     }
     store_sync_secrets(&cfg, target, &key)?;
+    remove_sync_files(root);
     cfg.save(root)?;
     let _ = save_state(root, &cfg, &SyncState::default());
-    let _ = std::fs::remove_dir_all(remote_dir(root));
-    Ok(key.recovery_key())
+    Ok((key.recovery_key(), cfg))
 }
 
 /// Join an existing sync vault from the vault folder `root` with its
@@ -1727,10 +1763,20 @@ pub fn sync_set_remote_secret_at(root: &Path, secret: &RemoteSecret) -> Result<S
 /// other devices sync with.
 pub fn sync_stop_at(root: &Path) {
     if let Some(cfg) = SyncConfig::load(root) {
-        let store = secrets::store();
-        let _ = store.delete(&token_name(&cfg.space));
-        let _ = store.delete(&key_name(&cfg.space));
+        remove_sync_secrets(&cfg.space);
     }
+    remove_sync_files(root);
+}
+
+fn remove_sync_secrets(space: &SpaceId) {
+    let store = secrets::store();
+    let _ = store.delete(&token_name(space));
+    let _ = store.delete(&key_name(space));
+}
+
+/// A sync setup's files on this device: config, engine state, the S3 or
+/// WebDAV mirror.
+fn remove_sync_files(root: &Path) {
     let dir = sync_dir(root);
     for f in ["config.json", "state.json", "state-partial.json", "state-shared.json", "last.json", "folder-seq"] {
         let _ = std::fs::remove_file(dir.join(f));
@@ -1744,24 +1790,72 @@ pub fn sync_stop_at(root: &Path) {
 /// this device's notes. Other devices join the new vault (their notes are
 /// adopted, not copied). Returns the new vault's recovery key, and the last
 /// pass's problem if it had one.
-pub fn sync_move_at(root: &Path, target: &SyncTarget, passphrase: &str) -> Result<(RecoveryKey, Option<String>), String> {
+///
+/// The old setup is removed only once the new vault exists and its secrets
+/// are stored: if making it fails, this device still syncs with the old
+/// place. Changes saved here but not yet uploaded to S3 or WebDAV stop the
+/// move unless `force` (they're in the notes, so they go to the new place
+/// either way, but the old place's devices wouldn't get them).
+pub fn sync_move_at(root: &Path, target: &SyncTarget, passphrase: &str, force: bool) -> Result<(RecoveryKey, Option<String>), String> {
     let cfg = SyncConfig::load(root).ok_or("Sync isn't set up for this vault")?;
     if passphrase.chars().count() < 8 {
         return Err("Use a passphrase of at least 8 characters".into());
     }
     // Check the new place before leaving the old one.
     sync_test(target)?;
-    let last = sync_once_at(root).err();
-    if last.as_deref().is_some_and(|e| e.starts_with(ALREADY_SYNCING)) {
-        return Err(format!("{ALREADY_SYNCING}. Stop it first, then move the vault."));
+    let lock = lock_sync(root).map_err(|e| match e {
+        LockError::Busy { .. } => format!("{ALREADY_SYNCING}. Stop it first, then move the vault."),
+        LockError::Io(_) => e.to_string(),
+    })?;
+    let (last, unsent, held) = last_pass(root, lock);
+    let unsent = match unsent {
+        Some(0) => None,
+        Some(n) => Some(format!("{n} change(s) made here haven't")),
+        // The pass stopped before it could tell (offline at the start).
+        None if last.is_some() && cfg.remote.is_some() => Some("Changes made here may not have".to_string()),
+        None => None,
+    };
+    if let Some(what) = unsent.filter(|_| !force) {
+        return Err(format!(
+            "{what} reached {} yet ({}). Move when it's reachable, or force the move: they're in your notes and go to the new place either way, but devices still on the old place won't get them.",
+            cfg.transport_label(),
+            last.as_deref().unwrap_or("not uploaded")
+        ));
     }
-    let _lock = lock_sync(root).map_err(|e| e.to_string())?;
-    sync_stop_at(root);
-    let rk = sync_create_at(root, target, passphrase, &cfg.device_name, &cfg.selection())?;
+    // Still this process's: the pass's session holds the lock, or it's taken again.
+    let _relock = if held.is_none() { Some(lock_sync(root).map_err(|e| e.to_string())?) } else { None };
+    let _held = held;
+    let (rk, new) = create_at(root, target, passphrase, &cfg.device_name, &cfg.selection())?;
+    if new.space != cfg.space {
+        remove_sync_secrets(&cfg.space);
+    }
     if cfg.shared_state {
         let _ = sync_share_at(root, true);
     }
     Ok((rk, last))
+}
+
+/// A pass for `sync move` under `lock`: its problem, if any; how many
+/// changes made here are still waiting to be uploaded to S3 or WebDAV
+/// (`None`: it couldn't tell); and the session, which holds the lock.
+fn last_pass(root: &Path, lock: SyncLock) -> (Option<String>, Option<usize>, Option<Session>) {
+    let mut session =
+        match open_parts(root).and_then(|(vault, cfg, token, key)| Session::new(root.to_path_buf(), vault, cfg, &token, key, lock)) {
+            Ok(s) => s,
+            Err(e) => return (Some(e), None, None),
+        };
+    let pass = session.pass(APP_POLL);
+    let problem = match pass.status {
+        SyncStatus::Synced(_) | SyncStatus::Waiting(_) => None,
+        SyncStatus::Syncing => Some("a note changed while syncing, or other devices were busy".into()),
+        SyncStatus::Offline(e) | SyncStatus::Error(e) | SyncStatus::Elsewhere(e) => Some(e),
+        SyncStatus::Off => Some("sync is off".into()),
+    };
+    let unsent = match &session.link {
+        Link::Remote(t) => t.unsent(),
+        _ => Some(0),
+    };
+    (problem, unsent, Some(session))
 }
 
 /// Change which folders the vault at `root` syncs. The engine's state
@@ -2361,7 +2455,7 @@ mod tests {
         sync_join_at(&vb, &folder, &space, "correct horse battery", "phone", &Selection::default()).unwrap();
         sync_once_at(&vb).unwrap();
         std::fs::write(va.join("Late.md"), "written just before the move\n").unwrap();
-        let (_rk, last) = sync_move_at(&va, &dav, "another passphrase").unwrap();
+        let (_rk, last) = sync_move_at(&va, &dav, "another passphrase", false).unwrap();
         assert!(last.is_none());
         assert!(SyncConfig::load(&va).unwrap().transport_label().starts_with("WebDAV"));
         sync_once_at(&va).unwrap();
@@ -2374,6 +2468,48 @@ mod tests {
         sync_once_at(&va).unwrap();
         assert_eq!(files(&va), ["Late.md", "Plan.md"]);
         assert_eq!(files(&va), files(&vb), "adopted, no copies");
+    }
+
+    /// 0.12 review (security L4, data M1): a move that fails to make the
+    /// new vault leaves the old setup working; changes not yet uploaded to
+    /// the old storage stop the move unless forced.
+    #[test]
+    fn a_failed_move_keeps_the_old_setup_and_unsent_changes_stop_it() {
+        let (srv, dav) = remote_targets().pop().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let (va, shared, other) = (dir.path().join("A"), dir.path().join("Dropbox"), dir.path().join("Elsewhere"));
+        for d in [&va, &shared, &other] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(va.join("Plan.md"), "# Plan\n").unwrap();
+        let folder = SyncTarget::Folder(shared);
+        sync_create_at(&va, &folder, "correct horse battery", "laptop", &Selection::default()).unwrap();
+        sync_once_at(&va).unwrap();
+        let before = SyncConfig::load(&va).unwrap();
+        // The test connection's writes succeed, then the storage drops the
+        // connection: making the new vault fails.
+        srv.state.puts_left.store(2, Ordering::Relaxed);
+        assert!(sync_move_at(&va, &dav, "another passphrase", false).is_err());
+        let after = SyncConfig::load(&va).unwrap();
+        assert_eq!((&after.space, after.transport_label()), (&before.space, before.transport_label()));
+        std::fs::write(va.join("Still.md"), "still syncing\n").unwrap();
+        sync_once_at(&va).unwrap();
+        // Now on WebDAV, with a change that can't be uploaded.
+        srv.state.puts_left.store(u64::MAX, Ordering::Relaxed);
+        sync_move_at(&va, &dav, "another passphrase", false).unwrap();
+        sync_once_at(&va).unwrap();
+        std::fs::write(va.join("Unsent.md"), "made offline\n").unwrap();
+        // The pass's tip write goes through, then the connection drops: the
+        // new revision stays in the outbox.
+        srv.state.puts_left.store(1, Ordering::Relaxed);
+        let to = SyncTarget::Folder(other);
+        let e = sync_move_at(&va, &to, "third passphrase", false).unwrap_err();
+        assert!(e.contains("change(s) made here haven't reached WebDAV"), "{e}");
+        assert!(SyncConfig::load(&va).unwrap().transport_label().starts_with("WebDAV"));
+        let (_rk, last) = sync_move_at(&va, &to, "third passphrase", true).unwrap();
+        assert!(last.is_some());
+        sync_once_at(&va).unwrap();
+        assert!(SyncConfig::load(&va).unwrap().transport_label().starts_with("folder"));
     }
 
     /// Review finding 5: one sync process per vault and device. A second
