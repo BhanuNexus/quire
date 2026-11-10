@@ -17,6 +17,12 @@ use crate::{NotePath, Vault, VaultError};
 
 /// Where the preferences live, relative to the vault root.
 pub const VAULT_PREFS_PATH: &str = ".quire/shared/vault.toml";
+/// What [`VaultPrefs::copy_from`] copies when no section is named.
+///
+/// Settings that make sense in any vault. Not `sort`, `order`, `icons` and `web`,
+/// which are about one vault's own folders and notes (name them to copy them).
+pub const COPY_SECTIONS: [&str; 8] = ["periodic", "tags", "git", "lint", "staleness", "citations", "links", "tasks"];
+
 /// The format this version writes and fully understands.
 pub const VAULT_PREFS_FORMAT: i64 = 1;
 
@@ -111,6 +117,31 @@ impl VaultPrefs {
             }
         }
         Ok(())
+    }
+
+    /// Take sections from another vault's preferences, replacing the same
+    /// sections here (0.12). With no `names`, [`COPY_SECTIONS`]. Returns the
+    /// sections copied (those `from` has); nothing is written until
+    /// [`VaultPrefs::save`].
+    pub fn copy_from(&mut self, from: &Self, names: &[&str]) -> Result<Vec<String>, PrefsError> {
+        if let Some(why) = &from.unreadable {
+            return Err(PrefsError::Unreadable(why.clone()));
+        }
+        if self.is_newer() {
+            return Err(PrefsError::NewerFormat(self.format()));
+        }
+        let wanted: Vec<&str> = if names.is_empty() { COPY_SECTIONS.to_vec() } else { names.to_vec() };
+        let mut copied = Vec::new();
+        for name in wanted {
+            if name == "format" {
+                continue;
+            }
+            if let Some(item) = from.doc.get(name) {
+                self.doc.insert(name, item.clone());
+                copied.push(name.to_string());
+            }
+        }
+        Ok(copied)
     }
 
     /// The file's text as it would be saved.
@@ -231,5 +262,30 @@ level = 3
         assert_eq!(p.section::<Periodic>("periodic").folder, "D");
         assert!(matches!(p.set_section("periodic", &Periodic::default()), Err(PrefsError::NewerFormat(2))));
         assert!(matches!(p.save(&v), Err(PrefsError::NewerFormat(2))));
+    }
+
+    #[test]
+    fn sections_copy_from_another_vault() {
+        let from = VaultPrefs::parse(
+            "format = 1\n[periodic.daily]\nfolder = \"Journal\"\n[tags.colors]\nwork = \"#ff0000\"\n[order]\n\"P/\" = [\"a.md\"]\n",
+        )
+        .unwrap();
+        let mut to = VaultPrefs::parse("# mine\nformat = 1\n[periodic.daily]\nfolder = \"Daily\"\n[lint]\nx = 1\n").unwrap();
+        // Default: the portable sections only.
+        assert_eq!(to.copy_from(&from, &[]).unwrap(), ["periodic", "tags"]);
+        let out = to.to_text();
+        assert!(
+            out.starts_with("# mine\nformat = 1\n") && out.contains("folder = \"Journal\"") && out.contains("work = \"#ff0000\""),
+            "{out}"
+        );
+        assert!(out.contains("[lint]") && !out.contains("[order]"), "{out}");
+        // Named sections, even per-vault ones.
+        assert_eq!(to.copy_from(&from, &["order", "missing", "format"]).unwrap(), ["order"]);
+        assert!(to.to_text().contains("[order]"));
+        // An unreadable source is never copied from; a newer destination is never changed.
+        let bad = VaultPrefs { unreadable: Some("x".into()), ..VaultPrefs::default() };
+        assert!(matches!(to.copy_from(&bad, &[]), Err(PrefsError::Unreadable(_))));
+        let mut newer = VaultPrefs::parse("format = 9\n").unwrap();
+        assert!(matches!(newer.copy_from(&from, &[]), Err(PrefsError::NewerFormat(9))));
     }
 }

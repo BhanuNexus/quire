@@ -149,6 +149,8 @@ pub struct Workspace {
     pub focus_mode: bool,
     pub(crate) vault: Option<Vault>,
     vault_root: Option<PathBuf>,
+    /// 0.12: a file opened on its own, outside any vault (`open_single_file`).
+    single_file: Option<PathBuf>,
     pub(crate) index: IndexService,
     pub(crate) watcher: Option<VaultWatcher>,
     /// The watcher and the index load wait for `start_deferred`.
@@ -200,6 +202,7 @@ impl Workspace {
             focus_mode: false,
             vault: None,
             vault_root: None,
+            single_file: None,
             index: IndexService::spawn(),
             watcher: None,
             deferred_start: false,
@@ -307,6 +310,9 @@ impl Workspace {
     }
 
     pub fn vault_name(&self) -> String {
+        if self.single_file.is_some() {
+            return "Single file".into();
+        }
         self.vault_root.as_deref().and_then(Path::file_name).map_or_else(|| "Notes".into(), |n| n.to_string_lossy().into_owned())
     }
 
@@ -318,6 +324,29 @@ impl Workspace {
         self.open_vault_deferred(root)?;
         self.start_deferred();
         Ok(())
+    }
+
+    /// 0.12 single-file mode: open one Markdown file without making its
+    /// folder a vault. The folder isn't scanned or watched, nothing is
+    /// written next to the file but the file itself, the last vault and
+    /// its session stay as they were, and Quire's own data (history, the
+    /// index) is kept in memory (`quire_vault::SingleFile`).
+    pub fn open_single_file(&mut self, file: &Path) -> Result<DocId, String> {
+        let (vault, note) = Vault::open_single_file(file).map_err(|e| e.to_string())?;
+        self.save_all();
+        self.docs.retain(|d| d.path.is_none());
+        self.active = if self.docs.is_empty() { None } else { Some(0) };
+        self.vault_root = None;
+        self.watcher = None;
+        self.deferred_start = false;
+        self.single_file = file.canonicalize().ok().or_else(|| Some(file.to_path_buf()));
+        self.attach_vault(vault);
+        self.open_note(&note).ok_or_else(|| format!("Couldn't open {}", file.display()))
+    }
+
+    /// The file open in single-file mode, if that is what this is.
+    pub fn single_file(&self) -> Option<&Path> {
+        self.single_file.as_deref()
     }
 
     /// [`Self::open_vault`], except that reading every note into the index,
@@ -335,6 +364,7 @@ impl Workspace {
         self.docs.retain(|d| d.path.is_none());
         self.active = if self.docs.is_empty() { None } else { Some(0) };
         self.vault_root = Some(root.canonicalize().unwrap_or_else(|_| root.to_path_buf()));
+        self.single_file = None;
         self.watcher = None;
         self.deferred_start = true;
         self.vault_attached(vault);
@@ -569,12 +599,16 @@ impl Workspace {
             None => {
                 let title = quire_vault::sanitize_title(target);
                 let id = self.new_note(Some(&title))?;
-                let body = format!("# {title}\n\n");
-                if let Some(doc) = self.active_doc_mut() {
-                    let _ = doc.apply(
-                        Transaction::insert(0, body.clone()).with_selection(Selection::cursor(body.chars().count())),
-                        EditKind::Other,
-                    );
+                // 0.12: the vault's default template (or its folder's) makes the body.
+                self.features.tasks.checked_new.insert(id);
+                if !crate::templates_ui_state::apply_default_template(self, id) {
+                    let body = format!("# {title}\n\n");
+                    if let Some(doc) = self.active_doc_mut() {
+                        let _ = doc.apply(
+                            Transaction::insert(0, body.clone()).with_selection(Selection::cursor(body.chars().count())),
+                            EditKind::Other,
+                        );
+                    }
                 }
                 self.notify(NoticeLevel::Info, format!("Created “{title}”"));
                 id
@@ -1856,7 +1890,10 @@ impl Workspace {
         // 0.11: edits in a locked folder that couldn't be saved are kept encrypted.
         self.keep_unsaved_locked();
         self.history.flush();
-        if let Some(p) = Session::path() {
+        // A single file isn't a vault: the last vault's tabs stay as they were.
+        if self.single_file.is_none()
+            && let Some(p) = Session::path()
+        {
             let _ = self.session().save_to(&p);
         }
         let _ = self.settings.save();

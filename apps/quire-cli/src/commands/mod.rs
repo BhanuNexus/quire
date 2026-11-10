@@ -20,6 +20,8 @@ mod links;
 mod lock;
 mod mcp;
 mod notes;
+// 0.12: `prefs-copy`.
+mod prefs;
 mod remind;
 mod scope_check;
 mod search;
@@ -61,6 +63,7 @@ pub(crate) fn all() -> Vec<&'static CliCommand> {
         serve::COMMANDS,
         lock::COMMANDS,
         links::COMMANDS,
+        prefs::COMMANDS,
         #[cfg(feature = "eval")]
         eval::COMMANDS,
     ];

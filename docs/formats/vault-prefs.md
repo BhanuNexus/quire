@@ -25,6 +25,18 @@ folder = "Weekly"
 [links]           # 0.12 typed links (read only)
 ```
 
+## Copying to another vault
+
+`quire-cli prefs-copy <from-vault> <to-vault> [section]...` replaces sections
+of the destination's `vault.toml` with the source's. With no section named it
+copies the ones that make sense in any vault: `periodic`, `tags`, `git`,
+`lint`, `staleness`, `citations`, `links`, `tasks`. `sort`, `order`, `icons`
+and `web` are about one vault's own folders and notes: name them to copy
+them. Other sections and comments in the destination stay. A destination
+written by a newer Quire, or a source that can't be parsed, is left as it is.
+Device-wide settings ([settings.md](settings.md)) are not per vault, so there
+is nothing to copy for them.
+
 ## `[periodic]` (WS-E)
 
 ```toml
