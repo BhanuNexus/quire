@@ -4,7 +4,22 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+Quire 0.12: typed links and a hierarchy you can browse (Dataview and Breadcrumbs syntax), sync straight to S3-compatible storage or WebDAV, locked folders' notes and pictures in every view while unlocked, and a faster start.
+
 ### Added
+
+#### Typed links and hierarchy
+- **Typed links, as Dataview and Breadcrumbs write them:** a link in a field has that field's name as its type. Inline fields on their own line (`parent:: [[Rope]]`), bracketed anywhere (`[supports:: [[Theory]]]`, `(source:: [[Book]])`), and front-matter properties holding links (`up: "[[Projects]]"`, lists of links). Front-matter links are now links everywhere: backlinks, the graph, renames, vault checks. Format and the mapping from both plugins: [docs/formats/links.md](docs/formats/links.md).
+- **Hierarchy:** `up`/`parent`, `down`/`child`, `same`/`sibling`, `next` and `prev` are hierarchy links (set your own names in `[links]` of `.quire/shared/vault.toml`); A `up` B makes B's child A without writing it twice (turn off with `implied = false`). Every other field is a type of its own: `supports`, `contradicts`, `source`…
+- **Breadcrumbs trail** above a note ("Maths › Calculus › Limits"), one line per path when a note has several parents, stopping at cycles. On by default only in vaults that use hierarchy fields (`trail = "on" | "off" | "auto"`).
+- **Insights groups links by type:** Parents, Children, Siblings, Previous, Next, Supports, Contradicts and other types, then the untyped backlinks. Implied links are dimmed; `←` marks links from other notes.
+- **Hierarchy** sidebar tab ("Show hierarchy"): the up/down tree from each top note, or just the open note's, with expand and collapse; a note met again in its own branch (a cycle) is shown once more, marked "again", and not expanded.
+- **Graph:** typed links are coloured by type, can be filtered (all, typed, one type), and show their type on hover.
+- **Add typed link…**: pick a type, then a note; it is written the way the note already writes typed links (inline field or property), as one undoable edit. **Go to parent**, **Go to next sibling** and **Go to previous sibling** (no default keys; bind them in Settings → Commands).
+- **Suggestions:** after `parent:: ` (any field that holds links) the notes to link; `[[` at the start of a line also offers the vault's typed fields (`up:: [[…]]`).
+- **Views, Dataview and Bases by type:** `where: up = Projects` (also matching `up: "[[Projects]]"`), `group: up`, `outlinks` and `outlinks.<type>`; Dataview's `WHERE up = [[X]]` and `contains(file.outlinks, [[X]])` translate; in a `.base` an inline typed field is a property.
+- **Agents (MCP):** `links` (a note's links and backlinks with their types), `hierarchy` (ancestors, descendants, siblings, previous/next and trails, depth-limited) and `add_link` (through the usual review: applied in agent zones, a suggestion elsewhere); `neighbors` edges carry their type and can follow chosen types. Clients limited to tags or folders, and locked folders, stay hidden in all of them, field names included.
+- **CLI:** `quire-cli links <vault> <note> [--type T]` and `quire-cli tree <vault> <note> [--depth N]`.
 
 #### Sync through S3-compatible storage and WebDAV
 - **Quire Sync straight to a bucket or a WebDAV folder you own:** AWS S3, Cloudflare R2, Backblaze B2, Wasabi, MinIO or any S3-compatible storage, and Nextcloud, ownCloud, Fastmail, Synology or `rclone serve webdav`. Settings → Sync → *S3-compatible storage* / *WebDAV* (provider presets, **Test connection**, plain errors for a wrong key, expired credentials, the clock, the region), or `quire-cli sync join --s3 ENDPOINT --bucket B --region R` / `--webdav URL --user U`. Setup, a minimal IAM policy and costs per provider: [docs/sync-backends.md](docs/sync-backends.md).
@@ -22,6 +37,7 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 - **The agenda's board keeps the order you drag cards into**, and its column colours and swimlanes, on this device (`<config>/vaults/<key>/agenda-board.json`).
 
 ### Changed
+- Renaming or moving a note also rewrites links to it in front-matter properties; only the link text changes, every other byte of the note stays.
 - **Faster start with a large vault:** nothing lists the vault before the first frame any more. The list of files that aren't notes (attachments, PDFs, boards) and the PDFs to read are gathered on a thread of their own after the first frame, and the task timer is read from then on too. What a 10,000-note vault adds before the first frame went from about 20 ms (CPU time, optimised build; CI measured 19.9 ms for 0.11) to nothing measurable ([details](docs/design/0.12-loose.md#1-startup-headroom)).
 
 ### Fixed

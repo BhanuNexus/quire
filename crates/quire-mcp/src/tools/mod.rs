@@ -19,6 +19,8 @@
 pub mod canvas;
 pub mod common;
 pub mod legacy;
+// 0.12: typed links and hierarchy.
+pub mod links;
 pub mod read;
 pub mod write;
 
@@ -305,6 +307,8 @@ impl ToolRegistry {
         tools.extend(canvas::tools());
         // ---- WS-B: the rest of §4.2 after the canvas tools.
         tools.extend(write::tools());
+        // ---- 0.12 typed links
+        tools.extend(links::tools());
         Self { tools }
     }
 
@@ -383,6 +387,9 @@ mod tests {
                 "save_answer",
                 "capture_url",
                 "revert",
+                "links",
+                "hierarchy",
+                "add_link",
             ]
         );
         for t in r.all() {

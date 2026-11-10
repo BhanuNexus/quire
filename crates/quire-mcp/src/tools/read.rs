@@ -129,15 +129,16 @@ pub fn tools_before_canvas() -> Vec<Box<dyn Tool>> {
         tool(
             "neighbors",
             "Linked notes",
-            "Notes linked to or from a note, up to 3 links away, with the line that links them. Example: {\"path\": \"Rope Notes.md\", \"depth\": 2, \"direction\": \"in\"}.",
+            "Notes linked to or from a note, up to 3 links away, with the line that links them and the link's type (the field it is in: `up:: [[X]]`, `supports: \"[[Y]]\"`; null for a plain link). Example: {\"path\": \"Rope Notes.md\", \"depth\": 2, \"direction\": \"in\"}; only some types: {\"path\": \"Claim.md\", \"type\": [\"supports\", \"contradicts\"]}.",
             json!({"type": "object", "properties": {
                 "path": {"type": "string"},
                 "depth": {"type": "integer", "minimum": 1, "maximum": 3, "default": 1},
                 "direction": {"type": "string", "enum": ["in", "out", "both"], "default": "both"},
+                "type": {"type": "array", "items": {"type": "string"}, "description": "Follow only links of these types (\"untyped\" for plain links)."},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}}, "required": ["path"]}),
             json!({"type": "object", "properties": {
                 "nodes": {"type": "array", "items": {"type": "object", "properties": {"path": {"type": "string"}, "title": {"type": "string"}, "depth": {"type": "integer"}}}},
-                "edges": {"type": "array", "items": {"type": "object", "properties": {"from": {"type": "string"}, "to": {"type": "string"}, "context": {"type": "string"}}}}},
+                "edges": {"type": "array", "items": {"type": "object", "properties": {"from": {"type": "string"}, "to": {"type": "string"}, "context": {"type": "string"}, "type": {"type": ["string", "null"]}}}}},
                 "required": ["nodes", "edges"]}),
             r,
             Access::Read,
@@ -672,6 +673,12 @@ fn neighbors(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         "out" => (false, true),
         _ => (true, true),
     };
+    // 0.12: only links of these types (`untyped` for plain ones).
+    let types: Option<BTreeSet<String>> = {
+        let t: BTreeSet<String> = list(a, "type").iter().map(|x| quire_app::markdown::fields::normalize_key(x)).collect();
+        (!t.is_empty()).then_some(t)
+    };
+    let keep = |field: Option<&String>| types.as_ref().is_none_or(|t| t.contains(field.map_or("untyped", String::as_str)));
     let ix = cx.index.read();
     let mut seen: HashMap<NotePath, usize> = HashMap::from([(start.clone(), 0)]);
     let mut queue = VecDeque::from([start.clone()]);
@@ -684,14 +691,14 @@ fn neighbors(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         }
         let mut next: Vec<(NotePath, Value)> = Vec::new();
         if want_in {
-            for b in ix.backlinks(&p) {
-                next.push((b.from.clone(), json!({"from": b.from, "to": p, "context": b.context})));
+            for b in ix.backlinks(&p).iter().filter(|b| keep(b.link.field.as_ref())) {
+                next.push((b.from.clone(), json!({"from": b.from, "to": p, "context": b.context, "type": b.link.field})));
             }
         }
         if want_out {
             for o in ix.graph().outgoing(&p) {
-                let context = ix.backlinks(o).iter().find(|b| b.from == p).map(|b| b.context.clone()).unwrap_or_default();
-                next.push((o.clone(), json!({"from": p, "to": o, "context": context})));
+                let Some(b) = ix.backlinks(o).iter().find(|b| b.from == p && keep(b.link.field.as_ref())) else { continue };
+                next.push((o.clone(), json!({"from": p, "to": o, "context": b.context, "type": b.link.field})));
             }
         }
         for (n, edge) in next {

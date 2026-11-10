@@ -19,6 +19,8 @@ pub mod cite;
 pub mod comment;
 pub mod editing;
 pub mod extract;
+// 0.12: typed links (inline fields and link-valued properties).
+pub mod fields;
 // 0.11: the formatting toolbar and the Format commands, on every cursor.
 pub mod format;
 pub mod frontmatter;

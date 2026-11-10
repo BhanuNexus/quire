@@ -79,12 +79,22 @@ never get in-client approval: their writes become suggestions.
 
 Read: `vault_info`, `search`, `view`, `outline`, `list`, `neighbors`,
 `recent_activity`, `ask`, `history`, `read_version`, `diff`, `tags`,
-`properties`, `query_view`, `tasks`, `proposals` (and `canvas_read`).
+`properties`, `query_view`, `tasks`, `proposals` (and `canvas_read`), and
+for typed links (0.12) `links` and `hierarchy`.
 
 Write: `begin_run`, `create`, `str_replace`, `insert`, `edit_section`,
 `append`, `set_properties`, `rename`, `delete`, `save_answer`,
-`capture_url`, `revert` (and `canvas_apply`). The 0.8 tools (`search_notes`,
+`capture_url`, `revert` (and `canvas_apply`), and `add_link`. The 0.8 tools (`search_notes`,
 `read_note`, …) remain for older clients.
+
+**Typed links** ([format](formats/links.md)): `neighbors` edges carry a
+`type` (the field the link is in, or null) and can follow chosen types;
+`links` lists a note's links and backlinks with their types (hierarchy
+reverses marked `implied`); `hierarchy` gives ancestors, descendants,
+siblings, previous/next and the paths from the top, depth 1–10, never
+through a note the client can't see; `add_link` adds `type:: [[Target]]`
+or `type: "[[Target]]"`, in the note's style, through the same review as
+`str_replace`.
 
 Every tool has an input and an output schema; `tools/list` describes each
 with examples. Results have text for the model and `structuredContent` for
@@ -283,7 +293,8 @@ each zone**, worked out by the same check that enforces it.
 * **Limit to tags or folders** (Bear-style): the client sees only notes
   with one of the tags (`#work/q4` counts as `work`) or under one of the
   folders. Everything else doesn't exist for it: `list`, `search` and its
-  snippets, `neighbors`, backlinks, views (rows, groups and counts),
+  snippets, `neighbors`, backlinks, typed links and the hierarchy (`links`,
+  `hierarchy`, and the link types in use), views (rows, groups and counts),
   resources and `ask` leave it out, and so does the agent panel's context.
 * **AI off for this vault** (top of Settings → Agents): no agent may use the
   vault (every MCP request gets an error saying so), and Quire sends

@@ -281,6 +281,7 @@ fn read_prefs(ws: &mut Workspace) {
     browse::read_prefs(ws, &prefs);
     crate::themes::read_prefs(ws, &prefs);
     crate::git::read_prefs(ws, &prefs);
+    crate::links_state::read_prefs(ws, &prefs);
     let mtime = vault.storage().modified(&quire_vault::NotePath::new(quire_vault::prefs::VAULT_PREFS_PATH)).ok();
     ws.features.nav.prefs_seen = Some((Instant::now(), mtime));
 }

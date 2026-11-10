@@ -1633,6 +1633,10 @@ impl Workspace {
             | C::ToggleToolbar
             | C::FocusToolbar
             | C::CustomizeCommands => return crate::features::run(self, cmd),
+            // 0.12 typed links (`links_state`).
+            C::AddTypedLink | C::GoToParent | C::GoToNextSibling | C::GoToPrevSibling | C::ShowHierarchy => {
+                return crate::features::run(self, cmd);
+            }
         }
         None
     }

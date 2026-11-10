@@ -181,6 +181,12 @@ pub enum Command {
     ToggleToolbar,
     FocusToolbar,
     CustomizeCommands,
+    // 0.12 typed links and hierarchy (`links_state.rs`)
+    AddTypedLink,
+    GoToParent,
+    GoToNextSibling,
+    GoToPrevSibling,
+    ShowHierarchy,
 }
 
 /// Which workstream's module handles a 0.9 command (design §6.2).
@@ -197,6 +203,8 @@ pub enum Owner {
     Spatial,
     /// 0.11 security (`secure_state.rs`).
     Secure,
+    /// 0.12 typed links and hierarchy (`links_state.rs`).
+    Links,
 }
 
 impl Command {
@@ -273,6 +281,7 @@ impl Command {
             | Self::StopLockingFolder
             | Self::AgentConnections
             | Self::ShowRecoveryKey => Owner::Secure,
+            Self::AddTypedLink | Self::GoToParent | Self::GoToNextSibling | Self::GoToPrevSibling | Self::ShowHierarchy => Owner::Links,
             _ => Owner::Core,
         }
     }
@@ -526,6 +535,12 @@ commands! {
     ToggleToolbar,    "View",   "Formatting toolbar",             [], false;
     FocusToolbar,     "View",   "Move focus to the formatting toolbar", [bare("F10")], true;
     CustomizeCommands,"App",    "Customize commands and shortcuts…", [], false;
+    // ---- 0.12 typed links: no default keys (Settings → Commands binds them).
+    AddTypedLink,     "Note",   "Add typed link…",                [], true;
+    GoToParent,       "Go",     "Go to parent",                   [], false;
+    GoToNextSibling,  "Go",     "Go to next sibling",             [], false;
+    GoToPrevSibling,  "Go",     "Go to previous sibling",         [], false;
+    ShowHierarchy,    "View",   "Show hierarchy",                 [], false;
 }
 
 impl Command {

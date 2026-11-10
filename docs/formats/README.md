@@ -56,6 +56,7 @@ F0 is the foundation step, after which its files are frozen).
 | task notes (`type: task`, `time_entries`, TaskNotes' names) | Markdown front matter | [tasks.md](tasks.md#task-notes) | 0.11 tasks | read and written |
 | `<config>/task-timer.json` | JSON, format 1 | [tasks.md](tasks.md#the-timer) | 0.11 tasks | written and read (app and CLI) |
 | board order, swimlanes, colours (`order.<column>`, `cardOrder`) | quire-view lines, `.base` view keys | [boards.md](boards.md) | 0.11 tasks | read and written |
+| typed links in notes (`parent:: [[X]]`, `[supports:: [[Y]]]`, `up: "[[X]]"`) and `[links]` in vault.toml | Markdown, TOML | [links.md](links.md) | 0.12 typed links | read; written by "Add typed link…" and `add_link` |
 | `Templates/*.md` (`{{…}}`, `quire-template:`) | Markdown | [templates.md](templates.md) | WS-E | read |
 | flashcards in notes (`::`, `?`, `==cloze==`) | Markdown | [srs.md](srs.md#cards-in-notes) | WS-E | read; `^k-` ids written on request |
 | `*.canvas` | JSON Canvas 1.0, one object per line | [canvas.md](canvas.md) | WS-G | read and written |

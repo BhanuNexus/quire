@@ -31,6 +31,10 @@ pub struct Link {
     pub heading: Option<String>,
     pub display: String,
     pub range: Range<usize>,
+    /// 0.12 typed links: the normalized name of the inline field
+    /// (`parent:: [[X]]`, `[supports:: [[Y]]]`) or front-matter property
+    /// (`up: "[[X]]"`) the link is in. See [`crate::fields`].
+    pub field: Option<String>,
 }
 
 impl Link {
@@ -183,10 +187,10 @@ pub fn extract(src: &str) -> Extracted {
             Event::End(TagEnd::Link) => {
                 if let Some((range, dest, display)) = link_stack.pop() {
                     let link = if is_external(&dest) {
-                        Link { kind: LinkKind::External, target: dest, heading: None, display, range }
+                        Link { kind: LinkKind::External, target: dest, heading: None, display, range, field: None }
                     } else {
                         let (target, heading) = internal_target(&dest);
-                        Link { kind: LinkKind::Relative, target, heading, display, range }
+                        Link { kind: LinkKind::Relative, target, heading, display, range, field: None }
                     };
                     out.links.push(link);
                 }
@@ -255,12 +259,18 @@ pub fn extract(src: &str) -> Extracted {
                 target: link.target,
                 heading: link.heading,
                 range,
+                field: None,
             }),
             Inline::Tag { name, .. } => tags.push(name),
             Inline::Highlight { .. } => {}
         }
     }
+    // 0.12: links in front-matter properties, and the type of links in inline fields.
+    if let Some(fm) = &out.front_matter {
+        out.links.extend(crate::fields::front_matter_links(src, fm.range.end));
+    }
     out.links.sort_by_key(|l| l.range.start);
+    crate::fields::type_links(&mut out.links, &crate::fields::inline_fields_with(src, &verbatim));
     let mut seen = std::collections::HashSet::new();
     out.tags = tags.into_iter().filter(|t| seen.insert(t.to_lowercase())).collect();
 

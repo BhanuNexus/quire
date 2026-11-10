@@ -70,6 +70,8 @@ pub(crate) struct FeatureUi {
     pub commands: crate::commands_ui::CommandsUi,
     pub toolbar: crate::toolbar_ui::ToolbarUi,
     pub insights: crate::panels::InsightsRows,
+    // ---- 0.12 typed links: the Hierarchy tab
+    pub hierarchy: crate::links_ui::HierarchyUi,
     // ---- app
     /// The file of the surface in the central panel (a `.base`, a canvas,
     /// a PDF), set each frame; `None` while a note is shown.
@@ -122,6 +124,13 @@ pub(crate) const SIDEBAR_TABS: &[TabDef] = &[
     // ---- WS-E
     TabDef { id: "agenda", label: label!("Agenda"), available: crate::agenda_ui::available, show: crate::agenda_ui::show },
     TabDef { id: "calendar", label: label!("Calendar"), available: crate::calendar_ui::available, show: crate::calendar_ui::show },
+    // ---- 0.12 typed links
+    TabDef {
+        id: "hierarchy",
+        label: label!("Hierarchy"),
+        available: crate::links_ui::hierarchy_available,
+        show: crate::links_ui::hierarchy,
+    },
 ];
 
 /// Feature tabs of Settings, after the built-in Editor, AI & search, Sync
@@ -174,6 +183,8 @@ pub(crate) const EDITOR_BANNERS: &[BannerDef] = &[
     BannerDef { id: "canvas-review", available: crate::canvas_ui::banner_available, show: crate::canvas_ui::banner },
     // ---- 0.10 people: an Excalidraw note's picture, read-only
     BannerDef { id: "drawing", available: crate::drawing_ui::banner_available, show: crate::drawing_ui::banner },
+    // ---- 0.12 typed links: "Maths › Calculus › Limits"
+    BannerDef { id: "trail", available: crate::links_ui::trail_available, show: crate::links_ui::trail },
 ];
 
 /// A tooltip for the note's text under the pointer: `tip(ws, line, byte)`
@@ -278,6 +289,9 @@ pub(crate) const fn ui_target(cmd: Command) -> Option<UiTarget> {
         Command::ShowRecoveryKey => UiTarget::Overlay(crate::lock_ui::LockDialog::make_show_key),
         // ---- 0.11 editor
         Command::CustomizeCommands => UiTarget::Settings("commands"),
+        // ---- 0.12 typed links
+        Command::AddTypedLink => UiTarget::Overlay(crate::links_ui::AddLinkDialog::make),
+        Command::ShowHierarchy => UiTarget::Sidebar("hierarchy"),
         _ => return None,
     })
 }
@@ -407,5 +421,8 @@ pub(crate) fn layout_samples(ws: &mut Workspace) -> Vec<(&'static str, crate::ov
             "quit with unsaved locked notes",
             Overlay::Feature(Box::new(crate::lock_ui::QuitDialog::new(vec!["2026-11-08".into(), "Letter to Sam".into()]))),
         ),
+        // ---- 0.12 typed links
+        ("add typed link: type", Overlay::Feature(Box::new(crate::links_ui::AddLinkDialog::sample(0)))),
+        ("add typed link: note", Overlay::Feature(Box::new(crate::links_ui::AddLinkDialog::sample(1)))),
     ]
 }

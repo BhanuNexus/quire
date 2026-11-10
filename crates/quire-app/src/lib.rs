@@ -33,6 +33,8 @@ pub mod graph;
 pub mod history_ops;
 pub mod jobs;
 pub mod keymap;
+// 0.12: typed links and hierarchy.
+pub mod links_state;
 pub mod mcp_state;
 pub mod meta_refactor;
 pub mod nav;

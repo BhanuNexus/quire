@@ -120,7 +120,18 @@ fn a_client_limited_to_tags_and_folders_never_sees_the_rest() {
             for _ in 0..2 {
                 let _ = write!(links, " [[Note{}]]", rng.below(n));
             }
-            let text = format!("{fm}# Note{i}\nshared words here {}{inline}\nSee{links}.\n- [ ] task {}\n", note.marker, note.marker);
+            // 0.12: typed links too, inline and in front matter, and a field
+            // named after the marker (a hidden note's field names are hidden).
+            let fm = fm.replacen("---\n", &format!("---\nup: \"[[Note{}]]\"\n", rng.below(n)), 1);
+            let typed = format!(
+                "parent:: [[Note{}]]\n[supports:: [[Note{}]]] and [{}:: [[Note{}]]]\n",
+                rng.below(n),
+                rng.below(n),
+                note.marker,
+                rng.below(n)
+            );
+            let text =
+                format!("{fm}# Note{i}\nshared words here {}{inline}\nSee{links}.\n{typed}- [ ] task {}\n", note.marker, note.marker);
             let abs = root.join(&note.path);
             std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
             std::fs::write(abs, text).unwrap();
@@ -158,19 +169,27 @@ fn a_client_limited_to_tags_and_folders_never_sees_the_rest() {
             call("query_view", &json!({"spec": "from: #work\ngroup: owner\nlayout: board"})),
             ("resources/list".into(), json!({})),
         ];
-        let mut named: Vec<Option<usize>> = vec![None; calls.len()];
+        let mut named: Vec<Vec<usize>> = vec![Vec::new(); calls.len()];
         for (i, note) in notes.iter().enumerate() {
+            // 0.12: a typed link to another note (that may be hidden) names both.
+            let j = rng.below(n);
+            calls.push(call("add_link", &json!({"path": note.path, "type": "related", "target": format!("Note{j}")})));
+            named.push(vec![i, j]);
             for c in [
                 call("search", &json!({"query": note.marker})),
                 call("view", &json!({"path": note.path})),
                 call("outline", &json!({"path": note.path})),
                 call("neighbors", &json!({"path": note.path, "depth": 2})),
                 call("backlinks", &json!({"name": format!("Note{i}")})),
+                call("links", &json!({"path": note.path})),
+                call("links", &json!({"path": note.path, "type": ["up", "supports", "untyped"], "direction": "in"})),
+                call("hierarchy", &json!({"path": note.path, "depth": 10})),
+                call("neighbors", &json!({"path": note.path, "type": ["parent", "up"]})),
                 call("read_note", &json!({"name": format!("Note{i}")})),
                 ("resources/read".into(), json!({"uri": format!("quire://note/{}", note.path.replace(' ', "%20"))})),
             ] {
                 calls.push(c);
-                named.push(Some(i));
+                named.push(vec![i]);
             }
         }
         let mut replies = run(&srv, &calls);
@@ -185,7 +204,7 @@ fn a_client_limited_to_tags_and_folders_never_sees_the_rest() {
             assert!(!all.contains(&note.marker), "seed {seed}: the text of {} leaked (policy {policy})", note.path);
             for (r, who) in replies.iter().zip(&named) {
                 // A call that named this note may say "no note at <its path>"; any other mention is a leak.
-                if *who != Some(n) {
+                if !who.contains(&n) {
                     let text = r.to_string();
                     assert!(!text.contains(&note.path), "seed {seed}: the path of {} leaked in {text} (policy {policy})", note.path);
                 }
@@ -204,7 +223,7 @@ fn locked_folders_are_invisible_to_agents() {
     std::fs::create_dir_all(root.join(".quire/shared")).unwrap();
     std::fs::write(root.join("Journal/Day.md"), "# Day\nlockedmarker shared\n").unwrap();
     std::fs::write(root.join("Journal/pic.png"), "lockedpicture").unwrap();
-    std::fs::write(root.join("Open.md"), "# Open\nshared [[Day]]\n").unwrap();
+    std::fs::write(root.join("Open.md"), "# Open\nshared [[Day]]\nup:: [[Day]]\n").unwrap();
     std::fs::write(root.join(".quire/shared/agent-policy.toml"), "format = 1\ndefault = \"direct\"\n").unwrap();
     let v = Vault::open_local(&root).unwrap();
     lock_folder(&v, "Journal", Some("pass phrase"), Kdf::TEST, 1).unwrap();
@@ -224,12 +243,15 @@ fn locked_folders_are_invisible_to_agents() {
             ("resources/list".into(), json!({})),
             call("create_note", &json!({"title": "Sneak", "folder": "Journal", "content": "x"})),
             call("write", &json!({"path": "Journal/New.md", "text": "plain"})),
+            // 0.12: typed links and the hierarchy don't reach into it either.
+            call("links", &json!({"path": "Open.md"})),
+            call("hierarchy", &json!({"path": "Open.md"})),
         ],
     );
     let all: String = replies.iter().map(Value::to_string).collect();
     assert!(!all.contains("lockedmarker") && !all.contains("lockedpicture"), "{all}");
     // Lists, search and links never mention the folder (calls that named a path may echo it in "not found").
-    for r in replies.iter().filter(|r| [1, 2, 6, 9].contains(&r["id"].as_u64().unwrap_or(0))) {
+    for r in replies.iter().filter(|r| [1, 2, 6, 9, 12, 13].contains(&r["id"].as_u64().unwrap_or(0))) {
         let t = r.to_string();
         assert!(!t.contains("Journal") && !t.contains(".qenc") && !t.contains("quire-lock"), "{t}");
     }
@@ -303,4 +325,77 @@ fn query_view_groups_and_totals_count_only_visible_notes() {
     assert!(all.contains("Open Co"));
     let r = replies.iter().find(|r| r["id"] == 1).unwrap();
     assert_eq!(r["result"]["structuredContent"]["total"], 1, "{r}");
+}
+
+/// 0.12 typed links: `links`, `hierarchy` and `add_link` see only what the
+/// client may, never walk through a hidden note, and write through review.
+#[test]
+fn typed_links_and_hierarchy_for_a_limited_client() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("vault");
+    std::fs::create_dir_all(root.join(".quire/shared")).unwrap();
+    std::fs::create_dir_all(root.join("wiki")).unwrap();
+    let files = [
+        ("Maths.md", "# Maths #ok\n"),
+        ("wiki/Calculus.md", "---\nup: \"[[Maths]]\"\ntags: [ok]\n---\n# Calculus\n"),
+        ("Limits.md", "# Limits #ok\nup:: [[Calculus]]\n[supports:: [[Claim]]]\nnext:: [[Series]]\n"),
+        ("Series.md", "# Series #ok\nup:: [[Hidden]]\n"),
+        ("Hidden.md", "# Hidden zqxhidden\nup:: [[Calculus]]\n[zqxfield:: [[Limits]]]\n"),
+        ("Claim.md", "# Claim #ok\n"),
+    ];
+    for (p, t) in files {
+        std::fs::write(root.join(p), t).unwrap();
+    }
+    std::fs::write(
+        root.join(".quire/shared/agent-policy.toml"),
+        "format = 1\ndefault = \"propose\"\n[[zone]]\npath = \"wiki/\"\nrole = \"agent\"\nmode = \"direct\"\n[clients.\"mcp:probe\"]\nallow_tags = [\"ok\"]\n",
+    )
+    .unwrap();
+    let srv = server(&root, Some("probe"));
+    let replies = run(
+        &srv,
+        &[
+            call("links", &json!({"path": "Limits.md"})),
+            call("links", &json!({"path": "Claim.md", "direction": "in", "type": "supports"})),
+            call("hierarchy", &json!({"path": "wiki/Calculus.md", "depth": 5})),
+            call("hierarchy", &json!({"path": "Series.md", "depth": 5})),
+            call("neighbors", &json!({"path": "Limits.md", "type": ["up"]})),
+            call("add_link", &json!({"path": "wiki/Calculus.md", "type": "related", "target": "Claim"})),
+            call("add_link", &json!({"path": "Limits.md", "type": "source", "target": "Maths"})),
+            call("add_link", &json!({"path": "Limits.md", "type": "source", "target": "Hidden"})),
+        ],
+    );
+    let by_id = |id: u64| replies.iter().find(|r| r["id"] == id).unwrap()["result"].clone();
+    // The call that names Hidden may say "no note at Hidden.md"; no other reply mentions it.
+    let all: String = replies.iter().filter(|r| r["id"] != 8).map(Value::to_string).collect();
+    assert!(!all.contains("zqx") && !all.contains("Hidden"), "a hidden note never shows: {all}");
+
+    let links = &by_id(1)["structuredContent"]["links"];
+    let has =
+        |dir: &str, t: &str, p: &str| links.as_array().unwrap().iter().any(|l| l["direction"] == dir && l["type"] == t && l["path"] == p);
+    assert!(has("out", "up", "wiki/Calculus.md") && has("out", "supports", "Claim.md") && has("out", "next", "Series.md"), "{links}");
+    let into_claim = by_id(2)["structuredContent"]["links"].clone();
+    assert_eq!(
+        into_claim,
+        json!([{"direction": "in", "type": "supports", "hierarchy": null, "implied": false, "path": "Limits.md", "title": "Limits #ok"}])
+    );
+
+    let calc = &by_id(3)["structuredContent"];
+    assert_eq!(calc["ancestors"][0]["path"], "Maths.md");
+    let kids: Vec<&str> = calc["descendants"].as_array().unwrap().iter().filter_map(|d| d["path"].as_str()).collect();
+    assert_eq!(kids, ["Limits.md"], "Hidden is skipped, and Series (below it) isn't reached through it");
+    let series = &by_id(4)["structuredContent"];
+    assert_eq!(series["ancestors"], json!([]));
+    assert_eq!(series["trails"], json!([]), "a trail through a hidden note is dropped");
+    assert_eq!(series["previous"], "Limits.md");
+    let n = &by_id(5)["structuredContent"]["edges"];
+    assert!(n.as_array().unwrap().iter().all(|e| e["type"] == "up"), "{n}");
+
+    // In the agent's zone the link is written; elsewhere it is a suggestion; a hidden target is "not found".
+    assert_eq!(by_id(6)["structuredContent"]["outcome"], "applied", "{}", by_id(6));
+    assert!(std::fs::read_to_string(root.join("wiki/Calculus.md")).unwrap().contains("related: \"[[Claim]]\"\n"));
+    assert_eq!(by_id(7)["structuredContent"]["outcome"], "proposed", "{}", by_id(7));
+    assert_eq!(std::fs::read_to_string(root.join("Limits.md")).unwrap(), files[2].1, "a suggestion changes nothing yet");
+    let hidden = replies.iter().find(|r| r["id"] == 8).unwrap().to_string();
+    assert!(hidden.contains("not_found"), "{hidden}");
 }

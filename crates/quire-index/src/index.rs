@@ -26,6 +26,8 @@ pub struct Index {
     attachments: HashMap<NotePath, AttachmentText>,
     /// Keyword index of attachment pages (`path#page=N`).
     pub(crate) attachment_text: FullText,
+    /// 0.12: which typed links are hierarchy edges (vault.toml `[links]`).
+    link_config: crate::relations::LinkConfig,
 }
 
 /// Byte offsets where each line starts.
@@ -99,7 +101,30 @@ impl Index {
     /// Rebuild the link graph (linear in the number of links).
     pub fn refresh(&mut self) {
         let sources = &self.sources;
-        self.graph = LinkGraph::build(self.records.values(), &|p| sources.get(p).map(String::as_str));
+        self.graph = LinkGraph::build(self.records.values(), &|p| sources.get(p).map(String::as_str), &self.link_config);
+    }
+
+    /// The vault's typed-link settings in use.
+    pub const fn link_config(&self) -> &crate::relations::LinkConfig {
+        &self.link_config
+    }
+
+    /// Use other typed-link settings (rebuilds the link graph when they differ).
+    pub fn set_link_config(&mut self, cfg: crate::relations::LinkConfig) {
+        if cfg != self.link_config {
+            self.link_config = cfg;
+            self.refresh();
+        }
+    }
+
+    /// Set the settings without rebuilding the graph (the caller refreshes).
+    pub(crate) fn set_link_config_quiet(&mut self, cfg: crate::relations::LinkConfig) {
+        self.link_config = cfg;
+    }
+
+    /// Typed links and the hierarchy.
+    pub fn relations(&self) -> &crate::relations::Relations {
+        self.graph.relations()
     }
 
     pub fn len(&self) -> usize {

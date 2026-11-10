@@ -77,7 +77,11 @@ fn local(ms: i64) -> Option<NaiveDateTime> {
 
 impl Row for RecordRow<'_> {
     fn property(&self, name: &str) -> Option<Val> {
-        quire_index::views::property(self.r, name).map(value)
+        quire_index::views::property(self.r, name).map(value).or_else(|| {
+            // 0.12: an inline field holding links (`up:: [[X]]`) is a property too.
+            let v = quire_index::views::typed_targets(self.r, name);
+            (!v.is_empty()).then(|| Val::List(v.into_iter().map(|t| Val::Str(format!("[[{t}]]"))).collect()))
+        })
     }
 
     fn file(&self, field: &str) -> Option<Val> {

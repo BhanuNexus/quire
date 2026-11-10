@@ -348,7 +348,9 @@ fn apply_approved(cx: &ToolCx<'_>, path: &NotePath, mut cs: ChangeSet, extra: Va
 }
 
 /// Apply `op` to `path` with optimistic concurrency, then submit.
-fn edit(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value, tool: &str, op: &EditOp) -> ToolOutput {
+/// The one path every edit tool takes: read, apply `op`, check the
+/// version, then submit (applied, or a proposal under review).
+pub(crate) fn edit(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value, tool: &str, op: &EditOp) -> ToolOutput {
     let path = match existing(cx, a, "path") {
         Ok(p) => p,
         Err(e) => return e,
@@ -423,6 +425,7 @@ fn title_for(tool: &str, path: &NotePath) -> String {
         "rename" => format!("Rename {}", path.stem()),
         "delete" => format!("Delete {}", path.stem()),
         "set_properties" => format!("Set properties of {}", path.stem()),
+        "add_link" => format!("Add a typed link to {}", path.stem()),
         _ => format!("Edit {}", path.stem()),
     }
 }

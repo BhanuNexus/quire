@@ -43,14 +43,24 @@ impl LinkRewrite<'_> {
 }
 
 /// Rewrite links in `src`. Returns `None` when nothing changed.
+///
+/// 0.12: links in front-matter properties (`up: "[[Old]]"`) are rewritten
+/// too; only the target inside `[[…]]` changes, so every other byte of the
+/// note stays as it was. In a single-quoted YAML value, a `'` in the new
+/// name is doubled so the property still reads back.
 pub fn rewrite_links(src: &str, rw: &LinkRewrite<'_>) -> Option<String> {
     let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
-    for link in extract(src).links {
+    let ex = extract(src);
+    let fm_end = ex.front_matter.as_ref().map_or(0, |f| f.range.end);
+    for link in ex.links {
         if !link.is_internal() || !rw.matches(&link.target) {
             continue;
         }
         let raw = &src[link.range.clone()];
-        let new_target = rw.new_target(&link.target);
+        let mut new_target = rw.new_target(&link.target);
+        if link.range.end <= fm_end && new_target.contains('\'') && in_single_quotes(src, link.range.start) {
+            new_target = new_target.replace('\'', "''");
+        }
         match link.kind {
             LinkKind::Wiki | LinkKind::Embed => {
                 let open = if link.kind == LinkKind::Embed { 3 } else { 2 };
@@ -95,6 +105,15 @@ pub fn rewrite_links(src: &str, rw: &LinkRewrite<'_>) -> Option<String> {
     Some(out)
 }
 
+/// Whether byte `at` of a front-matter line is inside a single-quoted
+/// YAML scalar.
+fn in_single_quotes(src: &str, at: usize) -> bool {
+    let start = src[..at].rfind('\n').map_or(0, |i| i + 1);
+    let line = &src[start..at];
+    let value = line.find(": ").map_or(line, |i| &line[i + 1..]);
+    quire_markdown::fields::yaml_quote_at(value) == Some('\'')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,5 +125,18 @@ mod tests {
         let out = rewrite_links(src, &rw).unwrap();
         assert_eq!(out, "[[New Name]] [[New Name#Part|alias]] ![[Folder/New Name]] [md](Folder/New%20Name.md#x) [[Other]] `[[Old Name]]`");
         assert!(rewrite_links("[[Other]]", &rw).is_none());
+    }
+
+    #[test]
+    fn rewrites_typed_links_keeping_every_other_byte() {
+        let src = "---\r\nup: \"[[Old Name]]\"   # parent\r\nrelated: ['[[Old Name|o]]', \"[[Keep]]\"]\r\ndown:\r\n  - \"[[Folder/Old Name#H]]\"\r\n---\r\nparent:: [[Old Name]]\r\n[supports:: [[old name]]]\r\n";
+        let rw = LinkRewrite { old_stem: "Old Name", old_path: "Folder/Old Name", new_stem: "Ada's", resolves: None, new_path: None };
+        let out = rewrite_links(src, &rw).unwrap();
+        assert_eq!(
+            out,
+            "---\r\nup: \"[[Ada's]]\"   # parent\r\nrelated: ['[[Ada''s|o]]', \"[[Keep]]\"]\r\ndown:\r\n  - \"[[Folder/Ada's#H]]\"\r\n---\r\nparent:: [[Ada's]]\r\n[supports:: [[Ada's]]]\r\n"
+        );
+        let fm = quire_markdown::frontmatter::parse(&out).unwrap();
+        assert_eq!(fm.get("related").unwrap().as_list()[0], "[[Ada's|o]]");
     }
 }

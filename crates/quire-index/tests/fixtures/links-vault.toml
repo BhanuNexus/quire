@@ -1,0 +1,5 @@
+format = 1
+
+# Breadcrumbs-style hierarchy names, plus one of this vault's own.
+[links]
+up = ["up", "parent", "broader"]

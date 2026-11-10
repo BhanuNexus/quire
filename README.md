@@ -132,6 +132,7 @@ cargo build --release -p quire-desktop --no-default-features   # ~41 MiB instead
 | Smart editing | Type `/` for a menu of headings, lists, checklists, code, tables, views, dates and your templates; `#` suggests tags you already use. List/task/quote continuation on Enter, Tab/Shift-Tab list indent, toggle checklist, wrap selection, heading levels, table auto-format |
 | Inline intelligence | `12 * 4 =` + Enter → result (variables, `ans`, `%`, functions), `@tomorrow` / `@next friday` / `@in 3 days` → `[[2026-11-02]]` |
 | Linking | Type `[[` for a list of notes to link (or a new one). `[[wikilinks]]`, `[[note#heading|alias]]`, embeds, click/Alt+Enter to follow, unresolved links create notes, F2 rename rewrites every link |
+| Typed links & hierarchy | Dataview and Breadcrumbs syntax as written: `parent:: [[X]]`, `[supports:: [[Y]]]`, `up: "[[X]]"`. A breadcrumbs trail above the note, Insights grouped by type (Parents, Children, Supports, Contradicts…), a Hierarchy tree, graph edges coloured and filtered by type, views and Bases by type, "Add typed link…", Go to parent / sibling. Agents get `links`, `hierarchy` and `add_link` ([format](docs/formats/links.md)) |
 | Knowledge | Backlinks with context, unlinked mentions, suggested links, related notes (TF-IDF), suggested tags, key sentences, nested `#tags`, tasks across the vault |
 | Finding | Ctrl+P fuzzy quick open, Ctrl+K command palette, search that combines exact words (BM25, `"phrases"`, `#tag`, `-exclude`) with meaning (≈ results); accents optional ("cafe" finds "Café") |
 | Ask your notes | Ctrl+Shift+A: answers from your own notes with `[[Note#Heading]]` citations to the exact sentences. Offline it quotes the best sentences; with a provider it writes an answer from the same sources, shown as it is written, with Stop |
@@ -149,6 +150,18 @@ cargo build --release -p quire-desktop --no-default-features   # ~41 MiB instead
 | Quire Sync (beta) | Optional end-to-end encrypted sync, free through a folder you already sync (Dropbox, iCloud Drive, Google Drive, OneDrive, Syncthing), straight to S3-compatible storage (AWS S3, Cloudflare R2, Backblaze B2, Wasabi, MinIO) or a WebDAV folder (Nextcloud, Fastmail, Synology, rclone) ([setup and costs](docs/sync-backends.md)), or through a server you run yourself ([guide](docs/self-hosting.md)). Only ciphertext leaves your device; concurrent edits merge line by line and never overwrite each other. A managed service is planned |
 | Sync safety | Works with any folder sync (iCloud, Dropbox, Syncthing, Nextcloud, Git). A note changed elsewhere while you edit is merged line by line; overlapping edits pause autosave and let you keep yours, take theirs or keep both. Conflict copies made by sync tools are found and merged back |
 | Updates | Optional daily check for a new release (Settings → About). Sends nothing about you; nothing installs itself |
+
+### Coming from Obsidian plugins
+
+Quire reads what these plugins write, in place, so a vault works in both.
+
+| Plugin | In Quire |
+|---|---|
+| Breadcrumbs | Typed links in properties and inline fields (`up`, `down`, `same`, `next`, `prev` and your own names), implied reverse links, the trail, a hierarchy tree, previous/next. Not read: list notes, tag notes, naming-scheme notes (Dendron, dates, regex) and transitive rules beyond reversal ([mapping](docs/formats/links.md#mapping-from-dataview-and-breadcrumbs)) |
+| Dataview | Inline fields (`key:: value`, `[key:: value]`) and properties; `dataview` query blocks are translated to `quire-view` blocks, saying what can't be (no DataviewJS) |
+| Tasks | Emoji and Dataview task fields, recurrence, reminders, the agenda |
+| TaskNotes | Task notes with TaskNotes' property names, read and kept |
+| Bases (core) | `.base` files with formulas, summaries, `groupBy`, kanban and map views |
 
 ## Keyboard
 

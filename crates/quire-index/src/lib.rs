@@ -18,6 +18,8 @@ mod hybrid;
 mod index;
 pub mod joined;
 mod record;
+// 0.12: typed links and the hierarchy.
+pub mod relations;
 mod sections;
 pub mod semantic;
 pub mod tokenize;
@@ -32,4 +34,5 @@ pub use hybrid::HybridHit;
 pub use index::Index;
 pub use joined::{CrossLinks, Joined};
 pub use record::NoteRecord;
+pub use relations::{Hier, LinkConfig, Relation, Relations, TrailMode};
 pub use sections::{SearchFilters, SearchKind, SectionHit};
