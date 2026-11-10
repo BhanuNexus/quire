@@ -23,7 +23,7 @@ pub use locked::LockedFolderState;
 pub use note::{NotePath, sanitize_title};
 pub use prefs::{PrefsError, VaultPrefs};
 pub use refactor::{LinkRewrite, rewrite_links};
-pub use storage::{LocalFs, MemFs, Storage};
+pub use storage::{LocalFs, MemFs, SingleFile, Storage};
 pub use templates::{TemplateVars, expand_template};
 pub use vault::{RenameReport, Vault, VaultConfig};
 pub use watch::{VaultEvent, VaultWatcher};

@@ -286,11 +286,19 @@ img{max-width:100%}li.task{list-style:none}
 "#;
 
 /// A standalone HTML document for export.
+///
+/// The note's own HTML is passed through as written: clean it first
+/// (`quire_app::sanitize::note_html`) when the page will be opened in a
+/// browser, and use [`html_document`].
 pub fn to_html_document(title: &str, src: &str, resolve: Resolver<'_>) -> String {
+    html_document(title, &to_html(src, resolve))
+}
+
+/// A standalone HTML document around a note's HTML (`body`).
+pub fn html_document(title: &str, body: &str) -> String {
     format!(
-        "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>{}</title>\n<style>{EXPORT_CSS}{CALLOUT_CSS}</style>\n</head>\n<body>\n<article>\n{}</article>\n</body>\n</html>\n",
+        "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>{}</title>\n<style>{EXPORT_CSS}{CALLOUT_CSS}</style>\n</head>\n<body>\n<article>\n{body}</article>\n</body>\n</html>\n",
         escape_html(title),
-        to_html(src, resolve)
     )
 }
 

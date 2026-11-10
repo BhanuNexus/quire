@@ -263,7 +263,10 @@ impl Index {
                 }
             }
         }
-        counts.into_iter().map(|(k, v)| (k, v.len())).collect()
+        let mut out: Vec<(String, usize)> = counts.into_iter().map(|(k, v)| (k, v.len())).collect();
+        // Tree order: `a`, `a/b`, `a/b/c`, then `a-b` (plain string order would put `a-b` before `a/b`).
+        out.sort_by(|a, b| a.0.split('/').cmp(b.0.split('/')));
+        out
     }
 
     pub fn notes_with_tag(&self, tag: &str) -> Vec<NotePath> {
@@ -324,6 +327,36 @@ mod tests {
         assert_eq!(ix.search("edit", 10)[0].path.as_str(), "Editors.md"); // prefix
         assert!(ix.search("rope zebra", 10).is_empty());
         assert!(ix.search("#cs", 10).iter().any(|h| h.path.as_str() == "Rope Notes.md"));
+    }
+
+    /// 0.12 verify: `#a/b/c` is a tree. A parent tag counts and finds its children, in the
+    /// tag list, in search and in `notes_with_tag`; the list is in tree order.
+    #[test]
+    fn nested_tags_form_a_tree() {
+        let mut ix = Index::new();
+        for (p, s) in [
+            ("A.md", "# A\n#proj/web/ui and #proj/web/api\n"),
+            ("B.md", "---\ntags: [proj/ios, Proj/Web]\n---\n# B\n"),
+            ("C.md", "# C\n#proj-old and #project\n"),
+            ("D.md", "# D\nin code `#proj/hidden` is not a tag\n"),
+        ] {
+            ix.insert_record(NoteRecord::from_source(NotePath::new(p), s), s.to_string());
+        }
+        ix.refresh();
+        let tags = ix.tags();
+        let names: Vec<&str> = tags.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(names, ["proj", "proj/ios", "proj/web", "proj/web/api", "proj/web/ui", "proj-old", "project"]);
+        let count = |t: &str| tags.iter().find(|(n, _)| n == t).map(|(_, c)| *c);
+        assert_eq!((count("proj"), count("proj/web"), count("proj/web/ui"), count("proj/ios")), (Some(2), Some(2), Some(1), Some(1)));
+        // A parent finds the notes of every descendant, and never a lookalike.
+        let paths = |v: Vec<NotePath>| v.iter().map(|p| p.as_str().to_string()).collect::<Vec<_>>();
+        assert_eq!(paths(ix.notes_with_tag("proj")), ["A.md", "B.md"]);
+        assert_eq!(paths(ix.notes_with_tag("#proj/web")), ["A.md", "B.md"]);
+        assert_eq!(paths(ix.notes_with_tag("proj/web/ui")), ["A.md"]);
+        let found = |q: &str| ix.search(q, 10).iter().map(|h| h.path.as_str().to_string()).collect::<Vec<_>>();
+        assert_eq!(found("#proj"), ["A.md", "B.md"]);
+        assert_eq!(found("#proj/web/api"), ["A.md"]);
+        assert!(found("#proj/hidden").is_empty());
     }
 
     #[test]

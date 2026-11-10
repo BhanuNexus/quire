@@ -323,6 +323,139 @@ impl Storage for LocalFs {
     }
 }
 
+// ---------------------------------------------------------------- SingleFile
+
+/// One Markdown file that is not in a vault (0.12 "single-file mode").
+///
+/// `quire notes.md`, a file association and a dropped file open the file
+/// without making its folder a vault: the folder is not scanned, and no
+/// `.quire/` is made in it. Only this file is ever written (when you save).
+/// The app's own data (history, the agent ledger, indexes) stays in memory
+/// and goes when Quire closes. Other files in the folder can be read, so
+/// `![[picture.png]]` next to the note still shows; none can be made.
+#[derive(Debug)]
+pub struct SingleFile {
+    local: LocalFs,
+    name: NotePath,
+    /// App data under `.quire/`: kept in memory.
+    side: MemFs,
+}
+
+impl SingleFile {
+    /// `file` must exist and be a regular file.
+    pub fn open(file: &Path) -> Result<Self> {
+        let file = file.canonicalize().map_err(io_err(file.display().to_string()))?;
+        if !file.is_file() {
+            return Err(VaultError::NotFound(file.display().to_string()));
+        }
+        let (Some(dir), Some(name)) = (file.parent(), file.file_name()) else {
+            return Err(VaultError::InvalidName(file.display().to_string()));
+        };
+        Ok(Self { local: LocalFs::new(dir)?, name: NotePath::new(name.to_string_lossy()), side: MemFs::new() })
+    }
+
+    /// The note's path in this storage (its file name).
+    pub fn note(&self) -> NotePath {
+        self.name.clone()
+    }
+
+    /// The folder the file is in.
+    pub fn folder(&self) -> &Path {
+        self.local.root()
+    }
+
+    fn is_main(&self, p: &NotePath) -> bool {
+        *p == self.name
+    }
+
+    fn is_app(p: &NotePath) -> bool {
+        p.as_str().starts_with('.')
+    }
+
+    /// Read from the folder: the file, and other files that aren't app data.
+    fn on_disk(&self, p: &NotePath) -> bool {
+        self.is_main(p) || !Self::is_app(p)
+    }
+
+    fn refuse(p: &NotePath, what: &str) -> VaultError {
+        VaultError::Io {
+            path: p.to_string(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("this file is open on its own, outside a vault, so Quire can't {what}; open its folder as a vault to do that"),
+            ),
+        }
+    }
+}
+
+impl Storage for SingleFile {
+    fn list(&self) -> Result<Vec<NotePath>> {
+        Ok(if self.local.exists(&self.name) { vec![self.name.clone()] } else { Vec::new() })
+    }
+
+    fn read_bytes(&self, path: &NotePath) -> Result<Vec<u8>> {
+        if self.is_main(path) {
+            return self.local.read_bytes(path);
+        }
+        match self.side.read_bytes(path) {
+            Err(VaultError::NotFound(_)) if self.on_disk(path) => self.local.read_bytes(path),
+            r => r,
+        }
+    }
+
+    fn write_bytes_atomic(&self, path: &NotePath, contents: &[u8]) -> Result<()> {
+        if self.is_main(path) {
+            self.local.write_bytes_atomic(path, contents)
+        } else if Self::is_app(path) {
+            self.side.write_bytes_atomic(path, contents)
+        } else {
+            Err(Self::refuse(path, "make other files"))
+        }
+    }
+
+    fn write_bytes_if(&self, path: &NotePath, still: &dyn Fn(Option<&[u8]>) -> bool, bytes: &[u8]) -> Result<bool> {
+        if self.is_main(path) {
+            self.local.write_bytes_if(path, still, bytes)
+        } else if Self::is_app(path) {
+            self.side.write_bytes_if(path, still, bytes)
+        } else {
+            Err(Self::refuse(path, "make other files"))
+        }
+    }
+
+    fn rename(&self, from: &NotePath, to: &NotePath) -> Result<()> {
+        if Self::is_app(from) && Self::is_app(to) { self.side.rename(from, to) } else { Err(Self::refuse(from, "rename or move it")) }
+    }
+
+    fn trash(&self, path: &NotePath) -> Result<()> {
+        if Self::is_app(path) { self.side.trash(path) } else { Err(Self::refuse(path, "delete it")) }
+    }
+
+    fn exists(&self, path: &NotePath) -> bool {
+        self.side.exists(path) || (self.on_disk(path) && self.local.exists(path))
+    }
+
+    fn modified(&self, path: &NotePath) -> Result<SystemTime> {
+        if self.on_disk(path) { self.local.modified(path) } else { self.side.modified(path) }
+    }
+
+    fn absolute(&self, path: &NotePath) -> Option<PathBuf> {
+        self.on_disk(path).then(|| self.local.absolute(path)).flatten()
+    }
+
+    fn list_under(&self, folder: &str) -> Result<Vec<NotePath>> {
+        if folder.starts_with('.') { self.side.list_under(folder) } else { Ok(Vec::new()) }
+    }
+
+    fn remove(&self, path: &NotePath) -> Result<()> {
+        if Self::is_app(path) { self.side.remove(path) } else { Err(Self::refuse(path, "delete files")) }
+    }
+
+    fn append_line(&self, path: &NotePath, line: &str) -> Result<()> {
+        if Self::is_app(path) { self.side.append_line(path, line) } else { Err(Self::refuse(path, "write to other files")) }
+    }
+}
+
 // ---------------------------------------------------------------- MemFs
 
 /// In-memory storage for tests, demos and the scratchpad.

@@ -62,6 +62,14 @@ impl Vault {
         Ok(Self::new(Arc::new(LocalFs::new(root.as_ref())?)))
     }
 
+    /// One Markdown file outside any vault ([`crate::SingleFile`]): the
+    /// vault and the file's note path (its name).
+    pub fn open_single_file(file: impl AsRef<Path>) -> Result<(Self, NotePath)> {
+        let storage = crate::SingleFile::open(file.as_ref())?;
+        let note = storage.note();
+        Ok((Self::new(Arc::new(storage)), note))
+    }
+
     pub fn in_memory(files: &[(&str, &str)]) -> Self {
         Self::new(Arc::new(MemFs::with_files(files.iter().copied())))
     }

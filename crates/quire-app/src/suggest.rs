@@ -244,7 +244,9 @@ impl Workspace {
                 .collect()
         };
         let q = query.trim();
-        let exists = ix.records().any(|r| r.path.stem().eq_ignore_ascii_case(q) || r.title.eq_ignore_ascii_case(q));
+        // A name that links to an existing note (accents and case ignored) isn't offered as new.
+        let exists = ix.resolve(q, active.as_ref()).is_some()
+            || ix.records().any(|r| r.path.stem().eq_ignore_ascii_case(q) || r.title.eq_ignore_ascii_case(q));
         if !q.is_empty() && !exists {
             items.push(SuggestItem {
                 label: format!("New note “{q}”"),
@@ -271,15 +273,16 @@ impl Workspace {
     }
 
     fn tag_items(&self, query: &str) -> Vec<SuggestItem> {
-        let q = query.to_lowercase();
+        // Accents and case are ignored: `#cafe` offers `#café`.
+        let q = quire_index::tokenize::fold_str(&query.to_lowercase());
         let mut tags: Vec<(usize, String, usize)> = self
             .index()
             .read()
             .tags()
             .into_iter()
-            .filter(|(t, _)| *t != q)
+            .filter(|(t, _)| *t != query.to_lowercase())
             .filter_map(|(t, n)| {
-                let at = if q.is_empty() { Some(0) } else { t.find(&q) }?;
+                let at = if q.is_empty() { Some(0) } else { quire_index::tokenize::fold_str(&t).find(&q) }?;
                 // Prefix matches first, then the most used.
                 Some((usize::from(at > 0), t, n))
             })
@@ -475,5 +478,27 @@ mod tests {
         assert!(w.active_doc().unwrap().text().ends_with("#project "));
         type_at_end(&mut w, "\n```\n#pro");
         assert!(w.suggestions().is_none(), "no suggestions inside code blocks");
+    }
+
+    /// 0.12 verify: accents are optional in link and tag suggestions (as in search and quick open).
+    #[test]
+    fn suggestions_ignore_accents() {
+        let mut w = ws(&[("Café Notes.md", "# Café Notes\n#café #crème/brûlée\n"), ("N.md", "# N\n")]);
+        w.open_note(&NotePath::new("N.md"));
+        type_at_end(&mut w, "[[cafe");
+        let s = w.suggestions().unwrap();
+        assert_eq!(s.items[0].insert, "[[Café Notes]]");
+        // The whole name without its accent is that note, not a new one.
+        type_at_end(&mut w, " notes");
+        let s = w.suggestions().unwrap();
+        assert_eq!(s.items[0].insert, "[[Café Notes]]");
+        assert!(!s.items.iter().any(|i| i.label.starts_with("New note")), "{:?}", s.items);
+        w.accept_suggestion(&s, 0);
+        type_at_end(&mut w, "\n#cafe");
+        let s = w.suggestions().unwrap();
+        assert_eq!(s.items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(), ["#café"]);
+        type_at_end(&mut w, "\n#brulee");
+        let s = w.suggestions().unwrap();
+        assert_eq!(s.items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(), ["#crème/brûlée"]);
     }
 }

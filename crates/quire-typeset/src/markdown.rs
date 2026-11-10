@@ -215,14 +215,20 @@ fn parser_options() -> Options {
         | Options::ENABLE_WIKILINKS
 }
 
-/// Obsidian's paragraph ids aren't for print: drop a trailing ` ^id`, and
-/// show `[[Note#^id]]` as `Note` and `[[Note#Heading]]` as `Note › Heading`.
-/// Code blocks are left alone.
-fn tidy_links(markdown: &str) -> std::borrow::Cow<'_, str> {
+/// Marks where a paragraph id (` ^id`) was, for links to it: `<a id="^id"></a>`.
+const BLOCK_MARK: &str = "<a id=\"^";
+
+/// Obsidian's paragraph ids aren't for print: a trailing ` ^id` becomes an
+/// invisible anchor, and `[[Note#^id]]` shows as `Note` and
+/// `[[Note#Heading]]` as `Note › Heading`. Links into this note itself
+/// (`[[#Heading]]`, `[[#^id]]`, `[[name#Heading]]` where `name` is `name`)
+/// keep their target, so they can become links in the PDF. Code blocks are
+/// left alone.
+fn tidy_links<'m>(markdown: &'m str, name: &str) -> std::borrow::Cow<'m, str> {
     if !markdown.contains('^') && !markdown.contains("[[") {
         return std::borrow::Cow::Borrowed(markdown);
     }
-    let mut out = String::with_capacity(markdown.len());
+    let mut out = String::with_capacity(markdown.len() + 64);
     let mut fence: Option<String> = None;
     let mut in_math = false;
     for line in markdown.split_inclusive('\n') {
@@ -251,12 +257,14 @@ fn tidy_links(markdown: &str) -> std::borrow::Cow<'_, str> {
             continue;
         }
         let mut b = body;
+        let mut anchor = None;
         // ` ^id` at the end (letters, digits and `-`), after a space or alone.
         if let Some(caret) = b.trim_end().rfind('^') {
             let id = &b.trim_end()[caret + 1..];
             let before = &b[..caret];
             if !id.is_empty() && id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-') && (before.is_empty() || before.ends_with(' '))
             {
+                anchor = Some(id);
                 b = before.trim_end();
             }
         }
@@ -267,6 +275,16 @@ fn tidy_links(markdown: &str) -> std::borrow::Cow<'_, str> {
             let inner = &rest[open + 2..open + 2 + close];
             let (target, alias) = inner.split_once('|').map_or((inner, None), |(t, a)| (t, Some(a)));
             match (target.split_once('#'), alias) {
+                // This note: `[[#Heading]]`, `[[#^id]]`, `[[ThisNote#Heading|alias]]`.
+                (Some((note, frag)), _)
+                    if !rest[..open].ends_with('!')
+                        && !frag.trim().is_empty()
+                        && (note.trim().is_empty() || note.trim().eq_ignore_ascii_case(name.trim()))
+                        && !frag.contains(['[', ']']) =>
+                {
+                    let shown = alias.map_or_else(|| if frag.starts_with('^') { "¶" } else { frag.trim() }, str::trim);
+                    let _ = write!(out, "#{}|{shown}", frag.trim());
+                }
                 (Some((note, frag)), None) if !rest[..open].ends_with('!') => {
                     if frag.starts_with('^') || frag.is_empty() {
                         let _ = write!(out, "{note}|{note}");
@@ -280,13 +298,16 @@ fn tidy_links(markdown: &str) -> std::borrow::Cow<'_, str> {
             rest = &rest[open + 2 + close + 2..];
         }
         out.push_str(rest);
+        if let Some(id) = anchor {
+            let _ = write!(out, "{BLOCK_MARK}{id}\"></a>");
+        }
         out.push_str(eol);
     }
     std::borrow::Cow::Owned(out)
 }
 
 pub(crate) fn to_typst(markdown: &str, opts: &PdfOptions<'_>) -> TypstDoc {
-    let markdown = &*tidy_links(markdown);
+    let markdown = &*tidy_links(markdown, &opts.title);
     let events: Vec<(Event<'_>, Range<usize>)> = Parser::new_ext(markdown, parser_options()).into_offset_iter().collect();
 
     let front_title = front_matter_title(&events);
@@ -394,6 +415,8 @@ enum Open {
     Link,
     /// A link that is written as plain text.
     PlainLink,
+    /// A heading; its anchor label (a link inside the document can point here).
+    Heading(Option<usize>),
     /// A block quote or callout.
     Quote { skip_until: Option<usize> },
     /// Anything that needs nothing at its end.
@@ -417,6 +440,100 @@ struct Renderer<'r, 'a> {
     rendering_footnotes: HashSet<String>,
     /// Inline events starting before this source offset are a callout header.
     skip_until: Option<usize>,
+    /// Targets of links inside the document (headings and paragraph ids).
+    anchors: Anchors,
+    /// The event being rendered (anchors are found by event index).
+    at: usize,
+    /// Anchor labels already written (a label may only occur once).
+    placed: HashSet<usize>,
+}
+
+/// GitHub-style slug, as `quire_markdown::outline::slugify` makes it.
+fn slugify(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.trim().chars().flat_map(char::to_lowercase) {
+        if c.is_alphanumeric() || c == '_' || c == '-' {
+            out.push(c);
+        } else if c.is_whitespace() {
+            out.push('-');
+        }
+    }
+    out
+}
+
+/// What a link inside the document can point to, each with a Typst label
+/// number (`<qa-N>`). Found before rendering, so a link may come first.
+#[derive(Default)]
+struct Anchors {
+    /// Heading slugs, made unique as the outline does (`intro`, `intro-1`).
+    headings: HashMap<String, usize>,
+    /// Lower-case heading text, the first of each.
+    texts: HashMap<String, usize>,
+    /// Paragraph ids (`^id`), the first of each.
+    blocks: HashMap<String, usize>,
+    /// Event index of a heading's start or a paragraph id's mark -> label.
+    at: HashMap<usize, usize>,
+}
+
+impl Anchors {
+    fn scan(events: &[(Event<'_>, Range<usize>)]) -> Self {
+        let mut a = Self::default();
+        let mut seen: HashMap<String, usize> = HashMap::new();
+        let mut open: Option<(usize, String)> = None;
+        let mut next = 0;
+        for (i, (event, _)) in events.iter().enumerate() {
+            match event {
+                Event::Start(Tag::Heading { .. }) => open = Some((i, String::new())),
+                Event::Text(t) | Event::Code(t) | Event::InlineMath(t) => {
+                    if let Some((_, text)) = open.as_mut() {
+                        text.push_str(t);
+                    }
+                }
+                Event::End(TagEnd::Heading(_)) => {
+                    if let Some((start, text)) = open.take() {
+                        let text = text.trim().to_string();
+                        let base = slugify(&text);
+                        let n = seen.entry(base.clone()).or_insert(0);
+                        let slug = if *n == 0 { base } else { format!("{base}-{n}") };
+                        *n += 1;
+                        a.headings.insert(slug, next);
+                        a.texts.entry(text.to_lowercase()).or_insert(next);
+                        a.at.insert(start, next);
+                        next += 1;
+                    }
+                }
+                Event::Html(h) | Event::InlineHtml(h) => {
+                    if let Some(id) = block_mark(h)
+                        && !a.blocks.contains_key(id)
+                    {
+                        a.blocks.insert(id.to_string(), next);
+                        a.at.insert(i, next);
+                        next += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        a
+    }
+
+    /// The label a link's target (`#Heading`, `#^id`, a slug, or the same
+    /// with `quire-anchor:`) points to, if the document has it.
+    fn find(&self, dest: &str) -> Option<usize> {
+        let frag = dest.strip_prefix('#')?;
+        let frag = percent_decode(frag);
+        let frag = frag.trim();
+        if let Some(id) = frag.strip_prefix('^') {
+            return self.blocks.get(id).copied();
+        }
+        self.headings.get(&slugify(frag)).or_else(|| self.texts.get(&frag.to_lowercase())).copied()
+    }
+}
+
+/// `<a id="^id"></a>` (what `tidy_links` leaves for a paragraph id): the id.
+fn block_mark(html: &str) -> Option<&str> {
+    let rest = html.trim().strip_prefix(BLOCK_MARK)?;
+    rest.split('"').next().filter(|id| !id.is_empty())
 }
 
 impl<'r, 'a> Renderer<'r, 'a> {
@@ -444,6 +561,9 @@ impl<'r, 'a> Renderer<'r, 'a> {
             footnote_ids: HashMap::new(),
             rendering_footnotes: HashSet::new(),
             skip_until: None,
+            anchors: Anchors::scan(events),
+            at: 0,
+            placed: HashSet::new(),
         }
     }
 
@@ -470,6 +590,7 @@ impl<'r, 'a> Renderer<'r, 'a> {
         let mut i = range.start;
         while i < range.end {
             let (event, span) = &self.events[i];
+            self.at = i;
             match event {
                 // Footnotes are rendered where referenced; front matter is metadata.
                 Event::Start(Tag::FootnoteDefinition(_) | Tag::MetadataBlock(_)) => {
@@ -517,7 +638,7 @@ impl<'r, 'a> Renderer<'r, 'a> {
             Tag::Paragraph | Tag::HtmlBlock => Open::Close("\n\n"),
             Tag::Heading { level, .. } => {
                 let _ = write!(self.w(), "\n#heading(level: {})[", *level as usize);
-                Open::Close("]\n")
+                Open::Heading(self.anchors.at.get(&self.at).copied().filter(|n| self.placed.insert(*n)))
             }
             Tag::BlockQuote(_) => self.quote(span),
             Tag::CodeBlock(kind) => {
@@ -583,7 +704,11 @@ impl<'r, 'a> Renderer<'r, 'a> {
                 Open::Close("]")
             }
             Tag::Link { link_type, dest_url, .. } => {
-                if matches!(link_type, LinkType::Email) && !dest_url.contains(':') {
+                // `[[#Heading]]`, `[[#^id]]` and `[text](#heading)`: a link inside the PDF when the target is there.
+                if let Some(n) = self.anchors.find(dest_url) {
+                    let _ = write!(self.w(), "#link(<qa-{n}>)[");
+                    Open::Link
+                } else if matches!(link_type, LinkType::Email) && !dest_url.contains(':') {
                     let _ = write!(self.w(), "#link({})[", typst_string(&format!("mailto:{dest_url}")));
                     Open::Link
                 } else if !matches!(link_type, LinkType::WikiLink { .. }) && is_external(dest_url) {
@@ -654,6 +779,13 @@ impl<'r, 'a> Renderer<'r, 'a> {
                 self.image(&dest, &alt, wiki_pothole);
             }
             Open::Link => self.w().push(']'),
+            Open::Heading(label) => {
+                self.w().push(']');
+                if let Some(n) = label {
+                    let _ = write!(self.w(), " <qa-{n}>");
+                }
+                self.w().push('\n');
+            }
             Open::Quote { skip_until } => {
                 if skip_until.is_some() {
                     self.skip_until = None;
@@ -686,6 +818,12 @@ impl<'r, 'a> Renderer<'r, 'a> {
             }
             Event::InlineMath(t) => self.math(t, false),
             Event::DisplayMath(t) => self.math(t, true),
+            Event::Html(html) | Event::InlineHtml(html) if block_mark(html).is_some() => {
+                // A paragraph id: an invisible anchor, once.
+                if let Some(n) = self.anchors.at.get(&self.at).copied().filter(|n| self.placed.insert(*n)) {
+                    let _ = write!(self.w(), "#metadata(none) <qa-{n}>");
+                }
+            }
             Event::Html(html) => self.w().push_str(&escaped(&strip_tags(html))),
             Event::InlineHtml(html) => {
                 if is_br(html) {
@@ -1039,6 +1177,58 @@ fn check_image(data: &Bytes) -> Option<(&'static str, f64)> {
 mod tests {
     use super::*;
     use typst::layout::{Frame, FrameItem};
+    use typst::model::Destination;
+
+    /// Every link in a compiled document: external URLs, and for links inside
+    /// it whether the target is really somewhere in the document.
+    fn links(md: &str, name: &str) -> (Vec<String>, Vec<bool>) {
+        fn walk(frame: &Frame, out: &mut Vec<Destination>) {
+            for (_, item) in frame.items() {
+                match item {
+                    FrameItem::Group(g) => walk(&g.frame, out),
+                    FrameItem::Link(d, _) => out.push(d.clone()),
+                    _ => {}
+                }
+            }
+        }
+        let opts = PdfOptions { title: name.into(), ..PdfOptions::default() };
+        let t = to_typst(md, &opts);
+        let mut world = TypesetWorld::new(t.source);
+        for (path, data) in t.files {
+            world.add_file(&path, data);
+        }
+        let doc = world.compile().unwrap();
+        let mut dests = Vec::new();
+        for page in doc.pages() {
+            walk(&page.frame, &mut dests);
+        }
+        let (mut urls, mut internal) = (Vec::new(), Vec::new());
+        for d in dests {
+            match d {
+                Destination::Url(u) => urls.push(u.as_str().to_string()),
+                Destination::Position(_) => internal.push(true),
+                Destination::Location(loc) => internal.push(doc.introspector().position(loc).is_some()),
+            }
+        }
+        (urls, internal)
+    }
+
+    /// 0.12 verify: links inside the note are links in the PDF; links to other
+    /// notes are plain text (never a link that goes nowhere).
+    #[test]
+    fn links_inside_the_note_work_in_the_pdf() {
+        let md = "# Intro\n\nSee [[#Details]], [[Me#Details|the details]], [text](#details), [[#^para]], [[Me#^para]] and [up](#intro).\n\n\
+                  An outside [site](https://example.com), a [[Other Note]], [[Other Note#Part|part]], [[#No such heading]] and [x](#nowhere).\n\n\
+                  ## Details\n\nA paragraph. ^para\n\n## Details\n\n[[#Details-1]]\n";
+        let (urls, internal) = links(md, "Me");
+        assert_eq!(urls, ["https://example.com"]);
+        // #Details, the details, (details), #^para, Me#^para, #intro, #Details-1.
+        assert_eq!(internal, [true; 7]);
+        // No target, no link: the text stays.
+        let t = to_typst(md, &PdfOptions { title: "Me".into(), ..PdfOptions::default() }).source;
+        assert!(t.contains("No such heading") && t.contains("Other Note"), "{t}");
+        assert_eq!(t.matches("#link(<qa-").count(), 7, "{t}");
+    }
 
     fn collect_text(frame: &Frame, out: &mut String) {
         for (_, item) in frame.items() {
@@ -1070,11 +1260,14 @@ mod tests {
     #[test]
     fn paragraph_ids_and_fragments_are_tidied_for_print() {
         let md = "See [[Note#^abc]] and [[Other#Part two]] and ![[pic.png]]. ^para1\n\n```\ncode ^keep\n```\n";
-        let t = tidy_links(md);
+        let t = tidy_links(md, "Me");
         assert!(t.contains("[[Note|Note]]") && t.contains("[[Other|Other › Part two]]") && t.contains("![[pic.png]]"), "{t}");
-        assert!(!t.contains("^para1") && t.contains("code ^keep"), "{t}");
-        let m = tidy_links("$$\nx = y ^2\n$$\nafter ^id\n");
-        assert!(m.contains("y ^2") && !m.contains("^id"), "{m}");
+        assert!(!t.contains(" ^para1") && t.contains("<a id=\"^para1\"></a>") && t.contains("code ^keep"), "{t}");
+        let m = tidy_links("$$\nx = y ^2\n$$\nafter ^id\n", "Me");
+        assert!(m.contains("y ^2") && !m.contains(" ^id"), "{m}");
+        // Links into this note keep their target.
+        let t = tidy_links("[[#Part two]] [[me#Part two|go]] [[Me#^abc]] [[Other#Part two]] [[#^x|here]]", "Me");
+        assert_eq!(t, "[[#Part two|Part two]] [[#Part two|go]] [[#^abc|¶]] [[Other|Other › Part two]] [[#^x|here]]");
     }
 
     #[test]
@@ -1083,6 +1276,8 @@ mod tests {
             r#"# $ * _ @ < > [ ] ` \ ~ / = - + . ' " ^ { } ( ) ; : | ! ? % &"#,
             r"\\ \ \n #let x = 1 #import \u{1F600} \u{",
             r#"#set page(width: 1pt) #read("/etc/passwd") #include "x.typ""#,
+            // 0.12: Typst's other ways to run something (WebAssembly plugins, eval, packages) stay text too.
+            r#"#plugin("/evil.wasm") #eval("1+1", mode: "code") #import "@preview/x:1.0.0": * #context here() #[#read("/etc/hostname")]"#,
             "// line comment /* block comment */ https://example.com <label> @ref",
             "= heading - list + enum / Term: x 1. 2) -- --- ... -? ~nbsp",
             "]]]]] [[[[ ))))) ((((( }}}}} {{{{{",

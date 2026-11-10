@@ -29,6 +29,9 @@ pub(crate) fn template_metas(ws: &Workspace) -> Vec<(NotePath, TemplateMeta)> {
     ws.templates().into_iter().filter_map(|p| Some((p.clone(), templates::template_meta(&vault.read(&p).ok()?)))).collect()
 }
 
+/// `applies_to: ["*"]`: the default template for new notes, anywhere.
+pub const ANY_FOLDER: &str = "*";
+
 fn in_folder(path: &str, folder: &str) -> bool {
     let f = folder.trim_matches('/');
     !f.is_empty() && path.len() > f.len() && path[..f.len()].eq_ignore_ascii_case(f) && path.as_bytes()[f.len()] == b'/'
@@ -51,12 +54,19 @@ fn answer<'a>(answers: &'a HashMap<String, String>, p: &'a Prompt) -> &'a str {
 
 impl Workspace {
     /// The template whose `applies_to` covers `path`'s folder (deepest wins).
+    /// `applies_to: ["*"]` is the vault's default: it covers every folder
+    /// that no other template names. A note inside the templates folder gets none.
     pub fn folder_template(&self, path: &NotePath) -> Option<NotePath> {
+        if self.vault().is_some_and(|v| v.is_template(path)) {
+            return None;
+        }
+        // The default ranks below any folder, whatever the folder's name length.
+        let rank = |f: &str| if f.trim() == ANY_FOLDER { 0 } else { f.trim_matches('/').len() + 1 };
         template_metas(self)
             .into_iter()
             .flat_map(|(p, m)| m.applies_to.into_iter().map(move |f| (f, p.clone())))
-            .filter(|(f, _)| in_folder(path.as_str(), f))
-            .max_by_key(|(f, _)| f.len())
+            .filter(|(f, _)| f.trim() == ANY_FOLDER || in_folder(path.as_str(), f))
+            .max_by_key(|(f, _)| rank(f))
             .map(|(_, p)| p)
     }
 
@@ -176,10 +186,17 @@ pub(crate) fn fill_new_notes(ws: &mut Workspace) -> bool {
     if !doc.auto_name || doc.revision() != 0 || doc.buffer().len_chars() != 0 {
         return false;
     }
-    let (id, Some(path)) = (doc.id, doc.path.clone()) else { return false };
+    let id = doc.id;
     if !ws.features.tasks.checked_new.insert(id) {
         return false;
     }
+    apply_default_template(ws, id)
+}
+
+/// Fill the empty note `id` from the template that applies to its folder
+/// (questions without a default stay as `{{prompt:…}}`). False when none does.
+pub(crate) fn apply_default_template(ws: &mut Workspace, id: DocId) -> bool {
+    let Some(path) = ws.doc(id).and_then(|d| d.path.clone()) else { return false };
     let Some(tpl) = ws.folder_template(&path) else { return false };
     let Some(text) = ws.vault().and_then(|v| v.read(&tpl).ok()) else { return false };
     let vars = TemplateVars { title: path.stem().to_string(), now: Local::now() };
@@ -237,5 +254,39 @@ mod tests {
         assert!(w.fill_template_fields(id, &HashMap::from([("topic".to_string(), "Call".to_string())])));
         assert_eq!(&*w.active_doc().unwrap().text(), "# Call\nStatus: planned\n\n");
         assert!(w.active_doc_mut().unwrap().undo(), "one undoable edit");
+    }
+
+    /// 0.12 verify: one default for every new note (Ctrl+N and a click on a
+    /// link to a missing note), and a folder's own template wins.
+    #[test]
+    fn a_default_template_for_new_notes_and_per_folder_overrides() {
+        let mut w = Workspace::new(crate::Settings::default());
+        w.attach_vault(quire_vault::Vault::in_memory(&[
+            ("Templates/Default.md", "---\nquire-template:\n  applies_to: [\"*\"]\n---\n# {{title}}\n\nCreated {{date:%Y}}\n{{cursor}}\n"),
+            ("Templates/Meeting.md", "---\nquire-template:\n  applies_to: [M]\n---\n## Agenda {{title}}\n"),
+            ("M/old.md", "x"),
+            ("Home.md", "[[Brand New]]"),
+        ]));
+        w.index().flush();
+        let year = Local::now().format("%Y").to_string();
+        // The default covers the root and any folder; the deepest named folder wins.
+        assert_eq!(w.folder_template(&NotePath::new("Home.md")), Some("Templates/Default.md".into()));
+        assert_eq!(w.folder_template(&NotePath::new("Deep/er/x.md")), Some("Templates/Default.md".into()));
+        assert_eq!(w.folder_template(&NotePath::new("M/x.md")), Some("Templates/Meeting.md".into()));
+        assert_eq!(w.folder_template(&NotePath::new("Templates/New.md")), None, "templates are not templated");
+        // Ctrl+N.
+        w.new_note(None).unwrap();
+        assert!(fill_new_notes(&mut w));
+        assert_eq!(&*w.active_doc().unwrap().text(), &format!("# Untitled\n\nCreated {year}\n\n"));
+        // A click on a link to a note that doesn't exist yet.
+        w.open_note(&"Home.md".into()).unwrap();
+        w.open_link("Brand New", None).unwrap();
+        assert_eq!(w.active_doc().unwrap().path.as_ref().unwrap().as_str(), "Brand New.md");
+        assert_eq!(&*w.active_doc().unwrap().text(), &format!("# Brand New\n\nCreated {year}\n\n"));
+        assert!(!fill_new_notes(&mut w), "not filled twice");
+        // Without any default the old body stays.
+        let mut w = ws();
+        w.open_link("Plain Link", None).unwrap();
+        assert_eq!(&*w.active_doc().unwrap().text(), "# Plain Link\n\n");
     }
 }

@@ -36,11 +36,22 @@ Quire 0.12: typed links and a hierarchy you can browse (Dataview and Breadcrumbs
 - **Vim keys:** Ctrl+D and Ctrl+U move half a page; in Normal and Visual mode Ctrl+B, F, D and U now scroll as in Vim instead of running Bold, Find and Add cursor. A setting (Settings → Editing, `[editing] vim_ctrl_scroll`), on by default.
 - **The agenda's board keeps the order you drag cards into**, and its column colours and swimlanes, on this device (`<config>/vaults/<key>/agenda-board.json`).
 
+#### Verify-and-fix sweep
+- **Open a Markdown file outside any vault:** `quire notes.md`, or drop a `.md` file on the welcome screen. The file opens on its own: its folder is not scanned, watched or made a vault, nothing is written next to it, and your last vault and its tabs stay as they were. A file inside a known vault opens in that vault. (File association on macOS and Windows is not set up yet; see [docs/design/0.12-verify.md](docs/design/0.12-verify.md).)
+- **Date format for properties and views:** Settings → Editing → Date format (`[editing] date_format`, a strftime format such as `%d.%m.%Y`). Dates are shown and typed that way; files keep ISO dates.
+- **Default template for new notes:** a template with `applies_to: ["*"]` is used by Ctrl+N and by a click on a link to a note that doesn't exist yet; a template that names a folder wins in that folder. Format: [docs/formats/templates.md](docs/formats/templates.md).
+- **Nested tags fold in the Tags tab** (`project/alpha` under `project`), shown in tree order.
+- **`quire-cli prefs-copy <from> <to> [section…]`** copies a vault's shared preferences (periodic notes, tags, git, lint, staleness, citations, links, tasks) to another vault. Device-wide settings were already the same in every vault.
+- **No code from your notes ever runs:** stated in [SECURITY.md](SECURITY.md) and locked in by tests for the desktop preview, published sites, the web app, HTML export and copy as HTML.
+
 ### Changed
 - Renaming or moving a note also rewrites links to it in front-matter properties; only the link text changes, every other byte of the note stays.
 - **Faster start with a large vault:** nothing lists the vault before the first frame any more. The list of files that aren't notes (attachments, PDFs, boards) and the PDFs to read are gathered on a thread of their own after the first frame, and the task timer is read from then on too. What a 10,000-note vault adds before the first frame went from about 20 ms (CPU time, optimised build; CI measured 19.9 ms for 0.11) to nothing measurable ([details](docs/design/0.12-loose.md#1-startup-headroom)).
 
 ### Fixed
+- **PDF export: links between headings and to other notes in the same PDF now work** (internal links jump to the heading; the PDF reader resolves named destinations).
+- **Link and tag suggestions ignore accents** (`[[cafe` offers `Café`, `#cafe` offers `#café`), as search and quick open already did; a name typed without its accent is no longer offered as a new note.
+- **`quire-cli export` and web previews drop active HTML**: the export is cleaned like published sites; a `style` that loads or runs something (`url(…)`, `expression(…)`) is removed everywhere.
 - The on-device AI engine ran at the lowest priority (nice 19) when a background job was the first to need it, on Linux; it is now always started from a thread at normal priority (nice 10, as intended).
 - The task timer's settings were read from the vault's prefs file every frame; now only while a timer runs.
 - Lint called a link to a note in a locked folder broken; it now counts it by name (it still never reads the note).

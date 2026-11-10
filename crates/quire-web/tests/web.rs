@@ -924,3 +924,61 @@ fn locked_folders_dont_exist_for_the_web() {
     assert!(r.status >= 400 || !r.body.contains("Sneak"), "{} {}", r.status, r.body);
     assert!(!env.root.join("Diary/Sneak.md").exists(), "nothing plain is written into a locked folder");
 }
+
+/// 0.12: nothing a note says can run in the web app. Raw HTML in a note, in its title, its
+/// tags and its search snippet is cleaned or escaped; the only script on any page is the app's own.
+#[test]
+fn a_hostile_note_cannot_run_scripts_in_the_web_app() {
+    let evil = "---\ntags: [\"<img src=x onerror=alert(1)>\"]\n---\n\
+# <img src=x onerror=alert('title')> Evil\n\n\
+<script>alert('raw')</script> <img src=x onerror=alert(1)> <a href=\"javascript:alert(1)\">js</a> [md](javascript:alert(2))\n\n\
+<iframe src=\"https://evil.example\"></iframe> <svg onload=alert(1)></svg> <div onclick=\"alert(1)\">d</div> \
+<meta http-equiv=\"refresh\" content=\"0;url=https://evil.example\"> <form action=\"https://evil.example\"></form>\n\n\
+`$= dv.pages()` <% tp.file.title %>\n\n```dataviewjs\ndv.paragraph(eval('1'))\n```\n";
+    let env = start_with(&[("Evil.md", evil), ("Other.md", "# Other\n\nSee [[Evil]]. zebra\n")], false, |_| {});
+    let mut b = Browser::signed_in(&env);
+    for url in ["/n/Evil.md", "/", "/search?q=evil", "/search?q=dv", "/tags", "/n/Other.md"] {
+        let r = b.get(url);
+        assert_eq!(r.status, 200, "{url}: {}", r.body);
+        assert_inert_markup(url, &r.body, true);
+    }
+    // The preview in the editor is the same pipeline.
+    let token = b.csrf();
+    let r = b.post("/api/preview", &[("_csrf", &token), ("path", "Evil.md"), ("text", evil)]);
+    assert_eq!(r.status, 200, "{}", r.body);
+    assert_inert_markup("preview", &r.body, false);
+    // The words are still there, as text.
+    assert!(b.get("/n/Evil.md").body.contains("dv.pages()"));
+}
+
+/// Every real tag in `html`: no script but the app's own (when `app`), no frames, forms,
+/// pictures from nowhere, `on…=` attribute or `javascript:` link. Escaped text (`&lt;`) isn't markup.
+fn assert_inert_markup(what: &str, html: &str, app: bool) {
+    let mut scripts = 0;
+    let mut rest = html;
+    while let Some(i) = rest.find('<') {
+        let Some(len) = rest[i..].find('>') else { break };
+        let tag = &rest[i..=i + len];
+        let lower = tag.to_ascii_lowercase();
+        let name: String = lower.trim_start_matches(['<', '/']).chars().take_while(char::is_ascii_alphanumeric).collect();
+        match name.as_str() {
+            "script" if !lower.starts_with("</") => {
+                scripts += 1;
+                assert!(app && lower.contains("src=\"/assets/app.js"), "{what}: {tag}");
+            }
+            "iframe" | "frame" | "math" | "object" | "embed" | "base" => panic!("{what}: <{name}> in the page: {tag}"),
+            // The app's own page has a charset, icons (svg), a style and forms; a note's must not add active ones.
+            "meta" | "form" | "style" | "button" => {
+                assert!(!lower.contains("http-equiv") && !lower.contains("evil.example") && !lower.contains("onerror"), "{what}: {tag}");
+            }
+            "link" => assert!(lower.contains("href=\"/assets/"), "{what}: {tag}"),
+            "img" => assert!(!lower.contains("src=x"), "{what}: {tag}"),
+            _ => {}
+        }
+        let attrs = lower.split_whitespace().skip(1).collect::<Vec<_>>().join(" ");
+        assert!(!attrs.split(' ').any(|a| a.starts_with("on") && a.contains('=')), "{what}: event handler in {tag}");
+        assert!(!lower.contains("javascript:"), "{what}: {tag}");
+        rest = &rest[i + len + 1..];
+    }
+    assert_eq!(scripts, usize::from(app), "{what}: scripts on the page");
+}

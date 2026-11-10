@@ -3,6 +3,13 @@
 Device-local, never in the vault. `<config>` is the platform's config folder
 for Quire (`directories::ProjectDirs("dev", "Quire", "Quire")`).
 
+Everything in `settings.toml` applies to every vault opened on this device;
+there are no per-vault overrides of these keys. What belongs to one vault
+(periodic notes, tag colours, git, lint, staleness, citations, links, sort
+order, icons) is in the vault's own [`.quire/shared/vault.toml`](vault-prefs.md),
+which travels with the vault and syncs. `quire-cli prefs-copy` copies those
+sections from one vault to another.
+
 ## settings.toml
 
 The 0.8 keys stay at the top level. Each 0.9 area is a table in its own
@@ -16,7 +23,7 @@ workstream; every key defaults to off or unchanged.
 | `[agent_panel]` | WS-D | `enabled`, `backend`, `model` (`""`, `"provider"` or `"device"`), `max_steps`, `acp_command`, `acp_args`, `acp_risk_ack` |
 | `[trust]` | WS-C | `contradictions`, `claims_daily_cap`, `ask_before_tell`, `staleness`, `verify_citations` |
 | `[mcp_http]` | WS-B | `enabled`, `bind`, `port`, `public_url` |
-| `[editing]` | WS-F | `vim`, `vim_ctrl_scroll` (0.12, default on: with Vim keys, Ctrl+B, F, D and U scroll in Normal and Visual mode instead of running Quire's commands; not on macOS, where those are ⌘ keys), `tab_mode` (`"reuse"` or `"new"`), `display_titles`, `homepage` (a note's name or path), `two_pane`, `new_note_folder` (`"current"` or `"root"`) |
+| `[editing]` | WS-F | `vim`, `vim_ctrl_scroll` (0.12, default on: with Vim keys, Ctrl+B, F, D and U scroll in Normal and Visual mode instead of running Quire's commands; not on macOS, where those are ⌘ keys), `tab_mode` (`"reuse"` or `"new"`), `display_titles`, `homepage` (a note's name or path), `two_pane`, `new_note_folder` (`"current"` or `"root"`), `date_format` (0.12: a strftime format such as `"%d.%m.%Y"` for how dates look in properties and views; empty: as stored; files always keep ISO dates) |
 | `[tasks]` | WS-E | `reminders`, `new_occurrence`, `format` |
 | `[appearance]` | WS-F | `theme_file` (a bundled theme's name or a file in `<config>/themes/`, [themes.md](themes.md)), `accent` (`#RRGGBB`) |
 | `[jobs]` | F0 | `pause_on_typing_ms`, `max_threads` |

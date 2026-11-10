@@ -107,13 +107,40 @@ impl QuireApp {
         let mut ws = Workspace::new(settings);
         // 0.10: "Record voice note…" is offered when this build can record.
         ws.features.ai.voice.can_record = crate::voice_ui::CAN_RECORD;
-        let target = vault_arg.or_else(|| ws.settings.last_vault.clone()).filter(|p| p.is_dir());
-        if let Some(dir) = target {
+        // 0.12: a Markdown file as the argument (`quire notes.md`, a file association) opens in
+        // its vault, or on its own when it is in none (`quire_app::single_file`).
+        let (dir_arg, file_arg) = match vault_arg {
+            Some(p) if p.is_file() => (None, Some(p)),
+            other => (other, None),
+        };
+        let mut target = dir_arg.or_else(|| ws.settings.last_vault.clone()).filter(|p| p.is_dir());
+        let mut note_to_open = None;
+        let mut single = None;
+        if let Some(file) = file_arg {
+            match quire_app::single_file::resolve(&file, ws.settings.last_vault.as_deref()) {
+                quire_app::single_file::FileTarget::Vault { root, note } => {
+                    target = Some(root);
+                    note_to_open = Some(note);
+                }
+                quire_app::single_file::FileTarget::Single => single = Some(file),
+                quire_app::single_file::FileTarget::NotMarkdown => {
+                    ws.notify(NoticeLevel::Info, format!("Quire opens Markdown (.md) files; {} was not opened", file.display()));
+                }
+            }
+        }
+        if let Some(file) = single {
+            if let Err(e) = ws.open_single_file(&file) {
+                ws.notify(NoticeLevel::Error, e);
+            }
+        } else if let Some(dir) = target {
             // The index and the watcher start after the first frame (`logic`).
             match ws.open_vault_deferred(&dir) {
                 Ok(()) => {
                     if session.vault.as_deref().map(Path::canonicalize).and_then(Result::ok) == dir.canonicalize().ok() {
                         ws.restore(&session);
+                    }
+                    if let Some(note) = note_to_open {
+                        ws.open_note(&note);
                     }
                 }
                 Err(e) => ws.notify(NoticeLevel::Error, e),
@@ -923,6 +950,7 @@ impl QuireApp {
         let ctx = ui.ctx().clone();
         self.quick_capture_key(&ctx);
         self.apply_theme(&ctx);
+        crate::view_ui::set_date_format(&ctx, &self.ws.settings.editing.date_format);
         let pal = self.palette(&ctx);
         // Background jobs wait while a dialog is open.
         self.ws.jobs.set_modal_open(self.overlay.is_some());
@@ -946,7 +974,19 @@ impl QuireApp {
         }
         // Files dropped on the window become attachments / notes.
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
-        if !dropped.is_empty() {
+        // 0.12: with no vault open (or a single file), a dropped Markdown file opens on its own.
+        let dropped_md = (self.ws.vault().is_none() || self.ws.single_file().is_some())
+            .then(|| dropped.iter().find(|p| quire_app::single_file::is_markdown(p)).cloned())
+            .flatten();
+        if let Some(file) = dropped_md {
+            match self.ws.open_single_file(&file) {
+                Ok(_) => {
+                    self.surfaces.active = None;
+                    self.focus_editor();
+                }
+                Err(e) => self.ws.notify(NoticeLevel::Error, e),
+            }
+        } else if !dropped.is_empty() {
             if self.ws.active_doc().is_none() {
                 self.ws.new_note(None);
             }
