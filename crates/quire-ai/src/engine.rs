@@ -624,6 +624,49 @@ fn command(path: &Path) -> Command {
     }
 }
 
+/// What [`prepare_spawner`] sets up: a thread that starts the engine.
+type SpawnRequest = (Command, Sender<std::io::Result<Child>>);
+
+fn spawner() -> &'static std::sync::OnceLock<Mutex<Sender<SpawnRequest>>> {
+    static SPAWNER: std::sync::OnceLock<Mutex<Sender<SpawnRequest>>> = std::sync::OnceLock::new();
+    &SPAWNER
+}
+
+/// Make the thread the engine is started from (0.12). Call it once from a
+/// thread at normal priority: the app does from its UI thread after the
+/// first frame.
+///
+/// On Linux a process inherits the priority of the thread that starts it.
+/// Background jobs run at the lowest priority (nice 19, 0.11), so an engine
+/// a job was the first to need ran at 19 instead of the 10 `nice -n 10`
+/// asks for, and lowering a priority can't be undone without privileges.
+/// Started from this thread, it gets 10 whoever asks.
+pub fn prepare_spawner() {
+    spawner().get_or_init(|| {
+        let (tx, rx) = channel::<SpawnRequest>();
+        // Without the thread, `rx` is gone and [`spawn_command`] starts in place.
+        let _ = std::thread::Builder::new().name("quire-ai-spawn".into()).spawn(move || {
+            for (mut cmd, reply) in rx {
+                let _ = reply.send(cmd.spawn());
+            }
+        });
+        Mutex::new(tx)
+    });
+}
+
+/// Start `cmd` from the spawner thread when there is one, else here.
+pub fn spawn_command(mut cmd: Command) -> std::io::Result<Child> {
+    if let Some(tx) = spawner().get() {
+        let (reply_tx, reply_rx) = channel();
+        let sent = lock(tx).send((cmd, reply_tx));
+        match sent {
+            Ok(()) => return reply_rx.recv().unwrap_or_else(|_| Err(std::io::Error::other("the engine's spawner thread stopped"))),
+            Err(std::sync::mpsc::SendError((back, _))) => cmd = back,
+        }
+    }
+    cmd.spawn()
+}
+
 fn spawn(path: &Path, threads: u32, env: &[(String, String)]) -> Result<Proc, EngineError> {
     let mut cmd = command(path);
     cmd.envs(env.iter().map(|(k, v)| (k, v)));
@@ -631,8 +674,8 @@ fn spawn(path: &Path, threads: u32, env: &[(String, String)]) -> Result<Proc, En
         // candle's thread pool reads these.
         cmd.env("RAYON_NUM_THREADS", threads.to_string()).env("CANDLE_NUM_THREADS", threads.to_string());
     }
-    let mut child =
-        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| EngineError::Failed(e.to_string()))?;
+    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = spawn_command(cmd).map_err(|e| EngineError::Failed(e.to_string()))?;
     let stdin = child.stdin.take().ok_or_else(|| EngineError::Failed("no stdin".into()))?;
     let stdout = child.stdout.take().ok_or_else(|| EngineError::Failed("no stdout".into()))?;
     let stderr = child.stderr.take();
@@ -682,6 +725,31 @@ fn spawn(path: &Path, threads: u32, env: &[(String, String)]) -> Result<Proc, En
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 0.12: a job thread at nice 19 that needs the engine starts it at
+    /// nice 10, not 19 (Linux; `nice` with no command prints the niceness).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_engine_starts_at_its_own_priority_from_a_lowered_thread() {
+        let Some(nice) = ["/usr/bin/nice", "/bin/nice"].into_iter().map(Path::new).find(|p| p.is_file()) else { return };
+        let niceness = |via_spawner: bool| {
+            let mut cmd = command(nice);
+            cmd.stdout(Stdio::piped());
+            let child = if via_spawner { spawn_command(cmd) } else { cmd.spawn() }.unwrap();
+            String::from_utf8(child.wait_with_output().unwrap().stdout).unwrap().trim().to_string()
+        };
+        // What `nice -n 10` gives from a normal thread of this process.
+        let normal = niceness(false);
+        prepare_spawner();
+        let (lowered, ours) = std::thread::spawn(move || {
+            quire_index::background::lower_priority();
+            (niceness(false), niceness(true))
+        })
+        .join()
+        .unwrap();
+        assert_eq!(lowered, "19", "started in place, the engine inherits the job's priority");
+        assert_eq!(ours, normal);
+    }
 
     #[test]
     fn a_missing_engine_is_reported_as_such() {

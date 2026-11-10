@@ -353,6 +353,9 @@ impl Workspace {
             return;
         }
         let (Some(vault), Some(root)) = (self.vault.clone(), self.vault_root.clone()) else { return };
+        // 0.12: the on-device AI engine is started from a thread made here, at
+        // normal priority (a job thread's nice 19 would carry over to it).
+        quire_ai::engine::prepare_spawner();
         // 0.11: the locked folders are checked against the disk, in the background.
         crate::secure_state::start_pass(self);
         self.watcher = match VaultWatcher::start(&root) {
