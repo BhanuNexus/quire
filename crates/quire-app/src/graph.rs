@@ -29,6 +29,11 @@ pub struct Graph {
     pub nodes: Vec<GraphNode>,
     /// Undirected, each pair once, `a < b`.
     pub edges: Vec<(usize, usize)>,
+    /// 0.12: each edge's type (the field of a typed link between the two
+    /// notes, either way), parallel to `edges`; `None` for plain links.
+    pub edge_types: Vec<Option<String>>,
+    /// The types on edges, most used first.
+    pub types: Vec<String>,
 }
 
 /// What to show.
@@ -106,7 +111,20 @@ impl Graph {
                 depth: depth[*p],
             })
             .collect();
-        Self { nodes, edges: edges.into_iter().collect() }
+        let edges: Vec<(usize, usize)> = edges.into_iter().collect();
+        // A typed link either way names the edge (the note's own link first).
+        let rel = ix.relations();
+        let typed = |a: &NotePath, b: &NotePath| rel.of(a).iter().find(|e| !e.implied && e.to == *b).map(|e| e.field.clone());
+        let edge_types: Vec<Option<String>> =
+            edges.iter().map(|&(a, b)| typed(paths[a], paths[b]).or_else(|| typed(paths[b], paths[a]))).collect();
+        let mut counts: HashMap<&str, usize> = HashMap::new();
+        for t in edge_types.iter().flatten() {
+            *counts.entry(t.as_str()).or_default() += 1;
+        }
+        let mut types: Vec<(&str, usize)> = counts.into_iter().collect();
+        types.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+        let types = types.into_iter().map(|(t, _)| t.to_string()).collect();
+        Self { nodes, edges, edge_types, types }
     }
 
     /// Indices of the nodes linked to `i`.
@@ -325,6 +343,21 @@ mod tests {
         assert_eq!(near.nodes.iter().find(|n| n.path.stem() == "A").unwrap().depth, 0);
         let two = Graph::build(&ix, &Scope::Around { focus: NotePath::new("A.md"), depth: 2 });
         assert_eq!(two.nodes.len(), 4);
+        assert!(all.edge_types.iter().all(Option::is_none) && all.types.is_empty());
+    }
+
+    #[test]
+    fn edges_carry_their_link_type() {
+        let ix = index(&[("A.md", "up:: [[B]]\n[[C]]"), ("B.md", "[supports:: [[C]]]"), ("C.md", "up:: [[B]]\n[[A]]")]);
+        let g = Graph::build(&ix, &Scope::All { orphans: true });
+        let name = |i: usize| g.nodes[i].path.stem().to_string();
+        let typed: Vec<(String, String, Option<&str>)> =
+            g.edges.iter().zip(&g.edge_types).map(|(&(a, b), t)| (name(a), name(b), t.as_deref())).collect();
+        assert_eq!(
+            typed,
+            [("A".into(), "B".into(), Some("up")), ("A".into(), "C".into(), None), ("B".into(), "C".into(), Some("supports"))]
+        );
+        assert_eq!(g.types, ["supports", "up"]);
     }
 
     #[test]

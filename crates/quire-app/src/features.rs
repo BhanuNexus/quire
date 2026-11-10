@@ -19,7 +19,7 @@ use crate::commands::{Command, Owner};
 use crate::decor::{Decoration, DecorationEvent, StatusItem};
 use crate::document::DocId;
 use crate::workspace::{UiRequest, Workspace};
-use crate::{agent_state, assistant_state, canvas_state, mcp_state, nav, secure_state, tasks_state, trust_jobs};
+use crate::{agent_state, assistant_state, canvas_state, links_state, mcp_state, nav, secure_state, tasks_state, trust_jobs};
 
 /// Decorations cached for (document, revision, generation).
 type DecorCache = RefCell<Option<((DocId, u64, u64), Rc<Vec<Decoration>>)>>;
@@ -61,6 +61,8 @@ pub struct Features {
     pub citations: crate::citations::CitationsState,
     /// 0.11 security: locked folders, connections (`secure_state.rs`).
     pub secure: secure_state::SecureState,
+    /// 0.12: typed links and hierarchy (`links_state.rs`).
+    pub links: links_state::LinksState,
     /// Bump to make every document's decorations be asked for again.
     pub decor_generation: u64,
     decor_cache: DecorCache,
@@ -77,6 +79,7 @@ pub(crate) fn tick(ws: &mut Workspace, now: Instant) -> bool {
         | nav::tick(ws, now)
         | canvas_state::tick(ws, now)
         | secure_state::tick(ws, now)
+        | links_state::tick(ws, now)
 }
 
 /// The earliest instant any feature has time-driven work.
@@ -90,6 +93,7 @@ pub(crate) fn next_deadline(ws: &Workspace) -> Option<Instant> {
         nav::next_deadline(ws),
         canvas_state::next_deadline(ws),
         secure_state::next_deadline(ws),
+        links_state::next_deadline(ws),
     ]
     .into_iter()
     .flatten()
@@ -107,12 +111,13 @@ pub(crate) fn run(ws: &mut Workspace, cmd: Command) -> Option<UiRequest> {
         Owner::Editor => nav::run(ws, cmd),
         Owner::Spatial => canvas_state::run(ws, cmd),
         Owner::Secure => secure_state::run(ws, cmd),
+        Owner::Links => links_state::run(ws, cmd),
         Owner::Core => None,
     }
 }
 
 /// Whether a command is offered (0.8 commands always are).
-pub(crate) const fn available(ws: &Workspace, cmd: Command) -> bool {
+pub(crate) fn available(ws: &Workspace, cmd: Command) -> bool {
     match cmd.owner() {
         Owner::Core => true,
         Owner::Agent => agent_state::available(ws, cmd),
@@ -123,6 +128,7 @@ pub(crate) const fn available(ws: &Workspace, cmd: Command) -> bool {
         Owner::Editor => nav::available(ws, cmd),
         Owner::Spatial => canvas_state::available(ws, cmd),
         Owner::Secure => secure_state::available(ws, cmd),
+        Owner::Links => links_state::available(ws, cmd),
     }
 }
 
@@ -136,6 +142,7 @@ pub(crate) fn vault_event(ws: &mut Workspace, ev: &VaultEvent) {
     nav::vault_event(ws, ev);
     canvas_state::vault_event(ws, ev);
     secure_state::vault_event(ws, ev);
+    links_state::vault_event(ws, ev);
 }
 
 /// A vault was opened (or attached): features start their jobs.
@@ -148,11 +155,12 @@ pub(crate) fn vault_opened(ws: &mut Workspace) {
     nav::vault_opened(ws);
     canvas_state::vault_opened(ws);
     secure_state::vault_opened(ws);
+    links_state::vault_opened(ws);
 }
 
 impl Workspace {
     /// Whether to offer `cmd` in menus, the palette and the keyboard.
-    pub const fn command_available(&self, cmd: Command) -> bool {
+    pub fn command_available(&self, cmd: Command) -> bool {
         available(self, cmd)
     }
 
@@ -173,6 +181,7 @@ impl Workspace {
         tasks_state::decorations(self, d, &mut out);
         nav::decorations(self, d, &mut out);
         canvas_state::decorations(self, d, &mut out);
+        links_state::decorations(self, d, &mut out);
         let out = Rc::new(out);
         *self.features.decor_cache.borrow_mut() = Some((key, Rc::clone(&out)));
         out
@@ -188,6 +197,7 @@ impl Workspace {
             Owner::Plan => tasks_state::decoration_event(self, ev),
             Owner::Editor => nav::decoration_event(self, ev),
             Owner::Spatial => canvas_state::decoration_event(self, ev),
+            Owner::Links => links_state::decoration_event(self, ev),
             Owner::Secure | Owner::Core => {}
         }
         self.features.decor_generation += 1;
@@ -204,6 +214,7 @@ impl Workspace {
         nav::status(self, &mut out);
         canvas_state::status(self, &mut out);
         secure_state::status(self, &mut out);
+        links_state::status(self, &mut out);
         out
     }
 }

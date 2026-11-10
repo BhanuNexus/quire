@@ -177,6 +177,15 @@ impl Workspace {
                 items,
             });
         }
+        // 0.12: after `parent:: ` (a field that holds links), notes to link.
+        if let Some((field, col, query)) = crate::links_state::field_value_query(&before)
+            && self.is_link_field(&field)
+            && !in_code(&doc.text(), line)
+        {
+            let items = self.link_items(&query);
+            let context = SuggestContext { kind: SuggestKind::Link, start: line_start + col, end: sel.head, query };
+            return (!items.is_empty()).then_some(Suggestions { context, items });
+        }
         let (kind, col, query) = detect(&before)?;
         if in_code(&doc.text(), line) {
             return None;
@@ -187,6 +196,12 @@ impl Workspace {
         let end = if kind == SuggestKind::Link && after.starts_with("]]") { sel.head + 2 } else { sel.head };
         let context = SuggestContext { kind, start: line_start + col, end, query };
         let items = match kind {
+            // 0.12: `[[` at the start of a line also offers the vault's typed fields (`up:: [[…]]`).
+            SuggestKind::Link if at_line_start && context.query.is_empty() => {
+                let mut items = self.link_items("");
+                items.extend(self.typed_field_items());
+                items
+            }
             SuggestKind::Link => self.link_items(&context.query),
             SuggestKind::Tag => self.tag_items(&context.query),
             SuggestKind::Slash => self.slash_items(&context.query, at_line_start),
@@ -238,6 +253,21 @@ impl Workspace {
             });
         }
         items
+    }
+
+    /// `up:: [[…]]` for the typed fields this vault uses, most used first.
+    fn typed_field_items(&self) -> Vec<SuggestItem> {
+        let ix = self.index().read();
+        ix.relations()
+            .fields()
+            .into_iter()
+            .take(4)
+            .map(|(f, n)| SuggestItem {
+                label: format!("{f}:: [[…]]"),
+                detail: format!("typed link · {n} in this vault"),
+                insert: format!("{f}:: [[{CARET}]]"),
+            })
+            .collect()
     }
 
     fn tag_items(&self, query: &str) -> Vec<SuggestItem> {
@@ -367,6 +397,28 @@ mod tests {
         let end = d.buffer().len_chars();
         d.set_selection(Selection::cursor(end));
         w.insert_text(text);
+    }
+
+    #[test]
+    fn typed_fields_complete_notes_and_are_offered_after_brackets() {
+        let mut w = ws(&[("Rope.md", "# Rope\n"), ("A.md", "up:: [[Rope]]\n"), ("B.md", "# B\n")]);
+        w.open_note(&NotePath::new("B.md"));
+        type_at_end(&mut w, "parent:: Ro");
+        let s = w.suggestions().expect("notes after parent::");
+        assert_eq!(s.context.kind, SuggestKind::Link);
+        assert_eq!(s.items[0].insert, "[[Rope]]");
+        assert!(w.accept_suggestion(&s, 0));
+        assert!(w.active_doc().unwrap().text().ends_with("parent:: [[Rope]]"));
+        // A field that holds no links in this vault offers nothing.
+        type_at_end(&mut w, "\nstatus:: dr");
+        assert!(w.suggestions().is_none());
+        type_at_end(&mut w, "\n[[");
+        let s = w.suggestions().expect("links and typed fields");
+        let up = s.items.iter().position(|i| i.label == "up:: [[…]]").expect("the vault's typed field");
+        assert!(w.accept_suggestion(&s, up));
+        let d = w.active_doc().unwrap();
+        assert!(d.text().ends_with("\nup:: [[]]"));
+        assert_eq!(d.selection().head, d.buffer().len_chars() - 2, "caret inside the brackets");
     }
 
     #[test]
