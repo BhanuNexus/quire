@@ -30,6 +30,10 @@ pub struct EditingSettings {
     /// Where Ctrl+N puts a new note: `"current"` (the open note's folder,
     /// so the folder's template applies) or `"root"` (the vault's top).
     pub new_note_folder: String,
+    /// 0.12: how dates are shown in properties and views, a strftime format
+    /// (`"%d.%m.%Y"`). Empty: as stored (`2026-11-05`). Files always keep
+    /// ISO dates. See `quire_app::datefmt`.
+    pub date_format: String,
     #[serde(flatten)]
     pub other: toml::Table,
 }
@@ -44,6 +48,7 @@ impl Default for EditingSettings {
             homepage: String::new(),
             two_pane: false,
             new_note_folder: "current".into(),
+            date_format: String::new(),
             other: toml::Table::new(),
         }
     }

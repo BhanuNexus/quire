@@ -33,6 +33,17 @@ pub(crate) enum ViewAction {
 /// Fields computed from the note itself, shown read-only in tables.
 const COMPUTED: [&str; 11] = ["title", "name", "path", "file", "folder", "tags", "tasks", "open_tasks", "done_tasks", "words", "links"];
 
+/// The date format for views, set by the app each frame (`[editing] date_format`).
+pub(crate) fn date_format(ctx: &egui::Context) -> String {
+    ctx.data(|d| d.get_temp::<String>(Id::unique("quire-date-format"))).unwrap_or_default()
+}
+
+pub(crate) fn set_date_format(ctx: &egui::Context, format: &str) {
+    if date_format(ctx) != format {
+        ctx.data_mut(|d| d.insert_temp(Id::unique("quire-date-format"), format.to_string()));
+    }
+}
+
 /// A table cell that edits its property in place: click to type, Enter or
 /// clicking away saves, Escape cancels. Yes/no values are checkboxes.
 pub(crate) fn editable_cell(ui: &mut Ui, pal: &Palette, key: Id, path: &NotePath, field: &str, cell: &str, act: &mut Option<ViewAction>) {
@@ -45,15 +56,20 @@ pub(crate) fn editable_cell(ui: &mut Ui, pal: &Palette, key: Id, path: &NotePath
         return;
     }
     let editing: Option<String> = ui.data(|d| d.get_temp::<String>(id));
+    // 0.12: dates in the chosen format; the file keeps ISO.
+    let fmt = date_format(ui.ctx());
+    let is_date = quire_app::markdown::frontmatter::is_date(cell.trim());
+    let cell_shown = if is_date { quire_app::datefmt::display(cell, &fmt) } else { cell.to_string() };
     match editing {
         None => {
-            let shown = if cell.is_empty() { RichText::new("—").color(pal.faint) } else { RichText::new(cell).color(pal.text) };
+            let shown =
+                if cell.is_empty() { RichText::new("—").color(pal.faint) } else { RichText::new(cell_shown.as_str()).color(pal.text) };
             let r = ui
                 .add(egui::Label::new(shown.size(13.0)).truncate().sense(Sense::click()))
                 .on_hover_cursor(egui::CursorIcon::Text)
                 .on_hover_text(format!("Click to edit {field}"));
             if r.clicked() {
-                ui.data_mut(|d| d.insert_temp(id, cell.to_string()));
+                ui.data_mut(|d| d.insert_temp(id, cell_shown.clone()));
                 ui.memory_mut(|m| m.request_focus(id.with("edit")));
             }
         }
@@ -66,8 +82,13 @@ pub(crate) fn editable_cell(ui: &mut Ui, pal: &Palette, key: Id, path: &NotePath
                 ui.data_mut(|d| d.remove::<String>(id));
             } else if r.lost_focus() || enter {
                 ui.data_mut(|d| d.remove::<String>(id));
-                if draft.trim() != cell {
-                    *act = Some(ViewAction::Edit { path: path.clone(), field: field.to_string(), text: draft });
+                if draft.trim() != cell_shown {
+                    // A date field stays a date: text that isn't one is dropped.
+                    let text =
+                        if is_date && !draft.trim().is_empty() { quire_app::datefmt::parse(&draft, &fmt, cell) } else { Some(draft) };
+                    if let Some(text) = text {
+                        *act = Some(ViewAction::Edit { path: path.clone(), field: field.to_string(), text });
+                    }
                 }
             } else {
                 ui.data_mut(|d| d.insert_temp(id, draft));
@@ -200,8 +221,14 @@ fn list(ui: &mut Ui, pal: &Palette, spec: &ViewSpec, r: &ViewResult, act: &mut O
         ui.horizontal(|ui| {
             ui.label(RichText::new("•").color(pal.muted));
             title_link(ui, pal, &row.title, &row.path, act);
-            let extra: Vec<&str> =
-                spec.fields.iter().zip(&row.cells).filter(|(f, c)| *f != "title" && !c.is_empty()).map(|(_, c)| c.as_str()).collect();
+            let fmt = date_format(ui.ctx());
+            let extra: Vec<String> = spec
+                .fields
+                .iter()
+                .zip(&row.cells)
+                .filter(|(f, c)| *f != "title" && !c.is_empty())
+                .map(|(_, c)| quire_app::datefmt::display(c, &fmt))
+                .collect();
             if !extra.is_empty() {
                 ui.add(egui::Label::new(RichText::new(extra.join(" · ")).size(12.0).color(pal.muted)).truncate());
             }
@@ -293,6 +320,8 @@ fn calendar(ui: &mut Ui, pal: &Palette, r: &ViewResult, key: Id, act: &mut Optio
 /// The "Properties" section of the insights panel for the active note.
 pub(crate) fn properties(ui: &mut Ui, ws: &mut Workspace, pal: &Palette, doc: DocId) {
     let props = ws.active_properties();
+    let date_fmt = ws.settings.editing.date_format.clone();
+    let mut bad_date: Option<String> = None;
     let base = Id::unique(("quire-props", doc.0));
     let mut set: Option<(String, quire_app::markdown::Value)> = None;
     let mut remove: Option<String> = None;
@@ -322,7 +351,8 @@ pub(crate) fn properties(ui: &mut Ui, ws: &mut Workspace, pal: &Palette, doc: Do
                         egui::Label::new(RichText::new(&name).size(12.0).color(pal.muted)).truncate(),
                     )
                     .on_hover_text(path.join("."));
-                    let current = v.display();
+                    let stored = v.display();
+                    let current = if v.kind() == Kind::Date { quire_app::datefmt::display(&stored, &date_fmt) } else { stored.clone() };
                     let w = (ui.available_width() - 48.0).max(60.0);
                     let id = base.with(("draft", path.join(".")));
                     let mut draft = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_else(|| current.clone());
@@ -333,7 +363,10 @@ pub(crate) fn properties(ui: &mut Ui, ws: &mut Workspace, pal: &Palette, doc: Do
                         ui.data_mut(|d| d.remove::<String>(id));
                     }
                     if r.lost_focus() && draft.trim() != current {
-                        set_path = Some((path.clone(), parse_input(&draft, v.kind() == Kind::List)));
+                        match typed_value(&draft, &v, &stored, &date_fmt) {
+                            Ok(nv) => set_path = Some((path.clone(), nv)),
+                            Err(msg) => bad_date = Some(msg),
+                        }
                     }
                     if ui.small_button("×").on_hover_text("Remove this field").clicked() {
                         remove_path = Some(path.clone());
@@ -345,7 +378,8 @@ pub(crate) fn properties(ui: &mut Ui, ws: &mut Workspace, pal: &Palette, doc: Do
         ui.horizontal(|ui| {
             ui.add_sized([72.0, 20.0], egui::Label::new(RichText::new(&p.key).size(12.5).color(pal.muted)).truncate())
                 .on_hover_text(format!("{} · {}", p.key, kind_name(p.kind)));
-            let current = p.value.display();
+            let stored = p.value.display();
+            let current = if p.kind == Kind::Date { quire_app::datefmt::display(&stored, &date_fmt) } else { stored.clone() };
             // Leave room for the × button and TextEdit margins, so the panel doesn't grow.
             let w = (ui.available_width() - 48.0).max(60.0);
             if p.kind == Kind::Bool {
@@ -364,7 +398,10 @@ pub(crate) fn properties(ui: &mut Ui, ws: &mut Workspace, pal: &Palette, doc: Do
                     ui.data_mut(|d| d.remove::<String>(id));
                 }
                 if r.lost_focus() && draft.trim() != current {
-                    set = Some((p.key.clone(), parse_input(&draft, p.kind == Kind::List)));
+                    match typed_value(&draft, &p.value, &stored, &date_fmt) {
+                        Ok(nv) => set = Some((p.key.clone(), nv)),
+                        Err(msg) => bad_date = Some(msg),
+                    }
                 }
             }
             if ui.small_button("×").on_hover_text("Remove property").clicked() {
@@ -397,6 +434,9 @@ pub(crate) fn properties(ui: &mut Ui, ws: &mut Workspace, pal: &Palette, doc: Do
     if props.is_empty() {
         ui.label(RichText::new("Properties live in the note's front matter, so other apps can read them.").size(11.5).color(pal.faint));
     }
+    if let Some(msg) = bad_date {
+        ws.notify(quire_app::workspace::NoticeLevel::Warn, msg);
+    }
     if let Some((k, v)) = set {
         ws.set_property(&k, &v);
     }
@@ -411,6 +451,19 @@ pub(crate) fn properties(ui: &mut Ui, ws: &mut Workspace, pal: &Palette, doc: Do
         let parts: Vec<&str> = path.iter().map(String::as_str).collect();
         ws.remove_property_path(&parts);
     }
+}
+
+/// What was typed into a property field as the value to store. A date
+/// typed in the chosen format (or as ISO) is stored as ISO; text that is
+/// no date in that format is refused with a message, so the field stays a date.
+fn typed_value(draft: &str, old: &quire_app::markdown::Value, stored: &str, date_fmt: &str) -> Result<quire_app::markdown::Value, String> {
+    if old.kind() == Kind::Date && !draft.trim().is_empty() {
+        return quire_app::datefmt::parse(draft, date_fmt, stored).map(quire_app::markdown::Value::Str).ok_or_else(|| {
+            let eg = quire_app::datefmt::display("2026-11-05", date_fmt);
+            format!("“{}” isn't a date. Type it like {eg} (or 2026-11-05).", draft.trim())
+        });
+    }
+    Ok(parse_input(draft, old.kind() == Kind::List))
 }
 
 /// The fields under a nested map, with their key paths (an empty map has none).
