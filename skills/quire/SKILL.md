@@ -67,10 +67,16 @@ new ones. Don't retry a proposed write as if it failed.
 
 Read: `vault_info`, `search`, `view`, `outline`, `list`, `neighbors`,
 `recent_activity`, `ask`, `history`, `read_version`, `diff`, `tags`,
-`properties`, `query_view`, `tasks`, `proposals`, `canvas_read`.
+`properties`, `query_view`, `tasks`, `proposals`, `canvas_read`, `links`,
+`hierarchy`.
 Write: `begin_run`, `create`, `str_replace`, `insert`, `edit_section`,
 `append`, `set_properties`, `rename`, `delete`, `canvas_apply`,
-`save_answer`, `capture_url`, `revert` (always a suggestion).
+`save_answer`, `capture_url`, `revert` (always a suggestion), `add_link`.
+Typed links (`parent:: [[X]]`, `[supports:: [[Y]]]`, `up: "[[X]]"`) are
+links with a type: `links` lists a note's links by type, `hierarchy` walks
+up/down/sibling relations, and `add_link` writes one in the note's own
+style. Follow `up`/`parent` to find context and `supports`/`contradicts`
+to weigh claims.
 Resources: `quire://note/{path}` (with `?section=` or `?lines=`),
 `quire://vault/instructions`, `quire://vault/index`, `quire://proposal/{id}`,
 `quire://attachment/{path}`. Prompts: `quire_ingest`, `quire_lint`,

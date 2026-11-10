@@ -23,6 +23,9 @@ pub enum EditOp {
     Append { text: String, under: Option<String> },
     /// `set_properties`.
     Properties { set: Vec<(String, Value)>, remove: Vec<String> },
+    /// `add_link` (0.12): a typed link to `target` in field `field`, in
+    /// the style the note already uses (front matter or inline field).
+    TypedLink { field: String, target: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,6 +125,14 @@ impl EditOp {
                     Ok(append_at(text, trim_blank_tail(text, s.body, s.end), add))
                 }
             },
+            Self::TypedLink { field, target } => {
+                if !quire_app::markdown::fields::is_field_name(field) {
+                    return Err(EditError::Invalid(format!("“{field}” isn't a link type: use letters, digits, spaces, “-” or “_”.")));
+                }
+                let style = quire_app::markdown::fields::preferred_style(text);
+                // Already linked this way: no change.
+                Ok(quire_app::markdown::fields::add_link(text, field, target, style).map_or_else(|| text.to_string(), |e| e.apply(text)))
+            }
             Self::Properties { set, remove } => {
                 let mut out = text.to_string();
                 for (k, v) in set {
