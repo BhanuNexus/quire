@@ -193,6 +193,25 @@ impl PdfDoc {
         })
     }
 
+    /// The destination array a name stands for (`/Names /Dests` tree of the catalog, or the old
+    /// `/Dests` dictionary).
+    fn named_destination(&self, name: &[u8]) -> Option<Array<'_>> {
+        let xref = self.pdf.xref();
+        let root: Dict<'_> = xref.get(xref.root_id())?;
+        if let Some(names) = root.get::<Dict<'_>>(b"Names".as_slice()).and_then(|n| n.get::<Dict<'_>>(b"Dests".as_slice())) {
+            let flat = names.get::<Array<'_>>(b"Names".as_slice())?;
+            let mut it = flat.flex_iter();
+            while let Some(key) = it.next::<hayro_interpret::hayro_syntax::object::String<'_>>() {
+                let value = it.next::<Array<'_>>();
+                if key.as_bytes() == name {
+                    return value;
+                }
+            }
+            return None;
+        }
+        root.get::<Dict<'_>>(b"Dests".as_slice())?.get::<Array<'_>>(name)
+    }
+
     /// Links on page `i`: web addresses and jumps to other pages.
     pub fn page_links(&self, i: usize) -> Vec<PageLink> {
         let Ok(page) = self.page(i) else { return Vec::new() };
@@ -218,8 +237,16 @@ impl PdfDoc {
                     out.push(PageLink { quad, target: LinkTarget::Uri(u) });
                     continue;
                 }
-                let dest =
-                    a.get::<Array<'_>>(b"Dest".as_slice()).or_else(|| action.as_ref().and_then(|d| d.get::<Array<'_>>(b"D".as_slice())));
+                let dest = a
+                    .get::<Array<'_>>(b"Dest".as_slice())
+                    .or_else(|| action.as_ref().and_then(|d| d.get::<Array<'_>>(b"D".as_slice())))
+                    // 0.12: a named destination (Typst makes one for every heading and paragraph id it links to).
+                    .or_else(|| {
+                        let name = a
+                            .get::<hayro_interpret::hayro_syntax::object::String<'_>>(b"Dest".as_slice())
+                            .or_else(|| action.as_ref()?.get::<hayro_interpret::hayro_syntax::object::String<'_>>(b"D".as_slice()))?;
+                        self.named_destination(name.as_bytes())
+                    });
                 let target = dest.and_then(|d| match d.raw_iter().next()? {
                     MaybeRef::Ref(r) => page_ids.iter().position(|id| id.is_some_and(|id| id.obj_number == r.obj_number)),
                     MaybeRef::NotRef(Object::Number(n)) => usize::try_from(n.as_i64()).ok(),

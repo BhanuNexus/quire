@@ -125,4 +125,37 @@ mod tests {
         assert!(text.contains("Idea"), "the drawing's text is in the PDF: {text}");
         assert!(!text.contains("Plan.excalidraw"), "not the missing-picture box: {text}");
     }
+
+    /// 0.12 verify: in the exported PDF, links inside the note (to a heading, to a
+    /// paragraph id, `[[#Heading]]`, `[[ThisNote#Heading]]`) jump to the right page; links to
+    /// other notes are plain text, and web links stay web links.
+    #[test]
+    fn links_inside_the_note_jump_to_their_page_in_the_pdf() {
+        use quire_pdf::text::LinkTarget;
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::open_local(dir.path()).unwrap();
+        let filler = "Filler line to push the next heading to a later page.\n\n".repeat(60);
+        let text = format!(
+            "# Top\n\nJump to [[#Later part]], [[Report#Later part|the same]], [the heading](#later-part), [[#^marker]] and [[Report#^marker]]. \
+             A [web link](https://example.com), a [[Some Other Note]] and [[Some Other Note#Part]].\n\n{filler}## Later part\n\n\
+             The marked paragraph. ^marker\n\n[[#Top]]\n"
+        );
+        let out = NotePath::new("Exports/Report.pdf");
+        let path = export_pdf(&vault, "Report", &text, &out).unwrap();
+        let pdf = quire_pdf::PdfDoc::open(std::fs::read(path).unwrap()).unwrap();
+        assert!(pdf.page_count() >= 2, "the later part is on a later page");
+        let last = pdf.page_count() - 1;
+        let first = pdf.page_links(0);
+        let uris: Vec<&str> =
+            first.iter().filter_map(|l| if let LinkTarget::Uri(u) = &l.target { Some(u.as_str()) } else { None }).collect();
+        assert_eq!(uris, ["https://example.com"]);
+        let pages: Vec<u32> = first.iter().filter_map(|l| if let LinkTarget::Page(p) = l.target { Some(p) } else { None }).collect();
+        assert_eq!(pages.len(), 5, "five links inside the note, none to other notes: {first:?}");
+        assert!(pages.iter().all(|p| *p as usize == last), "they jump to the later page ({last}): {pages:?}");
+        // The link back to the top.
+        let back = pdf.page_links(last);
+        assert!(back.iter().any(|l| l.target == LinkTarget::Page(0)), "{back:?}");
+        // Other notes are text: their names are in the page's text, with no link on them.
+        assert!(pdf.page_text(0).unwrap().text().contains("Some Other Note"));
+    }
 }
