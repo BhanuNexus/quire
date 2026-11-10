@@ -578,15 +578,15 @@ impl RemoteTransport {
         let own = read_logs(&self.device_dir(&self.device));
         m.own = own.len() as u64;
         let tip = self.read_tip(&self.device)?.map_or(0, |t| t.n);
-        if tip > m.own {
-            // The mirror lost revisions this device uploaded: fetch them back
-            // before the folder transport first reads its own log.
+        // The mirror lost revisions this device uploaded: fetch them back
+        // before the folder transport first reads its own log.
+        while tip > m.own {
             let got = self.fetch_range(&self.device, m.own, tip)?;
-            if (got.len() as u64) < tip - m.own {
+            if got.is_empty() {
                 return Err(TransportError::Offline("this device's own revisions aren't all readable in the storage yet".into()));
             }
             append_lines(&self.device_dir(&self.device), &got)?;
-            m.own = tip;
+            m.own += got.len() as u64;
         }
         m.uploaded = tip;
         m.outbox = own.into_iter().zip(1u64..).filter(|(_, n)| *n > tip).map(|(r, n)| (n, r)).collect();
