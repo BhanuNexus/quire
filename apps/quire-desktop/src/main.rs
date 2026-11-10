@@ -37,6 +37,7 @@ mod inbox_ui;
 #[cfg(test)]
 mod layout_check;
 mod lock_ui;
+mod locked_media;
 mod map_ui;
 mod mcp_ui;
 mod meta_refactor_ui;

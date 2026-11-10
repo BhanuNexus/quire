@@ -856,6 +856,11 @@ impl Workspace {
             changed |= self.doc(id).and_then(|d| d.path.clone()) != before;
         }
         changed |= self.process_vault_events();
+        // 0.12: the vault's file list arrives from its own thread.
+        if self.file_list_pending() {
+            self.refresh_file_cache();
+            changed |= !self.file_list_pending();
+        }
         changed |= self.poll_assist();
         changed |= self.poll_ask();
         self.maybe_check_updates();
@@ -873,7 +878,8 @@ impl Workspace {
         let delay = Duration::from_millis(self.settings.autosave_ms);
         let autosave =
             self.docs.iter().filter(|d| d.path.is_some() && d.is_dirty()).filter_map(Document::last_edit).map(|t| t + delay).min();
-        autosave.into_iter().chain(crate::features::next_deadline(self)).min()
+        let listing = self.file_list_pending().then(|| Instant::now() + Duration::from_millis(50));
+        autosave.into_iter().chain(listing).chain(crate::features::next_deadline(self)).min()
     }
 
     fn process_vault_events(&mut self) -> bool {

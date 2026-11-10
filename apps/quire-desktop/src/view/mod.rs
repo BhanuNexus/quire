@@ -1226,14 +1226,14 @@ impl FastEditor {
     }
 
     /// Image shown under a line that only embeds an image.
-    fn line_image(ws: &Workspace, doc: &Document, line: usize) -> Option<String> {
+    fn line_image(ctx: &egui::Context, ws: &Workspace, doc: &Document, line: usize) -> Option<String> {
         if !ws.settings.inline_images {
             return None;
         }
         let text = doc.buffer().line(line);
         let target = quire_app::attach::image_embed(&text)?;
-        let path = ws.attachment_path(target)?;
-        Some(format!("file://{}", path.display()))
+        // 0.12: a picture in a locked folder shows from memory while it is unlocked.
+        crate::locked_media::uri(ctx, ws, target)
     }
 
     /// Display size of an inline image (scaled down to fit), if it loads.
@@ -2429,7 +2429,7 @@ impl FastEditor {
                     }
                 }
 
-                if let Some(uri) = Self::line_image(ws, doc, line)
+                if let Some(uri) = Self::line_image(ui.ctx(), ws, doc, line)
                     && let Some(size) = Self::image_size(ui, &uri, cx.wrap)
                 {
                     let r = Rect::from_min_size(Pos2::new(x0, top + h + 4.0), size);

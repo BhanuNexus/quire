@@ -523,9 +523,15 @@ impl Workspace {
     /// Move a pomodoro on; record finished work and say what's next.
     /// Returns whether anything changed.
     pub(crate) fn timer_tick(&mut self) -> bool {
+        // 0.12: nothing before the first frame (the app opens its vault deferred).
+        if self.deferred_start {
+            return false;
+        }
         let reread = self.timer_poll();
-        let prefs = self.task_prefs().pomodoro;
         let Some(before) = self.features.tasks.timer.running.clone() else { return reread };
+        // Read only while a timer runs: the vault's prefs aren't cached, so
+        // this read the vault's prefs file every frame.
+        let prefs = self.task_prefs().pomodoro;
         let mut r = before.clone();
         let Some(t) = r.advance(now(), &prefs) else { return reread };
         let Transition { finished, next, record, stopped } = t;

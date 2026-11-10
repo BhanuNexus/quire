@@ -829,6 +829,8 @@ impl eframe::App for QuireApp {
             self.open_file(&NotePath::new(note));
         }
         self.ui_inner(ui, frame);
+        // 0.12: pictures of folders locked again leave memory.
+        crate::locked_media::sweep(ui.ctx(), &self.ws);
         self.ask_before_losing_locked_edits(ui.ctx());
         #[cfg(feature = "bench")]
         if let Some(b) = &mut self.bench {
