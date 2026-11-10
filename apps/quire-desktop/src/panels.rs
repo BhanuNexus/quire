@@ -38,6 +38,8 @@ pub(crate) struct SidebarState {
     /// Pages of PDFs (and images) matching the same query.
     page_hits: Vec<quire_app::index::SectionHit>,
     open_tag: Option<String>,
+    /// 0.12: nested tags (`a/b`) folded under their parent in the Tags tab.
+    collapsed_tags: std::collections::HashSet<String>,
     /// Two-pane browser: the folder whose notes are listed.
     browse_folder: Option<String>,
     /// The two-pane setting last frame (turning it on shows the Files tab).
@@ -879,11 +881,31 @@ pub(crate) fn sidebar(
             let tags = ws.index().read().tags();
             let mut tag_color: Option<(String, Option<quire_app::themes::Rgba>)> = None;
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                for (tag, count) in &tags {
+                for (i, (tag, count)) in tags.iter().enumerate() {
+                    // Under a folded parent: not shown (the list is in tree order).
+                    if tag.match_indices('/').any(|(at, _)| st.collapsed_tags.contains(&tag[..at])) {
+                        continue;
+                    }
                     let depth = tag.matches('/').count();
                     let leaf = tag.rsplit('/').next().unwrap_or(tag);
+                    let has_children =
+                        tags.get(i + 1).is_some_and(|(n, _)| n.strip_prefix(tag.as_str()).is_some_and(|r| r.starts_with('/')));
                     ui.horizontal(|ui| {
                         ui.add_space(depth as f32 * 14.0);
+                        if has_children {
+                            let folded = st.collapsed_tags.contains(tag);
+                            let arrow = ui.add(
+                                egui::Label::new(RichText::new(if folded { "▸" } else { "▾" }).color(pal.muted))
+                                    .sense(egui::Sense::click()),
+                            );
+                            if arrow.on_hover_text(if folded { "Show nested tags" } else { "Hide nested tags" }).clicked()
+                                && !st.collapsed_tags.remove(tag)
+                            {
+                                st.collapsed_tags.insert(tag.clone());
+                            }
+                        } else {
+                            ui.add_space(12.0);
+                        }
                         let selected = st.open_tag.as_deref() == Some(tag.as_str());
                         let color = ws.features.themes.tag_color(tag).map_or(pal.tag, crate::theme::color);
                         let r = ui.selectable_label(selected, RichText::new(format!("#{leaf}")).color(color));
