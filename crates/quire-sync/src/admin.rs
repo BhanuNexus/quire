@@ -164,11 +164,16 @@ pub fn devices(
         .into_iter()
         .map(|id| {
             let g = good.iter().find(|g| g.0 == id);
+            // A removed device's record still names it (for the list only).
+            let shown = g.map(|g| (g.2.clone(), g.3.clone())).or_else(|| {
+                let r = records.iter().find(|r| r.device == id && removed.contains(&id))?;
+                r.verify(keys, space, &id).map(|(_, name)| (name, r.quire.clone()))
+            });
             DeviceInfo {
                 this: id == *me,
                 removed: removed.contains(&id),
-                name: g.map(|g| g.2.clone()),
-                quire: g.map(|g| g.3.clone()),
+                name: shown.as_ref().map(|s| s.0.clone()),
+                quire: shown.map(|s| s.1),
                 has_key: g.is_some(),
                 id,
             }

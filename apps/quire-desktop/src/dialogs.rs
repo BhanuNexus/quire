@@ -1965,6 +1965,7 @@ pub(crate) fn sync_conflicts(ctx: &egui::Context, ws: &mut Workspace, pal: &Pale
 
 impl DevicesPanel {
     /// For layout checks: the list (0), removing a device (1), the upgrade warning (2).
+    #[cfg(test)]
     fn sample(step: usize) -> Self {
         use quire_app::vault_sync::{SyncDevice, SyncDevices, UpgradeInfo};
         let dev = |id: &str, label: &str, quire: Option<&str>, this: bool, removed: bool| SyncDevice {
@@ -2053,9 +2054,12 @@ fn sync_devices(ui: &mut Ui, p: &mut DevicesPanel, ws: &mut Workspace, compacts_
         }
         Some(Ok(list)) => {
             let mut clicked = None;
-            egui::Grid::new("sync-devices-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-                for d in &list.devices {
+            for d in &list.devices {
+                ui.horizontal(|ui| {
+                    // The name and notes wrap in what's left beside the button.
+                    let w = (ui.available_width() - 160.0).max(160.0);
                     ui.vertical(|ui| {
+                        ui.set_width(w);
                         ui.add(egui::Label::new(RichText::new(&d.label).strong()).wrap());
                         let mut notes = Vec::new();
                         if d.this {
@@ -2071,9 +2075,7 @@ fn sync_devices(ui: &mut Ui, p: &mut DevicesPanel, ws: &mut Workspace, compacts_
                         );
                         ui.add(egui::Label::new(small(&notes.join(" · "))).wrap());
                     });
-                    if d.this || d.removed {
-                        ui.label("");
-                    } else {
+                    if !d.this && !d.removed {
                         let b = ui
                             .add_enabled(
                                 upgraded && p.removal.is_none(),
@@ -2084,9 +2086,9 @@ fn sync_devices(ui: &mut Ui, p: &mut DevicesPanel, ws: &mut Workspace, compacts_
                             clicked = Some((d.id.clone(), d.label.clone()));
                         }
                     }
-                    ui.end_row();
-                }
-            });
+                });
+                ui.add_space(4.0);
+            }
             if let Some(c) = clicked {
                 p.removing = Some(c);
                 p.removed = None;

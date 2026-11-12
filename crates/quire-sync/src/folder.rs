@@ -919,7 +919,7 @@ impl FolderTransport {
     /// Fold old revisions into a snapshot (`docs/design/0.13-sync.md` §1).
     /// `cut` replaces the lanes' ends as read here (an S3 or WebDAV mirror
     /// passes its object numbers). With `force`, even when little would
-    /// go. Returns the snapshot written, or why not.
+    /// go (but never when nothing would). Returns the snapshot written, or why not.
     pub fn compact(&self, policy: Policy, cut: Option<BTreeMap<DeviceId, LanePos>>, force: bool) -> Result<Compacted, TransportError> {
         let keys = self.keyset().ok_or_else(|| TransportError::Refused("compaction needs the vault's keys".into()))?;
         let mut ix = self.lock();
@@ -966,7 +966,8 @@ impl FolderTransport {
         let links: HashMap<RevId, Vec<RevId>> = ix.links.clone();
         let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
         let plan = crate::compact::plan(&nodes, &heads, &links, policy, now_ms);
-        if !force && !crate::compact::worth_it(&plan.stats) {
+        // Nothing would go, or (unless asked) too little.
+        if plan.stats.dropped == 0 || (!force && !crate::compact::worth_it(&plan.stats)) {
             return Ok(Compacted::NotWorthIt(plan.stats));
         }
         let mut cut = cut.unwrap_or_else(|| ix.lane_end.iter().map(|(d, p)| (d.clone(), *p)).collect());
