@@ -98,12 +98,38 @@ Section "Quire" SecApp
   WriteRegDWORD HKCU "${UNINST_KEY}" "EstimatedSize" 20000
 SectionEnd
 
+; "Open with Quire" for .md files (0.13). Registers Quire as a program a file
+; can be opened with, and in Settings → Default apps; it never makes Quire
+; the default (Windows keeps whatever the person chose, and 10/11 only let
+; the person change it). Only per-user keys (HKCU), like the rest of the
+; installer. Only .md: Quire doesn't open .markdown files
+; (docs/design/0.13-pack.md §3).
+Section "Offer Quire for .md files" SecAssoc
+  WriteRegStr HKCU "Software\Classes\Quire.Markdown" "" "Markdown document"
+  WriteRegStr HKCU "Software\Classes\Quire.Markdown\DefaultIcon" "" "$INSTDIR\quire.exe,0"
+  WriteRegStr HKCU "Software\Classes\Quire.Markdown\shell\open\command" "" '"$INSTDIR\quire.exe" "%1"'
+  ; An entry in the .md "Open with" list. An empty value under OpenWithProgids
+  ; adds a choice; the key's own default value (the current default) is untouched.
+  WriteRegStr HKCU "Software\Classes\.md\OpenWithProgids" "Quire.Markdown" ""
+  WriteRegStr HKCU "Software\Classes\Applications\quire.exe" "FriendlyAppName" "Quire"
+  WriteRegStr HKCU "Software\Classes\Applications\quire.exe\SupportedTypes" ".md" ""
+  WriteRegStr HKCU "Software\Classes\Applications\quire.exe\shell\open\command" "" '"$INSTDIR\quire.exe" "%1"'
+  ; Settings → Default apps lists Quire (as a choice for .md).
+  WriteRegStr HKCU "Software\Quire\Capabilities" "ApplicationName" "Quire"
+  WriteRegStr HKCU "Software\Quire\Capabilities" "ApplicationDescription" "Fast, local-first Markdown notes"
+  WriteRegStr HKCU "Software\Quire\Capabilities\FileAssociations" ".md" "Quire.Markdown"
+  WriteRegStr HKCU "Software\RegisteredApplications" "Quire" "Software\Quire\Capabilities"
+  ; SHCNE_ASSOCCHANGED: Explorer re-reads the associations.
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
+SectionEnd
+
 Section /o "Desktop shortcut" SecDesktop
   CreateShortcut "$DESKTOP\Quire.lnk" "$INSTDIR\quire.exe"
 SectionEnd
 
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
   !insertmacro MUI_DESCRIPTION_TEXT ${SecApp} "The Quire app and quire-cli (search, import and the MCP server for AI assistants)."
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecAssoc} "List Quire under Open with for .md files. It doesn't become the default: you choose that in Windows."
   !insertmacro MUI_DESCRIPTION_TEXT ${SecDesktop} "Add a Quire shortcut to the desktop."
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
 
@@ -120,6 +146,13 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\Quire.lnk"
   Delete "$DESKTOP\Quire.lnk"
   DeleteRegKey HKCU "${UNINST_KEY}"
+  ; Only what the installer added: another program's .md choices and the
+  ; default stay as they are.
+  DeleteRegKey HKCU "Software\Classes\Quire.Markdown"
+  DeleteRegKey HKCU "Software\Classes\Applications\quire.exe"
+  DeleteRegValue HKCU "Software\Classes\.md\OpenWithProgids" "Quire.Markdown"
+  DeleteRegValue HKCU "Software\RegisteredApplications" "Quire"
   DeleteRegKey HKCU "Software\Quire"
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
   ; Notes and settings are never touched: vaults are your own folders.
 SectionEnd
