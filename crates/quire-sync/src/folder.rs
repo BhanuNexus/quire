@@ -405,6 +405,11 @@ impl FolderTransport {
         self
     }
 
+    #[doc(hidden)]
+    pub const fn set_settle(&mut self, secs: i64) {
+        self.settle = secs;
+    }
+
     /// Forget what was read; the next scan reads everything again (what
     /// was handed to the engine is kept, so nothing is handed out twice).
     fn reset(&self) {
@@ -493,6 +498,27 @@ impl FolderTransport {
     /// The space's minimum reader (1 unless raised; 4 for a 0.13 vault).
     pub fn level(&self) -> u32 {
         self.level.load(Ordering::Relaxed)
+    }
+
+    /// Say what the space's minimum reader is (an S3 or WebDAV mirror has
+    /// no `space.json` of its own).
+    pub fn set_level(&self, level: u32) {
+        self.level.store(level, Ordering::Relaxed);
+    }
+
+    /// [`Self::level`], read from `space.json` now.
+    pub fn read_level(&self) -> Result<u32, TransportError> {
+        let l = read_space(&self.dir)?.min_reader.unwrap_or(1);
+        self.level.store(l, Ordering::Relaxed);
+        Ok(l)
+    }
+
+    /// Raise the space's minimum reader (see [`raise_min_reader`]).
+    pub fn raise_level(&self, level: u32) -> Result<(), TransportError> {
+        let root = self.dir.parent().ok_or_else(|| TransportError::Refused("no sync folder".into()))?;
+        raise_min_reader(root, &self.space, level)?;
+        self.level.store(level.max(self.level()), Ordering::Relaxed);
+        Ok(())
     }
 
     fn snapshots_dir(&self) -> PathBuf {
@@ -931,7 +957,8 @@ impl FolderTransport {
         files.dedup();
         let heads: BTreeMap<FileId, RevId> = files.iter().filter_map(|f| Some((f.clone(), Self::head(&ix, f)?))).collect();
         let links: HashMap<RevId, Vec<RevId>> = ix.links.clone();
-        let plan = crate::compact::plan(&nodes, &heads, &links, policy, now.saturating_mul(1000));
+        let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+        let plan = crate::compact::plan(&nodes, &heads, &links, policy, now_ms);
         if !force && !crate::compact::worth_it(&plan.stats) {
             return Ok(Compacted::NotWorthIt(plan.stats));
         }

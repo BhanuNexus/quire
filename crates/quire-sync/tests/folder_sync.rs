@@ -9,8 +9,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use quire_sync::compact::Policy;
 use quire_sync::folder::{self, FolderTransport};
-use quire_sync::{DeviceId, Engine, KdfParams, LocalStore, MemoryStore, Report, SpaceId, SyncState, VaultKey, WrappedKey};
+use quire_sync::{DeviceId, Engine, KdfParams, KeySet, LocalStore, MemoryStore, Report, SpaceId, SyncState, VaultKey, WrappedKey};
 
 const TODAY: &str = "2026-11-01";
 
@@ -44,6 +45,12 @@ fn copy_prefix(from: &Path, to: &Path, len: u64) {
 
 impl Cloud {
     fn new(n: usize) -> Self {
+        Self::new_at(n, 1)
+    }
+
+    /// `level` [`folder::LEVEL_HARDENED`]: a 0.13 vault (bound headers,
+    /// chains, snapshots), every device with the vault's keys.
+    fn new_at(n: usize, level: u32) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let space = SpaceId::random().unwrap();
         let key = VaultKey::generate().unwrap();
@@ -51,12 +58,14 @@ impl Cloud {
         let devs = (0..n)
             .map(|i| {
                 let root = dir.path().join(format!("replica{i}"));
-                folder::create_space(&root, &space, &wrapped).unwrap();
+                folder::create_space_at(&root, &space, &wrapped, level).unwrap();
                 let state = dir.path().join(format!("state{i}"));
                 fs::create_dir_all(&state).unwrap();
                 let id = DeviceId::random().unwrap();
+                let transport = FolderTransport::new(&root, &space, id.clone(), Some(&state));
+                let transport = if level > 1 { transport.with_keys(KeySet::new(&key)).with_settle(0) } else { transport };
                 Device {
-                    transport: FolderTransport::new(&root, &space, id.clone(), Some(&state)),
+                    transport,
                     engine: Engine::new(space.clone(), id.clone(), format!("device {i}"), key.keys(), SyncState::default()),
                     store: MemoryStore::default(),
                     id,
@@ -94,6 +103,19 @@ impl Cloud {
                         },
                     };
                     copy_prefix(&f, &target, len);
+                }
+                // Snapshots the owner made travel too (or don't, yet).
+                let snaps = self.devs[owner].root.join(&self.space.0).join("snapshots");
+                for e in fs::read_dir(&snaps).into_iter().flatten().flatten() {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    if !name.ends_with(&self.devs[owner].id.0) || rng.as_deref_mut().is_some_and(|r| r.below(3) == 0) {
+                        continue;
+                    }
+                    let dest = self.devs[to].root.join(&self.space.0).join("snapshots").join(&name);
+                    fs::create_dir_all(&dest).unwrap();
+                    for f in fs::read_dir(e.path()).unwrap().flatten() {
+                        fs::copy(f.path(), dest.join(f.file_name())).unwrap();
+                    }
                 }
             }
         }
@@ -319,16 +341,35 @@ fn random_edit(store: &mut MemoryStore, rng: &mut Rng, token: &mut u64, additive
 }
 
 fn simulate(seed: u64, n: usize, steps: usize, additive: bool) {
-    let mut c = Cloud::new(n);
+    simulate_at(seed, n, steps, additive, 1);
+}
+
+fn simulate_hardened(steps: usize, additive: bool) {
+    let mut compacted = 0;
+    let mut runs = 0;
+    for seed in seeds() {
+        runs += 1;
+        compacted += usize::from(simulate_at(seed, 3, steps, additive, folder::LEVEL_HARDENED));
+    }
+    assert!(runs < 5 || compacted * 2 > runs, "compaction happened in {compacted} of {runs} runs");
+}
+
+/// At [`folder::LEVEL_HARDENED`], devices also compact now and then, often
+/// two at once, and their snapshots reach the others late.
+fn simulate_at(seed: u64, n: usize, steps: usize, additive: bool, level: u32) -> bool {
+    let mut c = Cloud::new_at(n, level);
     let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
     let (mut token, mut written) = (0, Vec::new());
     for _ in 0..steps {
         let i = rng.below(n);
-        match rng.below(4) {
-            0 => {
+        match rng.below(if level > 1 { 5 } else { 4 }) {
+            1 => c.spread(Some(&mut rng)),
+            4 if rng.below(3) == 0 => {
+                let _ = c.devs[i].transport.compact(Policy { keep_days: 0, min_versions: 1 }, None, true).unwrap();
+            }
+            0 | 4 => {
                 c.sync(i);
             }
-            1 => c.spread(Some(&mut rng)),
             _ => written.extend(random_edit(&mut c.devs[i].store, &mut rng, &mut token, additive)),
         }
     }
@@ -342,6 +383,7 @@ fn simulate(seed: u64, n: usize, steps: usize, additive: bool) {
             assert!(all.split_whitespace().any(|x| x == w), "seed {seed}: lost {w}\n{all}");
         }
     }
+    c.devs.iter().any(|d| d.transport.generation().is_some())
 }
 
 fn seeds() -> std::ops::RangeInclusive<u64> {
@@ -349,6 +391,16 @@ fn seeds() -> std::ops::RangeInclusive<u64> {
         Some(s) => s..=s,
         None => 1..=std::env::var("SYNC_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(150),
     }
+}
+
+#[test]
+fn random_edits_through_a_slow_upgraded_folder_with_compaction_never_lose_text() {
+    simulate_hardened(60, true);
+}
+
+#[test]
+fn random_edits_renames_and_deletes_through_an_upgraded_folder_with_compaction_converge() {
+    simulate_hardened(70, false);
 }
 
 #[test]

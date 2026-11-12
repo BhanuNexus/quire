@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "space": "ba0f686fcafb30c840409c579a4bdea7",
+  "created": 1794504254,
+  "wrapped_key": {
+    "kdf": {
+      "memory_kib": 64,
+      "iterations": 1,
+      "parallelism": 1
+    },
+    "salt": "d323b843c697eac530919cd841ba1419",
+    "sealed": "01993a975957f18938a1805acadc5dff917dcf3459d78a4e341c2134b2bdce5171cf5261a7e196a620d4fe6e6a88c6993a39c87b460b5572d72f22ac7e08f08b705b854bb8756565f4"
+  }
+}

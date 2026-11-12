@@ -15,6 +15,7 @@
 //!
 //! The design is in `docs/design/sync.md`.
 
+pub mod admin;
 pub mod compact;
 pub mod crypto;
 pub mod engine;

@@ -739,6 +739,14 @@ impl RemoteTransport {
         self
     }
 
+    /// For tests: snapshots settle after `secs` instead of a week.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_settle(mut self, secs: i64) -> Self {
+        self.folder.set_settle(secs);
+        self
+    }
+
     /// The vault's key changed (a device was removed): use these from now on.
     pub fn set_keys(&self, keys: KeySet) {
         self.folder.set_keys(keys.clone());
@@ -767,6 +775,10 @@ impl RemoteTransport {
 
     fn device_dir(&self, d: &DeviceId) -> PathBuf {
         self.mirror.join("devices").join(&d.0)
+    }
+
+    pub fn space(&self) -> &SpaceId {
+        &self.space
     }
 
     pub fn store(&self) -> &dyn ObjectStore {
@@ -880,8 +892,14 @@ impl RemoteTransport {
             }
         }
         let mut own = read_logs(&self.device_dir(&self.device));
+        if own.iter().any(|(_, r)| r.as_ref().is_some_and(|r| r.seq == 0)) {
+            // A mirror from before 0.13: number this device's lines once.
+            self.rewrite_own(0)?;
+            own = read_logs(&self.device_dir(&self.device));
+        }
         m.own = own.last().map_or(0, |(n, _)| *n);
         m.level = read_space(&*self.store, &self.space).map_or(FORMAT, |f| f.min_reader);
+        self.folder.set_level(m.level);
         let tip = self.read_tip(&self.device)?.map_or(0, |t| t.n);
         // This device's objects, listed once per session.
         let listed = if tip > 0 {
@@ -1294,6 +1312,7 @@ impl RemoteTransport {
     pub fn raise_level(&self, level: u32) -> Result<(), TransportError> {
         raise_level(&*self.store, &self.space, level)?;
         self.lock().level = level;
+        self.folder.set_level(level);
         Ok(())
     }
 
@@ -1339,8 +1358,7 @@ impl RemoteTransport {
     }
 
     /// Take the snapshot the mirror now uses: other devices' lanes are
-    /// mirrored again from its cut, numbered, and this device's own lane
-    /// keeps only what follows it. `true` if anything changed.
+    /// mirrored again from its cut, numbered. `true` if anything changed.
     fn adopt(&self, m: &mut Mirror) -> Result<bool, TransportError> {
         let Some((g, _)) = self.folder.generation() else { return Ok(false) };
         let name = g.name();
@@ -1354,7 +1372,8 @@ impl RemoteTransport {
                 continue;
             }
             if *d == self.device {
-                self.rewrite_own(c.n)?;
+                // Its own lines go only once the snapshot has settled
+                // (`tidy`): another one may still win, with another cut.
                 continue;
             }
             let _ = fs::remove_dir_all(self.device_dir(d));
@@ -1411,6 +1430,10 @@ impl RemoteTransport {
             return Ok(());
         }
         let cut = g.cut.get(&self.device).map_or(0, |c| c.n).min(m.uploaded);
+        if cut > 0 {
+            self.rewrite_own(cut).map_err(|e| e.to_string())?;
+            self.folder.reload();
+        }
         let cant = |e: StoreError| format!("Old revisions stay in the storage: this device's key can't delete them ({e}).");
         if cut > 0 {
             let listed = self.store.list(&format!("{}devices/{}/", space_dir(&self.space), self.device)).map_err(|e| e.to_string())?;
