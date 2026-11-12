@@ -4,6 +4,20 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Added
+
+#### Excalidraw drawings: editing
+- **Edit Excalidraw drawings** in a tab: `.excalidraw` files and the Obsidian Excalidraw plugin's `.excalidraw.md` notes. Select, move, resize, rotate; rectangle, diamond, ellipse, arrow and line (arrows attach to the shapes at their ends and follow them), freehand, text (also inside shapes), pictures from the vault, and the eraser. Excalidraw's tool keys (V, R, D, O, A, L, P, T, E, 1–9, 0) and its Ctrl shortcuts where Quire doesn't use them; the rest are in the style panel.
+- **Style panel:** stroke and background colour, fill, stroke width and style, sloppiness, edges, arrowheads, font, size, alignment and opacity; layers, align, duplicate, group, ungroup, lock and the element's link. Undo and redo, copy and paste (Excalidraw's clipboard, so you can paste between Quire and Excalidraw), pan and zoom, grid and snap.
+- **Links in drawings:** an element linked to `[[Note]]` (or a heading, a file, a web page) shows a ↗ badge; click it, or Ctrl+click the element, to open it. `[[links]]` typed in a drawing note's texts are links of the note: they show in backlinks, as with the plugin.
+- **New drawing (Excalidraw)** and **Embed a new drawing in this note** (no default keys). An embedded drawing shows as its picture; click it to edit the drawing.
+- **Files stay Excalidraw's:** a drawing saved without changes keeps every byte; an edit changes only the edited elements, keeps every field Quire doesn't know, and follows Excalidraw's own version rules. Compressed drawing notes stay compressed, plain ones plain. Format: [docs/formats/excalidraw.md](docs/formats/excalidraw.md).
+- **Saving** is automatic, with version history, and never writes over a change made elsewhere: a drawing changed elsewhere reloads, or (with edits here) asks whether to keep yours or theirs, with the other kept in a copy beside it.
+- **Drawings in locked folders** open and save encrypted, and show in notes from memory while the folder is unlocked.
+
+### Changed
+- A drawing note (`.excalidraw.md`) opens in the drawing editor; "Markdown" in its toolbar shows its text.
+
 ## [0.12.0] - 2026-11-11
 
 Quire 0.12: switching tools (import from more apps and undo it, tidy notes, a Home page), typed links and a hierarchy you can browse (Dataview and Breadcrumbs syntax), sync straight to S3-compatible storage or WebDAV, an import wizard with five more sources, a Markdown tidier and a Home tab, locked folders' notes and pictures in every view while unlocked, and a faster start.
