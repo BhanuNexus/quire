@@ -36,7 +36,7 @@
 //! downloading (or was cut short by a crash) is read up to its last whole line.
 //! Revisions whose earlier revision hasn't arrived yet wait for it.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -49,7 +49,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::compact::{Manifest, Node, Part, Policy, Stats};
 use crate::crypto::WrappedKey;
-use crate::keyring::{DeviceRecord, EpochRecord, KeySet};
+use crate::keyring::{DeviceRecord, EpochRecord, KeySet, LaneRules};
 use crate::protocol::{Content, DeviceId, FileId, LanePos, PushOutcome, RevId, Revision, Sealing, SpaceId};
 use crate::transport::{Fork, Transport, TransportError};
 
@@ -71,6 +71,22 @@ pub const READER_FORMAT: u32 = 4;
 /// (`docs/design/0.13-sync.md`). Quire 0.9–0.12 refuse it with "made by a
 /// newer Quire", 0.8 refuses its `format`.
 pub const LEVEL_HARDENED: u32 = 4;
+/// Words for a vault whose level went down in the storage.
+pub(crate) const LOWERED: &str = "The vault's sync format was lowered in the sync storage (Quire never does that; a removed device or someone else with access to the storage may have). Sync stopped on this device so nothing is sealed the old way.";
+/// Passes of at least [`TICK`] seconds apart a snapshot must also be seen
+/// for before it settles, so a clock set forward doesn't settle it early.
+pub const SETTLE_TICKS: u32 = 72;
+/// See [`SETTLE_TICKS`].
+const TICK: i64 = 600;
+
+/// When a snapshot was first seen here, and how many passes since.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct Seen {
+    /// Unix seconds: the clock when first seen, or the snapshot's own time if later.
+    at: i64,
+    ticks: u32,
+    last: i64,
+}
 
 /// `space.json`. From 0.9 on a reader refuses a space only when
 /// `min_reader` is above what it reads, and otherwise ignores a newer
@@ -267,6 +283,12 @@ struct Index {
     lane_end: HashMap<DeviceId, LanePos>,
     /// Lines sealed under a key epoch this device doesn't have yet.
     waiting_key: bool,
+    /// Devices whose lane has a line the rules refuse (for now): nothing
+    /// after it is read ([`LaneRules::allows`]).
+    held: BTreeSet<DeviceId>,
+    /// Notes whose first revision never arrived: the oldest revisions their
+    /// later ones name, to start from.
+    dangling: HashMap<FileId, BTreeSet<RevId>>,
 }
 
 /// A space in a synced folder, seen from one device.
@@ -284,6 +306,9 @@ pub struct FolderTransport {
     seq_file: Option<PathBuf>,
     /// When each snapshot was first seen here (Unix seconds), across restarts.
     seen_file: Option<PathBuf>,
+    /// How long this device's own log files are, as it wrote them: more
+    /// there is another computer (or a removed device) writing as this one.
+    own_file: Option<PathBuf>,
     index: Mutex<Index>,
     /// The vault's keys: lines are checked before they're used, and
     /// snapshots are authenticated with them (0.13).
@@ -292,6 +317,11 @@ pub struct FolderTransport {
     removed: Mutex<BTreeMap<DeviceId, LanePos>>,
     /// The space's minimum reader, as last read.
     level: AtomicU32,
+    /// The highest level this device knows the space had: lower in
+    /// `space.json` stops sync ([`LOWERED`]).
+    floor: AtomicU32,
+    /// What other devices' lines and snapshots must be (0.13 §2).
+    rules: Mutex<LaneRules>,
     /// How long a snapshot settles (tests shorten it).
     settle: i64,
     /// Check other devices' lines with the keys (off for a mirror whose
@@ -330,10 +360,13 @@ impl FolderTransport {
             device,
             seq_file,
             seen_file: state_dir.map(|d| d.join("snapshots-seen.json")),
+            own_file: state_dir.map(|d| d.join("folder-own.json")),
             index: Mutex::new(Index { seq, ..Index::default() }),
             keys: Mutex::new(None),
             removed: Mutex::new(BTreeMap::new()),
             level: AtomicU32::new(level),
+            floor: AtomicU32::new(0),
+            rules: Mutex::new(LaneRules::default()),
             settle: crate::compact::SETTLE,
             check_lines: true,
         }
@@ -388,6 +421,37 @@ impl FolderTransport {
         if changed {
             self.reset();
         }
+    }
+
+    /// What other devices' lines and snapshots must be to be taken, now
+    /// that the vault's key changed (`docs/design/0.13-sync.md` §2). Lines
+    /// refused for now are read again when the rules change.
+    pub fn set_rules(&self, rules: LaneRules) {
+        let changed = {
+            let mut r = self.rules.lock().unwrap_or_else(PoisonError::into_inner);
+            let changed = *r != rules;
+            *r = rules;
+            changed
+        };
+        if changed {
+            self.reset();
+        }
+    }
+
+    fn rules(&self) -> LaneRules {
+        self.rules.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    /// The highest level this device has seen the space at (kept by the
+    /// caller): a lower one in the storage stops sync instead of sealing
+    /// the old way.
+    pub fn set_floor(&self, level: u32) {
+        self.floor.fetch_max(level, Ordering::Relaxed);
+    }
+
+    #[cfg(feature = "remote")]
+    pub(crate) fn floor(&self) -> u32 {
+        self.floor.load(Ordering::Relaxed)
     }
 
     /// How long a snapshot settles here, in seconds.
@@ -475,6 +539,13 @@ impl FolderTransport {
         if ix.waiting_key {
             out.push("Some changes use the vault's new key, which this device doesn't have yet.".to_string());
         }
+        if !ix.held.is_empty() {
+            let who: Vec<&str> = ix.held.iter().map(|d| d.0.get(..8).unwrap_or(&d.0)).collect();
+            out.push(format!(
+                "Changes from device(s) {} use the vault's old key after that device took the new one; they wait until it syncs again (if a removed device wrote them, they're never taken).",
+                who.join(", ")
+            ));
+        }
         (!out.is_empty()).then(|| out.join(" "))
     }
 
@@ -519,8 +590,17 @@ impl FolderTransport {
     /// [`Self::level`], read from `space.json` now.
     pub fn read_level(&self) -> Result<u32, TransportError> {
         let l = read_space(&self.dir)?.min_reader.unwrap_or(1);
-        self.level.store(l, Ordering::Relaxed);
+        self.store_level(l)?;
         Ok(l)
+    }
+
+    /// Keep the level read from `space.json`, unless it's below the floor.
+    fn store_level(&self, l: u32) -> Result<(), TransportError> {
+        if l < self.floor.load(Ordering::Relaxed) {
+            return Err(TransportError::Refused(LOWERED.into()));
+        }
+        self.level.store(l, Ordering::Relaxed);
+        Ok(())
     }
 
     /// Raise the space's minimum reader (see [`raise_min_reader`]).
@@ -536,9 +616,15 @@ impl FolderTransport {
     }
 
     /// Complete, authentic snapshots in the folder.
+    ///
+    /// Authentic: under the current key (a removed device doesn't have it),
+    /// or one the newest key change names. Its cut never goes past what is
+    /// in the folder (a synced folder; a mirror's cut was checked when fetched).
     fn snapshots(&self, ix: &mut Index) -> Vec<Manifest> {
         let Some(keys) = self.keyset() else { return Vec::new() };
         let Ok(rd) = fs::read_dir(self.snapshots_dir()) else { return Vec::new() };
+        let rules = self.rules();
+        let removed = self.removed.lock().unwrap_or_else(PoisonError::into_inner).clone();
         let mut out = Vec::new();
         for e in rd.flatten() {
             let Some(name) = e.file_name().to_str().map(str::to_string) else { continue };
@@ -546,6 +632,12 @@ impl FolderTransport {
             let Ok(bytes) = fs::read(e.path().join("manifest.json")) else { continue };
             let Ok(m) = serde_json::from_slice::<Manifest>(&bytes) else { continue };
             if m.generation != g || m.maker != maker || !m.verify(&keys, &self.space, &self.lane_name) {
+                continue;
+            }
+            if !Self::takes(&rules, &removed, &keys, &m, &bytes) {
+                continue;
+            }
+            if self.check_lines && !ix.checked.contains(&name) && !self.cut_is_here(&m) {
                 continue;
             }
             // Every part there, whole, and as the manifest says.
@@ -563,26 +655,93 @@ impl FolderTransport {
         out
     }
 
-    fn load_seen(&self) -> BTreeMap<String, i64> {
-        self.seen_file.as_ref().and_then(|f| fs::read(f).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    /// Whether snapshot `m` (its manifest's bytes) may be taken: under the
+    /// current key, or the newest key change names it; and not made by a
+    /// removed device (unless named).
+    fn takes(rules: &LaneRules, removed: &BTreeMap<DeviceId, LanePos>, keys: &KeySet, m: &Manifest, bytes: &[u8]) -> bool {
+        let (name, sha) = (m.name(), sha256_hex(bytes));
+        let pinned = rules.snapshots.iter().any(|(n, h)| *n == name && *h == sha);
+        rules.takes_snapshot(keys.current(), m.epoch, &name, &sha) && (pinned || !removed.contains_key(&m.maker))
     }
 
-    /// Note when snapshot `name` was first seen here.
-    fn mark_seen(&self, name: &str) -> i64 {
+    /// [`Self::takes`], with this transport's rules.
+    #[cfg(feature = "remote")]
+    pub(crate) fn takes_snapshot(&self, keys: &KeySet, m: &Manifest, bytes: &[u8]) -> bool {
+        let removed = self.removed.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        Self::takes(&self.rules(), &removed, keys, m, bytes)
+    }
+
+    /// Whether every lane position `m`'s cut names is in the folder: its
+    /// segment there, with at least that many lines.
+    fn cut_is_here(&self, m: &Manifest) -> bool {
+        m.cut.iter().all(|(d, c)| {
+            if c.is_empty() {
+                return true;
+            }
+            if c.n > 0 || c.seg == 0 || !is_device_name(&d.0) {
+                return false;
+            }
+            let dir = self.logs.join("devices").join(&d.0);
+            let last = fs::read_dir(&dir)
+                .map(|rd| {
+                    rd.flatten()
+                        .filter_map(|e| e.file_name().to_str().filter(|n| is_segment_name(n)).and_then(|n| n[..6].parse::<u32>().ok()))
+                        .max()
+                })
+                .ok()
+                .flatten();
+            match last {
+                Some(l) if l > c.seg => true,
+                Some(l) if l == c.seg => {
+                    fs::read(dir.join(format!("{l:06}.jsonl"))).is_ok_and(|b| b.iter().filter(|&&x| x == b'\n').count() as u64 >= c.line)
+                }
+                _ => false,
+            }
+        })
+    }
+
+    fn load_seen(&self) -> BTreeMap<String, Seen> {
+        let Some(b) = self.seen_file.as_ref().and_then(|f| fs::read(f).ok()) else { return BTreeMap::new() };
+        serde_json::from_slice(&b)
+            .or_else(|_| {
+                // Before 0.13.1: only when.
+                serde_json::from_slice::<BTreeMap<String, i64>>(&b)
+                    .map(|m| m.into_iter().map(|(k, at)| (k, Seen { at, ticks: 0, last: at })).collect())
+            })
+            .unwrap_or_default()
+    }
+
+    /// Note that snapshot `m` is in use: when it was first seen here (not
+    /// before it was made, whatever the clock said), and one more pass if
+    /// the last was a while ago.
+    fn mark_seen(&self, m: &Manifest) -> Seen {
         let mut seen = self.load_seen();
         let now = unix_now();
-        let at = *seen.entry(name.to_string()).or_insert(now);
-        if let Some(f) = &self.seen_file {
+        let e = seen.entry(m.name()).or_insert(Seen { at: now.max(m.made), ticks: 0, last: now });
+        let mut changed = e.ticks == 0 && e.last == now;
+        if now - e.last >= TICK {
+            e.ticks = e.ticks.saturating_add(1);
+            e.last = now;
+            changed = true;
+        }
+        let out = *e;
+        if changed && let Some(f) = &self.seen_file {
             let _ = write_atomically(f, &serde_json::to_vec(&seen).unwrap_or_default());
         }
-        at
+        out
+    }
+
+    /// Whether a snapshot seen as `s` has settled: a week since, and
+    /// [`SETTLE_TICKS`] passes (not needed when tests shorten the week).
+    const fn settled(&self, s: &Seen, now: i64) -> bool {
+        now - s.at >= self.settle && (self.settle == 0 || s.ticks >= SETTLE_TICKS)
     }
 
     /// Read whatever is new in every device's logs.
     fn scan(&self, ix: &mut Index) -> Result<(), TransportError> {
         self.check_folder()?;
         if let Ok(f) = read_space(&self.dir) {
-            self.level.store(f.min_reader.unwrap_or(1), Ordering::Relaxed);
+            self.store_level(f.min_reader.unwrap_or(1))?;
         }
         // The snapshot to use: when it changes, everything is read again.
         let snaps = self.snapshots(ix);
@@ -599,10 +758,10 @@ impl FolderTransport {
             };
             *ix = fresh;
             if let Some(m) = win {
-                self.mark_seen(&m.name());
                 let dir = self.snapshots_dir().join(m.name());
+                let keys = self.keyset();
                 for p in &m.parts {
-                    Self::read_part(ix, &dir.join(&p.name));
+                    self.read_part(ix, &dir.join(&p.name), keys.as_ref());
                 }
                 for (a, b) in &m.links {
                     ix.links.entry(a.clone()).or_default().push(b.clone());
@@ -611,7 +770,11 @@ impl FolderTransport {
                 ix.snap = Some(Gen { manifest: m });
             }
         }
+        if let Some(g) = &ix.snap {
+            self.mark_seen(&g.manifest);
+        }
         ix.waiting_for_download = 0;
+        ix.held.clear();
         let Ok(devs) = fs::read_dir(self.logs.join("devices")) else { return Ok(()) };
         let mut logs = Vec::new();
         for dev in devs.flatten() {
@@ -624,7 +787,7 @@ impl FolderTransport {
                     // iCloud evicted it to save space; it downloads on demand.
                     ix.waiting_for_download += 1;
                 } else if Path::new(&fname).extension().is_some_and(|e| e.eq_ignore_ascii_case("jsonl")) {
-                    if own && !is_segment_name(&fname) {
+                    if own && (!is_segment_name(&fname) || self.grew_elsewhere(&fname, f.metadata().map_or(0, |m| m.len()))) {
                         ix.problem = Some(Self::shared_identity());
                     }
                     logs.push((DeviceId(name.clone()), own, f.path()));
@@ -635,8 +798,12 @@ impl FolderTransport {
         logs.sort();
         let keys = self.keyset();
         let removed = self.removed.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        let rules = self.rules();
         for (dev, own, path) in logs {
-            self.read_log(ix, &dev, own, &path, keys.as_ref(), removed.get(&dev));
+            if ix.held.contains(&dev) {
+                continue;
+            }
+            self.read_log(ix, &dev, own, &path, keys.as_ref(), removed.get(&dev), &rules);
         }
         ix.scanned_once = true;
         Ok(())
@@ -646,21 +813,34 @@ impl FolderTransport {
         "Another computer is syncing as this one (a copy of this vault's .quire folder?). Turn sync off and on again on one of them.".into()
     }
 
-    /// A snapshot's part: its revisions, all trusted (the manifest says so).
-    fn read_part(ix: &mut Index, path: &Path) {
+    /// A snapshot's part: its revisions, each checked with the vault's
+    /// keys like a lane line (one that doesn't open isn't used).
+    fn read_part(&self, ix: &mut Index, path: &Path, keys: Option<&KeySet>) {
         let Ok(buf) = fs::read(path) else { return };
         let shared = Arc::new(path.to_path_buf());
         let mut start = 0;
         while let Some(nl) = buf[start..].iter().position(|&b| b == b'\n') {
             let line = &buf[start..start + nl];
-            if let Ok(r) = serde_json::from_slice::<Revision>(line) {
+            if let Ok(r) = serde_json::from_slice::<Revision>(line)
+                && keys.is_none_or(|k| Content::open_set(k, &self.space, &r, true).is_ok())
+            {
                 Self::insert(ix, &r, Loc { path: Arc::clone(&shared), offset: start as u64, len: line.len() });
             }
             start += nl + 1;
         }
     }
 
-    fn read_log(&self, ix: &mut Index, dev: &DeviceId, own: bool, path: &Path, keys: Option<&KeySet>, cutoff: Option<&LanePos>) {
+    #[allow(clippy::too_many_arguments, reason = "what a lane line is checked against, each once")]
+    fn read_log(
+        &self,
+        ix: &mut Index,
+        dev: &DeviceId,
+        own: bool,
+        path: &Path,
+        keys: Option<&KeySet>,
+        cutoff: Option<&LanePos>,
+        rules: &LaneRules,
+    ) {
         let Ok(mut f) = File::open(path) else { return };
         let len = f.metadata().map_or(0, |m| m.len());
         let (mut from, mut lines) = ix.read_to.get(path).copied().unwrap_or((0, 0));
@@ -676,6 +856,8 @@ impl FolderTransport {
             return;
         }
         let seg = segment_number(path);
+        // This device's own log: only as far as it wrote it.
+        let noted = if own { self.own_len(path) } else { None };
         let cut = ix.snap.as_ref().and_then(|g| g.manifest.cut.get(dev)).copied();
         let shared = Arc::new(path.to_path_buf());
         let mut start = 0;
@@ -687,7 +869,15 @@ impl FolderTransport {
             // Folded into the snapshot, or written after this device was removed.
             let covered = cut.is_some_and(|c| c.covers(seg, pos_line, n));
             let after_removal = cutoff.is_some_and(|c| !c.covers(seg, pos_line, n));
-            if let Some(r) = parsed.filter(|_| !covered && !after_removal) {
+            let foreign = noted.is_some_and(|l| from + start as u64 >= l);
+            if let Some(r) = parsed.filter(|_| !covered && !after_removal && !foreign) {
+                // Sealed under a key older than this lane may use here
+                // (a removed device writing into it): nothing more is read
+                // from this lane until its device vouches for the line.
+                if !own && !rules.allows(dev, seg, pos_line, n, &r.sealed) {
+                    ix.held.insert(dev.clone());
+                    break;
+                }
                 // Checked with the vault's keys (not our own lines): a line
                 // that doesn't open is damaged and skipped; one sealed under
                 // a key this device doesn't have yet waits for it.
@@ -752,16 +942,38 @@ impl FolderTransport {
                 }
             }
         }
+        // The oldest revision it names, if it's not here: where the note
+        // starts if its first revision never arrives.
+        if let Some(top) = up.last().filter(|t| !ix.revs.contains_key(*t)) {
+            let top = (*top).clone();
+            ix.dangling.entry(r.file.clone()).or_default().insert(top);
+        }
+        if let Some(d) = ix.dangling.get_mut(&r.file) {
+            d.remove(&r.rev);
+        }
         ix.revs.insert(r.rev.clone(), Meta { file: r.file.clone(), parents: r.parents.clone(), device: r.device.clone(), loc });
+    }
+
+    /// Every note something is known of.
+    fn files(ix: &Index) -> Vec<FileId> {
+        let mut files: Vec<FileId> = ix.roots.keys().chain(ix.starts.keys()).chain(ix.dangling.keys()).cloned().collect();
+        files.sort();
+        files.dedup();
+        files
     }
 
     /// A note's current revision: from its first revision (or where a
     /// snapshot says to start), keep following the child with the smallest
     /// id. A revision known only from a later one's chain is passed through.
+    /// When the first revision never arrived, from the oldest one later
+    /// revisions name (the same on every device with the same files).
     fn head(ix: &Index, file: &FileId) -> Option<RevId> {
         let mut cur = match ix.starts.get(file).filter(|s| ix.revs.contains_key(*s)) {
             Some(s) => s,
-            None => ix.roots.get(file)?.iter().min()?,
+            None => match ix.roots.get(file).and_then(|r| r.iter().min()) {
+                Some(r) => r,
+                None => ix.dangling.get(file)?.iter().find(|d| !ix.revs.contains_key(*d))?,
+            },
         };
         for _ in 0..=ix.revs.len() + ix.bridges.len() {
             match ix.children.get(cur).and_then(|c| c.iter().min()) {
@@ -834,6 +1046,7 @@ impl FolderTransport {
         let werr = |e: std::io::Error| io_err("can't write to the sync folder", &e);
         let mut f = OpenOptions::new().create(true).read(true).append(true).open(&path).map_err(werr)?;
         let mut offset = f.metadata().map_err(werr)?.len();
+        let before = offset;
         let mut line = Vec::new();
         if offset > 0 {
             // A crash can leave half a line; start on a fresh one.
@@ -848,11 +1061,38 @@ impl FolderTransport {
         let json = serde_json::to_vec(&Revision { seq: n, ..r.clone() }).map_err(|e| TransportError::Refused(e.to_string()))?;
         line.extend_from_slice(&json);
         line.push(b'\n');
+        // Noted before writing: a crash in between leaves the file shorter
+        // than noted, never longer.
+        self.note_own(&path, before + line.len() as u64);
         f.write_all(&line).map_err(werr)?;
         f.sync_data().map_err(werr)?;
         ix.mine.insert(r.rev.clone());
         Self::insert(ix, r, Loc { path: Arc::new(path), offset, len: json.len() });
         Ok(())
+    }
+
+    /// Note that this device's log file `path` is `len` bytes long.
+    fn note_own(&self, path: &Path, len: u64) {
+        let (Some(f), Some(name)) = (&self.own_file, path.file_name().and_then(|n| n.to_str())) else { return };
+        let mut own: BTreeMap<String, u64> = fs::read(f).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        own.insert(name.to_string(), len);
+        let _ = write_atomically(f, &serde_json::to_vec(&own).unwrap_or_default());
+    }
+
+    /// How long this device wrote its log file `path`, if it noted it (a
+    /// synced folder; a mirror's own lines are written by its transport).
+    fn own_len(&self, path: &Path) -> Option<u64> {
+        if !self.check_lines {
+            return None;
+        }
+        let name = path.file_name()?.to_str()?;
+        let own: BTreeMap<String, u64> = fs::read(self.own_file.as_ref()?).ok().and_then(|b| serde_json::from_slice(&b).ok())?;
+        own.get(name).copied()
+    }
+
+    /// Whether this device's log file `name` is longer than it wrote it.
+    fn grew_elsewhere(&self, name: &str, len: u64) -> bool {
+        self.own_len(&self.own_dir().join(name)).is_some_and(|l| len > l)
     }
 
     /// [`Transport::push`], with the line numbered `n` (the object number of
@@ -871,7 +1111,7 @@ impl FolderTransport {
                 head.seq = ix.delivered.get(&rev.file).map_or(0, |(_, s)| *s);
                 return Ok(PushOutcome::Conflict { head });
             }
-            (None, Some(_)) => return Err(TransportError::Refused("parent doesn't exist".into())),
+            (None, Some(_)) => return Err(TransportError::Refused(crate::transport::LOST_PARENT.into())),
         }
         self.append(&mut ix, rev, n)?;
         let seq = self.next_seq(&mut ix);
@@ -896,6 +1136,25 @@ impl FolderTransport {
         Ok(out)
     }
 
+    /// Where this device's own lane stands, as read here.
+    pub fn own_end(&self) -> Result<LanePos, TransportError> {
+        Ok(self.lane_ends()?.get(&self.device).copied().unwrap_or_default())
+    }
+
+    /// Every complete snapshot taken here: its name and the SHA-256 of its
+    /// manifest (a key change names them, see [`LaneRules::snapshots`]).
+    pub fn snapshots_taken(&self) -> Vec<(String, String)> {
+        let mut ix = self.lock();
+        let ms = self.snapshots(&mut ix);
+        drop(ix);
+        ms.iter()
+            .filter_map(|m| {
+                let bytes = fs::read(self.snapshots_dir().join(m.name()).join("manifest.json")).ok()?;
+                Some((m.name(), sha256_hex(&bytes)))
+            })
+            .collect()
+    }
+
     /// Devices with a lane here (they wrote revisions).
     pub fn writers(&self) -> Vec<DeviceId> {
         let mut out: Vec<DeviceId> = fs::read_dir(self.logs.join("devices"))
@@ -909,11 +1168,39 @@ impl FolderTransport {
 
     /// The snapshot in use: its name and when it was first seen here.
     pub fn generation(&self) -> Option<(Manifest, i64)> {
+        self.generation_settled().map(|(m, s, _)| (m, s))
+    }
+
+    /// [`Self::generation`], and whether it has settled here.
+    pub fn generation_settled(&self) -> Option<(Manifest, i64, bool)> {
         let mut ix = self.lock();
         let _ = self.scan(&mut ix);
         let m = ix.snap.as_ref()?.manifest.clone();
-        let seen = self.load_seen().get(&m.name()).copied().unwrap_or_else(unix_now);
-        Some((m, seen))
+        let now = unix_now();
+        let seen = self.load_seen().get(&m.name()).copied().unwrap_or(Seen { at: now, ticks: 0, last: now });
+        Some((m, seen.at, self.settled(&seen, now)))
+    }
+
+    /// Whether every lane was read without a gap up to where it was read
+    /// (a sync tool may deliver a later log file before an earlier one),
+    /// and nothing waits for a download. Compaction cuts only such lanes.
+    fn lanes_whole(&self, ix: &Index) -> bool {
+        if ix.waiting_for_download > 0 {
+            return false;
+        }
+        ix.lane_end.iter().all(|(d, end)| {
+            if end.seg == 0 {
+                return true;
+            }
+            let base = ix.snap.as_ref().and_then(|g| g.manifest.cut.get(d)).map_or(1, |c| c.seg.max(1));
+            let dir = self.logs.join("devices").join(&d.0);
+            (base..end.seg).all(|s| {
+                let p = dir.join(format!("{s:06}.jsonl"));
+                let len = fs::metadata(&p).map_or(None, |m| Some(m.len()));
+                // Read to its end (it can't grow: a newer segment exists).
+                len.is_some_and(|l| ix.read_to.get(&p).is_some_and(|(r, _)| *r == l))
+            })
+        })
     }
 
     /// Fold old revisions into a snapshot (`docs/design/0.13-sync.md` §1).
@@ -930,12 +1217,15 @@ impl FolderTransport {
         if ix.waiting_key {
             return Ok(Compacted::Busy("some changes use a key this device doesn't have yet".into()));
         }
+        if !self.lanes_whole(&ix) {
+            return Ok(Compacted::Busy("some sync files haven't arrived yet".into()));
+        }
         let now = unix_now();
         let generation = match &ix.snap {
             Some(g) => {
-                let seen = self.load_seen().get(&g.manifest.name()).copied().unwrap_or(now);
-                if now - seen < self.settle {
-                    return Ok(Compacted::Settling { until: seen + self.settle });
+                let seen = self.load_seen().get(&g.manifest.name()).copied().unwrap_or(Seen { at: now, ticks: 0, last: now });
+                if !self.settled(&seen, now) {
+                    return Ok(Compacted::Settling { until: (seen.at + self.settle).max(now) });
                 }
                 g.manifest.generation + 1
             }
@@ -959,10 +1249,12 @@ impl FolderTransport {
                 Node { at: opened.as_ref().map_or(0, |c| c.at), bytes, opaque: opened.is_err(), file: r.file, parents: r.parents },
             );
         }
-        let mut files: Vec<FileId> = ix.roots.keys().chain(ix.starts.keys()).cloned().collect();
-        files.sort();
-        files.dedup();
+        let files = Self::files(&ix);
         let heads: BTreeMap<FileId, RevId> = files.iter().filter_map(|f| Some((f.clone(), Self::head(&ix, f)?))).collect();
+        // A note with revisions but no current one: something's missing.
+        if ix.revs.values().any(|m| !heads.contains_key(&m.file)) {
+            return Ok(Compacted::Busy("some sync files haven't arrived yet".into()));
+        }
         let links: HashMap<RevId, Vec<RevId>> = ix.links.clone();
         let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
         let plan = crate::compact::plan(&nodes, &heads, &links, policy, now_ms);
@@ -1029,7 +1321,7 @@ impl FolderTransport {
         write_atomically(&tmp.join("manifest.json"), &serde_json::to_vec_pretty(&m).unwrap_or_default()).map_err(werr)?;
         fs::rename(&tmp, &dir).map_err(werr)?;
         drop(ix);
-        self.mark_seen(&name);
+        self.mark_seen(&m);
         Ok(Compacted::Done(Box::new(m)))
     }
 
@@ -1037,8 +1329,8 @@ impl FolderTransport {
     /// log files before its cut, and older snapshots. Also the logs of
     /// removed devices before the cut. Returns how many files went.
     pub fn tidy(&self) -> usize {
-        let Some((m, seen)) = self.generation() else { return 0 };
-        if unix_now() - seen < self.settle {
+        let Some((m, _, settled)) = self.generation_settled() else { return 0 };
+        if !settled {
             return 0;
         }
         let removed = self.removed.lock().unwrap_or_else(PoisonError::into_inner).clone();
@@ -1135,10 +1427,7 @@ impl Transport for FolderTransport {
         let mut ix = self.lock();
         self.scan(&mut ix)?;
         ix.seq = ix.seq.max(after);
-        let mut files: Vec<FileId> = ix.roots.keys().chain(ix.starts.keys()).cloned().collect();
-        files.sort();
-        files.dedup();
-        for f in files {
+        for f in Self::files(&ix) {
             let Some(h) = Self::head(&ix, &f) else { continue };
             if ix.delivered.get(&f).is_none_or(|(d, _)| *d != h) {
                 let seq = self.next_seq(&mut ix);

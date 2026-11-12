@@ -44,7 +44,7 @@ QUIRE_SYNC_TOKEN=<your token> QUIRE_SYNC_DB=/var/lib/quire/sync.sqlite ./quire-s
 | `QUIRE_SYNC_ADDR` | `127.0.0.1:8787` | Where to listen |
 | `QUIRE_SYNC_DB` | `quire-sync.sqlite` | The database file |
 | `QUIRE_SYNC_KEEP_DAYS` | (keep everything) | 0.13: once a day, drop revisions replaced more than this many days ago. Each note's current version and its newest `QUIRE_SYNC_KEEP_VERSIONS` stay, and so does a deleted note's marker; a device offline for longer still catches up |
-| `QUIRE_SYNC_KEEP_VERSIONS` | `20` | The versions of each note compaction always keeps |
+| `QUIRE_SYNC_KEEP_VERSIONS` | `20` | The versions of each note compaction always keeps (at least 2, so a deleted note keeps its last text) |
 
 ## 3. Put HTTPS in front
 

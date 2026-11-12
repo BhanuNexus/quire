@@ -258,7 +258,14 @@ impl Content {
     }
 
     /// Seal for `r` the way `how` says.
+    ///
+    /// Once the vault's key has changed (`keys.current() > 0`) only
+    /// [`Sealing::Epoch`] is allowed: the older forms use the first key,
+    /// which a removed device has (a vault whose format was lowered).
     pub fn seal_as(&self, how: Sealing, keys: &KeySet, space: &SpaceId, r: &Revision) -> Result<Vec<u8>, CryptoError> {
+        if how != Sealing::Epoch && keys.current() > 0 {
+            return Err(CryptoError::Downgraded);
+        }
         let base = keys.get(0).unwrap_or_else(|| keys.current_keys());
         match how {
             Sealing::Plain => self.seal(base, space, &r.file, &r.rev),

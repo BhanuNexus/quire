@@ -6086,7 +6086,6 @@ dependencies = [
  "chacha20poly1305",
  "chrono",
  "getrandom 0.4.3",
- "hkdf",
  "hmac",
  "quire-sync",
  "quire-text",

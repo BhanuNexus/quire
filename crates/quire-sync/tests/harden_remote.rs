@@ -62,7 +62,8 @@ impl Dev {
     fn refresh(&mut self, space: &SpaceId) -> Option<KeyError> {
         let r = admin::refresh_keys(&self.t, space, &self.id, Some(&self.secret), &self.keys, &mut self.pins).unwrap();
         self.keys = r.keys.clone();
-        self.engine.set_keys(r.keys);
+        self.engine.set_keys(r.keys.clone());
+        self.t.set_rules(r.rules(""));
         self.t.set_removed(r.removed.iter().map(|(d, x)| (d.clone(), x.lanes.get("").copied().unwrap_or_default())).collect());
         r.stuck.map(|(_, w)| w)
     }
@@ -190,7 +191,10 @@ fn a_removed_device_cant_read_new_objects_or_get_its_own_taken() {
     let (mut a, mut b, mut r) =
         (Dev::new(&store, &space, &keys, "a"), Dev::new(&store, &space, &keys, "b"), Dev::new(&store, &space, &keys, "r"));
     for d in [&a, &b, &r] {
-        admin::publish_self(&d.t, &space, &d.id, &d.secret, "x", &d.keys).unwrap();
+        admin::publish_self(&d.t, &space, &d.id, &d.secret, "x", &d.keys, &BTreeMap::new()).unwrap();
+    }
+    for d in [&mut a, &mut b, &mut r] {
+        assert!(d.refresh(&space).is_none());
     }
     a.write("Old.md", "before\n");
     a.sync();
@@ -207,6 +211,8 @@ fn a_removed_device_cant_read_new_objects_or_get_its_own_taken() {
         kdf: KdfParams::TEST,
         lanes: BTreeMap::from([(String::new(), ends.get(&r.id).copied().unwrap_or_default())]),
         removed: &BTreeSet::new(),
+        seen: BTreeMap::new(),
+        snapshots: Vec::new(),
     };
     admin::remove_device(&a.t, &removal, &mut a.pins).unwrap();
     assert!(a.refresh(&space).is_none());

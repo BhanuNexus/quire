@@ -904,6 +904,9 @@ impl RemoteTransport {
         }
         m.own = own.last().map_or(0, |(n, _)| *n);
         m.level = read_space(&*self.store, &self.space).map_or(FORMAT, |f| f.min_reader);
+        if m.level < self.folder.floor() {
+            return Err(TransportError::Refused(crate::folder::LOWERED.into()));
+        }
         self.folder.set_level(m.level);
         let tip = self.read_tip(&self.device)?.map_or(0, |t| t.n);
         // This device's objects, listed once per session.
@@ -1342,6 +1345,19 @@ impl RemoteTransport {
         if man.name() != name || !man.verify(&keys, &self.space, "") {
             return Ok(false);
         }
+        // Under the current key (or named by the newest key change), and
+        // never cutting past what a device says it uploaded.
+        if !self.folder.takes_snapshot(&keys, &man, &bytes) {
+            return Ok(false);
+        }
+        for (d, c) in &man.cut {
+            if c.is_empty() {
+                continue;
+            }
+            if c.seg > 0 || !is_id(&d.0) || self.read_tip(d)?.is_none_or(|t| c.n > t.n) {
+                return Ok(false);
+            }
+        }
         let tmp = self.mirror.join("snapshots").join(format!(".{name}.tmp"));
         let werr = |e: std::io::Error| io_err("can't write the sync mirror", &e);
         let _ = fs::remove_dir_all(&tmp);
@@ -1435,8 +1451,8 @@ impl RemoteTransport {
     /// its cut, and older snapshots. A key that may not delete (the IAM
     /// policy in docs/sync-backends.md before 0.13) leaves them, and says so.
     fn tidy(&self, m: &Mirror) -> Result<(), String> {
-        let Some((g, seen)) = self.folder.generation() else { return Ok(()) };
-        if unix_now() - seen < self.folder.settle() {
+        let Some((g, _, settled)) = self.folder.generation_settled() else { return Ok(()) };
+        if !settled {
             return Ok(());
         }
         let cut = g.cut.get(&self.device).map_or(0, |c| c.n).min(m.uploaded);
@@ -1601,6 +1617,24 @@ impl RemoteTransport {
         Ok(out)
     }
 
+    /// See [`FolderTransport::set_rules`].
+    pub fn set_rules(&self, rules: crate::keyring::LaneRules) {
+        self.folder.set_rules(rules);
+    }
+
+    /// See [`FolderTransport::set_floor`].
+    pub fn set_floor(&self, level: u32) {
+        self.folder.set_floor(level);
+    }
+
+    /// Where this device's own lane stands: every revision it numbered,
+    /// uploaded or not.
+    pub fn own_end(&self) -> Result<LanePos, TransportError> {
+        let mut m = self.lock();
+        self.start(&mut m)?;
+        Ok(LanePos { n: m.own, ..LanePos::default() })
+    }
+
     /// Devices removed from the vault, and the last object still taken from each.
     pub fn set_removed(&self, removed: std::collections::BTreeMap<DeviceId, LanePos>) {
         self.lock().removed = removed.iter().map(|(d, p)| (d.clone(), p.n)).collect();
@@ -1610,6 +1644,11 @@ impl RemoteTransport {
     /// The snapshot in use, and when it was first seen here.
     pub fn generation(&self) -> Option<(Manifest, i64)> {
         self.folder.generation()
+    }
+
+    /// See [`FolderTransport::snapshots_taken`].
+    pub fn snapshots_taken(&self) -> Vec<(String, String)> {
+        self.folder.snapshots_taken()
     }
 }
 

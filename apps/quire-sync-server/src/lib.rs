@@ -275,7 +275,7 @@ impl From<StoreError> for ApiError {
     fn from(e: StoreError) -> Self {
         let code = match e {
             StoreError::NoSpace => StatusCode::NOT_FOUND,
-            StoreError::SpaceExists | StoreError::KeyConflict => StatusCode::CONFLICT,
+            StoreError::SpaceExists | StoreError::KeyConflict | StoreError::Enrolled => StatusCode::CONFLICT,
             StoreError::BadParent | StoreError::OldKey => StatusCode::UNPROCESSABLE_ENTITY,
             StoreError::Removed => StatusCode::FORBIDDEN,
             StoreError::Db(_) | StoreError::Corrupt(_) => StatusCode::INTERNAL_SERVER_ERROR,

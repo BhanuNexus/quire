@@ -92,6 +92,13 @@ pub trait LocalStore {
         let _ = (base, skip);
         None
     }
+    /// Whether `path` is here but left out of [`Self::list`] for now (too
+    /// big to sync): it isn't sent, and its absence from the list never
+    /// reads as a delete.
+    fn held_back(&self, path: &str) -> bool {
+        let _ = path;
+        false
+    }
 }
 
 /// Files that aren't notes: they're never merged line by line, and the
@@ -222,6 +229,8 @@ pub struct Report {
     pub conflict_copies: Vec<String>,
     /// Notes kept because they were edited on one side and deleted on the other.
     pub kept_over_delete: Vec<String>,
+    /// Files not sent because they're too big to sync ([`LocalStore::held_back`]).
+    pub held_back: Vec<String>,
 }
 
 impl Report {
@@ -924,6 +933,10 @@ impl Engine {
                     Content { actor: local.actor(&t.path), path: t.path.clone(), deleted: false, text: x, from: String::new(), at: 0 }
                 }
                 (Some(_), false) | (None, true) => continue,
+                (None, false) if local.held_back(&t.path) => {
+                    report.held_back.push(t.path.clone());
+                    continue;
+                }
                 (None, false) => {
                     // Gone from its path: renamed (same contents elsewhere) or deleted.
                     if let Some(i) = untracked.iter().position(|p| local.digest(p).as_deref() == Some(t.base.as_str())) {
@@ -998,7 +1011,19 @@ impl Engine {
             chain,
         };
         r.sealed = content.seal_as(how, &self.keys, &self.space, &r)?;
-        match server.push(&r)? {
+        let pushed = match server.push(&r) {
+            // The revision it builds on is gone for good (lost, or a
+            // snapshot left it out): send the note as a new first revision,
+            // so this note (and the rest of the pass) still syncs.
+            Err(TransportError::Refused(why)) if why.contains(crate::transport::LOST_PARENT) && !r.parents.is_empty() => {
+                r.parents.clear();
+                r.chain.clear();
+                r.sealed = content.seal_as(how, &self.keys, &self.space, &r)?;
+                server.push(&r)?
+            }
+            other => other?,
+        };
+        match pushed {
             PushOutcome::Accepted { seq } => {
                 self.state.files.insert(
                     file.clone(),

@@ -8,7 +8,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::crypto::{CryptoError, KdfParams, VaultKey};
-use crate::keyring::{DeviceRecord, DeviceSecret, EpochRecord, KeyError, KeySet, Pins, Removed, Resolved, resolve};
+use crate::keyring::{
+    DeviceRecord, DeviceSecret, EpochRecord, KeyError, KeySet, LaneRules, Pins, Removed, Resolved, resolve, resolve_trusting,
+};
 use crate::protocol::{DeviceId, LanePos, SpaceId};
 use crate::transport::TransportError;
 
@@ -34,6 +36,20 @@ pub trait SpaceAdmin {
     /// Ignore what removed devices write after their cut.
     fn set_removed(&self, removed: BTreeMap<DeviceId, LanePos>);
     fn set_keys(&self, keys: &KeySet);
+    /// What lines and snapshots must be to be taken ([`Resolved::rules`]).
+    fn set_rules(&self, rules: LaneRules);
+    /// Where this device's own lane stands (every revision it wrote).
+    fn own_end(&self) -> Result<LanePos, TransportError> {
+        Ok(LanePos::default())
+    }
+    /// The complete snapshots here: name and SHA-256 of the manifest.
+    fn snapshots(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+    /// Why this device can't sync here now (another computer writes as it).
+    fn trouble(&self) -> Option<String> {
+        None
+    }
     /// A server stops taking `device`'s token. Other transports: nothing to do.
     fn shut_out(&self, device: &DeviceId) -> Result<(), TransportError> {
         let _ = device;
@@ -70,27 +86,53 @@ impl DeviceInfo {
 /// quire)` for each one whose key is the pinned one. Once the vault's key
 /// has changed, a record authenticated only with an older key (which a
 /// removed device has) counts only for a device the newest key change
-/// names, with the same key: a removed device can't slip in a device of
-/// its own.
+/// names, with the same key. With `allow_new` false (a key change this
+/// device hasn't taken yet exists), no device is pinned for the first
+/// time: a removed device could make one up, and use it as the maker of a
+/// key change of its own.
 fn verified(
     space: &SpaceId,
     keys: &KeySet,
     records: &[DeviceRecord],
     pins: &mut Pins,
     latest: Option<&EpochRecord>,
+    allow_new: bool,
 ) -> Vec<(DeviceId, [u8; 32], String, String)> {
     let mut out = Vec::new();
     for r in records {
         let Some((k, name)) = r.verify(keys, space, &r.device) else { continue };
         let fresh = latest.is_none_or(|l| r.epoch >= l.epoch || l.members.get(&r.device).is_some_and(|m| m.key == crate::crypto::hex(&k)));
-        if fresh && pins.pin(&r.device, &k) {
+        let known = pins.get(&r.device).is_some();
+        if fresh && (known || allow_new) && pins.pin(&r.device, &k) {
             out.push((r.device.clone(), k, name, r.quire.clone()));
         }
     }
     out
 }
 
+/// What each device vouches for in its record ([`LaneRules::vouched`]):
+/// only records whose key is the one pinned here.
+fn vouched(
+    space: &SpaceId,
+    keys: &KeySet,
+    records: &[DeviceRecord],
+    pins: &Pins,
+) -> BTreeMap<DeviceId, (u32, BTreeMap<String, LanePos>, bool)> {
+    records
+        .iter()
+        .filter(|r| r.verify(keys, space, &r.device).is_some_and(|(k, _)| pins.get(&r.device) == Some(k)))
+        .map(|r| (r.device.clone(), (r.epoch, r.since.clone(), r.bound)))
+        .collect()
+}
+
 /// Publish this device's record when it has none for the current key epoch.
+///
+/// The record vouches for where this device's own lanes stand now (`""`,
+/// notes, from `admin`; `other_lanes` adds the others): once per key epoch,
+/// and when the vault starts binding headers. Past there, this device's
+/// lines use the current key (and bind headers), so a removed device's
+/// lines in its lane are refused.
+#[allow(clippy::too_many_arguments, reason = "everything a device record says, each once")]
 pub fn publish_self(
     admin: &dyn SpaceAdmin,
     space: &SpaceId,
@@ -98,27 +140,46 @@ pub fn publish_self(
     secret: &DeviceSecret,
     name: &str,
     keys: &KeySet,
+    other_lanes: &BTreeMap<String, LanePos>,
 ) -> Result<(), TransportError> {
     let records = admin.device_records()?;
-    // A record stays as long as it's right: one made under an older key
-    // still counts while this device is in the newest key change.
-    let current = records.iter().any(|r| {
-        r.device == *me
-            && r.quire == env!("CARGO_PKG_VERSION")
-            && r.verify(keys, space, me).is_some_and(|(k, n)| k == secret.public() && n == name)
+    let bound = admin.level()? >= HARDENED;
+    let mine = records.iter().find(|r| r.device == *me && r.verify(keys, space, me).is_some_and(|(k, _)| k == secret.public()));
+    // A record stays as long as it's right. Where it vouches from stays
+    // too, within an epoch: moving it on would vouch for whatever is in
+    // the lane now.
+    let same_epoch = mine.filter(|r| r.epoch == keys.current() && (r.bound || !bound));
+    let current = same_epoch.is_some_and(|r| {
+        r.quire == env!("CARGO_PKG_VERSION")
+            && r.verify(keys, space, me).is_some_and(|(_, n)| n == name)
+            && ((keys.current() == 0 && !bound) || !r.since.is_empty())
     });
     if current {
         return Ok(());
     }
-    let rec = DeviceRecord::make(space, me, secret, name, keys).map_err(|e| TransportError::Refused(e.to_string()))?;
+    let since = match same_epoch {
+        Some(r) if !r.since.is_empty() => r.since.clone(),
+        _ if keys.current() == 0 && !bound => BTreeMap::new(),
+        _ => {
+            let mut lanes = other_lanes.clone();
+            lanes.insert(String::new(), admin.own_end()?);
+            // Its lane has lines it didn't write: vouch for nothing.
+            if let Some(why) = admin.trouble() {
+                return Err(TransportError::Refused(why));
+            }
+            lanes
+        }
+    };
+    let rec = DeviceRecord::make_at(space, me, secret, name, keys, since, bound).map_err(|e| TransportError::Refused(e.to_string()))?;
     admin.put_device_record(&rec)
 }
 
 /// Read the key records and take any newer epoch this device is in.
 ///
-/// Pins device keys from their records first (makers must be known). The caller
-/// stores the new keys and pins, and gives the result's `removed` to the
-/// transports.
+/// Pins device keys from their records first (makers must be known): at
+/// every pass, so the devices of the vault are known before any key
+/// change. The caller stores the new keys and pins, and gives the
+/// result's `removed` and [`Resolved::rules`] to the transports.
 pub fn refresh_keys(
     admin: &dyn SpaceAdmin,
     space: &SpaceId,
@@ -127,20 +188,41 @@ pub fn refresh_keys(
     keys: &KeySet,
     pins: &mut Pins,
 ) -> Result<Resolved, TransportError> {
+    refresh_keys_trusting(admin, space, me, secret, keys, pins, &BTreeMap::new())
+}
+
+/// [`refresh_keys`], with the person's choice for key changes that
+/// conflict (see [`resolve_trusting`]).
+pub fn refresh_keys_trusting(
+    admin: &dyn SpaceAdmin,
+    space: &SpaceId,
+    me: &DeviceId,
+    secret: Option<&DeviceSecret>,
+    keys: &KeySet,
+    pins: &mut Pins,
+    trust: &BTreeMap<u32, DeviceId>,
+) -> Result<Resolved, TransportError> {
     let records = admin.key_records()?;
-    if records.is_empty() {
-        return Ok(Resolved { keys: keys.clone(), records: BTreeMap::new(), removed: BTreeMap::new(), stuck: None });
-    }
+    // Before any key change, a vault on a server older than 0.13 has no records.
+    let devs = match admin.device_records() {
+        Ok(d) => d,
+        Err(_) if records.is_empty() => Vec::new(),
+        Err(e) => return Err(e),
+    };
     // Device records may be authenticated with any epoch this device has,
     // and a maker's record with the new one only (after its removal):
     // pins come from what's verifiable now.
-    let devs = admin.device_records()?;
+    let pending = |k: &KeySet| records.iter().any(|r| r.epoch > k.current());
     let before = resolve(keys, &records, me, None, pins);
-    verified(space, keys, &devs, pins, before.records.values().next_back());
-    let r = resolve(keys, &records, me, secret, pins);
+    verified(space, keys, &devs, pins, before.records.values().next_back(), !pending(keys));
+    let mut r = resolve_trusting(keys, &records, me, secret, pins, trust);
     if r.keys.current() > keys.current() {
-        verified(space, &r.keys, &devs, pins, r.records.values().next_back());
+        verified(space, &r.keys, &devs, pins, r.records.values().next_back(), !pending(&r.keys));
+        // A key change needs an upgraded vault: read its level again, so
+        // the transport seals the new way.
+        let _ = admin.level();
     }
+    r.vouched = vouched(space, &r.keys, &devs, pins);
     admin.set_keys(&r.keys);
     Ok(r)
 }
@@ -155,8 +237,10 @@ pub fn devices(
     removed: &BTreeSet<DeviceId>,
 ) -> Result<Vec<DeviceInfo>, TransportError> {
     let records = admin.device_records()?;
-    let latest = resolve(keys, &admin.key_records()?, me, None, pins).records.into_values().next_back();
-    let good = verified(space, keys, &records, pins, latest.as_ref());
+    let key_records = admin.key_records()?;
+    let pending = key_records.iter().any(|r| r.epoch > keys.current());
+    let latest = resolve(keys, &key_records, me, None, pins).records.into_values().next_back();
+    let good = verified(space, keys, &records, pins, latest.as_ref(), !pending);
     let mut ids: BTreeSet<DeviceId> = admin.writers()?.into_iter().collect();
     ids.extend(good.iter().map(|g| g.0.clone()));
     ids.insert(me.clone());
@@ -214,6 +298,15 @@ pub struct Removal<'a> {
     pub lanes: BTreeMap<String, LanePos>,
     /// Devices removed before, which stay removed.
     pub removed: &'a BTreeSet<DeviceId>,
+    /// Where every device's lanes other than notes stand as read here
+    /// (lane name → position; notes' come from `admin`). Lines sealed under
+    /// an older key past there are refused afterwards, unless their device
+    /// vouches for them.
+    pub seen: BTreeMap<DeviceId, BTreeMap<String, LanePos>>,
+    /// The snapshots in use in other lanes: `(lane, name, SHA-256 of the
+    /// manifest)`. Snapshots under the old key other than these (and the
+    /// notes' one) are refused afterwards.
+    pub snapshots: Vec<(String, String, String)>,
 }
 
 /// What a removal did.
@@ -244,7 +337,7 @@ pub fn remove_device(admin: &dyn SpaceAdmin, r: &Removal<'_>, pins: &mut Pins) -
     }
     let keys = fresh.keys;
     let records = admin.device_records()?;
-    let good = verified(r.space, &keys, &records, pins, fresh.records.values().next_back());
+    let good = verified(r.space, &keys, &records, pins, fresh.records.values().next_back(), true);
     let mut members: Vec<(DeviceId, [u8; 32])> = good
         .iter()
         .filter(|g| g.0 != *r.target && !r.removed.contains(&g.0) && !fresh.removed.contains_key(&g.0))
@@ -261,6 +354,13 @@ pub fn remove_device(admin: &dyn SpaceAdmin, r: &Removal<'_>, pins: &mut Pins) -
     let removed = vec![Removed { device: r.target.clone(), lanes: r.lanes.clone() }];
     let (record, key) = EpochRecord::make(r.space, &keys, r.me, r.secret, &members, removed, r.passphrase, r.kdf)
         .map_err(|e: CryptoError| TransportError::Refused(e.to_string()))?;
+    let mut seen = r.seen.clone();
+    for (d, p) in admin.lane_ends()? {
+        seen.entry(d).or_default().insert(String::new(), p);
+    }
+    let mut snapshots = r.snapshots.clone();
+    snapshots.extend(admin.snapshots().into_iter().map(|(name, sha)| (String::new(), name, sha)));
+    let record = record.with_context(&key, seen, snapshots);
     admin.put_key_record(&record)?;
     admin.shut_out(r.target)?;
     Ok(Removed1 { record, key, members: members.into_iter().map(|(d, _)| d).collect(), left_out })
@@ -275,6 +375,9 @@ pub fn stuck_notice(why: &KeyError) -> String {
         KeyError::NotMember => {
             "The vault's key changed and this device wasn't given the new one (it hadn't synced since updating). Turn sync off and join again with the passphrase.".into()
         }
+        KeyError::Conflict(makers) => format!(
+            "Two devices ({makers}) removed each other from the sync vault at the same time; one of them may be a removed device. Sync stopped here until you choose the one you trust: `quire-cli sync trust-key`."
+        ),
         other => format!("Sync stopped: {other}."),
     }
 }
@@ -310,6 +413,18 @@ impl SpaceAdmin for crate::folder::FolderTransport {
     fn set_keys(&self, keys: &KeySet) {
         Self::set_keys(self, keys.clone());
     }
+    fn set_rules(&self, rules: LaneRules) {
+        Self::set_rules(self, rules);
+    }
+    fn own_end(&self) -> Result<LanePos, TransportError> {
+        Self::own_end(self)
+    }
+    fn trouble(&self) -> Option<String> {
+        self.problem()
+    }
+    fn snapshots(&self) -> Vec<(String, String)> {
+        self.snapshots_taken()
+    }
 }
 
 #[cfg(feature = "remote")]
@@ -343,6 +458,18 @@ impl SpaceAdmin for crate::remote::RemoteTransport {
     }
     fn set_keys(&self, keys: &KeySet) {
         Self::set_keys(self, keys.clone());
+    }
+    fn set_rules(&self, rules: LaneRules) {
+        Self::set_rules(self, rules);
+    }
+    fn own_end(&self) -> Result<LanePos, TransportError> {
+        Self::own_end(self)
+    }
+    fn trouble(&self) -> Option<String> {
+        self.problem()
+    }
+    fn snapshots(&self) -> Vec<(String, String)> {
+        self.snapshots_taken()
     }
 }
 
@@ -389,6 +516,8 @@ impl SpaceAdmin for crate::http::HttpTransport {
         Self::set_removed(self, removed);
     }
     fn set_keys(&self, _keys: &KeySet) {}
+    /// The server refuses lines under an older key itself (422).
+    fn set_rules(&self, _rules: LaneRules) {}
     fn shut_out(&self, device: &DeviceId) -> Result<(), TransportError> {
         self.remove_device(device)
     }

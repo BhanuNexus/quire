@@ -192,6 +192,11 @@ impl HttpTransport {
             404 | 405 if !text.contains("vault") => 1,
             _ => return Err(Self::fail(status, &text)),
         };
+        // Lower than it said before: a server (or someone in front of it)
+        // lowering the vault; nothing is sealed the old way.
+        if min < self.min.load(Ordering::Relaxed) {
+            return Err(TransportError::Refused(crate::folder::LOWERED.into()));
+        }
         self.min.store(min, Ordering::Relaxed);
         Ok(min)
     }

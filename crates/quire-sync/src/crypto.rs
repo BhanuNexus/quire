@@ -44,6 +44,8 @@ pub enum CryptoError {
     NoRandomness,
     #[error("this device doesn't have the vault's key {0} (it changed when a device was removed)")]
     UnknownEpoch(u32),
+    #[error("the vault's sync format was lowered in the storage; sync stopped so nothing is sealed with an old key")]
+    Downgraded,
 }
 
 pub(crate) fn random_bytes<const N: usize>() -> Result<[u8; N], CryptoError> {
@@ -88,7 +90,7 @@ impl VaultKey {
     }
 
     pub fn keys(&self) -> Keys {
-        let expand = |info: &[u8]| hkdf32(b"quire-sync v1", &self.0, info);
+        let expand = |info: &[u8]| derive32("quire-sync v1", &self.0, info);
         Keys { content: expand(b"content"), blob_id: expand(b"blob-id"), mac: expand(b"mac") }
     }
 
@@ -167,11 +169,20 @@ impl Keys {
     }
 }
 
-/// HKDF-SHA256 (RFC 5869) with a 32-byte output. For that length Expand is
-/// one HMAC block, T(1) = HMAC(PRK, info || 0x01), so no output buffer is needed.
-pub(crate) fn hkdf32(salt: &[u8], ikm: &[u8], info: &[u8]) -> [u8; 32] {
-    let (prk, _) = hkdf::Hkdf::<Sha256>::extract(Some(salt), ikm);
+/// A 32-byte key for `info`, derived from the secret `ikm` with HKDF-SHA256
+/// (RFC 5869), in the domain named by `domain`.
+///
+/// `domain` is a public, fixed label that keeps Quire's derivations apart
+/// (RFC 5869 §3.1 allows a non-secret, non-random salt; the secret is
+/// `ikm`). Extract is written out as HMAC(domain, ikm) so the label isn't
+/// mistaken for a random salt; the bytes are the same as `Hkdf::extract`.
+/// For a 32-byte output, Expand is one block, T(1) = HMAC(PRK, info || 0x01).
+pub(crate) fn derive32(domain: &'static str, ikm: &[u8], info: &[u8]) -> [u8; 32] {
+    let mut ext = Hmac::<Sha256>::new_from_slice(domain.as_bytes()).unwrap_or_else(|_| unreachable!("HMAC takes any key length"));
+    ext.update(ikm);
+    let mut prk: [u8; 32] = ext.finalize().into_bytes().into();
     let mut mac = Hmac::<Sha256>::new_from_slice(&prk).unwrap_or_else(|_| unreachable!("HMAC takes any key length"));
+    prk.zeroize();
     mac.update(info);
     mac.update(&[1]);
     mac.finalize().into_bytes().into()

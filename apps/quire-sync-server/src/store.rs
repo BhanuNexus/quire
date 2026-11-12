@@ -31,6 +31,9 @@ pub enum StoreError {
     /// 0.13: the device was removed from the space.
     #[error("this device was removed from the sync vault")]
     Removed,
+    /// 0.13: the device already has a token of its own.
+    #[error("this device already has a device token; to sync it again under a new token, turn sync off and on on it (a new device)")]
+    Enrolled,
 }
 
 /// Roughly how much sealed data one page of changes carries.
@@ -88,6 +91,7 @@ CREATE TABLE IF NOT EXISTS devices (
     created    INTEGER NOT NULL DEFAULT (unixepoch()),
     removed    INTEGER,
     record     TEXT,
+    enrolled   INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (space, device)
 );
 -- 0.13: the vault's key changes, one per epoch (compare-and-swap).
@@ -167,6 +171,16 @@ impl Store {
             db.query_row("SELECT COUNT(*) FROM pragma_table_info('revisions') WHERE name = 'chain'", [], |r| r.get::<_, i64>(0))? > 0;
         if !has_chain {
             db.execute_batch("ALTER TABLE revisions ADD COLUMN chain TEXT NOT NULL DEFAULT '[]'")?;
+        }
+        // 0.13: whether a row's token is a device's own (rows made by a
+        // removal or a device record hold a placeholder).
+        let has_enrolled: bool =
+            db.query_row("SELECT COUNT(*) FROM pragma_table_info('devices') WHERE name = 'enrolled'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !has_enrolled {
+            db.execute_batch(
+                "ALTER TABLE devices ADD COLUMN enrolled INTEGER NOT NULL DEFAULT 0;
+                 UPDATE devices SET enrolled = 1 WHERE record IS NULL AND removed IS NULL;",
+            )?;
         }
         Ok(())
     }
@@ -334,22 +348,27 @@ impl Store {
         Ok(PushOutcome::Accepted { seq: seq.cast_unsigned() })
     }
 
-    /// Give `device` a token for `space` (0.13). A device enrolled before
-    /// gets a new one (the old stops working); a removed device gets none.
+    /// Give `device` a token for `space` (0.13), once: a device that has
+    /// one gets no other (whoever holds the server's token could otherwise
+    /// take over its identity), and a removed device gets none.
     pub fn enroll(&self, space: &SpaceId, device: &str) -> Result<String, StoreError> {
         let mut db = self.db();
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         Self::require_space(&tx, space)?;
-        let removed: Option<Option<i64>> = tx
-            .query_row("SELECT removed FROM devices WHERE space = ?1 AND device = ?2", params![space.0, device], |r| r.get(0))
+        let row: Option<(Option<i64>, i64)> = tx
+            .query_row("SELECT removed, enrolled FROM devices WHERE space = ?1 AND device = ?2", params![space.0, device], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
             .optional()?;
-        if matches!(removed, Some(Some(_))) {
-            return Err(StoreError::Removed);
+        match row {
+            Some((Some(_), _)) => return Err(StoreError::Removed),
+            Some((None, e)) if e != 0 => return Err(StoreError::Enrolled),
+            _ => {}
         }
         let token = new_token()?;
         tx.execute(
-            "INSERT INTO devices (space, device, token_hash) VALUES (?1, ?2, ?3)
-             ON CONFLICT (space, device) DO UPDATE SET token_hash = excluded.token_hash",
+            "INSERT INTO devices (space, device, token_hash, enrolled) VALUES (?1, ?2, ?3, 1)
+             ON CONFLICT (space, device) DO UPDATE SET token_hash = excluded.token_hash, enrolled = 1",
             params![space.0, device, token_hash(&token)],
         )?;
         tx.commit()?;
@@ -403,13 +422,13 @@ impl Store {
             let (device, last_seq) = row?;
             out.insert(device.clone(), DeviceRow { device, enrolled: false, removed: false, last_seq, record: None });
         }
-        let mut stmt = db.prepare_cached("SELECT device, removed, record FROM devices WHERE space = ?1")?;
+        let mut stmt = db.prepare_cached("SELECT device, removed, record, enrolled FROM devices WHERE space = ?1")?;
         for row in stmt.query_map(params![space.0], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?.is_some(), r.get::<_, Option<String>>(2)?))
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?.is_some(), r.get::<_, Option<String>>(2)?, r.get::<_, i64>(3)? != 0))
         })? {
-            let (device, removed, record) = row?;
+            let (device, removed, record, enrolled) = row?;
             let e = out.entry(device.clone()).or_insert(DeviceRow { device, enrolled: false, removed: false, last_seq: 0, record: None });
-            e.enrolled = true;
+            e.enrolled = enrolled;
             e.removed = removed;
             e.record = record.and_then(|r| serde_json::from_str(&r).ok());
         }
@@ -444,7 +463,8 @@ impl Store {
     }
 
     /// Fold old revisions away (0.13): of each file, keep its newest
-    /// `keep_versions` revisions (at least its head) and every revision
+    /// `keep_versions` revisions (at least two: a deleted note's head is
+    /// its tombstone, and the one before holds its last text) and every revision
     /// replaced within the last `keep_days` days. Returns how many went.
     /// A device whose cursor is older gets each file's newest revision
     /// and merges from what it last synced, as when it pulls a long log.
@@ -459,7 +479,7 @@ impl Store {
                         LEAD(created) OVER (PARTITION BY space, file ORDER BY seq) AS replaced
                  FROM revisions)
                WHERE rk > ?1 AND replaced IS NOT NULL AND replaced < unixepoch() - ?2)",
-            params![i64::from(keep_versions.max(1)), cutoff],
+            params![i64::from(keep_versions.max(2)), cutoff],
         )?;
         Ok(n)
     }

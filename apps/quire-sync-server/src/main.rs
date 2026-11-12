@@ -11,7 +11,7 @@
 //! | `QUIRE_SYNC_ADDR` | `127.0.0.1:8787` | Address to listen on. Put it behind HTTPS (Caddy, nginx) |
 //! | `QUIRE_SYNC_DB` | `quire-sync.sqlite` | Database file |
 //! | `QUIRE_SYNC_KEEP_DAYS` | (keep everything) | 0.13: once a day, drop revisions replaced more than this many days ago |
-//! | `QUIRE_SYNC_KEEP_VERSIONS` | `20` | …but always keep each file's newest this many |
+//! | `QUIRE_SYNC_KEEP_VERSIONS` | `20` | …but always keep each file's newest this many (at least 2) |
 
 use std::process::ExitCode;
 use std::sync::Arc;

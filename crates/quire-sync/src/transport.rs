@@ -7,6 +7,11 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::protocol::{FileId, PushOutcome, RevId, Revision, Sealing};
 
+/// What a transport says when a revision builds on one it doesn't have
+/// (lost for good, or folded away): the engine sends the note again as a
+/// new first revision.
+pub const LOST_PARENT: &str = "parent doesn't exist";
+
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum TransportError {
     #[error("can't reach the sync server: {0}")]
@@ -135,7 +140,7 @@ impl Transport for MemoryServer {
         if head_rev != rev.parents.first() {
             return match head {
                 Some(i) => Ok(PushOutcome::Conflict { head: log.revs[i].clone() }),
-                None => Err(TransportError::Refused("parent doesn't exist".into())),
+                None => Err(TransportError::Refused(LOST_PARENT.into())),
             };
         }
         let seq = log.revs.len() as u64 + 1;

@@ -59,7 +59,7 @@ impl Dev {
             pins: Pins::default(),
             local: MemoryStore::default(),
         };
-        admin::publish_self(&d.t, space, &d.id, &d.secret, name, &d.keys).unwrap();
+        admin::publish_self(&d.t, space, &d.id, &d.secret, name, &d.keys, &BTreeMap::new()).unwrap();
         d
     }
 
@@ -70,7 +70,8 @@ impl Dev {
     fn refresh(&mut self, space: &SpaceId) -> Option<KeyError> {
         let r = admin::refresh_keys(&self.t, space, &self.id, Some(&self.secret), &self.keys, &mut self.pins).unwrap();
         self.keys = r.keys.clone();
-        self.engine.set_keys(r.keys);
+        self.engine.set_keys(r.keys.clone());
+        self.t.set_rules(r.rules(""));
         self.t.set_removed(r.removed.iter().map(|(d, x)| (d.clone(), x.lanes.get("").copied().unwrap_or_default())).collect());
         r.stuck.map(|(_, w)| w)
     }
@@ -128,6 +129,10 @@ fn removing_a_device_refuses_its_token_and_its_old_key() {
     a.sync().unwrap();
     b.sync().unwrap();
     r.sync().unwrap();
+    // Each device's passes pin the others' keys before any key change.
+    for d in [&mut a, &mut b, &mut r] {
+        assert!(d.refresh(&space).is_none());
+    }
     let ends = a.t.lane_ends().unwrap();
     let removal = Removal {
         space: &space,
@@ -139,6 +144,8 @@ fn removing_a_device_refuses_its_token_and_its_old_key() {
         kdf: KdfParams::TEST,
         lanes: BTreeMap::from([(String::new(), ends.get(&r.id).copied().unwrap_or_default())]),
         removed: &BTreeSet::new(),
+        seen: BTreeMap::new(),
+        snapshots: Vec::new(),
     };
     admin::remove_device(&a.t, &removal, &mut a.pins).unwrap();
     // B writes before it heard of the new key: refused, then fine after.
@@ -176,6 +183,9 @@ fn two_key_changes_at_once_one_wins() {
     let (space, key) = space(&base);
     let (mut a, mut b, r) = (Dev::new(&base, &space, &key, "a"), Dev::new(&base, &space, &key, "b"), Dev::new(&base, &space, &key, "r"));
     admin::upgrade(&a.t).unwrap();
+    for d in [&mut a, &mut b] {
+        assert!(d.refresh(&space).is_none());
+    }
     let empty = BTreeSet::new();
     let ra = Removal {
         space: &space,
@@ -187,6 +197,8 @@ fn two_key_changes_at_once_one_wins() {
         kdf: KdfParams::TEST,
         lanes: BTreeMap::new(),
         removed: &empty,
+        seen: BTreeMap::new(),
+        snapshots: Vec::new(),
     };
     admin::remove_device(&a.t, &ra, &mut a.pins).unwrap();
     // B made its record from epoch 0 too: the server takes only one epoch 1.
@@ -232,4 +244,29 @@ fn compaction_on_the_server_and_a_device_that_was_offline() {
     let mut d = Dev::new(&base, &space, &key, "d");
     d.sync().unwrap();
     assert_eq!(d.local.read("N.md"), c.local.read("N.md"));
+    // Data review #14: even keeping "1" version, a deleted note keeps its
+    // last text (the version before its tombstone).
+    a.local.write("Gone.md", "last words\n").unwrap();
+    a.sync().unwrap();
+    a.local.remove("Gone.md").unwrap();
+    a.sync().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    st.store().compact(0, 1).unwrap();
+    let h = a.engine.history(&a.t, "Gone.md").unwrap();
+    assert!(h.iter().any(|v| v.text == "last words\n"), "{h:?}");
+}
+
+/// Security review M1: whoever holds the server's token can't enroll a
+/// device that already has a token of its own (and so take it over).
+#[test]
+fn a_device_token_is_given_once() {
+    let (base, _st) = serve();
+    let (space, key) = space(&base);
+    let mut b = Dev::new(&base, &space, &key, "b");
+    b.local.write("B.md", "b\n").unwrap();
+    b.sync().unwrap();
+    let e = HttpTransport::enroll(&base, &space, TOKEN, &b.id).unwrap_err().to_string();
+    assert!(e.contains("already"), "{e}");
+    b.local.write("B.md", "b again\n").unwrap();
+    b.sync().unwrap();
 }

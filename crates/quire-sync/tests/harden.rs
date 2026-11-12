@@ -85,14 +85,15 @@ impl Dev {
     }
 
     fn publish(&self, space: &SpaceId) {
-        admin::publish_self(&self.t, space, &self.id, &self.secret, &self.name, &self.keys).unwrap();
+        admin::publish_self(&self.t, space, &self.id, &self.secret, &self.name, &self.keys, &BTreeMap::new()).unwrap();
     }
 
     /// Take key changes, as the app does at each pass.
     fn refresh(&mut self, space: &SpaceId) -> Option<KeyError> {
         let r = admin::refresh_keys(&self.t, space, &self.id, Some(&self.secret), &self.keys, &mut self.pins).unwrap();
         self.keys = r.keys.clone();
-        self.engine.set_keys(r.keys);
+        self.engine.set_keys(r.keys.clone());
+        self.t.set_rules(r.rules(""));
         self.t.set_removed(r.removed.iter().map(|(d, x)| (d.clone(), x.lanes.get("").copied().unwrap_or_default())).collect());
         r.stuck.map(|(_, why)| why)
     }
@@ -397,6 +398,10 @@ fn removing_a_device_shuts_it_out_of_new_content_and_ignores_what_it_writes() {
     for d in [&a, &b, &r] {
         d.publish(&v.space);
     }
+    // Each device's passes pin the others' keys before any key change.
+    for d in [&mut a, &mut b, &mut r] {
+        assert!(d.refresh(&v.space).is_none());
+    }
     a.write("Old.md", "everyone saw this\n");
     a.sync();
     b.sync();
@@ -412,6 +417,8 @@ fn removing_a_device_shuts_it_out_of_new_content_and_ignores_what_it_writes() {
         kdf: KdfParams::TEST,
         lanes: BTreeMap::from([(String::new(), ends.get(&r.id).copied().unwrap_or_default())]),
         removed: &BTreeSet::new(),
+        seen: BTreeMap::new(),
+        snapshots: Vec::new(),
     };
     let done = admin::remove_device(&a.t, &removal, &mut a.pins).unwrap();
     assert_eq!(done.members.len(), 2);
@@ -464,6 +471,9 @@ fn a_removal_cut_short_is_picked_up_on_the_next_pass() {
     for d in [&a, &b, &r] {
         d.publish(&v.space);
     }
+    for d in [&mut a, &mut b] {
+        assert!(d.refresh(&v.space).is_none());
+    }
     // The record is written, then the app stops before keeping the new key.
     let removal = Removal {
         space: &v.space,
@@ -475,6 +485,8 @@ fn a_removal_cut_short_is_picked_up_on_the_next_pass() {
         kdf: KdfParams::TEST,
         lanes: BTreeMap::new(),
         removed: &BTreeSet::new(),
+        seen: BTreeMap::new(),
+        snapshots: Vec::new(),
     };
     let done = admin::remove_device(&a.t, &removal, &mut a.pins).unwrap();
     assert_eq!(a.keys.current(), 0, "not kept yet");
@@ -532,9 +544,110 @@ fn removal_needs_an_upgraded_vault() {
         kdf: KdfParams::TEST,
         lanes: BTreeMap::new(),
         removed: &BTreeSet::new(),
+        seen: BTreeMap::new(),
+        snapshots: Vec::new(),
     };
     let e = admin::remove_device(&a.t, &removal, &mut a.pins).unwrap_err();
     assert!(e.to_string().contains("Upgrade"), "{e}");
     assert!(a.t.level() < admin::HARDENED);
     let _ = a.t.pull(0);
+}
+
+fn seg_dir(v: &Vault, d: &DeviceId) -> PathBuf {
+    v.root.join(&v.space.0).join("devices").join(&d.0)
+}
+
+/// Data review #1: a sync tool delivered a lane's later log files before
+/// its first. Compaction waits for it instead of cutting past lines it
+/// never read; once it arrives, nothing is lost.
+#[test]
+fn compaction_waits_for_a_lanes_earlier_log_files() {
+    let v = Vault::new(folder::LEVEL_HARDENED);
+    let mut a = v.device("a");
+    a.write("Quiet.md", "precious, never touched again\n");
+    a.sync();
+    let big = "x".repeat(200_000);
+    for i in 0..30 {
+        a.write("Big.md", &format!("{i}\n{big}\n"));
+        a.sync();
+    }
+    for i in 0..20 {
+        a.write("Churn.md", &format!("churn {i}\n"));
+        a.sync();
+    }
+    let files = walk(&seg_dir(&v, &a.id));
+    assert!(files.len() >= 3, "{files:?}");
+    let hold = v.dir.path().join("hold");
+    fs::create_dir_all(&hold).unwrap();
+    fs::rename(&files[0], hold.join("first")).unwrap();
+    let mut b = v.device("b");
+    b.sync();
+    let policy = Policy { keep_days: 0, min_versions: 3 };
+    assert!(matches!(b.t.compact(policy, None, true).unwrap(), Compacted::Busy(_)));
+    fs::rename(hold.join("first"), &files[0]).unwrap();
+    b.sync();
+    assert_eq!(b.text("Quiet.md").unwrap(), "precious, never touched again\n");
+    assert!(matches!(b.t.compact(policy, None, true).unwrap(), Compacted::Done(_)));
+    a.t.tidy();
+    b.t.tidy();
+    a.sync();
+    b.sync();
+    let mut c = v.device("c");
+    c.sync();
+    assert_eq!(c.text("Quiet.md").unwrap(), "precious, never touched again\n");
+    a.write("Quiet.md", "precious, edited later\n");
+    a.write("Other.md", "another note\n");
+    a.sync();
+    b.sync();
+    c.sync();
+    assert_eq!(c.text("Quiet.md").unwrap(), "precious, edited later\n");
+    assert_eq!(c.text("Other.md").unwrap(), "another note\n");
+}
+
+/// Data review #7: a note whose first revision is lost for good still
+/// shows, from the oldest revision its later ones name.
+#[test]
+fn a_note_whose_first_revision_is_lost_still_shows() {
+    let v = Vault::new(folder::LEVEL_HARDENED);
+    let mut a = v.device("a");
+    for i in 0..4 {
+        a.write("N.md", &format!("version {i}\n"));
+        a.sync();
+    }
+    let seg = walk(&seg_dir(&v, &a.id)).pop().unwrap();
+    let mut lines: Vec<String> = fs::read_to_string(&seg).unwrap().lines().map(str::to_string).collect();
+    lines[0] = "{damaged".into();
+    fs::write(&seg, lines.join("\n") + "\n").unwrap();
+    let mut b = v.device("b");
+    b.sync();
+    assert_eq!(b.text("N.md").unwrap(), "version 3\n");
+    // A starts again (its open index still points into the old file).
+    a.t = FolderTransport::new(&v.root, &v.space, a.id.clone(), None).with_keys(a.keys.clone()).with_settle(0);
+    a.write("N.md", "version 4\n");
+    a.sync();
+    let mut c = v.device("c");
+    c.sync();
+    b.sync();
+    assert_eq!(c.text("N.md").unwrap(), "version 4\n");
+    assert_eq!(b.text("N.md").unwrap(), "version 4\n");
+}
+
+/// Data review #1 (engine side): a note whose every revision is gone for
+/// good is sent again as a new first revision; the pass goes on.
+#[test]
+fn a_note_whose_revisions_are_all_lost_is_sent_again() {
+    let v = Vault::new(folder::LEVEL_HARDENED);
+    let mut a = v.device("a");
+    a.write("Solo.md", "only once\n");
+    a.sync();
+    let seg = walk(&seg_dir(&v, &a.id)).pop().unwrap();
+    fs::write(&seg, "{damaged\n").unwrap();
+    a.t = FolderTransport::new(&v.root, &v.space, a.id.clone(), None).with_keys(a.keys.clone()).with_settle(0);
+    a.write("Solo.md", "edited\n");
+    a.write("Other.md", "also sent\n");
+    a.sync();
+    let mut b = v.device("b");
+    b.sync();
+    assert_eq!(b.text("Solo.md").unwrap(), "edited\n");
+    assert_eq!(b.text("Other.md").unwrap(), "also sent\n");
 }
