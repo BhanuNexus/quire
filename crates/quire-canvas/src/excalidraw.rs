@@ -139,7 +139,8 @@ fn text(v: &Value, k: &str) -> String {
     v.get(k).and_then(Value::as_str).unwrap_or_default().to_string()
 }
 
-fn element(v: &Value) -> Option<Element> {
+/// One element of a drawing's JSON; `None` for a deleted one.
+pub fn element(v: &Value) -> Option<Element> {
     if v.get("isDeleted").and_then(Value::as_bool) == Some(true) {
         return None;
     }
@@ -418,6 +419,117 @@ fn lz_decompress(data: &[u32], reset: u32) -> Result<Vec<u16>, Lz> {
     }
 }
 
+/// LZ-string's `compressToBase64` (lz-string 1.5.0).
+///
+/// What Excalidraw and its Obsidian plugin use, over the UTF-16 units of
+/// `input`. The output is the same, character for character, as the
+/// JavaScript library's.
+pub fn lz_compress_base64(input: &str) -> String {
+    use std::collections::{HashMap, HashSet};
+    const KEY: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
+    struct Out {
+        data: String,
+        val: u32,
+        pos: u32,
+    }
+    impl Out {
+        fn bit(&mut self, b: u32) {
+            self.val = (self.val << 1) | b;
+            if self.pos == 5 {
+                self.pos = 0;
+                self.data.push(KEY[self.val as usize] as char);
+                self.val = 0;
+            } else {
+                self.pos += 1;
+            }
+        }
+        fn bits(&mut self, mut v: u32, n: u32) {
+            for _ in 0..n {
+                self.bit(v & 1);
+                v >>= 1;
+            }
+        }
+    }
+    fn step(enlarge: &mut u32, num_bits: &mut u32) {
+        *enlarge -= 1;
+        if *enlarge == 0 {
+            *enlarge = 1 << *num_bits;
+            *num_bits += 1;
+        }
+    }
+    // Words as (code of the word without its last unit, last unit).
+    let mut singles: HashMap<u16, u32> = HashMap::new();
+    let mut words: HashMap<(u32, u16), u32> = HashMap::new();
+    let mut to_create: HashSet<u16> = HashSet::new();
+    let (mut enlarge, mut size, mut num_bits) = (2u32, 3u32, 2u32);
+    // The current word: its code, and its unit when it is one unit long.
+    let mut w: Option<(u32, Option<u16>)> = None;
+    let mut out = Out { data: String::new(), val: 0, pos: 0 };
+    let emit = |w: (u32, Option<u16>), out: &mut Out, to_create: &mut HashSet<u16>, enlarge: &mut u32, num_bits: &mut u32| {
+        match w.1 {
+            Some(c) if to_create.remove(&c) => {
+                if c < 256 {
+                    out.bits(0, *num_bits);
+                    out.bits(u32::from(c), 8);
+                } else {
+                    out.bits(1, *num_bits);
+                    out.bits(u32::from(c), 16);
+                }
+                step(enlarge, num_bits);
+            }
+            _ => out.bits(w.0, *num_bits),
+        }
+        step(enlarge, num_bits);
+    };
+    if input.is_empty() {
+        return String::new();
+    }
+    for c in input.encode_utf16() {
+        let code = *singles.entry(c).or_insert_with(|| {
+            to_create.insert(c);
+            size += 1;
+            size - 1
+        });
+        match w {
+            None => w = Some((code, Some(c))),
+            Some(cur) => {
+                if let Some(&next) = words.get(&(cur.0, c)) {
+                    w = Some((next, None));
+                } else {
+                    emit(cur, &mut out, &mut to_create, &mut enlarge, &mut num_bits);
+                    words.insert((cur.0, c), size);
+                    size += 1;
+                    w = Some((code, Some(c)));
+                }
+            }
+        }
+    }
+    if let Some(cur) = w {
+        emit(cur, &mut out, &mut to_create, &mut enlarge, &mut num_bits);
+    }
+    out.bits(2, num_bits);
+    loop {
+        out.val <<= 1;
+        if out.pos == 5 {
+            out.data.push(KEY[out.val as usize] as char);
+            break;
+        }
+        out.pos += 1;
+    }
+    while !out.data.len().is_multiple_of(4) {
+        out.data.push('=');
+    }
+    out.data
+}
+
+/// [`lz_compress_base64`] the way the Obsidian plugin writes it in a note:
+/// lines of 256 characters with a blank line between them.
+pub fn lz_compress_note(input: &str) -> String {
+    let packed = lz_compress_base64(input);
+    let chunks: Vec<&str> = packed.as_bytes().chunks(256).map(|c| std::str::from_utf8(c).unwrap_or_default()).collect();
+    chunks.join("\n\n")
+}
+
 // ---------------------------------------------------------------- drawing ops
 
 /// A path command, in drawing units.
@@ -612,6 +724,14 @@ fn arrowhead(kind: &str, tip: (f64, f64), from: (f64, f64), width: f64, color: R
 pub fn ops(scene: &Scene) -> Vec<Op> {
     let mut out = Vec::new();
     for e in &scene.elements {
+        element_ops(e, &mut out);
+    }
+    out
+}
+
+/// One element's ops, appended to `out`.
+pub fn element_ops(e: &Element, out: &mut Vec<Op>) {
+    {
         let c = (e.x + e.width / 2.0, e.y + e.height / 2.0);
         let stroke = e.stroke.map(|s| s.with_alpha(e.opacity));
         let width = e.stroke_width.max(0.5);
@@ -648,7 +768,7 @@ pub fn ops(scene: &Scene) -> Vec<Op> {
             }
             "line" | "arrow" | "freedraw" => {
                 let pts: Vec<(f64, f64)> = e.points.iter().map(|(px, py)| rot((e.x + px, e.y + py), c, e.angle)).collect();
-                let Some(first) = pts.first() else { continue };
+                let Some(first) = pts.first() else { return };
                 let mut segs = vec![Seg::Move(first.0, first.1)];
                 segs.extend(pts.iter().skip(1).map(|p| Seg::Line(p.0, p.1)));
                 let closed = e.kind == "line" && pts.len() > 2 && pts.first() == pts.last();
@@ -704,7 +824,6 @@ pub fn ops(scene: &Scene) -> Vec<Op> {
             _ => {}
         }
     }
-    out
 }
 
 /// Margin around the drawing in pictures.
@@ -825,103 +944,6 @@ mod tests {
         assert_eq!(lz_decompress_base64("!!"), None);
     }
 
-    /// LZ-string's `compressToBase64`, for tests (a straight port of
-    /// lz-string 1.5.0's `_compress` with 6 bits per character).
-    fn lz_compress_base64(input: &[u16]) -> String {
-        use std::collections::{HashMap, HashSet};
-        const KEY: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
-        struct Out {
-            data: String,
-            val: u32,
-            pos: u32,
-        }
-        impl Out {
-            fn bit(&mut self, b: u32) {
-                self.val = (self.val << 1) | b;
-                if self.pos == 5 {
-                    self.pos = 0;
-                    self.data.push(KEY[self.val as usize] as char);
-                    self.val = 0;
-                } else {
-                    self.pos += 1;
-                }
-            }
-            fn bits(&mut self, mut v: u32, n: u32) {
-                for _ in 0..n {
-                    self.bit(v & 1);
-                    v >>= 1;
-                }
-            }
-        }
-        // Words as (code of the word without its last unit, last unit).
-        let mut singles: HashMap<u16, u32> = HashMap::new();
-        let mut words: HashMap<(u32, u16), u32> = HashMap::new();
-        let mut to_create: HashSet<u16> = HashSet::new();
-        let (mut enlarge, mut size, mut num_bits) = (2u32, 3u32, 2u32);
-        // The current word: its code, and its unit when it is one unit long.
-        let mut w: Option<(u32, Option<u16>)> = None;
-        let mut out = Out { data: String::new(), val: 0, pos: 0 };
-        let step = |enlarge: &mut u32, num_bits: &mut u32| {
-            *enlarge -= 1;
-            if *enlarge == 0 {
-                *enlarge = 1 << *num_bits;
-                *num_bits += 1;
-            }
-        };
-        let emit = |w: (u32, Option<u16>), out: &mut Out, to_create: &mut HashSet<u16>, enlarge: &mut u32, num_bits: &mut u32| {
-            match w.1 {
-                Some(c) if to_create.remove(&c) => {
-                    if c < 256 {
-                        out.bits(0, *num_bits);
-                        out.bits(u32::from(c), 8);
-                    } else {
-                        out.bits(1, *num_bits);
-                        out.bits(u32::from(c), 16);
-                    }
-                    step(enlarge, num_bits);
-                }
-                _ => out.bits(w.0, *num_bits),
-            }
-            step(enlarge, num_bits);
-        };
-        for &c in input {
-            if let std::collections::hash_map::Entry::Vacant(e) = singles.entry(c) {
-                e.insert(size);
-                size += 1;
-                to_create.insert(c);
-            }
-            match w {
-                None => w = Some((singles[&c], Some(c))),
-                Some(cur) => {
-                    if let Some(&code) = words.get(&(cur.0, c)) {
-                        w = Some((code, None));
-                    } else {
-                        emit(cur, &mut out, &mut to_create, &mut enlarge, &mut num_bits);
-                        words.insert((cur.0, c), size);
-                        size += 1;
-                        w = Some((singles[&c], Some(c)));
-                    }
-                }
-            }
-        }
-        if let Some(cur) = w {
-            emit(cur, &mut out, &mut to_create, &mut enlarge, &mut num_bits);
-        }
-        out.bits(2, num_bits);
-        loop {
-            out.val <<= 1;
-            if out.pos == 5 {
-                out.data.push(KEY[out.val as usize] as char);
-                break;
-            }
-            out.pos += 1;
-        }
-        while !out.data.len().is_multiple_of(4) {
-            out.data.push('=');
-        }
-        out.data
-    }
-
     /// A small fixed-seed generator for the property tests.
     struct Rng(u64);
     impl Rng {
@@ -937,7 +959,7 @@ mod tests {
     /// gives back, including runs that use `KwKwK` codes.
     #[test]
     fn lz_unpacks_whatever_lz_string_packs() {
-        assert_eq!(lz_compress_base64(&"Hello, Quire! ☃".encode_utf16().collect::<Vec<_>>()), "BIUwNmD2A0AECKBXAlgJxAQloYDIg===");
+        assert_eq!(lz_compress_base64("Hello, Quire! ☃"), "BIUwNmD2A0AECKBXAlgJxAQloYDIg===");
         let alphabets: [&[char]; 3] = [&['a', 'b'], &['a', 'b', 'c', ' ', '{', '"'], &['x', 'é', '☃', '中', '\n']];
         let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
         for case in 0..400 {
@@ -953,11 +975,11 @@ mod tests {
                         }
                     })
                     .collect();
-            let packed = lz_compress_base64(&text.encode_utf16().collect::<Vec<_>>());
+            let packed = lz_compress_base64(&text);
             assert_eq!(lz_decompress_base64(&packed).as_deref(), Some(text.as_str()), "case {case}: {text:?}");
         }
         let run = "a".repeat(100_000);
-        assert_eq!(lz_decompress_base64(&lz_compress_base64(&run.encode_utf16().collect::<Vec<_>>())), Some(run));
+        assert_eq!(lz_decompress_base64(&lz_compress_base64(&run)), Some(run));
     }
 
     /// 0.10.1 security review #7: a small compressed drawing that unpacks to
@@ -965,7 +987,7 @@ mod tests {
     #[test]
     fn a_compressed_drawing_bomb_is_too_large_to_show() {
         let n = limits::MAX_UNPACKED + 1_000;
-        let bomb = lz_compress_base64(&vec![u16::from(b'a'); n]);
+        let bomb = lz_compress_base64(&"a".repeat(n));
         assert!(bomb.len() < 40_000, "{} bytes", bomb.len());
         let started = std::time::Instant::now();
         assert_eq!(lz_unpack_base64(&bomb), Err(Lz::TooLarge));
