@@ -2,12 +2,12 @@
 <!-- SPDX-FileCopyrightText: 2026 The Quire contributors -->
 <!-- SPDX-License-Identifier: CC0-1.0 -->
 <component type="desktop-application">
-  <id>io.github.BhanuNexus.Quire</id>
+  <id>io.github.bhanunexus.Quire</id>
   <name>Quire</name>
   <summary>Fast, local-first Markdown notes</summary>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>AGPL-3.0-or-later</project_license>
-  <developer id="io.github.BhanuNexus">
+  <developer id="io.github.bhanunexus">
     <name>The Quire contributors</name>
   </developer>
   <description>
@@ -24,11 +24,12 @@
       <li>Version history for every note, and safe merging when a sync tool changes a note you're editing</li>
     </ul>
   </description>
-  <launchable type="desktop-id">io.github.BhanuNexus.Quire.desktop</launchable>
   <provides>
+    <mediatype>text/markdown</mediatype>
     <binary>quire</binary>
     <binary>quire-cli</binary>
   </provides>
+  <launchable type="desktop-id">io.github.bhanunexus.Quire.desktop</launchable>
   <categories>
     <category>Office</category>
     <category>TextEditor</category>
@@ -42,18 +43,30 @@
   <url type="homepage">https://github.com/BhanuNexus/quire</url>
   <url type="bugtracker">https://github.com/BhanuNexus/quire/issues</url>
   <url type="vcs-browser">https://github.com/BhanuNexus/quire</url>
+  <url type="help">https://github.com/BhanuNexus/quire#readme</url>
   <screenshots>
     <screenshot type="default">
-      <image>https://raw.githubusercontent.com/BhanuNexus/quire/main/docs/screenshots/editor-light.png</image>
+      <image type="source" width="1280" height="820">https://raw.githubusercontent.com/BhanuNexus/quire/v@VERSION@/docs/screenshots/editor-light.png</image>
       <caption>Editing a note with backlinks and related notes</caption>
     </screenshot>
     <screenshot>
-      <image>https://raw.githubusercontent.com/BhanuNexus/quire/main/docs/screenshots/board-dark.png</image>
+      <image type="source" width="1280" height="820">https://raw.githubusercontent.com/BhanuNexus/quire/v@VERSION@/docs/screenshots/editor-dark.png</image>
+      <caption>The dark theme</caption>
+    </screenshot>
+    <screenshot>
+      <image type="source" width="1280" height="820">https://raw.githubusercontent.com/BhanuNexus/quire/v@VERSION@/docs/screenshots/board-light.png</image>
       <caption>A project board built from note properties</caption>
+    </screenshot>
+    <screenshot>
+      <image type="source" width="1280" height="820">https://raw.githubusercontent.com/BhanuNexus/quire/v@VERSION@/docs/screenshots/preview-light.png</image>
+      <caption>The preview, with math, diagrams and callouts</caption>
     </screenshot>
   </screenshots>
   <content_rating type="oars-1.1"/>
   <releases>
-    <release version="@VERSION@" date="@DATE@"/>
+    <release version="@VERSION@" date="@DATE@">
+      <url type="details">https://github.com/BhanuNexus/quire/releases/tag/v@VERSION@</url>
+      @RELEASE_NOTES@
+    </release>
   </releases>
 </component>

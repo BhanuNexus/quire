@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# Build the Linux x86_64 downloads:
+# Build the Linux downloads for this machine's architecture (x86_64, or
+# aarch64 on an ARM64 machine; ARCH=x86_64|aarch64 says so explicitly, and
+# the machine must be that architecture: nothing here cross-compiles):
 #
-#   Quire-<v>-linux-x86_64.tar.gz    portable archive with install.sh
-#   Quire-<v>-linux-amd64.deb        Debian/Ubuntu package (needs dpkg-deb)
-#   Quire-<v>-linux-x86_64.AppImage  single-file app (needs APPIMAGETOOL and
+#   Quire-<v>-linux-<arch>.tar.gz    portable archive with install.sh
+#   Quire-<v>-linux-<deb>.deb        Debian/Ubuntu package (needs dpkg-deb);
+#                                    <deb> is amd64 or arm64
+#   Quire-<v>-linux-<arch>.AppImage  single-file app (needs APPIMAGETOOL and
 #                                    APPIMAGE_RUNTIME; see fetch-appimagetool.sh)
 #   quire-sync-server-<v>-linux-x86_64.tar.gz  the self-hosted sync server
+#                                    (x86_64 only, for now)
 #
 #   packaging/linux/package.sh             the full edition (and the sync server)
 #   EDITION=lite packaging/linux/package.sh  Quire Lite: no math, diagrams or PDF
@@ -29,19 +33,24 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
-target="x86_64-unknown-linux-gnu"
+arch="${ARCH:-$(uname -m)}"
+case "$arch" in
+  x86_64) deb_arch="amd64" ;;
+  aarch64 | arm64) arch="aarch64"; deb_arch="arm64" ;;
+  *) echo "unsupported architecture $arch (x86_64 or aarch64)" >&2; exit 1 ;;
+esac
+target="$arch-unknown-linux-gnu"
 edition="${EDITION:-full}"
 case "$edition" in
   full) prefix="Quire"; pkg_name="quire"; other_pkg="quire-lite"; features=() ;;
   lite) prefix="Quire-Lite"; pkg_name="quire-lite"; other_pkg="quire"; features=(--no-default-features) ;;
   *) echo "EDITION must be full or lite" >&2; exit 1 ;;
 esac
-name="$prefix-$version-linux-x86_64"
-app_id="io.github.BhanuNexus.Quire"
+name="$prefix-$version-linux-$arch"
+app_id="io.github.bhanunexus.Quire"
 out="dist"
 stage="$out/$name"
 export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct 2>/dev/null || date +%s)}"
-release_date="$(date -u -d "@$SOURCE_DATE_EPOCH" +%Y-%m-%d)"
 bin="target/$target/release"
 
 # ---------------------------------------------------------------- engine
@@ -64,10 +73,14 @@ fi
 # Identical code folding: the linker keeps one copy of functions that
 # compiled to the same machine code (generic code repeats a lot). About 1 MB
 # off each binary (docs/design/0.10-perf.md); Rust promises no unique
-# function addresses, so nothing relies on them.
-export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,--icf=all"
+# function addresses, so nothing relies on them. Only x86_64 Linux links with
+# rust-lld, which has the flag; aarch64 uses the system's GNU ld, which
+# doesn't (docs/design/0.13-pack.md §1), so there it is left out.
+if [[ "$arch" == x86_64 ]]; then
+  export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,--icf=all"
+fi
 cargo build --release --locked --target "$target" -p quire-desktop -p quire-cli ${features[@]+"${features[@]}"}
-[[ "$edition" == full ]] && cargo build --release --locked --target "$target" -p quire-sync-server
+[[ "$edition" == full && "$arch" == x86_64 ]] && cargo build --release --locked --target "$target" -p quire-sync-server
 mkdir -p "$out"
 
 # ---------------------------------------------------------------- tar.gz
@@ -83,9 +96,11 @@ tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owne
 rm -rf "$stage"
 
 # ---------------------------------------------------------------- sync server
-# Once per release, with the full edition.
+# Once per release, with the full edition (x86_64 only).
 server="quire-sync-server-$version-linux-x86_64"
-if [[ "$edition" == full ]]; then
+build_server=false
+[[ "$edition" == full && "$arch" == x86_64 ]] && build_server=true
+if [[ "$build_server" == true ]]; then
   sstage="$out/$server"
   rm -rf "$sstage" && mkdir -p "$sstage"
   install -m 755 "$bin/quire-sync-server" "$sstage/"
@@ -95,6 +110,11 @@ if [[ "$edition" == full ]]; then
     -C "$out" -cf - "$server" | gzip -9n > "$out/$server.tar.gz"
   rm -rf "$sstage"
 fi
+
+# The AppStream file, with this version's release and notes (from CHANGELOG.md).
+metainfo="$out/$app_id.metainfo.xml"
+python3 -I packaging/linux/render-metainfo.py "$version" > "$metainfo"
+trap 'rm -f "$metainfo" "$engine_pin"' EXIT
 
 # Files every system-wide layout shares (.deb and AppImage).
 # $1 = root to install into (e.g. pkgroot or AppDir)
@@ -107,13 +127,12 @@ install_tree() {
   sed 's/^Icon=quire$/Icon='"$app_id"'/' packaging/linux/quire.desktop \
     | install -Dm 644 /dev/stdin "$root/usr/share/applications/$app_id.desktop"
   install -Dm 644 packaging/icons/quire-256.png "$root/usr/share/icons/hicolor/256x256/apps/$app_id.png"
-  sed -e "s/@VERSION@/$version/" -e "s/@DATE@/$release_date/" "packaging/linux/$app_id.metainfo.xml" \
-    | install -Dm 644 /dev/stdin "$root/usr/share/metainfo/$app_id.metainfo.xml"
+  install -Dm 644 "$metainfo" "$root/usr/share/metainfo/$app_id.metainfo.xml"
 }
 
 # ---------------------------------------------------------------- .deb
 if command -v dpkg-deb > /dev/null; then
-  deb="$prefix-$version-linux-amd64.deb"
+  deb="$prefix-$version-linux-$deb_arch.deb"
   pkg="$out/deb-root"
   rm -rf "$pkg" && mkdir -p "$pkg/DEBIAN"
   install_tree "$pkg"
@@ -130,7 +149,7 @@ Version: ${version//-/\~}
 Conflicts: $other_pkg
 Replaces: $other_pkg
 Provides: quire-editor
-Architecture: amd64
+Architecture: $deb_arch
 Maintainer: The Quire contributors <https://github.com/BhanuNexus/quire/issues>
 Installed-Size: $size_kb
 Depends: libc6 (>= 2.35), libgcc-s1, libgl1 | libegl1, libxkbcommon0, libwayland-client0 | libx11-6$alsa
@@ -166,14 +185,14 @@ case "$(basename "${ARGV0:-quire}")" in
 esac
 EOF
   chmod 755 "$appdir/AppRun"
-  ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGETOOL" --no-appstream --runtime-file "$APPIMAGE_RUNTIME" \
+  ARCH="$arch" APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGETOOL" --no-appstream --runtime-file "$APPIMAGE_RUNTIME" \
     "$appdir" "$out/$appimage" > /dev/null
   rm -rf "$appdir"
 fi
 
-if [[ "$edition" == lite ]]; then
-  ( cd "$out" && sha256sum "$prefix-$version"-linux-* > "$name.sha256" )
+if [[ "$build_server" == true ]]; then
+  ( cd "$out" && sha256sum "$prefix-$version"-linux-"$arch"* "$prefix-$version"-linux-"$deb_arch".deb "$server.tar.gz" > "$name.sha256" )
 else
-  ( cd "$out" && sha256sum "$prefix-$version"-linux-* "$server.tar.gz" > "$name.sha256" )
+  ( cd "$out" && sha256sum "$prefix-$version"-linux-"$arch"* "$prefix-$version"-linux-"$deb_arch".deb > "$name.sha256" )
 fi
 echo "Built:"; ls -la "$out/$prefix-$version"-linux-*
