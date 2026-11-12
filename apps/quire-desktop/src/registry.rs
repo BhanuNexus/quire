@@ -353,8 +353,9 @@ pub(crate) fn open_surface(path: &NotePath) -> Option<Box<dyn crate::surfaces::S
         "canvas" => Some(Box::new(crate::canvas_ui::CanvasSurface::new(path))),
         "pdf" => Some(Box::new(crate::pdf_ui::PdfSurface::new(path))),
         "svg" => Some(Box::new(crate::canvas_ui::SketchSurface::new(path))),
-        // ---- 0.10 people: Excalidraw drawings (`.excalidraw.md` opens as a note with its picture)
-        "excalidraw" => Some(Box::new(crate::drawing_ui::DrawingSurface::new(path))),
+        // ---- 0.13: Excalidraw drawings open in the drawing editor (`.excalidraw.md` notes
+        // too, through `drawing_edit::open`)
+        "excalidraw" => Some(Box::new(crate::drawing_edit::DrawingEditor::new(path))),
         // ---- 0.11 security: a locked folder's file opens to its lock screen
         "qenc" => Some(Box::new(crate::lock_ui::LockedSurface::new(path))),
         _ => None,

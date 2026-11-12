@@ -28,10 +28,12 @@ pub(crate) fn uri(ctx: &Context, ws: &Workspace, target: &str) -> Option<String>
     match ws.attachment_source(target)? {
         AttachmentSource::File(p) => Some(format!("file://{}", p.display())),
         AttachmentSource::Locked(p) => {
-            let uri = format!("{PREFIX}{}", p.as_str());
+            // 0.13: a drawing is drawn to a PNG in memory.
+            let drawing = quire_canvas::excalidraw::is_drawing(p.as_str());
+            let uri = format!("{PREFIX}{}{}", p.as_str(), if drawing { ".png" } else { "" });
             let known = ctx.data(|d| d.get_temp::<Vec<String>>(key()).is_some_and(|v| v.contains(&uri)));
             if !known {
-                let bytes = ws.read_locked_attachment(&p)?;
+                let bytes = if drawing { crate::drawing_ui::locked_png(ws, &p)? } else { ws.read_locked_attachment(&p)? };
                 ctx.include_bytes(uri.clone(), bytes);
                 ctx.data_mut(|d| d.get_temp_mut_or_default::<Vec<String>>(key()).push(uri.clone()));
             }

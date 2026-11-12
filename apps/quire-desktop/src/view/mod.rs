@@ -1504,6 +1504,7 @@ impl FastEditor {
         let restore_offset = restore_line.map(|l| view.heights.top((l.max(0.0) as usize).min(view.heights.len().saturating_sub(1))));
         let total = view.heights.total() + TOP_MARGIN + BOTTOM_MARGIN;
         let mut view_action: Option<ViewAction> = None;
+        let mut open_drawing: Option<quire_app::vault::NotePath> = None;
         // Clicks on feature decorations (handled after drawing).
         let mut decor_clicks: Vec<quire_app::decor::DecorationEvent> = Vec::new();
         let mut clicked_suggestion: Option<(Suggestions, usize)> = None;
@@ -2434,6 +2435,19 @@ impl FastEditor {
                 {
                     let r = Rect::from_min_size(Pos2::new(x0, top + h + 4.0), size);
                     egui::Image::new(uri).corner_radius(4.0).paint_at(ui, r);
+                    // 0.13: a drawing opens in the drawing editor with a click.
+                    if let Some(target) = quire_app::attach::image_embed(&doc.buffer().line(line))
+                        && let Some(p) = crate::drawing_edit::embed_target(ws, target)
+                    {
+                        new_view_rects.push(r);
+                        let resp = ui
+                            .interact(r, Id::unique(("quire-drawing-embed", doc_id.0, line)), Sense::click())
+                            .on_hover_cursor(CursorIcon::PointingHand)
+                            .on_hover_text("Click to edit the drawing");
+                        if resp.clicked() {
+                            open_drawing = Some(p);
+                        }
+                    }
                     h += size.y + 10.0;
                 }
 
@@ -2656,6 +2670,9 @@ impl FastEditor {
         {
             self.request_focus = true;
             ctx.request_repaint();
+        }
+        if let Some(p) = open_drawing {
+            ws.request_ui(quire_app::workspace::UiRequest::OpenFile(p));
         }
         match view_action {
             Some(ViewAction::Open(p)) => {
