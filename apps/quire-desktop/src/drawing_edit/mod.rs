@@ -67,12 +67,12 @@ impl Tool {
     pub(crate) const ALL: [(Self, &'static str, &'static str, &'static str); 11] = [
         (Self::Hand, "✋", "Hand (pan)", "H"),
         (Self::Select, "↖", "Select", "V or 1"),
-        (Self::Rectangle, "▭", "Rectangle", "R or 2"),
+        (Self::Rectangle, "□", "Rectangle", "R or 2"),
         (Self::Diamond, "◇", "Diamond", "D or 3"),
         (Self::Ellipse, "◯", "Ellipse", "O or 4"),
         (Self::Arrow, "→", "Arrow", "A or 5"),
-        (Self::Line, "╱", "Line", "L or 6"),
-        (Self::Draw, "✎", "Draw", "P or 7"),
+        (Self::Line, "—", "Line", "L or 6"),
+        (Self::Draw, "✏", "Draw", "P or 7"),
         (Self::Text, "A", "Text", "T or 8"),
         (Self::Image, "🖼", "Picture from the vault", "9"),
         (Self::Eraser, "⌫", "Eraser", "E or 0"),
@@ -210,8 +210,8 @@ pub(crate) struct DrawingEditor {
     images: HashMap<String, Option<TextureHandle>>,
     panel: bool,
     picker: Option<String>,
-    /// The link being typed in the panel: (element, text).
-    link_buf: Option<(String, String)>,
+    /// The link being typed in the panel: (element, its link then, text).
+    link_buf: Option<(String, String, String)>,
     vault: Option<Vault>,
     ctx: Option<egui::Context>,
     locked_folder: bool,
@@ -872,10 +872,10 @@ impl DrawingEditor {
                 }
             }
             ui.separator();
-            if ui.add_enabled(self.hist.can_undo(), egui::Button::new("↶")).on_hover_text("Undo — Ctrl+Z").clicked() {
+            if ui.add_enabled(self.hist.can_undo(), egui::Button::new("⟲")).on_hover_text("Undo — Ctrl+Z").clicked() {
                 self.undo(false);
             }
-            if ui.add_enabled(self.hist.can_redo(), egui::Button::new("↷")).on_hover_text("Redo — Ctrl+Shift+Z").clicked() {
+            if ui.add_enabled(self.hist.can_redo(), egui::Button::new("⟳")).on_hover_text("Redo — Ctrl+Shift+Z").clicked() {
                 self.undo(true);
             }
             ui.separator();
@@ -898,7 +898,7 @@ impl DrawingEditor {
                 }))
                 .collect::<Vec<_>>()
                 .join("\n");
-            ui.label(RichText::new("⌨").color(pal.muted)).on_hover_text(keys);
+            ui.label(RichText::new("Keys").color(pal.muted)).on_hover_text(keys);
             if self.d.as_ref().is_some_and(Drawing::is_note)
                 && ui.button("Markdown").on_hover_text("Open the drawing note as Markdown").clicked()
             {
@@ -993,7 +993,7 @@ impl DrawingEditor {
                 });
                 label(ui, "Fill");
                 let fs = get_s("fillStyle", &self.style.fill_style);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     for (v, t) in [("hachure", "Hachure"), ("cross-hatch", "Cross"), ("solid", "Solid")] {
                         if ui.selectable_label(fs == v, t).clicked() {
                             set = Some(("fillStyle", Json::str(v)));
@@ -1004,7 +1004,7 @@ impl DrawingEditor {
             if !kinds.iter().all(|k| k == "text" || k == "image") || first.is_none() {
                 label(ui, "Stroke width");
                 let sw = get_n("strokeWidth", self.style.stroke_width);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     for (v, t) in [(1.0, "Thin"), (2.0, "Bold"), (4.0, "Extra bold")] {
                         if ui.selectable_label((sw - v).abs() < 0.01, t).clicked() {
                             set = Some(("strokeWidth", Json::num(v)));
@@ -1013,7 +1013,7 @@ impl DrawingEditor {
                 });
                 label(ui, "Stroke style");
                 let ss = get_s("strokeStyle", &self.style.stroke_style);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     for (v, t) in [("solid", "Solid"), ("dashed", "Dashed"), ("dotted", "Dotted")] {
                         if ui.selectable_label(ss == v, t).clicked() {
                             set = Some(("strokeStyle", Json::str(v)));
@@ -1022,7 +1022,7 @@ impl DrawingEditor {
                 });
                 label(ui, "Sloppiness (kept for Excalidraw; drawn clean here)");
                 let ro = get_n("roughness", self.style.roughness);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     for (v, t) in [(0.0, "Architect"), (1.0, "Artist"), (2.0, "Cartoonist")] {
                         if ui.selectable_label((ro - v).abs() < 0.01, t).clicked() {
                             set = Some(("roughness", Json::num(v)));
@@ -1033,7 +1033,7 @@ impl DrawingEditor {
             if has(&["rectangle", "diamond", "arrow", "line"]) {
                 label(ui, "Edges");
                 let round = first.as_ref().map_or(self.style.rounded, |e| e.get("roundness").is_some_and(|r| !r.is_null()));
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if ui.selectable_label(!round, "Sharp").clicked() {
                         self.style.rounded = false;
                         set = Some(("roundness", Json::Null));
@@ -1049,9 +1049,9 @@ impl DrawingEditor {
                 label(ui, "Arrowheads");
                 for (key, cur) in [("startArrowhead", self.style.start_arrow.clone()), ("endArrowhead", self.style.end_arrow.clone())] {
                     let cur = first.as_ref().map_or(cur, |e| e.str(key).map(str::to_string));
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label(RichText::new(if key == "startArrowhead" { "Start" } else { "End" }).size(11.0));
-                        for (v, t) in [(None, "—"), (Some("arrow"), "→"), (Some("triangle"), "▶"), (Some("bar"), "⊣"), (Some("dot"), "●")]
+                        for (v, t) in [(None, "—"), (Some("arrow"), "→"), (Some("triangle"), "▶"), (Some("bar"), "|"), (Some("dot"), "●")]
                         {
                             if ui.selectable_label(cur.as_deref() == v, t).clicked() {
                                 set = Some((key, v.map_or(Json::Null, Json::str)));
@@ -1065,7 +1065,7 @@ impl DrawingEditor {
                 let tfirst = first.as_ref().filter(|e| e.str("type") == Some("text"));
                 label(ui, "Font");
                 let fam = tfirst.as_ref().and_then(|e| e.num("fontFamily")).unwrap_or(self.style.font_family as f64) as i64;
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     for (v, t) in [(5, "Hand-drawn"), (6, "Normal"), (8, "Code")] {
                         if ui
                             .selectable_label(fam == v || (v == 5 && fam == 1) || (v == 6 && fam == 2) || (v == 8 && fam == 3), t)
@@ -1077,7 +1077,7 @@ impl DrawingEditor {
                 });
                 label(ui, "Font size");
                 let fsz = tfirst.as_ref().and_then(|e| e.num("fontSize")).unwrap_or(self.style.font_size);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     for (v, t) in [(16.0, "S"), (20.0, "M"), (28.0, "L"), (36.0, "XL")] {
                         if ui.selectable_label((fsz - v).abs() < 0.01, t).clicked() {
                             set = Some(("fontSize", Json::num(v)));
@@ -1087,7 +1087,7 @@ impl DrawingEditor {
                 label(ui, "Text align");
                 let ta =
                     tfirst.as_ref().and_then(|e| e.str("textAlign").map(str::to_string)).unwrap_or_else(|| self.style.text_align.clone());
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     for (v, t) in [("left", "Left"), ("center", "Center"), ("right", "Right")] {
                         if ui.selectable_label(ta == v, t).clicked() {
                             set = Some(("textAlign", Json::str(v)));
@@ -1107,12 +1107,12 @@ impl DrawingEditor {
                 return;
             }
             label(ui, "Layers");
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 for (z, t, tip) in [
-                    (Z::Back, "⤓", "Send to back"),
-                    (Z::Backward, "↓", "Send backward — Ctrl+["),
-                    (Z::Forward, "↑", "Bring forward — Ctrl+]"),
-                    (Z::Front, "⤒", "Bring to front"),
+                    (Z::Back, "To back", "Send to back"),
+                    (Z::Backward, "Back", "Send backward — Ctrl+["),
+                    (Z::Forward, "Forward", "Bring forward — Ctrl+]"),
+                    (Z::Front, "To front", "Bring to front"),
                 ] {
                     if ui.button(t).on_hover_text(tip).clicked() {
                         self.on_sel(|d, s, cx| d.reorder(s, z, cx));
@@ -1123,12 +1123,12 @@ impl DrawingEditor {
                 label(ui, "Align");
                 ui.horizontal_wrapped(|ui| {
                     for (a, t, tip) in [
-                        (Align::Left, "⇤", "Left — Ctrl+Shift+←"),
-                        (Align::CenterX, "↔", "Centre"),
-                        (Align::Right, "⇥", "Right — Ctrl+Shift+→"),
-                        (Align::Top, "⤒", "Top — Ctrl+Shift+↑"),
-                        (Align::CenterY, "↕", "Middle"),
-                        (Align::Bottom, "⤓", "Bottom — Ctrl+Shift+↓"),
+                        (Align::Left, "Left", "Ctrl+Shift+←"),
+                        (Align::CenterX, "Centre", "Centre horizontally"),
+                        (Align::Right, "Right", "Ctrl+Shift+→"),
+                        (Align::Top, "Top", "Ctrl+Shift+↑"),
+                        (Align::CenterY, "Middle", "Centre vertically"),
+                        (Align::Bottom, "Bottom", "Ctrl+Shift+↓"),
                     ] {
                         if ui.button(t).on_hover_text(tip).clicked() {
                             self.on_sel(|d, s, cx| d.align(s, a, cx));
@@ -1162,10 +1162,10 @@ impl DrawingEditor {
                 label(ui, "Link ([[Note]] or a web address)");
                 let cur = first.as_ref().and_then(|e| e.str("link")).unwrap_or_default().to_string();
                 let id = self.sel[0].clone();
-                if self.link_buf.as_ref().is_none_or(|(i, _)| *i != id) {
-                    self.link_buf = Some((id, cur.clone()));
+                if self.link_buf.as_ref().is_none_or(|(i, base, _)| *i != id || *base != cur) {
+                    self.link_buf = Some((id, cur.clone(), cur.clone()));
                 }
-                let Some((_, buf)) = self.link_buf.as_mut() else { return };
+                let Some((_, _, buf)) = self.link_buf.as_mut() else { return };
                 let r = ui.add(egui::TextEdit::singleline(buf).hint_text("[[Note]]").desired_width(f32::INFINITY));
                 if r.lost_focus() {
                     let v = buf.trim().to_string();

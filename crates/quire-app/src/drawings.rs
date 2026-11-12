@@ -175,9 +175,9 @@ pub fn copy_path(ws: &Workspace, path: &NotePath, what: &str) -> Option<NotePath
 
 /// Make an empty drawing note. Returns its path.
 ///
-/// The Obsidian plugin's form, so Obsidian opens it too, named "Drawing
-/// <date> <time>" like the plugin's, in the active note's folder, or the
-/// vault's top folder.
+/// The Obsidian plugin's form, so Obsidian opens it too, named
+/// `Drawing YYYY-MM-DD HH.MM.SS` like the plugin's, in the active note's
+/// folder, or the vault's top folder.
 pub fn new_drawing(ws: &Workspace) -> Result<NotePath, String> {
     let vault = ws.vault().ok_or("No vault is open")?;
     let folder = ws.active_doc().and_then(|d| d.path.as_ref()).map(|p| p.folder().to_string()).unwrap_or_default();
