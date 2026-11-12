@@ -32,8 +32,9 @@ pub(crate) const COMMANDS: &[CliCommand] = &[
     CliCommand {
         name: "publish",
         rank: 13,
-        usage: "  quire-cli publish   <vault> <out> [--all] [--title T]
-                      publish notes marked `publish: true` (or --all) as a static website",
+        usage: "  quire-cli publish   <vault> <out> [--all] [--title T] [--typed-links auto|on|off]
+                      publish notes marked `publish: true` (or --all) as a static website; pages get a
+                      breadcrumbs trail and typed links when the vault uses hierarchy fields (auto)",
         run: publish,
     },
     CliCommand {
@@ -134,7 +135,11 @@ fn publish(args: &[String]) -> Result<(), String> {
             .unwrap_or_else(|| "Notes".into())
     });
     let which = if args.iter().any(|a| a == "--all") { quire_app::publish::Selection::All } else { quire_app::publish::Selection::Marked };
-    let r = quire_app::publish::publish(&v, &svc.read(), out, &title, which)?;
+    let typed = match args.iter().position(|a| a == "--typed-links").and_then(|i| args.get(i + 1)) {
+        None => quire_app::publish::TypedLinks::Auto,
+        Some(v) => quire_app::publish::TypedLinks::parse(v).ok_or("--typed-links takes auto, on or off")?,
+    };
+    let r = quire_app::publish::publish_with(&v, &svc.read(), out, &title, which, typed)?;
     println!("published {} pages and {} files to {}", r.pages, r.files, out.display());
     if r.private_links > 0 {
         println!("{} links point at notes that aren't published; they're plain text on the site", r.private_links);

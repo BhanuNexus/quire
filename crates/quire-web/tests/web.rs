@@ -982,3 +982,102 @@ fn assert_inert_markup(what: &str, html: &str, app: bool) {
     }
     assert_eq!(scripts, usize::from(app), "{what}: scripts on the page");
 }
+
+/// 0.13: typed links, trails, the hierarchy page and derived edges (tag, folder and list
+/// notes) never name a note the reader can't see. Random vaults: some notes sit in folders hidden
+/// from the web (`[web] hide`, and `Private/` from the command line), and typed links, tag notes,
+/// folder notes and list notes cross the border both ways.
+#[test]
+fn typed_links_never_leak_hidden_notes() {
+    struct Rng(u64);
+    impl Rng {
+        fn below(&mut self, n: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            usize::try_from(self.0 % n as u64).unwrap()
+        }
+    }
+    let stem = |n: usize| format!("note-zz{n}zz");
+    let title = |n: usize| format!("Title zz{n}zz");
+    let mut shown = 0;
+    for seed in 1..=6u64 {
+        let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+        let n = 12;
+        let keys = ["up", "down", "same", "next", "prev", "supports"];
+        let mut files: Vec<(String, String)> = Vec::new();
+        let mut hidden = Vec::new();
+        for i in 0..n {
+            let folder = ["", "Open/", "Open/Deep/", "Private/", "Journal/"][rng.below(5)];
+            hidden.push(folder.starts_with("Private") || folder.starts_with("Journal"));
+            let mut fm = String::new();
+            for _ in 0..rng.below(4) {
+                let _ = writeln!(fm, "{}: \"[[{}]]\"", keys[rng.below(keys.len())], stem(rng.below(n)));
+            }
+            match rng.below(6) {
+                0 => fm.push_str("BC-tag-note-tag: shared\nBC-tag-note-field: down\n"),
+                1 => fm.push_str("BC-folder-note-field: down\nBC-folder-note-recurse: true\n"),
+                2 => fm.push_str("BC-list-note-field: down\n"),
+                _ => {}
+            }
+            let mut body = format!("# {}\n\n", title(i));
+            if rng.below(2) == 0 {
+                body.push_str("#shared\n");
+            }
+            if fm.contains("BC-list-note-field") {
+                for _ in 0..3 {
+                    let _ = writeln!(body, "- [[{}|item]]", stem(rng.below(n)));
+                }
+            }
+            files.push((format!("{folder}{}.md", stem(i)), format!("---\n{fm}---\n{body}")));
+        }
+        let mut all: Vec<(&str, &str)> = files.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
+        all.push((".quire/shared/vault.toml", "format = 1\n[web]\nhide = [\"Journal\"]\n"));
+        let env = start_with(&all, false, |_| {});
+        let mut b = Browser::signed_in(&env);
+        let mut pages = vec!["/".to_string(), "/hierarchy".to_string()];
+        pages.extend(files.iter().enumerate().filter(|(i, _)| !hidden[*i]).map(|(_, (p, _))| format!("/n/{}", pct(p).replace("%2F", "/"))));
+        for page in &pages {
+            let r = b.get(page);
+            assert_eq!(r.status, 200, "{page}");
+            shown += r.body.matches("Links by type").count() + r.body.matches("class=\"trail\"").count();
+            for (i, h) in hidden.iter().enumerate() {
+                if *h {
+                    assert!(
+                        !r.body.contains(&stem(i)) && !r.body.contains(&format!("zz{i}zz")),
+                        "seed {seed}: {page} names the hidden note {i}:\n{}",
+                        r.body
+                    );
+                }
+            }
+        }
+    }
+    assert!(shown > 20, "the test must actually show typed links ({shown})");
+}
+
+/// 0.13: the note page of the web app shows the trail and "Links by type", escaped; the
+/// hierarchy page lists the tree; a hidden parent leaves no trace.
+#[test]
+fn note_pages_show_the_trail_and_typed_links() {
+    let files: &[(&str, &str)] = &[
+        ("Maths.md", "# Maths\n"),
+        ("Calculus.md", "---\nup: \"[[Maths]]\"\ntitle: 'Calc <b>x</b> & \"q\"'\n---\n# Calculus\n"),
+        ("Limits.md", "---\nup: \"[[Calculus]]\"\nsupports: \"[[Maths]]\"\n---\n# Limits\n"),
+        ("Private/Secret.md", "---\ndown: \"[[Maths]]\"\n---\n# Secret parent\n"),
+    ];
+    let env = start_with(files, false, |_| {});
+    let mut b = Browser::signed_in(&env);
+    let r = b.get("/n/Limits.md");
+    assert_eq!(r.status, 200);
+    assert!(r.body.contains("class=\"trail\"") && r.body.contains("Maths") && r.body.contains("Links by type"), "{}", r.body);
+    assert!(r.body.contains("Calc &lt;b&gt;x&lt;/b&gt; &amp; &quot;q&quot;"), "titles are escaped: {}", r.body);
+    assert!(!r.body.contains("<b>x</b>"), "{}", r.body);
+    let m = b.get("/n/Maths.md");
+    assert!(!m.body.contains("Secret"), "a hidden parent leaves no trace: {}", m.body);
+    let h = b.get("/hierarchy");
+    assert!(h.body.contains("Maths") && h.body.contains("Limits") && !h.body.contains("Secret"), "{}", h.body);
+    assert!(b.get("/").body.contains("href=\"/hierarchy\""));
+    // Signed out, none of it.
+    let mut out = Browser::new(&env);
+    assert_eq!(out.get("/hierarchy").status, 303);
+}

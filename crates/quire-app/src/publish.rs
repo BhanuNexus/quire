@@ -31,6 +31,30 @@ pub enum Selection {
     All,
 }
 
+/// Whether pages get the breadcrumbs trail and "Links by type" (0.13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TypedLinks {
+    /// As the vault's `[links] trail` says: on when some note has a
+    /// hierarchy field (the default there too).
+    #[default]
+    Auto,
+    On,
+    Off,
+}
+
+impl TypedLinks {
+    /// `auto`, `on` or `off` (also `true`/`false`).
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "on" | "true" | "yes" => Some(Self::On),
+            "off" | "false" | "no" => Some(Self::Off),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PublishReport {
     pub pages: usize,
@@ -426,6 +450,10 @@ aside ul{padding-left:1.2rem}aside li{margin:.3rem 0}aside .ctx{display:block;fo
 .board{display:flex;gap:.75rem;overflow-x:auto}.board section{flex:1;min-width:11rem;background:var(--code);border-radius:8px;padding:.5rem}
 .board h4{margin:.2rem .3rem .5rem;font-size:.9rem}.card{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:.45rem .6rem;margin-bottom:.4rem}
 .card small{display:block;color:var(--muted)}.dates{list-style:none;padding:0}.dates time{color:var(--muted);font-variant-numeric:tabular-nums;margin-right:.6rem}
+.trail{margin:0 0 1rem;font-size:.9em}.trail ol{list-style:none;display:flex;flex-wrap:wrap;gap:.3rem;margin:0 0 .2rem;padding:0}
+.trail li+li::before{content:"\203a";margin-right:.3rem;color:var(--muted)}.trail [aria-current]{color:var(--muted)}
+.typed h2{font-size:1rem;margin:0 0 .5rem}.typed dt{font-weight:600;margin-top:.6rem}.typed dd{margin:0}.typed ul{margin:.2rem 0}
+.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 footer{max-width:46rem;margin:3rem auto 2rem;padding:0 1.25rem;color:var(--muted);font-size:.85em}
 "#;
 
@@ -454,6 +482,25 @@ fn page(site: &str, title: &str, body: &str) -> String {
 /// Write the site for `vault` into `out` (created if needed; files Quire
 /// writes there are replaced, others are left alone).
 pub fn publish(vault: &Vault, ix: &Index, out: &Path, site_title: &str, which: Selection) -> Result<PublishReport, String> {
+    publish_with(vault, ix, out, site_title, which, TypedLinks::Auto)
+}
+
+/// [`publish`], saying whether pages show typed links. The trail and the
+/// typed links name only published notes: a note that isn't published is
+/// left out of both, and a trail stops below it.
+pub fn publish_with(
+    vault: &Vault,
+    ix: &Index,
+    out: &Path,
+    site_title: &str,
+    which: Selection,
+    typed: TypedLinks,
+) -> Result<PublishReport, String> {
+    let show_typed = match typed {
+        TypedLinks::On => true,
+        TypedLinks::Off => false,
+        TypedLinks::Auto => crate::links_web::auto_on(ix),
+    };
     let chosen: Vec<&quire_index::NoteRecord> = ix
         .records()
         .filter(|r| !excluded_folder(&r.path))
@@ -494,6 +541,13 @@ pub fn publish(vault: &Vault, ix: &Index, out: &Path, site_title: &str, which: S
         report.private_links += rendered.private_links;
         files.extend(rendered.files);
         let mut body = rendered.html;
+        let typed_html = if show_typed {
+            let trail = crate::links_web::trail_html(ix, &rec.path, &note_url);
+            body = format!("{trail}{body}");
+            crate::links_web::typed_html(ix, &rec.path, &note_url)
+        } else {
+            String::new()
+        };
         for t in &rec.tags {
             tags.entry(t.to_lowercase()).or_default().push(rec);
         }
@@ -515,6 +569,9 @@ pub fn publish(vault: &Vault, ix: &Index, out: &Path, site_title: &str, which: S
             .collect();
         if !back.is_empty() {
             let _ = writeln!(body, "<aside><strong>Linked from</strong><ul>{}</ul></aside>", back.concat());
+        }
+        if !typed_html.is_empty() {
+            let _ = writeln!(body, "<aside>{typed_html}</aside>");
         }
         write(&url[&rec.path], &page(site_title, &rec.title, &body))?;
         search.push(format!(

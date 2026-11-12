@@ -167,6 +167,19 @@ h2 { font-size: 1.05rem; margin: 2rem 0 .6rem; }
 .callout.folded .callout-content { display: none; }
 .meta { max-width: 46rem; margin: 3rem auto 0; padding-top: 1rem; border-top: 1px solid var(--line); font-size: .95rem; }
 .meta h2 { margin-top: 1rem; }
+.trail { margin: 0 0 1rem; font-size: .88rem; max-width: 46rem; margin-inline: auto; }
+.trail ol { list-style: none; display: flex; flex-wrap: wrap; gap: .3rem; margin: 0 0 .2rem; padding: 0; overflow-wrap: anywhere; }
+.trail li + li::before { content: "\203a"; margin-right: .3rem; color: var(--muted); }
+.trail a { color: var(--muted); }
+.trail [aria-current] { color: var(--text, inherit); }
+.typed dl { margin: 0; }
+.typed dt { font-weight: 600; margin-top: .7rem; }
+.typed dd { margin: 0; }
+.typed ul { margin: .2rem 0; padding-left: 1.2rem; }
+.tree-h, .tree-h ul { list-style: none; padding-left: 1.2rem; }
+.tree-h { padding-left: 0; }
+.tree-h li { margin: .25rem 0; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .backlinks { list-style: none; padding: 0; }
 .backlinks li { margin: .5rem 0; }
 .backlinks .ctx { display: block; color: var(--muted); font-size: .9em; }
