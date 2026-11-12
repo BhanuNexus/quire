@@ -4,6 +4,18 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Added
+
+#### Packaging
+- **ARM64 Linux:** `.deb` (`arm64`), AppImage and `.tar.gz` (`aarch64`) for both editions, built natively on GitHub's arm64 runners. The full edition includes the on-device AI engine, as on x86_64; Quire Lite downloads the aarch64 engine when on-device AI is turned on. The sync server stays x86_64 only.
+- **Flatpak (x86_64 and ARM64):** `Quire-<version>-linux-<arch>.flatpak`, the full edition, built from source for each release; `flatpak install --user` it. Manifest, permissions and what a Flathub submission needs: [packaging/flatpak/README.md](packaging/flatpak/README.md). Not on Flathub yet.
+- **Quire is listed under *Open with* for `.md` files** by the Linux packages and the Flatpak (`text/markdown`), and by the Windows installer (a component, *Offer Quire for .md files*, on by default; the portable zip changes nothing). It never makes itself the default. On macOS Quire is listed in Finder's *Open With*, but opening a file that way doesn't work yet (the app doesn't get Finder's open-file event); `open -a Quire --args notes.md`, `quire notes.md` and a drop on the window do. Each file opens in its own Quire window. Only `.md` files, not `.markdown`. Details: [docs/design/0.13-pack.md](docs/design/0.13-pack.md).
+- The AppStream file has four screenshots, the release's date and notes (from this changelog), and lists `text/markdown`.
+
+### Changed
+- The Linux desktop entry and AppStream id is `io.github.bhanunexus.Quire` (was `io.github.BhanuNexus.Quire`, which AppStream validation rejects), and the window sets it as its application id, so Wayland and X11 desktops match it to the entry.
+- The release's CI also tests on ARM64 Linux (`ubuntu-24.04-arm`) and checks the packaging files (`packaging` job).
+
 ## [0.12.0] - 2026-11-11
 
 Quire 0.12: switching tools (import from more apps and undo it, tidy notes, a Home page), typed links and a hierarchy you can browse (Dataview and Breadcrumbs syntax), sync straight to S3-compatible storage or WebDAV, an import wizard with five more sources, a Markdown tidier and a Home tab, locked folders' notes and pictures in every view while unlocked, and a faster start.

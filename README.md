@@ -42,12 +42,13 @@ They're the same app working on the same files and settings. Installing one repl
 
 - **Windows 10/11:** `Quire-<version>-windows-x64-setup.exe` (no admin needed), or the portable zip.
 - **macOS 11+:** `Quire-<version>-macos-universal.dmg` (Apple Silicon and Intel).
-- **Linux x86_64:** pick one:
-  - `Quire-<version>-linux-amd64.deb` for Debian and Ubuntu: `sudo apt install ./Quire-<version>-linux-amd64.deb`
-  - `Quire-<version>-linux-x86_64.AppImage`: make it executable and run it (needs FUSE 2, or set `APPIMAGE_EXTRACT_AND_RUN=1`)
-  - `Quire-<version>-linux-x86_64.tar.gz`: extract it and run `./install.sh` (no root needed)
-- **Quire Lite:** the same files with `Quire-Lite-` in front (on Debian and Ubuntu the package is `quire-lite`, which replaces `quire` and the other way round).
-- **Sync server (optional, Linux x86_64):** `quire-sync-server-<version>-linux-x86_64.tar.gz`, to [run your own Quire Sync](docs/self-hosting.md).
+- **Linux (x86_64 and ARM64):** pick one. On an ARM64 machine (Raspberry Pi 5, Apple Silicon running Linux, Ampere and Graviton servers) take the `arm64` and `aarch64` files:
+  - `Quire-<version>-linux-amd64.deb` / `-linux-arm64.deb` for Debian and Ubuntu: `sudo apt install ./Quire-<version>-linux-amd64.deb`
+  - `Quire-<version>-linux-x86_64.AppImage` / `-linux-aarch64.AppImage`: make it executable and run it (needs FUSE 2, or set `APPIMAGE_EXTRACT_AND_RUN=1`)
+  - `Quire-<version>-linux-x86_64.tar.gz` / `-linux-aarch64.tar.gz`: extract it and run `./install.sh` (no root needed)
+  - `Quire-<version>-linux-x86_64.flatpak` / `-linux-aarch64.flatpak`: `flatpak install --user Quire-<version>-linux-x86_64.flatpak` (the full edition; see [Flatpak](#flatpak))
+- **Quire Lite:** the same files (not the Flatpak) with `Quire-Lite-` in front (on Debian and Ubuntu the package is `quire-lite`, which replaces `quire` and the other way round).
+- **Sync server (optional, Linux x86_64 only):** `quire-sync-server-<version>-linux-x86_64.tar.gz`, to [run your own Quire Sync](docs/self-hosting.md).
 
 Until code signing is set up (planned for 1.0), your system will warn you the first time:
 
@@ -62,6 +63,25 @@ gh attestation verify Quire-<version>-linux-x86_64.tar.gz --repo BhanuNexus/quir
 ```
 
 [RELEASING.md](RELEASING.md) explains how releases are built, attested and signed.
+
+### Flatpak
+
+The Flatpak is built from source for each release, for x86_64 and ARM64, and is the full edition. It isn't on Flathub yet; install the file from the release. Updates come from the next release's file, not from Flatpak.
+
+- Run it with `flatpak run io.github.bhanunexus.Quire`, or from the app menu. It needs the freedesktop runtime 26.08, which Flatpak fetches from Flathub when you install the bundle.
+- It can see your home folder, because your notes are in folders you choose and Quire watches them for changes made by sync tools. To use a folder elsewhere: `flatpak override --user --filesystem=/path/to/folder io.github.bhanunexus.Quire`.
+- Its settings are inside the sandbox (`~/.var/app/io.github.bhanunexus.Quire/`), not shared with a Quire installed another way. Notes in your folders are the same files.
+- `quire-cli` is in it too: `flatpak run --command=quire-cli io.github.bhanunexus.Quire search ~/Notes word`. For an AI app's MCP setup, the command is `flatpak` and the arguments are `run --command=quire-cli io.github.bhanunexus.Quire mcp /path/to/vault`.
+- Building it yourself, and what a Flathub submission needs: [packaging/flatpak/README.md](packaging/flatpak/README.md).
+
+### Opening `.md` files from your file manager
+
+Quire opens a Markdown file outside any vault on its own (`quire notes.md`; a file inside a vault opens in it). The Linux packages, the Flatpak and the Windows installer also list Quire under *Open with* for `.md` files. None of them makes Quire the default for `.md`: you choose that in your system (right-click → *Open With* → *Always use this app*, or Settings → Default apps on Windows).
+
+- **Linux:** the desktop entry has `MimeType=text/markdown;text/x-markdown;` and `Exec=quire %f`. If you installed with `install.sh`, it is installed for you.
+- **Windows:** the installer has a component, *Offer Quire for .md files* (on by default). The portable zip does nothing; use *Open with → Choose another app*.
+- **macOS:** Finder's *Open With* lists Quire for `.md` files, but **opening a file that way doesn't work yet**: the app doesn't receive Finder's open-file event (see [docs/design/0.13-pack.md](docs/design/0.13-pack.md#3-md-file-associations)). Use `open -a Quire --args notes.md`, `quire notes.md` from a terminal, or drop the file on Quire's window.
+- Each file you open starts its own Quire window: there is no single running copy to hand it to yet. Only `.md` files are offered; Quire doesn't open `.markdown` files.
 
 ## Build and run
 
