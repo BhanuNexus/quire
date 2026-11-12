@@ -123,7 +123,7 @@ N4KAkARALgngDgUwgLgAQQQDwMYEMA2AlgCYBOuA7hADTgQBuCpAzoQPYB2KqATLZMzYBXUtiRoIACyh
 * **`# Excalidraw Data`** starts the plugin's part. Before it, the note's
   own text (front matter, a warning line, anything written there).
 * **`## Text Elements`**: each text element as `<rawText> ^<id>` and a
-  blank line. The plugin makes text ids 8 characters long, so the `^id`
+  blank line. The plugin makes text ids 8 letters and digits long, so the `^id`
   is a block reference. This section is what Obsidian (and Quire) index:
   `[[links]]` here are links of the note, with backlinks.
 * **`## Element Links`**: `<id>: <link>` and a blank line, for each
