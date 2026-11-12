@@ -84,5 +84,17 @@ pin "not-a-hash $size $bin_sha\n";                      expect_fail malformed-pi
 pin "";                                                 expect_fail empty-pin "isn't"
 rm -f "$pins/engine.sha256.$target";                    expect_fail missing-pin "no engine pin"
 
+# Each release target reads its own pin (0.13 added aarch64 Linux next to x86_64):
+# the engine built for one is never checked against, or accepted by, the other's.
+x86="x86_64-unknown-linux-gnu"; arm="aarch64-unknown-linux-gnu"
+printf '%s %s %s\n' "$bin_sha" "$size" "$bin_sha" > "$pins/engine.sha256.$x86"
+printf '%s %s %s\n' "$gz_sha" "$size" "$bin_sha" > "$pins/engine.sha256.$arm"
+if "$script" "$gz" "$arm" "$tmp/out/arm/quire-ai-engine" > /dev/null 2> "$tmp/err" \
+  && ! "$script" "$gz" "$x86" "$tmp/out/x86/quire-ai-engine" > /dev/null 2>&1; then
+  pass per-target-pins
+else
+  fail "per-target-pins: $(cat "$tmp/err")"
+fi
+
 if (( fails )); then echo "$fails failed" >&2; exit 1; fi
 echo "all unpack-engine tests passed"

@@ -7,3 +7,8 @@ dist/
 # Engine pins written by the release workflow and the packaging scripts.
 crates/quire-ai/engine.sha256.*
 crates/quire-ai/engine.bundled.sha256
+# Flatpak builds: the offline crate list is generated (packaging/flatpak/update-cargo-sources.sh).
+packaging/flatpak/cargo-sources.json
+/.flatpak-builder/
+/flatpak_app/
+/repo/

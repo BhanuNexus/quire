@@ -5,6 +5,9 @@
 # this one on it. Run this by hand on a branch for a dry run: same builds,
 # uploaded as workflow artifacts only (no attestations, no release).
 #
+# Linux builds natively for x86_64 and ARM64 (GitHub's arm64 runners; nothing
+# is cross-compiled), and a Flatpak is built from source for each.
+#
 # Every published file gets:
 #   * a build-provenance attestation (`gh attestation verify <file> --repo BhanuNexus/quire`)
 #   * an entry in SHA256SUMS
@@ -101,6 +104,8 @@ jobs:
       matrix:
         include:
           - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, features: "" }
+          # Native on GitHub's arm64 runner; 22.04 like x86_64, so glibc 2.35+.
+          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, features: "" }
           - { os: macos-15, target: aarch64-apple-darwin, features: "--features metal" }
           - { os: macos-15, target: x86_64-apple-darwin, features: "" }
           - { os: windows-latest, target: x86_64-pc-windows-msvc, features: "" }
@@ -158,17 +163,24 @@ jobs:
 
   linux:
     needs: [check, engine]
-    # Oldest supported runner, so the binary runs on older glibc (2.35+).
-    runs-on: ubuntu-22.04
+    # Oldest supported runner, so the binary runs on older glibc (2.35+),
+    # natively for each architecture (the arm64 runner is free for public repositories).
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
       # Every release has both editions: Quire (full) and Quire Lite (no
-      # math, diagrams or PDF export). Built side by side.
+      # math, diagrams or PDF export), for x86_64 and ARM64. Built side by side.
       fail-fast: true
       matrix:
         edition: [full, lite]
+        arch: [x86_64, aarch64]
+        include:
+          - { arch: x86_64, runner: ubuntu-22.04, deb: amd64 }
+          - { arch: aarch64, runner: ubuntu-22.04-arm, deb: arm64 }
     env:
       EDITION: ${{ matrix.edition }}
+      ARCH: ${{ matrix.arch }}
+      DEB_ARCH: ${{ matrix.deb }}
     permissions:
       contents: read
       id-token: write
@@ -185,13 +197,13 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: matrix.edition == 'full'
         with:
-          name: quire-engine-x86_64-unknown-linux-gnu
+          name: quire-engine-${{ matrix.arch }}-unknown-linux-gnu
           path: ${{ runner.temp }}/engine
       - name: Unpack the engine to bundle (full edition)
         if: matrix.edition == 'full'
         run: |
-          engine="$(packaging/unpack-engine.sh "$RUNNER_TEMP/engine/quire-ai-engine-x86_64-unknown-linux-gnu.gz" \
-            x86_64-unknown-linux-gnu "$RUNNER_TEMP/engine/quire-ai-engine")"
+          engine="$(packaging/unpack-engine.sh "$RUNNER_TEMP/engine/quire-ai-engine-$ARCH-unknown-linux-gnu.gz" \
+            "$ARCH-unknown-linux-gnu" "$RUNNER_TEMP/engine/quire-ai-engine")"
           echo "ENGINE_BIN=$engine" >> "$GITHUB_ENV"
       - name: ALSA headers (the full edition records voice notes through cpal)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
@@ -199,35 +211,46 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - name: Build tar.gz, .deb and AppImage
         run: |
-          packaging/linux/fetch-appimagetool.sh "$RUNNER_TEMP/appimage" > "$RUNNER_TEMP/appimage.env"
+          packaging/linux/fetch-appimagetool.sh "$RUNNER_TEMP/appimage" "$ARCH" > "$RUNNER_TEMP/appimage.env"
           . "$RUNNER_TEMP/appimage.env"
           packaging/linux/package.sh
-          test -f dist/Quire-*-linux-x86_64.AppImage
+          test -f dist/Quire-*-linux-"$ARCH".AppImage
       - name: Binary size budget (design 0.9 §2.3)
-        run: packaging/check-size.sh target/x86_64-unknown-linux-gnu/release/quire "$EDITION"
+        run: packaging/check-size.sh "target/$ARCH-unknown-linux-gnu/release/quire" "$EDITION"
       - name: Smoke-test the packages
         run: |
-          sudo apt-get install -y --no-install-recommends ./dist/Quire-*-linux-amd64.deb
+          sudo apt-get install -y --no-install-recommends ./dist/Quire-*-linux-"$DEB_ARCH".deb
           quire --version && quire-cli --version
           # Each edition says which it is.
           if [ "$EDITION" = lite ]; then quire --version | grep -q "(Lite)"; elif quire --version | grep -q Lite; then exit 1; fi
-          APPIMAGE_EXTRACT_AND_RUN=1 ./dist/Quire-*-linux-x86_64.AppImage --version
-          tar -xzf dist/Quire-*-linux-x86_64.tar.gz -C "$RUNNER_TEMP"
-          "$RUNNER_TEMP"/Quire-*-linux-x86_64/quire-cli --version
-          if [ "$EDITION" = full ]; then
+          # The package is for this machine's architecture, and says so.
+          test "$(dpkg --print-architecture)" = "$DEB_ARCH"
+          file -L "$(command -v quire)" | grep -q "$([ "$ARCH" = aarch64 ] && echo aarch64 || echo x86-64)"
+          # The desktop entry lists Markdown files and takes a file argument
+          # (CI's packaging job validates the entry and the AppStream file).
+          grep -q '^MimeType=text/markdown;' /usr/share/applications/io.github.bhanunexus.Quire.desktop
+          grep -q '^Exec=quire %f$' /usr/share/applications/io.github.bhanunexus.Quire.desktop
+          appimage=(dist/Quire-*-linux-"$ARCH".AppImage)
+          APPIMAGE_EXTRACT_AND_RUN=1 "./${appimage[0]}" --version
+          tar -xzf dist/Quire-*-linux-"$ARCH".tar.gz -C "$RUNNER_TEMP"
+          extracted=("$RUNNER_TEMP"/Quire-*-linux-"$ARCH")
+          "${extracted[0]}/quire-cli" --version
+          # The sync server is built on x86_64 only (docs/design/0.13-pack.md).
+          if [ "$EDITION" = full ] && [ "$ARCH" = x86_64 ]; then
             tar -xzf dist/quire-sync-server-*-linux-x86_64.tar.gz -C "$RUNNER_TEMP"
-            "$RUNNER_TEMP"/quire-sync-server-*-linux-x86_64/quire-sync-server --version
+            server=("$RUNNER_TEMP"/quire-sync-server-*-linux-x86_64)
+            "${server[0]}/quire-sync-server" --version
           fi
       - name: The full edition includes the engine, Quire Lite doesn't
         run: |
           # Listings go to files first: `grep -q` closing a pipe early would
           # fail the step under pipefail.
-          dpkg-deb -c dist/Quire-*-linux-amd64.deb > "$RUNNER_TEMP/deb.txt"
-          tar -tzf dist/Quire-*-linux-x86_64.tar.gz > "$RUNNER_TEMP/tar.txt"
-          appimage=(dist/Quire-*-linux-x86_64.AppImage)
+          dpkg-deb -c dist/Quire-*-linux-"$DEB_ARCH".deb > "$RUNNER_TEMP/deb.txt"
+          tar -tzf dist/Quire-*-linux-"$ARCH".tar.gz > "$RUNNER_TEMP/tar.txt"
+          appimage=(dist/Quire-*-linux-"$ARCH".AppImage)
           (cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/${appimage[0]}" --appimage-extract > /dev/null)
           appdir="$RUNNER_TEMP/squashfs-root"
-          tardir="$(echo "$RUNNER_TEMP"/Quire-*-linux-x86_64)"
+          tardir="$(echo "$RUNNER_TEMP"/Quire-*-linux-"$ARCH")"
           if [ "$EDITION" = full ]; then
             grep -q ' \./usr/bin/quire-ai-engine$' "$RUNNER_TEMP/deb.txt"
             grep -q '^Quire-[^/]*/quire-ai-engine$' "$RUNNER_TEMP/tar.txt"
@@ -258,7 +281,7 @@ jobs:
             dist/*.AppImage
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: quire-linux-${{ matrix.edition }}
+          name: quire-linux-${{ matrix.edition }}-${{ matrix.arch }}
           path: |
             dist/*.tar.gz
             dist/*.deb
@@ -332,6 +355,11 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" build.keychain
           rm "$RUNNER_TEMP/cert.p12"
       - run: packaging/macos/package.sh
+      - name: The app lists Markdown (.md) files for "Open With"
+        run: |
+          plutil -p dist/Quire.app/Contents/Info.plist > "$RUNNER_TEMP/plist.txt"
+          grep -q 'CFBundleDocumentTypes' "$RUNNER_TEMP/plist.txt"
+          grep -q 'net.daringfireball.markdown' "$RUNNER_TEMP/plist.txt"
       - name: The full edition includes the engine, Quire Lite doesn't
         run: |
           engine=dist/Quire.app/Contents/MacOS/quire-ai-engine
@@ -434,6 +462,99 @@ jobs:
             dist/*.zip
           if-no-files-found: error
 
+  # The Flatpak is built from source (the Flathub way), for the full edition
+  # only, offline: Cargo.lock becomes a list of crates with checksums first
+  # (packaging/flatpak/update-cargo-sources.sh). No build cache is restored.
+  flatpak-sources:
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: List the crates for the offline Flatpak build
+        run: packaging/flatpak/update-cargo-sources.sh packaging/flatpak/cargo-sources.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          # Not `quire-*`: the publish job takes only those, and this isn't a release file.
+          name: flatpak-cargo-sources
+          path: packaging/flatpak/cargo-sources.json
+          if-no-files-found: error
+
+  flatpak:
+    needs: [check, flatpak-sources]
+    runs-on: ${{ matrix.runner }}
+    # flatpak-builder needs namespaces the runner's own AppArmor profile
+    # refuses, so the build runs in Flathub's builder image, as the action's
+    # README does. The image has flatpak, flatpak-builder, the 26.08 runtime
+    # and SDK, and flatpak-builder-lint.
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-26.08
+      options: --privileged
+    # Rust, from source, with no cache: the longest job of the release.
+    timeout-minutes: 120
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04 }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
+    env:
+      BUNDLE: Quire-${{ needs.check.outputs.version }}-linux-${{ matrix.arch }}.flatpak
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: flatpak-cargo-sources
+          path: packaging/flatpak
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@79327416609af08178ad73b352877e51450790b3 # v6.8
+        with:
+          bundle: ${{ env.BUNDLE }}
+          manifest-path: packaging/flatpak/io.github.bhanunexus.Quire.yml
+          arch: ${{ matrix.arch }}
+          cache: false
+          upload-artifact: false
+      - name: Smoke-test the bundle
+        run: |
+          flatpak install --user --noninteractive --assumeyes "./$BUNDLE"
+          app=io.github.bhanunexus.Quire
+          flatpak run "$app" --version | tee "$RUNNER_TEMP/version.txt"
+          grep -q '^Quire ' "$RUNNER_TEMP/version.txt"
+          if grep -q Lite "$RUNNER_TEMP/version.txt"; then exit 1; fi
+          flatpak run --command=quire-cli "$app" --version
+          flatpak run --command=/app/bin/quire-ai-engine "$app" --version
+          # The app finds the engine next to it and checks it against the hash it was built with.
+          flatpak run --env=QUIRE_EXPERIMENTAL_ON_DEVICE=1 --command=quire-cli "$app" ai engine | tee "$RUNNER_TEMP/engine.txt"
+          grep -q '^/app/bin/quire-ai-engine ' "$RUNNER_TEMP/engine.txt"
+          # The files Flatpak exports: the desktop entry lists Markdown, the icon is there.
+          export_dir="$HOME/.local/share/flatpak/app/$app/current/active/export/share"
+          grep -q '^MimeType=text/markdown;' "$export_dir/applications/$app.desktop"
+          test -f "$export_dir/icons/hicolor/128x128/apps/$app.png"
+      - name: Lint the manifest with Flathub's linter (informational)
+        # What Flathub's reviewers will see: expect findings about the home
+        # folder access and the bundled engine until a submission is prepared
+        # (packaging/flatpak/README.md). Not a gate.
+        continue-on-error: true
+        run: flatpak-builder-lint manifest packaging/flatpak/io.github.bhanunexus.Quire.yml
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        if: env.IS_RELEASE == 'true'
+        with:
+          subject-path: ${{ env.BUNDLE }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: quire-flatpak-${{ matrix.arch }}
+          path: ${{ env.BUNDLE }}
+          if-no-files-found: error
+
   sbom:
     needs: check
     runs-on: ubuntu-latest
@@ -458,7 +579,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: [check, engine, linux, macos, windows, sbom]
+    needs: [check, engine, linux, flatpak, macos, windows, sbom]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -478,13 +599,18 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
+          # Release files only: every `quire-*` artifact (the packages, the
+          # engine assets, the SBOM, the Flatpak bundles). Not the engine
+          # pins (compiled into the apps) or the Flatpak's crate list.
+          pattern: quire-*
           path: dist
           merge-multiple: true
       - name: Checksums
         working-directory: dist
         run: |
-          # The engine pins are compiled into the apps; they aren't assets.
-          rm -f engine.sha256.*
+          # A file that isn't a release file stays out of the release and the checksums.
+          rm -f engine.sha256.* cargo-sources.json
+          ls -1
           sha256sum -- * | sort -k2 > SHA256SUMS
           cat SHA256SUMS
       - uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
@@ -496,6 +622,7 @@ jobs:
             dist/*.dmg
             dist/*.exe
             dist/*.zip
+            dist/*.flatpak
             dist/quire-ai-engine-*.gz
           sbom-path: dist/Quire-${{ env.VERSION }}-sbom.spdx.json
       - name: Create draft release with all assets

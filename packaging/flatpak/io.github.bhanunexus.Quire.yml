@@ -1,0 +1,76 @@
+# Flatpak manifest for Quire (the full edition, with the on-device AI engine).
+#
+# Builds from this checkout, offline: packaging/flatpak/cargo-sources.json
+# (made by update-cargo-sources.sh) lists every crate with its checksum. The
+# release workflow builds it for x86_64 and aarch64 and attaches the
+# bundles to the release. For Flathub, replace the `dir` source with the
+# `git` one shown in README.md: that is the only change.
+#
+#   packaging/flatpak/update-cargo-sources.sh
+#   flatpak-builder --user --install --force-clean build-dir packaging/flatpak/io.github.bhanunexus.Quire.yml
+#   flatpak run io.github.bhanunexus.Quire
+app-id: io.github.bhanunexus.Quire
+runtime: org.freedesktop.Platform
+# 26.08 ships Rust 1.98 in its rust-stable extension; the workspace needs 1.97.
+runtime-version: "26.08"
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: quire
+finish-args:
+  # Window: Wayland where there is one, X11 otherwise; GL through the GPU.
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=dri
+  # Sync, remote AI providers you configure, the opt-in update check.
+  - --share=network
+  # Voice notes (the microphone).
+  - --socket=pulseaudio
+  # Notes live in folders you choose, and a file manager can hand Quire a
+  # file from anywhere in your home folder. Quire watches the folder for
+  # changes made by other programs and sync tools, which a file-chooser
+  # portal's per-folder access doesn't allow. To give it another place:
+  #   flatpak override --user --filesystem=/path io.github.bhanunexus.Quire
+  - --filesystem=home
+  # Reminders as desktop notifications; API keys in the system keyring.
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.freedesktop.secrets
+modules:
+  - name: quire
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/quire/cargo
+        CARGO_NET_OFFLINE: "true"
+    build-commands:
+      - rustc --version
+      - cargo --offline fetch --locked --manifest-path Cargo.toml --verbose
+      # The engine first, then the app built with the engine's SHA-256, which
+      # it checks before every start (design §D.3; what package.sh does for
+      # the .deb). The engine is installed next to `quire`, where it looks.
+      - cargo --offline build --release --locked -p quire-ai-engine --bin quire-ai-engine
+      - sha256sum < target/release/quire-ai-engine | cut -c1-64 > crates/quire-ai/engine.bundled.sha256
+      - cargo --offline build --release --locked -p quire-desktop -p quire-cli
+      - install -Dm755 target/release/quire target/release/quire-cli target/release/quire-ai-engine -t /app/bin
+      - sed 's/^Icon=quire$/Icon=io.github.bhanunexus.Quire/' packaging/linux/quire.desktop | install -Dm644 /dev/stdin /app/share/applications/io.github.bhanunexus.Quire.desktop
+      - |
+        for size in 128 256 512; do
+          install -Dm644 "packaging/icons/quire-$size.png" "/app/share/icons/hicolor/${size}x${size}/apps/io.github.bhanunexus.Quire.png"
+        done
+      - |
+        version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+        python3 -I packaging/linux/render-metainfo.py "$version" | install -Dm644 /dev/stdin /app/share/metainfo/io.github.bhanunexus.Quire.metainfo.xml
+      - install -Dm644 LICENSE /app/share/licenses/io.github.bhanunexus.Quire/LICENSE
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - .git
+          - target
+          - dist
+          - .flatpak-builder
+          - flatpak_app
+          - repo
+      - cargo-sources.json

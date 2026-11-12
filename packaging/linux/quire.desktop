@@ -3,10 +3,14 @@ Type=Application
 Name=Quire
 GenericName=Markdown Notes
 Comment=Fast, local-first Markdown notes
+# %f: one file. A file manager starts one Quire per file chosen; a file
+# outside any vault opens on its own (docs/design/0.13-pack.md §3).
 Exec=quire %f
 Icon=quire
 Terminal=false
 Categories=Office;TextEditor;Utility;
 Keywords=markdown;notes;wiki;journal;
-MimeType=text/markdown;
-StartupWMClass=quire
+# Listed for Markdown files so "Open With" offers Quire. Quire never sets
+# itself as the default: the install doesn't write mimeapps.list.
+MimeType=text/markdown;text/x-markdown;
+StartupWMClass=io.github.bhanunexus.Quire
