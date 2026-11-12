@@ -72,6 +72,8 @@ pub(crate) struct FeatureUi {
     pub insights: crate::panels::InsightsRows,
     // ---- 0.12 typed links: the Hierarchy tab
     pub hierarchy: crate::links_ui::HierarchyUi,
+    // ---- 0.13 typed links: Settings → Links
+    pub links_settings: crate::links_ui::LinksSettingsUi,
     // ---- 0.12 switching tools: Settings → Linter and Home
     pub switch: crate::lint_ui::SwitchUi,
     // ---- app
@@ -164,6 +166,8 @@ pub(crate) const SETTINGS_TABS: &[TabDef] = &[
     // ---- 0.12 switching tools
     TabDef { id: "linter", label: label!("Linter"), available: crate::lint_ui::available, show: crate::lint_ui::settings_tab },
     TabDef { id: "home", label: label!("Home"), available: crate::home_ui::available, show: crate::home_ui::settings_tab },
+    // ---- 0.13 typed links
+    TabDef { id: "links", label: label!("Links"), available: crate::links_ui::settings_available, show: crate::links_ui::settings_tab },
 ];
 
 /// A bar drawn above the note, below the find bar: full width, as tall as

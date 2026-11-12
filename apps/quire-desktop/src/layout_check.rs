@@ -314,6 +314,60 @@ fn toolbar_settings_for_the_floating_bar_keep_their_size() {
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
+/// 0.13: Settings → Links, with Dendron on and several custom types, keeps its size at
+/// two widths in both themes; what it saves survives a reload and leaves vault.toml's other text alone.
+#[test]
+fn links_settings_keep_their_size_and_save_what_they_show() {
+    let tab = crate::registry::SETTINGS_TABS.iter().find(|t| t.id == "links").expect("the Links tab");
+    let mut failures = Vec::new();
+    for pal in [&theme::LIGHT, &theme::DARK] {
+        for width in [220.0_f32, 480.0] {
+            let mut ws = workspace_with(false);
+            let vault = ws.vault().unwrap().clone();
+            let hand = "# mine\nformat = 1\n\n[web]\nhide = [\"Journal/\"] # keep\n";
+            vault.storage().write_atomic(&NotePath::new(quire_app::vault::prefs::VAULT_PREFS_PATH), hand).unwrap();
+            let mut cfg = ws.link_settings();
+            cfg.dendron.enabled = true;
+            for t in ["supports", "contradicts", "a-rather-long-type-name-for-a-narrow-panel"] {
+                cfg.types.insert(t.into(), quire_app::index::TypeStyle { color: Some("#2e7d32".into()), ..Default::default() });
+            }
+            ws.set_link_settings(&cfg).unwrap();
+            let text = vault.storage().read(&NotePath::new(quire_app::vault::prefs::VAULT_PREFS_PATH)).unwrap();
+            assert!(text.starts_with(hand), "the user's text is untouched: {text}");
+            assert_eq!(quire_app::index::LinkConfig::load(&vault), cfg, "what is saved reads back");
+            let mut fui = crate::registry::FeatureUi::default();
+            let ctx = egui::Context::default();
+            theme::install_fonts(&ctx);
+            ctx.global_style_mut(theme::style);
+            let mut sizes = Vec::new();
+            let mut shown = String::new();
+            for frame in 0..30 {
+                let mut out = ctx.run_ui(input(Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 3000.0)), frame), |ui| {
+                    let r = ui
+                        .allocate_ui(Vec2::new(width, 2900.0), |ui| {
+                            let _ = (tab.show)(ui, &mut ws, &mut fui, pal);
+                        })
+                        .response
+                        .rect;
+                    sizes.push(r.size());
+                });
+                shown = drawn_text(&out);
+                out.textures_delta.clear();
+            }
+            if sizes[10..].iter().any(|s| (s.y - sizes[10].y).abs() > 0.5 || s.x > width + 0.5) {
+                failures.push(format!("links settings at width {width}: {:?}", &sizes[10..]));
+            }
+            for row in ["Hierarchy fields", "Up (parents)", "Dotted note names", "Link types", "supports"] {
+                if !shown.contains(row) {
+                    failures.push(format!("links settings at width {width} lack {row}: {shown}"));
+                }
+            }
+            assert_eq!(ws.link_settings(), cfg, "drawing the page changes nothing");
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
 /// Every piece of text drawn in `out`.
 fn drawn_text(out: &egui::FullOutput) -> String {
     fn walk(shape: &egui::Shape, into: &mut String) {

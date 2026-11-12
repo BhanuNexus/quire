@@ -35,6 +35,8 @@ pub struct RelItem {
     pub implied: bool,
     /// The other note links here (`←`), rather than this note to it.
     pub incoming: bool,
+    /// Made from a tag, folder, list or Dendron note (0.13), not a link in a note.
+    pub derived: bool,
 }
 
 /// Notes related one way: "Parents", "Supports"…
@@ -87,6 +89,9 @@ type RelCache = RefCell<Option<(((u64, u64), Option<NotePath>), Rc<NoteRelations
 pub struct LinksState {
     /// vault.toml was read once since the vault opened (the index read `[links]` on load).
     prefs_seen: bool,
+    /// The settings last saved or read, until the index has them too (it
+    /// applies them on its own thread, which can take a while on a big vault).
+    settings: Option<LinkConfig>,
     cache: RelCache,
 }
 
@@ -122,6 +127,14 @@ pub fn relations_of(ix: &Index, p: &NotePath) -> NoteRelations {
 /// The groups and trails of `p` over the vault index and, while a locked
 /// folder is unlocked, its notes (memory only).
 pub fn relations_in(ix: &Joined<'_>, p: &NotePath) -> NoteRelations {
+    relations_where(ix, p, &|_| true)
+}
+
+/// [`relations_in`] for a reader who sees only the notes `keep` accepts.
+///
+/// Other notes appear nowhere (the web app, published sites): not in the
+/// groups, not in a trail, and a trail doesn't pass through them.
+pub fn relations_where(ix: &Joined<'_>, p: &NotePath, keep: &dyn Fn(&NotePath) -> bool) -> NoteRelations {
     let rel = ix.relations();
     let cfg = ix.link_config();
     let mut hier: Vec<RelGroup> = Vec::new();
@@ -144,19 +157,33 @@ pub fn relations_in(ix: &Joined<'_>, p: &NotePath) -> NoteRelations {
             group.items.push(item);
         }
     };
-    for e in rel.of(p) {
-        let item = RelItem { path: e.to.clone(), title: title_of(ix, &e.to), field: e.field.clone(), implied: e.implied, incoming: false };
+    for e in rel.of(p).iter().filter(|e| keep(&e.to)) {
+        let item = RelItem {
+            path: e.to.clone(),
+            title: title_of(ix, &e.to),
+            field: e.field.clone(),
+            implied: e.implied,
+            incoming: false,
+            derived: e.derived,
+        };
         match e.hier {
             Some(h) => push(h.label().to_string(), Some(h), String::new(), item),
             None => push(type_label(&e.field), None, e.field.clone(), item),
         }
     }
-    for e in rel.incoming(p) {
+    for e in rel.incoming(p).iter().filter(|e| keep(&e.to)) {
         // Hierarchy links into here already show as implied edges.
         if e.hier.is_some() && cfg.implied {
             continue;
         }
-        let item = RelItem { path: e.to.clone(), title: title_of(ix, &e.to), field: e.field.clone(), implied: false, incoming: true };
+        let item = RelItem {
+            path: e.to.clone(),
+            title: title_of(ix, &e.to),
+            field: e.field.clone(),
+            implied: false,
+            incoming: true,
+            derived: e.derived,
+        };
         push(type_label(&e.field), None, e.field.clone(), item);
     }
     hier.sort_by_key(|g| match g.hier {
@@ -171,13 +198,13 @@ pub fn relations_in(ix: &Joined<'_>, p: &NotePath) -> NoteRelations {
     // follow by title, so the order doesn't depend on how the index was built.
     for g in hier.iter_mut().chain(free.iter_mut().map(|(_, g)| g)) {
         g.items.sort_by_cached_key(|i| {
-            let derived = i.implied || i.incoming;
+            let derived = i.implied || i.incoming || i.derived;
             (derived, if derived { i.title.to_lowercase() } else { String::new() })
         });
     }
     let groups = hier.into_iter().chain(free.into_iter().map(|(_, g)| g)).collect();
     let trails = rel
-        .trails(p, MAX_TRAILS, MAX_TRAIL_DEPTH)
+        .trails_where(p, MAX_TRAILS, MAX_TRAIL_DEPTH, keep)
         .into_iter()
         .map(|t| t.into_iter().map(|q| (q.clone(), title_of(ix, &q))).collect())
         .collect();
@@ -404,6 +431,27 @@ impl Workspace {
     }
 }
 
+impl Workspace {
+    /// The vault's `[links]` settings: the last saved or read, else what the index has.
+    pub fn link_settings(&self) -> LinkConfig {
+        self.features.links.settings.clone().unwrap_or_else(|| self.index.read().link_config().clone())
+    }
+
+    /// Save the `[links]` section of vault.toml and give the settings to
+    /// the index, which rebuilds the edges on its own thread. Comments,
+    /// unknown keys and every other byte of the file stay as they were.
+    pub fn set_link_settings(&mut self, cfg: &LinkConfig) -> Result<(), String> {
+        let vault = self.vault().cloned().ok_or("No vault is open")?;
+        let mut file = VaultPrefs::load(&vault);
+        cfg.store(&mut file).map_err(|e| e.to_string())?;
+        file.save(&vault).map_err(|e| e.to_string())?;
+        self.index.set_link_config(cfg.clone());
+        self.features.links.prefs_seen = true;
+        self.features.links.settings = Some(cfg.clone());
+        Ok(())
+    }
+}
+
 /// Apply a front-matter-style edit (byte range and text) to a document as
 /// one undoable step, keeping the caret on the same text.
 fn apply_edit(doc: &mut Document, edit: &quire_markdown::frontmatter::Edit) -> bool {
@@ -429,8 +477,9 @@ pub(crate) fn read_prefs(ws: &mut Workspace, prefs: &VaultPrefs) {
     }
     let cfg: LinkConfig = prefs.section(quire_index::relations::SECTION);
     if ws.index.read().link_config() != &cfg {
-        ws.index.set_link_config(cfg);
+        ws.index.set_link_config(cfg.clone());
     }
+    ws.features.links.settings = Some(cfg);
 }
 
 pub(crate) const fn tick(_ws: &mut Workspace, _now: Instant) -> bool {

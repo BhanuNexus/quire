@@ -14,6 +14,7 @@ use std::rc::Rc;
 
 use egui::{Key, RichText, Sense, TextEdit};
 use quire_app::Workspace;
+use quire_app::index::{Hier, LinkConfig, TrailMode};
 use quire_app::links_state::{self, NoteRelations, RelGroup, TreeRow};
 use quire_app::markdown::fields::FieldStyle;
 use quire_app::vault::NotePath;
@@ -419,4 +420,223 @@ impl OverlayView for AddLinkDialog {
         });
         res
     }
+}
+
+// -------------------------------------------------------------- settings
+
+/// Settings → Links: text being edited, kept between frames.
+#[derive(Default)]
+pub(crate) struct LinksSettingsUi {
+    /// The five hierarchy kinds, as the comma-separated names being typed.
+    names: [String; 5],
+    /// The settings the buffers were made from.
+    from: Option<LinkConfig>,
+    /// Text of each custom type's colour box, by type name.
+    colors: Vec<(String, String)>,
+    new_type: String,
+    delimiter: String,
+    dendron_field: String,
+    problem: String,
+}
+
+impl LinksSettingsUi {
+    fn load(&mut self, cfg: &LinkConfig) {
+        for (i, h) in Hier::ALL.into_iter().enumerate() {
+            self.names[i] = cfg.fields(h).join(", ");
+        }
+        self.colors = cfg.types.iter().map(|(k, t)| (k.clone(), t.color.clone().unwrap_or_default())).collect();
+        self.delimiter.clone_from(&cfg.dendron.delimiter);
+        self.dendron_field.clone_from(&cfg.dendron.field);
+        self.from = Some(cfg.clone());
+    }
+}
+
+pub(crate) fn settings_available(_ws: &Workspace) -> bool {
+    true
+}
+
+/// `up, Parent ,, down` becomes the names `up`, `Parent` and `down`.
+fn split_names(s: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for n in s.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+        if !out.iter().any(|o| o == n) {
+            out.push(n.to_string());
+        }
+    }
+    out
+}
+
+fn swatch(ui: &mut egui::Ui, hex: &str) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), Sense::hover());
+    match quire_app::index::relations::parse_hex_color(hex) {
+        Some([r, g, b]) => {
+            ui.painter().rect_filled(rect, 3.0, egui::Color32::from_rgb(r, g, b));
+        }
+        None => {
+            ui.painter().rect_stroke(rect, 3.0, egui::Stroke::new(1.0, ui.visuals().weak_text_color()), egui::StrokeKind::Inside);
+        }
+    }
+}
+
+pub(crate) fn settings_tab(ui: &mut egui::Ui, ws: &mut Workspace, fui: &mut FeatureUi, pal: &Palette) -> PanelOut {
+    let out = PanelOut::default();
+    if ws.vault().is_none() {
+        ui.label(RichText::new("Open a vault to set up typed links.").color(pal.muted));
+        return out;
+    }
+    let st = &mut fui.links_settings;
+    let stored = ws.link_settings();
+    if st.from.as_ref().is_none_or(|f| *f != stored) {
+        st.load(&stored);
+    }
+    let mut cfg = stored.clone();
+    ui.label(
+        RichText::new(
+            "Which field names build the hierarchy, and how typed links look. Saved in this vault (vault.toml, [links]); \
+             your own comments and other settings in that file stay as they are.",
+        )
+        .color(pal.muted),
+    );
+    ui.add_space(6.0);
+    ui.label(RichText::new("Hierarchy fields").strong());
+    ui.label(RichText::new("Names, separated by commas. The first is the one Quire writes.").size(12.0).color(pal.muted));
+    let rows = [
+        (Hier::Up, "Up (parents)"),
+        (Hier::Down, "Down (children)"),
+        (Hier::Same, "Same (siblings)"),
+        (Hier::Next, "Next"),
+        (Hier::Prev, "Previous"),
+    ];
+    for (i, (h, label)) in rows.into_iter().enumerate() {
+        let mut commit = false;
+        ui.horizontal_wrapped(|ui| {
+            ui.label(label);
+            let r =
+                ui.add(TextEdit::singleline(&mut st.names[i]).hint_text(h.key()).desired_width(ui.available_width().clamp(60.0, 240.0)));
+            commit = r.lost_focus();
+        });
+        if commit {
+            let names = split_names(&st.names[i]);
+            match h {
+                Hier::Up => cfg.up = names,
+                Hier::Down => cfg.down = names,
+                Hier::Same => cfg.same = names,
+                Hier::Next => cfg.next = names,
+                Hier::Prev => cfg.prev = names,
+            }
+        }
+    }
+    ui.add_space(6.0);
+    ui.checkbox(&mut cfg.implied, "A link one way gives the other note the reverse (A up B shows B down A)");
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Show the breadcrumbs trail");
+        egui::ComboBox::from_id_salt("quire-links-trail")
+            .selected_text(match cfg.trail {
+                TrailMode::Auto => "when the vault has hierarchy fields",
+                TrailMode::On => "always",
+                TrailMode::Off => "never",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut cfg.trail, TrailMode::Auto, "when the vault has hierarchy fields");
+                ui.selectable_value(&mut cfg.trail, TrailMode::On, "always");
+                ui.selectable_value(&mut cfg.trail, TrailMode::Off, "never");
+            });
+    });
+    ui.add_space(8.0);
+    ui.label(RichText::new("Dotted note names").strong());
+    ui.checkbox(&mut cfg.dendron.enabled, "Read a.b.c as a child of a.b (Dendron style)");
+    if cfg.dendron.enabled {
+        let mut commit = false;
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Separator");
+            commit |= ui.add(TextEdit::singleline(&mut st.delimiter).desired_width(36.0)).lost_focus();
+            ui.label("Child's field");
+            commit |= ui.add(TextEdit::singleline(&mut st.dendron_field).hint_text("up").desired_width(90.0)).lost_focus();
+        });
+        if commit && !st.delimiter.is_empty() && !st.dendron_field.trim().is_empty() {
+            cfg.dendron.delimiter.clone_from(&st.delimiter);
+            cfg.dendron.field = st.dendron_field.trim().to_string();
+        }
+    }
+    ui.label(
+        RichText::new("Notes with Breadcrumbs' BC-tag-note-*, BC-folder-note-* and BC-list-note-* properties are read without a setting.")
+            .size(12.0)
+            .color(pal.muted),
+    );
+    ui.add_space(8.0);
+    ui.label(RichText::new("Link types").strong());
+    ui.label(RichText::new("Any field name is a type already. Add one here to give it a colour in the graph.").size(12.0).color(pal.muted));
+    let mut remove = None;
+    let mut recolor = None;
+    for (i, (name, text)) in st.colors.iter_mut().enumerate() {
+        ui.horizontal_wrapped(|ui| {
+            swatch(ui, text);
+            ui.label(&*name);
+            let r = ui.add(TextEdit::singleline(text).hint_text("colour #rrggbb").desired_width(110.0));
+            if r.lost_focus() {
+                recolor = Some(i);
+            }
+            if ui.small_button("Remove").clicked() {
+                remove = Some(i);
+            }
+        });
+    }
+    if let Some(i) = recolor {
+        let (name, text) = &st.colors[i];
+        let text = text.trim();
+        if text.is_empty() {
+            cfg.types.entry(name.clone()).or_default().color = None;
+            st.problem.clear();
+        } else if quire_app::index::relations::parse_hex_color(text).is_some() {
+            cfg.types.entry(name.clone()).or_default().color = Some(text.to_string());
+            st.problem.clear();
+        } else {
+            st.problem = format!("“{text}” isn't a colour. Write it like #2e7d32.");
+        }
+    }
+    if let Some(i) = remove {
+        let (name, _) = st.colors.remove(i);
+        cfg.types.remove(&name);
+    }
+    ui.horizontal_wrapped(|ui| {
+        let r = ui.add(TextEdit::singleline(&mut st.new_type).hint_text("type name").desired_width(160.0));
+        let add = ui.button("Add type").clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)));
+        if add {
+            let name = quire_app::markdown::fields::normalize_key(&st.new_type);
+            if !name.is_empty() && !cfg.types.contains_key(&name) {
+                cfg.types.insert(name, quire_app::index::TypeStyle::default());
+            }
+            st.new_type.clear();
+        }
+    });
+    // Types the vault already uses.
+    let in_use: Vec<String> = ws.index().read().relations().fields().iter().map(|(f, _)| (*f).to_string()).collect();
+    let offer: Vec<&String> = in_use
+        .iter()
+        .filter(|f| cfg.kind(f).is_none() && !cfg.types.keys().any(|k| quire_app::markdown::fields::normalize_key(k) == **f))
+        .take(8)
+        .collect();
+    if !offer.is_empty() {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("In this vault:").size(12.0).color(pal.muted));
+            for f in offer {
+                if ui.small_button(f).on_hover_text("Add this type").clicked() {
+                    cfg.types.insert(f.clone(), quire_app::index::TypeStyle::default());
+                }
+            }
+        });
+    }
+    if !st.problem.is_empty() {
+        ui.label(RichText::new(&st.problem).color(pal.danger));
+    }
+    if cfg != stored {
+        match ws.set_link_settings(&cfg) {
+            Ok(()) => {
+                let saved = ws.link_settings();
+                st.load(&saved);
+            }
+            Err(e) => st.problem = e,
+        }
+    }
+    out
 }

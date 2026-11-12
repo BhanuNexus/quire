@@ -60,6 +60,10 @@ impl EdgeFilter {
 /// A steady colour for a link type, by the type's place in the graph's
 /// list (most used first), from the theme's distinct hues.
 fn type_color(g: &Graph, t: &str, pal: &Palette) -> egui::Color32 {
+    // 0.13: a colour set in Settings → Links wins.
+    if let Some([r, gr, b]) = g.type_colors.get(t) {
+        return egui::Color32::from_rgb(*r, *gr, *b);
+    }
     let hues = [pal.accent, pal.tag, pal.warn, pal.added, pal.danger, pal.link, pal.quote];
     let i = g.types.iter().position(|x| x == t).unwrap_or(0);
     hues[i % hues.len()]
