@@ -64,7 +64,9 @@ impl Negotiated {
     /// What to tell the person, if anything.
     pub fn notice(self) -> Option<String> {
         match self {
-            Self::Version(v) if v < PROTOCOL => {
+            // Sharing vault settings needs protocol 2; a protocol 2 server
+            // lacks only removing devices (0.13), which says so when tried.
+            Self::Version(v) if v < 2 => {
                 Some("This sync server is older; some features (sharing vault settings across devices) are off until it's updated.".into())
             }
             Self::Version(_) => None,

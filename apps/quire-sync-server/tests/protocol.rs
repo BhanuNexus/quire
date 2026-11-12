@@ -62,9 +62,11 @@ fn info_needs_no_token_and_names_the_range() {
     let (status, body) = raw_get(&base, "/v1/info", None);
     assert_eq!(status, 200);
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(v["protocol"], serde_json::json!({"min": 1, "max": 2}));
+    assert_eq!(v["protocol"], serde_json::json!({"min": 1, "max": 3}));
     assert_eq!(v["server"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(HttpTransport::negotiate(&base).unwrap(), Negotiated::Version(2));
+    assert_eq!(HttpTransport::negotiate(&base).unwrap(), Negotiated::Version(3));
+    assert_eq!(Negotiated::Version(3).notice(), None);
+    // A 0.9–0.12 server: everything but removing devices works; nothing to say.
     assert_eq!(Negotiated::Version(2).notice(), None);
 }
 

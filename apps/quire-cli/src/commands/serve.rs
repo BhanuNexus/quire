@@ -222,6 +222,7 @@ but use HTTPS (a reverse proxy or tunnel) for anything beyond your own network."
                         }
                         format!("Synced: received {}, sent {}", r.pulled, r.pushed)
                     }
+                    SyncEvent::Notice(n) => format!("Sync: {n}"),
                     SyncEvent::Status(_) => continue,
                 };
                 if line != last_sync {

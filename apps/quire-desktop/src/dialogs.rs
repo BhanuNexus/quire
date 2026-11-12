@@ -73,6 +73,12 @@ impl SettingsState {
             sync.mode = SyncMode::Join;
             all.push((name, Self { tab: SettingsTab::Sync, force_tab: true, sync, ..Default::default() }));
         }
+        // 0.13: Devices, removing one (with a long name), and the upgrade warning.
+        for step in 0..3 {
+            let mut sync = SyncForm::default();
+            sync.devices = DevicesPanel::sample(step);
+            all.push(("settings: sync devices", Self { tab: SettingsTab::Sync, force_tab: true, sync, ..Default::default() }));
+        }
         all
     }
 }
@@ -158,6 +164,27 @@ struct SyncForm {
     edit_credentials: bool,
     /// New credentials being checked and saved.
     saving_credentials: Option<Receiver<Result<String, String>>>,
+    /// 0.13: Settings → Sync → Devices and the sync format.
+    devices: DevicesPanel,
+}
+
+/// Settings → Sync → Devices and the sync format (0.13).
+#[derive(Default)]
+struct DevicesPanel {
+    loading: Option<Receiver<Result<quire_app::vault_sync::SyncDevices, String>>>,
+    list: Option<Result<quire_app::vault_sync::SyncDevices, String>>,
+    /// The device "Remove this device" was clicked for: its id and label.
+    removing: Option<(String, String)>,
+    pass: String,
+    pass2: String,
+    removal: Option<Receiver<Result<quire_app::vault_sync::DeviceRemoved, String>>>,
+    removed: Option<Result<quire_app::vault_sync::DeviceRemoved, String>>,
+    upgrade_info: Option<Receiver<Result<quire_app::vault_sync::UpgradeInfo, String>>>,
+    /// "Upgrade sync format…" clicked: what it would mean.
+    upgrade: Option<Result<quire_app::vault_sync::UpgradeInfo, String>>,
+    upgrading: Option<Receiver<Result<(), String>>>,
+    /// Layout checks: show the panel with sample devices and no vault.
+    sample: bool,
 }
 
 impl SyncForm {
@@ -346,6 +373,10 @@ pub(crate) const SOURCE_URL: &str = "https://github.com/BhanuNexus/quire";
 
 fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palette) {
     use quire_app::vault_sync::SyncStatus;
+    if f.devices.sample {
+        sync_devices(ui, &mut f.devices, ws, true, pal);
+        return;
+    }
     if ws.vault_root().is_none() {
         ui.label(RichText::new("Open a notes folder first; sync works per folder.").color(pal.muted));
         return;
@@ -495,6 +526,10 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
         if let Some(e) = &f.error {
             ui.label(RichText::new(e).color(pal.danger));
         }
+        ui.add_space(8.0);
+        egui::CollapsingHeader::new("Devices and sync format").id_salt("sync-devices").show(ui, |ui| {
+            sync_devices(ui, &mut f.devices, ws, cfg.server.is_empty(), pal);
+        });
         return;
     }
 
@@ -1926,4 +1961,273 @@ pub(crate) fn sync_conflicts(ctx: &egui::Context, ws: &mut Workspace, pal: &Pale
         }
     }
     (close, opened)
+}
+
+impl DevicesPanel {
+    /// For layout checks: the list (0), removing a device (1), the upgrade warning (2).
+    fn sample(step: usize) -> Self {
+        use quire_app::vault_sync::{SyncDevice, SyncDevices, UpgradeInfo};
+        let dev = |id: &str, label: &str, quire: Option<&str>, this: bool, removed: bool| SyncDevice {
+            id: id.repeat(32 / id.len()),
+            label: label.into(),
+            quire: quire.map(str::to_string),
+            this,
+            removed,
+            has_key: quire.is_some(),
+        };
+        let devices = vec![
+            dev("1a2b", "Asha's laptop (1a2b1a2b)", Some("0.13.0"), true, false),
+            dev("9f8e", "The very long name of the old family desktop in the study (9f8e9f8e)", None, false, false),
+            dev("c0de", "Phone (c0dec0de)", Some("0.13.0"), false, false),
+            dev("dead", "Lost laptop (deaddead)", Some("0.13.0"), false, true),
+        ];
+        let mut p = Self { sample: true, list: Some(Ok(SyncDevices { devices, upgraded: step != 2, key_epoch: 1 })), ..Default::default() };
+        match step {
+            1 => p.removing = Some(("c0de".repeat(8), "Phone (c0dec0de)".into())),
+            2 => {
+                p.upgrade = Some(Ok(UpgradeInfo {
+                    upgraded: false,
+                    old_devices: vec!["The very long name of the old family desktop in the study (9f8e9f8e)".into()],
+                }))
+            }
+            _ => {}
+        }
+        p
+    }
+}
+
+/// Repaint until `rx` answers; then its value.
+fn poll_rx<T>(ui: &Ui, rx: &mut Option<Receiver<T>>) -> Option<T> {
+    let r = rx.as_ref()?.try_recv();
+    match r {
+        Ok(v) => {
+            *rx = None;
+            Some(v)
+        }
+        Err(crossbeam_channel::TryRecvError::Empty) => {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(150));
+            None
+        }
+        Err(crossbeam_channel::TryRecvError::Disconnected) => {
+            *rx = None;
+            None
+        }
+    }
+}
+
+/// Settings → Sync → Devices and sync format (0.13): the vault's devices,
+/// "Remove this device", "Upgrade sync format…" and "Compact now".
+fn sync_devices(ui: &mut Ui, p: &mut DevicesPanel, ws: &mut Workspace, compacts_here: bool, pal: &Palette) {
+    if p.list.is_none() && p.loading.is_none() && !p.sample {
+        match ws.sync_devices_in_background() {
+            Ok(rx) => p.loading = Some(rx),
+            Err(e) => p.list = Some(Err(e)),
+        }
+    }
+    if let Some(r) = poll_rx(ui, &mut p.loading) {
+        p.list = Some(r);
+    }
+    if let Some(r) = poll_rx(ui, &mut p.removal) {
+        p.removed = Some(r);
+        p.removing = None;
+        p.list = None;
+    }
+    if let Some(r) = poll_rx(ui, &mut p.upgrade_info) {
+        p.upgrade = Some(r);
+    }
+    if let Some(r) = poll_rx(ui, &mut p.upgrading) {
+        p.upgrade = r.err().map(Err);
+        p.list = None;
+    }
+    let small = |t: &str| RichText::new(t.to_string()).size(12.0).color(pal.muted);
+    let upgraded = p.list.as_ref().and_then(|l| l.as_ref().ok()).is_some_and(|l| l.upgraded);
+    match &p.list {
+        None => {
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new().size(12.0));
+                ui.label(small("Looking up the vault's devices…"));
+            });
+        }
+        Some(Err(e)) => {
+            ui.add(egui::Label::new(RichText::new(e).color(pal.danger)).wrap());
+        }
+        Some(Ok(list)) => {
+            let mut clicked = None;
+            egui::Grid::new("sync-devices-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+                for d in &list.devices {
+                    ui.vertical(|ui| {
+                        ui.add(egui::Label::new(RichText::new(&d.label).strong()).wrap());
+                        let mut notes = Vec::new();
+                        if d.this {
+                            notes.push("this device".to_string());
+                        }
+                        if d.removed {
+                            notes.push("removed".into());
+                        }
+                        notes.push(
+                            d.quire
+                                .as_ref()
+                                .map_or_else(|| "Quire 0.12 or older, or not synced since updating".into(), |v| format!("Quire {v}")),
+                        );
+                        ui.add(egui::Label::new(small(&notes.join(" · "))).wrap());
+                    });
+                    if d.this || d.removed {
+                        ui.label("");
+                    } else {
+                        let b = ui
+                            .add_enabled(
+                                upgraded && p.removal.is_none(),
+                                egui::Button::new(RichText::new("Remove this device").color(pal.danger)),
+                            )
+                            .on_disabled_hover_text("Upgrade the sync format first.");
+                        if b.clicked() {
+                            clicked = Some((d.id.clone(), d.label.clone()));
+                        }
+                    }
+                    ui.end_row();
+                }
+            });
+            if let Some(c) = clicked {
+                p.removing = Some(c);
+                p.removed = None;
+                p.pass.clear();
+                p.pass2.clear();
+            }
+        }
+    }
+    if let Some((id, label)) = p.removing.clone() {
+        ui.add_space(6.0);
+        egui::Frame::NONE.fill(pal.bg).corner_radius(6.0).inner_margin(10.0).show(ui, |ui| {
+            ui.add(egui::Label::new(RichText::new(format!("Remove “{label}”?")).strong()).wrap());
+            ui.add(
+                egui::Label::new(small(
+                    "The other devices get a new vault key at their next sync. The removed device keeps the notes it has, \
+                     but can't read anything written from now on, and what it writes is ignored. \
+                     Devices that join later use the passphrase below: choose a new one if whoever has that device knows the current one.",
+                ))
+                .wrap(),
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut p.pass).password(true).hint_text("Passphrase (8 characters or more)").desired_width(280.0),
+            );
+            ui.add(egui::TextEdit::singleline(&mut p.pass2).password(true).hint_text("Again").desired_width(280.0));
+            let ok = p.pass.chars().count() >= 8 && p.pass == p.pass2;
+            ui.horizontal(|ui| {
+                if ui.add_enabled(ok && p.removal.is_none(), egui::Button::new(RichText::new("Remove").color(pal.danger))).clicked() {
+                    match ws.sync_remove_device_in_background(id.clone(), std::mem::take(&mut p.pass)) {
+                        Ok(rx) => p.removal = Some(rx),
+                        Err(e) => p.removed = Some(Err(e)),
+                    }
+                    p.pass2.clear();
+                }
+                if ui.button("Cancel").clicked() {
+                    p.removing = None;
+                    p.pass.clear();
+                    p.pass2.clear();
+                }
+                if p.removal.is_some() {
+                    ui.add(egui::Spinner::new().size(12.0));
+                }
+            });
+        });
+    }
+    match &p.removed {
+        Some(Ok(r)) => {
+            ui.add_space(6.0);
+            ui.label(RichText::new("Removed. The vault's new recovery key:").strong());
+            egui::Frame::NONE.fill(pal.bg).corner_radius(6.0).inner_margin(10.0).show(ui, |ui| {
+                ui.add(egui::Label::new(RichText::new(&r.recovery_key).monospace().color(pal.strong)).wrap());
+            });
+            ui.add(egui::Label::new(small("Save it: the old recovery key opens only what was written before.")).wrap());
+            if !r.left_out.is_empty() {
+                ui.add(egui::Label::new(small(&format!("Not given the new key (they must join again): {}", r.left_out.join(", ")))).wrap());
+            }
+            ui.add(egui::Label::new(small(&r.advice)).wrap());
+            let mut done = false;
+            ui.horizontal(|ui| {
+                if ui.button("Copy").clicked() {
+                    ui.ctx().copy_text(r.recovery_key.clone());
+                }
+                done = ui.button("I've saved it").clicked();
+            });
+            if done {
+                p.removed = None;
+            }
+        }
+        Some(Err(e)) => {
+            ui.add(egui::Label::new(RichText::new(e).color(pal.danger)).wrap());
+        }
+        None => {}
+    }
+    ui.add_space(8.0);
+    if upgraded {
+        ui.add(
+            egui::Label::new(small(
+                "Sync format: 0.13. Revisions are authenticated, devices can be removed, and old history is compacted.",
+            ))
+            .wrap(),
+        );
+        ui.horizontal_wrapped(|ui| {
+            if compacts_here {
+                if ui.button("Compact now").on_hover_text("Fold old revisions into a snapshot; the last 90 days of history stay.").clicked()
+                    && let Err(e) = ws.sync_compact()
+                {
+                    p.list = Some(Err(e));
+                }
+            } else {
+                ui.add(egui::Label::new(small("The sync server compacts its own history.")).wrap());
+            }
+        });
+    } else if p.list.as_ref().is_some_and(Result::is_ok) {
+        ui.add(egui::Label::new(small("Sync format: before 0.13. Upgrading authenticates every revision's header and lets you remove a device and compact old history.")).wrap());
+        match &p.upgrade {
+            None => {
+                if ui.add_enabled(p.upgrade_info.is_none(), egui::Button::new("Upgrade sync format…")).clicked() {
+                    match ws.sync_upgrade_info_in_background() {
+                        Ok(rx) => p.upgrade_info = Some(rx),
+                        Err(e) => p.upgrade = Some(Err(e)),
+                    }
+                }
+            }
+            Some(Err(e)) => {
+                ui.add(egui::Label::new(RichText::new(e).color(pal.danger)).wrap());
+                if ui.button("Close").clicked() {
+                    p.upgrade = None;
+                }
+            }
+            Some(Ok(info)) => {
+                let info = info.clone();
+                egui::Frame::NONE.fill(pal.bg).corner_radius(6.0).inner_margin(10.0).show(ui, |ui| {
+                    ui.add(egui::Label::new(RichText::new("Every device needs Quire 0.13 afterwards.").strong()).wrap());
+                    ui.add(
+                        egui::Label::new(small("Devices on Quire 0.12 or older stop syncing and say “update Quire” until they are updated. This can't be undone."))
+                            .wrap(),
+                    );
+                    if !info.old_devices.is_empty() {
+                        ui.label(RichText::new("Not on 0.13 yet, as far as this vault knows:").color(pal.warn));
+                        for d in &info.old_devices {
+                            ui.add(egui::Label::new(small(&format!("• {d}"))).wrap());
+                        }
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.add_enabled(p.upgrading.is_none(), egui::Button::new("Upgrade")).clicked() {
+                            match ws.sync_upgrade_in_background() {
+                                Ok(rx) => p.upgrading = Some(rx),
+                                Err(e) => p.upgrade = Some(Err(e)),
+                            }
+                        }
+                        if ui.button("Cancel").clicked() {
+                            p.upgrade = None;
+                        }
+                        if p.upgrading.is_some() {
+                            ui.add(egui::Spinner::new().size(12.0));
+                        }
+                    });
+                });
+            }
+        }
+    }
+    if ui.small_button("Refresh").clicked() && !p.sample {
+        p.list = None;
+    }
 }

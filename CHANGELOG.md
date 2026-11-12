@@ -4,6 +4,18 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Added
+
+#### Sync hardening
+- **Remove a device from a sync vault** (Settings → Sync → *Devices and sync format* → *Remove this device*, or `quire-cli sync remove-device`): the other devices get a new vault key, sealed for each of them alone, so the removed device can't read anything written from then on, and whatever it writes later is ignored. It keeps what it already had. A new recovery key is shown once; devices that join later use the passphrase given then. On a sync server each device now has a token of its own, and a removed device's token is refused. What it protects and what it doesn't (the shared storage key of S3, WebDAV and folders): [docs/design/0.13-sync.md](docs/design/0.13-sync.md#2-removing-a-device).
+- **Compaction:** old revisions are folded into a sealed snapshot, keeping every note's current text, the last 90 days and the newest 10 versions of each note; a week later each device deletes its own old logs or objects. For a synced folder, S3 and WebDAV it runs on its own once a day when worth it, with *Compact now* and `quire-cli sync compact [--force] [--keep-days N]`; a sync server compacts by itself with `QUIRE_SYNC_KEEP_DAYS` (off unless set). A device offline for months catches up and merges its edits; two devices compacting at once agree on one snapshot.
+- **The 0.13 sync format**, for new vaults and, once, for existing ones (*Upgrade sync format…* in Settings → Sync, or `quire-cli sync upgrade`, after listing the devices not yet on 0.13): every revision's header (which revision it builds on, which device wrote it) is authenticated on a folder and a server too, not only on S3 and WebDAV, so a sync folder or server can't rewrite it. Quire 0.12 and older then say "update Quire" instead of syncing. Needed for removing devices and compaction.
+- `quire-cli sync devices` lists a vault's devices with the Quire each runs.
+
+### Fixed
+- **Sync:** a note no longer stays behind on devices that never got one of its revisions, when that revision is lost for good (a damaged line in a sync folder, an object deleted from S3 or WebDAV): later revisions name their ancestors, so every device finds the same current version (0.13 sync format).
+- **Sync:** in a sync folder, another device's line that doesn't decrypt is skipped as damaged instead of stopping sync.
+
 ## [0.12.0] - 2026-11-11
 
 Quire 0.12: switching tools (import from more apps and undo it, tidy notes, a Home page), typed links and a hierarchy you can browse (Dataview and Breadcrumbs syntax), sync straight to S3-compatible storage or WebDAV, an import wizard with five more sources, a Markdown tidier and a Home tab, locked folders' notes and pictures in every view while unlocked, and a faster start.

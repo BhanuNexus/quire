@@ -34,7 +34,7 @@ Credentials are kept in the system keychain (or Quire's private secrets file), n
 
 ## Providers
 
-The access key should be able to reach **only Quire's folder in one bucket**. Quire needs to list, read and write objects there, and to delete only the one-off probe of *Test connection* (`quire-sync/.probe-…`). It never needs to create or delete buckets, or delete its revisions.
+The access key should be able to reach **only Quire's folder in one bucket**. Quire needs to list, read and write objects there, and to delete the one-off probe of *Test connection* (`quire-sync/.probe-…`). Since 0.13 it also deletes old revisions once they are compacted (below): a device deletes only objects it wrote itself and old snapshots. It never needs to create or delete buckets. A key that may not delete still syncs; old revisions then stay, and the status says so.
 
 ### AWS S3
 
@@ -47,15 +47,13 @@ The access key should be able to reach **only Quire's folder in one bucket**. Qu
      "Statement": [
        { "Effect": "Allow", "Action": "s3:ListBucket", "Resource": "arn:aws:s3:::my-notes",
          "Condition": { "StringLike": { "s3:prefix": ["quire/quire-sync/*"] } } },
-       { "Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject"],
-         "Resource": "arn:aws:s3:::my-notes/quire/quire-sync/*" },
-       { "Effect": "Allow", "Action": "s3:DeleteObject",
-         "Resource": "arn:aws:s3:::my-notes/quire/quire-sync/.probe-*" }
+       { "Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+         "Resource": "arn:aws:s3:::my-notes/quire/quire-sync/*" }
      ]
    }
    ```
 
-   With this policy a key can't delete revisions, only overwrite them; turn on versioning (step 1) so an overwritten or deleted object can be brought back. See [Credentials and devices](#credentials-and-devices) for a key per device.
+   Turn on versioning (step 1) so an overwritten or deleted object can be brought back; a lifecycle rule that expires *noncurrent* versions after 30 days or so keeps compaction's savings. To keep revisions forever instead, leave `s3:DeleteObject` out except for `quire/quire-sync/.probe-*` (as in 0.12): sync works the same, nothing is compacted away. See [Credentials and devices](#credentials-and-devices) for a key per device.
 3. Create an access key for that user. Endpoint: `https://s3.<region>.amazonaws.com`, region as created. Quire uses `bucket.s3.<region>.amazonaws.com` URLs for AWS automatically, except for bucket names with dots.
 
 Conditional writes: supported.
@@ -111,7 +109,7 @@ Install **WebDAV Server** in Package Center and turn on HTTPS (port 5006 by defa
 
 Every device uses the storage credential you give it. With one shared key, any device's copy of it (on a lost or retired laptop, say) can overwrite or, if the policy allows, delete every device's objects. Quire copes with a lost or damaged object (devices skip it, say so, and its writer uploads it again), but a key that can delete everything can stop sync for everyone. So:
 
-* **Removing a device** means making a new key, giving it to every other device (`quire-cli sync credentials`, or *Update credentials…* in Settings → Sync), and deleting the old key. Unlike a Quire Sync server's tokens, one device's access can't be revoked on its own with a shared key.
+* **Removing a device** (0.13) has two halves. **Remove it from the vault** (Settings → Sync → Devices and sync format → *Remove this device*, or `quire-cli sync remove-device`): the other devices get a new vault key, so it can't read anything written from then on, and whatever it writes is ignored. **And take away its storage access**, because the key it holds can still delete or overwrite objects: make a new key, give it to every other device (`quire-cli sync credentials`, or *Update credentials…*), and delete the old key. With a key per device (below), deleting the removed device's key is enough. What removal does and doesn't protect: [design 0.13 §2](design/0.13-sync.md#2-removing-a-device).
 * **A key per device** (AWS, Wasabi, MinIO: anything with IAM-style policies) limits what a lost device can do. Each device only ever writes its own objects, so its key needs write access only to those. After a device joins, `quire-cli sync status` shows the vault id and this device's id; give that device's key this policy (fill in the bucket, the prefix, the vault id `SPACE` and the device id `DEVICE`):
 
   ```json
@@ -121,21 +119,23 @@ Every device uses the storage credential you give it. With one shared key, any d
       { "Effect": "Allow", "Action": "s3:ListBucket", "Resource": "arn:aws:s3:::my-notes",
         "Condition": { "StringLike": { "s3:prefix": ["quire/quire-sync/*"] } } },
       { "Effect": "Allow", "Action": "s3:GetObject", "Resource": "arn:aws:s3:::my-notes/quire/quire-sync/*" },
-      { "Effect": "Allow", "Action": "s3:PutObject", "Resource": [
+      { "Effect": "Allow", "Action": ["s3:PutObject", "s3:DeleteObject"], "Resource": [
           "arn:aws:s3:::my-notes/quire/quire-sync/SPACE/devices/DEVICE/*",
           "arn:aws:s3:::my-notes/quire/quire-sync/SPACE/tips/DEVICE",
+          "arn:aws:s3:::my-notes/quire/quire-sync/SPACE/snapshots/*-DEVICE/*",
           "arn:aws:s3:::my-notes/quire/quire-sync/.probe-*" ] },
-      { "Effect": "Allow", "Action": "s3:DeleteObject", "Resource": "arn:aws:s3:::my-notes/quire/quire-sync/.probe-*" }
+      { "Effect": "Allow", "Action": "s3:PutObject", "Resource":
+          "arn:aws:s3:::my-notes/quire/quire-sync/SPACE/keys/*-DEVICE.json" }
     ]
   }
   ```
 
-  Join with the shared key first (joining reads `space.json`; making the vault writes it), then switch that device to its own key with `sync credentials`. A lost device's key can then only touch its own revisions, and you can delete that key without touching the others.
+  Join with the shared key first (joining reads `space.json`; making the vault and upgrading it write it), then switch that device to its own key with `sync credentials`. A lost device's key can then only touch its own revisions, snapshots and key records, and you can delete that key without touching the others. Old snapshots made by other devices then stay until their maker deletes them.
 * **Versioning or object lock** (S3, B2, Wasabi, MinIO) keeps earlier versions of every object, so even a key that can delete can't destroy history for good. R2 has no versioning: use per-bucket tokens and keep the bucket for Quire alone.
 
 ## What it costs
 
-Storage holds every revision (Quire doesn't compact yet): roughly the size of your edits over time, each padded to at least 256 bytes, plus each version of each attachment. A typical text vault grows by a few MB a year.
+Storage holds every note's current version, the last 90 days of changes and the newest 10 versions of each note, once the vault uses the 0.13 sync format and has been compacted (a snapshot replaces older revisions; each device deletes its own a week later). Before that, every revision stays: roughly the size of your edits over time, each padded to at least 256 bytes, plus each version of each attachment. A typical text vault holds a few MB.
 
 Requests: each saved change is one upload, plus one small upload (the device's "tip") per sync pass. Each other device then downloads it once. While the app is open, it lists the devices' tips **once a minute** to notice changes, and runs a full pass every 2 minutes (one more listing; on WebDAV also one tiny download per device). That listing is what dominates costs where listings are billed.
 
@@ -173,6 +173,10 @@ Several devices multiply the listing count. A device with the app closed costs n
 | "Revision N of device 1a2b3c4d is missing from the storage" | The newest revision a device announced isn't there after 10 minutes. It's uploaded again when that device next syncs |
 | "This device's tip in the storage says it uploaded N revisions, but…" | This device's mirror was lost and the storage holds far fewer of its revisions than its tip says: turn sync off and on again on this device |
 | "Another computer is syncing as this one" | A copied vault folder: turn sync off and on again on one of them |
+| "This vault was made by a newer Quire; update Quire on this device" | The vault uses the 0.13 sync format: update Quire on this device |
+| "This device was removed from the sync vault on another device" | Join again with the passphrase (Settings → Sync), if it should sync |
+| "Old revisions stay in the storage: this device's key can't delete them" | Give the key `s3:DeleteObject` on Quire's folder (policy above), or leave it: sync works either way |
+| "Some changes use the vault's new key, which this device doesn't have yet" | Another device removed a device; this one takes the key at its next pass. If it stays, this device wasn't given the key: join again |
 
 ## Testing against your own server
 

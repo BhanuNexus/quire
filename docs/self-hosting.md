@@ -43,6 +43,8 @@ QUIRE_SYNC_TOKEN=<your token> QUIRE_SYNC_DB=/var/lib/quire/sync.sqlite ./quire-s
 | `QUIRE_SYNC_TOKEN_FILE` | | Read the token from a file instead, e.g. a Docker or systemd secret |
 | `QUIRE_SYNC_ADDR` | `127.0.0.1:8787` | Where to listen |
 | `QUIRE_SYNC_DB` | `quire-sync.sqlite` | The database file |
+| `QUIRE_SYNC_KEEP_DAYS` | (keep everything) | 0.13: once a day, drop revisions replaced more than this many days ago. Each note's current version and its newest `QUIRE_SYNC_KEEP_VERSIONS` stay, and so does a deleted note's marker; a device offline for longer still catches up |
+| `QUIRE_SYNC_KEEP_VERSIONS` | `20` | The versions of each note compaction always keeps |
 
 ## 3. Put HTTPS in front
 
@@ -64,6 +66,8 @@ On every other device: open the folder you want to sync (an empty one is fine), 
 
 The status bar shows *Synced*, *Syncing…*, *Offline* or *Sync needs attention*; click it to open Settings → Sync.
 
+**Device tokens (0.13).** The server's token is only for setting devices up: at its first sync, each 0.13 device trades it for a token of its own and keeps only that. Removing a device (Settings → Sync → *Devices and sync format*) makes the server refuse its token, and the other devices get a new vault key. A vault in the 0.13 sync format (new vaults, or after *Upgrade sync format…*) takes device tokens only, and tells Quire 0.12 and older to update. If a removed device might know the server's own token (it was set up with Quire 0.12, or the token is written down somewhere), change `QUIRE_SYNC_TOKEN`: devices with their own tokens don't need it, only new devices joining.
+
 ## Backups
 
 Back up the database file (with the server stopped, or with `sqlite3 quire-sync.sqlite ".backup backup.sqlite"`). A backup is still encrypted, so it's safe to keep offsite. Your notes are also plain files on each device, so the server is never the only copy.
@@ -74,6 +78,6 @@ It can see how many notes a vault has, roughly how big each change is (sizes are
 
 ## Limits of this preview
 
-- One token per server, so the server is meant for one person or one household. Accounts come with the managed service.
+- One server token, so the server is meant for one person or one household (each device then has its own token). Accounts come with the managed service.
 - Attachments (images, PDFs and other files) sync up to 10 MB each; bigger files stay on the device they're on.
 - Version history stays on each device; restoring old versions from the server comes later.

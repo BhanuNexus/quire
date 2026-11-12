@@ -309,3 +309,43 @@ fn s3_and_webdav_from_the_command_line() {
     assert!(!refused.status.success() && text(&refused).contains("can't write the recovery key"), "{}", text(&refused));
     assert_eq!(space("A"), before);
 }
+
+/// 0.13: `sync devices`, `upgrade`, `compact` and `remove-device` through a
+/// sync folder, with secrets from the environment and files only.
+#[test]
+fn devices_compaction_and_removing_a_device_from_the_command_line() {
+    let env = Env::new();
+    std::fs::write(env.path("A/Plan.md"), "# Plan\n").unwrap();
+    let (a, b) = (env.path("A").display().to_string(), env.path("B").display().to_string());
+    let dropbox = env.path("Dropbox").display().to_string();
+    let rk = env.path("rk.txt").display().to_string();
+    env.run(&["sync", "join", &a, "--folder", &dropbox, "--create", "--recovery-key-file", &rk, "--device", "laptop"]);
+    env.run(&["sync", "once", &a]);
+    env.run(&["sync", "join", &b, "--folder", &dropbox, "--device", "phone"]);
+    env.run(&["sync", "once", &b]);
+    env.run(&["sync", "once", &a]);
+    let listed = text(&env.run(&["sync", "devices", &a]));
+    assert!(listed.contains("laptop") && listed.contains("phone") && listed.contains("this device"), "{listed}");
+    assert!(listed.contains("Sync format: 0.13"), "{listed}");
+    let up = text(&env.run(&["sync", "upgrade", &a]));
+    assert!(up.contains("already"), "{up}");
+    for i in 0..4 {
+        std::fs::write(env.path("A/Plan.md"), format!("# Plan\n{i}\n")).unwrap();
+        env.run(&["sync", "once", &a]);
+    }
+    let said = text(&env.run(&["sync", "compact", &a, "--force", "--keep-days", "0"]));
+    assert!(said.contains("folded"), "{said}");
+    // Remove the phone; the new recovery key goes to a file, never the screen.
+    let phone = listed.lines().find(|l| l.contains("phone")).unwrap().split_whitespace().next().unwrap().to_string();
+    let rk2 = env.path("rk2.txt").display().to_string();
+    let mut c = env.cmd(&["sync", "remove-device", &a, &phone, "--recovery-key-file", &rk2]);
+    c.env("QUIRE_SYNC_PASSPHRASE", "a brand new passphrase");
+    let out = c.output().unwrap();
+    assert!(out.status.success(), "{}", text(&out));
+    let key = std::fs::read_to_string(&rk2).unwrap();
+    assert!(!text(&out).contains(key.trim()), "the recovery key isn't printed");
+    assert!(text(&out).contains("Removed"), "{}", text(&out));
+    env.run(&["sync", "once", &a]);
+    let listed = text(&env.run(&["sync", "devices", &a]));
+    assert!(listed.lines().any(|l| l.contains(&phone) && l.contains("removed")), "{listed}");
+}

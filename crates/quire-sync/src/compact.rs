@@ -234,7 +234,7 @@ pub fn plan<S: std::hash::BuildHasher, T: std::hash::BuildHasher>(
         if !nodes.contains_key(head) {
             continue;
         }
-        let anc = ancestry(nodes, links, head);
+        let ancestors = ancestry(nodes, links, head);
         // The way to the head: recent replacements and the last few versions.
         let mut cur = head.clone();
         let mut i = 0;
@@ -255,7 +255,7 @@ pub fn plan<S: std::hash::BuildHasher, T: std::hash::BuildHasher>(
         // again), and the way back to where it forked, so its device can
         // still merge three-way.
         for id in by_file.get(file).into_iter().flatten() {
-            if anc.contains(*id) {
+            if ancestors.contains(*id) {
                 continue;
             }
             keep.insert((*id).clone());
@@ -263,7 +263,7 @@ pub fn plan<S: std::hash::BuildHasher, T: std::hash::BuildHasher>(
             for _ in 0..nodes.len() {
                 let Some(p) = nodes.get(&c).and_then(|n| n.parents.first()).cloned() else { break };
                 keep.insert(p.clone());
-                if anc.contains(&p) || !nodes.contains_key(&p) {
+                if ancestors.contains(&p) || !nodes.contains_key(&p) {
                     break;
                 }
                 c = p;

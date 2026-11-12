@@ -54,7 +54,16 @@ pub(crate) const COMMANDS: &[CliCommand] = &[CliCommand {
                         stop the move unless --force
   quire-cli sync scope  <vault> (--only FOLDER… [--exclude FOLDER…] | --all)   change which folders sync (not while a sync runs)
   quire-cli sync share  <vault> on|off          also sync vault settings and review history (agents' suggestions
-                        and runs reach your other devices; every device needs Quire 0.9 or later)",
+                        and runs reach your other devices; every device needs Quire 0.9 or later)
+  quire-cli sync devices <vault>                the vault's devices: id, name, Quire version, removed
+  quire-cli sync remove-device <vault> DEVICE --recovery-key-file F [--passphrase-file F]
+                        a new vault key for every other device; DEVICE can't read what's written from now
+                        on, and what it writes is ignored. A new passphrase (prompt, QUIRE_SYNC_PASSPHRASE or
+                        the file) is for devices that join later; the new recovery key goes in F
+  quire-cli sync upgrade <vault> [--yes]        upgrade the vault's sync format (0.13): authenticated revision
+                        headers, removing devices, compaction. Quire 0.12 and older can't sync it afterwards
+  quire-cli sync compact <vault> [--force] [--keep-days N]   fold old revisions into a snapshot now
+                        (folder, S3, WebDAV; history of the last N days is kept, 90 unless set)",
     run,
 }];
 
@@ -123,8 +132,90 @@ fn run(args: &[String]) -> Result<(), String> {
             );
             Ok(())
         }
+        "devices" => devices(&vault),
+        "remove-device" => remove_device(&vault, args),
+        "upgrade" => upgrade(&vault, args),
+        "compact" => {
+            let keep = flag(args, "--keep-days")
+                .map(|d| d.parse::<u32>().map_err(|_| format!("--keep-days takes a number of days, not “{d}”")))
+                .transpose()?;
+            println!("{}", vault_sync::sync_compact_at(&vault, has(args, "--force"), keep)?);
+            Ok(())
+        }
         other => Err(format!("unknown sync command “{other}”\n\n{}", super::usage())),
     }
+}
+
+fn devices(vault: &Path) -> Result<(), String> {
+    let d = vault_sync::sync_devices_at(vault)?;
+    for x in &d.devices {
+        let mut notes = Vec::new();
+        if x.this {
+            notes.push("this device".to_string());
+        }
+        if x.removed {
+            notes.push("removed".into());
+        }
+        notes.push(x.quire.as_ref().map_or_else(|| "Quire 0.12 or older, or not synced since updating".into(), |v| format!("Quire {v}")));
+        println!("{}  {}  ({})", x.id, x.label, notes.join("; "));
+    }
+    println!(
+        "{}",
+        if d.upgraded {
+            format!("Sync format: 0.13 (key {}).", d.key_epoch)
+        } else {
+            "Sync format: before 0.13. `quire-cli sync upgrade` turns on removing devices and compaction.".into()
+        }
+    );
+    Ok(())
+}
+
+fn remove_device(vault: &Path, args: &[String]) -> Result<(), String> {
+    let device = arg(args, 3)?;
+    let out = PathBuf::from(
+        flag(args, "--recovery-key-file").ok_or("remove-device needs --recovery-key-file F: the new recovery key is written there")?,
+    );
+    if out.exists() {
+        return Err(format!("{} already exists; pick a new file for the recovery key", out.display()));
+    }
+    let pass = read_secret(
+        "Passphrase for devices that join later (8 characters or more; a new one if whoever has that device knows the old)",
+        "QUIRE_SYNC_PASSPHRASE",
+        flag(args, "--passphrase-file"),
+    )?;
+    let probe = out.with_extension("quire-probe");
+    quire_app::atomic::write_new_private(&probe, b"").map_err(|e| format!("can't write the recovery key to {}: {e}", out.display()))?;
+    let _ = std::fs::remove_file(&probe);
+    let r = vault_sync::sync_remove_device_at(vault, device, &pass)?;
+    quire_app::atomic::write_new_private(&out, format!("{}\n", r.recovery_key).as_bytes())
+        .map_err(|e| format!("can't write {}: {e}", out.display()))?;
+    println!("Removed {device}: the other devices get the vault's new key at their next sync.");
+    if !r.left_out.is_empty() {
+        println!("Not given the new key (never synced since updating to 0.13; they must join again): {}", r.left_out.join(", "));
+    }
+    println!("{}", r.advice);
+    println!("The new recovery key is in {} (readable only by you). The old one opens only what was written before.", out.display());
+    Ok(())
+}
+
+fn upgrade(vault: &Path, args: &[String]) -> Result<(), String> {
+    let info = vault_sync::sync_upgrade_info_at(vault)?;
+    if info.upgraded {
+        println!("This vault already uses the 0.13 sync format.");
+        return Ok(());
+    }
+    if !info.old_devices.is_empty() {
+        println!("These devices haven't said they run Quire 0.13; they stop syncing until they're updated:");
+        for d in &info.old_devices {
+            println!("  {d}");
+        }
+    }
+    if !has(args, "--yes") {
+        return Err("Every device needs Quire 0.13 afterwards; run again with --yes to upgrade.".into());
+    }
+    vault_sync::sync_upgrade_at(vault)?;
+    println!("Upgraded: revision headers are authenticated, devices can be removed, history can be compacted.");
+    Ok(())
 }
 
 /// `30s`, `5m`, `1h`.
@@ -514,6 +605,7 @@ pub(crate) fn watch_until(vault: &Path, poll: Duration, stop: &mpsc::Receiver<&'
                     }
                     format!("Synced: {}", report_line(&r))
                 }
+                SyncEvent::Notice(n) => n,
             };
             if line != last && !quiet {
                 println!("{} {line}", now());
