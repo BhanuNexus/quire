@@ -1657,6 +1657,8 @@ impl Workspace {
             | C::InsertSketch
             | C::InsertCitation
             | C::ImportBibliography
+            | C::NewDrawing
+            | C::EmbedNewDrawing
             | C::LockFolder
             | C::UnlockFolder
             | C::LockNow

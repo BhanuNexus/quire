@@ -1555,6 +1555,20 @@ impl History {
         true
     }
 
+    /// Go back to the last checkpoint without a redo step (an edit that
+    /// came to nothing, such as an empty new text).
+    pub fn cancel(&mut self, state: &mut State) -> bool {
+        let Some(prev) = self.undo.pop() else { return false };
+        *state = prev;
+        true
+    }
+
+    /// Forget every step (the drawing was read again).
+    pub fn clear(&mut self) {
+        self.undo.clear();
+        self.redo.clear();
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }

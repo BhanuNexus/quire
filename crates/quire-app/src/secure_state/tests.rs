@@ -688,3 +688,51 @@ fn tidy_leaves_notes_in_locked_folders_alone() {
     assert!(ws.save(id));
     assert_eq!(&*ws.vault().unwrap().read(&np("Journal/Day.md")).unwrap(), "# Day\ntext   \nmore   \n");
 }
+
+/// 0.13: an Excalidraw drawing in a locked folder opens decrypted in memory
+/// and saves encrypted (the drawing note and `.excalidraw` file both, with
+/// history and a copy on conflict); no plain text of it lands on disk, and
+/// nothing opens while the folder is locked.
+#[test]
+fn drawings_in_locked_folders() {
+    use quire_canvas::drawing::{Cx, Drawing, Style};
+    let note = Drawing::new_empty(true).to_text();
+    let file = Drawing::new_empty(false).to_text();
+    let (_dir, root) = vault_dir(&[
+        ("Journal/Sketch.excalidraw.md", note.as_str()),
+        ("Journal/Plan.excalidraw", file.as_str()),
+        ("Plain.md", "# Plain\n"),
+    ]);
+    let mut ws = open(&root);
+    lock_and_wait(&mut ws, "Journal");
+    assert!(root.join("Journal/Sketch.excalidraw.md.qenc").exists() && !root.join("Journal/Sketch.excalidraw.md").exists());
+    for p in ["Journal/Sketch.excalidraw.md", "Journal/Plan.excalidraw"] {
+        let p = np(p);
+        let base = crate::drawings::read_drawing(&ws, &p).expect("unlocked: read from memory");
+        let mut d = Drawing::parse(&base).unwrap();
+        let mut cx = Cx::now();
+        let t = d.new_element("text", 0.0, 0.0, &Style::default(), &mut cx);
+        let id = d.add(t, &mut cx);
+        d.set_text(&id, &format!("{MARK} drawn"), (100.0, 25.0), &mut cx);
+        let text = d.to_text();
+        assert_eq!(crate::drawings::save_drawing(&ws, &p, &base, &text), crate::drawings::Saved::Written);
+        assert_eq!(crate::drawings::read_drawing(&ws, &p).unwrap(), text);
+        assert!(root.join(format!("{p}.qenc")).exists() && !root.join(p.as_str()).exists(), "{p} stays encrypted");
+        // A change elsewhere is never written over; the copy is encrypted too.
+        let copy = crate::drawings::copy_path(&ws, &p, "changed elsewhere").unwrap();
+        ws.vault().unwrap().write(&copy, &text).unwrap();
+        assert!(root.join(format!("{copy}.qenc")).exists() && !root.join(copy.as_str()).exists());
+        assert!(matches!(crate::drawings::save_drawing(&ws, &p, &base, &text), crate::drawings::Saved::ChangedElsewhere(_)));
+    }
+    ws.save_all();
+    ws.history.flush();
+    let found = leaks(&root, MARK);
+    assert!(found.is_empty(), "plain text on disk: {found:#?}");
+    ws.lock_folder_now("Journal");
+    let err = crate::drawings::read_drawing(&ws, &np("Journal/Sketch.excalidraw.md")).unwrap_err();
+    assert!(err.contains("locked folder"), "{err}");
+    assert!(matches!(
+        crate::drawings::save_drawing(&ws, &np("Journal/Sketch.excalidraw.md"), "x", "y"),
+        crate::drawings::Saved::Failed(_) | crate::drawings::Saved::ChangedElsewhere(_)
+    ));
+}

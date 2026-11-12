@@ -54,8 +54,8 @@ pub(crate) fn next_deadline(ws: &Workspace) -> Option<Instant> {
 pub(crate) const fn available(ws: &Workspace, cmd: Command) -> bool {
     let vault = ws.vault.is_some();
     match cmd {
-        Command::NewCanvas | Command::ImportBibliography => vault,
-        Command::InsertSketch | Command::InsertCitation => vault && ws.active.is_some(),
+        Command::NewCanvas | Command::ImportBibliography | Command::NewDrawing => vault,
+        Command::InsertSketch | Command::InsertCitation | Command::EmbedNewDrawing => vault && ws.active.is_some(),
         _ => false,
     }
 }
@@ -84,6 +84,15 @@ pub(crate) fn run(ws: &mut Workspace, cmd: Command) -> Option<UiRequest> {
             None
         }
         Command::InsertCitation | Command::ImportBibliography => Some(UiRequest::Feature(cmd)),
+        // 0.13: Excalidraw drawings open in the drawing editor.
+        Command::NewDrawing | Command::EmbedNewDrawing => {
+            let made = if cmd == Command::NewDrawing { crate::drawings::new_drawing(ws) } else { crate::drawings::embed_new_drawing(ws) };
+            match made {
+                Ok(p) => ws.request_ui(UiRequest::OpenFile(p)),
+                Err(e) => ws.notify(NoticeLevel::Error, e),
+            }
+            None
+        }
         _ => {
             ws.notify(NoticeLevel::Info, format!("{} isn't available yet", cmd.info().title.trim_end_matches('…')));
             None
@@ -147,6 +156,12 @@ pub(crate) fn decoration_event(ws: &mut Workspace, ev: &DecorationEvent) {
 
 /// A file changed in the vault (notes and attachments).
 pub(crate) fn vault_event(ws: &mut Workspace, ev: &VaultEvent) {
+    // 0.13: an open drawing editor takes in a change made elsewhere.
+    let (VaultEvent::Changed(p) | VaultEvent::Removed(p) | VaultEvent::AttachmentChanged(p) | VaultEvent::AttachmentRemoved(p)) = ev;
+    let plain = quire_vault::lock::plain_name(p).unwrap_or_else(|| p.clone());
+    if quire_canvas::excalidraw::is_drawing(plain.as_str()) {
+        *ws.features.canvas.disk_changes.entry(plain).or_default() += 1;
+    }
     match ev {
         VaultEvent::AttachmentChanged(p) | VaultEvent::AttachmentRemoved(p) => {
             let ext = p.as_str().rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
