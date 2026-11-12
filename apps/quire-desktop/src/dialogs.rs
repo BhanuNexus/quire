@@ -75,8 +75,7 @@ impl SettingsState {
         }
         // 0.13: Devices, removing one (with a long name), and the upgrade warning.
         for step in 0..3 {
-            let mut sync = SyncForm::default();
-            sync.devices = DevicesPanel::sample(step);
+            let sync = SyncForm { devices: DevicesPanel::sample(step), ..Default::default() };
             all.push(("settings: sync devices", Self { tab: SettingsTab::Sync, force_tab: true, sync, ..Default::default() }));
         }
         all
@@ -1989,7 +1988,7 @@ impl DevicesPanel {
                 p.upgrade = Some(Ok(UpgradeInfo {
                     upgraded: false,
                     old_devices: vec!["The very long name of the old family desktop in the study (9f8e9f8e)".into()],
-                }))
+                }));
             }
             _ => {}
         }
@@ -2018,7 +2017,7 @@ fn poll_rx<T>(ui: &Ui, rx: &mut Option<Receiver<T>>) -> Option<T> {
 
 /// Settings → Sync → Devices and sync format (0.13): the vault's devices,
 /// "Remove this device", "Upgrade sync format…" and "Compact now".
-fn sync_devices(ui: &mut Ui, p: &mut DevicesPanel, ws: &mut Workspace, compacts_here: bool, pal: &Palette) {
+fn sync_devices(ui: &mut Ui, p: &mut DevicesPanel, ws: &Workspace, compacts_here: bool, pal: &Palette) {
     if p.list.is_none() && p.loading.is_none() && !p.sample {
         match ws.sync_devices_in_background() {
             Ok(rx) => p.loading = Some(rx),

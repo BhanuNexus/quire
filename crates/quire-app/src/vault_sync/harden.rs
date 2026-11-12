@@ -354,14 +354,15 @@ mod tests {
         assert!(list.devices.iter().all(|d| d.quire.as_deref() == Some(env!("CARGO_PKG_VERSION"))));
         assert!(list.devices.iter().any(|d| d.this && d.label.starts_with("laptop")));
         // Some history, then compaction from the CLI's path (with the lock).
-        for i in 0..5 {
+        // More versions than compaction always keeps (10).
+        for i in 0..15 {
             std::fs::write(a.join("Plan.md"), format!("one\n{i}\n")).unwrap();
             sync_once_at(&a).unwrap();
         }
         let said = sync_compact_at(&a, true, Some(0)).unwrap();
         assert!(said.contains("folded"), "{said}");
         sync_once_at(&b).unwrap();
-        assert_eq!(std::fs::read_to_string(b.join("Plan.md")).unwrap(), "one\n4\n");
+        assert_eq!(std::fs::read_to_string(b.join("Plan.md")).unwrap(), "one\n14\n");
         // Remove the phone.
         let phone = list.devices.iter().find(|d| !d.this).unwrap().id.clone();
         assert!(sync_remove_device_at(&a, &phone, "short").is_err());
@@ -379,7 +380,7 @@ mod tests {
         sync_join_at(&c, &target, &space, "second pass phrase", "tablet", &Selection::default()).unwrap();
         sync_once_at(&c).unwrap();
         assert_eq!(std::fs::read_to_string(c.join("After.md")).unwrap(), "after the removal\n");
-        assert_eq!(std::fs::read_to_string(c.join("Plan.md")).unwrap(), "one\n4\n");
+        assert_eq!(std::fs::read_to_string(c.join("Plan.md")).unwrap(), "one\n14\n");
         // The recovery key now opens the new epoch, and through it every older one.
         let rk = r.recovery_key;
         let d = vault(dir.path(), "D");

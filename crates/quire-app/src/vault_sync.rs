@@ -1233,13 +1233,14 @@ impl Session {
         let Some(secret) = self.secret.clone() else { return };
         let admin = self.link.admin();
         if !self.refreshed {
+            // Once a session (a server before 0.13 has nowhere to put it).
             let _ = quire_sync::admin::publish_self(admin, &self.cfg.space, &self.cfg.device, &secret, &self.cfg.device_name, &self.keys);
+            self.refreshed = true;
         }
         let Ok(r) = quire_sync::admin::refresh_keys(admin, &self.cfg.space, &self.cfg.device, Some(&secret), &self.keys, &mut self.pins)
         else {
             return;
         };
-        self.refreshed = true;
         harden::save_pins(&self.root, &self.pins);
         if r.keys.current() > self.keys.current() && harden::store_keys(&self.cfg.space, &r.keys).is_ok() {
             if let Some(k) = r.keys.current_raw() {

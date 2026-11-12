@@ -329,7 +329,8 @@ fn devices_compaction_and_removing_a_device_from_the_command_line() {
     assert!(listed.contains("Sync format: 0.13"), "{listed}");
     let up = text(&env.run(&["sync", "upgrade", &a]));
     assert!(up.contains("already"), "{up}");
-    for i in 0..4 {
+    // More versions than compaction always keeps (10).
+    for i in 0..13 {
         std::fs::write(env.path("A/Plan.md"), format!("# Plan\n{i}\n")).unwrap();
         env.run(&["sync", "once", &a]);
     }

@@ -312,8 +312,15 @@ fn two_devices_compacting_at_once_agree_on_one_snapshot() {
     a.t.tidy();
     let left: Vec<String> = fs::read_dir(&snaps).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
     assert_eq!(left, vec![winner]);
-    // A third one isn't made while another of the same generation is there.
-    assert!(matches!(b.t.compact(ALL, None, true).unwrap(), Compacted::Done(_)), "the next generation is fine once settled");
+    // Nothing more to fold: no snapshot. After more edits, the next generation.
+    assert!(matches!(b.t.compact(ALL, None, true).unwrap(), Compacted::NotWorthIt(_)));
+    for i in 10..13 {
+        a.write("A.md", &format!("a {i}\n"));
+        a.sync();
+    }
+    b.sync();
+    let Compacted::Done(next) = b.t.compact(ALL, None, true).unwrap() else { panic!("the next generation, once settled") };
+    assert_eq!(next.generation, 2);
 }
 
 #[test]

@@ -19,7 +19,7 @@ use sha2::Sha256;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Format version written in front of every sealed record.
-const SEALED_V1: u8 = 1;
+pub const SEALED_V1: u8 = 1;
 /// 0.13: a record sealed under one key epoch of the vault.
 ///
 /// `[2][epoch, u32 little-endian][nonce][ciphertext]`. Readers before 0.13 refuse it
