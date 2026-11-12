@@ -56,6 +56,14 @@ impl KeySet {
         s
     }
 
+    /// The keys of a vault from the key of `epoch` alone (older epochs
+    /// come from the key records, see [`resolve`]).
+    pub fn at(epoch: u32, key: VaultKey) -> Self {
+        let mut s = Self { current: 0, keys: BTreeMap::new(), raw: BTreeMap::new() };
+        s.insert(epoch, key);
+        s
+    }
+
     /// Add the key of `epoch`; the newest epoch is the current one.
     pub fn insert(&mut self, epoch: u32, key: VaultKey) {
         self.keys.insert(epoch, key.keys());

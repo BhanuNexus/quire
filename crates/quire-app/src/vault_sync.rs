@@ -39,6 +39,14 @@ use serde::{Deserialize, Serialize};
 use crate::secrets;
 use crate::workspace::{NoticeLevel, Workspace};
 
+mod harden;
+pub use harden::{
+    DeviceRemoved, Hardening, SyncDevice, SyncDevices, UpgradeInfo, sync_compact_at, sync_devices_at, sync_remove_device_at,
+    sync_upgrade_at, sync_upgrade_info_at,
+};
+use quire_sync::admin::SpaceAdmin;
+use quire_sync::keyring::{DeviceSecret, KeySet, Pins};
+
 /// What's stored in `.quire/sync/config.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncConfig {
@@ -306,6 +314,21 @@ fn token_name(space: &SpaceId) -> String {
 
 fn key_name(space: &SpaceId) -> String {
     format!("sync-key-{space}")
+}
+
+/// The vault key in the keychain and its key epoch: the recovery key, or
+/// (0.13, after a device was removed) `e<epoch>:<recovery key>`.
+fn parse_key(s: &str) -> Option<(u32, VaultKey)> {
+    let (epoch, rk) = match s.strip_prefix('e').and_then(|r| r.split_once(':')) {
+        Some((e, rk)) => (e.parse().ok()?, rk),
+        None => (0, s),
+    };
+    VaultKey::from_recovery_key(rk).ok().map(|k| (epoch, k))
+}
+
+/// The newest vault key this device has for `space`.
+fn read_key(space: &SpaceId) -> Option<VaultKey> {
+    secrets::store().get(&key_name(space)).and_then(|k| parse_key(&k)).map(|(_, k)| k)
 }
 
 /// Where a vault syncs, as chosen in Settings.
@@ -1036,6 +1059,8 @@ fn snapshot_reads(store: &mut VaultStore) {
 enum Msg {
     Nudge,
     Remote,
+    /// Compact now (Settings → Sync → Compact now).
+    Compact,
     Stop,
 }
 
@@ -1045,6 +1070,8 @@ pub enum SyncEvent {
     Status(SyncStatus),
     /// A pass that changed something.
     Report(Report),
+    /// Something to tell the person once (what compaction did).
+    Notice(String),
 }
 
 /// How the worker reaches the other devices.
@@ -1087,6 +1114,24 @@ impl Link {
             Self::Remote(t) => &**t,
         }
     }
+
+    /// Check what's read with the vault's keys (folder, S3, WebDAV).
+    fn with_keys(self, keys: &KeySet) -> Self {
+        match self {
+            Self::Folder(t) => Self::Folder(Box::new(t.with_keys(keys.clone()))),
+            Self::Remote(t) => Self::Remote(Box::new(t.with_keys(keys.clone()))),
+            s @ Self::Server(_) => s,
+        }
+    }
+
+    /// The vault-level side (0.13): device records, key changes, upgrade.
+    fn admin(&self) -> &dyn SpaceAdmin {
+        match self {
+            Self::Server(t) => t,
+            Self::Folder(t) => &**t,
+            Self::Remote(t) => &**t,
+        }
+    }
 }
 
 /// One device's sync of one vault: the engine, its state and the way to
@@ -1103,6 +1148,16 @@ struct Session {
     lane: Option<(FolderTransport, Engine, VaultStore)>,
     /// This device's agent store, to share review history (0.10).
     agent: quire_agent::AgentStore,
+    /// 0.13: the vault's keys this device has, its own key, pinned keys.
+    keys: KeySet,
+    secret: Option<DeviceSecret>,
+    pins: Pins,
+    /// This session published its device record and looked for key changes.
+    refreshed: bool,
+    /// Why this device can't take the vault's newest key (it was removed).
+    key_stuck: Option<String>,
+    /// Compaction was tried this session.
+    compacted: bool,
     /// Held for the session's life: no other process syncs this vault here.
     _lock: SyncLock,
 }
@@ -1116,13 +1171,11 @@ struct Pass {
 
 impl Session {
     fn new(root: PathBuf, vault: Vault, cfg: SyncConfig, token: &str, key: VaultKey, lock: SyncLock) -> Result<Self, String> {
-        let link = match Link::new(&cfg, token, Some(&sync_dir(&root)), Some(&root))? {
-            // Every revision fetched is decrypted before it's mirrored, so a
-            // damaged one is skipped rather than stopping sync.
-            Link::Remote(t) => Link::Remote(Box::new(t.with_keys(key.keys()))),
-            link => link,
-        };
-        let engine = Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), key.keys(), load_state(&root, &cfg));
+        let keys = harden::keyset(&cfg.space, &key);
+        // Every revision fetched (S3, WebDAV) or read (a folder) is decrypted
+        // before it's used, so a damaged one is skipped rather than stopping sync.
+        let link = Link::new(&cfg, token, Some(&sync_dir(&root)), Some(&root))?.with_keys(&keys);
+        let engine = Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), keys.clone(), load_state(&root, &cfg));
         // In a sync folder, vault settings travel in a lane of their own,
         // which 0.8 never reads; the notes lane never touches them.
         let store = if cfg.folder.is_some() {
@@ -1137,7 +1190,128 @@ impl Session {
             device.name = cfg.device_name.trim().to_string();
         }
         let agent = quire_agent::AgentStore::open(&vault, device, Arc::new(quire_agent::SystemClock));
-        Ok(Self { root, vault, cfg, key, link, engine, store, lane: None, agent, _lock: lock })
+        let secret = harden::device_secret(&cfg.device).ok();
+        let pins = harden::load_pins(&root);
+        Ok(Self {
+            root,
+            vault,
+            cfg,
+            key,
+            link,
+            engine,
+            store,
+            lane: None,
+            agent,
+            keys,
+            secret,
+            pins,
+            refreshed: false,
+            key_stuck: None,
+            compacted: false,
+            _lock: lock,
+        })
+    }
+
+    /// 0.13, at the start of a pass: on a 0.13 server, swap the server's
+    /// token for this device's own; publish this device's record; take
+    /// any change of the vault's key (a device was removed), and ignore
+    /// what removed devices write after their cut.
+    fn refresh_keys(&mut self) {
+        if let Link::Server(_) = &self.link
+            && !Hardening::load(&self.root).device_token
+        {
+            self.enroll();
+        }
+        let news = match &self.link {
+            Link::Remote(t) => t.take_key_news(),
+            // A folder is read here; a server answers one small request.
+            _ => true,
+        };
+        if !news && self.refreshed {
+            return;
+        }
+        let Some(secret) = self.secret.clone() else { return };
+        let admin = self.link.admin();
+        if !self.refreshed {
+            let _ = quire_sync::admin::publish_self(admin, &self.cfg.space, &self.cfg.device, &secret, &self.cfg.device_name, &self.keys);
+        }
+        let Ok(r) = quire_sync::admin::refresh_keys(admin, &self.cfg.space, &self.cfg.device, Some(&secret), &self.keys, &mut self.pins)
+        else {
+            return;
+        };
+        self.refreshed = true;
+        harden::save_pins(&self.root, &self.pins);
+        if r.keys.current() > self.keys.current() && harden::store_keys(&self.cfg.space, &r.keys).is_ok() {
+            if let Some(k) = r.keys.current_raw() {
+                self.key = k.clone();
+            }
+            // A newer key: this device's record says so again.
+            let _ = quire_sync::admin::publish_self(admin, &self.cfg.space, &self.cfg.device, &secret, &self.cfg.device_name, &r.keys);
+        }
+        self.keys = r.keys.clone();
+        self.engine.set_keys(r.keys.clone());
+        admin.set_removed(harden::removed_lanes(&r.removed, ""));
+        if let Some((t, e, _)) = self.lane.as_mut() {
+            t.set_keys(r.keys.clone());
+            t.set_removed(harden::removed_lanes(&r.removed, folder::SHARED_LANE));
+            e.set_keys(r.keys);
+        }
+        self.key_stuck = r.stuck.map(|(_, why)| quire_sync::admin::stuck_notice(&why));
+    }
+
+    /// Swap the server's token for one of this device's own (a 0.13
+    /// server): the server can then refuse this device alone if it's removed.
+    fn enroll(&mut self) {
+        let store = secrets::store();
+        let Some(token) = store.get(&token_name(&self.cfg.space)) else { return };
+        let Ok(own) = HttpTransport::enroll(&self.cfg.server, &self.cfg.space, &token, &self.cfg.device) else { return };
+        if store.set(&token_name(&self.cfg.space), &own).is_err() {
+            return;
+        }
+        let mut h = Hardening::load(&self.root);
+        h.device_token = true;
+        if h.save(&self.root).is_ok() {
+            self.link = Link::Server(HttpTransport::new(&self.cfg.server, self.cfg.space.clone(), &own));
+        }
+    }
+
+    /// Fold old revisions into a snapshot (folder, S3, WebDAV; a server
+    /// compacts by itself) and delete what settled snapshots replaced.
+    fn compact(&self, force: bool) -> Result<String, String> {
+        let mut h = Hardening::load(&self.root);
+        let policy = h.policy();
+        h.last_compact = chrono::Utc::now().timestamp();
+        let _ = h.save(&self.root);
+        let out = match &self.link {
+            Link::Server(_) => return Ok("A sync server compacts its own history (QUIRE_SYNC_KEEP_DAYS on the server).".into()),
+            Link::Folder(t) => {
+                let c = t.compact(policy, None, force).map_err(|e| e.to_string())?;
+                let _ = t.tidy();
+                let mut out = harden::describe(&c, "Notes");
+                if let Some((lane, _, _)) = &self.lane {
+                    let c = lane.compact(policy, None, force).map_err(|e| e.to_string())?;
+                    let _ = lane.tidy();
+                    out.push(' ');
+                    out.push_str(&harden::describe(&c, "Vault settings"));
+                }
+                out
+            }
+            Link::Remote(t) => harden::describe(&t.compact(policy, force).map_err(|e| e.to_string())?, "Notes"),
+        };
+        Ok(out)
+    }
+
+    /// After a good pass, at most once a day: compact if worth it.
+    fn maybe_compact(&mut self) {
+        if self.compacted || matches!(self.link, Link::Server(_)) {
+            return;
+        }
+        self.compacted = true;
+        let h = Hardening::load(&self.root);
+        if chrono::Utc::now().timestamp() - h.last_compact < 24 * 3600 {
+            return;
+        }
+        let _ = self.compact(false);
     }
 
     /// Whether `.quire/shared/` travels on this device now (turned on here,
@@ -1161,6 +1335,12 @@ impl Session {
     fn pass(&mut self, poll: Duration) -> Pass {
         // Review history: this device's proposals, decisions and ledger go
         // out with the vault settings, and other devices' come in after.
+        self.refresh_keys();
+        if let Some(why) = self.key_stuck.clone() {
+            let status = SyncStatus::Error(why);
+            let _ = LastPass::record(&self.root, &status, None);
+            return Pass { status, report: None, again: poll.max(Duration::from_mins(5)) };
+        }
         if self.shares_state() {
             export_review(&self.agent);
         }
@@ -1185,12 +1365,13 @@ impl Session {
             && runs_shared_lane(root, cfg)
             && let Some(dir) = &cfg.folder
         {
-            let t = FolderTransport::lane(dir, &cfg.space, cfg.device.clone(), Some(&sync_dir(root)), folder::SHARED_LANE);
+            let t = FolderTransport::lane(dir, &cfg.space, cfg.device.clone(), Some(&sync_dir(root)), folder::SHARED_LANE)
+                .with_keys(self.keys.clone());
             let e = Engine::new(
                 cfg.space.clone(),
                 cfg.device.clone(),
                 cfg.device_name.clone(),
-                self.key.keys(),
+                self.keys.clone(),
                 load_state_named(root, SHARED_STATE_FILE),
             );
             self.lane = Some((t, e, VaultStore::new(self.vault.clone()).shared_only()));
@@ -1400,18 +1581,28 @@ impl SyncWorker {
                     }
                 }),
                 // A server answers a long poll as soon as something changes.
-                Ok(Link::Server(http)) => std::thread::spawn(move || {
-                    while !stop.load(Ordering::Relaxed) {
-                        match http.wait(known.load(Ordering::Relaxed), 25) {
-                            Ok(latest) if latest > known.load(Ordering::Relaxed) => {
-                                let _ = tx.send(Msg::Remote);
-                                std::thread::sleep(Duration::from_millis(300));
+                Ok(Link::Server(mut http)) => {
+                    let (server, space) = (cfg.server.clone(), cfg.space.clone());
+                    std::thread::spawn(move || {
+                        while !stop.load(Ordering::Relaxed) {
+                            match http.wait(known.load(Ordering::Relaxed), 25) {
+                                Ok(latest) if latest > known.load(Ordering::Relaxed) => {
+                                    let _ = tx.send(Msg::Remote);
+                                    std::thread::sleep(Duration::from_millis(300));
+                                }
+                                Ok(_) => {}
+                                Err(_) => {
+                                    // The worker may have swapped the server's token
+                                    // for this device's own (0.13): use what's kept now.
+                                    if let Some(t) = secrets::store().get(&token_name(&space)) {
+                                        http = HttpTransport::new(&server, space.clone(), &t);
+                                    }
+                                    std::thread::sleep(Duration::from_secs(15));
+                                }
                             }
-                            Ok(_) => {}
-                            Err(_) => std::thread::sleep(Duration::from_secs(15)),
                         }
-                    }
-                }),
+                    })
+                }
                 // A folder is checked every couple of seconds (sizes and
                 // times only, so it's cheap).
                 Ok(Link::Folder(dir)) => {
@@ -1493,6 +1684,11 @@ impl SyncWorker {
                             }
                         }
                     }
+                    Ok(Msg::Compact) => {
+                        let _ = events.send(SyncEvent::Status(SyncStatus::Syncing));
+                        let said = session.compact(true).unwrap_or_else(|e| format!("Compaction failed: {e}"));
+                        let _ = events.send(SyncEvent::Notice(said));
+                    }
                     Ok(Msg::Remote) | Err(_) => {}
                 }
                 if stop.load(Ordering::Relaxed) {
@@ -1500,6 +1696,9 @@ impl SyncWorker {
                 }
                 let _ = events.send(SyncEvent::Status(SyncStatus::Syncing));
                 let pass = session.pass(poll);
+                if matches!(pass.status, SyncStatus::Synced(_)) {
+                    session.maybe_compact();
+                }
                 known.store(session.engine.state.cursor, Ordering::Relaxed);
                 if let Some(r) = pass.report {
                     let _ = events.send(SyncEvent::Report(r));
@@ -1523,6 +1722,11 @@ impl SyncWorker {
     /// Sync soon (local files changed).
     pub fn nudge(&self) {
         let _ = self.tx.send(Msg::Nudge);
+    }
+
+    /// Compact the vault's history now (a [`SyncEvent::Notice`] says how it went).
+    pub fn compact(&self) {
+        let _ = self.tx.send(Msg::Compact);
     }
 
     /// What happened since the last call.
@@ -1553,7 +1757,7 @@ fn open_parts(root: &Path) -> Result<(Vault, SyncConfig, String, VaultKey), Stri
     let store = secrets::store();
     // A folder needs no token.
     let token = if cfg.folder.is_some() { Some(String::new()) } else { store.get(&token_name(&cfg.space)) };
-    let key = store.get(&key_name(&cfg.space)).and_then(|k| VaultKey::from_recovery_key(&k).ok());
+    let key = read_key(&cfg.space);
     if cfg.remote.is_some() && token.is_none() && key.is_some() {
         return Err(format!(
             "This device is missing the storage credentials ({}). Enter them again: `quire-cli sync credentials`, or Settings → Sync.",
@@ -1597,6 +1801,15 @@ pub fn sync_share_at(root: &Path, on: bool) -> Result<(), String> {
     }
     cfg.shared_state = on;
     cfg.save(root)
+}
+
+/// Run `f` on a thread of its own; its result arrives on the receiver.
+fn in_background<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Receiver<T> {
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    rx
 }
 
 /// Sync's part of the workspace.
@@ -1698,20 +1911,32 @@ fn create_at(
     let key = VaultKey::generate().map_err(|e| e.to_string())?;
     let cfg = sync_config_for(root, target, SpaceId::random().map_err(|e| e.to_string())?, device_name, selection)?;
     let wrapped = WrappedKey::wrap(&key, passphrase, KDF).map_err(|e| e.to_string())?;
+    // 0.13: a new vault binds revision headers and can remove devices
+    // (docs/design/0.13-sync.md); Quire 0.12 and older can't join it.
+    let mut own_token = None;
     match (target, &cfg.folder) {
         (SyncTarget::Remote { .. }, _) => {
             let store = target.store()?.ok_or("No storage")?;
-            remote::create_space(&*store, &cfg.space, &wrapped).map_err(|e| e.to_string())?;
+            remote::create_space_at(&*store, &cfg.space, &wrapped, remote::LEVEL_HARDENED).map_err(|e| e.to_string())?;
         }
-        (_, Some(dir)) => folder::create_space(dir, &cfg.space, &wrapped).map_err(|e| e.to_string())?,
+        (_, Some(dir)) => folder::create_space_at(dir, &cfg.space, &wrapped, folder::LEVEL_HARDENED).map_err(|e| e.to_string())?,
         (SyncTarget::Server { url, token }, None) => {
             HttpTransport::new(url.trim(), cfg.space.clone(), token.trim()).create_space(&wrapped).map_err(|e| e.to_string())?;
+            // A 0.13 server: this device's own token, then the 0.13 minimum.
+            if let Ok(own) = HttpTransport::enroll(url.trim(), &cfg.space, token.trim(), &cfg.device) {
+                let _ = HttpTransport::new(url.trim(), cfg.space.clone(), &own).set_min_protocol(quire_sync::protocol::HARDENED_PROTOCOL);
+                own_token = Some(own);
+            }
         }
         (SyncTarget::Folder(_), None) => return Err("No sync folder".into()),
     }
     store_sync_secrets(&cfg, target, &key)?;
     remove_sync_files(root);
     cfg.save(root)?;
+    if let Some(own) = &own_token {
+        secrets::store().set(&token_name(&cfg.space), own)?;
+    }
+    Hardening { device_token: own_token.is_some(), ..Hardening::default() }.save(root)?;
     let _ = save_state(root, &cfg, &SyncState::default());
     Ok((key.recovery_key(), cfg))
 }
@@ -1728,19 +1953,39 @@ pub fn sync_join_at(
     selection: &Selection,
 ) -> Result<(), String> {
     let cfg = sync_config_for(root, target, space.clone(), device_name, selection)?;
-    let key = if let Ok(k) = VaultKey::from_recovery_key(secret) {
-        k
-    } else {
-        let wrapped = match (target, &cfg.folder) {
-            (SyncTarget::Remote { .. }, _) => remote::wrapped_key(&*target.store()?.ok_or("No storage")?, space),
-            (_, Some(dir)) => folder::wrapped_key(dir, space),
-            (SyncTarget::Server { url, token }, None) => HttpTransport::new(url.trim(), space.clone(), token.trim()).wrapped_key(),
-            (SyncTarget::Folder(_), None) => return Err("No sync folder".into()),
-        };
-        wrapped.map_err(|e| e.to_string())?.unwrap(secret).map_err(|e| e.to_string())?
+    // A 0.13 server gives this device a token of its own first.
+    let own_token = match target {
+        SyncTarget::Server { url, token } => HttpTransport::enroll(url.trim(), space, token.trim(), &cfg.device).ok(),
+        _ => None,
     };
+    let (wrapped, records) = match (target, &cfg.folder) {
+        (SyncTarget::Remote { .. }, _) => {
+            let store = target.store()?.ok_or("No storage")?;
+            let records =
+                RemoteTransport::new(Arc::clone(&store), space, cfg.device.clone(), None).and_then(|t| t.key_records()).unwrap_or_default();
+            (remote::wrapped_key(&*store, space), records)
+        }
+        (_, Some(dir)) => (folder::wrapped_key(dir, space), FolderTransport::new(dir, space, cfg.device.clone(), None).key_records()),
+        (SyncTarget::Server { url, token }, None) => {
+            let t = HttpTransport::new(url.trim(), space.clone(), own_token.as_deref().unwrap_or_else(|| token.trim()));
+            (t.wrapped_key(), t.key_records().unwrap_or_default())
+        }
+        (SyncTarget::Folder(_), None) => return Err("No sync folder".into()),
+    };
+    let wrapped = match wrapped {
+        Ok(w) => Some(w),
+        Err(_) if VaultKey::from_recovery_key(secret).is_ok() => None,
+        Err(e) => return Err(e.to_string()),
+    };
+    let keys = harden::join_keys(wrapped.as_ref(), &records, secret)?;
+    let key = keys.current_raw().ok_or("no key")?.clone();
     store_sync_secrets(&cfg, target, &key)?;
+    harden::store_keys(&cfg.space, &keys)?;
+    if let Some(own) = &own_token {
+        secrets::store().set(&token_name(&cfg.space), own)?;
+    }
     cfg.save(root)?;
+    Hardening { device_token: own_token.is_some(), ..Hardening::default() }.save(root)?;
     let _ = save_state(root, &cfg, &SyncState::default());
     let _ = std::fs::remove_file(sync_dir(root).join("folder-seq"));
     // A new device id: a mirror from an earlier setup holds nothing to send.
@@ -1764,6 +2009,7 @@ pub fn sync_set_remote_secret_at(root: &Path, secret: &RemoteSecret) -> Result<S
 pub fn sync_stop_at(root: &Path) {
     if let Some(cfg) = SyncConfig::load(root) {
         remove_sync_secrets(&cfg.space);
+        let _ = secrets::store().delete(&harden::device_secret_name(&cfg.device));
     }
     remove_sync_files(root);
 }
@@ -1778,7 +2024,17 @@ fn remove_sync_secrets(space: &SpaceId) {
 /// WebDAV mirror.
 fn remove_sync_files(root: &Path) {
     let dir = sync_dir(root);
-    for f in ["config.json", "state.json", "state-partial.json", "state-shared.json", "last.json", "folder-seq"] {
+    for f in [
+        "config.json",
+        "state.json",
+        "state-partial.json",
+        "state-shared.json",
+        "last.json",
+        "folder-seq",
+        "hardening.json",
+        "peers.json",
+        "snapshots-seen.json",
+    ] {
         let _ = std::fs::remove_file(dir.join(f));
     }
     let _ = std::fs::remove_dir_all(remote_dir(root));
@@ -1991,7 +2247,7 @@ impl Workspace {
         let store = secrets::store();
         // A folder needs no token.
         let token = if cfg.folder.is_some() { Some(String::new()) } else { store.get(&token_name(&cfg.space)) };
-        let key = store.get(&key_name(&cfg.space)).and_then(|k| VaultKey::from_recovery_key(&k).ok());
+        let key = read_key(&cfg.space);
         if cfg.remote.is_some() && token.is_none() && key.is_some() {
             self.sync.config = Some(cfg);
             self.sync.status = SyncStatus::Error("This device is missing the storage credentials. Enter them in Settings → Sync.".into());
@@ -2072,6 +2328,35 @@ impl Workspace {
         Ok(())
     }
 
+    /// The vault's devices, off the UI thread (Settings → Sync → Devices).
+    pub fn sync_devices_in_background(&self) -> Result<Receiver<Result<SyncDevices, String>>, String> {
+        let (root, _) = self.sync_parts()?;
+        Ok(in_background(move || sync_devices_at(&root)))
+    }
+
+    /// Remove a device, off the UI thread; the worker takes the new key at its next pass.
+    pub fn sync_remove_device_in_background(
+        &self,
+        device: String,
+        passphrase: String,
+    ) -> Result<Receiver<Result<DeviceRemoved, String>>, String> {
+        let (root, _) = self.sync_parts()?;
+        let pass = remote::Zeroizing::new(passphrase);
+        Ok(in_background(move || sync_remove_device_at(&root, &device, &pass)))
+    }
+
+    /// Whether the vault is upgraded, and which devices would stop syncing.
+    pub fn sync_upgrade_info_in_background(&self) -> Result<Receiver<Result<UpgradeInfo, String>>, String> {
+        let (root, _) = self.sync_parts()?;
+        Ok(in_background(move || sync_upgrade_info_at(&root)))
+    }
+
+    /// Upgrade the vault's sync format, off the UI thread.
+    pub fn sync_upgrade_in_background(&self) -> Result<Receiver<Result<(), String>>, String> {
+        let (root, _) = self.sync_parts()?;
+        Ok(in_background(move || sync_upgrade_at(&root)))
+    }
+
     /// "Test connection" off the UI thread.
     pub fn sync_test_in_background(target: SyncTarget) -> Receiver<Result<String, String>> {
         let (tx, rx) = crossbeam_channel::bounded(1);
@@ -2107,22 +2392,40 @@ impl Workspace {
         let cfg = self.sync.config.clone()?;
         let (root, _) = self.sync_parts().ok()?;
         let store = secrets::store();
-        let key = store.get(&key_name(&cfg.space)).and_then(|k| VaultKey::from_recovery_key(&k).ok())?;
+        let key = read_key(&cfg.space)?;
         let token = store.get(&token_name(&cfg.space)).unwrap_or_default();
         let (tx, rx) = crossbeam_channel::bounded(1);
         let path = path.as_str().to_string();
         std::thread::spawn(move || {
             // S3 and WebDAV: read the mirror the worker keeps, not the storage.
+            let keys = harden::keyset(&cfg.space, &key);
             let link = if cfg.remote.is_some() {
                 let mirror = RemoteTransport::mirror_root(&remote_dir(&root));
-                Ok(Link::Folder(Box::new(FolderTransport::new(&mirror, &cfg.space, cfg.device.clone(), None))))
+                let mut t = FolderTransport::new(&mirror, &cfg.space, cfg.device.clone(), None);
+                t.set_check_lines(false);
+                Ok(Link::Folder(Box::new(t)))
             } else {
                 Link::new(&cfg, &token, None, None)
             };
-            let engine = Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), key.keys(), load_state(&root, &cfg));
+            // Older key epochs, from the vault's key records (0.13).
+            let link = link.map(|l| l.with_keys(&keys));
+            let keys = link
+                .as_ref()
+                .ok()
+                .and_then(|l| l.admin().key_records().ok())
+                .map_or_else(|| keys.clone(), |recs| quire_sync::keyring::resolve(&keys, &recs, &cfg.device, None, &Pins::default()).keys);
+            let link = link.map(|l| l.with_keys(&keys));
+            let engine = Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), keys, load_state(&root, &cfg));
             let _ = tx.send(link.and_then(|l| engine.history(l.transport(), &path).map_err(|e| e.to_string())));
         });
         Some(rx)
+    }
+
+    /// Compact the vault's sync history now, in the background (Settings →
+    /// Sync); a notice says how it went.
+    pub fn sync_compact(&self) -> Result<(), String> {
+        self.sync.worker.as_ref().ok_or("Sync isn't running")?.compact();
+        Ok(())
     }
 
     /// Ask the worker to sync soon (after a save, or "Sync now").
@@ -2135,7 +2438,7 @@ impl Workspace {
     /// The recovery key for this vault, to show again in Settings.
     pub fn sync_recovery_key(&self) -> Option<String> {
         let cfg = self.sync.config.as_ref()?;
-        secrets::store().get(&key_name(&cfg.space))
+        secrets::store().get(&key_name(&cfg.space)).map(|k| k.split_once(':').map_or_else(|| k.clone(), |(_, rk)| rk.to_string()))
     }
 
     /// Collect worker events. Returns true when something changed.
@@ -2159,6 +2462,7 @@ impl Workspace {
                         self.notify(NoticeLevel::Info, format!("Kept “{p}”: it was edited on one device and deleted on another"));
                     }
                 }
+                SyncEvent::Notice(n) => self.notify(NoticeLevel::Info, n),
             }
         }
         true

@@ -294,6 +294,9 @@ pub struct FolderTransport {
     level: AtomicU32,
     /// How long a snapshot settles (tests shorten it).
     settle: i64,
+    /// Check other devices' lines with the keys (off for a mirror whose
+    /// lines were checked when fetched).
+    check_lines: bool,
 }
 
 /// Whether `s` can be a device id (a folder name under `devices/`).
@@ -332,6 +335,7 @@ impl FolderTransport {
             removed: Mutex::new(BTreeMap::new()),
             level: AtomicU32::new(level),
             settle: crate::compact::SETTLE,
+            check_lines: true,
         }
     }
 
@@ -408,6 +412,12 @@ impl FolderTransport {
     #[doc(hidden)]
     pub const fn set_settle(&mut self, secs: i64) {
         self.settle = secs;
+    }
+
+    /// Whether other devices' lines are checked with the vault's keys
+    /// before they're used (on unless the lines were checked already).
+    pub const fn set_check_lines(&mut self, on: bool) {
+        self.check_lines = on;
     }
 
     /// Forget what was read; the next scan reads everything again (what
@@ -681,7 +691,11 @@ impl FolderTransport {
                 // Checked with the vault's keys (not our own lines): a line
                 // that doesn't open is damaged and skipped; one sealed under
                 // a key this device doesn't have yet waits for it.
-                let check = if own { Ok(()) } else { keys.map_or(Ok(()), |k| Content::open_set(k, &self.space, &r, true).map(|_| ())) };
+                let check = if own || !self.check_lines {
+                    Ok(())
+                } else {
+                    keys.map_or(Ok(()), |k| Content::open_set(k, &self.space, &r, true).map(|_| ()))
+                };
                 if let Err(crate::crypto::CryptoError::UnknownEpoch(_)) = check {
                     ix.waiting_key = true;
                     break;
@@ -933,24 +947,17 @@ impl FolderTransport {
         }) {
             return Ok(Compacted::Busy("another device is compacting".into()));
         }
+        // One revision at a time: only ids, times and sizes stay in memory.
         let mut nodes = HashMap::new();
-        let mut raw: HashMap<RevId, Vec<u8>> = HashMap::new();
         let ids: Vec<RevId> = ix.revs.keys().cloned().collect();
         for id in ids {
             let r = Self::read_rev(&ix, &id)?;
             let opened = Content::open_set(&keys, &self.space, &r, true);
-            let line = serde_json::to_vec(&Revision { seq: 0, ..r.clone() }).unwrap_or_default();
+            let bytes = ix.revs.get(&id).map_or(0, |m| m.loc.len as u64);
             nodes.insert(
-                id.clone(),
-                Node {
-                    file: r.file.clone(),
-                    parents: r.parents.clone(),
-                    at: opened.as_ref().map_or(0, |c| c.at),
-                    bytes: line.len() as u64,
-                    opaque: opened.is_err(),
-                },
+                id,
+                Node { at: opened.as_ref().map_or(0, |c| c.at), bytes, opaque: opened.is_err(), file: r.file, parents: r.parents },
             );
-            raw.insert(id, line);
         }
         let mut files: Vec<FileId> = ix.roots.keys().chain(ix.starts.keys()).cloned().collect();
         files.sort();
@@ -992,8 +999,8 @@ impl FolderTransport {
             Ok(())
         };
         for (id, _) in kept {
-            let Some(line) = raw.get(id) else { continue };
-            buf.extend_from_slice(line);
+            let line = serde_json::to_vec(&Revision { seq: 0, ..Self::read_rev(&ix, id)? }).unwrap_or_default();
+            buf.extend_from_slice(&line);
             buf.push(b'\n');
             lines += 1;
             if buf.len() >= crate::compact::PART_BYTES {

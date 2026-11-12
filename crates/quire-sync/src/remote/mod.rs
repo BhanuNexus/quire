@@ -567,6 +567,8 @@ struct Mirror {
     tidy_note: Option<String>,
     /// Revisions sealed under a key this device doesn't have yet.
     no_key: bool,
+    /// Removed devices: objects past their cut aren't fetched.
+    removed: HashMap<DeviceId, u64>,
     problem: Option<String>,
     /// Why the outbox couldn't be uploaded, last time.
     upload_error: Option<String>,
@@ -711,7 +713,10 @@ impl RemoteTransport {
         };
         let mirror = root.join(&space.0);
         fs::create_dir_all(mirror.join("devices")).map_err(|e| io_err("can't make the sync mirror", &e))?;
-        let folder = FolderTransport::new(&root, space, device.clone(), state_dir);
+        let mut folder = FolderTransport::new(&root, space, device.clone(), state_dir);
+        // Fetched objects are checked before they're mirrored: no need to
+        // decrypt every mirrored line again at each start.
+        folder.set_check_lines(false);
         let nonce = crate::crypto::hex(&crate::crypto::random_bytes::<8>().map_err(|e| TransportError::Refused(e.to_string()))?);
         Ok(Self {
             store,
@@ -1202,10 +1207,12 @@ impl RemoteTransport {
                 m.tried.insert(d.clone(), tip.w.clone());
             }
             let done = m.fetched.get(&d).map_or(0, |p| p.done);
-            if tip.n > done {
-                let limited = self.fetch_into(m, &d, tip.n, &mut budget)?;
+            // A removed device: nothing after its cut is taken, so nothing is fetched.
+            let upto = m.removed.get(&d).map_or(tip.n, |c| tip.n.min(*c));
+            if upto > done {
+                let limited = self.fetch_into(m, &d, upto, &mut budget)?;
                 let now = m.fetched.get(&d).map_or(0, |p| p.done);
-                if now < tip.n {
+                if now < upto {
                     if limited {
                         m.more = true;
                         m.stuck.remove(&d);
@@ -1394,6 +1401,9 @@ impl RemoteTransport {
     fn rewrite_own(&self, cut: u64) -> Result<(), TransportError> {
         let dir = self.device_dir(&self.device);
         let lines = read_logs(&dir);
+        if lines.iter().all(|(n, r)| *n > cut && r.as_ref().is_none_or(|r| r.seq > 0)) {
+            return Ok(());
+        }
         let max = lines.last().map_or(0, |(n, _)| *n);
         let mut keep: Vec<Vec<u8>> = lines
             .iter()
@@ -1472,8 +1482,15 @@ impl RemoteTransport {
         if m.level < LEVEL_HARDENED {
             return Ok(Compacted::NotUpgraded);
         }
-        let mut cut: std::collections::BTreeMap<DeviceId, LanePos> =
-            m.fetched.iter().filter(|(_, p)| p.done > 0).map(|(d, p)| (d.clone(), LanePos { n: p.done, ..LanePos::default() })).collect();
+        // Up to what's mirrored, and never past an object skipped as
+        // missing: it may still come back, after the cut.
+        let mut cut: std::collections::BTreeMap<DeviceId, LanePos> = m
+            .fetched
+            .iter()
+            .map(|(d, p)| (d, p.lost.first().map_or(p.done, |(a, _)| a - 1).min(p.done)))
+            .filter(|(_, n)| *n > 0)
+            .map(|(d, n)| (d.clone(), LanePos { n, ..LanePos::default() }))
+            .collect();
         if m.uploaded > 0 {
             cut.insert(self.device.clone(), LanePos { n: m.uploaded, ..LanePos::default() });
         }
@@ -1572,19 +1589,21 @@ impl RemoteTransport {
         Ok(out)
     }
 
-    /// How far each device's revisions have been fetched here (this
-    /// device's: uploaded), as positions.
+    /// What each device's tip says it uploaded (the storage's word, read
+    /// now; nothing is fetched), as positions.
     pub fn lane_ends(&self) -> Result<std::collections::BTreeMap<DeviceId, LanePos>, TransportError> {
-        self.refresh()?;
-        let m = self.lock();
-        let mut out: std::collections::BTreeMap<DeviceId, LanePos> =
-            m.fetched.iter().map(|(d, p)| (d.clone(), LanePos { n: p.done, ..LanePos::default() })).collect();
-        out.insert(self.device.clone(), LanePos { n: m.uploaded.max(m.own), ..LanePos::default() });
+        let mut out = std::collections::BTreeMap::new();
+        for d in self.writers()? {
+            if let Some(t) = self.read_tip(&d)? {
+                out.insert(d, LanePos { n: t.n, ..LanePos::default() });
+            }
+        }
         Ok(out)
     }
 
     /// Devices removed from the vault, and the last object still taken from each.
     pub fn set_removed(&self, removed: std::collections::BTreeMap<DeviceId, LanePos>) {
+        self.lock().removed = removed.iter().map(|(d, p)| (d.clone(), p.n)).collect();
         self.folder.set_removed(removed);
     }
 
