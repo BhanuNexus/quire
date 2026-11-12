@@ -358,8 +358,8 @@ jobs:
       - name: The app lists Markdown (.md) files for "Open With"
         run: |
           plutil -p dist/Quire.app/Contents/Info.plist > "$RUNNER_TEMP/plist.txt"
-          grep -q 'CFBundleDocumentTypes' "$RUNNER_TEMP/plist.txt"
-          grep -q 'net.daringfireball.markdown' "$RUNNER_TEMP/plist.txt"
+          # Not listed for .md in Finder until the open-file event is handled (docs/design/0.13-pack.md §3).
+          ! grep -q 'CFBundleDocumentTypes' "$RUNNER_TEMP/plist.txt"
       - name: The full edition includes the engine, Quire Lite doesn't
         run: |
           engine=dist/Quire.app/Contents/MacOS/quire-ai-engine

@@ -4,6 +4,10 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-13
+
+Quire 0.13: edit Excalidraw drawings, remove a device from sync and keep sync small with compaction, a stronger sync format, typed links in Settings, the web app and published sites, and ARM64 Linux and Flatpak builds.
+
 ### Added
 
 #### Sync hardening
@@ -30,7 +34,7 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 #### Packaging
 - **ARM64 Linux:** `.deb` (`arm64`), AppImage and `.tar.gz` (`aarch64`) for both editions, built natively on GitHub's arm64 runners. The full edition includes the on-device AI engine, as on x86_64; Quire Lite downloads the aarch64 engine when on-device AI is turned on. The sync server stays x86_64 only.
 - **Flatpak (x86_64 and ARM64):** `Quire-<version>-linux-<arch>.flatpak`, the full edition, built from source for each release; `flatpak install --user` it. Manifest, permissions and what a Flathub submission needs: [packaging/flatpak/README.md](packaging/flatpak/README.md). Not on Flathub yet.
-- **Quire is listed under *Open with* for `.md` files** by the Linux packages and the Flatpak (`text/markdown`), and by the Windows installer (a component, *Offer Quire for .md files*, on by default; the portable zip changes nothing). It never makes itself the default. On macOS Quire is listed in Finder's *Open With*, but opening a file that way doesn't work yet (the app doesn't get Finder's open-file event); `open -a Quire --args notes.md`, `quire notes.md` and a drop on the window do. Each file opens in its own Quire window. Only `.md` files, not `.markdown`. Details: [docs/design/0.13-pack.md](docs/design/0.13-pack.md).
+- **Quire is listed under *Open with* for `.md` files** by the Linux packages and the Flatpak (`text/markdown`), and by the Windows installer (a component, *Offer Quire for .md files*, on by default; the portable zip changes nothing). It never makes itself the default. On macOS Quire isn't offered in Finder's *Open With* yet (the app can't get Finder's open-file event); `open -a Quire --args notes.md`, `quire notes.md` and a drop on the window work. Each file opens in its own Quire window. Only `.md` files, not `.markdown`. Details: [docs/design/0.13-pack.md](docs/design/0.13-pack.md).
 - The AppStream file has four screenshots, the release's date and notes (from this changelog), and lists `text/markdown`.
 
 ### Changed
@@ -539,7 +543,8 @@ Downloads for Windows, macOS (universal) and Linux are attached to the release, 
 ### Added
 - First version: live Markdown styling, wikilinks with rename refactoring, backlinks, related notes, daily notes, templates, command palette, quick open, inline calculator and natural-language dates.
 
-[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/BhanuNexus/quire/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/BhanuNexus/quire/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/BhanuNexus/quire/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/BhanuNexus/quire/compare/v0.9.1...v0.10.2

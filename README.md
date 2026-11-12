@@ -76,11 +76,11 @@ The Flatpak is built from source for each release, for x86_64 and ARM64, and is 
 
 ### Opening `.md` files from your file manager
 
-Quire opens a Markdown file outside any vault on its own (`quire notes.md`; a file inside a vault opens in it). The Linux packages, the Flatpak and the Windows installer also list Quire under *Open with* for `.md` files. None of them makes Quire the default for `.md`: you choose that in your system (right-click → *Open With* → *Always use this app*, or Settings → Default apps on Windows).
+Quire opens a Markdown file outside any vault on its own (`quire notes.md`; a file inside a vault opens in it). The Linux packages, the Flatpak and the Windows installer list Quire under *Open with* for `.md` files. None of them makes Quire the default for `.md`: you choose that in your system (right-click → *Open With* → *Always use this app*, or Settings → Default apps on Windows).
 
 - **Linux:** the desktop entry has `MimeType=text/markdown;text/x-markdown;` and `Exec=quire %f`. If you installed with `install.sh`, it is installed for you.
 - **Windows:** the installer has a component, *Offer Quire for .md files* (on by default). The portable zip does nothing; use *Open with → Choose another app*.
-- **macOS:** Finder's *Open With* lists Quire for `.md` files, but **opening a file that way doesn't work yet**: the app doesn't receive Finder's open-file event (see [docs/design/0.13-pack.md](docs/design/0.13-pack.md#3-md-file-associations)). Use `open -a Quire --args notes.md`, `quire notes.md` from a terminal, or drop the file on Quire's window.
+- **macOS:** Quire isn't offered in Finder's *Open With* yet: the app can't receive Finder's open-file event without unsafe code (see [docs/design/0.13-pack.md](docs/design/0.13-pack.md#3-md-file-associations)). Use `open -a Quire --args notes.md`, `quire notes.md` from a terminal, or drop the file on Quire's window.
 - Each file you open starts its own Quire window: there is no single running copy to hand it to yet. Only `.md` files are offered; Quire doesn't open `.markdown` files.
 
 ## Build and run
