@@ -20,6 +20,12 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Format version written in front of every sealed record.
 const SEALED_V1: u8 = 1;
+/// 0.13: a record sealed under one key epoch of the vault.
+///
+/// `[2][epoch, u32 little-endian][nonce][ciphertext]`. Readers before 0.13 refuse it
+/// ([`CryptoError::UnknownVersion`]), which only happens in a vault whose
+/// minimum reader already keeps them out.
+pub const SEALED_V2: u8 = 2;
 const NONCE_LEN: usize = 24;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -36,6 +42,8 @@ pub enum CryptoError {
     BadRecoveryKey,
     #[error("the system couldn't provide random numbers")]
     NoRandomness,
+    #[error("this device doesn't have the vault's key {0} (it changed when a device was removed)")]
+    UnknownEpoch(u32),
 }
 
 pub(crate) fn random_bytes<const N: usize>() -> Result<[u8; N], CryptoError> {
@@ -59,6 +67,9 @@ impl std::fmt::Debug for VaultKey {
 pub struct Keys {
     content: [u8; 32],
     blob_id: [u8; 32],
+    /// Authenticates sync metadata that isn't a revision (0.13: snapshots,
+    /// device records, key records).
+    mac: [u8; 32],
 }
 
 impl std::fmt::Debug for Keys {
@@ -77,16 +88,8 @@ impl VaultKey {
     }
 
     pub fn keys(&self) -> Keys {
-        // HKDF-SHA256 (RFC 5869). For a 32-byte output, Expand is one HMAC
-        // block, T(1) = HMAC(PRK, info || 0x01), so no output buffer is needed.
-        let (prk, _) = hkdf::Hkdf::<Sha256>::extract(Some(b"quire-sync v1"), &self.0);
-        let expand = |info: &[u8]| -> [u8; 32] {
-            let mut mac = Hmac::<Sha256>::new_from_slice(&prk).unwrap_or_else(|_| unreachable!("HMAC takes any key length"));
-            mac.update(info);
-            mac.update(&[1]);
-            mac.finalize().into_bytes().into()
-        };
-        Keys { content: expand(b"content"), blob_id: expand(b"blob-id") }
+        let expand = |info: &[u8]| hkdf32(b"quire-sync v1", &self.0, info);
+        Keys { content: expand(b"content"), blob_id: expand(b"blob-id"), mac: expand(b"mac") }
     }
 
     /// The raw key, for a format that derives its own subkeys from a key
@@ -114,6 +117,48 @@ impl Keys {
         open_with(&self.content, sealed, aad).map_err(|e| if e == CryptoError::WrongPassphrase { CryptoError::Tampered } else { e })
     }
 
+    /// Encrypt `plain` as a [`SEALED_V2`] record of key epoch `epoch`. The
+    /// epoch is in the clear (readers need it to pick the key), so `aad`
+    /// must name it too.
+    pub fn seal_epoch(&self, epoch: u32, plain: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
+        let inner = seal_with(&self.content, plain, aad)?;
+        let mut out = Vec::with_capacity(inner.len() + 4);
+        out.push(SEALED_V2);
+        out.extend_from_slice(&epoch.to_le_bytes());
+        out.extend_from_slice(&inner[1..]);
+        Ok(out)
+    }
+
+    /// Open a [`SEALED_V2`] record (the caller picked these keys by its epoch).
+    pub fn open_epoch(&self, sealed: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
+        let rest = sealed.get(5..).ok_or(CryptoError::Truncated)?;
+        if sealed.first() != Some(&SEALED_V2) {
+            return Err(CryptoError::UnknownVersion(sealed.first().copied().unwrap_or(0)));
+        }
+        let mut v1 = Vec::with_capacity(rest.len() + 1);
+        v1.push(SEALED_V1);
+        v1.extend_from_slice(rest);
+        self.open(&v1, aad)
+    }
+
+    /// An HMAC-SHA256 of `data` for `purpose`, with this vault key's MAC subkey.
+    pub fn mac(&self, purpose: &str, data: &[u8]) -> [u8; 32] {
+        let mut mac = Hmac::<Sha256>::new_from_slice(&self.mac).unwrap_or_else(|_| unreachable!("HMAC takes any key length"));
+        mac.update(purpose.as_bytes());
+        mac.update(&[0]);
+        mac.update(data);
+        mac.finalize().into_bytes().into()
+    }
+
+    /// Whether `tag` is [`Self::mac`] of `data` (in constant time).
+    pub fn verify_mac(&self, purpose: &str, data: &[u8], tag: &[u8]) -> bool {
+        let mut mac = Hmac::<Sha256>::new_from_slice(&self.mac).unwrap_or_else(|_| unreachable!("HMAC takes any key length"));
+        mac.update(purpose.as_bytes());
+        mac.update(&[0]);
+        mac.update(data);
+        mac.verify_slice(tag).is_ok()
+    }
+
     /// A content id for an attachment that reveals nothing about its bytes.
     pub fn blob_id(&self, plain: &[u8]) -> String {
         let mut mac = Hmac::<Sha256>::new_from_slice(&self.blob_id).unwrap_or_else(|_| unreachable!("HMAC takes any key length"));
@@ -122,7 +167,26 @@ impl Keys {
     }
 }
 
-fn seal_with(key: &[u8; 32], plain: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
+/// HKDF-SHA256 (RFC 5869) with a 32-byte output. For that length Expand is
+/// one HMAC block, T(1) = HMAC(PRK, info || 0x01), so no output buffer is needed.
+pub(crate) fn hkdf32(salt: &[u8], ikm: &[u8], info: &[u8]) -> [u8; 32] {
+    let (prk, _) = hkdf::Hkdf::<Sha256>::extract(Some(salt), ikm);
+    let mut mac = Hmac::<Sha256>::new_from_slice(&prk).unwrap_or_else(|_| unreachable!("HMAC takes any key length"));
+    mac.update(info);
+    mac.update(&[1]);
+    mac.finalize().into_bytes().into()
+}
+
+/// The key epoch a sealed record names: 0 for [`SEALED_V1`] records.
+pub fn sealed_epoch(sealed: &[u8]) -> Option<u32> {
+    match *sealed.first()? {
+        SEALED_V1 => Some(0),
+        SEALED_V2 => Some(u32::from_le_bytes(sealed.get(1..5)?.try_into().ok()?)),
+        _ => None,
+    }
+}
+
+pub(crate) fn seal_with(key: &[u8; 32], plain: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let nonce: [u8; NONCE_LEN] = random_bytes()?;
     let cipher = XChaCha20Poly1305::new(key.into());
     let ct = cipher.encrypt(&XNonce::from(nonce), Payload { msg: plain, aad }).map_err(|_| CryptoError::Tampered)?;
@@ -133,7 +197,7 @@ fn seal_with(key: &[u8; 32], plain: &[u8], aad: &[u8]) -> Result<Vec<u8>, Crypto
     Ok(out)
 }
 
-fn open_with(key: &[u8; 32], sealed: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
+pub(crate) fn open_with(key: &[u8; 32], sealed: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let (&version, rest) = sealed.split_first().ok_or(CryptoError::Truncated)?;
     if version != SEALED_V1 {
         return Err(CryptoError::UnknownVersion(version));

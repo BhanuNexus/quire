@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::protocol::{FileId, PushOutcome, RevId, Revision};
+use crate::protocol::{FileId, PushOutcome, RevId, Revision, Sealing};
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum TransportError {
@@ -35,6 +35,21 @@ pub trait Transport {
         None
     }
 
+    /// [`Self::fork_base`], also telling apart a fork whose shared revision
+    /// is gone: `ours` was written here, `theirs` doesn't build on it, and
+    /// the revisions between them were folded into a snapshot (0.13
+    /// compaction). The engine can't merge three-way then, so it keeps
+    /// both versions.
+    fn fork(&self, file: &FileId, ours: &RevId, theirs: &Revision) -> Fork {
+        self.fork_base(file, ours, theirs).map_or(Fork::Builds, Fork::Base)
+    }
+
+    /// How revisions sent here are sealed (0.13: [`Sealing::Epoch`] in a
+    /// vault whose minimum reader is 0.13).
+    fn sealing(&self) -> Sealing {
+        if self.binds_header() { Sealing::Bound } else { Sealing::Plain }
+    }
+
     /// Whether revisions sent here are sealed with their whole header bound
     /// ([`crate::Content::seal_bound`]): only where no Quire older than 0.12
     /// reads them (S3 and WebDAV). A server and a sync folder keep the old
@@ -48,6 +63,18 @@ pub trait Transport {
         let _ = file;
         Err(TransportError::Refused("this sync server doesn't keep history; update it".into()))
     }
+}
+
+/// See [`Transport::fork`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Fork {
+    /// `theirs` builds on `ours` (or this device wrote nothing it lacks).
+    Builds,
+    /// Merge this device's changes again from this shared revision.
+    Base(Revision),
+    /// Changes written here aren't in `theirs`, and the revision both
+    /// share was compacted away: keep both versions.
+    Unknown,
 }
 
 #[derive(Debug, Default)]

@@ -70,10 +70,12 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::crypto::{Keys, WrappedKey};
-use crate::folder::FolderTransport;
-use crate::protocol::{Content, DeviceId, FileId, PushOutcome, RevId, Revision, SpaceId};
-use crate::transport::{Transport, TransportError};
+use crate::compact::{Manifest, Policy};
+use crate::crypto::{CryptoError, WrappedKey};
+use crate::folder::{Compacted, FolderTransport};
+use crate::keyring::{DeviceRecord, EpochRecord, KeySet};
+use crate::protocol::{Content, DeviceId, FileId, LanePos, PushOutcome, RevId, Revision, Sealing, SpaceId};
+use crate::transport::{Fork, Transport, TransportError};
 
 pub use s3::{S3Config, S3Credentials, S3Store};
 pub use webdav::{WebDavConfig, WebDavCredentials, WebDavStore};
@@ -84,6 +86,12 @@ pub use zeroize::Zeroizing;
 pub const ROOT: &str = "quire-sync";
 /// The format of remote spaces; Quire 0.12 is the first to read it.
 pub const FORMAT: u32 = 3;
+/// The minimum reader of a 0.13 vault in the storage (key epochs, revision
+/// chains, compaction; `docs/design/0.13-sync.md`). 0.12 refuses it with
+/// "made by a newer Quire".
+pub const LEVEL_HARDENED: u32 = 4;
+/// The newest minimum reader this build reads.
+pub const READER: u32 = 4;
 /// A revision object, at most: a 10 MB attachment is about 14 MB sealed.
 pub const MAX_OBJECT: u64 = 64 * 1024 * 1024;
 /// `space.json` and tips are small.
@@ -259,14 +267,20 @@ fn put_new(store: &dyn ObjectStore, key: &str, body: &[u8], conditional: &Atomic
     store.put(key, body, false)
 }
 
-/// Make a new vault in the storage.
+/// Make a new vault in the storage that Quire 0.12 reads.
 pub fn create_space(store: &dyn ObjectStore, space: &SpaceId, key: &WrappedKey) -> Result<(), TransportError> {
+    create_space_at(store, space, key, FORMAT)
+}
+
+/// Make a new vault whose minimum reader is `level` (0.13 makes new vaults
+/// at [`LEVEL_HARDENED`]).
+pub fn create_space_at(store: &dyn ObjectStore, space: &SpaceId, key: &WrappedKey, level: u32) -> Result<(), TransportError> {
     let file = SpaceFile {
-        format: FORMAT,
+        format: level.max(FORMAT),
         space: space.clone(),
         created: unix_now(),
         wrapped_key: key.clone(),
-        min_reader: FORMAT,
+        min_reader: level.max(FORMAT),
         other: serde_json::Map::new(),
     };
     let json = serde_json::to_vec_pretty(&file).unwrap_or_default();
@@ -285,10 +299,29 @@ fn read_space(store: &dyn ObjectStore, space: &SpaceId) -> Result<SpaceFile, Tra
     if f.space != *space {
         return Err(TransportError::Refused("the vault's space.json in the storage names another vault".into()));
     }
-    if f.min_reader > FORMAT {
+    if f.min_reader > READER {
         return Err(TransportError::Refused("this vault was made by a newer Quire; update Quire on this device".into()));
     }
     Ok(f)
+}
+
+/// The vault's minimum reader ([`LEVEL_HARDENED`] once upgraded).
+pub fn level(store: &dyn ObjectStore, space: &SpaceId) -> Result<u32, TransportError> {
+    Ok(read_space(store, space)?.min_reader)
+}
+
+/// Keep Quire older than `level` out of this vault (it refuses it with
+/// "made by a newer Quire"). Other fields are kept; it never lowers.
+pub fn raise_level(store: &dyn ObjectStore, space: &SpaceId, level: u32) -> Result<(), TransportError> {
+    let mut f = read_space(store, space)?;
+    if f.min_reader >= level {
+        return Ok(());
+    }
+    f.format = f.format.max(level);
+    f.min_reader = level;
+    let json = serde_json::to_vec_pretty(&f).unwrap_or_default();
+    store.put(&format!("{}space.json", space_dir(space)), &json, false)?;
+    Ok(())
 }
 
 /// A vault's wrapped key, to join it from a new device.
@@ -363,11 +396,23 @@ pub fn probe(store: &dyn ObjectStore) -> Result<Probe, StoreError> {
 
 /// A device's tip: how many revisions it has uploaded, and which process
 /// wrote it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct Tip {
     n: u64,
     #[serde(default)]
     w: String,
+    /// 0.13: the snapshot this device made or uses (`<generation>-<maker>`),
+    /// so the others notice a new one without listing.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    s: String,
+    /// 0.13: the key epoch this device uses.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    k: u32,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref, reason = "serde's skip_serializing_if passes a reference")]
+const fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// A revision as stored: `quire-rev/1`, its ids as JSON, then the sealed
@@ -386,7 +431,12 @@ pub fn decode_object(b: &[u8]) -> Option<Revision> {
     let rest = b.strip_prefix(MAGIC)?;
     let nl = rest.iter().position(|&c| c == b'\n')?;
     let mut r: Revision = serde_json::from_slice(&rest[..nl]).ok()?;
-    let ids_ok = is_id(&r.file.0) && is_id(&r.rev.0) && is_id(&r.device.0) && r.parents.iter().all(|p| is_id(&p.0)) && r.parents.len() <= 2;
+    let ids_ok = is_id(&r.file.0)
+        && is_id(&r.rev.0)
+        && is_id(&r.device.0)
+        && r.parents.iter().chain(r.chain.iter()).all(|p| is_id(&p.0))
+        && r.parents.len() <= 2
+        && r.chain.len() <= crate::protocol::CHAIN;
     if !ids_ok || !r.sealed.is_empty() {
         return None;
     }
@@ -459,6 +509,8 @@ struct LostLine {
 enum Got {
     Missing,
     Bad,
+    /// Sealed under a key epoch this device doesn't have yet: fetched again later.
+    NoKey,
     Rev(Revision),
 }
 
@@ -501,6 +553,20 @@ struct Mirror {
     tip_written: Option<u64>,
     /// Own revisions not yet uploaded, by number.
     outbox: Vec<(u64, Revision)>,
+    /// The vault's minimum reader, read once per session.
+    level: u32,
+    /// Snapshots mirrored here (0.13).
+    snaps: HashSet<String>,
+    /// The snapshot and key epoch this device's tip last said.
+    tip_meta: (String, u32),
+    /// A tip names a key epoch newer than this device has: read the key records.
+    keys_news: bool,
+    /// Old objects were tidied away this session (or couldn't be).
+    tidied: bool,
+    /// Why old objects couldn't be deleted.
+    tidy_note: Option<String>,
+    /// Revisions sealed under a key this device doesn't have yet.
+    no_key: bool,
     problem: Option<String>,
     /// Why the outbox couldn't be uploaded, last time.
     upload_error: Option<String>,
@@ -521,7 +587,7 @@ pub struct RemoteTransport {
     conditional: AtomicBool,
     /// The vault's keys: every fetched revision is decrypted before it's
     /// mirrored, so a damaged one is skipped instead of stopping the engine.
-    keys: Option<Keys>,
+    keys: Mutex<Option<KeySet>>,
     _temp: Option<TempDir>,
 }
 
@@ -533,25 +599,35 @@ fn shared_identity() -> String {
     "Another computer is syncing as this one (a copy of this vault's .quire folder?). Turn sync off and on again on one of them.".into()
 }
 
-/// The lines of a device's mirrored logs, in order: a revision, or `None`
-/// for a [`LostLine`]. Torn or damaged lines are skipped, as the folder
-/// transport skips them.
-fn read_logs(dir: &Path) -> Vec<Option<Revision>> {
+/// The lines of a device's mirrored logs, in order, with their object
+/// numbers: a revision, or `None` for a [`LostLine`]. A line's number is
+/// its `seq` (0.13 mirrors number every line), else one more than the
+/// line before. Torn or damaged lines are skipped, as the folder transport
+/// skips them.
+fn read_logs(dir: &Path) -> Vec<(u64, Option<Revision>)> {
     let Ok(rd) = fs::read_dir(dir) else { return Vec::new() };
     let mut files: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "jsonl")).collect();
     files.sort();
     let mut out = Vec::new();
+    let mut n = 0;
     for f in files {
         let Ok(bytes) = fs::read(&f) else { continue };
         for line in bytes.split(|&b| b == b'\n') {
             if let Ok(r) = serde_json::from_slice::<Revision>(line) {
-                out.push(Some(r));
-            } else if serde_json::from_slice::<LostLine>(line).is_ok() {
-                out.push(None);
+                n = if r.seq > 0 { r.seq } else { n + 1 };
+                out.push((n, Some(r)));
+            } else if let Ok(l) = serde_json::from_slice::<LostLine>(line) {
+                n = l.lost.max(n + 1);
+                out.push((n, None));
             }
         }
     }
     out
+}
+
+/// A mirrored line for object `n`.
+fn mirror_line(r: &Revision, n: u64) -> Vec<u8> {
+    serde_json::to_vec(&Revision { seq: n, ..r.clone() }).unwrap_or_default()
 }
 
 fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -565,8 +641,8 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// Append whole lines to a device's mirrored log, starting a fresh line
 /// after a torn one, and a new segment past 1 MiB. If the write fails, the
 /// file is cut back to where it was, so no part of the batch stays.
-fn append_lines(dir: &Path, revs: &[Revision]) -> Result<(), TransportError> {
-    let lines: Vec<Vec<u8>> = revs.iter().map(|r| serde_json::to_vec(&Revision { seq: 0, ..r.clone() }).unwrap_or_default()).collect();
+fn append_lines(dir: &Path, revs: &[(u64, Revision)]) -> Result<(), TransportError> {
+    let lines: Vec<Vec<u8>> = revs.iter().map(|(n, r)| mirror_line(r, *n)).collect();
     append_raw(dir, &lines)
 }
 
@@ -646,7 +722,7 @@ impl RemoteTransport {
             state: Mutex::new(Mirror::default()),
             nonce,
             conditional: AtomicBool::new(true),
-            keys: None,
+            keys: Mutex::new(None),
             _temp: temp,
         })
     }
@@ -656,9 +732,27 @@ impl RemoteTransport {
     /// the engine. Revisions are sealed with their header bound anyway
     /// ([`Transport::binds_header`]); without keys only their shape is checked.
     #[must_use]
-    pub fn with_keys(mut self, keys: Keys) -> Self {
-        self.keys = Some(keys);
+    pub fn with_keys(self, keys: impl Into<KeySet>) -> Self {
+        let keys = keys.into();
+        self.folder.set_keys(keys.clone());
+        *self.keys.lock().unwrap_or_else(PoisonError::into_inner) = Some(keys);
         self
+    }
+
+    /// The vault's key changed (a device was removed): use these from now on.
+    pub fn set_keys(&self, keys: KeySet) {
+        self.folder.set_keys(keys.clone());
+        *self.keys.lock().unwrap_or_else(PoisonError::into_inner) = Some(keys);
+        let mut m = self.lock();
+        if m.no_key {
+            // Objects that waited for the key are fetched again.
+            m.no_key = false;
+            m.seen.clear();
+        }
+    }
+
+    fn keyset(&self) -> Option<KeySet> {
+        self.keys.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
     /// Where the mirror of `space` is, under a state folder (for reading
@@ -724,6 +818,12 @@ impl RemoteTransport {
         if m.more {
             out.push("Still downloading other devices' changes.".into());
         }
+        if m.no_key {
+            out.push("Some changes use the vault's new key, which this device doesn't have yet.".into());
+        }
+        if let Some(n) = &m.tidy_note {
+            out.push(n.clone());
+        }
         (!out.is_empty()).then(|| out.join(" "))
     }
 
@@ -776,11 +876,12 @@ impl RemoteTransport {
             let id = DeviceId(name);
             if id != self.device && !m.fetched.contains_key(&id) {
                 // A mirror from before `progress.json`: one line per object.
-                m.fetched.insert(id, Progress { done: read_logs(&d.path()).len() as u64, lost: Vec::new() });
+                m.fetched.insert(id, Progress { done: read_logs(&d.path()).last().map_or(0, |(n, _)| *n), lost: Vec::new() });
             }
         }
         let mut own = read_logs(&self.device_dir(&self.device));
-        m.own = own.len() as u64;
+        m.own = own.last().map_or(0, |(n, _)| *n);
+        m.level = read_space(&*self.store, &self.space).map_or(FORMAT, |f| f.min_reader);
         let tip = self.read_tip(&self.device)?.map_or(0, |t| t.n);
         // This device's objects, listed once per session.
         let listed = if tip > 0 {
@@ -798,10 +899,10 @@ impl RemoteTransport {
             // before the folder transport first reads its own log.
             self.restore(m, tip, listed.as_ref())?;
             own = read_logs(&self.device_dir(&self.device));
-            m.own = own.len() as u64;
+            m.own = own.last().map_or(0, |(n, _)| *n).max(m.own);
         }
         m.uploaded = tip;
-        m.outbox = own.iter().zip(1u64..).filter(|(_, n)| *n > tip).filter_map(|(r, n)| r.clone().map(|r| (n, r))).collect();
+        m.outbox = own.iter().filter(|(n, _)| *n > tip).filter_map(|(n, r)| r.clone().map(|r| (*n, r))).collect();
         if let Some(l) = &listed {
             self.repair(m, &own, tip, l)?;
         }
@@ -816,11 +917,11 @@ impl RemoteTransport {
     /// What fetched bytes are: a revision of device `d` (and, with the
     /// vault's keys, one that decrypts), or damaged.
     fn check(&self, bytes: &[u8], d: &DeviceId) -> Got {
-        match decode_object(bytes) {
-            Some(r) if r.device == *d && self.keys.as_ref().is_none_or(|k| Content::open_hinted(k, &self.space, &r, true).is_ok()) => {
-                Got::Rev(r)
-            }
-            _ => Got::Bad,
+        let Some(r) = decode_object(bytes).filter(|r| r.device == *d) else { return Got::Bad };
+        match self.keyset().map(|k| Content::open_set(&k, &self.space, &r, true)) {
+            None | Some(Ok(_)) => Got::Rev(r),
+            Some(Err(CryptoError::UnknownEpoch(_))) => Got::NoKey,
+            Some(Err(_)) => Got::Bad,
         }
     }
 
@@ -858,6 +959,14 @@ impl RemoteTransport {
             }
         }
         let dir = self.device_dir(&self.device);
+        // Objects before the first one there were compacted away (0.13):
+        // numbering goes on after them.
+        if let Some(first) = listed.and_then(|l| l.keys().copied().filter(|&n| n > m.own).min())
+            && first > m.own + 1
+        {
+            append_raw(&dir, &[serde_json::to_vec(&LostLine { lost: first - 1 }).unwrap_or_default()])?;
+            m.own = first - 1;
+        }
         let mut budget = u64::MAX;
         while m.own < tip {
             let nums: Vec<u64> = (m.own + 1..=tip.min(m.own + BATCH)).collect();
@@ -866,7 +975,7 @@ impl RemoteTransport {
             let mut stopped = false;
             for (n, g) in nums.iter().zip(got) {
                 match g {
-                    Got::Rev(r) => lines.push(serde_json::to_vec(&Revision { seq: 0, ..r }).unwrap_or_default()),
+                    Got::Rev(r) => lines.push(mirror_line(&r, *n)),
                     // Without a listing, a gap may be one still arriving.
                     _ if listed.is_none() => {
                         stopped = true;
@@ -889,13 +998,13 @@ impl RemoteTransport {
     fn repair(
         &self,
         m: &mut Mirror,
-        own: &[Option<Revision>],
+        own: &[(u64, Option<Revision>)],
         upto: u64,
         listed: &HashMap<u64, Option<u64>>,
     ) -> Result<(), TransportError> {
         let mut todo = Vec::new();
-        for (r, n) in own.iter().zip(1u64..).take_while(|(_, n)| *n <= upto) {
-            let Some(r) = r else { continue };
+        for (n, r) in own.iter().filter(|(n, _)| *n <= upto) {
+            let (n, Some(r)) = (*n, r) else { continue };
             let body = encode_object(r);
             match listed.get(&n) {
                 None => todo.push((n, r, body, false)),
@@ -953,8 +1062,17 @@ impl RemoteTransport {
             if *budget == 0 {
                 return Ok(true);
             }
-            let nums: Vec<u64> = (done + 1..=cap.min(done + BATCH)).collect();
-            let got = self.get_many(d, &nums, budget)?;
+            let mut nums: Vec<u64> = (done + 1..=cap.min(done + BATCH)).collect();
+            let mut got = self.get_many(d, &nums, budget)?;
+            // Sealed under a key this device doesn't have yet: stop before it.
+            if let Some(i) = got.iter().position(|g| matches!(g, Got::NoKey)) {
+                m.no_key = true;
+                got.truncate(i);
+                nums.truncate(i);
+                if nums.is_empty() {
+                    return Ok(false);
+                }
+            }
             let cut = if let Some(i) = got.iter().rposition(|g| !matches!(g, Got::Missing)) {
                 nums[i]
             } else {
@@ -975,8 +1093,8 @@ impl RemoteTransport {
                     break;
                 }
                 match g {
-                    Got::Rev(r) => revs.push(r),
-                    Got::Missing | Got::Bad => lost.push(*n),
+                    Got::Rev(r) => revs.push((*n, r)),
+                    Got::Missing | Got::Bad | Got::NoKey => lost.push(*n),
                 }
             }
             append_lines(&dir, &revs)?;
@@ -1003,7 +1121,7 @@ impl RemoteTransport {
             let mut found = Vec::new();
             for (n, g) in nums.iter().zip(got) {
                 if let Got::Rev(r) = g {
-                    revs.push(r);
+                    revs.push((*n, r));
                     found.push(*n);
                 }
             }
@@ -1040,6 +1158,17 @@ impl RemoteTransport {
             }
             let d = DeviceId(e.name.clone());
             let Some(tip) = self.read_tip(&d)? else { continue };
+            // 0.13: a snapshot or a key change another device made.
+            if !tip.s.is_empty()
+                && !m.snaps.contains(&tip.s)
+                && crate::compact::parse_name(&tip.s).is_some()
+                && self.fetch_snapshot(&tip.s)?
+            {
+                m.snaps.insert(tip.s.clone());
+            }
+            if tip.k > self.keyset().map_or(0, |k| k.current()) {
+                m.keys_news = true;
+            }
             if d == self.device {
                 // Ours: unless this process wrote it, someone else writes as us.
                 if tip.w != self.nonce && (m.tip_written.is_some() || tip.n != m.uploaded) {
@@ -1104,10 +1233,15 @@ impl RemoteTransport {
             m.uploaded = m.outbox[done - 1].0;
         }
         m.outbox.drain(..done);
-        if m.tip_written != Some(m.uploaded) && (m.uploaded > 0 || m.tip_written.is_some()) {
-            let tip = serde_json::to_vec(&Tip { n: m.uploaded, w: self.nonce.clone() }).unwrap_or_default();
+        let meta = (self.folder.generation().map(|(g, _)| g.name()).unwrap_or_default(), self.keyset().map_or(0, |k| k.current()));
+        let meta_changed = meta != m.tip_meta && (!meta.0.is_empty() || meta.1 > 0);
+        if (m.tip_written != Some(m.uploaded) || meta_changed) && (m.uploaded > 0 || m.tip_written.is_some() || meta_changed) {
+            let tip = serde_json::to_vec(&Tip { n: m.uploaded, w: self.nonce.clone(), s: meta.0.clone(), k: meta.1 }).unwrap_or_default();
             match self.store.put(&tip_key(&self.space, &self.device), &tip, false) {
-                Ok(_) => m.tip_written = Some(m.uploaded),
+                Ok(_) => {
+                    m.tip_written = Some(m.uploaded);
+                    m.tip_meta = meta;
+                }
                 Err(e) => err = err.or(Some(e)),
             }
         }
@@ -1130,12 +1264,310 @@ impl RemoteTransport {
         let mut m = self.lock();
         self.start(&mut m)?;
         self.download(&mut m)?;
-        self.upload(&mut m)
+        if self.adopt(&mut m)? {
+            // Lanes past the snapshot's cut are fetched again, numbered.
+            self.download(&mut m)?;
+        }
+        self.upload(&mut m)?;
+        if !m.tidied {
+            m.tidied = true;
+            m.tidy_note = self.tidy(&m).err();
+        }
+        Ok(())
     }
 
     /// Changes whenever another device uploads (one listing).
     pub fn fingerprint(&self) -> Result<u64, TransportError> {
         fingerprint(&*self.store, &self.space, &self.device)
+    }
+
+    /// The vault's minimum reader, as read this session.
+    pub fn level(&self) -> u32 {
+        let mut m = self.lock();
+        if !m.started {
+            let _ = self.start(&mut m);
+        }
+        m.level
+    }
+
+    /// Upgrade the vault to 0.13 sync (`docs/design/0.13-sync.md` §3).
+    pub fn raise_level(&self, level: u32) -> Result<(), TransportError> {
+        raise_level(&*self.store, &self.space, level)?;
+        self.lock().level = level;
+        Ok(())
+    }
+
+    /// A tip named a key epoch newer than this device's: read the key records.
+    pub fn take_key_news(&self) -> bool {
+        std::mem::take(&mut self.lock().keys_news)
+    }
+
+    /// Mirror snapshot `name` from the storage, checked against its
+    /// manifest. `false` if it isn't complete or authentic (yet).
+    fn fetch_snapshot(&self, name: &str) -> Result<bool, TransportError> {
+        let Some(keys) = self.keyset() else { return Ok(false) };
+        let dir = self.mirror.join("snapshots").join(name);
+        if dir.join("manifest.json").is_file() {
+            return Ok(true);
+        }
+        let base = format!("{}snapshots/{name}/", space_dir(&self.space));
+        let Some(bytes) = self.store.get(&format!("{base}manifest"), MAX_OBJECT)? else { return Ok(false) };
+        let Ok(man) = serde_json::from_slice::<Manifest>(&bytes) else { return Ok(false) };
+        if man.name() != name || !man.verify(&keys, &self.space, "") {
+            return Ok(false);
+        }
+        let tmp = self.mirror.join("snapshots").join(format!(".{name}.tmp"));
+        let werr = |e: std::io::Error| io_err("can't write the sync mirror", &e);
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).map_err(werr)?;
+        let names: Vec<&crate::compact::Part> = man.parts.iter().filter(|p| crate::compact::parse_part(&p.name)).collect();
+        if names.len() != man.parts.len() {
+            return Ok(false);
+        }
+        let got = parallel(&names, |p| self.store.get(&format!("{base}{}", p.name), MAX_OBJECT));
+        for (p, g) in names.iter().zip(got) {
+            let Some(b) = g? else { return Ok(false) };
+            if b.len() as u64 != p.size || crate::compact::sha256_hex(&b) != p.sha256 {
+                return Ok(false);
+            }
+            write_atomically(&tmp.join(&p.name), &b).map_err(werr)?;
+        }
+        write_atomically(&tmp.join("manifest.json"), &bytes).map_err(werr)?;
+        let _ = fs::remove_dir_all(&dir);
+        fs::rename(&tmp, &dir).map_err(werr)?;
+        Ok(true)
+    }
+
+    /// Take the snapshot the mirror now uses: other devices' lanes are
+    /// mirrored again from its cut, numbered, and this device's own lane
+    /// keeps only what follows it. `true` if anything changed.
+    fn adopt(&self, m: &mut Mirror) -> Result<bool, TransportError> {
+        let Some((g, _)) = self.folder.generation() else { return Ok(false) };
+        let name = g.name();
+        let path = self.mirror.join("adopted");
+        if fs::read_to_string(&path).ok().as_deref() == Some(name.as_str()) {
+            m.snaps.insert(name);
+            return Ok(false);
+        }
+        for (d, c) in &g.cut {
+            if c.n == 0 || !is_id(&d.0) {
+                continue;
+            }
+            if *d == self.device {
+                self.rewrite_own(c.n)?;
+                continue;
+            }
+            let _ = fs::remove_dir_all(self.device_dir(d));
+            let p = m.fetched.entry(d.clone()).or_default();
+            p.done = c.n;
+            p.lost = p.lost.iter().filter(|(_, b)| *b > c.n).map(|&(a, b)| (a.max(c.n + 1), b)).collect();
+        }
+        m.stuck.clear();
+        m.seen.clear();
+        self.save_progress(m)?;
+        write_atomically(&path, name.as_bytes()).map_err(|e| io_err("can't write the sync mirror", &e))?;
+        m.snaps.insert(name);
+        self.folder.reload();
+        Ok(true)
+    }
+
+    /// Keep only this device's own mirrored lines after `cut`, numbered.
+    fn rewrite_own(&self, cut: u64) -> Result<(), TransportError> {
+        let dir = self.device_dir(&self.device);
+        let lines = read_logs(&dir);
+        let max = lines.last().map_or(0, |(n, _)| *n);
+        let mut keep: Vec<Vec<u8>> = lines
+            .iter()
+            .filter(|(n, _)| *n > cut)
+            .map(|(n, r)| match r {
+                Some(r) => mirror_line(r, *n),
+                None => serde_json::to_vec(&LostLine { lost: *n }).unwrap_or_default(),
+            })
+            .collect();
+        if keep.is_empty() && max > 0 {
+            // The numbering goes on from here.
+            keep.push(serde_json::to_vec(&LostLine { lost: max }).unwrap_or_default());
+        }
+        let werr = |e: std::io::Error| io_err("can't write the sync mirror", &e);
+        let (tmp, old) = (dir.with_extension("new"), dir.with_extension("old"));
+        let _ = fs::remove_dir_all(&tmp);
+        let _ = fs::remove_dir_all(&old);
+        fs::create_dir_all(&tmp).map_err(werr)?;
+        append_raw(&tmp, &keep)?;
+        if dir.exists() {
+            fs::rename(&dir, &old).map_err(werr)?;
+        }
+        fs::rename(&tmp, &dir).map_err(werr)?;
+        let _ = fs::remove_dir_all(&old);
+        Ok(())
+    }
+
+    /// Once a snapshot has settled: delete this device's own objects up to
+    /// its cut, and older snapshots. A key that may not delete (the IAM
+    /// policy in docs/sync-backends.md before 0.13) leaves them, and says so.
+    fn tidy(&self, m: &Mirror) -> Result<(), String> {
+        let Some((g, seen)) = self.folder.generation() else { return Ok(()) };
+        if unix_now() - seen < self.folder.settle() {
+            return Ok(());
+        }
+        let cut = g.cut.get(&self.device).map_or(0, |c| c.n).min(m.uploaded);
+        let cant = |e: StoreError| format!("Old revisions stay in the storage: this device's key can't delete them ({e}).");
+        if cut > 0 {
+            let listed = self.store.list(&format!("{}devices/{}/", space_dir(&self.space), self.device)).map_err(|e| e.to_string())?;
+            let old: Vec<u64> = numbers(&listed).keys().copied().filter(|&n| n <= cut).collect();
+            for r in parallel(&old, |n| self.store.delete(&object_key(&self.space, &self.device, *n))) {
+                match r {
+                    Ok(()) => {}
+                    Err(e @ (StoreError::Auth(_) | StoreError::Refused(_))) => return Err(cant(e)),
+                    Err(e) => return Err(e.to_string()),
+                }
+            }
+        }
+        let snaps = self.store.list(&format!("{}snapshots/", space_dir(&self.space))).map_err(|e| e.to_string())?;
+        for e in snaps.iter().filter(|e| e.dir) {
+            let older =
+                crate::compact::parse_name(&e.name).is_some_and(|(n, _)| n < g.generation || (n == g.generation && e.name != g.name()));
+            if !older {
+                continue;
+            }
+            let base = format!("{}snapshots/{}/", space_dir(&self.space), e.name);
+            for f in self.store.list(&base).unwrap_or_default().iter().filter(|f| !f.dir) {
+                if f.name == "manifest" || crate::compact::parse_part(&f.name) {
+                    let _ = self.store.delete(&format!("{base}{}", f.name));
+                }
+            }
+            let _ = fs::remove_dir_all(self.mirror.join("snapshots").join(&e.name));
+        }
+        Ok(())
+    }
+
+    /// Fold old revisions into a snapshot in the storage (see
+    /// [`FolderTransport::compact`]).
+    pub fn compact(&self, policy: Policy, force: bool) -> Result<Compacted, TransportError> {
+        self.refresh()?;
+        let mut m = self.lock();
+        if m.level < LEVEL_HARDENED {
+            return Ok(Compacted::NotUpgraded);
+        }
+        let mut cut: std::collections::BTreeMap<DeviceId, LanePos> =
+            m.fetched.iter().filter(|(_, p)| p.done > 0).map(|(d, p)| (d.clone(), LanePos { n: p.done, ..LanePos::default() })).collect();
+        if m.uploaded > 0 {
+            cut.insert(self.device.clone(), LanePos { n: m.uploaded, ..LanePos::default() });
+        }
+        let res = self.folder.compact(policy, Some(cut), force)?;
+        let Compacted::Done(man) = &res else { return Ok(res) };
+        let name = man.name();
+        let local = self.mirror.join("snapshots").join(&name);
+        // Another device made one meanwhile: let it settle.
+        let there = self.store.list(&format!("{}snapshots/", space_dir(&self.space)))?;
+        if there.iter().any(|e| e.dir && crate::compact::parse_name(&e.name).is_some_and(|(g, _)| g >= man.generation)) {
+            let _ = fs::remove_dir_all(&local);
+            self.folder.reload();
+            return Ok(Compacted::Busy("another device is compacting".into()));
+        }
+        let base = format!("{}snapshots/{name}/", space_dir(&self.space));
+        let parts: Vec<&crate::compact::Part> = man.parts.iter().collect();
+        for r in parallel(&parts, |p| {
+            let b = fs::read(local.join(&p.name)).map_err(|e| StoreError::Refused(e.to_string()))?;
+            self.store.put(&format!("{base}{}", p.name), &b, false)
+        }) {
+            r?;
+        }
+        let body = fs::read(local.join("manifest.json")).map_err(|e| io_err("can't read the sync mirror", &e))?;
+        put_new(&*self.store, &format!("{base}manifest"), &body, &self.conditional)?;
+        m.snaps.insert(name);
+        self.adopt(&mut m)?;
+        self.upload(&mut m)?;
+        Ok(res)
+    }
+
+    /// The vault's key records (0.13), cached in the mirror.
+    pub fn key_records(&self) -> Result<Vec<EpochRecord>, TransportError> {
+        let cache = self.mirror.join("keys");
+        let listed = self.store.list(&format!("{}keys/", space_dir(&self.space)))?;
+        let mut out = Vec::new();
+        for e in listed.iter().filter(|e| !e.dir) {
+            let Some(stem) = e.name.strip_suffix(".json").filter(|n| crate::compact::parse_name(n).is_some()) else { continue };
+            let file = cache.join(format!("{stem}.json"));
+            let bytes = if let Ok(b) = fs::read(&file) {
+                b
+            } else {
+                let Some(b) = self.store.get(&format!("{}keys/{stem}.json", space_dir(&self.space)), MAX_SMALL)? else { continue };
+                let _ = fs::create_dir_all(&cache);
+                let _ = write_atomically(&file, &b);
+                b
+            };
+            if let Ok(r) = serde_json::from_slice::<EpochRecord>(&bytes)
+                && r.space == self.space
+            {
+                out.push(r);
+            }
+        }
+        out.sort_by(|a, b| (a.epoch, &a.maker).cmp(&(b.epoch, &b.maker)));
+        Ok(out)
+    }
+
+    /// Write a key record (once; never changed).
+    pub fn put_key_record(&self, r: &EpochRecord) -> Result<(), TransportError> {
+        let key = format!("{}keys/{}.json", space_dir(&self.space), crate::compact::name(r.epoch, &r.maker));
+        match put_new(&*self.store, &key, &serde_json::to_vec_pretty(r).unwrap_or_default(), &self.conditional)? {
+            Put::Done => {
+                let mut m = self.lock();
+                m.tip_meta = (String::new(), 0);
+                Ok(())
+            }
+            Put::Exists => Err(TransportError::Refused("that key record is already in the storage".into())),
+        }
+    }
+
+    /// Every device's record (0.13 devices publish one).
+    pub fn device_records(&self) -> Result<Vec<DeviceRecord>, TransportError> {
+        let listed = self.store.list(&format!("{}devices/", space_dir(&self.space)))?;
+        let ids: Vec<String> = listed.into_iter().filter(|e| e.dir && is_id(&e.name)).map(|e| e.name).take(MAX_DEVICES).collect();
+        let got = parallel(&ids, |d| self.store.get(&format!("{}devices/{d}/device.json", space_dir(&self.space)), MAX_SMALL));
+        let mut out = Vec::new();
+        for (d, g) in ids.iter().zip(got) {
+            if let Some(r) = g?.and_then(|b| serde_json::from_slice::<DeviceRecord>(&b).ok()).filter(|r| r.device.0 == *d) {
+                out.push(r);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Publish this device's record.
+    pub fn put_device_record(&self, r: &DeviceRecord) -> Result<(), TransportError> {
+        let key = format!("{}devices/{}/device.json", space_dir(&self.space), self.device);
+        self.store.put(&key, &serde_json::to_vec_pretty(r).unwrap_or_default(), false)?;
+        Ok(())
+    }
+
+    /// Devices that have uploaded revisions (they have a tip).
+    pub fn writers(&self) -> Result<Vec<DeviceId>, TransportError> {
+        let tips = self.store.list(&format!("{}tips/", space_dir(&self.space)))?;
+        let mut out: Vec<DeviceId> = tips.into_iter().filter(|e| !e.dir && is_id(&e.name)).map(|e| DeviceId(e.name)).collect();
+        out.sort();
+        Ok(out)
+    }
+
+    /// How far each device's revisions have been fetched here (this
+    /// device's: uploaded), as positions.
+    pub fn lane_ends(&self) -> Result<std::collections::BTreeMap<DeviceId, LanePos>, TransportError> {
+        self.refresh()?;
+        let m = self.lock();
+        let mut out: std::collections::BTreeMap<DeviceId, LanePos> =
+            m.fetched.iter().map(|(d, p)| (d.clone(), LanePos { n: p.done, ..LanePos::default() })).collect();
+        out.insert(self.device.clone(), LanePos { n: m.uploaded.max(m.own), ..LanePos::default() });
+        Ok(out)
+    }
+
+    /// Devices removed from the vault, and the last object still taken from each.
+    pub fn set_removed(&self, removed: std::collections::BTreeMap<DeviceId, LanePos>) {
+        self.folder.set_removed(removed);
+    }
+
+    /// The snapshot in use, and when it was first seen here.
+    pub fn generation(&self) -> Option<(Manifest, i64)> {
+        self.folder.generation()
     }
 }
 
@@ -1172,7 +1604,7 @@ impl Transport for RemoteTransport {
         if let Some(p) = &m.problem {
             return Err(TransportError::Refused(p.clone()));
         }
-        let out = self.folder.push(rev)?;
+        let out = self.folder.push_numbered(rev, m.own + 1)?;
         if matches!(out, PushOutcome::Accepted { .. }) {
             m.own += 1;
             let n = m.own;
@@ -1183,6 +1615,14 @@ impl Transport for RemoteTransport {
 
     fn fork_base(&self, file: &FileId, ours: &RevId, theirs: &Revision) -> Option<Revision> {
         self.folder.fork_base(file, ours, theirs)
+    }
+
+    fn fork(&self, file: &FileId, ours: &RevId, theirs: &Revision) -> Fork {
+        self.folder.fork(file, ours, theirs)
+    }
+
+    fn sealing(&self) -> Sealing {
+        if self.level() >= LEVEL_HARDENED { Sealing::Epoch } else { Sealing::Bound }
     }
 
     /// No Quire before 0.12 reads this storage, so revisions bind their
@@ -1333,6 +1773,7 @@ mod tests {
             seq: 0,
             device: device.clone(),
             sealed: vec![0, 1, 2, 255],
+            chain: vec![],
         }
     }
 

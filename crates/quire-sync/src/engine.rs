@@ -39,9 +39,10 @@ use serde::{Deserialize, Serialize};
 
 use quire_text::merge;
 
-use crate::crypto::{CryptoError, Keys};
-use crate::protocol::{Content, DeviceId, FileId, PushOutcome, RevId, Revision, SpaceId};
-use crate::transport::{Transport, TransportError};
+use crate::crypto::CryptoError;
+use crate::keyring::KeySet;
+use crate::protocol::{CHAIN, Content, DeviceId, FileId, PushOutcome, RevId, Revision, Sealing, SpaceId};
+use crate::transport::{Fork, Transport, TransportError};
 
 /// A folder of notes, as the engine sees it. Paths are vault-relative with `/`.
 ///
@@ -156,6 +157,16 @@ pub struct Tracked {
     /// as it is now, wherever it moved (never copied aside, never lost).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kept: Option<KeptCopy>,
+    /// `head`'s first-parent ancestors (its parent first), at most
+    /// [`CHAIN`]: a revision built on `head` names them (0.13, see
+    /// [`Revision::chain`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub up: Vec<RevId>,
+}
+
+/// The first-parent ancestors a revision built on `r` names.
+fn ancestors_of(r: &Revision) -> Vec<RevId> {
+    r.parents.first().into_iter().chain(r.chain.iter()).take(CHAIN).cloned().collect()
 }
 
 /// See [`Tracked::kept`].
@@ -239,7 +250,7 @@ pub struct Engine {
     pub device: DeviceId,
     /// Shown in conflict copy names, e.g. "Asha's laptop".
     pub device_name: String,
-    keys: Keys,
+    keys: KeySet,
     pub state: SyncState,
 }
 
@@ -260,13 +271,22 @@ fn backoff(round: usize) {
 }
 
 impl Engine {
-    pub fn new(space: SpaceId, device: DeviceId, device_name: impl Into<String>, keys: Keys, state: SyncState) -> Self {
-        Self { space, device, device_name: device_name.into(), keys, state }
+    pub fn new(space: SpaceId, device: DeviceId, device_name: impl Into<String>, keys: impl Into<KeySet>, state: SyncState) -> Self {
+        Self { space, device, device_name: device_name.into(), keys: keys.into(), state }
+    }
+
+    /// Use these keys from now on (the vault's key changed: 0.13).
+    pub fn set_keys(&mut self, keys: KeySet) {
+        self.keys = keys;
+    }
+
+    pub const fn keys(&self) -> &KeySet {
+        &self.keys
     }
 
     /// Decrypt a revision from `server`, in the form it writes first.
     fn open(&self, server: &dyn Transport, r: &Revision) -> Result<Content, CryptoError> {
-        Content::open_hinted(&self.keys, &self.space, r, server.binds_header())
+        Content::open_set(&self.keys, &self.space, r, server.sealing() != Sealing::Plain)
     }
 
     /// Pull, merge and push until this device and the server agree.
@@ -546,14 +566,18 @@ impl Engine {
         // last revision lost a tie in a synced folder, its changes aren't in
         // `r`: merge from the revision both share instead, so they're kept.
         // A kept copy coming back is compared with the text it was kept with.
-        let shared = if r.parents.first() == Some(&t.head) || Self::rejoining(&t) { None } else { server.fork_base(&r.file, &t.head, r) };
-        let lost_tie = shared.is_some();
-        let (base, base_deleted) = match shared {
-            Some(shared) => {
+        let fork = if r.parents.first() == Some(&t.head) || Self::rejoining(&t) { Fork::Builds } else { server.fork(&r.file, &t.head, r) };
+        // The revision both share was compacted away (0.13): no three-way
+        // merge; both versions are kept unless they're the same.
+        let unknown_base = fork == Fork::Unknown;
+        let lost_tie = !matches!(fork, Fork::Builds);
+        let (base, base_deleted) = match fork {
+            Fork::Base(shared) => {
                 let s = self.open(server, &shared)?;
                 (s.text, s.deleted)
             }
-            None => (t.base.clone(), t.deleted),
+            Fork::Unknown => (String::new(), true),
+            Fork::Builds => (t.base.clone(), t.deleted),
         };
         if !local.in_scope(&t.path) {
             // Outside the selection here: nothing local to protect. It is
@@ -586,6 +610,15 @@ impl Engine {
         // A deleted note's old path may hold another note now (one it was
         // filed as the same as, or a new one): that file isn't this note's.
         let here = if t.deleted && self.held_by_other(&t.path, &r.file) { None } else { local.read(&t.path) };
+        if unknown_base
+            && !c.deleted
+            && local.in_scope(&c.path)
+            && here.as_deref().is_some_and(|h| same_as_base(&t.path, h, &fingerprint(&t.path, &c.text)))
+        {
+            // Already the same text: nothing to keep aside.
+            self.track_at(r, c, &t.path);
+            return Ok(());
+        }
         let changed_here = match (&here, base_deleted) {
             (None, deleted) => !deleted,
             (Some(_), true) => true,
@@ -598,7 +631,7 @@ impl Engine {
             // its next version); otherwise this device's text stays where it
             // is and is sent as a note of its own, so nothing is lost.
             if let Some(mine) = here.as_ref().filter(|_| changed_here) {
-                let merged = (!is_attachment(&t.path) && !base_deleted)
+                let merged = (!is_attachment(&t.path) && !base_deleted && !unknown_base)
                     .then(|| merge::merge3(&base, mine, &c.text))
                     .filter(merge::MergeResult::is_clean);
                 if let Some(m) = merged {
@@ -666,7 +699,9 @@ impl Engine {
                     self.protect_unsynced(local, &to, &mine)?;
                 }
                 // Attachments can't be merged: both versions are kept.
-                let merged = (!is_attachment(&to)).then(|| merge::merge3(&base, &mine, &c.text)).filter(merge::MergeResult::is_clean);
+                let merged = (!is_attachment(&to) && !unknown_base)
+                    .then(|| merge::merge3(&base, &mine, &c.text))
+                    .filter(merge::MergeResult::is_clean);
                 if let Some(m) = merged {
                     write(local, &to, &m.text)?;
                     report.merged.push(to.clone());
@@ -811,6 +846,7 @@ impl Engine {
                 outside: false,
                 absorbed: false,
                 kept: None,
+                up: ancestors_of(r),
             },
         );
     }
@@ -828,6 +864,7 @@ impl Engine {
                 outside: false,
                 absorbed: false,
                 kept: None,
+                up: ancestors_of(r),
             },
         );
     }
@@ -944,6 +981,13 @@ impl Engine {
         let at =
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(0));
         let content = &Content { from: self.device_name.clone(), at, ..content.clone() };
+        let how = server.sealing();
+        // A revision built on the note's head names the head's ancestors
+        // too (0.13): the head rule then holds across a revision lost for good.
+        let chain = match (how, parent) {
+            (Sealing::Epoch, Some(_)) => self.state.files.get(file).map(|t| t.up.iter().take(CHAIN).cloned().collect()).unwrap_or_default(),
+            _ => Vec::new(),
+        };
         let mut r = Revision {
             file: file.clone(),
             rev,
@@ -951,12 +995,9 @@ impl Engine {
             seq: 0,
             device: self.device.clone(),
             sealed: Vec::new(),
+            chain,
         };
-        r.sealed = if server.binds_header() {
-            content.seal_bound(&self.keys, &self.space, &r)?
-        } else {
-            content.seal(&self.keys, &self.space, file, &r.rev)?
-        };
+        r.sealed = content.seal_as(how, &self.keys, &self.space, &r)?;
         match server.push(&r)? {
             PushOutcome::Accepted { seq } => {
                 self.state.files.insert(
@@ -964,13 +1005,14 @@ impl Engine {
                     Tracked {
                         path: content.path.clone(),
                         synced_path: content.path.clone(),
-                        head: r.rev,
+                        head: r.rev.clone(),
                         head_seq: seq,
                         base: fingerprint(&content.path, &content.text),
                         deleted: content.deleted,
                         outside: false,
                         absorbed: false,
                         kept: None,
+                        up: ancestors_of(&r),
                     },
                 );
                 report.pushed += 1;

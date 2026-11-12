@@ -15,6 +15,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::crypto::{CryptoError, Keys, hex_bytes, random_bytes};
+use crate::keyring::KeySet;
 
 macro_rules! id_type {
     ($(#[$m:meta])* $name:ident) => {
@@ -56,7 +57,14 @@ id_type!(
 );
 
 /// The newest protocol this build speaks.
-pub const PROTOCOL: u32 = 2;
+///
+/// Version 3 (0.13) adds device tokens, key epochs and authenticated
+/// revision headers on the server (`docs/design/0.13-sync.md`); a space at
+/// minimum 3 refuses older clients.
+pub const PROTOCOL: u32 = 3;
+/// The protocol of a server space whose revisions bind their whole header,
+/// can change keys and accepts device tokens only (0.13).
+pub const HARDENED_PROTOCOL: u32 = 3;
 /// The oldest protocol this build still speaks.
 pub const MIN_PROTOCOL: u32 = 1;
 /// The request header that names the client's protocol (absent: version 1).
@@ -100,6 +108,81 @@ pub struct Revision {
     pub device: DeviceId,
     #[serde(with = "hex_bytes")]
     pub sealed: Vec<u8>,
+    /// 0.13: the next first-parent ancestors after `parents[0]` (its parent
+    /// first), at most [`CHAIN`]. A reader that never got one of them (lost
+    /// for good) still knows where it sat, so the note's current revision
+    /// is the same on every device (`docs/design/0.13-sync.md` §4). Bound
+    /// into the sealing, so whoever stores it can't change it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chain: Vec<RevId>,
+}
+
+/// How many ancestors a revision names in [`Revision::chain`].
+pub const CHAIN: usize = 3;
+
+/// How revisions sent through a transport are sealed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sealing {
+    /// `v1`: space, file and revision bound (read by every Quire since 0.5).
+    Plain,
+    /// `v2`: the whole header bound (S3 and WebDAV in 0.12).
+    Bound,
+    /// `v3` (0.13): the whole header, its [`Revision::chain`] and the key
+    /// epoch bound, under the vault's current key epoch ([`crate::crypto::SEALED_V2`]).
+    /// Only in a vault whose minimum reader is 0.13.
+    Epoch,
+}
+
+/// Where a line sits in one device's lane.
+///
+/// A segment of a folder log and the line in it, or (S3, WebDAV, a server)
+/// its number. Used for the cut of a snapshot and the last revision taken
+/// from a removed device.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct LanePos {
+    /// Folder log segment (`000003.jsonl` is 3); 0 when numbered.
+    #[serde(default, skip_serializing_if = "is_zero32")]
+    pub seg: u32,
+    /// Lines in that segment, counting every whole line.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub line: u64,
+    /// The object number (S3, WebDAV) or a server's log position.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub n: u64,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref, reason = "serde's skip_serializing_if passes a reference")]
+const fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref, reason = "serde's skip_serializing_if passes a reference")]
+const fn is_zero32(n: &u32) -> bool {
+    *n == 0
+}
+
+impl LanePos {
+    /// Whether the line at `(seg, line)` with number `n` (0 when it has
+    /// none) is at or before this position.
+    pub const fn covers(&self, seg: u32, line: u64, n: u64) -> bool {
+        if self.is_empty() {
+            return false;
+        }
+        if self.seg == 0 {
+            // A numbered position (S3, WebDAV, a server). A line without a
+            // number was mirrored before 0.13: older than any position.
+            return n == 0 || n <= self.n;
+        }
+        if n > 0 {
+            return false;
+        }
+        seg < self.seg || (seg == self.seg && line <= self.line)
+    }
+
+    /// Nothing covered.
+    pub const fn is_empty(&self) -> bool {
+        self.seg == 0 && self.line == 0 && self.n == 0
+    }
 }
 
 /// What a revision contains once decrypted.
@@ -136,6 +219,12 @@ fn aad(space: &SpaceId, file: &FileId, rev: &RevId) -> Vec<u8> {
     format!("quire-sync/rev/v1/{space}/{file}/{rev}").into_bytes()
 }
 
+/// 0.13: the whole header, the chain and the key epoch.
+fn aad_v3(space: &SpaceId, r: &Revision, epoch: u32) -> Vec<u8> {
+    let join = |v: &[RevId]| v.iter().map(|p| p.0.as_str()).collect::<Vec<_>>().join(",");
+    format!("quire-sync/rev/v3/{space}/{}/{}/{}/{}/{}/{epoch}", r.file, r.rev, r.device, join(&r.parents), join(&r.chain)).into_bytes()
+}
+
 /// The associated data of a revision whose whole header is bound: its
 /// `device` and `parents` too, so whoever stores it can't change which
 /// revision it builds on or who wrote it (S3 and WebDAV, design 0.12).
@@ -158,6 +247,48 @@ impl Content {
     pub fn seal_bound(&self, keys: &Keys, space: &SpaceId, r: &Revision) -> Result<Vec<u8>, CryptoError> {
         let plain = self.padded()?;
         keys.seal(&plain, &aad_bound(space, r))
+    }
+
+    /// Encrypt for `r` under the current key epoch of `keys`, binding its
+    /// whole header, its chain and the epoch (`v3`, 0.13).
+    pub fn seal_epoch(&self, keys: &KeySet, space: &SpaceId, r: &Revision) -> Result<Vec<u8>, CryptoError> {
+        let plain = self.padded()?;
+        let epoch = keys.current();
+        keys.current_keys().seal_epoch(epoch, &plain, &aad_v3(space, r, epoch))
+    }
+
+    /// Seal for `r` the way `how` says.
+    pub fn seal_as(&self, how: Sealing, keys: &KeySet, space: &SpaceId, r: &Revision) -> Result<Vec<u8>, CryptoError> {
+        let base = keys.get(0).unwrap_or_else(|| keys.current_keys());
+        match how {
+            Sealing::Plain => self.seal(base, space, &r.file, &r.rev),
+            Sealing::Bound => self.seal_bound(base, space, r),
+            Sealing::Epoch => self.seal_epoch(keys, space, r),
+        }
+    }
+
+    /// Decrypt a revision sealed any way, with the key of the epoch it
+    /// names. A `v3` revision whose header, chain or epoch was changed
+    /// never opens.
+    pub fn open_set(keys: &KeySet, space: &SpaceId, r: &Revision, bound_first: bool) -> Result<Self, CryptoError> {
+        match crate::crypto::sealed_epoch(&r.sealed) {
+            Some(e) if r.sealed.first() == Some(&crate::crypto::SEALED_V2) => {
+                let k = keys.get(e).ok_or(CryptoError::UnknownEpoch(e))?;
+                let plain = k.open_epoch(&r.sealed, &aad_v3(space, r, e))?;
+                Self::unpad(&plain)
+            }
+            _ => {
+                let k = keys.get(0).ok_or(CryptoError::UnknownEpoch(0))?;
+                Self::open_hinted(k, space, r, bound_first)
+            }
+        }
+    }
+
+    fn unpad(plain: &[u8]) -> Result<Self, CryptoError> {
+        let len_bytes: [u8; 4] = plain.get(..4).and_then(|b| b.try_into().ok()).ok_or(CryptoError::Truncated)?;
+        let len = u32::from_le_bytes(len_bytes) as usize;
+        let json = plain.get(4..4 + len).ok_or(CryptoError::Truncated)?;
+        serde_json::from_slice(json).map_err(|_| CryptoError::Tampered)
     }
 
     fn padded(&self) -> Result<Vec<u8>, CryptoError> {
@@ -184,10 +315,7 @@ impl Content {
         let (short, bound) = (aad(space, &r.file, &r.rev), aad_bound(space, r));
         let (first, second) = if bound_first { (&bound, &short) } else { (&short, &bound) };
         let plain = keys.open(&r.sealed, first).or_else(|_| keys.open(&r.sealed, second))?;
-        let len_bytes: [u8; 4] = plain.get(..4).and_then(|b| b.try_into().ok()).ok_or(CryptoError::Truncated)?;
-        let len = u32::from_le_bytes(len_bytes) as usize;
-        let json = plain.get(4..4 + len).ok_or(CryptoError::Truncated)?;
-        serde_json::from_slice(json).map_err(|_| CryptoError::Tampered)
+        Self::unpad(&plain)
     }
 }
 
@@ -222,7 +350,7 @@ mod tests {
         // Short notes all look the same size.
         let other = Content { text: "x".into(), ..c.clone() }.seal(&keys, &space, &file, &rev).unwrap();
         assert_eq!(sealed.len(), other.len());
-        let r = Revision { file, rev, parents: vec![], seq: 0, device: DeviceId::random().unwrap(), sealed };
+        let r = Revision { file, rev, parents: vec![], seq: 0, device: DeviceId::random().unwrap(), sealed, chain: vec![] };
         assert_eq!(Content::open(&keys, &space, &r).unwrap(), c);
         // The path isn't readable from the stored bytes.
         assert!(!String::from_utf8_lossy(&r.sealed).contains("Plan"));
@@ -246,6 +374,7 @@ mod tests {
             seq: 0,
             device: DeviceId::random().unwrap(),
             sealed: Vec::new(),
+            chain: vec![],
         };
         r.sealed = c.seal_bound(&keys, &space, &r).unwrap();
         for hint in [true, false] {

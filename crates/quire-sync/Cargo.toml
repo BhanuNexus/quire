@@ -30,6 +30,10 @@ hmac = "0.13"
 sha2 = "0.11"
 getrandom = "0.4"
 zeroize = { version = "1", features = ["derive"] }
+# 0.13: device keys, so removing a device can hand the vault's new key to
+# the other devices only (docs/design/0.13-sync.md). The dalek crates are
+# the maintained, audited pure-Rust X25519.
+x25519-dalek = { version = "2.0.1", default-features = false, features = ["static_secrets", "zeroize"] }
 ureq = { workspace = true, optional = true }
 # Listings from S3 (ListObjectsV2) and WebDAV (PROPFIND). Already in the tree
 # through usvg; rejects DTDs by default, so no entity expansion.
