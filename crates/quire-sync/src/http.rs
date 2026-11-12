@@ -2,12 +2,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Talk to `quire-sync-server` over HTTP(S).
 
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
 use crate::crypto::WrappedKey;
-use crate::protocol::{MIN_PROTOCOL, PROTOCOL, PROTOCOL_HEADER, PushOutcome, Revision, ServerInfo, SpaceId};
+use crate::keyring::{DeviceRecord, EpochRecord};
+use crate::protocol::{
+    DeviceId, HARDENED_PROTOCOL, LanePos, MIN_PROTOCOL, PROTOCOL, PROTOCOL_HEADER, PushOutcome, Revision, Sealing, ServerInfo, SpaceId,
+};
 use crate::transport::{Transport, TransportError};
 
 /// A space on a sync server.
@@ -19,6 +25,30 @@ pub struct HttpTransport {
     agent: ureq::Agent,
     /// The protocol sent in `Quire-Sync-Protocol` (tests act as older clients).
     protocol: u32,
+    /// The space's minimum protocol, once read (0: not yet).
+    min: Arc<AtomicU32>,
+    /// Devices removed from the vault, and the last log position still
+    /// taken from each (0.13): their later revisions are ignored.
+    removed: Arc<Mutex<BTreeMap<DeviceId, LanePos>>>,
+}
+
+/// A device of the space, as the server lists it (0.13).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct DeviceRow {
+    pub device: String,
+    #[serde(default)]
+    pub enrolled: bool,
+    #[serde(default)]
+    pub removed: bool,
+    #[serde(default)]
+    pub last_seq: u64,
+    #[serde(default)]
+    pub record: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct Enrolled {
+    token: String,
 }
 
 /// What a server speaks, from `GET /v1/info` (design §B.5).
@@ -101,7 +131,107 @@ impl HttpTransport {
             token: token.to_string(),
             agent: agent(Duration::from_mins(1)),
             protocol: PROTOCOL,
+            min: Arc::new(AtomicU32::new(0)),
+            removed: Arc::new(Mutex::new(BTreeMap::new())),
         }
+    }
+
+    /// A device token for `device` in `space` (0.13), made with the
+    /// server's token. The device keeps this one instead from then on.
+    pub fn enroll(base: &str, space: &SpaceId, server_token: &str, device: &DeviceId) -> Result<String, TransportError> {
+        let t = Self::new(base, space.clone(), server_token);
+        let body = serde_json::json!({ "device": device }).to_string();
+        let (status, text) = t.send("POST", &t.url("/devices"), Some(&body))?;
+        match status {
+            200 => serde_json::from_str::<Enrolled>(&text)
+                .map(|e| e.token)
+                .map_err(|e| TransportError::Refused(format!("unexpected reply: {e}"))),
+            404 | 405 if !text.contains("vault") => Err(TransportError::Refused("Update your sync server first.".into())),
+            _ => Err(Self::fail(status, &text)),
+        }
+    }
+
+    /// A request with this transport's token; the status and body.
+    fn send(&self, method: &str, url: &str, body: Option<&str>) -> Result<(u16, String), TransportError> {
+        let auth = self.auth();
+        let proto = self.protocol.to_string();
+        let res = match (method, body) {
+            ("PUT", Some(b)) => self
+                .agent
+                .put(url)
+                .header("Authorization", &auth)
+                .header(PROTOCOL_HEADER, &proto)
+                .header("Content-Type", "application/json")
+                .send(b),
+            ("POST", Some(b)) => self
+                .agent
+                .post(url)
+                .header("Authorization", &auth)
+                .header(PROTOCOL_HEADER, &proto)
+                .header("Content-Type", "application/json")
+                .send(b),
+            ("DELETE", _) => self.agent.delete(url).header("Authorization", &auth).header(PROTOCOL_HEADER, &proto).call(),
+            _ => self.agent.get(url).header("Authorization", &auth).header(PROTOCOL_HEADER, &proto).call(),
+        };
+        let mut res = res.map_err(|e| TransportError::Offline(e.to_string()))?;
+        let status = res.status().as_u16();
+        let text = res.body_mut().with_config().limit(MAX_REPLY).read_to_string().map_err(|e| TransportError::Offline(e.to_string()))?;
+        Ok((status, text))
+    }
+
+    /// The space's minimum protocol (1 on a server before 0.13).
+    pub fn min_protocol(&self) -> Result<u32, TransportError> {
+        let (status, text) = self.send("GET", &self.url("/min_protocol"), None)?;
+        let min = match status {
+            200 => serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v.get("min")?.as_u64())
+                .map_or(1, |m| u32::try_from(m).unwrap_or(1)),
+            404 | 405 if !text.contains("vault") => 1,
+            _ => return Err(Self::fail(status, &text)),
+        };
+        self.min.store(min, Ordering::Relaxed);
+        Ok(min)
+    }
+
+    /// The vault's key records (0.13).
+    pub fn key_records(&self) -> Result<Vec<EpochRecord>, TransportError> {
+        let v: Vec<serde_json::Value> = self.get_json(&self.agent, &self.url("/keys"))?;
+        Ok(v.into_iter().filter_map(|r| serde_json::from_value::<EpochRecord>(r).ok()).filter(|r| r.space == self.space).collect())
+    }
+
+    /// Add the next key record; refused if another device's came first.
+    pub fn put_key_record(&self, r: &EpochRecord) -> Result<(), TransportError> {
+        let body = serde_json::to_string(r).unwrap_or_default();
+        let (status, text) = self.send("PUT", &self.url(&format!("/keys/{}", r.epoch)), Some(&body))?;
+        match status {
+            200 | 201 | 204 => Ok(()),
+            409 => Err(TransportError::Refused("Another device changed the vault's key at the same moment; try again.".into())),
+            _ => Err(Self::fail(status, &text)),
+        }
+    }
+
+    /// The space's devices (0.13).
+    pub fn device_rows(&self) -> Result<Vec<DeviceRow>, TransportError> {
+        self.get_json(&self.agent, &self.url("/devices"))
+    }
+
+    /// Publish this device's record (only its own device token may).
+    pub fn put_device_record(&self, r: &DeviceRecord) -> Result<(), TransportError> {
+        let body = serde_json::to_string(r).unwrap_or_default();
+        let (status, text) = self.send("PUT", &self.url(&format!("/devices/{}/record", r.device)), Some(&body))?;
+        if matches!(status, 200 | 204) { Ok(()) } else { Err(Self::fail(status, &text)) }
+    }
+
+    /// Stop the server taking `device`'s token.
+    pub fn remove_device(&self, device: &DeviceId) -> Result<(), TransportError> {
+        let (status, text) = self.send("DELETE", &self.url(&format!("/devices/{device}")), None)?;
+        if matches!(status, 200 | 204) { Ok(()) } else { Err(Self::fail(status, &text)) }
+    }
+
+    /// Ignore what removed devices wrote after their cut.
+    pub fn set_removed(&self, removed: BTreeMap<DeviceId, LanePos>) {
+        *self.removed.lock().unwrap_or_else(PoisonError::into_inner) = removed;
     }
 
     /// Act as a client of protocol `v` (tests of mixed fleets).
@@ -167,7 +297,9 @@ impl HttpTransport {
             404 => TransportError::Refused("this vault isn't on the server".into()),
             426 => {
                 let min = serde_json::from_str::<serde_json::Value>(body).ok().and_then(|v| v.get("min")?.as_u64()).unwrap_or(0);
-                TransportError::Refused(if min >= 2 {
+                TransportError::Refused(if min >= 3 {
+                    "This vault now needs Quire 0.13 or later on every device; update Quire.".into()
+                } else if min >= 2 {
                     "This vault now needs Quire 0.9 or later on every device; update Quire.".into()
                 } else {
                     format!("This server needs a newer Quire: {msg}")
@@ -231,6 +363,14 @@ impl HttpTransport {
 }
 
 impl Transport for HttpTransport {
+    fn sealing(&self) -> Sealing {
+        let mut min = self.min.load(Ordering::Relaxed);
+        if min == 0 {
+            min = self.min_protocol().unwrap_or(1);
+        }
+        if min >= HARDENED_PROTOCOL { Sealing::Epoch } else { Sealing::Plain }
+    }
+
     fn history(&self, file: &crate::protocol::FileId) -> Result<Vec<Revision>, TransportError> {
         match self.get_json::<Changes>(&self.agent, &self.url(&format!("/files/{file}"))) {
             Ok(c) => Ok(c.revisions),
@@ -251,7 +391,8 @@ impl Transport for HttpTransport {
             if let Some(last) = page.revisions.last() {
                 cursor = last.seq;
             }
-            out.extend(page.revisions);
+            let removed = self.removed.lock().unwrap_or_else(PoisonError::into_inner).clone();
+            out.extend(page.revisions.into_iter().filter(|r| removed.get(&r.device).is_none_or(|p| r.seq <= p.n)));
             // Pages can end early (big revisions), so keep going until the log's end.
             if n == 0 || cursor >= page.latest {
                 return Ok(out);

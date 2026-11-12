@@ -340,3 +340,51 @@ impl SpaceAdmin for crate::remote::RemoteTransport {
         Self::set_keys(self, keys.clone());
     }
 }
+
+#[cfg(feature = "http")]
+impl SpaceAdmin for crate::http::HttpTransport {
+    fn level(&self) -> Result<u32, TransportError> {
+        Ok(if self.min_protocol()? >= crate::protocol::HARDENED_PROTOCOL { HARDENED } else { 1 })
+    }
+    fn upgrade(&self) -> Result<(), TransportError> {
+        self.set_min_protocol(crate::protocol::HARDENED_PROTOCOL)?;
+        self.min_protocol().map(|_| ())
+    }
+    fn key_records(&self) -> Result<Vec<EpochRecord>, TransportError> {
+        Self::key_records(self)
+    }
+    fn put_key_record(&self, r: &EpochRecord) -> Result<(), TransportError> {
+        Self::put_key_record(self, r)
+    }
+    fn device_records(&self) -> Result<Vec<DeviceRecord>, TransportError> {
+        Ok(self
+            .device_rows()?
+            .into_iter()
+            .filter_map(|row| {
+                let r: DeviceRecord = serde_json::from_value(row.record?).ok()?;
+                (r.device.0 == row.device).then_some(r)
+            })
+            .collect())
+    }
+    fn put_device_record(&self, r: &DeviceRecord) -> Result<(), TransportError> {
+        Self::put_device_record(self, r)
+    }
+    fn writers(&self) -> Result<Vec<DeviceId>, TransportError> {
+        Ok(self
+            .device_rows()?
+            .into_iter()
+            .filter(|r| r.last_seq > 0 && crate::folder::is_device_name(&r.device))
+            .map(|r| DeviceId(r.device))
+            .collect())
+    }
+    fn lane_ends(&self) -> Result<BTreeMap<DeviceId, LanePos>, TransportError> {
+        Ok(self.device_rows()?.into_iter().map(|r| (DeviceId(r.device), LanePos { n: r.last_seq, ..LanePos::default() })).collect())
+    }
+    fn set_removed(&self, removed: BTreeMap<DeviceId, LanePos>) {
+        Self::set_removed(self, removed);
+    }
+    fn set_keys(&self, _keys: &KeySet) {}
+    fn shut_out(&self, device: &DeviceId) -> Result<(), TransportError> {
+        self.remove_device(device)
+    }
+}

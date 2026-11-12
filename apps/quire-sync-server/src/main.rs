@@ -10,6 +10,8 @@
 //! | `QUIRE_SYNC_TOKEN_FILE` | | Read the token from this file instead |
 //! | `QUIRE_SYNC_ADDR` | `127.0.0.1:8787` | Address to listen on. Put it behind HTTPS (Caddy, nginx) |
 //! | `QUIRE_SYNC_DB` | `quire-sync.sqlite` | Database file |
+//! | `QUIRE_SYNC_KEEP_DAYS` | (keep everything) | 0.13: once a day, drop revisions replaced more than this many days ago |
+//! | `QUIRE_SYNC_KEEP_VERSIONS` | `20` | …but always keep each file's newest this many |
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -78,6 +80,23 @@ async fn main() -> ExitCode {
     };
     eprintln!("quire-sync-server {} listening on {addr}, database {db_path}", env!("CARGO_PKG_VERSION"));
     let state = Arc::new(AppState::new(store, &token));
+    if let Some(days) = std::env::var("QUIRE_SYNC_KEEP_DAYS").ok().and_then(|d| d.trim().parse::<u32>().ok()) {
+        let versions = std::env::var("QUIRE_SYNC_KEEP_VERSIONS").ok().and_then(|d| d.trim().parse::<u32>().ok()).unwrap_or(20);
+        let st = Arc::clone(&state);
+        tokio::spawn(async move {
+            loop {
+                let s2 = Arc::clone(&st);
+                match tokio::task::spawn_blocking(move || s2.store().compact(days, versions)).await {
+                    Ok(Ok(n)) if n > 0 => {
+                        eprintln!("quire-sync-server: compacted {n} old revision(s) (keeping {days} days, {versions} versions)");
+                    }
+                    Ok(Err(e)) => eprintln!("quire-sync-server: compaction failed: {e}"),
+                    _ => {}
+                }
+                tokio::time::sleep(std::time::Duration::from_hours(24)).await;
+            }
+        });
+    }
     if let Err(e) = axum::serve(listener, app(state)).with_graceful_shutdown(shutdown()).await {
         eprintln!("quire-sync-server: {e}");
         return ExitCode::FAILURE;

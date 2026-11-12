@@ -22,6 +22,15 @@ pub enum StoreError {
     BadParent,
     #[error("stored data is corrupt: {0}")]
     Corrupt(String),
+    /// 0.13: a key record for an epoch that isn't the next one.
+    #[error("another device changed the vault's key at the same moment; try again")]
+    KeyConflict,
+    /// 0.13: a revision sealed under a key epoch older than the space's.
+    #[error("this revision is sealed with the vault's old key; take the new key first")]
+    OldKey,
+    /// 0.13: the device was removed from the space.
+    #[error("this device was removed from the sync vault")]
+    Removed,
 }
 
 /// Roughly how much sealed data one page of changes carries.
@@ -71,29 +80,95 @@ CREATE TABLE IF NOT EXISTS space_settings (
     space        TEXT PRIMARY KEY REFERENCES spaces(id),
     min_protocol INTEGER NOT NULL DEFAULT 1
 );
+-- 0.13: a token per device, its record, and when it was removed.
+CREATE TABLE IF NOT EXISTS devices (
+    space      TEXT NOT NULL REFERENCES spaces(id),
+    device     TEXT NOT NULL,
+    token_hash BLOB NOT NULL UNIQUE,
+    created    INTEGER NOT NULL DEFAULT (unixepoch()),
+    removed    INTEGER,
+    record     TEXT,
+    PRIMARY KEY (space, device)
+);
+-- 0.13: the vault's key changes, one per epoch (compare-and-swap).
+CREATE TABLE IF NOT EXISTS key_records (
+    space  TEXT NOT NULL REFERENCES spaces(id),
+    epoch  INTEGER NOT NULL,
+    record TEXT NOT NULL,
+    PRIMARY KEY (space, epoch)
+);
 ";
 
-fn row_to_rev(r: &rusqlite::Row<'_>) -> rusqlite::Result<(u64, String, String, String, String, Vec<u8>)> {
-    Ok((r.get::<_, i64>(0)?.cast_unsigned(), r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+/// A device of a space, as the server knows it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DeviceRow {
+    pub device: String,
+    /// It has a device token (0.13).
+    pub enrolled: bool,
+    pub removed: bool,
+    /// Its newest revision in the log.
+    pub last_seq: u64,
+    /// What it published about itself (sealed name, public key, version).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record: Option<serde_json::Value>,
 }
 
-fn to_revision(t: (u64, String, String, String, String, Vec<u8>)) -> Result<Revision, StoreError> {
-    let (seq, file, rev, parents, device, sealed) = t;
+/// Who a device token belongs to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenOwner {
+    pub space: SpaceId,
+    pub device: String,
+    pub removed: bool,
+}
+
+/// A new random device token (256 bits, hex).
+fn new_token() -> Result<String, StoreError> {
+    let a = quire_sync::DeviceId::random().map_err(|e| StoreError::Corrupt(e.to_string()))?;
+    let b = quire_sync::DeviceId::random().map_err(|e| StoreError::Corrupt(e.to_string()))?;
+    Ok(format!("qd_{}{}", a.0, b.0))
+}
+
+/// How tokens are kept: their SHA-256.
+pub fn token_hash(token: &str) -> Vec<u8> {
+    use sha2::Digest;
+    sha2::Sha256::digest(token.as_bytes()).to_vec()
+}
+
+type Row = (u64, String, String, String, String, Vec<u8>, String);
+
+fn row_to_rev(r: &rusqlite::Row<'_>) -> rusqlite::Result<Row> {
+    Ok((r.get::<_, i64>(0)?.cast_unsigned(), r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
+}
+
+fn to_revision(t: Row) -> Result<Revision, StoreError> {
+    let (seq, file, rev, parents, device, sealed, chain) = t;
     let parents: Vec<RevId> = serde_json::from_str(&parents).map_err(|e| StoreError::Corrupt(e.to_string()))?;
-    Ok(Revision { file: FileId(file), rev: RevId(rev), parents, seq, device: quire_sync::DeviceId(device), sealed })
+    let chain: Vec<RevId> = serde_json::from_str(&chain).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+    Ok(Revision { file: FileId(file), rev: RevId(rev), parents, seq, device: quire_sync::DeviceId(device), sealed, chain })
 }
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         let db = Connection::open(path)?;
-        db.execute_batch(SCHEMA)?;
+        Self::migrate(&db)?;
         Ok(Self { db: Mutex::new(db) })
     }
 
     pub fn in_memory() -> Result<Self, StoreError> {
         let db = Connection::open_in_memory()?;
-        db.execute_batch(SCHEMA)?;
+        Self::migrate(&db)?;
         Ok(Self { db: Mutex::new(db) })
+    }
+
+    fn migrate(db: &Connection) -> Result<(), StoreError> {
+        db.execute_batch(SCHEMA)?;
+        // 0.13: revisions name their first-parent ancestors (bound into v3 sealing).
+        let has_chain: bool =
+            db.query_row("SELECT COUNT(*) FROM pragma_table_info('revisions') WHERE name = 'chain'", [], |r| r.get::<_, i64>(0))? > 0;
+        if !has_chain {
+            db.execute_batch("ALTER TABLE revisions ADD COLUMN chain TEXT NOT NULL DEFAULT '[]'")?;
+        }
+        Ok(())
     }
 
     fn db(&self) -> std::sync::MutexGuard<'_, Connection> {
@@ -146,7 +221,7 @@ impl Store {
         let db = self.db();
         Self::require_space(&db, space)?;
         let mut stmt = db.prepare_cached(
-            "SELECT seq, file, rev, parents, device, sealed FROM revisions WHERE space = ?1 AND seq > ?2 ORDER BY seq LIMIT ?3",
+            "SELECT seq, file, rev, parents, device, sealed, chain FROM revisions WHERE space = ?1 AND seq > ?2 ORDER BY seq LIMIT ?3",
         )?;
         let rows = stmt.query_map(params![space.0, after.cast_signed(), limit], row_to_rev)?;
         // Pages also stop at about 8 MB (attachments make big revisions); the
@@ -170,7 +245,7 @@ impl Store {
         let db = self.db();
         Self::require_space(&db, space)?;
         let mut stmt = db.prepare_cached(
-            "SELECT seq, file, rev, parents, device, sealed FROM revisions WHERE space = ?1 AND file = ?2 ORDER BY seq DESC LIMIT 500",
+            "SELECT seq, file, rev, parents, device, sealed, chain FROM revisions WHERE space = ?1 AND file = ?2 ORDER BY seq DESC LIMIT 500",
         )?;
         let rows = stmt.query_map(params![space.0, file.0], row_to_rev)?;
         let mut out = Vec::new();
@@ -221,9 +296,16 @@ impl Store {
         let mut db = self.db();
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         Self::require_space(&tx, space)?;
-        let head: Option<(u64, String, String, String, String, Vec<u8>)> = tx
+        // 0.13: once the vault's key changed, only revisions sealed under
+        // the newest key are taken (a lagging device takes the key and retries).
+        let epoch: i64 =
+            tx.query_row("SELECT COALESCE(MAX(epoch), 0) FROM key_records WHERE space = ?1", params![space.0], |r| r.get(0))?;
+        if i64::from(quire_sync::crypto::sealed_epoch(&rev.sealed).unwrap_or(0)) < epoch {
+            return Err(StoreError::OldKey);
+        }
+        let head: Option<Row> = tx
             .query_row(
-                "SELECT r.seq, r.file, r.rev, r.parents, r.device, r.sealed FROM heads h
+                "SELECT r.seq, r.file, r.rev, r.parents, r.device, r.sealed, r.chain FROM heads h
                  JOIN revisions r ON r.space = h.space AND r.seq = h.seq
                  WHERE h.space = ?1 AND h.file = ?2",
                 params![space.0, rev.file.0],
@@ -239,9 +321,10 @@ impl Store {
         }
         let seq: i64 = tx.query_row("SELECT COALESCE(MAX(seq), 0) + 1 FROM revisions WHERE space = ?1", params![space.0], |r| r.get(0))?;
         let parents = serde_json::to_string(&rev.parents).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+        let chain = serde_json::to_string(&rev.chain).map_err(|e| StoreError::Corrupt(e.to_string()))?;
         tx.execute(
-            "INSERT INTO revisions (space, seq, file, rev, parents, device, sealed) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![space.0, seq, rev.file.0, rev.rev.0, parents, rev.device.0, rev.sealed],
+            "INSERT INTO revisions (space, seq, file, rev, parents, device, sealed, chain) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![space.0, seq, rev.file.0, rev.rev.0, parents, rev.device.0, rev.sealed, chain],
         )?;
         tx.execute(
             "INSERT INTO heads (space, file, seq) VALUES (?1, ?2, ?3) ON CONFLICT (space, file) DO UPDATE SET seq = excluded.seq",
@@ -249,5 +332,135 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(PushOutcome::Accepted { seq: seq.cast_unsigned() })
+    }
+
+    /// Give `device` a token for `space` (0.13). A device enrolled before
+    /// gets a new one (the old stops working); a removed device gets none.
+    pub fn enroll(&self, space: &SpaceId, device: &str) -> Result<String, StoreError> {
+        let mut db = self.db();
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        Self::require_space(&tx, space)?;
+        let removed: Option<Option<i64>> = tx
+            .query_row("SELECT removed FROM devices WHERE space = ?1 AND device = ?2", params![space.0, device], |r| r.get(0))
+            .optional()?;
+        if matches!(removed, Some(Some(_))) {
+            return Err(StoreError::Removed);
+        }
+        let token = new_token()?;
+        tx.execute(
+            "INSERT INTO devices (space, device, token_hash) VALUES (?1, ?2, ?3)
+             ON CONFLICT (space, device) DO UPDATE SET token_hash = excluded.token_hash",
+            params![space.0, device, token_hash(&token)],
+        )?;
+        tx.commit()?;
+        Ok(token)
+    }
+
+    /// Whose device token this is.
+    pub fn token_owner(&self, token: &str) -> Result<Option<TokenOwner>, StoreError> {
+        let db = self.db();
+        Ok(db
+            .query_row("SELECT space, device, removed FROM devices WHERE token_hash = ?1", params![token_hash(token)], |r| {
+                Ok(TokenOwner { space: SpaceId(r.get(0)?), device: r.get(1)?, removed: r.get::<_, Option<i64>>(2)?.is_some() })
+            })
+            .optional()?)
+    }
+
+    /// Stop taking `device`'s token, for good. A device that never had one
+    /// (it wrote with the server's token) is recorded as removed too.
+    pub fn remove_device(&self, space: &SpaceId, device: &str) -> Result<(), StoreError> {
+        let db = self.db();
+        Self::require_space(&db, space)?;
+        let placeholder = token_hash(&new_token()?);
+        db.execute(
+            "INSERT INTO devices (space, device, token_hash, removed) VALUES (?1, ?2, ?3, unixepoch())
+             ON CONFLICT (space, device) DO UPDATE SET removed = COALESCE(removed, unixepoch())",
+            params![space.0, device, placeholder],
+        )?;
+        Ok(())
+    }
+
+    /// Store what a device says about itself.
+    pub fn set_device_record(&self, space: &SpaceId, device: &str, record: &str) -> Result<(), StoreError> {
+        let db = self.db();
+        Self::require_space(&db, space)?;
+        let placeholder = token_hash(&new_token()?);
+        db.execute(
+            "INSERT INTO devices (space, device, token_hash, record) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (space, device) DO UPDATE SET record = excluded.record",
+            params![space.0, device, placeholder, record],
+        )?;
+        Ok(())
+    }
+
+    /// Every device of a space: enrolled ones and those that wrote revisions.
+    pub fn devices(&self, space: &SpaceId) -> Result<Vec<DeviceRow>, StoreError> {
+        let db = self.db();
+        Self::require_space(&db, space)?;
+        let mut out: std::collections::BTreeMap<String, DeviceRow> = std::collections::BTreeMap::new();
+        let mut stmt = db.prepare_cached("SELECT device, MAX(seq) FROM revisions WHERE space = ?1 GROUP BY device")?;
+        for row in stmt.query_map(params![space.0], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?.cast_unsigned())))? {
+            let (device, last_seq) = row?;
+            out.insert(device.clone(), DeviceRow { device, enrolled: false, removed: false, last_seq, record: None });
+        }
+        let mut stmt = db.prepare_cached("SELECT device, removed, record FROM devices WHERE space = ?1")?;
+        for row in stmt.query_map(params![space.0], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?.is_some(), r.get::<_, Option<String>>(2)?))
+        })? {
+            let (device, removed, record) = row?;
+            let e = out.entry(device.clone()).or_insert(DeviceRow { device, enrolled: false, removed: false, last_seq: 0, record: None });
+            e.enrolled = true;
+            e.removed = removed;
+            e.record = record.and_then(|r| serde_json::from_str(&r).ok());
+        }
+        Ok(out.into_values().collect())
+    }
+
+    /// The vault's key records, oldest first.
+    pub fn key_records(&self, space: &SpaceId) -> Result<Vec<serde_json::Value>, StoreError> {
+        let db = self.db();
+        Self::require_space(&db, space)?;
+        let mut stmt = db.prepare_cached("SELECT record FROM key_records WHERE space = ?1 ORDER BY epoch")?;
+        let rows = stmt.query_map(params![space.0], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(serde_json::from_str(&r?).map_err(|e| StoreError::Corrupt(e.to_string()))?);
+        }
+        Ok(out)
+    }
+
+    /// Add the key record of `epoch`, only if it is the next one.
+    pub fn put_key_record(&self, space: &SpaceId, epoch: u32, record: &str) -> Result<(), StoreError> {
+        let mut db = self.db();
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        Self::require_space(&tx, space)?;
+        let max: i64 = tx.query_row("SELECT COALESCE(MAX(epoch), 0) FROM key_records WHERE space = ?1", params![space.0], |r| r.get(0))?;
+        if i64::from(epoch) != max + 1 {
+            return Err(StoreError::KeyConflict);
+        }
+        tx.execute("INSERT INTO key_records (space, epoch, record) VALUES (?1, ?2, ?3)", params![space.0, i64::from(epoch), record])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Fold old revisions away (0.13): of each file, keep its newest
+    /// `keep_versions` revisions (at least its head) and every revision
+    /// replaced within the last `keep_days` days. Returns how many went.
+    /// A device whose cursor is older gets each file's newest revision
+    /// and merges from what it last synced, as when it pulls a long log.
+    pub fn compact(&self, keep_days: u32, keep_versions: u32) -> Result<usize, StoreError> {
+        let db = self.db();
+        let cutoff = i64::from(keep_days) * 86_400;
+        let n = db.execute(
+            "DELETE FROM revisions WHERE rowid IN (
+               SELECT id FROM (
+                 SELECT rowid AS id,
+                        ROW_NUMBER() OVER (PARTITION BY space, file ORDER BY seq DESC) AS rk,
+                        LEAD(created) OVER (PARTITION BY space, file ORDER BY seq) AS replaced
+                 FROM revisions)
+               WHERE rk > ?1 AND replaced IS NOT NULL AND replaced < unixepoch() - ?2)",
+            params![i64::from(keep_versions.max(1)), cutoff],
+        )?;
+        Ok(n)
     }
 }
