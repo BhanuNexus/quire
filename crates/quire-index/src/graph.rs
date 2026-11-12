@@ -140,6 +140,7 @@ impl LinkGraph {
         source: &dyn Fn(&NotePath) -> Option<&'a str>,
         cfg: &LinkConfig,
     ) -> Self {
+        let records_again = records.clone();
         let resolver = Resolver::build(records.clone());
         let mut g = Self { resolver, ..Default::default() };
         let mut typed: Vec<(NotePath, String, NotePath)> = Vec::new();
@@ -172,7 +173,8 @@ impl LinkGraph {
                 }
             }
         }
-        g.relations = Relations::build(typed, cfg);
+        let derived = crate::derived::derive(records_again, source, &g.resolver, cfg);
+        g.relations = Relations::build(typed, derived, cfg);
         g
     }
 

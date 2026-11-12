@@ -34,6 +34,9 @@ pub struct Graph {
     pub edge_types: Vec<Option<String>>,
     /// The types on edges, most used first.
     pub types: Vec<String>,
+    /// 0.13: the colour the vault's `[links.types.*]` gives a type, by
+    /// type name; types without one are coloured by the app.
+    pub type_colors: std::collections::BTreeMap<String, [u8; 3]>,
 }
 
 /// What to show.
@@ -131,8 +134,10 @@ impl Graph {
         }
         let mut types: Vec<(&str, usize)> = counts.into_iter().collect();
         types.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
-        let types = types.into_iter().map(|(t, _)| t.to_string()).collect();
-        Self { nodes, edges, edge_types, types }
+        let types: Vec<String> = types.into_iter().map(|(t, _)| t.to_string()).collect();
+        let cfg = ix.link_config();
+        let type_colors = types.iter().filter_map(|t| cfg.color_of(t).map(|c| (t.clone(), c))).collect();
+        Self { nodes, edges, edge_types, types, type_colors }
     }
 
     /// Indices of the nodes linked to `i`.

@@ -23,10 +23,11 @@ chrono.workspace = true
 thread-priority.workspace = true
 # 0.12: the `[links]` section of vault.toml.
 serde.workspace = true
+# 0.13: `toml::Table` keeps `[links]` keys this version doesn't know.
+toml.workspace = true
 
 [lints]
 workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-toml.workspace = true

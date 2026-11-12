@@ -70,6 +70,7 @@ pub(crate) fn handle(web: &Web, req: &Req) -> Res {
         (false, "/") => cx.home(),
         (false, "/search") => cx.search(),
         (false, "/tags") => cx.tags(),
+        (false, "/hierarchy") => cx.hierarchy(),
         (false, "/new") => cx.new_form(""),
         (true, "/new") => cx.create(),
         (false, "/consent") => cx.consent(),
@@ -240,6 +241,7 @@ impl Cx<'_> {
             // The search page has its own box.
             query: "",
             folder,
+            hierarchy: self.web.cfg.server.index().read().relations().has_hierarchy(),
         };
         Res::html(StatusCode::OK, html::page(&frame, main))
     }
@@ -444,7 +446,10 @@ impl Cx<'_> {
         let ix = self.web.cfg.server.index().read();
         let body = render::note(self.web, &ix, &hidden, &path, &src);
         let title = ix.get(&path).map_or_else(|| path.stem().to_string(), |r| r.title.clone());
-        let aside = Self::note_aside(&ix, &hidden, &path);
+        let listed = |q: &NotePath| Guard::listed(&hidden, q).then(|| note_href(q));
+        let trail = if quire_app::links_web::auto_on(&ix) { quire_app::links_web::trail_html(&ix, &path, &listed) } else { String::new() };
+        let typed = quire_app::links_web::typed_html(&ix, &path, &listed);
+        let aside = Self::note_aside(&ix, &hidden, &path, &typed);
         drop(ix);
         let edit = if self.web.cfg.read_only {
             String::new()
@@ -452,12 +457,12 @@ impl Cx<'_> {
             format!("<a class=\"btn\" href=\"/edit/{}\" accesskey=\"e\">Edit</a>", url_path(path.as_str()))
         };
         let main = format!(
-            "<div class=\"note-head\">{crumbs}<div class=\"actions\">{edit}</div></div><article class=\"note\">{body}</article>{aside}"
+            "<div class=\"note-head\">{crumbs}<div class=\"actions\">{edit}</div></div>{trail}<article class=\"note\">{body}</article>{aside}"
         );
         self.page(&title, path.folder(), Some(&path), &main)
     }
 
-    fn note_aside(ix: &Index, hidden: &[String], path: &NotePath) -> String {
+    fn note_aside(ix: &Index, hidden: &[String], path: &NotePath, typed: &str) -> String {
         let mut seen = BTreeSet::new();
         let mut back = String::new();
         for b in ix.backlinks(path) {
@@ -477,10 +482,11 @@ impl Cx<'_> {
             .get(path)
             .map(|r| r.tags.iter().map(|t| format!("<a class=\"tag\" href=\"/tags/{}\">#{}</a>", url_path(t), esc(t))).collect())
             .unwrap_or_default();
-        if back.is_empty() && tags.is_empty() {
+        if back.is_empty() && tags.is_empty() && typed.is_empty() {
             return String::new();
         }
         let mut out = String::from("<aside class=\"meta\">");
+        out.push_str(typed);
         if !back.is_empty() {
             let _ = write!(out, "<section><h2>Linked from</h2><ul class=\"backlinks\">{back}</ul></section>");
         }
@@ -489,6 +495,23 @@ impl Cx<'_> {
         }
         out.push_str("</aside>");
         out
+    }
+
+    /// The hierarchy: notes with children and no parent, and what is below
+    /// them, for the notes this reader may see.
+    fn hierarchy(&self) -> Res {
+        let hidden = self.hidden();
+        let listed = |q: &NotePath| Guard::listed(&hidden, q).then(|| note_href(q));
+        let ix = self.web.cfg.server.index().read();
+        let tree = quire_app::links_web::hierarchy_html(&ix, &listed);
+        drop(ix);
+        let body = if tree.is_empty() {
+            "<p class=\"muted\">No note has children yet. Write <code>up:: [[Parent]]</code> in a note, or set the hierarchy fields in Settings → Links on the desktop.</p>"
+                .to_string()
+        } else {
+            tree
+        };
+        self.page("Hierarchy", "", None, &format!("<h1>Hierarchy</h1>{body}"))
     }
 
     fn file(&self, raw: &str) -> Res {

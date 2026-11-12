@@ -43,6 +43,8 @@ pub(crate) struct Frame<'a> {
     pub query: &'a str,
     /// The folder "New note" starts in.
     pub folder: &'a str,
+    /// Some note has a hierarchy field: offer the Hierarchy page.
+    pub hierarchy: bool,
 }
 
 fn head(title: &str) -> String {
@@ -103,7 +105,11 @@ placeholder=\"Search notes\" aria-label=\"Search notes\" autocomplete=\"off\"></
             let _ = writeln!(out, "<a class=\"btn new-side\" href=\"/new?folder={}\">New note</a>", crate::encode_query(f.folder));
         }
         out.push_str(f.tree);
-        out.push_str("<p class=\"side-links\"><a href=\"/tags\">Tags</a></p>\n</nav>\n");
+        out.push_str("<p class=\"side-links\"><a href=\"/tags\">Tags</a>");
+        if f.hierarchy {
+            out.push_str(" <a href=\"/hierarchy\">Hierarchy</a>");
+        }
+        out.push_str("</p>\n</nav>\n");
     }
     out.push_str("<main id=\"main\" tabindex=\"-1\">\n");
     out.push_str(main);
@@ -130,7 +136,10 @@ This server holds a decrypted copy of your notes. \
 
 /// A bare page (sign-in, errors) without the app's frame.
 pub(crate) fn plain(title: &str, main: &str) -> String {
-    page(&Frame { title, csrf: "", tree: "", read_only: true, query: "", folder: "" }, &format!("<div class=\"narrow\">{main}</div>"))
+    page(
+        &Frame { title, csrf: "", tree: "", read_only: true, query: "", folder: "", hierarchy: false },
+        &format!("<div class=\"narrow\">{main}</div>"),
+    )
 }
 
 pub(crate) fn error_page(message: &str) -> String {

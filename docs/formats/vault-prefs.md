@@ -22,7 +22,7 @@ folder = "Weekly"
 [lint]            # WS-A
 [staleness]       # WS-C
 [citations]       # WS-G
-[links]           # 0.12 typed links (read only)
+[links]           # 0.12 typed links; 0.13 Settings → Links writes it
 ```
 
 ## Copying to another vault
@@ -70,8 +70,11 @@ can't parse back are matched against the 30 years around today).
 ## `[links]` (0.12 typed links)
 
 Which link fields make the hierarchy, whether they imply their reverse and
-when the breadcrumbs trail shows. Quire reads this section and never writes
-it. See [links.md](links.md#hierarchy).
+when the breadcrumbs trail shows; since 0.13 also the colour of free-form
+types (`[links.types.<name>]`) and Dendron-style names (`[links.dendron]`).
+Settings → Links writes it with `VaultPrefs::set_section` and keeps comments,
+unknown keys and every other byte of the file; a key still at its default is
+not added to a hand-written section. See [links.md](links.md#hierarchy).
 
 ## `[lint]` and `[lint.format]` (0.12 switching tools)
 
