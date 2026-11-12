@@ -64,6 +64,7 @@ F0 is the foundation step, after which its files are frozen).
 | flashcards in notes (`::`, `?`, `==cloze==`) | Markdown | [srs.md](srs.md#cards-in-notes) | WS-E | read; `^k-` ids written on request |
 | `*.canvas` | JSON Canvas 1.0, one object per line | [canvas.md](canvas.md) | WS-G | read and written |
 | `attachments/<canvas>-ink-<n>.svg` | SVG with `data-quire-*` attributes | [canvas.md](canvas.md) | WS-G | read and written |
+| `*.excalidraw`, `*.excalidraw.md` | Excalidraw JSON; the Obsidian Excalidraw plugin's note (plain or LZ-string compressed) | [excalidraw.md](excalidraw.md) | 0.13 Excalidraw | read and written (0.13; read-only before) |
 | `<pdf> (annotations).md` | Markdown + `quire:pdf-anchor` | [pdf-annotations.md](pdf-annotations.md) | WS-G | read and written |
 | `.quire/cache/pdf-text/<sha256>.json` | JSON, format 1 (cache) | [pdf-annotations.md](pdf-annotations.md#pdf-text-cache-quirecachepdf-textsha256json) | WS-G | written |
 | `[@key]` in notes, library `.bib` files | Pandoc citations, BibTeX | [citations.md](citations.md) | WS-G | read; `.bib` written by Import |

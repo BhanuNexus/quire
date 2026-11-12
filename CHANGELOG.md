@@ -12,7 +12,21 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 - **The 0.13 sync format**, for new vaults and, once, for existing ones (*Upgrade sync format…* in Settings → Sync, or `quire-cli sync upgrade`, after listing the devices not yet on 0.13): every revision's header (which revision it builds on, which device wrote it) is authenticated on a folder and a server too, not only on S3 and WebDAV, so a sync folder or server can't rewrite it. Quire 0.12 and older then say "update Quire" instead of syncing. Needed for removing devices and compaction.
 - `quire-cli sync devices` lists a vault's devices with the Quire each runs.
 
+#### Excalidraw drawings: editing
+- **Edit Excalidraw drawings** in a tab: `.excalidraw` files and the Obsidian Excalidraw plugin's `.excalidraw.md` notes. Select, move, resize, rotate; rectangle, diamond, ellipse, arrow and line (arrows attach to the shapes at their ends and follow them), freehand, text (also inside shapes), pictures from the vault, and the eraser. Excalidraw's tool keys (V, R, D, O, A, L, P, T, E, 1–9, 0) and its Ctrl shortcuts where Quire doesn't use them; the rest are in the style panel.
+- **Style panel:** stroke and background colour, fill, stroke width and style, sloppiness, edges, arrowheads, font, size, alignment and opacity; layers, align, duplicate, group, ungroup, lock and the element's link. Undo and redo, copy and paste (Excalidraw's clipboard, so you can paste between Quire and Excalidraw), pan and zoom, grid and snap.
+- **Links in drawings:** an element linked to `[[Note]]` (or a heading, a file, a web page) shows a ↗ badge; click it, or Ctrl+click the element, to open it. `[[links]]` typed in a drawing note's texts are links of the note: they show in backlinks, as with the plugin.
+- **New drawing (Excalidraw)** and **Embed a new drawing in this note** (no default keys). An embedded drawing shows as its picture; click it to edit the drawing.
+- **Files stay Excalidraw's:** a drawing saved without changes keeps every byte; an edit changes only the edited elements, keeps every field Quire doesn't know, and follows Excalidraw's own version rules. Compressed drawing notes stay compressed, plain ones plain. Format: [docs/formats/excalidraw.md](docs/formats/excalidraw.md).
+- **Saving** is automatic, with version history, and never writes over a change made elsewhere: a drawing changed elsewhere reloads, or (with edits here) asks whether to keep yours or theirs, with the other kept in a copy beside it.
+- **Drawings in locked folders** open and save encrypted, and show in notes from memory while the folder is unlocked.
+
+### Changed
+
+- A drawing note (`.excalidraw.md`) opens in the drawing editor; "Markdown" in its toolbar shows its text.
+
 ### Fixed
+
 - **Sync:** a note no longer stays behind on devices that never got one of its revisions, when that revision is lost for good (a damaged line in a sync folder, an object deleted from S3 or WebDAV): later revisions name their ancestors, so every device finds the same current version (0.13 sync format).
 - **Sync:** in a sync folder, another device's line that doesn't decrypt is skipped as damaged instead of stopping sync.
 

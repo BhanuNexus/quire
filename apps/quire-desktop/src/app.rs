@@ -221,7 +221,10 @@ impl QuireApp {
 
     /// Open a file that isn't a note in its surface (`registry::open_surface`).
     fn open_file(&mut self, path: &NotePath) {
-        if path.is_markdown() {
+        // 0.13: a drawing (`.excalidraw`, or an `.excalidraw.md` note) opens in the drawing editor.
+        if quire_canvas::excalidraw::is_drawing(path.as_str()) {
+            crate::drawing_edit::open(&mut self.ws, &mut self.surfaces, path);
+        } else if path.is_markdown() {
             if self.ws.open_note(path).is_some() {
                 self.surfaces.active = None;
                 self.focus_editor();
@@ -957,6 +960,8 @@ impl QuireApp {
         self.ws.jobs.set_modal_open(self.overlay.is_some());
         self.handle_shortcuts(&ctx);
         self.take_ui_requests();
+        // 0.13: a drawing note opened as a note opens in the drawing editor.
+        crate::drawing_edit::route(&mut self.ws, &mut self.surfaces);
         if self.overlay.is_none() && self.classic() {
             EditorState::handle_smart_keys(&ctx, &mut self.ws);
         }

@@ -27,6 +27,7 @@ mod connections_ui;
 mod decor;
 mod diagram_ui;
 mod dialogs;
+mod drawing_edit;
 mod drawing_ui;
 mod editor;
 mod embed_edit;

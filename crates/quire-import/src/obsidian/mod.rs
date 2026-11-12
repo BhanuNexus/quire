@@ -46,5 +46,9 @@ pub const COMPATIBILITY: &[(&str, &str, &str)] = &[
         "other view types, image, icon, html and other functions not listed",
     ),
     ("JSON Canvas (.canvas)", "the canvas editor", "—"),
-    ("Excalidraw (.excalidraw.md)", "shown as Markdown", "drawing"),
+    (
+        "Excalidraw (.excalidraw.md, .excalidraw)",
+        "the drawing editor: shapes, arrows, freehand, text, pictures, styles, links; compressed or plain, every field kept",
+        "the hand-drawn look, frames, libraries, scripts, LaTeX, multi-point and elbow arrows (kept, not edited)",
+    ),
 ];

@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Excalidraw drawings as pictures (0.10): `![[Plan.excalidraw]]` in a
-//! note and its preview, drawing files on a canvas, and the drawing itself
-//! when it's opened. Read-only: the notice says to edit in Excalidraw.
+//! note and its preview, drawing files on a canvas, and a drawing note
+//! shown as Markdown. Drawings are edited in `drawing_edit` (0.13).
 //!
 //! An egui image loader draws `.excalidraw` and `.excalidraw.md` files to
 //! pixels in both editions: `quire_canvas::excalidraw` turns the drawing
@@ -35,8 +35,8 @@ const SCALE: f64 = 2.0;
 /// The largest picture side, in pixels.
 const MAX_SIDE: f64 = 4096.0;
 
-/// What a reader is told about drawings.
-pub(crate) const NOTICE: &str = "Excalidraw drawing, shown as a picture. Quire doesn't edit drawings: edit in Excalidraw.";
+/// What a reader of a drawing note shown as Markdown is told.
+pub(crate) const NOTICE: &str = "Excalidraw drawing, shown as Markdown. Its picture:";
 
 // ---------------------------------------------------------------- rendering
 
@@ -317,45 +317,42 @@ pub(crate) fn banner_available(ws: &Workspace) -> bool {
 }
 
 pub(crate) fn banner(ui: &mut Ui, ws: &mut Workspace, _st: &mut crate::registry::FeatureUi, pal: &Palette) -> PanelOut {
-    let Some(abs) = ws.active_doc().and_then(|d| d.path.clone()).and_then(|p| ws.vault()?.storage().absolute(&p)) else {
-        return PanelOut::default();
-    };
-    ui.label(RichText::new(NOTICE).color(pal.muted));
-    show_picture(ui, &abs, ui.available_width(), 360.0);
+    let Some(path) = ws.active_doc().and_then(|d| d.path.clone()) else { return PanelOut::default() };
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(NOTICE).color(pal.muted));
+        if ui.button("Edit drawing").clicked() {
+            ws.request_ui(quire_app::workspace::UiRequest::OpenFile(path.clone()));
+        }
+    });
+    if let Some(abs) =
+        ws.vault().and_then(|v| v.storage().absolute(&path)).filter(|_| ws.vault().is_some_and(|v| v.locked_folder(&path).is_none()))
+    {
+        show_picture(ui, &abs, ui.available_width(), 360.0);
+    }
     PanelOut::default()
 }
 
-/// A `.excalidraw` file (plain JSON) opened from the file list.
-pub(crate) struct DrawingSurface {
-    path: NotePath,
-}
-
-impl DrawingSurface {
-    pub(crate) fn new(path: &NotePath) -> Self {
-        Self { path: path.clone() }
-    }
-}
-
-impl crate::surfaces::Surface for DrawingSurface {
-    fn path(&self) -> &NotePath {
-        &self.path
-    }
-
-    fn show(&mut self, ui: &mut Ui, ws: &mut Workspace, pal: &Palette) -> PanelOut {
-        egui::Frame::NONE.inner_margin(egui::Margin::symmetric(24, 16)).show(ui, |ui| {
-            ui.label(RichText::new(self.path.file_name()).size(22.0).color(pal.strong));
-            ui.label(RichText::new(NOTICE).color(pal.muted));
-            ui.add_space(8.0);
-            if let Some(abs) = ws.vault().and_then(|v| v.storage().absolute(&self.path)) {
-                egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
-                    show_picture(ui, &abs, ui.available_width(), f32::INFINITY);
-                });
-            } else {
-                ui.label(RichText::new("This file can't be read.").color(pal.danger));
+/// A drawing in a locked folder, decrypted in memory, as PNG bytes (for
+/// `locked_media`, which shows pictures of unlocked folders from memory).
+pub(crate) fn locked_png(ws: &Workspace, path: &NotePath) -> Option<Vec<u8>> {
+    let text = quire_app::drawings::read_drawing(ws, path).ok()?;
+    let root = ws.vault_root().map(Path::to_path_buf);
+    let scene = excalidraw::parse(&text).ok()?;
+    let d = quire_canvas::drawing::Drawing::parse(&text).ok();
+    let (w, h, rgba) = render(&scene, &|id| {
+        let f = d.as_ref()?.file_ref(id)?;
+        match &f {
+            FileRef::DataUrl(_) => load_file(&f, Path::new(""), root.as_deref()),
+            FileRef::Vault(rel) => {
+                let bytes = match ws.attachment_source(rel)? {
+                    quire_app::attach::AttachmentSource::Locked(p) => ws.read_locked_attachment(&p)?,
+                    quire_app::attach::AttachmentSource::File(p) => std::fs::read(p).ok()?,
+                };
+                Some(image::load_from_memory(&bytes).ok()?.to_rgba8())
             }
-        });
-        PanelOut::default()
-    }
+        }
+    });
+    quire_app::attach::encode_png(w as u32, h as u32, &rgba).ok()
 }
 
 #[cfg(test)]

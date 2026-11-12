@@ -193,6 +193,9 @@ pub enum Command {
     OpenHome,
     PinToHome,
     UndoImport,
+    // 0.13 Excalidraw editing (`drawings.rs`, dispatched with the canvas commands)
+    NewDrawing,
+    EmbedNewDrawing,
 }
 
 /// Which workstream's module handles a 0.9 command (design §6.2).
@@ -281,7 +284,12 @@ impl Command {
             | Self::ToggleToolbar
             | Self::FocusToolbar
             | Self::CustomizeCommands => Owner::Editor,
-            Self::NewCanvas | Self::InsertSketch | Self::InsertCitation | Self::ImportBibliography => Owner::Spatial,
+            Self::NewCanvas
+            | Self::InsertSketch
+            | Self::InsertCitation
+            | Self::ImportBibliography
+            | Self::NewDrawing
+            | Self::EmbedNewDrawing => Owner::Spatial,
             Self::LockFolder
             | Self::UnlockFolder
             | Self::LockNow
@@ -556,6 +564,9 @@ commands! {
     OpenHome,         "Go",     "Home",                           [], false;
     PinToHome,        "Note",   "Pin to Home (or unpin)",         [], true;
     UndoImport,       "Note",   "Undo the last import",           [], false;
+    // ---- 0.13 Excalidraw: no default keys (Settings → Commands binds them).
+    NewDrawing,       "Note",   "New drawing (Excalidraw)",       [], false;
+    EmbedNewDrawing,  "Format", "Embed a new drawing in this note", [], true;
 }
 
 impl Command {
