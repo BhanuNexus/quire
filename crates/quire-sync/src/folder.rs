@@ -73,7 +73,7 @@ pub const READER_FORMAT: u32 = 4;
 pub const LEVEL_HARDENED: u32 = 4;
 /// Words for a vault whose level went down in the storage.
 pub const LOWERED: &str = "The vault's sync format was lowered in the sync storage (Quire never does that; a removed device or someone else with access to the storage may have). Sync stopped on this device so nothing is sealed the old way.";
-/// Passes of at least [`TICK`] seconds apart a snapshot must also be seen
+/// Passes at least 10 minutes apart a snapshot must also be seen
 /// for before it settles, so a clock set forward doesn't settle it early.
 pub const SETTLE_TICKS: u32 = 72;
 /// See [`SETTLE_TICKS`].
