@@ -4,6 +4,14 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Added
+
+#### Typed links polish
+- **Settings → Links:** the hierarchy field names (up, down, same, next, previous), implied reverse links, when the trail shows, Dendron-style dotted names, and free-form link types with an optional colour for the graph. Saved in `[links]` of `.quire/shared/vault.toml`; your comments, unknown keys and every other byte of the file stay as they were, and a setting still at its default isn't added to a section you wrote by hand. A change takes effect at once, without a restart; the index rebuilds the edges on its own thread.
+- **Typed links in `quire-cli serve`:** a note's page shows the breadcrumbs trail and **Links by type** (Parents, Children, Siblings, Previous, Next, then every other type, `←` for links from other notes), and a **Hierarchy** page lists the tree. Server-rendered, escaped, behind the same sign-in, and a note in a hidden or locked folder appears in none of it: not as a link, a title, a count or a step of a trail.
+- **Typed links in published sites:** pages get the trail and a "Links by type" block, on by default when the vault uses hierarchy fields (`--typed-links auto|on|off` for `quire-cli publish`). They name only published notes; a trail stops below an unpublished one.
+- **Breadcrumbs' other ways of making edges**, with its property names: **tag notes** (`BC-tag-note-tag`, `-field`, `-exact`), **folder notes** (`BC-folder-note-field`, `-recurse`), **list notes** (`BC-list-note-field`, `-exclude-index`, `-neighbour-field`, and a field before a link: `- child [[B]]`) and **Dendron-style names** (`a.b.c` under `a.b`, off until switched on in Settings → Links). They are built in the same index pass as the written links, are marked as derived and never write to your notes. Not read: Johnny.Decimal, date, regex and transitive rules ([docs/design/0.13-links.md](docs/design/0.13-links.md)).
+
 ## [0.12.0] - 2026-11-11
 
 Quire 0.12: switching tools (import from more apps and undo it, tidy notes, a Home page), typed links and a hierarchy you can browse (Dataview and Breadcrumbs syntax), sync straight to S3-compatible storage or WebDAV, an import wizard with five more sources, a Markdown tidier and a Home tab, locked folders' notes and pictures in every view while unlocked, and a faster start.

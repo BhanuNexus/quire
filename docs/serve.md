@@ -201,6 +201,20 @@ drawings as pictures, voice notes and other recordings with a player, tags,
 backlinks, code with colours, and (full edition) math and Mermaid diagrams. The sun
 button switches light and dark; the layout works on a phone.
 
+**Typed links** (0.13). A note's page shows its breadcrumbs trail above the
+text (when the vault uses hierarchy fields, or `trail = "on"` in `[links]`;
+`"off"` hides it) and **Links by type** below it: Parents, Children,
+Siblings, Previous, Next, then each other type (`Supports`, `Source`…), with
+`←` for links from other notes. The **Hierarchy** link in the side bar opens
+the tree from each top note. Fields, names and colours are set in the
+desktop's Settings → Links ([format](formats/links.md)). Everything is
+rendered on the server, escaped like the rest of the page, and needs the
+same sign-in. A note the web may not show (a folder in `[web] hide`, a
+locked folder, `.quire/`) is not in any of it: not as a link, a title, a
+step of a trail or a type name, and a trail stops below it. The web uses
+`[web] hide`, not the agent policy, so tag and folder limits of agents don't
+apply here (a `private` agent zone stays visible, as the section above says).
+
 **Editing** is a plain Markdown text box with a preview, plus "New note".
 Saving checks that the note hasn't changed since you opened it. If it has
 (another device, an agent, sync), nothing is overwritten: when the changes

@@ -52,8 +52,9 @@ dropped, lower case, runs of spaces as one `-`. `**Parent Note**::` is type
 ## Hierarchy
 
 Five kinds of type build a hierarchy. Which field names mean which kind is
-set per vault in `.quire/shared/vault.toml` (read only; Quire doesn't write
-this section):
+set per vault in `.quire/shared/vault.toml`, by hand or in Settings → Links
+(which keeps comments, unknown keys and every other byte of the file, and adds
+no key that is still at its default):
 
 ```toml
 [links]
@@ -64,6 +65,14 @@ next = ["next"]
 prev = ["prev"]
 implied = true              # A up B gives B down A
 trail = "auto"              # auto | on | off
+
+[links.types.supports]      # a free-form type's colour in the graph (0.13)
+color = "#2e7d32"           # #rrggbb or #rgb; other keys here are kept
+
+[links.dendron]             # a.b.c is a child of a.b (0.13, off by default)
+enabled = true
+field = "up"                # the field the child has for its parent
+delimiter = "."
 ```
 
 Every key is optional; the values above are the defaults. Field names are
@@ -96,8 +105,41 @@ sibling", the other children of its first parent sorted by name; a `next` or
 | Breadcrumbs frontmatter links `up: "[[X]]"`, `down: ["[[A]]", "[[B]]"]` | as written |
 | Breadcrumbs implied "opposite direction" rules | `implied = true` |
 | Breadcrumbs custom field groups (e.g. `broader` as an up field) | list the names under `up`, `down`… in `[links]` |
-| Breadcrumbs list notes, tag notes, Dendron/date/regex notes, transitive rules beyond reversal | not read (the links stay ordinary links) |
+| Breadcrumbs tag notes, folder notes, list notes, Dendron notes | derived edges, below |
+| Breadcrumbs Johnny.Decimal, date and regex notes, transitive rules beyond reversal | not read (the links stay ordinary links) |
 | Obsidian Bases `file.links`, a property `up` | `file.links`, `up` (`up = X` matches `up: "[[X]]"`) |
+
+## Derived edges (0.13)
+
+Breadcrumbs also makes edges from how notes are named and filed. Quire reads
+four of them, with Breadcrumbs v4's property names (written as there, case
+included), so a Breadcrumbs vault keeps its hierarchy. The edges are built
+with the others, shown with the same groups and trail, and marked as derived;
+nothing is written to any note. A derived edge that is also written in a note
+counts once, as the written one.
+
+| Property of the note | Meaning |
+|---|---|
+| `BC-tag-note-tag: "#recipe"` | Edges to every note with that tag **or a nested tag** (`#recipe/dessert`). `#` is optional. |
+| `BC-tag-note-field: down` | The edge's field (any name; the first `down` name when missing, where Breadcrumbs needs it). |
+| `BC-tag-note-exact: true` | Only notes with exactly that tag. |
+| `BC-folder-note-field: down` | The note is a folder note: edges to the other notes in its folder. |
+| `BC-folder-note-recurse: true` | And every folder below it, flattened: all of them are its children. |
+| `BC-list-note-field: down` | A list note: an edge to each note linked in a list (`-`, `*`, `+`, `1.`; code blocks skipped, the first `[[link]]` of an item counts). A nested item is a child of the item above it, not of the list note. |
+| `BC-list-note-exclude-index: true` | No edges from the list note to its top-level items. |
+| `BC-list-note-neighbour-field: next` | Edges between consecutive items of one list. |
+| `- child [[B]]` or `- child:: [[B]]` in a list note | The word before the link names that item's edge, instead of the list note's field. |
+
+**Dendron names** are set in `[links.dendron]` (or Settings → Links), not in
+a note: with `enabled = true`, `a.b.c.md` gets an edge, in `field` (default
+`up`), to `a.b.md`, which has one to `a.md`. Only the exact parent counts: if
+`a.b.md` doesn't exist there is no edge to `a.md`. The delimiter can be any
+text. (Breadcrumbs' "display trimmed" isn't read: titles are shown as they
+are.)
+
+A list note reads at most 5000 items. All the edges follow `[links]`: a field
+named like an `up` field is an `up` edge, and `implied` makes the reverse.
+Which scheme Quire reads, and why only these four: [design/0.13-links.md](../design/0.13-links.md).
 
 ## Views and Bases
 
