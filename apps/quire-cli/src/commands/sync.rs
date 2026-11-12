@@ -58,8 +58,11 @@ pub(crate) const COMMANDS: &[CliCommand] = &[CliCommand {
   quire-cli sync devices <vault>                the vault's devices: id, name, Quire version, removed
   quire-cli sync remove-device <vault> DEVICE --recovery-key-file F [--passphrase-file F]
                         a new vault key for every other device; DEVICE can't read what's written from now
-                        on, and what it writes is ignored. A new passphrase (prompt, QUIRE_SYNC_PASSPHRASE or
-                        the file) is for devices that join later; the new recovery key goes in F
+                        on, and what it writes to sync is ignored (with access to the storage it can still
+                        delete files there). A new passphrase (prompt, QUIRE_SYNC_PASSPHRASE or the file) is
+                        for devices that join later; the new recovery key goes in F
+  quire-cli sync trust-key <vault> EPOCH DEVICE   when two devices removed each other, take DEVICE's key
+                        change EPOCH (sync stops until you choose)
   quire-cli sync upgrade <vault> [--yes]        upgrade the vault's sync format (0.13): authenticated revision
                         headers, removing devices, compaction. Quire 0.12 and older can't sync it afterwards
   quire-cli sync compact <vault> [--force] [--keep-days N]   fold old revisions into a snapshot now
@@ -134,6 +137,11 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         "devices" => devices(&vault),
         "remove-device" => remove_device(&vault, args),
+        "trust-key" => {
+            let epoch = arg(args, 3)?.parse::<u32>().map_err(|_| format!("trust-key takes a key change number, not “{}”", args[3]))?;
+            println!("{}", vault_sync::sync_trust_key_at(&vault, epoch, arg(args, 4)?)?);
+            Ok(())
+        }
         "upgrade" => upgrade(&vault, args),
         "compact" => {
             let keep = flag(args, "--keep-days")

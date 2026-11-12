@@ -149,6 +149,18 @@ impl Dev {
     }
 }
 
+/// A device of an S3 or WebDAV vault.
+struct RemoteDev {
+    id: DeviceId,
+    secret: DeviceSecret,
+    keys: KeySet,
+    pins: Pins,
+    engine: Engine,
+    local: MemoryStore,
+    t: RemoteTransport,
+    _state: tempfile::TempDir,
+}
+
 fn walk(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for e in fs::read_dir(dir).into_iter().flatten().flatten() {
@@ -429,21 +441,11 @@ fn objects_uploaded_as_another_device_with_the_old_key_are_refused() {
         quire_sync::remote::LEVEL_HARDENED,
     )
     .unwrap();
-    struct R {
-        id: DeviceId,
-        secret: DeviceSecret,
-        keys: KeySet,
-        pins: Pins,
-        engine: Engine,
-        local: MemoryStore,
-        t: RemoteTransport,
-        _state: tempfile::TempDir,
-    }
     let dev = |name: &str| {
         let state = tempfile::tempdir().unwrap();
         let id = DeviceId::random().unwrap();
         let keys = KeySet::new(&key);
-        R {
+        RemoteDev {
             t: RemoteTransport::new(Arc::clone(&store) as Arc<dyn ObjectStore>, &space, id.clone(), Some(state.path()))
                 .unwrap()
                 .with_keys(keys.clone()),
@@ -456,7 +458,7 @@ fn objects_uploaded_as_another_device_with_the_old_key_are_refused() {
             _state: state,
         }
     };
-    let pass = |d: &mut R| {
+    let pass = |d: &mut RemoteDev| {
         admin::publish_self(&d.t, &space, &d.id, &d.secret, "x", &d.keys, &BTreeMap::new()).unwrap();
         let before = d.keys.current();
         let r = admin::refresh_keys(&d.t, &space, &d.id, Some(&d.secret), &d.keys, &mut d.pins).unwrap();
@@ -469,7 +471,7 @@ fn objects_uploaded_as_another_device_with_the_old_key_are_refused() {
         }
         assert!(r.stuck.is_none());
     };
-    let sync = |d: &mut R| {
+    let sync = |d: &mut RemoteDev| {
         d.engine.sync(&mut d.local, &d.t, TODAY).unwrap();
         d.t.flush().unwrap();
     };

@@ -442,6 +442,7 @@ impl EpochRecord {
 
     /// Add where every device's lanes stood and the snapshots in use, and
     /// authenticate the record again with its key.
+    #[must_use]
     pub fn with_context(
         mut self,
         key: &VaultKey,
@@ -564,9 +565,10 @@ impl Resolved {
     }
 }
 
-/// What a lane's lines and snapshots must be, once the vault's key has
-/// changed (`docs/design/0.13-sync.md` §2). A removed device still has the
-/// older keys; these rules keep what it writes with them from being taken.
+/// What a lane's lines and snapshots must be, once the vault's key has changed.
+///
+/// A removed device still has the older keys; these rules keep what it
+/// writes with them from being taken (`docs/design/0.13-sync.md` §2).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LaneRules {
     /// Each key change taken (with its epoch), and where each device's
@@ -854,7 +856,7 @@ mod tests {
         // The removed device, offline, makes its own epoch 1 with a key it knows.
         let (rogue, _) =
             EpochRecord::make(&space, &keys, &r, &sr, &all(&[(&a, &sa), (&b, &sb), (&r, &sr)]), vec![], "p", KdfParams::TEST).unwrap();
-        for order in [vec![real.clone(), rogue.clone()], vec![rogue.clone(), real.clone()]] {
+        for order in [vec![real.clone(), rogue.clone()], vec![rogue, real.clone()]] {
             let got = resolve(&keys, &order, &b, Some(&sb), &pins);
             assert_eq!(got.keys.raw(1).unwrap().as_bytes(), k1.as_bytes());
         }
@@ -872,7 +874,7 @@ mod tests {
             KdfParams::TEST,
         )
         .unwrap();
-        for order in [vec![real.clone(), rogue.clone()], vec![rogue.clone(), real.clone()]] {
+        for order in [vec![real.clone(), rogue.clone()], vec![rogue, real.clone()]] {
             let got = resolve(&keys, &order, &b, Some(&sb), &pins);
             assert_eq!(got.keys.current(), 0);
             assert!(matches!(got.stuck, Some((1, KeyError::Conflict(_)))), "{:?}", got.stuck);
@@ -897,7 +899,7 @@ mod tests {
             KdfParams::TEST,
         )
         .unwrap();
-        for order in [vec![real.clone(), fake.clone()], vec![fake.clone(), real.clone()]] {
+        for order in [vec![real.clone(), fake.clone()], vec![fake, real]] {
             let got = resolve(&keys, &order, &b, Some(&sb), &pins);
             assert_eq!(got.keys.raw(1).unwrap().as_bytes(), k1.as_bytes());
         }

@@ -176,7 +176,6 @@ struct DevicesPanel {
     removing: Option<(String, String)>,
     pass: String,
     pass2: String,
-    removal: Option<Receiver<Result<quire_app::vault_sync::DeviceRemoved, String>>>,
     removed: Option<Result<quire_app::vault_sync::DeviceRemoved, String>>,
     upgrade_info: Option<Receiver<Result<quire_app::vault_sync::UpgradeInfo, String>>>,
     /// "Upgrade sync format…" clicked: what it would mean.
@@ -2027,7 +2026,13 @@ fn sync_devices(ui: &mut Ui, p: &mut DevicesPanel, ws: &Workspace, compacts_here
     if let Some(r) = poll_rx(ui, &mut p.loading) {
         p.list = Some(r);
     }
-    if let Some(r) = poll_rx(ui, &mut p.removal) {
+    // The removal runs in the workspace, so its recovery key waits there
+    // if Settings closes meanwhile.
+    let removing_now = !p.sample && ws.sync_removal_running();
+    if removing_now {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+    }
+    if let Some(r) = ws.take_sync_removal() {
         p.removed = Some(r);
         p.removing = None;
         p.list = None;
@@ -2077,7 +2082,7 @@ fn sync_devices(ui: &mut Ui, p: &mut DevicesPanel, ws: &Workspace, compacts_here
                     if !d.this && !d.removed {
                         let b = ui
                             .add_enabled(
-                                upgraded && p.removal.is_none(),
+                                upgraded && !removing_now,
                                 egui::Button::new(RichText::new("Remove this device").color(pal.danger)),
                             )
                             .on_disabled_hover_text("Upgrade the sync format first.");
@@ -2103,7 +2108,8 @@ fn sync_devices(ui: &mut Ui, p: &mut DevicesPanel, ws: &Workspace, compacts_here
             ui.add(
                 egui::Label::new(small(
                     "The other devices get a new vault key at their next sync. The removed device keeps the notes it has, \
-                     but can't read anything written from now on, and what it writes is ignored. \
+                     but can't read anything written from now on, and what it writes to sync is ignored \
+                     (with access to the sync storage it can still delete or damage files there: change that access too). \
                      Devices that join later use the passphrase below: choose a new one if whoever has that device knows the current one.",
                 ))
                 .wrap(),
@@ -2114,10 +2120,9 @@ fn sync_devices(ui: &mut Ui, p: &mut DevicesPanel, ws: &Workspace, compacts_here
             ui.add(egui::TextEdit::singleline(&mut p.pass2).password(true).hint_text("Again").desired_width(280.0));
             let ok = p.pass.chars().count() >= 8 && p.pass == p.pass2;
             ui.horizontal(|ui| {
-                if ui.add_enabled(ok && p.removal.is_none(), egui::Button::new(RichText::new("Remove").color(pal.danger))).clicked() {
-                    match ws.sync_remove_device_in_background(id.clone(), std::mem::take(&mut p.pass)) {
-                        Ok(rx) => p.removal = Some(rx),
-                        Err(e) => p.removed = Some(Err(e)),
+                if ui.add_enabled(ok && !removing_now, egui::Button::new(RichText::new("Remove").color(pal.danger))).clicked() {
+                    if let Err(e) = ws.sync_remove_device_in_background(id.clone(), std::mem::take(&mut p.pass)) {
+                        p.removed = Some(Err(e));
                     }
                     p.pass2.clear();
                 }
@@ -2126,7 +2131,7 @@ fn sync_devices(ui: &mut Ui, p: &mut DevicesPanel, ws: &Workspace, compacts_here
                     p.pass.clear();
                     p.pass2.clear();
                 }
-                if p.removal.is_some() {
+                if removing_now {
                     ui.add(egui::Spinner::new().size(12.0));
                 }
             });

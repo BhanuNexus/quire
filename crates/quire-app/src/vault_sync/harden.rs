@@ -35,6 +35,16 @@ pub struct Hardening {
     /// When this device last tried compacting (Unix seconds).
     #[serde(default)]
     pub last_compact: i64,
+    /// The highest sync format level seen for this vault (see
+    /// [`HARDENED`]): a lower one in the storage stops sync rather than
+    /// sealing the old way.
+    #[serde(default)]
+    pub level: u32,
+    /// The person's choice for key changes that conflict (two devices
+    /// removed each other): epoch → the device whose key change to take
+    /// (`quire-cli sync trust-key`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub trust: BTreeMap<u32, DeviceId>,
 }
 
 impl Hardening {
@@ -152,8 +162,9 @@ pub struct SyncDevices {
 pub fn sync_devices_at(root: &Path) -> Result<SyncDevices, String> {
     let mut p = parts(root)?;
     let admin = p.link.admin();
-    let fresh =
-        admin::refresh_keys(admin, &p.cfg.space, &p.cfg.device, Some(&p.secret), &p.keys, &mut p.pins).map_err(|e| e.to_string())?;
+    let trust = Hardening::load(root).trust;
+    let fresh = admin::refresh_keys_trusting(admin, &p.cfg.space, &p.cfg.device, Some(&p.secret), &p.keys, &mut p.pins, &trust)
+        .map_err(|e| e.to_string())?;
     let removed: BTreeSet<DeviceId> = fresh.removed.keys().cloned().collect();
     let list = admin::devices(admin, &p.cfg.space, &p.cfg.device, &fresh.keys, &mut p.pins, &removed).map_err(|e| e.to_string())?;
     save_pins(root, &p.pins);
@@ -200,13 +211,29 @@ pub fn sync_remove_device_at(root: &Path, device: &str, passphrase: &str) -> Res
             lane.lane_ends().map_err(|e| e.to_string())?.get(&target).copied().unwrap_or_default(),
         );
     }
+    // Where every device's lanes stand, and the snapshots taken, in the
+    // settings lane too (the notes' come from `admin`).
+    let mut seen: BTreeMap<DeviceId, BTreeMap<String, LanePos>> = BTreeMap::new();
+    let mut snapshots = Vec::new();
+    if let Some(dir) = &p.cfg.folder
+        && quire_sync::folder::lane_exists(dir, &p.cfg.space, quire_sync::folder::SHARED_LANE)
+    {
+        let lane =
+            quire_sync::folder::FolderTransport::lane(dir, &p.cfg.space, p.cfg.device.clone(), None, quire_sync::folder::SHARED_LANE)
+                .with_keys(p.keys.clone());
+        for (d, pos) in lane.lane_ends().map_err(|e| e.to_string())? {
+            seen.entry(d).or_default().insert(quire_sync::folder::SHARED_LANE.to_string(), pos);
+        }
+        snapshots.extend(lane.snapshots_taken().into_iter().map(|(n, h)| (quire_sync::folder::SHARED_LANE.to_string(), n, h)));
+    }
     let known = admin.writers().map_err(|e| e.to_string())?;
     let records = admin.device_records().map_err(|e| e.to_string())?;
     if !known.contains(&target) && !records.iter().any(|r| r.device == target) {
         return Err(format!("No device {device} in this vault (see `quire-cli sync devices`)."));
     }
-    let fresh =
-        admin::refresh_keys(admin, &p.cfg.space, &p.cfg.device, Some(&p.secret), &p.keys, &mut p.pins).map_err(|e| e.to_string())?;
+    let trust = Hardening::load(root).trust;
+    let fresh = admin::refresh_keys_trusting(admin, &p.cfg.space, &p.cfg.device, Some(&p.secret), &p.keys, &mut p.pins, &trust)
+        .map_err(|e| e.to_string())?;
     let removed: BTreeSet<DeviceId> = fresh.removed.keys().cloned().collect();
     let r = Removal {
         space: &p.cfg.space,
@@ -218,6 +245,8 @@ pub fn sync_remove_device_at(root: &Path, device: &str, passphrase: &str) -> Res
         kdf: KDF,
         lanes,
         removed: &removed,
+        seen,
+        snapshots,
     };
     let done = admin::remove_device(admin, &r, &mut p.pins).map_err(|e| e.to_string())?;
     let mut keys = fresh.keys;
@@ -236,6 +265,28 @@ pub fn sync_remove_device_at(root: &Path, device: &str, passphrase: &str) -> Res
         left_out: done.left_out.into_iter().map(|d| d.0).collect(),
         advice: advice.into(),
     })
+}
+
+/// Take device `maker`'s key change of `epoch` when two devices removed
+/// each other (`quire-cli sync trust-key`); sync then goes on with it. A
+/// device id may be shortened to its first characters.
+pub fn sync_trust_key_at(root: &Path, epoch: u32, maker: &str) -> Result<String, String> {
+    let p = parts(root)?;
+    let records = p.link.admin().key_records().map_err(|e| e.to_string())?;
+    let makers: BTreeSet<&DeviceId> = records.iter().filter(|r| r.epoch == epoch).map(|r| &r.maker).collect();
+    let found: Vec<&&DeviceId> = makers.iter().filter(|m| m.0.starts_with(maker.trim()) && !maker.trim().is_empty()).collect();
+    let [chosen] = found.as_slice() else {
+        let all: Vec<&str> = makers.iter().map(|m| m.0.as_str()).collect();
+        return Err(if all.is_empty() {
+            format!("No key change {epoch} in this vault.")
+        } else {
+            format!("Name one of the devices that made key change {epoch}: {}", all.join(", "))
+        });
+    };
+    let mut h = Hardening::load(root);
+    h.trust.insert(epoch, (**chosen).clone());
+    h.save(root)?;
+    Ok(format!("Key change {epoch} by {} is taken at the next sync.", chosen.0))
 }
 
 /// Before upgrading: is it done, and which devices would stop syncing.
@@ -280,7 +331,12 @@ pub fn sync_compact_at(root: &Path, force: bool, keep_days: Option<u32>) -> Resu
         h.keep_days = Some(d);
         h.save(root)?;
     }
-    let session = super::Session::new(root.to_path_buf(), vault, cfg, &token, key, lock)?;
+    let mut session = super::Session::new(root.to_path_buf(), vault, cfg, &token, key, lock)?;
+    // Key changes first: a removed device's late lines must not go into a snapshot.
+    session.refresh_keys();
+    if let Some(why) = &session.key_stuck {
+        return Err(why.clone());
+    }
     session.compact(force)
 }
 

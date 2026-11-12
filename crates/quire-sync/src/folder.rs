@@ -72,7 +72,7 @@ pub const READER_FORMAT: u32 = 4;
 /// newer Quire", 0.8 refuses its `format`.
 pub const LEVEL_HARDENED: u32 = 4;
 /// Words for a vault whose level went down in the storage.
-pub(crate) const LOWERED: &str = "The vault's sync format was lowered in the sync storage (Quire never does that; a removed device or someone else with access to the storage may have). Sync stopped on this device so nothing is sealed the old way.";
+pub const LOWERED: &str = "The vault's sync format was lowered in the sync storage (Quire never does that; a removed device or someone else with access to the storage may have). Sync stopped on this device so nothing is sealed the old way.";
 /// Passes of at least [`TICK`] seconds apart a snapshot must also be seen
 /// for before it settles, so a clock set forward doesn't settle it early.
 pub const SETTLE_TICKS: u32 = 72;
@@ -692,9 +692,8 @@ impl FolderTransport {
                 .flatten();
             match last {
                 Some(l) if l > c.seg => true,
-                Some(l) if l == c.seg => {
-                    fs::read(dir.join(format!("{l:06}.jsonl"))).is_ok_and(|b| b.iter().filter(|&&x| x == b'\n').count() as u64 >= c.line)
-                }
+                Some(l) if l == c.seg => fs::read(dir.join(format!("{l:06}.jsonl")))
+                    .is_ok_and(|b| b.split(|&x| x == b'\n').count().saturating_sub(1) as u64 >= c.line),
                 _ => false,
             }
         })
@@ -717,13 +716,14 @@ impl FolderTransport {
     fn mark_seen(&self, m: &Manifest) -> Seen {
         let mut seen = self.load_seen();
         let now = unix_now();
-        let e = seen.entry(m.name()).or_insert(Seen { at: now.max(m.made), ticks: 0, last: now });
-        let mut changed = e.ticks == 0 && e.last == now;
-        if now - e.last >= TICK {
+        let e = seen.entry(m.name()).or_insert_with(|| Seen { at: now.max(m.made), ticks: 0, last: now });
+        let changed = if now - e.last >= TICK {
             e.ticks = e.ticks.saturating_add(1);
             e.last = now;
-            changed = true;
-        }
+            true
+        } else {
+            e.ticks == 0 && e.last == now
+        };
         let out = *e;
         if changed && let Some(f) = &self.seen_file {
             let _ = write_atomically(f, &serde_json::to_vec(&seen).unwrap_or_default());
@@ -1662,6 +1662,17 @@ mod tests {
         one.pull(0).unwrap();
         assert!(one.problem().is_some_and(|n| n.contains("Another computer")));
         assert!(matches!(one.push(&rev(&FileId::random().unwrap(), &[], &d)), Err(TransportError::Refused(_))));
+    }
+
+    #[test]
+    fn a_snapshot_settles_after_a_week_and_enough_passes_not_a_clock_jump() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = FolderTransport::new(dir.path(), &SpaceId::random().unwrap(), DeviceId::random().unwrap(), None);
+        let week = crate::compact::SETTLE;
+        let seen = Seen { at: 1_000, ticks: 3, last: 1_000 };
+        assert!(!t.settled(&seen, 1_000 + week * 10), "a clock set far forward isn't enough");
+        assert!(!t.settled(&Seen { ticks: SETTLE_TICKS, ..seen }, 1_000 + week - 1));
+        assert!(t.settled(&Seen { ticks: SETTLE_TICKS, ..seen }, 1_000 + week));
     }
 
     #[test]

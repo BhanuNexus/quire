@@ -903,10 +903,12 @@ impl RemoteTransport {
             own = read_logs(&self.device_dir(&self.device));
         }
         m.own = own.last().map_or(0, |(n, _)| *n);
-        m.level = read_space(&*self.store, &self.space).map_or(FORMAT, |f| f.min_reader);
-        if m.level < self.folder.floor() {
-            return Err(TransportError::Refused(crate::folder::LOWERED.into()));
-        }
+        m.level = match read_space(&*self.store, &self.space) {
+            Ok(f) if f.min_reader < self.folder.floor() => return Err(TransportError::Refused(crate::folder::LOWERED.into())),
+            Ok(f) => f.min_reader,
+            // Unreadable now (offline, credentials): what is known of it.
+            Err(_) => FORMAT.max(self.folder.floor()),
+        };
         self.folder.set_level(m.level);
         let tip = self.read_tip(&self.device)?.map_or(0, |t| t.n);
         // This device's objects, listed once per session.

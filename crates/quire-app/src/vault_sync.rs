@@ -15,7 +15,7 @@
 //! token, or the storage's credentials) live in the OS keychain (or the
 //! private secrets file), never in the vault.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -31,7 +31,8 @@ use quire_sync::folder::{self, FolderTransport};
 pub use quire_sync::protocol::RevId as SyncRevId;
 use quire_sync::remote::{self, ObjectStore, RemoteTransport};
 use quire_sync::{
-    DeviceId, Engine, HttpTransport, KdfParams, LocalStore, RecoveryKey, Report, SpaceId, SyncState, Transport, VaultKey, WrappedKey,
+    DeviceId, Engine, HttpTransport, KdfParams, LanePos, LocalStore, RecoveryKey, Report, SpaceId, SyncState, Transport, VaultKey,
+    WrappedKey,
 };
 use quire_vault::{NotePath, Vault};
 use serde::{Deserialize, Serialize};
@@ -42,7 +43,7 @@ use crate::workspace::{NoticeLevel, Workspace};
 mod harden;
 pub use harden::{
     DeviceRemoved, Hardening, SyncDevice, SyncDevices, UpgradeInfo, sync_compact_at, sync_devices_at, sync_remove_device_at,
-    sync_upgrade_at, sync_upgrade_info_at,
+    sync_trust_key_at, sync_upgrade_at, sync_upgrade_info_at,
 };
 use quire_sync::admin::SpaceAdmin;
 use quire_sync::keyring::{DeviceSecret, KeySet, Pins};
@@ -919,6 +920,13 @@ impl LocalStore for VaultStore {
         out
     }
 
+    fn held_back(&self, path: &str) -> bool {
+        self.lane != Lane::Shared
+            && quire_sync::engine::is_attachment(path)
+            && self.selection.includes(path)
+            && self.size_and_time(path).is_some_and(|(n, _)| n > MAX_ATTACHMENT_BYTES)
+    }
+
     fn actor(&self, path: &str) -> Option<quire_sync::ActorRef> {
         let p = NotePath::new(path);
         if !p.is_markdown() {
@@ -1213,14 +1221,43 @@ impl Session {
     }
 
     /// 0.13, at the start of a pass: on a 0.13 server, swap the server's
-    /// token for this device's own; publish this device's record; take
-    /// any change of the vault's key (a device was removed), and ignore
-    /// what removed devices write after their cut.
+    /// token for this device's own; check the vault's level never went
+    /// down; publish this device's record; take any change of the vault's
+    /// key (a device was removed), and give the transports what removed
+    /// devices and older keys may no longer write.
     fn refresh_keys(&mut self) {
         if let Link::Server(_) = &self.link
             && !Hardening::load(&self.root).device_token
         {
             self.enroll();
+        }
+        // The highest level seen here is the floor: lower in the storage
+        // stops sync (a removed device lowering it to have new notes
+        // sealed with the key it still has).
+        let mut h = Hardening::load(&self.root);
+        match self.link.admin().level() {
+            Ok(l) if l < h.level => {
+                self.key_stuck = Some(folder::LOWERED.to_string());
+                return;
+            }
+            Ok(l) if l > h.level => {
+                h.level = l;
+                let _ = h.save(&self.root);
+            }
+            Err(quire_sync::TransportError::Refused(why)) if why == folder::LOWERED => {
+                self.key_stuck = Some(why);
+                return;
+            }
+            // Unreadable now (offline): the pass says so itself.
+            Ok(_) | Err(_) => {}
+        }
+        match &self.link {
+            Link::Folder(t) => t.set_floor(h.level),
+            Link::Remote(t) => t.set_floor(h.level),
+            Link::Server(_) => {}
+        }
+        if let Some((t, _, _)) = &self.lane {
+            t.set_floor(h.level);
         }
         let news = match &self.link {
             Link::Remote(t) => t.take_key_news(),
@@ -1232,13 +1269,31 @@ impl Session {
         }
         let Some(secret) = self.secret.clone() else { return };
         let admin = self.link.admin();
+        let lanes = |lane: Option<&(FolderTransport, Engine, VaultStore)>| -> BTreeMap<String, LanePos> {
+            lane.and_then(|(t, _, _)| t.own_end().ok()).map(|p| BTreeMap::from([(folder::SHARED_LANE.to_string(), p)])).unwrap_or_default()
+        };
         if !self.refreshed {
             // Once a session (a server before 0.13 has nowhere to put it).
-            let _ = quire_sync::admin::publish_self(admin, &self.cfg.space, &self.cfg.device, &secret, &self.cfg.device_name, &self.keys);
+            let _ = quire_sync::admin::publish_self(
+                admin,
+                &self.cfg.space,
+                &self.cfg.device,
+                &secret,
+                &self.cfg.device_name,
+                &self.keys,
+                &lanes(self.lane.as_ref()),
+            );
             self.refreshed = true;
         }
-        let Ok(r) = quire_sync::admin::refresh_keys(admin, &self.cfg.space, &self.cfg.device, Some(&secret), &self.keys, &mut self.pins)
-        else {
+        let Ok(r) = quire_sync::admin::refresh_keys_trusting(
+            admin,
+            &self.cfg.space,
+            &self.cfg.device,
+            Some(&secret),
+            &self.keys,
+            &mut self.pins,
+            &h.trust,
+        ) else {
             return;
         };
         harden::save_pins(&self.root, &self.pins);
@@ -1246,16 +1301,27 @@ impl Session {
             if let Some(k) = r.keys.current_raw() {
                 self.key = k.clone();
             }
-            // A newer key: this device's record says so again.
-            let _ = quire_sync::admin::publish_self(admin, &self.cfg.space, &self.cfg.device, &secret, &self.cfg.device_name, &r.keys);
+            // A newer key: this device's record says so again, and vouches
+            // for its lanes up to here.
+            let _ = quire_sync::admin::publish_self(
+                admin,
+                &self.cfg.space,
+                &self.cfg.device,
+                &secret,
+                &self.cfg.device_name,
+                &r.keys,
+                &lanes(self.lane.as_ref()),
+            );
         }
         self.keys = r.keys.clone();
         self.engine.set_keys(r.keys.clone());
         admin.set_removed(harden::removed_lanes(&r.removed, ""));
+        admin.set_rules(r.rules(""));
         if let Some((t, e, _)) = self.lane.as_mut() {
             t.set_keys(r.keys.clone());
             t.set_removed(harden::removed_lanes(&r.removed, folder::SHARED_LANE));
-            e.set_keys(r.keys);
+            t.set_rules(r.rules(folder::SHARED_LANE));
+            e.set_keys(r.keys.clone());
         }
         self.key_stuck = r.stuck.map(|(_, why)| quire_sync::admin::stuck_notice(&why));
     }
@@ -1265,6 +1331,14 @@ impl Session {
     fn enroll(&mut self) {
         let store = secrets::store();
         let Some(token) = store.get(&token_name(&self.cfg.space)) else { return };
+        if token.starts_with("qd_") {
+            // Already this device's own (noted before, then lost): a server
+            // gives a device one token only.
+            let mut h = Hardening::load(&self.root);
+            h.device_token = true;
+            let _ = h.save(&self.root);
+            return;
+        }
         let Ok(own) = HttpTransport::enroll(&self.cfg.server, &self.cfg.space, &token, &self.cfg.device) else { return };
         if store.set(&token_name(&self.cfg.space), &own).is_err() {
             return;
@@ -1390,6 +1464,7 @@ impl Session {
                     a.merged.extend(b.merged);
                     a.conflict_copies.extend(b.conflict_copies);
                     a.kept_over_delete.extend(b.kept_over_delete);
+                    a.held_back.extend(b.held_back);
                     Ok(a)
                 }
                 (Err(e), _) | (_, Err(e)) => Err(e),
@@ -1687,7 +1762,12 @@ impl SyncWorker {
                     }
                     Ok(Msg::Compact) => {
                         let _ = events.send(SyncEvent::Status(SyncStatus::Syncing));
-                        let said = session.compact(true).unwrap_or_else(|e| format!("Compaction failed: {e}"));
+                        // Key changes first: a removed device's late lines must not go into a snapshot.
+                        session.refresh_keys();
+                        let said = match &session.key_stuck {
+                            Some(why) => format!("Compaction waits: {why}"),
+                            None => session.compact(true).unwrap_or_else(|e| format!("Compaction failed: {e}")),
+                        };
                         let _ = events.send(SyncEvent::Notice(said));
                     }
                     Ok(Msg::Remote) | Err(_) => {}
@@ -1819,6 +1899,35 @@ pub struct SyncHandle {
     worker: Option<SyncWorker>,
     pub status: SyncStatus,
     pub config: Option<SyncConfig>,
+    /// A device removal running or done, kept here (not in Settings) so
+    /// its one-time recovery key isn't lost when Settings closes.
+    removal: std::sync::Mutex<Removal>,
+    /// Files already said to be too big to sync, this session.
+    held_back_said: std::collections::BTreeSet<String>,
+}
+
+/// See [`SyncHandle`]'s `removal`.
+#[derive(Debug, Default)]
+struct Removal {
+    running: Option<Receiver<Result<DeviceRemoved, String>>>,
+    done: Option<Result<DeviceRemoved, String>>,
+    announced: bool,
+}
+
+impl Removal {
+    fn poll(&mut self) {
+        if let Some(rx) = &self.running {
+            match rx.try_recv() {
+                Ok(r) => {
+                    self.done = Some(r);
+                    self.running = None;
+                    self.announced = false;
+                }
+                Err(crossbeam_channel::TryRecvError::Disconnected) => self.running = None,
+                Err(crossbeam_channel::TryRecvError::Empty) => {}
+            }
+        }
+    }
 }
 
 /// A default device name, e.g. "Asha's laptop" isn't knowable, so the host name.
@@ -2336,14 +2445,31 @@ impl Workspace {
     }
 
     /// Remove a device, off the UI thread; the worker takes the new key at its next pass.
-    pub fn sync_remove_device_in_background(
-        &self,
-        device: String,
-        passphrase: String,
-    ) -> Result<Receiver<Result<DeviceRemoved, String>>, String> {
+    /// Remove a device off the UI thread. The result waits here, for
+    /// [`Self::take_sync_removal`], even if Settings closes meanwhile.
+    pub fn sync_remove_device_in_background(&self, device: String, passphrase: String) -> Result<(), String> {
         let (root, _) = self.sync_parts()?;
+        let mut r = self.sync.removal.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if r.running.is_some() {
+            return Err("A device is being removed already.".into());
+        }
         let pass = remote::Zeroizing::new(passphrase);
-        Ok(in_background(move || sync_remove_device_at(&root, &device, &pass)))
+        r.running = Some(in_background(move || sync_remove_device_at(&root, &device, &pass)));
+        Ok(())
+    }
+
+    /// Whether a device removal is still running.
+    pub fn sync_removal_running(&self) -> bool {
+        let mut r = self.sync.removal.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        r.poll();
+        r.running.is_some()
+    }
+
+    /// The finished device removal, once (its recovery key is shown once).
+    pub fn take_sync_removal(&self) -> Option<Result<DeviceRemoved, String>> {
+        let mut r = self.sync.removal.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        r.poll();
+        r.done.take()
     }
 
     /// Whether the vault is upgraded, and which devices would stop syncing.
@@ -2444,10 +2570,24 @@ impl Workspace {
 
     /// Collect worker events. Returns true when something changed.
     pub(crate) fn poll_sync(&mut self) -> bool {
-        let Some(w) = &self.sync.worker else { return false };
+        // A removal finished while Settings was closed: say where its key is.
+        let finished = {
+            let mut r = self.sync.removal.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            r.poll();
+            let say = r.done.is_some() && !r.announced;
+            r.announced |= say;
+            say
+        };
+        if finished {
+            self.notify(
+                NoticeLevel::Warn,
+                "A device was removed from sync. Open Settings → Sync → Devices and sync format to see the vault's new recovery key (shown once).",
+            );
+        }
+        let Some(w) = &self.sync.worker else { return finished };
         let events = w.events();
         if events.is_empty() {
-            return false;
+            return finished;
         }
         for e in events {
             match e {
@@ -2461,6 +2601,14 @@ impl Workspace {
                     }
                     for p in &r.kept_over_delete {
                         self.notify(NoticeLevel::Info, format!("Kept “{p}”: it was edited on one device and deleted on another"));
+                    }
+                    for p in &r.held_back {
+                        if self.sync.held_back_said.insert(p.clone()) {
+                            self.notify(
+                                NoticeLevel::Warn,
+                                format!("“{p}” is over 10 MB, too big to sync: other devices keep their last copy until it's smaller."),
+                            );
+                        }
                     }
                 }
                 SyncEvent::Notice(n) => self.notify(NoticeLevel::Info, n),
@@ -2986,6 +3134,40 @@ mod tests {
             }
         }
         out
+    }
+
+    /// Data review #5: a synced drawing that grows past the sync limit is
+    /// held back with a notice, never sent as a deletion.
+    #[test]
+    fn a_synced_file_grown_too_big_is_held_back_not_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = folder::sync_root(&dir.path().join("Dropbox"));
+        let space = SpaceId::random().unwrap();
+        let key = VaultKey::generate().unwrap();
+        folder::create_space(&root, &space, &WrappedKey::wrap(&key, "pw", KDF).unwrap()).unwrap();
+        let (va, vb) = (dir.path().join("A"), dir.path().join("B"));
+        std::fs::create_dir_all(&va).unwrap();
+        std::fs::create_dir_all(&vb).unwrap();
+        let (a, b) = (Vault::open_local(&va).unwrap(), Vault::open_local(&vb).unwrap());
+        let (da, db) = (DeviceId::random().unwrap(), DeviceId::random().unwrap());
+        let mut ea = Engine::new(space.clone(), da.clone(), "a", key.keys(), SyncState::default());
+        let mut eb = Engine::new(space.clone(), db.clone(), "b", key.keys(), SyncState::default());
+        let (ta, tb) = (FolderTransport::new(&root, &space, da, None), FolderTransport::new(&root, &space, db, None));
+        std::fs::write(va.join("Board.excalidraw"), b"{\"type\":\"excalidraw\"}").unwrap();
+        let pass = |e: &mut Engine, v: &Vault, t: &FolderTransport| {
+            let mut st = VaultStore::new(v.clone());
+            snapshot_reads(&mut st);
+            e.sync(&mut st, t, "2026-11-13").unwrap()
+        };
+        pass(&mut ea, &a, &ta);
+        pass(&mut eb, &b, &tb);
+        assert!(vb.join("Board.excalidraw").exists());
+        std::fs::write(va.join("Board.excalidraw"), vec![b' '; usize::try_from(MAX_ATTACHMENT_BYTES).unwrap() + 1]).unwrap();
+        let r = pass(&mut ea, &a, &ta);
+        assert_eq!(r.held_back, ["Board.excalidraw"]);
+        pass(&mut eb, &b, &tb);
+        assert!(vb.join("Board.excalidraw").exists(), "the other device keeps its copy");
+        assert!(va.join("Board.excalidraw").exists());
     }
 
     #[test]
