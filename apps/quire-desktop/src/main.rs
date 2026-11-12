@@ -90,8 +90,14 @@ fn main() -> eframe::Result {
         return Ok(());
     }
     let vault_arg: Option<PathBuf> = std::env::args_os().nth(1).map(PathBuf::from);
-    let mut viewport =
-        egui::ViewportBuilder::default().with_title("Quire").with_inner_size([1280.0, 820.0]).with_min_inner_size([520.0, 360.0]);
+    // The Linux window's application id (Wayland app id, X11 class): the desktop matches it to
+    // the installed `io.github.bhanunexus.Quire.desktop` for the icon, the name and grouping
+    // (the .deb, AppImage and Flatpak all name their files so). Ignored elsewhere.
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("Quire")
+        .with_app_id("io.github.bhanunexus.Quire")
+        .with_inner_size([1280.0, 820.0])
+        .with_min_inner_size([520.0, 360.0]);
     if let Some(icon) = app_icon() {
         viewport = viewport.with_icon(icon);
     }
