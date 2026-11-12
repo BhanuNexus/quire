@@ -6,7 +6,8 @@ Every release is built by GitHub Actions from a tag. It's published as an immuta
 |---|---|---|
 | Windows 10/11 x64 | `Quire-<v>-windows-x64-setup.exe` (per-user installer, no admin), `Quire-<v>-windows-x64-portable.zip` | `packaging/windows/package.sh msvc` |
 | macOS 11+ (Apple Silicon + Intel) | `Quire-<v>-macos-universal.dmg` | `packaging/macos/package.sh` |
-| Linux x86_64 (glibc 2.35+) | `Quire-<v>-linux-x86_64.tar.gz` (reproducible; includes `install.sh` for a no-root install) | `packaging/linux/package.sh` |
+| Linux x86_64 and ARM64 (glibc 2.35+) | `Quire-<v>-linux-<arch>.tar.gz` (reproducible; includes `install.sh` for a no-root install), `.AppImage` and `.deb`; `<arch>` is `x86_64` or `aarch64` (the `.deb` says `amd64` or `arm64`). The sync server tarball is x86_64 only | `packaging/linux/package.sh`, natively on each architecture's runner |
+| Flatpak, x86_64 and ARM64 | `Quire-<v>-linux-<arch>.flatpak` (the full edition only) | `packaging/flatpak/io.github.bhanunexus.Quire.yml`, with `flatpak-builder`, from source and offline |
 | All | `SHA256SUMS`, `Quire-<v>-sbom.spdx.json` | release workflow |
 
 `quire-cli` (search, import, history and the MCP server) ships in every package.
@@ -24,7 +25,7 @@ Every release is built by GitHub Actions from a tag. It's published as an immuta
 4. `.github/workflows/release.yml` then:
    1. checks that the tag matches `Cargo.toml` and that the changelog has a section for it, checks that the on-device models are pinned (`packaging/pin-models.py --check`; only a warning while `REQUIRE_MODEL_PINS` at the top of the workflow is `"false"`, as in 0.9.0, where on-device AI ships behind an experimental switch), and runs the tests;
    2. builds the on-device AI engine per target, uploads it as a release asset (`quire-ai-engine-<target>.gz`) and pins its SHA-256 into the app builds (`engine.sha256.<target>`);
-   3. builds Linux, macOS and Windows in parallel, from clean (no build caches), both editions. The full edition's packages include the engine next to the app: each job unpacks the engine assets for its target, checks them against their pins (`packaging/unpack-engine.sh`; on macOS the two are joined with `lipo`), and passes the file as `ENGINE_BIN` to the packaging script, which signs it (macOS, Windows), writes its SHA-256 to `crates/quire-ai/engine.bundled.sha256` and builds the app with it, so the app refuses an engine next to it that isn't that file. Quire Lite's packages have no engine; it downloads the asset when on-device AI is turned on. A smoke test checks each package has (or hasn't) the engine and, for the full edition, that `quire-cli ai engine` starts it;
+   3. builds Linux (x86_64 on `ubuntu-22.04`, ARM64 on `ubuntu-22.04-arm`, natively), macOS and Windows in parallel, from clean (no build caches), both editions. The Flatpak is built from source on both architectures (`flatpak-sources`, then `flatpak`; full edition only). The full edition's packages include the engine next to the app: each job unpacks the engine assets for its target, checks them against their pins (`packaging/unpack-engine.sh`; on macOS the two are joined with `lipo`), and passes the file as `ENGINE_BIN` to the packaging script, which signs it (macOS, Windows), writes its SHA-256 to `crates/quire-ai/engine.bundled.sha256` and builds the app with it, so the app refuses an engine next to it that isn't that file. Quire Lite's packages have no engine; it downloads the asset when on-device AI is turned on. A smoke test checks each package has (or hasn't) the engine and, for the full edition, that `quire-cli ai engine` starts it;
    4. creates a build-provenance attestation for every file;
    5. generates an SPDX SBOM and attests it against the binaries;
    6. writes `SHA256SUMS`;
@@ -42,7 +43,7 @@ These can only be changed in the GitHub UI:
 - **Settings → General → Releases → Enable release immutability.** Published releases can then never have their assets or tag changed.
 - **Settings → Rules → Rulesets → New tag ruleset** for `v*`: restrict creation, update and deletion to maintainers, so release tags can't be moved or deleted.
 - **Settings → Environments → `release`** (created by the first release run): add required reviewers to approve each publish. Optionally limit it to `v*` tags.
-- **Settings → Rules → Rulesets → New branch ruleset** for `main`: require a pull request, the `CI` checks (`lint`, `test (…)`, `deny`, `typos`, `workflows`) and `CodeQL`; block force-pushes.
+- **Settings → Rules → Rulesets → New branch ruleset** for `main`: require a pull request, the `CI` checks (`lint`, `test (…)` including `ubuntu-24.04-arm`, `deny`, `typos`, `workflows`, `packaging`) and `CodeQL`; block force-pushes.
 - **Settings → Code security:** private vulnerability reporting, Dependabot alerts and security updates, and secret scanning with push protection.
 - **Settings → General → Features:** turn on Discussions.
 

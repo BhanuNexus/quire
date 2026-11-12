@@ -1,0 +1,13 @@
+# What flatpak-cargo-generator.py needs (update-cargo-sources.sh installs
+# these into a throw-away virtual environment). The two it names are pinned
+# to a version a few months old; the others are what they resolved to.
+aiohappyeyeballs==2.7.1
+aiohttp==3.13.0
+aiosignal==1.4.0
+attrs==26.1.0
+frozenlist==1.8.0
+idna==3.20
+multidict==6.9.1
+propcache==0.5.4
+tomlkit==0.13.3
+yarl==1.25.1
