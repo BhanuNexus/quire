@@ -182,7 +182,8 @@ fn edits_follow_excalidraws_rules() {
     assert!(idx.as_str() > "aC" && fractional::valid(&idx), "{idx}");
     // In a note, a new text gets the plugin's 8-character id.
     let n = fixture("Roadmap sketch.excalidraw.md");
-    assert_eq!(n.new_element("text", 0.0, 0.0, &Style::default(), &mut c).str("id").unwrap().len(), 8);
+    let tid = n.new_element("text", 0.0, 0.0, &Style::default(), &mut c).str("id").unwrap().to_string();
+    assert!(tid.len() == 8 && tid.bytes().all(|b| b.is_ascii_alphanumeric()), "{tid}: a block reference");
     // A legacy drawing without indices gets none.
     let mut l = fixture("legacy.excalidraw");
     let e = l.new_element("ellipse", 0.0, 0.0, &Style::default(), &mut c);

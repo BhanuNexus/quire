@@ -510,9 +510,13 @@ impl Cx {
     }
 
     /// A new id: 21 characters as Excalidraw's nanoid, or 8 (text in a note, as the plugin).
+    /// Text ids in a note are block references (`^id`), which Obsidian
+    /// allows letters and digits in: those only, as the plugin makes them.
     pub fn id(&mut self, len: usize) -> String {
         const ALPHA: &[u8] = b"ModuleSymbhasOwnPr-0123456789ABCDEFGHNRVfgctiUvz_KqYTJkLxpZXIjQW";
-        (0..len).map(|_| ALPHA[(self.next() >> 58) as usize] as char).collect()
+        const ALNUM: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        let alpha = if len == 8 { ALNUM } else { ALPHA };
+        (0..len).map(|_| alpha[(self.next() >> 32) as usize % alpha.len()] as char).collect()
     }
 
     /// An edit to `o`, as Excalidraw's `mutateElement`: `version + 1`, a new

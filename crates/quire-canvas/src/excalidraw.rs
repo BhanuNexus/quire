@@ -129,6 +129,8 @@ pub struct Element {
     pub file_id: Option<String>,
     /// Frames: their name.
     pub name: Option<String>,
+    /// The element's link (an embeddable's page).
+    pub link: Option<String>,
 }
 
 fn num(v: &Value, k: &str, default: f64) -> f64 {
@@ -183,6 +185,7 @@ pub fn element(v: &Value) -> Option<Element> {
         line_height: num(v, "lineHeight", 1.25),
         file_id: v.get("fileId").and_then(Value::as_str).map(str::to_string),
         name: v.get("name").and_then(Value::as_str).map(str::to_string),
+        link: v.get("link").and_then(Value::as_str).map(str::to_string),
         kind,
     })
 }
@@ -762,6 +765,23 @@ pub fn element_ops(e: &Element, out: &mut Vec<Op>) {
                     lines: vec![(name, e.x, e.y - 8.0)],
                     size: 14.0,
                     color: Rgba([120, 120, 120, 255]),
+                    anchor: "start",
+                    mono: false,
+                });
+            }
+            // 0.13: a web page in a drawing: a box with its address (not loaded).
+            "embeddable" | "iframe" => {
+                push_path(
+                    rect(e.x, e.y, e.width, e.height, 8.0),
+                    Some(Rgba([241, 243, 245, 255])),
+                    Some(Rgba([173, 181, 189, 255])),
+                    vec![6.0, 4.0],
+                );
+                let label = e.link.clone().filter(|l| !l.is_empty()).unwrap_or_else(|| "Embedded page".into());
+                out.push(Op::Text {
+                    lines: vec![(label, e.x + 12.0, e.y + 26.0)],
+                    size: 14.0,
+                    color: Rgba([110, 110, 110, 255]),
                     anchor: "start",
                     mono: false,
                 });

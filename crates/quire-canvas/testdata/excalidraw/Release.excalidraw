@@ -521,7 +521,7 @@
     "f00d": {
       "mimeType": "image/png",
       "id": "f00d",
-      "dataURL": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFklEQVR4nGNkYPj/n4GBgYGJgYEBAA8bAgK9FeyTAAAAAElFTkSuQmCC",
+      "dataURL": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAEElEQVR42mP40MMARwzEcQB40hfBCZUx2gAAAABJRU5ErkJggg==",
       "created": 1731400000000,
       "lastRetrieved": 1731400000000
     }
