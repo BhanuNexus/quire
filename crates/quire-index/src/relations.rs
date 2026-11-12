@@ -14,7 +14,7 @@
 //! Every query here is bounded: walks keep a visited set, so cycles end,
 //! and stop after a fixed number of steps.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use quire_markdown::fields::normalize_key;
 use quire_vault::NotePath;
@@ -94,8 +94,19 @@ fn names(v: &[&str]) -> Vec<String> {
 /// prev = ["prev"]
 /// implied = true      # A up B gives B down A
 /// trail = "auto"      # auto | on | off
+///
+/// [links.types.supports]   # 0.13: a free-form type's colour in the graph
+/// color = "#2e7d32"
+///
+/// [links.dendron]          # 0.13: `a.b.c` is a child of `a.b`
+/// enabled = true
+/// field = "up"
+/// delimiter = "."
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Keys this version doesn't know are kept in `other`, so saving the
+/// section from Settings never drops them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LinkConfig {
     pub up: Vec<String>,
@@ -105,6 +116,62 @@ pub struct LinkConfig {
     pub prev: Vec<String>,
     pub implied: bool,
     pub trail: TrailMode,
+    /// Free-form types with a style, by name as written (`supports`).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub types: BTreeMap<String, TypeStyle>,
+    /// Dotted note names as a hierarchy (Breadcrumbs' Dendron notes).
+    #[serde(skip_serializing_if = "Dendron::is_default")]
+    pub dendron: Dendron,
+    #[serde(flatten)]
+    pub other: toml::Table,
+}
+
+/// How a free-form type is drawn.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TypeStyle {
+    /// `#rrggbb`, the type's colour in the graph.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(flatten)]
+    pub other: toml::Table,
+}
+
+/// `#rrggbb` (or `#rgb`) as bytes.
+#[must_use]
+pub fn parse_hex_color(s: &str) -> Option<[u8; 3]> {
+    let h = s.trim().strip_prefix('#')?;
+    if !h.is_ascii() {
+        return None;
+    }
+    let digit = |i: usize, n: usize| u8::from_str_radix(&h[i..i + n], 16).ok();
+    match h.len() {
+        6 => Some([digit(0, 2)?, digit(2, 2)?, digit(4, 2)?]),
+        3 => Some([digit(0, 1)? * 17, digit(1, 1)? * 17, digit(2, 1)? * 17]),
+        _ => None,
+    }
+}
+
+/// Dendron-style names: `a.b.c` is a child of `a.b` (0.13).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Dendron {
+    pub enabled: bool,
+    /// The field the child has for its parent (`up`).
+    pub field: String,
+    pub delimiter: String,
+}
+
+impl Default for Dendron {
+    fn default() -> Self {
+        Self { enabled: false, field: "up".into(), delimiter: ".".into() }
+    }
+}
+
+impl Dendron {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 impl Default for LinkConfig {
@@ -117,6 +184,9 @@ impl Default for LinkConfig {
             prev: names(&["prev"]),
             implied: true,
             trail: TrailMode::Auto,
+            types: BTreeMap::new(),
+            dendron: Dendron::default(),
+            other: toml::Table::new(),
         }
     }
 }
@@ -150,6 +220,30 @@ impl LinkConfig {
         self.fields(h).first().map_or_else(|| h.key().to_string(), |f| normalize_key(f))
     }
 
+    /// Write the settings into `prefs`' `[links]` section (the caller saves
+    /// the file). A key that is still at its default and isn't in the file
+    /// is not added, so saving from Settings doesn't fill a hand-written
+    /// section with defaults; every other byte of the file stays.
+    pub fn store(&self, prefs: &mut quire_vault::VaultPrefs) -> Result<(), quire_vault::PrefsError> {
+        let existing: toml::Table = prefs.try_section(SECTION).ok().flatten().unwrap_or_default();
+        let to_table = |c: &Self| match toml::Value::try_from(c) {
+            Ok(toml::Value::Table(t)) => t,
+            _ => toml::Table::new(),
+        };
+        let defaults = to_table(&Self::default());
+        let mut t = to_table(self);
+        t.retain(|k, v| existing.contains_key(k) || defaults.get(k) != Some(v));
+        if t.is_empty() && existing.is_empty() {
+            return Ok(());
+        }
+        prefs.set_section(SECTION, &t)
+    }
+
+    /// The graph colour set for a type (`field` is normalized), if valid.
+    pub fn color_of(&self, field: &str) -> Option<[u8; 3]> {
+        self.types.iter().find(|(k, _)| normalize_key(k) == field).and_then(|(_, t)| t.color.as_deref()).and_then(parse_hex_color)
+    }
+
     fn table(&self) -> HashMap<String, Hier> {
         let mut t = HashMap::new();
         for h in Hier::ALL {
@@ -173,6 +267,9 @@ pub struct Relation {
     pub to: NotePath,
     /// Implied by the other note's edge (A `up` B gives B this `down` A).
     pub implied: bool,
+    /// Made from a naming scheme or a list (tag, folder, list, Dendron
+    /// notes), not from a link written in the note.
+    pub derived: bool,
 }
 
 /// The typed edges of a vault. Built by `LinkGraph::build`.
@@ -193,14 +290,19 @@ pub struct Relations {
 const WALK_CAP: usize = 5000;
 
 impl Relations {
-    /// Edges from `(from, field, to)` triples of resolved typed links.
-    pub(crate) fn build(edges: Vec<(NotePath, String, NotePath)>, cfg: &LinkConfig) -> Self {
+    /// Edges from `(from, field, to)` triples of resolved typed links, and
+    /// `derived` ones made from naming schemes (written edges win when both
+    /// make the same edge).
+    pub(crate) fn build(edges: Vec<(NotePath, String, NotePath)>, derived: Vec<(NotePath, String, NotePath)>, cfg: &LinkConfig) -> Self {
         let table = cfg.table();
         let mut r = Self::default();
         let mut seen: HashSet<(NotePath, String, NotePath, bool)> = HashSet::new();
         let mut implied = Vec::new();
-        for (from, field, to) in edges {
-            *r.fields.entry(field.clone()).or_default() += 1;
+        let all = edges.into_iter().map(|e| (e, false)).chain(derived.into_iter().map(|e| (e, true)));
+        for ((from, field, to), is_derived) in all {
+            if !is_derived {
+                *r.fields.entry(field.clone()).or_default() += 1;
+            }
             if from == to {
                 continue;
             }
@@ -209,11 +311,12 @@ impl Relations {
             if !seen.insert((from.clone(), field.clone(), to.clone(), false)) {
                 continue;
             }
-            r.into.entry(to.clone()).or_default().push(Relation { field: field.clone(), hier, to: from.clone(), implied: false });
+            let back = Relation { field: field.clone(), hier, to: from.clone(), implied: false, derived: is_derived };
+            r.into.entry(to.clone()).or_default().push(back);
             if let Some(h) = hier.filter(|_| cfg.implied) {
                 implied.push((to.clone(), h.reverse(), from.clone()));
             }
-            r.out.entry(from).or_default().push(Relation { field, hier, to, implied: false });
+            r.out.entry(from).or_default().push(Relation { field, hier, to, implied: false, derived: is_derived });
         }
         for (from, h, to) in implied {
             let field = cfg.field_for(h);
@@ -222,17 +325,30 @@ impl Relations {
             if list.iter().any(|e| e.hier == Some(h) && e.to == to) || !seen.insert((from, field.clone(), to.clone(), true)) {
                 continue;
             }
-            list.push(Relation { field, hier: Some(h), to, implied: true });
+            list.push(Relation { field, hier: Some(h), to, implied: true, derived: false });
         }
         r
     }
 
-    /// The typed links as written (not the implied edges): `(from, field, to)`.
-    pub fn written(&self) -> impl Iterator<Item = (&NotePath, &str, &NotePath)> {
+    fn sorted_out(&self) -> Vec<(&NotePath, &Vec<Relation>)> {
         // Notes in path order, each note's links in the order written: the same edges give the same result.
         let mut notes: Vec<(&NotePath, &Vec<Relation>)> = self.out.iter().collect();
         notes.sort_by(|a, b| a.0.cmp(b.0));
-        notes.into_iter().flat_map(|(from, list)| list.iter().filter(|e| !e.implied).map(move |e| (from, e.field.as_str(), &e.to)))
+        notes
+    }
+
+    /// The typed links as written (not implied or derived edges): `(from, field, to)`.
+    pub fn written(&self) -> impl Iterator<Item = (&NotePath, &str, &NotePath)> {
+        self.sorted_out()
+            .into_iter()
+            .flat_map(|(from, list)| list.iter().filter(|e| !e.implied && !e.derived).map(move |e| (from, e.field.as_str(), &e.to)))
+    }
+
+    /// The edges derived from tag, folder, list and Dendron notes.
+    pub fn derived(&self) -> impl Iterator<Item = (&NotePath, &str, &NotePath)> {
+        self.sorted_out()
+            .into_iter()
+            .flat_map(|(from, list)| list.iter().filter(|e| e.derived).map(move |e| (from, e.field.as_str(), &e.to)))
     }
 
     /// The edges of several indexes read as one: what each wrote, and
@@ -242,7 +358,8 @@ impl Relations {
         let mut edges: Vec<(NotePath, String, NotePath)> =
             parts.iter().flat_map(|r| r.written().map(|(f, field, t)| (f.clone(), field.to_string(), t.clone()))).collect();
         edges.extend(cross);
-        Self::build(edges, cfg)
+        let derived = parts.iter().flat_map(|r| r.derived().map(|(f, field, t)| (f.clone(), field.to_string(), t.clone()))).collect();
+        Self::build(edges, derived, cfg)
     }
 
     /// Every typed edge from `p`, its own first.
@@ -329,6 +446,13 @@ impl Relations {
     /// note on a cycle ends its path there; a note with no parents gives
     /// no path.
     pub fn trails(&self, p: &NotePath, max_paths: usize, max_depth: usize) -> Vec<Vec<NotePath>> {
+        self.trails_where(p, max_paths, max_depth, &|_| true)
+    }
+
+    /// [`Self::trails`] through the notes `keep` accepts only: a path never
+    /// passes through, or names, a note `keep` refuses (a note hidden from
+    /// the reader), so a trail stops below it.
+    pub fn trails_where(&self, p: &NotePath, max_paths: usize, max_depth: usize, keep: &dyn Fn(&NotePath) -> bool) -> Vec<Vec<NotePath>> {
         let mut out: Vec<Vec<NotePath>> = Vec::new();
         let mut steps = 0;
         // Depth first from `p` up; `path` is p, parent, grandparent…
@@ -339,7 +463,7 @@ impl Relations {
                 break;
             }
             let last = *path.last().expect("never empty");
-            let parents: Vec<&NotePath> = self.parents(last).into_iter().filter(|q| !path.contains(q)).collect();
+            let parents: Vec<&NotePath> = self.parents(last).into_iter().filter(|q| !path.contains(q) && keep(q)).collect();
             if parents.is_empty() || path.len() > max_depth {
                 if path.len() > 1 {
                     out.push(path.iter().rev().map(|q| (*q).clone()).collect());
@@ -384,7 +508,7 @@ mod tests {
     }
 
     fn rel(edges: &[(&str, &str, &str)], cfg: &LinkConfig) -> Relations {
-        Relations::build(edges.iter().map(|(a, f, b)| (p(a), (*f).to_string(), p(b))).collect(), cfg)
+        Relations::build(edges.iter().map(|(a, f, b)| (p(a), (*f).to_string(), p(b))).collect(), Vec::new(), cfg)
     }
 
     #[test]
@@ -457,5 +581,69 @@ mod tests {
         assert_eq!(c.kind("child"), Some(Hier::Down));
         assert!(!c.implied);
         assert_eq!(c.trail, TrailMode::Off);
+    }
+
+    const HAND: &str = "# Shared settings
+format = 1
+
+[web]
+hide = [\"Journal/\"]   # not on the web
+
+[links]
+# what means \"parent\" here
+up = [\"up\", \"parent\"]   # my parents
+implied = true
+future_key = \"kept\"
+
+[links.types.supports]
+color = \"#2e7d32\"
+note = \"also kept\"
+
+[tail]
+x = 1
+";
+
+    #[test]
+    fn settings_round_trip_keeps_every_other_byte() {
+        let mut prefs = quire_vault::VaultPrefs::parse(HAND).unwrap();
+        let cfg: LinkConfig = prefs.section(SECTION);
+        assert_eq!(cfg.color_of("supports"), Some([0x2e, 0x7d, 0x32]));
+        // Saving what was read changes nothing.
+        cfg.store(&mut prefs).unwrap();
+        assert_eq!(prefs.to_text(), HAND);
+        // A change touches only its own line.
+        let mut edited = cfg.clone();
+        edited.implied = false;
+        edited.down = vec!["child".into(), "kid".into()];
+        edited.types.entry("contradicts".into()).or_default().color = Some("#c62828".into());
+        edited.store(&mut prefs).unwrap();
+        let out = prefs.to_text();
+        assert!(out.starts_with("# Shared settings\nformat = 1\n\n[web]\nhide = [\"Journal/\"]   # not on the web\n\n[links]\n# what means \"parent\" here\nup = [\"up\", \"parent\"]   # my parents\nimplied = false\nfuture_key = \"kept\""), "{out}");
+        assert!(
+            out.contains("down = [\"child\", \"kid\"]")
+                && out.contains("note = \"also kept\"")
+                && out.contains("[links.types.contradicts]"),
+            "{out}"
+        );
+        assert!(out.ends_with("[tail]\nx = 1\n"), "{out}");
+        let again: LinkConfig = quire_vault::VaultPrefs::parse(&out).unwrap().section(SECTION);
+        assert_eq!(again, edited);
+    }
+
+    #[test]
+    fn default_settings_write_nothing_extra() {
+        let mut prefs = quire_vault::VaultPrefs::parse("format = 1\n").unwrap();
+        LinkConfig::default().store(&mut prefs).unwrap();
+        let out = prefs.to_text();
+        assert_eq!(out, "format = 1\n", "nothing is written for defaults");
+    }
+
+    #[test]
+    fn colours_parse() {
+        assert_eq!(parse_hex_color("#fff"), Some([255, 255, 255]));
+        assert_eq!(parse_hex_color(" #0a0B0c "), Some([10, 11, 12]));
+        assert_eq!(parse_hex_color("red"), None);
+        assert_eq!(parse_hex_color("#12345"), None);
+        assert_eq!(parse_hex_color("#é12345"), None);
     }
 }
