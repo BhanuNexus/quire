@@ -100,8 +100,19 @@ impl Index {
 
     /// Rebuild the link graph (linear in the number of links).
     pub fn refresh(&mut self) {
+        self.graph = self.build_graph();
+    }
+
+    /// Build the link graph for the current records without touching the index, so a
+    /// caller can do it under a read lock and `install_graph` it under a brief write.
+    pub fn build_graph(&self) -> LinkGraph {
         let sources = &self.sources;
-        self.graph = LinkGraph::build(self.records.values(), &|p| sources.get(p).map(String::as_str), &self.link_config);
+        LinkGraph::build(self.records.values(), &|p| sources.get(p).map(String::as_str), &self.link_config)
+    }
+
+    /// Replace the link graph with one from `build_graph` on the same records.
+    pub fn install_graph(&mut self, graph: LinkGraph) {
+        self.graph = graph;
     }
 
     /// The vault's typed-link settings in use.

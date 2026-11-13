@@ -301,6 +301,7 @@ enum Prepared {
 }
 
 fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: &Sender<SemMsg>) {
+    let read = || index.read().unwrap_or_else(std::sync::PoisonError::into_inner);
     let write = || index.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     // The vault last loaded: a note in one of its locked folders (0.11) is
     // never indexed, whoever sends it (a save, a watcher event, a job).
@@ -384,8 +385,12 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
             if let Some(cfg) = link_config {
                 ix.set_link_config_quiet(cfg);
             }
-            ix.refresh();
         }
+        // The graph is built under a read lock (searches and the UI keep working) and
+        // installed under a brief write. Only this thread writes, so the records cannot
+        // change in between.
+        let graph = read().build_graph();
+        write().install_graph(graph);
         shared.busy.store(false, Ordering::Relaxed);
         shared.version.fetch_add(1, Ordering::Release);
         if changed {
