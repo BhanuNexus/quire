@@ -90,7 +90,7 @@ jobs:
           for f in quire.exe quire-cli.exe quire-ai-engine.exe README.md; do echo x > "$RUNNER_TEMP/win/$f"; done
           cp LICENSE "$RUNNER_TEMP/win/LICENSE.txt"
           # An absolute script path: makensis changes into the script's folder (as package.sh notes).
-          makensis -V2 -DVERSION=0.0.0 -DSRCDIR="$RUNNER_TEMP/win" -DOUTFILE="$RUNNER_TEMP/win/setup.exe" -DENGINE "$PWD/packaging/windows/quire.nsi"
+          makensis -V2 -DVERSION=0.0.0 -DSRCDIR="$RUNNER_TEMP/win" -DOUTFILE="$RUNNER_TEMP/win/quire-test-setup.exe" -DENGINE "$PWD/packaging/windows/quire.nsi"
           grep -q 'Quire.Markdown' packaging/windows/quire.nsi
       - name: macOS Info.plist doesn't list Markdown files (docs/design/0.13-pack.md §3)
         run: |
