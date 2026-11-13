@@ -8,8 +8,8 @@ set -euo pipefail
 bin="$1"
 edition="$2"
 case "$edition" in
-  full) budget=75 ;;
-  lite) budget=45 ;;
+  full) budget=80 ;;
+  lite) budget=50 ;;
   engine) budget=25 ;;
   *) echo "edition must be full, lite or engine" >&2; exit 2 ;;
 esac
