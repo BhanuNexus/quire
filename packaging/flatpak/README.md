@@ -52,7 +52,7 @@ Flathub builds from a public git source, offline. What to prepare in a new `flat
    ```
 
    `commit` is required so the tag can't move. Nothing else changes.
-2. **`cargo-sources.json`**: run `packaging/flatpak/update-cargo-sources.sh` at the tag and commit the file next to the manifest. Regenerate it whenever `Cargo.lock` changes (every release), or Flathub's build fails on a missing or unlisted crate. The script runs `flatpak-cargo-generator.py` from flatpak-builder-tools at a pinned commit, checked by SHA-256.
+2. **`cargo-sources.json`**: run `packaging/flatpak/update-cargo-sources.sh` at the tag and commit the file next to the manifest. Regenerate it whenever `Cargo.lock` changes (every release), or Flathub's build fails on a missing or unlisted crate. The script runs `flatpak-cargo-generator.py` from flatpak-builder-tools at a pinned commit, checked by SHA-256, with its Python packages installed from `requirements.txt` by hash (`pin-requirements.py` regenerates that file when a version changes).
 3. **`flathub.json`** if the app should build only for some architectures; both x86_64 and aarch64 build today.
 4. **The linter's findings**: expect `finish-args-home-filesystem-access` (explained in the table above; Flathub treats it as an exception request). Not run here: nothing in 0.13 ran Flathub's linter, so the CI step that does is informational.
    **The app ID** is permanent once published. `io.github.bhanunexus.Quire` is lower case (the validators prefer it, and the GitHub account name is case-insensitive); Flathub verifies ownership of the `io.github.<account>` name, so check its current rules for the case it wants before submitting.

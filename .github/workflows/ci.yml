@@ -89,17 +89,16 @@ jobs:
           mkdir "$RUNNER_TEMP/win"
           for f in quire.exe quire-cli.exe quire-ai-engine.exe README.md; do echo x > "$RUNNER_TEMP/win/$f"; done
           cp LICENSE "$RUNNER_TEMP/win/LICENSE.txt"
-          makensis -V2 -DVERSION=0.0.0 -DSRCDIR="$RUNNER_TEMP/win" -DOUTFILE="$RUNNER_TEMP/win/setup.exe" -DENGINE packaging/windows/quire.nsi
+          # An absolute script path: makensis changes into the script's folder (as package.sh notes).
+          makensis -V2 -DVERSION=0.0.0 -DSRCDIR="$RUNNER_TEMP/win" -DOUTFILE="$RUNNER_TEMP/win/setup.exe" -DENGINE "$PWD/packaging/windows/quire.nsi"
           grep -q 'Quire.Markdown' packaging/windows/quire.nsi
-      - name: macOS Info.plist lists Markdown files
+      - name: macOS Info.plist doesn't list Markdown files (docs/design/0.13-pack.md §3)
         run: |
           python3 -I -c "
-          import plistlib, sys
+          import plistlib
           d = plistlib.load(open('packaging/macos/Info.plist', 'rb'))
-          types = d['CFBundleDocumentTypes']
-          assert types[0]['CFBundleTypeExtensions'] == ['md'], types
-          assert types[0]['LSHandlerRank'] == 'Alternate', types
-          assert d['UTImportedTypeDeclarations'][0]['UTTypeIdentifier'] == 'net.daringfireball.markdown'
+          assert 'CFBundleDocumentTypes' not in d, 'Finder would offer Quire for .md, which fails until the open-file event is handled'
+          assert 'UTImportedTypeDeclarations' not in d
           "
       - name: Shell scripts (errors only; the scripts predate this check's warnings)
         run: shellcheck --severity=error packaging/*.sh packaging/linux/*.sh packaging/macos/*.sh packaging/windows/*.sh packaging/flatpak/*.sh

@@ -27,7 +27,10 @@ curl -sSfL --retry 3 -o "$tmp/flatpak-cargo-generator.py" \
   "https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/$commit/cargo/flatpak-cargo-generator.py"
 echo "$sha256  $tmp/flatpak-cargo-generator.py" | sha256sum -c --quiet -
 python3 -m venv "$tmp/venv"
-"$tmp/venv/bin/pip" install --quiet --disable-pip-version-check -r "$root/packaging/flatpak/requirements.txt"
+# Hashes of every file, binaries only: nothing is built, and a file that differs
+# from the recorded hash, or a dependency that isn't listed, stops the install.
+"$tmp/venv/bin/pip" install --quiet --disable-pip-version-check --require-hashes --only-binary=:all: \
+  -r "$root/packaging/flatpak/requirements.txt"
 # -I: nothing from the current directory or the environment is imported.
 "$tmp/venv/bin/python" -I "$tmp/flatpak-cargo-generator.py" "$root/Cargo.lock" -o "$out"
 echo "wrote $out ($(grep -o '"type": "archive"' "$out" | wc -l) crates)"
