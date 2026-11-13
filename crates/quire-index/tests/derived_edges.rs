@@ -88,7 +88,7 @@ fn dendron_names_need_the_setting() {
 fn derived_edges_are_stable_and_never_double_a_written_link() {
     let a = vault(LinkConfig::default());
     let b = vault(LinkConfig::default());
-    let list = |ix: &Index| ix.relations().derived().map(|(f, k, t)| format!("{f} {k} {t}")).collect::<Vec<_>>();
+    let list = |ix: &Index| ix.relations().derived().map(|(f, k, t, o)| format!("{f} {k} {t} by {o}")).collect::<Vec<_>>();
     assert_eq!(list(&a), list(&b), "the order doesn't depend on how the index was filled");
     // A note that also writes the link by hand has one edge, and it is the written one.
     let mut ix = vault(LinkConfig::default());
@@ -98,4 +98,24 @@ fn derived_edges_are_stable_and_never_double_a_written_link() {
     let soup: Vec<_> = ix.relations().of(&p("Recipes.md")).iter().filter(|e| e.to == p("Soup.md") && e.hier == Some(Hier::Down)).collect();
     assert_eq!(soup.len(), 1);
     assert!(!soup[0].derived);
+}
+
+#[test]
+fn derived_edges_and_their_reverses_name_the_note_that_made_them() {
+    let ix = vault(LinkConfig::default());
+    let rel = ix.relations();
+    // Book One next Book Two comes from the list note, and so does the implied Book Two prev Book One.
+    let next = rel.of(&p("Book One.md")).iter().find(|e| e.field == "next" && e.to == p("Book Two.md")).unwrap();
+    assert_eq!(next.origin, Some(p("Reading List.md")));
+    let prev = rel.of(&p("Book Two.md")).iter().find(|e| e.hier == Some(Hier::Prev) && e.to == p("Book One.md")).unwrap();
+    assert!(prev.implied && prev.origin == Some(p("Reading List.md")));
+    assert!(rel.incoming(&p("Book Two.md")).iter().any(|e| e.origin == Some(p("Reading List.md"))));
+    // Hide the list note: the neighbour edges, the implied ones and the trails through them go with it.
+    let keep = |q: &NotePath| q.as_str() != "Reading List.md";
+    assert!(!next.visible(&keep) && !prev.visible(&keep));
+    assert!(rel.related_where(&p("Book One.md"), Hier::Next, &keep).is_empty());
+    assert!(rel.related_where(&p("Book Two.md"), Hier::Prev, &keep).is_empty());
+    assert_eq!(rel.related(&p("Book One.md"), Hier::Next), [&p("Book Two.md")]);
+    // A written link has no origin.
+    assert!(rel.of(&p("Recipes.md")).iter().all(|e| e.origin == Some(p("Recipes.md"))));
 }

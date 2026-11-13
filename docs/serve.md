@@ -203,7 +203,7 @@ button switches light and dark; the layout works on a phone.
 
 **Typed links** (0.13). A note's page shows its breadcrumbs trail above the
 text (when the vault uses hierarchy fields, or `trail = "on"` in `[links]`;
-`"off"` hides it) and **Links by type** below it: Parents, Children,
+`"off"` hides it and the block below) and **Links by type** below it: Parents, Children,
 Siblings, Previous, Next, then each other type (`Supports`, `Source`…), with
 `←` for links from other notes. The **Hierarchy** link in the side bar opens
 the tree from each top note. Fields, names and colours are set in the

@@ -1015,9 +1015,15 @@ fn typed_links_never_leak_hidden_notes() {
                 let _ = writeln!(fm, "{}: \"[[{}]]\"", keys[rng.below(keys.len())], stem(rng.below(n)));
             }
             match rng.below(6) {
-                0 => fm.push_str("BC-tag-note-tag: shared\nBC-tag-note-field: down\n"),
-                1 => fm.push_str("BC-folder-note-field: down\nBC-folder-note-recurse: true\n"),
-                2 => fm.push_str("BC-list-note-field: down\n"),
+                0 => {
+                    let _ = write!(fm, "BC-tag-note-tag: shared\nBC-tag-note-field: lbl-zz{i}zz\n");
+                }
+                1 => {
+                    let _ = write!(fm, "BC-folder-note-field: lbl-zz{i}zz\nBC-folder-note-recurse: true\n");
+                }
+                2 => {
+                    let _ = write!(fm, "BC-list-note-field: down\nBC-list-note-neighbour-field: nbr-zz{i}zz\n");
+                }
                 _ => {}
             }
             let mut body = format!("# {}\n\n", title(i));
@@ -1080,4 +1086,36 @@ fn note_pages_show_the_trail_and_typed_links() {
     // Signed out, none of it.
     let mut out = Browser::new(&env);
     assert_eq!(out.get("/hierarchy").status, 303);
+}
+
+/// 0.13 fixes: a hierarchy among hidden notes only is invisible (no Hierarchy link, no trail), and
+/// `[links] trail = "off"` turns off the typed-links block as well as the trail, as in published sites.
+#[test]
+fn hidden_hierarchy_and_trail_off_leave_no_trace() {
+    let files: &[(&str, &str)] =
+        &[("Plain.md", "# Plain\n"), ("Private/Top.md", "# Top\n"), ("Private/Leaf.md", "---\nup: \"[[Top]]\"\n---\n# Leaf\n")];
+    let env = start_with(files, false, |_| {});
+    let mut b = Browser::signed_in(&env);
+    let home = b.get("/");
+    assert!(!home.body.contains("/hierarchy"), "no Hierarchy link for a hierarchy the reader can't see: {}", home.body);
+    assert!(!b.get("/n/Plain.md").body.contains("class=\"trail\""));
+    // Off: no trail and no typed block, though the notes have typed links.
+    let files: &[(&str, &str)] = &[
+        ("Maths.md", "# Maths\n"),
+        ("Limits.md", "---\nup: \"[[Maths]]\"\nsupports: \"[[Maths]]\"\n---\n# Limits\n"),
+        (".quire/shared/vault.toml", "format = 1\n[links]\ntrail = \"off\"\n"),
+    ];
+    let env = start_with(files, false, |_| {});
+    let mut b = Browser::signed_in(&env);
+    let r = b.get("/n/Limits.md");
+    assert!(!r.body.contains("class=\"trail\"") && !r.body.contains("Links by type"), "{}", r.body);
+    let files: &[(&str, &str)] = &[
+        ("Maths.md", "# Maths\n"),
+        ("Limits.md", "---\nup: \"[[Maths]]\"\n---\n# Limits\n"),
+        (".quire/shared/vault.toml", "format = 1\n[links]\ntrail = \"on\"\n"),
+    ];
+    let env = start_with(files, false, |_| {});
+    let mut b = Browser::signed_in(&env);
+    let r = b.get("/n/Limits.md");
+    assert!(r.body.contains("class=\"trail\"") && r.body.contains("Links by type"), "{}", r.body);
 }

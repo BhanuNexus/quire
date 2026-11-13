@@ -437,6 +437,10 @@ pub(crate) struct LinksSettingsUi {
     delimiter: String,
     dendron_field: String,
     problem: String,
+    /// Field names the vault uses, as of index version `in_use_at` (read without
+    /// waiting, only when the index changed).
+    in_use: Vec<String>,
+    in_use_at: Option<u64>,
 }
 
 impl LinksSettingsUi {
@@ -610,8 +614,15 @@ pub(crate) fn settings_tab(ui: &mut egui::Ui, ws: &mut Workspace, fui: &mut Feat
         }
     });
     // Types the vault already uses.
-    let in_use: Vec<String> = ws.index().read().relations().fields().iter().map(|(f, _)| (*f).to_string()).collect();
-    let offer: Vec<&String> = in_use
+    let version = ws.index().version();
+    if st.in_use_at != Some(version)
+        && let Some(ix) = ws.index().try_read()
+    {
+        st.in_use = ix.relations().fields().iter().map(|(f, _)| (*f).to_string()).collect();
+        st.in_use_at = Some(version);
+    }
+    let offer: Vec<&String> = st
+        .in_use
         .iter()
         .filter(|f| cfg.kind(f).is_none() && !cfg.types.keys().any(|k| quire_app::markdown::fields::normalize_key(k) == **f))
         .take(8)

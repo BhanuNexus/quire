@@ -124,7 +124,7 @@ fn links(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
             "implied": implied, "path": other, "title": title(&ix, other)}));
     };
     if want_out {
-        for e in rel.of(&p) {
+        for e in rel.of(&p).iter().filter(|e| e.visible(&|q| visible(cx, q))) {
             push(&mut rows, false, Some(&e.field), e.hier, e.implied, &e.to);
         }
         // Plain links out.
@@ -176,7 +176,7 @@ fn walk(cx: &ToolCx<'_>, ix: &Index, start: &NotePath, h: Hier, depth: usize, li
         if d >= depth {
             continue;
         }
-        for n in rel.related(&p, h) {
+        for n in rel.related_where(&p, h, &|q| visible(cx, q)) {
             if !visible(cx, n) || !seen.insert(n.clone()) {
                 continue;
             }
@@ -195,9 +195,9 @@ fn walk(cx: &ToolCx<'_>, ix: &Index, start: &NotePath, h: Hier, depth: usize, li
 /// other children of its *visible* parents. Two notes that share only a parent the
 /// caller can't see aren't reported as siblings (that would reveal the parent).
 fn visible_siblings(cx: &ToolCx<'_>, rel: &Relations, p: &NotePath) -> Vec<NotePath> {
-    let mut v: Vec<NotePath> = rel.related(p, Hier::Same).into_iter().filter(|q| visible(cx, q)).cloned().collect();
-    for parent in rel.parents(p).into_iter().filter(|q| visible(cx, q)) {
-        let mut kids: Vec<&NotePath> = rel.children(parent);
+    let mut v: Vec<NotePath> = rel.related_where(p, Hier::Same, &|q| visible(cx, q)).into_iter().cloned().collect();
+    for parent in rel.related_where(p, Hier::Up, &|q| visible(cx, q)) {
+        let mut kids: Vec<&NotePath> = rel.related_where(parent, Hier::Down, &|q| visible(cx, q));
         kids.sort();
         for k in kids {
             if k != p && visible(cx, k) && !v.contains(k) {
@@ -212,11 +212,11 @@ fn visible_siblings(cx: &ToolCx<'_>, rel: &Relations, p: &NotePath) -> Vec<NoteP
 /// by name under its first visible parent (hidden notes aren't counted).
 fn visible_step(cx: &ToolCx<'_>, rel: &Relations, p: &NotePath, forward: bool) -> Option<NotePath> {
     let h = if forward { Hier::Next } else { Hier::Prev };
-    if let Some(n) = rel.related(p, h).first() {
+    if let Some(n) = rel.related_where(p, h, &|q| visible(cx, q)).first() {
         return Some((*n).clone()).filter(|q| visible(cx, q));
     }
-    let parent = *rel.parents(p).iter().find(|q| visible(cx, q))?;
-    let mut kids: Vec<&NotePath> = rel.children(parent).into_iter().filter(|k| visible(cx, k)).collect();
+    let parent = *rel.related_where(p, Hier::Up, &|q| visible(cx, q)).first()?;
+    let mut kids: Vec<&NotePath> = rel.related_where(parent, Hier::Down, &|q| visible(cx, q));
     kids.sort_by_key(|k| k.stem().to_lowercase());
     let i = kids.iter().position(|k| *k == p)?;
     let j = if forward { i + 1 } else { i.checked_sub(1)? };
@@ -258,7 +258,7 @@ fn hierarchy(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     }
     if want("trails") {
         // Only paths every note of which the caller may see.
-        let trails: Vec<Vec<NotePath>> = rel.trails(&p, 8, 32).into_iter().filter(|t| t.iter().all(|q| visible(cx, q))).collect();
+        let trails: Vec<Vec<NotePath>> = rel.trails_where(&p, 8, 32, &|q| visible(cx, q));
         for t in &trails {
             let _ = writeln!(text, "trail: {}", t.iter().map(NotePath::stem).collect::<Vec<_>>().join(" › "));
         }

@@ -241,9 +241,27 @@ impl Cx<'_> {
             // The search page has its own box.
             query: "",
             folder,
-            hierarchy: self.web.cfg.server.index().read().relations().has_hierarchy(),
+            hierarchy: self.has_hierarchy(),
         };
         Res::html(StatusCode::OK, html::page(&frame, main))
+    }
+
+    /// Whether a note this reader may see has a hierarchy edge (for the
+    /// Hierarchy link), from a short-lived cache: hidden notes decide nothing.
+    fn has_hierarchy(&self) -> bool {
+        let now = self.web.now();
+        let mut c = self.web.hierarchy.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((at, v)) = *c
+            && now >= at
+            && now - at <= 3000
+        {
+            return v;
+        }
+        let hidden = self.hidden();
+        let listed = |q: &NotePath| Guard::listed(&hidden, q).then(String::new);
+        let v = quire_app::links_web::has_visible_hierarchy(&self.web.cfg.server.index().read(), &listed);
+        *c = Some((now, v));
+        v
     }
 
     fn not_found(&self) -> Res {
@@ -447,8 +465,12 @@ impl Cx<'_> {
         let body = render::note(self.web, &ix, &hidden, &path, &src);
         let title = ix.get(&path).map_or_else(|| path.stem().to_string(), |r| r.title.clone());
         let listed = |q: &NotePath| Guard::listed(&hidden, q).then(|| note_href(q));
-        let trail = if quire_app::links_web::auto_on(&ix) { quire_app::links_web::trail_html(&ix, &path, &listed) } else { String::new() };
-        let typed = quire_app::links_web::typed_html(&ix, &path, &listed);
+        // `[links] trail = "off"` turns off both; `auto` looks only at notes this reader may see.
+        let (trail, typed) = if quire_app::links_web::auto_on(&ix, &listed) {
+            (quire_app::links_web::trail_html(&ix, &path, &listed), quire_app::links_web::typed_html(&ix, &path, &listed))
+        } else {
+            (String::new(), String::new())
+        };
         let aside = Self::note_aside(&ix, &hidden, &path, &typed);
         drop(ix);
         let edit = if self.web.cfg.read_only {
