@@ -11,7 +11,7 @@
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use toml_edit::{DocumentMut, Item, Table};
+use toml_edit::{DocumentMut, Item};
 
 use crate::{NotePath, Vault, VaultError};
 
@@ -51,6 +51,8 @@ pub enum PrefsError {
 #[derive(Debug, Clone)]
 pub struct VaultPrefs {
     doc: DocumentMut,
+    /// The file used `\r\n` line ends throughout; they are written back.
+    crlf: bool,
     /// Why the file on disk couldn't be parsed (then this holds defaults).
     unreadable: Option<String>,
 }
@@ -59,7 +61,7 @@ impl Default for VaultPrefs {
     fn default() -> Self {
         let mut doc = DocumentMut::new();
         doc.insert("format", toml_edit::value(VAULT_PREFS_FORMAT));
-        Self { doc, unreadable: None }
+        Self { doc, crlf: false, unreadable: None }
     }
 }
 
@@ -67,7 +69,8 @@ impl VaultPrefs {
     /// Parse preferences text.
     pub fn parse(text: &str) -> Result<Self, PrefsError> {
         let doc: DocumentMut = text.parse().map_err(|e: toml_edit::TomlError| PrefsError::Unreadable(e.to_string()))?;
-        Ok(Self { doc, unreadable: None })
+        let crlf = text.contains("\r\n") && !text.replace("\r\n", "").contains('\n');
+        Ok(Self { doc, crlf, unreadable: None })
     }
 
     /// The vault's preferences; defaults when the file is missing. An
@@ -117,8 +120,8 @@ impl VaultPrefs {
         let text = toml::to_string(&wrapper).map_err(|e| PrefsError::Encode(e.to_string()))?;
         let mut fresh: DocumentMut = text.parse().map_err(|e: toml_edit::TomlError| PrefsError::Encode(e.to_string()))?;
         let Some(new_item) = fresh.remove(name) else { return Ok(()) };
-        match (self.doc.get_mut(name).and_then(Item::as_table_mut), new_item) {
-            (Some(old), Item::Table(new)) => merge_table(old, new),
+        match (self.doc.get_mut(name).and_then(Item::as_table_like_mut), new_item) {
+            (Some(old), Item::Table(new)) => merge_table(old, &new),
             (_, new) => {
                 self.doc.insert(name, new);
             }
@@ -168,7 +171,8 @@ impl VaultPrefs {
 
     /// The file's text as it would be saved.
     pub fn to_text(&self) -> String {
-        self.doc.to_string()
+        let text = self.doc.to_string();
+        if self.crlf { text.replace("\r\n", "\n").replace('\n', "\r\n") } else { text }
     }
 
     /// Write the file atomically. Refuses (and changes nothing) when the
@@ -180,29 +184,48 @@ impl VaultPrefs {
         if self.is_newer() {
             return Err(PrefsError::NewerFormat(self.format()));
         }
-        vault.storage().write_atomic(&NotePath::new(VAULT_PREFS_PATH), &self.doc.to_string())?;
+        vault.storage().write_atomic(&NotePath::new(VAULT_PREFS_PATH), &self.to_text())?;
         Ok(())
     }
 }
 
+/// A value as plain data, for comparing what a key says apart from how it
+/// is written (`['a' , "b"]` and `["a", "b"]` are the same value).
+fn plain(v: &toml_edit::Value) -> Option<toml::Value> {
+    let mut t: toml::Table = toml::from_str(&format!("v = {v}")).ok()?;
+    t.remove("v")
+}
+
 /// Put `new`'s keys into `old` in place: existing keys keep their position
 /// and comments, new keys are appended, and keys `new` lacks are removed.
-fn merge_table(old: &mut Table, new: Table) {
+///
+/// A key whose value says the same thing is not touched at all, so its
+/// quotes, spacing and comments (also inside arrays) stay as written. Inline
+/// tables (`types = { a = 1 }`) are merged key by key like standard ones.
+fn merge_table(old: &mut dyn toml_edit::TableLike, new: &dyn toml_edit::TableLike) {
     let gone: Vec<String> = old.iter().map(|(k, _)| k.to_string()).filter(|k| !new.contains_key(k)).collect();
     for k in gone {
         old.remove(&k);
     }
-    for (k, item) in new {
-        match (old.get_mut(&k), item) {
-            (Some(Item::Table(o)), Item::Table(n)) => merge_table(o, n),
-            (Some(Item::Value(o)), Item::Value(mut n)) => {
+    for (k, item) in new.iter() {
+        if let Some(o) = old.get_mut(k) {
+            if let (Some(old_t), Some(new_t)) = (o.as_table_like_mut(), item.as_table_like()) {
+                merge_table(old_t, new_t);
+                continue;
+            }
+            if let (Item::Value(ov), Item::Value(nv)) = (&mut *o, item) {
+                if plain(ov).is_some_and(|a| plain(nv).is_some_and(|b| a == b)) {
+                    continue;
+                }
                 // Keep a trailing comment (`x = 1 # why`) on the value.
-                *n.decor_mut() = o.decor().clone();
-                *o = n;
+                let mut nv = nv.clone();
+                *nv.decor_mut() = ov.decor().clone();
+                *ov = nv;
+                continue;
             }
-            (_, item) => {
-                old.insert(&k, item);
-            }
+            *o = item.clone();
+        } else {
+            old.insert(k, item.clone());
         }
     }
 }
@@ -329,5 +352,44 @@ level = 3
         assert!(matches!(to.copy_from(&bad, &[]), Err(PrefsError::Unreadable(_))));
         let mut newer = VaultPrefs::parse("format = 9\n").unwrap();
         assert!(matches!(newer.copy_from(&from, &[]), Err(PrefsError::NewerFormat(9))));
+    }
+
+    /// Every section a settings page saves with `set_section` keeps the file's
+    /// text: saving what was read changes nothing, a change touches its own
+    /// value only, and `\r\n` files stay `\r\n`.
+    #[test]
+    fn saving_keeps_every_other_byte_for_every_settings_section() {
+        const SECTIONS: [&str; 12] =
+            ["periodic", "tags", "git", "lint", "staleness", "citations", "links", "tasks", "home", "sort", "order", "icons"];
+        for eol in ["\n", "\r\n"] {
+            for name in SECTIONS {
+                let text = format!(
+                    "# top{eol}format = 1{eol}{eol}[{name}]{eol}# why{eol}list = [{eol}  'a',   # first{eol}  \"b\",{eol}]{eol}odd   =   'x'  # keep{eol}\
+                     inline = {{ k = 1, j = \"v\" }} # inl{eol}{eol}[{name}.sub]{eol}# blue{eol}color = '#112233'{eol}{eol}[[other]]{eol}n = 1{eol}[[other]]{eol}n = 2{eol}{eol}[tail]{eol}x = 1{eol}"
+                );
+                let mut p = VaultPrefs::parse(&text).unwrap();
+                let t: toml::Table = p.section(name);
+                assert!(!t.is_empty(), "{name} reads");
+                p.set_section(name, &t).unwrap();
+                assert_eq!(p.to_text(), text, "{name}, unchanged, eol {eol:?}");
+                let mut changed = t.clone();
+                changed.insert("added".into(), toml::Value::Integer(7));
+                changed.insert("odd".into(), toml::Value::String("y".into()));
+                p.set_section(name, &changed).unwrap();
+                let out = p.to_text();
+                assert!(
+                    out.contains(&format!("odd   =   \"y\"  # keep{eol}")) && out.contains(&format!("added = 7{eol}")),
+                    "{name}: {out:?}"
+                );
+                let rest = |s: &str| s.replace("odd   =   \"y\"", "odd   =   'x'").replace(&format!("added = 7{eol}"), "");
+                assert_eq!(rest(&out), text, "{name}: only the two keys changed, eol {eol:?}");
+                // Removing a key removes only its line.
+                let mut fewer = t.clone();
+                fewer.remove("odd");
+                p.set_section(name, &fewer).unwrap();
+                assert!(!p.to_text().contains("odd"), "{name}");
+                assert!(p.to_text().contains(&format!("[tail]{eol}x = 1{eol}")), "{name}");
+            }
+        }
     }
 }
