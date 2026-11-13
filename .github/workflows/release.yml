@@ -355,11 +355,15 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" build.keychain
           rm "$RUNNER_TEMP/cert.p12"
       - run: packaging/macos/package.sh
-      - name: The app lists Markdown (.md) files for "Open With"
+      - name: The app isn't offered for .md files in Finder (until the open-file event is handled)
         run: |
           plutil -p dist/Quire.app/Contents/Info.plist > "$RUNNER_TEMP/plist.txt"
           # Not listed for .md in Finder until the open-file event is handled (docs/design/0.13-pack.md §3).
-          ! grep -q 'CFBundleDocumentTypes' "$RUNNER_TEMP/plist.txt"
+          # (`! grep` would not fail the step under `bash -e`.)
+          if grep -q -e CFBundleDocumentTypes -e UTImportedTypeDeclarations "$RUNNER_TEMP/plist.txt"; then
+            echo "::error::Info.plist lists document types; Finder would offer Quire for .md and fail to open the file"
+            exit 1
+          fi
       - name: The full edition includes the engine, Quire Lite doesn't
         run: |
           engine=dist/Quire.app/Contents/MacOS/quire-ai-engine
@@ -484,15 +488,61 @@ jobs:
           path: packaging/flatpak/cargo-sources.json
           if-no-files-found: error
 
+  # The builder image is pinned by digest. The tag below is only how the
+  # digest is found: this job resolves it and a tag release stops unless it
+  # is the digest recorded in packaging/flatpak/builder-image.digest (a
+  # moved tag, or nothing recorded yet). The `flatpak` job then runs exactly
+  # that digest. To record or update it: read the "Resolved" line of a dry
+  # run of this workflow, check the tag is the one flathub-infra/actions-images
+  # built, and commit the digest to that file (docs/design/0.13-pack.md §6).
+  flatpak-image:
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      digest: ${{ steps.digest.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve the builder image's digest and compare it with the recorded one
+        id: digest
+        env:
+          IMAGE: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-26.08
+        run: |
+          got="$(docker buildx imagetools inspect "$IMAGE" | sed -n 's/^Digest: *//p' | head -n 1)"
+          if ! printf '%s' "$got" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "::error::Couldn't resolve a digest for $IMAGE (got: $got)"
+            exit 1
+          fi
+          want="$(tr -d '[:space:]' < packaging/flatpak/builder-image.digest)"
+          echo "Resolved: $IMAGE = $got"
+          echo "Recorded: $want"
+          echo "digest=$got" >> "$GITHUB_OUTPUT"
+          if [ "$got" = "$want" ]; then
+            echo "The builder image is the recorded one."
+          elif [ "$IS_RELEASE" = "true" ]; then
+            echo "::error::The builder image is $got, not the recorded $want. Check the tag, then record it: echo $got > packaging/flatpak/builder-image.digest"
+            exit 1
+          else
+            echo "::warning::Not the recorded digest (a dry run goes on; a tag release would stop). To record: echo $got > packaging/flatpak/builder-image.digest"
+          fi
+
   flatpak:
-    needs: [check, flatpak-sources]
+    needs: [check, flatpak-sources, flatpak-image]
     runs-on: ${{ matrix.runner }}
     # flatpak-builder needs namespaces the runner's own AppArmor profile
     # refuses, so the build runs in Flathub's builder image, as the action's
     # README does. The image has flatpak, flatpak-builder, the 26.08 runtime
-    # and SDK, and flatpak-builder-lint.
+    # and SDK, and flatpak-builder-lint. This is the one privileged container
+    # in the release, and it runs a third-party action and every crate's build
+    # script: so it holds no token that can sign or write (read-only contents;
+    # the bundle is attested by `flatpak-attest` on a plain runner), and it is
+    # pinned by digest (see `flatpak-image`).
     container:
-      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-26.08
+      image: ghcr.io/flathub-infra/flatpak-github-actions@${{ needs.flatpak-image.outputs.digest }}
       options: --privileged
     # Rust, from source, with no cache: the longest job of the release.
     timeout-minutes: 120
@@ -506,8 +556,6 @@ jobs:
       BUNDLE: Quire-${{ needs.check.outputs.version }}-linux-${{ matrix.arch }}.flatpak
     permissions:
       contents: read
-      id-token: write
-      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -545,15 +593,31 @@ jobs:
         # (packaging/flatpak/README.md). Not a gate.
         continue-on-error: true
         run: flatpak-builder-lint manifest packaging/flatpak/io.github.bhanunexus.Quire.yml
-      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        if: env.IS_RELEASE == 'true'
-        with:
-          subject-path: ${{ env.BUNDLE }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: quire-flatpak-${{ matrix.arch }}
           path: ${{ env.BUNDLE }}
           if-no-files-found: error
+
+  # The bundles are attested here, not in the privileged container that built them.
+  flatpak-attest:
+    needs: flatpak
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: quire-flatpak-*
+          path: bundles
+          merge-multiple: true
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: bundles/*.flatpak
 
   sbom:
     needs: check
@@ -579,7 +643,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: [check, engine, linux, flatpak, macos, windows, sbom]
+    needs: [check, engine, linux, flatpak, flatpak-attest, macos, windows, sbom]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 20
