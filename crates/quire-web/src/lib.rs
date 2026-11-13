@@ -99,6 +99,8 @@ pub(crate) struct Web {
     pub(crate) writing: Mutex<()>,
     /// The files the web may list, and when they were read.
     pub(crate) files: Mutex<Option<(i64, Arc<Vec<quire_app::vault::NotePath>>)>>,
+    /// Whether the reader may see a hierarchy edge, and when it was worked out.
+    pub(crate) hierarchy: Mutex<Option<(i64, bool)>>,
 }
 
 /// A request, as the pages see it.
@@ -179,6 +181,7 @@ pub fn mount(cfg: WebConfig, urls: &Urls) -> Mount {
         limiter: Mutex::default(),
         writing: Mutex::new(()),
         files: Mutex::new(None),
+        hierarchy: Mutex::new(None),
         cfg,
     });
     let router = axum::Router::new().fallback(dispatch).with_state(web);

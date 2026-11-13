@@ -496,11 +496,6 @@ pub fn publish_with(
     which: Selection,
     typed: TypedLinks,
 ) -> Result<PublishReport, String> {
-    let show_typed = match typed {
-        TypedLinks::On => true,
-        TypedLinks::Off => false,
-        TypedLinks::Auto => crate::links_web::auto_on(ix),
-    };
     let chosen: Vec<&quire_index::NoteRecord> = ix
         .records()
         .filter(|r| !excluded_folder(&r.path))
@@ -533,6 +528,12 @@ pub fn publish_with(
     // WS-G: `[@key]` citations as author-date text and a reference list.
     let library = crate::citations::vault_library(vault);
     let note_url = |p: &NotePath| url.get(p).cloned();
+    let show_typed = match typed {
+        TypedLinks::On => true,
+        TypedLinks::Off => false,
+        // Only published notes can turn it on.
+        TypedLinks::Auto => crate::links_web::auto_on(ix, &note_url),
+    };
     let file_url = |f: &NotePath| Some(format!("files/{}", render::encode_url(f.as_str())));
     let tag_url = |t: &str| Some(format!("tags.html#{}", tag_anchor(t)));
     let links = Links { note: &note_url, file: &file_url, tag: &tag_url };

@@ -12,7 +12,7 @@
 
 use std::fmt::Write as _;
 
-use quire_index::{Index, Joined, TrailMode};
+use quire_index::{Hier, Index, Joined, TrailMode};
 use quire_markdown::render::escape_html;
 use quire_vault::NotePath;
 
@@ -21,14 +21,27 @@ use crate::links_state::{RelGroup, relations_where};
 /// A note's URL for this reader; `None` when they may not see the note.
 pub type Href<'a> = &'a dyn Fn(&NotePath) -> Option<String>;
 
+/// Whether some note the reader may see has a hierarchy edge to another.
+///
+/// Asked only of the notes `href` accepts, so hidden notes
+/// can't turn anything on (not even a link to the Hierarchy page).
+pub fn has_visible_hierarchy(ix: &Index, href: Href<'_>) -> bool {
+    let rel = ix.relations();
+    if !rel.has_hierarchy() {
+        return false;
+    }
+    let keep = |q: &NotePath| href(q).is_some();
+    ix.records().any(|r| keep(&r.path) && rel.of(&r.path).iter().any(|e| e.hier.is_some() && e.visible(&keep)))
+}
+
 /// Whether to show the trail and typed links when nothing says otherwise:
-/// the vault's `[links] trail` (`auto` means when some note has a
-/// hierarchy field).
-pub fn auto_on(ix: &Index) -> bool {
+/// the vault's `[links] trail` (`auto` means when a note the reader may see
+/// has a hierarchy edge).
+pub fn auto_on(ix: &Index, href: Href<'_>) -> bool {
     match ix.link_config().trail {
         TrailMode::On => true,
         TrailMode::Off => false,
-        TrailMode::Auto => ix.relations().has_hierarchy(),
+        TrailMode::Auto => has_visible_hierarchy(ix, href),
     }
 }
 
@@ -139,16 +152,17 @@ fn walk(
 /// children ("again").
 pub fn hierarchy_html(ix: &Index, href: Href<'_>) -> String {
     let rel = ix.relations();
+    let keep = |q: &NotePath| href(q).is_some();
     let title = |q: &NotePath| ix.get(q).map_or_else(|| q.stem().to_string(), |r| r.title.clone());
     let kids = |q: &NotePath| -> Vec<NotePath> {
-        let mut v: Vec<NotePath> = rel.children(q).into_iter().filter(|k| href(k).is_some()).cloned().collect();
+        let mut v: Vec<NotePath> = rel.related_where(q, Hier::Down, &keep).into_iter().cloned().collect();
         v.sort_by_cached_key(|k| (title(k).to_lowercase(), k.clone()));
         v
     };
     let mut roots: Vec<NotePath> = ix
         .records()
         .map(|r| &r.path)
-        .filter(|q| href(q).is_some() && !kids(q).is_empty() && !rel.parents(q).into_iter().any(|x| href(x).is_some()))
+        .filter(|q| href(q).is_some() && !kids(q).is_empty() && rel.related_where(q, Hier::Up, &keep).is_empty())
         .cloned()
         .collect();
     roots.sort_by_cached_key(|k| (title(k).to_lowercase(), k.clone()));
@@ -210,9 +224,15 @@ mod tests {
                 let _ = writeln!(fm, "{k}: \"[[{}]]\"", stem(rng.below(n)));
             }
             match rng.below(8) {
-                0 => fm.push_str("BC-tag-note-tag: shared\nBC-tag-note-field: down\n"),
-                1 => fm.push_str("BC-folder-note-field: down\nBC-folder-note-recurse: true\n"),
-                2 => fm.push_str("BC-list-note-field: down\n"),
+                0 => {
+                    let _ = write!(fm, "BC-tag-note-tag: shared\nBC-tag-note-field: lbl-zz{i}zz\n");
+                }
+                1 => {
+                    let _ = write!(fm, "BC-folder-note-field: lbl-zz{i}zz\nBC-folder-note-recurse: true\n");
+                }
+                2 => {
+                    let _ = write!(fm, "BC-list-note-field: down\nBC-list-note-neighbour-field: nbr-zz{i}zz\n");
+                }
                 _ => {}
             }
             let mut body = format!("# {}\n\n", title(i));
@@ -280,6 +300,26 @@ mod tests {
             }
         }
         assert!(shown_links > 50, "the test must actually show typed links ({shown_links})");
+    }
+
+    /// A hidden list note's neighbour field and the order of its items stay off visible pages.
+    #[test]
+    fn a_hidden_list_notes_neighbour_edges_are_not_shown() {
+        let files = [
+            ("Private/Plan.md", "---\nBC-list-note-field: down\nBC-list-note-neighbour-field: layoff-order\n---\n- [[A]]\n- [[B]]\n"),
+            ("A.md", "# A\n"),
+            ("B.md", "# B\n"),
+        ];
+        let ix = index(&files.iter().map(|(p, s)| ((*p).to_string(), (*s).to_string())).collect::<Vec<_>>());
+        let seen = |p: &NotePath| (!p.as_str().starts_with("Private/")).then(|| format!("/n/{}", p.as_str()));
+        for note in ["A.md", "B.md"] {
+            let t = typed_html(&ix, &NotePath::new(note), &seen);
+            assert!(!t.contains("ayoff") && !t.contains("Next") && !t.contains("Previous"), "{note}: {t}");
+        }
+        let all = |p: &NotePath| Some(format!("/n/{}", p.as_str()));
+        assert!(typed_html(&ix, &NotePath::new("A.md"), &all).contains("Layoff order"), "visible to those who may see the list note");
+        let tree = hierarchy_html(&ix, &seen);
+        assert!(!tree.contains("B</a>"), "no tree edge from a hidden list: {tree}");
     }
 
     #[test]

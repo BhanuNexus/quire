@@ -225,6 +225,9 @@ impl LinkConfig {
     /// is not added, so saving from Settings doesn't fill a hand-written
     /// section with defaults; every other byte of the file stays.
     pub fn store(&self, prefs: &mut quire_vault::VaultPrefs) -> Result<(), quire_vault::PrefsError> {
+        if prefs.try_section::<Self>(SECTION).ok().flatten().as_ref() == Some(self) {
+            return Ok(());
+        }
         let existing: toml::Table = prefs.try_section(SECTION).ok().flatten().unwrap_or_default();
         let to_table = |c: &Self| match toml::Value::try_from(c) {
             Ok(toml::Value::Table(t)) => t,
@@ -270,7 +273,23 @@ pub struct Relation {
     /// Made from a naming scheme or a list (tag, folder, list, Dendron
     /// notes), not from a link written in the note.
     pub derived: bool,
+    /// For a derived edge, and an edge implied by one: the note whose
+    /// properties or list made it (the tag, folder or list note). The
+    /// edge's own words (its field name, the order it records) belong to that
+    /// note, so a reader who can't see it must not see the edge.
+    pub origin: Option<NotePath>,
 }
+
+impl Relation {
+    /// Whether a reader who sees only the notes `keep` accepts may see this
+    /// edge: the other note and, for a derived edge, the note that made it.
+    pub fn visible(&self, keep: &dyn Fn(&NotePath) -> bool) -> bool {
+        keep(&self.to) && self.origin.as_ref().is_none_or(keep)
+    }
+}
+
+/// A derived edge: `(from, field, to, origin)`.
+pub(crate) type DerivedEdge = (NotePath, String, NotePath, NotePath);
 
 /// The typed edges of a vault. Built by `LinkGraph::build`.
 #[derive(Debug, Default, Clone)]
@@ -293,13 +312,14 @@ impl Relations {
     /// Edges from `(from, field, to)` triples of resolved typed links, and
     /// `derived` ones made from naming schemes (written edges win when both
     /// make the same edge).
-    pub(crate) fn build(edges: Vec<(NotePath, String, NotePath)>, derived: Vec<(NotePath, String, NotePath)>, cfg: &LinkConfig) -> Self {
+    pub(crate) fn build(edges: Vec<(NotePath, String, NotePath)>, derived: Vec<DerivedEdge>, cfg: &LinkConfig) -> Self {
         let table = cfg.table();
         let mut r = Self::default();
         let mut seen: HashSet<(NotePath, String, NotePath, bool)> = HashSet::new();
         let mut implied = Vec::new();
-        let all = edges.into_iter().map(|e| (e, false)).chain(derived.into_iter().map(|e| (e, true)));
-        for ((from, field, to), is_derived) in all {
+        let all = edges.into_iter().map(|e| (e, None)).chain(derived.into_iter().map(|(f, k, t, o)| ((f, k, t), Some(o))));
+        for ((from, field, to), origin) in all {
+            let is_derived = origin.is_some();
             if !is_derived {
                 *r.fields.entry(field.clone()).or_default() += 1;
             }
@@ -311,21 +331,22 @@ impl Relations {
             if !seen.insert((from.clone(), field.clone(), to.clone(), false)) {
                 continue;
             }
-            let back = Relation { field: field.clone(), hier, to: from.clone(), implied: false, derived: is_derived };
+            let back =
+                Relation { field: field.clone(), hier, to: from.clone(), implied: false, derived: is_derived, origin: origin.clone() };
             r.into.entry(to.clone()).or_default().push(back);
             if let Some(h) = hier.filter(|_| cfg.implied) {
-                implied.push((to.clone(), h.reverse(), from.clone()));
+                implied.push((to.clone(), h.reverse(), from.clone(), origin.clone()));
             }
-            r.out.entry(from).or_default().push(Relation { field, hier, to, implied: false, derived: is_derived });
+            r.out.entry(from).or_default().push(Relation { field, hier, to, implied: false, derived: is_derived, origin });
         }
-        for (from, h, to) in implied {
+        for (from, h, to, origin) in implied {
             let field = cfg.field_for(h);
             let list = r.out.entry(from.clone()).or_default();
             // Written both ways already: one edge.
             if list.iter().any(|e| e.hier == Some(h) && e.to == to) || !seen.insert((from, field.clone(), to.clone(), true)) {
                 continue;
             }
-            list.push(Relation { field, hier: Some(h), to, implied: true, derived: false });
+            list.push(Relation { field, hier: Some(h), to, implied: true, derived: false, origin });
         }
         r
     }
@@ -345,10 +366,10 @@ impl Relations {
     }
 
     /// The edges derived from tag, folder, list and Dendron notes.
-    pub fn derived(&self) -> impl Iterator<Item = (&NotePath, &str, &NotePath)> {
-        self.sorted_out()
-            .into_iter()
-            .flat_map(|(from, list)| list.iter().filter(|e| e.derived).map(move |e| (from, e.field.as_str(), &e.to)))
+    pub fn derived(&self) -> impl Iterator<Item = (&NotePath, &str, &NotePath, &NotePath)> {
+        self.sorted_out().into_iter().flat_map(|(from, list)| {
+            list.iter().filter(|e| e.derived).filter_map(move |e| Some((from, e.field.as_str(), &e.to, e.origin.as_ref()?)))
+        })
     }
 
     /// The edges of several indexes read as one: what each wrote, and
@@ -358,7 +379,8 @@ impl Relations {
         let mut edges: Vec<(NotePath, String, NotePath)> =
             parts.iter().flat_map(|r| r.written().map(|(f, field, t)| (f.clone(), field.to_string(), t.clone()))).collect();
         edges.extend(cross);
-        let derived = parts.iter().flat_map(|r| r.derived().map(|(f, field, t)| (f.clone(), field.to_string(), t.clone()))).collect();
+        let derived =
+            parts.iter().flat_map(|r| r.derived().map(|(f, field, t, o)| (f.clone(), field.to_string(), t.clone(), o.clone()))).collect();
         Self::build(edges, derived, cfg)
     }
 
@@ -376,6 +398,17 @@ impl Relations {
     pub fn related(&self, p: &NotePath, h: Hier) -> Vec<&NotePath> {
         let mut v: Vec<&NotePath> = Vec::new();
         for e in self.of(p).iter().filter(|e| e.hier == Some(h)) {
+            if !v.contains(&&e.to) {
+                v.push(&e.to);
+            }
+        }
+        v
+    }
+
+    /// [`Self::related`] for a reader who sees only the notes `keep` accepts.
+    pub fn related_where(&self, p: &NotePath, h: Hier, keep: &dyn Fn(&NotePath) -> bool) -> Vec<&NotePath> {
+        let mut v: Vec<&NotePath> = Vec::new();
+        for e in self.of(p).iter().filter(|e| e.hier == Some(h) && e.visible(keep)) {
             if !v.contains(&&e.to) {
                 v.push(&e.to);
             }
@@ -463,7 +496,7 @@ impl Relations {
                 break;
             }
             let last = *path.last().expect("never empty");
-            let parents: Vec<&NotePath> = self.parents(last).into_iter().filter(|q| !path.contains(q) && keep(q)).collect();
+            let parents: Vec<&NotePath> = self.related_where(last, Hier::Up, keep).into_iter().filter(|q| !path.contains(q)).collect();
             if parents.is_empty() || path.len() > max_depth {
                 if path.len() > 1 {
                     out.push(path.iter().rev().map(|q| (*q).clone()).collect());
@@ -645,5 +678,37 @@ x = 1
         assert_eq!(parse_hex_color("red"), None);
         assert_eq!(parse_hex_color("#12345"), None);
         assert_eq!(parse_hex_color("#é12345"), None);
+    }
+
+    /// Hand-written files in the shapes people use: only what changed changes.
+    #[test]
+    fn settings_keep_comments_in_arrays_inline_tables_quotes_and_crlf() {
+        let cases = [
+            "# top\nformat = 1\n\n[links]\n# my hierarchy\nup = [\n  \"up\",   # primary\n  'parent',\n]\nimplied = true # why\nmystery = 3\n\n[git]\nauto_commit = false # keep\n",
+            "format = 1\r\n\r\n[links]\r\nup = [\"up\", \"parent\"]\r\nimplied = true\r\n\r\n[git]\r\nx = 1\r\n",
+            "format = 1\n[links]\nimplied = true\ntypes = { supports = { color = \"#112233\" } } # colors\n[[other]]\nname = \"a\"\n[[other]]\nname = \"b\"\n",
+            "format = 1\n[links]\nimplied = true\n[links.types.supports]\n# blue\ncolor = '#112233'\n",
+        ];
+        for text in cases {
+            let mut p = quire_vault::VaultPrefs::parse(text).unwrap();
+            let cfg: LinkConfig = p.section(SECTION);
+            cfg.store(&mut p).unwrap();
+            assert_eq!(p.to_text(), text, "unchanged config changes nothing");
+            let mut c = cfg.clone();
+            c.implied = false;
+            c.store(&mut p).unwrap();
+            let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
+            let want = if text.contains("implied = true # why") {
+                text.replace("implied = true # why", "implied = false # why")
+            } else {
+                text.replace(&format!("implied = true{eol}"), &format!("implied = false{eol}"))
+            };
+            assert_eq!(p.to_text(), want, "only `implied` changes");
+        }
+        // The same hand-written array with odd spacing and no change at all.
+        let t = "format = 1\n[links]\n# hand\nup = [ 'up' , 'parent' ]\nimplied = true\n";
+        let mut p = quire_vault::VaultPrefs::parse(t).unwrap();
+        LinkConfig::default().store(&mut p).unwrap();
+        assert_eq!(p.to_text(), t);
     }
 }

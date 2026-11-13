@@ -157,7 +157,7 @@ pub fn relations_where(ix: &Joined<'_>, p: &NotePath, keep: &dyn Fn(&NotePath) -
             group.items.push(item);
         }
     };
-    for e in rel.of(p).iter().filter(|e| keep(&e.to)) {
+    for e in rel.of(p).iter().filter(|e| e.visible(keep)) {
         let item = RelItem {
             path: e.to.clone(),
             title: title_of(ix, &e.to),
@@ -171,7 +171,7 @@ pub fn relations_where(ix: &Joined<'_>, p: &NotePath, keep: &dyn Fn(&NotePath) -
             None => push(type_label(&e.field), None, e.field.clone(), item),
         }
     }
-    for e in rel.incoming(p).iter().filter(|e| keep(&e.to)) {
+    for e in rel.incoming(p).iter().filter(|e| e.visible(keep)) {
         // Hierarchy links into here already show as implied edges.
         if e.hier.is_some() && cfg.implied {
             continue;
@@ -432,9 +432,10 @@ impl Workspace {
 }
 
 impl Workspace {
-    /// The vault's `[links]` settings: the last saved or read, else what the index has.
+    /// The vault's `[links]` settings: the last saved or read, else what the index has
+    /// (never waits for the index: busy means the defaults for now).
     pub fn link_settings(&self) -> LinkConfig {
-        self.features.links.settings.clone().unwrap_or_else(|| self.index.read().link_config().clone())
+        self.features.links.settings.clone().unwrap_or_else(|| self.index.try_read().map(|ix| ix.link_config().clone()).unwrap_or_default())
     }
 
     /// Save the `[links]` section of vault.toml and give the settings to

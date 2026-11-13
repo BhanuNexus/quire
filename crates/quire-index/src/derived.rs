@@ -30,7 +30,7 @@ use crate::graph::Resolver;
 use crate::record::NoteRecord;
 use crate::relations::LinkConfig;
 
-type Edge = (NotePath, String, NotePath);
+type Edge = crate::relations::DerivedEdge;
 
 fn flag(rec: &NoteRecord, key: &str) -> bool {
     rec.properties.get(key).and_then(|v| v.as_str()).is_some_and(|s| s.trim().eq_ignore_ascii_case("true"))
@@ -89,7 +89,7 @@ pub(crate) fn derive<'a>(
                 if r.path == rec.path || (exact && !r.tags.iter().any(|t| t.eq_ignore_ascii_case(&tag))) {
                     continue;
                 }
-                out.push((rec.path.clone(), field.clone(), r.path.clone()));
+                out.push((rec.path.clone(), field.clone(), r.path.clone(), rec.path.clone()));
             }
         }
         // Folder notes.
@@ -109,7 +109,12 @@ pub(crate) fn derive<'a>(
             };
             for (f, members) in &*by_folder {
                 if below(f) {
-                    out.extend(members.iter().filter(|r| r.path != rec.path).map(|r| (rec.path.clone(), field.clone(), r.path.clone())));
+                    out.extend(
+                        members
+                            .iter()
+                            .filter(|r| r.path != rec.path)
+                            .map(|r| (rec.path.clone(), field.clone(), r.path.clone(), rec.path.clone())),
+                    );
                 }
             }
         }
@@ -138,12 +143,12 @@ pub(crate) fn derive<'a>(
                 && !parent.is_empty()
                 && let Some(p) = by_stem.get(&parent.to_lowercase())
             {
-                out.push((r.path.clone(), field.clone(), (*p).clone()));
+                out.push((r.path.clone(), field.clone(), (*p).clone(), r.path.clone()));
             }
         }
     }
     out.sort();
-    out.dedup();
+    out.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1 && a.2 == b.2);
     out
 }
 
@@ -236,12 +241,12 @@ fn list_edges(
         }
         last_at.retain(|i, _| *i <= indent);
         match stack.last() {
-            Some((_, parent)) => out.push((parent.clone(), own, to.clone())),
-            None if !exclude_index => out.push((rec.path.clone(), own, to.clone())),
+            Some((_, parent)) => out.push((parent.clone(), own, to.clone(), rec.path.clone())),
+            None if !exclude_index => out.push((rec.path.clone(), own, to.clone(), rec.path.clone())),
             None => {}
         }
         if let (Some(n), Some(prev)) = (neighbour, last_at.get(&indent)) {
-            out.push((prev.clone(), n.to_string(), to.clone()));
+            out.push((prev.clone(), n.to_string(), to.clone(), rec.path.clone()));
         }
         last_at.insert(indent, to.clone());
         stack.push((indent, to));
@@ -262,7 +267,7 @@ mod tests {
         let src: HashMap<NotePath, &str> = rs.iter().map(|(r, s)| (r.path.clone(), s.as_str())).collect();
         derive(rs.iter().map(|(r, _)| r), &|p| src.get(p).copied(), &resolver, cfg)
             .into_iter()
-            .map(|(a, f, b)| (a.as_str().to_string(), f, b.as_str().to_string()))
+            .map(|(a, f, b, _)| (a.as_str().to_string(), f, b.as_str().to_string()))
             .collect()
     }
 
