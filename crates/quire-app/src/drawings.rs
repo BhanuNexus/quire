@@ -158,13 +158,19 @@ pub fn save_drawing(ws: &Workspace, path: &NotePath, base: &str, text: &str) -> 
     }
 }
 
+/// A drawing's name without its extension, and the extension
+/// (`.excalidraw.md`, `.excalidraw.json`, `.excalidraw`).
+pub fn split_name(path: &NotePath) -> (&str, &str) {
+    let name = path.file_name();
+    let lower = name.to_ascii_lowercase();
+    let n = [".excalidraw.md", ".excalidraw.json", ".excalidraw"].into_iter().find(|e| lower.ends_with(e)).map_or(0, str::len);
+    name.split_at(name.len() - n)
+}
+
 /// A free path for a copy of a drawing (`Plan (changed elsewhere).excalidraw.md`).
 pub fn copy_path(ws: &Workspace, path: &NotePath, what: &str) -> Option<NotePath> {
     let vault = ws.vault()?;
-    let name = path.file_name();
-    let lower = name.to_ascii_lowercase();
-    let ext = [".excalidraw.md", ".excalidraw.json", ".excalidraw"].into_iter().find(|e| lower.ends_with(e)).unwrap_or(".excalidraw");
-    let stem = &name[..name.len() - ext.len()];
+    let (stem, ext) = split_name(path);
     (1..1000)
         .map(|n| {
             let tag = if n == 1 { String::new() } else { format!(" {n}") };
