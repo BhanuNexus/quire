@@ -97,6 +97,14 @@ pub struct Drawing {
     links_read: String,
     /// Embedded files in the note: (file id, link target), as read.
     embedded_read: Vec<(String, String)>,
+    /// `## Text Elements` entries no element owns (typed in Markdown, or
+    /// text without a `^id`), kept as written.
+    orphans: Vec<String>,
+    /// Texts taken in from a note's `## Text Elements` and `## Element
+    /// Links`, where they differed from the drawing's JSON (edited in Markdown).
+    from_markdown: usize,
+    /// The file used CRLF line ends: written back with them.
+    crlf: bool,
 }
 
 // ---------------------------------------------------------------- reading
@@ -118,14 +126,28 @@ fn lines(text: &str) -> impl Iterator<Item = (usize, usize, usize)> + '_ {
 
 impl Drawing {
     /// Read a drawing: `.excalidraw` JSON or an `.excalidraw.md` note.
+    ///
+    /// A note's `## Text Elements` and `## Element Links` are read too: a
+    /// text or link edited there in Markdown is taken into the drawing, as
+    /// the Obsidian plugin does ([`Self::markdown_edits`]).
     pub fn parse(text: &str) -> Result<Self, String> {
         if text.len() > excalidraw::limits::MAX_TEXT {
             return Err(excalidraw::TOO_LARGE.into());
         }
+        let crlf = text.contains("\r\n");
+        let owned;
+        let text = if crlf {
+            owned = text.replace("\r\n", "\n");
+            owned.as_str()
+        } else {
+            text
+        };
         if text.trim_start().starts_with('{') {
-            return Self::from_json(Form::Json, text);
+            let mut d = Self::from_json(Form::Json, text)?;
+            d.crlf = crlf;
+            return Ok(d);
         }
-        let note = parse_note(text)?;
+        let (note, region) = parse_note(text)?;
         let json = match note.encoding {
             Encoding::Plain => note.body.clone(),
             Encoding::Compressed => match excalidraw::lz_unpack_base64(&note.body) {
@@ -134,10 +156,87 @@ impl Drawing {
                 Err(excalidraw::Lz::Invalid) => return Err("the compressed drawing can't be read".into()),
             },
         };
-        let embedded = embedded_files(&note);
         let mut d = Self::from_json(Form::Note(note), &json)?;
-        d.embedded_read = embedded;
+        d.crlf = crlf;
+        let ids: Vec<String> =
+            live(&d.state.elements).filter(|e| e.str("type") == Some("text")).filter_map(|e| e.str("id").map(str::to_string)).collect();
+        let (data_heading, sections, pre_drawing) = split_sections(&region, &ids);
+        if let Form::Note(n) = &mut d.form {
+            n.data_heading = data_heading;
+            n.sections = sections;
+            n.pre_drawing = pre_drawing;
+            d.embedded_read = embedded_files(n);
+        }
+        d.take_markdown_edits();
+        d.texts_read = d.text_elements_md();
+        d.links_read = d.element_links_md();
         Ok(d)
+    }
+
+    /// How many texts and links were taken in from the note's Markdown
+    /// sections (edited there since the drawing was saved).
+    pub const fn markdown_edits(&self) -> usize {
+        self.from_markdown
+    }
+
+    /// Apply `## Text Elements` and `## Element Links` as written, where they
+    /// differ from the JSON; keep entries no element owns.
+    fn take_markdown_edits(&mut self) {
+        let Form::Note(n) = &self.form else { return };
+        let section = |t: &str| n.sections.iter().find(|s| s.title.trim_end() == t).map(|s| s.body.clone());
+        let (texts, links) = (section("## Text Elements"), section("## Element Links"));
+        let mut changed = 0;
+        if let Some(body) = texts {
+            for (text, id) in text_entries(&body) {
+                let owner = id.as_deref().and_then(|id| self.index_of(id)).filter(|&i| self.state.elements[i].str("type") == Some("text"));
+                if owner.is_some_and(|i| self.state.elements[i].bool("isDeleted") == Some(true)) {
+                    continue;
+                }
+                let Some(i) = owner else {
+                    // Not an element's: kept as written.
+                    let entry = id.map_or_else(|| text.clone(), |id| format!("{text} ^{id}"));
+                    if !entry.trim().is_empty() {
+                        self.orphans.push(entry);
+                    }
+                    continue;
+                };
+                let e = &self.state.elements[i];
+                let now = e.str("rawText").or_else(|| e.str("originalText")).or_else(|| e.str("text")).unwrap_or_default();
+                if now == text {
+                    continue;
+                }
+                let old_link = wikilinks_in(now).into_iter().next().map(|l| format!("[[{l}]]"));
+                let o = Arc::make_mut(&mut self.state.elements[i]);
+                let shown = display_text(&text);
+                o.set_str("text", &shown);
+                o.set_str("originalText", &shown);
+                o.set_str("rawText", &text);
+                let link = wikilinks_in(&text).into_iter().next().map(|l| format!("[[{l}]]"));
+                let derived = o.str("link").is_none_or(|l| l.is_empty() || Some(l) == old_link.as_deref());
+                if derived {
+                    o.set("link", link.map_or(Json::Null, Json::Str));
+                }
+                let v = o.num("version").unwrap_or(0.0);
+                o.set_num("version", v + 1.0);
+                changed += 1;
+            }
+        }
+        if let Some(body) = links {
+            for line in body.lines() {
+                let Some((id, link)) = line.split_once(": ") else { continue };
+                let Some(i) = self.index_of(id.trim()) else { continue };
+                let link = link.trim();
+                if link.is_empty() || self.state.elements[i].str("link") == Some(link) {
+                    continue;
+                }
+                let o = Arc::make_mut(&mut self.state.elements[i]);
+                o.set_str("link", link);
+                let v = o.num("version").unwrap_or(0.0);
+                o.set_num("version", v + 1.0);
+                changed += 1;
+            }
+        }
+        self.from_markdown = changed;
     }
 
     fn from_json(form: Form, json: &str) -> Result<Self, String> {
@@ -163,6 +262,9 @@ impl Drawing {
             texts_read: String::new(),
             links_read: String::new(),
             embedded_read: Vec::new(),
+            orphans: Vec::new(),
+            from_markdown: 0,
+            crlf: false,
         };
         d.texts_read = d.text_elements_md();
         d.links_read = d.element_links_md();
@@ -235,18 +337,24 @@ impl Drawing {
 
     /// The scene's JSON now.
     pub fn json(&self) -> String {
-        let mut doc = self.doc.clone();
-        if let Some(root) = doc.value.as_obj_mut() {
-            root.set("elements", Json::Arr(self.state.elements.iter().map(|e| Json::Obj((**e).clone())).collect()));
-            if root.get("files").is_some() || !self.state.files.0.is_empty() {
-                root.set("files", Json::Obj((*self.state.files).clone()));
+        let mut root = self.doc.value.clone();
+        if let Some(r) = root.as_obj_mut() {
+            r.set("elements", Json::Arr(self.state.elements.iter().map(|e| Json::Obj((**e).clone())).collect()));
+            if r.get("files").is_some() || !self.state.files.0.is_empty() {
+                r.set("files", Json::Obj((*self.state.files).clone()));
             }
         }
-        doc.write()
+        // Elements and members not changed keep their text as read.
+        self.doc.write_keeping(&root)
     }
 
-    /// The file's text now, in its own form.
+    /// The file's text now, in its own form (and its line ends).
     pub fn to_text(&self) -> String {
+        let t = self.text_lf();
+        if self.crlf { t.replace('\n', "\r\n") } else { t }
+    }
+
+    fn text_lf(&self) -> String {
         let json = self.json();
         let Form::Note(n) = &self.form else { return json };
         let mut sections = n.sections.clone();
@@ -309,6 +417,10 @@ impl Drawing {
             s.push_str(text);
             s.push_str(" ^");
             s.push_str(e.str("id").unwrap_or_default());
+            s.push_str("\n\n");
+        }
+        for o in &self.orphans {
+            s.push_str(o);
             s.push_str("\n\n");
         }
         s
@@ -392,65 +504,105 @@ fn embedded_files(n: &Note) -> Vec<(String, String)> {
         .collect()
 }
 
-fn parse_note(text: &str) -> Result<Note, String> {
-    // `## Drawing` (or `# Drawing`) followed by a ```json or ```compressed-json fence.
-    let mut drawing = None;
-    let all: Vec<(usize, usize, usize)> = lines(text).collect();
-    for (k, &(s, e, _)) in all.iter().enumerate() {
-        let l = text[s..e].trim_end_matches('\r');
-        if l == "## Drawing" || l == "# Drawing" {
-            // The fence: the next line starting with ``` (no backticks before it).
-            if let Some(&(fs, fe, fnext)) =
-                all[k + 1..].iter().find(|(a, b, _)| text[*a..*b].starts_with("```") || text[*a..*b].contains('`'))
-                && text[fs..fe].starts_with("```")
-            {
-                let lang = text[fs + 3..fe].trim();
-                let enc = match lang {
-                    "json" => Encoding::Plain,
-                    "compressed-json" => Encoding::Compressed,
-                    _ => continue,
-                };
-                drawing = Some((s, fnext, enc));
-                break;
-            }
+/// `## Text Elements` entries: (text, its `^id`); a last piece without an
+/// id has `None`. An entry ends with a line ending in ` ^id`.
+fn text_entries(body: &str) -> Vec<(String, Option<String>)> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for line in body.split_inclusive('\n') {
+        let l = line.trim_end_matches('\n');
+        let id = l
+            .rfind(" ^")
+            .map(|i| (&l[..i], &l[i + 2..]))
+            .filter(|(_, id)| !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'));
+        if let Some((text, id)) = id {
+            cur.push_str(text);
+            out.push((std::mem::take(&mut cur).trim_start_matches('\n').to_string(), Some(id.to_string())));
+        } else {
+            cur.push_str(line);
         }
     }
-    let (dstart, body_start, encoding) = drawing.ok_or("this note has no ## Drawing section")?;
-    // The closing fence: a line starting with ``` after the body.
-    let close = lines(&text[body_start..])
-        .find(|(s, e, _)| text[body_start + s..body_start + e].starts_with("```"))
-        .map(|(s, _, _)| body_start + s)
-        .ok_or("the drawing's block isn't closed")?;
-    let body = text[body_start..close].to_string();
-    let tail = text[close..].to_string();
-    let drawing_open = text[dstart..body_start].to_string();
-    // `# Excalidraw Data` before the drawing.
-    let data = lines(&text[..dstart]).find(|(s, e, _)| text[*s..*e].trim_end() == "# Excalidraw Data").map(|(s, _, _)| s);
-    let Some(data) = data else {
-        return Ok(Note {
-            head: text[..dstart].to_string(),
-            data_heading: String::new(),
-            sections: Vec::new(),
-            pre_drawing: String::new(),
-            drawing_open,
-            encoding,
-            body,
-            tail,
-        });
+    let rest = cur.trim_matches('\n');
+    if !rest.trim().is_empty() {
+        out.push((rest.to_string(), None));
+    }
+    out
+}
+
+/// The note around the drawing: everything but its sections, and the text
+/// between `# Excalidraw Data` and `## Drawing` (the sections, split later
+/// by [`split_sections`], which needs the drawing's text ids).
+///
+/// Found from the end: the drawing block is the last fenced ```` ```json ````
+/// or ```` ```compressed-json ```` block, under a `## Drawing` heading. So
+/// a text in the drawing holding `## Drawing`, ```` ``` ```` or other heading
+/// lines can't be mistaken for it, and neither can an example in the note's
+/// own text above the drawing.
+fn parse_note(text: &str) -> Result<(Note, String), String> {
+    let all: Vec<(usize, usize, usize)> = lines(text).collect();
+    let line = |k: usize| &text[all[k].0..all[k].1];
+    let close = (0..all.len()).rev().find(|&k| line(k).starts_with("```")).ok_or("this note has no ## Drawing section")?;
+    let open = (0..close).rev().find(|&k| line(k).starts_with("```")).ok_or("this note has no ## Drawing section")?;
+    let encoding = match line(open)[3..].trim() {
+        "json" => Encoding::Plain,
+        "compressed-json" => Encoding::Compressed,
+        _ => return Err("this note has no ## Drawing section".into()),
     };
-    let region = &text[data..dstart];
-    let mut sections: Vec<Section> = Vec::new();
+    let heading =
+        (0..open).rev().find(|&k| !line(k).trim().is_empty()).filter(|&k| matches!(line(k).trim_end(), "## Drawing" | "# Drawing"));
+    let heading = heading.ok_or("this note has no ## Drawing section")?;
+    let (dstart, body_start, close_at) = (all[heading].0, all[open].2, all[close].0);
+    let body = text[body_start..close_at].to_string();
+    let tail = text[close_at..].to_string();
+    let drawing_open = text[dstart..body_start].to_string();
+    // `# Excalidraw Data`: the first, as the plugin finds it.
+    let data = (0..heading).find(|&k| line(k).trim_end() == "# Excalidraw Data").map(|k| all[k].0);
+    let (head, region) = match data {
+        Some(d) => (text[..d].to_string(), text[d..dstart].to_string()),
+        None => (text[..dstart].to_string(), String::new()),
+    };
+    let note =
+        Note { head, data_heading: String::new(), sections: Vec::new(), pre_drawing: String::new(), drawing_open, encoding, body, tail };
+    Ok((note, region))
+}
+
+/// The plugin's sections, by their exact titles.
+const SECTIONS: [&str; 3] = ["## Text Elements", "## Element Links", "## Embedded Files"];
+
+/// Split the data part of a note into `# Excalidraw Data`, its sections and
+/// the `%%` before `## Drawing`. Only the plugin's three titles start a
+/// section, and `## Element Links` and `## Embedded Files` only after the
+/// last ` ^id` of a text in the drawing: a text holding such lines stays in
+/// `## Text Elements`. Any other `## ` line is text of the section it's in.
+fn split_sections(region: &str, text_ids: &[String]) -> (String, Vec<Section>, String) {
+    // Where the texts end: after the last ` ^id` of one of the drawing's texts.
+    let texts_end = text_ids
+        .iter()
+        .filter_map(|id| {
+            let pat = format!(" ^{id}");
+            region
+                .match_indices(&pat)
+                .map(|(i, _)| i + pat.len())
+                .filter(|&e| region[e..].is_empty() || region[e..].starts_with('\n'))
+                .max()
+        })
+        .max()
+        .unwrap_or(0);
     let mut data_heading = String::new();
+    let mut sections: Vec<Section> = Vec::new();
+    let mut seen = [false; 3];
     for (s, e, next) in lines(region) {
-        let line = &region[s..e];
-        if line.starts_with("## ") {
-            sections.push(Section { title: line.to_string(), body: String::new() });
-        } else {
-            let whole = &region[s..next];
-            match sections.last_mut() {
-                Some(sec) => sec.body.push_str(whole),
-                None => data_heading.push_str(whole),
-            }
+        let l = region[s..e].trim_end();
+        let title = SECTIONS.iter().position(|t| *t == l).filter(|&k| !seen[k] && (k == 0 || s >= texts_end));
+        if let Some(k) = title {
+            seen[k] = true;
+            sections.push(Section { title: region[s..e].to_string(), body: String::new() });
+            continue;
+        }
+        let whole = &region[s..next];
+        match sections.last_mut() {
+            Some(sec) => sec.body.push_str(whole),
+            None => data_heading.push_str(whole),
         }
     }
     // A final `%%` line (with the blank lines around it) belongs before `## Drawing`.
@@ -462,7 +614,7 @@ fn parse_note(text: &str) -> Result<Note, String> {
         pre_drawing = last_body[i..].to_string();
         last_body.truncate(i);
     }
-    Ok(Note { head: text[..data].to_string(), data_heading, sections, pre_drawing, drawing_open, encoding, body, tail })
+    (data_heading, sections, pre_drawing)
 }
 
 // ---------------------------------------------------------------- elements
@@ -1430,10 +1582,15 @@ impl Drawing {
 
     /// Set a text element's text (`raw` may hold `[[links]]`), with its measured size.
     pub fn set_text(&mut self, id: &str, raw: &str, size: (f64, f64), cx: &mut Cx) {
-        let shown = display_text(raw);
-        let link = wikilinks_in(raw).into_iter().next().map(|l| format!("[[{l}]]"));
         let note = self.is_note();
+        // In a note, `[[Note|alias]]` shows `alias` and `rawText` keeps the
+        // link (the plugin's way). In a `.excalidraw` file, which Excalidraw
+        // shows as plain text, the text stays as typed.
+        let shown = if note { display_text(raw) } else { raw.to_string() };
+        let link = wikilinks_in(raw).into_iter().next().map(|l| format!("[[{l}]]"));
         let had_raw = self.get(id).is_some_and(|e| e.get("rawText").is_some());
+        let before = self.get(id).and_then(|e| e.str("rawText").or_else(|| e.str("originalText"))).unwrap_or_default().to_string();
+        let old_link = wikilinks_in(&before).into_iter().next().map(|l| format!("[[{l}]]"));
         let container = self.get(id).and_then(|e| e.str("containerId")).map(str::to_string);
         self.edit(id, cx, |o| {
             o.set_str("text", &shown);
@@ -1443,10 +1600,11 @@ impl Drawing {
             }
             o.set_num("width", size.0);
             o.set_num("height", size.1);
-            if let Some(l) = link {
-                o.set_str("link", &l);
-            } else if o.str("link").is_some_and(|l| l.starts_with("[[")) && note {
-                o.set("link", Json::Null);
+            // The element's link follows the text's first link, in a note,
+            // unless it was set apart from the text (in the panel).
+            let derived = o.str("link").is_none_or(|l| l.is_empty() || Some(l) == old_link.as_deref());
+            if note && derived {
+                o.set("link", link.map_or(Json::Null, Json::Str));
             }
         });
         if let Some(c) = container {
@@ -1601,31 +1759,76 @@ pub fn clipboard_json(els: &[El], files: &Obj) -> String {
 
 /// Elements (and files) from Excalidraw's clipboard JSON.
 pub fn from_clipboard(text: &str) -> Option<(Vec<Obj>, Obj)> {
+    // The drawing's own limits (0.13 security review L3).
+    if text.len() > excalidraw::limits::MAX_TEXT {
+        return None;
+    }
     let v = ojson::parse(text.trim()).ok()?;
     let o = v.as_obj()?;
     if o.str("type") != Some("excalidraw/clipboard") && o.str("type") != Some("excalidraw") {
         return None;
     }
-    let els = o.arr("elements")?.iter().filter_map(|e| e.as_obj().cloned()).filter(|e| e.bool("isDeleted") != Some(true)).collect();
-    Some((els, o.obj("files").cloned().unwrap_or_default()))
+    let els: Vec<Obj> =
+        o.arr("elements")?.iter().filter_map(|e| e.as_obj().cloned()).filter(|e| e.bool("isDeleted") != Some(true)).collect();
+    // Only pictures a pasted element shows, and only as picture data URLs.
+    let used: Vec<&str> = els.iter().filter_map(|e| e.str("fileId")).collect();
+    let files = o
+        .obj("files")
+        .map(|f| {
+            Obj(f
+                .0
+                .iter()
+                .filter(|(k, v)| used.contains(&k.as_str()) && v.as_obj().and_then(|f| f.str("dataURL")).is_some_and(is_picture_data_url))
+                .take(excalidraw::limits::MAX_FILES)
+                .cloned()
+                .collect())
+        })
+        .unwrap_or_default();
+    Some((els, files))
 }
+
+/// A `data:` URL of a PNG, JPEG, GIF or WebP picture.
+pub fn is_picture_data_url(u: &str) -> bool {
+    ["data:image/png;", "data:image/jpeg;", "data:image/gif;", "data:image/webp;"].iter().any(|p| u.starts_with(p))
+}
+
+/// Why a paste was refused.
+pub const PASTE_TOO_LARGE: &str = "too much to paste: the drawing would go over its limits";
 
 impl Drawing {
     /// Paste elements (from the clipboard) with new ids, their box's corner
-    /// at `at`. Returns the new ids of the top-level ones (not bound texts).
-    pub fn paste(&mut self, els: Vec<Obj>, files: &Obj, at: (f64, f64), cx: &mut Cx) -> Vec<String> {
+    /// at `at`. Returns the new ids of the top-level ones (not bound texts),
+    /// or [`PASTE_TOO_LARGE`] when the drawing would go over its limits.
+    pub fn paste(&mut self, els: Vec<Obj>, files: &Obj, at: (f64, f64), cx: &mut Cx) -> Result<Vec<String>, &'static str> {
+        let points = |e: &Obj| e.arr("points").map_or(0, <[Json]>::len);
+        let have: usize = self.state.elements.iter().map(|e| points(e)).sum();
+        let adding: usize = els.iter().map(points).sum();
+        let new_files = files.0.iter().filter(|(k, _)| self.state.files.get(k).is_none()).count();
+        if self.state.elements.len() + els.len() > excalidraw::limits::MAX_ELEMENTS
+            || have + adding > excalidraw::limits::MAX_POINTS
+            || self.state.files.0.len() + new_files > excalidraw::limits::MAX_FILES
+        {
+            return Err(PASTE_TOO_LARGE);
+        }
         let b = union(els.iter().map(aabb)).unwrap_or_default();
         let top: Vec<String> =
             els.iter().filter(|e| e.get("containerId").is_none_or(Json::is_null)).filter_map(|e| e.str("id").map(str::to_string)).collect();
         for (k, v) in &files.0 {
-            if self.state.files.get(k).is_none() {
+            if self.state.files.get(k).is_none() && v.as_obj().and_then(|f| f.str("dataURL")).is_some_and(is_picture_data_url) {
                 Arc::make_mut(&mut self.state.files).set(k, v.clone());
             }
         }
-        let (copies, map) = copies(els, at.0 - b.0, at.1 - b.1, self.is_note(), cx);
+        let (mut copies, map) = copies(els, at.0 - b.0, at.1 - b.1, self.is_note(), cx);
+        // A frame not pasted along, and not in this drawing: no frame.
+        for o in &mut copies {
+            let dangling = o.str("frameId").is_some_and(|f| !map.iter().any(|(_, n)| n == f) && self.get(f).is_none());
+            if dangling {
+                o.set("frameId", Json::Null);
+            }
+        }
         self.state.elements.extend(copies.into_iter().map(Arc::new));
         self.sync_indices(cx);
-        top.iter().filter_map(|i| map.iter().find(|(a, _)| a == i).map(|(_, b)| b.clone())).collect()
+        Ok(top.iter().filter_map(|i| map.iter().find(|(a, _)| a == i).map(|(_, b)| b.clone())).collect())
     }
 }
 
@@ -1671,6 +1874,10 @@ fn copies(objs: Vec<Obj>, dx: f64, dy: f64, note: bool, cx: &mut Cx) -> (Vec<Obj
         .collect();
     let rename = |s: &str| map.iter().find(|(a, _)| a == s).map(|(_, b)| b.clone());
     for o in &mut out {
+        // In a frame copied along: the copy's frame (else the same frame).
+        if let Some(f) = o.str("frameId").and_then(&rename) {
+            o.set_str("frameId", &f);
+        }
         match o.str("containerId").map(&rename) {
             Some(Some(c)) => o.set_str("containerId", &c),
             Some(None) => o.set("containerId", Json::Null),

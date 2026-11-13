@@ -10,7 +10,7 @@ tags: [excalidraw]
 # Excalidraw Data
 
 ## Text Elements
-Idea ^t1
+Idea ^ship ^t1
 
 ## Embedded Files
 img7: [[attachments/dot.png]]
