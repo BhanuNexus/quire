@@ -449,3 +449,79 @@ fn the_editor_keeps_its_layout() {
         }
     }
 }
+
+// ---------------------------------------------------------------- 0.13 review fixes
+
+/// Data review #4: a drawing whose tab isn't shown still autosaves and
+/// takes in changes made elsewhere.
+#[test]
+fn drawings_not_shown_autosave() {
+    let mut r = Rig::new(&[("Release.excalidraw", RELEASE)], "Release.excalidraw");
+    r.ed.sel = vec!["dia1".into()];
+    r.key(Key::ArrowRight, Modifiers::NONE);
+    assert!(r.ed.dirty);
+    let mut s = crate::surfaces::Surfaces::default();
+    let ed = std::mem::replace(&mut r.ed, DrawingEditor::new(&NotePath::new("x.excalidraw")));
+    s.open(Box::new(ed));
+    s.active = None; // a note was clicked
+    s.tick_hidden(&mut r.ws);
+    assert!(!r.disk("Release.excalidraw").contains("\"x\": 561"), "not before the edits rest");
+    std::thread::sleep(SAVE_AFTER + Duration::from_millis(50));
+    s.tick_hidden(&mut r.ws);
+    assert!(r.disk("Release.excalidraw").contains("\"x\": 561"), "saved while hidden");
+    // A change elsewhere is taken in while hidden, and the open tab stays one.
+    let theirs = r.disk("Release.excalidraw").replace("\"x\": 561", "\"x\": 600");
+    r.ws.vault().unwrap().write(&NotePath::new("Release.excalidraw"), &theirs).unwrap();
+    *r.ws.features.canvas.disk_changes.entry(NotePath::new("Release.excalidraw")).or_default() += 1;
+    s.tick_hidden(&mut r.ws);
+    s.open(Box::new(DrawingEditor::new(&NotePath::new("Release.excalidraw"))));
+    assert_eq!(s.open.len(), 1);
+}
+
+/// Data review #8: the Markdown button, and saving, write nothing without an edit.
+#[test]
+fn no_edit_no_write() {
+    let crlf = ROADMAP.replace('\n', "\r\n");
+    let mut r = Rig::new(&[("Sketch.excalidraw.md", &crlf)], "Sketch.excalidraw.md");
+    r.ed.save(&mut r.ws);
+    assert_eq!(r.disk("Sketch.excalidraw.md"), crlf);
+    r.ed.sel = vec!["pTq8nWm2".into()];
+    r.key(Key::ArrowRight, Modifiers::NONE);
+    r.autosave();
+    let out = r.disk("Sketch.excalidraw.md");
+    assert_eq!(out.replace("\r\n", "").matches('\n').count(), 0, "CRLF kept");
+}
+
+/// Data review #10: a drawing renamed in its folder is followed; one
+/// deleted asks, and isn't written back by autosave; "Close" writes nothing.
+#[test]
+fn renamed_and_deleted_drawings() {
+    let mut r = Rig::new(&[("Release.excalidraw", RELEASE)], "Release.excalidraw");
+    let v = r.ws.vault().unwrap().clone();
+    v.storage().rename(&NotePath::new("Release.excalidraw"), &NotePath::new("Plan.excalidraw")).unwrap();
+    *r.ws.features.canvas.disk_changes.entry(NotePath::new("Release.excalidraw")).or_default() += 1;
+    r.frame(vec![]);
+    assert_eq!(r.ed.path.as_str(), "Plan.excalidraw", "followed");
+    assert!(r.ed.conflict.is_none());
+    r.ed.sel = vec!["dia1".into()];
+    r.key(Key::ArrowRight, Modifiers::NONE);
+    r.autosave();
+    assert!(r.disk("Plan.excalidraw").contains("\"x\": 561"));
+    assert!(!v.exists(&NotePath::new("Release.excalidraw")), "the old name isn't written again");
+    // Deleted, with edits: asked, never recreated by autosave.
+    r.key(Key::ArrowRight, Modifiers::NONE);
+    assert!(r.ed.dirty, "an edit not saved yet");
+    v.storage().trash(&NotePath::new("Plan.excalidraw")).unwrap();
+    *r.ws.features.canvas.disk_changes.entry(NotePath::new("Plan.excalidraw")).or_default() += 1;
+    r.autosave();
+    r.autosave();
+    assert_eq!(r.ed.conflict, Some(Elsewhere::Deleted));
+    assert!(!v.exists(&NotePath::new("Plan.excalidraw")));
+    r.ed.resolve(&mut r.ws, false);
+    assert!(r.ed.done, "Close");
+    assert!(r.ed.dirty, "the edit is still to keep");
+    let ed = std::mem::replace(&mut r.ed, DrawingEditor::new(&NotePath::new("x.excalidraw")));
+    drop(ed);
+    assert!(!v.exists(&NotePath::new("Plan.excalidraw")));
+    assert!(v.exists(&NotePath::new("Plan (unsaved edits 1).excalidraw")), "the edits are kept in a copy");
+}

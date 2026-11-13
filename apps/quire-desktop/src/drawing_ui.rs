@@ -223,7 +223,39 @@ fn load_file(f: &FileRef, drawing: &Path, root: Option<&Path>) -> Option<image::
             std::fs::read(found).ok()?
         }
     };
-    Some(image::load_from_memory(&bytes).ok()?.to_rgba8())
+    decode_picture(&bytes, MAX_PICTURE_SIDE)
+}
+
+/// The largest picture side a drawing may embed, in pixels (0.13 security
+/// review M3: a tiny PNG can claim 20000×1 or 16000×8000).
+pub(crate) const MAX_PICTURE_SIDE: u32 = 8192;
+/// The most memory a picture may take to decode.
+const MAX_PICTURE_BYTES: u64 = 64 << 20;
+
+/// Decode a picture safely: its size is read first, and a picture with a
+/// side over [`MAX_PICTURE_SIDE`] or over 64 MiB decoded is refused, never
+/// decoded. One larger than `fit` on a side (the GPU's largest texture) is
+/// scaled down to fit.
+pub(crate) fn decode_picture(bytes: &[u8], fit: u32) -> Option<image::RgbaImage> {
+    let (w, h) = picture_size(bytes)?;
+    if w == 0 || h == 0 || w > MAX_PICTURE_SIDE || h > MAX_PICTURE_SIDE || u64::from(w) * u64::from(h) * 4 > MAX_PICTURE_BYTES {
+        return None;
+    }
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_PICTURE_SIDE);
+    limits.max_image_height = Some(MAX_PICTURE_SIDE);
+    limits.max_alloc = Some(MAX_PICTURE_BYTES);
+    reader.limits(limits);
+    let img = reader.decode().ok()?;
+    let fit = fit.clamp(1, MAX_PICTURE_SIDE);
+    let img = if img.width() > fit || img.height() > fit { img.resize(fit, fit, image::imageops::FilterType::Triangle) } else { img };
+    Some(img.to_rgba8())
+}
+
+/// A picture's size, from its header (nothing is decoded).
+pub(crate) fn picture_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?.into_dimensions().ok()
 }
 
 /// A drawing file as a picture.
@@ -348,7 +380,7 @@ pub(crate) fn locked_png(ws: &Workspace, path: &NotePath) -> Option<Vec<u8>> {
                     quire_app::attach::AttachmentSource::Locked(p) => ws.read_locked_attachment(&p)?,
                     quire_app::attach::AttachmentSource::File(p) => std::fs::read(p).ok()?,
                 };
-                Some(image::load_from_memory(&bytes).ok()?.to_rgba8())
+                decode_picture(&bytes, MAX_PICTURE_SIDE)
             }
         }
     });
@@ -374,6 +406,25 @@ mod tests {
         assert!(has(&|p| p.r() > 200 && p.g() < 80 && p.b() < 80), "the red ellipse");
         assert!(has(&|p| p.r() < 60 && p.g() < 60 && p.b() < 60), "dark strokes and text");
         assert!(has(&|p| p.b() > 230 && p.r() < 100 && p.g() > 120 && p.g() < 160), "the embedded blue picture");
+    }
+
+    /// Security review M3: a picture that claims a huge size is refused
+    /// before it is decoded, and a big one is scaled to fit a texture.
+    #[test]
+    fn huge_pictures_are_refused_or_scaled() {
+        let png = |w: u32, h: u32| {
+            let mut out = Vec::new();
+            image::RgbaImage::new(w, h).write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).unwrap();
+            out
+        };
+        assert!(decode_picture(&png(20_000, 1), 16_384).is_none(), "a side over the limit");
+        let started = std::time::Instant::now();
+        assert!(decode_picture(&png(8000, 8000), 16_384).is_none(), "over 64 MiB decoded");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        let big = decode_picture(&png(3000, 1000), 2048).unwrap();
+        assert_eq!((big.width(), big.height()), (2048, 683), "scaled to the texture's side");
+        assert_eq!(decode_picture(&png(40, 20), 2048).map(|i| (i.width(), i.height())), Some((40, 20)));
+        assert!(decode_picture(b"not a picture", 2048).is_none());
     }
 
     #[test]

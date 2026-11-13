@@ -220,6 +220,10 @@ pub(crate) struct DrawingEditor {
     drawn: paint::Drawn,
     /// The canvas's rect last frame.
     last_rect: Rect,
+    /// A message for the person, shown in the next frame.
+    notice: Option<String>,
+    /// This editor's widgets' id (stable when the drawing is renamed).
+    uid: u64,
 }
 
 impl DrawingEditor {
@@ -260,6 +264,11 @@ impl DrawingEditor {
             last_frame_ms: 0.0,
             drawn: paint::Drawn::default(),
             last_rect: Rect::NOTHING,
+            notice: None,
+            uid: {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            },
         }
     }
 
@@ -275,6 +284,13 @@ impl DrawingEditor {
                 match Drawing::parse(&t) {
                     Ok(d) => {
                         self.grid = d.state.elements.is_empty() || self.grid;
+                        if d.markdown_edits() > 0 {
+                            self.notice = Some(format!(
+                                "{} text{} edited in the note's Markdown taken into the drawing",
+                                d.markdown_edits(),
+                                if d.markdown_edits() == 1 { "" } else { "s" }
+                            ));
+                        }
                         self.d = Some(d);
                         self.error = None;
                     }
@@ -306,29 +322,59 @@ impl DrawingEditor {
     }
 
     /// Take in a change made elsewhere: reload, or hold it as a conflict.
+    /// A file that can't be read but is there (its folder locked again, a
+    /// passing read error) is left alone; one that is gone may have been
+    /// renamed in its folder (followed), or deleted (asked).
     fn absorb(&mut self, ws: &mut Workspace) {
         let generation = ws.features.canvas.disk_generation(&self.path);
         if generation == self.disk_gen {
             return;
         }
         self.disk_gen = generation;
-        let theirs = drawings::read_drawing(ws, &self.path).ok();
-        if theirs.as_deref() == Some(self.disk_text.as_str()) {
+        let theirs = match drawings::read_drawing(ws, &self.path) {
+            Ok(t) => t,
+            Err(_) if ws.vault().is_some_and(|v| v.exists(&self.path)) => return,
+            Err(_) => {
+                if let Some(to) = self.renamed_to(ws) {
+                    ws.notify(NoticeLevel::Info, format!("“{}” was renamed to “{}”", self.title_text(), to.file_name()));
+                    self.path = to;
+                    self.disk_gen = ws.features.canvas.disk_generation(&self.path);
+                } else if self.conflict.is_none() {
+                    self.conflict = Some(Elsewhere::Deleted);
+                    ws.notify(NoticeLevel::Warn, format!("“{}” was deleted or moved elsewhere", self.title_text()));
+                }
+                return;
+            }
+        };
+        if theirs == self.disk_text {
             return; // our own save
         }
-        match theirs {
-            Some(t) if !self.dirty && self.conflict.is_none() => {
-                self.reload(t);
-                ws.notify(NoticeLevel::Info, format!("Reloaded “{}” (changed on disk)", self.title_text()));
-            }
-            theirs => {
-                self.conflict = Some(Elsewhere::from(theirs));
-                ws.notify(
-                    NoticeLevel::Warn,
-                    format!("“{}” changed elsewhere while you were editing it: choose what to keep", self.title_text()),
-                );
-            }
+        if !self.dirty && self.conflict.is_none() {
+            self.reload(theirs);
+            ws.notify(NoticeLevel::Info, format!("Reloaded “{}” (changed on disk)", self.title_text()));
+        } else {
+            self.conflict = Some(Elsewhere::Changed(theirs));
+            ws.notify(
+                NoticeLevel::Warn,
+                format!("“{}” changed elsewhere while you were editing it: choose what to keep", self.title_text()),
+            );
         }
+    }
+
+    /// The drawing gone from its path: another drawing in the same folder
+    /// holding exactly the text last read or written (a rename, in Quire or
+    /// elsewhere). Only when there is one such file.
+    fn renamed_to(&self, ws: &Workspace) -> Option<NotePath> {
+        let vault = ws.vault()?;
+        let listed = vault.storage().list_under(self.path.folder()).ok()?;
+        let found: Vec<NotePath> = listed
+            .into_iter()
+            .map(|p| quire_app::vault::lock::plain_name(&p).unwrap_or(p))
+            .filter(|p| *p != self.path && excalidraw::is_drawing(p.as_str()))
+            .filter(|p| drawings::read_drawing(ws, p).is_ok_and(|t| t == self.disk_text))
+            .take(2)
+            .collect();
+        (found.len() == 1).then(|| found[0].clone())
     }
 
     fn title_text(&self) -> String {
@@ -338,7 +384,9 @@ impl DrawingEditor {
 
     fn save(&mut self, ws: &mut Workspace) {
         let Some(d) = &self.d else { return };
-        if self.error.is_some() || self.conflict.is_some() {
+        // No edit, no write (data review #8): a file is never rewritten
+        // just because it was opened.
+        if !self.dirty || self.error.is_some() || self.conflict.is_some() {
             return;
         }
         let text = d.to_text();
@@ -374,7 +422,13 @@ impl DrawingEditor {
     }
 
     /// Keep this version and put theirs beside it, or the other way round.
+    /// For a drawing deleted elsewhere, "theirs" closes the tab: nothing is
+    /// written (unsaved edits go to a copy, as on every close).
     fn resolve(&mut self, ws: &mut Workspace, keep_mine: bool) {
+        if !keep_mine && self.conflict == Some(Elsewhere::Deleted) {
+            self.done = true;
+            return;
+        }
         let Some(theirs) = self.conflict.take() else { return };
         let mine = self.d.as_ref().map(Drawing::to_text);
         let (copy_text, label) = if keep_mine { (theirs.text().map(str::to_string), "changed elsewhere") } else { (mine, "my edits") };
@@ -572,7 +626,14 @@ impl DrawingEditor {
         if let Some((els, files)) = drawing::from_clipboard(text) {
             self.checkpoint();
             if let Some(d) = &mut self.d {
-                self.sel = d.paste(els, &files, at, &mut self.cx);
+                match d.paste(els, &files, at, &mut self.cx) {
+                    Ok(ids) => self.sel = ids,
+                    Err(e) => {
+                        self.hist.cancel(&mut d.state);
+                        self.notice = Some(format!("Not pasted: {e}"));
+                        return;
+                    }
+                }
             }
             self.touch();
             return;
@@ -797,7 +858,9 @@ impl DrawingEditor {
             .entry(id.to_string())
             .or_insert_with(|| {
                 let bytes = picture_bytes(ws, path, &d.file_ref(id)?)?;
-                let img = image::load_from_memory(&bytes).ok()?.to_rgba8();
+                // Never larger than the GPU takes (security review M3).
+                let max_side = ctx.input(|i| i.max_texture_side) as u32;
+                let img = crate::drawing_ui::decode_picture(&bytes, max_side)?;
                 let size = [img.width() as usize, img.height() as usize];
                 let ci = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
                 Some(ctx.load_texture(format!("quire-drawing-{id}"), ci, egui::TextureOptions::LINEAR))
@@ -806,7 +869,7 @@ impl DrawingEditor {
     }
 
     /// Add a picture from the vault in the middle of the view.
-    fn add_picture(&mut self, ws: &Workspace, file: &NotePath, rect: Rect) {
+    fn add_picture(&mut self, ws: &mut Workspace, file: &NotePath, rect: Rect) {
         let Some(vault) = ws.vault() else { return };
         let mime = drawings::picture_type(file.as_str()).unwrap_or("image/png");
         let bytes =
@@ -814,7 +877,20 @@ impl DrawingEditor {
         let Some(bytes) = bytes else {
             return;
         };
-        let (w, h) = image::load_from_memory(&bytes).map_or((200.0, 150.0), |i| (f64::from(i.width()), f64::from(i.height())));
+        let Some((w, h)) = crate::drawing_ui::picture_size(&bytes).filter(|(w, h)| {
+            (1..=crate::drawing_ui::MAX_PICTURE_SIDE).contains(w) && (1..=crate::drawing_ui::MAX_PICTURE_SIDE).contains(h)
+        }) else {
+            ws.notify(
+                NoticeLevel::Warn,
+                format!(
+                    "{} can't be added: not a picture, or larger than {} pixels on a side",
+                    file.file_name(),
+                    crate::drawing_ui::MAX_PICTURE_SIDE
+                ),
+            );
+            return;
+        };
+        let (w, h) = (f64::from(w), f64::from(h));
         let s = (400.0 / w.max(h)).min(1.0);
         let (w, h) = (w * s, h * s);
         let center = self.view(rect).to_scene(rect.center());
@@ -933,19 +1009,26 @@ impl DrawingEditor {
                 let gone = self.conflict == Some(Elsewhere::Deleted);
                 ui.label(
                     RichText::new(if gone {
-                        "This drawing was deleted elsewhere."
+                        "This drawing was deleted or moved elsewhere."
                     } else {
                         "This drawing changed elsewhere while you were editing it."
                     })
                     .color(pal.strong),
                 );
-                if ui.button("Keep mine").on_hover_text("Save this version; the other is kept in a copy beside it").clicked() {
-                    self.resolve(ws, true);
-                }
-                if !gone
-                    && ui.button("Take theirs").on_hover_text("Show the other version; your edits are kept in a copy beside it").clicked()
-                {
-                    self.resolve(ws, false);
+                if gone {
+                    if ui.button("Save it again").on_hover_text("Write this drawing back under its name").clicked() {
+                        self.resolve(ws, true);
+                    }
+                    if ui.button("Close").on_hover_text("Close the tab; unsaved edits are kept in a copy beside it").clicked() {
+                        self.resolve(ws, false);
+                    }
+                } else {
+                    if ui.button("Keep mine").on_hover_text("Save this version; the other is kept in a copy beside it").clicked() {
+                        self.resolve(ws, true);
+                    }
+                    if ui.button("Take theirs").on_hover_text("Show the other version; your edits are kept in a copy beside it").clicked() {
+                        self.resolve(ws, false);
+                    }
                 }
             });
         });
@@ -1195,11 +1278,11 @@ impl DrawingEditor {
         self.touch();
     }
 
-    fn picker_ui(&mut self, ctx: &egui::Context, ws: &Workspace, pal: &Palette, rect: Rect) {
+    fn picker_ui(&mut self, ctx: &egui::Context, ws: &mut Workspace, pal: &Palette, rect: Rect) {
         let Some(q) = self.picker.as_mut() else { return };
         let mut chosen = None;
         let mut close = false;
-        egui::Area::new(Id::unique(("quire-drawing-picker", self.path.as_str())))
+        egui::Area::new(Id::unique(("quire-drawing-picker", self.uid)))
             .fixed_pos(rect.min + Vec2::new(12.0, 8.0))
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
@@ -1283,7 +1366,7 @@ impl DrawingEditor {
 
     #[expect(clippy::cognitive_complexity, reason = "the pointer's one state machine")]
     fn canvas(&mut self, ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette, rect: Rect, out: &mut PanelOut) {
-        let resp = ui.interact(rect, Id::unique(("quire-drawing-canvas", self.path.as_str())), Sense::click_and_drag());
+        let resp = ui.interact(rect, Id::unique(("quire-drawing-canvas", self.uid)), Sense::click_and_drag());
         if !self.fitted {
             self.fit(rect);
         }
@@ -1483,6 +1566,11 @@ impl DrawingEditor {
             if ui.memory(|m| m.focused().is_none()) {
                 resp.request_focus();
             }
+            // Arrow keys nudge the selection: they don't move the focus away.
+            let id = resp.id;
+            ui.memory_mut(|m| {
+                m.set_focus_lock_filter(id, egui::EventFilter { horizontal_arrows: true, vertical_arrows: true, ..Default::default() });
+            });
             self.keys(ui, rect, scene_at);
         }
         self.typing_ui(ui, self.view(rect), pal);
@@ -2035,6 +2123,9 @@ impl Surface for DrawingEditor {
             self.load(ws);
         }
         self.absorb(ws);
+        if let Some(n) = self.notice.take() {
+            ws.notify(NoticeLevel::Info, n);
+        }
         PAN_DELTA.with(|c| c.set(ui.input(|i| i.pointer.delta())));
         self.toolbar(ui, ws, pal, &mut out);
         self.conflict_bar(ui, ws, pal);
@@ -2075,18 +2166,37 @@ impl Surface for DrawingEditor {
             FontId::proportional(10.0),
             Color32::from_gray(140),
         );
-        // Autosave.
-        if self.dirty && self.drag.is_none() && self.typing.is_none() {
-            let wait = self.save_failed.map_or(SAVE_AFTER, |_| RETRY_AFTER);
-            let since = self.save_failed.map_or(self.last_edit, |t| t.max(self.last_edit));
-            if since.elapsed() >= wait {
-                self.save(ws);
-            } else {
-                ui.ctx().request_repaint_after(wait.saturating_sub(since.elapsed()));
-            }
-        }
+        self.autosave(ws);
         self.last_frame_ms = started.elapsed().as_secs_f32() * 1000.0;
         out
+    }
+
+    /// Not shown (another tab is): changes elsewhere are taken in, and edits
+    /// save as when shown (data review #4).
+    fn tick(&mut self, ws: &mut Workspace) {
+        if !self.loaded {
+            return;
+        }
+        self.drag = None;
+        self.finish_typing();
+        self.absorb(ws);
+        self.autosave(ws);
+    }
+}
+
+impl DrawingEditor {
+    /// Save once the edits have rested (not during a drag or while typing).
+    fn autosave(&mut self, ws: &mut Workspace) {
+        if !self.dirty || self.drag.is_some() || self.typing.is_some() {
+            return;
+        }
+        let wait = self.save_failed.map_or(SAVE_AFTER, |_| RETRY_AFTER);
+        let since = self.save_failed.map_or(self.last_edit, |t| t.max(self.last_edit));
+        if since.elapsed() >= wait {
+            self.save(ws);
+        } else if let Some(ctx) = &self.ctx {
+            ctx.request_repaint_after(wait.saturating_sub(since.elapsed()));
+        }
     }
 }
 
@@ -2105,10 +2215,7 @@ impl Drop for DrawingEditor {
         }
         let written = self.conflict.is_none() && vault.write_if(&self.path, Some(&self.disk_text), &text).unwrap_or(false);
         if !written {
-            let name = self.path.file_name();
-            let lower = name.to_ascii_lowercase();
-            let ext = [".excalidraw.md", ".excalidraw"].into_iter().find(|e| lower.ends_with(e)).unwrap_or(".excalidraw");
-            let stem = &name[..name.len() - ext.len()];
+            let (stem, ext) = drawings::split_name(&self.path);
             if let Some(copy) = (1..1000)
                 .map(|n| NotePath::join(self.path.folder(), &format!("{stem} (unsaved edits {n}){ext}")))
                 .find(|p| !vault.exists(p))
