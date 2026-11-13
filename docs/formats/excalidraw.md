@@ -147,15 +147,21 @@ N4KAkARALgngDgUwgLgAQQQDwMYEMA2AlgCYBOuA7hADTgQBuCpAzoQPYB2KqATLZMzYBXUtiRoIACyh
 * **Unchanged drawing**: nothing is written. Open, then save without an
   edit, gives the same bytes (tested on every fixture).
 * **Fidelity**: elements are kept as ordered JSON: every field stays,
-  in its place, unknown ones and unknown element types included. The JSON
-  is written as `JSON.stringify` writes it (same indent, escapes and
-  number forms; numbers not edited keep their text), so only edited
-  elements' lines change.
+  in its place, unknown ones and unknown element types included. An
+  element (and a root member such as `appState`) that wasn't changed is
+  written back with its text as read; a changed one is written as
+  `JSON.stringify` writes it (same indent, escapes and number forms;
+  numbers not edited keep their text). So only edited elements' lines
+  change, whatever tool wrote the file. CRLF line ends are kept.
 * **The form is kept**: a `.excalidraw` stays JSON with its indent; a note
   stays compressed or plain. A note's text before `# Excalidraw Data`,
   its sections and the `%%` lines are kept. `## Text Elements` and
   `## Element Links` are written again only when a text or a link
-  changed; `## Embedded Files` only gets new lines.
+  changed (entries no element owns are kept); `## Embedded Files` only
+  gets new lines.
+* **Edited in Markdown**: a text changed in `## Text Elements` (the text
+  before its ` ^id`) or a link changed in `## Element Links` is taken into
+  the drawing when Quire opens it, as the plugin does.
 * **Edits, as Excalidraw makes them**: each changed element gets
   `version + 1`, a new `versionNonce` and `updated` = now; its `seed`
   stays. A new element gets the fields `newElement` writes, a random
@@ -163,10 +169,13 @@ N4KAkARALgngDgUwgLgAQQQDwMYEMA2AlgCYBOuA7hADTgQBuCpAzoQPYB2KqATLZMzYBXUtiRoIACyh
   the drawing has indices). Moving elements in the stacking order gives
   them new `index` keys between their neighbours (as `syncMovedIndices`).
   A deleted element is kept with `isDeleted: true`.
-* **Text**: `text` and `originalText` are the text as shown (`[[Note|alias]]`
-  shows `alias`); in a note, `rawText` keeps the links, and the first
-  `[[link]]` becomes the element's `link`. Width and height are measured
-  with Quire's fonts.
+* **Text**: in a note, `text` and `originalText` are the text as shown
+  (`[[Note|alias]]` shows `alias`), `rawText` keeps the links, and the
+  first `[[link]]` becomes the element's `link` (unless the element has a
+  link set apart from its text). In a `.excalidraw` file, which Excalidraw
+  shows as plain text, the text is kept as typed, brackets included, and
+  the element's link is left alone. Width and height are measured with
+  Quire's fonts.
 * **Arrows** bound to shapes: `startBinding`/`endBinding` with `focus` 0
   and `gap` 4, and the arrow in the shape's `boundElements`. Moving the
   shape moves the arrow's end to the shape's outline.
@@ -174,7 +183,9 @@ N4KAkARALgngDgUwgLgAQQQDwMYEMA2AlgCYBOuA7hADTgQBuCpAzoQPYB2KqATLZMzYBXUtiRoIACyh
   `## Embedded Files`; in a `.excalidraw` file, a `data:` URL in `files`
   (40 hex characters as the id). Both as Excalidraw and the plugin do.
 * **Clipboard**: Excalidraw's `{"type": "excalidraw/clipboard", "elements",
-  "files"}`; pasting it from Excalidraw works too.
+  "files"}`; pasting it from Excalidraw works too. A paste stays within the
+  limits below, and takes only the pictures pasted elements show, as
+  PNG, JPEG, GIF or WebP `data:` URLs.
 * New drawing notes have the plugin's front matter and a compressed
   block, named `Drawing YYYY-MM-DD HH.MM.SS.excalidraw.md` as the plugin
   names them. Embeds are written `![[Drawing ….excalidraw]]` (without
@@ -184,4 +195,7 @@ N4KAkARALgngDgUwgLgAQQQDwMYEMA2AlgCYBOuA7hADTgQBuCpAzoQPYB2KqATLZMzYBXUtiRoIACyh
 
 A drawing over 32 MiB of text, 50,000 elements, 1,000,000 points, 1,000
 pictures, or one that unpacks to more than 16 Mi UTF-16 units, is shown
-as "too large" and not edited (0.10.1 security review #7).
+as "too large" and not edited (0.10.1 security review #7). A picture in a
+drawing over 8192 pixels on a side, or over 64 MiB decoded, isn't shown
+(its size is read before it is decoded); one larger than the graphics
+card's largest texture is scaled down to show (0.13 security review M3).

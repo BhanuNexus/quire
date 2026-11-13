@@ -27,6 +27,11 @@ pub(crate) trait Surface {
     fn done(&self) -> bool {
         false
     }
+    /// Once a frame while another tab is shown: work that mustn't wait for
+    /// the tab to be shown again (a drawing's autosave, 0.13).
+    fn tick(&mut self, ws: &mut Workspace) {
+        let _ = ws;
+    }
 }
 
 /// For a file Quire can't edit yet: say so, and offer the system's viewer.
@@ -103,6 +108,33 @@ impl Surfaces {
         if let Some(i) = close {
             self.open.remove(i);
             self.active = None;
+        }
+    }
+
+    /// Once a frame: every surface not shown does its background work; one
+    /// done goes away, and of two open on the same file (a drawing that
+    /// followed a rename to a file open in another tab) the shown one stays.
+    pub(crate) fn tick_hidden(&mut self, ws: &mut Workspace) {
+        for (i, s) in self.open.iter_mut().enumerate() {
+            if self.active != Some(i) {
+                s.tick(ws);
+            }
+        }
+        let mut i = 0;
+        while i < self.open.len() {
+            let dup =
+                self.open.iter().enumerate().any(|(j, o)| {
+                    j != i && o.path() == self.open[i].path() && (self.active == Some(j) || (j < i && self.active != Some(i)))
+                });
+            if (self.open[i].done() && self.active != Some(i)) || dup {
+                self.open.remove(i);
+                self.active = match self.active {
+                    Some(a) if a > i => Some(a - 1),
+                    a => a,
+                };
+            } else {
+                i += 1;
+            }
         }
     }
 

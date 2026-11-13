@@ -4,6 +4,17 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Fixed
+- **Excalidraw drawings:**
+  - A drawing with a picture claiming a huge size no longer crashes Quire: pictures over 8192 pixels on a side aren't shown, and large ones are scaled to fit.
+  - A text containing heading lines (`## …`, `# Drawing`) no longer makes a drawing note grow on every save.
+  - Texts and links edited in a drawing note's Markdown (`## Text Elements`, `## Element Links`) are taken into the drawing, as the Obsidian plugin does, instead of being overwritten.
+  - A drawing whose tab isn't shown still autosaves.
+  - Opening a drawing never rewrites it; CRLF files keep CRLF; files written by other tools change only where edited.
+  - `[[links]]` typed in a `.excalidraw` file keep their brackets, and a link set in the style panel isn't dropped by editing the text.
+  - A drawing renamed in its folder stays open under its new name; one deleted elsewhere asks before it's written again.
+  - Pasted elements stay within a drawing's limits, bring only the pictures they show, and keep their frame.
+
 ## [0.13.0] - 2026-11-13
 
 Quire 0.13: edit Excalidraw drawings, remove a device from sync and keep sync small with compaction, a stronger sync format, typed links in Settings, the web app and published sites, and ARM64 Linux and Flatpak builds.

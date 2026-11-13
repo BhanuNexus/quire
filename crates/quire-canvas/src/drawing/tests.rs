@@ -286,7 +286,7 @@ fn duplicate_group_align_lock_and_paste() {
     let clip = clipboard_json(&[Arc::clone(d.get("img1").unwrap())], &d.state.files);
     let (els, files) = from_clipboard(&clip).unwrap();
     assert!(files.get("f00d").is_some(), "the picture goes with it");
-    let pasted = d.paste(els, &files, (1000.0, 1000.0), &mut c);
+    let pasted = d.paste(els, &files, (1000.0, 1000.0), &mut c).unwrap();
     let p = d.get(&pasted[0]).unwrap();
     assert_eq!((p.num("x"), p.num("y")), (Some(1000.0), Some(1000.0)));
     assert_ne!(pasted[0], "img1");
@@ -378,7 +378,7 @@ fn random_edit(d: &mut Drawing, rng: &mut Rng, c: &mut Cx) {
         _ => {
             let clip = clipboard_json(&d.state.elements[..1], &d.state.files);
             if let Some((els, files)) = from_clipboard(&clip) {
-                d.paste(els, &files, (f, f), c);
+                let _ = d.paste(els, &files, (f, f), c);
             }
         }
     }
@@ -475,4 +475,175 @@ fn new_drawings_read_back_and_have_the_plugins_front_matter() {
 fn display_text_hides_link_brackets() {
     assert_eq!(display_text("See [[A]] and [[B|bee]] [[open"), "See A and bee [[open");
     assert_eq!(wikilinks_in("x [[A#h|t]] [[ ]] [[B]]"), ["A#h", "B"]);
+}
+
+// ---------------------------------------------------------------- 0.13 review fixes
+
+const PLAIN: &str = include_str!("../../testdata/excalidraw/Roadmap plain.excalidraw.md");
+const SKETCH: &str = include_str!("../../testdata/excalidraw/Roadmap sketch.excalidraw.md");
+
+fn text_ids(d: &Drawing) -> Vec<String> {
+    d.state.elements.iter().filter(|e| e.str("type") == Some("text")).filter_map(|e| e.str("id").map(String::from)).collect()
+}
+
+/// Data review H1: texts holding heading lines, `%%`, fences and the data
+/// heading don't move the note's sections; saving and reading again is a
+/// fixed point.
+#[test]
+fn texts_with_heading_lines_are_a_fixed_point() {
+    let nasty = [
+        "## Drawing\nsecond line\n## Element Links\nx",
+        "# Excalidraw Data\n## Text Elements\n%%",
+        "```json\n{}\n```",
+        "## Embedded Files\nabc: [[x.png]]",
+        "# Drawing\n```compressed-json\nAAAA\n```",
+        "%%",
+    ];
+    for src in [PLAIN, SKETCH, CORPUS.iter().find(|(n, _)| *n == "Commented.excalidraw.md").unwrap().1] {
+        for t in nasty {
+            let mut d = Drawing::parse(src).unwrap();
+            let ids = text_ids(&d);
+            d.set_text(&ids[1], t, (100.0, 25.0), &mut cx());
+            let first = d.to_text();
+            let mut text = first.clone();
+            for round in 0..3 {
+                let mut p = Drawing::parse(&text).unwrap_or_else(|e| panic!("{t:?} round {round}: {e}"));
+                assert_eq!(p.to_text(), text, "{t:?} round {round}: read and written again, unchanged");
+                assert_eq!(p.get(&ids[1]).unwrap().str("rawText"), Some(t), "{t:?} round {round}");
+                assert_eq!(p.markdown_edits(), 0, "{t:?} round {round}: nothing taken from Markdown");
+                let ids = text_ids(&p);
+                p.set_text(&ids[0], &format!("Plan v{round}"), (100.0, 25.0), &mut cx());
+                let next = p.to_text();
+                assert_eq!(next.matches(&format!(" ^{}\n", ids[1])).count(), 1, "{t:?} round {round}: one entry\n{next}");
+                assert!(next.len() < first.len() + 100, "{t:?} round {round}: no growth");
+                text = next;
+            }
+        }
+    }
+}
+
+/// Data review #3: `## Text Elements` and `## Element Links` edited in
+/// Markdown are taken into the drawing (as the plugin does), and lines no
+/// element owns are kept when the section is written again.
+#[test]
+fn markdown_edits_to_texts_are_taken_in_and_kept() {
+    let edited = PLAIN
+        .replace("no links here ^pTq8nWm2", "no links here, EDITED IN [[Markdown]] ^pTq8nWm2\n\nA brand new line the user typed ^ZZZZZZZZ");
+    let mut d = Drawing::parse(&edited).unwrap();
+    assert_eq!(d.to_text().split("## Drawing").next(), edited.split("## Drawing").next(), "the Markdown part is kept as written");
+    assert_eq!(d.markdown_edits(), 1);
+    let e = d.get("pTq8nWm2").unwrap();
+    assert_eq!(e.str("rawText"), Some("no links here, EDITED IN [[Markdown]]"));
+    assert_eq!(e.str("text"), Some("no links here, EDITED IN Markdown"));
+    assert_eq!(e.str("link"), Some("[[Markdown]]"));
+    assert_eq!(e.num("version"), Some(13.0));
+    d.set_text("Kq3sXz1a", "Plan for [[Roadmap]] v2", (210.0, 25.0), &mut cx());
+    let out = d.to_text();
+    assert!(out.contains("no links here, EDITED IN [[Markdown]] ^pTq8nWm2\n\n"), "{out}");
+    assert!(out.contains("A brand new line the user typed ^ZZZZZZZZ\n\n"), "{out}");
+    assert!(out.contains("Plan for [[Roadmap]] v2 ^Kq3sXz1a"));
+    // An element link changed in Markdown.
+    let links = PLAIN.replace("rectZZZZZZZZZZZZZZZZZ: [[Meeting notes#Decisions]]", "rectZZZZZZZZZZZZZZZZZ: [[Other note]]");
+    let d = Drawing::parse(&links).unwrap();
+    assert_eq!(d.get("rectZZZZZZZZZZZZZZZZZ").unwrap().str("link"), Some("[[Other note]]"));
+}
+
+/// Data review #8: CRLF files keep CRLF; JSON other tools wrote keeps its
+/// form outside the edited element; a lone surrogate in an element not
+/// edited stays as written.
+#[test]
+fn line_ends_and_foreign_json_are_kept() {
+    for src in [PLAIN, SKETCH, include_str!("../../testdata/excalidraw/Release.excalidraw")] {
+        let crlf = src.replace('\n', "\r\n");
+        let mut d = Drawing::parse(&crlf).unwrap();
+        assert_eq!(d.to_text(), crlf, "unedited: the same bytes");
+        let id = d.state.elements[1].str("id").unwrap().to_string();
+        d.translate(&[id], 1.0, 0.0, &mut cx());
+        let out = d.to_text();
+        assert_eq!(out.replace("\r\n", "").matches('\n').count(), 0, "no bare LF");
+        assert!(Drawing::parse(&out).is_ok());
+    }
+    let src = "{\n  \"type\": \"excalidraw\",\n  \"version\": 2,\n  \"elements\": [\n    {\"id\": \"a\", \"type\": \"text\", \"x\": 1.50, \"y\": 1E2, \"text\": \"n\\u00e9e \\ud83d\\ude00 \\ud800 \\/ \\u2028\", \"originalText\": \"x\", \"width\": 10, \"height\": 10, \"isDeleted\": false, \"version\": 1, \"versionNonce\": 1, \"updated\": 1, \"boundElements\": null, \"groupIds\": [], \"angle\": 0},\n    {\"id\": \"b\", \"type\": \"rectangle\", \"x\": 0, \"y\": 0, \"width\": 10, \"height\": 10, \"isDeleted\": false, \"version\": 1, \"versionNonce\": 1, \"updated\": 1, \"boundElements\": null, \"groupIds\": [], \"angle\": 0}\n  ],\n  \"appState\": {},\n  \"files\": {}\n}\n";
+    let mut d = Drawing::parse(src).unwrap();
+    assert_eq!(d.to_text(), src);
+    d.translate(&["b".to_string()], 5.0, 0.0, &mut cx());
+    let out = d.to_text();
+    let a_line = src.lines().nth(4).unwrap();
+    assert!(out.lines().any(|l| l == a_line), "element a is untouched, escapes and all:\n{out}");
+    assert!(out.contains("\"x\": 5"));
+    assert_eq!(out.lines().filter(|l| src.lines().all(|s| s != *l)).count(), 15, "only b's lines are new:\n{out}");
+}
+
+/// Data review #9: in a `.excalidraw` file the text stays as typed; in a
+/// note, a link set in the panel isn't dropped by typing a text without one.
+#[test]
+fn typed_links_keep_their_brackets_in_excalidraw_files() {
+    let mut d = fixture("Release.excalidraw");
+    d.set_text("txt1", "see [[Roadmap|the plan]]", (100.0, 25.0), &mut cx());
+    let e = d.get("txt1").unwrap();
+    assert_eq!(e.str("text"), Some("see [[Roadmap|the plan]]"));
+    assert_eq!(e.str("link"), Some("[[Roadmap]]"), "the element's own link is left alone");
+    let mut n = fixture("Roadmap sketch.excalidraw.md");
+    n.set_field(&ids(&["pTq8nWm2"]), "link", &Json::str("[[Chosen]]"), &mut cx());
+    n.set_text("pTq8nWm2", "still no links", (100.0, 25.0), &mut cx());
+    assert_eq!(n.get("pTq8nWm2").unwrap().str("link"), Some("[[Chosen]]"), "a link set apart from the text stays");
+    n.set_text("Kq3sXz1a", "now [[Other]]", (100.0, 25.0), &mut cx());
+    assert_eq!(n.get("Kq3sXz1a").unwrap().str("link"), Some("[[Other]]"), "a link from the text follows it");
+}
+
+/// Data review #11: copies of a frame's elements go in the copied frame;
+/// a pasted element's frame that isn't here is dropped.
+#[test]
+fn frames_follow_copies() {
+    let mut d = fixture("Release.excalidraw");
+    let mut c = cx();
+    let new = d.duplicate(&ids(&["frm", "dia1"]), 10.0, 10.0, &mut c);
+    assert_eq!(d.get(&new[1]).unwrap().str("frameId"), Some(new[0].as_str()));
+    let one = d.duplicate(&ids(&["ell1"]), 10.0, 10.0, &mut c);
+    assert_eq!(d.get(&one[0]).unwrap().str("frameId"), Some("frm"), "the same frame when it isn't copied");
+    let clip = clipboard_json(&[Arc::clone(d.get("ell1").unwrap())], &d.state.files);
+    let (els, files) = from_clipboard(&clip).unwrap();
+    let mut other = Drawing::new_empty(false);
+    let p = other.paste(els, &files, (0.0, 0.0), &mut c).unwrap();
+    assert!(other.get(&p[0]).unwrap().get("frameId").is_some_and(Json::is_null));
+}
+
+/// Security review L3: a paste respects the drawing's limits and takes only
+/// the pictures pasted elements show, as picture data.
+#[test]
+fn paste_respects_the_limits() {
+    let el = "{\"id\":\"i\",\"type\":\"image\",\"x\":0,\"y\":0,\"width\":1,\"height\":1,\"fileId\":\"f1\"}";
+    let clip = format!(
+        "{{\"type\":\"excalidraw/clipboard\",\"elements\":[{el}],\"files\":{{\"f1\":{{\"dataURL\":\"data:image/png;base64,AA\"}},\"f2\":{{\"dataURL\":\"data:image/png;base64,BB\"}},\"f3\":{{\"dataURL\":\"data:text/html;base64,CC\"}}}}}}"
+    );
+    let (_, files) = from_clipboard(&clip).unwrap();
+    assert_eq!(files.0.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["f1"], "only what's shown");
+    let bad = clip.replace("data:image/png;base64,AA", "data:text/html;base64,AA");
+    assert!(from_clipboard(&bad).unwrap().1.0.is_empty(), "not picture data");
+    let many = format!(
+        "{{\"type\":\"excalidraw/clipboard\",\"elements\":[{}],\"files\":{{}}}}",
+        vec!["{\"type\":\"rectangle\",\"id\":\"r\"}"; excalidraw::limits::MAX_ELEMENTS + 1].join(",")
+    );
+    let (els, files) = from_clipboard(&many).unwrap();
+    let mut d = Drawing::new_empty(false);
+    assert_eq!(d.paste(els, &files, (0.0, 0.0), &mut cx()), Err(PASTE_TOO_LARGE));
+    assert!(d.state.elements.is_empty());
+    assert!(from_clipboard(&" ".repeat(excalidraw::limits::MAX_TEXT + 1)).is_none());
+}
+
+/// LZ-string: odd texts and long runs round-trip (from the review's script).
+#[test]
+fn lz_round_trips_odd_texts() {
+    let mut s = String::new();
+    for i in 0..3000u32 {
+        s.push(char::from_u32(0x20 + (i * 7919) % 0x2f00).unwrap_or('x'));
+        if i % 50 == 0 {
+            s.push('😀');
+            s.push('\u{10FFFF}');
+        }
+    }
+    for t in ["", "a", "😀", &s, &"ab".repeat(100_000)] {
+        let back = excalidraw::lz_decompress_base64(&excalidraw::lz_compress_base64(t));
+        assert_eq!(back.as_deref().unwrap_or(""), t);
+    }
 }

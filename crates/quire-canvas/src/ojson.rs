@@ -9,9 +9,15 @@
 //! it: the same indent, the same escapes, the same number forms. An
 //! unedited file written back is byte-identical (tested on the fixtures).
 //!
+//! A document also keeps the text of each root member and of each item of
+//! a root array as it was read ([`Doc::write_keeping`]): a part that wasn't
+//! changed is written back as it was, whatever tool wrote it (other
+//! escapes, `1E2`, compact arrays), so only changed parts take
+//! `JSON.stringify`'s form.
+//!
 //! Strings with a lone UTF-16 surrogate (`"\ud800"`) can't be held in a
-//! Rust `String`; such a string is read with U+FFFD in its place. Such text
-//! is changed on save only if its element is.
+//! Rust `String`; such a string is read with U+FFFD in its place. Its text
+//! is kept by the rule above, so it changes only if its element is edited.
 
 use std::fmt::Write as _;
 
@@ -211,6 +217,10 @@ pub struct Doc {
     pub before: String,
     pub after: String,
     pub indent: Indent,
+    /// Each root member's text as read: (key, text).
+    raw_members: Vec<(String, String)>,
+    /// Each item of a root member that is an array: (key, item texts).
+    raw_items: Vec<(String, Vec<String>)>,
 }
 
 /// How a document is indented.
@@ -224,7 +234,7 @@ pub enum Indent {
 
 impl Doc {
     pub fn parse(text: &str) -> Result<Self, String> {
-        let mut p = Parser { s: text.as_bytes(), text, i: 0 };
+        let mut p = Parser { s: text.as_bytes(), text, i: 0, key: None, members: Vec::new(), items: Vec::new() };
         p.ws();
         let start = p.i;
         let value = p.value(0)?;
@@ -233,7 +243,84 @@ impl Doc {
         if p.i != text.len() {
             return Err(format!("unexpected text after the JSON at byte {}", p.i));
         }
-        Ok(Self { value, before: text[..start].to_string(), after: text[end..].to_string(), indent: detect_indent(&text[start..end]) })
+        let raw_members = p.members.iter().map(|(k, a, b)| (k.clone(), text[*a..*b].to_string())).collect();
+        let mut raw_items: Vec<(String, Vec<String>)> = Vec::new();
+        for (k, a, b) in &p.items {
+            let t = text[*a..*b].to_string();
+            match raw_items.iter_mut().find(|(rk, _)| rk == k) {
+                Some((_, v)) => v.push(t),
+                None => raw_items.push((k.clone(), vec![t])),
+            }
+        }
+        Ok(Self {
+            value,
+            before: text[..start].to_string(),
+            after: text[end..].to_string(),
+            indent: detect_indent(&text[start..end]),
+            raw_members,
+            raw_items,
+        })
+    }
+
+    /// `root` written in this document's place and indent, keeping the text
+    /// as read of every root member, and every item of a root array, that is
+    /// unchanged (array items are matched by their `id`, else by position).
+    pub fn write_keeping(&self, root: &Json) -> String {
+        let mut out = self.before.clone();
+        let (Json::Obj(new), Json::Obj(old)) = (root, &self.value) else {
+            write_value(&mut out, root, &self.indent, 0);
+            out.push_str(&self.after);
+            return out;
+        };
+        if new.0.is_empty() {
+            out.push_str("{}");
+        } else {
+            out.push('{');
+            for (i, (k, v)) in new.0.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                newline(&mut out, &self.indent, 1);
+                write_str(&mut out, k);
+                out.push(':');
+                if matches!(self.indent, Indent::Unit(_)) {
+                    out.push(' ');
+                }
+                let raw = self.raw_members.iter().find(|(rk, _)| rk == k).map(|(_, t)| t.as_str());
+                let before = old.get(k);
+                match (raw, before, v) {
+                    (Some(t), Some(b), _) if b == v => out.push_str(t),
+                    (_, Some(Json::Arr(b)), Json::Arr(a)) if !a.is_empty() => {
+                        let texts = self.raw_items.iter().find(|(rk, _)| rk == k).map(|(_, t)| t.as_slice()).unwrap_or_default();
+                        self.write_items(&mut out, a, b, texts);
+                    }
+                    _ => write_value(&mut out, v, &self.indent, 1),
+                }
+            }
+            newline(&mut out, &self.indent, 0);
+            out.push('}');
+        }
+        out.push_str(&self.after);
+        out
+    }
+
+    fn write_items(&self, out: &mut String, items: &[Json], before: &[Json], texts: &[String]) {
+        let id = |j: &Json| j.as_obj().and_then(|o| o.str("id")).map(str::to_string);
+        let by_id: std::collections::HashMap<String, usize> = before.iter().enumerate().filter_map(|(i, j)| Some((id(j)?, i))).collect();
+        out.push('[');
+        for (i, x) in items.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            newline(out, &self.indent, 2);
+            let at = id(x).and_then(|k| by_id.get(&k).copied()).or_else(|| (id(x).is_none() && i < before.len()).then_some(i));
+            match at {
+                Some(j) if before.get(j) == Some(x) && j < texts.len() => out.push_str(&texts[j]),
+                _ => write_value(out, x, &self.indent, 2),
+            }
+        }
+        newline(out, &self.indent, 1);
+        out.push(']');
     }
 
     /// The document written back.
@@ -262,6 +349,12 @@ struct Parser<'a> {
     s: &'a [u8],
     text: &'a str,
     i: usize,
+    /// The root member being read.
+    key: Option<String>,
+    /// Root members' value spans: (key, start, end).
+    members: Vec<(String, usize, usize)>,
+    /// Spans of the items of root members that are arrays.
+    items: Vec<(String, usize, usize)>,
 }
 
 impl Parser<'_> {
@@ -307,7 +400,16 @@ impl Parser<'_> {
                     let k = self.string()?;
                     self.ws();
                     self.eat(":")?;
+                    self.ws();
+                    let start = self.i;
+                    if depth == 0 {
+                        self.key = Some(k.clone());
+                    }
                     let v = self.value(depth + 1)?;
+                    if depth == 0 {
+                        self.members.push((k.clone(), start, self.i));
+                        self.key = None;
+                    }
                     o.0.push((k, v));
                     self.ws();
                     match self.s.get(self.i) {
@@ -329,7 +431,14 @@ impl Parser<'_> {
                     return Ok(Json::Arr(a));
                 }
                 loop {
+                    self.ws();
+                    let start = self.i;
                     a.push(self.value(depth + 1)?);
+                    if depth == 1
+                        && let Some(k) = &self.key
+                    {
+                        self.items.push((k.clone(), start, self.i));
+                    }
                     self.ws();
                     match self.s.get(self.i) {
                         Some(b',') => self.i += 1,
@@ -538,6 +647,22 @@ mod tests {
         ] {
             assert_eq!(Doc::parse(text).unwrap().write(), text);
         }
+    }
+
+    /// Parts not changed keep their text, whatever wrote them.
+    #[test]
+    fn unchanged_parts_keep_their_text() {
+        let text = "{\n  \"a\": [\n    {\"id\": \"x\", \"t\": \"n\\u00e9e \\ud800 \\/\", \"n\": 1E2},\n    {\"id\": \"y\", \"n\": 1}\n  ],\n  \"b\": {\"k\":[1,2]}\n}\n";
+        let d = Doc::parse(text).unwrap();
+        assert_eq!(d.write_keeping(&d.value), text, "unchanged: the same bytes");
+        let mut v = d.value.clone();
+        if let Some(Json::Arr(a)) = v.as_obj_mut().and_then(|o| o.get_mut("a")) {
+            a[1].as_obj_mut().unwrap().set_num("n", 2.0);
+        }
+        let out = d.write_keeping(&v);
+        assert!(out.contains("    {\"id\": \"x\", \"t\": \"n\\u00e9e \\ud800 \\/\", \"n\": 1E2},\n"), "{out}");
+        assert!(out.contains("\"n\": 2") && out.ends_with("  ],\n  \"b\": {\"k\":[1,2]}\n}\n"), "{out}");
+        assert!(out.contains("\\ud800"), "a lone surrogate in an unchanged element stays as written");
     }
 
     #[test]

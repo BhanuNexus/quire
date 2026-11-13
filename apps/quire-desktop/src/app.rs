@@ -960,8 +960,13 @@ impl QuireApp {
         self.ws.jobs.set_modal_open(self.overlay.is_some());
         self.handle_shortcuts(&ctx);
         self.take_ui_requests();
-        // 0.13: a drawing note opened as a note opens in the drawing editor.
-        crate::drawing_edit::route(&mut self.ws, &mut self.surfaces);
+        // 0.13: a drawing note opened as a note opens in the drawing editor
+        // (not while a dialog acts on it, such as Rename), and drawings not
+        // shown autosave.
+        if self.overlay.is_none() {
+            crate::drawing_edit::route(&mut self.ws, &mut self.surfaces);
+        }
+        self.surfaces.tick_hidden(&mut self.ws);
         if self.overlay.is_none() && self.classic() {
             EditorState::handle_smart_keys(&ctx, &mut self.ws);
         }
