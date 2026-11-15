@@ -382,11 +382,16 @@ fn render_page(path: &str, page: u32, dpi: u32) -> Result<(Vec<u8>, u32, u32), F
     let pages = pdf.pages();
     let pg = pages.get(page as usize).ok_or_else(|| (code::BAD_PARAMS, format!("the PDF has {} pages", pages.len())))?;
     let scale = (dpi.clamp(72, 300) as f32) / 72.0;
-    let pixmap = hayro::PixmapSettings { x_scale: scale, y_scale: scale, bg_color: hayro::vello_cpu::color::palette::css::WHITE };
-    let pix = hayro::render(pg, &hayro::RenderCache::new(), &InterpreterSettings::default(), &hayro::RenderSettings::default(), &pixmap);
+    let settings = hayro::RenderSettings {
+        x_scale: scale,
+        y_scale: scale,
+        bg_color: hayro::vello_cpu::color::palette::css::WHITE,
+        ..Default::default()
+    };
+    let pix = hayro::render(pg, &hayro::RenderCache::new(), &InterpreterSettings::default(), &settings);
     let (w, h) = (u32::from(pix.width()), u32::from(pix.height()));
-    let rgba = pix.take_rgba8(hayro::vello_cpu::peniko::ImageAlphaType::Alpha);
-    let rgb = rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+    let rgba = pix.take_unpremultiplied();
+    let rgb = rgba.iter().flat_map(|p| [p.r, p.g, p.b]).collect();
     Ok((rgb, w, h))
 }
 

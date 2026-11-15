@@ -91,7 +91,7 @@ png = "0.18"
 egui_extras = { version = "0.37", default-features = false, features = ["file", "image", "gif", "webp"] }
 spellbook = "0.4"
 global-hotkey = "0.9"
-resvg = { version = "0.49", default-features = false, features = ["text"] }
+resvg = { version = "0.47", default-features = false, features = ["text"] }
 flate2 = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 # Typesetting (quire-typeset): Typst as a library, LaTeX math via MiTeX,
@@ -120,9 +120,10 @@ htmd = "0.5.6"
 encoding_rs = "0.8.44"
 yaml-rust2 = "0.13.0"
 notify-rust = "4.18.2"
-# 0.7 is what Typst links; 0.8 exists, but two copies would cost size in the full build.
-hayro = "0.8"
-hayro-interpret = "0.8"
+# Typst 0.15 links hayro 0.7 (and resvg/usvg 0.47), so Quire stays on the same
+# versions: one copy of each in the tree. Move all of them together when Typst does.
+hayro = "0.7"
+hayro-interpret = "0.7"
 # The geometry types of hayro-interpret's `Device` trait (quire-pdf).
 kurbo = "0.13"
 biblatex = "0.12.0"

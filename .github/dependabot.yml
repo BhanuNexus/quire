@@ -21,6 +21,15 @@ updates:
       minor-and-patch:
         update-types: ["minor", "patch"]
         exclude-patterns: ["egui*", "eframe", "epaint*", "emath", "ecolor", "resvg", "usvg", "tiny-skia*", "hayro*", "skrifa", "read-fonts", "fontdb", "vello*", "typst*", "krilla*", "mermaid-rs-renderer", "mitex*", "rten*", "ocrs", "candle-*", "tokenizers"]
+    # These follow the versions Typst pins (Typst 0.15: hayro 0.7, resvg and
+    # usvg 0.47). A newer one next to Typst's copy puts two PDF/SVG stacks in
+    # the full edition (+3 MiB, over its size budget). Lift this when a Typst
+    # release moves to hayro 0.8 and resvg 0.49 or later, and bump them together.
+    ignore:
+      - dependency-name: "hayro"
+      - dependency-name: "hayro-interpret"
+      - dependency-name: "resvg"
+      - dependency-name: "usvg"
     labels: ["dependencies"]
   - package-ecosystem: github-actions
     directory: /
