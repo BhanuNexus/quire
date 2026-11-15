@@ -249,6 +249,31 @@ pub fn undo_plan(vault: &Vault, rec: &ImportRecord) -> UndoPlan {
     plan
 }
 
+/// Remove the folders the undo emptied (the import's own subfolders and its
+/// target folder), innermost first. Only an empty folder goes (`remove_dir`
+/// refuses any other), so nothing anyone added or kept is touched; a vault
+/// without folders on disk has nothing to remove.
+fn remove_emptied_folders(vault: &Vault, trashed: &[NotePath]) {
+    let Some(root) = vault.storage().absolute(&NotePath::new("")).and_then(|r| r.canonicalize().ok()) else { return };
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    for p in trashed {
+        let mut folder = p.folder().to_string();
+        while !folder.is_empty() {
+            if let Some(abs) = vault.storage().absolute(&NotePath::new(&folder)) {
+                dirs.push(abs);
+            }
+            folder = NotePath::new(&folder).folder().to_string();
+        }
+    }
+    // Deepest first.
+    dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
+    for d in dirs {
+        if d.canonicalize().is_ok_and(|c| c != root && c.starts_with(&root)) {
+            let _ = std::fs::remove_dir(&d);
+        }
+    }
+}
+
 /// Move what the import created, and nobody changed, to the trash.
 pub fn undo(vault: &Vault, id: &str, now_ms: i64) -> Result<(ImportRecord, UndoPlan), String> {
     if !valid_id(id) {
@@ -262,6 +287,7 @@ pub fn undo(vault: &Vault, id: &str, now_ms: i64) -> Result<(ImportRecord, UndoP
     for p in &plan.trash {
         vault.trash(p).map_err(|e| format!("couldn't move {p} to the trash: {e}"))?;
     }
+    remove_emptied_folders(vault, &plan.trash);
     if plan.missing.is_empty() {
         rec.undone_ms = Some(now_ms);
     } else {
@@ -322,6 +348,30 @@ mod tests {
         assert_eq!(v.read(&NotePath::new("Imported/sub/B.md")).unwrap(), "b, then edited");
         assert_eq!(v.read(&NotePath::new("Mine.md")).unwrap(), "mine");
         assert!(undo(&v, "i_1000", 3000).is_err(), "only once");
+    }
+
+    /// 0.13.1: undoing an import takes the folders it made away with it, but
+    /// only when they are empty (a folder someone put a file in stays).
+    #[test]
+    fn undo_removes_the_folders_it_emptied() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("Mine")).unwrap();
+        std::fs::write(dir.path().join("Mine/Keep.md"), "k").unwrap();
+        let v = Vault::open_local(dir.path()).unwrap();
+        let (_, rec) = run(&v, &plan(), "Imported", std::path::Path::new("/home/x/export.jex"), "d1", 1000, None, &mut |_| {}).unwrap();
+        assert!(dir.path().join("Imported/sub/B.md").exists() && dir.path().join("Imported/attachments/x.png").exists());
+        // Someone adds a file of their own beside an imported one.
+        std::fs::write(dir.path().join("Imported/attachments/mine.txt"), "m").unwrap();
+        undo(&v, &rec.id, 2000).unwrap();
+        assert!(!dir.path().join("Imported/sub").exists(), "its emptied subfolder is gone");
+        assert!(dir.path().join("Imported/attachments/mine.txt").exists(), "a folder with someone's file stays");
+        assert!(dir.path().join("Imported").exists(), "…and so does the folder above it");
+        assert!(dir.path().join("Mine/Keep.md").exists());
+        // Without that file, the whole import folder goes.
+        let (_, rec) = run(&v, &plan(), "Imported two", std::path::Path::new("/home/x/export.jex"), "d1", 3000, None, &mut |_| {}).unwrap();
+        undo(&v, &rec.id, 4000).unwrap();
+        assert!(!dir.path().join("Imported two").exists());
+        assert!(dir.path().join("Mine").exists(), "folders the import didn't make stay");
     }
 
     #[test]
