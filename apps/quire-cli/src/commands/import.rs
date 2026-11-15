@@ -16,8 +16,9 @@ pub(crate) const COMMANDS: &[CliCommand] = &[CliCommand {
     name: "import",
     rank: 15,
     usage: "  quire-cli import    <source> <vault> [--from KIND] [--into Folder] [--write]
-                      import Logseq, Roam, Notion, Bear, Evernote, Obsidian, Google Keep, Joplin, Day One,
-                      HTML pages or Markdown (folder, .zip, .jex, .enex, .bear2bk); a dry run until --write
+                      import Logseq, Roam, Notion, Bear, Evernote, Google Keep, Joplin, Day One, HTML pages
+                      or Markdown (an Obsidian vault is a Markdown folder; folder, .zip, .jex, .enex, .bear2bk);
+                      a dry run until --write
   quire-cli import    --list <vault>      what was imported, newest first
   quire-cli import    --undo <id|last> <vault>
                       move what an import created (and nobody edited since) to the trash",
