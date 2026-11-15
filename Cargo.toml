@@ -232,25 +232,26 @@ opt-level = "z"
 
 # Our crates off the hot path: MCP and agents (their §9 budgets are checked
 # by the perf job), importers, the web app, sync, the assistant and AI
-# client, planning, the typesetter's glue.
+# client, planning, the typesetter's glue. "z" since 0.13.1 (was "s"):
+# they run once per action, and the perf job's MCP budgets hold.
 [profile.release.package.quire-mcp]
-opt-level = "s"
+opt-level = "z"
 [profile.release.package.quire-agent]
-opt-level = "s"
+opt-level = "z"
 [profile.release.package.quire-import]
-opt-level = "s"
+opt-level = "z"
 [profile.release.package.quire-web]
-opt-level = "s"
+opt-level = "z"
 [profile.release.package.quire-sync]
-opt-level = "s"
+opt-level = "z"
 [profile.release.package.quire-assistant]
-opt-level = "s"
+opt-level = "z"
 [profile.release.package.quire-ai]
-opt-level = "s"
+opt-level = "z"
 [profile.release.package.quire-plan]
-opt-level = "s"
+opt-level = "z"
 [profile.release.package.quire-typeset]
-opt-level = "s"
+opt-level = "z"
 # The two binaries say `strip = true` again: when a binary's package has a
 # `[profile.release.package.X]` override that doesn't set `strip`, Cargo
 # (1.97) links it with `-C strip=debuginfo`, not the `strip = true` above.
