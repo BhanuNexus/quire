@@ -112,6 +112,11 @@ impl Rig {
         drawings::read_drawing(&self.ws, &NotePath::new(p)).unwrap()
     }
 
+    /// Whether the drawing can't be read now (its folder is locked).
+    fn disk_err(&self, p: &str) -> bool {
+        drawings::read_drawing(&self.ws, &NotePath::new(p)).is_err()
+    }
+
     fn d(&self) -> &Drawing {
         self.ed.d.as_ref().expect("a drawing")
     }
@@ -460,13 +465,17 @@ fn drawings_not_shown_autosave() {
     r.ed.sel = vec!["dia1".into()];
     r.key(Key::ArrowRight, Modifiers::NONE);
     assert!(r.ed.dirty);
+    // Not before the edits rest: the edit is dated in the future, so a slow
+    // machine can't let the delay pass between the edit and this check.
+    r.ed.last_edit = Instant::now() + Duration::from_secs(3600);
+    Surface::tick(&mut r.ed, &mut r.ws);
+    assert!(!r.disk("Release.excalidraw").contains("\"x\": 561"), "not before the edits rest");
+    // Rested: dated past the delay, with no waiting.
+    r.ed.last_edit = Instant::now().checked_sub(SAVE_AFTER + Duration::from_secs(1)).unwrap();
     let mut s = crate::surfaces::Surfaces::default();
     let ed = std::mem::replace(&mut r.ed, DrawingEditor::new(&NotePath::new("x.excalidraw")));
     s.open(Box::new(ed));
     s.active = None; // a note was clicked
-    s.tick_hidden(&mut r.ws);
-    assert!(!r.disk("Release.excalidraw").contains("\"x\": 561"), "not before the edits rest");
-    std::thread::sleep(SAVE_AFTER + Duration::from_millis(50));
     s.tick_hidden(&mut r.ws);
     assert!(r.disk("Release.excalidraw").contains("\"x\": 561"), "saved while hidden");
     // A change elsewhere is taken in while hidden, and the open tab stays one.
@@ -524,4 +533,69 @@ fn renamed_and_deleted_drawings() {
     drop(ed);
     assert!(!v.exists(&NotePath::new("Plan.excalidraw")));
     assert!(v.exists(&NotePath::new("Plan (unsaved edits 1).excalidraw")), "the edits are kept in a copy");
+}
+
+/// 0.13.1: a folder that locks inside the autosave window doesn't lose the
+/// drawing's last edits: the lock waits for the editor to write them (a
+/// locked folder can't be written), then locks, with the edit encrypted.
+#[test]
+fn a_folder_locking_inside_the_autosave_window_keeps_the_last_edits() {
+    const PASS: &str = "a passphrase for the test";
+    let mut r = Rig::new(&[("Journal/Release.excalidraw", RELEASE), ("Plain.md", "# Plain\n")], "Journal/Release.excalidraw");
+    r.ws.start_locking("Journal", PASS, false).unwrap();
+    let start = Instant::now();
+    while r.ws.lock_job().is_some() {
+        assert!(start.elapsed() < Duration::from_secs(60), "the conversion never ended");
+        r.ws.tick(Instant::now());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    r.ws.take_recovery_key().expect("the recovery key is offered");
+    let path = NotePath::new("Journal/Release.excalidraw");
+    // The editor opens the (unlocked, encrypted on disk) drawing and is edited; the edit is
+    // dated now, so autosave won't write it for another 0.6 s.
+    r.ed = DrawingEditor::new(&path);
+    r.frame(vec![]);
+    r.ed.sel = vec!["dia1".into()];
+    r.key(Key::ArrowRight, Modifiers::NONE);
+    assert!(r.ed.dirty);
+    r.ed.last_edit = Instant::now() + Duration::from_secs(3600);
+    r.frame(vec![]);
+    assert!(!r.disk("Journal/Release.excalidraw").contains("\"x\": 561"), "not written yet");
+    // Lock now: it waits for the drawing, and the folder is still unlocked.
+    assert_eq!(r.ws.lock_folder_now("Journal"), None);
+    assert!(r.ws.vault().unwrap().keys().is_unlocked("Journal"));
+    // The editor's next frame writes its edits; the next tick locks.
+    r.frame(vec![]);
+    assert!(!r.ed.dirty, "saved at the request");
+    let start = Instant::now();
+    while r.ws.vault().unwrap().keys().is_unlocked("Journal") {
+        assert!(start.elapsed() < Duration::from_secs(10), "never locked");
+        r.ws.tick(Instant::now());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(r.disk_err("Journal/Release.excalidraw"), "locked now");
+    // Unlocking shows the edit.
+    r.ws.unlock_folder("Journal", PASS, false).unwrap();
+    assert!(r.disk("Journal/Release.excalidraw").contains("\"x\": 561"), "the last edit survived the lock");
+}
+
+/// 0.13.1: closing a drawing's tab writes its edits through the workspace,
+/// so they keep a history version (the `Drop` write is the last resort).
+#[test]
+fn closing_a_drawing_keeps_a_history_version() {
+    let mut r = Rig::new(&[("Release.excalidraw", RELEASE)], "Release.excalidraw");
+    r.ed.sel = vec!["dia1".into()];
+    r.key(Key::ArrowRight, Modifiers::NONE);
+    r.ed.last_edit = Instant::now() + Duration::from_secs(3600);
+    r.frame(vec![]);
+    assert!(r.ed.dirty);
+    let path = NotePath::new("Release.excalidraw");
+    let before = r.ws.vault().unwrap().history(&path).len();
+    let mut s = crate::surfaces::Surfaces::default();
+    let ed = std::mem::replace(&mut r.ed, DrawingEditor::new(&NotePath::new("x.excalidraw")));
+    s.open(Box::new(ed));
+    s.close_all(&mut r.ws);
+    r.ws.flush_history();
+    assert!(r.disk("Release.excalidraw").contains("\"x\": 561"), "written on close");
+    assert!(r.ws.vault().unwrap().history(&path).len() > before, "and kept as a version");
 }

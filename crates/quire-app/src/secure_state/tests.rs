@@ -53,6 +53,10 @@ fn until(ws: &mut [&mut Workspace], what: &str, mut done: impl FnMut(&mut [&mut 
 }
 
 fn lock_and_wait(ws: &mut Workspace, folder: &str) -> String {
+    // Versions asked for so far are written by a background thread; the
+    // conversion moves a note's history, so it must not run beside a write
+    // still in flight (that is what left a `.tmp` file behind once).
+    ws.history.flush();
     ws.start_locking(folder, PASS, false).unwrap();
     until(&mut [&mut *ws], "the conversion", |w| w[0].lock_job().is_none());
     let (f, rk) = ws.take_recovery_key().expect("the recovery key is offered once");
@@ -459,8 +463,10 @@ fn changing_a_folders_key_from_the_app() {
 /// reaches the disk in plain text. Locking takes them out again.
 #[test]
 fn unlocked_notes_join_the_features_from_memory_only() {
-    let soon = (chrono::Local::now() + chrono::Duration::hours(3)).format("%Y-%m-%d %H:%M").to_string();
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    // One reading of the clock, so "today" and "in three hours" agree across midnight.
+    let now = chrono::Local::now();
+    let soon = (now + chrono::Duration::hours(3)).format("%Y-%m-%d %H:%M").to_string();
+    let today = now.format("%Y-%m-%d").to_string();
     let day = format!(
         "---\nstatus: doing\nlocation: [38.7, -9.1]\n---\n# Day\nMARKER-9d1f see [[Plain]].\n- [ ] MARKER-9d1f call Bo 📅 {today}\n- [ ] MARKER-9d1f ship ⏰ {soon}\n"
     );
@@ -735,4 +741,35 @@ fn drawings_in_locked_folders() {
         crate::drawings::save_drawing(&ws, &np("Journal/Sketch.excalidraw.md"), "x", "y"),
         crate::drawings::Saved::Failed(_) | crate::drawings::Saved::ChangedElsewhere(_)
     ));
+}
+
+/// 0.13.1: a folder asked to lock while a drawing in it has unwritten edits
+/// waits for the editor to write them (a locked folder can't be written),
+/// then locks; if they never get written it stays unlocked, with a warning.
+#[test]
+fn locking_waits_for_a_drawing_with_unwritten_edits() {
+    let (_d, root) = vault_dir(&[("Journal/Day.md", "# Day\nMARKER-9d1f\n"), ("Plain.md", "# Plain\n")]);
+    let mut ws = open(&root);
+    lock_and_wait(&mut ws, "Journal");
+    let flag = ws.features.canvas.register_drawing(&np("Journal/Plan.excalidraw"));
+    let other = ws.features.canvas.register_drawing(&np("Elsewhere/Plan.excalidraw"));
+    other.set(true);
+    assert!(!ws.features.canvas.unsaved_in("Journal"), "another folder's drawing doesn't count");
+    flag.set(true);
+    let before = ws.features.canvas.save_now;
+    assert_eq!(ws.lock_folder_now("Journal"), None);
+    assert_eq!(ws.features.canvas.save_now, before + 1, "the editors are asked to save");
+    assert!(ws.vault().unwrap().keys().is_unlocked("Journal"), "still unlocked");
+    // The editor writes its edits; the next tick locks.
+    flag.set(false);
+    ws.tick(Instant::now());
+    assert!(!ws.vault().unwrap().keys().is_unlocked("Journal"), "locked");
+    // An editor that is closed without saving doesn't hold a lock up.
+    ws.unlock_folder("Journal", PASS, false).unwrap();
+    let gone = ws.features.canvas.register_drawing(&np("Journal/Gone.excalidraw"));
+    gone.set(true);
+    assert_eq!(ws.lock_folder_now("Journal"), None);
+    drop(gone);
+    ws.tick(Instant::now());
+    assert!(!ws.vault().unwrap().keys().is_unlocked("Journal"), "locked once the editor is gone");
 }

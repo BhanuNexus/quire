@@ -31,9 +31,29 @@ pub struct CanvasState {
     /// Bumped per file when a canvas or sketch changes on disk, so an open
     /// editor can take the change in.
     pub disk_changes: HashMap<NotePath, u64>,
+    /// Open drawing editors: the file and whether it has edits not yet
+    /// written. The editor owns the flag, so a closed editor drops out.
+    drawings: Vec<(NotePath, std::rc::Weak<std::cell::Cell<bool>>)>,
+    /// Bumped to ask every drawing editor to write its edits now (before a
+    /// folder locks), without waiting for the autosave delay.
+    pub save_now: u64,
 }
 
 impl CanvasState {
+    /// An open drawing editor's "has unsaved edits" flag for `path`.
+    pub fn register_drawing(&mut self, path: &NotePath) -> std::rc::Rc<std::cell::Cell<bool>> {
+        self.drawings.retain(|(_, w)| w.strong_count() > 0);
+        let flag = std::rc::Rc::new(std::cell::Cell::new(false));
+        self.drawings.push((path.clone(), std::rc::Rc::downgrade(&flag)));
+        flag
+    }
+
+    /// Whether a drawing in `folder` (or below it) has edits not yet written.
+    pub fn unsaved_in(&self, folder: &str) -> bool {
+        let f = quire_vault::lock::LockedFolder { path: folder.to_string(), unlocking: false };
+        self.drawings.iter().any(|(p, w)| f.contains(p.as_str()) && w.upgrade().is_some_and(|c| c.get()))
+    }
+
     /// How many times `path` changed on disk since the vault opened.
     pub fn disk_generation(&self, path: &NotePath) -> u64 {
         self.disk_changes.get(path).copied().unwrap_or(0)

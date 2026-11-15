@@ -1028,7 +1028,7 @@ impl QuireApp {
                     .frame(egui::Frame::NONE.fill(pal.panel).inner_margin(egui::Margin::symmetric(10, 6)))
                     .show(ui, |ui| {
                         let out = panels::tab_bar(ui, &mut self.ws, pal);
-                        self.surfaces.tab_strip(ui, pal);
+                        self.surfaces.tab_strip(ui, &mut self.ws, pal);
                         out
                     })
                     .inner;
@@ -1316,6 +1316,8 @@ fn trace(what: &str, since: Instant) {
 
 impl Drop for QuireApp {
     fn drop(&mut self) {
+        // Drawings write what is unwritten while history and sync can still hear of it.
+        self.surfaces.close_all(&mut self.ws);
         self.ws.shutdown();
     }
 }

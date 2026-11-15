@@ -61,6 +61,9 @@ pub struct SecureState {
     /// Idle locking waits until then (a folder kept unlocked because a note
     /// in it couldn't be saved).
     idle_retry: Option<Instant>,
+    /// Folders asked to lock while a drawing in them had edits not yet
+    /// written: they lock once the editors have saved (and since when).
+    lock_waiting: Vec<(String, Instant)>,
     /// The person chose to quit although notes in locked folders can't be
     /// saved; and the window should close now.
     quit_confirmed: bool,
@@ -325,6 +328,16 @@ impl Workspace {
     /// text; if even that fails the folder stays unlocked. Returns how many
     /// notes were closed, or `None` when the folder was kept unlocked.
     pub fn lock_folder_now(&mut self, folder: &str) -> Option<usize> {
+        // A drawing's edits wait up to 0.6 s for autosave, and a locked
+        // folder can't be written: have the editors save first, and lock on
+        // a later tick (`lock_when_saved`).
+        if self.features.canvas.unsaved_in(folder) {
+            self.features.canvas.save_now += 1;
+            if !self.features.secure.lock_waiting.iter().any(|(f, _)| f == folder) {
+                self.features.secure.lock_waiting.push((folder.to_string(), Instant::now()));
+            }
+            return None;
+        }
         let open = self.docs_in(folder);
         for id in &open {
             self.save(*id);
@@ -838,6 +851,7 @@ pub(crate) fn tick(ws: &mut Workspace, now: Instant) -> bool {
             changed = true;
         }
     }
+    changed |= lock_when_saved(ws);
     // Idle locking.
     if let Some(at) = idle_deadline(ws)
         && now >= at
@@ -847,6 +861,30 @@ pub(crate) fn tick(ws: &mut Workspace, now: Instant) -> bool {
         if !locked.is_empty() {
             let mins = ws.settings.security.lock_after_idle_minutes;
             ws.notify(NoticeLevel::Info, format!("Locked {} after {mins} minutes without use", folders_words(&locked)));
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// How long a folder waits for its drawings to save before staying unlocked.
+const DRAWING_SAVE_WAIT: Duration = Duration::from_secs(5);
+
+/// Lock the folders that waited for drawing editors to save, once they have;
+/// one whose drawing still can't be saved stays unlocked, as for a note.
+fn lock_when_saved(ws: &mut Workspace) -> bool {
+    let waiting = std::mem::take(&mut ws.features.secure.lock_waiting);
+    let mut changed = false;
+    for (folder, since) in waiting {
+        if ws.features.canvas.unsaved_in(&folder) {
+            if since.elapsed() < DRAWING_SAVE_WAIT {
+                ws.features.secure.lock_waiting.push((folder, since));
+            } else {
+                ws.notify(NoticeLevel::Warn, format!("{folder}/ stays unlocked: a drawing in it has edits that couldn't be saved."));
+                changed = true;
+            }
+        } else if ws.lock_folder_now(&folder).is_some() {
+            ws.notify(NoticeLevel::Info, format!("Locked {folder}/"));
             changed = true;
         }
     }
@@ -1003,7 +1041,10 @@ pub fn clear_caches(root: &std::path::Path) {
 }
 
 pub(crate) fn next_deadline(ws: &Workspace) -> Option<Instant> {
-    let busy = ws.features.secure.job.is_some() || ws.features.secure.building.is_some() || ws.features.secure.opening.is_some();
+    let busy = ws.features.secure.job.is_some()
+        || ws.features.secure.building.is_some()
+        || ws.features.secure.opening.is_some()
+        || !ws.features.secure.lock_waiting.is_empty();
     let poll = busy.then(|| Instant::now() + Duration::from_millis(100));
     poll.into_iter().chain(idle_deadline(ws)).min()
 }
@@ -1012,7 +1053,14 @@ pub(crate) fn run(ws: &mut Workspace, cmd: Command) -> Option<UiRequest> {
     match cmd {
         Command::LockNow => {
             let locked = ws.lock_all_now();
-            let text = if locked.is_empty() { "No folder is unlocked".to_string() } else { format!("Locked {}", folders_words(&locked)) };
+            let waiting: Vec<String> = ws.features.secure.lock_waiting.iter().map(|(f, _)| f.clone()).collect();
+            let text = if !waiting.is_empty() {
+                format!("Saving drawings, then locking {}", folders_words(&waiting))
+            } else if locked.is_empty() {
+                "No folder is unlocked".to_string()
+            } else {
+                format!("Locked {}", folders_words(&locked))
+            };
             ws.notify(NoticeLevel::Info, text);
             None
         }
