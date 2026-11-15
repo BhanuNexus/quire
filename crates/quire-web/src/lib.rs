@@ -101,7 +101,13 @@ pub(crate) struct Web {
     pub(crate) files: Mutex<Option<(i64, Arc<Vec<quire_app::vault::NotePath>>)>>,
     /// Whether the reader may see a hierarchy edge, and when it was worked out.
     pub(crate) hierarchy: Mutex<Option<(i64, bool)>>,
+    /// The Hierarchy page's tree, for the index version and hidden folders
+    /// it was made for (0.13.1: it was made again for every request).
+    pub(crate) hierarchy_page: Mutex<Option<HierarchyPage>>,
 }
+
+/// The Hierarchy page's tree: (index version, hidden folders, HTML).
+pub(crate) type HierarchyPage = (u64, Vec<String>, Arc<String>);
 
 /// A request, as the pages see it.
 pub(crate) struct Req {
@@ -182,6 +188,7 @@ pub fn mount(cfg: WebConfig, urls: &Urls) -> Mount {
         writing: Mutex::new(()),
         files: Mutex::new(None),
         hierarchy: Mutex::new(None),
+        hierarchy_page: Mutex::new(None),
         cfg,
     });
     let router = axum::Router::new().fallback(dispatch).with_state(web);
