@@ -12,12 +12,11 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use hayro_interpret::font::Glyph;
-use hayro_interpret::font::GlyphRun;
 use hayro_interpret::hayro_syntax::Pdf;
 use hayro_interpret::hayro_syntax::object::{Array, Dict, MaybeRef, Name, Object};
 use hayro_interpret::hayro_syntax::page::Page;
 use hayro_interpret::{
-    BlendMode, ClipPath, Context, Device, DrawMode, DrawProps, Image, ImageDrawProps, InterpreterCache, InterpreterSettings, SoftMask,
+    BlendMode, ClipPath, Context, Device, GlyphDrawMode, Image, InterpreterCache, InterpreterSettings, Paint, PathDrawMode, SoftMask,
     interpret_page,
 };
 use kurbo::{Affine, BezPath, Point};
@@ -293,53 +292,52 @@ fn pt(a: Affine, x: f64, y: f64) -> (f32, f32) {
 }
 
 impl Device<'_> for Collector {
-    fn draw_path(&mut self, _: &BezPath, _: DrawProps<'_>, _: &DrawMode) {}
+    fn set_soft_mask(&mut self, _: Option<SoftMask<'_>>) {}
+    fn set_blend_mode(&mut self, _: BlendMode) {}
+    fn draw_path(&mut self, _: &BezPath, _: Affine, _: &Paint<'_>, _: &PathDrawMode) {}
     fn push_clip_path(&mut self, _: &ClipPath) {}
     fn push_transparency_group(&mut self, _: f32, _: Option<SoftMask<'_>>, _: BlendMode) {}
 
-    fn draw_glyph_run(&mut self, run: &GlyphRun<'_, '_>, props: DrawProps<'_>, _: &DrawMode) {
-        for positioned in run.glyphs() {
-            let glyph: &Glyph<'_> = positioned;
-            let Some(u) = glyph.as_unicode() else { continue };
-            let text = match u {
-                hayro_interpret::hayro_cmap::BfString::Char(c) => c.to_string(),
-                hayro_interpret::hayro_cmap::BfString::String(s) => s,
-            };
-            // Drop control characters; spaces are worked out from the gaps.
-            let text: String = text.chars().filter(|c| !c.is_control()).collect();
-            if text.trim().is_empty() {
-                continue;
-            }
-            let adv = match glyph {
-                Glyph::Outline(o) => f64::from(o.advance_width().filter(|w| *w > 0.0).unwrap_or(500.0)),
-                Glyph::Type3(_) => 500.0,
-            };
-            let t = props.transform * positioned.transform();
-            let corners = [pt(t, 0.0, -200.0), pt(t, adv, -200.0), pt(t, adv, 800.0), pt(t, 0.0, 800.0)];
-            let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
-            for (x, y) in corners {
-                x0 = x0.min(x);
-                y0 = y0.min(y);
-                x1 = x1.max(x);
-                y1 = y1.max(y);
-            }
-            let origin = pt(t, 0.0, 0.0);
-            let top = pt(t, 0.0, 1000.0);
-            let size = (top.0 - origin.0).hypot(top.1 - origin.1);
-            if !(x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()) || size <= 0.0 {
-                continue;
-            }
-            self.glyphs.push(RawGlyph { text, bbox: [x0, y0, x1, y1], origin, end: pt(t, adv, 0.0), size });
+    fn draw_glyph(&mut self, glyph: &Glyph<'_>, transform: Affine, glyph_transform: Affine, _: &Paint<'_>, _: &GlyphDrawMode) {
+        let Some(u) = glyph.as_unicode() else { return };
+        let text = match u {
+            hayro_interpret::hayro_cmap::BfString::Char(c) => c.to_string(),
+            hayro_interpret::hayro_cmap::BfString::String(s) => s,
+        };
+        // Drop control characters; spaces are worked out from the gaps.
+        let text: String = text.chars().filter(|c| !c.is_control()).collect();
+        if text.trim().is_empty() {
+            return;
         }
+        let adv = match glyph {
+            Glyph::Outline(o) => f64::from(o.advance_width().filter(|w| *w > 0.0).unwrap_or(500.0)),
+            Glyph::Type3(_) => 500.0,
+        };
+        let t = transform * glyph_transform;
+        let corners = [pt(t, 0.0, -200.0), pt(t, adv, -200.0), pt(t, adv, 800.0), pt(t, 0.0, 800.0)];
+        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for (x, y) in corners {
+            x0 = x0.min(x);
+            y0 = y0.min(y);
+            x1 = x1.max(x);
+            y1 = y1.max(y);
+        }
+        let origin = pt(t, 0.0, 0.0);
+        let top = pt(t, 0.0, 1000.0);
+        let size = (top.0 - origin.0).hypot(top.1 - origin.1);
+        if !(x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()) || size <= 0.0 {
+            return;
+        }
+        self.glyphs.push(RawGlyph { text, bbox: [x0, y0, x1, y1], origin, end: pt(t, adv, 0.0), size });
     }
 
-    fn draw_image(&mut self, image: Image<'_, '_>, props: ImageDrawProps<'_>) {
+    fn draw_image(&mut self, image: Image<'_, '_>, transform: Affine) {
         // The transform maps the image's pixels to the page.
-        let [a, b, c, d, _, _] = props.transform.as_coeffs();
+        let [a, b, c, d, _, _] = transform.as_coeffs();
         self.image_area += (a * d - b * c).abs() * f64::from(image.width()) * f64::from(image.height());
     }
 
-    fn pop_clip(&mut self) {}
+    fn pop_clip_path(&mut self) {}
     fn pop_transparency_group(&mut self) {}
 }
 

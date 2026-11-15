@@ -102,16 +102,25 @@ impl Workspace {
             return false;
         }
         let Some(doc) = self.active_doc() else { return false };
-        let edit = frontmatter::set_field_path(&doc.text(), path, value);
-        self.apply_fm_edit_active(edit)
+        match frontmatter::set_field_path(&doc.text(), path, value) {
+            Ok(edit) => self.apply_fm_edit_active(edit),
+            Err(why) => {
+                self.notify(NoticeLevel::Warn, why.to_string());
+                false
+            }
+        }
     }
 
     /// Remove a field inside a nested map of the active note.
     pub fn remove_property_path(&mut self, path: &[&str]) -> bool {
         let Some(doc) = self.active_doc() else { return false };
         match frontmatter::remove_field_path(&doc.text(), path) {
-            Some(edit) => self.apply_fm_edit_active(edit),
-            None => false,
+            Ok(Some(edit)) => self.apply_fm_edit_active(edit),
+            Ok(None) => false,
+            Err(why) => {
+                self.notify(NoticeLevel::Warn, why.to_string());
+                false
+            }
         }
     }
 
@@ -237,5 +246,34 @@ mod tests {
         assert_eq!(v.read(&NotePath::new("Tasks/A.md")).unwrap(), "---\nstatus: done\n---\n# A\n");
         assert!(v.history(&NotePath::new("Tasks/A.md")).len() >= 2, "the move is reversible");
         assert!(w.run_view("layout: pie", None).is_err());
+    }
+
+    /// The reviewers' D-L3: a path through a property kept as text (maps
+    /// nested past 64, a list of maps) is refused with a notice, and the note
+    /// does not change.
+    #[test]
+    fn a_property_path_through_text_kept_as_written_is_refused() {
+        let mut w = ws();
+        w.open_note(&NotePath::new("Tasks/A.md")).unwrap();
+        let maps: String = (0..100).map(|d| " ".repeat(d * 2) + "k" + &d.to_string() + ":\n").collect();
+        let deep = format!("---\nstatus: todo\nlist:\n  - name: Ada\n    org: X\n{maps}{}leaf: 1\n---\n# A\n", " ".repeat(200));
+        {
+            let doc = w.active_doc_mut().unwrap();
+            let len = doc.buffer().len_chars();
+            doc.apply(Transaction::replace(0, len, deep.clone()), EditKind::Other).unwrap();
+        }
+        let path: Vec<String> = (0..64).map(|d| format!("k{d}")).chain(["newkey".to_string()]).collect();
+        let path: Vec<&str> = path.iter().map(String::as_str).collect();
+        let v = Value::Str("v".into());
+        assert!(!w.set_property_path(&path, &v));
+        assert!(!w.remove_property_path(&path));
+        assert!(!w.set_property_path(&["list", "name"], &v));
+        assert!(!w.remove_property_path(&["list", "name"]));
+        assert_eq!(&*w.active_doc().unwrap().text(), deep.as_str(), "the note is unchanged");
+        assert!(w.notices(std::time::Duration::from_mins(1)).any(|n| n.text.contains("keeps as text")), "the error is shown");
+        // Other properties still edit, and the deep text stays.
+        assert!(w.set_property("status", &Value::Str("done".into())));
+        let text = w.active_doc().unwrap().text().to_string();
+        assert_eq!(text, deep.replacen("status: todo", "status: done", 1));
     }
 }

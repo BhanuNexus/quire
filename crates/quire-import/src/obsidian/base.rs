@@ -18,7 +18,7 @@
 
 use std::fmt::Write as _;
 
-use yaml_rust2::{Yaml, YamlLoader};
+use yaml_rust2::Yaml;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewKind {
@@ -271,7 +271,7 @@ fn id_list(ids: &[String]) -> String {
 
 /// Read a `.base` file.
 pub fn parse(text: &str) -> Result<Base, String> {
-    let docs = YamlLoader::load_from_str(text).map_err(|e| format!("this base can't be read: {e}"))?;
+    let docs = quire_markdown::frontmatter::load_yaml(text).map_err(|e| format!("this base can't be read: {e}"))?;
     let doc = docs.into_iter().next().unwrap_or(Yaml::Null);
     let mut top = Filters::default();
     if !doc["filters"].is_badvalue() {
@@ -582,7 +582,8 @@ pub fn set_view_key(text: &str, view: usize, key: &str, value: Option<&YamlValue
     let out = format!("{}{text_new}{}", &text[..from], &text[to..]);
     // Whatever shape the YAML had, never write a base that doesn't read
     // back, or that lost a view.
-    let views = |t: &str| YamlLoader::load_from_str(t).ok().map(|d| d.first().map_or(0, |d| d["views"].as_vec().map_or(0, Vec::len)));
+    let views =
+        |t: &str| quire_markdown::frontmatter::load_yaml(t).ok().map(|d| d.first().map_or(0, |d| d["views"].as_vec().map_or(0, Vec::len)));
     match (views(text), views(&out)) {
         (Some(a), Some(b)) if a == b => Some(out),
         _ => None,
@@ -837,11 +838,36 @@ views:
         // A multi-line flow map, an anchor and an alias: refused too.
         for text in ["views:\n  - {type: kanban,\n     name: B}\n", "views:\n  - &v\n    type: kanban\n  - *v\n"] {
             if let Some(out) = set_view_key(text, 0, "cardOrder", Some(&order)) {
-                assert!(YamlLoader::load_from_str(&out).is_ok(), "{out}");
+                assert!(yaml_rust2::YamlLoader::load_from_str(&out).is_ok(), "{out}");
             }
         }
         // A value that would break the YAML is refused, not written.
         let bad = YamlValue::Block(vec!["{".into()]);
         assert!(set_view_key(BOARD, 0, "cardOrder", Some(&bad)).is_none());
+    }
+
+    /// A `.base` file nested 100,000 deep (lists, flow, a mix) is refused,
+    /// not an overflow of the stack: `yaml-rust2` limits flow nesting but not
+    /// block nesting. Run on an ordinary thread (2 MiB).
+    #[test]
+    fn a_base_nested_100000_deep_is_refused_without_overflowing_the_stack() {
+        let n = 100_000;
+        let texts = vec![
+            format!("views:\n  {}x\n", "- ".repeat(n)),
+            format!("filters: {}x{}\n", "[".repeat(n), "]".repeat(n)),
+            format!("filters: {}x{}\n", "{a: ".repeat(n), "}".repeat(n)),
+            format!("views:\n  - {}x\n", "- [".repeat(n)),
+            (0..1000).map(|d| " ".repeat(d) + "k:\n").collect::<String>(),
+        ];
+        std::thread::Builder::new()
+            .spawn(move || {
+                for text in texts {
+                    assert!(parse(&text).is_err(), "{}", &text[..text.len().min(30)]);
+                    assert!(set_view_key(&text, 0, "cardOrder", None).is_none_or(|out| out == text), "never changed");
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }

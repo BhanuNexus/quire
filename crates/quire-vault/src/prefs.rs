@@ -392,4 +392,33 @@ level = 3
             }
         }
     }
+
+    /// TOML nested 100,000 deep: arrays, inline tables, and a mix.
+    fn deep_toml_inputs() -> Vec<String> {
+        let n = 100_000;
+        vec![
+            format!("a = {}1{}\n", "[".repeat(n), "]".repeat(n)),
+            format!("a = {}1{}\n", "{a = ".repeat(n), "}".repeat(n)),
+            format!("a = {}1{}\n", "[{a = ".repeat(n / 2), "}]".repeat(n / 2)),
+            format!("a = {}\n", "[".repeat(n)),
+        ]
+    }
+
+    /// `vault.toml`, nested 100,000 deep, on a normal-size thread stack: a
+    /// stack overflow would abort the test run, so passing means every
+    /// parser behind it (`toml_edit`, `toml`) bounds its recursion.
+    #[test]
+    fn vault_toml_nested_100000_deep_is_refused_without_overflowing_the_stack() {
+        std::thread::Builder::new()
+            .spawn(|| {
+                for text in deep_toml_inputs() {
+                    assert!(VaultPrefs::parse(&text).is_err());
+                    assert!(toml::from_str::<toml::Table>(&text).is_err());
+                    assert!(text.parse::<toml::Table>().is_err());
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 }

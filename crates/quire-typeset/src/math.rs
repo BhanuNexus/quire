@@ -379,4 +379,50 @@ mod tests {
             assert!(latex_to_typst(bad).is_err(), "{bad}");
         }
     }
+
+    /// Note text never becomes Typst code. The converted formula is run by
+    /// `eval(…, mode: "math")` (mitex.typ), where a `#` starts code, so the
+    /// converter must escape every `#` that came from the note. This is what
+    /// keeps `#bibliography(style: bytes(…))`, which would hand a
+    /// note-supplied CSL file to `quick-xml` (RUSTSEC-2026-0194/0195), out of
+    /// reach. The only unescaped `#` are the calls mitex itself writes.
+    #[test]
+    fn formula_text_never_becomes_typst_code() {
+        let allowed: Vec<&str> = include_str!("mitex-defs.typ")
+            .lines()
+            .filter_map(|l| l.strip_prefix("#let "))
+            .filter_map(|l| l.split(['(', ' ', '=']).next())
+            .chain(["math.equation"])
+            .collect();
+        let corpus = [
+            r#"\text{#read("/etc/passwd")}"#,
+            r#"\mathrm{#bibliography("x", style: bytes("<style/>"))}"#,
+            r"x # y \# z",
+            r#"\textbf{#eval("1")}"#,
+            r"\operatorname{#panic()}",
+            r"\color{red}{#c}",
+            r"\text{a$#b$}",
+            r"\begin{matrix} #h \\ i \end{matrix}",
+            r"\text{]#l[}",
+            r"\left\# x",
+            r#"\text{\#import "@preview/x:1.0.0": *}"#,
+            r#"\textit{#[#plugin("/x.wasm")]}"#,
+            "\\text{a\n#b}",
+            r"\boxed{#c} \fbox{#d} \textcolor{red}{#e} \colorbox{red}{#f}",
+            r"\overset{#g}{x} \underset{#h}{x} \xrightarrow{#i} \substack{#j}",
+            r"\hspace{#k} \phantom{#l} \raisebox{#m}{x}",
+        ];
+        for f in corpus {
+            let Ok(code) = latex_to_typst(f) else { continue };
+            let bytes = code.as_bytes();
+            for (i, _) in code.match_indices('#') {
+                let slashes = bytes[..i].iter().rev().take_while(|b| **b == b'\\').count();
+                if slashes % 2 == 1 {
+                    continue;
+                }
+                let ident: String = code[i + 1..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-').collect();
+                assert!(allowed.contains(&ident.as_str()), "{f:?} gave raw code #{ident} in {code:?}");
+            }
+        }
+    }
 }

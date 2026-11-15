@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use yaml_rust2::{Yaml, YamlLoader};
+use yaml_rust2::Yaml;
 
 use crate::frontmatter::{self, Value};
 
@@ -282,7 +282,7 @@ fn real_tags(block: &str) -> Option<Value> {
     if block.lines().any(|l| l.trim_start().starts_with('#') || l.contains(" #") || l.contains("\t#")) {
         return None;
     }
-    let docs = YamlLoader::load_from_str(block).ok()?;
+    let docs = frontmatter::load_yaml(block).ok()?;
     let [Yaml::Hash(h)] = docs.as_slice() else { return None };
     if h.len() != 1 {
         return None;
@@ -307,7 +307,7 @@ fn real_tags(block: &str) -> Option<Value> {
 /// The front matter as a real YAML parser reads it: top-level keys to values.
 fn real_map(text: &str) -> Option<BTreeMap<String, Yaml>> {
     let (start, end) = locate(text)?;
-    let docs = YamlLoader::load_from_str(&text[start..end]).ok()?;
+    let docs = frontmatter::load_yaml(&text[start..end]).ok()?;
     let mut out = BTreeMap::new();
     match docs.as_slice() {
         [] | [Yaml::Null] => {}
