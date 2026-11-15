@@ -412,7 +412,6 @@ mod tests {
         });
         #[cfg(unix)]
         {
-            use std::os::unix::ffi::OsStrExt as _;
             use std::os::unix::fs::symlink;
             // 1: a dangling `.git`, and HEAD as a symlink to a branch not born yet
             // (git accepts that HEAD; so must this, and the folder isn't trusted).
@@ -427,7 +426,12 @@ mod tests {
                 std::fs::create_dir_all(d.join("refs")).unwrap();
                 symlink("refs/heads/nothere", d.join("HEAD")).unwrap();
             });
-            // 7: a commondir that isn't UTF-8 is used as bytes, as git does.
+        }
+        // 7: a commondir that isn't UTF-8 is used as bytes, as git does. (Linux
+        // only: macOS file systems refuse a name that isn't UTF-8.)
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::ffi::OsStrExt as _;
             let d = top.join("r/bytes");
             fake_git_dir(&d.join(".git"));
             let raw = std::ffi::OsStr::from_bytes(b"other\xff");
