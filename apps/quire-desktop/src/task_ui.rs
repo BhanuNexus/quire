@@ -711,7 +711,12 @@ mod tests {
         assert!(NewTaskDialog::sample(true).task().unwrap_err().contains("soon"));
         let mut d = NewTaskDialog::sample(false);
         d.due = "tomorrow".into();
-        assert_eq!(d.task().unwrap().due, Some((Local::now().date_naive() + Duration::days(1)).format("%Y-%m-%d").to_string()));
+        // The clock is read inside `task()`; bracket it so midnight between the reads can't fail this.
+        let before = Local::now().date_naive();
+        let got = d.task().unwrap().due;
+        let after = Local::now().date_naive();
+        let tomorrow = |d: NaiveDate| Some((d + Duration::days(1)).format("%Y-%m-%d").to_string());
+        assert!(got == tomorrow(before) || got == tomorrow(after), "{got:?}");
         d.due = "next blue moon".into();
         assert!(d.task().is_err());
         assert_eq!(board_spec().group.as_deref(), Some("status"));

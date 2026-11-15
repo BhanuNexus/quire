@@ -770,6 +770,8 @@ mod tests {
         let e = time::session(now() - chrono::Duration::minutes(20), now());
         assert_eq!(w.record_time(&t, &e), Ok(()));
         assert!(w.active_doc().unwrap().text().contains("- [ ] Call Bo [time:: 30m]"));
+        // 0.11 loose end: the write didn't move the caret to the next line (it stays on the task's line).
+        assert_eq!(w.active_doc().unwrap().caret_line_col().0, 2, "the caret stays on the task's line");
         // A pomodoro whose work ended records 25 minutes and starts a break.
         w.start_timer(TaskRef::note("Tasks/Gym.md", "Gym"), true);
         // (Started 26 minutes ago, in the timer file the app reads.)
@@ -794,13 +796,21 @@ mod tests {
         assert_eq!(p.as_str(), "Tasks/Plan trip.md");
         w.index().flush();
         assert!(w.task_notes().iter().any(|(path, n)| *path == p && n.task.due.as_deref() == Some("2026-12-01")));
-        // The session may straddle midnight into a new week: count both weeks then.
+        // The report follows the entry that was actually written, so the test
+        // does not depend on when it runs. Minutes are floored per day, so an
+        // entry that straddles a week boundary may lose up to a minute of its
+        // 25 (pure boundary cases are pinned in `quire-plan`).
+        let gym_note = w.task_notes().into_iter().find(|(path, _)| path.as_str() == "Tasks/Gym.md").unwrap().1;
+        assert_eq!(gym_note.entries.len(), 1);
+        let entry = &gym_note.entries[0];
+        let (first, last) = (entry.start.with_timezone(&Local).date_naive(), entry.end.unwrap().with_timezone(&Local).date_naive());
         let gym = |day: NaiveDate| w.week_report(day).rows.iter().filter(|x| x.title == "Gym").map(|x| x.total).sum::<u32>();
-        let today = Local::now().date_naive();
-        let began = (Local::now() - chrono::Duration::minutes(30)).date_naive();
-        let same_week = began.iso_week() == today.iso_week();
-        let total = if same_week { gym(today) } else { gym(today) + gym(began) };
-        assert_eq!(total, 25);
+        if first.iso_week() == last.iso_week() {
+            assert_eq!(gym(first), 25);
+        } else {
+            let total = gym(first) + gym(last);
+            assert!((24..=25).contains(&total), "{total}");
+        }
     }
 
     /// The running timer started `minutes` ago, as another process would

@@ -441,6 +441,20 @@ mod tests {
         assert_eq!(r.total, 205);
     }
 
+    /// An entry across the Sunday-night week boundary: each week counts its
+    /// own seconds, floored to minutes, so a 25-minute session split at
+    /// 12m30s / 12m30s reads 12 + 12 (pinned here so the app's week-report
+    /// test can rely on "24 or 25" at any time of day).
+    #[test]
+    fn weekly_report_at_the_week_boundary() {
+        let a = [session(at("2026-11-08T23:47:30+01:00"), at("2026-11-09T00:12:30+01:00"))];
+        let this = week_report([("A.md", "A", &a[..])], NaiveDate::from_ymd_opt(2026, 11, 2).unwrap(), at("2026-11-10T00:00:00Z"), &off(1));
+        let next = week_report([("A.md", "A", &a[..])], NaiveDate::from_ymd_opt(2026, 11, 9).unwrap(), at("2026-11-10T00:00:00Z"), &off(1));
+        assert_eq!((this.total, next.total), (12, 12));
+        assert_eq!(this.days[6], 12);
+        assert_eq!(next.days[0], 12);
+    }
+
     /// 0.11 review L6: a UTC entry (TaskNotes writes `…Z`) counts on the
     /// day it was where the person is, not in UTC.
     #[test]
