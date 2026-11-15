@@ -211,7 +211,7 @@ run history under `.quire/shared/agent/`, and takes in the other devices'
   was waiting here and was decided on another device says "decided on …"
   under Resolved in the Inbox, and **Reopen** asks about it again here.
   Files aren't signed yet: give the vault key only to devices you trust
-  ([design](design/0.10-agentsync.md#other-devices-files-are-untrusted-0101)).
+  ([design](design/0.10-agentsync.md#other-devices-files-are-untrusted-0102)).
 
 Read events stay on their device. With the option off (the default), all
 of this stays on the device where the agent ran, as in 0.9.

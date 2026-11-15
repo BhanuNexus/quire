@@ -305,3 +305,175 @@ fn openai_transcription_sends_the_recording_as_multipart() {
     let err = OpenAiCompatible::new(addr, "m", None).transcribe("whisper-1", wav, "a.wav", "").unwrap_err();
     assert!(err.to_string().contains("HTTP 401: Incorrect API key"), "{err}");
 }
+
+// ---------------------------------------------------------------- 0.13.1: documented streaming and error cases
+//
+// Checked against the providers' published wire formats (Anthropic's Messages
+// API types in its SDK, Ollama's `docs/api` and OpenAI-compatibility pages).
+// No live provider was reachable: these replay the documented shapes.
+
+const ANTHROPIC_PING_AND_EXTRAS: &str = concat!(
+    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"usage\":{\"input_tokens\":25,\"output_tokens\":1,\"cache_read_input_tokens\":0}}}\n\n",
+    "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
+    "event: ping\ndata: {\"type\":\"ping\"}\n\n",
+    "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Let me think\"}}\n\n",
+    "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"EqQBCgJkAhIM\"}}\n\n",
+    "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+    "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+    "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n",
+    "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"citations_delta\",\"citation\":{\"type\":\"char_location\",\"cited_text\":\"x\"}}}\n\n",
+    "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\" there\"}}\n\n",
+    "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+    "event: some_future_event\ndata: {\"type\":\"some_future_event\",\"x\":1}\n\n",
+    "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":25,\"output_tokens\":15,\"cache_read_input_tokens\":0}}\n\n",
+    "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+);
+
+fn anthropic_stop_sse(reason: &str) -> &'static str {
+    let text = format!(
+        "event: message_start\ndata: {{\"type\":\"message_start\",\"message\":{{\"usage\":{{\"input_tokens\":3,\"output_tokens\":1}}}}}}\n\n\
+         event: message_delta\ndata: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"{reason}\",\"stop_sequence\":null}},\"usage\":{{\"output_tokens\":7}}}}\n\n\
+         event: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n"
+    );
+    Box::leak(text.into_boxed_str())
+}
+
+#[test]
+fn anthropic_ignores_pings_thinking_citations_and_unknown_events() {
+    let (addr, _seen) = server(vec![Reply::Sse(ANTHROPIC_PING_AND_EXTRAS)]);
+    let m = AnthropicModel::new("k", "claude-sonnet-5-5").with_base_url(&addr);
+    let (events, r) = run(&m, &ChatRequest::simple("", "hi", 50));
+    r.unwrap();
+    assert_eq!(
+        events,
+        vec![
+            ChatEvent::Text { text: "Hello".into() },
+            ChatEvent::Text { text: " there".into() },
+            ChatEvent::Done { stop: StopReason::EndTurn, usage: Usage { input_tokens: 25, output_tokens: 15 } },
+        ]
+    );
+}
+
+#[test]
+fn anthropic_stop_reasons_beyond_the_first_four() {
+    for (reason, want) in [
+        ("max_tokens", StopReason::MaxTokens),
+        ("model_context_window_exceeded", StopReason::MaxTokens),
+        ("pause_turn", StopReason::EndTurn),
+    ] {
+        let (addr, _seen) = server(vec![Reply::Sse(anthropic_stop_sse(reason))]);
+        let m = AnthropicModel::new("k", "claude-sonnet-5-5").with_base_url(&addr);
+        let (events, r) = run(&m, &ChatRequest::simple("", "hi", 50));
+        r.unwrap();
+        assert!(matches!(events.last(), Some(ChatEvent::Done { stop, .. }) if *stop == want), "{reason}: {events:?}");
+    }
+    // A refusal is said, not shown as an ordinary end of the reply.
+    let (addr, _seen) = server(vec![Reply::Sse(anthropic_stop_sse("refusal"))]);
+    let m = AnthropicModel::new("k", "claude-sonnet-5-5").with_base_url(&addr);
+    let (events, r) = run(&m, &ChatRequest::simple("", "hi", 50));
+    assert!(matches!(r, Err(LlmError::Request(ref e)) if e.contains("declined") && e.contains("refusal")), "{r:?}");
+    assert!(!events.iter().any(|e| matches!(e, ChatEvent::Done { .. })));
+}
+
+#[test]
+fn anthropic_error_bodies_name_their_type_and_status() {
+    for (status, kind, msg) in [
+        (400, "invalid_request_error", "messages: first message must use the \"user\" role"),
+        (403, "permission_error", "Your API key does not have permission"),
+        (404, "not_found_error", "model: claude-nope"),
+        (413, "request_too_large", "Request exceeds the maximum allowed number of bytes"),
+        (429, "rate_limit_error", "This request would exceed your rate limit"),
+        (500, "api_error", "Internal server error"),
+        (529, "overloaded_error", "Overloaded"),
+    ] {
+        let body = json!({"type": "error", "error": {"type": kind, "message": msg}, "request_id": "req_011"}).to_string();
+        let (addr, _seen) = server(vec![Reply::Json(status, body)]);
+        let m = AnthropicModel::new("k", "claude-sonnet-5-5").with_base_url(&addr);
+        let (events, r) = run(&m, &ChatRequest::simple("", "hi", 10));
+        assert!(events.is_empty());
+        assert!(matches!(r, Err(LlmError::Request(ref e)) if e.contains(&format!("HTTP {status}")) && e.contains(msg)), "{status}: {r:?}");
+    }
+    // The error event inside a stream names its type.
+    let (addr, _seen) = server(vec![Reply::Sse(include_str!("fixtures/anthropic-error.sse"))]);
+    let m = AnthropicModel::new("k", "claude-sonnet-5-5").with_base_url(&addr);
+    let (_, r) = run(&m, &ChatRequest::simple("", "hi", 10));
+    assert!(matches!(r, Err(LlmError::Request(ref e)) if e.contains("overloaded_error") && e.contains("Overloaded")), "{r:?}");
+}
+
+#[test]
+fn a_provider_that_refuses_a_parameter_is_asked_again_without_it() {
+    // Newer Anthropic models refuse `temperature`.
+    let refuse =
+        json!({"type": "error", "error": {"type": "invalid_request_error", "message": "`temperature` is not supported for this model"}})
+            .to_string();
+    let (addr, seen) = server(vec![Reply::Json(400, refuse), Reply::Sse(anthropic_stop_sse("end_turn"))]);
+    let m = AnthropicModel::new("k", "claude-sonnet-5-5").with_base_url(&addr);
+    let mut req = ChatRequest::simple("", "hi", 50);
+    req.temperature = 0.3;
+    let (events, r) = run(&m, &req);
+    r.unwrap();
+    assert!(matches!(events.last(), Some(ChatEvent::Done { .. })));
+    let first = seen.recv().unwrap().2;
+    let second = seen.recv().unwrap().2;
+    assert!(first.get("temperature").is_some() && second.get("temperature").is_none(), "{first} / {second}");
+    assert_eq!(second["messages"], first["messages"], "nothing else changes");
+
+    // OpenAI's newer models want `max_completion_tokens`, and some refuse `temperature` as well.
+    let ok = "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+    let (addr, seen) = server(vec![
+        Reply::Json(400, json!({"error": {"message": "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.", "type": "invalid_request_error", "param": "max_tokens", "code": "unsupported_parameter"}}).to_string()),
+        Reply::Json(400, json!({"error": {"message": "Unsupported value: 'temperature' does not support 0.3 with this model. Only the default (1) value is supported."}}).to_string()),
+        Reply::Sse(ok),
+    ]);
+    let m = OpenAiCompatible::new(&addr, "gpt-x", Some("sk-test".into()));
+    let (events, r) = run(&m, &req);
+    r.unwrap();
+    assert_eq!(events[0], ChatEvent::Text { text: "ok".into() });
+    let bodies: Vec<Value> = (0..3).map(|_| seen.recv().unwrap().2).collect();
+    assert!(bodies[0].get("max_tokens").is_some());
+    assert!(bodies[1].get("max_tokens").is_none() && bodies[1]["max_completion_tokens"] == 50 && bodies[1].get("temperature").is_some());
+    assert!(bodies[2].get("temperature").is_none() && bodies[2]["max_completion_tokens"] == 50);
+
+    // A 400 about something else is not retried, and says what it said.
+    let (addr, seen) = server(vec![Reply::Json(400, json!({"error": {"message": "messages: too long"}}).to_string())]);
+    let m = OpenAiCompatible::new(&addr, "gpt-x", None);
+    let (_, r) = run(&m, &req);
+    assert!(matches!(r, Err(LlmError::Request(ref e)) if e.contains("HTTP 400") && e.contains("too long")), "{r:?}");
+    assert!(seen.recv().is_ok() && seen.try_recv().is_err(), "one request only");
+}
+
+#[test]
+fn ollama_errors_are_plain_strings_and_mid_stream_errors_stop_the_reply() {
+    // Ollama: `{"error": "…"}` with 404 for a model that isn't pulled, 400, 429 and 502.
+    for (status, msg) in [
+        (404, "model \"llama9\" not found, try pulling it first"),
+        (400, "invalid JSON"),
+        (429, "too many requests"),
+        (502, "cloud model unreachable"),
+    ] {
+        let (addr, _seen) = server(vec![Reply::Json(status, json!({ "error": msg }).to_string())]);
+        let m = OpenAiCompatible::new(&addr, "llama9", None);
+        let (_, r) = run(&m, &ChatRequest::simple("", "hi", 10));
+        assert!(matches!(r, Err(LlmError::Request(ref e)) if e.contains(&format!("HTTP {status}")) && e.contains(msg)), "{status}: {r:?}");
+    }
+    // An error object in the middle of the SSE stream (the status is already 200).
+    let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"Yes\"},\"finish_reason\":null}]}\n\ndata: {\"error\":{\"message\":\"an error was encountered while running the model\"}}\n\n";
+    let (addr, _seen) = server(vec![Reply::Sse(sse)]);
+    let m = OpenAiCompatible::new(&addr, "llama3", None);
+    let (events, r) = run(&m, &ChatRequest::simple("", "hi", 10));
+    assert_eq!(events, vec![ChatEvent::Text { text: "Yes".into() }], "what arrived before is kept");
+    assert!(matches!(r, Err(LlmError::Request(ref e)) if e.contains("cut off") && e.contains("while running the model")), "{r:?}");
+    // …and the error given as a bare string, as Ollama's own API sends it.
+    let sse = "data: {\"error\":\"model runner has unexpectedly stopped\"}\n\n";
+    let (addr, _seen) = server(vec![Reply::Sse(sse)]);
+    let m = OpenAiCompatible::new(&addr, "llama3", None);
+    let (_, r) = run(&m, &ChatRequest::simple("", "hi", 10));
+    assert!(matches!(r, Err(LlmError::Request(ref e)) if e.contains("unexpectedly stopped")), "{r:?}");
+    // Usage arrives in a last chunk with no choices (`stream_options.include_usage`); a stream with the finish and usage chunks and no `[DONE]` still ends.
+    let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"},\"finish_reason\":\"length\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":4}}\n\n";
+    let (addr, _seen) = server(vec![Reply::Sse(sse)]);
+    let m = OpenAiCompatible::new(&addr, "llama3", None);
+    let (events, r) = run(&m, &ChatRequest::simple("", "hi", 10));
+    r.unwrap();
+    assert_eq!(events.last(), Some(&ChatEvent::Done { stop: StopReason::MaxTokens, usage: Usage { input_tokens: 9, output_tokens: 4 } }));
+}

@@ -176,6 +176,56 @@ mod remote {
         LlmError::Request(format!("HTTP {status}: {msg}"))
     }
 
+    /// An error sent inside a reply that had already started (an SSE `error`
+    /// event: Anthropic's `overloaded_error`, a server's `{"error": …}`).
+    fn err_in_stream(body: &Value) -> LlmError {
+        let msg = body["error"]["message"].as_str().or_else(|| body["error"].as_str()).unwrap_or("request failed");
+        match body["error"]["type"].as_str() {
+            Some(kind) => LlmError::Request(format!("the reply was cut off ({kind}): {msg}")),
+            None => LlmError::Request(format!("the reply was cut off: {msg}")),
+        }
+    }
+
+    /// A rejected request (`HTTP 400`) that names a parameter the provider
+    /// no longer takes, retried once without it: newer models refuse
+    /// sampling parameters (`temperature`), and `OpenAI`'s newer models want
+    /// `max_completion_tokens` for `max_tokens`. `None` when `message` isn't
+    /// such a rejection, or the body has nothing to change.
+    fn adapt_body(body: &Value, message: &str) -> Option<Value> {
+        if !message.starts_with("HTTP 400") {
+            return None;
+        }
+        let lower = message.to_ascii_lowercase();
+        let mut out = body.clone();
+        let map = out.as_object_mut()?;
+        if lower.contains("max_completion_tokens") && map.contains_key("max_tokens") {
+            let v = map.remove("max_tokens")?;
+            map.insert("max_completion_tokens".into(), v);
+            return Some(out);
+        }
+        if lower.contains("temperature") && map.remove("temperature").is_some() {
+            return Some(out);
+        }
+        None
+    }
+
+    /// `attempt` with `body`, and again with the body [`adapt_body`] makes
+    /// of it when the provider refuses a parameter (nothing was streamed
+    /// yet, a 400 comes before the reply starts).
+    fn with_adapted_body(body: Value, mut attempt: impl FnMut(&Value) -> Result<(), LlmError>) -> Result<(), LlmError> {
+        let mut body = body;
+        for _ in 0..3 {
+            match attempt(&body) {
+                Err(LlmError::Request(m)) => match adapt_body(&body, &m) {
+                    Some(next) => body = next,
+                    None => return Err(LlmError::Request(m)),
+                },
+                other => return other,
+            }
+        }
+        attempt(&body)
+    }
+
     /// A `multipart/form-data` body with the fields
     /// `/v1/audio/transcriptions` takes.
     pub(crate) fn multipart(boundary: &str, model: &str, audio: &[u8], file_name: &str, language: &str) -> Vec<u8> {
@@ -373,8 +423,10 @@ mod remote {
     fn anthropic_stop(s: &str) -> StopReason {
         match s {
             "tool_use" => StopReason::ToolUse,
-            "max_tokens" => StopReason::MaxTokens,
+            // The reply was cut off by length: by `max_tokens`, or by the model's context window.
+            "max_tokens" | "model_context_window_exceeded" => StopReason::MaxTokens,
             "stop_sequence" => StopReason::StopSequence,
+            // `end_turn`, and `pause_turn` (a server tool's turn that Quire doesn't use).
             _ => StopReason::EndTurn,
         }
     }
@@ -397,6 +449,12 @@ mod remote {
         }
 
         fn chat(&self, req: &ChatRequest, cancel: &CancelFlag, sink: &mut dyn FnMut(ChatEvent)) -> Result<(), LlmError> {
+            with_adapted_body(self.body(req), |body| self.chat_once(body, cancel, sink))
+        }
+    }
+
+    impl AnthropicModel {
+        fn chat_once(&self, body: &Value, cancel: &CancelFlag, sink: &mut dyn FnMut(ChatEvent)) -> Result<(), LlmError> {
             let http = stream_agent()
                 .post(format!("{}/v1/messages", trim(&self.base_url)))
                 .header("x-api-key", &self.api_key)
@@ -405,9 +463,10 @@ mod remote {
                 .header("accept", "text/event-stream");
             let mut usage = Usage::default();
             let mut stop = StopReason::EndTurn;
+            let mut refused = false;
             let mut tools: BTreeMap<u64, ToolAcc> = BTreeMap::new();
             let mut done = false;
-            stream(http, &self.body(req), cancel, &mut |piece| match piece {
+            stream(http, body, cancel, &mut |piece| match piece {
                 Body::Event(ev) => {
                     let Ok(v) = serde_json::from_str::<Value>(&ev.data) else { return Ok(true) };
                     let kind = v["type"].as_str().unwrap_or(ev.event.as_str());
@@ -456,6 +515,7 @@ mod remote {
                         "message_delta" => {
                             if let Some(s) = v["delta"]["stop_reason"].as_str() {
                                 stop = anthropic_stop(s);
+                                refused = s == "refusal";
                             }
                             if v["usage"]["output_tokens"].is_u64() {
                                 usage.output_tokens = u32_of(&v["usage"]["output_tokens"]);
@@ -468,7 +528,7 @@ mod remote {
                             done = true;
                             return Ok(false);
                         }
-                        "error" => return Err(err_from(200, &v)),
+                        "error" => return Err(err_in_stream(&v)),
                         _ => {}
                     }
                     Ok(true)
@@ -489,12 +549,16 @@ mod remote {
                     usage.input_tokens = u32_of(&v["usage"]["input_tokens"]);
                     usage.output_tokens = u32_of(&v["usage"]["output_tokens"]);
                     stop = anthropic_stop(v["stop_reason"].as_str().unwrap_or_default());
+                    refused = v["stop_reason"] == "refusal";
                     done = true;
                     Ok(false)
                 }
             })?;
             if !done {
                 return Err(LlmError::Request("the reply ended early".into()));
+            }
+            if refused {
+                return Err(LlmError::Request("the model declined to answer this request (stop reason: refusal)".into()));
             }
             for (_, acc) in std::mem::take(&mut tools) {
                 sink(acc.finish());
@@ -713,12 +777,18 @@ mod remote {
         }
 
         fn chat(&self, req: &ChatRequest, cancel: &CancelFlag, sink: &mut dyn FnMut(ChatEvent)) -> Result<(), LlmError> {
+            with_adapted_body(self.body(req), |body| self.chat_once(body, cancel, sink))
+        }
+    }
+
+    impl OpenAiCompatible {
+        fn chat_once(&self, body: &Value, cancel: &CancelFlag, sink: &mut dyn FnMut(ChatEvent)) -> Result<(), LlmError> {
             let http = self.request("chat/completions", &stream_agent()).header("accept", "text/event-stream");
             let mut usage = Usage::default();
             let mut stop = StopReason::EndTurn;
             let mut tools: BTreeMap<u64, ToolAcc> = BTreeMap::new();
             let mut saw_any = false;
-            stream(http, &self.body(req), cancel, &mut |piece| match piece {
+            stream(http, body, cancel, &mut |piece| match piece {
                 Body::Event(ev) => {
                     let data = ev.data.trim();
                     if data == "[DONE]" {
@@ -726,7 +796,7 @@ mod remote {
                     }
                     let Ok(v) = serde_json::from_str::<Value>(data) else { return Ok(true) };
                     if v.get("error").is_some_and(|e| !e.is_null()) {
-                        return Err(err_from(200, &v));
+                        return Err(err_in_stream(&v));
                     }
                     saw_any = true;
                     if v["usage"].is_object() {

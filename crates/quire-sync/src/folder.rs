@@ -830,7 +830,6 @@ impl FolderTransport {
         }
     }
 
-    #[allow(clippy::too_many_arguments, reason = "what a lane line is checked against, each once")]
     fn read_log(
         &self,
         ix: &mut Index,

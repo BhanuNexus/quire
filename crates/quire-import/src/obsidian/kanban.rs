@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Kanban plugin boards.
 //!
-//! A board is a note with `kanban-plugin: basic` in its front matter, a
+//! A board is a note with a `kanban-plugin` key in its front matter (`board`, as the plugin writes it today; `basic` in older versions), a
 //! `## Column` heading per column and `- [ ] card` items under it. The archive (after `***` and `## Archive`) and the plugin's
 //! `%% kanban:settings %%` block are kept but not shown.
 

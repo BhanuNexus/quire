@@ -34,7 +34,7 @@ Download from [Releases](https://github.com/BhanuNexus/quire/releases). Each rel
 | Export as PDF | ✓ | — |
 | On-device AI engine (about 18 MB) | included | downloaded when you turn on-device AI on |
 | Voice notes (record from the microphone) | ✓ | — |
-| App size (Linux) | ~68 MiB | ~41 MiB |
+| App size (Linux) | under 80 MiB | ~46 MiB |
 | File names | `Quire-<version>-…` | `Quire-Lite-<version>-…` |
 
 They're the same app working on the same files and settings. Installing one replaces the other, so you can switch either way at any time and your notes, settings and sync carry over. Settings → About says which one you have. Not sure which to take? Take **Quire**.
@@ -103,7 +103,7 @@ Settings live in `~/.config/quire/settings.toml` (Linux), `~/Library/Application
 **Quire Lite.** Math, Mermaid diagrams and PDF export use Typst, which is about 28 MB of the app. To build without them (they show as their Markdown source instead; everything else is the same), add `--no-default-features`:
 
 ```sh
-cargo build --release -p quire-desktop --no-default-features   # ~41 MiB instead of ~68 MiB
+cargo build --release -p quire-desktop --no-default-features   # ~46 MiB; the full edition is under 80 MiB
 ```
 
 ## What it does
@@ -246,7 +246,7 @@ crates/quire-markdown  highlight (whole or windowed), extract, front matter, ren
 crates/quire-vault     Storage port, LocalFs/MemFs, notes, attachments, templates, rename refactor, watcher
 crates/quire-index     BM25, fuzzy open, link graph, passages, semantic index, hybrid search, background actors
 crates/quire-intel     related, mentions, tags, summary, calculator, dates, Ask, LLM port
-crates/quire-import    Logseq, Notion, Bear, Evernote, Obsidian and Markdown importers, web capture
+crates/quire-import    Logseq, Notion, Bear, Evernote, Roam, Google Keep, Joplin, Day One, HTML and Markdown importers, Obsidian Bases and Kanban, web capture
 crates/quire-agent     the agent store: one write path, policy, proposals, provenance, ledger, Inbox
 crates/quire-mcp       MCP server (stdio, HTTP + OAuth), tools, resources, prompts
 crates/quire-assistant the agent loop, prompts, conversations, ACP bridge, ingest into wiki
@@ -320,7 +320,7 @@ clients.
 - The PDF viewer (pages, highlights, area selection) is in the full edition; Quire Lite shows a PDF's text and highlights and opens it in your system's viewer. OCR reads printed text best.
 - An external agent connected to the agent panel runs with your permissions on your computer; only its writes through Quire are reviewed.
 - On macOS, the Alt shortcuts (Alt+I, Alt+A, Alt+] and Alt+[) may type characters with some keyboard layouts; the commands are also in the palette (Ctrl+K).
-- The fast editor reports itself to screen readers as a multi-line text field named after the note, with the caret's line as its value. It doesn't yet expose every visible line or the selection range. This and the inline IME pre-edit were checked in code and tests, not with a real screen reader or IME.
+- The fast editor reports itself to screen readers as a multi-line text field named after the note, with the caret's line as its value, each visible line as a text run (the note's source text, not what live preview draws) and the selection from its anchor to the caret. This and the inline IME pre-edit were checked in code and tests, not with a real screen reader or IME.
 - Notes over 512 KB still edit and style fully, but outline, word count, insights and preview are turned off for them.
 - egui has no complex-script shaping, so Devanagari and Arabic render but conjuncts may not join correctly.
 - AI providers and the agent panel were tested against a local mock of the OpenAI-compatible API (chat, tools, streaming, models, embeddings), not against live Ollama or Anthropic servers.
@@ -330,7 +330,7 @@ clients.
 - Excalidraw drawings are drawn in a clean style rather than Excalidraw's hand-drawn one, with the bundled fonts. The editor makes two-point lines and arrows (multi-point and elbow arrows are kept and drawn, not edited); frames, libraries, the laser pointer, collaboration and Mermaid-to-Excalidraw aren't there. When a drawing changes in Excalidraw, the editor reloads it at once; pictures of it in other notes and canvases update after Quire restarts (edits made in Quire update them at once). Canvas cards don't render math, and their links aren't clickable.
 - **`quire-cli serve` is Beta.** Its server holds a decrypted copy of the notes it serves; it does no TLS itself (put a reverse proxy or tunnel in front); a restart signs everyone out; the web app doesn't rename, move or delete notes, upload attachments or review agents' suggestions (review them in the app once synced).
 - **Locked folders protect files on disk, not a running, unlocked Quire.** While a folder is unlocked, anyone using your computer account can read it, and the operating system may page memory to disk (use full-disk encryption too). File and folder names, sizes and times stay visible, so name notes in a locked folder with that in mind (Quire doesn't name them after their first line). Copies made before a folder was locked aren't changed: backups, git history, a cloud provider's version history, notes already in the trash, other devices' trash and (until the folder is first unlocked there) their history, and old disk blocks. Changing only the passphrase keeps the folder's key, so an old copy of the key file still opens it with the old passphrase: if a passphrase or recovery key leaked, change the folder's key too. Someone who can write the folder can delete or swap its files, though not read or change them. Two devices editing one locked note offline keep both versions instead of merging them.
-- Locked notes are in search, quick open, tasks, the agenda, views and Bases, the graph, backlinks and reminders only while their folder is unlocked (from memory; their reminders fire only then), and never in the timeline, flashcards or any AI feature; renaming a plain note doesn't update links inside locked notes. Pictures in a locked folder show while it is unlocked; PDFs and drawings there don't open yet. The CLI and `quire-cli serve` can't unlock a folder for reading beyond `quire-cli unlock --cat`.
+- Locked notes are in search, quick open, tasks, the agenda, views and Bases, the graph, backlinks and reminders only while their folder is unlocked (from memory; their reminders fire only then), and never in the timeline, flashcards or any AI feature; renaming a plain note doesn't update links inside locked notes. Pictures and Excalidraw drawings in a locked folder show and edit while it is unlocked; PDFs there don't open yet. The CLI and `quire-cli serve` can't unlock a folder for reading beyond `quire-cli unlock --cat`.
 - Connections, allow lists, revoking and "AI off" are enforced by Quire 0.11; a Quire 0.10 device sharing the vault ignores them (it keeps them in the policy file). Revoking an unverified stdio client is matched by the name it reports; a local process can report another name (and can read the vault's files anyway), so give clients you may need to shut out a `--client` key or an HTTP token.
 - **Sync:** removing a device stops it reading what's written afterwards and ignores what it writes, but on a sync folder, S3 or WebDAV every device shares the storage access: take that away too (a new storage key, or stop sharing the folder). Changes another device makes before it hears of the removal (seconds; with a slow sync tool, longer) still use the old key. Removing devices, compaction and authenticated headers on folders and servers need the 0.13 sync format, which Quire 0.12 and older can't sync. A device offline for longer than compaction keeps history (90 days by default) that edited a note others changed gets a conflict copy instead of a merge. "All devices" history keeps the last 90 days and 10 versions per note once compacted; Version history on each device keeps everything as before. A sync server keeps all revisions unless `QUIRE_SYNC_KEEP_DAYS` is set.
 - Bases: no grouping, map or list views, `this`, `image`, `icon`, `html` or regular expressions. `file.ctime` is the last change (Quire keeps no creation time) and `file.size` counts characters.

@@ -2285,6 +2285,15 @@ pub fn sync_summary_at(root: &Path) -> Option<SyncSummary> {
     })
 }
 
+/// [`sync_list`] off the UI thread (a server or storage that is slow to answer).
+pub fn sync_list_in_background(target: SyncTarget) -> Receiver<Result<Vec<SyncVaultInfo>, String>> {
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    std::thread::spawn(move || {
+        let _ = tx.send(Workspace::sync_list(&target));
+    });
+    rx
+}
+
 /// The vaults a new device can join, in a sync folder or on a server.
 pub fn sync_list(target: &SyncTarget) -> Result<Vec<SyncVaultInfo>, String> {
     Workspace::sync_list(target)
@@ -2333,6 +2342,41 @@ impl Workspace {
         let rk = sync_create_at(&root, target, passphrase, device_name, &Selection::default())?;
         self.start_sync();
         Ok(rk)
+    }
+
+    /// [`Self::sync_create`] off the UI thread (the passphrase is stretched
+    /// and the storage is reached): call [`Self::start_sync`] when it says `Ok`.
+    /// The recovery key comes back as written down, to show once.
+    pub fn sync_create_in_background(
+        &self,
+        target: SyncTarget,
+        passphrase: String,
+        device_name: String,
+    ) -> Result<Receiver<Result<String, String>>, String> {
+        let (root, _) = self.sync_parts()?;
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let passphrase = remote::Zeroizing::new(passphrase);
+            let _ = tx.send(sync_create_at(&root, &target, &passphrase, &device_name, &Selection::default()).map(|rk| rk.to_string()));
+        });
+        Ok(rx)
+    }
+
+    /// [`Self::sync_join`] off the UI thread: call [`Self::start_sync`] when it says `Ok`.
+    pub fn sync_join_in_background(
+        &self,
+        target: SyncTarget,
+        space: SpaceId,
+        secret: String,
+        device_name: String,
+    ) -> Result<Receiver<Result<(), String>>, String> {
+        let (root, _) = self.sync_parts()?;
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            let secret = remote::Zeroizing::new(secret);
+            let _ = tx.send(sync_join_at(&root, &target, &space, &secret, &device_name, &Selection::default()));
+        });
+        Ok(rx)
     }
 
     /// Join an existing sync vault with its passphrase (or recovery key).

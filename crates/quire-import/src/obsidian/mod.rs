@@ -4,7 +4,7 @@
 //! vault, read by Quire without running anything.
 //!
 //! * [`base`] — Obsidian Bases (`.base` YAML) as `quire-view` specs;
-//! * [`kanban`] — Kanban plugin boards (`kanban-plugin: basic`), read from
+//! * [`kanban`] — Kanban plugin boards (`kanban-plugin: board`, or `basic` in older versions), read from
 //!   their `## Column` headings and `- [ ] card` lists, with card moves
 //!   written back as moved list items.
 //!

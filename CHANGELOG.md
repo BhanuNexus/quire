@@ -24,6 +24,11 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
   - `[[links]]` typed in a `.excalidraw` file keep their brackets, and a link set in the style panel isn't dropped by editing the text.
   - A drawing renamed in its folder stays open under its new name; one deleted elsewhere asks before it's written again.
   - Pasted elements stay within a drawing's limits, bring only the pictures they show, and keep their frame.
+- **Locking a folder while a drawing in it has unsaved edits** writes the edits first, instead of waiting for the autosave delay (a locked folder can't be written). Closing a drawing's tab or the window writes it once, keeps a version in its history and doesn't start a sync by itself.
+- **Undoing an import** also removes the folders the import created and left empty.
+- **Settings → Sync:** *Create*, *Join* and *List* no longer freeze the window while they talk to the sync storage.
+- **AI providers:** an error that arrives in the middle of a streamed answer is shown as the provider's error instead of a cut-off answer, and a provider that refuses a request says so; a request that a server rejects because it no longer takes `temperature`, or wants `max_completion_tokens` for `max_tokens`, is sent again with that changed.
+- **Screen readers:** the text editor tells the system's accessibility service which lines are visible and what is selected, so a screen reader can read the line you are on.
 
 ## [0.13.0] - 2026-11-13
 

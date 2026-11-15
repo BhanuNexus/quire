@@ -203,14 +203,46 @@ fn one_sync_per_vault_and_scope_waits_for_it() {
     assert!(text(&env.run(&["sync", "status", a_s])).contains("Folders: everything"), "nothing changed");
 
     let mut second = env.cmd(&["sync", "watch", a_s, "--poll", "5s"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-    std::thread::sleep(Duration::from_secs(2));
+    // Everything `second` says, collected on threads, so each step below waits
+    // for what it needs to see instead of for a number of seconds.
+    let said = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let readers: Vec<_> = [
+        second.stdout.take().map(|o| Box::new(o) as Box<dyn std::io::Read + Send>),
+        second.stderr.take().map(|o| Box::new(o) as Box<dyn std::io::Read + Send>),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|r| {
+        let said = std::sync::Arc::clone(&said);
+        std::thread::spawn(move || {
+            for line in std::io::BufRead::lines(std::io::BufReader::new(r)).map_while(Result::ok) {
+                let mut s = said.lock().unwrap();
+                s.push_str(&line);
+                s.push('\n');
+            }
+        })
+    })
+    .collect();
+    let wait_said = |what: &str, ok: &dyn Fn(&str) -> bool| {
+        let start = Instant::now();
+        while !ok(&said.lock().unwrap()) {
+            assert!(start.elapsed() < Duration::from_mins(2), "timed out waiting for {what}: {}", said.lock().unwrap());
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    // It must have been turned away (the first still holds the lock) before the first stops.
+    wait_said("the second watch to be turned away", &|s| s.contains(&format!("Waiting: {busy}")));
     stop(&mut first);
     // It takes the lock within a few seconds and syncs.
-    std::thread::sleep(Duration::from_secs(8));
+    wait_said("the second watch to take over", &|s| s.contains("Synced"));
+    // A change made now is picked up by the watch that took over.
     std::fs::write(a.join("Later.md"), "# Later\n").unwrap();
-    std::thread::sleep(Duration::from_secs(3));
+    wait_said("the change made after the takeover", &|s| s.contains("Synced: received 0, sent 1"));
     stop(&mut second);
-    let said = text(&second.wait_with_output().unwrap());
+    for r in readers {
+        r.join().unwrap();
+    }
+    let said = said.lock().unwrap().clone();
     assert!(said.contains(&format!("Waiting: {busy}")), "{said}");
     assert!(said.contains("Synced"), "the second watch never took over: {said}");
 

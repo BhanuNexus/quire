@@ -88,6 +88,43 @@ fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
 }
 
+/// Starts `serve --sync` for `vault` and returns it with its port. A port found
+/// free a moment ago can be taken by another test or process before `serve`
+/// binds it (`serve` has no "pick one" mode), so a start that fails because the
+/// port is in use is retried on a new port instead of failing the test.
+fn start_serve(env: &Env, vault: &str) -> (Serve, u16) {
+    let mut last = String::new();
+    for _ in 0..8 {
+        let port = free_port();
+        let child = env
+            .cmd("srv", &["serve", vault, "--sync", "--poll", "5s", "--port", &port.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut serve = Serve(child);
+        let base = format!("http://127.0.0.1:{port}");
+        let start = Instant::now();
+        loop {
+            if let Some(status) = serve.0.try_wait().unwrap() {
+                let mut said = String::new();
+                if let Some(e) = serve.0.stderr.as_mut() {
+                    let _ = std::io::Read::read_to_string(e, &mut said);
+                }
+                last = format!("serve stopped ({status}): {said}");
+                break;
+            }
+            if agent().get(&format!("{base}/login")).call().is_ok() {
+                return (serve, port);
+            }
+            assert!(start.elapsed() < Duration::from_mins(2), "timed out waiting: serve listens");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(last.contains("in use") || last.contains("bind") || last.to_lowercase().contains("address"), "{last}");
+    }
+    panic!("serve never got a port: {last}");
+}
+
 /// A `serve` process this test started; stopped with SIGTERM when dropped.
 struct Serve(Child);
 
@@ -180,21 +217,13 @@ fn sync_and_serve_through_a_quire_sync_server() {
     let help = env.run("srv", &["serve", "--help"]);
     assert!(help.contains("Beta, for self-hosters") && help.contains("decrypted copy"), "{help}");
 
-    let port = free_port();
-    let child = env
-        .cmd("srv", &["serve", h, "--sync", "--poll", "5s", "--port", &port.to_string()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut serve = Serve(child);
+    let (mut serve, port) = start_serve(&env, h);
     let base = format!("http://127.0.0.1:{port}");
     wait_for("serve --sync brings the notes", || {
         serve.check();
         home.join("Work/Launch.md").exists() && home.join("attachments/Voice note 2026-11-05 153012.wav").exists()
     });
     assert!(!home.join("Home/Garden.md").exists(), "outside the selection");
-    wait_for("serve listens", || agent().get(&format!("{base}/login")).call().is_ok());
 
     // The web app: Beta sign-in, then the note with its recording and drawing.
     let mut res = agent().get(&format!("{base}/login")).call().unwrap();
@@ -227,10 +256,13 @@ fn sync_and_serve_through_a_quire_sync_server() {
     // The index catches up with the notes sync brought a moment ago.
     let mut note = String::new();
     let start = Instant::now();
-    while !note.contains("data:image/svg+xml") && start.elapsed() < Duration::from_secs(30) {
+    while !note.contains("data:image/svg+xml") {
+        assert!(start.elapsed() < Duration::from_mins(2), "timed out waiting for the indexed note: {note}");
         let mut res = agent().get(&format!("{base}/n/Work/Launch.md")).header("Cookie", &session).call().unwrap();
-        assert_eq!(res.status().as_u16(), 200);
-        note = res.body_mut().read_to_string().unwrap();
+        // Not indexed yet is a 404 for a moment; only the final page must be a 200.
+        if res.status().as_u16() == 200 {
+            note = res.body_mut().read_to_string().unwrap();
+        }
         std::thread::sleep(Duration::from_millis(200));
     }
     assert!(note.contains("moved to Friday"), "{note}");
@@ -305,20 +337,12 @@ fn an_agent_on_the_server_is_reviewed_on_the_laptop() {
         .unwrap()
         .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
         .to_string();
-    let port = free_port();
-    let child = env
-        .cmd("srv", &["serve", h, "--sync", "--poll", "5s", "--port", &port.to_string()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut serve = Serve(child);
+    let (mut serve, port) = start_serve(&env, h);
     let base = format!("http://127.0.0.1:{port}");
     wait_for("serve --sync brings the note and turns sharing on", || {
         serve.check();
         home.join("Launch.md").exists() && env.run("srv", &["sync", "status", h]).contains("review history sync too")
     });
-    wait_for("serve listens", || agent().get(&format!("{base}/login")).call().is_ok());
 
     // The agent on the server: a suggestion for the person's note, and a
     // new page in its own folder (written at once).

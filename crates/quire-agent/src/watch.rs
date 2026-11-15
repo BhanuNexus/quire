@@ -52,19 +52,41 @@ impl AgentWatcher {
 mod tests {
     use super::*;
 
+    use std::time::{Duration, Instant};
+
+    /// Drops the events a watcher reports for what happened before the test
+    /// began (macOS `FSEvents` can deliver the folders `start` made late) by
+    /// waiting for a quiet stretch, not for a fixed time.
+    fn settle(w: &AgentWatcher) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut quiet = 0;
+        while quiet < 6 && Instant::now() < deadline {
+            quiet = if w.take() { 0 } else { quiet + 1 };
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     #[test]
     fn notices_a_new_proposal_file() {
         let dir = tempfile::tempdir().unwrap();
         let w = AgentWatcher::start(dir.path()).unwrap();
-        // macOS (FSEvents) can report the folders `start` made a moment
-        // later; let those arrive and drop them before the real test.
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        let _ = w.take();
-        std::fs::write(dir.path().join(".quire/agent/proposals/p_X.json"), "{}").unwrap();
-        let t = std::time::Instant::now();
-        while !w.take() {
-            assert!(t.elapsed().as_secs() < 10, "no event");
-            std::thread::sleep(std::time::Duration::from_millis(20));
+        settle(&w);
+        // Each round writes a new file and waits a while for it; an event
+        // that was coalesced or late is covered by the next round's file,
+        // and one that never comes fails at the deadline.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut n = 0;
+        loop {
+            assert!(Instant::now() < deadline, "no event");
+            n += 1;
+            std::fs::write(dir.path().join(format!(".quire/agent/proposals/p_{n}.json")), "{}").unwrap();
+            let round = Instant::now();
+            while round.elapsed() < Duration::from_secs(2) {
+                if w.take() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
         }
     }
 }

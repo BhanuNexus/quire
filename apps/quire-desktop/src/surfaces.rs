@@ -32,6 +32,10 @@ pub(crate) trait Surface {
     fn tick(&mut self, ws: &mut Workspace) {
         let _ = ws;
     }
+    /// Its tab is closed, or the app quits: write what isn't written yet.
+    fn close(&mut self, ws: &mut Workspace) {
+        let _ = ws;
+    }
 }
 
 /// For a file Quire can't edit yet: say so, and offer the system's viewer.
@@ -88,7 +92,7 @@ impl Surfaces {
 
     /// Tabs for open surfaces, drawn after the note tabs. A click makes a
     /// surface active; clicking a note tab makes notes active again.
-    pub(crate) fn tab_strip(&mut self, ui: &mut egui::Ui, pal: &Palette) {
+    pub(crate) fn tab_strip(&mut self, ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) {
         if self.open.is_empty() {
             return;
         }
@@ -106,8 +110,16 @@ impl Surfaces {
             }
         });
         if let Some(i) = close {
+            self.open[i].close(ws);
             self.open.remove(i);
             self.active = None;
+        }
+    }
+
+    /// The app is quitting: every surface writes what isn't written yet.
+    pub(crate) fn close_all(&mut self, ws: &mut Workspace) {
+        for s in &mut self.open {
+            s.close(ws);
         }
     }
 
@@ -127,6 +139,7 @@ impl Surfaces {
                     j != i && o.path() == self.open[i].path() && (self.active == Some(j) || (j < i && self.active != Some(i)))
                 });
             if (self.open[i].done() && self.active != Some(i)) || dup {
+                self.open[i].close(ws);
                 self.open.remove(i);
                 self.active = match self.active {
                     Some(a) if a > i => Some(a - 1),
@@ -144,6 +157,7 @@ impl Surfaces {
         let s = self.open.get_mut(i)?;
         let out = s.show(ui, ws, pal);
         if s.done() {
+            s.close(ws);
             self.open.remove(i);
             self.active = None;
         }
@@ -170,7 +184,7 @@ mod tests {
         crate::theme::install_fonts(&ctx);
         for _ in 0..3 {
             let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-                s.tab_strip(ui, &crate::theme::LIGHT);
+                s.tab_strip(ui, &mut ws, &crate::theme::LIGHT);
                 assert!(s.show_active(ui, &mut ws, &crate::theme::LIGHT).is_some());
             });
             out.textures_delta.clear();

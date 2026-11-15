@@ -224,6 +224,10 @@ pub(crate) struct DrawingEditor {
     notice: Option<String>,
     /// This editor's widgets' id (stable when the drawing is renamed).
     uid: u64,
+    /// Whether there are edits not yet written, as the workspace sees it (a
+    /// folder about to lock waits for it), and the save request last obeyed.
+    unsaved: Option<std::rc::Rc<std::cell::Cell<bool>>>,
+    save_seen: u64,
 }
 
 impl DrawingEditor {
@@ -265,6 +269,8 @@ impl DrawingEditor {
             drawn: paint::Drawn::default(),
             last_rect: Rect::NOTHING,
             notice: None,
+            unsaved: None,
+            save_seen: 0,
             uid: {
                 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
                 NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -2167,6 +2173,7 @@ impl Surface for DrawingEditor {
             Color32::from_gray(140),
         );
         self.autosave(ws);
+        self.report_unsaved(ws);
         self.last_frame_ms = started.elapsed().as_secs_f32() * 1000.0;
         out
     }
@@ -2181,10 +2188,39 @@ impl Surface for DrawingEditor {
         self.finish_typing();
         self.absorb(ws);
         self.autosave(ws);
+        self.report_unsaved(ws);
+    }
+
+    /// The tab closes or the app quits: write what is not written yet while
+    /// the workspace can still keep a history version and nudge sync (the
+    /// `Drop` write is only the last resort).
+    fn close(&mut self, ws: &mut Workspace) {
+        if self.loaded {
+            self.drag = None;
+            self.finish_typing();
+            self.save(ws);
+            self.report_unsaved(ws);
+        }
     }
 }
 
 impl DrawingEditor {
+    /// Tell the workspace whether edits wait to be written, and write them
+    /// now when it asks (a folder is about to lock; a locked folder can't be
+    /// written, so the autosave delay can't be waited out).
+    fn report_unsaved(&mut self, ws: &mut Workspace) {
+        let flag = std::rc::Rc::clone(self.unsaved.get_or_insert_with(|| ws.features.canvas.register_drawing(&self.path)));
+        if ws.features.canvas.save_now != self.save_seen {
+            self.save_seen = ws.features.canvas.save_now;
+            if self.dirty {
+                self.drag = None;
+                self.finish_typing();
+                self.save(ws);
+            }
+        }
+        flag.set(self.dirty && self.conflict.is_none() && self.error.is_none());
+    }
+
     /// Save once the edits have rested (not during a drag or while typing).
     fn autosave(&mut self, ws: &mut Workspace) {
         if !self.dirty || self.drag.is_some() || self.typing.is_some() {

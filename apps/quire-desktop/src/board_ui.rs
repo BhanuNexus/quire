@@ -233,7 +233,6 @@ fn lanes_menu(ui: &mut Ui, ws: &Workspace, pal: &Palette, spec: &ViewSpec, targe
 }
 
 /// A column's heading: name and count, a colour menu (right-click), and "+".
-#[allow(clippy::too_many_arguments, reason = "a board column's whole context; split it and every caller passes a struct")]
 fn column_header(
     ui: &mut Ui,
     ws: &Workspace,
@@ -340,7 +339,6 @@ fn column_header(
 }
 
 /// One card. Returns its rect (for working out where a drop lands).
-#[allow(clippy::too_many_arguments, reason = "a card's whole context")]
 fn card(
     ui: &mut Ui,
     ws: &Workspace,
