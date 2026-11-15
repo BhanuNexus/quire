@@ -96,7 +96,18 @@ staging="$(mktemp -d)"
 cp -R "$app" "$staging/"
 ln -s /Applications "$staging/Applications"
 rm -f "$dmg"
-hdiutil create -volname "$volume" -srcfolder "$staging" -ov -format UDZO "$dmg"
+# hdiutil sometimes fails with "Resource busy" on CI runners while Spotlight
+# or XProtect still holds the staging folder. A retry after a pause succeeds.
+made=""
+for attempt in 1 2 3 4 5; do
+  if hdiutil create -volname "$volume" -srcfolder "$staging" -ov -format UDZO "$dmg"; then
+    made=1
+    break
+  fi
+  echo "hdiutil create failed (attempt $attempt of 5); retrying in $((attempt * 5)) s" >&2
+  sleep $((attempt * 5))
+done
+[[ -n "$made" ]] || { echo "hdiutil create failed 5 times" >&2; exit 1; }
 rm -rf "$staging"
 [[ "$identity" != "-" ]] && codesign --force --timestamp --sign "$identity" "$dmg"
 
