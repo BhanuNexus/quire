@@ -488,4 +488,29 @@ mod tests {
         assert!(ws.notices.last().is_some_and(|n| n.text.contains("built-in theme")));
         assert!(!tick(&mut ws), "said once");
     }
+
+    /// TOML nested 100,000 deep: arrays, inline tables, and a mix.
+    fn deep_toml_inputs() -> Vec<String> {
+        let n = 100_000;
+        vec![
+            format!("a = {}1{}\n", "[".repeat(n), "]".repeat(n)),
+            format!("a = {}1{}\n", "{a = ".repeat(n), "}".repeat(n)),
+            format!("a = {}1{}\n", "[{a = ".repeat(n / 2), "}]".repeat(n / 2)),
+            format!("a = {}\n", "[".repeat(n)),
+        ]
+    }
+
+    /// A theme file nested 100,000 deep is an error, not a stack overflow.
+    #[test]
+    fn theme_toml_nested_100000_deep_is_refused_without_overflowing_the_stack() {
+        std::thread::Builder::new()
+            .spawn(|| {
+                for text in deep_toml_inputs() {
+                    assert!(parse("deep", &text).is_err());
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 }

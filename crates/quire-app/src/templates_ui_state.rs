@@ -122,7 +122,10 @@ impl Workspace {
         if !preset.is_empty() {
             for (k, v) in preset {
                 let parts: Vec<&str> = k.split('.').collect();
-                e.text = quire_markdown::frontmatter::set_field_path(&e.text, &parts, v).apply(&e.text);
+                match quire_markdown::frontmatter::set_field_path(&e.text, &parts, v) {
+                    Ok(edit) => e.text = edit.apply(&e.text),
+                    Err(why) => self.notify(NoticeLevel::Warn, why.to_string()),
+                }
             }
             e.cursor = None; // the text moved; the caret goes to the end
         }

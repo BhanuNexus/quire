@@ -7,7 +7,10 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 ### Security
 - **Git:** opening a folder that is (or is inside) a git repository no longer runs programs that the repository's own settings name. Before, a copied or unpacked folder whose `.git/config` set `core.fsmonitor` or a clean filter ran that program as soon as Quire read the git status. Now Quire runs no git in such a repository and says why in the status bar. Repository hooks stop only what Quire does on its own (auto-commit, pull on start, push after commit); a commit you ask for still runs them.
 - **`quire-cli serve`:** a request without a session (web app) or a token (MCP) is answered without reading its body, and the sign-in and OAuth forms are limited to a few kilobytes. Before, anyone who could reach the server could make it hold up to 8 MB per request.
-- **Properties:** front matter nested tens of thousands of levels deep no longer crashes Quire. Maps nested more than 64 levels deep are kept as text.
+- **Properties:** front matter nested tens of thousands of levels deep no longer crashes Quire. Maps nested more than 64 levels deep are kept as text, and a change that would have to go through such text (or through a list of maps) is refused with a message instead of rewriting it: the note is left unchanged.
+- **Deeply nested YAML:** a note, or a Bases `.base` file, whose YAML is nested hundreds of levels deep (`- - - …`) no longer crashes Quire when it is saved with tidy-on-save, tidied, or opened as a base. Such text is treated as unreadable and left as it is.
+- **BibTeX files** with braces nested thousands of levels deep (`{{{{…`) no longer crash Quire; they are reported as unreadable.
+- **PDF pages:** a PDF page that claims an enormous size (a huge `MediaBox`) is drawn at most 40 megapixels (the on-device OCR asked for up to 17 GB); a page with no usable size is an error.
 - API keys, the sync server token and a removal's passphrase no longer appear in debug output.
 - **HTML sanitizer:** updated the `ammonia` library to 4.2.5, which fixes a mutation-XSS hole (RUSTSEC-2026-0533) where embedded SVG or MathML in a note could become live markup after a browser re-parsed it. It protects the web app, published sites, "Copy as HTML" and HTML export. Tests now run SVG/MathML mutation payloads through every one of those outputs.
 

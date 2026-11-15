@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
 
-use quire_markdown::frontmatter::{self, ItemChange, Value};
+use quire_markdown::frontmatter::{self, ItemChange, Refused, Value};
 use quire_markdown::{Inline, scan_inlines};
 use quire_vault::{ContentHash, NotePath};
 
@@ -171,6 +171,13 @@ fn apply_fm(text: &mut String, edit: Option<frontmatter::Edit>, n: &mut usize) {
     }
 }
 
+/// Like [`apply_fm`] for a path edit. A refusal (the path runs through text
+/// kept as written) stops the note's whole operation, so no half of it lands.
+fn apply_fm_path(text: &mut String, edit: Result<Option<frontmatter::Edit>, Refused>, n: &mut usize) -> Result<(), Refused> {
+    apply_fm(text, edit?, n);
+    Ok(())
+}
+
 /// A tag op on one note.
 fn retag_note(src: &str, op: &MetaOp) -> (String, usize) {
     let mut n = 0;
@@ -279,12 +286,12 @@ fn combine(values: &[Value]) -> Value {
 }
 
 /// A property op on one note.
-fn reprop_note(src: &str, op: &MetaOp) -> (String, usize) {
+fn reprop_note(src: &str, op: &MetaOp) -> Result<(String, usize), Refused> {
     let mut out = src.to_string();
     let mut n = 0;
     match op {
         MetaOp::RenameKey { from, to } => {
-            let Some(path) = find_key(&out, from) else { return (out, 0) };
+            let Some(path) = find_key(&out, from) else { return Ok((out, 0)) };
             let target: Vec<String> = to.split('.').map(|p| p.trim().to_string()).collect();
             let same_parent =
                 path.len() == target.len() && path[..path.len() - 1].iter().zip(&target).all(|(a, b)| a.eq_ignore_ascii_case(b));
@@ -293,10 +300,8 @@ fn reprop_note(src: &str, op: &MetaOp) -> (String, usize) {
                 return reprop_note(src, &MetaOp::MergeKeys { from: vec![from.clone()], into: to.clone() });
             }
             let p: Vec<&str> = path.iter().map(String::as_str).collect();
-            {
-                let e = frontmatter::rename_field_path(&out, &p, target.last().map_or("", String::as_str));
-                apply_fm(&mut out, e, &mut n);
-            }
+            let e = frontmatter::rename_field_path(&out, &p, target.last().map_or("", String::as_str));
+            apply_fm_path(&mut out, e, &mut n)?;
         }
         MetaOp::MergeKeys { from, into } => {
             let target = find_key(&out, into).unwrap_or_else(|| into.split('.').map(|p| p.trim().to_string()).collect());
@@ -306,24 +311,22 @@ fn reprop_note(src: &str, op: &MetaOp) -> (String, usize) {
                 if let Some(p) = find_key(&out, f).filter(|p| *p != target) {
                     values.extend(get_value(&out, &p));
                     let pr: Vec<&str> = p.iter().map(String::as_str).collect();
-                    {
-                        let e = frontmatter::remove_field_path(&out, &pr);
-                        apply_fm(&mut out, e, &mut n);
-                    }
+                    let e = frontmatter::remove_field_path(&out, &pr);
+                    apply_fm_path(&mut out, e, &mut n)?;
                     found = true;
                 }
             }
             if found {
                 let t: Vec<&str> = target.iter().map(String::as_str).collect();
-                out = frontmatter::set_field_path(&out, &t, &combine(&values)).apply(&out);
+                out = frontmatter::set_field_path(&out, &t, &combine(&values))?.apply(&out);
             }
         }
         MetaOp::RenameValue { key, from, to } => {
-            let Some(path) = find_key(&out, key) else { return (out, 0) };
+            let Some(path) = find_key(&out, key) else { return Ok((out, 0)) };
             let p: Vec<&str> = path.iter().map(String::as_str).collect();
             match get_value(&out, &path) {
                 Some(Value::Str(s)) if s.trim().eq_ignore_ascii_case(from.trim()) => {
-                    out = frontmatter::set_field_path(&out, &p, &Value::Str(to.clone())).apply(&out);
+                    out = frontmatter::set_field_path(&out, &p, &Value::Str(to.clone()))?.apply(&out);
                     n += 1;
                 }
                 Some(Value::List(_) | Value::Str(_)) => {
@@ -338,28 +341,49 @@ fn reprop_note(src: &str, op: &MetaOp) -> (String, usize) {
         MetaOp::DeleteKey { key } => {
             if let Some(path) = find_key(&out, key) {
                 let p: Vec<&str> = path.iter().map(String::as_str).collect();
-                {
-                    let e = frontmatter::remove_field_path(&out, &p);
-                    apply_fm(&mut out, e, &mut n);
-                }
+                let e = frontmatter::remove_field_path(&out, &p);
+                apply_fm_path(&mut out, e, &mut n)?;
             }
         }
         _ => {}
     }
-    (out, n)
+    Ok((out, n))
 }
 
-/// One note under `op`; `None` when nothing changes.
+/// One note under `op`; `Ok(None)` when nothing changes.
+///
+/// `Err` when the
+/// change would have to go through text the property editor keeps as
+/// written (maps nested too deeply, a list of maps): that note is not changed.
+pub fn try_apply_to(path: &NotePath, src: &str, op: &MetaOp) -> Result<Option<FileEdit>, Refused> {
+    let (after, changes) = if op.is_tag_op() { retag_note(src, op) } else { reprop_note(src, op)? };
+    Ok((after != src).then(|| FileEdit { path: path.clone(), before: src.to_string(), after, changes: changes.max(1) }))
+}
+
+/// One note under `op`; `None` when nothing changes or the change is refused.
 pub fn apply_to(path: &NotePath, src: &str, op: &MetaOp) -> Option<FileEdit> {
-    let (after, changes) = if op.is_tag_op() { retag_note(src, op) } else { reprop_note(src, op) };
-    (after != src).then(|| FileEdit { path: path.clone(), before: src.to_string(), after, changes: changes.max(1) })
+    try_apply_to(path, src, op).ok().flatten()
+}
+
+/// Every note's edit under `op`, in path order, and the notes it had to
+/// leave alone (see [`try_apply_to`]).
+pub fn plan_with_refusals<'a>(notes: impl IntoIterator<Item = (&'a NotePath, &'a str)>, op: &MetaOp) -> (Vec<FileEdit>, Vec<NotePath>) {
+    let (mut v, mut refused) = (Vec::new(), Vec::new());
+    for (p, src) in notes {
+        match try_apply_to(p, src, op) {
+            Ok(Some(e)) => v.push(e),
+            Ok(None) => {}
+            Err(_) => refused.push(p.clone()),
+        }
+    }
+    v.sort_by(|a, b| a.path.cmp(&b.path));
+    refused.sort();
+    (v, refused)
 }
 
 /// Every note's edit under `op`, in path order.
 pub fn plan<'a>(notes: impl IntoIterator<Item = (&'a NotePath, &'a str)>, op: &MetaOp) -> Vec<FileEdit> {
-    let mut v: Vec<FileEdit> = notes.into_iter().filter_map(|(p, src)| apply_to(p, src, op)).collect();
-    v.sort_by(|a, b| a.path.cmp(&b.path));
-    v
+    plan_with_refusals(notes, op).0
 }
 
 // ------------------------------------------------------------------ app state
@@ -372,6 +396,8 @@ pub struct Preview {
     pub edits: Option<Arc<Vec<FileEdit>>>,
     /// Milliseconds the plan took (shown when slow).
     pub ms: u128,
+    /// Notes left out because the change would go through text kept as written.
+    pub refused: Vec<NotePath>,
 }
 
 /// A batch that was applied, for undo.
@@ -392,7 +418,7 @@ pub struct UndoReport {
     pub conflicts: Vec<NotePath>,
 }
 
-type PlanSlot = Arc<Mutex<Option<(Vec<FileEdit>, u128)>>>;
+type PlanSlot = Arc<Mutex<Option<(Vec<FileEdit>, u128, Vec<NotePath>)>>>;
 
 /// State for this feature.
 #[derive(Debug, Default)]
@@ -407,10 +433,11 @@ impl MetaState {
     /// Work the plan out yet? Called every tick; true when it just arrived.
     pub(crate) fn poll(&mut self) -> bool {
         let Some(slot) = &self.slot else { return false };
-        let Some((edits, ms)) = slot.lock().ok().and_then(|mut s| s.take()) else { return false };
+        let Some((edits, ms, refused)) = slot.lock().ok().and_then(|mut s| s.take()) else { return false };
         if let Some(p) = &mut self.preview {
             p.edits = Some(Arc::new(edits));
             p.ms = ms;
+            p.refused = refused;
         }
         self.slot = None;
         true
@@ -514,16 +541,16 @@ impl Workspace {
         let op2 = op.clone();
         let started = std::time::Instant::now();
         let spawned = std::thread::Builder::new().name("quire-meta-plan".into()).spawn(move || {
-            let edits = plan(texts.iter().map(|(p, t)| (p, t.as_str())), &op2);
+            let (edits, refused) = plan_with_refusals(texts.iter().map(|(p, t)| (p, t.as_str())), &op2);
             if let Ok(mut s) = out.lock() {
-                *s = Some((edits, started.elapsed().as_millis()));
+                *s = Some((edits, started.elapsed().as_millis(), refused));
             }
         });
         if spawned.is_err() {
             self.notify(NoticeLevel::Error, "Couldn't start working out the changes");
             return;
         }
-        self.features.meta.preview = Some(Preview { op, edits: None, ms: 0 });
+        self.features.meta.preview = Some(Preview { op, edits: None, ms: 0, refused: Vec::new() });
         self.features.meta.slot = Some(slot);
     }
 
@@ -831,5 +858,25 @@ mod tests {
         assert_eq!(r.restored, 1000);
         let v = w.vault().unwrap();
         assert!((0..1000).all(|i| v.read(&NotePath::new(format!("N{i}.md"))).unwrap() == files[i].1), "undo restores every byte");
+    }
+
+    /// Merging into a path through text kept as written leaves the note as
+    /// it was, and the plan reports it instead of dropping the deep text.
+    #[test]
+    fn property_ops_through_text_kept_as_written_leave_the_note_alone() {
+        let maps: String = (0..100).map(|d| " ".repeat(d * 2) + "k" + &d.to_string() + ":\n").collect();
+        let src = format!("---\nz: 1\n{maps}{}leaf: 1\n---\nbody\n", " ".repeat(200));
+        let deep = (0..64).map(|d| format!("k{d}")).chain(["new".to_string()]).collect::<Vec<_>>().join(".");
+        let op = MetaOp::MergeKeys { from: vec!["z".into()], into: deep };
+        assert!(try_apply_to(&"N.md".into(), &src, &op).is_err());
+        assert_eq!(edit(&src, &op), src, "not even the removal of `z` is applied");
+        let path: NotePath = "N.md".into();
+        let (edits, refused) = plan_with_refusals([(&path, src.as_str())], &op);
+        assert!(edits.is_empty());
+        assert_eq!(refused, vec![path]);
+        // The same op on a note without the deep entry works.
+        let plain = "---\nz: 1\n---\n";
+        let plain_op = MetaOp::MergeKeys { from: vec!["z".into()], into: "a.b".into() };
+        assert!(try_apply_to(&"N.md".into(), plain, &plain_op).unwrap().is_some());
     }
 }

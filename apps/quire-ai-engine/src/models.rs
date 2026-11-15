@@ -373,6 +373,24 @@ fn embed_part(m: &Embedder, texts: Vec<String>, normalize: bool) -> Result<(usiz
     Ok((dims, flat))
 }
 
+/// The most pixels in a rendered page (40 million), and its longest side.
+const MAX_PIXELS: f64 = 40_000_000.0;
+const MAX_SIDE: f64 = 8_000.0;
+
+/// The scale to render a `width` × `height` pt page at: `want`, lowered so
+/// the image stays under [`MAX_PIXELS`] and [`MAX_SIDE`]. `None` for a size
+/// that is zero, negative, not a number or too thin to draw (a page's size
+/// comes from the file, so it is never trusted).
+fn page_scale(want: f32, width: f32, height: f32) -> Option<f32> {
+    if !(width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0) {
+        return None;
+    }
+    let want = if want.is_finite() { f64::from(want) } else { 1.0 };
+    let (w, h) = (f64::from(width), f64::from(height));
+    let scale = want.max(0.05).max(1.0 / w.min(h)).min(MAX_SIDE / w.max(h)).min((MAX_PIXELS / (w * h)).sqrt());
+    (scale.is_finite() && w * scale >= 1.0 && h * scale >= 1.0).then_some(scale as f32)
+}
+
 /// One PDF page as RGB pixels (white background) at `dpi`.
 fn render_page(path: &str, page: u32, dpi: u32) -> Result<(Vec<u8>, u32, u32), Failure> {
     use hayro::hayro_interpret::InterpreterSettings;
@@ -381,7 +399,9 @@ fn render_page(path: &str, page: u32, dpi: u32) -> Result<(Vec<u8>, u32, u32), F
     let pdf = Pdf::new(data).map_err(|e| failed(format!("can't read the PDF: {e:?}")))?;
     let pages = pdf.pages();
     let pg = pages.get(page as usize).ok_or_else(|| (code::BAD_PARAMS, format!("the PDF has {} pages", pages.len())))?;
-    let scale = (dpi.clamp(72, 300) as f32) / 72.0;
+    let (pw, ph) = pg.render_dimensions();
+    let scale = page_scale((dpi.clamp(72, 300) as f32) / 72.0, pw, ph)
+        .ok_or_else(|| (code::BAD_PARAMS, "this PDF page has no usable size".to_string()))?;
     let settings = hayro::RenderSettings {
         x_scale: scale,
         y_scale: scale,
@@ -397,6 +417,75 @@ fn render_page(path: &str, page: u32, dpi: u32) -> Result<(Vec<u8>, u32, u32), F
 
 #[cfg(test)]
 mod tests {
+    use super::{MAX_PIXELS, MAX_SIDE, page_scale, render_page};
+
+    /// A one-page PDF with the given `/MediaBox` text and a valid xref table.
+    fn pdf_with_media_box(media_box: &str) -> Vec<u8> {
+        let objs = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+            format!("<< /Type /Page /Parent 2 0 R /MediaBox {media_box} /Contents 4 0 R >>"),
+            "<< /Length 0 >>\nstream\n\nendstream".to_string(),
+        ];
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (i, o) in objs.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend(format!("{} 0 obj\n{o}\nendobj\n", i + 1).bytes());
+        }
+        let xref = out.len();
+        out.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).bytes());
+        for o in offsets {
+            out.extend(format!("{o:010} 00000 n \n").bytes());
+        }
+        out.extend(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objs.len() + 1).bytes());
+        out
+    }
+
+    #[test]
+    fn page_size_is_capped_and_degenerate_sizes_are_refused() {
+        assert_eq!(page_scale(1.0, 612.0, 792.0), Some(1.0));
+        for (w, h) in [(20_000.0, 20_000.0), (1.0e9, 1.0e9), (f32::MAX, f32::MAX), (8_000.0, 8_000.0)] {
+            let s = f64::from(page_scale(300.0 / 72.0, w, h).unwrap());
+            let (pw, ph) = (f64::from(w) * s, f64::from(h) * s);
+            assert!(pw <= MAX_SIDE + 1.0 && ph <= MAX_SIDE + 1.0 && pw * ph <= MAX_PIXELS * 1.001, "{w}x{h}");
+        }
+        for (w, h) in [(0.0, 100.0), (-5.0, 10.0), (f32::NAN, 10.0), (10.0, f32::INFINITY), (1.0e9, 0.001)] {
+            assert_eq!(page_scale(1.0, w, h), None, "{w}x{h}");
+        }
+    }
+
+    /// The reviewer's PDF: `MediaBox [0 0 20000 20000]` at 300 dpi asked for
+    /// a 65535 x 65535 buffer (17 GB).
+    #[test]
+    fn a_huge_media_box_renders_small_and_odd_ones_fail_cleanly() {
+        let dir = tempfile::tempdir().unwrap();
+        std::thread::Builder::new()
+            .stack_size(2 << 20)
+            .spawn(move || {
+                for (i, mb) in [
+                    "[0 0 20000 20000]",
+                    "[0 0 99999999999999999999 99999999999999999999]",
+                    "[0 0 0 0]",
+                    "[0 0 0.001 0.001]",
+                    "[0 0 -5 -5]",
+                ]
+                .iter()
+                .enumerate()
+                {
+                    let path = dir.path().join(format!("{i}.pdf"));
+                    std::fs::write(&path, pdf_with_media_box(mb)).unwrap();
+                    if let Ok((rgb, w, h)) = render_page(path.to_str().unwrap(), 0, 300) {
+                        assert!(f64::from(w) * f64::from(h) <= MAX_PIXELS, "{mb}: {w}x{h}");
+                        assert_eq!(rgb.len(), w as usize * h as usize * 3);
+                    }
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
     use tokenizers::pre_tokenizers::split::{Split, SplitPattern};
     use tokenizers::{OffsetReferential, OffsetType, PreTokenizedString, PreTokenizer, SplitDelimiterBehavior};
 

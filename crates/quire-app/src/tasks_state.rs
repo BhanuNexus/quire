@@ -997,7 +997,16 @@ pub(crate) fn tick(ws: &mut Workspace, now: Instant) -> bool {
     changed |= crate::srs_state::poll_load(ws);
     changed |= crate::reminders::tick(ws);
     changed |= ws.timer_tick();
-    changed |= ws.features.meta.poll();
+    if ws.features.meta.poll() {
+        changed = true;
+        let skipped = ws.features.meta.preview.as_ref().map_or(0, |p| p.refused.len());
+        if skipped > 0 {
+            ws.notify(
+                NoticeLevel::Warn,
+                format!("{skipped} note(s) left out: the change would go through a property this editor keeps as text (nested too deeply, or a list of maps)"),
+            );
+        }
+    }
     changed |= run_actions(ws);
     changed |= complete_ticked(ws);
     changed |= crate::templates_ui_state::fill_new_notes(ws);

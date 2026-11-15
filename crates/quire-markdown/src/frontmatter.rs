@@ -269,7 +269,40 @@ struct Entry {
     shape: Shape,
     /// The fields of a block map.
     children: Vec<Self>,
+    /// A flow value nested past [`MAX_NESTING`]: its deep part is kept as text.
+    capped: bool,
 }
+
+impl Entry {
+    /// Whether the value is text the reader could not take apart (a list of
+    /// maps, or nesting past the limit): writers must not go through it.
+    fn opaque(&self) -> bool {
+        self.shape == Shape::Raw || self.capped
+    }
+}
+
+/// An edit that would have to go through or rewrite a value kept as text.
+///
+/// Such a value (maps nested more than 64 deep, a list of maps) is not
+/// read into fields, so writing a field inside it would re-emit it from
+/// what was read and lose or change text. The note is left as it was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refused {
+    /// The dotted path asked for.
+    pub path: String,
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Can't change “{}”: it is inside a value this editor keeps as text (nested too deeply, or a list of maps). Edit it in the note's text; the note is unchanged.",
+            self.path
+        )
+    }
+}
+
+impl std::error::Error for Refused {}
 
 /// The parsed block with positions, for writers.
 #[derive(Debug)]
@@ -339,13 +372,16 @@ fn split_flow(s: &str) -> Vec<(Range<usize>, &str)> {
 const MAX_NESTING: usize = 64;
 
 /// A value written on one line.
-fn parse_inline(v: &str) -> (Value, Shape) {
-    parse_inline_at(v, 0)
+fn parse_inline(v: &str) -> (Value, Shape, bool) {
+    let mut capped = false;
+    let (value, shape) = parse_inline_at(v, 0, &mut capped);
+    (value, shape, capped)
 }
 
-fn parse_inline_at(v: &str, depth: usize) -> (Value, Shape) {
+fn parse_inline_at(v: &str, depth: usize, capped: &mut bool) -> (Value, Shape) {
     let v = v.trim();
     if depth >= MAX_NESTING {
+        *capped |= v.starts_with(['[', '{']);
         return (Value::Str(v.to_string()), Shape::Scalar);
     }
     if v.len() >= 2 && v.starts_with('[') && v.ends_with(']') {
@@ -357,7 +393,7 @@ fn parse_inline_at(v: &str, depth: usize) -> (Value, Shape) {
         for (_, part) in split_flow(&v[1..v.len() - 1]) {
             match split_key(part, false) {
                 Some((k, val)) => {
-                    m.insert(k, parse_inline_at(val, depth + 1).0);
+                    m.insert(k, parse_inline_at(val, depth + 1, capped).0);
                 }
                 None => {
                     m.insert(unquote(part), Value::Str(String::new()));
@@ -441,8 +477,16 @@ fn parse_entries_at(lines: &[Line<'_>], mut i: usize, indent: usize, depth: usiz
             i += 1;
             continue;
         };
-        let mut e =
-            Entry { key, line: i, end: i + 1, indent, value: Value::Str(String::new()), shape: Shape::Scalar, children: Vec::new() };
+        let mut e = Entry {
+            key,
+            line: i,
+            end: i + 1,
+            indent,
+            value: Value::Str(String::new()),
+            shape: Shape::Scalar,
+            children: Vec::new(),
+            capped: false,
+        };
         let block_scalar = matches!(val.trim_end_matches(|c: char| c.is_ascii_digit()), "|" | "|-" | "|+" | ">" | ">-" | ">+");
         if block_scalar {
             let (mut j, mut last) = (i + 1, i);
@@ -463,7 +507,7 @@ fn parse_entries_at(lines: &[Line<'_>], mut i: usize, indent: usize, depth: usiz
             e.end = last + 1;
             i = last + 1;
         } else if !val.is_empty() {
-            (e.value, e.shape) = parse_inline(val);
+            (e.value, e.shape, e.capped) = parse_inline(val);
             i += 1;
         } else {
             match next_content(lines, i + 1) {
@@ -660,6 +704,60 @@ pub fn yaml_scalar(s: &str) -> String {
     if risky { format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")) } else { s.to_string() }
 }
 
+/// The deepest block nesting [`load_yaml`] reads.
+pub const MAX_YAML_DEPTH: usize = 64;
+
+/// Whether `text` nests block collections no deeper than [`MAX_YAML_DEPTH`].
+///
+/// A cheap pass over the lines, with no recursion, made before the text goes
+/// to `yaml-rust2`, which limits flow nesting (`[[[…`) but not block
+/// nesting: `- - - …` or ever deeper indentation makes it, and the values it
+/// builds, recurse until the stack is gone, and a stack overflow aborts the
+/// whole app. Depth is the number of indentation levels in force plus the
+/// `-`, `?` or `:` indicators that open a collection on the same line.
+/// Block scalars and multi-line strings count like any other line, so a
+/// pathological one is refused too: refusing is the safe side.
+pub fn yaml_depth_ok(text: &str) -> bool {
+    let mut stack: Vec<usize> = Vec::new();
+    for line in text.lines() {
+        let body = line.trim_start_matches([' ', '\t']);
+        if body.is_empty() || body.starts_with('#') {
+            continue;
+        }
+        if body == "---" || body == "..." {
+            stack.clear();
+            continue;
+        }
+        let indent = line.len() - body.len();
+        while stack.last().is_some_and(|&t| t >= indent) {
+            stack.pop();
+        }
+        stack.push(indent);
+        let mut runs = 0usize;
+        let mut rest = body;
+        while let Some(tail) = rest.strip_prefix(['-', '?', ':']) {
+            if !(tail.is_empty() || tail.starts_with([' ', '\t'])) {
+                break;
+            }
+            runs += 1;
+            rest = tail.trim_start_matches([' ', '\t']);
+        }
+        if stack.len() + runs.saturating_sub(1) > MAX_YAML_DEPTH {
+            return false;
+        }
+    }
+    true
+}
+
+/// Read `text` as YAML with `yaml-rust2`, after [`yaml_depth_ok`]. Every
+/// place that hands user YAML to that parser goes through here.
+pub fn load_yaml(text: &str) -> Result<Vec<yaml_rust2::Yaml>, String> {
+    if !yaml_depth_ok(text) {
+        return Err("it is nested too deeply to read".into());
+    }
+    yaml_rust2::YamlLoader::load_from_str(text).map_err(|e| e.to_string())
+}
+
 /// Whether the front matter at the start of `src` is valid YAML, read by a
 /// real YAML parser (the reader here is lenient). `None` without front matter.
 pub fn yaml_valid(src: &str) -> Option<bool> {
@@ -668,7 +766,7 @@ pub fn yaml_valid(src: &str) -> Option<bool> {
     let mut lines: Vec<&str> = block.split_inclusive('\n').collect();
     lines.remove(0);
     lines.pop();
-    Some(yaml_rust2::YamlLoader::load_from_str(&lines.concat()).is_ok())
+    Some(load_yaml(&lines.concat()).is_ok())
 }
 
 /// Like [`yaml_scalar`], for a value that is text (a tag).
@@ -810,18 +908,24 @@ fn set_in_map(m: &mut BTreeMap<String, Value>, path: &[&str], value: Value) {
 }
 
 /// Set a field at a path (`["author", "name"]`), creating missing parents.
+///
 /// Only the leaf's line or lines change (or, when a parent is written
 /// inline as `{…}`, that parent's line); every other byte stays.
-pub fn set_field_path(src: &str, path: &[&str], value: &Value) -> Edit {
+///
+/// [`Refused`] when the path runs through a value the reader keeps as text
+/// (maps nested past 64 levels, a list of maps): writing inside it would
+/// rewrite that text from what was read. Replacing such an entry as a whole
+/// (a path that ends at it) is allowed.
+pub fn set_field_path(src: &str, path: &[&str], value: &Value) -> Result<Edit, Refused> {
     if path.iter().any(|k| k.chars().any(needs_escape)) {
         let clean: Vec<String> = path.iter().map(|k| clean_key(k)).collect();
         return set_field_path(src, &clean.iter().map(String::as_str).collect::<Vec<_>>(), value);
     }
     if path.len() <= 1 {
-        return set_field(src, path.first().copied().unwrap_or_default(), value);
+        return Ok(set_field(src, path.first().copied().unwrap_or_default(), value));
     }
     let Some(doc) = parse_doc(src) else {
-        return Edit { range: 0..0, text: format!("---\n{}---\n", format_chain(path, value, 0, 2, "\n")) };
+        return Ok(Edit { range: 0..0, text: format!("---\n{}---\n", format_chain(path, value, 0, 2, "\n")) });
     };
     let (nl, unit) = (doc.nl, doc.unit);
     let mut entries = &doc.entries;
@@ -829,16 +933,20 @@ pub fn set_field_path(src: &str, path: &[&str], value: &Value) -> Edit {
     for (depth, key) in path.iter().enumerate() {
         let last = depth + 1 == path.len();
         let Some(e) = entries.iter().rev().find(|e| e.key == *key) else {
-            return Edit { range: insert_at..insert_at, text: format_chain(&path[depth..], value, indent, unit, nl) };
+            return Ok(Edit { range: insert_at..insert_at, text: format_chain(&path[depth..], value, indent, unit, nl) });
         };
         if last {
-            return replace_lines(src, entry_range(&doc, e), format_entry(key, value, e.indent, unit, nl), nl);
+            return Ok(replace_lines(src, entry_range(&doc, e), format_entry(key, value, e.indent, unit, nl), nl));
         }
         if e.shape == Shape::BlockMap {
             indent = e.children.first().map_or(e.indent + unit, |c| c.indent);
             insert_at = doc.lines[e.end - 1].end;
             entries = &e.children;
             continue;
+        }
+        // Text kept as it was written can't be rewritten from what was read.
+        if e.opaque() {
+            return Err(Refused { path: path.join(".") });
         }
         // The parent is written inline or isn't a map yet: rewrite it whole.
         let mut merged = match &e.value {
@@ -852,54 +960,62 @@ pub fn set_field_path(src: &str, path: &[&str], value: &Value) -> Edit {
         } else {
             format_entry(key, &merged, e.indent, unit, nl)
         };
-        return replace_lines(src, entry_range(&doc, e), text, nl);
+        return Ok(replace_lines(src, entry_range(&doc, e), text, nl));
     }
-    Edit { range: insert_at..insert_at, text: String::new() }
+    Ok(Edit { range: insert_at..insert_at, text: String::new() })
 }
 
 /// Remove a top-level field; `None` when it isn't there. Removing the last
 /// field removes the whole block.
 pub fn remove_field(src: &str, key: &str) -> Option<Edit> {
-    remove_field_path(src, &[key.trim()])
+    remove_field_path(src, &[key.trim()]).ok().flatten()
 }
 
 /// Remove a field at a path; `None` when it isn't there. A nested map left
 /// empty is written `key: {}`; removing the last top-level field removes the
 /// whole block.
-pub fn remove_field_path(src: &str, path: &[&str]) -> Option<Edit> {
-    let doc = parse_doc(src)?;
+///
+/// [`Refused`] when the path runs through text the reader keeps as it was
+/// written (see [`set_field_path`]); the note is left alone.
+pub fn remove_field_path(src: &str, path: &[&str]) -> Result<Option<Edit>, Refused> {
+    let Some(doc) = parse_doc(src) else { return Ok(None) };
     let (nl, unit) = (doc.nl, doc.unit);
     // Inside an inline map: rewrite that line.
     for depth in 0..path.len() {
-        let chain = find_path(&doc, &path[..=depth])?;
+        let Some(chain) = find_path(&doc, &path[..=depth]) else { return Ok(None) };
         let e = chain[depth];
         if depth + 1 < path.len() && e.shape != Shape::BlockMap {
-            let Value::Map(mut m) = e.value.clone() else { return None };
-            remove_in_map(&mut m, &path[depth + 1..])?;
+            if e.opaque() {
+                return Err(Refused { path: path.join(".") });
+            }
+            let Value::Map(mut m) = e.value.clone() else { return Ok(None) };
+            if remove_in_map(&mut m, &path[depth + 1..]).is_none() {
+                return Ok(None);
+            }
             let v = Value::Map(m);
             let text = if e.shape == Shape::FlowMap {
                 format!("{}{}: {}{nl}", " ".repeat(e.indent), yaml_scalar(&e.key), v.flow())
             } else {
                 format_entry(&e.key, &v, e.indent, unit, nl)
             };
-            return Some(replace_lines(src, entry_range(&doc, e), text, nl));
+            return Ok(Some(replace_lines(src, entry_range(&doc, e), text, nl)));
         }
     }
-    let chain = find_path(&doc, path)?;
-    let leaf = *chain.last()?;
+    let Some(chain) = find_path(&doc, path) else { return Ok(None) };
+    let Some(&leaf) = chain.last() else { return Ok(None) };
     if chain.len() == 1 {
         let distinct: std::collections::BTreeSet<&str> = doc.entries.iter().map(|e| e.key.as_str()).collect();
         if distinct.len() == 1 {
-            return Some(Edit { range: 0..doc.block_end, text: String::new() });
+            return Ok(Some(Edit { range: 0..doc.block_end, text: String::new() }));
         }
-        return Some(Edit { range: entry_range(&doc, leaf), text: String::new() });
+        return Ok(Some(Edit { range: entry_range(&doc, leaf), text: String::new() }));
     }
     let parent = chain[chain.len() - 2];
     if parent.children.iter().all(|c| c.key == leaf.key) {
         let text = format!("{}{}: {{}}{nl}", " ".repeat(parent.indent), yaml_scalar(&parent.key));
-        return Some(replace_lines(src, entry_range(&doc, parent), text, nl));
+        return Ok(Some(replace_lines(src, entry_range(&doc, parent), text, nl)));
     }
-    Some(Edit { range: entry_range(&doc, leaf), text: String::new() })
+    Ok(Some(Edit { range: entry_range(&doc, leaf), text: String::new() }))
 }
 
 fn remove_in_map(m: &mut BTreeMap<String, Value>, path: &[&str]) -> Option<()> {
@@ -914,23 +1030,32 @@ fn remove_in_map(m: &mut BTreeMap<String, Value>, path: &[&str]) -> Option<()> {
 }
 
 /// Rename the key at `path` to `new_key`, keeping its value's bytes.
-/// `None` when the field isn't there.
-pub fn rename_field_path(src: &str, path: &[&str], new_key: &str) -> Option<Edit> {
-    let doc = parse_doc(src)?;
+/// `None` when the field isn't there; [`Refused`] as for [`set_field_path`].
+pub fn rename_field_path(src: &str, path: &[&str], new_key: &str) -> Result<Option<Edit>, Refused> {
+    let Some(doc) = parse_doc(src) else { return Ok(None) };
     let new_key = clean_key(new_key);
     let new_key = new_key.as_str();
     for depth in 0..path.len() {
-        let chain = find_path(&doc, &path[..=depth])?;
+        let Some(chain) = find_path(&doc, &path[..=depth]) else { return Ok(None) };
         let e = chain[depth];
         if depth + 1 < path.len() && e.shape != Shape::BlockMap {
+            if e.opaque() {
+                return Err(Refused { path: path.join(".") });
+            }
             // Inside an inline map: rewrite its line.
-            let Value::Map(mut m) = e.value.clone() else { return None };
-            rename_in_map(&mut m, &path[depth + 1..], new_key)?;
+            let Value::Map(mut m) = e.value.clone() else { return Ok(None) };
+            if rename_in_map(&mut m, &path[depth + 1..], new_key).is_none() {
+                return Ok(None);
+            }
             let text = format!("{}{}: {}{}", " ".repeat(e.indent), yaml_scalar(&e.key), Value::Map(m).flow(), doc.nl);
-            return Some(replace_lines(src, entry_range(&doc, e), text, doc.nl));
+            return Ok(Some(replace_lines(src, entry_range(&doc, e), text, doc.nl)));
         }
     }
-    let leaf = *find_path(&doc, path)?.last()?;
+    Ok(rename_leaf(src, &doc, path, new_key))
+}
+
+fn rename_leaf(src: &str, doc: &Doc<'_>, path: &[&str], new_key: &str) -> Option<Edit> {
+    let leaf = *find_path(doc, path)?.last()?;
     let line = &doc.lines[leaf.line];
     let key_start = line.start + leaf.indent;
     let body = &src[key_start..line.end];
@@ -1337,7 +1462,7 @@ mod tests {
         assert_eq!(out.matches("\n---\n").count(), 1, "one closing fence: {out}");
         // Nested fields, list items, other line breaks and control characters too.
         for v in ["a\r\n---\r\nb: c", "x\u{2028}y", "tab\there", "back\\slash \"q\"\n- item", "nul\u{0}"] {
-            let out = set_field_path(src, &["author", "name"], &s(v)).apply(src);
+            let out = set_field_path(src, &["author", "name"], &s(v)).unwrap().apply(src);
             let fm = parse(&out).unwrap();
             assert_eq!(fm.get_path("author.name"), Some(&s(v.trim())), "{out}");
             assert_eq!(fm.tags(), ["a"], "{out}");
@@ -1381,52 +1506,52 @@ mod tests {
 
     #[test]
     fn path_edits_touch_only_their_lines() {
-        let e = set_field_path(NESTED, &["author", "name"], &s("Ada Lovelace"));
+        let e = set_field_path(NESTED, &["author", "name"], &s("Ada Lovelace")).unwrap();
         let out = e.apply(NESTED);
         assert_eq!(changed_lines(NESTED, &out), (vec!["  name: Ada\n".into()], vec!["  name: Ada Lovelace\n".into()]));
         assert_eq!(parse(&out).unwrap().get_path("author.name"), Some(&s("Ada Lovelace")));
 
         // A new leaf goes at the end of its map, at its siblings' indent.
-        let out = set_field_path(NESTED, &["author", "address", "zip"], &s("N1")).apply(NESTED);
+        let out = set_field_path(NESTED, &["author", "address", "zip"], &s("N1")).unwrap().apply(NESTED);
         assert!(out.contains("    city: London\n    zip: N1\n\ntags:"), "{out}");
         // Missing parents are created.
-        let out = set_field_path(NESTED, &["review", "by", "name"], &s("Bo")).apply(NESTED);
+        let out = set_field_path(NESTED, &["review", "by", "name"], &s("Bo")).unwrap().apply(NESTED);
         assert!(out.contains("title: T\nreview:\n  by:\n    name: Bo\n---\n"), "{out}");
         assert_eq!(parse(&out).unwrap().get_path("review.by.name"), Some(&s("Bo")));
         // An inline map keeps its line and form.
-        let out = set_field_path(NESTED, &["meta", "rev"], &s("3")).apply(NESTED);
+        let out = set_field_path(NESTED, &["meta", "rev"], &s("3")).unwrap().apply(NESTED);
         assert_eq!(changed_lines(NESTED, &out).1, vec!["meta: {by: [x, y], rev: 3}\n".to_string()]);
         // A scalar parent becomes a map.
-        let out = set_field_path(NESTED, &["title", "main"], &s("T")).apply(NESTED);
+        let out = set_field_path(NESTED, &["title", "main"], &s("T")).unwrap().apply(NESTED);
         assert_eq!(parse(&out).unwrap().get_path("title.main"), Some(&s("T")));
         // No front matter yet.
-        assert_eq!(set_field_path("body", &["a", "b"], &s("c")).apply("body"), "---\na:\n  b: c\n---\nbody");
+        assert_eq!(set_field_path("body", &["a", "b"], &s("c")).unwrap().apply("body"), "---\na:\n  b: c\n---\nbody");
         // A map value is written as a block.
-        let out = set_field_path(NESTED, &["author", "address"], &map(&[("city", s("Paris")), ("cc", s("FR"))])).apply(NESTED);
+        let out = set_field_path(NESTED, &["author", "address"], &map(&[("city", s("Paris")), ("cc", s("FR"))])).unwrap().apply(NESTED);
         assert!(out.contains("  address:\n    cc: FR\n    city: Paris\n\n"), "{out}");
     }
 
     #[test]
     fn remove_and_rename_by_path() {
-        let out = remove_field_path(NESTED, &["author", "orcid"]).unwrap().apply(NESTED);
+        let out = remove_field_path(NESTED, &["author", "orcid"]).unwrap().unwrap().apply(NESTED);
         assert_eq!(changed_lines(NESTED, &out), (vec!["  orcid: 0000-0001\n".into()], vec![]));
-        let out = remove_field_path(NESTED, &["author", "address", "city"]).unwrap().apply(NESTED);
+        let out = remove_field_path(NESTED, &["author", "address", "city"]).unwrap().unwrap().apply(NESTED);
         assert!(out.contains("  address: {}\n"), "{out}");
-        let out = remove_field_path(NESTED, &["meta", "by"]).unwrap().apply(NESTED);
+        let out = remove_field_path(NESTED, &["meta", "by"]).unwrap().unwrap().apply(NESTED);
         assert!(out.contains("meta: {rev: 2}\n"));
-        assert!(remove_field_path(NESTED, &["author", "nope"]).is_none());
-        let out = remove_field_path(NESTED, &["author"]).unwrap().apply(NESTED);
+        assert!(remove_field_path(NESTED, &["author", "nope"]).unwrap().is_none());
+        let out = remove_field_path(NESTED, &["author"]).unwrap().unwrap().apply(NESTED);
         assert!(!out.contains("Ada") && !out.contains("London") && out.contains("# who wrote it\n\ntags:"), "{out}");
 
-        let out = rename_field_path(NESTED, &["author", "name"], "full name").unwrap().apply(NESTED);
+        let out = rename_field_path(NESTED, &["author", "name"], "full name").unwrap().unwrap().apply(NESTED);
         assert_eq!(changed_lines(NESTED, &out), (vec!["  name: Ada\n".into()], vec!["  full name: Ada\n".into()]));
-        let out = rename_field_path(NESTED, &["abstract"], "summary").unwrap().apply(NESTED);
+        let out = rename_field_path(NESTED, &["abstract"], "summary").unwrap().unwrap().apply(NESTED);
         assert_eq!(parse(&out).unwrap().get("summary"), Some(&s("Line one\nline two")));
-        let out = rename_field_path(NESTED, &["meta", "rev"], "version").unwrap().apply(NESTED);
+        let out = rename_field_path(NESTED, &["meta", "rev"], "version").unwrap().unwrap().apply(NESTED);
         assert!(out.contains("meta: {by: [x, y], version: 2}\n"));
         let src = "---\n\"odd key\": 1\nk2:v\n---\n";
-        assert_eq!(rename_field_path(src, &["odd key"], "even").unwrap().apply(src), "---\neven: 1\nk2:v\n---\n");
-        assert_eq!(rename_field_path(src, &["k2"], "k3").unwrap().apply(src), "---\n\"odd key\": 1\nk3:v\n---\n");
+        assert_eq!(rename_field_path(src, &["odd key"], "even").unwrap().unwrap().apply(src), "---\neven: 1\nk2:v\n---\n");
+        assert_eq!(rename_field_path(src, &["k2"], "k3").unwrap().unwrap().apply(src), "---\n\"odd key\": 1\nk3:v\n---\n");
     }
 
     #[test]
@@ -1449,7 +1574,7 @@ mod tests {
     #[test]
     fn crlf_and_missing_final_newline() {
         let src = "---\r\na:\r\n  b: 1\r\n---\r\nx";
-        let out = set_field_path(src, &["a", "c"], &s("2")).apply(src);
+        let out = set_field_path(src, &["a", "c"], &s("2")).unwrap().apply(src);
         assert_eq!(out, "---\r\na:\r\n  b: 1\r\n  c: 2\r\n---\r\nx");
         assert_eq!(parse(&out).unwrap().get_path("a.c"), Some(&s("2")));
     }
@@ -1472,9 +1597,9 @@ mod tests {
             let before = src.clone();
             let value = s(&format!("v{}", rnd(100)));
             let edit = match rnd(3) {
-                0 => Some(set_field_path(&src, &path, &value)),
-                1 => remove_field_path(&src, &path),
-                _ => rename_field_path(&src, &path, keys[rnd(keys.len())]),
+                0 => Some(set_field_path(&src, &path, &value).unwrap()),
+                1 => remove_field_path(&src, &path).unwrap(),
+                _ => rename_field_path(&src, &path, keys[rnd(keys.len())]).unwrap(),
             };
             let Some(edit) = edit else { continue };
             src = edit.apply(&src);
@@ -1485,5 +1610,220 @@ mod tests {
             assert!(src.ends_with("---\nbody\n"));
             let _ = fm;
         }
+    }
+
+    // ---- text kept as written (nesting past the limit, lists of maps)
+
+    fn flow_note(n: usize) -> String {
+        format!("---\nz: 1\nk: {}x{}\ny: 2\n---\nbody\n", "{a: ".repeat(n), "}".repeat(n))
+    }
+
+    fn block_note(n: usize) -> String {
+        let mut s = String::from("---\nz: 1\n");
+        for d in 0..n {
+            s.push_str(&" ".repeat(d * 2));
+            let _ = writeln!(s, "k{d}:");
+        }
+        s.push_str(&" ".repeat(n * 2));
+        s.push_str("leaf: 1\n---\nbody\n");
+        s
+    }
+
+    fn block_path(depth: usize) -> Vec<String> {
+        (0..depth).map(|d| format!("k{d}")).collect()
+    }
+
+    /// The reviewers' D-L3 / S-L3: an edit through a capped entry used to
+    /// drop its deep part (10616 -> 4498 bytes) or re-quote it as a string.
+    #[test]
+    fn set_remove_and_rename_through_a_capped_flow_map_are_refused() {
+        let src = flow_note(100);
+        let p = ["k", "a", "b"];
+        assert!(set_field_path(&src, &p, &s("v")).is_err());
+        assert!(remove_field_path(&src, &["k", "a"]).is_err());
+        assert!(rename_field_path(&src, &["k", "a"], "b").is_err());
+        let err = set_field_path(&src, &p, &s("v")).unwrap_err();
+        assert_eq!(err.path, "k.a.b");
+        assert!(err.to_string().contains("k.a.b") && err.to_string().contains("the note is unchanged"), "{err}");
+        // A flow map that is only just under the limit is still edited as before.
+        let ok = format!("---\nk: {}x{}\n---\n", "{a: ".repeat(10), "}".repeat(10));
+        assert!(set_field_path(&ok, &["k", "a", "b"], &s("v")).is_ok());
+        // Whole-entry edits still work: they replace the entry on purpose.
+        let out = set_field(&src, "k", &s("new")).apply(&src);
+        assert_eq!(out, src.replace(&format!("k: {}x{}", "{a: ".repeat(100), "}".repeat(100)), "k: new"));
+        // The capped entry sits among other keys: editing those keeps its bytes.
+        let out = set_field_path(&src, &["z"], &s("9")).unwrap().apply(&src);
+        assert_eq!(out, src.replacen("z: 1", "z: 9", 1));
+        let out = remove_field(&src, "y").unwrap().apply(&src);
+        assert_eq!(out, src.replace("y: 2\n", ""));
+    }
+
+    #[test]
+    fn set_remove_and_rename_through_a_capped_block_map_are_refused() {
+        let src = block_note(100);
+        for depth in [63, 64, 80] {
+            let mut p = block_path(depth);
+            p.push("newkey".into());
+            let pr: Vec<&str> = p.iter().map(String::as_str).collect();
+            if depth > 63 {
+                assert!(set_field_path(&src, &pr, &s("v")).is_err(), "set below k{}", depth - 1);
+                assert!(remove_field_path(&src, &pr).is_err(), "remove below k{}", depth - 1);
+                assert!(rename_field_path(&src, &pr, "other").is_err(), "rename below k{}", depth - 1);
+            }
+        }
+        // Down to the last readable level it works and keeps the capped text.
+        let mut p = block_path(63);
+        p.push("newkey".into());
+        let pr: Vec<&str> = p.iter().map(String::as_str).collect();
+        let edit = set_field_path(&src, &pr, &s("v")).unwrap();
+        let out = edit.apply(&src);
+        assert!(out.contains("leaf: 1\n") && out.len() > src.len(), "the capped text stays");
+        let leaf = format!("{}leaf: 1\n", " ".repeat(200));
+        assert!(out.contains(&leaf));
+        // The capped entry itself can be renamed or removed as one whole.
+        let p63 = block_path(64);
+        let pr: Vec<&str> = p63.iter().map(String::as_str).collect();
+        assert!(rename_field_path(&src, &pr, "renamed").unwrap().is_some());
+        // Other keys: the capped bytes are identical.
+        let out = set_field(&src, "z", &s("2")).apply(&src);
+        assert_eq!(out, src.replacen("z: 1", "z: 2", 1));
+    }
+
+    #[test]
+    fn a_list_of_maps_is_not_rewritten_by_a_path_edit() {
+        let src = "---\nauthors:\n  - name: Ada\n    org: X\n  - name: Bo\nz: 1\n---\n";
+        assert!(set_field_path(src, &["authors", "name"], &s("v")).is_err());
+        assert!(remove_field_path(src, &["authors", "name"]).is_err());
+        assert!(rename_field_path(src, &["authors", "name"], "who").is_err());
+        let out = set_field(src, "z", &s("2")).apply(src);
+        assert_eq!(out, src.replace("z: 1", "z: 2"));
+    }
+
+    /// Every writer that touches front matter leaves a capped entry's bytes
+    /// as they were when it edits something else.
+    #[test]
+    fn every_writer_keeps_capped_entries_byte_identical() {
+        use crate::linter::{Cx, Options, lint};
+        for src in [flow_note(100), block_note(100)] {
+            let capped_lines: Vec<&str> = src.lines().filter(|l| l.starts_with('k') || l.starts_with(' ')).collect();
+            let keeps = |out: &str, what: &str| {
+                for l in &capped_lines {
+                    assert!(out.lines().any(|o| o == *l), "{what} changed a capped line: {}", &l[..l.len().min(40)]);
+                }
+                assert!(out.ends_with("body\n"), "{what}");
+            };
+            // Property edits (the panel, MCP, CLI, templates and tasks all use these).
+            keeps(&set_field(&src, "z", &s("2")).apply(&src), "set_field");
+            keeps(&set_field(&src, "new", &s("v")).apply(&src), "set_field (new key)");
+            keeps(&set_field_path(&src, &["z"], &s("2")).unwrap().apply(&src), "set_field_path");
+            keeps(&remove_field(&src, "z").unwrap().apply(&src), "remove_field");
+            keeps(&rename_field_path(&src, &["z"], "zz").unwrap().unwrap().apply(&src), "rename_field_path");
+            keeps(&append_list_item(&src, "tags", "t").unwrap().apply(&src), "append_list_item");
+            let with_list = src.replacen("z: 1\n", "z: 1\ntags: [a, b]\n", 1);
+            keeps(
+                &edit_list_items(&with_list, &["tags"], |_| ItemChange::Replace("c".into())).unwrap().apply(&with_list),
+                "edit_list_items",
+            );
+            // Tidy and the linter, with every front-matter rule on.
+            let opts =
+                Options { front_matter: true, tags_format: crate::linter::TagsFormat::Keep, date_modified: true, ..Options::default() };
+            let out = lint(&src, &opts, &Cx { stamp: "2026-11-10T09:30", edited: true });
+            keeps(&out.text, "the linter");
+            let opts = Options { front_matter: true, front_matter_sort: crate::linter::Sort::Alpha, ..Options::default() };
+            let out = lint(&src, &opts, &Cx::default());
+            assert!(
+                out.text == src || out.text.lines().filter(|l| capped_lines.contains(l)).count() == capped_lines.len(),
+                "sorting must not rewrite a capped entry"
+            );
+        }
+    }
+
+    /// A hostile note can't push the property editor off a normal stack.
+    #[test]
+    fn deep_edits_run_on_a_small_stack() {
+        let notes = [flow_note(20_000), block_note(1000)];
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || {
+                for src in notes {
+                    assert!(set_field_path(&src, &["k", "a", "b"], &s("v")).is_err() || src.contains("k0"));
+                    let _ = remove_field_path(&src, &["k", "a"]);
+                    let _ = rename_field_path(&src, &["k", "a"], "b");
+                    let _ = set_field(&src, "z", &s("2")).apply(&src);
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    // ---- yaml-rust2 and nesting (S-L1)
+
+    #[test]
+    fn yaml_depth_is_measured_without_recursion() {
+        assert!(yaml_depth_ok("a: 1\nb:\n  - x\n  - y: [1, 2]\n    z: {a: b}\n"));
+        assert!(yaml_depth_ok("tags:\n  - a\n"));
+        assert!(yaml_depth_ok(&format!("tags:\n  {}x\n", "- ".repeat(60))));
+        assert!(!yaml_depth_ok(&format!("tags:\n  {}x\n", "- ".repeat(100))));
+        assert!(!yaml_depth_ok(&format!("tags:\n  {}x\n", "- ".repeat(100_000))));
+        assert!(!yaml_depth_ok(&format!("{}x\n", "? ".repeat(100))));
+        let mut maps = String::new();
+        for d in 0..100 {
+            maps.push_str(&" ".repeat(d));
+            maps.push_str("k:\n");
+        }
+        assert!(!yaml_depth_ok(&maps));
+        // A comment or a blank line is no level; a document break starts over.
+        assert!(yaml_depth_ok(&format!("{}\n# c\n\n---\n{}", "k:\n".repeat(50), "k:\n".repeat(50))));
+    }
+
+    /// Lists, maps, flow, and a mix, 100,000 deep, on a normal-size stack: a
+    /// stack overflow aborts the whole test run, so passing means every
+    /// YAML entry point returned.
+    #[test]
+    fn deep_yaml_reaches_no_recursive_parser() {
+        use crate::linter::{Cx, Options, lint};
+        let n = 100_000;
+        // Block maps can't be 100,000 deep (the indentation alone would be 5 GB): 1,000 is 0.5 MB.
+        let maps: String = (0..1000).map(|d| " ".repeat(d) + "k:\n").collect();
+        let bodies = [
+            maps,
+            format!("tags:\n  {}x\n", "- ".repeat(n)),
+            format!("tags: {}x{}\n", "[".repeat(n), "]".repeat(n)),
+            format!("k: {}x{}\n", "{a: ".repeat(n), "}".repeat(n)),
+            format!("tags:\n  - {}\n  - x\n", "[".repeat(n)),
+            format!("a:\n{}", "- ".repeat(n)),
+            format!("tags:\n  {}x\n", "- [".repeat(n)),
+            format!("{}x\n", "? ".repeat(n)),
+            format!("{}x\n", "- {a: ".repeat(n)),
+        ];
+        let notes: Vec<(String, String)> = bodies.into_iter().map(|b| (format!("---\n{b}---\nbody\n"), b)).collect();
+        std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(move || {
+                // Only the front-matter rules: the other rules scan the whole text, and a
+                // line of 100,000 `[` is slow for them (a separate matter from the YAML parser).
+                let opts = Options {
+                    heading_increment: false,
+                    heading_style: crate::linter::HeadingStyle::Keep,
+                    trailing_spaces: false,
+                    list_marker: crate::linter::ListMarker::Keep,
+                    blank_lines: false,
+                    final_newline: false,
+                    front_matter: true,
+                    link_spacing: false,
+                    ..Options::default()
+                };
+                for (note, body) in notes {
+                    let _ = yaml_valid(&note);
+                    let _ = parse(&note);
+                    let out = lint(&note, &opts, &Cx { stamp: "2026-11-10T09:30", edited: true });
+                    assert_eq!(out.text, note, "a note too deep to check is left as it was");
+                    assert!(load_yaml(&body).is_err(), "too deep to read, so refused or errored, never overflowed");
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }

@@ -278,9 +278,39 @@ fn person(p: &biblatex::Person) -> Name {
     Name { family, given: p.given_name.clone() }
 }
 
+/// The deepest `{…}` nesting handed to the BibTeX reader.
+const MAX_BRACE_DEPTH: usize = 128;
+
+/// Whether `{` nests deeper than [`MAX_BRACE_DEPTH`] anywhere in `text`.
+///
+/// The `biblatex` reader recurses once per brace level, and a stack overflow
+/// can't be caught: a `.bib` file with 100,000 `{` aborted the app. This
+/// counts at least as deep as the reader does (every `{` opens, a `}` closes
+/// unless a backslash escapes it), in one pass with no recursion.
+fn too_deeply_braced(text: &str) -> bool {
+    let (mut depth, mut prev) = (0usize, '\0');
+    for c in text.chars() {
+        match c {
+            '{' => {
+                depth += 1;
+                if depth > MAX_BRACE_DEPTH {
+                    return true;
+                }
+            }
+            '}' if prev != '\\' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        prev = c;
+    }
+    false
+}
+
 /// The references in BibTeX (or BibLaTeX) text.
 pub fn parse_bibtex(text: &str) -> Result<Vec<Reference>, String> {
     use biblatex::ChunksExt as _;
+    if too_deeply_braced(text) {
+        return Err("the BibTeX file nests braces too deeply to read".to_string());
+    }
     let bib = std::panic::catch_unwind(|| biblatex::Bibliography::parse(text))
         .map_err(|_| "the BibTeX reader failed on this file".to_string())?
         .map_err(|e| {
@@ -616,6 +646,9 @@ pub fn other_fields(text: &str) -> HashMap<String, Vec<(String, String)>> {
     use biblatex::ChunksExt as _;
     let t = text.trim_start_matches('\u{feff}').trim_start();
     if t.starts_with('[') || t.starts_with('{') {
+        return HashMap::new();
+    }
+    if too_deeply_braced(t) {
         return HashMap::new();
     }
     let Ok(Ok(bib)) = std::panic::catch_unwind(|| biblatex::Bibliography::parse(t)) else { return HashMap::new() };
@@ -1529,5 +1562,30 @@ mod tests {
             .unwrap();
         let path = crate::export_pdf::export_pdf(&v, "Engines", "Cited [@ada].", &out).unwrap();
         assert!(std::fs::read(path).unwrap().starts_with(b"%PDF-"));
+    }
+
+    /// A `.bib` file with braces nested 100,000 deep is an error or a result,
+    /// never a stack overflow (the thread has an ordinary 2 MiB stack).
+    #[test]
+    fn bibtex_nested_100000_deep_does_not_overflow_the_stack() {
+        let n = 100_000;
+        let texts = vec![
+            format!("@article{{k, title = {}x{}}}", "{".repeat(n), "}".repeat(n)),
+            format!("@article{{k, title = {}", "{".repeat(n)),
+            format!("@article{{k, title = {}x{}}}", "{\\textbf{".repeat(n / 8), "}}".repeat(n / 8)),
+            format!("@article{{k, title = {}x}}", "\"{".repeat(n / 2)),
+        ];
+        std::thread::Builder::new()
+            .spawn(move || {
+                for t in texts {
+                    assert!(parse_bibtex(&t).is_err());
+                    assert!(other_fields(&t).is_empty());
+                }
+                // Ordinary nesting is unchanged.
+                assert!(parse_bibtex("@article{k, title = {A {B {C}} d}, author = {Xx, Y}}").is_ok());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }

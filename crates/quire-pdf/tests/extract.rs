@@ -145,3 +145,76 @@ fn renders_pages_and_survives_odd_files() {
     assert!(quire_pdf::render_page(&scan, 0, 0.5).is_ok());
     assert!(quire_pdf::render_page(&doc, 9, 1.0).is_err(), "no such page");
 }
+
+/// A one-page PDF with the given `/MediaBox` text and a valid xref table.
+#[cfg(feature = "render")]
+fn pdf_with_media_box(media_box: &str) -> Vec<u8> {
+    let objs = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+        format!("<< /Type /Page /Parent 2 0 R /MediaBox {media_box} /Contents 4 0 R >>"),
+        "<< /Length 0 >>\nstream\n\nendstream".to_string(),
+    ];
+    let mut out = b"%PDF-1.4\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, o) in objs.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend(format!("{} 0 obj\n{o}\nendobj\n", i + 1).bytes());
+    }
+    let xref = out.len();
+    out.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).bytes());
+    for o in offsets {
+        out.extend(format!("{o:010} 00000 n \n").bytes());
+    }
+    out.extend(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objs.len() + 1).bytes());
+    out
+}
+
+#[cfg(feature = "render")]
+#[test]
+fn page_size_limits_hold_for_any_media_box() {
+    use quire_pdf::{MAX_PIXELS, MAX_SIDE, page_scale};
+    // The arithmetic, with nothing to render.
+    assert_eq!(page_scale(1.0, 612.0, 792.0), Some(1.0));
+    for (w, h) in [(20_000.0, 20_000.0), (1.0e9, 1.0e9), (200_000.0, 200_000.0), (f32::MAX, f32::MAX), (8_000.0, 8_000.0)] {
+        let s = page_scale(300.0 / 72.0, w, h).expect("a big page is scaled down, not refused");
+        let (pw, ph) = (f64::from(w) * f64::from(s), f64::from(h) * f64::from(s));
+        assert!(pw <= f64::from(MAX_SIDE) + 1.0 && ph <= f64::from(MAX_SIDE) + 1.0, "{w}x{h}: {pw}x{ph}");
+        assert!(pw * ph <= f64::from(MAX_PIXELS) * 1.001, "{w}x{h}: {} pixels", pw * ph);
+    }
+    for (w, h) in [(0.0, 100.0), (100.0, 0.0), (-5.0, 10.0), (f32::NAN, 10.0), (10.0, f32::NAN), (f32::INFINITY, 10.0), (1.0e9, 0.001)] {
+        assert_eq!(page_scale(1.0, w, h), None, "{w}x{h}");
+    }
+    assert!(page_scale(f32::NAN, 100.0, 100.0).is_some_and(f32::is_finite));
+    assert!(page_scale(f32::INFINITY, 100.0, 100.0).is_some_and(|s| s <= MAX_SIDE / 100.0));
+    // A tiny page is scaled up to at least a pixel a side.
+    assert!(page_scale(1.0, 0.01, 0.01).is_some_and(|s| s * 0.01 >= 0.999));
+}
+
+#[cfg(feature = "render")]
+#[test]
+fn rendering_a_hostile_media_box_stays_small_or_fails() {
+    // On a normal-size stack, as the app calls it.
+    std::thread::Builder::new()
+        .stack_size(2 << 20)
+        .spawn(|| {
+            for mb in [
+                "[0 0 20000 20000]",
+                "[0 0 99999999999999999999 99999999999999999999]",
+                "[0 0 0 0]",
+                "[0 0 0.001 0.001]",
+                "[0 0 612 0]",
+                "[0 0 -5 -5]",
+                "[0 0 1000000 1]",
+            ] {
+                let Ok(doc) = PdfDoc::open(pdf_with_media_box(mb)) else { continue };
+                if let Ok(img) = quire_pdf::render_page(&doc, 0, 300.0 / 72.0) {
+                    assert!(u64::from(img.width) * u64::from(img.height) <= 40_000_000, "{mb}: {}x{}", img.width, img.height);
+                    assert_eq!(img.rgba.len(), img.width as usize * img.height as usize * 4, "{mb}");
+                }
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}

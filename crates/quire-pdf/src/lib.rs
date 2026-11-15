@@ -48,6 +48,29 @@ pub struct PageImage {
 /// The largest side of a page image, in pixels.
 pub const MAX_SIDE: f32 = 8000.0;
 
+/// The most pixels in a page image (40 million: 160 MB of RGBA).
+pub const MAX_PIXELS: f32 = 40_000_000.0;
+
+/// The scale to render a `width` × `height` pt page at.
+///
+/// As close to `want` as the limits allow (a page under one pixel is scaled up to one): at most [`MAX_SIDE`] a side and [`MAX_PIXELS`] in
+/// all, and at least 0.05. `None` for a page that can't be drawn: a size that
+/// is zero, negative or not a number, or so thin that a side would be under
+/// one pixel.
+///
+/// A page's size comes from the file (`/MediaBox`), so it is never trusted.
+pub fn page_scale(want: f32, width: f32, height: f32) -> Option<f32> {
+    if !(width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0) {
+        return None;
+    }
+    let want = if want.is_finite() { want } else { 1.0 };
+    let (w, h) = (f64::from(width), f64::from(height));
+    let by_side = f64::from(MAX_SIDE) / w.max(h);
+    let by_area = (f64::from(MAX_PIXELS) / (w * h)).sqrt();
+    let scale = f64::from(want).max(0.05).max(1.0 / w.min(h)).min(by_side).min(by_area);
+    (scale.is_finite() && w * scale >= 1.0 && h * scale >= 1.0).then_some(scale as f32)
+}
+
 /// Render page `page` (0-based) at `scale` pixels per point.
 #[cfg(feature = "render")]
 pub fn render_page(doc: &PdfDoc, page: usize, scale: f32) -> Result<PageImage, PdfError> {
@@ -57,15 +80,15 @@ pub fn render_page(doc: &PdfDoc, page: usize, scale: f32) -> Result<PageImage, P
     let p = doc.page(page)?;
     text::guard("Showing this page", || {
         let (w, h) = p.render_dimensions();
-        let scale = scale.clamp(0.05, MAX_SIDE / w.max(h).max(1.0));
+        let scale = page_scale(scale, w, h).ok_or_else(|| PdfError::Unreadable("this page has no usable size".into()))?;
         let cache = RenderCache::new();
         let settings =
             RenderSettings { x_scale: scale, y_scale: scale, bg_color: hayro::vello_cpu::color::palette::css::WHITE, ..Default::default() };
         let pix = render(p, &cache, &InterpreterSettings::default(), &settings);
         let (width, height) = (u32::from(pix.width()), u32::from(pix.height()));
         let rgba: Vec<u8> = pix.take_unpremultiplied().into_iter().flat_map(|c| [c.r, c.g, c.b, c.a]).collect();
-        PageImage { width, height, rgba }
-    })
+        Ok(PageImage { width, height, rgba })
+    })?
 }
 
 /// Hex SHA-256 of a file's bytes (cache keys and `pdf_sha256`).
