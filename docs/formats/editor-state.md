@@ -61,3 +61,23 @@ push_after_commit = false    # off while Quire Sync is on for the vault
 * Git: Quire commits notes, attachments and `.quire/shared/` (never the rest
   of `.quire/`), runs the system `git` with prompts off and a 60-second
   limit, and suggests a `.gitignore` of `.quire/*` with `!.quire/shared/`.
+  It runs no git at all in a repository that isn't trusted on this device
+  (below), and none of these settings applies there.
+
+## git-trust.toml
+
+`<config>/git-trust.toml` (device-local, never in the vault, 0.13.1): the
+git repositories trusted on this device. Quire runs git only in these.
+
+```toml
+[[trusted]]
+root = "/home/me/Notes"                 # the working tree's top folder
+git_dir = "/home/me/Notes/.git"         # its git folder (a `.git` file's target)
+common_dir = "/home/me/Notes/.git"      # the main git folder (differs for a linked worktree)
+```
+
+* Every path is canonical, and an entry matches only when all three are
+  equal, so a copy at another path, or another worktree, is not trusted.
+* Written by "Trust this git repository…" and removed by "Stop trusting
+  this repository" (Git tab). Keys Quire doesn't know are kept. A file that
+  can't be read trusts nothing and isn't rewritten.

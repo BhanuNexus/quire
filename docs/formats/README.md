@@ -75,6 +75,7 @@ F0 is the foundation step, after which its files are frozen).
 | `<config>/settings.toml` | TOML | [settings.md](settings.md) | F0 (each table: its feature) | read and written |
 | `<config>/device.toml` | TOML, format 1 | [settings.md](settings.md#devicetoml) | F0 | written |
 | `<config>/themes/*.toml`, `<config>/fonts/*` | TOML, format 1 | [themes.md](themes.md) | WS-F | read (and a template written on request) |
+| `<config>/git-trust.toml` | TOML | [editor-state.md](editor-state.md#git-trusttoml) | WS-F (0.13.1) | written and read |
 | `<config>/session.json` (`positions`) | JSON | [editor-state.md](editor-state.md#sessionjson) | WS-F | written |
 | `.quire/shared/vault.toml` `[sort]`, `[order]`, `[icons]`, `[tags]`, `[git]` | TOML sections | [editor-state.md](editor-state.md#vaulttoml-sections) | WS-F | read and written |
 | `<data_dir>/models/…` (`installed.toml`), the catalog, `cache/vectors-<model>.f16`, `cache/ocr/` | TOML format 1, binary, JSON format 1 | [model-catalog.md](model-catalog.md) | WS-D | written |
