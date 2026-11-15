@@ -333,9 +333,21 @@ fn split_flow(s: &str) -> Vec<(Range<usize>, &str)> {
     out
 }
 
+/// How deeply nested maps are read: deeper ones are kept as text. A note
+/// from anywhere (a synced or shared vault, an import) must not be able to
+/// exhaust the stack of whoever reads its properties.
+const MAX_NESTING: usize = 64;
+
 /// A value written on one line.
 fn parse_inline(v: &str) -> (Value, Shape) {
+    parse_inline_at(v, 0)
+}
+
+fn parse_inline_at(v: &str, depth: usize) -> (Value, Shape) {
     let v = v.trim();
+    if depth >= MAX_NESTING {
+        return (Value::Str(v.to_string()), Shape::Scalar);
+    }
     if v.len() >= 2 && v.starts_with('[') && v.ends_with(']') {
         let items = split_flow(&v[1..v.len() - 1]).into_iter().map(|(_, s)| unquote(s)).filter(|s| !s.is_empty()).collect();
         return (Value::List(items), Shape::FlowList);
@@ -345,7 +357,7 @@ fn parse_inline(v: &str) -> (Value, Shape) {
         for (_, part) in split_flow(&v[1..v.len() - 1]) {
             match split_key(part, false) {
                 Some((k, val)) => {
-                    m.insert(k, parse_inline(val).0);
+                    m.insert(k, parse_inline_at(val, depth + 1).0);
                 }
                 None => {
                     m.insert(unquote(part), Value::Str(String::new()));
@@ -404,7 +416,11 @@ fn parse_seq(lines: &[Line<'_>], j: usize) -> (Value, Shape, usize) {
 
 /// The fields at `indent` starting at line `i`. Returns them and the line
 /// where the block ended.
-fn parse_entries(lines: &[Line<'_>], mut i: usize, indent: usize) -> (Vec<Entry>, usize) {
+fn parse_entries(lines: &[Line<'_>], i: usize, indent: usize) -> (Vec<Entry>, usize) {
+    parse_entries_at(lines, i, indent, 0)
+}
+
+fn parse_entries_at(lines: &[Line<'_>], mut i: usize, indent: usize, depth: usize) -> (Vec<Entry>, usize) {
     let mut out = Vec::new();
     while i < lines.len() {
         let l = &lines[i];
@@ -456,8 +472,22 @@ fn parse_entries(lines: &[Line<'_>], mut i: usize, indent: usize) -> (Vec<Entry>
                     (e.value, e.shape, e.end) = (v, shape, end);
                     i = end;
                 }
+                Some(j) if lines[j].indent > indent && depth + 1 >= MAX_NESTING => {
+                    // Too deep to read as fields: the block's text, as written.
+                    let mut last = j;
+                    let mut k = j;
+                    while k < lines.len() && (lines[k].is_blank_or_comment() || lines[k].indent > indent) {
+                        if !lines[k].is_blank_or_comment() {
+                            last = k;
+                        }
+                        k += 1;
+                    }
+                    let raw: Vec<&str> = lines[j..=last].iter().map(|l| l.full).collect();
+                    (e.value, e.shape, e.end) = (Value::Str(raw.join("\n")), Shape::Raw, last + 1);
+                    i = last + 1;
+                }
                 Some(j) if lines[j].indent > indent => {
-                    let (children, next) = parse_entries(lines, j, lines[j].indent);
+                    let (children, next) = parse_entries_at(lines, j, lines[j].indent, depth + 1);
                     e.end = children.iter().map(|c| c.end).max().unwrap_or(j + 1);
                     let mut m = BTreeMap::new();
                     for c in &children {
@@ -1138,6 +1168,41 @@ impl Edit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A hostile note (synced, shared or imported) nests maps tens of
+    /// thousands deep: reading its properties must neither exhaust the
+    /// stack nor take quadratic time. Deep parts are kept as text.
+    #[test]
+    fn deeply_nested_properties_are_read_without_exhausting_the_stack() {
+        let flow = format!("---\ntitle: ok\nk: {}x{}\n---\nbody\n", "{a: ".repeat(100_000), "}".repeat(100_000));
+        let mut block = String::from("---\ntitle: ok\n");
+        for d in 0..1500 {
+            block.push_str(&" ".repeat(d));
+            block.push_str("k:\n");
+        }
+        block.push_str(&" ".repeat(1500));
+        block.push_str("leaf: 1\n---\nbody\n");
+        let started = std::time::Instant::now();
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || {
+                for src in [flow, block] {
+                    let fm = parse(&src).unwrap();
+                    assert_eq!(fm.fields.get("title"), Some(&Value::Str("ok".into())));
+                    assert!(matches!(fm.fields.get("k"), Some(Value::Map(_))));
+                    assert_eq!(&src[fm.range.end..], "body\n");
+                    let _ = fm.fields.get("k").unwrap().flow();
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(20));
+        // Ordinary nesting is unchanged.
+        let fm = parse("---\na:\n  b:\n    c: 1\nd: {e: {f: 2}}\n---\n").unwrap();
+        assert_eq!(fm.fields["a"].flow(), "{b: {c: 1}}");
+        assert_eq!(fm.fields["d"].flow(), "{e: {f: 2}}");
+    }
 
     #[test]
     fn parses_common_shapes() {
