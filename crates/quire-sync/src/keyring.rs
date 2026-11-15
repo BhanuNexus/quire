@@ -23,7 +23,7 @@ use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::crypto::{
-    CryptoError, KdfParams, Keys, VaultKey, WrappedKey, derive32, hex, hex_bytes, open_with, random_bytes, seal_with, unhex,
+    CryptoError, KEY_BOX, KdfParams, Keys, VaultKey, WrappedKey, derive32, hex, hex_bytes, open_with, random_bytes, seal_with, unhex,
 };
 use crate::protocol::{DeviceId, LanePos, SpaceId};
 
@@ -152,7 +152,7 @@ fn box_key(eph_ss: &[u8; 32], static_ss: &[u8; 32], eph: &[u8; 32], to: &[u8; 32
     info.extend_from_slice(to);
     info.extend_from_slice(maker);
     info.extend_from_slice(context);
-    let k = derive32("quire-sync key box v1", &ikm, &info);
+    let k = derive32(KEY_BOX, &ikm, &info);
     ikm.zeroize();
     k
 }

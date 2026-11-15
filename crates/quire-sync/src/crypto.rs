@@ -90,7 +90,7 @@ impl VaultKey {
     }
 
     pub fn keys(&self) -> Keys {
-        let expand = |info: &[u8]| derive32("quire-sync v1", &self.0, info);
+        let expand = |info: &[u8]| derive32(VAULT_KEYS, &self.0, info);
         Keys { content: expand(b"content"), blob_id: expand(b"blob-id"), mac: expand(b"mac") }
     }
 
@@ -169,18 +169,47 @@ impl Keys {
     }
 }
 
+/// A public label that keeps Quire's key derivations apart: the HKDF salt
+/// (RFC 5869 §3.1 allows a non-secret, non-random one; the secret is the
+/// input key material). At most one SHA-256 block long, checked when the
+/// label is written down.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Domain(&'static str);
+
+impl Domain {
+    pub(crate) const fn new(label: &'static str) -> Self {
+        assert!(label.len() <= SHA256_BLOCK, "a domain label fits in one SHA-256 block");
+        Self(label)
+    }
+}
+
+/// The vault key's subkeys (content, blob ids, metadata MACs).
+pub(crate) const VAULT_KEYS: Domain = Domain::new("quire-sync v1");
+/// 0.13: the key that seals a vault key for one device.
+pub(crate) const KEY_BOX: Domain = Domain::new("quire-sync key box v1");
+
+const SHA256_BLOCK: usize = 64;
+
+/// HKDF-Extract (RFC 5869 §2.2): HMAC-SHA256 keyed by the domain label,
+/// over the secret `ikm`. HMAC (RFC 2104) is written out here because its
+/// key is a public label, not a secret: for a key no longer than a block,
+/// HMAC(K, m) = H((K ⊕ opad) ‖ H((K ⊕ ipad) ‖ m)), with K padded with zeros
+/// to the block. The bytes are those of `Hmac::<Sha256>` and
+/// `Hkdf::extract` (tested below), and no fixed value is handed to an API
+/// that takes a secret key.
+fn extract(domain: Domain, ikm: &[u8]) -> [u8; 32] {
+    use sha2::Digest as _;
+    let mut block = [0u8; SHA256_BLOCK];
+    block[..domain.0.len()].copy_from_slice(domain.0.as_bytes());
+    let inner = Sha256::new().chain_update(block.map(|b| b ^ 0x36)).chain_update(ikm).finalize();
+    Sha256::new().chain_update(block.map(|b| b ^ 0x5c)).chain_update(inner).finalize().into()
+}
+
 /// A 32-byte key for `info`, derived from the secret `ikm` with HKDF-SHA256
-/// (RFC 5869), in the domain named by `domain`.
-///
-/// `domain` is a public, fixed label that keeps Quire's derivations apart
-/// (RFC 5869 §3.1 allows a non-secret, non-random salt; the secret is
-/// `ikm`). Extract is written out as HMAC(domain, ikm) so the label isn't
-/// mistaken for a random salt; the bytes are the same as `Hkdf::extract`.
-/// For a 32-byte output, Expand is one block, T(1) = HMAC(PRK, info || 0x01).
-pub(crate) fn derive32(domain: &'static str, ikm: &[u8], info: &[u8]) -> [u8; 32] {
-    let mut ext = Hmac::<Sha256>::new_from_slice(domain.as_bytes()).unwrap_or_else(|_| unreachable!("HMAC takes any key length"));
-    ext.update(ikm);
-    let mut prk: [u8; 32] = ext.finalize().into_bytes().into();
+/// (RFC 5869) in `domain`. For a 32-byte output, Expand is one block,
+/// T(1) = HMAC(PRK, info || 0x01).
+pub(crate) fn derive32(domain: Domain, ikm: &[u8], info: &[u8]) -> [u8; 32] {
+    let mut prk = extract(domain, ikm);
     let mut mac = Hmac::<Sha256>::new_from_slice(&prk).unwrap_or_else(|_| unreachable!("HMAC takes any key length"));
     prk.zeroize();
     mac.update(info);
@@ -402,6 +431,33 @@ pub(crate) mod hex_bytes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The derivation written out gives the bytes of the `hmac` crate's
+    /// HMAC and of HKDF as Quire 0.12 computed them (recorded fixtures in
+    /// `tests/harden*.rs` check whole vaults).
+    #[test]
+    fn derivation_matches_hmac_and_hkdf() {
+        fn reference(domain: &str, ikm: &[u8], info: &[u8]) -> [u8; 32] {
+            let mut ext = Hmac::<Sha256>::new_from_slice(domain.as_bytes()).unwrap();
+            ext.update(ikm);
+            let prk: [u8; 32] = ext.finalize().into_bytes().into();
+            let mut mac = Hmac::<Sha256>::new_from_slice(&prk).unwrap();
+            mac.update(info);
+            mac.update(&[1]);
+            mac.finalize().into_bytes().into()
+        }
+        let long = Domain::new("0123456789012345678901234567890123456789012345678901234567890123");
+        for domain in [VAULT_KEYS, KEY_BOX, Domain::new(""), long] {
+            for ikm in [&[][..], &[7u8; 32][..], &[0xa5; 64][..], &[1u8; 200][..]] {
+                for info in [&b"content"[..], b"blob-id", b"mac", b""] {
+                    assert_eq!(derive32(domain, ikm, info), reference(domain.0, ikm, info), "{domain:?}");
+                }
+            }
+        }
+        // Known answers (Python's hmac module), so a change on both sides shows.
+        assert_eq!(hex(&derive32(VAULT_KEYS, &[0x42; 32], b"content")), "a5eba1220393bb99fa302d4f54dd975dfc9491ea661df813e9fc87debcfdf520");
+        assert_eq!(hex(&derive32(KEY_BOX, &[0x42; 64], b"ctx")), "018441a7e2dea27959427175aac6840fb4a4954368463de8eaf1e4fd9e91cf08");
+    }
 
     #[test]
     fn seal_open_and_tamper() {
