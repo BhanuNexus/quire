@@ -74,10 +74,16 @@ git repositories trusted on this device. Quire runs git only in these.
 root = "/home/me/Notes"                 # the working tree's top folder
 git_dir = "/home/me/Notes/.git"         # its git folder (a `.git` file's target)
 common_dir = "/home/me/Notes/.git"      # the main git folder (differs for a linked worktree)
+id = "5f0c…"                            # 128 random bits, hex; also in <git_dir>/quire-trust
 ```
 
 * Every path is canonical, and an entry matches only when all three are
-  equal, so a copy at another path, or another worktree, is not trusted.
+  equal and `<git_dir>/quire-trust` holds the same `id` (its first line,
+  trimmed). So a copy at another path, another worktree, or a different
+  repository that later appears at the same path is not trusted.
+* `<git_dir>/quire-trust`: one line, the id, written when the repository is
+  trusted (a new id each time) and removed when it stops being trusted. git
+  ignores it; it isn't in the working tree, so it is never committed.
 * Written by "Trust this git repository…" and removed by "Stop trusting
   this repository" (Git tab). Keys Quire doesn't know are kept. A file that
   can't be read trusts nothing and isn't rewritten.
