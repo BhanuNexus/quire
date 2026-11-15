@@ -10,7 +10,7 @@ use crate::locked::damaged;
 use crate::{NotePath, Result, Vault, VaultError};
 
 /// What a conversion did.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct ConvertReport {
     /// Files encrypted (locking) or decrypted (unlocking).
     pub files: usize,
@@ -23,6 +23,18 @@ pub struct ConvertReport {
     /// with other content is next to them (see [`keep_both`]). Unlocking:
     /// the copies made of encrypted files whose plain file differed.
     pub conflicts: Vec<NotePath>,
+}
+
+/// Without the recovery key.
+impl std::fmt::Debug for ConvertReport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConvertReport")
+            .field("files", &self.files)
+            .field("history", &self.history)
+            .field("recovery_key", &self.recovery_key.as_ref().map(|_| "<hidden>"))
+            .field("conflicts", &self.conflicts)
+            .finish()
+    }
 }
 
 /// Plain files left in a locked folder: an interrupted conversion, or a
@@ -460,4 +472,16 @@ pub fn plain_left_in(vault: &Vault, all: &[NotePath]) -> Vec<PlainLeft> {
             (!files.is_empty() || !conflicts.is_empty()).then_some(PlainLeft { folder: f.path, files, conflicts })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod debug_tests {
+    use super::ConvertReport;
+
+    #[test]
+    fn debug_leaves_the_recovery_key_out() {
+        let r = ConvertReport { files: 2, recovery_key: Some("RK-SECRET-123".into()), ..Default::default() };
+        let text = format!("{r:?}");
+        assert!(text.contains("files: 2") && !text.contains("RK-SECRET-123"), "{text}");
+    }
 }

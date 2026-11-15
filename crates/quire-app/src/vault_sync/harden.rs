@@ -176,7 +176,7 @@ pub fn sync_devices_at(root: &Path) -> Result<SyncDevices, String> {
 }
 
 /// What removing a device did.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DeviceRemoved {
     /// The vault's new recovery key: show it once (the old one opens only
     /// what was written before).
@@ -186,6 +186,13 @@ pub struct DeviceRemoved {
     pub left_out: Vec<String>,
     /// What else to do (S3 and WebDAV: the storage key; a server: its token).
     pub advice: String,
+}
+
+/// Without the recovery key.
+impl std::fmt::Debug for DeviceRemoved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeviceRemoved").field("left_out", &self.left_out).field("advice", &self.advice).finish_non_exhaustive()
+    }
 }
 
 /// Remove `device` from the vault: a new vault key for the other devices

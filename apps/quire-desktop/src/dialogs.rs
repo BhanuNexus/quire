@@ -165,11 +165,9 @@ struct SyncForm {
     saving_credentials: Option<Receiver<Result<String, String>>>,
     /// 0.13: Settings → Sync → Devices and the sync format.
     devices: DevicesPanel,
-    /// 0.13.1: "Find vaults", "Start syncing" and "Join and sync" run off the
-    /// UI thread (they reach the storage and stretch the passphrase).
-    listing: Option<Receiver<Result<Vec<quire_app::vault_sync::SyncVaultInfo>, String>>>,
-    creating: Option<Receiver<Result<String, String>>>,
-    joining: Option<Receiver<Result<(), String>>>,
+    // 0.13.1: "Find vaults", "Start syncing" and "Join and sync" run off the
+    // UI thread, in the workspace (see `Workspace::sync_setup_running`), so
+    // closing this dialog never drops what they finish.
 }
 
 /// Settings → Sync → Devices and the sync format (0.13).
@@ -677,11 +675,11 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
                         SyncVia::Server => "Find vaults on the server",
                         SyncVia::S3 | SyncVia::WebDav => "Find vaults in the storage",
                     };
-                    if ui.add_enabled(f.listing.is_none(), egui::Button::new(find)).clicked() {
+                    if ui.add_enabled(ws.sync_setup_running().is_none(), egui::Button::new(find)).clicked() {
                         f.spaces = None;
-                        f.listing = Some(quire_app::vault_sync::sync_list_in_background(sync_target(f)));
+                        f.error = ws.sync_list_in_background(sync_target(f)).err();
                     }
-                    if f.listing.is_some() {
+                    if ws.sync_setup_running() == Some(quire_app::vault_sync::SetupKind::List) {
                         ui.add(egui::Spinner::new().size(12.0));
                     }
                     match &f.spaces {
@@ -726,19 +724,19 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
     let ready = reachable && !f.device.trim().is_empty();
     match f.mode {
         SyncMode::Create => {
-            let busy = f.creating.is_some();
+            let busy = ws.sync_setup_running().is_some();
             if ui.add_enabled(ready && !f.pass.is_empty() && !busy, egui::Button::new("Start syncing")).clicked() {
                 f.error = None;
                 if f.pass == f.pass2 {
                     match ws.sync_create_in_background(sync_target(f), f.pass.clone(), f.device.clone()) {
-                        Ok(rx) => f.creating = Some(rx),
+                        Ok(()) => {}
                         Err(e) => f.error = Some(e),
                     }
                 } else {
                     f.error = Some("The passphrases don't match".into());
                 }
             }
-            if busy {
+            if ws.sync_setup_running() == Some(quire_app::vault_sync::SetupKind::Create) {
                 ui.add(egui::Spinner::new().size(12.0));
             }
             ui.label(
@@ -749,17 +747,17 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
         }
         SyncMode::Join => {
             let chosen = f.chosen.and_then(|i| f.spaces.as_ref()?.as_ref().ok()?.get(i).cloned());
-            let busy = f.joining.is_some();
+            let busy = ws.sync_setup_running().is_some();
             if ui.add_enabled(ready && chosen.is_some() && !f.secret.is_empty() && !busy, egui::Button::new("Join and sync")).clicked()
                 && let Some(s) = chosen
             {
                 f.error = None;
                 match ws.sync_join_in_background(sync_target(f), s.space, f.secret.clone(), f.device.clone()) {
-                    Ok(rx) => f.joining = Some(rx),
+                    Ok(()) => {}
                     Err(e) => f.error = Some(e),
                 }
             }
-            if busy {
+            if ws.sync_setup_running() == Some(quire_app::vault_sync::SetupKind::Join) {
                 ui.add(egui::Spinner::new().size(12.0));
             }
             ui.label(
@@ -775,53 +773,30 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
 }
 
 /// Take in what "Find vaults", "Start syncing" and "Join and sync" finished
-/// in the background; asks for repaints meanwhile.
+/// (the workspace started sync already); asks for repaints meanwhile.
 fn poll_setup(ui: &Ui, f: &mut SyncForm, ws: &mut Workspace) {
-    use crossbeam_channel::TryRecvError::{Disconnected, Empty};
-    if let Some(rx) = &f.listing {
-        match rx.try_recv() {
-            Ok(list) => {
+    use quire_app::vault_sync::SetupDone;
+    for done in ws.take_sync_setup() {
+        match done {
+            SetupDone::Listed(list) => {
                 f.chosen = list.as_ref().ok().filter(|l| l.len() == 1).map(|_| 0);
                 f.spaces = Some(list);
-                f.listing = None;
             }
-            Err(Empty) => ui.ctx().request_repaint_after(std::time::Duration::from_millis(100)),
-            Err(Disconnected) => f.listing = None,
-        }
-    }
-    if let Some(rx) = &f.creating {
-        match rx.try_recv() {
-            Ok(Ok(rk)) => {
-                f.creating = None;
-                ws.start_sync();
+            SetupDone::Created(rk) => {
                 f.recovery = Some(rk);
                 f.pass.clear();
                 f.pass2.clear();
                 f.done_setting_up();
             }
-            Ok(Err(e)) => {
-                f.creating = None;
-                f.error = Some(e);
-            }
-            Err(Empty) => ui.ctx().request_repaint_after(std::time::Duration::from_millis(100)),
-            Err(Disconnected) => f.creating = None,
-        }
-    }
-    if let Some(rx) = &f.joining {
-        match rx.try_recv() {
-            Ok(Ok(())) => {
-                f.joining = None;
-                ws.start_sync();
+            SetupDone::Joined => {
                 f.secret.clear();
                 f.done_setting_up();
             }
-            Ok(Err(e)) => {
-                f.joining = None;
-                f.error = Some(e);
-            }
-            Err(Empty) => ui.ctx().request_repaint_after(std::time::Duration::from_millis(100)),
-            Err(Disconnected) => f.joining = None,
+            SetupDone::Failed(_, e) => f.error = Some(e),
         }
+    }
+    if ws.sync_setup_running().is_some() {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
     }
 }
 

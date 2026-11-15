@@ -913,7 +913,8 @@ impl Workspace {
         let autosave =
             self.docs.iter().filter(|d| d.path.is_some() && d.is_dirty()).filter_map(Document::last_edit).map(|t| t + delay).min();
         let listing = self.file_list_pending().then(|| Instant::now() + Duration::from_millis(50));
-        autosave.into_iter().chain(listing).chain(crate::features::next_deadline(self)).min()
+        let setup = self.sync_setup_running().map(|_| Instant::now() + Duration::from_millis(100));
+        autosave.into_iter().chain(listing).chain(setup).chain(crate::features::next_deadline(self)).min()
     }
 
     fn process_vault_events(&mut self) -> bool {

@@ -333,7 +333,7 @@ fn read_key(space: &SpaceId) -> Option<VaultKey> {
 }
 
 /// Where a vault syncs, as chosen in Settings.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum SyncTarget {
     /// A folder another tool keeps the same on every device (the one the
     /// user picked; Quire works in a `Quire Sync` folder inside it).
@@ -347,6 +347,17 @@ pub enum SyncTarget {
         profile: RemoteProfile,
         secret: RemoteSecret,
     },
+}
+
+/// Without the server token (the storage secret hides itself).
+impl std::fmt::Debug for SyncTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Folder(p) => f.debug_tuple("Folder").field(p).finish(),
+            Self::Server { url, .. } => f.debug_struct("Server").field("url", url).finish_non_exhaustive(),
+            Self::Remote { profile, secret } => f.debug_struct("Remote").field("profile", profile).field("secret", secret).finish(),
+        }
+    }
 }
 
 impl SyncTarget {
@@ -1902,8 +1913,64 @@ pub struct SyncHandle {
     /// A device removal running or done, kept here (not in Settings) so
     /// its one-time recovery key isn't lost when Settings closes.
     removal: std::sync::Mutex<Removal>,
+    /// Find vaults, Start syncing or Join running (or just finished), kept
+    /// here so closing Settings never drops the result.
+    setup: SetupJob,
     /// Files already said to be too big to sync, this session.
     held_back_said: std::collections::BTreeSet<String>,
+}
+
+/// What Settings → Sync asks for in the background, one at a time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SetupKind {
+    /// "Find vaults".
+    List,
+    /// "Start syncing".
+    Create,
+    /// "Join and sync".
+    Join,
+}
+
+enum SetupResult {
+    Listed(Result<Vec<SyncVaultInfo>, String>),
+    Created(Result<String, String>),
+    Joined(Result<(), String>),
+}
+
+/// A finished setup step, for Settings to show (see [`Workspace::take_sync_setup`]).
+pub enum SetupDone {
+    /// The vaults found.
+    Listed(Result<Vec<SyncVaultInfo>, String>),
+    /// Sync is running; the recovery key, to show once.
+    Created(String),
+    /// Sync is running.
+    Joined,
+    /// The step failed.
+    Failed(SetupKind, String),
+}
+
+impl std::fmt::Debug for SetupDone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Listed(_) => f.write_str("Listed"),
+            Self::Created(_) => f.write_str("Created(<recovery key>)"),
+            Self::Joined => f.write_str("Joined"),
+            Self::Failed(k, _) => write!(f, "Failed({k:?})"),
+        }
+    }
+}
+
+#[derive(Default)]
+struct SetupJob {
+    /// The step running, for which vault, and its result.
+    running: Option<(SetupKind, PathBuf, Receiver<SetupResult>)>,
+    done: Vec<SetupDone>,
+}
+
+impl std::fmt::Debug for SetupJob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SetupJob").field("running", &self.running.as_ref().map(|r| r.0)).field("done", &self.done).finish()
+    }
 }
 
 /// See [`SyncHandle`]'s `removal`.
@@ -2285,15 +2352,6 @@ pub fn sync_summary_at(root: &Path) -> Option<SyncSummary> {
     })
 }
 
-/// [`sync_list`] off the UI thread (a server or storage that is slow to answer).
-pub fn sync_list_in_background(target: SyncTarget) -> Receiver<Result<Vec<SyncVaultInfo>, String>> {
-    let (tx, rx) = crossbeam_channel::bounded(1);
-    std::thread::spawn(move || {
-        let _ = tx.send(Workspace::sync_list(&target));
-    });
-    rx
-}
-
 /// The vaults a new device can join, in a sync folder or on a server.
 pub fn sync_list(target: &SyncTarget) -> Result<Vec<SyncVaultInfo>, String> {
     Workspace::sync_list(target)
@@ -2344,39 +2402,130 @@ impl Workspace {
         Ok(rk)
     }
 
-    /// [`Self::sync_create`] off the UI thread (the passphrase is stretched
-    /// and the storage is reached): call [`Self::start_sync`] when it says `Ok`.
-    /// The recovery key comes back as written down, to show once.
-    pub fn sync_create_in_background(
-        &self,
-        target: SyncTarget,
-        passphrase: String,
-        device_name: String,
-    ) -> Result<Receiver<Result<String, String>>, String> {
-        let (root, _) = self.sync_parts()?;
-        let (tx, rx) = crossbeam_channel::bounded(1);
-        std::thread::spawn(move || {
-            let passphrase = remote::Zeroizing::new(passphrase);
-            let _ = tx.send(sync_create_at(&root, &target, &passphrase, &device_name, &Selection::default()).map(|rk| rk.to_string()));
-        });
-        Ok(rx)
+    /// Drop sync's state for this vault. A setup step still running stays:
+    /// its result is dealt with when it arrives, whatever vault is open then.
+    fn reset_sync(&mut self) {
+        let setup = std::mem::take(&mut self.sync.setup);
+        self.sync = SyncHandle { setup, ..SyncHandle::default() };
     }
 
-    /// [`Self::sync_join`] off the UI thread: call [`Self::start_sync`] when it says `Ok`.
+    fn start_setup(&mut self, kind: SetupKind, work: impl FnOnce(PathBuf) -> SetupResult + Send + 'static) -> Result<(), String> {
+        if let Some((running, ..)) = &self.sync.setup.running {
+            return Err(match running {
+                SetupKind::List => "Still looking for vaults. Wait for it to finish.",
+                SetupKind::Create => "Sync is still being set up. Wait for it to finish.",
+                SetupKind::Join => "Still joining. Wait for it to finish.",
+            }
+            .into());
+        }
+        let root =
+            if kind == SetupKind::List { self.vault_root().map(Path::to_path_buf).unwrap_or_default() } else { self.sync_parts()?.0 };
+        // Older errors and lists are stale now.
+        self.sync.setup.done.retain(|d| matches!(d, SetupDone::Created(_)));
+        let rx = in_background({
+            let root = root.clone();
+            move || work(root)
+        });
+        self.sync.setup.running = Some((kind, root, rx));
+        Ok(())
+    }
+
+    /// "Find vaults", off the UI thread. The result waits for
+    /// [`Self::take_sync_setup`]. One setup step runs at a time.
+    pub fn sync_list_in_background(&mut self, target: SyncTarget) -> Result<(), String> {
+        self.start_setup(SetupKind::List, move |_| SetupResult::Listed(Self::sync_list(&target)))
+    }
+
+    /// [`Self::sync_create`] off the UI thread (the passphrase is stretched
+    /// and the storage is reached). The workspace starts sync when it is
+    /// done, even if Settings was closed; the recovery key waits for
+    /// [`Self::take_sync_setup`]. One setup step runs at a time.
+    pub fn sync_create_in_background(&mut self, target: SyncTarget, passphrase: String, device_name: String) -> Result<(), String> {
+        self.start_setup(SetupKind::Create, move |root| {
+            let passphrase = remote::Zeroizing::new(passphrase);
+            SetupResult::Created(sync_create_at(&root, &target, &passphrase, &device_name, &Selection::default()).map(|rk| rk.to_string()))
+        })
+    }
+
+    /// [`Self::sync_join`] off the UI thread, as [`Self::sync_create_in_background`].
     pub fn sync_join_in_background(
-        &self,
+        &mut self,
         target: SyncTarget,
         space: SpaceId,
         secret: String,
         device_name: String,
-    ) -> Result<Receiver<Result<(), String>>, String> {
-        let (root, _) = self.sync_parts()?;
-        let (tx, rx) = crossbeam_channel::bounded(1);
-        std::thread::spawn(move || {
+    ) -> Result<(), String> {
+        self.start_setup(SetupKind::Join, move |root| {
             let secret = remote::Zeroizing::new(secret);
-            let _ = tx.send(sync_join_at(&root, &target, &space, &secret, &device_name, &Selection::default()));
-        });
-        Ok(rx)
+            SetupResult::Joined(sync_join_at(&root, &target, &space, &secret, &device_name, &Selection::default()))
+        })
+    }
+
+    /// The setup step running, if any.
+    pub fn sync_setup_running(&self) -> Option<SetupKind> {
+        self.sync.setup.running.as_ref().map(|r| r.0)
+    }
+
+    /// What finished since the last call (the recovery key is shown once).
+    pub fn take_sync_setup(&mut self) -> Vec<SetupDone> {
+        std::mem::take(&mut self.sync.setup.done)
+    }
+
+    /// Take in a finished setup step. Returns true when something changed.
+    fn poll_setup(&mut self) -> bool {
+        use crossbeam_channel::TryRecvError::{Disconnected, Empty};
+        let Some((kind, root, rx)) = &self.sync.setup.running else { return false };
+        let (kind, root) = (*kind, root.clone());
+        let result = match rx.try_recv() {
+            Ok(r) => Ok(r),
+            Err(Empty) => return false,
+            Err(Disconnected) => Err(()),
+        };
+        self.sync.setup.running = None;
+        let same_vault = self.vault_root() == Some(root.as_path());
+        let done = match result {
+            Err(()) => SetupDone::Failed(kind, "Setting up sync stopped unexpectedly. Try again.".into()),
+            Ok(SetupResult::Listed(l)) => SetupDone::Listed(l),
+            Ok(SetupResult::Created(Err(e)) | SetupResult::Joined(Err(e))) => SetupDone::Failed(kind, e),
+            Ok(SetupResult::Created(Ok(rk))) => {
+                if same_vault {
+                    self.start_sync();
+                    SetupDone::Created(rk)
+                } else {
+                    self.notify_other_vault(&root);
+                    return true;
+                }
+            }
+            Ok(SetupResult::Joined(Ok(()))) => {
+                if same_vault {
+                    self.start_sync();
+                    SetupDone::Joined
+                } else {
+                    self.notify_other_vault(&root);
+                    return true;
+                }
+            }
+        };
+        match &done {
+            SetupDone::Failed(_, e) => self.notify(NoticeLevel::Warn, format!("Sync setup failed: {e}")),
+            SetupDone::Created(_) => {
+                self.notify(NoticeLevel::Info, "Sync is on. Settings → Sync shows the recovery key. Write it down.");
+            }
+            SetupDone::Joined => self.notify(NoticeLevel::Info, "Sync is on for this vault."),
+            SetupDone::Listed(_) => {}
+        }
+        self.sync.setup.done.push(done);
+        true
+    }
+
+    fn notify_other_vault(&mut self, root: &Path) {
+        self.notify(
+            NoticeLevel::Warn,
+            format!(
+                "Sync was set up for the vault at {}, but another vault is open now. Open that vault and look in Settings → Sync (the recovery key is there).",
+                root.display()
+            ),
+        );
     }
 
     /// Join an existing sync vault with its passphrase (or recovery key).
@@ -2391,11 +2540,11 @@ impl Workspace {
     pub fn start_sync(&mut self) {
         self.sync.worker = None;
         let Ok((root, vault)) = self.sync_parts() else {
-            self.sync = SyncHandle::default();
+            self.reset_sync();
             return;
         };
         let Some(cfg) = SyncConfig::load(&root) else {
-            self.sync = SyncHandle::default();
+            self.reset_sync();
             return;
         };
         let store = secrets::store();
@@ -2471,7 +2620,7 @@ impl Workspace {
             let _ = store.delete(&token_name(&cfg.space));
             let _ = store.delete(&key_name(&cfg.space));
         }
-        self.sync = SyncHandle::default();
+        self.reset_sync();
         let dir = sync_dir(&root);
         let _ = std::fs::remove_file(dir.join("config.json"));
         let _ = std::fs::remove_file(dir.join("state.json"));
@@ -2614,6 +2763,7 @@ impl Workspace {
 
     /// Collect worker events. Returns true when something changed.
     pub(crate) fn poll_sync(&mut self) -> bool {
+        let setup = self.poll_setup();
         // A removal finished while Settings was closed: say where its key is.
         let finished = {
             let mut r = self.sync.removal.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2628,6 +2778,7 @@ impl Workspace {
                 "A device was removed from sync. Open Settings → Sync → Devices and sync format to see the vault's new recovery key (shown once).",
             );
         }
+        let finished = finished | setup;
         let Some(w) = &self.sync.worker else { return finished };
         let events = w.events();
         if events.is_empty() {
@@ -2753,6 +2904,109 @@ mod tests {
         assert!(!logs.contains("Plan") && !logs.contains("Ship it"));
         b.stop_sync().unwrap();
         assert_eq!(b.sync.status, SyncStatus::Off);
+    }
+
+    #[test]
+    fn debug_output_leaves_secrets_out() {
+        let t = SyncTarget::Server { url: "https://sync.example".into(), token: "TOKEN-SECRET-123".into() };
+        let text = format!("{t:?}");
+        assert!(text.contains("sync.example") && !text.contains("TOKEN-SECRET-123"), "{text}");
+        let r = DeviceRemoved { recovery_key: "RK-SECRET-456".into(), left_out: vec!["phone".into()], advice: "x".into() };
+        let text = format!("{r:?}");
+        assert!(text.contains("phone") && !text.contains("RK-SECRET-456"), "{text}");
+        let d = SetupDone::Created("RK-SECRET-789".into());
+        assert!(!format!("{d:?}").contains("RK-SECRET-789"));
+    }
+
+    fn run_setup(ws: &mut Workspace) -> Vec<SetupDone> {
+        let start = Instant::now();
+        let mut out = Vec::new();
+        while ws.sync_setup_running().is_some() {
+            assert!(start.elapsed() < Duration::from_mins(1), "setup timed out");
+            ws.tick(Instant::now());
+            out.extend(ws.take_sync_setup());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        ws.tick(Instant::now());
+        out.extend(ws.take_sync_setup());
+        out
+    }
+
+    fn setup_dirs() -> (tempfile::TempDir, PathBuf, PathBuf, SyncTarget) {
+        let dir = tempfile::tempdir().unwrap();
+        let (va, vb, shared) = (dir.path().join("A"), dir.path().join("B"), dir.path().join("Shared"));
+        for d in [&va, &vb, &shared] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        (dir, va, vb, SyncTarget::Folder(shared))
+    }
+
+    #[test]
+    fn setup_result_is_applied_though_settings_closed() {
+        let (_d, va, _vb, target) = setup_dirs();
+        let mut a = Workspace::new(crate::Settings::default());
+        a.open_vault(&va).unwrap();
+        a.sync_create_in_background(target, "correct horse battery".into(), "laptop".into()).unwrap();
+        // Nobody polls the dialog: only the workspace tick runs.
+        let start = Instant::now();
+        while a.sync_setup_running().is_some() {
+            assert!(start.elapsed() < Duration::from_mins(1));
+            a.tick(Instant::now());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        a.tick(Instant::now());
+        assert!(a.sync.config.is_some(), "sync started");
+        assert!(a.sync_recovery_key().is_some());
+        let done = a.take_sync_setup();
+        assert!(matches!(done.as_slice(), [SetupDone::Created(rk)] if !rk.is_empty()), "{done:?}");
+        assert!(a.notices(Duration::from_mins(10)).any(|n| n.text.contains("Sync is on")));
+        assert!(!format!("{done:?}").contains("recovery key:"), "debug hides the key");
+    }
+
+    #[test]
+    fn only_one_setup_step_runs_at_a_time() {
+        let (_d, va, _vb, target) = setup_dirs();
+        let mut a = Workspace::new(crate::Settings::default());
+        a.open_vault(&va).unwrap();
+        a.sync_create_in_background(target.clone(), "correct horse battery".into(), "laptop".into()).unwrap();
+        assert!(a.sync_list_in_background(target.clone()).is_err());
+        assert!(a.sync_create_in_background(target.clone(), "correct horse battery".into(), "laptop".into()).is_err());
+        assert!(a.sync_join_in_background(target, SpaceId("x".into()), "s".into(), "d".into()).is_err());
+        assert_eq!(a.sync_setup_running(), Some(SetupKind::Create));
+        run_setup(&mut a);
+        assert_eq!(a.sync_setup_running(), None);
+    }
+
+    #[test]
+    fn setup_result_for_another_vault_is_not_applied() {
+        let (_d, va, vb, target) = setup_dirs();
+        let mut a = Workspace::new(crate::Settings::default());
+        a.open_vault(&va).unwrap();
+        a.sync_create_in_background(target, "correct horse battery".into(), "laptop".into()).unwrap();
+        a.open_vault(&vb).unwrap();
+        let done = run_setup(&mut a);
+        assert!(done.is_empty(), "nothing for the dialog: {done:?}");
+        assert!(a.sync.config.is_none(), "sync not started on the vault now open");
+        assert!(SyncConfig::load(&vb).is_none());
+        assert!(SyncConfig::load(&va).is_some(), "the first vault was set up on disk");
+        assert!(a.notices(Duration::from_mins(10)).any(|n| n.text.contains("another vault is open")));
+    }
+
+    #[test]
+    fn setup_failure_is_reported() {
+        let (_d, va, _vb, target) = setup_dirs();
+        let mut a = Workspace::new(crate::Settings::default());
+        a.open_vault(&va).unwrap();
+        a.sync_create_in_background(target, "short".into(), "laptop".into()).unwrap();
+        let done = run_setup(&mut a);
+        assert!(matches!(done.as_slice(), [SetupDone::Failed(SetupKind::Create, _)]), "{done:?}");
+        assert!(a.notices(Duration::from_mins(10)).any(|n| n.text.contains("Sync setup failed")));
+        // A worker that dies without answering is reported too.
+        let (tx, rx) = crossbeam_channel::bounded::<SetupResult>(1);
+        drop(tx);
+        a.sync.setup.running = Some((SetupKind::Join, va, rx));
+        let done = run_setup(&mut a);
+        assert!(matches!(done.as_slice(), [SetupDone::Failed(SetupKind::Join, e)] if e.contains("stopped")), "{done:?}");
     }
 
     /// Drain a headless worker's events while ticking the app.

@@ -389,6 +389,12 @@ impl DrawingEditor {
     }
 
     fn save(&mut self, ws: &mut Workspace) {
+        self.save_as(ws, true);
+    }
+
+    /// [`Self::save`]; `ask` says whether a change elsewhere is announced as
+    /// a question (not when the tab is closing: nothing is left to choose).
+    fn save_as(&mut self, ws: &mut Workspace, ask: bool) {
         let Some(d) = &self.d else { return };
         // No edit, no write (data review #8): a file is never rewritten
         // just because it was opened.
@@ -409,7 +415,14 @@ impl DrawingEditor {
             }
             Saved::ChangedElsewhere(theirs) => {
                 self.conflict = Some(Elsewhere::from(theirs));
-                ws.notify(NoticeLevel::Warn, format!("“{}” changed elsewhere: choose what to keep", self.title_text()));
+                if ask {
+                    ws.notify(NoticeLevel::Warn, format!("“{}” changed elsewhere: choose what to keep", self.title_text()));
+                } else {
+                    ws.notify(
+                        NoticeLevel::Warn,
+                        format!("“{}” changed elsewhere: your edits are kept in a copy beside it", self.title_text()),
+                    );
+                }
             }
             Saved::Failed(e) => {
                 if self.save_failed.is_none() {
@@ -2198,7 +2211,7 @@ impl Surface for DrawingEditor {
         if self.loaded {
             self.drag = None;
             self.finish_typing();
-            self.save(ws);
+            self.save_as(ws, false);
             self.report_unsaved(ws);
         }
     }
@@ -2218,7 +2231,10 @@ impl DrawingEditor {
                 self.save(ws);
             }
         }
-        flag.set(self.dirty && self.conflict.is_none() && self.error.is_none());
+        // A drawing in "changed elsewhere" with edits still holds unsaved
+        // work: a lock must not run past it (the edits could not be written
+        // once the folder is locked).
+        flag.set(self.dirty && self.error.is_none());
     }
 
     /// Save once the edits have rested (not during a drag or while typing).

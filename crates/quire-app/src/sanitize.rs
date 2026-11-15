@@ -228,30 +228,57 @@ mod tests {
     fn assert_inert(what: &str, html: &str) {
         let mut rest = html;
         while let Some(i) = rest.find('<') {
-            let Some(len) = rest[i..].find('>') else { break };
-            let tag = &rest[i..=i + len];
+            let Some((tag, outside_quotes)) = split_tag(&rest[i..]) else { break };
             // As a URL parser reads it: no tabs, line breaks or other controls.
-            let lower: String = tag.to_ascii_lowercase().chars().filter(|c| !c.is_ascii_control() || *c == '\n').collect();
-            let lower = lower.replace("&#9;", "").replace("&#x9;", "");
+            let clean = |t: &str| -> String {
+                let l: String = t.to_ascii_lowercase().chars().filter(|c| !c.is_ascii_control() || *c == '\n').collect();
+                l.replace("&#9;", "").replace("&#x9;", "")
+            };
+            let lower = clean(tag);
             let name: String = lower.trim_start_matches(['<', '/']).chars().take_while(char::is_ascii_alphanumeric).collect();
             assert!(!FORBIDDEN.contains(&name.as_str()), "{what}: <{name}> in the page: {tag}\n{html}");
             for bad in ["javascript:", "vbscript:", "srcdoc", "formaction", "expression(", "data:text/html"] {
                 assert!(!lower.contains(bad), "{what}: {bad} in {tag}\n{html}");
             }
-            // Text inside a quoted value (escaped by the cleaner, so only text) is not an attribute.
-            let mut outside_quotes = String::new();
-            let mut quoted = false;
-            for c in lower.chars() {
-                if c == '"' {
-                    quoted = !quoted;
-                } else if !quoted {
-                    outside_quotes.push(c);
-                }
-            }
-            let on_handler = outside_quotes.split([' ', '/', '\t', '\n']).skip(1).any(|a| a.starts_with("on") && a.contains('='));
+            let outside = clean(&outside_quotes);
+            let on_handler = outside.split([' ', '/', '\t', '\n']).skip(1).any(|a| a.starts_with("on") && a.contains('='));
             assert!(!on_handler, "{what}: an event handler in {tag}\n{html}");
-            rest = &rest[i + len + 1..];
+            rest = &rest[i + tag.len()..];
         }
+    }
+
+    /// The tag at the start of `s` (up to the first `>` outside a quoted
+    /// value), and the tag without its quoted values. A quote opens a value
+    /// only right after `=`, and only the same quote character closes it, so
+    /// `title='a"b' onerror=x` keeps `onerror=x` outside the quotes.
+    fn split_tag(s: &str) -> Option<(&str, String)> {
+        let mut outside = String::new();
+        let mut quote: Option<char> = None;
+        let mut prev = ' ';
+        for (n, c) in s.char_indices() {
+            match quote {
+                Some(q) if c == q => quote = None,
+                Some(_) => {}
+                None if (c == '"' || c == '\'') && prev == '=' => quote = Some(c),
+                None if c == '>' => return Some((&s[..=n], outside)),
+                None => outside.push(c),
+            }
+            if quote.is_none() && !c.is_whitespace() {
+                prev = c;
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn the_inert_check_sees_a_handler_next_to_a_single_quoted_value() {
+        let caught = |html: &str| std::panic::catch_unwind(|| assert_inert("t", html)).is_err();
+        assert!(caught(r#"<img title='a"b' onerror=x>"#));
+        assert!(caught(r#"<img title="a'b" onerror=x>"#));
+        assert!(caught("<a title='>' onclick='x'>"));
+        assert!(caught(r#"<img title=a"b onerror=x>"#));
+        assert!(!caught(r#"<img title='a"b onerror=x' alt="it's">"#), "text inside a quoted value is only text");
+        assert!(!caught(r#"<a href="/x" title='one'>link</a>"#));
     }
 
     /// Every way a note becomes HTML a browser opens: the published site and

@@ -326,14 +326,18 @@ impl Workspace {
     /// be saved (it changed on disk meanwhile, say) is kept as an encrypted
     /// copy beside it (`Day (unsaved 2026-11-08 14.30).md`), never in plain
     /// text; if even that fails the folder stays unlocked. Returns how many
-    /// notes were closed, or `None` when the folder was kept unlocked.
+    /// notes were closed, or `None` when the folder isn't locked yet: it was
+    /// kept unlocked, or it waits for a drawing's edits to be written (the
+    /// lock follows on a later tick, or is refused with a notice; a drawing
+    /// that is in "changed elsewhere" with edits keeps it unlocked until the
+    /// person chooses what to keep).
     pub fn lock_folder_now(&mut self, folder: &str) -> Option<usize> {
         // A drawing's edits wait up to 0.6 s for autosave, and a locked
         // folder can't be written: have the editors save first, and lock on
         // a later tick (`lock_when_saved`).
         if self.features.canvas.unsaved_in(folder) {
-            self.features.canvas.save_now += 1;
-            if !self.features.secure.lock_waiting.iter().any(|(f, _)| f == folder) {
+            if !self.is_lock_waiting(folder) {
+                self.features.canvas.save_now += 1;
                 self.features.secure.lock_waiting.push((folder.to_string(), Instant::now()));
             }
             return None;
@@ -362,6 +366,11 @@ impl Workspace {
         self.forget_unlocked_text();
         self.rebuild_locked_index();
         Some(closed)
+    }
+
+    /// Whether `folder` already waits for its drawings to save.
+    fn is_lock_waiting(&self, folder: &str) -> bool {
+        self.features.secure.lock_waiting.iter().any(|(f, _)| f == folder)
     }
 
     /// The open notes (tabs and hidden ones) in `folder`.
@@ -415,6 +424,9 @@ impl Workspace {
         let unlocked = self.vault.as_ref().map(|v| v.keys().unlocked()).unwrap_or_default();
         let mut locked = Vec::new();
         for f in unlocked {
+            if self.is_lock_waiting(&f) {
+                continue; // already asked its drawings to save; `lock_when_saved` decides
+            }
             let open = self.docs_in(&f);
             for id in &open {
                 self.save(*id);
@@ -880,7 +892,14 @@ fn lock_when_saved(ws: &mut Workspace) -> bool {
             if since.elapsed() < DRAWING_SAVE_WAIT {
                 ws.features.secure.lock_waiting.push((folder, since));
             } else {
-                ws.notify(NoticeLevel::Warn, format!("{folder}/ stays unlocked: a drawing in it has edits that couldn't be saved."));
+                ws.notify(
+                    NoticeLevel::Warn,
+                    format!(
+                        "{folder}/ stays unlocked: a drawing in it has edits that couldn't be saved, or changed elsewhere and waits for you to choose what to keep."
+                    ),
+                );
+                // Idle locking tries again in a minute, not every frame.
+                ws.features.secure.idle_retry = Some(Instant::now() + Duration::from_mins(1));
                 changed = true;
             }
         } else if ws.lock_folder_now(&folder).is_some() {
