@@ -12,10 +12,10 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use hayro_interpret::font::Glyph;
+use hayro_interpret::font::GlyphRun;
 use hayro_interpret::hayro_syntax::Pdf;
 use hayro_interpret::hayro_syntax::object::{Array, Dict, MaybeRef, Name, Object};
 use hayro_interpret::hayro_syntax::page::Page;
-use hayro_interpret::font::GlyphRun;
 use hayro_interpret::{
     BlendMode, ClipPath, Context, Device, DrawMode, DrawProps, Image, ImageDrawProps, InterpreterCache, InterpreterSettings, SoftMask,
     interpret_page,

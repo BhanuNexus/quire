@@ -59,8 +59,7 @@ pub fn render_page(doc: &PdfDoc, page: usize, scale: f32) -> Result<PageImage, P
         let (w, h) = p.render_dimensions();
         let scale = scale.clamp(0.05, MAX_SIDE / w.max(h).max(1.0));
         let cache = RenderCache::new();
-        let pixmap =
-            PixmapSettings { x_scale: scale, y_scale: scale, bg_color: hayro::vello_cpu::color::palette::css::WHITE };
+        let pixmap = PixmapSettings { x_scale: scale, y_scale: scale, bg_color: hayro::vello_cpu::color::palette::css::WHITE };
         let pix = render(p, &cache, &InterpreterSettings::default(), &RenderSettings::default(), &pixmap);
         let (width, height) = (u32::from(pix.width()), u32::from(pix.height()));
         let rgba: Vec<u8> = pix.take_rgba8(hayro::vello_cpu::peniko::ImageAlphaType::Alpha);
