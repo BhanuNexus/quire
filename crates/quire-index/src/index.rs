@@ -83,8 +83,11 @@ impl Index {
     }
 
     /// Insert a pre-built record without refreshing the graph (bulk loads).
-    pub fn insert_record(&mut self, rec: NoteRecord, src: String) {
+    pub fn insert_record(&mut self, mut rec: NoteRecord, src: String) {
         self.fulltext.upsert(&rec);
+        // 0.13.1: the search terms live in the keyword index now; the record's
+        // copy was a second set of every note's words, kept for nothing.
+        rec.search_terms = (Vec::new(), 0.0);
         self.line_starts.insert(rec.path.clone(), line_starts(&src));
         self.sources.insert(rec.path.clone(), src);
         self.records.insert(rec.path.clone(), rec);
@@ -398,6 +401,7 @@ mod tests {
     /// tags of tag notes, list notes, Dendron names and lines that move.
     #[test]
     fn patched_graph_equals_a_rebuild() {
+        use std::fmt::Write as _;
         let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
         let mut next = |n: usize| {
             seed ^= seed << 13;
@@ -415,17 +419,25 @@ mod tests {
                 _ => {}
             }
             if s.ends_with("Alias") {
-                s.push_str(&format!("{me}]\nup: \"[[{}]]\"\n---\n", names[next(names.len())]));
+                let _ = writeln!(s, "{me}]\nup: \"[[{}]]\"\n---", names[next(names.len())]);
             }
             for _ in 0..next(8) {
                 match next(9) {
-                    0 => s.push_str(&format!("see [[{}]] here\n", names[next(names.len())])),
-                    1 => s.push_str(&format!("up:: [[{}]]\n", names[next(names.len())])),
-                    2 => s.push_str(&format!("- [[{}]]\n  - child [[{}]]\n", names[next(names.len())], names[next(names.len())])),
+                    0 => {
+                        let _ = writeln!(s, "see [[{}]] here", names[next(names.len())]);
+                    }
+                    1 => {
+                        let _ = writeln!(s, "up:: [[{}]]", names[next(names.len())]);
+                    }
+                    2 => {
+                        let _ = writeln!(s, "- [[{}]]\n  - child [[{}]]", names[next(names.len())], names[next(names.len())]);
+                    }
                     3 => s.push_str("#topic and #topic/sub\n"),
                     4 => s.push_str("[[Missing]] and [[Gone|shown]] and ![[pic.png]]\n"),
                     5 => s.push_str("[[unï]] [[Alias3]] [[#Heading]]\n"),
-                    6 => s.push_str(&format!("supports:: [[{}]]\n", names[next(names.len())])),
+                    6 => {
+                        let _ = writeln!(s, "supports:: [[{}]]", names[next(names.len())]);
+                    }
                     _ => s.push_str("plain words\n"),
                 }
             }

@@ -59,6 +59,8 @@ struct Shared {
     indexed: AtomicUsize,
     total: AtomicUsize,
     busy: AtomicBool,
+    /// Notes in the index after the last batch, for per-frame UI.
+    notes: AtomicUsize,
     semantic_version: AtomicU64,
     semantic_busy: AtomicBool,
 }
@@ -219,6 +221,12 @@ impl IndexService {
             Err(std::sync::TryLockError::Poisoned(p)) => Some(p.into_inner()),
             Err(std::sync::TryLockError::WouldBlock) => None,
         }
+    }
+
+    /// How many notes are indexed, without taking the lock (0.13.1: for the
+    /// status bar, which asked under a blocking read every frame).
+    pub fn note_count(&self) -> usize {
+        self.shared.notes.load(Ordering::Relaxed)
     }
 
     /// Increments after every applied batch.
@@ -404,6 +412,7 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
             if !rebuild && !patched.is_empty() {
                 ix.patch_graph(&patched);
             }
+            shared.notes.store(ix.len(), Ordering::Relaxed);
         }
         if rebuild {
             // The graph is built under a read lock (searches and the UI keep working) and
@@ -490,6 +499,7 @@ mod tests {
         svc.load(vault);
         svc.flush();
         assert_eq!(svc.read().len(), 3);
+        assert_eq!(svc.note_count(), 3);
         assert_eq!(svc.read().backlinks(&NotePath::new("B.md")).len(), 1);
         svc.upsert(NotePath::new("C.md"), "now links [[B]] too".into());
         svc.remove(NotePath::new("A.md"));
