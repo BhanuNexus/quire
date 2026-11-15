@@ -5798,7 +5798,6 @@ dependencies = [
  "half",
  "quire-index",
  "quire-intel",
- "quire-vault",
  "serde",
  "serde_json",
  "sha2",
@@ -5824,7 +5823,6 @@ dependencies = [
  "quire-intel",
  "quire-vault",
  "rten",
- "serde",
  "serde_json",
  "tempfile",
  "tokenizers",
@@ -5870,7 +5868,6 @@ dependencies = [
 name = "quire-assistant"
 version = "0.13.0"
 dependencies = [
- "chrono",
  "quire-agent",
  "quire-ai",
  "quire-app",
@@ -6177,7 +6174,6 @@ dependencies = [
  "quire-agent",
  "quire-app",
  "quire-mcp",
- "quire-typeset",
  "serde",
  "serde_json",
  "sha2",
