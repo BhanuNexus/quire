@@ -371,10 +371,17 @@ fn real_servers() {
         eprintln!("skipped: set QUIRE_SYNC_REAL_SERVERS to a Python with moto[server] and wsgidav");
         return;
     };
-    let port = |base: u16| base + u16::try_from(std::process::id() % 1000).unwrap();
+    // Ports the system hands out (not a number derived from the process id,
+    // which two runs or another program can share). Both are held until just
+    // before their server starts, so they differ.
+    let reserve = || {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        (l.local_addr().unwrap().port(), l)
+    };
+    let (dav_port, dav_hold) = reserve();
+    let (s3_port, s3_hold) = reserve();
     let dir = tempfile::tempdir().unwrap();
     // WsgiDAV with Basic auth over a temporary folder.
-    let dav_port = port(41000);
     let conf = dir.path().join("wsgidav.yaml");
     std::fs::create_dir_all(dir.path().join("share")).unwrap();
     std::fs::write(
@@ -385,6 +392,7 @@ fn real_servers() {
         ),
     )
     .unwrap();
+    drop(dav_hold);
     let mut wsgidav = std::process::Command::new(&python)
         .args(["-I", "-m", "wsgidav.server.server_cli", "--config"])
         .arg(&conf)
@@ -392,7 +400,7 @@ fn real_servers() {
         .stderr(std::process::Stdio::null())
         .spawn()
         .unwrap();
-    let s3_port = port(42000);
+    drop(s3_hold);
     let mut moto = std::process::Command::new(&python)
         .args(["-I", "-m", "moto.server", "-H", "127.0.0.1", "-p", &s3_port.to_string()])
         .env("INITIAL_NO_AUTH_ACTION_COUNT", "8")
