@@ -117,8 +117,8 @@ jobs:
         shell: bash
     permissions:
       contents: read
-      id-token: write
-      attestations: write
+      id-token: write # sign build-provenance attestations (OIDC)
+      attestations: write # store the attestations
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -128,7 +128,11 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           rustup target add "$TARGET"
       - name: Build the engine
-        run: cargo build --release --locked --target "$TARGET" -p quire-ai-engine --bin quire-ai-engine ${{ matrix.features }}
+        env:
+          FEATURES: ${{ matrix.features }}
+        run: |
+          read -ra features <<< "$FEATURES"
+          cargo build --release --locked --target "$TARGET" -p quire-ai-engine --bin quire-ai-engine "${features[@]}"
       - name: Compress, pin and check the size budget
         run: |
           mkdir -p dist pins
@@ -183,8 +187,8 @@ jobs:
       DEB_ARCH: ${{ matrix.deb }}
     permissions:
       contents: read
-      id-token: write
-      attestations: write
+      id-token: write # sign build-provenance attestations (OIDC)
+      attestations: write # store the attestations
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -294,8 +298,8 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
-      id-token: write
-      attestations: write
+      id-token: write # sign build-provenance attestations (OIDC)
+      attestations: write # store the attestations
     strategy:
       fail-fast: true
       matrix:
@@ -390,8 +394,8 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
-      id-token: write
-      attestations: write
+      id-token: write # sign build-provenance attestations (OIDC)
+      attestations: write # store the attestations
     strategy:
       fail-fast: true
       matrix:
@@ -607,8 +611,8 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-      id-token: write
-      attestations: write
+      id-token: write # sign build-provenance attestations (OIDC)
+      attestations: write # store the attestations
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -651,9 +655,9 @@ jobs:
     # to approve each release before it's published.
     environment: release
     permissions:
-      contents: write
-      id-token: write
-      attestations: write
+      contents: write # create the draft release, upload and publish it
+      id-token: write # sign build-provenance attestations (OIDC)
+      attestations: write # store the attestations
     env:
       VERSION: ${{ needs.check.outputs.version }}
       GH_TOKEN: ${{ github.token }}
