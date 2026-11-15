@@ -258,15 +258,36 @@ pub fn nested_message(path: &str) -> String {
 
 /// Run `git` in `dir` with prompts off and a time limit: stdout, or an error
 /// in plain words. Only [`run_git`] calls this.
+/// A canonical Windows path without its `\\?\` prefix, which git doesn't
+/// take in `--git-dir` and `--work-tree`: `\\?\C:\x` is `C:\x`, and
+/// `\\?\UNC\server\share` is `\\server\share`. Any other text is unchanged.
+fn without_verbatim_prefix(path: &str) -> String {
+    path.strip_prefix(r"\\?\UNC\").map_or_else(
+        || match path.strip_prefix(r"\\?\") {
+            Some(rest) if rest.as_bytes().get(1) == Some(&b':') => rest.to_string(),
+            _ => path.to_string(),
+        },
+        |rest| format!(r"\\{rest}"),
+    )
+}
+
+/// `path` as git takes it on its command line.
+fn for_git(path: &Path) -> std::ffi::OsString {
+    match path.to_str() {
+        Some(text) if cfg!(windows) => without_verbatim_prefix(text).into(),
+        _ => path.as_os_str().to_os_string(),
+    }
+}
+
 fn spawn_git(repo: &RepoDirs, dir: &Path, args: &[&str]) -> Result<String, String> {
     #[cfg(test)]
     SPAWNED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(dir.to_path_buf());
     // Exactly the git folder and working tree that were checked and
     // trusted: git searches for nothing itself.
     let mut git_dir = std::ffi::OsString::from("--git-dir=");
-    git_dir.push(repo.git_dir());
+    git_dir.push(for_git(repo.git_dir()));
     let mut work_tree = std::ffi::OsString::from("--work-tree=");
-    work_tree.push(repo.root());
+    work_tree.push(for_git(repo.root()));
     let mut child = Proc::new("git")
         .arg(git_dir)
         .arg(work_tree)
@@ -1053,6 +1074,14 @@ mod tests {
         let p = GitPrefs { auto_commit: true, push_after_commit: true, ..GitPrefs::default() };
         assert_eq!(p.automatic(), ["commit by itself", "push after each commit"]);
         assert!(GitPrefs::default().automatic().is_empty());
+    }
+
+    #[test]
+    fn windows_paths_reach_git_without_the_verbatim_prefix() {
+        assert_eq!(without_verbatim_prefix(r"\\?\C:\Users\a\Notes\.git"), r"C:\Users\a\Notes\.git");
+        assert_eq!(without_verbatim_prefix(r"\\?\UNC\server\share\Notes"), r"\\server\share\Notes");
+        assert_eq!(without_verbatim_prefix(r"\\?\Volume{1}\x"), r"\\?\Volume{1}\x");
+        assert_eq!(without_verbatim_prefix("/home/a/Notes/.git"), "/home/a/Notes/.git");
     }
 
     #[test]
