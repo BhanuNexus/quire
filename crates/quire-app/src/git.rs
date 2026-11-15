@@ -11,6 +11,15 @@
 //!
 //! Settings are in the vault (`[git]` in `.quire/shared/vault.toml`).
 //! Owned by WS-F; kept in `ws.features.git`.
+//!
+//! A repository's own settings (`.git/config`) and hooks travel with a
+//! copied or unpacked folder, and some of them make git run a program:
+//! `core.fsmonitor` and clean filters run on a plain `git status`. Quire
+//! runs git on its own as soon as a vault opens, so it first reads the
+//! repository's own settings ([`repo_programs`]): where they run a program,
+//! Quire runs no git there that would start it, and says why. Repository
+//! hooks stop only what Quire does on its own (auto-commit, pull on start,
+//! push after commit); a commit you ask for runs them, as git would.
 
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -94,15 +103,15 @@ enum Op {
     Detect,
     Status,
     Commit { auto: bool },
-    Pull,
-    Push,
+    Pull { auto: bool },
+    Push { auto: bool },
     Log(NotePath),
     Show { hash: String, path: String },
 }
 
 #[derive(Debug)]
 enum Done {
-    Detected(Result<(PathBuf, String), String>),
+    Detected(Result<(PathBuf, String, Programs), String>),
     Status(Result<Status, String>),
     Committed { auto: bool, result: Result<Option<usize>, String> },
     Pulled(Result<String, String>),
@@ -122,6 +131,12 @@ pub struct GitState {
     /// The repository's top folder.
     pub root: Option<PathBuf>,
     pub prefs: GitPrefs,
+    /// Why Quire runs no git here: the repository's own settings run a
+    /// program ([`repo_programs`]).
+    pub blocked: Option<String>,
+    /// The repository has hooks, so Quire commits, pulls and pushes only
+    /// when asked.
+    pub hooks: Option<String>,
     pub status: Option<Status>,
     /// What's running (`"Committing…"`).
     pub busy: Vec<&'static str>,
@@ -148,6 +163,8 @@ impl Default for GitState {
             version: String::new(),
             root: None,
             prefs: GitPrefs::default(),
+            blocked: None,
+            hooks: None,
             status: None,
             busy: Vec::new(),
             last: None,
@@ -225,6 +242,102 @@ pub fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     }
 }
 
+/// Whether a setting in a repository's own config makes git run a program.
+///
+/// `key` as `git config --list` prints it (section and name in lowercase).
+/// Settings that only name one of git's own helpers are fine: a bare
+/// credential helper name (`store`, `osxkeychain`), the built-in file
+/// system monitor (`core.fsmonitor = true`) and Git LFS's standard filter.
+pub fn runs_program(key: &str, value: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    let value = value.trim();
+    let Some((section, rest)) = key.split_once('.') else { return false };
+    let name = rest.rsplit('.').next().unwrap_or(rest);
+    let named_helper = |v: &str| !v.is_empty() && v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    match section {
+        "core" => match rest {
+            "fsmonitor" => !matches!(value.to_ascii_lowercase().as_str(), "" | "true" | "false" | "yes" | "no" | "on" | "off" | "1" | "0"),
+            "sshcommand" | "askpass" | "alternaterefscommand" | "gitproxy" => !value.is_empty(),
+            _ => false,
+        },
+        "filter" => {
+            const LFS: [&str; 5] = [
+                "git-lfs clean -- %f",
+                "git-lfs smudge -- %f",
+                "git-lfs smudge --skip -- %f",
+                "git-lfs filter-process",
+                "git-lfs filter-process --skip",
+            ];
+            matches!(name, "clean" | "smudge" | "process") && !value.is_empty() && !(rest.starts_with("lfs.") && LFS.contains(&value))
+        }
+        "diff" => rest == "external" || matches!(name, "command" | "textconv"),
+        "merge" => name == "driver",
+        "credential" => name == "helper" && !value.is_empty() && !named_helper(value),
+        "gpg" => matches!(name, "program" | "defaultkeycommand"),
+        "remote" => matches!(name, "uploadpack" | "receivepack" | "vcs"),
+        "protocol" => name == "allow" && value.eq_ignore_ascii_case("always"),
+        "trailer" => matches!(name, "command" | "cmd"),
+        _ => false,
+    }
+}
+
+/// What in a repository's own settings would make git run a program, as
+/// `(settings, hooks)`: the first such setting (`key = value`), and the
+/// first hook in the repository's hooks folder (or a hooks folder the
+/// repository's own settings name). Settings of this computer's user and
+/// system are the person's own and aren't looked at.
+pub fn repo_programs(root: &Path) -> Result<(Option<String>, Option<String>), String> {
+    let list = git(root, &["config", "--list", "--show-scope", "--includes", "-z"])?;
+    let mut setting = None;
+    let mut hooks_path = false;
+    let mut fields = list.split('\0');
+    while let (Some(scope), Some(entry)) = (fields.next(), fields.next()) {
+        if !matches!(scope, "local" | "worktree") {
+            continue;
+        }
+        let (key, value) = entry.split_once('\n').unwrap_or((entry, ""));
+        hooks_path |= key.eq_ignore_ascii_case("core.hookspath");
+        if setting.is_none() && runs_program(key, value) {
+            setting = Some(format!("{key} = {}", value.chars().take(80).collect::<String>()));
+        }
+    }
+    let hook = if hooks_path {
+        Some("core.hooksPath".to_string())
+    } else {
+        let dir = git(root, &["rev-parse", "--absolute-git-dir"])?;
+        std::fs::read_dir(Path::new(dir.trim()).join("hooks")).ok().and_then(|entries| {
+            entries
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| !n.ends_with(".sample") && !n.starts_with('.'))
+                .min()
+                .map(|n| format!("the hook {n}"))
+        })
+    };
+    Ok((setting, hook))
+}
+
+/// `Err` with the reason when git shouldn't run here: never where the
+/// repository's own settings run a program, and not on Quire's own
+/// initiative (`auto`) where the repository has hooks.
+fn safe_to_run(root: &Path, auto: bool) -> Result<(), String> {
+    match repo_programs(root)? {
+        (Some(s), _) => Err(blocked_message(&s)),
+        (None, Some(h)) if auto => Err(hooks_message(&h)),
+        _ => Ok(()),
+    }
+}
+
+fn blocked_message(setting: &str) -> String {
+    format!(
+        "Quire doesn't run git in this repository: its own settings run a program ({setting}). If you set that up, use git from a terminal here."
+    )
+}
+
+fn hooks_message(hook: &str) -> String {
+    format!("This repository has hooks that run programs ({hook}), so Quire commits, pulls and pushes here only when you ask.")
+}
+
 /// `git version 2.43.0` → (2, 43).
 pub fn parse_version(s: &str) -> Option<(u32, u32)> {
     let v = s.split_whitespace().find(|w| w.chars().next().is_some_and(|c| c.is_ascii_digit()))?;
@@ -232,7 +345,10 @@ pub fn parse_version(s: &str) -> Option<(u32, u32)> {
     Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
 }
 
-fn detect(vault: &Path) -> Result<(PathBuf, String), String> {
+/// What [`repo_programs`] found: a setting, a hook.
+type Programs = (Option<String>, Option<String>);
+
+fn detect(vault: &Path) -> Result<(PathBuf, String, Programs), String> {
     let v = git(vault, &["--version"])?;
     let version = v.trim().to_string();
     match parse_version(&version) {
@@ -240,7 +356,9 @@ fn detect(vault: &Path) -> Result<(PathBuf, String), String> {
         _ => return Err(format!("{version} is too old; Quire needs git {}.{} or newer", MIN_VERSION.0, MIN_VERSION.1)),
     }
     let top = git(vault, &["rev-parse", "--show-toplevel"]).map_err(|_| "not a repository".to_string())?;
-    Ok((PathBuf::from(top.trim()), version))
+    let root = PathBuf::from(top.trim());
+    let programs = repo_programs(&root)?;
+    Ok((root, version, programs))
 }
 
 /// Paths are relative to the repository; keep only what Quire commits.
@@ -360,17 +478,21 @@ fn run_op(root: Option<&Path>, vault: &Path, prefix: &str, op: Op, message: &str
     let need = || root.ok_or_else(|| "not a repository".to_string());
     match op {
         Op::Detect => Done::Detected(detect(vault)),
-        Op::Status => Done::Status(need().and_then(|r| git_status(r, prefix))),
-        Op::Commit { auto } => Done::Committed { auto, result: need().and_then(|r| commit(r, prefix, message)) },
-        Op::Pull => Done::Pulled(need().and_then(|r| git(r, &["pull", "--ff-only", "-q"]))),
-        Op::Push => Done::Pushed(need().and_then(|r| git(r, &["push", "-q"]))),
+        Op::Status => Done::Status(need().and_then(|r| safe_to_run(r, false).and_then(|()| git_status(r, prefix)))),
+        Op::Commit { auto } => {
+            Done::Committed { auto, result: need().and_then(|r| safe_to_run(r, auto).and_then(|()| commit(r, prefix, message))) }
+        }
+        Op::Pull { auto } => Done::Pulled(need().and_then(|r| safe_to_run(r, auto).and_then(|()| git(r, &["pull", "--ff-only", "-q"])))),
+        Op::Push { auto } => Done::Pushed(need().and_then(|r| safe_to_run(r, auto).and_then(|()| git(r, &["push", "-q"])))),
         Op::Log(p) => {
             let rel = format!("{prefix}{}", p.as_str());
             let r = need().and_then(|r| log(r, &rel));
             Done::Log(p, r)
         }
         Op::Show { hash, path } => {
-            let r = need().and_then(|r| git(r, &["show", "--format=", "--patch", "--no-color", &hash, "--", &path]));
+            let r = need().and_then(|r| {
+                git(r, &["show", "--format=", "--patch", "--no-color", "--no-ext-diff", "--no-textconv", &hash, "--", &path])
+            });
             Done::Shown { hash, result: r }
         }
     }
@@ -381,8 +503,8 @@ fn label(op: &Op) -> &'static str {
         Op::Detect => "Checking git…",
         Op::Status => "Reading git status…",
         Op::Commit { .. } => "Committing…",
-        Op::Pull => "Pulling…",
-        Op::Push => "Pushing…",
+        Op::Pull { .. } => "Pulling…",
+        Op::Push { .. } => "Pushing…",
         Op::Log(_) => "Reading history…",
         Op::Show { .. } => "Reading a commit…",
     }
@@ -448,16 +570,21 @@ fn finish(ws: &mut Workspace, done: Done) {
         st.busy.remove(i);
     }
     match done {
-        Done::Detected(Ok((root, version))) => {
+        Done::Detected(Ok((root, version, (blocked, hooks)))) => {
             st.repo = true;
             st.root = Some(root);
             st.version = version;
             st.unavailable = None;
+            st.hooks = hooks;
+            if let Some(b) = blocked {
+                st.blocked = Some(b);
+                return;
+            }
             // Opening the vault counts as activity: auto-commit waits a quiet spell first.
             st.pending_change = true;
             spawn(ws, Op::Status);
-            if ws.features.git.prefs.pull_on_start && !sync_on(ws) {
-                spawn(ws, Op::Pull);
+            if ws.features.git.prefs.pull_on_start && ws.features.git.hooks.is_none() && !sync_on(ws) {
+                spawn(ws, Op::Pull { auto: true });
             }
         }
         Done::Detected(Err(e)) => {
@@ -475,8 +602,8 @@ fn finish(ws: &mut Workspace, done: Done) {
             match result {
                 Ok(Some(n)) => {
                     st.last = Some((format!("Committed {n} file{}", if n == 1 { "" } else { "s" }), false));
-                    if st.prefs.push_after_commit && !sync_on(ws) {
-                        spawn(ws, Op::Push);
+                    if st.prefs.push_after_commit && st.hooks.is_none() && !sync_on(ws) {
+                        spawn(ws, Op::Push { auto: true });
                     }
                 }
                 Ok(None) => {
@@ -523,7 +650,7 @@ pub(crate) fn tick(ws: &mut Workspace, now: Instant) -> bool {
         finish(ws, done);
         changed = true;
     }
-    if !ws.features.git.repo {
+    if !ws.features.git.repo || ws.features.git.blocked.is_some() {
         return changed;
     }
     let st = &mut ws.features.git;
@@ -546,7 +673,7 @@ pub(crate) fn tick(ws: &mut Workspace, now: Instant) -> bool {
     let has_changes = st.status.as_ref().is_some_and(|s| !s.changed.is_empty());
     let quiet = last_activity.is_none_or(|t| now.saturating_duration_since(t) >= idle);
     let saved = ws.docs().iter().chain(&ws.features.nav.hidden).all(|d| !d.is_dirty());
-    if st.prefs.auto_commit && !busy && has_changes && quiet && saved {
+    if st.prefs.auto_commit && st.hooks.is_none() && !busy && has_changes && quiet && saved {
         // Commit once per quiet spell: the status refresh after it clears `changed`.
         if let Some(s) = ws.features.git.status.as_mut() {
             s.changed.clear();
@@ -562,11 +689,11 @@ pub(crate) fn next_deadline(ws: &Workspace) -> Option<Instant> {
     if !st.busy.is_empty() {
         return Some(Instant::now() + Duration::from_millis(100));
     }
-    if !st.repo {
+    if !st.repo || st.blocked.is_some() {
         return None;
     }
     let status = st.status_at.map(|t| t + STATUS_EVERY);
-    let commit = (st.prefs.auto_commit && st.status.as_ref().is_some_and(|s| !s.changed.is_empty()))
+    let commit = (st.prefs.auto_commit && st.hooks.is_none() && st.status.as_ref().is_some_and(|s| !s.changed.is_empty()))
         .then(|| st.last_change.map(|t| t + Duration::from_secs(st.prefs.commit_after_idle_s.max(10))))
         .flatten();
     [status, commit].into_iter().flatten().min()
@@ -578,24 +705,32 @@ pub fn commit_now(ws: &mut Workspace) {
         ws.notify(NoticeLevel::Info, why);
         return;
     }
+    if let Some(b) = &ws.features.git.blocked {
+        ws.notify(NoticeLevel::Info, blocked_message(b));
+        return;
+    }
     ws.save_all();
     spawn(ws, Op::Commit { auto: false });
 }
 
 pub fn pull(ws: &mut Workspace) {
-    if sync_on(ws) {
+    if let Some(b) = &ws.features.git.blocked {
+        ws.notify(NoticeLevel::Info, blocked_message(b));
+    } else if sync_on(ws) {
         ws.notify(NoticeLevel::Info, SYNC_ON);
     } else if ws.features.git.repo {
         ws.save_all();
-        spawn(ws, Op::Pull);
+        spawn(ws, Op::Pull { auto: false });
     }
 }
 
 pub fn push(ws: &mut Workspace) {
-    if sync_on(ws) {
+    if let Some(b) = &ws.features.git.blocked {
+        ws.notify(NoticeLevel::Info, blocked_message(b));
+    } else if sync_on(ws) {
         ws.notify(NoticeLevel::Info, SYNC_ON);
     } else if ws.features.git.repo {
-        spawn(ws, Op::Push);
+        spawn(ws, Op::Push { auto: false });
     }
 }
 
@@ -641,6 +776,16 @@ pub(crate) fn status(ws: &Workspace, out: &mut Vec<StatusItem>) {
     if !st.repo {
         return;
     }
+    if let Some(b) = &st.blocked {
+        out.push(StatusItem {
+            owner: crate::Owner::Editor,
+            text: "git: off here".into(),
+            tooltip: blocked_message(b),
+            command: None,
+            warn: true,
+        });
+        return;
+    }
     let (text, warn) = match (&st.busy.first(), &st.last, &st.status) {
         (Some(b), _, _) => ((*b).to_string(), false),
         (None, Some((_, true)), _) => ("git: error".to_string(), true),
@@ -650,7 +795,10 @@ pub(crate) fn status(ws: &Workspace, out: &mut Vec<StatusItem>) {
     };
     let tooltip = match (&st.last, &st.status) {
         (Some((e, true)), _) => e.clone(),
-        (_, Some(s)) => format!("Branch {}{}", s.branch, s.upstream.as_ref().map(|u| format!(" → {u}")).unwrap_or_default()),
+        (_, Some(s)) => {
+            let hooks = st.hooks.as_deref().map(|h| format!("\n{}", hooks_message(h))).unwrap_or_default();
+            format!("Branch {}{}{hooks}", s.branch, s.upstream.as_ref().map(|u| format!(" → {u}")).unwrap_or_default())
+        }
         _ => st.version.clone(),
     };
     out.push(StatusItem { owner: crate::Owner::Editor, text, tooltip, command: Some(crate::Command::GitCommitNow), warn });
@@ -784,6 +932,120 @@ mod tests {
         commit_now(&mut ws);
         wait(&mut ws, Instant::now());
         assert!(ws.notices.iter().any(|m| m.text == "Nothing to commit"));
+        ws.shutdown();
+    }
+
+    #[test]
+    fn settings_that_run_programs_are_recognised() {
+        for (k, v) in [
+            ("core.fsmonitor", "touch /tmp/x"),
+            ("core.fsmonitor", ".git/hooks/fsmonitor-watchman"),
+            ("core.sshcommand", "ssh -o ProxyCommand=x"),
+            ("filter.x.clean", "sh -c evil"),
+            ("filter.lfs.clean", "git-lfs clean -- %f; evil"),
+            ("filter.lfs.process", "evil"),
+            ("diff.external", "evil"),
+            ("diff.md.textconv", "evil"),
+            ("merge.ours.driver", "evil %A"),
+            ("credential.helper", "!evil"),
+            ("credential.https://example.com.helper", "/tmp/evil"),
+            ("gpg.program", "evil"),
+            ("gpg.ssh.defaultkeycommand", "evil"),
+            ("remote.origin.uploadpack", "evil"),
+            ("protocol.ext.allow", "always"),
+            ("trailer.sign.command", "evil"),
+        ] {
+            assert!(runs_program(k, v), "{k} = {v}");
+        }
+        for (k, v) in [
+            ("core.fsmonitor", "true"),
+            ("core.fsmonitor", "false"),
+            ("core.quotepath", "off"),
+            ("filter.lfs.clean", "git-lfs clean -- %f"),
+            ("filter.lfs.process", "git-lfs filter-process"),
+            ("filter.lfs.required", "true"),
+            ("credential.helper", "osxkeychain"),
+            ("credential.helper", ""),
+            ("protocol.file.allow", "user"),
+            ("remote.origin.url", "https://example.com/x.git"),
+            ("user.name", "Ada"),
+        ] {
+            assert!(!runs_program(k, v), "{k} = {v}");
+        }
+    }
+
+    /// A folder copied or unpacked with its `.git` brings that repository's
+    /// own settings: opening it as a vault must not run a program they name
+    /// (here `core.fsmonitor`, which a plain `git status` runs).
+    #[test]
+    fn a_repository_whose_settings_run_a_program_gets_no_git() {
+        if !have_git() {
+            return;
+        }
+        let repo = temp_repo();
+        let root = repo.path();
+        let marker = root.join("ran");
+        std::fs::write(root.join("A.md"), "# A\n").unwrap();
+        git(root, &["config", "core.fsmonitor", &format!("touch '{}'; false", marker.display())]).unwrap();
+        let mut ws = Workspace::new(Settings::default());
+        ws.open_vault(root).unwrap();
+        let t0 = Instant::now();
+        wait(&mut ws, t0);
+        wait(&mut ws, t0 + Duration::from_secs(120));
+        assert!(ws.features.git.repo);
+        assert!(ws.features.git.blocked.as_deref().is_some_and(|b| b.starts_with("core.fsmonitor")), "{:?}", ws.features.git.blocked);
+        commit_now(&mut ws);
+        pull(&mut ws);
+        wait(&mut ws, t0 + Duration::from_secs(240));
+        assert!(!marker.exists(), "git ran the repository's program");
+        let mut items = Vec::new();
+        status(&ws, &mut items);
+        assert!(items.iter().any(|i| i.warn && i.tooltip.contains("core.fsmonitor")));
+        // A clean filter named in the repository's settings is refused too.
+        assert!(safe_to_run(root, false).is_err());
+        git(root, &["config", "--unset", "core.fsmonitor"]).unwrap();
+        assert!(safe_to_run(root, false).is_ok());
+        git(root, &["config", "filter.x.clean", "cat"]).unwrap();
+        assert!(safe_to_run(root, false).unwrap_err().contains("filter.x.clean"));
+        ws.shutdown();
+    }
+
+    /// Hooks in the repository stop what Quire does by itself (here
+    /// auto-commit, turned on by the vault's shared settings, which travel
+    /// with the folder); a commit you ask for runs them, as git would.
+    #[cfg(unix)]
+    #[test]
+    fn repository_hooks_stop_auto_commit() {
+        use std::os::unix::fs::PermissionsExt as _;
+        if !have_git() {
+            return;
+        }
+        let repo = temp_repo();
+        let root = repo.path();
+        let marker = root.join("hook-ran");
+        std::fs::write(root.join("A.md"), "# A\n").unwrap();
+        std::fs::create_dir_all(root.join(".quire/shared")).unwrap();
+        std::fs::write(root.join(".quire/shared/vault.toml"), "format = 1\n[git]\nauto_commit = true\ncommit_after_idle_s = 30\n").unwrap();
+        let hook = root.join(".git/hooks/post-commit");
+        std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut ws = Workspace::new(Settings::default());
+        ws.open_vault(root).unwrap();
+        let t0 = Instant::now();
+        wait(&mut ws, t0);
+        wait(&mut ws, t0);
+        assert!(ws.features.git.blocked.is_none());
+        assert_eq!(ws.features.git.hooks.as_deref(), Some("the hook post-commit"));
+        assert_eq!(ws.features.git.status.as_ref().map(|s| s.changed.len()), Some(2), "status still works");
+        ws.features.git.last_change = Some(t0);
+        wait(&mut ws, t0 + Duration::from_secs(31));
+        wait(&mut ws, t0 + Duration::from_secs(62));
+        assert!(git(root, &["log", "--oneline"]).is_err(), "no commit was made");
+        assert!(!marker.exists());
+        commit_now(&mut ws);
+        wait(&mut ws, t0 + Duration::from_secs(63));
+        assert!(git(root, &["log", "--oneline"]).unwrap().contains("Quire: 2 notes"));
+        assert!(marker.exists(), "a commit you ask for runs the hook");
         ws.shutdown();
     }
 
