@@ -8,6 +8,7 @@
 //! core (`quire_text::multi`, `quire_text::motion`, workspace smart edits),
 //! so undo, autosave and indexing are unchanged.
 
+mod a11y;
 mod heights;
 pub(crate) mod settings;
 mod vim;
@@ -2551,6 +2552,26 @@ impl FastEditor {
             view.task_boxes = task_boxes;
             view.figure_boxes = figure_clicks;
             view.fold_toggles = fold_toggles;
+            // Screen readers (issue #5): the visible lines as text runs, and the selection.
+            if ctx.has_accesskit_node(id) {
+                let lines: Vec<a11y::Line> = (first..=last)
+                    .filter(|l| !hidden.iter().any(|r| r.contains(l)))
+                    .map(|l| {
+                        let top = origin.y + TOP_MARGIN + view.heights.top(l);
+                        let bottom = origin.y + TOP_MARGIN + view.heights.top(l + 1);
+                        a11y::Line {
+                            line: l,
+                            text: buf.line(l).to_string(),
+                            rect: Rect::from_min_max(Pos2::new(x0, top), Pos2::new(x0 + cx.wrap, bottom.max(top + 1.0))),
+                        }
+                    })
+                    .collect();
+                let at = |c: usize| {
+                    let l = buf.char_to_line(c);
+                    (l, c - buf.line_to_char(l))
+                };
+                a11y::publish(ui, id, &lines, at(primary.anchor), at(primary.head));
+            }
             // Empty new note: say how it gets its name.
             if doc.auto_name && buf.len_chars() == 0 && view.preedit.is_none() {
                 painter.text(
