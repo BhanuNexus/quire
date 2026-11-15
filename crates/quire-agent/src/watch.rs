@@ -55,7 +55,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     /// Drops the events a watcher reports for what happened before the test
-    /// began (macOS FSEvents can deliver the folders `start` made late) by
+    /// began (macOS `FSEvents` can deliver the folders `start` made late) by
     /// waiting for a quiet stretch, not for a fixed time.
     fn settle(w: &AgentWatcher) {
         let deadline = Instant::now() + Duration::from_secs(10);

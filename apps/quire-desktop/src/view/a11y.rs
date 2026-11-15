@@ -16,7 +16,7 @@
 //! Text is the note's source text (what the caret's column counts in), not
 //! what live preview draws.
 
-use egui::accesskit::{Node, NodeId, Rect as AkRect, Role, TextDirection, TextPosition, TextSelection};
+use egui::accesskit::{Node, Rect as AkRect, Role, TextDirection, TextPosition, TextSelection};
 use egui::{Id, Rect, Sense, Ui, UiBuilder};
 
 /// Most characters in one `TextRun` (AccessKit's word starts are `u8`).
@@ -24,7 +24,7 @@ const MAX_RUN_CHARS: usize = 255;
 
 /// A visible line: its number, its text (with its line ending) and where it is drawn.
 pub(super) struct Line {
-    pub line: usize,
+    pub number: usize,
     pub text: String,
     pub rect: Rect,
 }
@@ -63,7 +63,8 @@ pub(super) fn runs(lines: &[Line]) -> Vec<Run> {
             let mut lengths = Vec::new();
             let mut word_starts = Vec::new();
             // A piece that continues a word is not a new word at its start.
-            let mut in_word = start > 0 && chars.get(start - 1).copied().is_some_and(is_word_char) && piece.first().copied().is_some_and(is_word_char);
+            let mut in_word =
+                start > 0 && chars.get(start - 1).copied().is_some_and(is_word_char) && piece.first().copied().is_some_and(is_word_char);
             for (i, c) in piece.iter().enumerate() {
                 let word = is_word_char(*c);
                 if word && !in_word {
@@ -73,7 +74,7 @@ pub(super) fn runs(lines: &[Line]) -> Vec<Run> {
                 lengths.push(u8::try_from(c.len_utf8()).unwrap_or(1));
                 value.push(*c);
             }
-            out.push(Run { line: l.line, chunk, start, value, lengths, word_starts, rect: l.rect });
+            out.push(Run { line: l.number, chunk, start, value, lengths, word_starts, rect: l.rect });
         }
     }
     out
@@ -150,17 +151,18 @@ pub(super) fn publish(ui: &mut Ui, editor: Id, lines: &[Line], anchor: (usize, u
 
 /// The ids of the run nodes (for tests).
 #[cfg(test)]
-pub(super) fn run_node_ids(editor: Id, lines: &[Line]) -> Vec<NodeId> {
+pub(super) fn run_node_ids(editor: Id, lines: &[Line]) -> Vec<egui::accesskit::NodeId> {
     runs(lines).iter().map(|r| run_id(editor, r).accesskit_id()).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui::accesskit::NodeId;
     use egui::{Pos2, Vec2};
 
     fn line(n: usize, text: &str) -> Line {
-        Line { line: n, text: text.to_string(), rect: Rect::from_min_size(Pos2::new(10.0, 20.0 * n as f32), Vec2::new(300.0, 18.0)) }
+        Line { number: n, text: text.to_string(), rect: Rect::from_min_size(Pos2::new(10.0, 20.0 * n as f32), Vec2::new(300.0, 18.0)) }
     }
 
     #[test]
@@ -212,6 +214,14 @@ mod tests {
     /// none, nothing is built.
     #[test]
     fn the_tree_has_the_visible_lines_and_the_selection() {
+        fn descendants(nodes: &std::collections::HashMap<NodeId, &Node>, of: NodeId, out: &mut Vec<NodeId>) {
+            for c in nodes[&of].children() {
+                out.push(*c);
+                if nodes.contains_key(c) {
+                    descendants(nodes, *c, out);
+                }
+            }
+        }
         let lines = [line(10, "first line\n"), line(11, "second line\n"), line(12, "third")];
         let editor = Id::unique("quire-fast-editor-test");
         let frame = |ctx: &egui::Context| {
@@ -236,14 +246,6 @@ mod tests {
         let editor_node = nodes[&editor.accesskit_id()];
         assert_eq!(editor_node.role(), Role::MultilineTextInput);
         // Every run is a descendant of the editor's node.
-        fn descendants(nodes: &std::collections::HashMap<NodeId, &Node>, of: NodeId, out: &mut Vec<NodeId>) {
-            for c in nodes[&of].children() {
-                out.push(*c);
-                if nodes.contains_key(c) {
-                    descendants(nodes, *c, out);
-                }
-            }
-        }
         let mut below = Vec::new();
         descendants(&nodes, editor.accesskit_id(), &mut below);
         let ids = run_node_ids(editor, &lines);

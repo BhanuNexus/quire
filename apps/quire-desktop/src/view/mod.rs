@@ -2560,8 +2560,8 @@ impl FastEditor {
                         let top = origin.y + TOP_MARGIN + view.heights.top(l);
                         let bottom = origin.y + TOP_MARGIN + view.heights.top(l + 1);
                         a11y::Line {
-                            line: l,
-                            text: buf.line(l).to_string(),
+                            number: l,
+                            text: buf.line(l),
                             rect: Rect::from_min_max(Pos2::new(x0, top), Pos2::new(x0 + cx.wrap, bottom.max(top + 1.0))),
                         }
                     })

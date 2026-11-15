@@ -29,11 +29,10 @@ fn import(files: &[(&str, &[u8])]) -> (tempfile::TempDir, ImportPlan) {
 }
 
 fn note<'a>(p: &'a ImportPlan, name: &str) -> &'a str {
-    p.notes
-        .iter()
-        .find(|n| n.path.as_str() == name)
-        .map(|n| n.content.as_str())
-        .unwrap_or_else(|| panic!("no note {name}: {:?} {:?}", p.notes.iter().map(|n| n.path.as_str()).collect::<Vec<_>>(), p.warnings))
+    p.notes.iter().find(|n| n.path.as_str() == name).map_or_else(
+        || panic!("no note {name}: {:?} {:?}", p.notes.iter().map(|n| n.path.as_str()).collect::<Vec<_>>(), p.warnings),
+        |n| n.content.as_str(),
+    )
 }
 
 // ---------------------------------------------------------------- Evernote
@@ -96,7 +95,7 @@ fn evernote_dtd_variants() {
     assert!(n.contains("created: 2026-11-01T23:59:59Z"), "{n}");
     assert_eq!(p.files.len(), 1, "the one resource");
     assert_eq!(p.files[0].bytes, pdf, "wrapped base64 decodes");
-    assert!(p.files[0].path.as_str().ends_with(".pdf"), "a name from the MIME type: {}", p.files[0].path);
+    assert!(p.files[0].path.as_str().to_ascii_lowercase().ends_with(".pdf"), "a name from the MIME type: {}", p.files[0].path);
     assert!(n.contains(&format!("[[{}]]", p.files[0].path.file_name())), "the media is linked: {n}");
 }
 
@@ -134,7 +133,10 @@ fn keep_takeout_folder_variants() {
     let plumber = p.notes.iter().find(|n| n.content.contains("plumber")).unwrap();
     assert!(plumber.content.contains("pinned") && plumber.content.contains("archived"), "{}", plumber.content);
     assert!(plumber.content.contains("[The Plumber](https://plumber.example/)"), "{}", plumber.content);
-    assert!(plumber.content.contains("[[memo.3gp]]") && !plumber.content.contains("![[memo.3gp]]"), "audio is linked, not embedded as a picture");
+    assert!(
+        plumber.content.contains("[[memo.3gp]]") && !plumber.content.contains("![[memo.3gp]]"),
+        "audio is linked, not embedded as a picture"
+    );
     assert!(plumber.content.contains("urgent"), "labels become tags");
     assert!(!p.notes.iter().any(|n| n.content.contains("gone")), "trashed notes are left out");
     assert_eq!(p.files.len(), 1);
@@ -148,7 +150,7 @@ fn keep_takeout_folder_variants() {
 /// `isPinned`, `timeZone`, `location` and `weather`.
 #[test]
 fn dayone_json_variants() {
-    let json = r##"{"metadata":{"version":"1.0"},"entries":[
+    let json = r#"{"metadata":{"version":"1.0"},"entries":[
 {"uuid":"A1B2C3","creationDate":"2026-11-05T15:30:12Z","modifiedDate":"2026-11-05T16:00:00Z","timeZone":"Europe/Lisbon",
  "text":"Walked by the river\\.\n\n![](dayone-moment://PH0TO1)\n\nAudio: ![](dayone-moment:/audio/AUD10)\n\n# Evening\nTea \\- very good",
  "richText":"{\"contents\":[{\"text\":\"Walked by the river\"}],\"meta\":{\"version\":1}}",
@@ -157,7 +159,7 @@ fn dayone_json_variants() {
  "weather":{"temperatureCelsius":18,"conditionsDescription":"Clear","weatherCode":"clear-day"},
  "photos":[{"identifier":"PH0TO1","md5":"d41d8cd98f00b204e9800998ecf8427e","type":"jpeg","orderInEntry":0,"width":10,"height":10}],
  "audios":[{"identifier":"AUD10","md5":"0cc175b9c0f1b6a831c399e269772661","format":"m4a"}]},
-{"uuid":"D4E5F6","creationDate":"2026-11-05T09:00:00Z","text":"Second entry the same day","tags":[]}]}"##;
+{"uuid":"D4E5F6","creationDate":"2026-11-05T09:00:00Z","text":"Second entry the same day","tags":[]}]}"#;
     let (_d, p) = import(&[
         ("Journal.json", json.as_bytes()),
         ("photos/d41d8cd98f00b204e9800998ecf8427e.jpeg", b"JPEG"),
@@ -170,7 +172,11 @@ fn dayone_json_variants() {
     assert!(!first.content.contains("dayone-moment"), "moment links are rewritten: {}", first.content);
     assert!(first.content.contains("Lisbon"), "{}", first.content);
     assert!(first.content.contains("starred"), "{}", first.content);
-    assert!(first.content.contains("Walked by the river.") && first.content.contains(r"Tea \- very good"), "escapes that cannot change the meaning are removed, `\\-` stays (it could start a list): {}", first.content);
+    assert!(
+        first.content.contains("Walked by the river.") && first.content.contains(r"Tea \- very good"),
+        "escapes that cannot change the meaning are removed, `\\-` stays (it could start a list): {}",
+        first.content
+    );
     assert!(p.files.iter().any(|f| f.bytes == b"JPEG"), "the photo comes across");
 }
 
@@ -182,7 +188,7 @@ fn dayone_json_variants() {
 /// ("November 5th, 2026"), and children nested three deep.
 #[test]
 fn roam_json_variants() {
-    let json = r##"[
+    let json = r#"[
 {"title":"November 5th, 2026","create-time":1793800000000,"edit-time":1793800100000,"children":[
   {"string":"{{[[TODO]]}} call Sam #[[multi word]]","uid":"todo00001","create-time":1793800000000,"children":[
      {"string":"{{[[DONE]]}} step ^^key^^ and __soft__","uid":"done00001","children":[
@@ -191,14 +197,18 @@ fn roam_json_variants() {
   {"string":"Big","heading":2,"uid":"head00001"},
   {"string":"{{embed: ((done00001))}}","uid":"emb000001"}]},
 {"title":"Launch","create-time":1793800000000,"children":[{"string":"See [[November 5th, 2026]] and **bold** ![img](https://example.com/a.png)","uid":"lnch00001"}]},
-{"title":"Empty page"}]"##;
+{"title":"Empty page"}]"#;
     let (_d, p) = import(&[("roam-export.json", json.as_bytes())]);
     let names: Vec<&str> = p.notes.iter().map(|n| n.path.as_str()).collect();
     assert!(names.contains(&"2026-11-05.md") || names.iter().any(|n| n.contains("2026-11-05")), "daily notes are named by date: {names:?}");
     let daily = p.notes.iter().find(|n| n.path.as_str().contains("2026-11-05")).unwrap();
     assert!(daily.content.contains("- [ ] call Sam"), "{}", daily.content);
     assert!(daily.content.contains("[x] step") || daily.content.contains("- [x]"), "{}", daily.content);
-    assert!(daily.content.contains("#multi-word") || daily.content.contains("#[[multi word]]") || daily.content.contains("multi word"), "{}", daily.content);
+    assert!(
+        daily.content.contains("#multi-word") || daily.content.contains("#[[multi word]]") || daily.content.contains("multi word"),
+        "{}",
+        daily.content
+    );
     assert!(!daily.content.contains("((todo00001))"), "block references are resolved: {}", daily.content);
     assert!(!daily.content.contains("^^"), "{}", daily.content);
     assert!(daily.content.contains("## Big"), "headings: {}", daily.content);
@@ -224,7 +234,11 @@ fn joplin_raw_variants() {
         ("cccccccccccccccccccccccccccccccc.md", res.as_bytes()),
         ("resources/cccccccccccccccccccccccccccccccc.png", b"\x89PNG"),
     ]);
-    let h = p.notes.iter().find(|n| n.path.as_str().ends_with("HTML note.md")).unwrap_or_else(|| panic!("{:?}", p.notes.iter().map(|n| n.path.as_str()).collect::<Vec<_>>()));
+    let h = p
+        .notes
+        .iter()
+        .find(|n| n.path.as_str().ends_with("HTML note.md"))
+        .unwrap_or_else(|| panic!("{:?}", p.notes.iter().map(|n| n.path.as_str()).collect::<Vec<_>>()));
     assert!(h.content.contains("**bold**"), "HTML notes are converted: {}", h.content);
     assert!(h.content.contains("[[Buy stamps]]") || h.content.contains("Buy stamps"), "a :/id link is rewritten: {}", h.content);
     assert!(!h.content.contains(":/aaaa"), "{}", h.content);
@@ -236,14 +250,16 @@ fn joplin_raw_variants() {
 
 // ---------------------------------------------------------------- Bear
 
-/// A folder of TextBundles as Bear exports them: `info.json` with Bear's
+/// A folder of text bundles as Bear exports them: `info.json` with Bear's
 /// `net.shinyfrog.bear` block, tags in the text (`#tag`, `#nested/tag`,
 /// `#two words#` closed with a hash), `[[note links]]`, `::highlight::`, a
 /// trashed note (`trashed: 1`) and an image in `assets/`.
 #[test]
 fn bear_textbundle_variants() {
     let info = |extra: &str| {
-        format!(r#"{{"transient":true,"type":"net.daringfireball.markdown","creatorIdentifier":"net.shinyfrog.bear","version":2,"net.shinyfrog.bear":{{"modificationDate":"2026-11-05T10:00:00Z","creationDate":"2026-11-01T10:00:00Z","uniqueIdentifier":"U1"{extra}}}}}"#)
+        format!(
+            r#"{{"transient":true,"type":"net.daringfireball.markdown","creatorIdentifier":"net.shinyfrog.bear","version":2,"net.shinyfrog.bear":{{"modificationDate":"2026-11-05T10:00:00Z","creationDate":"2026-11-01T10:00:00Z","uniqueIdentifier":"U1"{extra}}}}}"#
+        )
     };
     let text = "# Bear note\n#work #nested/tag #two words#\n\nSee [[Other note]] and ::marked::\n\n![](assets/pic.png)\n";
     let (_d, p) = import(&[
@@ -291,7 +307,11 @@ fn notion_markdown_and_csv_variants() {
     let launch = p.notes.iter().find(|n| n.path.as_str().ends_with("Launch plan.md")).unwrap_or_else(|| panic!("{names:?}"));
     assert!(launch.content.contains("[[Budget]]") || launch.content.contains("Budget]]"), "links become wikilinks: {}", launch.content);
     assert!(!launch.content.contains(id_b), "{}", launch.content);
-    assert!(launch.content.contains("Remember the venue") && launch.content.contains("hidden text"), "HTML blocks keep their text: {}", launch.content);
+    assert!(
+        launch.content.contains("Remember the venue") && launch.content.contains("hidden text"),
+        "HTML blocks keep their text: {}",
+        launch.content
+    );
     assert!(launch.content.contains("Status") && launch.content.contains("In progress"), "properties are kept: {}", launch.content);
     assert!(p.files.iter().any(|f| f.bytes == b"\x89PNG"), "the image comes across");
     assert!(names.iter().any(|n| n.contains("Write")) || names.iter().any(|n| n.contains("Ship")), "database rows become notes: {names:?}");
@@ -333,6 +353,7 @@ fn logseq_graph_variants() {
 /// table, nested lists, `<pre><code>`, `<br>`, an image from a `_files`
 /// folder with a percent-encoded name, and a charset declared in a meta tag.
 #[test]
+#[allow(clippy::literal_string_with_formatting_args, reason = "CSS braces in an HTML sample")]
 fn html_folder_variants() {
     let html = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Saved page</title><style>p{color:red}</style><script>alert('x')</script></head><body>\n<!--[if gte mso 9]><xml><o:OfficeDocumentSettings/></xml><![endif]-->\n<h1>Saved page</h1><p class=MsoNormal>Hello<o:p></o:p> <b>world</b><br>next line</p>\n<ul><li>one<ul><li>nested</li></ul></li><li>two</li></ul>\n<table><thead><tr><th>A</th><th>B</th></tr></thead><tbody><tr><td>1</td><td>2</td></tr></tbody></table>\n<pre><code>let x = 1;\n</code></pre>\n<img src=\"Saved%20page_files/pic%201.png\" alt=\"pic\">\n<a href=\"other.html\">other</a></body></html>";
     let (_d, p) = import(&[

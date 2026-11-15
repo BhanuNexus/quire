@@ -120,7 +120,7 @@ fn start_serve(env: &Env, vault: &str) -> (Serve, u16) {
             assert!(start.elapsed() < Duration::from_mins(2), "timed out waiting: serve listens");
             std::thread::sleep(Duration::from_millis(100));
         }
-        assert!(last.contains("in use") || last.contains("bind") || last.contains("ddress"), "{last}");
+        assert!(last.contains("in use") || last.contains("bind") || last.to_lowercase().contains("address"), "{last}");
     }
     panic!("serve never got a port: {last}");
 }

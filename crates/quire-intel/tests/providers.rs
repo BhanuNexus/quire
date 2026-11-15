@@ -317,7 +317,7 @@ const ANTHROPIC_PING_AND_EXTRAS: &str = concat!(
     "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
     "event: ping\ndata: {\"type\":\"ping\"}\n\n",
     "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Let me think\"}}\n\n",
-    "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"EqQBCgIYAhIM\"}}\n\n",
+    "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"EqQBCgJkAhIM\"}}\n\n",
     "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
     "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
     "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n",
@@ -356,7 +356,11 @@ fn anthropic_ignores_pings_thinking_citations_and_unknown_events() {
 
 #[test]
 fn anthropic_stop_reasons_beyond_the_first_four() {
-    for (reason, want) in [("max_tokens", StopReason::MaxTokens), ("model_context_window_exceeded", StopReason::MaxTokens), ("pause_turn", StopReason::EndTurn)] {
+    for (reason, want) in [
+        ("max_tokens", StopReason::MaxTokens),
+        ("model_context_window_exceeded", StopReason::MaxTokens),
+        ("pause_turn", StopReason::EndTurn),
+    ] {
         let (addr, _seen) = server(vec![Reply::Sse(anthropic_stop_sse(reason))]);
         let m = AnthropicModel::new("k", "claude-sonnet-5-5").with_base_url(&addr);
         let (events, r) = run(&m, &ChatRequest::simple("", "hi", 50));
@@ -399,7 +403,9 @@ fn anthropic_error_bodies_name_their_type_and_status() {
 #[test]
 fn a_provider_that_refuses_a_parameter_is_asked_again_without_it() {
     // Newer Anthropic models refuse `temperature`.
-    let refuse = json!({"type": "error", "error": {"type": "invalid_request_error", "message": "`temperature` is not supported for this model"}}).to_string();
+    let refuse =
+        json!({"type": "error", "error": {"type": "invalid_request_error", "message": "`temperature` is not supported for this model"}})
+            .to_string();
     let (addr, seen) = server(vec![Reply::Json(400, refuse), Reply::Sse(anthropic_stop_sse("end_turn"))]);
     let m = AnthropicModel::new("k", "claude-sonnet-5-5").with_base_url(&addr);
     let mut req = ChatRequest::simple("", "hi", 50);
@@ -439,7 +445,12 @@ fn a_provider_that_refuses_a_parameter_is_asked_again_without_it() {
 #[test]
 fn ollama_errors_are_plain_strings_and_mid_stream_errors_stop_the_reply() {
     // Ollama: `{"error": "…"}` with 404 for a model that isn't pulled, 400, 429 and 502.
-    for (status, msg) in [(404, "model \"llama9\" not found, try pulling it first"), (400, "invalid JSON"), (429, "too many requests"), (502, "cloud model unreachable")] {
+    for (status, msg) in [
+        (404, "model \"llama9\" not found, try pulling it first"),
+        (400, "invalid JSON"),
+        (429, "too many requests"),
+        (502, "cloud model unreachable"),
+    ] {
         let (addr, _seen) = server(vec![Reply::Json(status, json!({ "error": msg }).to_string())]);
         let m = OpenAiCompatible::new(&addr, "llama9", None);
         let (_, r) = run(&m, &ChatRequest::simple("", "hi", 10));

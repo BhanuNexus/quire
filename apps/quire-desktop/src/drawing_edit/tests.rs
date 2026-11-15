@@ -467,7 +467,7 @@ fn drawings_not_shown_autosave() {
     assert!(r.ed.dirty);
     // Not before the edits rest: the edit is dated in the future, so a slow
     // machine can't let the delay pass between the edit and this check.
-    r.ed.last_edit = Instant::now() + Duration::from_secs(3600);
+    r.ed.last_edit = Instant::now() + Duration::from_hours(1);
     Surface::tick(&mut r.ed, &mut r.ws);
     assert!(!r.disk("Release.excalidraw").contains("\"x\": 561"), "not before the edits rest");
     // Rested: dated past the delay, with no waiting.
@@ -545,7 +545,7 @@ fn a_folder_locking_inside_the_autosave_window_keeps_the_last_edits() {
     r.ws.start_locking("Journal", PASS, false).unwrap();
     let start = Instant::now();
     while r.ws.lock_job().is_some() {
-        assert!(start.elapsed() < Duration::from_secs(60), "the conversion never ended");
+        assert!(start.elapsed() < Duration::from_mins(1), "the conversion never ended");
         r.ws.tick(Instant::now());
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -558,7 +558,7 @@ fn a_folder_locking_inside_the_autosave_window_keeps_the_last_edits() {
     r.ed.sel = vec!["dia1".into()];
     r.key(Key::ArrowRight, Modifiers::NONE);
     assert!(r.ed.dirty);
-    r.ed.last_edit = Instant::now() + Duration::from_secs(3600);
+    r.ed.last_edit = Instant::now() + Duration::from_hours(1);
     r.frame(vec![]);
     assert!(!r.disk("Journal/Release.excalidraw").contains("\"x\": 561"), "not written yet");
     // Lock now: it waits for the drawing, and the folder is still unlocked.
@@ -586,7 +586,7 @@ fn closing_a_drawing_keeps_a_history_version() {
     let mut r = Rig::new(&[("Release.excalidraw", RELEASE)], "Release.excalidraw");
     r.ed.sel = vec!["dia1".into()];
     r.key(Key::ArrowRight, Modifiers::NONE);
-    r.ed.last_edit = Instant::now() + Duration::from_secs(3600);
+    r.ed.last_edit = Instant::now() + Duration::from_hours(1);
     r.frame(vec![]);
     assert!(r.ed.dirty);
     let path = NotePath::new("Release.excalidraw");

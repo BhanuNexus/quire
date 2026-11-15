@@ -2209,7 +2209,7 @@ impl DrawingEditor {
     /// now when it asks (a folder is about to lock; a locked folder can't be
     /// written, so the autosave delay can't be waited out).
     fn report_unsaved(&mut self, ws: &mut Workspace) {
-        let flag = self.unsaved.get_or_insert_with(|| ws.features.canvas.register_drawing(&self.path)).clone();
+        let flag = std::rc::Rc::clone(self.unsaved.get_or_insert_with(|| ws.features.canvas.register_drawing(&self.path)));
         if ws.features.canvas.save_now != self.save_seen {
             self.save_seen = ws.features.canvas.save_now;
             if self.dirty {
