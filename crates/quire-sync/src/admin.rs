@@ -283,7 +283,6 @@ pub fn upgrade(admin: &dyn SpaceAdmin) -> Result<(), TransportError> {
 }
 
 /// What removing a device needs from the caller.
-#[derive(Debug)]
 pub struct Removal<'a> {
     pub space: &'a SpaceId,
     pub me: &'a DeviceId,
@@ -307,6 +306,13 @@ pub struct Removal<'a> {
     /// manifest)`. Snapshots under the old key other than these (and the
     /// notes' one) are refused afterwards.
     pub snapshots: Vec<(String, String, String)>,
+}
+
+/// Without the passphrase.
+impl std::fmt::Debug for Removal<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Removal").field("space", self.space).field("me", self.me).field("target", self.target).finish_non_exhaustive()
+    }
 }
 
 /// What a removal did.

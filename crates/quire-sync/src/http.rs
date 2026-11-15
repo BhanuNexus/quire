@@ -17,7 +17,7 @@ use crate::protocol::{
 use crate::transport::{Transport, TransportError};
 
 /// A space on a sync server.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HttpTransport {
     base: String,
     space: SpaceId,
@@ -30,6 +30,17 @@ pub struct HttpTransport {
     /// Devices removed from the vault, and the last log position still
     /// taken from each (0.13): their later revisions are ignored.
     removed: Arc<Mutex<BTreeMap<DeviceId, LanePos>>>,
+}
+
+/// Without the token.
+impl std::fmt::Debug for HttpTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpTransport")
+            .field("base", &self.base)
+            .field("space", &self.space)
+            .field("protocol", &self.protocol)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A device of the space, as the server lists it (0.13).

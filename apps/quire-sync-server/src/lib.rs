@@ -415,9 +415,16 @@ pub struct Enroll {
     pub device: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Enrolled {
     pub token: String,
+}
+
+/// Without the token.
+impl std::fmt::Debug for Enrolled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Enrolled { .. }")
+    }
 }
 
 /// A token for one device (server token only).

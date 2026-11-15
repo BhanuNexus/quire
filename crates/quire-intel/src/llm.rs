@@ -272,11 +272,18 @@ mod remote {
     // ------------------------------------------------------------------ Anthropic
 
     /// Anthropic Messages API provider.
-    #[derive(Debug, Clone)]
+    #[derive(Clone)]
     pub struct AnthropicModel {
         api_key: String,
         pub model: String,
         pub base_url: String,
+    }
+
+    /// Without the API key.
+    impl std::fmt::Debug for AnthropicModel {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("AnthropicModel").field("model", &self.model).field("base_url", &self.base_url).finish_non_exhaustive()
+        }
     }
 
     impl AnthropicModel {
@@ -516,13 +523,24 @@ mod remote {
     // ------------------------------------------------------------------ OpenAI-compatible
 
     /// OpenAI-compatible chat completions provider (local or cloud).
-    #[derive(Debug, Clone)]
+    #[derive(Clone)]
     pub struct OpenAiCompatible {
         api_key: Option<String>,
         pub model: String,
         pub base_url: String,
         /// Where it runs, for the UI ("this computer" for localhost servers).
         locality: Locality,
+    }
+
+    /// Without the API key.
+    impl std::fmt::Debug for OpenAiCompatible {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("OpenAiCompatible")
+                .field("model", &self.model)
+                .field("base_url", &self.base_url)
+                .field("locality", &self.locality)
+                .finish_non_exhaustive()
+        }
     }
 
     impl OpenAiCompatible {
