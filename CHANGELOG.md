@@ -4,6 +4,8 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-11-16
+
 ### Security
 - **Git:** Quire runs git only in a repository you have trusted on this computer. A repository's own settings and hooks can make git run any program, even on a plain `git status`, and they travel with a copied, unpacked or synced folder: before, opening such a folder as a vault ran them. Now, until you trust it, Quire runs no git there (the status bar says `git: off (not trusted)`; click it, or use the Git tab, to trust it after a short confirmation that also says when the vault's settings turn on auto-commit, pull on start or push after commit). Trust is kept outside the vault, for that repository at that path (plus a random id Quire writes to `quire-trust` in its `.git` folder), so a copy elsewhere, or a different repository later at the same path, isn't trusted; take it back with *Stop trusting this repository* in the Git tab. In a trusted repository git runs as your own git would, hooks, filters, LFS, `core.sshCommand` and signing included. Quire runs git with exactly that repository's folders, and never in a git repository placed inside the vault: it doesn't commit one (and says so), and doesn't look into submodules on status, commit, pull or push. **Upgrading from 0.13.0:** git is off once in each repository, and auto-commit, pull on start and push after commit wait, until you trust it.
 - **`quire-cli serve`:** a request without a session (web app) or a token (MCP) is answered without reading its body, and the sign-in and OAuth forms are limited to a few kilobytes. Before, anyone who could reach the server could make it hold up to 8 MB per request.
@@ -576,7 +578,8 @@ Downloads for Windows, macOS (universal) and Linux are attached to the release, 
 ### Added
 - First version: live Markdown styling, wikilinks with rename refactoring, backlinks, related notes, daily notes, templates, command palette, quick open, inline calculator and natural-language dates.
 
-[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.13.1...HEAD
+[0.13.1]: https://github.com/BhanuNexus/quire/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/BhanuNexus/quire/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/BhanuNexus/quire/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/BhanuNexus/quire/compare/v0.10.2...v0.11.0
