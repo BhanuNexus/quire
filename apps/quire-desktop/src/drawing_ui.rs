@@ -142,7 +142,7 @@ pub(crate) fn render(scene: &Scene, image: &dyn Fn(&str) -> Option<image::RgbaIm
     let scale = SCALE.min(MAX_SIDE / dw.max(dh).max(1.0));
     let (w, h) = (((dw * scale).ceil() as u16).max(1), ((dh * scale).ceil() as u16).max(1));
     let to_px = Affine::translate((-x0, -y0)).then_scale(scale);
-    let fonts = (FontRef::new(crate::theme::INTER_REGULAR).ok(), FontRef::new(crate::theme::JETBRAINS_MONO).ok());
+    let fonts = (FontRef::new(crate::theme::inter_regular()).ok(), FontRef::new(crate::theme::jetbrains_mono()).ok());
     let mut pixmap = Pixmap::new(w, h);
     let mut res = Resources::new();
     let over = RasterizerSettings { composite_mode: CompositeMode::SrcOver, ..RasterizerSettings::default() };
@@ -429,7 +429,7 @@ mod tests {
 
     #[test]
     fn text_has_ink() {
-        let font = FontRef::new(crate::theme::INTER_REGULAR).unwrap();
+        let font = FontRef::new(crate::theme::inter_regular()).unwrap();
         let p = text_path(&font, "Hi", 20.0, 10.0, 30.0, "start");
         let b = vello_cpu::kurbo::Shape::bounding_box(&p);
         assert!(b.x0 >= 10.0 && b.y1 <= 30.5 && b.width() > 10.0, "{b:?}");

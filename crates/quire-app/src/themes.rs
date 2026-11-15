@@ -397,6 +397,16 @@ pub fn note_icon(ws: &Workspace, path: &quire_vault::NotePath) -> Option<String>
     }
 }
 
+/// Unpack a file the app bundles gzipped (0.13.1: Quire Lite's fonts, as
+/// `quire-spell` bundles its dictionaries). A bundled file always unpacks;
+/// a broken one is a build mistake the tests catch.
+pub fn unpack_bundled(gz: &[u8]) -> Vec<u8> {
+    use std::io::Read as _;
+    let mut out = Vec::with_capacity(gz.len() * 2);
+    flate2::read::GzDecoder::new(gz).read_to_end(&mut out).expect("a bundled gzip file unpacks");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

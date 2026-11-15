@@ -90,6 +90,8 @@ fn main() -> eframe::Result {
         println!("Quire {}{}", env!("CARGO_PKG_VERSION"), if cfg!(feature = "typeset") { "" } else { " (Lite)" });
         return Ok(());
     }
+    // Quire Lite's bundled fonts are gzipped: unpack them while the window opens.
+    let _ = std::thread::Builder::new().name("quire-fonts".into()).spawn(theme::unpack_fonts);
     let vault_arg: Option<PathBuf> = std::env::args_os().nth(1).map(PathBuf::from);
     // The Linux window's application id (Wayland app id, X11 class): the desktop matches it to
     // the installed `io.github.bhanunexus.Quire.desktop` for the icon, the name and grouping
