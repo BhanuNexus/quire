@@ -4,6 +4,12 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Security
+- **Git:** opening a folder that is (or is inside) a git repository no longer runs programs that the repository's own settings name. Before, a copied or unpacked folder whose `.git/config` set `core.fsmonitor` or a clean filter ran that program as soon as Quire read the git status. Now Quire runs no git in such a repository and says why in the status bar. Repository hooks stop only what Quire does on its own (auto-commit, pull on start, push after commit); a commit you ask for still runs them.
+- **`quire-cli serve`:** a request without a session (web app) or a token (MCP) is answered without reading its body, and the sign-in and OAuth forms are limited to a few kilobytes. Before, anyone who could reach the server could make it hold up to 8 MB per request.
+- **Properties:** front matter nested tens of thousands of levels deep no longer crashes Quire. Maps nested more than 64 levels deep are kept as text.
+- API keys, the sync server token and a removal's passphrase no longer appear in debug output.
+
 ### Fixed
 - **Excalidraw drawings:**
   - A drawing with a picture claiming a huge size no longer crashes Quire: pictures over 8192 pixels on a side aren't shown, and large ones are scaled to fit.
