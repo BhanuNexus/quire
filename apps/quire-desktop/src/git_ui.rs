@@ -269,6 +269,8 @@ fn diff_view(ui: &mut Ui, ws: &Workspace, hash: &str, pal: &Palette) {
 /// own settings (which travel with it) will then make Quire do by itself.
 pub(crate) struct TrustDialog {
     root: String,
+    /// The git folder and common folder, when outside `root`.
+    outside: Vec<String>,
     automatic: Vec<&'static str>,
     error: Option<String>,
 }
@@ -278,15 +280,21 @@ impl TrustDialog {
         let g = &ws.features.git;
         Box::new(Self {
             root: g.found.as_ref().map(|f| f.root().display().to_string()).unwrap_or_default(),
+            outside: g.found.as_ref().map(|f| f.outside_root().iter().map(|p| p.display().to_string()).collect()).unwrap_or_default(),
             automatic: g.prefs.automatic(),
             error: None,
         })
     }
 
     #[cfg(test)]
-    pub(crate) fn sample(automatic: bool, error: bool) -> Self {
+    pub(crate) fn sample(automatic: bool, error: bool, outside: bool) -> Self {
         Self {
             root: "/home/someone/Documents/A rather long folder name/Notes".into(),
+            outside: if outside {
+                vec!["/home/someone/Projects/work/.git/worktrees/Notes".into(), "/home/someone/Projects/work/.git".into()]
+            } else {
+                Vec::new()
+            },
             automatic: if automatic { vec!["commit by itself", "pull when the vault opens", "push after each commit"] } else { Vec::new() },
             error: error.then(|| "Couldn't write /home/someone/.config/quire/git-trust.toml: permission denied".into()),
         }
@@ -303,6 +311,27 @@ impl OverlayView for TrustDialog {
             ui.label(RichText::new("Trust this git repository?").size(20.0).strong().color(pal.strong));
             ui.add_space(4.0);
             ui.add(egui::Label::new(RichText::new(&self.root).monospace().size(12.0).color(pal.muted)).wrap());
+            if !self.outside.is_empty() {
+                ui.add_space(8.0);
+                egui::Frame::NONE.fill(pal.warn.gamma_multiply(0.12)).stroke(Stroke::new(1.0, pal.warn)).corner_radius(8.0).inner_margin(10.0).show(
+                    ui,
+                    |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(
+                                    "This folder uses the git repository at the path below, outside it. Trusting lets Quire commit, pull and push in that repository, with its settings and hooks.",
+                                )
+                                .color(pal.text),
+                            )
+                            .wrap(),
+                        );
+                        for p in &self.outside {
+                            ui.add(egui::Label::new(RichText::new(p).monospace().size(12.0).color(pal.strong)).wrap());
+                        }
+                    },
+                );
+            }
             ui.add_space(8.0);
             ui.add(egui::Label::new(RichText::new(git::TRUST_WARNING).color(pal.text)).wrap());
             if !self.automatic.is_empty() {

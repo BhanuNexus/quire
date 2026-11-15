@@ -418,9 +418,10 @@ pub(crate) fn layout_samples(ws: &mut Workspace) -> Vec<(&'static str, crate::ov
         ("new task: error", Overlay::Feature(Box::new(crate::task_ui::NewTaskDialog::sample(true)))),
         ("time this week", Overlay::Feature(crate::task_ui::TimeReportOverlay::make(ws))),
         // ---- WS-F
-        ("trust a git repository", Overlay::Feature(Box::new(crate::git_ui::TrustDialog::sample(false, false)))),
-        ("trust a git repository: automatic settings", Overlay::Feature(Box::new(crate::git_ui::TrustDialog::sample(true, false)))),
-        ("trust a git repository: error", Overlay::Feature(Box::new(crate::git_ui::TrustDialog::sample(true, true)))),
+        ("trust a git repository", Overlay::Feature(Box::new(crate::git_ui::TrustDialog::sample(false, false, false)))),
+        ("trust a git repository: automatic settings", Overlay::Feature(Box::new(crate::git_ui::TrustDialog::sample(true, false, false)))),
+        ("trust a git repository: error", Overlay::Feature(Box::new(crate::git_ui::TrustDialog::sample(true, true, false)))),
+        ("trust a git repository: git folder elsewhere", Overlay::Feature(Box::new(crate::git_ui::TrustDialog::sample(true, false, true)))),
         // ---- 0.11 editor
         ("diagram, full screen", Overlay::Feature(Box::new(crate::diagram_ui::DiagramOverlay::new("graph TD; A-->B".into())))),
         // ---- WS-G

@@ -115,6 +115,9 @@ pub struct Status {
     pub behind: u32,
     /// Changed, added, deleted and untracked files Quire would commit.
     pub changed: Vec<String>,
+    /// Untracked folders that are git repositories of their own (`x/`),
+    /// which Quire never commits or runs git in.
+    pub nested: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -151,6 +154,8 @@ enum Done {
     Committed {
         auto: bool,
         result: Result<Option<usize>, String>,
+        /// Repositories inside the vault that were left out.
+        nested: Vec<String>,
     },
     Pulled(Result<String, String>),
     Pushed(Result<String, String>),
@@ -187,6 +192,8 @@ pub struct GitState {
     pub log: Option<(NotePath, Result<Vec<LogEntry>, String>)>,
     /// A commit's change to a note.
     pub shown: Option<(String, Result<String, String>)>,
+    /// Repositories inside the vault the person was told Quire leaves out.
+    told_nested: std::collections::HashSet<String>,
     pending_change: bool,
     last_change: Option<Instant>,
     status_at: Option<Instant>,
@@ -212,6 +219,7 @@ impl Default for GitState {
             last: None,
             log: None,
             shown: None,
+            told_nested: std::collections::HashSet::new(),
             pending_change: false,
             last_change: None,
             status_at: None,
@@ -238,29 +246,49 @@ pub fn run_git(trust: &TrustStore, repo: &RepoDirs, dir: &Path, args: &[&str]) -
     if find_repo(dir).as_ref() != Some(repo) || !trust.is_trusted(repo) {
         return Err(NOT_TRUSTED.into());
     }
-    spawn_git(dir, args)
+    spawn_git(repo, dir, args)
+}
+
+/// Why a folder in the vault isn't committed.
+pub fn nested_message(path: &str) -> String {
+    format!(
+        "Quire doesn't commit “{path}”: it is a separate git repository inside the vault, and Quire runs no git in it. Use git yourself if you mean to add it."
+    )
 }
 
 /// Run `git` in `dir` with prompts off and a time limit: stdout, or an error
 /// in plain words. Only [`run_git`] calls this.
-fn spawn_git(dir: &Path, args: &[&str]) -> Result<String, String> {
+fn spawn_git(repo: &RepoDirs, dir: &Path, args: &[&str]) -> Result<String, String> {
     #[cfg(test)]
     SPAWNED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(dir.to_path_buf());
+    // Exactly the git folder and working tree that were checked and
+    // trusted: git searches for nothing itself.
+    let mut git_dir = std::ffi::OsString::from("--git-dir=");
+    git_dir.push(repo.git_dir());
+    let mut work_tree = std::ffi::OsString::from("--work-tree=");
+    work_tree.push(repo.root());
     let mut child = Proc::new("git")
+        .arg(git_dir)
+        .arg(work_tree)
         .arg("-c")
         .arg("core.quotepath=off")
-        // Never a bare repository found on the way up (`find_repo` refuses
-        // those too; this is git's own check, from 2.38).
+        // Harmless with an explicit git folder; refuses a bare repository
+        // anywhere git might still look for one (git 2.38 and later).
         .arg("-c")
         .arg("safe.bareRepository=explicit")
         .args(args)
         .current_dir(dir)
-        // git finds the repository from `dir`, as `find_repo` did, and not
-        // from variables this process inherited.
+        // Nothing this process inherited changes which repository or
+        // objects git uses.
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_COMMON_DIR")
         .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+        .env_remove("GIT_CEILING_DIRECTORIES")
+        .env_remove("GIT_DISCOVERY_ACROSS_FILESYSTEM")
+        .env_remove("GIT_NAMESPACE")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_ASKPASS", "")
         .env("SSH_ASKPASS", "")
@@ -385,7 +413,13 @@ pub fn parse_status(out: &str, prefix: &str) -> Status {
                 && p.starts_with(prefix)
                 && quire_commits(p, prefix)
             {
-                st.changed.push(p.to_string());
+                // With `--untracked-files=all` only a folder that is a
+                // repository of its own is listed as a folder.
+                if line.starts_with('?') && p.ends_with('/') {
+                    st.nested.push(p.to_string());
+                } else {
+                    st.changed.push(p.to_string());
+                }
             }
         }
     }
@@ -417,24 +451,62 @@ impl Repo<'_> {
     fn status(&self) -> Result<Status, String> {
         // Paths relative to the repository's top, as `parse_status` expects
         // (git otherwise gives untracked files relative to the vault's folder).
+        // Submodules and other repositories inside are never looked into:
+        // that would run their own settings.
         self.git(
             &self.dir(),
-            &["-c", "status.relativePaths=false", "status", "--porcelain=v2", "--branch", "--untracked-files=all", "--", "."],
+            &[
+                "-c",
+                "status.relativePaths=false",
+                "status",
+                "--porcelain=v2",
+                "--branch",
+                "--untracked-files=all",
+                "--ignore-submodules=all",
+                "--",
+                ".",
+            ],
         )
         .map(|o| parse_status(&o, self.prefix))
     }
 
+    /// Submodules (gitlinks) in the index under the vault's folder, from the
+    /// top. `git add` would look into each one, running its settings.
+    fn gitlinks(&self) -> Result<Vec<String>, String> {
+        let out = self.git(&self.dir(), &["ls-files", "--stage", "-z", "--full-name", "--", "."])?;
+        Ok(out.split('\0').filter(|e| e.starts_with("160000 ")).filter_map(|e| e.split_once('\t').map(|(_, p)| p.to_string())).collect())
+    }
+
     /// Stage what Quire commits (notes, attachments, `.quire/shared/`) and
-    /// commit. `Ok(None)`: nothing to commit.
-    fn commit(&self, message: &str) -> Result<Option<usize>, String> {
+    /// commit. `Ok(None)`: nothing to commit. Repositories inside the vault
+    /// (untracked ones and submodules) are left out; the untracked ones are
+    /// returned, to tell the person.
+    fn commit(&self, message: &str) -> (Result<Option<usize>, String>, Vec<String>) {
+        match self.status() {
+            Ok(before) => {
+                let nested = before.nested.clone();
+                (self.commit_after(&before, message), nested)
+            }
+            Err(e) => (Err(e), Vec::new()),
+        }
+    }
+
+    fn commit_after(&self, before: &Status, message: &str) -> Result<Option<usize>, String> {
         let dir = self.dir();
-        let before = self.status()?;
         if before.changed.is_empty() {
             return Ok(None);
         }
-        self.git(&dir, &["add", "-A", "--", ".", ":(exclude).quire"])?;
+        let mut skip: Vec<String> = before.nested.iter().map(|p| p.trim_end_matches('/').to_string()).collect();
+        skip.extend(self.gitlinks()?);
+        let skip: Vec<String> = skip.iter().map(|p| format!(":(exclude,top,literal){p}")).collect();
+        let with_skip = |paths: &[&str]| -> Vec<String> {
+            ["add", "-A", "--"].iter().chain(paths).map(|a| (*a).to_string()).chain(skip.iter().cloned()).collect()
+        };
+        let args = with_skip(&[".", ":(exclude).quire"]);
+        self.git(&dir, &args.iter().map(String::as_str).collect::<Vec<_>>())?;
         if dir.join(".quire/shared").is_dir() {
-            self.git(&dir, &["add", "-A", "--", ".quire/shared"])?;
+            let args = with_skip(&[".quire/shared"]);
+            self.git(&dir, &args.iter().map(String::as_str).collect::<Vec<_>>())?;
         }
         let n = before.changed.len();
         let msg = message.replace("{{count}}", &n.to_string());
@@ -492,9 +564,16 @@ fn run_op(trust: &TrustStore, found: Option<&RepoDirs>, vault: &Path, op: Op, me
     match op {
         Op::Detect { opening } => detect(trust, vault, opening),
         Op::Status => Done::Status(need().and_then(Repo::status)),
-        Op::Commit { auto } => Done::Committed { auto, result: need().and_then(|r| r.commit(message)) },
-        Op::Pull => Done::Pulled(need().and_then(|r| r.git(r.root(), &["pull", "--ff-only", "-q"]))),
-        Op::Push => Done::Pushed(need().and_then(|r| r.git(r.root(), &["push", "-q"]))),
+        Op::Commit { auto } => {
+            let (result, nested) = match need() {
+                Ok(r) => r.commit(message),
+                Err(e) => (Err(e), Vec::new()),
+            };
+            Done::Committed { auto, result, nested }
+        }
+        // Never into submodules (their own settings), whatever the config says.
+        Op::Pull => Done::Pulled(need().and_then(|r| r.git(r.root(), &["pull", "--ff-only", "-q", "--no-recurse-submodules"]))),
+        Op::Push => Done::Pushed(need().and_then(|r| r.git(r.root(), &["push", "-q", "--no-recurse-submodules"]))),
         Op::Log(p) => {
             let rel = format!("{prefix}{}", p.as_str());
             let r = need().and_then(|r| r.log(&rel));
@@ -653,7 +732,13 @@ fn finish(ws: &mut Workspace, done: Done) {
                 Err(e) => st.last = Some((e, true)),
             }
         }
-        Done::Committed { auto, result } => {
+        Done::Committed { auto, result, nested } => {
+            for p in nested {
+                if ws.features.git.told_nested.insert(p.clone()) {
+                    ws.notify(NoticeLevel::Info, nested_message(&p));
+                }
+            }
+            let st = &mut ws.features.git;
             match result {
                 Ok(Some(n)) => {
                     st.last = Some((format!("Committed {n} file{}", if n == 1 { "" } else { "s" }), false));
@@ -1270,6 +1355,158 @@ mod tests {
         assert!(sh(root, &["log", "--oneline"]).contains("Quire: 3 notes"), "auto-commit works");
         assert!(marker.exists(), "the pre-commit hook ran, as git would run it");
         ws.shutdown();
+    }
+
+    /// A marker program for `core.fsmonitor`, and its marker.
+    #[cfg(unix)]
+    fn fsmonitor(dir: &Path, name: &str) -> (String, PathBuf) {
+        let marker = dir.join(format!("{name}.ran"));
+        (format!("touch '{}'; false #", marker.display()), marker)
+    }
+
+    /// Re-review finding 1 (high): files placed in a folder of a trusted
+    /// repository make a git folder there whose `HEAD` is a symlink to a
+    /// branch not born yet (git accepts that). Quire must neither skip it
+    /// (and run git, which would use it, under the trusted repository) nor
+    /// run git in it. The bare variant (`HEAD`, `objects`, `refs` in the
+    /// folder itself) the same.
+    #[cfg(unix)]
+    #[test]
+    fn a_git_folder_placed_inside_a_trusted_repository_runs_nothing() {
+        use std::os::unix::fs::symlink;
+        if !have_git() {
+            return;
+        }
+        let t = tempfile::tempdir().unwrap();
+        let top = t.path().canonicalize().unwrap();
+        let (_cfg, store) = store();
+        let r = top.join("r");
+        init(&r);
+        std::fs::write(r.join("A.md"), "# A\n").unwrap();
+        trusted(&store, &r);
+        for bare in [false, true] {
+            let notes = r.join(if bare { "bare" } else { "notes" });
+            let g = if bare { notes.clone() } else { notes.join(".git") };
+            std::fs::create_dir_all(g.join("objects")).unwrap();
+            std::fs::create_dir_all(g.join("refs/heads")).unwrap();
+            symlink("refs/heads/nothere", g.join("HEAD")).unwrap();
+            let (cmd, marker) = fsmonitor(&top, if bare { "bare" } else { "dot-git" });
+            let wt = if bare { "\tworktree = .\n" } else { "" };
+            std::fs::write(g.join("config"), format!("[core]\n\trepositoryformatversion = 0\n{wt}\tfsmonitor = \"{cmd}\"\n")).unwrap();
+            std::fs::write(notes.join("B.md"), "# B\n").unwrap();
+            let before = spawned_in(&notes);
+            let mut ws = open(&notes, &store);
+            let t0 = Instant::now();
+            wait(&mut ws, t0);
+            assert!(!ws.features.git.repo, "bare {bare}");
+            if bare {
+                assert!(ws.features.git.found.is_none());
+            } else {
+                assert_eq!(ws.features.git.found.as_ref().map(|f| f.root().to_path_buf()), Some(notes.clone()));
+            }
+            wait(&mut ws, t0 + Duration::from_mins(2));
+            commit_now(&mut ws);
+            wait(&mut ws, t0 + Duration::from_mins(3));
+            ws.shutdown();
+            assert_eq!(spawned_in(&notes), before, "bare {bare}");
+            assert!(!marker.exists(), "bare {bare}: the placed git folder's program ran");
+        }
+    }
+
+    /// Re-review finding 2 (medium): a repository placed in a trusted vault
+    /// is never committed (git would add it as a submodule) nor looked into,
+    /// and the person is told once. A submodule already committed (by the
+    /// person's own git) isn't looked into either.
+    #[cfg(unix)]
+    #[test]
+    fn a_repository_inside_the_vault_is_left_alone() {
+        if !have_git() {
+            return;
+        }
+        let t = tempfile::tempdir().unwrap();
+        let top = t.path().canonicalize().unwrap();
+        let (_cfg, store) = store();
+        let r = top.join("r");
+        init(&r);
+        std::fs::write(r.join("A.md"), "# A\n").unwrap();
+        let x = r.join("x");
+        init(&x);
+        std::fs::write(x.join("B.md"), "# B\n").unwrap();
+        sh(&x, &["add", "B.md"]);
+        sh(&x, &["commit", "-q", "-m", "x"]);
+        let (cmd, marker) = fsmonitor(&top, "nested");
+        sh(&x, &["config", "core.fsmonitor", &cmd]);
+        let mut ws = open(&r, &trusted(&store, &r));
+        let t0 = Instant::now();
+        wait(&mut ws, t0);
+        wait(&mut ws, t0);
+        assert_eq!(
+            ws.features.git.status.as_ref().map(|s| (s.changed.clone(), s.nested.clone())),
+            Some((vec!["A.md".into()], vec!["x/".into()]))
+        );
+        commit_now(&mut ws);
+        wait(&mut ws, Instant::now());
+        commit_now(&mut ws);
+        wait(&mut ws, Instant::now());
+        let tree = sh(&r, &["ls-tree", "-r", "--name-only", "HEAD"]);
+        assert_eq!(tree.trim(), "A.md", "the repository inside wasn't committed");
+        assert_eq!(ws.notices.iter().filter(|n| n.text == nested_message("x/")).count(), 1, "told once");
+        wait(&mut ws, Instant::now());
+        assert!(!marker.exists(), "git looked into the repository inside");
+        // Committed as a submodule by the person's own git, then changed:
+        // Quire's status and commit still don't look into it.
+        sh(&r, &["add", "x"]);
+        sh(&r, &["commit", "-q", "-m", "gitlink"]);
+        std::fs::write(x.join("B.md"), "# B2\n").unwrap();
+        std::fs::write(r.join("C.md"), "# C\n").unwrap();
+        let _ = std::fs::remove_file(&marker);
+        ws.features.git.status_at = None;
+        wait(&mut ws, Instant::now());
+        wait(&mut ws, Instant::now());
+        commit_now(&mut ws);
+        wait(&mut ws, Instant::now());
+        assert!(sh(&r, &["log", "--format=%s", "-1", "--name-only"]).contains("C.md"));
+        assert!(!marker.exists(), "git looked into the submodule");
+        ws.shutdown();
+    }
+
+    /// Re-review finding 3 (medium): a different repository that later
+    /// appears at a trusted path (a stick with the same name, a new archive
+    /// unpacked where the old one was) isn't trusted.
+    #[cfg(unix)]
+    #[test]
+    fn another_repository_at_a_trusted_path_is_not_trusted() {
+        use std::os::unix::fs::PermissionsExt as _;
+        if !have_git() {
+            return;
+        }
+        let t = tempfile::tempdir().unwrap();
+        let top = t.path().canonicalize().unwrap();
+        let (_cfg, store) = store();
+        let r = top.join("r");
+        init(&r);
+        std::fs::write(r.join("A.md"), "# A\n").unwrap();
+        trusted(&store, &r);
+        let mut ws = open(&r, &store);
+        wait(&mut ws, Instant::now());
+        assert!(ws.features.git.repo);
+        ws.shutdown();
+        // Replaced: same path, a new repository with a hook that runs on status.
+        std::fs::remove_dir_all(&r).unwrap();
+        init(&r);
+        std::fs::write(r.join("A.md"), "# A\n").unwrap();
+        let marker = top.join("replaced.ran");
+        let hook = r.join(".git/hooks/post-index-change");
+        std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let before = spawned_in(&r);
+        let mut ws = open(&r, &store);
+        wait(&mut ws, Instant::now());
+        wait(&mut ws, Instant::now() + Duration::from_mins(2));
+        assert!(!ws.features.git.repo && untrusted(&ws));
+        ws.shutdown();
+        assert_eq!(spawned_in(&r), before);
+        assert!(!marker.exists());
     }
 
     #[test]
