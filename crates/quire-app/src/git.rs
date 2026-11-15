@@ -281,8 +281,9 @@ pub fn runs_program(key: &str, value: &str) -> bool {
     }
 }
 
-/// What in a repository's own settings would make git run a program, as
-/// `(settings, hooks)`: the first such setting (`key = value`), and the
+/// What in a repository's own settings would make git run a program.
+///
+/// Returns `(settings, hooks)`: the first such setting (`key = value`), and the
 /// first hook in the repository's hooks folder (or a hooks folder the
 /// repository's own settings name). Settings of this computer's user and
 /// system are the person's own and aren't looked at.
@@ -991,12 +992,12 @@ mod tests {
         ws.open_vault(root).unwrap();
         let t0 = Instant::now();
         wait(&mut ws, t0);
-        wait(&mut ws, t0 + Duration::from_secs(120));
+        wait(&mut ws, t0 + Duration::from_mins(2));
         assert!(ws.features.git.repo);
         assert!(ws.features.git.blocked.as_deref().is_some_and(|b| b.starts_with("core.fsmonitor")), "{:?}", ws.features.git.blocked);
         commit_now(&mut ws);
         pull(&mut ws);
-        wait(&mut ws, t0 + Duration::from_secs(240));
+        wait(&mut ws, t0 + Duration::from_mins(4));
         assert!(!marker.exists(), "git ran the repository's program");
         let mut items = Vec::new();
         status(&ws, &mut items);

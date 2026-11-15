@@ -1191,7 +1191,7 @@ mod tests {
                     assert_eq!(fm.fields.get("title"), Some(&Value::Str("ok".into())));
                     assert!(matches!(fm.fields.get("k"), Some(Value::Map(_))));
                     assert_eq!(&src[fm.range.end..], "body\n");
-                    let _ = fm.fields.get("k").unwrap().flow();
+                    let _ = fm.fields["k"].flow();
                 }
             })
             .unwrap()
