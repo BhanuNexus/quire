@@ -159,12 +159,10 @@ pub fn hierarchy_html(ix: &Index, href: Href<'_>) -> String {
         v.sort_by_cached_key(|k| (title(k).to_lowercase(), k.clone()));
         v
     };
-    let mut roots: Vec<NotePath> = ix
-        .records()
-        .map(|r| &r.path)
-        .filter(|q| href(q).is_some() && !kids(q).is_empty() && rel.related_where(q, Hier::Up, &keep).is_empty())
-        .cloned()
-        .collect();
+    // Whether a note has a visible edge of a kind, without collecting and sorting them.
+    let any = |q: &NotePath, h: Hier| rel.of(q).iter().any(|e| e.hier == Some(h) && e.visible(&keep));
+    let mut roots: Vec<NotePath> =
+        ix.records().map(|r| &r.path).filter(|q| any(q, Hier::Down) && !any(q, Hier::Up) && keep(q)).cloned().collect();
     roots.sort_by_cached_key(|k| (title(k).to_lowercase(), k.clone()));
     if roots.is_empty() {
         return String::new();
@@ -340,5 +338,27 @@ mod tests {
         let tree = hierarchy_html(&ix, &all);
         assert!(tree.contains("Top") && tree.contains("Hidden &lt;mid&gt;"), "{tree}");
         assert!(!hierarchy_html(&ix, &seen).contains("Mid"));
+    }
+
+    /// Cost of the Hierarchy page on 10,000 notes in a tree (fan-out 10). Run by hand:
+    /// `cargo test -p quire-app --lib links_web::tests::hierarchy_timing -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "timing, run by hand"]
+    #[allow(clippy::print_stderr, reason = "timing output")]
+    fn hierarchy_timing() {
+        let files: Vec<(String, String)> = (0..10_000)
+            .map(|i| {
+                (
+                    format!("f{}/n{i}.md", i % 40),
+                    if i == 0 { "# Root\n".to_string() } else { format!("up:: [[n{}]]\n# N {i}\n", (i - 1) / 10) },
+                )
+            })
+            .collect();
+        let ix = index(&files);
+        let all = |p: &NotePath| Some(format!("/n/{}", p.as_str()));
+        let t = std::time::Instant::now();
+        let tree = hierarchy_html(&ix, &all);
+        eprintln!("hierarchy page, 10,000 notes: {:?}, {} KB", t.elapsed(), tree.len() / 1024);
+        assert!(tree.contains("The list stops here"));
     }
 }

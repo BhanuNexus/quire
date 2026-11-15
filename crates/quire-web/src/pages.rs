@@ -523,15 +523,28 @@ impl Cx<'_> {
     /// them, for the notes this reader may see.
     fn hierarchy(&self) -> Res {
         let hidden = self.hidden();
-        let listed = |q: &NotePath| Guard::listed(&hidden, q).then(|| note_href(q));
-        let ix = self.web.cfg.server.index().read();
-        let tree = quire_app::links_web::hierarchy_html(&ix, &listed);
-        drop(ix);
+        let index = self.web.cfg.server.index();
+        let version = index.version();
+        let cached = {
+            let c = self.web.hierarchy_page.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            c.as_ref().filter(|(v, h, _)| *v == version && *h == hidden).map(|(_, _, t)| std::sync::Arc::clone(t))
+        };
+        let tree = cached.unwrap_or_else(|| {
+            let listed = |q: &NotePath| Guard::listed(&hidden, q).then(|| note_href(q));
+            let ix = index.read();
+            // The version the tree is made from: a batch applied since `version` was read has a newer one.
+            let version = index.version();
+            let tree = std::sync::Arc::new(quire_app::links_web::hierarchy_html(&ix, &listed));
+            drop(ix);
+            *self.web.hierarchy_page.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some((version, hidden.clone(), std::sync::Arc::clone(&tree)));
+            tree
+        });
         let body = if tree.is_empty() {
             "<p class=\"muted\">No note has children yet. Write <code>up:: [[Parent]]</code> in a note, or set the hierarchy fields in Settings → Links on the desktop.</p>"
                 .to_string()
         } else {
-            tree
+            tree.to_string()
         };
         self.page("Hierarchy", "", None, &format!("<h1>Hierarchy</h1>{body}"))
     }

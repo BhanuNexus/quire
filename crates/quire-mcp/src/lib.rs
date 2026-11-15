@@ -15,6 +15,35 @@
 //! their version defines. A 2026-07-28 client names its version in every
 //! request's `_meta` and can start with `server/discover`.
 
+/// A JSON value written as JSON, for the tool and resource schemas: kept in
+/// the binary as its text and parsed when the tool list is made (0.13.1),
+/// instead of the code `json!` expands each one to (about 0.2 MB a binary).
+/// Literals only: strings, numbers, `true`, `false`, `null`; a trailing comma
+/// is allowed, as in `json!`. The tests build every schema.
+macro_rules! schema {
+    ($($t:tt)+) => {
+        $crate::schema_text(stringify!($($t)+))
+    };
+}
+
+/// Parse [`schema!`]'s text (trailing commas dropped).
+pub(crate) fn schema_text(text: &str) -> serde_json::Value {
+    let mut clean = String::with_capacity(text.len());
+    let (mut in_str, mut escaped) = (false, false);
+    for (i, c) in text.char_indices() {
+        if in_str {
+            in_str = escaped || c != '"';
+            escaped = !escaped && c == '\\';
+        } else if c == '"' {
+            in_str = true;
+        } else if c == ',' && text[i + 1..].trim_start().starts_with(['}', ']']) {
+            continue;
+        }
+        clean.push(c);
+    }
+    serde_json::from_str(&clean).expect("a schema! is JSON")
+}
+
 pub mod bounds;
 pub mod capture;
 pub mod consent;
@@ -35,3 +64,21 @@ pub mod tools;
 
 pub use server::{Conn, Principal, Reply, Server, ServerConfig};
 pub use tools::{Tool, ToolCx, ToolOutput, ToolRegistry, ToolSpec};
+
+#[cfg(test)]
+mod schema_tests {
+    use serde_json::json;
+
+    /// `schema!` gives what `json!` gives for the same literal (0.13.1).
+    #[test]
+    fn schema_matches_json() {
+        assert_eq!(
+            schema!({"type": "object", "properties": {"q": {"type": "string", "description": "A \"phrase\", a , ] } and \\ too.\n"},
+                "n": {"type": "integer", "minimum": 1, "maximum": 50, "default": 0.5}, "e": {"enum": ["a", "b",], "x": [true, false, null]},},
+                "required": ["q"],}),
+            json!({"type": "object", "properties": {"q": {"type": "string", "description": "A \"phrase\", a , ] } and \\ too.\n"},
+                "n": {"type": "integer", "minimum": 1, "maximum": 50, "default": 0.5}, "e": {"enum": ["a", "b",], "x": [true, false, null]},},
+                "required": ["q"],})
+        );
+    }
+}

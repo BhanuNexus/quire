@@ -263,17 +263,27 @@ impl Workspace {
 
     /// Overdue, today, the next seven days and today's time blocks; cached until the index changes.
     pub fn agenda(&self) -> Rc<Agenda> {
+        self.agenda_with(true).expect("a blocking read always gives the agenda")
+    }
+
+    /// [`Self::agenda`] for a frame (0.13.1): `None` instead of waiting
+    /// while the index worker holds the write lock and the cached agenda is stale.
+    pub fn try_agenda(&self) -> Option<Rc<Agenda>> {
+        self.agenda_with(false)
+    }
+
+    fn agenda_with(&self, wait: bool) -> Option<Rc<Agenda>> {
         let today = Local::now().date_naive();
         // 0.12: with the notes of unlocked folders (memory only).
         let key = (self.notes_version(), today);
         if let Some((k, a)) = self.features.tasks.agenda.borrow().as_ref()
             && *k == key
         {
-            return Rc::clone(a);
+            return Some(Rc::clone(a));
         }
         let daily = self.period_path(Period::Daily, today);
-        let mut tasks: Vec<(String, quire_markdown::Task)> = Vec::new();
-        self.with_notes(|n| {
+        let collect = |n: &quire_index::Joined<'_>| {
+            let mut tasks: Vec<(String, quire_markdown::Task)> = Vec::new();
             for r in n.records() {
                 let p = r.path.as_str();
                 tasks.extend(r.tasks.iter().map(|t| (p.to_string(), t.clone())));
@@ -281,10 +291,12 @@ impl Workspace {
                     tasks.push((p.to_string(), t));
                 }
             }
-        });
+            tasks
+        };
+        let tasks = if wait { self.with_notes(collect) } else { self.try_with_notes(collect)? };
         let a = Rc::new(quire_plan::agenda::build(tasks.iter().map(|(p, t)| (p.as_str(), t)), today, Some(daily.as_str())));
         *self.features.tasks.agenda.borrow_mut() = Some((key, Rc::clone(&a)));
-        a
+        Some(a)
     }
 
     /// The text of a note now: the open document's, else the file's.

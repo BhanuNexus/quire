@@ -15,6 +15,11 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Line tables only for the debug and test builds (0.13.1): panics and
+  # backtraces still name the file and line, while the test binaries, their
+  # links and the build caches are much smaller than with full debug info.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
 
 jobs:
   lint:
@@ -31,6 +36,11 @@ jobs:
       - name: Install the pinned toolchain (rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Pull requests restore main's caches but don't save their own: saving
+          # takes minutes, and seven jobs' caches overflow the repository's
+          # 10 GB, which evicted main's and left every run cold (0.13.1).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Quire Lite (no math, diagrams or PDF export) builds cleanly too
@@ -136,15 +146,34 @@ jobs:
         shell: bash
         run: packaging/test-unpack-engine.sh
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo test --workspace --locked --no-fail-fast
+
+  test-features:
+    # The Linux runs of other feature sets, beside the test matrix instead of
+    # after the workspace tests in its ubuntu-latest job (0.13.1): each
+    # rebuilds part of the tree with other features, which added to that
+    # job's time one after another.
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: ALSA headers (the full edition records voice notes through cpal)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: features
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Quire Lite tests (the desktop and CLI without the typesetter)
-        if: matrix.os == 'ubuntu-latest'
         run: cargo test -p quire-desktop -p quire-cli --no-default-features --locked
       - name: PDF rendering tests (behind the full edition's `render` feature)
-        if: matrix.os == 'ubuntu-latest'
         run: cargo test -p quire-pdf --features render --locked
       - name: Agent edit eval (synthetic edits against the MCP tools, design §B.6)
-        if: matrix.os == 'ubuntu-latest'
         run: cargo run -p quire-cli --features eval --locked -- eval synthetic-edits --json
 
   perf:
@@ -166,6 +195,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: perf
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build quire-cli and the desktop with its bench runs
         run: cargo build --profile perf --locked -p quire-cli -p quire-desktop --features quire-desktop/bench
       - name: Speed budgets

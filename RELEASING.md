@@ -43,7 +43,7 @@ These can only be changed in the GitHub UI:
 - **Settings → General → Releases → Enable release immutability.** Published releases can then never have their assets or tag changed.
 - **Settings → Rules → Rulesets → New tag ruleset** for `v*`: restrict creation, update and deletion to maintainers, so release tags can't be moved or deleted.
 - **Settings → Environments → `release`** (created by the first release run): add required reviewers to approve each publish. Optionally limit it to `v*` tags.
-- **Settings → Rules → Rulesets → New branch ruleset** for `main`: require a pull request, the `CI` checks (`lint`, `test (…)` including `ubuntu-24.04-arm`, `deny`, `typos`, `workflows`, `packaging`) and `CodeQL`; block force-pushes.
+- **Settings → Rules → Rulesets → New branch ruleset** for `main`: require a pull request, the `CI` checks (`lint`, `test (…)` including `ubuntu-24.04-arm`, `test-features`, `deny`, `typos`, `workflows`, `packaging`) and `CodeQL`; block force-pushes.
 - **Settings → Code security:** private vulnerability reporting, Dependabot alerts and security updates, and secret scanning with push protection.
 - **Settings → General → Features:** turn on Discussions.
 

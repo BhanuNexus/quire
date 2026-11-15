@@ -409,15 +409,59 @@ fn first_existing(paths: &[&str]) -> Option<Vec<u8>> {
 /// The full edition takes them from the typesetter, which embeds the same
 /// files, so they are in the app once.
 #[cfg(feature = "typeset")]
-pub(crate) use quire_typeset::fonts::{INTER_ITALIC, INTER_REGULAR, INTER_SEMIBOLD, JETBRAINS_MONO_NL as JETBRAINS_MONO};
+mod faces {
+    pub(crate) fn inter_regular() -> &'static [u8] {
+        quire_typeset::fonts::INTER_REGULAR
+    }
+    pub(crate) fn inter_semibold() -> &'static [u8] {
+        quire_typeset::fonts::INTER_SEMIBOLD
+    }
+    pub(crate) fn inter_italic() -> &'static [u8] {
+        quire_typeset::fonts::INTER_ITALIC
+    }
+    pub(crate) fn jetbrains_mono() -> &'static [u8] {
+        quire_typeset::fonts::JETBRAINS_MONO_NL
+    }
+    /// Nothing to unpack in the full edition.
+    pub(crate) const fn unpack() {}
+}
+
+/// Quire Lite bundles the faces gzipped (0.13.1: 0.7 MB smaller) and
+/// unpacks them once, on a thread `main` starts before the window opens.
 #[cfg(not(feature = "typeset"))]
-pub(crate) static INTER_REGULAR: &[u8] = include_bytes!("../fonts/Inter-Regular.ttf");
-#[cfg(not(feature = "typeset"))]
-static INTER_SEMIBOLD: &[u8] = include_bytes!("../fonts/Inter-SemiBold.ttf");
-#[cfg(not(feature = "typeset"))]
-static INTER_ITALIC: &[u8] = include_bytes!("../fonts/Inter-Italic.ttf");
-#[cfg(not(feature = "typeset"))]
-pub(crate) static JETBRAINS_MONO: &[u8] = include_bytes!("../fonts/JetBrainsMonoNL-Regular.ttf");
+mod faces {
+    use std::sync::LazyLock;
+
+    static INTER_REGULAR: LazyLock<Vec<u8>> =
+        LazyLock::new(|| quire_app::themes::unpack_bundled(include_bytes!("../fonts/Inter-Regular.ttf.gz")));
+    static INTER_SEMIBOLD: LazyLock<Vec<u8>> =
+        LazyLock::new(|| quire_app::themes::unpack_bundled(include_bytes!("../fonts/Inter-SemiBold.ttf.gz")));
+    static INTER_ITALIC: LazyLock<Vec<u8>> =
+        LazyLock::new(|| quire_app::themes::unpack_bundled(include_bytes!("../fonts/Inter-Italic.ttf.gz")));
+    static JETBRAINS_MONO: LazyLock<Vec<u8>> =
+        LazyLock::new(|| quire_app::themes::unpack_bundled(include_bytes!("../fonts/JetBrainsMonoNL-Regular.ttf.gz")));
+
+    pub(crate) fn inter_regular() -> &'static [u8] {
+        &INTER_REGULAR
+    }
+    pub(crate) fn inter_semibold() -> &'static [u8] {
+        &INTER_SEMIBOLD
+    }
+    pub(crate) fn inter_italic() -> &'static [u8] {
+        &INTER_ITALIC
+    }
+    pub(crate) fn jetbrains_mono() -> &'static [u8] {
+        &JETBRAINS_MONO
+    }
+    /// Unpack all four now (a thread from `main`, while the window opens).
+    pub(crate) fn unpack() {
+        for f in [&INTER_REGULAR, &INTER_SEMIBOLD, &INTER_ITALIC, &JETBRAINS_MONO] {
+            LazyLock::force(f);
+        }
+    }
+}
+
+pub(crate) use faces::{inter_italic, inter_regular, inter_semibold, jetbrains_mono, unpack as unpack_fonts};
 
 pub(crate) const ITALIC: &str = "quire-italic";
 
@@ -459,10 +503,10 @@ fn install_fonts_with(ctx: &egui::Context, theme_fonts: &quire_app::themes::Them
     let add = |defs: &mut FontDefinitions, name: &str, bytes: &'static [u8]| {
         defs.font_data.insert(name.into(), Arc::new(FontData::from_static(bytes)));
     };
-    add(&mut defs, "quire-regular", INTER_REGULAR);
-    add(&mut defs, BOLD, INTER_SEMIBOLD);
-    add(&mut defs, ITALIC, INTER_ITALIC);
-    add(&mut defs, "quire-mono", JETBRAINS_MONO);
+    add(&mut defs, "quire-regular", inter_regular());
+    add(&mut defs, BOLD, inter_semibold());
+    add(&mut defs, ITALIC, inter_italic());
+    add(&mut defs, "quire-mono", jetbrains_mono());
     defs.families.entry(prop.clone()).or_default().insert(0, "quire-regular".into());
     defs.families.entry(FontFamily::Monospace).or_default().insert(0, "quire-mono".into());
 
@@ -515,6 +559,21 @@ fn install_fonts_with(ctx: &egui::Context, theme_fonts: &quire_app::themes::Them
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The gzipped faces Quire Lite bundles are the fonts in `fonts/` (0.13.1).
+    #[test]
+    fn bundled_gzip_faces_match_the_fonts() {
+        let unpack = quire_app::themes::unpack_bundled;
+        assert_eq!(unpack(include_bytes!("../fonts/Inter-Regular.ttf.gz")), include_bytes!("../fonts/Inter-Regular.ttf"));
+        assert_eq!(unpack(include_bytes!("../fonts/Inter-SemiBold.ttf.gz")), include_bytes!("../fonts/Inter-SemiBold.ttf"));
+        assert_eq!(unpack(include_bytes!("../fonts/Inter-Italic.ttf.gz")), include_bytes!("../fonts/Inter-Italic.ttf"));
+        assert_eq!(
+            unpack(include_bytes!("../fonts/JetBrainsMonoNL-Regular.ttf.gz")),
+            include_bytes!("../fonts/JetBrainsMonoNL-Regular.ttf")
+        );
+        assert_eq!(inter_regular(), include_bytes!("../fonts/Inter-Regular.ttf"));
+        assert_eq!(jetbrains_mono(), include_bytes!("../fonts/JetBrainsMonoNL-Regular.ttf"));
+    }
 
     #[test]
     fn a_theme_switches_every_token() {

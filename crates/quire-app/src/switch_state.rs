@@ -130,6 +130,10 @@ fn read_prefs(vault: &Vault) -> SwitchPrefs {
 
 // --------------------------------------------------------------------- state
 
+fn home_titles(ix: &quire_index::Index, paths: impl Iterator<Item = NotePath>) -> Vec<HomeNote> {
+    paths.filter_map(|p| Some(HomeNote { title: ix.get(&p)?.title.clone(), path: p })).collect()
+}
+
 type StatsCache = RefCell<Option<(((u64, u64), NaiveDate), HomeStats)>>;
 type HomeCache = RefCell<Option<(HomeKey, Rc<HomeData>)>>;
 
@@ -141,6 +145,9 @@ pub struct SwitchState {
     start_checked: bool,
     prefs: RefCell<Option<Rc<SwitchPrefs>>>,
     stats: StatsCache,
+    /// Today's word-count baseline (day, words), once read or written: its
+    /// file is read once a day, not on every index change.
+    baseline: RefCell<Option<(String, usize)>>,
     home: HomeCache,
     /// A folder tidy being written, one chunk per frame.
     pub apply: Option<LintApply>,
@@ -674,11 +681,6 @@ impl Workspace {
         pool.get(usize::try_from(seed % pool.len() as u128).unwrap_or(0)).cloned()
     }
 
-    fn home_titles(&self, paths: impl Iterator<Item = NotePath>) -> Vec<HomeNote> {
-        let ix = self.index.read();
-        paths.filter_map(|p| Some(HomeNote { title: ix.get(&p)?.title.clone(), path: p })).collect()
-    }
-
     fn baseline_path(&self) -> Option<std::path::PathBuf> {
         if cfg!(test) {
             return None;
@@ -687,15 +689,16 @@ impl Workspace {
     }
 
     /// Notes, words and open tasks; cached per notes version and day.
-    fn home_stats(&self, today: NaiveDate) -> HomeStats {
+    /// `None` while the index worker holds the write lock (a frame never waits).
+    fn home_stats(&self, today: NaiveDate) -> Option<HomeStats> {
         let key = (self.notes_version(), today);
         if let Some((k, s)) = self.features.switch.stats.borrow().as_ref()
             && *k == key
         {
-            return s.clone();
+            return Some(s.clone());
         }
-        let (mut notes, mut words, mut open_tasks, mut plain_words) = (0, 0, 0, 0);
-        self.with_notes(|n| {
+        let (notes, words, open_tasks, plain_words) = self.try_with_notes(|n| {
+            let (mut notes, mut words, mut open_tasks) = (0, 0, 0);
             for r in n.records() {
                 notes += 1;
                 words += r.stats.words;
@@ -704,10 +707,25 @@ impl Workspace {
             // The baseline is written to disk and compared across sessions, so it counts only
             // the notes of the vault index: a locked folder's words never reach the file, and
             // unlocking or locking a folder doesn't move "today".
-            plain_words = n.main().records().map(|r| r.stats.words).sum();
-        });
-        // This device's count from the first time Home was drawn today.
+            let plain_words: usize = n.main().records().map(|r| r.stats.words).sum();
+            (notes, words, open_tasks, plain_words)
+        })?;
+        let base = self.word_baseline(today, plain_words);
+        let stats =
+            HomeStats { notes, words, open_tasks, words_today: i64::try_from(plain_words).unwrap_or(0) - i64::try_from(base).unwrap_or(0) };
+        *self.features.switch.stats.borrow_mut() = Some((key, stats.clone()));
+        Some(stats)
+    }
+
+    /// This device's word count from the first time Home was drawn today:
+    /// read from its file (or written with `words_now`) once a day.
+    fn word_baseline(&self, today: NaiveDate, words_now: usize) -> usize {
         let day = today.format("%Y-%m-%d").to_string();
+        if let Some((d, w)) = self.features.switch.baseline.borrow().as_ref()
+            && *d == day
+        {
+            return *w;
+        }
         let file = self.baseline_path();
         let known = file
             .as_ref()
@@ -720,17 +738,15 @@ impl Workspace {
                     if let Some(dir) = p.parent() {
                         let _ = std::fs::create_dir_all(dir);
                     }
-                    let json = serde_json::to_string(&Baseline { day: day.clone(), words: plain_words }).unwrap_or_default();
+                    let json = serde_json::to_string(&Baseline { day: day.clone(), words: words_now }).unwrap_or_default();
                     let _ = crate::atomic::write(p, json.as_bytes(), false);
                 }
-                plain_words
+                words_now
             },
             |b| b.words,
         );
-        let stats =
-            HomeStats { notes, words, open_tasks, words_today: i64::try_from(plain_words).unwrap_or(0) - i64::try_from(base).unwrap_or(0) };
-        *self.features.switch.stats.borrow_mut() = Some((key, stats.clone()));
-        stats
+        *self.features.switch.baseline.borrow_mut() = Some((day, base));
+        base
     }
 
     /// What Home shows now. Cheap when nothing changed (it is called every frame while Home is open).
@@ -759,18 +775,25 @@ impl Workspace {
             return Rc::clone(d);
         }
         let vault = self.vault.as_ref();
-        let mut data = HomeData { recent: self.home_titles(key.recent.iter().cloned()), ..HomeData::default() };
-        if cfg.shows("pinned") {
-            let (mut found, mut missing) = (Vec::new(), Vec::new());
-            for p in &cfg.pinned {
-                let path = NotePath::new(p);
-                if self.index.read().get(&path).is_some() { found.push(path) } else { missing.push(p.clone()) }
+        // 0.13.1: the reads below don't wait for the index worker either; while it
+        // applies a batch Home keeps what it showed and reads again next frame.
+        let keep = || self.features.switch.home.borrow().as_ref().map(|(_, d)| Rc::clone(d)).unwrap_or_default();
+        let mut data = HomeData::default();
+        {
+            let Some(ix) = self.index.try_read() else { return keep() };
+            data.recent = home_titles(&ix, key.recent.iter().cloned());
+            if cfg.shows("pinned") {
+                let (mut found, mut missing) = (Vec::new(), Vec::new());
+                for p in &cfg.pinned {
+                    let path = NotePath::new(p);
+                    if ix.get(&path).is_some() { found.push(path) } else { missing.push(p.clone()) }
+                }
+                data.pinned = home_titles(&ix, found.into_iter());
+                data.missing_pins = missing;
             }
-            data.pinned = self.home_titles(found.into_iter());
-            data.missing_pins = missing;
         }
         if cfg.shows("tasks") {
-            let agenda = self.agenda();
+            let Some(agenda) = self.try_agenda() else { return keep() };
             let row = |i: &quire_plan::agenda::AgendaItem, when: String| HomeTask {
                 path: NotePath::new(&i.path),
                 text: i.task.text.clone(),
@@ -799,7 +822,8 @@ impl Workspace {
             data.daily = Some(p);
         }
         if cfg.shows("stats") {
-            data.stats = self.home_stats(today);
+            let Some(stats) = self.home_stats(today) else { return keep() };
+            data.stats = stats;
         }
         let data = Rc::new(data);
         *self.features.switch.home.borrow_mut() = Some((key, Rc::clone(&data)));

@@ -22,6 +22,9 @@ use crate::semantic::{SemanticIndex, build_lsa_index};
 /// Wait this long after the last change before rebuilding the semantic index.
 const SEMANTIC_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(700);
 
+/// Notes cut into passages under one read lock while the semantic index is built.
+const SEMANTIC_NOTES_PER_LOCK: usize = 256;
+
 enum SemMsg {
     Rebuild,
     Flush(Sender<()>),
@@ -59,6 +62,8 @@ struct Shared {
     indexed: AtomicUsize,
     total: AtomicUsize,
     busy: AtomicBool,
+    /// Notes in the index after the last batch, for per-frame UI.
+    notes: AtomicUsize,
     semantic_version: AtomicU64,
     semantic_busy: AtomicBool,
 }
@@ -221,6 +226,12 @@ impl IndexService {
         }
     }
 
+    /// How many notes are indexed, without taking the lock (0.13.1: for the
+    /// status bar, which asked under a blocking read every frame).
+    pub fn note_count(&self) -> usize {
+        self.shared.notes.load(Ordering::Relaxed)
+    }
+
     /// Increments after every applied batch.
     pub fn version(&self) -> u64 {
         self.shared.version.load(Ordering::Acquire)
@@ -356,6 +367,12 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                 IndexMsg::Shutdown => shutdown = true,
             }
         }
+        // 0.13.1: the link graph is rebuilt only when the batch can change how
+        // links resolve (a load, a note added or removed, new aliases, new
+        // link settings). An edit to notes already indexed patches it in
+        // place, and attachment text leaves it alone.
+        let mut rebuild = reload.is_some();
+        let mut patched: Vec<NotePath> = Vec::new();
         {
             let mut ix = write();
             if let Some(all) = reload {
@@ -374,23 +391,39 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                     Prepared::Note(note) => {
                         let (rec, src, modified) = *note;
                         let path = rec.path.clone();
+                        if !rebuild && ix.graph_patchable(&rec) {
+                            patched.push(path.clone());
+                        } else {
+                            rebuild = true;
+                        }
                         ix.insert_record(rec, src);
                         ix.set_modified(&path, modified);
                     }
-                    Prepared::Remove(path) => ix.remove_no_refresh(&path),
+                    Prepared::Remove(path) => {
+                        // A path that isn't indexed (a locked folder's note, a file that isn't a note) changes nothing.
+                        rebuild |= ix.contains(&path);
+                        ix.remove_no_refresh(&path);
+                    }
                     Prepared::Attachment(text) => ix.upsert_attachment(text),
                     Prepared::RemoveAttachment(path) => ix.remove_attachment(&path),
                 }
             }
             if let Some(cfg) = link_config {
+                rebuild |= cfg != *ix.link_config();
                 ix.set_link_config_quiet(cfg);
             }
+            if !rebuild && !patched.is_empty() {
+                ix.patch_graph(&patched);
+            }
+            shared.notes.store(ix.len(), Ordering::Relaxed);
         }
-        // The graph is built under a read lock (searches and the UI keep working) and
-        // installed under a brief write. Only this thread writes, so the records cannot
-        // change in between.
-        let graph = read().build_graph();
-        write().install_graph(graph);
+        if rebuild {
+            // The graph is built under a read lock (searches and the UI keep working) and
+            // installed under a brief write. Only this thread writes, so the records cannot
+            // change in between.
+            let graph = read().build_graph();
+            write().install_graph(graph);
+        }
         shared.busy.store(false, Ordering::Relaxed);
         shared.version.fetch_add(1, Ordering::Release);
         if changed {
@@ -429,11 +462,19 @@ fn run_semantic(rx: &Receiver<SemMsg>, index: &RwLock<Index>, shared: &Shared, o
             }
         }
         shared.semantic_busy.store(true, Ordering::Relaxed);
-        let docs: Vec<(NotePath, String)> = {
+        // 0.13.1: passages are cut from the index's own text, a few hundred notes per
+        // short read lock, instead of from a copy of every note made first (the copy,
+        // as big as the vault, was freed after but stayed in the process's memory).
+        let paths = index.read().unwrap_or_else(std::sync::PoisonError::into_inner).paths();
+        let mut chunks: Vec<crate::chunk::Chunk> = Vec::new();
+        for part in paths.chunks(SEMANTIC_NOTES_PER_LOCK) {
             let ix = index.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-            ix.paths().into_iter().filter_map(|p| ix.source(&p).map(|s| (p.clone(), s.to_string()))).collect()
-        };
-        let chunks: Vec<crate::chunk::Chunk> = docs.iter().flat_map(|(p, s)| chunk_note(p, s)).collect();
+            for p in part {
+                if let Some(s) = ix.source(p) {
+                    chunks.extend(chunk_note(p, s));
+                }
+            }
+        }
         let builder = cfg.read().unwrap_or_else(std::sync::PoisonError::into_inner).builder.clone();
         let built = match builder {
             Some(b) => match b(chunks.clone()) {
@@ -469,6 +510,7 @@ mod tests {
         svc.load(vault);
         svc.flush();
         assert_eq!(svc.read().len(), 3);
+        assert_eq!(svc.note_count(), 3);
         assert_eq!(svc.read().backlinks(&NotePath::new("B.md")).len(), 1);
         svc.upsert(NotePath::new("C.md"), "now links [[B]] too".into());
         svc.remove(NotePath::new("A.md"));
@@ -482,6 +524,42 @@ mod tests {
         let sem = svc.semantic().expect("semantic index built");
         assert!(sem.chunks.iter().all(|c| c.path.as_str() != "A.md"));
         assert_eq!(svc.semantic_version(), 1);
+    }
+
+    /// 0.13.1: an edit patches the graph, a new note or new aliases rebuild it,
+    /// attachment text leaves it alone; each gives the links a rebuild would.
+    #[test]
+    fn edits_patch_the_graph_and_attachments_leave_it() {
+        let vault = Vault::in_memory(&[("A.md", "links [[B]]"), ("B.md", "# B\nbee"), ("C.md", "sea")]);
+        let svc = IndexService::spawn();
+        svc.load(vault);
+        svc.flush();
+        let b = NotePath::new("B.md");
+        svc.upsert(NotePath::new("C.md"), "now [[B]] and [[Bee]]".into());
+        svc.flush();
+        let from: Vec<String> = svc.read().backlinks(&b).iter().map(|l| l.from.to_string()).collect();
+        assert_eq!(from.len(), 2, "{from:?}");
+        assert_eq!(svc.read().graph().unresolved().len(), 1, "[[Bee]] doesn't resolve yet");
+        // New aliases change what links resolve to: a rebuild.
+        svc.upsert(b.clone(), "---\naliases: [Bee]\n---\n# B".into());
+        svc.flush();
+        assert_eq!(svc.read().backlinks(&b).len(), 3);
+        assert!(svc.read().graph().unresolved().is_empty());
+        svc.upsert_attachment(crate::attach::AttachmentText {
+            path: NotePath::new("x.pdf"),
+            kind: crate::attach::AttachmentKind::Pdf,
+            pages: vec!["[[A]]".into()],
+            source_hash: "ab".into(),
+            by: crate::attach::TextSource::Embedded,
+        });
+        svc.flush();
+        assert_eq!(svc.read().backlinks(&b).len(), 3);
+        // A new note: a rebuild, and the link that waited for it resolves.
+        svc.upsert(NotePath::new("D.md"), "[[C]]".into());
+        svc.upsert(NotePath::new("A.md"), "links [[D]]".into());
+        svc.flush();
+        assert_eq!(svc.read().backlinks(&NotePath::new("D.md")).len(), 1);
+        assert_eq!(svc.read().backlinks(&b).len(), 2);
     }
 
     #[test]

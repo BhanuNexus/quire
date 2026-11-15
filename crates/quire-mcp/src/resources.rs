@@ -88,7 +88,7 @@ pub enum ReadError {
 }
 
 pub fn templates() -> Value {
-    json!([
+    schema!([
         {"uriTemplate": "quire://note/{+path}", "name": "note", "title": "A note", "description": "A note's Markdown. The version is in _meta.version.", "mimeType": "text/markdown"},
         {"uriTemplate": "quire://note/{+path}{?section,lines}", "name": "note-part", "title": "Part of a note", "description": "A section (heading or ^block id) or a line range (\"10-40\") of a note.", "mimeType": "text/markdown"},
         {"uriTemplate": "quire://proposal/{id}", "name": "proposal", "title": "A suggestion", "description": "A pending or decided suggestion: JSON summary and a unified diff.", "mimeType": "application/json"},

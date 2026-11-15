@@ -27,7 +27,8 @@ pub struct NoteRecord {
     pub plain: String,
     /// Content term frequencies (stopwords removed) for intelligence features.
     pub terms: HashMap<String, u32, FastHash>,
-    /// BM25 term weights and document length, precomputed off the index lock.
+    /// BM25 term weights and document length, precomputed off the index
+    /// lock; emptied once the keyword index has them (`Index::insert_record`).
     pub(crate) search_terms: (Vec<(String, f32)>, f32),
 }
 
