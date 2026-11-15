@@ -289,6 +289,7 @@ pub(crate) const fn ui_target(cmd: Command) -> Option<UiTarget> {
         Command::TimeReport => UiTarget::Overlay(crate::task_ui::TimeReportOverlay::make),
         // ---- WS-F
         Command::ChooseTheme => UiTarget::Settings("appearance"),
+        Command::GitTrust => UiTarget::Overlay(crate::git_ui::TrustDialog::make),
         // ---- WS-G
         Command::InsertCitation => UiTarget::Overlay(crate::cite_ui::CitePicker::make),
         Command::ImportBibliography => UiTarget::Overlay(crate::cite_ui::ImportDialog::make),
@@ -417,6 +418,9 @@ pub(crate) fn layout_samples(ws: &mut Workspace) -> Vec<(&'static str, crate::ov
         ("new task: error", Overlay::Feature(Box::new(crate::task_ui::NewTaskDialog::sample(true)))),
         ("time this week", Overlay::Feature(crate::task_ui::TimeReportOverlay::make(ws))),
         // ---- WS-F
+        ("trust a git repository", Overlay::Feature(Box::new(crate::git_ui::TrustDialog::sample(false, false)))),
+        ("trust a git repository: automatic settings", Overlay::Feature(Box::new(crate::git_ui::TrustDialog::sample(true, false)))),
+        ("trust a git repository: error", Overlay::Feature(Box::new(crate::git_ui::TrustDialog::sample(true, true)))),
         // ---- 0.11 editor
         ("diagram, full screen", Overlay::Feature(Box::new(crate::diagram_ui::DiagramOverlay::new("graph TD; A-->B".into())))),
         // ---- WS-G
