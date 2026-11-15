@@ -250,7 +250,7 @@ pub fn outcome(path: &NotePath, out: &SubmitOutcome, extra: Value) -> ToolOutput
 
 /// The JSON Schema of the write outcome.
 pub fn outcome_schema() -> Value {
-    json!({
+    schema!({
         "type": "object",
         "properties": {
             "outcome": {"type": "string", "enum": ["applied", "proposed"]},

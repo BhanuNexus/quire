@@ -24,10 +24,10 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
             "canvas_read",
             "Read a canvas",
             "Read a JSON Canvas file (.canvas): its nodes (text, file, link, group) with positions and sizes, and its edges. Long text is cut to what fits in its node and to max_tokens. Use the ids with canvas_apply. Example: {\"path\": \"Boards/Ropes.canvas\"}.",
-            json!({"type": "object", "properties": {
+            schema!({"type": "object", "properties": {
                 "path": {"type": "string", "description": "Vault path of the .canvas file."},
                 "max_tokens": {"type": "integer", "minimum": 200, "maximum": 20000, "default": 4000}}, "required": ["path"]}),
-            json!({"type": "object", "properties": {
+            schema!({"type": "object", "properties": {
                 "path": {"type": "string"}, "version": {"type": "string"}, "uri": {"type": "string"},
                 "nodes": {"type": "array", "items": {"type": "object"}}, "edges": {"type": "array", "items": {"type": "object"}},
                 "truncated": {"type": "boolean"}}, "required": ["path", "version", "nodes", "edges"]}),
@@ -39,15 +39,15 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
             "canvas_apply",
             "Change a canvas",
             "Change a .canvas file with operations, applied in order, all or nothing: add_node {node: {type, text|file|url|label, x, y, width, height, color}}, update_node {id, set: {…}} (null removes a key), remove_node {id} (its edges go too), add_edge {edge: {fromNode, toNode, fromSide, toSide, toEnd, label}}, update_edge {id, set}, remove_edge {id}. Colours are \"1\"–\"6\" or #RRGGBB; sides top/right/bottom/left. New ids are returned. A missing file is created. Outside agent zones the change is a suggestion the person reviews node by node. Example: {\"path\": \"Boards/Ropes.canvas\", \"ops\": [{\"op\": \"add_node\", \"node\": {\"type\": \"text\", \"text\": \"Undo is cheap\", \"x\": 0, \"y\": 200}}], \"expected_version\": \"sha256:…\"}.",
-            json!({"type": "object", "properties": {
+            schema!({"type": "object", "properties": {
                 "path": {"type": "string"},
                 "ops": {"type": "array", "items": {"type": "object", "properties": {"op": {"type": "string", "enum": ["add_node", "update_node", "remove_node", "add_edge", "update_edge", "remove_edge"]}}, "required": ["op"]}},
                 "expected_version": {"type": "string", "description": "The version from canvas_read. If the canvas changed since, the operations are applied to the new version when they still fit."},
                 "run": {"type": "string", "description": "Optional run id from begin_run."}}, "required": ["path", "ops"]}),
             {
                 let mut s = outcome_schema();
-                s["properties"]["ids"] = json!({"type": "array", "items": {"type": "string"}});
-                s["properties"]["changes"] = json!({"type": "array", "items": {"type": "string"}});
+                s["properties"]["ids"] = schema!({"type": "array", "items": {"type": "string"}});
+                s["properties"]["changes"] = schema!({"type": "array", "items": {"type": "string"}});
                 s
             },
             Annotations::WRITE,

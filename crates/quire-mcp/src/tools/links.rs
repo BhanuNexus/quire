@@ -29,12 +29,12 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
             "links",
             "Typed links of a note",
             "A note's links and backlinks with their types. A typed link is a link in a field: `parent:: [[X]]`, `[supports:: [[Y]]]` or a property `up: \"[[X]]\"`. Hierarchy types (up, down, same, next, prev, and the names the vault maps to them such as parent and child) imply their reverse: if A is `up` B, B lists A as `down` with implied: true. Example: {\"path\": \"Claims/Ropes are fast.md\", \"type\": [\"supports\", \"contradicts\"], \"direction\": \"in\"}. Use type \"untyped\" for plain links.",
-            json!({"type": "object", "properties": {
+            schema!({"type": "object", "properties": {
                 "path": {"type": "string"},
                 "type": {"type": "array", "items": {"type": "string"}, "description": "Only these types (a string is one type); \"untyped\" for plain links."},
                 "direction": {"type": "string", "enum": ["in", "out", "both"], "default": "both"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}}, "required": ["path"]}),
-            json!({"type": "object", "properties": {
+            schema!({"type": "object", "properties": {
                 "path": {"type": "string"},
                 "links": {"type": "array", "items": {"type": "object", "properties": {
                     "direction": {"type": "string", "enum": ["in", "out"]}, "type": {"type": ["string", "null"]},
@@ -50,13 +50,13 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
             "hierarchy",
             "Hierarchy around a note",
             "Where a note sits in the vault's hierarchy (from up/down/same/next/prev links and the names the vault maps to them): its ancestors (parents, grandparents…), descendants and siblings, each with its distance, plus the paths from the top down to the note. Cycles are followed once. Example: {\"path\": \"Maths/Limits.md\", \"depth\": 3, \"include\": [\"ancestors\", \"siblings\"]}.",
-            json!({"type": "object", "properties": {
+            schema!({"type": "object", "properties": {
                 "path": {"type": "string"},
                 "depth": {"type": "integer", "minimum": 1, "maximum": 10, "default": 3},
                 "include": {"type": "array", "items": {"type": "string", "enum": ["ancestors", "descendants", "siblings", "trails"]},
                     "description": "Default: all four."},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 200}}, "required": ["path"]}),
-            json!({"type": "object", "properties": {
+            schema!({"type": "object", "properties": {
                 "path": {"type": "string"}, "title": {"type": "string"},
                 "ancestors": {"type": "array", "items": {"type": "object", "properties": {"path": {"type": "string"}, "title": {"type": "string"}, "depth": {"type": "integer"}, "via": {"type": "string"}}}},
                 "descendants": {"type": "array", "items": {"type": "object", "properties": {"path": {"type": "string"}, "title": {"type": "string"}, "depth": {"type": "integer"}, "via": {"type": "string"}}}},
@@ -72,7 +72,7 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
             "add_link",
             "Add a typed link",
             "Add a typed link from a note to another, written the way the note already writes them: an inline field (`supports:: [[Target]]`) or a property (`supports: \"[[Target]]\"`). Like every write it applies in your zones and becomes a suggestion the person reviews elsewhere; nothing changes when the link is already there. Example: {\"path\": \"Claims/Ropes are fast.md\", \"type\": \"supports\", \"target\": \"Benchmarks 2026\", \"expected_version\": \"…\"}.",
-            json!({"type": "object", "properties": {
+            schema!({"type": "object", "properties": {
                 "path": {"type": "string", "description": "The note that gets the link."},
                 "type": {"type": "string", "description": "up, down, same, next, prev, a name the vault maps to them (parent, child…), or any other type (supports, contradicts, source…)."},
                 "target": {"type": "string", "description": "The note to link to, by path or name."},

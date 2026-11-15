@@ -35,7 +35,7 @@ pub fn tools_before_canvas() -> Vec<Box<dyn Tool>> {
             "About this vault",
             "Start here. Returns the vault's size, its agent instructions (AGENTS.md, if approved), the zones and what you may do in each (direct: your writes apply; propose: your writes become suggestions the person reviews; create-only: you may add new files; read; deny: hidden), write limits, the server time and how many of your suggestions are waiting. Example: {}.",
             json!({"type": "object", "properties": {}}),
-            json!({"type": "object", "properties": {
+            schema!({"type": "object", "properties": {
                 "notes": {"type": "integer"}, "attachments": {"type": "integer"},
                 "instructions": {"type": ["object", "null"], "properties": {"path": {"type": "string"}, "approved": {"type": "boolean"}}},
                 "zones": {"type": "array", "items": {"type": "object", "properties": {"path": {"type": "string"}, "role": {"type": "string"}, "mode_for_you": {"type": "string"}}}},
@@ -48,7 +48,7 @@ pub fn tools_before_canvas() -> Vec<Box<dyn Tool>> {
             "search",
             "Search notes",
             "Find the sections of notes that match a query, by keywords and meaning. Each hit names the note, the heading and the line range, so you can `view` just that part: view {path, lines}. Supports \"phrases\", #tags and -exclusions in the query. Example: {\"query\": \"rope undo\", \"filters\": {\"folder\": \"Projects/\", \"tags\": [\"cs\"]}}. Results are bounded by max_tokens; pass next_cursor back as cursor for more.",
-            json!({"type": "object", "properties": {
+            schema!({"type": "object", "properties": {
                 "query": {"type": "string", "description": "What to look for."},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
                 "filters": {"type": "object", "properties": {
@@ -60,7 +60,7 @@ pub fn tools_before_canvas() -> Vec<Box<dyn Tool>> {
                     "kind": {"type": "string", "enum": ["notes", "attachments", "all"], "default": "notes"}}},
                 "max_tokens": {"type": "integer", "default": 2000},
                 "cursor": {"type": "string"}}, "required": ["query"]}),
-            json!({"type": "object", "properties": {
+            schema!({"type": "object", "properties": {
                 "hits": {"type": "array", "items": {"type": "object", "properties": {
                     "uri": {"type": "string"}, "path": {"type": "string"}, "title": {"type": "string"}, "heading": {"type": ["string", "null"]},
                     "lines": {"type": "array", "items": {"type": "integer"}}, "snippet": {"type": "string"}, "score": {"type": "number"},
@@ -77,14 +77,14 @@ pub fn tools_before_canvas() -> Vec<Box<dyn Tool>> {
             "view",
             "View a note",
             "Read a note with line numbers (`  12│ text`), or just a section or a line range. Returns the note's version: pass it as expected_version when you edit, so you never overwrite changes you haven't seen. Examples: {\"path\": \"Rope Notes.md\"}; {\"path\": \"Rope Notes.md\", \"section\": \"## Undo\"}; {\"path\": \"Rope Notes.md\", \"lines\": [10, 40]}. Long notes are cut at max_tokens; pass next_cursor back as cursor to continue. include_pending shows the note with your own pending suggestion applied.",
-            json!({"type": "object", "properties": {
+            schema!({"type": "object", "properties": {
                 "path": {"type": "string", "description": "Vault path, e.g. \"Projects/Plan.md\" (\".md\" may be left out)."},
                 "section": {"type": "string", "description": "A heading (\"## Undo\" or \"Undo\") or a block id (\"^abc\")."},
                 "lines": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "[first, last], 1-based, inclusive."},
                 "include_pending": {"type": "boolean", "default": false},
                 "max_tokens": {"type": "integer", "default": 4000},
                 "cursor": {"type": "string"}}, "required": ["path"]}),
-            json!({"type": "object", "properties": {
+            schema!({"type": "object", "properties": {
                 "path": {"type": "string"}, "version": {"type": "string"}, "lines": {"type": "array", "items": {"type": "integer"}},
                 "total_lines": {"type": "integer"}, "truncated": {"type": "boolean"}, "next_cursor": {"type": ["string", "null"]},
                 "title": {"type": "string"}, "properties": {"type": "object"}, "trust": {"type": "string"}, "modified": {"type": ["string", "null"]},
@@ -97,8 +97,8 @@ pub fn tools_before_canvas() -> Vec<Box<dyn Tool>> {
             "outline",
             "Outline of a note",
             "The headings of a note with their line ranges and block ids, to choose a section to `view` or `edit_section`. Example: {\"path\": \"Rope Notes.md\"}.",
-            json!({"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}),
-            json!({"type": "object", "properties": {
+            schema!({"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}),
+            schema!({"type": "object", "properties": {
                 "headings": {"type": "array", "items": {"type": "object", "properties": {
                     "level": {"type": "integer"}, "text": {"type": "string"}, "line": {"type": "integer"}, "end_line": {"type": "integer"},
                     "block_ids": {"type": "array", "items": {"type": "string"}}}}},
@@ -111,13 +111,13 @@ pub fn tools_before_canvas() -> Vec<Box<dyn Tool>> {
             "list",
             "List notes",
             "List notes, optionally in a folder, with a tag, or matching a property filter. Example: {\"folder\": \"Projects/\", \"where\": \"status != done\", \"sort\": \"modified\"}. Pass next_cursor back as cursor for more.",
-            json!({"type": "object", "properties": {
+            schema!({"type": "object", "properties": {
                 "folder": {"type": "string"}, "tag": {"type": "string"},
                 "where": {"type": "string", "description": "e.g. \"status = active and due < 2026-12-01\""},
                 "sort": {"type": "string", "enum": ["path", "modified", "title"], "default": "path"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
                 "cursor": {"type": "string"}}}),
-            json!({"type": "object", "properties": {
+            schema!({"type": "object", "properties": {
                 "notes": {"type": "array", "items": {"type": "object", "properties": {
                     "uri": {"type": "string"}, "path": {"type": "string"}, "title": {"type": "string"}, "modified": {"type": ["string", "null"]},
                     "tags": {"type": "array", "items": {"type": "string"}}, "words": {"type": "integer"}}}},
@@ -130,13 +130,13 @@ pub fn tools_before_canvas() -> Vec<Box<dyn Tool>> {
             "neighbors",
             "Linked notes",
             "Notes linked to or from a note, up to 3 links away, with the line that links them and the link's type (the field it is in: `up:: [[X]]`, `supports: \"[[Y]]\"`; null for a plain link). Example: {\"path\": \"Rope Notes.md\", \"depth\": 2, \"direction\": \"in\"}; only some types: {\"path\": \"Claim.md\", \"type\": [\"supports\", \"contradicts\"]}.",
-            json!({"type": "object", "properties": {
+            schema!({"type": "object", "properties": {
                 "path": {"type": "string"},
                 "depth": {"type": "integer", "minimum": 1, "maximum": 3, "default": 1},
                 "direction": {"type": "string", "enum": ["in", "out", "both"], "default": "both"},
                 "type": {"type": "array", "items": {"type": "string"}, "description": "Follow only links of these types (\"untyped\" for plain links)."},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}}, "required": ["path"]}),
-            json!({"type": "object", "properties": {
+            schema!({"type": "object", "properties": {
                 "nodes": {"type": "array", "items": {"type": "object", "properties": {"path": {"type": "string"}, "title": {"type": "string"}, "depth": {"type": "integer"}}}},
                 "edges": {"type": "array", "items": {"type": "object", "properties": {"from": {"type": "string"}, "to": {"type": "string"}, "context": {"type": "string"}, "type": {"type": ["string", "null"]}}}}},
                 "required": ["nodes", "edges"]}),
@@ -148,12 +148,12 @@ pub fn tools_before_canvas() -> Vec<Box<dyn Tool>> {
             "recent_activity",
             "Recent changes",
             "What changed in the vault since a time: agent writes, suggestions and decisions from Quire's ledger, and notes the person edited. Example: {\"since\": \"24h\"} or {\"since\": \"2026-11-01\", \"actor\": \"mcp:claude-code\"}.",
-            json!({"type": "object", "properties": {
+            schema!({"type": "object", "properties": {
                 "since": {"type": "string", "description": "\"24h\", \"7d\", YYYY-MM-DD or RFC 3339."},
                 "actor": {"type": "string"},
                 "kinds": {"type": "array", "items": {"type": "string", "enum": ["edit", "create", "rename", "delete", "proposal", "decision"]}},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}}, "required": ["since"]}),
-            json!({"type": "object", "properties": {
+            schema!({"type": "object", "properties": {
                 "events": {"type": "array", "items": {"type": "object", "properties": {
                     "at": {"type": "string"}, "actor": {"type": "string"}, "op": {"type": "string"}, "path": {"type": "string"},
                     "to": {"type": "string"}, "proposal": {"type": "string"}}}}}, "required": ["events"]}),
@@ -165,12 +165,12 @@ pub fn tools_before_canvas() -> Vec<Box<dyn Tool>> {
             "ask",
             "Ask the notes",
             "Answer a question from the notes with citations to exact passages (each citation names the note, lines and quoted text). It abstains when the notes don't answer it, listing the nearest passages. mode \"extractive\" (default) quotes the best passages; mode \"model\" writes an answer with the person's own AI provider, if they allowed it. Example: {\"question\": \"Why is undo cheap with ropes?\"}.",
-            json!({"type": "object", "properties": {
+            schema!({"type": "object", "properties": {
                 "question": {"type": "string"},
                 "k": {"type": "integer", "minimum": 1, "maximum": 20, "default": 6},
                 "mode": {"type": "string", "enum": ["extractive", "model"], "default": "extractive"},
                 "max_tokens": {"type": "integer", "default": 4000}}, "required": ["question"]}),
-            json!({"type": "object", "properties": {
+            schema!({"type": "object", "properties": {
                 "answer": {"type": "string"}, "abstained": {"type": "boolean"},
                 "citations": {"type": "array", "items": {"type": "object"}}, "by": {"type": "string"},
                 "nearest": {"type": "array", "items": {"type": "object"}, "description": "When it abstains: up to 3 passages that came closest, with anchors (none of them answers)."}},
@@ -183,8 +183,8 @@ pub fn tools_before_canvas() -> Vec<Box<dyn Tool>> {
             "history",
             "Version history",
             "The saved versions of a note, newest first, with who made each and how many lines changed. Read one with read_version; compare with diff. Example: {\"path\": \"Rope Notes.md\"}.",
-            json!({"type": "object", "properties": {"path": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20}}, "required": ["path"]}),
-            json!({"type": "object", "properties": {"versions": {"type": "array", "items": {"type": "object", "properties": {
+            schema!({"type": "object", "properties": {"path": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20}}, "required": ["path"]}),
+            schema!({"type": "object", "properties": {"versions": {"type": "array", "items": {"type": "object", "properties": {
                 "id": {"type": "string"}, "at": {"type": "string"}, "actor": {"type": "string"}, "version": {"type": "string"},
                 "added": {"type": "integer"}, "removed": {"type": "integer"}}}}}, "required": ["versions"]}),
             r,
@@ -195,11 +195,11 @@ pub fn tools_before_canvas() -> Vec<Box<dyn Tool>> {
             "read_version",
             "Read an old version",
             "The text of a note as it was: at a version (sha256:… from view or history) or as of a time. Example: {\"path\": \"Rope Notes.md\", \"as_of\": \"2026-11-01\"}.",
-            json!({"type": "object", "properties": {
+            schema!({"type": "object", "properties": {
                 "path": {"type": "string"}, "version": {"type": "string"},
                 "as_of": {"type": "string", "description": "RFC 3339, YYYY-MM-DD or 7d (ago)."},
                 "max_tokens": {"type": "integer", "default": 4000}, "cursor": {"type": "string"}}, "required": ["path"]}),
-            json!({"type": "object", "properties": {"text": {"type": "string"}, "version": {"type": "string"}, "at": {"type": ["string", "null"]},
+            schema!({"type": "object", "properties": {"text": {"type": "string"}, "version": {"type": "string"}, "at": {"type": ["string", "null"]},
                 "actor": {"type": "string"}, "truncated": {"type": "boolean"}, "next_cursor": {"type": ["string", "null"]}}, "required": ["text", "version"]}),
             r,
             Access::Read,
@@ -209,8 +209,8 @@ pub fn tools_before_canvas() -> Vec<Box<dyn Tool>> {
             "diff",
             "Compare versions",
             "A unified diff of a note between two versions (from view, history or an edit result); `to` defaults to the current text. Example: {\"path\": \"Rope Notes.md\", \"from\": \"sha256:1a2b…\"}.",
-            json!({"type": "object", "properties": {"path": {"type": "string"}, "from": {"type": "string"}, "to": {"type": "string"}}, "required": ["path", "from"]}),
-            json!({"type": "object", "properties": {"unified": {"type": "string"}, "added": {"type": "integer"}, "removed": {"type": "integer"}}, "required": ["unified"]}),
+            schema!({"type": "object", "properties": {"path": {"type": "string"}, "from": {"type": "string"}, "to": {"type": "string"}}, "required": ["path", "from"]}),
+            schema!({"type": "object", "properties": {"unified": {"type": "string"}, "added": {"type": "integer"}, "removed": {"type": "integer"}}, "required": ["unified"]}),
             r,
             Access::Read,
             diff,
@@ -219,8 +219,8 @@ pub fn tools_before_canvas() -> Vec<Box<dyn Tool>> {
             "tags",
             "Tags",
             "Every tag with how many notes use it; nested tags appear as written (project/alpha). Example: {\"prefix\": \"project\"}.",
-            json!({"type": "object", "properties": {"prefix": {"type": "string"}}}),
-            json!({"type": "object", "properties": {"tags": {"type": "array", "items": {"type": "object", "properties": {"tag": {"type": "string"}, "count": {"type": "integer"}}}}}, "required": ["tags"]}),
+            schema!({"type": "object", "properties": {"prefix": {"type": "string"}}}),
+            schema!({"type": "object", "properties": {"tags": {"type": "array", "items": {"type": "object", "properties": {"tag": {"type": "string"}, "count": {"type": "integer"}}}}}, "required": ["tags"]}),
             r,
             Access::Read,
             tags,
@@ -229,8 +229,8 @@ pub fn tools_before_canvas() -> Vec<Box<dyn Tool>> {
             "properties",
             "Front-matter properties",
             "The front-matter keys used in the vault with counts, value types and examples, to follow the vault's conventions when you set properties. Example: {} or {\"key\": \"status\"}.",
-            json!({"type": "object", "properties": {"key": {"type": "string"}}}),
-            json!({"type": "object", "properties": {"keys": {"type": "array", "items": {"type": "object", "properties": {
+            schema!({"type": "object", "properties": {"key": {"type": "string"}}}),
+            schema!({"type": "object", "properties": {"keys": {"type": "array", "items": {"type": "object", "properties": {
                 "key": {"type": "string"}, "count": {"type": "integer"}, "types": {"type": "array", "items": {"type": "string"}},
                 "examples": {"type": "array", "items": {"type": "string"}}}}}}, "required": ["keys"]}),
             r,
@@ -241,8 +241,8 @@ pub fn tools_before_canvas() -> Vec<Box<dyn Tool>> {
             "query_view",
             "Run a view",
             "Run a quire-view query over note properties and get a table. The spec is the text of a quire-view block. Example: \"from: #project\\nwhere: status != done\\nsort: due asc\\nfields: [title, status, due]\".",
-            json!({"type": "object", "properties": {"spec": {"type": "string"}, "max_rows": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100}}, "required": ["spec"]}),
-            json!({"type": "object", "properties": {"columns": {"type": "array", "items": {"type": "string"}},
+            schema!({"type": "object", "properties": {"spec": {"type": "string"}, "max_rows": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100}}, "required": ["spec"]}),
+            schema!({"type": "object", "properties": {"columns": {"type": "array", "items": {"type": "string"}},
                 "rows": {"type": "array", "items": {"type": "object"}}, "groups": {"type": "array", "items": {"type": "string"}}, "total": {"type": "integer"}}, "required": ["columns", "rows"]}),
             r,
             Access::Read,
@@ -252,12 +252,12 @@ pub fn tools_before_canvas() -> Vec<Box<dyn Tool>> {
             "tasks",
             "Tasks",
             "Checklist tasks (- [ ] …) across the vault with their dates, priority and recurrence. Example: {\"status\": \"open\", \"due_before\": \"2026-11-10\"}.",
-            json!({"type": "object", "properties": {
+            schema!({"type": "object", "properties": {
                 "status": {"type": "string", "enum": ["open", "done", "all"], "default": "open"},
                 "due_before": {"type": "string", "description": "YYYY-MM-DD"}, "due_after": {"type": "string"},
                 "path": {"type": "string"}, "tag": {"type": "string"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 200}}}),
-            json!({"type": "object", "properties": {"tasks": {"type": "array", "items": {"type": "object", "properties": {
+            schema!({"type": "object", "properties": {"tasks": {"type": "array", "items": {"type": "object", "properties": {
                 "path": {"type": "string"}, "line": {"type": "integer"}, "text": {"type": "string"}, "due": {"type": ["string", "null"]},
                 "scheduled": {"type": ["string", "null"]}, "start": {"type": ["string", "null"]},
                 "completed": {"type": ["string", "null"]}, "reminder": {"type": ["string", "null"]},
@@ -273,10 +273,10 @@ pub fn tools_before_canvas() -> Vec<Box<dyn Tool>> {
             "proposals",
             "Suggestions",
             "Your suggestions (proposals) and whether the person accepted them. Example: {} for your pending ones, {\"status\": \"applied\"}, or {\"mine\": false} for everyone's.",
-            json!({"type": "object", "properties": {
+            schema!({"type": "object", "properties": {
                 "status": {"type": "string", "enum": ["pending", "applied", "partially_applied", "rejected", "expired", "superseded", "all"], "default": "pending"},
                 "mine": {"type": "boolean", "default": true}}}),
-            json!({"type": "object", "properties": {"proposals": {"type": "array", "items": {"type": "object", "properties": {
+            schema!({"type": "object", "properties": {"proposals": {"type": "array", "items": {"type": "object", "properties": {
                 "id": {"type": "string"}, "status": {"type": "string"}, "title": {"type": "string"}, "files": {"type": "array", "items": {"type": "string"}},
                 "created": {"type": "string"}, "decided_hunks": {"type": "integer"}}}}}, "required": ["proposals"]}),
             r,
