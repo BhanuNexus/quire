@@ -238,7 +238,17 @@ mod tests {
             for bad in ["javascript:", "vbscript:", "srcdoc", "formaction", "expression(", "data:text/html"] {
                 assert!(!lower.contains(bad), "{what}: {bad} in {tag}\n{html}");
             }
-            let on_handler = lower.split([' ', '/', '\t', '\n']).skip(1).any(|a| a.starts_with("on") && a.contains('='));
+            // Text inside a quoted value (escaped by the cleaner, so only text) is not an attribute.
+            let mut outside_quotes = String::new();
+            let mut quoted = false;
+            for c in lower.chars() {
+                if c == '"' {
+                    quoted = !quoted;
+                } else if !quoted {
+                    outside_quotes.push(c);
+                }
+            }
+            let on_handler = outside_quotes.split([' ', '/', '\t', '\n']).skip(1).any(|a| a.starts_with("on") && a.contains('='));
             assert!(!on_handler, "{what}: an event handler in {tag}\n{html}");
             rest = &rest[i + len + 1..];
         }
@@ -289,6 +299,59 @@ mod tests {
         assert!(exported.contains("dv.pages().length"));
         // The plain renderer does not clean (so it must never be served as it is).
         assert!(quire_markdown::render::to_html(HOSTILE, &|_| None).contains("<script>alert('raw')"));
+    }
+
+    /// Mutation-XSS payloads (RUSTSEC-2026-0533: ammonia before 4.2.5 mishandled
+    /// embedded SVG and MathML): markup that is harmless as parsed but becomes a
+    /// live element after the browser re-parses it, through `svg`, `math`,
+    /// `foreignObject`, `annotation-xml`, `mglyph`, `style`, `xmp`, `noscript` and
+    /// CDATA.
+    const MUTATION_XSS: &str = "# mXSS\n\n\
+<svg></p><style><a id=\"</style><img src=1 onerror=alert(1)>\">\n\n\
+<math><mtext><table><mglyph><style><!--</style><img title=\"--&gt;&lt;img src=1 onerror=alert(1)&gt;\">\n\n\
+<math><mtext><table><mglyph><style><img src onerror=alert(1)></style></mglyph></table></mtext></math>\n\n\
+<svg><desc><![CDATA[</desc><script>alert(1)</script>]]></svg>\n\n\
+<svg><foreignObject><p><style><a title=\"</style><img src onerror=alert(1)>\">x</p></foreignObject></svg>\n\n\
+<math><annotation-xml encoding=\"text/html\"><style><img src onerror=alert(1)></style></annotation-xml></math>\n\n\
+<svg><title><style><img src=x onerror=alert(1)></style></title></svg>\n\n\
+<math><mi><xmp><img src onerror=alert(1)></xmp></mi></math>\n\n\
+<svg><noscript><p title=\"</noscript><img src onerror=alert(1)>\"></noscript></svg>\n\n\
+<svg><a xlink:href=\"javascript:alert(1)\"><text>x</text></a></svg> <math href=\"javascript:alert(1)\">x</math>\n";
+
+    /// The mutation payloads stay inert in every HTML output, including a second
+    /// pass (a browser that re-serialises the cleaned page must not wake anything up).
+    #[test]
+    fn mutation_xss_in_svg_and_mathml_is_inert_in_every_html_output() {
+        use quire_index::{Index, NoteRecord};
+        use quire_vault::{NotePath, Vault};
+        let mut ix = Index::new();
+        let path = NotePath::new("Evil.md");
+        ix.insert_record(NoteRecord::from_source(path.clone(), MUTATION_XSS), MUTATION_XSS.to_string());
+        ix.refresh();
+        let vault = Vault::in_memory(&[("Evil.md", MUTATION_XSS)]);
+        let library = crate::citations::vault_library(&vault);
+        let note = |_: &NotePath| Some("/n/x".to_string());
+        let tag = |t: &str| Some(format!("/tags/{t}"));
+        let links = crate::publish::Links { note: &note, file: &note, tag: &tag };
+        let rendered = crate::publish::render_note(&vault, &ix, &library, &path, MUTATION_XSS, &links);
+        assert_inert("render_note (publish and serve)", &rendered.html);
+        assert_inert("render_note, cleaned again", &note_html(&rendered.html));
+        assert_inert("copy as HTML", &crate::copy_html::render_without_vault(MUTATION_XSS));
+        assert_inert("copy as HTML (vault)", &crate::copy_html::render(&vault, &ix, &library, &path, MUTATION_XSS));
+        let body = note_html(&quire_markdown::render::to_html(MUTATION_XSS, &|_| None));
+        assert_inert("export", &body);
+        assert_inert("export, cleaned again", &note_html(&body));
+        let page = quire_markdown::render::html_document("Evil", &body);
+        assert_eq!(page.to_ascii_lowercase().matches("<script").count(), 0, "{page}");
+        let mut ws = crate::Workspace::new(crate::Settings::default());
+        ws.attach_vault(Vault::in_memory(&[("Evil.md", MUTATION_XSS)]));
+        ws.index().flush();
+        ws.open_note(&path);
+        ws.export_active_html().unwrap();
+        let exported = ws.vault().unwrap().read(&NotePath::new("Exports/Evil.html")).unwrap();
+        let article = &exported[exported.find("<article>").unwrap()..exported.find("</article>").unwrap()];
+        assert_inert("Export as HTML (app)", article);
+        assert_eq!(exported.to_ascii_lowercase().matches("<script").count(), 0, "{exported}");
     }
 
     /// A published site has one script, its own search box, and its search data is a data file.
