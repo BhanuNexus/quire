@@ -4,6 +4,7 @@
 //! bar, preview and the welcome screen.
 
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use egui::text::{LayoutJob, TextFormat};
 use egui::{FontId, RichText};
@@ -48,7 +49,19 @@ pub(crate) struct SidebarState {
     /// building and sorting it every frame took most of a frame in a
     /// 10,000-note vault (0.10 perf).
     files: Option<FilesCache>,
+    /// 0.13.1: the Tags tab's list (index version, tags), the open tag's
+    /// notes, and the Tasks tab's open tasks (notes version, tasks): each
+    /// was gathered from every note on every frame.
+    tags: Option<(u64, TagCounts)>,
+    tag_notes: Option<(u64, String, Rc<Vec<NotePath>>)>,
+    tasks: Option<((u64, u64), OpenTasks)>,
 }
+
+/// Every tag with how many notes have it.
+type TagCounts = Rc<Vec<(String, usize)>>;
+
+/// Every open task, with its note.
+type OpenTasks = Rc<Vec<(NotePath, quire_app::markdown::Task)>>;
 
 /// What the Files tab lists, and what it was built from.
 struct FilesCache {
@@ -592,9 +605,9 @@ fn two_pane(
         let ix = ws.index().read();
         let previews: Vec<String> = notes
             .iter()
+            // The first 160 characters, without copying the rest of the note (every frame).
             .map(|p| {
-                let plain = ix.get(p).map(|r| r.plain.trim().replace('\n', " ")).unwrap_or_default();
-                plain.chars().take(160).collect()
+                ix.get(p).map(|r| r.plain.trim().chars().take(160).map(|c| if c == '\n' { ' ' } else { c }).collect()).unwrap_or_default()
             })
             .collect();
         drop(ix);
@@ -878,7 +891,13 @@ pub(crate) fn sidebar(
             });
         }
         SidebarTab::Tags => {
-            let tags = ws.index().read().tags();
+            let version = ws.index().version();
+            if st.tags.as_ref().is_none_or(|(v, _)| *v != version)
+                && let Some(ix) = ws.index().try_read()
+            {
+                st.tags = Some((version, Rc::new(ix.tags())));
+            }
+            let tags = st.tags.as_ref().map(|(_, t)| Rc::clone(t)).unwrap_or_default();
             let mut tag_color: Option<(String, Option<quire_app::themes::Rgba>)> = None;
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 for (i, (tag, count)) in tags.iter().enumerate() {
@@ -933,11 +952,16 @@ pub(crate) fn sidebar(
                         ui.label(RichText::new(count.to_string()).color(pal.muted).size(11.0));
                     });
                     if st.open_tag.as_deref() == Some(tag.as_str()) {
-                        let notes = ws.index().read().notes_with_tag(tag);
-                        for p in notes {
+                        if st.tag_notes.as_ref().is_none_or(|(v, t, _)| *v != version || t != tag)
+                            && let Some(ix) = ws.index().try_read()
+                        {
+                            st.tag_notes = Some((version, tag.clone(), Rc::new(ix.notes_with_tag(tag))));
+                        }
+                        let notes = st.tag_notes.as_ref().filter(|(_, t, _)| t == tag).map(|(_, _, n)| Rc::clone(n)).unwrap_or_default();
+                        for p in notes.iter() {
                             ui.horizontal(|ui| {
                                 ui.add_space(depth as f32 * 14.0 + 18.0);
-                                if ui.link(note_label(ws, &p)).clicked() {
+                                if ui.link(note_label(ws, p)).clicked() {
                                     open = Some((p.clone(), None));
                                 }
                             });
@@ -956,11 +980,17 @@ pub(crate) fn sidebar(
         }
         SidebarTab::Tasks => {
             // 0.12: with the tasks of unlocked folders (memory only).
-            let tasks = ws.with_notes(|n| n.tasks(false));
+            let version = ws.notes_version();
+            if st.tasks.as_ref().is_none_or(|(v, _)| *v != version)
+                && let Some(t) = ws.try_with_notes(|n| n.tasks(false))
+            {
+                st.tasks = Some((version, Rc::new(t)));
+            }
+            let tasks = st.tasks.as_ref().map(|(_, t)| Rc::clone(t)).unwrap_or_default();
             ui.label(RichText::new(format!("{} open", tasks.len())).color(pal.muted).size(11.5));
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 let mut last: Option<NotePath> = None;
-                for (p, t) in &tasks {
+                for (p, t) in tasks.iter() {
                     if last.as_ref() != Some(p) {
                         section(ui, pal, p.stem());
                         last = Some(p.clone());
@@ -1081,8 +1111,8 @@ pub(crate) struct InsightsRows {
     /// (note, revision, index version) shown, and the latest seen with when it was first seen.
     shown: Option<(quire_app::DocId, u64, u64)>,
     seen: Option<((quire_app::DocId, u64, u64), std::time::Instant)>,
-    outline: std::rc::Rc<Vec<quire_app::markdown::Heading>>,
-    outgoing: std::rc::Rc<Vec<(String, Option<NotePath>)>>,
+    outline: Rc<Vec<quire_app::markdown::Heading>>,
+    outgoing: Rc<Vec<(String, Option<NotePath>)>>,
     /// Where each link goes in the wrapped list, for a panel width.
     links_at: Option<(f32, Vec<egui::Rect>, f32)>,
 }
@@ -1106,8 +1136,8 @@ impl InsightsRows {
         let since = self.seen.map_or(SETTLE, |(_, t)| now.duration_since(t));
         let other_note = self.shown.is_none_or(|(id, _, _)| id != doc.id);
         if other_note || since >= SETTLE {
-            self.outline = std::rc::Rc::new(doc.outline());
-            self.outgoing = std::rc::Rc::new(ws.outgoing());
+            self.outline = Rc::new(doc.outline());
+            self.outgoing = Rc::new(ws.outgoing());
             self.links_at = None;
             self.shown = Some(key);
         } else {
@@ -1146,9 +1176,9 @@ pub(crate) fn insights(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette, row
     }
     rows.refresh(ws, ui.ctx());
     let doc = ws.active_doc().expect("checked");
-    let outline = std::rc::Rc::clone(&rows.outline);
+    let outline = Rc::clone(&rows.outline);
     let ins = ws.insights();
-    let outgoing = std::rc::Rc::clone(&rows.outgoing);
+    let outgoing = Rc::clone(&rows.outgoing);
     let mut jump_byte = None;
     let mut open_link: Option<(String, Option<String>)> = None;
     let mut open_path: Option<(NotePath, Option<usize>)> = None;
@@ -1519,7 +1549,7 @@ pub(crate) fn status_bar(ui: &mut egui::Ui, ws: &Workspace, pal: &Palette, surfa
                 ui.separator();
             }
             let s = ws.index().status();
-            let n = ws.index().read().len();
+            let n = ws.index().note_count();
             ui.label(small(if s.busy && s.total > 0 { format!("Indexing {}/{}", s.indexed, s.total) } else { format!("{n} notes") }));
             ui.separator();
             let sem = if ws.index().semantic_busy() {
