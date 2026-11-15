@@ -32,7 +32,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use axum::Router;
-use axum::body::{Body, Bytes};
+use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -50,6 +50,9 @@ use crate::tokens::TokenStore;
 
 /// The largest JSON-RPC body accepted.
 pub const MAX_BODY: usize = 4 * 1024 * 1024;
+/// The largest OAuth form accepted (`/oauth/token`, `/oauth/revoke`):
+/// these are open to anyone, so they never hold more than this each.
+pub const MAX_OAUTH_FORM: usize = 64 * 1024;
 /// Keep-alive comments on event streams.
 pub const KEEP_ALIVE: Duration = Duration::from_secs(15);
 
@@ -246,8 +249,8 @@ fn router(state: Arc<HttpState>) -> Router {
         .route("/.well-known/oauth-authorization-server", get(oauth::authorization_server))
         .route("/oauth/authorize", get(oauth::authorize))
         .route("/oauth/authorize/wait", get(oauth::wait))
-        .route("/oauth/token", post(oauth::token))
-        .route("/oauth/revoke", post(oauth::revoke))
+        .route("/oauth/token", post(oauth::token).layer(DefaultBodyLimit::max(MAX_OAUTH_FORM)))
+        .route("/oauth/revoke", post(oauth::revoke).layer(DefaultBodyLimit::max(MAX_OAUTH_FORM)))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(axum::middleware::from_fn_with_state(Arc::clone(&state), guard))
         .with_state(state)
@@ -351,7 +354,7 @@ impl Drop for Events {
     }
 }
 
-async fn mcp(State(st): State<Arc<HttpState>>, headers: HeaderMap, body: Bytes) -> Response {
+async fn mcp(State(st): State<Arc<HttpState>>, headers: HeaderMap, body: Body) -> Response {
     // Authentication first: nothing about the vault without a token.
     let bearer = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer ")).map(str::trim);
     let Some(token) = bearer else { return unauthorized(&st) };
@@ -360,6 +363,11 @@ async fn mcp(State(st): State<Arc<HttpState>>, headers: HeaderMap, body: Bytes) 
         tokio::task::spawn_blocking(move || tokens.authenticate(&token, &resource, now_ms())).await.ok().flatten()
     };
     let Some(grant) = grant else { return unauthorized(&st) };
+    // The body is read only now, so a caller without a token never makes the
+    // server hold up to MAX_BODY for it.
+    let Ok(body) = axum::body::to_bytes(body, MAX_BODY).await else {
+        return rpc_error(StatusCode::PAYLOAD_TOO_LARGE, Value::Null, code::INVALID_REQUEST, "The request is too large");
+    };
     let accept = headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()).unwrap_or_default().to_lowercase();
     if !(accept.contains("application/json") && accept.contains("text/event-stream")) {
         return rpc_error(

@@ -38,8 +38,11 @@ use quire_mcp::http::{Mount, Urls};
 
 use crate::auth::{LoginStore, SessionLimits};
 
-/// The largest form accepted (a note being saved).
+/// The largest form accepted (a note being saved), from a signed-in browser.
 pub const MAX_FORM: usize = 8 * 1024 * 1024;
+/// The largest sign-in form. Before signing in, nobody can make the server
+/// hold more than this for a request (a post without a session isn't read).
+pub const MAX_LOGIN_FORM: usize = 16 * 1024;
 
 /// Milliseconds since the Unix epoch, injectable for tests.
 pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
@@ -200,6 +203,19 @@ impl Web {
         (self.cfg.clock)()
     }
 
+    /// Whether the request carries a session cookie that is still good.
+    fn signed_in(&self, headers: &HeaderMap) -> bool {
+        let req = Req { method: Method::GET, path: String::new(), query: HashMap::new(), form: HashMap::new(), headers: headers.clone() };
+        req.cookie(self.session_cookie()).is_some_and(|token| {
+            let changed = self.cfg.login.changed();
+            self.sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .check(&token, self.now(), self.cfg.limits, changed)
+                .is_some()
+        })
+    }
+
     pub(crate) fn session_cookie(&self) -> &'static str {
         if self.secure { "__Host-quire_session" } else { "quire_session" }
     }
@@ -218,8 +234,16 @@ async fn dispatch(State(web): State<Arc<Web>>, request: axum::extract::Request) 
     if !web.urls.hosts.contains(&host) {
         return finish(Res::html(StatusCode::FORBIDDEN, html::error_page("This address isn't one Quire answers on.")));
     }
-    let form = if method == Method::POST {
-        let Ok(body) = axum::body::to_bytes(body, MAX_FORM).await else {
+    // A post without a session is answered without reading it (the pages
+    // say the session ended), so before signing in nobody can make the
+    // server hold more than the small sign-in form.
+    let limit = if uri.path() == "/login" { MAX_LOGIN_FORM } else { MAX_FORM };
+    let form = if method == Method::POST && (uri.path() == "/login" || web.signed_in(&headers)) {
+        // A length over the limit is refused before waiting for the body.
+        let declared = headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok());
+        let fits = declared.is_none_or(|n| usize::try_from(n).is_ok_and(|n| n <= limit));
+        let body = if fits { axum::body::to_bytes(body, limit).await.ok() } else { None };
+        let Some(body) = body else {
             return finish(Res::html(StatusCode::PAYLOAD_TOO_LARGE, html::error_page("That's too much to send at once.")));
         };
         parse_query(&String::from_utf8_lossy(&body))

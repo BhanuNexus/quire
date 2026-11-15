@@ -410,6 +410,57 @@ fn forms_need_the_csrf_token_and_this_origin() {
     assert_eq!(std::fs::read_to_string(env.root.join("Projects/Plan.md")).unwrap(), "# Plan\nchanged\n");
 }
 
+/// Sends a post whose headers promise `len` bytes but only a few arrive,
+/// and returns the status line (or the read error) within a few seconds.
+fn post_unfinished(env: &Env, path: &str, len: usize) -> String {
+    // Browsers send Origin on a form post; MCP clients send none.
+    let origin = if path.starts_with("/mcp") || path.starts_with("/oauth") { String::new() } else { format!("Origin: {}\r\n", env.base) };
+    let addr = env.http.addr();
+    let mut s = std::net::TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    write!(
+        s,
+        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n{origin}Content-Type: application/x-www-form-urlencoded\r\n\
+Accept: application/json, text/event-stream\r\nContent-Length: {len}\r\n\r\npassphrase=",
+        addr.port()
+    )
+    .unwrap();
+    s.flush().unwrap();
+    let mut line = String::new();
+    match BufReader::new(s).read_line(&mut line) {
+        Ok(_) => line.trim().to_string(),
+        Err(e) => format!("no answer: {e}"),
+    }
+}
+
+/// Before signing in, nobody can make the server hold a large body: a post
+/// without a session (web) or a token (MCP) is answered without reading
+/// it, and the sign-in and OAuth forms are small.
+#[test]
+fn bodies_are_not_read_before_sign_in() {
+    let env = start();
+    let r = post_unfinished(&env, "/edit/Welcome.md", 8_000_000);
+    assert!(r.starts_with("HTTP/1.1 403"), "/edit/Welcome.md: {r}");
+    let r = post_unfinished(&env, "/mcp", 4_000_000);
+    assert!(r.starts_with("HTTP/1.1 401"), "/mcp: {r}");
+    let r = post_unfinished(&env, "/login", 1_000_000);
+    assert!(r.starts_with("HTTP/1.1 413"), "/login: {r}");
+    // The OAuth forms are open to anyone: at most 64 KB each.
+    let big = format!("grant_type=refresh_token&refresh_token={}", "x".repeat(100_000));
+    let r =
+        agent().post(&format!("{}/oauth/token", env.base)).header("Content-Type", "application/x-www-form-urlencoded").send(big).unwrap();
+    assert_eq!(r.status().as_u16(), 413);
+    // Signed in, a large save still goes through.
+    let mut b = Browser::signed_in(&env);
+    let csrf = b.csrf();
+    let page = b.get("/edit/Welcome.md");
+    let big = "x".repeat(2_000_000);
+    let (base, orig) = (page.field("base"), page.field("orig"));
+    let r = b.post("/edit/Welcome.md", &[("_csrf", &csrf), ("base", &base), ("orig", &orig), ("text", &big), ("action", "save")]);
+    assert_eq!(r.status, 303, "{}", &r.body[..r.body.len().min(300)]);
+    assert!(std::fs::read_to_string(env.root.join("Welcome.md")).unwrap().contains(&big));
+}
+
 #[test]
 fn host_must_be_this_server() {
     let env = start();
