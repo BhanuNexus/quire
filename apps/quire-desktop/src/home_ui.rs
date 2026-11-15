@@ -34,7 +34,13 @@ pub(crate) struct HomeUi {
     /// A `.base` file's text and the spec of the chosen view, read when the
     /// setting or the file changes (not every frame).
     base: Option<(String, usize, String, Result<String, String>)>,
+    /// When the `.base` file was last read: at most once a second while Home
+    /// is drawn (0.13.1: it was read from disk on every frame).
+    base_read: Option<std::time::Instant>,
 }
+
+/// How often Home looks at its `.base` file again.
+const BASE_REREAD: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub(crate) struct HomeSurface {
     path: NotePath,
@@ -297,17 +303,21 @@ fn view_section(ui: &mut Ui, ws: &Workspace, pal: &Palette, cfg: &HomeConfig, st
         return;
     }
     let spec = if src.to_ascii_lowercase().ends_with(".base") {
-        let text = ws.vault().and_then(|v| v.read(&NotePath::from(src)).ok()).unwrap_or_default();
-        let stale = st.base.as_ref().is_none_or(|(p, i, t, _)| p != src || *i != cfg.base_view || *t != text);
-        if stale {
-            let spec = quire_import::obsidian::base::parse(&text).and_then(|b| {
-                b.views
-                    .get(cfg.base_view)
-                    .or_else(|| b.views.first())
-                    .map(|v| v.spec.clone())
-                    .ok_or_else(|| "This base has no views.".to_string())
-            });
-            st.base = Some((src.to_string(), cfg.base_view, text, spec));
+        let setting_changed = st.base.as_ref().is_none_or(|(p, i, _, _)| p != src || *i != cfg.base_view);
+        let due = st.base_read.is_none_or(|t| t.elapsed() >= BASE_REREAD);
+        if setting_changed || due {
+            st.base_read = Some(std::time::Instant::now());
+            let text = ws.vault().and_then(|v| v.read(&NotePath::from(src)).ok()).unwrap_or_default();
+            if setting_changed || st.base.as_ref().is_none_or(|(_, _, t, _)| *t != text) {
+                let spec = quire_import::obsidian::base::parse(&text).and_then(|b| {
+                    b.views
+                        .get(cfg.base_view)
+                        .or_else(|| b.views.first())
+                        .map(|v| v.spec.clone())
+                        .ok_or_else(|| "This base has no views.".to_string())
+                });
+                st.base = Some((src.to_string(), cfg.base_view, text, spec));
+            }
         }
         match st.base.as_ref().map(|b| &b.3) {
             Some(Ok(s)) => s.clone(),
