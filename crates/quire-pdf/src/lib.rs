@@ -51,7 +51,7 @@ pub const MAX_SIDE: f32 = 8000.0;
 /// Render page `page` (0-based) at `scale` pixels per point.
 #[cfg(feature = "render")]
 pub fn render_page(doc: &PdfDoc, page: usize, scale: f32) -> Result<PageImage, PdfError> {
-    use hayro::{RenderCache, RenderSettings, render};
+    use hayro::{PixmapSettings, RenderCache, RenderSettings, render};
     use hayro_interpret::InterpreterSettings;
 
     let p = doc.page(page)?;
@@ -59,11 +59,10 @@ pub fn render_page(doc: &PdfDoc, page: usize, scale: f32) -> Result<PageImage, P
         let (w, h) = p.render_dimensions();
         let scale = scale.clamp(0.05, MAX_SIDE / w.max(h).max(1.0));
         let cache = RenderCache::new();
-        let settings =
-            RenderSettings { x_scale: scale, y_scale: scale, bg_color: hayro::vello_cpu::color::palette::css::WHITE, ..Default::default() };
-        let pix = render(p, &cache, &InterpreterSettings::default(), &settings);
+        let pixmap = PixmapSettings { x_scale: scale, y_scale: scale, bg_color: hayro::vello_cpu::color::palette::css::WHITE };
+        let pix = render(p, &cache, &InterpreterSettings::default(), &RenderSettings::default(), &pixmap);
         let (width, height) = (u32::from(pix.width()), u32::from(pix.height()));
-        let rgba: Vec<u8> = pix.take_unpremultiplied().into_iter().flat_map(|c| [c.r, c.g, c.b, c.a]).collect();
+        let rgba: Vec<u8> = pix.take_rgba8(hayro::vello_cpu::peniko::ImageAlphaType::Alpha);
         PageImage { width, height, rgba }
     })
 }

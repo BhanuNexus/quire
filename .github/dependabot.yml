@@ -4,12 +4,23 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    # Security updates have their own limit (they are not held back by the
+    # version-update limit), but a low cap here lets a few big rendering bumps
+    # fill the queue; keep room for the rest.
+    open-pull-requests-limit: 10
     groups:
       egui:
         patterns: ["egui*", "eframe", "epaint*", "emath", "ecolor"]
+      # Heavy rendering and model crates: one reviewed PR each family, so a
+      # breaking change in one (pixel or text output, models) does not hold up
+      # the small updates, and the small updates do not hide it.
+      rendering:
+        patterns: ["resvg", "usvg", "tiny-skia*", "hayro*", "skrifa", "read-fonts", "fontdb", "vello*", "typst*", "krilla*", "mermaid-rs-renderer", "mitex*"]
+      ocr-models:
+        patterns: ["rten*", "ocrs", "candle-*", "tokenizers"]
       minor-and-patch:
         update-types: ["minor", "patch"]
+        exclude-patterns: ["egui*", "eframe", "epaint*", "emath", "ecolor", "resvg", "usvg", "tiny-skia*", "hayro*", "skrifa", "read-fonts", "fontdb", "vello*", "typst*", "krilla*", "mermaid-rs-renderer", "mitex*", "rten*", "ocrs", "candle-*", "tokenizers"]
     labels: ["dependencies"]
   - package-ecosystem: github-actions
     directory: /

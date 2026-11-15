@@ -12,13 +12,12 @@ publish.workspace = true
 [features]
 default = []
 # Math and Mermaid diagrams as SVG (the full edition); without it they show as source.
-typeset = ["quire-app/typeset", "dep:quire-typeset"]
+typeset = ["quire-app/typeset"]
 
 [dependencies]
 quire-app.workspace = true
 quire-agent.workspace = true
 quire-mcp.workspace = true
-quire-typeset = { workspace = true, optional = true }
 axum.workspace = true
 tokio = { workspace = true, features = ["rt", "sync"] }
 serde.workspace = true

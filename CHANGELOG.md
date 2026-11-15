@@ -9,6 +9,10 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 - **`quire-cli serve`:** a request without a session (web app) or a token (MCP) is answered without reading its body, and the sign-in and OAuth forms are limited to a few kilobytes. Before, anyone who could reach the server could make it hold up to 8 MB per request.
 - **Properties:** front matter nested tens of thousands of levels deep no longer crashes Quire. Maps nested more than 64 levels deep are kept as text.
 - API keys, the sync server token and a removal's passphrase no longer appear in debug output.
+- **HTML sanitizer:** updated the `ammonia` library to 4.2.5, which fixes a mutation-XSS hole (RUSTSEC-2026-0533) where embedded SVG or MathML in a note could become live markup after a browser re-parsed it. It protects the web app, published sites, "Copy as HTML" and HTML export. Tests now run SVG/MathML mutation payloads through every one of those outputs.
+
+### Changed
+- Updated the SVG renderer (`resvg` 0.49), PDF rendering (`hayro` 0.8), on-device OCR (`ocrs` 0.14 on `rten` 0.28; the OCR models are unchanged) and fonts (`skrifa` 0.49), and all other compatible dependencies. Removed five unused dependencies.
 
 ### Fixed
 - **Excalidraw drawings:**
