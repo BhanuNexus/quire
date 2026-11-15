@@ -4,6 +4,10 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Changed
+- **Smaller programs:** the Quire Lite app is 1.6 MiB smaller once installed (45.4 → 43.8 MiB on Linux x86-64) and the full edition's 1.0 MiB (73.0 → 72.0 MiB); `quire-cli` is about 0.9 MiB smaller in both. Downloads shrink less (0.1–0.7 MiB), since part of the saving is fonts that the archives already compressed. Nothing was removed: Quire Lite's bundled fonts are stored compressed, the MCP tool schemas are kept as text, and code that runs once per action is optimised for size.
+- **Large vaults:** saving a note updates the link graph in place instead of rebuilding it (10,000 notes: about 20 ms instead of 2 s of background work in a debug build), and PDF text being indexed doesn't rebuild it at all. Home, the Tags and Tasks tabs and the status bar no longer gather every note on each frame or wait for the index while it is being updated; the web app (`quire-cli serve`) keeps its Hierarchy page until the notes change.
+
 ### Fixed
 - **Excalidraw drawings:**
   - A drawing with a picture claiming a huge size no longer crashes Quire: pictures over 8192 pixels on a side aren't shown, and large ones are scaled to fit.
