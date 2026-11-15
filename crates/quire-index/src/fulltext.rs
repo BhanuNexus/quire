@@ -3,6 +3,8 @@
 //! Inverted index with BM25 ranking, prefix search-as-you-type and snippets.
 
 use std::collections::{BTreeMap, HashMap};
+use std::ops::Bound;
+use std::sync::Arc;
 
 use quire_vault::NotePath;
 use unicode_segmentation::UnicodeSegmentation;
@@ -178,8 +180,11 @@ pub(crate) fn note_terms(
 
 #[derive(Debug, Default)]
 pub(crate) struct FullText {
-    postings: BTreeMap<String, HashMap<u32, f32>>,
-    doc_terms: HashMap<u32, Vec<String>>,
+    postings: BTreeMap<Arc<str>, HashMap<u32, f32>>,
+    /// Each document's terms, for `remove`: the postings' own keys, shared
+    /// (0.13.1: a `String` per document and term was most of the index's
+    /// memory in a big vault).
+    doc_terms: HashMap<u32, Vec<Arc<str>>>,
     doc_len: HashMap<u32, f32>,
     ids: HashMap<NotePath, u32>,
     paths: HashMap<u32, NotePath>,
@@ -212,8 +217,12 @@ impl FullText {
         self.next_id += 1;
         let mut terms = Vec::with_capacity(tf.len());
         for (t, f) in tf {
-            self.postings.entry(t.clone()).or_default().insert(id, *f);
-            terms.push(t.clone());
+            let key = match self.postings.get_key_value(t.as_str()) {
+                Some((k, _)) => Arc::clone(k),
+                None => Arc::from(t.as_str()),
+            };
+            self.postings.entry(Arc::clone(&key)).or_default().insert(id, *f);
+            terms.push(key);
         }
         self.doc_terms.insert(id, terms);
         self.doc_len.insert(id, len.max(1.0));
@@ -231,10 +240,10 @@ impl FullText {
             self.total_len -= f64::from(len);
         }
         for t in self.doc_terms.remove(&id).unwrap_or_default() {
-            if let Some(p) = self.postings.get_mut(&t) {
+            if let Some(p) = self.postings.get_mut(&*t) {
                 p.remove(&id);
                 if p.is_empty() {
-                    self.postings.remove(&t);
+                    self.postings.remove(&*t);
                 }
             }
         }
@@ -269,7 +278,7 @@ impl FullText {
             });
         };
         for term in &q.terms {
-            match self.postings.get(term) {
+            match self.postings.get(term.as_str()) {
                 Some(p) => {
                     self.score_term(p, &mut scores, avg);
                     intersect(p.keys().copied().collect());
@@ -279,11 +288,12 @@ impl FullText {
         }
         if let Some(prefix) = &q.prefix {
             let mut any = std::collections::HashSet::new();
-            for (term, p) in self.postings.range(prefix.clone()..).take_while(|(t, _)| t.starts_with(prefix.as_str())).take(64) {
+            let from = (Bound::Included(prefix.as_str()), Bound::Unbounded);
+            for (term, p) in self.postings.range::<str, _>(from).take_while(|(t, _)| t.starts_with(prefix.as_str())).take(64) {
                 // Exact matches score fully, longer completions a little less.
                 let mut partial = HashMap::new();
                 self.score_term(p, &mut partial, avg);
-                let factor = if term == prefix { 1.0 } else { 0.8 };
+                let factor = if **term == **prefix { 1.0 } else { 0.8 };
                 for (id, s) in partial {
                     *scores.entry(id).or_default() += s * factor;
                     any.insert(id);
@@ -299,7 +309,7 @@ impl FullText {
             None => self.paths.values().map(|p| (p.clone(), 0.0)).collect(),
         };
         for term in &q.exclude {
-            if let Some(p) = self.postings.get(term) {
+            if let Some(p) = self.postings.get(term.as_str()) {
                 out.retain(|(path, _)| self.ids.get(path).is_none_or(|id| !p.contains_key(id)));
             }
         }

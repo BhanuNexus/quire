@@ -22,6 +22,9 @@ use crate::semantic::{SemanticIndex, build_lsa_index};
 /// Wait this long after the last change before rebuilding the semantic index.
 const SEMANTIC_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(700);
 
+/// Notes cut into passages under one read lock while the semantic index is built.
+const SEMANTIC_NOTES_PER_LOCK: usize = 256;
+
 enum SemMsg {
     Rebuild,
     Flush(Sender<()>),
@@ -459,11 +462,19 @@ fn run_semantic(rx: &Receiver<SemMsg>, index: &RwLock<Index>, shared: &Shared, o
             }
         }
         shared.semantic_busy.store(true, Ordering::Relaxed);
-        let docs: Vec<(NotePath, String)> = {
+        // 0.13.1: passages are cut from the index's own text, a few hundred notes per
+        // short read lock, instead of from a copy of every note made first (the copy,
+        // as big as the vault, was freed after but stayed in the process's memory).
+        let paths = index.read().unwrap_or_else(std::sync::PoisonError::into_inner).paths();
+        let mut chunks: Vec<crate::chunk::Chunk> = Vec::new();
+        for part in paths.chunks(SEMANTIC_NOTES_PER_LOCK) {
             let ix = index.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-            ix.paths().into_iter().filter_map(|p| ix.source(&p).map(|s| (p.clone(), s.to_string()))).collect()
-        };
-        let chunks: Vec<crate::chunk::Chunk> = docs.iter().flat_map(|(p, s)| chunk_note(p, s)).collect();
+            for p in part {
+                if let Some(s) = ix.source(p) {
+                    chunks.extend(chunk_note(p, s));
+                }
+            }
+        }
         let builder = cfg.read().unwrap_or_else(std::sync::PoisonError::into_inner).builder.clone();
         let built = match builder {
             Some(b) => match b(chunks.clone()) {
