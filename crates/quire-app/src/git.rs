@@ -249,6 +249,10 @@ fn spawn_git(dir: &Path, args: &[&str]) -> Result<String, String> {
     let mut child = Proc::new("git")
         .arg("-c")
         .arg("core.quotepath=off")
+        // Never a bare repository found on the way up (`find_repo` refuses
+        // those too; this is git's own check, from 2.38).
+        .arg("-c")
+        .arg("safe.bareRepository=explicit")
         .args(args)
         .current_dir(dir)
         // git finds the repository from `dir`, as `find_repo` did, and not

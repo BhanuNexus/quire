@@ -10,7 +10,9 @@
 //!
 //! - Finding the repository runs no git: [`find_repo`] walks up from the vault
 //!   for `.git` (a folder, or a file saying `gitdir: …`), as git does, and
-//!   reads `commondir` for a linked worktree.
+//!   reads `commondir` for a linked worktree. A folder on the way that is
+//!   itself a git folder (a bare repository, which files in a vault could
+//!   make) ends the search with nothing found: git would use that one.
 //! - Trust is kept in this computer's Quire settings folder
 //!   (`git-trust.toml`), never in the vault, keyed by the canonical paths of
 //!   the working tree, its git folder and the common git folder. A copy of a
@@ -73,11 +75,7 @@ pub fn find_repo(dir: &Path) -> Option<RepoDirs> {
     let start = dir.canonicalize().ok()?;
     for d in start.ancestors() {
         let dot = d.join(".git");
-        let git_dir = if dot.is_dir() {
-            if !looks_like_git_dir(&dot) {
-                // git skips a `.git` folder that isn't a repository.
-                continue;
-            }
+        let git_dir = if dot.is_dir() && looks_like_git_dir(&dot) {
             dot
         } else if dot.is_file() {
             // `gitdir: <path>`; git stops with an error on any other content.
@@ -91,7 +89,15 @@ pub fn find_repo(dir: &Path) -> Option<RepoDirs> {
                 return None;
             }
             target
+        } else if looks_like_git_dir(d) {
+            // A folder that is itself a git folder (a bare repository): git
+            // would use it, and its settings, before any repository above.
+            // Quire has no use for one, and files placed in a vault can make
+            // one, so there is no repository here that Quire will run git in.
+            return None;
         } else {
+            // No `.git`, or a `.git` folder that isn't a repository: git
+            // looks further up.
             continue;
         };
         let git_dir = git_dir.canonicalize().ok()?;
@@ -222,6 +228,11 @@ mod tests {
         fake_git_dir(&top.join("r/.git/modules/sub"));
         std::fs::write(top.join("r/sub/.git"), "gitdir: ../.git/modules/sub\n").unwrap();
         assert_eq!(find_repo(&top.join("r/sub")).unwrap().git_dir(), top.join("r/.git/modules/sub"));
+        // A folder that is itself a git folder, inside a repository: git would
+        // use it and its settings, so Quire finds nothing to run git in.
+        fake_git_dir(&top.join("r/notes/daily"));
+        assert_eq!(find_repo(&top.join("r/notes/daily")), None);
+        assert_eq!(find_repo(&top.join("r/notes")).unwrap().root(), top.join("r"));
         // A `.git` file git can't use stops the search, as it stops git.
         std::fs::create_dir_all(top.join("r/bad")).unwrap();
         std::fs::write(top.join("r/bad/.git"), "nonsense\n").unwrap();
