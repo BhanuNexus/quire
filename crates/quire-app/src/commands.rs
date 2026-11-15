@@ -147,6 +147,7 @@ pub enum Command {
     GitCommitNow,
     GitPull,
     GitPush,
+    GitTrust,
     ToggleTwoPaneBrowser,
     OpenHomepage,
     // WS-G: canvas, PDF, citations
@@ -264,6 +265,7 @@ impl Command {
             | Self::GitCommitNow
             | Self::GitPull
             | Self::GitPush
+            | Self::GitTrust
             | Self::ToggleTwoPaneBrowser
             | Self::OpenHomepage
             // 0.11 editor
@@ -520,6 +522,7 @@ commands! {
     GitCommitNow,     "App",    "Commit now (git)",               [], false;
     GitPull,          "App",    "Pull (git)",                     [], false;
     GitPush,          "App",    "Push (git)",                     [], false;
+    GitTrust,         "App",    "Trust this git repository…",     [], false;
     ToggleTwoPaneBrowser,"View","Folders and notes side by side", [], false;
     OpenHomepage,     "Go",     "Open homepage note",             [], false;
     NewCanvas,        "Note",   "New canvas",                     [cmd_alt("C")], false;

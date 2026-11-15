@@ -146,6 +146,8 @@ pub(crate) const fn available(ws: &Workspace, cmd: Command) -> bool {
     match cmd {
         // Git commands only for a vault that is a git repository.
         Command::GitCommitNow | Command::GitPull | Command::GitPush => ws.features.git.repo,
+        // Trusting a repository: only one that was found and isn't trusted yet.
+        Command::GitTrust => crate::git::untrusted(ws),
         _ => true,
     }
 }
@@ -168,7 +170,8 @@ pub(crate) fn run(ws: &mut Workspace, cmd: Command) -> Option<UiRequest> {
         }
         Command::OpenHomepage => open_homepage(ws, true),
         // 0.11 editor: Settings → Commands, the attachment picker and the toolbar's keyboard focus are UI.
-        Command::ChooseTheme | Command::CustomizeCommands | Command::InsertAttachment | Command::FocusToolbar => {
+        // The confirmation for trusting a git repository is a dialog.
+        Command::ChooseTheme | Command::CustomizeCommands | Command::InsertAttachment | Command::FocusToolbar | Command::GitTrust => {
             return Some(UiRequest::Feature(cmd));
         }
         Command::GitCommitNow => crate::git::commit_now(ws),

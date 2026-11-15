@@ -1651,6 +1651,7 @@ impl Workspace {
             | C::GitCommitNow
             | C::GitPull
             | C::GitPush
+            | C::GitTrust
             | C::ToggleTwoPaneBrowser
             | C::OpenHomepage
             | C::NewCanvas
