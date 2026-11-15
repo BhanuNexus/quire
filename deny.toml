@@ -13,23 +13,28 @@ ignore = [
   { id = "RUSTSEC-2026-0370", reason = "merged into zbus 6; transitive via accesskit" },
   { id = "RUSTSEC-2026-0371", reason = "merged into zbus 6; transitive via accesskit" },
   { id = "RUSTSEC-2026-0372", reason = "merged into zbus 6; transitive via accesskit" },
-  # quire-typeset: pinned by Typst 0.15 / MiTeX 0.2 / mermaid-rs-renderer 0.3,
-  # no compatible upgrade exists. Revisit when those crates update.
-  # quick-xml 0.38 (DoS) is only used by citationberg to parse CSL bibliography
-  # styles. Quire only ever parses the styles embedded at build time (APA,
-  # Chicago author-date, IEEE; design 0.9 §G.3) and never user-supplied CSL.
-  { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.38 via typst -> hayagriva -> citationberg; CSL parsing only of styles embedded at build time (APA/Chicago/IEEE)" },
-  { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.38 via typst -> hayagriva -> citationberg; CSL parsing only of styles embedded at build time (APA/Chicago/IEEE)" },
-  # rkyv 0.7 only deserializes MiTeX's own command table, embedded at build time.
-  { id = "RUSTSEC-2026-0235", reason = "rkyv 0.7 via mitex-spec; only reads trusted, embedded data" },
+  # quire-typeset: pinned by Typst 0.15 / MiTeX 0.2 / mermaid-rs-renderer 0.3.
+  # Checked 2026-11-15: typst 0.15.1, hayagriva 0.10.1, citationberg 0.7.0 and
+  # mitex 0.2.4 are the newest releases, so no parent upgrade removes these.
+  # quick-xml 0.38 (DoS) is reached only through citationberg's CSL parser. Quire
+  # sends Typst a style *name* from a fixed list (BIB_STYLES in
+  # quire-typeset/src/markdown.rs: embedded APA, Chicago author-date, IEEE),
+  # never a CSL file, and user BibTeX goes to biblatex, not to an XML parser.
+  { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.38 via typst -> hayagriva -> citationberg; only embedded CSL styles are parsed (no user CSL), design 0.9 G.3" },
+  { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.38 via typst -> hayagriva -> citationberg; only embedded CSL styles are parsed (no user CSL), design 0.9 G.3" },
+  # rkyv 0.7 comes from mitex-spec, whose `from_bytes` (the only reader of
+  # untrusted-looking archives) is never called by mitex, mitex-parser or
+  # mitex-lexer; the crate's rkyv features are on by default and its parents
+  # offer no way to turn them off.
+  { id = "RUSTSEC-2026-0235", reason = "rkyv 0.7 via mitex-spec; its archive reader is never called, nothing user-supplied is deserialized" },
   # Unmaintained, no vulnerability.
   { id = "RUSTSEC-2025-0141", reason = "bincode 1 unmaintained; via typst -> syntect" },
   { id = "RUSTSEC-2025-0057", reason = "fxhash unmaintained; via mitex" },
   { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; via typst -> hayagriva -> biblatex" },
   { id = "RUSTSEC-2026-0206", reason = "rustybuzz unmaintained; via typst-layout and krilla" },
   { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained; via typst, fontdb and mermaid-rs-renderer" },
-  { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml unmaintained; via typst -> hayagriva -> serde_yaml" },
-  { id = "RUSTSEC-2024-0320", reason = "yaml-rust unmaintained; via typst -> syntect" },
+  { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml unmaintained; via typst -> hayagriva -> serde_yaml (hayagriva YAML bibliographies are not offered; Quire reads BibTeX and CSL JSON with its own code)" },
+  { id = "RUSTSEC-2024-0320", reason = "yaml-rust unmaintained; via typst -> syntect -> two-face (syntax definitions embedded at build time, no user YAML)" },
 ]
 
 [licenses]

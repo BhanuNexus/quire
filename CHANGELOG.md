@@ -4,6 +4,12 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Security
+- **HTML sanitizer:** updated the `ammonia` library to 4.2.5, which fixes a mutation-XSS hole (RUSTSEC-2026-0533) where embedded SVG or MathML in a note could become live markup after a browser re-parsed it. It protects the web app, published sites, "Copy as HTML" and HTML export. Tests now run SVG/MathML mutation payloads through every one of those outputs.
+
+### Changed
+- Updated the SVG renderer (`resvg` 0.49), PDF rendering (`hayro` 0.8), on-device OCR (`ocrs` 0.14 on `rten` 0.28; the OCR models are unchanged) and fonts (`skrifa` 0.49), and all other compatible dependencies. Removed five unused dependencies.
+
 ### Fixed
 - **Excalidraw drawings:**
   - A drawing with a picture claiming a huge size no longer crashes Quire: pictures over 8192 pixels on a side aren't shown, and large ones are scaled to fit.
