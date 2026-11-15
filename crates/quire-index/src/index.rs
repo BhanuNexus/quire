@@ -45,10 +45,41 @@ impl Index {
         Self::default()
     }
 
-    /// Insert or replace a note and refresh the link graph.
+    /// Insert or replace a note and update the link graph (in place when
+    /// the note was already indexed with the same aliases, else rebuilt).
     pub fn upsert(&mut self, path: NotePath, src: &str) {
-        self.insert_record(NoteRecord::from_source(path, src), src.to_string());
-        self.refresh();
+        let rec = NoteRecord::from_source(path, src);
+        let patch = self.graph_patchable(&rec);
+        let path = rec.path.clone();
+        self.insert_record(rec, src.to_string());
+        if patch {
+            self.patch_graph(&[path]);
+        } else {
+            self.refresh();
+        }
+    }
+
+    /// Whether storing `rec` keeps every link of the vault resolving as it
+    /// does now, so [`Index::patch_graph`] can update the graph in place
+    /// instead of rebuilding it: the note is already indexed (the set of
+    /// notes stays the same) and keeps its aliases (its path, and so its
+    /// name, is the same by construction). Call it before storing `rec`.
+    pub fn graph_patchable(&self, rec: &NoteRecord) -> bool {
+        self.records.get(&rec.path).is_some_and(|old| old.name == rec.name && old.aliases == rec.aliases)
+    }
+
+    /// Update the link graph for notes stored since it was built, each of
+    /// which was [`Index::graph_patchable`] when stored. Costs the changed
+    /// notes' links and one pass for derived edges, not a rebuild.
+    pub fn patch_graph(&mut self, changed: &[NotePath]) {
+        let sources = &self.sources;
+        let recs: Vec<&NoteRecord> = changed.iter().filter_map(|p| self.records.get(p)).collect();
+        self.graph.patch(&recs, self.records.values(), &|p| sources.get(p).map(String::as_str), &self.link_config);
+    }
+
+    /// Whether a note is indexed.
+    pub fn contains(&self, p: &NotePath) -> bool {
+        self.records.contains_key(p)
     }
 
     /// Insert a pre-built record without refreshing the graph (bulk loads).
@@ -324,6 +355,116 @@ mod tests {
         }
         ix.refresh();
         ix
+    }
+
+    /// The graph as sorted text: what `LinkGraph::build` and `patch` must agree on
+    /// (the order of lists that come from map iteration isn't part of it).
+    fn graph_text(ix: &Index) -> String {
+        let mut out = Vec::new();
+        let mut paths = ix.paths();
+        paths.push(NotePath::new("Nowhere.md"));
+        for p in &paths {
+            let mut o: Vec<String> = ix.graph().outgoing(p).iter().map(ToString::to_string).collect();
+            o.sort();
+            let mut b: Vec<String> =
+                ix.backlinks(p).iter().map(|b| format!("{} {:?} {:?} {}", b.from, b.link.range, b.link.field, b.context)).collect();
+            b.sort();
+            let mut r: Vec<String> = ix.relations().of(p).iter().map(|e| format!("{e:?}")).collect();
+            r.sort();
+            let mut i: Vec<String> = ix.relations().incoming(p).iter().map(|e| format!("{e:?}")).collect();
+            i.sort();
+            out.push(format!("{p}\n out {o:?}\n back {b:?}\n rel {r:?}\n in {i:?}"));
+        }
+        let mut u: Vec<String> = ix
+            .graph()
+            .unresolved()
+            .iter()
+            .map(|(t, v)| {
+                let mut v: Vec<&str> = v.iter().map(NotePath::as_str).collect();
+                v.sort_unstable();
+                format!("{t} {v:?}")
+            })
+            .collect();
+        u.sort();
+        out.push(format!("unresolved {u:?}"));
+        out.push(format!("fields {:?} hier {}", ix.relations().fields(), ix.relations().has_hierarchy()));
+        out.join("\n")
+    }
+
+    /// 0.13.1: editing notes patches the graph in place; the result is what a
+    /// (Names differ by more than case: which of `A.md` and `a.md` `[[a]]` means
+    /// depends on map order, in a rebuild too.)
+    /// rebuild from the same notes makes, through link and typed-link edits,
+    /// tags of tag notes, list notes, Dendron names and lines that move.
+    #[test]
+    fn patched_graph_equals_a_rebuild() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            usize::try_from(seed % n as u64).expect("small")
+        };
+        let names = ["A", "B", "C", "D", "x.y", "x", "Deep/E", "Deep/F", "Ünï", "Index", "Plan"];
+        let note = |next: &mut dyn FnMut(usize) -> usize, me: usize| -> String {
+            let mut s = String::new();
+            match me {
+                9 => s.push_str("---\nBC-tag-note-tag: '#topic'\n---\n"),
+                10 => s.push_str("---\nBC-list-note-field: down\nBC-list-note-neighbour-field: next\n---\n"),
+                _ if next(3) == 0 => s.push_str("---\naliases: [Alias"),
+                _ => {}
+            }
+            if s.ends_with("Alias") {
+                s.push_str(&format!("{me}]\nup: \"[[{}]]\"\n---\n", names[next(names.len())]));
+            }
+            for _ in 0..next(8) {
+                match next(9) {
+                    0 => s.push_str(&format!("see [[{}]] here\n", names[next(names.len())])),
+                    1 => s.push_str(&format!("up:: [[{}]]\n", names[next(names.len())])),
+                    2 => s.push_str(&format!("- [[{}]]\n  - child [[{}]]\n", names[next(names.len())], names[next(names.len())])),
+                    3 => s.push_str("#topic and #topic/sub\n"),
+                    4 => s.push_str("[[Missing]] and [[Gone|shown]] and ![[pic.png]]\n"),
+                    5 => s.push_str("[[unï]] [[Alias3]] [[#Heading]]\n"),
+                    6 => s.push_str(&format!("supports:: [[{}]]\n", names[next(names.len())])),
+                    _ => s.push_str("plain words\n"),
+                }
+            }
+            s
+        };
+        let cfg = crate::relations::LinkConfig {
+            dendron: crate::relations::Dendron { enabled: true, ..Default::default() },
+            ..crate::relations::LinkConfig::default()
+        };
+        let mut ix = Index::new();
+        ix.set_link_config_quiet(cfg);
+        let mut texts: Vec<String> = Vec::new();
+        for (i, n) in names.iter().enumerate() {
+            let t = note(&mut next, i);
+            ix.insert_record(NoteRecord::from_source(NotePath::new(format!("{n}.md")), &t), t.clone());
+            texts.push(t);
+        }
+        ix.refresh();
+        let mut patched = 0;
+        for round in 0..400 {
+            let i = next(names.len());
+            let path = NotePath::new(format!("{}.md", names[i]));
+            // Mostly the note's own lines moved around, sometimes a new text.
+            let t = if next(2) == 0 { format!("{}\n{}", "x".repeat(next(5)), texts[i]) } else { note(&mut next, i) };
+            if ix.graph_patchable(&NoteRecord::from_source(path.clone(), &t)) {
+                patched += 1;
+            }
+            ix.upsert(path, &t);
+            texts[i] = t;
+            let mut fresh = Index::new();
+            fresh.set_link_config_quiet(ix.link_config().clone());
+            for p in ix.paths() {
+                let src = ix.source(&p).expect("indexed").to_string();
+                fresh.insert_record(NoteRecord::from_source(p, &src), src);
+            }
+            fresh.refresh();
+            assert_eq!(graph_text(&ix), graph_text(&fresh), "round {round}");
+        }
+        assert!(patched > 200, "most edits patch the graph ({patched})");
     }
 
     #[test]

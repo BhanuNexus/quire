@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Cost of one link-graph rebuild (`Index::build_graph`) on a big vault. Run by hand:
+//! Cost of one link-graph rebuild (`Index::build_graph`) on a big vault, and of
+//! the in-place update an ordinary edit gets instead (0.13.1). Run by hand:
 //! `cargo test -p quire-index --test graph_timing -- --ignored --nocapture`.
 
 #![allow(clippy::unwrap_used, clippy::print_stderr, reason = "test code")]
@@ -29,4 +30,11 @@ fn rebuild_time_on_ten_thousand_notes() {
     let t = Instant::now();
     ix.install_graph(g);
     eprintln!("{n} notes: build {build:?}, install {:?}", t.elapsed());
+    // An edit to one note: its text and links change, its aliases don't.
+    let p = NotePath::new("f7/n7.md");
+    let src = format!("{}\nNow also [[n42]] and [[nowhere]].\n", ix.source(&p).unwrap());
+    let t = Instant::now();
+    ix.upsert(p.clone(), &src);
+    eprintln!("{n} notes: an edit (parse and patch) {:?}", t.elapsed());
+    assert!(ix.backlinks(&NotePath::new("f2/n42.md")).iter().any(|b| b.from == p));
 }

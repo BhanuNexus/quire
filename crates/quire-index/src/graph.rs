@@ -122,6 +122,12 @@ pub struct LinkGraph {
     outgoing: HashMap<NotePath, Vec<NotePath>>,
     backlinks: HashMap<NotePath, Vec<Backlink>>,
     unresolved: HashMap<String, Vec<NotePath>>,
+    /// The resolved typed links each note writes, `(field, to)` in the
+    /// order written: kept so [`LinkGraph::patch`] can rebuild `relations`
+    /// without resolving every note's links again.
+    typed: HashMap<NotePath, Vec<(String, NotePath)>>,
+    /// The derived edges `relations` was built with (to tell when they change).
+    derived: Vec<crate::relations::DerivedEdge>,
     /// 0.12: typed links and the hierarchy, built in the same pass.
     relations: Relations,
 }
@@ -140,42 +146,108 @@ impl LinkGraph {
         source: &dyn Fn(&NotePath) -> Option<&'a str>,
         cfg: &LinkConfig,
     ) -> Self {
-        let records_again = records.clone();
         let resolver = Resolver::build(records.clone());
         let mut g = Self { resolver, ..Default::default() };
-        let mut typed: Vec<(NotePath, String, NotePath)> = Vec::new();
-        for rec in records {
-            let src = source(&rec.path);
-            let mut seen = HashSet::new();
-            for link in rec.links.iter().filter(|l| l.is_internal()) {
-                if link.target.is_empty() {
-                    continue; // same-note heading link
-                }
-                match g.resolver.resolve(&link.target, Some(&rec.path)) {
-                    Some(to) => {
-                        if let Some(field) = &link.field {
-                            typed.push((rec.path.clone(), field.clone(), to.clone()));
-                        }
-                        if seen.insert(to.clone()) {
-                            g.outgoing.entry(rec.path.clone()).or_default().push(to.clone());
-                        }
-                        if to != rec.path {
-                            let context = src.map_or_else(|| link.display.clone(), |s| line_around(s, link));
-                            g.backlinks.entry(to).or_default().push(Backlink { from: rec.path.clone(), link: link.clone(), context });
-                        }
+        for rec in records.clone() {
+            g.add_note(rec, source(&rec.path));
+        }
+        g.relate(records, source, cfg);
+        g
+    }
+
+    /// One note's links: its outgoing list, its backlinks in the notes it
+    /// links to, its unresolved targets and its typed links.
+    fn add_note(&mut self, rec: &NoteRecord, src: Option<&str>) {
+        let mut seen = HashSet::new();
+        let mut typed: Vec<(String, NotePath)> = Vec::new();
+        for link in rec.links.iter().filter(|l| l.is_internal()) {
+            if link.target.is_empty() {
+                continue; // same-note heading link
+            }
+            match self.resolver.resolve(&link.target, Some(&rec.path)) {
+                Some(to) => {
+                    if let Some(field) = &link.field {
+                        typed.push((field.clone(), to.clone()));
                     }
-                    None => {
-                        // Attachments that aren't notes (images, PDFs) aren't "unresolved notes".
-                        if !link.target.contains('.') {
-                            g.unresolved.entry(link.target.clone()).or_default().push(rec.path.clone());
-                        }
+                    if seen.insert(to.clone()) {
+                        self.outgoing.entry(rec.path.clone()).or_default().push(to.clone());
+                    }
+                    if to != rec.path {
+                        let context = src.map_or_else(|| link.display.clone(), |s| line_around(s, link));
+                        self.backlinks.entry(to).or_default().push(Backlink { from: rec.path.clone(), link: link.clone(), context });
+                    }
+                }
+                None => {
+                    // Attachments that aren't notes (images, PDFs) aren't "unresolved notes".
+                    if !link.target.contains('.') {
+                        self.unresolved.entry(link.target.clone()).or_default().push(rec.path.clone());
                     }
                 }
             }
         }
-        let derived = crate::derived::derive(records_again, source, &g.resolver, cfg);
-        g.relations = Relations::build(typed, derived, cfg);
-        g
+        if !typed.is_empty() {
+            self.typed.insert(rec.path.clone(), typed);
+        }
+    }
+
+    /// Typed links, the edges derived from naming schemes, and the hierarchy.
+    fn relate<'a>(
+        &mut self,
+        records: impl Iterator<Item = &'a NoteRecord> + Clone,
+        source: &dyn Fn(&NotePath) -> Option<&'a str>,
+        cfg: &LinkConfig,
+    ) {
+        let typed: Vec<(NotePath, String, NotePath)> =
+            self.typed.iter().flat_map(|(from, list)| list.iter().map(|(f, to)| (from.clone(), f.clone(), to.clone()))).collect();
+        self.derived = crate::derived::derive(records, source, &self.resolver, cfg);
+        self.relations = Relations::build(typed, self.derived.clone(), cfg);
+    }
+
+    /// Update the graph in place after the notes `changed` were replaced
+    /// (0.13.1): the same graph [`LinkGraph::build`] makes from `records`,
+    /// as long as the set of notes, their names and their aliases are what
+    /// they were when the graph was built, so every link resolves as it did
+    /// (`Index::graph_patchable` checks this for each note). The changed
+    /// notes' own links are redone; derived edges are made again from the
+    /// records (one pass, no link resolution), and the typed links and the
+    /// hierarchy only when those or the notes' typed links changed.
+    pub fn patch<'a>(
+        &mut self,
+        changed: &[&'a NoteRecord],
+        records: impl Iterator<Item = &'a NoteRecord> + Clone,
+        source: &dyn Fn(&NotePath) -> Option<&'a str>,
+        cfg: &LinkConfig,
+    ) {
+        let gone: HashSet<&NotePath> = changed.iter().map(|r| &r.path).collect();
+        let typed_before: Vec<Option<Vec<(String, NotePath)>>> = gone.iter().map(|p| self.typed.get(*p).cloned()).collect();
+        for p in &gone {
+            if let Some(outs) = self.outgoing.remove(*p) {
+                for t in outs {
+                    if let Some(v) = self.backlinks.get_mut(&t) {
+                        v.retain(|b| &b.from != *p);
+                        if v.is_empty() {
+                            self.backlinks.remove(&t);
+                        }
+                    }
+                }
+            }
+            self.typed.remove(*p);
+        }
+        self.unresolved.retain(|_, v| {
+            v.retain(|q| !gone.contains(q));
+            !v.is_empty()
+        });
+        let mut done: HashSet<&NotePath> = HashSet::new();
+        for rec in changed {
+            if done.insert(&rec.path) {
+                self.add_note(rec, source(&rec.path));
+            }
+        }
+        let typed_same = gone.iter().zip(typed_before).all(|(p, before)| self.typed.get(*p) == before.as_ref());
+        let derived = crate::derived::derive(records.clone(), source, &self.resolver, cfg);
+        if !typed_same || derived != self.derived {
+            self.relate(records, source, cfg);
+        }
     }
 
     /// Typed links and the hierarchy (0.12).

@@ -356,6 +356,12 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                 IndexMsg::Shutdown => shutdown = true,
             }
         }
+        // 0.13.1: the link graph is rebuilt only when the batch can change how
+        // links resolve (a load, a note added or removed, new aliases, new
+        // link settings). An edit to notes already indexed patches it in
+        // place, and attachment text leaves it alone.
+        let mut rebuild = reload.is_some();
+        let mut patched: Vec<NotePath> = Vec::new();
         {
             let mut ix = write();
             if let Some(all) = reload {
@@ -374,23 +380,38 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                     Prepared::Note(note) => {
                         let (rec, src, modified) = *note;
                         let path = rec.path.clone();
+                        if !rebuild && ix.graph_patchable(&rec) {
+                            patched.push(path.clone());
+                        } else {
+                            rebuild = true;
+                        }
                         ix.insert_record(rec, src);
                         ix.set_modified(&path, modified);
                     }
-                    Prepared::Remove(path) => ix.remove_no_refresh(&path),
+                    Prepared::Remove(path) => {
+                        // A path that isn't indexed (a locked folder's note, a file that isn't a note) changes nothing.
+                        rebuild |= ix.contains(&path);
+                        ix.remove_no_refresh(&path);
+                    }
                     Prepared::Attachment(text) => ix.upsert_attachment(text),
                     Prepared::RemoveAttachment(path) => ix.remove_attachment(&path),
                 }
             }
             if let Some(cfg) = link_config {
+                rebuild |= cfg != *ix.link_config();
                 ix.set_link_config_quiet(cfg);
             }
+            if !rebuild && !patched.is_empty() {
+                ix.patch_graph(&patched);
+            }
         }
-        // The graph is built under a read lock (searches and the UI keep working) and
-        // installed under a brief write. Only this thread writes, so the records cannot
-        // change in between.
-        let graph = read().build_graph();
-        write().install_graph(graph);
+        if rebuild {
+            // The graph is built under a read lock (searches and the UI keep working) and
+            // installed under a brief write. Only this thread writes, so the records cannot
+            // change in between.
+            let graph = read().build_graph();
+            write().install_graph(graph);
+        }
         shared.busy.store(false, Ordering::Relaxed);
         shared.version.fetch_add(1, Ordering::Release);
         if changed {
@@ -482,6 +503,42 @@ mod tests {
         let sem = svc.semantic().expect("semantic index built");
         assert!(sem.chunks.iter().all(|c| c.path.as_str() != "A.md"));
         assert_eq!(svc.semantic_version(), 1);
+    }
+
+    /// 0.13.1: an edit patches the graph, a new note or new aliases rebuild it,
+    /// attachment text leaves it alone; each gives the links a rebuild would.
+    #[test]
+    fn edits_patch_the_graph_and_attachments_leave_it() {
+        let vault = Vault::in_memory(&[("A.md", "links [[B]]"), ("B.md", "# B\nbee"), ("C.md", "sea")]);
+        let svc = IndexService::spawn();
+        svc.load(vault);
+        svc.flush();
+        let b = NotePath::new("B.md");
+        svc.upsert(NotePath::new("C.md"), "now [[B]] and [[Bee]]".into());
+        svc.flush();
+        let from: Vec<String> = svc.read().backlinks(&b).iter().map(|l| l.from.to_string()).collect();
+        assert_eq!(from.len(), 2, "{from:?}");
+        assert_eq!(svc.read().graph().unresolved().len(), 1, "[[Bee]] doesn't resolve yet");
+        // New aliases change what links resolve to: a rebuild.
+        svc.upsert(b.clone(), "---\naliases: [Bee]\n---\n# B".into());
+        svc.flush();
+        assert_eq!(svc.read().backlinks(&b).len(), 3);
+        assert!(svc.read().graph().unresolved().is_empty());
+        svc.upsert_attachment(crate::attach::AttachmentText {
+            path: NotePath::new("x.pdf"),
+            kind: crate::attach::AttachmentKind::Pdf,
+            pages: vec!["[[A]]".into()],
+            source_hash: "ab".into(),
+            by: crate::attach::TextSource::Embedded,
+        });
+        svc.flush();
+        assert_eq!(svc.read().backlinks(&b).len(), 3);
+        // A new note: a rebuild, and the link that waited for it resolves.
+        svc.upsert(NotePath::new("D.md"), "[[C]]".into());
+        svc.upsert(NotePath::new("A.md"), "links [[D]]".into());
+        svc.flush();
+        assert_eq!(svc.read().backlinks(&NotePath::new("D.md")).len(), 1);
+        assert_eq!(svc.read().backlinks(&b).len(), 2);
     }
 
     #[test]
