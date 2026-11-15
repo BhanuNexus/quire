@@ -397,7 +397,6 @@ impl EpochRecord {
 
     /// A new epoch after `keys`' current one: a new key sealed for each of
     /// `members` (device, public key), wrapped by `passphrase`.
-    #[allow(clippy::too_many_arguments, reason = "everything a key change needs, each once")]
     pub fn make(
         space: &SpaceId,
         keys: &KeySet,

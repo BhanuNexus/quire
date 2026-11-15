@@ -132,7 +132,6 @@ fn vouched(
 /// and when the vault starts binding headers. Past there, this device's
 /// lines use the current key (and bind headers), so a removed device's
 /// lines in its lane are refused.
-#[allow(clippy::too_many_arguments, reason = "everything a device record says, each once")]
 pub fn publish_self(
     admin: &dyn SpaceAdmin,
     space: &SpaceId,
