@@ -26,10 +26,10 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
   - `[[links]]` typed in a `.excalidraw` file keep their brackets, and a link set in the style panel isn't dropped by editing the text.
   - A drawing renamed in its folder stays open under its new name; one deleted elsewhere asks before it's written again.
   - Pasted elements stay within a drawing's limits, bring only the pictures they show, and keep their frame.
-- **Locking a folder while a drawing in it has unsaved edits** writes the edits first, instead of waiting for the autosave delay (a locked folder can't be written). Closing a drawing's tab or the window writes it once, keeps a version in its history and doesn't start a sync by itself.
+- **Locking a folder while a drawing in it has unsaved edits** writes the edits first, instead of waiting for the autosave delay (a locked folder can't be written). Closing a drawing's tab or the window writes it once, keeps a version in its history and asks sync to run, like any other save. A folder with a drawing that is still unsaved, or that changed elsewhere and waits for you to choose what to keep, stays unlocked, with a notice; idle locking then tries again after a minute, with one warning.
 - **Git:** in a vault that is a folder inside a git repository, new notes count as changes (and are committed by *Commit now* and auto-commit); before, git reported them relative to the folder and Quire missed them.
-- **Undoing an import** also removes the folders the import created and left empty.
-- **Settings → Sync:** *Create*, *Join* and *List* no longer freeze the window while they talk to the sync storage.
+- **Undoing an import** also removes the folders the import created and left empty (never one that was there before).
+- **Settings → Sync:** *Create*, *Join* and *List* no longer freeze the window while they talk to the sync storage, and they finish even if you close Settings meanwhile: sync starts, the recovery key is kept for Settings, and a notice says so. Only one runs at a time; a failure is reported.
 - **AI providers:** an error that arrives in the middle of a streamed answer is shown as the provider's error instead of a cut-off answer, and a provider that refuses a request says so; a request that a server rejects because it no longer takes `temperature`, or wants `max_completion_tokens` for `max_tokens`, is sent again with that changed.
 - **Screen readers:** the text editor tells the system's accessibility service which lines are visible and what is selected, so a screen reader can read the line you are on.
 

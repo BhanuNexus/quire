@@ -773,3 +773,36 @@ fn locking_waits_for_a_drawing_with_unwritten_edits() {
     ws.tick(Instant::now());
     assert!(!ws.vault().unwrap().keys().is_unlocked("Journal"), "locked once the editor is gone");
 }
+
+/// 0.13.1 review D-L2: idle locking with a drawing that can't be written
+/// asks once, warns once and tries again in a minute (not every frame).
+#[test]
+fn idle_locking_with_a_drawing_that_cannot_save_backs_off() {
+    let (_d, root) = vault_dir(&[("Journal/Day.md", "# Day\nx\n")]);
+    let mut ws = open(&root);
+    lock_and_wait(&mut ws, "Journal");
+    let flag = ws.features.canvas.register_drawing(&np("Journal/Plan.excalidraw"));
+    flag.set(true);
+    ws.settings.security.lock_after_idle_minutes = 1;
+    ws.note_user_activity();
+    let due = Instant::now() + Duration::from_secs(61);
+    ws.tick(due);
+    let asked = ws.features.canvas.save_now;
+    for _ in 0..5 {
+        ws.tick(due);
+    }
+    assert_eq!(ws.features.canvas.save_now, asked, "the editors are asked once while the wait runs");
+    // The wait ends: one warning, and the next try is a minute away.
+    ws.features.secure.lock_waiting[0].1 = Instant::now().checked_sub(Duration::from_secs(6)).unwrap();
+    ws.tick(due);
+    assert!(ws.is_unlocked("Journal"));
+    assert_eq!(notices(&ws).matches("stays unlocked").count(), 1);
+    assert!(super::idle_deadline(&ws).unwrap() > Instant::now() + Duration::from_secs(50));
+    // (This tick ran at a made-up time 61 s ahead, so it may have asked again once.)
+    let asked = ws.features.canvas.save_now;
+    for s in [5, 10, 20] {
+        ws.tick(Instant::now() + Duration::from_secs(s));
+    }
+    assert_eq!(ws.features.canvas.save_now, asked, "no write retry each frame");
+    assert_eq!(notices(&ws).matches("stays unlocked").count(), 1, "warned once");
+}

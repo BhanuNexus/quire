@@ -24,6 +24,7 @@ Owner: 0.12 switching tools. Code: `quire_app::import_run`.
 | `source`, `origin` | what was imported, and the export's file or folder *name* (never its full path) |
 | `folder` | the vault folder the import wrote into (`""` for the root) |
 | `notes`, `files` | every file the import created, with the hash of the bytes it wrote, as stored on disk |
+| `created_folders` | optional (0.13.1): the folders that did not exist before the import and were made for it. Undo removes only these, and only when empty. Absent in older records, which leave their folders |
 | `undone_ms` | when it was undone |
 | `in_progress` | `true` while the import runs. A record that still has it was left by an import that failed or was killed: what it lists was written and can be undone |
 

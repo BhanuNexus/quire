@@ -599,3 +599,39 @@ fn closing_a_drawing_keeps_a_history_version() {
     assert!(r.disk("Release.excalidraw").contains("\"x\": 561"), "written on close");
     assert!(r.ws.vault().unwrap().history(&path).len() > before, "and kept as a version");
 }
+
+/// 0.13.1 review D-L1: a drawing with edits that is in "changed elsewhere"
+/// still counts as unsaved, so locking its folder waits and then refuses
+/// (the folder stays unlocked) instead of losing the edits.
+#[test]
+fn a_conflicted_drawing_with_edits_holds_its_folder_unlocked() {
+    const PASS: &str = "a passphrase for the test";
+    let mut r = Rig::new(&[("Journal/Release.excalidraw", RELEASE), ("Plain.md", "# Plain\n")], "Journal/Release.excalidraw");
+    r.ws.start_locking("Journal", PASS, false).unwrap();
+    let start = Instant::now();
+    while r.ws.lock_job().is_some() {
+        assert!(start.elapsed() < Duration::from_mins(1), "the conversion never ended");
+        r.ws.tick(Instant::now());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    r.ws.take_recovery_key().expect("the recovery key is offered");
+    let path = NotePath::new("Journal/Release.excalidraw");
+    r.ed = DrawingEditor::new(&path);
+    r.frame(vec![]);
+    r.ed.sel = vec!["dia1".into()];
+    r.key(Key::ArrowRight, Modifiers::NONE);
+    r.ed.last_edit = Instant::now() + Duration::from_hours(1);
+    // The file changes elsewhere while the edit waits.
+    let v = r.ws.vault().unwrap().clone();
+    let theirs = r.disk("Journal/Release.excalidraw").replace("Release", "Elsewhere");
+    v.write(&path, &theirs).unwrap();
+    *r.ws.features.canvas.disk_changes.entry(path).or_default() += 1;
+    r.frame(vec![]);
+    assert!(r.ed.conflict.is_some() && r.ed.dirty, "changed elsewhere, with edits");
+    assert!(r.ws.features.canvas.unsaved_in("Journal"), "still counts as unsaved");
+    // Locking waits, can't write the conflicted edits, and stays unlocked.
+    assert_eq!(r.ws.lock_folder_now("Journal"), None);
+    r.frame(vec![]);
+    assert!(r.ws.vault().unwrap().keys().is_unlocked("Journal"));
+    assert!(r.ed.dirty && r.ed.conflict.is_some(), "the edits are still here");
+}

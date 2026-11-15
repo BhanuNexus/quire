@@ -48,6 +48,11 @@ pub struct ImportRecord {
     pub folder: String,
     pub notes: Vec<Item>,
     pub files: Vec<Item>,
+    /// Folders that did not exist before the import and were made for it;
+    /// undoing removes only these (and only when empty). Absent in records
+    /// made before 0.13.1: those leave their folders.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub created_folders: Vec<String>,
     /// Set when the import was undone.
     pub undone_ms: Option<i64>,
     /// Set while the import runs. A record that still has it was left by an
@@ -69,6 +74,7 @@ impl Default for ImportRecord {
             folder: String::new(),
             notes: Vec::new(),
             files: Vec::new(),
+            created_folders: Vec::new(),
             undone_ms: None,
             in_progress: false,
             other: serde_json::Map::new(),
@@ -128,6 +134,7 @@ pub fn run(
         in_progress: true,
         ..ImportRecord::default()
     };
+    rec.created_folders = folders_to_create(vault, plan, &rec.folder);
     create_record(vault, &mut rec)?;
     let actor = Actor::import(source, device);
     let mut since_save = 0;
@@ -158,6 +165,26 @@ pub fn run(
     }
     save(vault, &rec)?;
     Ok((report, rec))
+}
+
+/// The folders (the target and below, as vault paths) the plan's files go
+/// into that are not there yet.
+fn folders_to_create(vault: &Vault, plan: &ImportPlan, base: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for rel in plan.files.iter().map(|f| f.path.as_str()).chain(plan.notes.iter().map(|n| n.path.as_str())) {
+        if rel.split('/').any(|c| c == ".." || c.is_empty()) {
+            continue; // refused by the import
+        }
+        let mut folder = NotePath::join(base, rel).folder().to_string();
+        while !folder.is_empty() {
+            let exists = vault.storage().absolute(&NotePath::new(&folder)).is_none_or(|a| a.is_dir());
+            if !exists && !out.contains(&folder) {
+                out.push(folder.clone());
+            }
+            folder = NotePath::new(&folder).folder().to_string();
+        }
+    }
+    out
 }
 
 /// Make the record's file, taking the next free id when another import made
@@ -249,17 +276,20 @@ pub fn undo_plan(vault: &Vault, rec: &ImportRecord) -> UndoPlan {
     plan
 }
 
-/// Remove the folders the undo emptied (the import's own subfolders and its
-/// target folder), innermost first. Only an empty folder goes (`remove_dir`
-/// refuses any other), so nothing anyone added or kept is touched; a vault
-/// without folders on disk has nothing to remove.
-fn remove_emptied_folders(vault: &Vault, trashed: &[NotePath]) {
+/// Remove the folders the undo emptied that the import itself made
+/// (`created`, from its record), innermost first. Only an empty folder goes
+/// (`remove_dir` refuses any other), so nothing anyone added or kept is
+/// touched, and a folder that was there before the import stays even when
+/// the import filled it; a vault without folders on disk has nothing to remove.
+fn remove_emptied_folders(vault: &Vault, trashed: &[NotePath], created: &[String]) {
     let Some(root) = vault.storage().absolute(&NotePath::new("")).and_then(|r| r.canonicalize().ok()) else { return };
     let mut dirs: Vec<std::path::PathBuf> = Vec::new();
     for p in trashed {
         let mut folder = p.folder().to_string();
         while !folder.is_empty() {
-            if let Some(abs) = vault.storage().absolute(&NotePath::new(&folder)) {
+            if created.contains(&folder)
+                && let Some(abs) = vault.storage().absolute(&NotePath::new(&folder))
+            {
                 dirs.push(abs);
             }
             folder = NotePath::new(&folder).folder().to_string();
@@ -287,7 +317,7 @@ pub fn undo(vault: &Vault, id: &str, now_ms: i64) -> Result<(ImportRecord, UndoP
     for p in &plan.trash {
         vault.trash(p).map_err(|e| format!("couldn't move {p} to the trash: {e}"))?;
     }
-    remove_emptied_folders(vault, &plan.trash);
+    remove_emptied_folders(vault, &plan.trash, &rec.created_folders);
     if plan.missing.is_empty() {
         rec.undone_ms = Some(now_ms);
     } else {
@@ -357,6 +387,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("Mine")).unwrap();
         std::fs::write(dir.path().join("Mine/Keep.md"), "k").unwrap();
+        std::fs::create_dir_all(dir.path().join("Empty before")).unwrap();
         let v = Vault::open_local(dir.path()).unwrap();
         let (_, rec) = run(&v, &plan(), "Imported", std::path::Path::new("/home/x/export.jex"), "d1", 1000, None, &mut |_| {}).unwrap();
         assert!(dir.path().join("Imported/sub/B.md").exists() && dir.path().join("Imported/attachments/x.png").exists());
@@ -372,6 +403,12 @@ mod tests {
         undo(&v, &rec.id, 4000).unwrap();
         assert!(!dir.path().join("Imported two").exists());
         assert!(dir.path().join("Mine").exists(), "folders the import didn't make stay");
+        // An empty folder that was there before is the person's, even when the import filled it.
+        let (_, rec) = run(&v, &plan(), "Empty before", std::path::Path::new("/x/e.jex"), "d1", 5000, None, &mut |_| {}).unwrap();
+        assert!(dir.path().join("Empty before/A.md").exists());
+        undo(&v, &rec.id, 6000).unwrap();
+        assert!(dir.path().join("Empty before").is_dir(), "a folder that existed before the import stays");
+        assert!(!dir.path().join("Empty before/sub").exists(), "the ones it made go");
     }
 
     #[test]
