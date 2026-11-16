@@ -20,7 +20,7 @@ good="[$(check lint completed '"success"' 2026-01-01T00:01:00Z), $(check dco com
 run() { # runs checks [exceptions]
   printf '%s' "$1" > "$work/runs.json"; printf '%s' "$2" > "$work/checks.json"
   printf '%s' "${3:-# nothing}" > "$work/exceptions.txt"
-  CI_RUNS_FILE="$work/runs.json" CI_CHECK_RUNS_FILE="$work/checks.json" CI_EXCEPTIONS_FILE="$work/exceptions.txt" \
+  CI_RUNS_FILE="$work/runs.json" CI_CHECK_RUNS_FILE="$work/checks.json" CI_EXCEPTIONS_FILE="$work/exceptions.txt" CI_ALSO_REQUIRED_FILE=/dev/null \
     "$tool" owner/repo abc123 > "$work/out.txt" 2>&1
 }
 expect_pass() { if ! run "${@:2}"; then echo "FAIL: $1 was refused"; cat "$work/out.txt"; exit 1; fi; echo "ok: $1"; }
@@ -37,10 +37,26 @@ expect_fail "a CI push run that is still going" '[{"name":"CI","event":"push","s
 # A failure followed by a re-run that passed: the latest of each name counts.
 expect_pass "a re-run that passed" "$runs_ok" "[$(check lint completed '"failure"' 2026-01-01T00:01:00Z), $(check lint completed '"success"' 2026-01-01T00:09:00Z)]"
 expect_fail "a re-run that failed after a pass" "$runs_ok" "[$(check lint completed '"success"' 2026-01-01T00:01:00Z), $(check lint completed '"failure"' 2026-01-01T00:09:00Z)]"
-# The Release workflow's own check-runs (suite 3) are not CI.
+# Check-runs of other suites (Release workflow 3; Dependabot, Audit, GHAS: 9) do not decide.
 expect_pass "a failed Release dry run on the same commit" "$runs_ok" "${good%]}, $(check publish completed '"failure"' 2026-01-01T00:05:00Z 3)]"
-bad="[$(check CodeQL completed '"failure"' 2026-01-01T00:01:00Z 1 github-advanced-security)]"
-expect_fail "a failed CodeQL result with no exception" "$runs_ok" "$bad"
-expect_pass "the same, listed with a reason" "$runs_ok" "$bad" 'CodeQL   # a test'
-expect_fail "an exception with no reason" "$runs_ok" "$bad" 'CodeQL'
+ghas="${good%]}, $(check CodeQL completed '"failure"' 2026-01-01T00:01:00Z 9 github-advanced-security)]"
+expect_pass "the GHAS CodeQL pull-request check failing" "$runs_ok" "$ghas"
+expect_pass "a failed Dependabot job" "${runs_ok%]}, {\"name\":\"dependabot\",\"event\":\"dynamic\",\"status\":\"completed\",\"conclusion\":\"success\",\"created_at\":\"2026-01-01T00:00:00Z\",\"check_suite_id\":9}]" "${good%]}, $(check advisories completed '"failure"' 2026-01-01T00:01:00Z 9)]"
+expect_pass "a Dependabot job still running" "$runs_ok" "${good%]}, $(check update in_progress null 2026-01-01T00:01:00Z 9)]"
+audit_failed='{"name":"Audit","event":"schedule","status":"completed","conclusion":"failure","created_at":"2026-01-01T00:00:00Z","check_suite_id":8}'
+expect_pass "a failed weekly Audit (a warning only)" "${runs_ok%]}, $audit_failed]" "$good"
+grep -q '::warning::The weekly dependency Audit' "$work/out.txt" || { echo "FAIL: no Audit warning"; cat "$work/out.txt"; exit 1; }
+# A queued re-run with no start time is not hidden behind an older success.
+expect_fail "a queued re-run after a success" "$runs_ok" "[$(check lint completed '"success"' 2026-01-01T00:01:00Z), $(check lint queued null null 1)]"
+# A name outside CI and CodeQL decides only when opted in.
+printf '%s' "$runs_ok" > "$work/runs.json"; printf '%s' "${good%]}, $(check advisories completed '"failure"' 2026-01-01T00:01:00Z 9)]" > "$work/checks.json"
+printf 'advisories  # test\n' > "$work/also.txt"
+if CI_RUNS_FILE="$work/runs.json" CI_CHECK_RUNS_FILE="$work/checks.json" CI_EXCEPTIONS_FILE=/dev/null CI_ALSO_REQUIRED_FILE="$work/also.txt" "$tool" owner/repo abc123 > "$work/out.txt" 2>&1; then
+  echo "FAIL: an opted-in failing check was accepted"; exit 1
+fi
+echo "ok: an opted-in check that failed is refused"
+bad="[$(check lint completed '"failure"' 2026-01-01T00:01:00Z 1)]"
+expect_fail "a failed CI check-run" "$runs_ok" "$bad"
+expect_pass "the same, listed with a reason" "$runs_ok" "$bad" 'lint   # a test'
+expect_fail "an exception with no reason" "$runs_ok" "$bad" 'lint'
 echo "All check-ci-green tests passed."
