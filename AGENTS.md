@@ -81,7 +81,7 @@ A persisted format change needs old data to still load, and a note in `docs/form
 | `quire-import` | `crates/quire-import` | importers (Logseq, Obsidian, Notion, Bear, Evernote, Roam, Keep, Joplin, Day One, HTML) | quire-markdown, quire-vault |
 | `quire-pdf` | `crates/quire-pdf` | PDF text with positions, page rendering, annotation notes | quire-markdown, quire-vault |
 | `quire-typeset` | `crates/quire-typeset` | math, Mermaid and PDF export through Typst (the full edition only) | none |
-| `quire-spell` | `crates/quire-spell` | Markdown-aware spell checking (Hunspell dictionaries) | none |
+| `quire-spell` | `crates/quire-spell` | Markdown-aware spell checking (Hunspell dictionaries) | quire-vault |
 | `quire-mcp` | `crates/quire-mcp` | note tools and the MCP server (stdio and HTTP) | quire-agent, quire-app, quire-import |
 | `quire-assistant` | `crates/quire-assistant` | in-app agent panel loop, ACP bridge, wiki workflows | quire-agent, quire-ai, quire-app, quire-mcp |
 | `quire-web` | `crates/quire-web` | the web app of `quire-cli serve` | quire-agent, quire-app, quire-mcp |
