@@ -15,7 +15,7 @@ For an agent or a person starting cold. (Not to be confused with the `AGENTS.md`
 
 ## The gate
 
-CI (`.github/workflows/ci.yml`) runs all of this. Run the part your change touches before you commit; run all of it before a release.
+Run the part your change touches before you commit, and all of it before a release. CI (`.github/workflows/ci.yml`) runs every line below **except `actionlint`**, which no workflow runs: run it by hand when you touch a workflow. Where a line differs from CI's, the comment says so.
 
 ```sh
 cargo fmt --all -- --check
@@ -29,11 +29,12 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-it
 cargo deny check advisories bans licenses sources        # cargo install cargo-deny
 typos                                                    # cargo install typos-cli
 packaging/test-unpack-engine.sh && packaging/test-release-files.sh && packaging/test-check-ci-green.sh
-shellcheck --severity=error packaging/*.sh packaging/*/*.sh apps/quire-sync-server/*.sh
-actionlint && zizmor --offline .github/workflows/       # when you touch workflows
+shellcheck --severity=error packaging/*.sh packaging/linux/*.sh packaging/macos/*.sh packaging/windows/*.sh packaging/flatpak/*.sh apps/quire-sync-server/*.sh
+pipx run zizmor==1.31.1 --offline --format=github .github/workflows/   # CI's pinned version
+actionlint                                                # NOT run by CI: run it when you touch a workflow
 ```
 
-CI also has a `perf` job (speed budgets, `packaging/perf-check.py`) and a DCO job on pull requests. `cargo test --workspace` compiles candle for the on-device AI engine: a cold build takes 10+ minutes.
+CI's `packaging` job also validates the desktop entry and the AppStream file, parses the Flatpak manifest, compiles the Windows installer script with `makensis` and checks `Info.plist`; those need `desktop-file-utils`, `appstream`, `flatpak-builder` and `nsis`, and you only need them when you change those files. CI also has a `perf` job (speed budgets, `packaging/perf-check.py`) and a DCO job on pull requests. `cargo test --workspace` compiles candle for the on-device AI engine: a cold build takes 10+ minutes.
 
 **Small machine** (2 CPUs, about 7 GB RAM): set these on every cargo command, build crate by crate with `-p`, give each worktree its own `target/`, and check `df -h /` before a big build.
 
@@ -64,32 +65,32 @@ A persisted format change needs old data to still load, and a note in `docs/form
 
 ## Workspace
 
-22 members, bottom layer first; "depends on" lists direct workspace dependencies (`cargo metadata --no-deps --format-version 1`, any feature). Logic goes in crates with tests beside it; `apps/quire-desktop` only draws and forwards input; every user action is a `Command` in `crates/quire-app/src/commands.rs`, which also gives it a palette entry, a shortcut and the in-app shortcut list.
+22 members, ordered so that every crate comes after the crates it depends on (libraries first, then the apps). "Depends on" lists direct normal and build dependencies on other workspace crates, any feature, from `cargo metadata --no-deps --format-version 1`; **dev-dependencies are not counted** (for example `quire-cli` also dev-depends on `quire-sync` and `quire-sync-server`). Logic goes in crates with tests beside it; `apps/quire-desktop` only draws and forwards input; every user action is a `Command` in `crates/quire-app/src/commands.rs`, which also gives it a palette entry, a shortcut and the in-app shortcut list.
 
 | Crate | Path | What it is | Depends on (workspace crates) |
 |---|---|---|---|
+| `quire-canvas` | `crates/quire-canvas` | JSON Canvas model and serializer, ink SVG, Excalidraw | none |
+| `quire-spell` | `crates/quire-spell` | Markdown-aware spell checking (Hunspell dictionaries) | none |
 | `quire-text` | `crates/quire-text` | rope buffer, changes, transactions, undo tree (no I/O) | none |
 | `quire-markdown` | `crates/quire-markdown` | Markdown syntax, front matter, extraction, rendering, smart edits | quire-text |
-| `quire-vault` | `crates/quire-vault` | storage port, local and in-memory adapters, notes, templates, refactors, history | quire-markdown, quire-sync |
-| `quire-sync` | `crates/quire-sync` | end-to-end encrypted sync engine and its folder, S3 and WebDAV transports | quire-text |
-| `quire-index` | `crates/quire-index` | full-text, fuzzy and semantic search, link graph (actor thread) | quire-markdown, quire-plan, quire-vault |
 | `quire-plan` | `crates/quire-plan` | tasks, recurrence, agenda, reminders, periodic notes, flashcards | quire-markdown |
+| `quire-sync` | `crates/quire-sync` | end-to-end encrypted sync engine and its folder, S3 and WebDAV transports | quire-text |
+| `quire-typeset` | `crates/quire-typeset` | math, Mermaid and PDF export through Typst (the full edition only) | none |
+| `quire-vault` | `crates/quire-vault` | storage port, local and in-memory adapters, notes, templates, refactors, history | quire-markdown, quire-sync |
+| `quire-import` | `crates/quire-import` | importers (Logseq, Obsidian, Notion, Bear, Evernote, Roam, Keep, Joplin, Day One, HTML) | quire-markdown, quire-vault |
+| `quire-index` | `crates/quire-index` | full-text, fuzzy and semantic search, link graph (actor thread) | quire-markdown, quire-plan, quire-vault |
 | `quire-intel` | `crates/quire-intel` | related notes, link and tag suggestions, summaries, calculator, LLM port | quire-index, quire-markdown, quire-vault |
 | `quire-agent` | `crates/quire-agent` | agent store: actors, zones, policy, proposals, approvals, ledger | quire-intel, quire-markdown, quire-text, quire-vault |
 | `quire-ai` | `crates/quire-ai` | on-device AI client: model catalog, downloads, engine process and its protocol | quire-index, quire-intel |
-| `quire-canvas` | `crates/quire-canvas` | JSON Canvas model and serializer, ink SVG, Excalidraw | none |
-| `quire-import` | `crates/quire-import` | importers (Logseq, Obsidian, Notion, Bear, Evernote, Roam, Keep, Joplin, Day One, HTML) | quire-markdown, quire-vault |
 | `quire-pdf` | `crates/quire-pdf` | PDF text with positions, page rendering, annotation notes | quire-markdown, quire-vault |
-| `quire-typeset` | `crates/quire-typeset` | math, Mermaid and PDF export through Typst (the full edition only) | none |
-| `quire-spell` | `crates/quire-spell` | Markdown-aware spell checking (Hunspell dictionaries) | none |
+| `quire-app` | `crates/quire-app` | UI-agnostic application layer: Workspace, documents, commands, settings, sessions, sync glue | quire-agent, quire-ai, quire-canvas, quire-import, quire-index, quire-intel, quire-markdown, quire-pdf, quire-plan, quire-sync, quire-text, quire-typeset, quire-vault |
 | `quire-mcp` | `crates/quire-mcp` | note tools and the MCP server (stdio and HTTP) | quire-agent, quire-app, quire-import |
 | `quire-assistant` | `crates/quire-assistant` | in-app agent panel loop, ACP bridge, wiki workflows | quire-agent, quire-ai, quire-app, quire-mcp |
 | `quire-web` | `crates/quire-web` | the web app of `quire-cli serve` | quire-agent, quire-app, quire-mcp |
-| `quire-app` | `crates/quire-app` | UI-agnostic application layer: Workspace, documents, commands, settings, sessions, sync glue | quire-agent, quire-ai, quire-canvas, quire-import, quire-index, quire-intel, quire-markdown, quire-pdf, quire-plan, quire-sync, quire-text, quire-typeset, quire-vault |
-| `quire-desktop` | `apps/quire-desktop` | egui desktop app (draws and forwards input) | quire-ai, quire-app, quire-assistant, quire-canvas, quire-import, quire-mcp, quire-pdf, quire-spell, quire-typeset |
-| `quire-cli` | `apps/quire-cli` | headless Quire: search, import, export, tasks, sync, MCP, `serve` | quire-agent, quire-ai, quire-app, quire-assistant, quire-import, quire-mcp, quire-pdf, quire-web |
-| `quire-sync-server` | `apps/quire-sync-server` | self-hostable sync server (sees only encrypted data) | quire-sync |
 | `quire-ai-engine` | `apps/quire-ai-engine` | on-device AI engine: a separate process speaking JSON lines over stdio | quire-ai |
+| `quire-cli` | `apps/quire-cli` | headless Quire: search, import, export, tasks, sync, MCP, `serve` | quire-agent, quire-ai, quire-app, quire-assistant, quire-import, quire-mcp, quire-pdf, quire-web |
+| `quire-desktop` | `apps/quire-desktop` | egui desktop app (draws and forwards input) | quire-ai, quire-app, quire-assistant, quire-canvas, quire-import, quire-mcp, quire-pdf, quire-spell, quire-typeset |
+| `quire-sync-server` | `apps/quire-sync-server` | self-hostable sync server (sees only encrypted data) | quire-sync |
 
 ## Files many changes collide in
 

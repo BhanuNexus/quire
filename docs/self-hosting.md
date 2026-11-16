@@ -47,21 +47,24 @@ docker run -d --name quire-sync --restart unless-stopped -p 127.0.0.1:8787:8787 
 
 ## 2b. Or run the binary
 
-Download `quire-sync-server-<version>-linux-x86_64.tar.gz` from [Releases](https://github.com/BhanuNexus/quire/releases) (x86_64 only; on ARM64 build it with `cargo build --release -p quire-sync-server`). To try it:
+Download `quire-sync-server-<version>-linux-x86_64.tar.gz` from [Releases](https://github.com/BhanuNexus/quire/releases) (x86_64 only; on ARM64 build it with `cargo build --release -p quire-sync-server`). To try it (the database file is made in the current folder):
 
 ```bash
-QUIRE_SYNC_TOKEN=<your token> QUIRE_SYNC_DB=/var/lib/quire/sync.sqlite ./quire-sync-server
+tar -xzf quire-sync-server-<version>-linux-x86_64.tar.gz
+cd quire-sync-server-<version>-linux-x86_64
+QUIRE_SYNC_TOKEN=<your token> ./quire-sync-server
 ```
 
 To keep it running, install it and run it with systemd. The token goes in a file only the server can read, not on a command line:
 
 ```bash
+# from the folder that holds the downloaded .tar.gz (skip the tar line if you just extracted it)
 tar -xzf quire-sync-server-<version>-linux-x86_64.tar.gz
 sudo install -m 755 quire-sync-server-<version>-linux-x86_64/quire-sync-server /usr/local/bin/
 sudo useradd --system --home-dir /var/lib/quire-sync --create-home --shell /usr/sbin/nologin quire-sync
 sudo install -d -m 755 /etc/quire-sync
-openssl rand -hex 32 | sudo tee /etc/quire-sync/token > /dev/null    # or put the token from step 1 in this file
-sudo chown root:quire-sync /etc/quire-sync/token && sudo chmod 640 /etc/quire-sync/token
+sudo install -m 640 -o root -g quire-sync /dev/null /etc/quire-sync/token    # an empty file with its final permissions
+openssl rand -hex 32 | sudo tee /etc/quire-sync/token > /dev/null            # or put the token from step 1 in this file
 ```
 
 `/etc/systemd/system/quire-sync.service`:
@@ -70,6 +73,7 @@ sudo chown root:quire-sync /etc/quire-sync/token && sudo chmod 640 /etc/quire-sy
 [Unit]
 Description=Quire Sync server
 After=network-online.target
+Wants=network-online.target
 
 [Service]
 User=quire-sync
@@ -117,6 +121,7 @@ On the first device: **Settings → Sync**, enter the server address and token, 
 **No desktop on the first machine?** A headless machine with only `quire-cli` can start the vault from a folder of notes, and keeps the recovery key out of the terminal:
 
 ```bash
+mkdir -p ~/vault     # the folder must exist; put your notes in it, or leave it empty
 quire-cli sync join ~/vault --server https://sync.example.com --create --recovery-key-file ~/vault-recovery-key.txt --device "home server"
 ```
 

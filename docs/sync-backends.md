@@ -13,6 +13,7 @@ Each device writes only its own files and never changes one once written, so two
 **Headless** (a server, `quire-cli serve --sync`):
 
 ```sh
+mkdir -p ~/vault                              # sync join needs the folder to exist (an empty one is fine)
 # S3: the secret comes from the environment (or --secret-file, or a prompt), never the command line
 export QUIRE_S3_SECRET_ACCESS_KEY=…           # AWS_SECRET_ACCESS_KEY works too (the CLI says when it uses it)
 quire-cli sync join ~/vault --s3 https://s3.eu-central-1.amazonaws.com --region eu-central-1 \
@@ -132,6 +133,11 @@ Every device uses the storage credential you give it. With one shared key, any d
 
   Join with the shared key first (joining reads `space.json`; making the vault and upgrading it write it), then switch that device to its own key with `sync credentials`. A lost device's key can then only touch its own revisions, snapshots and key records, and you can delete that key without touching the others. Old snapshots made by other devices then stay until their maker deletes them.
 * **Versioning or object lock** (S3, B2, Wasabi, MinIO) keeps earlier versions of every object, so even a key that can delete can't destroy history for good. R2 has no versioning: use per-bucket tokens and keep the bucket for Quire alone.
+
+## When a pass would delete many notes, and notes this computer can't store
+
+- **Mass deletes wait for you.** If a sync pass would delete a large part of the vault at once, it sends nothing and the status says why. A folder that is empty or gone (an unplugged drive, a signed-out cloud folder) looks exactly like "every note deleted", so Quire asks first. If you meant it, run `quire-cli sync allow-deletes ~/vault`; if not, put the folder back and sync goes on by itself. A folder that can't be read at all stops the pass the same way and sends nothing. The exact rule, which can change between releases, is in [design/0.13.2-sync.md](design/0.13.2-sync.md).
+- **A note whose name this computer can't store** (a `:` or `?` in the name on Windows, a name that differs from another only in capitals on Windows or macOS) is skipped on this computer with a notice; everything else syncs, and the note is never deleted or renamed back. It arrives once it is renamed on another device.
 
 ## What it costs
 

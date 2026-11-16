@@ -83,6 +83,8 @@ has a first history version marked "Imported (Source)".
 
 ## From the command line
 
+`quire-cli import` makes the vault folder if it is missing. Every other `quire-cli` command needs an existing folder and stops with `No folder at …` otherwise (`mkdir` it first).
+
 ```bash
 quire-cli import ~/Downloads/export.jex ./vault                 # dry run
 quire-cli import ~/Downloads/export.jex ./vault --from joplin --into Imported --write
