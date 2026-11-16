@@ -906,3 +906,82 @@ fn an_unfinished_unlock_for_good_is_reported_and_can_be_finished() {
     ws.vault().unwrap().write(&np("Journal/New.md"), "plain now").unwrap();
     ws.shutdown();
 }
+
+/// A storage whose first conditional write to an encrypted file waits for
+/// a go-ahead (a long re-encryption, frozen at its first file).
+struct Gate {
+    inner: std::sync::Arc<quire_vault::MemFs>,
+    go: std::sync::Mutex<Option<crossbeam_channel::Receiver<()>>>,
+}
+
+impl quire_vault::Storage for Gate {
+    fn list(&self) -> quire_vault::Result<Vec<NotePath>> {
+        self.inner.list()
+    }
+    fn read_bytes(&self, p: &NotePath) -> quire_vault::Result<Vec<u8>> {
+        self.inner.read_bytes(p)
+    }
+    fn write_bytes_atomic(&self, p: &NotePath, b: &[u8]) -> quire_vault::Result<()> {
+        self.inner.write_bytes_atomic(p, b)
+    }
+    fn write_bytes_if(&self, p: &NotePath, still: &dyn Fn(Option<&[u8]>) -> bool, b: &[u8]) -> quire_vault::Result<bool> {
+        if p.as_str().ends_with(".qenc")
+            && let Some(go) = self.go.lock().unwrap().take()
+        {
+            let _ = go.recv();
+        }
+        self.inner.write_bytes_if(p, still, b)
+    }
+    fn rename(&self, a: &NotePath, b: &NotePath) -> quire_vault::Result<()> {
+        self.inner.rename(a, b)
+    }
+    fn trash(&self, p: &NotePath) -> quire_vault::Result<()> {
+        self.inner.trash(p)
+    }
+    fn exists(&self, p: &NotePath) -> bool {
+        self.inner.exists(p)
+    }
+    fn modified(&self, p: &NotePath) -> quire_vault::Result<std::time::SystemTime> {
+        self.inner.modified(p)
+    }
+    fn absolute(&self, _: &NotePath) -> Option<PathBuf> {
+        None
+    }
+    fn list_under(&self, f: &str) -> quire_vault::Result<Vec<NotePath>> {
+        self.inner.list_under(f)
+    }
+    fn remove(&self, p: &NotePath) -> quire_vault::Result<()> {
+        self.inner.remove(p)
+    }
+    fn set_locked_folders(&self, f: &[String]) {
+        self.inner.set_locked_folders(f);
+    }
+}
+
+/// Review D-L8: the app gets a key change's new recovery key before any
+/// file is encrypted again, so a crash during that never loses it.
+#[test]
+fn the_new_recovery_key_comes_before_any_file_changes() {
+    use quire_vault::Storage as _;
+    use quire_vault::lock;
+    let fs = std::sync::Arc::new(quire_vault::MemFs::with_files([("Journal/Day.md", "# Day\nMARKER-9d1f\n")]));
+    let v = quire_vault::Vault::new(std::sync::Arc::clone(&fs) as std::sync::Arc<dyn quire_vault::Storage>);
+    lock::lock_folder(&v, "Journal", Some(PASS), lock::Kdf::TEST, 1).unwrap();
+    let before = fs.read_bytes(&np("Journal/Day.md.qenc")).unwrap();
+    let (go, wait) = crossbeam_channel::bounded::<()>(0);
+    let gated =
+        quire_vault::Vault::new(std::sync::Arc::new(Gate { inner: std::sync::Arc::clone(&fs), go: std::sync::Mutex::new(Some(wait)) }));
+    gated.unlock("Journal", PASS).unwrap();
+    let (tx, rx) = crossbeam_channel::bounded(2);
+    let t = std::thread::spawn(move || super::run_key_change(&gated, "Journal".into(), "a new passphrase", false, &tx));
+    let first = rx.recv_timeout(Duration::from_secs(30)).unwrap();
+    let super::Done::KeyReady { recovery, .. } = first else { panic!("the recovery key comes first") };
+    assert_eq!(fs.read_bytes(&np("Journal/Day.md.qenc")).unwrap(), before, "no file changed yet");
+    // It opens the folder already.
+    let w = quire_vault::Vault::new(std::sync::Arc::clone(&fs) as std::sync::Arc<dyn quire_vault::Storage>);
+    w.unlock_with_key("Journal", lock::FolderKey::from_recovery_key(&recovery).unwrap()).unwrap();
+    assert!(w.read(&np("Journal/Day.md")).unwrap().contains(MARK));
+    go.send(()).unwrap();
+    assert!(matches!(rx.recv_timeout(Duration::from_secs(30)).unwrap(), super::Done::Rekeyed { .. }));
+    t.join().unwrap();
+}

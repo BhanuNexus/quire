@@ -144,7 +144,14 @@ impl LockDialog {
     }
 
     pub(crate) fn make_change(ws: &mut Workspace) -> Box<dyn OverlayView> {
-        Box::new(Self::new(Mode::Change, Self::initial(ws, true)))
+        let mut d = Self::new(Mode::Change, Self::initial(ws, true));
+        // A key change shows its new recovery key as soon as it has one,
+        // before the files are encrypted again.
+        if let Some(k) = ws.take_recovery_key() {
+            d.folder.clone_from(&k.0);
+            d.shown_key = Some(k);
+        }
+        Box::new(d)
     }
 
     pub(crate) fn make_stop(ws: &mut Workspace) -> Box<dyn OverlayView> {
