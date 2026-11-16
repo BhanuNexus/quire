@@ -1007,3 +1007,127 @@ fn keep_both_makes_no_copy_of_a_file_identical_to_its_encrypted_one() {
     assert!(!fs.list().unwrap().iter().any(|p| p.as_str().contains("plain copy")));
     assert!(v.read(&np("Journal/Day 1.md")).unwrap().contains(SECRET));
 }
+
+// ------------------------------------------------------------ 0.13.2 review (D-M4)
+
+/// Review D-M4, scenario 1: a file written with the key from before the
+/// last key change (by a device that still had it) after that change
+/// ended is brought to the current key before a new key change drops the
+/// old key; afterwards every file opens with the newest key file alone.
+#[test]
+fn a_new_key_change_first_finishes_files_left_under_the_previous_key() {
+    let (v, fs) = vault_with(&journal());
+    lock(&v);
+    let k1_file = fs.read(&np("Journal/quire-lock.json")).unwrap();
+    let (k1, id) = (KeyFile::parse(&k1_file).unwrap().unwrap_key(PASS).unwrap(), KeyFile::parse(&k1_file).unwrap().id().unwrap());
+    change_key(&v, "Journal", "second passphrase", 9).unwrap();
+    // A lagging device saves with K1 after the change ended (rotating is clear).
+    assert!(!v.key_file("Journal").unwrap().1.rotating);
+    fs.write_bytes_atomic(&np("Journal/Late.md.qenc"), &k1.seal(Kind::File, id, b"late, under K1").unwrap()).unwrap();
+    let w = Vault::new(Arc::clone(&fs) as Arc<dyn Storage>);
+    w.unlock("Journal", "second passphrase").unwrap();
+    change_key(&w, "Journal", "third passphrase", 10).unwrap();
+    // Only the newest key file: its key and its one previous key open everything.
+    let fresh = Vault::new(Arc::clone(&fs) as Arc<dyn Storage>);
+    fresh.unlock("Journal", "third passphrase").unwrap();
+    assert_eq!(fresh.read(&np("Journal/Late.md")).unwrap(), "late, under K1");
+    fresh.keys().set_previous("Journal", None);
+    assert_eq!(fresh.read(&np("Journal/Late.md")).unwrap(), "late, under K1", "under the newest key itself");
+    for (p, text) in journal().iter().filter(|(p, _)| p.starts_with("Journal/")) {
+        assert_eq!(fresh.read_file(&np(p)).unwrap(), text.as_bytes(), "{p}");
+    }
+}
+
+/// A storage whose reads of one file fail after the first, and whose
+/// conditional writes to it never land (as a file held open on Windows).
+struct HeldFile {
+    inner: Arc<MemFs>,
+    path: NotePath,
+    reads: AtomicUsize,
+}
+
+impl Storage for HeldFile {
+    fn list(&self) -> Result<Vec<NotePath>> {
+        self.inner.list()
+    }
+    fn read_bytes(&self, path: &NotePath) -> Result<Vec<u8>> {
+        if *path == self.path && self.reads.fetch_add(1, Ordering::SeqCst) > 0 {
+            return Err(VaultError::Io { path: path.to_string(), source: std::io::Error::other("held by another program") });
+        }
+        self.inner.read_bytes(path)
+    }
+    fn write_bytes_atomic(&self, path: &NotePath, bytes: &[u8]) -> Result<()> {
+        self.inner.write_bytes_atomic(path, bytes)
+    }
+    fn write_bytes_if(&self, path: &NotePath, still: &dyn Fn(Option<&[u8]>) -> bool, bytes: &[u8]) -> Result<bool> {
+        if *path == self.path {
+            return Ok(false);
+        }
+        self.inner.write_bytes_if(path, still, bytes)
+    }
+    fn rename(&self, from: &NotePath, to: &NotePath) -> Result<()> {
+        self.inner.rename(from, to)
+    }
+    fn trash(&self, path: &NotePath) -> Result<()> {
+        self.inner.trash(path)
+    }
+    fn exists(&self, path: &NotePath) -> bool {
+        self.inner.exists(path)
+    }
+    fn modified(&self, path: &NotePath) -> Result<SystemTime> {
+        self.inner.modified(path)
+    }
+    fn absolute(&self, _: &NotePath) -> Option<PathBuf> {
+        None
+    }
+    fn list_under(&self, folder: &str) -> Result<Vec<NotePath>> {
+        self.inner.list_under(folder)
+    }
+    fn remove(&self, path: &NotePath) -> Result<()> {
+        self.inner.remove(path)
+    }
+    fn set_locked_folders(&self, folders: &[String]) {
+        self.inner.set_locked_folders(folders);
+    }
+}
+
+/// Review D-M4, scenario 2: a file that can't be read when the key change
+/// checks what is left is not counted as done; the change stays unfinished
+/// (the previous key kept) and finishes once the file can be read.
+#[test]
+fn a_file_that_cant_be_read_keeps_the_key_change_unfinished() {
+    let (v, fs) = vault_with(&journal());
+    lock(&v);
+    let held = Vault::new(Arc::new(HeldFile { inner: Arc::clone(&fs), path: np("Journal/Day 1.md.qenc"), reads: AtomicUsize::new(0) }));
+    held.unlock("Journal", PASS).unwrap();
+    begin_change_key(&held, "Journal", "a new passphrase", 9).unwrap();
+    assert!(finish_change_key(&held, "Journal").is_err());
+    assert!(v.key_file("Journal").unwrap().1.rotating, "not marked done");
+    let again = Vault::new(Arc::clone(&fs) as Arc<dyn Storage>);
+    again.unlock("Journal", "a new passphrase").unwrap();
+    assert!(again.read(&np("Journal/Day 1.md")).unwrap().contains(SECRET), "through the kept previous key");
+    finish_change_key(&again, "Journal").unwrap();
+    again.keys().set_previous("Journal", None);
+    assert!(again.read(&np("Journal/Day 1.md")).unwrap().contains(SECRET));
+}
+
+/// Review D-M4, scenario 3: another device's key change that arrives while
+/// this one runs is never stamped done by it.
+#[test]
+fn a_key_file_replaced_during_a_key_change_is_not_marked_done() {
+    let (v, fs, hook) = hooked(&journal(), "Journal/Day 1.md.qenc");
+    lock(&v);
+    let k1 = v.keys().get("Journal").unwrap().1;
+    begin_change_key(&v, "Journal", "a new passphrase", 9).unwrap();
+    // Device B's key change (K1 → K3) reaches this vault mid-way.
+    let kf = v.key_file("Journal").unwrap().1;
+    let k3 = FolderKey::generate().unwrap();
+    let mut theirs = KeyFile::new(kf.id().unwrap(), &k3, "device B passphrase", Kdf::TEST, 11).unwrap();
+    theirs.set_previous(&k3, &k1).unwrap();
+    theirs.rotating = true;
+    let theirs = theirs.to_json();
+    let written = theirs.clone();
+    *hook.before.lock().unwrap() = Some(Box::new(move |fs: &MemFs| fs.write_atomic(&np("Journal/quire-lock.json"), &written).unwrap()));
+    assert!(finish_change_key(&v, "Journal").is_err());
+    assert_eq!(fs.read(&np("Journal/quire-lock.json")).unwrap(), theirs, "B's key file is left as B wrote it");
+}

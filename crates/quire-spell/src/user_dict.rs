@@ -79,7 +79,7 @@ impl UserDictionary {
         let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(io)?;
         tmp.write_all(text.as_bytes()).map_err(io)?;
         tmp.as_file().sync_all().map_err(io)?;
-        tmp.persist(path).map_err(|e| io(e.error))?;
+        quire_vault::replace_file(tmp, path).map_err(io)?;
         Ok(())
     }
 

@@ -14,6 +14,8 @@ spellbook.workspace = true
 flate2.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
+# The vault's replace-by-rename (Windows: works while the file is open).
+quire-vault.workspace = true
 
 [lints]
 workspace = true

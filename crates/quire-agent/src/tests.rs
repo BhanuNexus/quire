@@ -776,4 +776,11 @@ fn no_edit_is_written_without_the_version_from_before() {
     let r = store.submit(&agent, ChangeSet::one(Change::Edit { path: "wiki/Ropes.md".into(), new_text: "# Ropes\nchanged\n".into() }));
     assert!(r.is_err(), "{r:?}");
     assert_eq!(read(&vault, "wiki/Ropes.md"), "# Ropes\n");
+    // Review D-L6: deletes and renames follow the same rule.
+    let r = store.submit(&agent, ChangeSet::one(Change::Delete { path: "wiki/Ropes.md".into() }));
+    assert!(r.is_err(), "{r:?}");
+    let r = store
+        .submit(&agent, ChangeSet::one(Change::Rename { from: "wiki/Ropes.md".into(), to: "wiki/Cords.md".into(), update_links: true }));
+    assert!(r.is_err(), "{r:?}");
+    assert_eq!(read(&vault, "wiki/Ropes.md"), "# Ropes\n");
 }

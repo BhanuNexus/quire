@@ -30,10 +30,34 @@ const KDF: Kdf = if cfg!(test) { Kdf::TEST } else { Kdf::DEFAULT };
 
 /// What a background conversion finished with.
 enum Done {
-    Locked { folder: String, recovery: Option<String>, remember: bool, conflicts: usize },
-    Unlocked { folder: String, id: String },
-    Rekeyed { folder: String, recovery: Option<String>, remembered: bool },
-    Failed { folder: String, error: String, recovery: Option<String>, what: Conversion },
+    Locked {
+        folder: String,
+        recovery: Option<String>,
+        remember: bool,
+        conflicts: usize,
+    },
+    Unlocked {
+        folder: String,
+        id: String,
+    },
+    Rekeyed {
+        folder: String,
+        recovery: Option<String>,
+        remembered: bool,
+    },
+    Failed {
+        folder: String,
+        error: String,
+        recovery: Option<String>,
+        what: Conversion,
+    },
+    /// Not the end: a key change wrote its key file, and its new recovery
+    /// key is shown now, before any file is encrypted again.
+    KeyReady {
+        folder: String,
+        recovery: String,
+        remembered: bool,
+    },
 }
 
 /// Which conversion a job runs (for what to say when it stops).
@@ -673,27 +697,22 @@ impl Workspace {
         self.save_open_notes();
         let remembered = self.remembers_folder(&folder);
         let new = lock::zeroize::Zeroizing::new(new.to_string());
-        let (tx, rx) = bounded(1);
+        let (tx, rx) = bounded(2);
         let f = folder.clone();
-        std::thread::spawn(move || {
-            let failed = |folder, error: VaultError, recovery: Option<String>| {
-                let what = Conversion::ChangeKey { begun: recovery.is_some() };
-                Done::Failed { folder, error: error.to_string(), recovery, what }
-            };
-            // The key file first, and the new recovery key back before any
-            // file changes: if the rest stops, it is still shown.
-            let done = match lock::begin_change_key(&vault, &f, &new, crate::history_ops::now_ms()) {
-                Err(e) => failed(f, e, None),
-                Ok(rk) => match lock::finish_change_key(&vault, &f) {
-                    Ok(_) => Done::Rekeyed { folder: f, recovery: Some(rk), remembered },
-                    Err(e) => failed(f, e, Some(rk)),
-                },
-            };
-            let _ = tx.send(done);
-        });
+        std::thread::spawn(move || run_key_change(&vault, f, &new, remembered, &tx));
         let what = Conversion::ChangeKey { begun: false };
         self.features.secure.job = Some(Job { label: format!("Changing the key of {folder}/…"), folder, what, rx });
         Ok(())
+    }
+
+    /// Keep `folder`'s current key in this computer's keychain again (after
+    /// a key change, the one kept there is the old one).
+    fn remember_new_key(&mut self, folder: &str) {
+        if let Some((_, key)) = self.vault.as_ref().and_then(|v| v.keys().get(folder))
+            && let Err(e) = self.remember_key(folder, &key)
+        {
+            self.notify(NoticeLevel::Warn, e);
+        }
     }
 
     /// Whether this computer unlocks `folder` automatically.
@@ -833,6 +852,29 @@ fn rekey_unfinished(vault: &Vault, folder: &str) -> Option<String> {
     })
 }
 
+/// A key change, on its own thread: the key file first, and the new
+/// recovery key sent ([`Done::KeyReady`]) before any file is encrypted
+/// again, so a crash or quit during the long part never loses it.
+fn run_key_change(vault: &Vault, f: String, new: &str, remembered: bool, tx: &crossbeam_channel::Sender<Done>) {
+    let failed = |folder, error: VaultError, begun| Done::Failed {
+        folder,
+        error: error.to_string(),
+        recovery: None,
+        what: Conversion::ChangeKey { begun },
+    };
+    let done = match lock::begin_change_key(vault, &f, new, crate::history_ops::now_ms()) {
+        Err(e) => failed(f, e, false),
+        Ok(rk) => {
+            let _ = tx.send(Done::KeyReady { folder: f.clone(), recovery: rk, remembered });
+            match lock::finish_change_key(vault, &f) {
+                Ok(_) => Done::Rekeyed { folder: f, recovery: None, remembered: false },
+                Err(e) => failed(f, e, true),
+            }
+        }
+    };
+    let _ = tx.send(done);
+}
+
 fn unlock_error(vault: &Vault, folder: &str, e: &VaultError) -> String {
     let hint = || rekey_unfinished(vault, folder).unwrap_or_default();
     match e {
@@ -871,9 +913,18 @@ pub(crate) fn tick(ws: &mut Workspace, now: Instant) -> bool {
         }
     });
     if let Some(done) = done {
-        ws.features.secure.job = None;
         changed = true;
-        finished(ws, done);
+        if let Done::KeyReady { folder, recovery, remembered } = done {
+            // The job goes on: the new recovery key is shown now.
+            if remembered {
+                ws.remember_new_key(&folder);
+            }
+            ws.features.secure.recovery = Some((folder, recovery.into()));
+            ws.request_ui(UiRequest::Feature(Command::ChangeFolderPassphrase));
+        } else {
+            ws.features.secure.job = None;
+            finished(ws, done);
+        }
     }
     if let Some(ix) = ws.features.secure.building.as_ref().and_then(|rx| rx.try_recv().ok()) {
         let st = &mut ws.features.secure;
@@ -1023,13 +1074,11 @@ fn finished(ws: &mut Workspace, done: Done) {
                 plain_left_notice(ws, &left);
             }
         }
+        Done::KeyReady { .. } => {} // handled in `tick`
         Done::Rekeyed { folder, recovery, remembered } => {
             // The key this computer kept is the old one: keep the new one instead.
-            if remembered
-                && let Some((_, key)) = ws.vault.as_ref().and_then(|v| v.keys().get(&folder))
-                && let Err(e) = ws.remember_key(&folder, &key)
-            {
-                ws.notify(NoticeLevel::Warn, e);
+            if remembered {
+                ws.remember_new_key(&folder);
             }
             ws.notify(
                 NoticeLevel::Info,
@@ -1037,7 +1086,7 @@ fn finished(ws: &mut Workspace, done: Done) {
             );
             if let Some(rk) = recovery {
                 ws.features.secure.recovery = Some((folder, rk.into()));
-                ws.request_ui(UiRequest::Feature(Command::LockFolder));
+                ws.request_ui(UiRequest::Feature(Command::ChangeFolderPassphrase));
             }
             ws.rebuild_locked_index();
             ws.recheck_locked_docs();
@@ -1086,7 +1135,8 @@ fn failed_text(folder: &str, error: &str, key_shown: bool, what: Conversion) -> 
         ),
         Conversion::ChangeKey { begun: true } => format!(
             "Changing the key of {folder}/ stopped: {error}. Every note in it still opens, but only with the new passphrase you chose \
-             and the new recovery key (shown now: store it); the old passphrase and recovery key no longer open it. \
+             and the new recovery key (shown when the change began; with the new passphrase, “Show a locked folder's recovery key…” \
+             shows it again); the old passphrase and recovery key no longer open it. \
              To finish, run “Change a locked folder's passphrase…” with “Also change the folder's key”, giving the new passphrase as the current one."
         ),
     }

@@ -150,13 +150,18 @@ impl LocalFs {
         Ok(self.root.join(p.as_str()))
     }
 
-    /// Every file under `dir`. The root must be readable; a folder below it
-    /// that disappears between being listed and being read (moved or
-    /// deleted meanwhile) is left out, not an error for the whole listing.
-    fn walk(&self, dir: &Path, out: &mut Vec<NotePath>) -> Result<()> {
+    /// Every file under `dir`. A folder below the root that disappears
+    /// between being listed and being read (renamed or deleted meanwhile)
+    /// sets `vanished`: the listing is then not a true picture of the vault
+    /// (a renamed folder would look like deleted notes), and [`Storage::list`]
+    /// lists again. The root itself must be readable.
+    fn walk(&self, dir: &Path, out: &mut Vec<NotePath>, vanished: &mut bool) -> Result<()> {
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
-            Err(e) if dir != self.root && e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) if dir != self.root && e.kind() == std::io::ErrorKind::NotFound => {
+                *vanished = true;
+                return Ok(());
+            }
             Err(e) => return Err(io_err(dir.display().to_string())(e)),
         };
         for entry in entries.flatten() {
@@ -170,11 +175,14 @@ impl LocalFs {
             }
             let ft = match entry.file_type() {
                 Ok(ft) => ft,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    *vanished = true;
+                    continue;
+                }
                 Err(e) => return Err(io_err(rel)(e)),
             };
             if ft.is_dir() {
-                self.walk(&path, out)?;
+                self.walk(&path, out, vanished)?;
             } else if ft.is_file() {
                 out.push(NotePath::new(rel));
             }
@@ -186,7 +194,7 @@ impl LocalFs {
     /// be put in place with [`Self::place`]. Done without
     /// [`one_write_at_a_time`] held, so a slow disk's flush doesn't hold
     /// up every other write.
-    fn prepare(&self, path: &NotePath, contents: &[u8]) -> Result<(PathBuf, tempfile::NamedTempFile)> {
+    fn prepare(&self, path: &NotePath, contents: &[u8]) -> Result<(PathBuf, Pending)> {
         let abs = self.abs(path)?;
         self.no_plain_into_locked(path)?;
         let dir = abs.parent().unwrap_or(&self.root);
@@ -202,15 +210,36 @@ impl LocalFs {
             let mode = std::fs::metadata(&abs).map_or(0o644, |m| m.permissions().mode());
             let _ = tmp.as_file().set_permissions(std::fs::Permissions::from_mode(mode));
         }
-        Ok((abs, tmp))
+        Ok((abs, Pending::keep(tmp).map_err(io_err(path.to_string()))?))
     }
 
-    /// Put a [`Self::prepare`]d file in place (call with
-    /// [`one_write_at_a_time`] held). The locked-folder check runs again
-    /// here: a key file may have arrived since.
-    fn place(&self, path: &NotePath, abs: &Path, tmp: tempfile::NamedTempFile) -> Result<()> {
-        self.no_plain_into_locked(path)?;
-        replace_file(tmp, abs).map_err(io_err(path.to_string()))
+    /// Put a [`Self::prepare`]d file in place, if `still` (when given)
+    /// accepts the file as it is now: the check and the rename are one step
+    /// under [`one_write_at_a_time`]. The locked-folder check runs again
+    /// there (a key file may have arrived since). Returns whether it wrote.
+    fn place(&self, path: &NotePath, abs: &Path, mut pending: Pending, still: Option<&Still<'_>>) -> Result<bool> {
+        retry_unlocked(|| {
+            if let Some(still) = still {
+                let now = match std::fs::read(abs) {
+                    Ok(b) => Some(b),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(e) if is_read_busy(&e) => return Ok(Step::Busy(io_err(path.to_string())(e))),
+                    Err(e) => return Err(io_err(path.to_string())(e)),
+                };
+                if !still(now.as_deref()) {
+                    return Ok(Step::Done(false));
+                }
+            }
+            self.no_plain_into_locked(path)?;
+            match std::fs::rename(&pending.path, abs) {
+                Ok(()) => {
+                    pending.placed = true;
+                    Ok(Step::Done(true))
+                }
+                Err(e) if is_busy(&e) => Ok(Step::Busy(io_err(path.to_string())(e))),
+                Err(e) => Err(io_err(path.to_string())(e)),
+            }
+        })
     }
 
     /// Refuse a plain file in a locked folder (0.11): whoever writes, the
@@ -223,8 +252,15 @@ impl LocalFs {
         }
     }
 
-    fn move_to_trash(&self, path: &NotePath) -> Result<()> {
-        self.move_to_trash_stamped(path, &chrono::Local::now().format("%Y%m%d-%H%M%S").to_string())
+    /// Move `path` to the trash (call with [`one_write_at_a_time`] held):
+    /// one try, a busy file reported as [`Step::Busy`].
+    fn move_to_trash(&self, path: &NotePath) -> Result<Step<()>> {
+        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+        match self.move_to_trash_stamped(path, &stamp) {
+            Ok(()) => Ok(Step::Done(())),
+            Err(e) if is_busy(&e) => Ok(Step::Busy(io_err(path.to_string())(e))),
+            Err(e) => Err(io_err(path.to_string())(e)),
+        }
     }
 
     /// Move `path` to `.trash/<stamp> <file name>`, or, when that name is
@@ -232,24 +268,25 @@ impl LocalFs {
     /// folder or another process), `<stamp> <name> (2).<ext>` and so on.
     /// The name is claimed by creating it new first, so nothing already in
     /// the trash is ever replaced.
-    fn move_to_trash_stamped(&self, path: &NotePath, stamp: &str) -> Result<()> {
-        let src = self.abs(path)?;
+    fn move_to_trash_stamped(&self, path: &NotePath, stamp: &str) -> std::io::Result<()> {
+        let src = self.abs(path).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
         let dir = self.root.join(".trash");
-        std::fs::create_dir_all(&dir).map_err(io_err(".trash"))?;
+        std::fs::create_dir_all(&dir)?;
         let mut n = 1;
         let dest = loop {
             let dest = dir.join(trash_name(stamp, path.file_name(), n));
             match std::fs::OpenOptions::new().write(true).create_new(true).open(&dest) {
                 Ok(_) => break dest,
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && n < 10_000 => n += 1,
-                Err(e) => return Err(io_err(".trash")(e)),
+                Err(e) => return Err(e),
             }
         };
         // Over the empty file just made, which only this call knows of.
-        retry_busy(|| std::fs::rename(&src, &dest), REPLACE_PATIENCE, is_busy).map_err(|e| {
+        let r = std::fs::rename(&src, &dest);
+        if r.is_err() {
             let _ = std::fs::remove_file(&dest);
-            io_err(path.to_string())(e)
-        })
+        }
+        r
     }
 
     /// Whether `to` names the same file as `from` only in another case, on
@@ -269,6 +306,26 @@ impl LocalFs {
     }
 }
 
+/// How many times [`LocalFs`] lists the vault when a folder vanished
+/// during a listing, before it gives up with an error.
+const LIST_TRIES: usize = 3;
+
+/// The listing `walk` makes, again while a folder vanished during it, up
+/// to [`LIST_TRIES`] times; then an error.
+fn stable_listing(mut walk: impl FnMut(&mut bool) -> Result<Vec<NotePath>>) -> Result<Vec<NotePath>> {
+    for _ in 0..LIST_TRIES {
+        let mut vanished = false;
+        let out = walk(&mut vanished)?;
+        if !vanished {
+            return Ok(out);
+        }
+    }
+    Err(VaultError::Io {
+        path: String::new(),
+        source: std::io::Error::other("folders kept being moved or deleted while the vault was listed; try again in a moment"),
+    })
+}
+
 /// The name of the `n`th file trashed as `name` at `stamp`.
 fn trash_name(stamp: &str, name: &str, n: usize) -> String {
     if n <= 1 {
@@ -280,15 +337,79 @@ fn trash_name(stamp: &str, name: &str, n: usize) -> String {
     }
 }
 
-/// How long a replace keeps trying while another program has the file
-/// open in a way that blocks it (Windows only).
-const REPLACE_PATIENCE: Duration = Duration::from_millis(400);
+/// How long one write, rename or read keeps trying, in all, while another
+/// program has the file open in a way that blocks it (Windows only).
+const REPLACE_PATIENCE: Duration = Duration::from_millis(300);
 
-/// Whether `e` means another program has the file open right now (Windows:
-/// access denied, sharing violation, lock violation): worth a short retry.
-/// Never on other systems, where an open file doesn't block a rename.
+/// Whether a rename failed because another program has the file open
+/// right now (Windows: access denied, which a file open without delete
+/// sharing gives, or a sharing violation): worth a short retry. Never on
+/// other systems, where an open file doesn't block a rename.
 fn is_busy(e: &std::io::Error) -> bool {
-    cfg!(windows) && matches!(e.raw_os_error(), Some(5 | 32 | 33))
+    cfg!(windows) && matches!(e.raw_os_error(), Some(5 | 32))
+}
+
+/// Whether a read failed because another program holds the file right now
+/// (Windows: a sharing or lock violation, as while a log is appended to).
+/// Not access denied: that is also a real permission error, or a folder.
+fn is_read_busy(e: &std::io::Error) -> bool {
+    cfg!(windows) && matches!(e.raw_os_error(), Some(32 | 33))
+}
+
+/// The check of a compare-and-swap ([`Storage::write_bytes_if`]).
+type Still<'a> = dyn Fn(Option<&[u8]>) -> bool + 'a;
+
+/// One try of a write under [`one_write_at_a_time`]: done, or blocked by
+/// another program for now (with the error to give if it stays so).
+enum Step<T> {
+    Done(T),
+    Busy(VaultError),
+}
+
+/// Run `op` with [`one_write_at_a_time`] held, again after a short wait
+/// while it reports [`Step::Busy`], within [`REPLACE_PATIENCE`] in all.
+/// The lock is not held while waiting, so other writes go on meanwhile;
+/// `op` makes its checks again on each try.
+fn retry_unlocked<T>(mut op: impl FnMut() -> Result<Step<T>>) -> Result<T> {
+    let start = Instant::now();
+    let mut wait = Duration::from_millis(5);
+    loop {
+        let step = {
+            let _one = one_write_at_a_time();
+            op()?
+        };
+        match step {
+            Step::Done(t) => return Ok(t),
+            Step::Busy(_) if start.elapsed() + wait <= REPLACE_PATIENCE => {
+                std::thread::sleep(wait);
+                wait = (wait * 2).min(Duration::from_millis(50));
+            }
+            Step::Busy(e) => return Err(e),
+        }
+    }
+}
+
+/// A flushed temporary file, an ordinary file now (not removed when the
+/// handle closes), removed on drop unless it was renamed into place.
+struct Pending {
+    path: PathBuf,
+    placed: bool,
+}
+
+impl Pending {
+    /// Closes the file; `keep` makes it an ordinary file (Windows marks
+    /// temporary files) that `tempfile` no longer removes on drop.
+    fn keep(tmp: tempfile::NamedTempFile) -> std::io::Result<Self> {
+        Ok(Self { path: tmp.into_temp_path().keep().map_err(|e| e.error)?, placed: false })
+    }
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        if !self.placed {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
 }
 
 /// Run `op` until it succeeds, fails for another reason than `busy`, or
@@ -321,12 +442,10 @@ fn retry_busy<T>(
 /// Quire's own readers) is retried for a few hundred milliseconds. The
 /// temporary file is removed if the replace fails.
 pub fn replace_file(tmp: tempfile::NamedTempFile, dest: &Path) -> std::io::Result<()> {
-    // Closes the file; `keep` makes it an ordinary file (Windows marks
-    // temporary files) that is no longer removed on drop: removed below on failure.
-    let path = tmp.into_temp_path().keep().map_err(|e| e.error)?;
-    retry_busy(|| std::fs::rename(&path, dest), REPLACE_PATIENCE, is_busy).inspect_err(|_| {
-        let _ = std::fs::remove_file(&path);
-    })
+    let mut pending = Pending::keep(tmp)?;
+    retry_busy(|| std::fs::rename(&pending.path, dest), REPLACE_PATIENCE, is_busy)?;
+    pending.placed = true;
+    Ok(())
 }
 
 impl Storage for LocalFs {
@@ -334,65 +453,79 @@ impl Storage for LocalFs {
         *self.locked.write().unwrap_or_else(PoisonError::into_inner) = folders.to_vec();
     }
 
+    /// Lists again when a folder vanished while it was being listed (a
+    /// folder renamed meanwhile), up to three times, then fails:
+    /// a listing missing a folder must not be taken for deleted notes.
     fn list(&self) -> Result<Vec<NotePath>> {
-        let mut out = Vec::new();
-        self.walk(&self.root, &mut out)?;
-        out.sort();
-        Ok(out)
+        stable_listing(|vanished| {
+            let mut out = Vec::new();
+            self.walk(&self.root, &mut out, vanished)?;
+            out.sort();
+            Ok(out)
+        })
     }
 
     fn read_bytes(&self, path: &NotePath) -> Result<Vec<u8>> {
         let abs = self.abs(path)?;
         // Windows: a log being appended to is locked for that moment.
-        retry_busy(|| std::fs::read(&abs), REPLACE_PATIENCE, is_busy).map_err(|e| {
+        retry_busy(|| std::fs::read(&abs), REPLACE_PATIENCE, is_read_busy).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound { VaultError::NotFound(path.to_string()) } else { io_err(path.to_string())(e) }
         })
     }
 
     fn write_bytes_atomic(&self, path: &NotePath, contents: &[u8]) -> Result<()> {
-        let (abs, tmp) = self.prepare(path, contents)?;
-        let _one = one_write_at_a_time();
-        self.place(path, &abs, tmp)
+        let (abs, pending) = self.prepare(path, contents)?;
+        self.place(path, &abs, pending, None).map(|_| ())
     }
 
     fn write_bytes_if(&self, path: &NotePath, still: &dyn Fn(Option<&[u8]>) -> bool, bytes: &[u8]) -> Result<bool> {
         // Written to a temporary file first; dropped (removed) if the check fails.
-        let (abs, tmp) = self.prepare(path, bytes)?;
-        let _one = one_write_at_a_time();
-        if !still(read_if_exists(self, path)?.as_deref()) {
-            return Ok(false);
-        }
-        self.place(path, &abs, tmp)?;
-        Ok(true)
+        let (abs, pending) = self.prepare(path, bytes)?;
+        self.place(path, &abs, pending, Some(still))
     }
 
     fn trash_if(&self, path: &NotePath, still: &dyn Fn(Option<&[u8]>) -> bool) -> Result<bool> {
-        let _one = one_write_at_a_time();
-        if !still(read_if_exists(self, path)?.as_deref()) {
-            return Ok(false);
-        }
-        self.move_to_trash(path)?;
-        Ok(true)
+        let abs = self.abs(path)?;
+        retry_unlocked(|| {
+            let now = match std::fs::read(&abs) {
+                Ok(b) => Some(b),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) if is_read_busy(&e) => return Ok(Step::Busy(io_err(path.to_string())(e))),
+                Err(e) => return Err(io_err(path.to_string())(e)),
+            };
+            if !still(now.as_deref()) {
+                return Ok(Step::Done(false));
+            }
+            Ok(match self.move_to_trash(path)? {
+                Step::Done(()) => Step::Done(true),
+                Step::Busy(e) => Step::Busy(e),
+            })
+        })
     }
 
     fn rename(&self, from: &NotePath, to: &NotePath) -> Result<()> {
         let (a, b) = (self.abs(from)?, self.abs(to)?);
-        let _one = one_write_at_a_time();
-        self.no_plain_into_locked(to)?;
-        // `meeting.md` → `Meeting.md` on a disk that ignores case: the
-        // target "exists" because it is this very file.
-        if b.exists() && !Self::case_only_rename(&a, &b) {
-            return Err(VaultError::Exists(to.to_string()));
-        }
-        if let Some(dir) = b.parent() {
-            std::fs::create_dir_all(dir).map_err(io_err(to.to_string()))?;
-        }
-        retry_busy(|| std::fs::rename(&a, &b), REPLACE_PATIENCE, is_busy).map_err(io_err(from.to_string()))
+        retry_unlocked(|| {
+            self.no_plain_into_locked(to)?;
+            // `meeting.md` → `Meeting.md` on a disk that ignores case: the
+            // target "exists" because it is this very file.
+            if b.exists() && !Self::case_only_rename(&a, &b) {
+                return Err(VaultError::Exists(to.to_string()));
+            }
+            if let Some(dir) = b.parent() {
+                std::fs::create_dir_all(dir).map_err(io_err(to.to_string()))?;
+            }
+            match std::fs::rename(&a, &b) {
+                Ok(()) => Ok(Step::Done(())),
+                Err(e) if is_busy(&e) => Ok(Step::Busy(io_err(from.to_string())(e))),
+                Err(e) => Err(io_err(from.to_string())(e)),
+            }
+        })
     }
 
     fn trash(&self, path: &NotePath) -> Result<()> {
-        let _one = one_write_at_a_time();
-        self.move_to_trash(path)
+        self.abs(path)?;
+        retry_unlocked(|| self.move_to_trash(path))
     }
 
     fn exists(&self, path: &NotePath) -> bool {
@@ -927,6 +1060,42 @@ mod tests {
         assert!(r.is_err() && tries == 1);
     }
 
+    /// Review D-L5: a write blocked by another program waits without the
+    /// process-wide write lock (other writes go on meanwhile), and gives up
+    /// within one bound for the whole write.
+    #[test]
+    fn a_blocked_write_waits_without_the_write_lock_and_within_one_bound() {
+        let free_while_waiting = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let t = {
+            let (free, stop) = (std::sync::Arc::clone(&free_while_waiting), std::sync::Arc::clone(&stop));
+            std::thread::spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                    if WRITES.try_lock().is_ok() {
+                        free.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            })
+        };
+        let start = Instant::now();
+        let r: Result<()> = retry_unlocked(|| {
+            // Held here: the lock is taken for each try.
+            assert!(WRITES.try_lock().is_err());
+            Ok(Step::Busy(VaultError::NotFound("blocked".into())))
+        });
+        let took = start.elapsed();
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        t.join().unwrap();
+        assert!(r.is_err());
+        assert!(took >= Duration::from_millis(200) && took < REPLACE_PATIENCE + Duration::from_millis(200), "{took:?}");
+        assert!(free_while_waiting.load(std::sync::atomic::Ordering::SeqCst) > 5, "the lock was free while waiting");
+        // Reads retry only on sharing or lock violations, never on access denied.
+        let denied = std::io::Error::from_raw_os_error(5);
+        assert!(!is_read_busy(&denied));
+        assert_eq!(is_read_busy(&std::io::Error::from_raw_os_error(32)), cfg!(windows));
+    }
+
     #[test]
     fn a_failed_replace_leaves_no_temporary_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -1012,16 +1181,35 @@ mod tests {
         assert!(!LocalFs::case_only_rename(&a, &a));
     }
 
-    /// For the sync team: a folder that goes away while the vault is being
-    /// listed is left out; an unreadable vault root is still an error.
+    /// Review D-L1: a folder that goes away while the vault is being listed
+    /// (renamed meanwhile) makes the listing untrustworthy: it is listed
+    /// again, and if that keeps happening the listing fails rather than
+    /// leaving the folder's notes out (sync would send them as deleted).
+    /// An unreadable vault root is an error too.
     #[test]
-    fn listing_skips_a_folder_that_vanishes_but_not_a_missing_root() {
+    fn a_listing_that_lost_a_folder_is_retried_then_refused() {
         let dir = tempfile::tempdir().unwrap();
         let fs = LocalFs::new(dir.path().join("v")).unwrap();
         fs.write_atomic(&NotePath::new("Keep/a.md"), "a").unwrap();
-        let mut out = Vec::new();
-        fs.walk(&fs.root().join("Gone"), &mut out).unwrap();
-        assert!(out.is_empty());
+        let (mut out, mut vanished) = (Vec::new(), false);
+        fs.walk(&fs.root().join("Gone"), &mut out, &mut vanished).unwrap();
+        assert!(out.is_empty() && vanished, "a folder gone mid-listing is noticed");
+        // Lost once, then a full listing: that one is used.
+        let mut tries = 0;
+        let got = stable_listing(|v| {
+            tries += 1;
+            *v = tries == 1;
+            Ok(if tries == 1 { vec![] } else { vec![NotePath::new("Projects/a.md")] })
+        });
+        assert_eq!((got.unwrap(), tries), (vec![NotePath::new("Projects/a.md")], 2));
+        // Lost every time: an error, never a short listing.
+        let mut tries = 0;
+        let got = stable_listing(|v| {
+            tries += 1;
+            *v = true;
+            Ok(vec![])
+        });
+        assert!(got.is_err() && tries == LIST_TRIES);
         assert_eq!(fs.list().unwrap(), [NotePath::new("Keep/a.md")]);
         std::fs::remove_dir_all(fs.root()).unwrap();
         assert!(fs.list().is_err(), "the root itself must be readable");

@@ -162,13 +162,13 @@ pub struct DiffLine {
 
 /// Tell the person, once, that version history couldn't be written.
 pub(crate) fn tick(ws: &mut Workspace, _now: std::time::Instant) -> bool {
-    match ws.history.take_failure() {
-        Some(text) => {
-            ws.notify(NoticeLevel::Warn, text);
-            true
-        }
-        None => false,
+    // Versions that couldn't be written, and old ones that couldn't be thinned out.
+    let pruning = ws.vault.as_ref().and_then(Vault::take_history_trouble);
+    let told: Vec<String> = ws.history.take_failure().into_iter().chain(pruning).collect();
+    for text in &told {
+        ws.notify(NoticeLevel::Warn, text.clone());
     }
+    !told.is_empty()
 }
 
 /// Line diff from `old` to `new` with `context` unchanged lines around changes.
@@ -357,5 +357,41 @@ mod tests {
         w.history.flush();
         tick(&mut w, std::time::Instant::now());
         assert_eq!(told(&w), 2);
+    }
+
+    /// Review D-L5: a save that keeps failing backs off (it doesn't try on
+    /// every tick, each try blocking the window) and is told once; it is
+    /// saved once it can be.
+    #[test]
+    fn autosave_backs_off_after_a_failed_save() {
+        use std::time::{Duration, Instant};
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("N.md"), "original").unwrap();
+        let mut w = Workspace::new(Settings::default());
+        w.open_vault(dir.path()).unwrap();
+        let id = w.open_note(&NotePath::new("N.md")).unwrap();
+        w.insert_text("edited ");
+        // The file can't be read or replaced: a folder stands where it was.
+        std::fs::remove_file(dir.path().join("N.md")).unwrap();
+        std::fs::create_dir(dir.path().join("N.md")).unwrap();
+        let told = |w: &Workspace| w.notices.iter().filter(|n| n.text.starts_with("Couldn't save")).count();
+        let tries = |w: &Workspace| w.doc(id).and_then(|d| d.save_retry).map_or(0, |(_, n)| n);
+        w.settings.autosave_ms = 0;
+        w.tick(Instant::now());
+        assert_eq!((tries(&w), told(&w)), (1, 1));
+        // Ticks right after: no new try.
+        for _ in 0..5 {
+            w.tick(Instant::now());
+        }
+        assert_eq!(tries(&w), 1);
+        assert!(w.next_deadline().is_some_and(|d| d > Instant::now()), "no busy loop waiting for it");
+        // Once the wait is over it tries again, quietly, and waits longer.
+        w.tick(Instant::now() + Duration::from_secs(10));
+        assert_eq!((tries(&w), told(&w)), (2, 1));
+        std::fs::remove_dir(dir.path().join("N.md")).unwrap();
+        w.tick(Instant::now() + Duration::from_mins(1));
+        assert_eq!(tries(&w), 0);
+        assert!(!w.doc(id).unwrap().is_dirty());
+        assert!(std::fs::read_to_string(dir.path().join("N.md")).unwrap().contains("edited"));
     }
 }

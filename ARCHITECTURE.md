@@ -92,13 +92,13 @@ The tree above is abridged. These are **all 22 workspace members**, ordered so t
 | Crate | Path | What it is | Depends on (workspace crates) |
 |---|---|---|---|
 | `quire-canvas` | `crates/quire-canvas` | JSON Canvas model and serializer, ink SVG, Excalidraw | none |
-| `quire-spell` | `crates/quire-spell` | Markdown-aware spell checking (Hunspell dictionaries) | none |
 | `quire-text` | `crates/quire-text` | rope buffer, changes, transactions, undo tree (no I/O) | none |
 | `quire-markdown` | `crates/quire-markdown` | Markdown syntax, front matter, extraction, rendering, smart edits | quire-text |
 | `quire-plan` | `crates/quire-plan` | tasks, recurrence, agenda, reminders, periodic notes, flashcards | quire-markdown |
 | `quire-sync` | `crates/quire-sync` | end-to-end encrypted sync engine and its folder, S3 and WebDAV transports | quire-text |
 | `quire-typeset` | `crates/quire-typeset` | math, Mermaid and PDF export through Typst (the full edition only) | none |
 | `quire-vault` | `crates/quire-vault` | storage port, local and in-memory adapters, notes, templates, refactors, history | quire-markdown, quire-sync |
+| `quire-spell` | `crates/quire-spell` | Markdown-aware spell checking (Hunspell dictionaries) | quire-vault |
 | `quire-import` | `crates/quire-import` | importers (Logseq, Obsidian, Notion, Bear, Evernote, Roam, Keep, Joplin, Day One, HTML) | quire-markdown, quire-vault |
 | `quire-index` | `crates/quire-index` | full-text, fuzzy and semantic search, link graph (actor thread) | quire-markdown, quire-plan, quire-vault |
 | `quire-intel` | `crates/quire-intel` | related notes, link and tag suggestions, summaries, calculator, LLM port | quire-index, quire-markdown, quire-vault |

@@ -407,7 +407,8 @@ impl AgentStore {
             }
             ChangeOp::Delete => {
                 let Ok(text) = vault.read(subject) else { return self.supersede(&store, &mut p, i).map(Some) };
-                let _ = vault.snapshot(subject, &text, now - 1, true);
+                // Without the version from before, an undo couldn't bring it back: no delete then.
+                vault.snapshot(subject, &text, now - 1, true)?;
                 let snap = self.newest_snapshot(subject);
                 vault.trash(subject)?;
                 let mut e = LedgerEntry::new(human, Op::Delete, now).path(subject);

@@ -346,8 +346,19 @@ impl Vault {
             self.storage().write_bytes_atomic(&NotePath::new(format!("{folder}/{at}{PROV_EXT}")), &bytes)?;
         }
         self.put_snapshot(note, at, &gzip(content))?;
-        self.prune_history(note, now_ms)?;
+        // The version is kept: old ones that can't be thinned out (a file
+        // held open, made read-only) don't make this a failure; the person
+        // is told once ([`Vault::take_history_trouble`]).
+        if let Err(e) = self.prune_history(note, now_ms) {
+            self.pruning.lock().unwrap_or_else(std::sync::PoisonError::into_inner).note(note, &e);
+        }
         Ok(true)
+    }
+
+    /// What went wrong thinning out version history, once per note, for
+    /// the person; `None` when nothing new.
+    pub fn take_history_trouble(&self) -> Option<String> {
+        self.pruning.lock().unwrap_or_else(std::sync::PoisonError::into_inner).untold.take()
     }
 
     /// Thin out old snapshots, removing provenance with its snapshot, and
@@ -398,6 +409,25 @@ impl Vault {
             self.storage().remove(&f)?;
         }
         Ok(())
+    }
+}
+
+/// Notes whose old versions couldn't be thinned out ([`Vault::take_history_trouble`]).
+#[derive(Debug, Default)]
+pub(crate) struct PruneTrouble {
+    told: std::collections::HashSet<NotePath>,
+    untold: Option<String>,
+}
+
+impl PruneTrouble {
+    fn note(&mut self, note: &NotePath, e: &VaultError) {
+        if self.told.insert(note.clone()) && self.untold.is_none() {
+            self.untold = Some(format!(
+                "Quire couldn't remove old versions of “{}” from its history ({e}). New versions are still kept; \
+                 check that the vault's .quire/history folder can be written.",
+                note.stem()
+            ));
+        }
     }
 }
 
@@ -536,6 +566,62 @@ mod tests {
         let texts: Vec<String> = v.history(&a).iter().map(|s| v.read_snapshot(s).unwrap()).collect();
         assert!(texts.contains(&"from a clock a day ahead".to_string()), "{texts:?}");
         assert!(texts.contains(&"one".to_string()) && texts.contains(&"three".to_string()), "{texts:?}");
+    }
+
+    /// A storage whose removals fail (an old snapshot held open, or made
+    /// read-only by a restore).
+    struct NoRemove(crate::MemFs);
+
+    impl crate::Storage for NoRemove {
+        fn list(&self) -> Result<Vec<NotePath>> {
+            self.0.list()
+        }
+        fn read_bytes(&self, p: &NotePath) -> Result<Vec<u8>> {
+            self.0.read_bytes(p)
+        }
+        fn write_bytes_atomic(&self, p: &NotePath, b: &[u8]) -> Result<()> {
+            self.0.write_bytes_atomic(p, b)
+        }
+        fn rename(&self, a: &NotePath, b: &NotePath) -> Result<()> {
+            self.0.rename(a, b)
+        }
+        fn trash(&self, p: &NotePath) -> Result<()> {
+            self.0.trash(p)
+        }
+        fn exists(&self, p: &NotePath) -> bool {
+            self.0.exists(p)
+        }
+        fn modified(&self, p: &NotePath) -> Result<std::time::SystemTime> {
+            self.0.modified(p)
+        }
+        fn absolute(&self, _: &NotePath) -> Option<std::path::PathBuf> {
+            None
+        }
+        fn list_under(&self, f: &str) -> Result<Vec<NotePath>> {
+            self.0.list_under(f)
+        }
+        fn remove(&self, p: &NotePath) -> Result<()> {
+            Err(VaultError::Io { path: p.to_string(), source: std::io::Error::from(std::io::ErrorKind::PermissionDenied) })
+        }
+    }
+
+    /// Review D-L6: an old version that can't be removed doesn't make
+    /// keeping a new one fail (agents refuse to write without it); it is
+    /// told once.
+    #[test]
+    fn old_versions_that_cant_be_removed_dont_fail_a_snapshot() {
+        let v = Vault::new(std::sync::Arc::new(NoRemove(crate::MemFs::new())));
+        let a = NotePath::new("A.md");
+        let now = 1_800_000_000_000;
+        let old = (now - 100 * DAY) / (7 * DAY) * (7 * DAY) + DAY;
+        v.snapshot(&a, "old 1", old, true).unwrap();
+        v.snapshot(&a, "old 2", old + HOUR, true).unwrap();
+        assert!(v.snapshot(&a, "new", now, true).unwrap(), "kept although thinning failed");
+        assert_eq!(v.read_snapshot(&v.history(&a)[0]).unwrap(), "new");
+        let told = v.take_history_trouble().unwrap();
+        assert!(told.contains("couldn't remove old versions of “A”"), "{told}");
+        assert!(v.snapshot(&a, "newer", now + HOUR, true).unwrap());
+        assert!(v.take_history_trouble().is_none(), "once");
     }
 
     #[test]

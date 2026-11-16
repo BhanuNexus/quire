@@ -60,6 +60,9 @@ pub struct Document {
     /// person accepting an agent's suggestion). `Workspace::save` takes it
     /// and writes it next to the history snapshot.
     pub next_save_provenance: Option<quire_agent::Provenance>,
+    /// After a failed save: when autosave tries again, and how many saves
+    /// failed in a row (the wait doubles, up to half a minute).
+    pub(crate) save_retry: Option<(Instant, u32)>,
 }
 
 const LINE_LOG_CAP: usize = 256;
@@ -83,6 +86,7 @@ impl Document {
             derived: RefCell::default(),
             line_log: Vec::new(),
             next_save_provenance: None,
+            save_retry: None,
         }
     }
 

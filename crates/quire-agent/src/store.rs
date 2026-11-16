@@ -1028,6 +1028,11 @@ impl AgentStore {
                 }
                 Change::Rename { from, to, update_links } => {
                     let text = p.before.unwrap_or_default();
+                    // History must work before anything moves: the notes whose
+                    // links the rename rewrites get their "before" version
+                    // right after (from the text read before it), and an undo
+                    // needs those.
+                    vault.snapshot(&from, &text, now - 1, true)?;
                     let updated = self.rename_file(&from, &to, update_links)?;
                     // Links rewritten in other notes are part of the same batch.
                     let batch = batch.clone().or_else(|| (!updated.is_empty()).then(|| BatchId::new(now).to_string()));
@@ -1054,7 +1059,8 @@ impl AgentStore {
                 }
                 Change::Delete { path } => {
                     let text = p.before.unwrap_or_default();
-                    let _ = vault.snapshot(&path, &text, now - 1, true);
+                    // Without the version from before, an undo couldn't bring it back: no delete then.
+                    vault.snapshot(&path, &text, now - 1, true)?;
                     entry.snap_before = self.newest_snapshot(&path);
                     vault.trash(&path)?;
                     entry.op = Op::Delete;
