@@ -143,11 +143,20 @@ when they save the state:
   before 0.13.2 that saves the state forgets the entry: the note then
   arrives on that device only when it changes again.
 
-Not in the state but next to it: `.quire/sync/allow-deletes` (0.13.2), an
-empty file. When a pass would send deletes for more than 10 notes and more
-than half of the notes this device holds, it sends nothing and asks; this
-file (`quire-cli sync allow-deletes <vault>`) says the deletes are meant.
-The next pass that finishes sends them and removes the file.
+* `deletes {since, held, sent}`: the deletes this device sent since
+  `since` (Unix ms, at most an hour ago), out of the most notes it held in
+  that time. A pass whose deletes, added to `sent`, are more than 10 and
+  more than half of `held` sends nothing and asks first. Deletes under
+  `.quire/` and a note replaced by its encrypted file (or back) don't count.
+
+Not in the state but next to it: `.quire/sync/held-deletes.json` (0.13.2),
+written when a pass held deletes back:
+`{"at": ms, "notes": [{"file": id, "path": p}…], "allowed_until": ms?}`.
+*Send these deletes* in Settings → Sync (or `quire-cli sync allow-deletes
+<vault>`) sets `allowed_until` 15 minutes out; until then, a pass whose
+counted deletes are all among `notes` sends them. A different set is held
+back again (the file is rewritten without `allowed_until`); the file goes
+once a pass succeeds.
 
 A state file that can't be parsed is copied to `<name>.unreadable` and sync
 starts afresh, with a notice (0.13.2; before, it started afresh silently).
