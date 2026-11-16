@@ -791,6 +791,7 @@ impl Workspace {
             Ok(()) => {
                 self.history.keep_with(vault, &path, &text, now, false, prov);
                 self.docs[i].next_save_provenance = None;
+                self.docs[i].save_retry = None;
                 self.docs[i].mark_saved(&text);
                 // Templates stay out of the index (and the Files tab), as at
                 // start; so do files shown as text (a canvas under review).
@@ -801,7 +802,14 @@ impl Workspace {
                 true
             }
             Err(e) => {
-                self.notify(NoticeLevel::Error, format!("Couldn't save: {e}"));
+                // Autosave backs off (1 s, 2 s, 4 s… up to 30 s) instead of
+                // trying again on every tick; the person is told once.
+                let failed = self.docs[i].save_retry.map_or(0, |(_, n)| n);
+                let wait = Duration::from_secs(1u64 << failed.min(5)).min(Duration::from_secs(30));
+                self.docs[i].save_retry = Some((Instant::now() + wait, failed + 1));
+                if failed == 0 {
+                    self.notify(NoticeLevel::Error, format!("Couldn't save: {e}. Quire keeps trying; your edits stay open meanwhile."));
+                }
                 false
             }
         }
@@ -877,6 +885,8 @@ impl Workspace {
             .docs
             .iter()
             .filter(|d| d.path.is_some() && d.is_dirty() && !d.conflict && d.last_edit().is_some_and(|t| now.duration_since(t) >= delay))
+            // A save that failed waits before it is tried again.
+            .filter(|d| d.save_retry.is_none_or(|(at, _)| now >= at))
             .map(|d| d.id)
             .collect();
         for id in due {
@@ -910,8 +920,12 @@ impl Workspace {
     /// Earliest instant at which `tick` has work to do: autosave, or a feature's deadline.
     pub fn next_deadline(&self) -> Option<Instant> {
         let delay = Duration::from_millis(self.settings.autosave_ms);
-        let autosave =
-            self.docs.iter().filter(|d| d.path.is_some() && d.is_dirty()).filter_map(Document::last_edit).map(|t| t + delay).min();
+        let autosave = self
+            .docs
+            .iter()
+            .filter(|d| d.path.is_some() && d.is_dirty())
+            .filter_map(|d| d.last_edit().map(|t| (t + delay).max(d.save_retry.map_or(t, |(at, _)| at))))
+            .min();
         let listing = self.file_list_pending().then(|| Instant::now() + Duration::from_millis(50));
         let setup = self.sync_setup_running().map(|_| Instant::now() + Duration::from_millis(100));
         autosave.into_iter().chain(listing).chain(setup).chain(crate::features::next_deadline(self)).min()
