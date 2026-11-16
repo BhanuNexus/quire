@@ -1013,7 +1013,8 @@ impl AgentStore {
                     let before = p.before.unwrap_or_default();
                     if before != new_text {
                         // Keep what was there (if history doesn't have it yet), then the new version.
-                        let _ = vault.snapshot(&path, &before, now - 1, true);
+                        // Without that version an undo couldn't bring it back: no write then.
+                        vault.snapshot(&path, &before, now - 1, true)?;
                         entry.snap_before = self.newest_snapshot(&path);
                         vault.storage().write_atomic(&path, &new_text)?;
                         let _ = vault.snapshot_with(&path, &new_text, now, true, Some(&self.provenance(actor, cs, Op::Write, &new_text)));

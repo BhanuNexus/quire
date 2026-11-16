@@ -758,3 +758,22 @@ fn attachments_follow_policy_and_limits() {
     store.set_cap(&other.id, Mode::Read);
     assert_eq!(store.add_attachment(&other, "d.png", png, None).unwrap_err().code(), "permission_denied");
 }
+
+/// Reliability scan item 10: an agent's edit is not written when the
+/// version from before it can't be kept (an undo couldn't bring it back).
+#[test]
+fn no_edit_is_written_without_the_version_from_before() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("wiki")).unwrap();
+    std::fs::write(dir.path().join("wiki/Ropes.md"), "# Ropes\n").unwrap();
+    let vault = Vault::open_local(dir.path()).unwrap();
+    let store = AgentStore::open(&vault, DeviceInfo { id: "d_test".into(), name: "Test".into() }, FixedClock::new(T0));
+    let agent = Actor::agent("mcp:claude-code", "Claude Code", Via::McpStdio, "d_test");
+    // History's folder can't be made: a file stands where it goes.
+    std::fs::create_dir_all(dir.path().join(".quire")).unwrap();
+    let _ = std::fs::remove_dir_all(dir.path().join(".quire/history"));
+    std::fs::write(dir.path().join(".quire/history"), "not a folder").unwrap();
+    let r = store.submit(&agent, ChangeSet::one(Change::Edit { path: "wiki/Ropes.md".into(), new_text: "# Ropes\nchanged\n".into() }));
+    assert!(r.is_err(), "{r:?}");
+    assert_eq!(read(&vault, "wiki/Ropes.md"), "# Ropes\n");
+}

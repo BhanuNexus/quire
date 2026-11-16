@@ -323,7 +323,7 @@ fn the_recovery_key_is_never_lost() {
     ws.start_locking("Box", PASS, false).unwrap();
     until(&mut [&mut ws], "the conversion", |w| w[0].lock_job().is_none());
     let text = notices(&ws);
-    assert!(text.contains("Converting Box/ stopped") && !text.contains("Nothing was lost"), "{text}");
+    assert!(text.contains("Locking Box/ stopped") && !text.contains("Nothing was lost"), "{text}");
     let (f, shown) = ws.take_recovery_key().expect("shown although the conversion stopped");
     assert_eq!(f, "Box");
     assert_eq!(ws.folder_recovery_key("Box", PASS).unwrap(), shown);
@@ -808,4 +808,101 @@ fn idle_locking_with_a_drawing_that_cannot_save_backs_off() {
     }
     assert_eq!(ws.features.canvas.save_now, asked, "no write retry each frame");
     assert_eq!(notices(&ws).matches("stays unlocked").count(), 1, "warned once");
+}
+
+// ------------------------------------------------------------ 0.13.2
+
+/// Reliability scan item 5: a key change that stops after the key file
+/// changed still shows the new recovery key, says which passphrase opens
+/// the folder now and how to finish; finishing with another new
+/// passphrase keeps that one.
+#[test]
+fn a_key_change_that_stops_shows_the_new_key_and_how_to_finish() {
+    let (_d, root) = vault_dir(&[("Journal/Day.md", "# Day\nMARKER-9d1f\n")]);
+    let mut ws = open(&root);
+    let old_rk = lock_and_wait(&mut ws, "Journal");
+    // A damaged encrypted file stops the re-encryption, after the key file changed.
+    let mut bad = std::fs::read(root.join("Journal/Day.md.qenc")).unwrap();
+    *bad.last_mut().unwrap() ^= 1;
+    std::fs::write(root.join("Journal/Bad.md.qenc"), &bad).unwrap();
+    ws.lock_folder_now("Journal");
+    ws.start_changing_key("Journal", PASS, "a new passphrase").unwrap();
+    until(&mut [&mut ws], "the key change", |w| w[0].lock_job().is_none());
+    let text = notices(&ws);
+    assert!(text.contains("Changing the key of Journal/ stopped") && text.contains("only with the new passphrase"), "{text}");
+    assert!(!text.contains("No plain file was removed"), "{text}");
+    let (f, new_rk) = ws.take_recovery_key().expect("the new recovery key is shown although the change stopped");
+    assert_eq!(f, "Journal");
+    assert_ne!(new_rk, old_rk);
+    // The old passphrase says why it no longer works.
+    ws.lock_folder_now("Journal");
+    let e = ws.unlock_folder("Journal", PASS, false).unwrap_err();
+    assert!(e.starts_with("Wrong passphrase.") && e.contains("didn't finish"), "{e}");
+    assert!(ws.unlock_with_recovery_key("Journal", &old_rk, None).unwrap_err().contains("didn't finish"));
+    // Both new ways in work.
+    ws.unlock_with_recovery_key("Journal", &new_rk, None).unwrap();
+    assert!(ws.vault().unwrap().read(&np("Journal/Day.md")).unwrap().contains(MARK));
+    ws.lock_folder_now("Journal");
+    ws.unlock_folder("Journal", "a new passphrase", false).unwrap();
+    // Finish, choosing yet another passphrase this time: it is the one kept.
+    std::fs::remove_file(root.join("Journal/Bad.md.qenc")).unwrap();
+    ws.lock_folder_now("Journal");
+    ws.start_changing_key("Journal", "a new passphrase", "a third passphrase").unwrap();
+    until(&mut [&mut ws], "the key change", |w| w[0].lock_job().is_none());
+    let (_, again) = ws.take_recovery_key().expect("shown again");
+    assert_eq!(again, new_rk, "the same new key");
+    ws.lock_folder_now("Journal");
+    assert!(ws.unlock_folder("Journal", "a new passphrase", false).is_err());
+    ws.unlock_folder("Journal", "a third passphrase", false).unwrap();
+    assert!(ws.vault().unwrap().read(&np("Journal/Day.md")).unwrap().contains(MARK));
+    assert!(!ws.vault().unwrap().key_file("Journal").unwrap().1.rotating);
+    assert!(leaks(&root, MARK).is_empty());
+}
+
+/// Reliability scan item 4: while this process converts a folder, its own
+/// rewrites are not read back (no locked-index rebuild, no versions) until
+/// the conversion ends; a conversion thread that stops without a word
+/// ends the job with a message.
+#[test]
+fn own_conversions_are_not_read_back_while_they_run() {
+    let (_d, root) = vault_dir(&[("Journal/Day.md", "# Day\nx\n")]);
+    let mut ws = open(&root);
+    lock_and_wait(&mut ws, "Journal");
+    ws.tick(Instant::now());
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    let job = super::Job { label: "Locking Journal/…".into(), folder: "Journal".into(), what: super::Conversion::Lock, rx };
+    ws.features.secure.job = Some(job);
+    let before = ws.features.secure.locked_version;
+    for p in ["Journal/quire-lock.json", "Journal/Day.md.qenc"] {
+        super::vault_event(&mut ws, &quire_vault::VaultEvent::AttachmentChanged(np(p)));
+    }
+    assert_eq!(ws.features.secure.locked_version, before);
+    assert!(ws.features.secure.building.is_none());
+    drop(tx);
+    ws.tick(Instant::now());
+    assert!(ws.lock_job().is_none());
+    let text = notices(&ws);
+    assert!(text.contains("Locking Journal/ stopped: it stopped unexpectedly"), "{text}");
+    assert!(ws.features.secure.locked_version > before, "read once at the end");
+}
+
+/// Reliability scan item 8: unlocking for good interrupted by a restart
+/// is reported on open, with how to finish; finishing makes saves work.
+#[test]
+fn an_unfinished_unlock_for_good_is_reported_and_can_be_finished() {
+    let (_d, root) = vault_dir(&[("Journal/Day.md", "# Day\nback to plain\n")]);
+    let mut ws = open(&root);
+    lock_and_wait(&mut ws, "Journal");
+    ws.shutdown();
+    // As an unlock for good leaves it when the app stops after its first step.
+    std::fs::rename(root.join("Journal/quire-lock.json"), root.join("Journal/quire-lock.unlocking.json")).unwrap();
+    let mut ws = open(&root);
+    let text = notices(&ws);
+    assert!(text.contains("Unlocking Journal/ for good didn't finish") && text.contains("Stop locking a folder"), "{text}");
+    assert!(ws.vault().unwrap().write(&np("Journal/New.md"), "plain").is_err(), "still nothing plain");
+    ws.start_unlocking_for_good("Journal", Some(PASS)).unwrap();
+    until(&mut [&mut ws], "decrypting", |w| w[0].lock_job().is_none());
+    assert_eq!(std::fs::read_to_string(root.join("Journal/Day.md")).unwrap(), "# Day\nback to plain\n");
+    ws.vault().unwrap().write(&np("Journal/New.md"), "plain now").unwrap();
+    ws.shutdown();
 }

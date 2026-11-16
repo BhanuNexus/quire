@@ -252,15 +252,21 @@ fn change_key(root: &Path, vault: &Vault, folder: &str, args: &[String]) -> Resu
             flag(args, "--new-passphrase-file"),
         )?)
     };
-    let r = lock::change_key(vault, folder, &new, now_ms()).map_err(|e| {
-        format!("{e}. Run `quire-cli lock {} {folder} --change-key` again to finish (with the new passphrase).", root.display())
-    })?;
-    if let (Some(out), Some(rk)) = (&out, &r.recovery_key) {
-        write_recovery_key(out, rk).map_err(|e| {
+    // The key file first, and the new recovery key saved, before any file changes.
+    let rk = Zeroizing::new(lock::begin_change_key(vault, folder, &new, now_ms()).map_err(|e| e.to_string())?);
+    if let Some(out) = &out {
+        write_recovery_key(out, &rk).map_err(|e| {
             format!("{folder}/ has a new key, but {e}. Show it with `quire-cli unlock {} {folder} --recovery-key-file F`.", root.display())
         })?;
         println!("The new recovery key is in {} (readable only by you). Keep it somewhere safe and delete it here.", out.display());
     }
+    let r = lock::finish_change_key(vault, folder).map_err(|e| {
+        format!(
+            "{e}. {folder}/ now opens only with the new passphrase (and the new recovery key); every note still opens. \
+             Run `quire-cli lock {} {folder} --change-key` again with the new passphrase to finish.",
+            root.display()
+        )
+    })?;
     println!(
         "{folder}/ has a new key: {} file{} and {} history version{} encrypted again. Old copies of its key file and the old recovery key no longer open it.",
         r.files,

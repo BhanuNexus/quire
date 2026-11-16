@@ -201,7 +201,13 @@ pub fn lock_folder(vault: &Vault, folder: &str, passphrase: Option<&str>, kdf: K
         stored_files(vault, &folder)?.into_iter().filter(|p| !is_encrypted_name(p.as_str()) && !is_key_file(p.as_str())).collect();
     let mut verified: Vec<(NotePath, String)> = Vec::with_capacity(plain.len());
     for p in &plain {
-        let bytes = vault.storage().read_bytes(p)?;
+        let bytes = match vault.storage().read_bytes(p) {
+            Ok(b) => b,
+            // Saved encrypted meanwhile (an autosave in the unlocked folder
+            // writes the `.qenc` and removes the plain file), moved or deleted.
+            Err(VaultError::NotFound(_)) => continue,
+            Err(e) => return Err(e),
+        };
         let tag = key.tag(&bytes);
         let enc = stored(p);
         let existing = match vault.storage().read_bytes(&enc) {
@@ -210,7 +216,7 @@ pub fn lock_folder(vault: &Vault, folder: &str, passphrase: Option<&str>, kdf: K
             Err(e) => return Err(e),
         };
         let recorded = journal.files.get(p.as_str()) == Some(&tag);
-        match existing.map(|b| vault.open_sealed(&folder, Kind::File, id, &key, &b)) {
+        match existing.as_ref().map(|b| vault.open_sealed(&folder, Kind::File, id, &key, b)) {
             // Already encrypted, same bytes.
             Some(Ok(b)) if b == bytes => {}
             // The original this device encrypted; the encrypted copy changed since (another device's edit): it wins.
@@ -225,7 +231,14 @@ pub fn lock_folder(vault: &Vault, folder: &str, passphrase: Option<&str>, kdf: K
                 journal.files.insert(p.as_str().to_string(), tag.clone());
                 journal.save(vault, id)?;
                 let sealed = key.seal(Kind::File, id, &bytes).map_err(|e| damaged(&enc, &e))?;
-                vault.storage().write_bytes_atomic(&enc, &sealed)?;
+                // Only over the encrypted copy as read above: a save that
+                // landed since is newer than these bytes and stays.
+                if !vault.storage().write_bytes_if(&enc, &|cur| cur == existing.as_deref(), &sealed)? {
+                    if vault.storage().exists(p) {
+                        report.conflicts.push(p.clone());
+                    }
+                    continue;
+                }
                 let back = vault.storage().read_bytes(&enc)?;
                 if key.open(Kind::File, id, &back).map_err(|e| damaged(&enc, &e))? != bytes {
                     return Err(VaultError::Damaged {
@@ -252,7 +265,7 @@ pub fn lock_folder(vault: &Vault, folder: &str, passphrase: Option<&str>, kdf: K
         vault.storage().remove(&journal_path(id))?;
     }
     // Phase 3: the history of the folder's notes, and of notes that were in it before.
-    for note in vault.locked_notes(&folder).into_iter().chain(vault.history_paths_under(&folder)) {
+    for note in vault.locked_notes(&folder).into_iter().chain(vault.history_paths_under(&folder)?) {
         report.history += vault.rehome_history(&note, &note)?;
     }
     report.conflicts.sort();
@@ -276,6 +289,14 @@ pub fn keep_both(vault: &Vault, folder: &str) -> Result<Vec<NotePath>> {
     let conflicts = plain_left(vault).into_iter().filter(|l| l.folder == folder).flat_map(|l| l.conflicts).collect::<Vec<_>>();
     for p in conflicts {
         let bytes = vault.storage().read_bytes(&p)?;
+        // The same text as the encrypted copy (a lock interrupted before it
+        // removed the plain files): nothing to keep twice.
+        if vault.read_file(&p).is_ok_and(|enc| enc == bytes) {
+            if vault.storage().read_bytes(&p).is_ok_and(|now| now == bytes) {
+                vault.storage().remove(&p)?;
+            }
+            continue;
+        }
         let to = copy_name(vault, &p, "plain copy");
         vault.write_locked(&f, &to, &bytes)?;
         if vault.read_file(&to)? != bytes {
@@ -325,26 +346,45 @@ pub fn unlock_folder_permanently(vault: &Vault, folder: &str, passphrase: Option
     let encrypted: Vec<NotePath> = stored_files(vault, &folder)?.into_iter().filter(|p| is_encrypted_name(p.as_str())).collect();
     for enc in &encrypted {
         let Some(plain) = plain_name(enc) else { continue };
-        let bytes = vault.open_sealed(&folder, Kind::File, id, &key, &vault.storage().read_bytes(enc)?).map_err(|e| damaged(enc, &e))?;
-        let target = match vault.storage().read_bytes(&plain) {
-            Ok(now) if now == bytes => continue,
-            // A plain file with other content: keep it, and this one beside it.
-            Ok(_) => {
-                let c = copy_name(vault, &plain, "encrypted copy");
-                report.conflicts.push(c.clone());
-                c
-            }
-            Err(VaultError::NotFound(_)) => plain,
+        let data = match vault.storage().read_bytes(enc) {
+            Ok(d) => d,
+            // Moved or deleted meanwhile.
+            Err(VaultError::NotFound(_)) => continue,
             Err(e) => return Err(e),
         };
-        vault.storage().write_bytes_atomic(&target, &bytes)?;
+        let bytes = vault.open_sealed(&folder, Kind::File, id, &key, &data).map_err(|e| damaged(enc, &e))?;
+        // Twice at most: a save can write the plain file between the look and the write.
+        let mut written = None;
+        for _ in 0..2 {
+            let target = match vault.storage().read_bytes(&plain) {
+                Ok(now) if now == bytes => break,
+                // A plain file with other content: keep it, and this one beside it.
+                Ok(_) => copy_name(vault, &plain, "encrypted copy"),
+                Err(VaultError::NotFound(_)) => plain.clone(),
+                Err(e) => return Err(e),
+            };
+            // Never over a file: only where nothing is.
+            if vault.storage().write_bytes_if(&target, &|cur| cur.is_none(), &bytes)? {
+                written = Some(target);
+                break;
+            }
+        }
+        let Some(target) = written else {
+            if vault.storage().read_bytes(&plain).is_ok_and(|now| now == bytes) {
+                continue;
+            }
+            return Err(VaultError::InvalidName(format!("{plain} kept changing while it was decrypted; run it again to finish.")));
+        };
         if vault.storage().read_bytes(&target)? != bytes {
             return Err(VaultError::Damaged { path: target.to_string(), reason: "the plain copy didn't read back the same".into() });
+        }
+        if target != plain {
+            report.conflicts.push(target);
         }
         report.files += 1;
     }
     for enc in &encrypted {
-        if plain_name(enc).is_some_and(|p| vault.storage().exists(&p)) {
+        if plain_name(enc).is_some_and(|p| vault.storage().exists(&p)) && vault.storage().exists(enc) {
             vault.storage().trash(enc)?;
         }
     }
@@ -367,7 +407,30 @@ pub fn unlock_folder_permanently(vault: &Vault, folder: &str, passphrase: Option
 /// previous key stays in the key file, readable only with the new one, for
 /// files another device may still write with it. Needs the folder unlocked.
 /// The report carries the new recovery key.
+///
+/// It is [`begin_change_key`] then [`finish_change_key`]; callers that
+/// must show the recovery key even if the rest fails call those two.
 pub fn change_key(vault: &Vault, folder: &str, passphrase: &str, now_ms: i64) -> Result<ConvertReport> {
+    let recovery = begin_change_key(vault, folder, passphrase, now_ms)?;
+    let mut report = finish_change_key(vault, folder)?;
+    report.recovery_key = Some(recovery);
+    Ok(report)
+}
+
+/// Start changing `folder`'s key: the key file first, and the new
+/// recovery key back before any file changes, so it can be shown even if
+/// the rest then stops ([`begin_lock`] does the same for locking).
+///
+/// From the moment this returns, the folder opens with `passphrase` and
+/// the new recovery key only. Needs the folder unlocked.
+///
+/// A key change that didn't finish (the key file says `rotating`) is
+/// taken up again: the new key stays, and its recovery key is returned
+/// again. If `passphrase` isn't the one the key file has now, and isn't
+/// empty, the key file is wrapped with it instead, so the passphrase typed
+/// last is the one that works (never ignored without a word). An empty
+/// `passphrase` keeps the one the key file has.
+pub fn begin_change_key(vault: &Vault, folder: &str, passphrase: &str, now_ms: i64) -> Result<String> {
     let folder = folder.trim().trim_matches('/').to_string();
     let (f, kf) = vault.key_file(&folder)?;
     if f.unlocking {
@@ -377,11 +440,15 @@ pub fn change_key(vault: &Vault, folder: &str, passphrase: &str, now_ms: i64) ->
     let id = kf.id().map_err(|e| damaged(&key_path, &e))?;
     let (_, current) = vault.keys().get(&folder).ok_or_else(|| VaultError::Locked(folder.clone()))?;
     kf.check_key(&current).map_err(|e| damaged(&key_path, &e))?;
-    let mut report = ConvertReport::default();
-    let (new, old) = if kf.rotating {
+    let next = if kf.rotating {
         // Resuming: the key file holds the new key already.
-        let old = vault.keys().previous(&folder).ok_or_else(|| VaultError::Locked(folder.clone()))?;
-        (current, old)
+        vault.keys().previous(&folder).ok_or_else(|| VaultError::Locked(folder.clone()))?;
+        if passphrase.is_empty() || kf.unwrap_key(passphrase).is_ok() {
+            return Ok(current.recovery_key());
+        }
+        let mut next = kf.clone();
+        next.rewrap(&current, passphrase).map_err(|e| damaged(&key_path, &e))?;
+        next
     } else {
         let new = FolderKey::generate().map_err(|e| damaged(&key_path, &e))?;
         let mut next = KeyFile::new(id, &new, passphrase, kf.kdf, now_ms).map_err(|e| damaged(&key_path, &e))?;
@@ -389,34 +456,69 @@ pub fn change_key(vault: &Vault, folder: &str, passphrase: &str, now_ms: i64) ->
         next.other.clone_from(&kf.other);
         next.set_previous(&new, &current).map_err(|e| damaged(&key_path, &e))?;
         next.rotating = true;
-        vault.storage().write_atomic(&key_path, &next.to_json())?;
-        // The key file as stored must give the new key back before any file changes.
-        let (_, stored_kf) = vault.key_file(&folder)?;
-        let again = stored_kf.unwrap_key(passphrase).map_err(|e| damaged(&key_path, &e))?;
-        stored_kf.check_key(&again).map_err(|e| damaged(&key_path, &e))?;
-        vault.keys().insert(&folder, id, new.clone());
-        vault.keys().set_previous(&folder, Some(current.clone()));
-        let _ = vault.note_locked_folder(&folder);
-        report.recovery_key = Some(new.recovery_key());
-        (new, current)
+        next
     };
-    for enc in stored_files(vault, &folder)?.into_iter().filter(|p| is_encrypted_name(p.as_str())) {
-        let data = vault.storage().read_bytes(&enc)?;
-        if new.open(Kind::File, id, &data).is_ok() {
-            continue;
+    // Only over the key file as read: another device's change since wins.
+    let before = kf.to_json();
+    if !vault.storage().write_bytes_if(
+        &key_path,
+        &|cur| cur.is_some_and(|c| KeyFile::parse(&String::from_utf8_lossy(c)).is_ok_and(|k| k.to_json() == before)),
+        next.to_json().as_bytes(),
+    )? {
+        return Err(VaultError::InvalidName(format!("{folder}/'s key file changed meanwhile (another device?); try again.")));
+    }
+    // The key file as stored must give the new key back before any file changes.
+    let (_, stored_kf) = vault.key_file(&folder)?;
+    let again = stored_kf.unwrap_key(passphrase).map_err(|e| damaged(&key_path, &e))?;
+    stored_kf.check_key(&again).map_err(|e| damaged(&key_path, &e))?;
+    if !kf.rotating {
+        vault.keys().insert(&folder, id, again.clone());
+        vault.keys().set_previous(&folder, Some(current));
+    }
+    let _ = vault.note_locked_folder(&folder);
+    Ok(again.recovery_key())
+}
+
+/// Encrypt again whatever of `folder` is still under its previous key,
+/// after [`begin_change_key`], and mark the key change done. Run again
+/// after an interruption, it picks up where it stopped.
+pub fn finish_change_key(vault: &Vault, folder: &str) -> Result<ConvertReport> {
+    let folder = folder.trim().trim_matches('/').to_string();
+    let (f, kf) = vault.key_file(&folder)?;
+    let key_path = f.key_file();
+    let id = kf.id().map_err(|e| damaged(&key_path, &e))?;
+    let (_, new) = vault.keys().get(&folder).ok_or_else(|| VaultError::Locked(folder.clone()))?;
+    kf.check_key(&new).map_err(|e| damaged(&key_path, &e))?;
+    let mut report = ConvertReport::default();
+    if !kf.rotating {
+        return Ok(report);
+    }
+    let old = vault.keys().previous(&folder).ok_or_else(|| VaultError::Locked(folder.clone()))?;
+    // A file moved, or saved with the previous key, while a pass runs is
+    // found by the next one; the key change is done only when every file
+    // opens with the new key (a later key change keeps only this one's
+    // previous key, so nothing may be left under it).
+    let mut rounds = 0;
+    loop {
+        report.files += reseal_files(vault, &folder, id, &old, &new)?;
+        let left = stored_files(vault, &folder)?
+            .into_iter()
+            .filter(|p| is_encrypted_name(p.as_str()))
+            .filter(|p| vault.storage().read_bytes(p).is_ok_and(|d| new.open(Kind::File, id, &d).is_err()))
+            .count();
+        if left == 0 {
+            break;
         }
-        let plain = old.open(Kind::File, id, &data).map_err(|e| damaged(&enc, &e))?;
-        let sealed = new.seal(Kind::File, id, &plain).map_err(|e| damaged(&enc, &e))?;
-        // Changed meanwhile (a save with either key): left for the next run.
-        if vault.storage().write_bytes_if(&enc, &|cur| cur == Some(data.as_slice()), &sealed)? {
-            if new.open(Kind::File, id, &vault.storage().read_bytes(&enc)?).ok() != Some(plain) {
-                return Err(VaultError::Damaged { path: enc.to_string(), reason: "the encrypted copy didn't read back the same".into() });
-            }
-            report.files += 1;
+        rounds += 1;
+        if rounds == 3 {
+            return Err(VaultError::InvalidName(format!(
+                "{left} file{} in {folder}/ kept changing while its key was changed; run it again to finish",
+                if left == 1 { "" } else { "s" }
+            )));
         }
     }
     let mut notes = vault.locked_notes(&folder);
-    notes.extend(vault.history_paths_under(&folder));
+    notes.extend(vault.history_paths_under(&folder)?);
     notes.sort();
     notes.dedup();
     for note in notes {
@@ -427,6 +529,46 @@ pub fn change_key(vault: &Vault, folder: &str, passphrase: &str, now_ms: i64) ->
     vault.storage().write_atomic(&key_path, &done.to_json())?;
     let _ = vault.note_locked_folder(&folder);
     Ok(report)
+}
+
+/// One pass of [`finish_change_key`] over the files: each `.qenc` still
+/// under `old` is encrypted again with `new`, compared and swapped only if
+/// unchanged. Returns how many it did.
+fn reseal_files(vault: &Vault, folder: &str, id: FolderId, old: &FolderKey, new: &FolderKey) -> Result<usize> {
+    let mut n = 0;
+    for enc in stored_files(vault, folder)?.into_iter().filter(|p| is_encrypted_name(p.as_str())) {
+        let data = match vault.storage().read_bytes(&enc) {
+            Ok(d) => d,
+            // Moved or deleted meanwhile.
+            Err(VaultError::NotFound(_)) => continue,
+            Err(e) => return Err(e),
+        };
+        if new.open(Kind::File, id, &data).is_ok() {
+            continue;
+        }
+        let plain = old.open(Kind::File, id, &data).map_err(|e| damaged(&enc, &e))?;
+        let sealed = new.seal(Kind::File, id, &plain).map_err(|e| damaged(&enc, &e))?;
+        // Changed meanwhile (a save with either key): left for the next pass.
+        if vault.storage().write_bytes_if(&enc, &|cur| cur == Some(data.as_slice()), &sealed)? {
+            let back = match vault.storage().read_bytes(&enc) {
+                Ok(b) => b,
+                Err(VaultError::NotFound(_)) => continue,
+                Err(e) => return Err(e),
+            };
+            if new.open(Kind::File, id, &back).ok() != Some(plain) {
+                // A save may have replaced it since; only our own bytes must read back.
+                if back == sealed {
+                    return Err(VaultError::Damaged {
+                        path: enc.to_string(),
+                        reason: "the encrypted copy didn't read back the same".into(),
+                    });
+                }
+                continue;
+            }
+            n += 1;
+        }
+    }
+    Ok(n)
 }
 
 /// A free name beside `p`: `Day 1 (what).md`, `Day 1 (what 2).md`…

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Version history operations for the active note: list, diff, restore.
 
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use crossbeam_channel::{Sender, bounded, unbounded};
@@ -38,9 +39,44 @@ enum Job {
 
 /// Writes version history on its own thread, in order, so saving a big note
 /// never waits on compressing it. Readers call [`HistoryWriter::flush`] first.
+///
+/// A version that can't be written (a full disk, a folder that can't be
+/// written, even a panic) is told once ([`tick`]), not on every save; once
+/// a version is written again, the next failure is told again.
 #[derive(Debug)]
 pub(crate) struct HistoryWriter {
     tx: Sender<Job>,
+    failure: Arc<Mutex<Failure>>,
+}
+
+/// What went wrong writing history, for the person.
+#[derive(Debug, Default)]
+struct Failure {
+    /// Failing since the last version written: later failures stay quiet.
+    failing: bool,
+    /// The first failure, not yet told.
+    untold: Option<String>,
+}
+
+impl Failure {
+    fn note(&mut self, path: &NotePath, r: std::thread::Result<Result<(), String>>) {
+        let error = match r {
+            Ok(Ok(())) => {
+                self.failing = false;
+                return;
+            }
+            Ok(Err(e)) => e,
+            Err(_) => "it stopped unexpectedly".to_string(),
+        };
+        if !self.failing {
+            self.failing = true;
+            self.untold = Some(format!(
+                "Quire couldn't keep a version of “{}” in its history: {error}. Notes are still saved; version history may miss \
+                 changes until this is fixed (check that the vault folder can be written and the disk isn't full).",
+                path.stem()
+            ));
+        }
+    }
 }
 
 impl std::fmt::Debug for Job {
@@ -52,18 +88,25 @@ impl std::fmt::Debug for Job {
 impl HistoryWriter {
     pub(crate) fn spawn() -> Self {
         let (tx, rx) = unbounded::<Job>();
+        let failure = Arc::new(Mutex::new(Failure::default()));
+        let failed = Arc::clone(&failure);
         std::thread::Builder::new()
             .name("quire-history".into())
             .spawn(move || {
                 for job in rx {
+                    // A panic in one job is a failure to tell, not the end of history for the session.
+                    let run = |f: &dyn Fn() -> quire_vault::Result<bool>| {
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f().map(|_| ()).map_err(|e| e.to_string())))
+                    };
                     match job {
                         Job::Keep { vault, path, text, at, force, prov } => {
-                            let _ = vault.snapshot_with(&path, &text, at, force, prov.as_ref());
+                            let r = run(&|| vault.snapshot_with(&path, &text, at, force, prov.as_ref()));
+                            failed.lock().unwrap_or_else(PoisonError::into_inner).note(&path, r);
                         }
                         Job::KeepFirst { vault, path, text, at } => {
-                            if vault.history(&path).is_empty() {
-                                let _ = vault.snapshot(&path, &text, at, true);
-                            }
+                            let r =
+                                run(&|| if vault.history(&path).is_empty() { vault.snapshot(&path, &text, at, true) } else { Ok(false) });
+                            failed.lock().unwrap_or_else(PoisonError::into_inner).note(&path, r);
                         }
                         Job::Flush(done) => {
                             let _ = done.send(());
@@ -72,7 +115,12 @@ impl HistoryWriter {
                 }
             })
             .expect("spawn history writer");
-        Self { tx }
+        Self { tx, failure }
+    }
+
+    /// The first history failure since the last one told, once.
+    pub(crate) fn take_failure(&self) -> Option<String> {
+        self.failure.lock().unwrap_or_else(PoisonError::into_inner).untold.take()
     }
 
     pub(crate) fn keep(&self, vault: &Vault, path: &NotePath, text: &str, at: i64, force: bool) {
@@ -110,6 +158,17 @@ pub enum DiffKind {
 pub struct DiffLine {
     pub kind: DiffKind,
     pub text: String,
+}
+
+/// Tell the person, once, that version history couldn't be written.
+pub(crate) fn tick(ws: &mut Workspace, _now: std::time::Instant) -> bool {
+    match ws.history.take_failure() {
+        Some(text) => {
+            ws.notify(NoticeLevel::Warn, text);
+            true
+        }
+        None => false,
+    }
 }
 
 /// Line diff from `old` to `new` with `context` unchanged lines around changes.
@@ -257,5 +316,46 @@ mod tests {
         assert_eq!(with_prov[0].accepted_from.as_ref().map(|a| a.id.as_str()), Some("mcp:claude-code"));
         assert_eq!(with_prov[0].hash, quire_vault::ContentHash::of("from the agent\none\n"));
         assert_eq!(vault.read_snapshot(&h[0]).unwrap(), "from the agent\ntyped more one\n");
+    }
+
+    /// Reliability scan item 10: a version that can't be written is told
+    /// once, not on every save, and told again after history worked.
+    #[test]
+    fn a_history_failure_is_told_once() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("N.md"), "original").unwrap();
+        let mut w = Workspace::new(Settings::default());
+        w.open_vault(dir.path()).unwrap();
+        w.open_note(&NotePath::new("N.md")).unwrap();
+        let id = w.active_doc().unwrap().id;
+        w.history.flush();
+        // History's folder can't be made: a file stands where it goes.
+        let history = dir.path().join(".quire/history");
+        let _ = std::fs::remove_dir_all(&history);
+        std::fs::create_dir_all(dir.path().join(".quire")).unwrap();
+        std::fs::write(&history, "not a folder").unwrap();
+        let told = |w: &Workspace| w.notices.iter().filter(|n| n.text.contains("couldn't keep a version")).count();
+        for i in 0..3 {
+            w.insert_text(&format!("edit {i} "));
+            assert!(w.save(id), "the note itself is saved");
+            w.history.flush();
+            tick(&mut w, std::time::Instant::now());
+        }
+        assert_eq!(told(&w), 1);
+        assert!(std::fs::read_to_string(dir.path().join("N.md")).unwrap().contains("edit 2"));
+        // History works again, then fails again: told again.
+        std::fs::remove_file(&history).unwrap();
+        w.insert_text("ok ");
+        assert!(w.save(id));
+        w.history.flush();
+        tick(&mut w, std::time::Instant::now());
+        assert_eq!(told(&w), 1);
+        std::fs::remove_dir_all(&history).unwrap();
+        std::fs::write(&history, "not a folder").unwrap();
+        w.insert_text("again ");
+        assert!(w.save(id));
+        w.history.flush();
+        tick(&mut w, std::time::Instant::now());
+        assert_eq!(told(&w), 2);
     }
 }

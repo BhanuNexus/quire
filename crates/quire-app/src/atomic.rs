@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 /// Replace `path` with `bytes` all at once.
 ///
 /// The bytes go to a temporary file in the same folder, are flushed to
-/// disk, then renamed over the old file. The temporary file has a random
+/// disk, then renamed over the old file ([`quire_vault::replace_file`]:
+/// on Windows this works while others have the file open for reading, and
+/// waits briefly for one that holds it locked). The temporary file has a random
 /// name and is created new (never one that already exists, so nobody can
 /// plant it beforehand), and with `private` it is readable only by its
 /// owner (Unix) from the moment it exists.
@@ -32,8 +34,7 @@ pub fn write(path: &Path, bytes: &[u8], private: bool) -> std::io::Result<()> {
     let mut tmp = b.tempfile_in(dir)?;
     tmp.write_all(bytes)?;
     tmp.as_file().sync_all()?;
-    tmp.persist(path).map_err(|e| e.error)?;
-    Ok(())
+    quire_vault::replace_file(tmp, path)
 }
 
 /// Create `path` with `bytes`, readable only by its owner (Unix).
@@ -96,6 +97,12 @@ mod tests {
             assert_eq!(std::fs::metadata(&q).unwrap().permissions().mode() & 0o777, 0o600);
         }
         assert!(keep_unreadable(&p).is_some_and(|c| std::fs::read(c).unwrap() == b"two"));
+        // A replace that fails leaves no temporary file.
+        let blocked = dir.path().join("blocked");
+        std::fs::create_dir_all(blocked.join("inside")).unwrap();
+        assert!(write(&blocked, b"x", false).is_err());
+        let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert!(names.iter().all(|n| !n.to_string_lossy().starts_with(".blocked.")), "{names:?}");
         // Written once, new, private.
         let rk = dir.path().join("recovery-key.txt");
         write_new_private(&rk, b"RK").unwrap();
@@ -106,5 +113,21 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(std::fs::metadata(&rk).unwrap().permissions().mode() & 0o777, 0o600);
         }
+    }
+
+    /// Reliability scan item 4: settings and other state files are replaced
+    /// on Windows while something holds them open for reading.
+    #[cfg(windows)]
+    #[test]
+    fn replaces_a_file_that_is_open_for_reading() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.toml");
+        write(&p, b"one", false).unwrap();
+        let held = std::fs::File::open(&p).unwrap();
+        write(&p, b"two", false).unwrap();
+        drop(held);
+        assert_eq!(std::fs::read(&p).unwrap(), b"two");
+        let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(names.len(), 1, "{names:?}");
     }
 }

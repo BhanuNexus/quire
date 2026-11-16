@@ -201,7 +201,8 @@ impl AgentStore {
             }
             let now = self.now_ms();
             let vault = self.vault();
-            let _ = vault.snapshot(path, &current, now - 1, true);
+            // Without the version from before, an undo couldn't bring it back: no write then.
+            vault.snapshot(path, &current, now - 1, true)?;
             let before = self.newest_snapshot(path);
             vault.storage().write_atomic(path, text)?;
             let _ = vault.snapshot_with(path, text, now, true, Some(&self.accepted_provenance(p, text).to_json()));

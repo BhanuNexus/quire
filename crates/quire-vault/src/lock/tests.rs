@@ -691,7 +691,7 @@ fn locking_encrypts_the_history_of_notes_deleted_or_renamed_before() {
     fs.remove(&old).unwrap();
     v.rename_note(&np("Journal/Trips/Lisbon.md"), "Porto").unwrap();
     v.snapshot(&np("Journal/Trips/Porto.md"), "# Lisbon\nMARKER-diary renamed\n", 20, true).unwrap();
-    assert_eq!(v.history_paths_under("Journal"), [old.clone(), np("Journal/Trips/Porto.md")]);
+    assert_eq!(v.history_paths_under("Journal").unwrap(), [old.clone(), np("Journal/Trips/Porto.md")]);
     lock(&v);
     assert_no_marker_in(&fs);
     assert!(v.read_snapshot(&v.history(&old)[0]).unwrap().contains("deleted before locking"));
@@ -759,7 +759,7 @@ fn changing_the_key_interrupted_at_any_step_finishes() {
                 assert_eq!(again.read_file(&np(p)).unwrap(), text.as_bytes(), "{p}");
             }
             if !done {
-                change_key(&again, "Journal", "unused", 10).unwrap();
+                change_key(&again, "Journal", "a new passphrase", 10).unwrap();
             }
             assert!(!again.key_file("Journal").unwrap().1.rotating);
         }
@@ -780,4 +780,230 @@ fn continue_or_finish(v: &Vault, files: &[(&str, &str)], fs: &Arc<MemFs>) {
         assert_eq!(v.read_file(&np(p)).unwrap(), text.as_bytes(), "{p}");
     }
     assert_no_marker_in(fs);
+}
+
+// ------------------------------------------------------------ 0.13.2
+
+/// Reliability scan item 5: a key change that stops at any step leaves a
+/// way in: before the key file changed, the old passphrase and recovery
+/// key; after, the new passphrase and the new recovery key, which
+/// `begin_change_key` hands over before any file changes. Running it
+/// again with another new passphrase uses that one, never ignores it.
+#[test]
+fn a_key_change_that_stops_anywhere_always_leaves_a_way_in() {
+    let files = journal();
+    let mut n = 0;
+    loop {
+        let fs = Arc::new(MemFs::with_files(files.iter().copied()));
+        let v = Vault::new(Arc::clone(&fs) as Arc<dyn Storage>);
+        let old_rk = lock(&v).recovery_key.unwrap();
+        let crashing = Vault::new(Arc::new(Crash { inner: Arc::clone(&fs), left: AtomicUsize::new(n) }));
+        crashing.unlock("Journal", PASS).unwrap();
+        let begun = begin_change_key(&crashing, "Journal", "a new passphrase", 9);
+        let done = begun.as_ref().is_ok_and(|_| finish_change_key(&crashing, "Journal").is_ok());
+        let fresh = || Vault::new(Arc::clone(&fs) as Arc<dyn Storage>);
+        let rotating = fresh().key_file("Journal").unwrap().1.rotating;
+        match &begun {
+            // The key file wasn't changed: everything as before.
+            Err(_) => {
+                assert!(!rotating);
+                fresh().unlock("Journal", PASS).unwrap();
+                fresh().unlock_with_key("Journal", FolderKey::from_recovery_key(&old_rk).unwrap()).unwrap();
+                all_readable(&fs, &files);
+            }
+            Ok(new_rk) => {
+                assert_ne!(*new_rk, old_rk);
+                // The new passphrase and the recovery key handed over both open every file.
+                for way in 0..2 {
+                    let w = fresh();
+                    if way == 0 {
+                        w.unlock("Journal", "a new passphrase").unwrap();
+                    } else {
+                        w.unlock_with_key("Journal", FolderKey::from_recovery_key(new_rk).unwrap()).unwrap();
+                    }
+                    for (p, text) in &files {
+                        assert_eq!(w.read_file(&np(p)).unwrap(), text.as_bytes(), "{p} (n = {n})");
+                    }
+                }
+                assert!(fresh().unlock("Journal", PASS).is_err(), "the old passphrase is replaced");
+                if !done {
+                    assert!(rotating);
+                    // Run again with another new passphrase: that one is kept, the key stays.
+                    let again = fresh();
+                    again.unlock("Journal", "a new passphrase").unwrap();
+                    let rk = begin_change_key(&again, "Journal", "another passphrase", 10).unwrap();
+                    assert_eq!(rk, *new_rk, "the same new key");
+                    finish_change_key(&again, "Journal").unwrap();
+                    let last = fresh();
+                    assert!(last.unlock("Journal", "a new passphrase").is_err());
+                    last.unlock("Journal", "another passphrase").unwrap();
+                    assert!(!last.key_file("Journal").unwrap().1.rotating);
+                    for (p, text) in &files {
+                        assert_eq!(last.read_file(&np(p)).unwrap(), text.as_bytes(), "{p}");
+                    }
+                    // Without the previous key, only the new key opens everything now.
+                    let only_new = fresh();
+                    only_new.unlock_with_key("Journal", FolderKey::from_recovery_key(new_rk).unwrap()).unwrap();
+                    only_new.keys().set_previous("Journal", None);
+                    for (p, text) in &files {
+                        assert_eq!(only_new.read_file(&np(p)).unwrap(), text.as_bytes(), "{p}");
+                    }
+                }
+            }
+        }
+        assert_no_marker_in(&fs);
+        if done {
+            break;
+        }
+        n += 1;
+        assert!(n < 200);
+    }
+    assert!(n > 3, "{n}");
+}
+
+/// What [`Hook`] runs once.
+type Before = Box<dyn FnOnce(&MemFs) + Send>;
+
+/// A storage that runs `before` once, just before the first conditional
+/// write to `when` (as if another writer got there first).
+struct Hook {
+    inner: Arc<MemFs>,
+    when: NotePath,
+    before: std::sync::Mutex<Option<Before>>,
+}
+
+impl Storage for Hook {
+    fn list(&self) -> Result<Vec<NotePath>> {
+        self.inner.list()
+    }
+    fn read_bytes(&self, path: &NotePath) -> Result<Vec<u8>> {
+        self.inner.read_bytes(path)
+    }
+    fn write_bytes_atomic(&self, path: &NotePath, bytes: &[u8]) -> Result<()> {
+        self.inner.write_bytes_atomic(path, bytes)
+    }
+    fn write_bytes_if(&self, path: &NotePath, still: &dyn Fn(Option<&[u8]>) -> bool, bytes: &[u8]) -> Result<bool> {
+        if *path == self.when
+            && let Some(h) = self.before.lock().unwrap().take()
+        {
+            h(&self.inner);
+        }
+        self.inner.write_bytes_if(path, still, bytes)
+    }
+    fn rename(&self, from: &NotePath, to: &NotePath) -> Result<()> {
+        self.inner.rename(from, to)
+    }
+    fn trash(&self, path: &NotePath) -> Result<()> {
+        self.inner.trash(path)
+    }
+    fn exists(&self, path: &NotePath) -> bool {
+        self.inner.exists(path)
+    }
+    fn modified(&self, path: &NotePath) -> Result<SystemTime> {
+        self.inner.modified(path)
+    }
+    fn absolute(&self, _: &NotePath) -> Option<PathBuf> {
+        None
+    }
+    fn list_under(&self, folder: &str) -> Result<Vec<NotePath>> {
+        self.inner.list_under(folder)
+    }
+    fn remove(&self, path: &NotePath) -> Result<()> {
+        self.inner.remove(path)
+    }
+    fn set_locked_folders(&self, folders: &[String]) {
+        self.inner.set_locked_folders(folders);
+    }
+}
+
+fn hooked(files: &[(&str, &str)], when: &str) -> (Vault, Arc<MemFs>, Arc<Hook>) {
+    let fs = Arc::new(MemFs::with_files(files.iter().copied()));
+    let hook = Arc::new(Hook { inner: Arc::clone(&fs), when: np(when), before: std::sync::Mutex::new(None) });
+    (Vault::new(Arc::clone(&hook) as Arc<dyn Storage>), fs, hook)
+}
+
+/// Reliability scan item 8: a save that lands while the folder is being
+/// locked (the editor writes the encrypted file and removes the plain
+/// one) is never written over, and doesn't stop the lock.
+#[test]
+fn a_save_during_locking_is_kept() {
+    let (v, fs, hook) = hooked(&journal(), "Journal/Day 1.md.qenc");
+    begin_lock(&v, "Journal", Some(PASS), Kdf::TEST, 1).unwrap();
+    let (id, key) = v.keys().get("Journal").unwrap();
+    let newer = key.seal(Kind::File, id, b"# Day 1\nsaved while locking\n").unwrap();
+    *hook.before.lock().unwrap() = Some(Box::new(move |fs: &MemFs| {
+        fs.write_bytes_atomic(&np("Journal/Day 1.md.qenc"), &newer).unwrap();
+        fs.remove(&np("Journal/Day 1.md")).unwrap();
+    }));
+    lock_folder(&v, "Journal", Some(PASS), Kdf::TEST, 1).unwrap();
+    assert_eq!(v.read(&np("Journal/Day 1.md")).unwrap(), "# Day 1\nsaved while locking\n");
+    assert!(plain_left(&v).is_empty());
+    assert_no_marker_in(&fs);
+    // A plain file saved (encrypted) away before the lock reads it is skipped, not an error.
+    let (v, _fs) = vault_with(&journal());
+    begin_lock(&v, "Journal", Some(PASS), Kdf::TEST, 1).unwrap();
+    v.write(&np("Journal/Day 1.md"), "# Day 1\nsaved first\n").unwrap();
+    lock(&v);
+    assert_eq!(v.read(&np("Journal/Day 1.md")).unwrap(), "# Day 1\nsaved first\n");
+}
+
+/// Reliability scan item 8: unlocking for good never writes over a plain
+/// file saved meanwhile; both are kept.
+#[test]
+fn a_save_during_unlocking_for_good_is_kept() {
+    let (v, fs, hook) = hooked(&journal(), "Journal/Day 1.md");
+    lock(&v);
+    *hook.before.lock().unwrap() = Some(Box::new(|fs: &MemFs| {
+        fs.write_bytes_atomic(&np("Journal/Day 1.md"), b"saved while unlocking").unwrap();
+    }));
+    let r = unlock_folder_permanently(&v, "Journal", None).unwrap();
+    assert_eq!(fs.read(&np("Journal/Day 1.md")).unwrap(), "saved while unlocking");
+    assert_eq!(r.conflicts, [np("Journal/Day 1 (encrypted copy).md")]);
+    assert!(fs.read(&np("Journal/Day 1 (encrypted copy).md")).unwrap().contains(SECRET));
+}
+
+/// Reliability scan item 8: a note trashed or moved during a key change
+/// doesn't stop it.
+#[test]
+fn a_note_moved_during_a_key_change_is_skipped() {
+    let (v, fs, hook) = hooked(&journal(), "Journal/Day 1.md.qenc");
+    lock(&v);
+    *hook.before.lock().unwrap() = Some(Box::new(|fs: &MemFs| {
+        fs.rename(&np("Journal/Trips/Lisbon.md.qenc"), &np("Journal/Trips/Porto.md.qenc")).unwrap();
+    }));
+    // Listing first, then the move, then the reads.
+    let r = change_key(&v, "Journal", "a new passphrase", 9).unwrap();
+    assert!(!v.key_file("Journal").unwrap().1.rotating || r.files < 3);
+    // Running it again finishes whatever was skipped.
+    change_key(&v, "Journal", "a new passphrase", 10).unwrap();
+    let fresh = Vault::new(Arc::clone(&fs) as Arc<dyn Storage>);
+    fresh.unlock("Journal", "a new passphrase").unwrap();
+    fresh.keys().set_previous("Journal", None);
+    assert!(fresh.read(&np("Journal/Trips/Porto.md")).unwrap().contains("Lisbon"));
+}
+
+/// Reliability scan, interrupted lock: plain files left next to identical
+/// encrypted copies are not "kept both" as duplicates.
+#[test]
+fn keep_both_makes_no_copy_of_a_file_identical_to_its_encrypted_one() {
+    let files = journal();
+    let mut n = 0;
+    let fs = loop {
+        let fs = Arc::new(MemFs::with_files(files.iter().copied()));
+        let crashing = Vault::new(Arc::new(Crash { inner: Arc::clone(&fs), left: AtomicUsize::new(n) }));
+        let _ = lock_folder(&crashing, "Journal", Some(PASS), Kdf::TEST, 1);
+        if fs.exists(&np("Journal/Day 1.md")) && fs.exists(&stored(&np("Journal/Day 1.md"))) {
+            break fs;
+        }
+        n += 1;
+        assert!(n < 200);
+    };
+    let v = Vault::new(Arc::clone(&fs) as Arc<dyn Storage>);
+    v.unlock("Journal", PASS).unwrap();
+    assert!(!plain_left(&v)[0].conflicts.is_empty());
+    let kept = keep_both(&v, "Journal").unwrap();
+    assert!(kept.is_empty(), "{kept:?}");
+    assert!(!fs.exists(&np("Journal/Day 1.md")));
+    assert!(!fs.list().unwrap().iter().any(|p| p.as_str().contains("plain copy")));
+    assert!(v.read(&np("Journal/Day 1.md")).unwrap().contains(SECRET));
 }
