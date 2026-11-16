@@ -1326,11 +1326,19 @@ impl FolderTransport {
 
     /// Delete what a settled snapshot made unnecessary: this device's own
     /// log files before its cut, and older snapshots. Also the logs of
-    /// removed devices before the cut. Returns how many files went.
+    /// removed devices before the cut, and temporary files a crash left
+    /// (0.13.2). Returns how many files went.
     pub fn tidy(&self) -> usize {
-        let Some((m, _, settled)) = self.generation_settled() else { return 0 };
+        // Temporary files a crash left in the shared folder (0.13.2): a day
+        // old is long past any write in progress.
+        let day = std::time::Duration::from_hours(24);
+        let mut swept = crate::fsx::sweep(&self.dir, day) + crate::fsx::sweep(&self.dir.join("keys"), day);
+        if let Ok(rd) = fs::read_dir(self.dir.join("devices")) {
+            swept += rd.flatten().map(|e| crate::fsx::sweep(&e.path(), day)).sum::<usize>();
+        }
+        let Some((m, _, settled)) = self.generation_settled() else { return swept };
         if !settled {
-            return 0;
+            return swept;
         }
         let removed = self.removed.lock().unwrap_or_else(PoisonError::into_inner).clone();
         let mut gone = 0;
@@ -1357,7 +1365,7 @@ impl FolderTransport {
                 }
             }
         }
-        gone
+        gone + swept
     }
 
     /// The vault's key records (0.13: a device was removed).
