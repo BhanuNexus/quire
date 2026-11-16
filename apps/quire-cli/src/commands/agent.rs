@@ -49,7 +49,7 @@ fn store(vault: &str) -> Result<AgentStore, String> {
 }
 
 fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
+    super::flag_value(args, name)
 }
 
 /// `--since`: Unix ms, `2h`, `7d`, `YYYY-MM-DD` or RFC 3339.
@@ -66,7 +66,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let store = store(arg(args, 2)?)?;
     let now = store.now_ms();
     let out = match arg(args, 1)? {
-        "proposals" => proposals(&store, args.iter().any(|a| a == "--all")),
+        "proposals" => proposals(&store, super::has_flag(args, "--all")),
         "show" => show(&store, arg(args, 3)?)?,
         "log" => log(&store, &LedgerQuery { since: since(args, now)?, actor: flag(args, "--actor").map(str::to_string), run: None }),
         "accept" | "reject" => {
@@ -86,7 +86,7 @@ fn run(args: &[String]) -> Result<(), String> {
             if sel.actor.is_none() && sel.run.is_none() && sel.since.is_none() && sel.batch.is_none() {
                 return Err("say what to undo: --actor, --run, --since or --batch".into());
             }
-            revert(&store, &sel, args.iter().any(|a| a == "--write"))
+            revert(&store, &sel, super::has_flag(args, "--write"))
         }
         other => return Err(super::unknown_subcommand(args, "command", other)),
     };
@@ -199,7 +199,7 @@ fn skill(args: &[String]) -> Result<(), String> {
         "install" => {
             let dir = Path::new(arg(args, 2)?);
             if let Some(from) = flag(args, "--from") {
-                return install_imported(dir, Path::new(from), args.iter().any(|a| a == "--yes"));
+                return install_imported(dir, Path::new(from), super::has_flag(args, "--yes"));
             }
             std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
             let file = dir.join("SKILL.md");

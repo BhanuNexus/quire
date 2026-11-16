@@ -183,3 +183,62 @@ fn import_makes_its_target_folder_but_only_when_writing() {
     assert!(err(&out).contains("No folder at"), "{}", err(&out));
     assert!(!dir.path().join("media").exists());
 }
+
+fn vault_with(note: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.md"), note).unwrap();
+    dir
+}
+
+fn stdout(o: &Output) -> String {
+    String::from_utf8_lossy(&o.stdout).into_owned()
+}
+
+fn any_file_has(dir: &Path, text: &str) -> bool {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .any(|p| if p.is_dir() { any_file_has(&p, text) } else { std::fs::read_to_string(&p).is_ok_and(|s| s.contains(text)) })
+}
+
+/// 0.13.2 (F-L4): after `--` every word is text, for every command.
+#[test]
+fn after_a_double_dash_replace_takes_flag_words_as_text() {
+    let v = vault_with("keep --write and more\n");
+    let t = v.path().to_str().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let o = cli(cwd.path(), &["replace", t, "--", "--write", "done"]);
+    assert!(o.status.success(), "{}", err(&o));
+    assert!(stdout(&o).contains("1 matches (dry run"), "{}", stdout(&o));
+    assert_eq!(std::fs::read_to_string(v.path().join("a.md")).unwrap(), "keep --write and more\n", "a dry run writes nothing");
+    // The real flag, before the `--`, still writes.
+    let o = cli(cwd.path(), &["replace", t, "--write", "--", "--write", "done"]);
+    assert!(o.status.success(), "{}", err(&o));
+    assert_eq!(std::fs::read_to_string(v.path().join("a.md")).unwrap(), "keep done and more\n");
+}
+
+#[test]
+fn after_a_double_dash_capture_takes_flag_words_as_text() {
+    let v = vault_with("x\n");
+    let t = v.path().to_str().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let o = cli(cwd.path(), &["capture", t, "--", "--url", "x"]);
+    assert!(o.status.success(), "{}", err(&o));
+    assert!(any_file_has(v.path(), "--url x"), "the words were captured as text");
+    assert!(!stdout(&o).contains("saved") && !stdout(&o).contains("suggested"), "no web capture ran: {}", stdout(&o));
+}
+
+#[test]
+fn after_a_double_dash_search_and_subcommands_take_flag_words_as_text() {
+    let v = vault_with("a note about --help\n");
+    let t = v.path().to_str().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let o = cli(cwd.path(), &["search", t, "--", "--help"]);
+    assert!(o.status.success(), "{}", err(&o));
+    assert!(!stdout(&o).contains("quire-cli search"), "searched; didn't print help: {}", stdout(&o));
+    // A command with subcommands: `--write` is the tag's name, not the flag.
+    let o = cli(cwd.path(), &["tags", t, "delete", "--", "--write"]);
+    assert!(o.status.success(), "{}", err(&o));
+    assert!(!stdout(&o).contains("Usage") && !err(&o).contains("usage"), "{}{}", stdout(&o), err(&o));
+    assert_eq!(std::fs::read_to_string(v.path().join("a.md")).unwrap(), "a note about --help\n");
+}

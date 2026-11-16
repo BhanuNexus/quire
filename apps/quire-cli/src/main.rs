@@ -31,10 +31,14 @@ fn run(args: &[String]) -> Result<(), String> {
                 println!("{}", commands::command_usage(c));
                 return Ok(());
             }
-            // The `--` itself is not an argument of the command.
+            // The first `--` splits options from literal operands. It is not
+            // an argument itself; commands read flags only from the options
+            // part (`commands::options`), so after it every word is text for
+            // every command.
             let mut rest = args.to_vec();
             if let Some(i) = rest.iter().skip(1).position(|a| a == "--") {
                 rest.remove(i + 1);
+                commands::set_literal_from(i + 1);
             }
             return (c.run)(&rest);
         }

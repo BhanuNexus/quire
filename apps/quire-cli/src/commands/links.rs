@@ -33,7 +33,7 @@ pub(crate) const COMMANDS: &[CliCommand] = &[
 
 /// Every `--flag value` in `args`.
 fn flag_values(args: &[String], flag: &str) -> Vec<String> {
-    args.windows(2).filter(|w| w[0] == flag).map(|w| w[1].clone()).collect()
+    super::options(args).windows(2).filter(|w| w[0] == flag).map(|w| w[1].clone()).collect()
 }
 
 /// The lines `links` prints for note `p` (only the types in `only`, if given).

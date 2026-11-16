@@ -74,6 +74,48 @@ pub(crate) fn all() -> Vec<&'static CliCommand> {
     v
 }
 
+/// Where the literal operands start in the argument list: everything from
+/// this index on came after a `--` and is text, never an option. `usize::MAX`
+/// means there was no `--`. Set once by `main`.
+static LITERAL_FROM: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);
+
+pub(crate) fn set_literal_from(i: usize) {
+    LITERAL_FROM.store(i, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The part of `args` that may hold options (flags and their values). Every
+/// command reads flags from here only, so words after `--` stay literal.
+pub(crate) fn options(args: &[String]) -> &[String] {
+    &args[..LITERAL_FROM.load(std::sync::atomic::Ordering::Relaxed).min(args.len())]
+}
+
+/// Whether the word at `i` of `args` may be an option (it is before any `--`).
+pub(crate) fn is_option(args: &[String], i: usize) -> bool {
+    i < options(args).len()
+}
+
+/// The words of `args` from `from` on, without the options in `drop` (the
+/// same words after `--` are text and kept).
+pub(crate) fn words_without(args: &[String], from: usize, drop: &[&str]) -> Vec<String> {
+    args.iter()
+        .enumerate()
+        .skip(from)
+        .filter(|(i, a)| !(drop.contains(&a.as_str()) && is_option(args, *i)))
+        .map(|(_, a)| a.clone())
+        .collect()
+}
+
+/// Whether the flag `name` is among the options.
+pub(crate) fn has_flag(args: &[String], name: &str) -> bool {
+    options(args).iter().any(|a| a == name)
+}
+
+/// The word after the flag `name`, if the flag is among the options.
+pub(crate) fn flag_value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
+    let o = options(args);
+    o.iter().position(|a| a == name).and_then(|i| o.get(i + 1)).map(String::as_str)
+}
+
 pub(crate) fn find(name: &str) -> Option<&'static CliCommand> {
     all().into_iter().find(|c| c.name == name)
 }

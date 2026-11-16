@@ -23,7 +23,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let root = arg(args, 1)?;
     quire_mcp::require_folder(std::path::Path::new(root))?;
     let vault = Vault::open_local(root).map_err(|e| e.to_string())?;
-    let json = args.iter().any(|a| a == "--json");
+    let json = super::has_flag(args, "--json");
     let store = AgentStore::open(&vault, quire_app::device::this_device(), std::sync::Arc::new(SystemClock));
     let notes: Vec<LintNote> = vault
         .notes()

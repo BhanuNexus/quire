@@ -24,7 +24,7 @@ fn remind(args: &[String]) -> Result<(), String> {
     let root = PathBuf::from(super::arg(args, 1)?);
     quire_mcp::require_folder(&root)?;
     let root = root.canonicalize().map_err(|e| format!("{}: {e}", root.display()))?;
-    let flag = |f: &str| args.iter().any(|a| a == f);
+    let flag = |f: &str| super::has_flag(args, f);
     if flag("--install") || flag("--uninstall") || flag("--status") {
         let env = Env::current().ok_or("no home folder")?;
         let backend = remind_bg::detect();

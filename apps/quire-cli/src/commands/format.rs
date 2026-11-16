@@ -21,9 +21,15 @@ pub(crate) const COMMANDS: &[CliCommand] = &[CliCommand {
 }];
 
 fn run(args: &[String]) -> Result<(), String> {
-    let pos: Vec<&str> = args.iter().skip(1).filter(|a| !a.starts_with("--")).map(String::as_str).collect();
+    let pos: Vec<&str> = args
+        .iter()
+        .enumerate()
+        .skip(1)
+        .filter(|(i, a)| !super::is_option(args, *i) || !a.starts_with("--"))
+        .map(|(_, a)| a.as_str())
+        .collect();
     let (Some(root), at) = (pos.first(), pos.get(1).copied().unwrap_or("")) else { return Err(bad_usage(args)) };
-    let write = args.iter().any(|a| a == "--write");
+    let write = super::has_flag(args, "--write");
     let vault = super::open_vault(root)?;
     let opts = quire_app::switch_state::lint_options(&vault);
     // A note's path (with or without `.md`) or a folder.

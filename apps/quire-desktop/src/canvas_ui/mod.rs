@@ -52,7 +52,7 @@ const SAVE_AFTER: Duration = Duration::from_millis(600);
 
 /// The last-resort write (no workspace): over `base` only, and a file that
 /// was deleted outside is put back, as `drawings::save_drawing` does.
-fn write_checked(vault: &Vault, path: &NotePath, base: &str, text: &str) -> bool {
+pub(crate) fn write_checked(vault: &Vault, path: &NotePath, base: &str, text: &str) -> bool {
     let wrote = if vault.exists(path) { vault.write_if(path, Some(base), text) } else { vault.write(path, text).map(|()| true) };
     wrote.unwrap_or(false)
 }

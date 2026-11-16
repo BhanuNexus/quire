@@ -51,10 +51,13 @@ pub(crate) const COMMANDS: &[CliCommand] = &[
 fn replace(args: &[String]) -> Result<(), String> {
     let arg = |i: usize| super::arg(args, i);
     let vault = super::open_vault(arg(1)?)?;
-    let opts = FindOptions { regex: args.iter().any(|a| a == "--regex"), ..Default::default() };
-    let write = args.iter().any(|a| a == "--write");
-    let re = compile(arg(2)?, opts)?;
-    let with = arg(3)?;
+    let opts = FindOptions { regex: super::has_flag(args, "--regex"), ..Default::default() };
+    let write = super::has_flag(args, "--write");
+    // The words that aren't `--regex` / `--write` (those may stand anywhere
+    // before a `--`; after it, even they are text).
+    let words = super::words_without(args, 0, &["--write", "--regex"]);
+    let re = compile(super::arg(&words, 2)?, opts)?;
+    let with = super::arg(&words, 3)?;
     let mut total = 0;
     for p in vault.notes().map_err(|e| e.to_string())? {
         let src = vault.read(&p).map_err(|e| e.to_string())?;
@@ -129,14 +132,17 @@ fn publish(args: &[String]) -> Result<(), String> {
     let arg = |i: usize| super::arg(args, i);
     let (v, svc, _) = load(arg(1)?)?;
     let out = std::path::Path::new(arg(2)?);
-    let title = args.iter().position(|a| a == "--title").and_then(|i| args.get(i + 1)).cloned().unwrap_or_else(|| {
-        std::fs::canonicalize(arg(1).unwrap_or("."))
-            .ok()
-            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-            .unwrap_or_else(|| "Notes".into())
-    });
-    let which = if args.iter().any(|a| a == "--all") { quire_app::publish::Selection::All } else { quire_app::publish::Selection::Marked };
-    let typed = match args.iter().position(|a| a == "--typed-links").and_then(|i| args.get(i + 1)) {
+    let title = super::flag_value(args, "--title").map_or_else(
+        || {
+            std::fs::canonicalize(arg(1).unwrap_or("."))
+                .ok()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .unwrap_or_else(|| "Notes".into())
+        },
+        str::to_string,
+    );
+    let which = if super::has_flag(args, "--all") { quire_app::publish::Selection::All } else { quire_app::publish::Selection::Marked };
+    let typed = match super::flag_value(args, "--typed-links") {
         None => quire_app::publish::TypedLinks::Auto,
         Some(v) => quire_app::publish::TypedLinks::parse(v).ok_or("--typed-links takes auto, on or off")?,
     };

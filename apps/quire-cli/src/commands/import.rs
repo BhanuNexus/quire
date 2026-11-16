@@ -29,8 +29,10 @@ pub(crate) const COMMANDS: &[CliCommand] = &[CliCommand {
 fn positional(args: &[String]) -> Vec<&str> {
     let mut out = Vec::new();
     let mut skip = false;
-    for a in args.iter().skip(1) {
-        if skip {
+    for (i, a) in args.iter().enumerate().skip(1) {
+        if !super::is_option(args, i) {
+            out.push(a.as_str());
+        } else if skip {
             skip = false;
         } else if matches!(a.as_str(), "--into" | "--from" | "--undo") {
             skip = true;
@@ -42,12 +44,12 @@ fn positional(args: &[String]) -> Vec<&str> {
 }
 
 fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
+    super::flag_value(args, name)
 }
 
 fn command(args: &[String]) -> Result<(), String> {
     let pos = positional(args);
-    if args.iter().any(|a| a == "--list") {
+    if super::has_flag(args, "--list") {
         return list(pos.first().copied().ok_or_else(|| bad_usage(args))?);
     }
     if let Some(id) = flag(args, "--undo") {
@@ -58,7 +60,7 @@ fn command(args: &[String]) -> Result<(), String> {
         Some(k) => Some(Source::from_id(k).ok_or_else(|| format!("unknown source “{k}”; one of: {}", kinds()))?),
         None => None,
     };
-    run(source, vault, from, flag(args, "--into").unwrap_or(""), args.iter().any(|a| a == "--write"))
+    run(source, vault, from, flag(args, "--into").unwrap_or(""), super::has_flag(args, "--write"))
 }
 
 fn kinds() -> String {

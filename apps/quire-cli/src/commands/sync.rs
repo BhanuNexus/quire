@@ -74,15 +74,15 @@ pub(crate) const COMMANDS: &[CliCommand] = &[CliCommand {
 }];
 
 fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
+    super::flag_value(args, name)
 }
 
 fn flags(args: &[String], name: &str) -> Vec<String> {
-    args.windows(2).filter(|w| w[0] == name).map(|w| w[1].clone()).collect()
+    super::options(args).windows(2).filter(|w| w[0] == name).map(|w| w[1].clone()).collect()
 }
 
 fn has(args: &[String], name: &str) -> bool {
-    args.iter().any(|a| a == name)
+    super::has_flag(args, name)
 }
 
 fn run(args: &[String]) -> Result<(), String> {

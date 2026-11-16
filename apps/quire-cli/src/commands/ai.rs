@@ -156,8 +156,8 @@ fn run_ai(args: &[String]) -> Result<(), String> {
 fn run_ingest(args: &[String]) -> Result<(), String> {
     let vault = super::open_vault(arg(args, 1)?)?;
     let source = arg(args, 2)?;
-    let yes = args.iter().any(|a| a == "--yes" || a == "-y");
-    let dry = args.iter().any(|a| a == "--dry-run");
+    let yes = super::has_flag(args, "--yes") || super::has_flag(args, "-y");
+    let dry = super::has_flag(args, "--dry-run");
     let settings = Settings::load();
     let agent = AgentStore::open(&vault, quire_app::device::this_device(), Arc::new(SystemClock));
     let Some(model) = quire_app::ai::chat_model(&settings) else {
