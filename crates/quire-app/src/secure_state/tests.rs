@@ -446,7 +446,10 @@ fn changing_a_folders_key_from_the_app() {
     assert_eq!(ws.start_changing_key("Journal", "wrong horse", "a new passphrase").unwrap_err(), "Wrong passphrase.");
     ws.start_changing_key("Journal", PASS, "a new passphrase").unwrap();
     until(&mut [&mut ws], "the key change", |w| w[0].lock_job().is_none());
-    let (f, new_rk) = ws.take_recovery_key().expect("a new recovery key is offered");
+    // The notices say why, if the key change failed (seen once on Windows).
+    let Some((f, new_rk)) = ws.take_recovery_key() else {
+        panic!("a new recovery key is offered; notices: {:?}", ws.notices.iter().map(|n| &n.text).collect::<Vec<_>>())
+    };
     assert_eq!(f, "Journal");
     assert_ne!(new_rk, old_rk);
     ws.lock_folder_now("Journal");
