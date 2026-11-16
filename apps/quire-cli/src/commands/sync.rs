@@ -43,6 +43,8 @@ pub(crate) const COMMANDS: &[CliCommand] = &[CliCommand {
                           --webdav URL --user NAME [--password-file F]   (password: QUIRE_WEBDAV_PASSWORD, the file or a prompt)
                         --allow-http allows http:// to a computer on your network (S3, WebDAV)
   quire-cli sync once   <vault>                 one sync pass
+  quire-cli sync allow-deletes <vault>          send the deletes sync held back because they were many (more than
+                        10 notes and more than half of the vault): at this device's next pass, by whatever runs it
   quire-cli sync watch  <vault> [--poll 60s]    keep syncing until Ctrl+C or SIGTERM
   quire-cli sync status <vault>                 how sync is set up and how the last pass went
   quire-cli sync test   <vault> [WHERE]         check the storage (or the one this vault syncs with): sign-in,
@@ -91,6 +93,11 @@ fn run(args: &[String]) -> Result<(), String> {
     match sub {
         "join" => join(&vault, args),
         "once" => once(&vault),
+        "allow-deletes" => {
+            vault_sync::sync_allow_deletes_at(&vault)?;
+            println!("The deletes go out at this device's next sync pass (`quire-cli sync once`, `watch`, or the app's next pass).");
+            Ok(())
+        }
         "watch" => {
             let poll = flag(args, "--poll").map_or(Ok(Duration::from_mins(1)), parse_duration)?;
             watch(&vault, poll)
@@ -530,6 +537,12 @@ fn once(vault: &Path) -> Result<(), String> {
     for p in &r.kept_over_delete {
         println!("Kept “{p}”: it was edited on one device and deleted on another.");
     }
+    for (p, why) in &r.skipped {
+        println!("{}", vault_sync::skipped_notice(p, why));
+    }
+    for n in &r.notices {
+        println!("{n}");
+    }
     Ok(())
 }
 
@@ -610,6 +623,12 @@ pub(crate) fn watch_until(vault: &Path, poll: Duration, stop: &mpsc::Receiver<&'
                     }
                     for p in &r.kept_over_delete {
                         println!("{} Kept “{p}”: edited on one device, deleted on another.", now());
+                    }
+                    for (p, why) in &r.skipped {
+                        println!("{} {}", now(), vault_sync::skipped_notice(p, why));
+                    }
+                    for n in &r.notices {
+                        println!("{} {n}", now());
                     }
                     format!("Synced: {}", report_line(&r))
                 }

@@ -49,9 +49,27 @@ use crate::transport::{Fork, Transport, TransportError};
 /// Notes are text. Other files (images, PDFs: see [`is_attachment`]) travel
 /// as base64 text, so `read` and `write` use that for them.
 pub trait LocalStore {
-    /// Every file that should sync.
-    fn list(&self) -> Vec<String>;
+    /// Every file that should sync. An error when the folder can't be read
+    /// whole (0.13.2): the pass stops rather than take the notes it missed
+    /// for deleted.
+    fn list(&self) -> Result<Vec<String>, String>;
     fn read(&self, path: &str) -> Option<String>;
+    /// Whether `path` is surely not here: asked again just before a delete
+    /// is sent for it. A file that is there but can't be read right now
+    /// isn't missing (its delete waits).
+    fn missing(&self, path: &str) -> bool {
+        self.read(path).is_none()
+    }
+    /// Why a note from another device can't be stored at `path` on this
+    /// computer (a name this system refuses, or one a different file here
+    /// already has when capital letters don't count), if it can't. `own`
+    /// is where this device keeps that note now, if it does: that file
+    /// doesn't count as another one. The engine then skips the note here
+    /// and keeps syncing the rest (0.13.2, see [`SyncState::skipped`]).
+    fn unstorable(&self, path: &str, own: Option<&str>) -> Option<String> {
+        let _ = (path, own);
+        None
+    }
     fn write(&mut self, path: &str, text: &str) -> Result<(), String>;
     fn remove(&mut self, path: &str) -> Result<(), String>;
     /// What [`fingerprint`] gives for the file, so an unchanged attachment
@@ -131,7 +149,27 @@ pub enum SyncError {
     Local { path: String, error: String },
     #[error("other devices kept changing the same notes; try again")]
     Busy,
+    /// The folder of notes couldn't be read whole (0.13.2): nothing was sent.
+    #[error("couldn't read the vault's folder ({0}), so sync stopped before sending anything; it goes on once the folder can be read")]
+    List(String),
+    /// This pass would delete many of the notes on every device at once
+    /// (0.13.2, see [`MANY_DELETES`]): nothing was sent.
+    #[error(
+        "{count} of the {of} notes on this device are gone from its folder. So that a folder that went missing doesn't delete them on your other devices, sync sent nothing"
+    )]
+    ManyDeletes { count: usize, of: usize },
 }
+
+/// The most deletes a pass sends without asking (0.13.2).
+///
+/// A pass that would send deletes for more than this many notes, and for
+/// more than half of the notes this device holds, stops instead and sends
+/// nothing, until the person says the deletes are meant
+/// ([`Engine::allow_many_deletes`]). A folder that is gone or empty for a
+/// while (a drive pulled out, a cloud folder signed out) looks exactly like
+/// every note deleted; a person rarely deletes most of a vault at once,
+/// and deleting a few notes of a small vault never asks.
+pub const MANY_DELETES: usize = 10;
 
 /// What the engine remembers about one synced note.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -206,6 +244,25 @@ pub struct SyncState {
     /// note's history), so it isn't sent back as a note of its own.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub left: BTreeMap<String, LeftCopy>,
+    /// Notes from other devices this one couldn't store (0.13.2): a name
+    /// this computer refuses, see [`LocalStore::unstorable`]. The revision
+    /// is skipped here as if it hadn't arrived yet: what this device has
+    /// of the note stays as it was, and is neither sent nor sent as
+    /// deleted. It is tried again when the name can be stored here, and a
+    /// newer revision of the note (renamed on another device) is applied
+    /// as usual.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub skipped: BTreeMap<FileId, Skipped>,
+}
+
+/// A revision this device couldn't store (see [`SyncState::skipped`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Skipped {
+    /// The name it has on the other devices.
+    pub path: String,
+    pub rev: RevId,
+    /// Why it can't be stored here, in words.
+    pub why: String,
 }
 
 /// A copy of a note that may be left on this disk (see [`SyncState::left`]).
@@ -231,11 +288,22 @@ pub struct Report {
     pub kept_over_delete: Vec<String>,
     /// Files not sent because they're too big to sync ([`LocalStore::held_back`]).
     pub held_back: Vec<String>,
+    /// Notes skipped on this device because it can't store their names,
+    /// as `(name, why)`: each once, when it is first skipped (see
+    /// [`SyncState::skipped`]).
+    pub skipped: Vec<(String, String)>,
+    /// Anything else to tell the person once (filled by the caller).
+    pub notices: Vec<String>,
 }
 
 impl Report {
     pub const fn changed_anything(&self) -> bool {
         self.pulled > 0 || self.pushed > 0
+    }
+
+    /// Whether there is something to tell the person (besides counts).
+    pub const fn has_news(&self) -> bool {
+        !self.conflict_copies.is_empty() || !self.kept_over_delete.is_empty() || !self.skipped.is_empty() || !self.notices.is_empty()
     }
 }
 
@@ -261,6 +329,9 @@ pub struct Engine {
     pub device_name: String,
     keys: KeySet,
     pub state: SyncState,
+    /// Send the deletes of a pass even when they are many
+    /// ([`MANY_DELETES`]): set when the person said they are meant.
+    pub allow_many_deletes: bool,
 }
 
 impl std::fmt::Debug for Engine {
@@ -281,7 +352,7 @@ fn backoff(round: usize) {
 
 impl Engine {
     pub fn new(space: SpaceId, device: DeviceId, device_name: impl Into<String>, keys: impl Into<KeySet>, state: SyncState) -> Self {
-        Self { space, device, device_name: device_name.into(), keys: keys.into(), state }
+        Self { space, device, device_name: device_name.into(), keys: keys.into(), state, allow_many_deletes: false }
     }
 
     /// Use these keys from now on (the vault's key changed: 0.13).
@@ -301,6 +372,9 @@ impl Engine {
     /// Pull, merge and push until this device and the server agree.
     /// `today` (e.g. `2026-11-01`) goes into conflict copy names.
     pub fn sync(&mut self, local: &mut dyn LocalStore, server: &dyn Transport, today: &str) -> Result<Report, SyncError> {
+        // A folder that can't be read (gone, unplugged) is neither written
+        // into nor read as empty.
+        local.list().map_err(SyncError::List)?;
         self.rescope(&*local);
         let res = self.clear_left(local, server).and_then(|()| self.rounds(local, server, today));
         // Whatever happened, notes now tracked outside the selection are
@@ -502,7 +576,12 @@ impl Engine {
         old.dedup();
         for (path, print) in old {
             let lives = self.state.files.values().any(|t| !t.deleted && t.held() && t.path == path);
-            if !lives && local.read(&path).is_some_and(|h| !h.trim().is_empty() && fingerprint(&path, &h) == print) {
+            // A name this computer can't store was never written here (and
+            // reading it could find another file).
+            if !lives
+                && local.unstorable(&path, None).is_none()
+                && local.read(&path).is_some_and(|h| !h.trim().is_empty() && fingerprint(&path, &h) == print)
+            {
                 remove(local, &path)?;
             }
         }
@@ -523,10 +602,73 @@ impl Engine {
                 };
                 // If applying fails (say the file changed underneath us), the
                 // cursor stays put and this revision is applied next time.
-                self.apply(local, server, &r, &c, today, report)?;
-                report.pulled += 1;
+                // One this device can't store is skipped, and the rest go on.
+                self.apply_or_skip(local, server, &r, &c, today, report)?;
             }
             self.state.cursor = self.state.cursor.max(r.seq);
+        }
+        self.retry_skipped(local, server, today, report)
+    }
+
+    /// [`Self::apply`], unless the note's name can't be stored here: then
+    /// the revision is noted as skipped (and the person told, once).
+    fn apply_or_skip(
+        &mut self,
+        local: &mut dyn LocalStore,
+        server: &dyn Transport,
+        r: &Revision,
+        c: &Content,
+        today: &str,
+        report: &mut Report,
+    ) -> Result<(), SyncError> {
+        if !c.deleted && local.in_scope(&c.path) {
+            let own = self.state.files.get(&r.file).filter(|t| !t.deleted && t.held()).map(|t| t.path.clone());
+            if let Some(why) = local.unstorable(&c.path, own.as_deref()) {
+                let told = self.state.skipped.get(&r.file).is_some_and(|s| s.path == c.path && s.why == why);
+                if !told {
+                    report.skipped.push((c.path.clone(), why.clone()));
+                }
+                self.state.skipped.insert(r.file.clone(), Skipped { path: c.path.clone(), rev: r.rev.clone(), why });
+                return Ok(());
+            }
+        }
+        self.apply(local, server, r, c, today, report)?;
+        self.state.skipped.remove(&r.file);
+        report.pulled += 1;
+        Ok(())
+    }
+
+    /// Skipped notes whose names can be stored here now (the file in the
+    /// way was renamed or deleted): their revision is fetched and applied.
+    fn retry_skipped(
+        &mut self,
+        local: &mut dyn LocalStore,
+        server: &dyn Transport,
+        today: &str,
+        report: &mut Report,
+    ) -> Result<(), SyncError> {
+        let due: Vec<(FileId, Skipped)> = self
+            .state
+            .skipped
+            .iter()
+            .filter(|(id, s)| {
+                let own = self.state.files.get(*id).filter(|t| !t.deleted && t.held()).map(|t| t.path.as_str());
+                !local.in_scope(&s.path) || local.unstorable(&s.path, own).is_none()
+            })
+            .map(|(id, s)| (id.clone(), s.clone()))
+            .collect();
+        for (file, s) in due {
+            if !local.in_scope(&s.path) {
+                // Out of this device's selection now: nothing to store here.
+                self.state.skipped.remove(&file);
+                continue;
+            }
+            // Unreachable now (offline, a server without history) or not in
+            // the history any more: stays skipped, tried again next pass,
+            // and a newer revision of the note is applied as usual.
+            let Some(r) = server.history(&file).ok().and_then(|h| h.into_iter().find(|r| r.rev == s.rev)) else { continue };
+            let c = self.open(server, &r)?;
+            self.apply_or_skip(local, server, &r, &c, today, report)?;
         }
         Ok(())
     }
@@ -881,7 +1023,11 @@ impl Engine {
     fn conflict_copy_path(&self, local: &dyn LocalStore, path: &str, from: &str, today: &str) -> String {
         let (stem, ext) = split_ext(path);
         let from = if from.trim().is_empty() { "another device" } else { from.trim() };
-        let device = from.replace(['/', '\\', ':'], "-");
+        // A device's name goes into a file name every system can store.
+        let device: String = from
+            .chars()
+            .map(|c| if c.is_control() || ['/', '\\', ':', '*', '?', '"', '<', '>', '|'].contains(&c) { '-' } else { c })
+            .collect();
         let mut n = 1;
         loop {
             let suffix = if n == 1 { String::new() } else { format!(" {n}") };
@@ -896,13 +1042,18 @@ impl Engine {
     /// Push every local change. Returns false when the server had newer
     /// revisions (pull again first).
     fn push(&mut self, local: &dyn LocalStore, server: &dyn Transport, report: &mut Report) -> Result<bool, SyncError> {
-        let present: BTreeSet<String> = local.list().into_iter().collect();
+        let present: BTreeSet<String> = local.list().map_err(SyncError::List)?.into_iter().collect();
         let live: BTreeSet<String> = self.state.files.values().filter(|t| !t.deleted).map(|t| t.path.clone()).collect();
         // A file at a deleted note's path brings that note back rather than
         // starting a new one, unless another live note has the path now.
         let mut known: BTreeSet<String> = self.state.files.values().map(|t| t.path.clone()).collect();
         let mut untracked: Vec<String> = present.iter().filter(|p| !known.contains(*p)).cloned().collect();
 
+        // What to send, worked out whole first, so a pass that would delete
+        // too much sends nothing at all.
+        let mut plan: Vec<(FileId, RevId, Content)> = Vec::new();
+        let mut held = 0usize;
+        let mut deletes = 0usize;
         let ids: Vec<FileId> = self.state.files.keys().cloned().collect();
         for id in ids {
             let t = self.state.files[&id].clone();
@@ -911,13 +1062,20 @@ impl Engine {
                 // deleted. A kept copy waits until it's brought up to date.
                 continue;
             }
+            if self.state.skipped.contains_key(&id) {
+                // Its newest revision couldn't be stored here: what this
+                // device has of it is older, and sending it would undo the
+                // other device's change (a rename) for everyone.
+                continue;
+            }
             if t.absorbed {
                 // Filed as the same note as the one at its path: tell the others.
                 let content = Content { path: t.path.clone(), deleted: true, text: String::new(), from: String::new(), at: 0, actor: None };
-                if !self.push_one(server, &id, Some(&t.head), &content, report)? {
-                    return Ok(false);
-                }
+                plan.push((id, t.head.clone(), content));
                 continue;
+            }
+            if !t.deleted {
+                held += 1;
             }
             // Compare fingerprints first, so unchanged attachments aren't read.
             let here = if present.contains(&t.path) { local.digest(&t.path) } else { None };
@@ -952,12 +1110,24 @@ impl Engine {
                         known.insert(to.clone());
                         // Moved into a folder this device doesn't sync: a rename, not a delete.
                         Content { actor: None, path: to, deleted: false, text, from: String::new(), at: 0 }
-                    } else {
+                    } else if local.missing(&t.path) {
+                        deletes += 1;
                         Content { path: t.path.clone(), deleted: true, text: String::new(), from: String::new(), at: 0, actor: None }
+                    } else {
+                        // Not listed, yet still there (it couldn't be read just
+                        // now): not deleted. Tried again next pass.
+                        continue;
                     }
                 }
             };
-            if !self.push_one(server, &id, Some(&t.head), &content, report)? {
+            plan.push((id, t.head.clone(), content));
+        }
+        if deletes > MANY_DELETES && deletes * 2 > held && !self.allow_many_deletes {
+            return Err(SyncError::ManyDeletes { count: deletes, of: held });
+        }
+
+        for (id, head, content) in plan {
+            if !self.push_one(server, &id, Some(&head), &content, report)? {
                 return Ok(false);
             }
             if !content.deleted
@@ -1079,8 +1249,8 @@ fn remove(local: &mut dyn LocalStore, path: &str) -> Result<(), SyncError> {
 pub struct MemoryStore(pub BTreeMap<String, String>);
 
 impl LocalStore for MemoryStore {
-    fn list(&self) -> Vec<String> {
-        self.0.keys().cloned().collect()
+    fn list(&self) -> Result<Vec<String>, String> {
+        Ok(self.0.keys().cloned().collect())
     }
     fn read(&self, path: &str) -> Option<String> {
         self.0.get(path).cloned()

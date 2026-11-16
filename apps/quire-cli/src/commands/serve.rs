@@ -220,6 +220,12 @@ but use HTTPS (a reverse proxy or tunnel) for anything beyond your own network."
                         for p in &r.conflict_copies {
                             eprintln!("Sync conflict: the other version was saved as “{p}”.");
                         }
+                        for (p, why) in &r.skipped {
+                            eprintln!("Sync: {}", quire_app::vault_sync::skipped_notice(p, why));
+                        }
+                        for n in &r.notices {
+                            eprintln!("Sync: {n}");
+                        }
                         format!("Synced: received {}, sent {}", r.pulled, r.pushed)
                     }
                     SyncEvent::Notice(n) => format!("Sync: {n}"),
