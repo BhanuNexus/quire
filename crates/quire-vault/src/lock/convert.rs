@@ -450,6 +450,18 @@ pub fn begin_change_key(vault: &Vault, folder: &str, passphrase: &str, now_ms: i
         next.rewrap(&current, passphrase).map_err(|e| damaged(&key_path, &e))?;
         next
     } else {
+        // The key file keeps one previous key. Files still under it (written
+        // by a device that had it after the last key change ended) are
+        // brought to the current key first, so the new key file's previous
+        // key (the current one) opens everything; otherwise nothing changes.
+        if let Some(prev) = vault.keys().previous(&folder) {
+            bring_to_key(vault, &folder, id, &prev, &current).map_err(|e| {
+                VaultError::InvalidName(format!(
+                    "{folder}/ still has files under its key from before the last key change, and they couldn't all be encrypted again \
+                     ({e}); nothing was changed. Try again in a moment."
+                ))
+            })?;
+        }
         let new = FolderKey::generate().map_err(|e| damaged(&key_path, &e))?;
         let mut next = KeyFile::new(id, &new, passphrase, kf.kdf, now_ms).map_err(|e| damaged(&key_path, &e))?;
         next.created = kf.created;
@@ -494,17 +506,49 @@ pub fn finish_change_key(vault: &Vault, folder: &str) -> Result<ConvertReport> {
         return Ok(report);
     }
     let old = vault.keys().previous(&folder).ok_or_else(|| VaultError::Locked(folder.clone()))?;
-    // A file moved, or saved with the previous key, while a pass runs is
-    // found by the next one; the key change is done only when every file
-    // opens with the new key (a later key change keeps only this one's
-    // previous key, so nothing may be left under it).
+    let (files, history) = bring_to_key(vault, &folder, id, &old, &new)?;
+    report.files += files;
+    report.history += history;
+    // Marked done only in the key file this change wrote: another device's
+    // key change that arrived meanwhile is never stamped done here.
+    let before = vault.storage().read_bytes(&key_path)?;
+    let mut done = KeyFile::parse(&crate::storage::decode(&before)).map_err(|e| damaged(&key_path, &e))?;
+    if done.check_key(&new).is_err() || !done.rotating {
+        return Err(VaultError::InvalidName(format!(
+            "{folder}/'s key file changed while its key was being changed (another device?); unlock it again and check its key."
+        )));
+    }
+    done.rotating = false;
+    if !vault.storage().write_bytes_if(&key_path, &|cur| cur == Some(before.as_slice()), done.to_json().as_bytes())? {
+        return Err(VaultError::InvalidName(format!(
+            "{folder}/'s key file changed while its key was being changed (another device?); run it again to finish."
+        )));
+    }
+    let _ = vault.note_locked_folder(&folder);
+    Ok(report)
+}
+
+/// Encrypt every file and history snapshot of `folder` still under `old`
+/// with `new`, until every `.qenc` opens with `new` (a file moved, or saved
+/// with `old`, while a pass runs is found by the next one). A file that
+/// can't be read counts as not done. Fails after three passes that leave
+/// some, so a caller never drops `old` while a file needs it. Returns
+/// (files, snapshots) encrypted again.
+fn bring_to_key(vault: &Vault, folder: &str, id: FolderId, old: &FolderKey, new: &FolderKey) -> Result<(usize, usize)> {
+    let mut files = 0;
     let mut rounds = 0;
     loop {
-        report.files += reseal_files(vault, &folder, id, &old, &new)?;
-        let left = stored_files(vault, &folder)?
+        files += reseal_files(vault, folder, id, old, new)?;
+        let left = stored_files(vault, folder)?
             .into_iter()
             .filter(|p| is_encrypted_name(p.as_str()))
-            .filter(|p| vault.storage().read_bytes(p).is_ok_and(|d| new.open(Kind::File, id, &d).is_err()))
+            .filter(|p| match vault.storage().read_bytes(p) {
+                Ok(d) => new.open(Kind::File, id, &d).is_err(),
+                // Moved or deleted meanwhile: the next listing has it.
+                Err(VaultError::NotFound(_)) => false,
+                // Can't tell: not done.
+                Err(_) => true,
+            })
             .count();
         if left == 0 {
             break;
@@ -512,23 +556,20 @@ pub fn finish_change_key(vault: &Vault, folder: &str) -> Result<ConvertReport> {
         rounds += 1;
         if rounds == 3 {
             return Err(VaultError::InvalidName(format!(
-                "{left} file{} in {folder}/ kept changing while its key was changed; run it again to finish",
+                "{left} file{} in {folder}/ kept changing or couldn't be read while its key was changed; run it again to finish",
                 if left == 1 { "" } else { "s" }
             )));
         }
     }
-    let mut notes = vault.locked_notes(&folder);
-    notes.extend(vault.history_paths_under(&folder)?);
+    let mut notes = vault.locked_notes(folder);
+    notes.extend(vault.history_paths_under(folder)?);
     notes.sort();
     notes.dedup();
+    let mut history = 0;
     for note in notes {
-        report.history += vault.reseal_history(&note, id, &old, &new)?;
+        history += vault.reseal_history(&note, id, old, new)?;
     }
-    let (_, mut done) = vault.key_file(&folder)?;
-    done.rotating = false;
-    vault.storage().write_atomic(&key_path, &done.to_json())?;
-    let _ = vault.note_locked_folder(&folder);
-    Ok(report)
+    Ok((files, history))
 }
 
 /// One pass of [`finish_change_key`] over the files: each `.qenc` still
