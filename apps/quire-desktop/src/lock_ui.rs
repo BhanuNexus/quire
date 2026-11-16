@@ -655,11 +655,14 @@ pub(crate) fn list_file(ws: &Workspace, p: &NotePath) -> bool {
 /// device, and Quire has no key): unlock to save them, or quit without them.
 pub(crate) struct QuitDialog {
     notes: Vec<String>,
+    /// Canvases, sketches and notes whose edits could not be written for
+    /// another reason (a full disk, a read-only folder, a conflict).
+    files: Vec<String>,
 }
 
 impl QuitDialog {
-    pub(crate) const fn new(notes: Vec<String>) -> Self {
-        Self { notes }
+    pub(crate) const fn new(notes: Vec<String>, files: Vec<String>) -> Self {
+        Self { notes, files }
     }
 }
 
@@ -670,29 +673,50 @@ impl OverlayView for QuitDialog {
             ui.set_width(460.0_f32.min(ctx.content_rect().width() - 48.0));
             ui.heading("Edits that can't be saved");
             let n = self.notes.len();
-            ui.add(
-                egui::Label::new(
-                    RichText::new(format!(
-                        "{n} note{} in a locked folder {} edits that weren't saved: the folder was locked, and Quire has no key to encrypt them. \
-                         Unlock the folder to save them. Quitting now loses them (nothing is written in plain text).",
-                        if n == 1 { "" } else { "s" },
-                        if n == 1 { "has" } else { "have" }
-                    ))
-                    .color(pal.muted),
-                )
-                .wrap(),
-            );
-            ui.add_space(6.0);
-            for t in self.notes.iter().take(8) {
-                ui.label(RichText::new(format!("• {t}")).color(pal.strong));
+            if n > 0 {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!(
+                            "{n} note{} in a locked folder {} edits that weren't saved: the folder was locked, and Quire has no key to encrypt them. \
+                             Unlock the folder to save them. Quitting now loses them (nothing is written in plain text).",
+                            if n == 1 { "" } else { "s" },
+                            if n == 1 { "has" } else { "have" }
+                        ))
+                        .color(pal.muted),
+                    )
+                    .wrap(),
+                );
+                ui.add_space(6.0);
+                for t in self.notes.iter().take(8) {
+                    ui.label(RichText::new(format!("• {t}")).color(pal.strong));
+                }
+                ui.add_space(8.0);
+            }
+            let m = self.files.len();
+            if m > 0 {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!(
+                            "{m} open file{} could not be written: the disk may be full or read-only, or the file changed elsewhere. \
+                             Go back to see the message and save a copy elsewhere. Quitting now loses these edits.",
+                            if m == 1 { "" } else { "s" },
+                        ))
+                        .color(pal.muted),
+                    )
+                    .wrap(),
+                );
+                ui.add_space(6.0);
+                for t in self.files.iter().take(8) {
+                    ui.label(RichText::new(format!("• {t}")).color(pal.strong));
+                }
             }
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                if ui.button(RichText::new("Unlock…").strong()).clicked() {
+                if n > 0 && ui.button(RichText::new("Unlock…").strong()).clicked() {
                     res.close = true;
                     res.run = Some(Command::UnlockFolder);
                 }
-                if ui.button("Cancel").clicked() {
+                if ui.button(if n > 0 { "Cancel" } else { "Go back" }).clicked() {
                     res.close = true;
                 }
                 if ui.button(RichText::new("Quit without them").color(pal.danger)).clicked() {

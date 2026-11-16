@@ -885,7 +885,8 @@ impl eframe::App for QuireApp {
 impl QuireApp {
     /// 0.11: closing the window while notes in a locked folder have edits
     /// that can't be saved (the folder was locked and Quire has no key)
-    /// asks first: unlock to save them, or quit without them.
+    /// asks first: unlock to save them, or quit without them. 0.13.2: so
+    /// does any canvas, sketch or note whose edits still couldn't be written.
     fn ask_before_losing_locked_edits(&mut self, ctx: &egui::Context) {
         if self.ws.take_quit_request() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -894,10 +895,14 @@ impl QuireApp {
         if !ctx.input(|i| i.viewport().close_requested()) || self.ws.quit_confirmed() {
             return;
         }
+        // Write what is unwritten once more; then whatever is still unsaved is asked about.
+        self.surfaces.close_all(&mut self.ws);
         let notes = self.ws.unsaveable_locked_notes();
-        if !notes.is_empty() {
+        let mut files = self.surfaces.unsaved_titles();
+        files.extend(quire_app::nav::unsaved_after_retry(&mut self.ws).into_iter().filter(|t| !notes.contains(t)));
+        if !notes.is_empty() || !files.is_empty() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.set_overlay(Some(Overlay::Feature(Box::new(crate::lock_ui::QuitDialog::new(notes)))));
+            self.set_overlay(Some(Overlay::Feature(Box::new(crate::lock_ui::QuitDialog::new(notes, files)))));
         }
     }
 
