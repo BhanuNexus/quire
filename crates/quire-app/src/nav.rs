@@ -22,7 +22,7 @@ use quire_vault::{VaultEvent, VaultPrefs};
 pub use browse::{
     FolderLink, SortMode, display_name, folder_link, folder_note, move_note_in_order, note_times, set_sort_mode, sort_mode, sorted,
 };
-pub use embed::{EMBED_DOC_BIT, embed_doc, embed_doc_mut, embed_doc_ref, save_embedded};
+pub use embed::{EMBED_DOC_BIT, embed_doc, embed_doc_mut, embed_doc_ref, save_embedded, unsaved_after_retry};
 pub use tabs::{pin, remember_position, restore_position};
 pub use vim_doc::{VimHost, collapse_insert, vim_ex, vim_undo};
 

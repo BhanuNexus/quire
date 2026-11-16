@@ -165,6 +165,22 @@ pub(super) fn save_all_hidden(ws: &mut Workspace) {
     }
 }
 
+/// Quitting: save the notes again, and name those still unsaved.
+///
+/// A change from elsewhere is merged in by the first refused save and written
+/// by the second, so saving is repeated while notes wait. Returns the titles
+/// (tabs and embeds) of the notes whose edits still were not written.
+pub fn unsaved_after_retry(ws: &mut Workspace) -> Vec<String> {
+    for _ in 0..3 {
+        let waiting = ws.docs.iter().chain(ws.features.nav.hidden.iter()).any(|d| d.is_dirty() && d.path.is_some());
+        if !waiting {
+            break;
+        }
+        ws.save_open_notes();
+    }
+    ws.docs.iter().chain(ws.features.nav.hidden.iter()).filter(|d| d.is_dirty() && d.path.is_some()).map(Document::title).collect()
+}
+
 /// Autosave hidden documents, hand them over to tabs, forget idle ones.
 pub(super) fn tick(ws: &mut Workspace, now: Instant) -> bool {
     if ws.features.nav.hidden.is_empty() {
@@ -341,5 +357,17 @@ mod tests {
             vault.history(&"Target.md".into()).iter().any(|v| vault.read_snapshot(v).is_ok_and(|c| c == "one theirs\n")),
             "their version is in history"
         );
+    }
+
+    #[test]
+    fn quitting_writes_the_merged_text_a_refused_save_left_behind() {
+        let mut ws = ws_with(&[("Host.md", "![[Target]]\n"), ("Target.md", "one\n\ntwo\n")]);
+        ws.open_note(&"Host.md".into()).unwrap();
+        let t = embed_doc(&mut ws, &NotePath::new("Target.md")).unwrap();
+        embed_doc_mut(&mut ws, t).unwrap().apply(Transaction::insert(3, " here"), EditKind::Other).unwrap();
+        ws.vault().unwrap().write(&"Target.md".into(), "one\n\ntwo there\n").unwrap();
+        // The quit's single save is refused and merges; the retry writes the merge.
+        assert!(unsaved_after_retry(&mut ws).is_empty());
+        assert_eq!(ws.vault().unwrap().read(&"Target.md".into()).unwrap(), "one here\n\ntwo there\n");
     }
 }

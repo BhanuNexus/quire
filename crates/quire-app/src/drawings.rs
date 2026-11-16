@@ -131,6 +131,20 @@ pub fn read_drawing(ws: &Workspace, path: &NotePath) -> Result<String, String> {
 /// history; a drawing note is reindexed.
 pub fn save_drawing(ws: &Workspace, path: &NotePath, base: &str, text: &str) -> Saved {
     let Some(vault) = ws.vault().cloned() else { return Saved::Failed("No vault is open".into()) };
+    save_drawing_in(ws, &vault, path, base, text)
+}
+
+/// Keep `theirs`, the version of `path` that changed elsewhere, in version
+/// history (in `vault`, which may not be the open one: a surface saves into
+/// the vault it was opened from).
+pub fn keep_their_version(ws: &Workspace, vault: &Vault, path: &NotePath, theirs: &str) {
+    ws.history.keep(vault, path, theirs, crate::history_ops::now_ms(), true);
+}
+
+/// [`save_drawing`] into `vault`, which the editor was opened from, whatever
+/// vault is open now: a surface never writes into another vault.
+pub fn save_drawing_in(ws: &Workspace, vault: &Vault, path: &NotePath, base: &str, text: &str) -> Saved {
+    let vault = vault.clone();
     let now = crate::history_ops::now_ms();
     let exists = vault.exists(path);
     let written = if exists { vault.write_if(path, Some(base), text) } else { vault.write(path, text).map(|()| true) };
