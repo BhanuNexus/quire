@@ -861,12 +861,15 @@ fn a_key_change_that_stops_anywhere_always_leaves_a_way_in() {
     assert!(n > 3, "{n}");
 }
 
-/// A storage that runs `hook` once, just before the first conditional
+/// What [`Hook`] runs once.
+type Before = Box<dyn FnOnce(&MemFs) + Send>;
+
+/// A storage that runs `before` once, just before the first conditional
 /// write to `when` (as if another writer got there first).
 struct Hook {
     inner: Arc<MemFs>,
     when: NotePath,
-    hook: std::sync::Mutex<Option<Box<dyn FnOnce(&MemFs) + Send>>>,
+    before: std::sync::Mutex<Option<Before>>,
 }
 
 impl Storage for Hook {
@@ -881,7 +884,7 @@ impl Storage for Hook {
     }
     fn write_bytes_if(&self, path: &NotePath, still: &dyn Fn(Option<&[u8]>) -> bool, bytes: &[u8]) -> Result<bool> {
         if *path == self.when
-            && let Some(h) = self.hook.lock().unwrap().take()
+            && let Some(h) = self.before.lock().unwrap().take()
         {
             h(&self.inner);
         }
@@ -915,7 +918,7 @@ impl Storage for Hook {
 
 fn hooked(files: &[(&str, &str)], when: &str) -> (Vault, Arc<MemFs>, Arc<Hook>) {
     let fs = Arc::new(MemFs::with_files(files.iter().copied()));
-    let hook = Arc::new(Hook { inner: Arc::clone(&fs), when: np(when), hook: std::sync::Mutex::new(None) });
+    let hook = Arc::new(Hook { inner: Arc::clone(&fs), when: np(when), before: std::sync::Mutex::new(None) });
     (Vault::new(Arc::clone(&hook) as Arc<dyn Storage>), fs, hook)
 }
 
@@ -928,7 +931,7 @@ fn a_save_during_locking_is_kept() {
     begin_lock(&v, "Journal", Some(PASS), Kdf::TEST, 1).unwrap();
     let (id, key) = v.keys().get("Journal").unwrap();
     let newer = key.seal(Kind::File, id, b"# Day 1\nsaved while locking\n").unwrap();
-    *hook.hook.lock().unwrap() = Some(Box::new(move |fs: &MemFs| {
+    *hook.before.lock().unwrap() = Some(Box::new(move |fs: &MemFs| {
         fs.write_bytes_atomic(&np("Journal/Day 1.md.qenc"), &newer).unwrap();
         fs.remove(&np("Journal/Day 1.md")).unwrap();
     }));
@@ -950,7 +953,7 @@ fn a_save_during_locking_is_kept() {
 fn a_save_during_unlocking_for_good_is_kept() {
     let (v, fs, hook) = hooked(&journal(), "Journal/Day 1.md");
     lock(&v);
-    *hook.hook.lock().unwrap() = Some(Box::new(|fs: &MemFs| {
+    *hook.before.lock().unwrap() = Some(Box::new(|fs: &MemFs| {
         fs.write_bytes_atomic(&np("Journal/Day 1.md"), b"saved while unlocking").unwrap();
     }));
     let r = unlock_folder_permanently(&v, "Journal", None).unwrap();
@@ -965,7 +968,7 @@ fn a_save_during_unlocking_for_good_is_kept() {
 fn a_note_moved_during_a_key_change_is_skipped() {
     let (v, fs, hook) = hooked(&journal(), "Journal/Day 1.md.qenc");
     lock(&v);
-    *hook.hook.lock().unwrap() = Some(Box::new(|fs: &MemFs| {
+    *hook.before.lock().unwrap() = Some(Box::new(|fs: &MemFs| {
         fs.rename(&np("Journal/Trips/Lisbon.md.qenc"), &np("Journal/Trips/Porto.md.qenc")).unwrap();
     }));
     // Listing first, then the move, then the reads.

@@ -200,10 +200,7 @@ impl VaultWatcher {
         let root_for_cb = root.clone();
         let on_event = Arc::clone(&rescan);
         let mut w = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-            let ev = match res {
-                Ok(ev) => ev,
-                Err(_) => return on_event.ask(),
-            };
+            let Ok(ev) = res else { return on_event.ask() };
             if ev.need_rescan() {
                 on_event.ask();
             }

@@ -151,9 +151,10 @@ pub fn key_missing_text(folder: &str) -> String {
     )
 }
 
-/// What to tell the person about a folder whose unlocking for good didn't
-/// finish (its key file has the `unlocking` name, and this process isn't
-/// running that conversion): until it does, nothing plain is written there.
+/// What to tell the person about an unfinished unlock for good.
+///
+/// Its key file has the `unlocking` name, and this process isn't running
+/// that conversion: until it does, nothing plain is written there.
 pub fn unlock_unfinished_text(folder: &str) -> String {
     format!(
         "Unlocking {folder}/ for good didn't finish, so its notes can't be saved yet. Run “Stop locking a folder…” on it again to finish \
