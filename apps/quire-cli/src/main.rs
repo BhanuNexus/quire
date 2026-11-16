@@ -24,13 +24,19 @@ fn run(args: &[String]) -> Result<(), String> {
         },
         name => {
             let c = commands::find(name).ok_or_else(|| commands::unknown_command(name))?;
-            // `quire-cli <command> --help` is help, whatever else follows; it
-            // never opens a vault. (`serve` has a longer help of its own.)
-            if c.name != "serve" && args.iter().skip(1).take(2).any(|a| matches!(a.as_str(), "--help" | "-h")) {
+            // A standalone `--help` or `-h` anywhere before a `--` is help, and
+            // nothing runs (nothing is opened, nothing is written). After `--`,
+            // words are text, so `capture <vault> -- -h` captures "-h".
+            if args.iter().skip(1).take_while(|a| *a != "--").any(|a| matches!(a.as_str(), "--help" | "-h")) {
                 println!("{}", commands::command_usage(c));
                 return Ok(());
             }
-            return (c.run)(args);
+            // The `--` itself is not an argument of the command.
+            let mut rest = args.to_vec();
+            if let Some(i) = rest.iter().skip(1).position(|a| a == "--") {
+                rest.remove(i + 1);
+            }
+            return (c.run)(&rest);
         }
     }
     Ok(())

@@ -10,7 +10,7 @@ use std::sync::atomic::AtomicBool;
 
 use quire_import::{ImportPlan, Source};
 
-use super::{CliCommand, usage};
+use super::{CliCommand, bad_usage};
 
 pub(crate) const COMMANDS: &[CliCommand] = &[CliCommand {
     name: "import",
@@ -48,12 +48,12 @@ fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
 fn command(args: &[String]) -> Result<(), String> {
     let pos = positional(args);
     if args.iter().any(|a| a == "--list") {
-        return list(pos.first().copied().ok_or_else(usage)?);
+        return list(pos.first().copied().ok_or_else(|| bad_usage(args))?);
     }
     if let Some(id) = flag(args, "--undo") {
-        return undo(id, pos.first().copied().ok_or_else(usage)?);
+        return undo(id, pos.first().copied().ok_or_else(|| bad_usage(args))?);
     }
-    let [source, vault] = pos[..] else { return Err(usage()) };
+    let [source, vault] = pos[..] else { return Err(bad_usage(args)) };
     let from = match flag(args, "--from") {
         Some(k) => Some(Source::from_id(k).ok_or_else(|| format!("unknown source “{k}”; one of: {}", kinds()))?),
         None => None,
@@ -95,13 +95,30 @@ pub(crate) fn print_plan(plan: &ImportPlan, vault: Option<&quire_app::vault::Vau
 
 pub(crate) fn run(source: &str, vault: &str, from: Option<Source>, folder: &str, write: bool) -> Result<(), String> {
     let plan = quire_import::plan_as(Path::new(source), from, &quire_import::Limits::default())?;
-    let vault = super::open_vault(vault)?;
-    print_plan(&plan, Some(&vault), folder);
+    // Importing into a new vault is a documented workflow, and making the
+    // vault's folder is this command's job (only with --write: a dry run
+    // writes nothing, and plans without clash checks against a folder that
+    // isn't there yet).
+    let root = Path::new(vault);
+    if write && !root.exists() {
+        // One level only: a missing parent is an unplugged drive or a typo, not something to make.
+        if let Err(e) = std::fs::create_dir(root) {
+            return Err(quire_mcp::require_folder(root)
+                .err()
+                .unwrap_or_else(|| format!("Couldn't make the folder {}: {e}", root.display())));
+        }
+    }
+    let vault = if write || root.exists() { Some(super::open_vault(vault)?) } else { None };
+    print_plan(&plan, vault.as_ref(), folder);
     let target = if folder.is_empty() { "the vault root".to_string() } else { format!("{folder}/") };
     if !write {
-        println!("Dry run. Re-run with --write to import into {target}.");
+        println!(
+            "Dry run. Re-run with --write to import into {target}{}.",
+            if vault.is_none() { " (the folder will be made)" } else { "" }
+        );
         return Ok(());
     }
+    let Some(vault) = vault else { return Err("the vault folder couldn't be opened".into()) };
     let now = quire_app::history_ops::now_ms();
     let device = quire_app::device::this_device();
     let mut last = 0usize;

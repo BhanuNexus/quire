@@ -371,7 +371,7 @@ fn tags(args: &[String]) -> Result<(), String> {
             MetaOp::MergeTags { from: from.iter().map(|t| strip(t)).collect(), into: strip(&into) }
         }
         Some("delete") if rest.len() == 2 => MetaOp::DeleteTag { tag: strip(&rest[1]) },
-        _ => return Err(super::usage()),
+        _ => return Err(super::bad_usage(args)),
     };
     refactor(super::arg(args, 1)?, &op, write)
 }
@@ -406,7 +406,7 @@ fn props(args: &[String]) -> Result<(), String> {
         }
         Some("value") if rest.len() == 4 => MetaOp::RenameValue { key: rest[1].clone(), from: rest[2].clone(), to: rest[3].clone() },
         Some("delete") if rest.len() == 2 => MetaOp::DeleteKey { key: rest[1].clone() },
-        _ => return Err(super::usage()),
+        _ => return Err(super::bad_usage(args)),
     };
     refactor(super::arg(args, 1)?, &op, write)
 }

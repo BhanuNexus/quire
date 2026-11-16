@@ -50,6 +50,13 @@ const MAX_ZOOM: f32 = 4.0;
 const DETAIL_ZOOM: f32 = 0.45;
 const SAVE_AFTER: Duration = Duration::from_millis(600);
 
+/// The last-resort write (no workspace): over `base` only, and a file that
+/// was deleted outside is put back, as `drawings::save_drawing` does.
+fn write_checked(vault: &Vault, path: &NotePath, base: &str, text: &str) -> bool {
+    let wrote = if vault.exists(path) { vault.write_if(path, Some(base), text) } else { vault.write(path, text).map(|()| true) };
+    wrote.unwrap_or(false)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Select,
@@ -158,6 +165,9 @@ pub(crate) struct CanvasSurface {
     ctx: Option<egui::Context>,
     /// A save failed and the person was told; cleared by the next one that works.
     save_failed: bool,
+    /// The version changed elsewhere that no copy could be written for: the
+    /// file is not saved over until a copy is (its text is kept here).
+    hold: Option<String>,
 }
 
 impl CanvasSurface {
@@ -197,6 +207,7 @@ impl CanvasSurface {
             last_frame_ms: 0.0,
             ctx: None,
             save_failed: false,
+            hold: None,
         }
     }
 
@@ -242,72 +253,79 @@ impl CanvasSurface {
                     self.canvas = c;
                     self.error = None;
                     self.galleys.clear();
+                    self.disk_text = theirs;
+                    return;
                 }
-                Err(e) => self.error = Some(e),
+                // Nothing here to lose: the "can't be read" page shows, until a later read parses.
+                Err(e) if !self.has_unsaved() => {
+                    self.error = Some(e);
+                    self.disk_text = theirs;
+                    return;
+                }
+                // A sketch of this canvas has unsaved edits: keep theirs like the dirty case.
+                Err(_) => {}
             }
-            self.disk_text = theirs;
-            return;
         }
         // Unsaved changes here and a change there: merge node by node.
         let canon = |t: &str| quire_canvas::parse(t).map(|c| quire_canvas::to_canonical(&c));
         let (Ok(base), Ok(other)) = (canon(&self.disk_text), canon(&theirs)) else {
             // The next save writes ours over it: keep theirs beside it first.
-            let copy = self.elsewhere_copy(vault);
-            let kept = vault.storage().write_atomic(&copy, &theirs).is_ok();
-            ws.notify(
-                NoticeLevel::Warn,
-                if kept {
-                    format!(
-                        "{} changed elsewhere in a form Quire can't read; your version is kept and the other is in {}.",
-                        self.path.file_name(),
-                        copy.file_name()
-                    )
-                } else {
-                    format!(
-                        "{} changed elsewhere in a form Quire can't read, and a copy couldn't be kept; not saving over it.",
-                        self.path.file_name()
-                    )
-                },
-            );
-            if !kept {
-                self.error = Some(format!("{} changed elsewhere and couldn't be kept", self.path.file_name()));
-            }
+            // Unsaved edits stay visible and saveable, whatever the file says.
+            self.keep_theirs(ws, vault, &theirs, "changed elsewhere in a form Quire can't read");
             self.disk_text = theirs;
+            self.dirty = true;
+            self.last_edit = Instant::now();
             return;
         };
         let ours = quire_canvas::to_canonical(&self.canvas);
         let m = quire_app::text::merge::merge3(&base, &ours, &other);
         if let Some(c) = m.is_clean().then(|| quire_canvas::parse(&m.text)).and_then(Result::ok) {
             self.canvas = c;
+            self.error = None;
             self.galleys.clear();
             ws.notify(NoticeLevel::Info, format!("{} was also changed elsewhere; both changes are kept.", self.path.file_name()));
         } else {
             // Keep ours and put theirs beside it, so nothing is lost.
-            let copy = self.elsewhere_copy(vault);
-            let _ = vault.storage().write_atomic(&copy, &theirs);
-            ws.notify(
-                NoticeLevel::Warn,
-                format!(
-                    "{} was changed elsewhere in the same places; your version is kept and the other is in {}.",
-                    self.path.file_name(),
-                    copy.file_name()
-                ),
-            );
+            self.keep_theirs(ws, vault, &theirs, "was changed elsewhere in the same places");
         }
         self.disk_text = theirs;
         self.dirty = true;
         self.last_edit = Instant::now();
     }
 
-    /// A free name for a copy of the version changed elsewhere.
-    fn elsewhere_copy(&self, vault: &Vault) -> NotePath {
-        (1..1000)
-            .map(|n| {
-                let tag = if n == 1 { String::new() } else { format!(" {n}") };
-                NotePath::join(self.path.folder(), &format!("{} (changed elsewhere{tag}).canvas", self.path.stem()))
-            })
-            .find(|p| !vault.exists(p))
-            .unwrap_or_else(|| NotePath::join(self.path.folder(), &format!("{} (changed elsewhere).canvas", self.path.stem())))
+    /// Keep the version changed elsewhere before ours is saved over it: in
+    /// version history, and in a copy beside the file. If no copy can be
+    /// written, ours is not saved over theirs until one can be.
+    fn keep_theirs(&mut self, ws: &mut Workspace, vault: &Vault, theirs: &str, what: &str) {
+        drawings::keep_their_version(ws, vault, &self.path, theirs);
+        let name = self.path.file_name().to_string();
+        if let Some(copy) = self.write_copy(vault, theirs) {
+            self.hold = None;
+            ws.notify(NoticeLevel::Warn, format!("{name} {what}; your version is kept and the other is in {}.", copy.file_name()));
+        } else {
+            self.hold = Some(theirs.to_string());
+            ws.notify(
+                NoticeLevel::Warn,
+                format!(
+                    "{name} {what}. Quire couldn't write a copy of the other version; it is in the version history, and your version is not saved over it until a copy can be written."
+                ),
+            );
+        }
+    }
+
+    /// Write `text` to a free "(changed elsewhere)" name beside the canvas,
+    /// through the vault's normal write (a locked folder encrypts it). Never
+    /// over an existing file; `None` when it can't be written.
+    fn write_copy(&self, vault: &Vault, text: &str) -> Option<NotePath> {
+        (1..1000).find_map(|n| {
+            let tag = if n == 1 { String::new() } else { format!(" {n}") };
+            let p = NotePath::join(self.path.folder(), &format!("{} (changed elsewhere{tag}).canvas", self.path.stem()));
+            match vault.write_if(&p, None, text) {
+                Ok(true) => Some(Some(p)),
+                Ok(false) => None, // taken: the next name
+                Err(_) => Some(None),
+            }
+        })?
     }
 
     /// Write what isn't written: the canvas and its sketches, each only over
@@ -316,11 +334,21 @@ impl CanvasSurface {
     /// version and a nudge to sync. A write that fails keeps the edits and
     /// tells the person once; the next try comes after the autosave delay.
     fn save(&mut self, ws: &mut Workspace) {
-        if self.vault.is_none() || self.error.is_some() {
+        let Some(vault) = self.vault.clone() else { return };
+        // A file that can't be read, and nothing of ours to save: leave it be.
+        if self.error.is_some() && !self.has_unsaved() {
             return;
         }
         let name = self.path.file_name().to_string();
         let mut failure: Option<String> = None;
+        if let Some(theirs) = self.hold.take() {
+            if let Some(copy) = self.write_copy(&vault, &theirs) {
+                ws.notify(NoticeLevel::Info, format!("A copy of the other version of {name} is now in {}.", copy.file_name()));
+            } else {
+                self.hold = Some(theirs);
+                failure = Some("a copy of the version changed elsewhere can't be written".to_string());
+            }
+        }
         let dirty_sketches: Vec<NotePath> = self.sketches.iter().filter(|(_, e)| e.dirty).map(|(p, _)| p.clone()).collect();
         for p in dirty_sketches {
             let Some(e) = self.sketches.get_mut(&p) else { continue };
@@ -329,11 +357,11 @@ impl CanvasSurface {
                 e.dirty = false;
                 continue;
             }
-            match drawings::save_drawing(ws, &p, &e.disk_text, &t) {
+            match drawings::save_drawing_in(ws, &vault, &p, &e.disk_text, &t) {
                 Saved::Written => {
                     e.disk_text = t;
                     e.dirty = false;
-                    if let (Some(ctx), Some(abs)) = (&self.ctx, ws.vault().and_then(|v| v.storage().absolute(&p))) {
+                    if let (Some(ctx), Some(abs)) = (&self.ctx, vault.storage().absolute(&p)) {
                         loader::forget(ctx, &abs);
                     }
                 }
@@ -355,20 +383,20 @@ impl CanvasSurface {
         }
         // Unchanged content keeps the file as it was written (an Obsidian file stays as is).
         let same = quire_canvas::parse(&self.disk_text).is_ok_and(|c| c == self.canvas);
-        if same {
+        if self.hold.is_some() {
+            // Theirs has no copy yet: not saved over (see `keep_theirs`).
+        } else if same {
             self.dirty = false;
         } else {
             let text = quire_canvas::to_canonical(&self.canvas);
-            match drawings::save_drawing(ws, &self.path, &self.disk_text, &text) {
+            match drawings::save_drawing_in(ws, &vault, &self.path, &self.disk_text, &text) {
                 Saved::Written => {
                     self.disk_text = text;
                     self.dirty = false;
                 }
                 Saved::ChangedElsewhere(Some(theirs)) => {
                     // Merged with ours (or ours kept beside it); saved on the next try.
-                    if let Some(vault) = self.vault.clone() {
-                        self.take_in(ws, &vault, theirs);
-                    }
+                    self.take_in(ws, &vault, theirs);
                 }
                 Saved::ChangedElsewhere(None) => failure = Some(format!("{name} can't be read to check it")),
                 Saved::Failed(m) => failure = Some(m),
@@ -382,7 +410,9 @@ impl CanvasSurface {
                 if !self.save_failed {
                     ws.notify(
                         NoticeLevel::Error,
-                        format!("Couldn't save {name}: {m}. Your changes are still here; Quire will keep trying."),
+                        format!(
+                            "Couldn't save {name}: {m}. Your changes are still here and Quire tries again; closing the tab or quitting asks you first."
+                        ),
                     );
                 }
                 self.save_failed = true;
@@ -400,26 +430,55 @@ impl CanvasSurface {
     /// the same checked writes, without history or a nudge to sync.
     fn save_last_resort(&mut self) {
         let Some(vault) = self.vault.clone() else { return };
-        if self.error.is_some() {
+        if (self.error.is_some() && !self.has_unsaved()) || self.hold.is_some() {
             return;
         }
         for (p, e) in &mut self.sketches {
             let t = quire_canvas::ink::to_svg(&e.sketch);
-            if !e.dirty || t == e.disk_text {
-                continue;
-            }
-            let wrote = if vault.exists(p) { vault.write_if(p, Some(&e.disk_text), &t) } else { vault.write(p, &t).map(|()| true) };
-            if wrote.unwrap_or(false) {
+            if e.dirty && t != e.disk_text && write_checked(&vault, p, &e.disk_text, &t) {
                 e.disk_text = t;
                 e.dirty = false;
             }
         }
         if self.dirty && !quire_canvas::parse(&self.disk_text).is_ok_and(|c| c == self.canvas) {
             let text = quire_canvas::to_canonical(&self.canvas);
-            if vault.write_if(&self.path, Some(&self.disk_text), &text).unwrap_or(false) {
+            if write_checked(&vault, &self.path, &self.disk_text, &text) {
                 self.disk_text = text;
                 self.dirty = false;
             }
+        }
+    }
+
+    /// "Save a copy as…": the canvas (and the sketches with unsaved edits,
+    /// beside it) written to `to`, which must be a name not in use.
+    fn save_copy_to(&self, to: &NotePath) -> Result<(), String> {
+        let vault = self.vault.clone().ok_or("No vault is open")?;
+        if vault.exists(to) {
+            return Err(format!("{} already exists; pick another name", to.file_name()));
+        }
+        let mut canvas = self.canvas.clone();
+        for (p, e) in self.sketches.iter().filter(|(_, e)| e.dirty) {
+            let sp = NotePath::join(to.folder(), &format!("{} {}", to.stem(), p.file_name()));
+            if !vault.write_if(&sp, None, &quire_canvas::ink::to_svg(&e.sketch)).map_err(|e| e.to_string())? {
+                return Err(format!("{} already exists; pick another name", sp.file_name()));
+            }
+            for n in canvas.nodes.iter_mut().filter(|n| n.file.as_deref().map(NotePath::new).as_ref() == Some(p)) {
+                n.file = Some(sp.as_str().to_string());
+            }
+        }
+        match vault.write_if(to, None, &quire_canvas::to_canonical(&canvas)) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(format!("{} already exists; pick another name", to.file_name())),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// Forget every unsaved edit (the person chose to close without them).
+    fn drop_edits(&mut self) {
+        self.dirty = false;
+        self.hold = None;
+        for e in self.sketches.values_mut() {
+            e.dirty = false;
         }
     }
 
@@ -2112,6 +2171,13 @@ impl Surface for CanvasSurface {
         if self.has_unsaved() && (!self.save_failed || self.last_edit.elapsed() >= SAVE_AFTER) {
             self.save(ws);
         }
+        // A failed save is tried again without waiting for input.
+        if self.has_unsaved()
+            && self.save_failed
+            && let Some(ctx) = &self.ctx
+        {
+            ctx.request_repaint_after(SAVE_AFTER * 4);
+        }
     }
 
     fn close(&mut self, ws: &mut Workspace) {
@@ -2125,6 +2191,14 @@ impl Surface for CanvasSurface {
 
     fn unsaved(&self) -> bool {
         self.has_unsaved()
+    }
+
+    fn discard(&mut self) {
+        self.drop_edits();
+    }
+
+    fn save_copy_as(&mut self, _ws: &mut Workspace, to: &NotePath) -> Result<(), String> {
+        self.save_copy_to(to)
     }
 
     fn show(&mut self, ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> PanelOut {
@@ -2144,7 +2218,7 @@ impl Surface for CanvasSurface {
                 ui.ctx().request_repaint_after(SAVE_AFTER);
             }
         }
-        if let Some(e) = &self.error {
+        if let Some(e) = self.error.clone().filter(|_| !self.has_unsaved()) {
             let mut out = PanelOut::default();
             ui.vertical_centered(|ui| {
                 ui.add_space(ui.available_height() * 0.3);
@@ -2352,7 +2426,9 @@ mod tests {
 
     impl TempDir {
         fn new() -> Self {
-            let p = std::env::temp_dir().join(format!("quire-canvas-save-{}", std::process::id()));
+            static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let p = std::env::temp_dir().join(format!("quire-canvas-save-{}-{n}", std::process::id()));
             let _ = std::fs::remove_dir_all(&p);
             std::fs::create_dir_all(&p).unwrap();
             Self(p)
@@ -2452,6 +2528,149 @@ mod tests {
         <CanvasSurface as Surface>::close(&mut s, &mut ws);
         assert!(!s.has_unsaved());
         assert!(ws.vault().unwrap().read(&"H.canvas".into()).unwrap().contains("\"x\":12"));
+    }
+
+    fn edit_a(s: &mut CanvasSurface, by: i64) {
+        s.canvas.node_mut("a").unwrap().x += by;
+        s.touch();
+    }
+
+    /// 0.13.2 (U-M3): a canvas saves into the vault it was opened from, not
+    /// into whichever vault is open now.
+    #[test]
+    fn a_canvas_saves_into_its_own_vault_after_a_vault_switch() {
+        let mut ws = Workspace::new(quire_app::Settings::default());
+        ws.attach_vault(Vault::in_memory(&[]));
+        let vault_a = ws.vault().unwrap().clone();
+        let mut s = shown(&mut ws, "Board.canvas", TWO);
+        edit_a(&mut s, 33);
+        ws.attach_vault(Vault::in_memory(&[("Other.md", "# Other\n")]));
+        <CanvasSurface as Surface>::close(&mut s, &mut ws);
+        assert!(!s.has_unsaved());
+        assert!(vault_a.read(&"Board.canvas".into()).unwrap().contains("\"x\":33"), "saved in the vault it came from");
+        assert!(!ws.vault().unwrap().exists(&"Board.canvas".into()), "nothing was written into the other vault");
+    }
+
+    /// 0.13.2 (U-H1): what couldn't be written is still reported as unsaved
+    /// after the surfaces were closed, so quitting can ask.
+    #[test]
+    fn unsaved_canvases_are_listed_after_a_failed_close() {
+        let dir = TempDir::new();
+        let mut ws = Workspace::new(quire_app::Settings::default());
+        ws.attach_vault(Vault::open_local(dir.path()).unwrap());
+        let mut s = shown(&mut ws, "Q.canvas", TWO);
+        edit_a(&mut s, 5);
+        std::fs::remove_file(dir.path().join("Q.canvas")).unwrap();
+        std::fs::create_dir(dir.path().join("Q.canvas")).unwrap();
+        let mut surfaces = crate::surfaces::Surfaces::default();
+        surfaces.open(Box::new(s));
+        surfaces.close_all(&mut ws);
+        assert_eq!(surfaces.unsaved_titles(), vec!["Q.canvas".to_string()]);
+        // The notice doesn't promise more than is true.
+        assert!(ws.notices(Duration::from_mins(1)).any(|n| n.text.contains("quitting asks you first")));
+    }
+
+    /// 0.13.2 (U-M1): an unreadable outside change never hides or blocks
+    /// unsaved edits, and the error clears when a later read parses.
+    #[test]
+    fn an_unreadable_outside_change_leaves_the_edits_visible_and_saveable() {
+        let mut ws = Workspace::new(quire_app::Settings::default());
+        ws.attach_vault(Vault::in_memory(&[]));
+        let mut s = shown(&mut ws, "U.canvas", TWO);
+        edit_a(&mut s, 9);
+        let odd = "{\"nodes\":[{\"id\":\"z\",\"type\":\"text\",\"x\":\"left\"}],\"edges\":[]}";
+        ws.vault().unwrap().write(&"U.canvas".into(), odd).unwrap();
+        s.absorb(&mut ws);
+        assert!(s.error.is_none(), "the edits are not hidden behind the error page");
+        assert!(s.hold.is_none(), "their version was kept in a copy");
+        assert!(ws.vault().unwrap().exists(&"U (changed elsewhere).canvas".into()));
+        s.save(&mut ws);
+        assert!(!s.has_unsaved());
+        assert!(ws.vault().unwrap().read(&"U.canvas".into()).unwrap().contains("\"x\":9"));
+        // With only a sketch unsaved, the same.
+        let mut t = shown(&mut ws, "V.canvas", TWO);
+        t.sketches.insert("s.svg".into(), SketchEntry { sketch: Sketch::default(), disk_text: String::new(), disk_gen: 0, dirty: true });
+        ws.vault().unwrap().write(&"V.canvas".into(), odd).unwrap();
+        t.absorb(&mut ws);
+        assert!(t.error.is_none() && t.has_unsaved());
+        // Nothing unsaved and unreadable: the error page, until a later read parses.
+        let mut u = shown(&mut ws, "W.canvas", TWO);
+        ws.vault().unwrap().write(&"W.canvas".into(), odd).unwrap();
+        u.absorb(&mut ws);
+        assert!(u.error.is_some());
+        ws.vault().unwrap().write(&"W.canvas".into(), TWO).unwrap();
+        u.absorb(&mut ws);
+        assert!(u.error.is_none(), "cleared once the file parses");
+    }
+
+    /// 0.13.2 (U-M2): when no copy of their version can be written, ours is
+    /// not saved over it, their version is in history, and no existing file
+    /// is overwritten.
+    #[test]
+    fn a_conflict_without_a_copy_does_not_save_over_their_version() {
+        let dir = TempDir::new();
+        let mut ws = Workspace::new(quire_app::Settings::default());
+        ws.attach_vault(Vault::open_local(dir.path()).unwrap());
+        let mut s = shown(&mut ws, "M.canvas", TWO);
+        // Every numbered name is taken.
+        std::fs::write(dir.path().join("M (changed elsewhere).canvas"), "taken").unwrap();
+        for n in 2..1000 {
+            std::fs::write(dir.path().join(format!("M (changed elsewhere {n}).canvas")), "taken").unwrap();
+        }
+        // Both sides change card "a".
+        s.canvas.node_mut("a").unwrap().text = Some("ours".into());
+        s.touch();
+        let theirs = TWO.replace("\"text\":\"A\"", "\"text\":\"theirs\"");
+        std::fs::write(dir.path().join("M.canvas"), &theirs).unwrap();
+        s.absorb(&mut ws);
+        assert!(s.hold.is_some(), "held until a copy can be written");
+        assert!(ws.notices(Duration::from_mins(1)).any(|n| n.text.contains("couldn't write a copy")), "the notice says what is true");
+        s.save(&mut ws);
+        assert_eq!(std::fs::read_to_string(dir.path().join("M.canvas")).unwrap(), theirs, "theirs is not saved over");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("M (changed elsewhere 7).canvas")).unwrap(),
+            "taken",
+            "no existing file is overwritten"
+        );
+        ws.flush_history();
+        let vault = ws.vault().unwrap();
+        assert!(
+            vault.history(&"M.canvas".into()).iter().any(|v| vault.read_snapshot(v).is_ok_and(|t| t == theirs)),
+            "theirs is in history"
+        );
+        // A name frees up: the copy is written and ours is saved.
+        std::fs::remove_file(dir.path().join("M (changed elsewhere 7).canvas")).unwrap();
+        s.save(&mut ws);
+        assert!(s.hold.is_none() && !s.dirty);
+        assert_eq!(std::fs::read_to_string(dir.path().join("M (changed elsewhere 7).canvas")).unwrap(), theirs);
+        assert!(std::fs::read_to_string(dir.path().join("M.canvas")).unwrap().contains("ours"));
+    }
+
+    /// 0.13.2 (U-L1): the last-resort write puts back a file deleted outside.
+    #[test]
+    fn the_last_resort_write_puts_back_a_deleted_canvas() {
+        let mut ws = Workspace::new(quire_app::Settings::default());
+        ws.attach_vault(Vault::in_memory(&[]));
+        let mut s = shown(&mut ws, "D.canvas", TWO);
+        edit_a(&mut s, 3);
+        ws.vault().unwrap().storage().remove(&"D.canvas".into()).unwrap();
+        s.save_last_resort();
+        assert!(ws.vault().unwrap().read(&"D.canvas".into()).unwrap().contains("\"x\":3"));
+    }
+
+    /// 0.13.2 (U-L2): "Save a copy as…" writes the edits to a new name and
+    /// refuses a name in use.
+    #[test]
+    fn a_stuck_canvas_can_be_saved_as_a_copy() {
+        let mut ws = Workspace::new(quire_app::Settings::default());
+        ws.attach_vault(Vault::in_memory(&[]));
+        let mut s = shown(&mut ws, "C1.canvas", TWO);
+        edit_a(&mut s, 11);
+        <CanvasSurface as Surface>::save_copy_as(&mut s, &mut ws, &"C1 (copy).canvas".into()).unwrap();
+        assert!(ws.vault().unwrap().read(&"C1 (copy).canvas".into()).unwrap().contains("\"x\":11"));
+        assert!(<CanvasSurface as Surface>::save_copy_as(&mut s, &mut ws, &"C1 (copy).canvas".into()).is_err());
+        <CanvasSurface as Surface>::discard(&mut s);
+        assert!(!s.has_unsaved());
     }
 
     /// 0.10: text cards are drawn by the note preview's renderer, laid out

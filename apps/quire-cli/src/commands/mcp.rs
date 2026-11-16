@@ -196,7 +196,7 @@ fn token(args: &[String]) -> Result<(), String> {
             println!("Revoked.");
             Ok(())
         }
-        other => Err(format!("unknown token command “{other}”\n\n{}", super::usage())),
+        other => Err(super::unknown_subcommand(args, "token command", other)),
     }
 }
 

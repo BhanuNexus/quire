@@ -392,19 +392,19 @@ impl SketchSurface {
     /// version and a nudge to sync. A failed write keeps the edits (still
     /// dirty) and tells the person once.
     fn save(&mut self, ws: &mut Workspace) {
-        let Some(Ok(sk)) = &self.sketch else { return };
+        let (Some(vault), Some(Ok(sk))) = (self.vault.clone(), &self.sketch) else { return };
         let text = ink::to_svg(sk);
         if text == self.disk_text {
             self.dirty = false;
             return;
         }
         let name = self.path.file_name().to_string();
-        let failure = match drawings::save_drawing(ws, &self.path, &self.disk_text, &text) {
+        let failure = match drawings::save_drawing_in(ws, &vault, &self.path, &self.disk_text, &text) {
             Saved::Written => {
                 self.disk_text = text;
                 self.dirty = false;
                 self.save_failed = false;
-                if let (Some(ctx), Some(abs)) = (&self.ctx, ws.vault().and_then(|v| v.storage().absolute(&self.path))) {
+                if let (Some(ctx), Some(abs)) = (&self.ctx, vault.storage().absolute(&self.path)) {
                     super::loader::forget(ctx, &abs);
                 }
                 return;
@@ -425,7 +425,7 @@ impl SketchSurface {
         self.dirty = true;
         self.last_edit = Instant::now();
         if !self.save_failed {
-            ws.notify(NoticeLevel::Error, format!("Couldn't save {name}: {failure}. Your changes are still here; Quire will keep trying."));
+            ws.notify(NoticeLevel::Error, format!("Couldn't save {name}: {failure}. Your changes are still here and Quire tries again; closing the tab or quitting asks you first."));
         }
         self.save_failed = true;
     }
@@ -450,7 +450,7 @@ impl Drop for SketchSurface {
             && let (Some(vault), Some(Ok(sk))) = (&self.vault, &self.sketch)
         {
             let text = ink::to_svg(sk);
-            let _ = vault.write_if(&self.path, Some(&self.disk_text), &text);
+            super::write_checked(vault, &self.path, &self.disk_text, &text);
         }
     }
 }
@@ -464,6 +464,13 @@ impl Surface for SketchSurface {
         if self.dirty && (!self.save_failed || self.last_edit.elapsed() > Duration::from_millis(600)) {
             self.save(ws);
         }
+        // A failed save is tried again without waiting for input.
+        if self.dirty
+            && self.save_failed
+            && let Some(ctx) = &self.ctx
+        {
+            ctx.request_repaint_after(Duration::from_secs(2));
+        }
     }
 
     fn close(&mut self, ws: &mut Workspace) {
@@ -474,6 +481,19 @@ impl Surface for SketchSurface {
 
     fn unsaved(&self) -> bool {
         self.dirty
+    }
+
+    fn discard(&mut self) {
+        self.dirty = false;
+    }
+
+    fn save_copy_as(&mut self, _ws: &mut Workspace, to: &NotePath) -> Result<(), String> {
+        let (Some(vault), Some(Ok(sk))) = (&self.vault, &self.sketch) else { return Err("Nothing to save".into()) };
+        match vault.write_if(to, None, &ink::to_svg(sk)) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(format!("{} already exists; pick another name", to.file_name())),
+            Err(e) => Err(e.to_string()),
+        }
     }
 
     fn show(&mut self, ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> PanelOut {

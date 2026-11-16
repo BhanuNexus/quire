@@ -114,3 +114,72 @@ fn usage_mistakes_are_one_line_with_exit_code_2() {
     let out = cli(dir.path(), &["search", dir.path().join("nope").to_str().unwrap(), "x"]);
     assert_eq!(out.status.code(), Some(1));
 }
+
+#[test]
+fn help_anywhere_before_a_double_dash_prints_help_and_runs_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("vault");
+    std::fs::create_dir(&vault).unwrap();
+    let v = vault.to_str().unwrap();
+    let before = entries(&vault);
+    for args in [
+        vec!["capture", v, "note text", "--help"],
+        vec!["serve", v, "--help"],
+        vec!["serve", v, "-h"],
+        vec!["sync", "once", v, "--help"],
+        vec!["remind", v, "--install", "-h"],
+        vec!["lock", v, "Journal", "--help"],
+        vec!["search", v, "q", "-h"],
+    ] {
+        let out = cli(dir.path(), &args);
+        assert!(out.status.success(), "{args:?}: {}", err(&out));
+        assert!(String::from_utf8_lossy(&out.stdout).contains("quire-cli"), "{args:?}: prints help");
+    }
+    assert_eq!(entries(&vault), before, "nothing was written or made");
+    // After `--` the words are text.
+    let out = cli(dir.path(), &["capture", v, "--", "-h"]);
+    assert!(out.status.success(), "{}", err(&out));
+    let daily: Vec<String> = entries(&vault);
+    assert!(daily.iter().any(|n| n != ".quire"), "a note was written: {daily:?}");
+    // A folder named --help, -h or help is not a vault for serve.
+    for name in ["--help", "-h", "help"] {
+        std::fs::create_dir(dir.path().join(name)).unwrap();
+        let out = cli(dir.path(), &["serve", name]);
+        assert!(out.status.success() && String::from_utf8_lossy(&out.stdout).contains("quire-cli serve"), "serve {name}");
+    }
+}
+
+#[test]
+fn every_usage_error_is_one_line_with_exit_code_2() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("vault");
+    std::fs::create_dir(&vault).unwrap();
+    let v = vault.to_str().unwrap();
+    for args in [vec!["sync", "bogus", v], vec!["agent", "bogus", v], vec!["format"], vec!["import"], vec!["tags", v, "bogus"]] {
+        let out = cli(dir.path(), &args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", err(&out));
+        assert_eq!(err(&out).lines().count(), 1, "{args:?}: {}", err(&out));
+    }
+}
+
+#[test]
+fn import_makes_its_target_folder_but_only_when_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("src");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("A.md"), "# A\n").unwrap();
+    let target = dir.path().join("new-vault");
+    let (s, t) = (source.to_str().unwrap(), target.to_str().unwrap());
+    let out = cli(dir.path(), &["import", s, t]);
+    assert!(out.status.success(), "{}", err(&out));
+    assert!(!target.exists(), "a dry run makes nothing");
+    let out = cli(dir.path(), &["import", s, t, "--write"]);
+    assert!(out.status.success(), "{}", err(&out));
+    assert!(target.join("A.md").exists(), "imported into a folder it made");
+    // Not two levels: a missing parent is an unplugged drive or a typo.
+    let deep = dir.path().join("media").join("Notes");
+    let out = cli(dir.path(), &["import", s, deep.to_str().unwrap(), "--write"]);
+    assert!(!out.status.success());
+    assert!(err(&out).contains("No folder at"), "{}", err(&out));
+    assert!(!dir.path().join("media").exists());
+}

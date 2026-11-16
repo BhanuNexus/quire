@@ -68,16 +68,31 @@ pub mod tools;
 /// # Errors
 /// `No folder at <path>` with what to do next, when `root` isn't a folder.
 pub fn require_folder(root: &std::path::Path) -> Result<(), String> {
-    if root.is_dir() {
-        return Ok(());
-    }
     let shown = root.display();
-    if root.exists() {
-        return Err(format!("{shown} is a file, not a folder. Give the folder that holds your notes."));
+    match std::fs::metadata(root) {
+        Ok(m) if m.is_dir() => Ok(()),
+        Ok(_) => Err(format!("{shown} is a file, not a folder. Give the folder that holds your notes.")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if std::fs::symlink_metadata(root).is_ok() {
+                return Err(format!(
+                    "No folder at {shown}: it is a link to a place that isn't there ({e}). Check where the link points, and that the drive or share is connected."
+                ));
+            }
+            // `mkdir` is only the fix when the folder above it is there: on an
+            // unmounted drive it would make an empty vault on the wrong disk.
+            let parent_there = root.parent().is_none_or(|p| p.as_os_str().is_empty() || p.is_dir());
+            if parent_there {
+                Err(format!(
+                    "No folder at {shown}. Check the path. To start a new vault, create the folder first (mkdir \"{shown}\"), then run this command again."
+                ))
+            } else {
+                Err(format!(
+                    "No folder at {shown}, and the folder it would go in isn't there either. Check the path, and that the drive or share is connected; don't make the folder until it is."
+                ))
+            }
+        }
+        Err(e) => Err(format!("No folder at {shown}: {e}. Check the path, and that the drive or share is connected.")),
     }
-    Err(format!(
-        "No folder at {shown}. Check the path. To start a new vault, create the folder first (mkdir \"{shown}\"), then run this command again."
-    ))
 }
 
 pub use server::{Conn, Principal, Reply, Server, ServerConfig};
@@ -98,5 +113,32 @@ mod schema_tests {
                 "n": {"type": "integer", "minimum": 1, "maximum": 50, "default": 0.5}, "e": {"enum": ["a", "b",], "x": [true, false, null]},},
                 "required": ["q"],})
         );
+    }
+}
+
+#[cfg(test)]
+mod require_folder_tests {
+    use super::require_folder;
+
+    #[test]
+    fn mkdir_is_suggested_only_when_the_parent_folder_is_there() {
+        let dir = std::env::temp_dir().join(format!("quire-require-folder-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(require_folder(&dir).is_ok());
+        let typo = require_folder(&dir.join("Nots")).unwrap_err();
+        assert!(typo.starts_with("No folder at ") && typo.contains("mkdir"), "{typo}");
+        let unmounted = require_folder(&dir.join("media").join("Notes")).unwrap_err();
+        assert!(unmounted.starts_with("No folder at ") && !unmounted.contains("mkdir \""), "{unmounted}");
+        assert!(unmounted.contains("connected"), "{unmounted}");
+        std::fs::write(dir.join("f"), "x").unwrap();
+        assert!(require_folder(&dir.join("f")).unwrap_err().contains("is a file"));
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.join("gone"), dir.join("dangling")).unwrap();
+            let e = require_folder(&dir.join("dangling")).unwrap_err();
+            assert!(e.contains("link") && !e.contains("mkdir \""), "{e}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

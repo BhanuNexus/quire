@@ -3,7 +3,7 @@
 //! Command palette, quick open, pickers, dialogs and toasts.
 
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use egui::{Align2, Key, Modifiers, Pos2, RichText};
 use quire_app::vault::NotePath;
@@ -559,23 +559,46 @@ pub(crate) fn show(ctx: &egui::Context, overlay: &mut Overlay, ws: &mut Workspac
                     }
                 });
                 // A mistyped path must not quietly become a new empty vault:
-                // a folder that isn't there is made only when asked for.
-                let path = std::path::Path::new(input.trim());
-                let typed = !input.trim().is_empty();
-                let missing = typed && !path.exists();
-                if missing {
-                    ui.label(
-                        RichText::new(format!("No folder at {}. Check the path, or make it as a new, empty vault.", path.display()))
+                // a folder that isn't there is made only when asked for. The
+                // disk is looked at when the text changes, not every frame.
+                let id = egui::Id::NULL.with("quire-open-vault-choice");
+                let cached: Option<(String, Instant, VaultChoice)> = ctx.data(|d| d.get_temp(id));
+                let choice = match cached {
+                    Some((text, at, c)) if text == *input && at.elapsed() < Duration::from_secs(2) => c,
+                    _ => {
+                        let home: Option<std::path::PathBuf> =
+                            std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(Into::into);
+                        let c = vault_choice(input, home.as_deref());
+                        ctx.data_mut(|d| d.insert_temp(id, (input.clone(), Instant::now(), c.clone())));
+                        c
+                    }
+                };
+                match &choice {
+                    VaultChoice::Make(p) => {
+                        ui.label(
+                            RichText::new(format!(
+                                "No folder at {}. Check the path, or make this folder as a new, empty vault.",
+                                p.display()
+                            ))
                             .color(pal.muted),
-                    );
-                } else if typed && !path.is_dir() {
-                    ui.label(RichText::new(format!("{} is a file, not a folder.", path.display())).color(pal.muted));
+                        );
+                    }
+                    VaultChoice::Problem(t) => {
+                        ui.label(RichText::new(t).color(pal.muted));
+                    }
+                    VaultChoice::Open(_) | VaultChoice::Empty => {}
                 }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    let label = if missing { "Make folder and open" } else { "Open" };
-                    if ui.add_enabled(typed && (missing || path.is_dir()), egui::Button::new(label)).clicked() {
-                        match ws.open_vault(path) {
+                    let (label, target) = match &choice {
+                        VaultChoice::Open(p) => ("Open", Some(p)),
+                        VaultChoice::Make(p) => ("Make folder and open", Some(p)),
+                        VaultChoice::Empty | VaultChoice::Problem(_) => ("Open", None),
+                    };
+                    if ui.add_enabled(target.is_some(), egui::Button::new(label)).clicked()
+                        && let Some(p) = target
+                    {
+                        match ws.open_vault(p) {
                             Ok(()) => res.close = true,
                             Err(e) => ws.notify(NoticeLevel::Error, e),
                         }
@@ -588,6 +611,52 @@ pub(crate) fn show(ctx: &egui::Context, overlay: &mut Overlay, ws: &mut Workspac
         }
     }
     res
+}
+
+/// What the Open a vault window can do with the path typed in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum VaultChoice {
+    Empty,
+    /// A folder that is there.
+    Open(std::path::PathBuf),
+    /// A folder that is not there, in a parent folder that is: made on request.
+    Make(std::path::PathBuf),
+    /// Why it can't be opened or made.
+    Problem(String),
+}
+
+/// Decide what to do with `typed` (a leading `~` is the home folder).
+pub(crate) fn vault_choice(typed: &str, home: Option<&std::path::Path>) -> VaultChoice {
+    use std::path::{Path, PathBuf};
+    let typed = typed.trim();
+    if typed.is_empty() {
+        return VaultChoice::Empty;
+    }
+    let path: PathBuf = match (typed.strip_prefix('~'), &home) {
+        (Some(""), Some(h)) => h.to_path_buf(),
+        (Some(rest), Some(h)) if rest.starts_with(['/', '\\']) => h.join(rest.trim_start_matches(['/', '\\'])),
+        _ => PathBuf::from(typed),
+    };
+    match std::fs::metadata(&path) {
+        Ok(m) if m.is_dir() => VaultChoice::Open(path),
+        Ok(_) => VaultChoice::Problem(format!("{} is a file, not a folder.", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if !path.is_absolute() {
+                return VaultChoice::Problem(format!(
+                    "No folder at {}. Type the full path to make a new folder (it starts with / or ~).",
+                    path.display()
+                ));
+            }
+            match path.parent().map(Path::to_path_buf) {
+                Some(parent) if parent.is_dir() => VaultChoice::Make(path),
+                _ => VaultChoice::Problem(format!(
+                    "No folder at {}, and the folder it would go in isn't there either (an unplugged drive, or a typo?). Check the path.",
+                    path.display()
+                )),
+            }
+        }
+        Err(e) => VaultChoice::Problem(format!("{} can't be reached: {e}", path.display())),
+    }
 }
 
 /// Categories in the order the cheat sheet shows them.
@@ -771,9 +840,9 @@ mod tests {
         ws.attach_vault(quire_app::vault::Vault::in_memory(&[("A.md", "a"), ("B.md", "b"), ("C.md", "c")]));
         ws.index().flush();
         ws.open_note(&NotePath::new("B.md")).unwrap();
-        ws.tick(std::time::Instant::now());
+        ws.tick(Instant::now());
         ws.open_note(&NotePath::new("C.md")).unwrap();
-        ws.tick(std::time::Instant::now());
+        ws.tick(Instant::now());
         let labels: Vec<String> = items(&ws, Mode::Notes, "", false).into_iter().map(|i| i.label).collect();
         assert_eq!(labels[0], "B", "recent first");
         assert_eq!(labels.len(), 3, "then every other note");
@@ -787,5 +856,32 @@ mod tests {
         let c = fuzzy_score("Format: Heading 1", "h1").unwrap();
         assert!(a > c);
         assert!(fuzzy_score("Quick open", "qo").unwrap() > fuzzy_score("Quick open", "ko").unwrap_or(-99));
+    }
+}
+
+#[cfg(test)]
+mod vault_choice_tests {
+    use super::*;
+
+    #[test]
+    fn a_folder_is_made_only_in_a_parent_that_exists_and_from_a_full_path() {
+        let dir = std::env::temp_dir().join(format!("quire-open-choice-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let s = |p: &std::path::Path| p.display().to_string();
+        assert_eq!(vault_choice(&s(&dir), None), VaultChoice::Open(dir.clone()));
+        assert_eq!(vault_choice(&s(&dir.join("New")), None), VaultChoice::Make(dir.join("New")));
+        assert!(
+            matches!(vault_choice(&s(&dir.join("A").join("B")), None), VaultChoice::Problem(_)),
+            "two levels deep: the parent isn't there"
+        );
+        assert!(matches!(vault_choice("Documnts/Notes", None), VaultChoice::Problem(t) if t.contains("full path")));
+        // `~` is the home folder, not a folder named `~`.
+        assert_eq!(vault_choice("~/New", Some(dir.as_path())), VaultChoice::Make(dir.join("New")));
+        assert_eq!(vault_choice("~", Some(dir.as_path())), VaultChoice::Open(dir.clone()));
+        std::fs::write(dir.join("f.md"), "x").unwrap();
+        assert!(matches!(vault_choice(&s(&dir.join("f.md")), None), VaultChoice::Problem(t) if t.contains("is a file")));
+        assert_eq!(vault_choice("  ", None), VaultChoice::Empty);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

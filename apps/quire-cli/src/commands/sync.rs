@@ -155,7 +155,7 @@ fn run(args: &[String]) -> Result<(), String> {
             println!("{}", vault_sync::sync_compact_at(&vault, has(args, "--force"), keep)?);
             Ok(())
         }
-        other => Err(format!("unknown sync command “{other}”\n\n{}", super::usage())),
+        other => Err(super::unknown_subcommand(args, "command", other)),
     }
 }
 

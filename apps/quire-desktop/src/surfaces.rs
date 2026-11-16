@@ -41,6 +41,15 @@ pub(crate) trait Surface {
     fn unsaved(&self) -> bool {
         false
     }
+    /// The person chose to lose the unsaved edits: forget them, so nothing
+    /// writes them later (its drop too).
+    fn discard(&mut self) {}
+    /// Write the edits to a new file, `to`, instead (when the file itself
+    /// can't be written). `Err` says why not.
+    fn save_copy_as(&mut self, ws: &mut Workspace, to: &NotePath) -> Result<(), String> {
+        let _ = (ws, to);
+        Err("This can't be saved as a copy".into())
+    }
 }
 
 /// For a file Quire can't edit yet: say so, and offer the system's viewer.
@@ -83,9 +92,26 @@ pub(crate) struct Surfaces {
     pub open: Vec<Box<dyn Surface>>,
     /// Index into `open`; `None` shows the notes.
     pub active: Option<usize>,
+    /// A tab whose changes can't be written, and the person closing it.
+    stuck: Option<Stuck>,
+}
+
+/// The "can't be saved" window of one tab.
+struct Stuck {
+    path: NotePath,
+    /// The name typed for "Save a copy".
+    copy: String,
+    error: Option<String>,
+    /// "Close without saving" was pressed: asking once more.
+    confirm: bool,
 }
 
 impl Surfaces {
+    /// What is still unsaved, by title: asked about at quit.
+    pub(crate) fn unsaved_titles(&self) -> Vec<String> {
+        self.open.iter().filter(|s| s.unsaved()).map(|s| s.title()).collect()
+    }
+
     /// Show `s` (or the already open surface for the same file).
     pub(crate) fn open(&mut self, s: Box<dyn Surface>) {
         let i = self.open.iter().position(|o| o.path() == s.path()).unwrap_or_else(|| {
@@ -117,15 +143,93 @@ impl Surfaces {
         if let Some(i) = close {
             self.open[i].close(ws);
             if self.open[i].unsaved() {
-                // The write failed (the person was told why): keep the tab, and the edits in it.
-                ws.notify(
-                    quire_app::workspace::NoticeLevel::Warn,
-                    format!("{} wasn't closed because its changes couldn't be saved.", self.open[i].title()),
-                );
+                // The write failed (the person was told why): the tab stays,
+                // with a way out that says what is lost or kept.
+                let path = self.open[i].path().clone();
+                let ext = path.file_name().rsplit_once('.').map_or(String::new(), |(_, e)| format!(".{e}"));
+                let copy = NotePath::join(path.folder(), &format!("{} (copy){ext}", path.stem())).to_string();
+                self.stuck = Some(Stuck { path, copy, error: None, confirm: false });
             } else {
                 self.open.remove(i);
                 self.active = None;
             }
+        }
+        self.stuck_window(ui.ctx(), ws, pal);
+    }
+
+    /// The window for a tab whose changes can't be written.
+    fn stuck_window(&mut self, ctx: &egui::Context, ws: &mut Workspace, pal: &Palette) {
+        let Some(st) = &mut self.stuck else { return };
+        let Some(i) = self.open.iter().position(|o| *o.path() == st.path) else {
+            self.stuck = None;
+            return;
+        };
+        let title = self.open[i].title();
+        let (mut keep, mut save_copy, mut discard) = (false, false, false);
+        egui::Modal::new(egui::Id::unique("quire-surface-stuck")).show(ctx, |ui| {
+            ui.set_width(440.0_f32.min(ctx.content_rect().width() - 48.0));
+            ui.heading(format!("“{title}” can't be saved"));
+            if st.confirm {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new("Close it and lose the changes that were never written? This can't be undone.").color(pal.muted),
+                    )
+                    .wrap(),
+                );
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui.button(RichText::new("Close without saving").color(pal.danger)).clicked() {
+                        discard = true;
+                    }
+                    if ui.button("Back").clicked() {
+                        st.confirm = false;
+                    }
+                });
+                return;
+            }
+            ui.add(
+                egui::Label::new(
+                    RichText::new(
+                        "Quire couldn't write its changes (the message shown earlier says why). Save them as a copy under a name you can write to, \
+                         or close it and lose them.",
+                    )
+                    .color(pal.muted),
+                )
+                .wrap(),
+            );
+            ui.add_space(6.0);
+            ui.add(egui::TextEdit::singleline(&mut st.copy).desired_width(f32::INFINITY));
+            if let Some(e) = &st.error {
+                ui.label(RichText::new(e).color(pal.danger));
+            }
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                save_copy = ui.button(RichText::new("Save a copy as…").strong()).clicked();
+                if ui.button("Keep open").clicked() {
+                    keep = true;
+                }
+                if ui.button(RichText::new("Close without saving").color(pal.danger)).clicked() {
+                    st.confirm = true;
+                }
+            });
+        });
+        if keep {
+            self.stuck = None;
+        } else if save_copy {
+            let to = NotePath::new(st.copy.trim());
+            match self.open[i].save_copy_as(ws, &to) {
+                Ok(()) => {
+                    ws.notify(quire_app::workspace::NoticeLevel::Info, format!("Saved the changes of “{title}” as {}", to.file_name()));
+                    discard = true;
+                }
+                Err(e) => st.error = Some(e),
+            }
+        }
+        if discard {
+            self.open[i].discard();
+            self.open.remove(i);
+            self.active = None;
+            self.stuck = None;
         }
     }
 

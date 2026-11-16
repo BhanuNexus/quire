@@ -335,7 +335,7 @@ fn unlock_cmd(args: &[String]) -> Result<(), String> {
         println!("The passphrase opens {folder}/ ({} notes).", vault.locked_notes(&folder).len());
         return Ok(());
     }
-    Err(super::usage())
+    Err(super::bad_usage(args))
 }
 
 fn status_cmd(args: &[String]) -> Result<(), String> {

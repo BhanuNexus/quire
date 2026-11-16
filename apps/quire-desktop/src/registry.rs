@@ -439,7 +439,18 @@ pub(crate) fn layout_samples(ws: &mut Workspace) -> Vec<(&'static str, crate::ov
         ("unlock with the recovery key", Overlay::Feature(Box::new(crate::lock_ui::LockDialog::sample(6)))),
         (
             "quit with unsaved locked notes",
-            Overlay::Feature(Box::new(crate::lock_ui::QuitDialog::new(vec!["2026-11-08".into(), "Letter to Sam".into()]))),
+            Overlay::Feature(Box::new(crate::lock_ui::QuitDialog::new(vec!["2026-11-08".into(), "Letter to Sam".into()], Vec::new()))),
+        ),
+        (
+            "quit with canvases that can't be saved",
+            Overlay::Feature(Box::new(crate::lock_ui::QuitDialog::new(
+                Vec::new(),
+                vec!["Project board.canvas".into(), "Sketch 2026-11-08.svg".into()],
+            ))),
+        ),
+        (
+            "quit with locked notes and canvases",
+            Overlay::Feature(Box::new(crate::lock_ui::QuitDialog::new(vec!["Letter to Sam".into()], vec!["Project board.canvas".into()]))),
         ),
         // ---- 0.12 typed links
         ("add typed link: type", Overlay::Feature(Box::new(crate::links_ui::AddLinkDialog::sample(0)))),

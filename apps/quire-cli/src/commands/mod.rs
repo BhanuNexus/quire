@@ -85,6 +85,7 @@ pub(crate) fn usage() -> String {
         s.push_str(c.usage);
         s.push('\n');
     }
+    s.push_str("  quire-cli <command> --help                  that command's usage (put -- before text that starts with a dash)\n");
     s.push_str("  quire-cli --version                         print the version");
     s
 }
@@ -103,9 +104,22 @@ pub(crate) fn was_usage_error() -> bool {
     USAGE_ERROR.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// The help for one command: its usage lines.
+/// The help for one command: its usage lines (`serve` has a longer text).
 pub(crate) fn command_usage(c: &CliCommand) -> String {
-    format!("USAGE:\n{}", c.usage)
+    if c.name == "serve" { serve::HELP.to_string() } else { format!("USAGE:\n{}", c.usage) }
+}
+
+/// A command typed wrongly (arguments missing or not understood): one line
+/// and a hint, and exit code 2.
+pub(crate) fn bad_usage(args: &[String]) -> String {
+    let name = args.first().map_or("quire-cli", String::as_str);
+    usage_error(format!("quire-cli {name}: the arguments aren't right. Run `quire-cli {name} --help` for how to use it."))
+}
+
+/// A word that is not one of a command's subcommands: one line, exit code 2.
+pub(crate) fn unknown_subcommand(args: &[String], what: &str, word: &str) -> String {
+    let name = args.first().map_or("quire-cli", String::as_str);
+    usage_error(format!("quire-cli {name}: unknown {what} “{word}”. Run `quire-cli {name} --help` for the commands."))
 }
 
 /// The name of argument `i` (`<vault>`) when the command's usage says it.
