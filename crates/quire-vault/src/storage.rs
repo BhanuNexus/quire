@@ -82,6 +82,12 @@ pub trait Storage: Send + Sync {
         self.write_bytes_atomic(path, bytes)?;
         Ok(true)
     }
+    /// A notice about the listing, once: folders inside the vault that can
+    /// never be opened (on Windows a folder whose name ends in a space or a
+    /// dot; an automount point whose target is missing) and are left out.
+    fn take_listing_notice(&self) -> Option<String> {
+        None
+    }
     /// The locked folders the vault remembers apart from their key files
     /// ([`crate::lock::Known`]): plain writes there stay refused even while
     /// a key file is missing. Adapters that refuse plain writes into locked
@@ -129,6 +135,9 @@ pub struct LocalFs {
     root: PathBuf,
     /// [`Storage::set_locked_folders`].
     locked: std::sync::Arc<RwLock<Vec<String>>>,
+    /// Folders left out of listings because they can never be opened:
+    /// (told already, the notice not yet taken).
+    unopenable: std::sync::Arc<Mutex<(std::collections::HashSet<String>, Option<String>)>>,
 }
 
 impl LocalFs {
@@ -136,7 +145,7 @@ impl LocalFs {
         let root = root.into();
         std::fs::create_dir_all(&root).map_err(io_err(root.display().to_string()))?;
         let root = root.canonicalize().map_err(io_err(root.display().to_string()))?;
-        Ok(Self { root, locked: std::sync::Arc::default() })
+        Ok(Self { root, locked: std::sync::Arc::default(), unopenable: std::sync::Arc::default() })
     }
 
     pub fn root(&self) -> &Path {
@@ -150,16 +159,17 @@ impl LocalFs {
         Ok(self.root.join(p.as_str()))
     }
 
-    /// Every file under `dir`. A folder below the root that disappears
-    /// between being listed and being read (renamed or deleted meanwhile)
-    /// sets `vanished`: the listing is then not a true picture of the vault
-    /// (a renamed folder would look like deleted notes), and [`Storage::list`]
-    /// lists again. The root itself must be readable.
-    fn walk(&self, dir: &Path, out: &mut Vec<NotePath>, vanished: &mut bool) -> Result<()> {
+    /// Every file under `dir`. A folder below the root that was listed but
+    /// then can't be found is added to `vanished` (vault-relative): renamed
+    /// or deleted meanwhile, the listing is then not a true picture of the
+    /// vault (a renamed folder would look like deleted notes), and
+    /// [`Storage::list`] lists again. The root itself must be readable.
+    fn walk(&self, dir: &Path, out: &mut Vec<NotePath>, vanished: &mut Vec<String>) -> Result<()> {
+        let rel_of = |p: &Path| p.strip_prefix(&self.root).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
             Err(e) if dir != self.root && e.kind() == std::io::ErrorKind::NotFound => {
-                *vanished = true;
+                vanished.push(rel_of(dir));
                 return Ok(());
             }
             Err(e) => return Err(io_err(dir.display().to_string())(e)),
@@ -176,7 +186,7 @@ impl LocalFs {
             let ft = match entry.file_type() {
                 Ok(ft) => ft,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    *vanished = true;
+                    vanished.push(rel.clone());
                     continue;
                 }
                 Err(e) => return Err(io_err(rel)(e)),
@@ -311,18 +321,40 @@ impl LocalFs {
 const LIST_TRIES: usize = 3;
 
 /// The listing `walk` makes, again while a folder vanished during it, up
-/// to [`LIST_TRIES`] times; then an error.
-fn stable_listing(mut walk: impl FnMut(&mut bool) -> Result<Vec<NotePath>>) -> Result<Vec<NotePath>> {
+/// to [`LIST_TRIES`] times.
+///
+/// Two kinds of "vanished" are told apart. A folder renamed or deleted
+/// during the walk gives a different result the next time (the new name
+/// appears, or the old one is no longer listed): listed again, and if the
+/// vault keeps changing, an error naming the folder, never a short
+/// listing. A folder that is listed but can never be opened gives the very
+/// same result on the next walk, with nothing else changed: that listing
+/// is used without it (as before 0.13.2), and `unopenable` gets each such
+/// folder once, to be told.
+fn stable_listing(
+    mut walk: impl FnMut(&mut Vec<String>) -> Result<Vec<NotePath>>,
+    mut unopenable: impl FnMut(&[String]),
+) -> Result<Vec<NotePath>> {
+    let mut last: Option<(Vec<NotePath>, Vec<String>)> = None;
     for _ in 0..LIST_TRIES {
-        let mut vanished = false;
+        let mut vanished = Vec::new();
         let out = walk(&mut vanished)?;
-        if !vanished {
+        if vanished.is_empty() {
             return Ok(out);
         }
+        vanished.sort();
+        if last.as_ref().is_some_and(|(o, v)| *o == out && *v == vanished) {
+            unopenable(&vanished);
+            return Ok(out);
+        }
+        last = Some((out, vanished));
     }
+    let names = last.map(|(_, v)| v.join(", ")).unwrap_or_default();
     Err(VaultError::Io {
-        path: String::new(),
-        source: std::io::Error::other("folders kept being moved or deleted while the vault was listed; try again in a moment"),
+        path: names.clone(),
+        source: std::io::Error::other(format!(
+            "folders kept being moved or deleted while the vault was listed ({names}); try again in a moment"
+        )),
     })
 }
 
@@ -468,12 +500,30 @@ impl Storage for LocalFs {
     /// folder renamed meanwhile), up to three times, then fails:
     /// a listing missing a folder must not be taken for deleted notes.
     fn list(&self) -> Result<Vec<NotePath>> {
-        stable_listing(|vanished| {
-            let mut out = Vec::new();
-            self.walk(&self.root, &mut out, vanished)?;
-            out.sort();
-            Ok(out)
-        })
+        stable_listing(
+            |vanished| {
+                let mut out = Vec::new();
+                self.walk(&self.root, &mut out, vanished)?;
+                out.sort();
+                Ok(out)
+            },
+            |folders| {
+                let mut st = self.unopenable.lock().unwrap_or_else(PoisonError::into_inner);
+                let new: Vec<&String> = folders.iter().filter(|f| !st.0.contains(*f)).collect();
+                if !new.is_empty() {
+                    let names = new.iter().map(|f| format!("{f}/")).collect::<Vec<_>>().join(", ");
+                    st.1 = Some(format!(
+                        "Quire can't open {names} in this vault (a name this system can't use, such as one ending in a space or a dot, \
+                         or a drive that isn't there), so the notes in it are left out. Rename it with another program, or move it out of the vault."
+                    ));
+                    st.0.extend(new.into_iter().cloned());
+                }
+            },
+        )
+    }
+
+    fn take_listing_notice(&self) -> Option<String> {
+        self.unopenable.lock().unwrap_or_else(PoisonError::into_inner).1.take()
     }
 
     fn read_bytes(&self, path: &NotePath) -> Result<Vec<u8>> {
@@ -1216,32 +1266,54 @@ mod tests {
     /// (renamed meanwhile) makes the listing untrustworthy: it is listed
     /// again, and if that keeps happening the listing fails rather than
     /// leaving the folder's notes out (sync would send them as deleted).
+    /// Final review F-I1: a folder that is listed but can never be opened
+    /// (the same result on every walk) is left out with a notice, once.
     /// An unreadable vault root is an error too.
     #[test]
     fn a_listing_that_lost_a_folder_is_retried_then_refused() {
         let dir = tempfile::tempdir().unwrap();
         let fs = LocalFs::new(dir.path().join("v")).unwrap();
         fs.write_atomic(&NotePath::new("Keep/a.md"), "a").unwrap();
-        let (mut out, mut vanished) = (Vec::new(), false);
+        let (mut out, mut vanished) = (Vec::new(), Vec::new());
         fs.walk(&fs.root().join("Gone"), &mut out, &mut vanished).unwrap();
-        assert!(out.is_empty() && vanished, "a folder gone mid-listing is noticed");
-        // Lost once, then a full listing: that one is used.
+        assert_eq!((out.len(), vanished), (0, vec!["Gone".to_string()]), "a folder gone mid-listing is noticed");
+        let none = |_: &[String]| panic!("not an unopenable folder");
+        // Renamed during the first walk: the second sees the new name and is used.
         let mut tries = 0;
-        let got = stable_listing(|v| {
-            tries += 1;
-            *v = tries == 1;
-            Ok(if tries == 1 { vec![] } else { vec![NotePath::new("Projects/a.md")] })
-        });
+        let got = stable_listing(
+            |v| {
+                tries += 1;
+                if tries == 1 {
+                    v.push("Work".into());
+                }
+                Ok(if tries == 1 { vec![] } else { vec![NotePath::new("Projects/a.md")] })
+            },
+            none,
+        );
         assert_eq!((got.unwrap(), tries), (vec![NotePath::new("Projects/a.md")], 2));
-        // Lost every time: an error, never a short listing.
+        // The vault changes on every walk: an error naming the folder, never a short listing.
         let mut tries = 0;
-        let got = stable_listing(|v| {
-            tries += 1;
-            *v = true;
-            Ok(vec![])
-        });
-        assert!(got.is_err() && tries == LIST_TRIES);
+        let got = stable_listing(
+            |v| {
+                tries += 1;
+                v.push(format!("Work {tries}"));
+                Ok(vec![])
+            },
+            none,
+        );
+        assert!(tries == LIST_TRIES && got.as_ref().is_err_and(|e| e.to_string().contains("Work 3")), "{got:?}");
+        // The same folder can't be opened on every walk, nothing else changes: left out, told.
+        let mut told = Vec::new();
+        let got = stable_listing(
+            |v| {
+                v.push("Bad. ".into());
+                Ok(vec![NotePath::new("Keep/a.md")])
+            },
+            |f| told.extend_from_slice(f),
+        );
+        assert_eq!((got.unwrap(), told), (vec![NotePath::new("Keep/a.md")], vec!["Bad. ".to_string()]));
         assert_eq!(fs.list().unwrap(), [NotePath::new("Keep/a.md")]);
+        assert!(fs.take_listing_notice().is_none());
         std::fs::remove_dir_all(fs.root()).unwrap();
         assert!(fs.list().is_err(), "the root itself must be readable");
     }
