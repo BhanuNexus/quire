@@ -117,7 +117,11 @@ pub enum Saved {
 /// Read a drawing to edit: a plain file, or (0.13) one in an unlocked
 /// locked folder, decrypted in memory.
 pub fn read_drawing(ws: &Workspace, path: &NotePath) -> Result<String, String> {
-    let vault = ws.vault().ok_or("No vault is open")?;
+    read_drawing_in(ws.vault().ok_or("No vault is open")?, path)
+}
+
+/// [`read_drawing`] from `vault`, the one an editor was opened from.
+pub fn read_drawing_in(vault: &Vault, path: &NotePath) -> Result<String, String> {
     vault.read(path).map_err(|e| match e {
         quire_vault::VaultError::Locked(_) => "This drawing is in a locked folder: unlock the folder to edit it.".to_string(),
         e => e.to_string(),
@@ -183,7 +187,11 @@ pub fn split_name(path: &NotePath) -> (&str, &str) {
 
 /// A free path for a copy of a drawing (`Plan (changed elsewhere).excalidraw.md`).
 pub fn copy_path(ws: &Workspace, path: &NotePath, what: &str) -> Option<NotePath> {
-    let vault = ws.vault()?;
+    copy_path_in(ws.vault()?, path, what)
+}
+
+/// [`copy_path`] in `vault`, the one an editor was opened from.
+pub fn copy_path_in(vault: &Vault, path: &NotePath, what: &str) -> Option<NotePath> {
     let (stem, ext) = split_name(path);
     (1..1000)
         .map(|n| {

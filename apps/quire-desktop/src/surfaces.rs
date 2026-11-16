@@ -44,6 +44,13 @@ pub(crate) trait Surface {
     /// The person chose to lose the unsaved edits: forget them, so nothing
     /// writes them later (its drop too).
     fn discard(&mut self) {}
+    /// A name to offer for "Save a copy as…": beside the file, `(copy)`
+    /// before its extension.
+    fn suggested_copy(&self) -> NotePath {
+        let path = self.path();
+        let ext = path.file_name().rsplit_once('.').map_or(String::new(), |(_, e)| format!(".{e}"));
+        NotePath::join(path.folder(), &format!("{} (copy){ext}", path.stem()))
+    }
     /// Write the edits to a new file, `to`, instead (when the file itself
     /// can't be written). `Err` says why not.
     fn save_copy_as(&mut self, ws: &mut Workspace, to: &NotePath) -> Result<(), String> {
@@ -146,8 +153,7 @@ impl Surfaces {
                 // The write failed (the person was told why): the tab stays,
                 // with a way out that says what is lost or kept.
                 let path = self.open[i].path().clone();
-                let ext = path.file_name().rsplit_once('.').map_or(String::new(), |(_, e)| format!(".{e}"));
-                let copy = NotePath::join(path.folder(), &format!("{} (copy){ext}", path.stem())).to_string();
+                let copy = self.open[i].suggested_copy().to_string();
                 self.stuck = Some(Stuck { path, copy, error: None, confirm: false });
             } else {
                 self.open.remove(i);

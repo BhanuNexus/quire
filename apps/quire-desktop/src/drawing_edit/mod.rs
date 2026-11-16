@@ -337,11 +337,12 @@ impl DrawingEditor {
             return;
         }
         self.disk_gen = generation;
-        let theirs = match drawings::read_drawing(ws, &self.path) {
+        let Some(vault) = self.vault.clone() else { return };
+        let theirs = match drawings::read_drawing_in(&vault, &self.path) {
             Ok(t) => t,
-            Err(_) if ws.vault().is_some_and(|v| v.exists(&self.path)) => return,
+            Err(_) if vault.exists(&self.path) => return,
             Err(_) => {
-                if let Some(to) = self.renamed_to(ws) {
+                if let Some(to) = self.renamed_to() {
                     ws.notify(NoticeLevel::Info, format!("“{}” was renamed to “{}”", self.title_text(), to.file_name()));
                     self.path = to;
                     self.disk_gen = ws.features.canvas.disk_generation(&self.path);
@@ -370,14 +371,14 @@ impl DrawingEditor {
     /// The drawing gone from its path: another drawing in the same folder
     /// holding exactly the text last read or written (a rename, in Quire or
     /// elsewhere). Only when there is one such file.
-    fn renamed_to(&self, ws: &Workspace) -> Option<NotePath> {
-        let vault = ws.vault()?;
+    fn renamed_to(&self) -> Option<NotePath> {
+        let vault = self.vault.as_ref()?;
         let listed = vault.storage().list_under(self.path.folder()).ok()?;
         let found: Vec<NotePath> = listed
             .into_iter()
             .map(|p| quire_app::vault::lock::plain_name(&p).unwrap_or(p))
             .filter(|p| *p != self.path && excalidraw::is_drawing(p.as_str()))
-            .filter(|p| drawings::read_drawing(ws, p).is_ok_and(|t| t == self.disk_text))
+            .filter(|p| drawings::read_drawing_in(vault, p).is_ok_and(|t| t == self.disk_text))
             .take(2)
             .collect();
         (found.len() == 1).then(|| found[0].clone())
@@ -406,12 +407,13 @@ impl DrawingEditor {
             self.dirty = false;
             return;
         }
-        match drawings::save_drawing(ws, &self.path, &self.disk_text, &text) {
+        let Some(vault) = self.vault.clone() else { return };
+        match drawings::save_drawing_in(ws, &vault, &self.path, &self.disk_text, &text) {
             Saved::Written => {
                 self.disk_text = text;
                 self.dirty = false;
                 self.save_failed = None;
-                self.refresh_pictures(ws);
+                self.refresh_pictures();
             }
             Saved::ChangedElsewhere(theirs) => {
                 self.conflict = Some(Elsewhere::from(theirs));
@@ -434,8 +436,8 @@ impl DrawingEditor {
     }
 
     /// Pictures of this drawing elsewhere (embeds in notes) are drawn again.
-    fn refresh_pictures(&self, ws: &Workspace) {
-        if let (Some(ctx), Some(abs)) = (&self.ctx, ws.vault().and_then(|v| v.storage().absolute(&self.path))) {
+    fn refresh_pictures(&self) {
+        if let (Some(ctx), Some(abs)) = (&self.ctx, self.vault.as_ref().and_then(|v| v.storage().absolute(&self.path))) {
             ctx.forget_image(&format!("file://{}", abs.display()));
         }
     }
@@ -445,15 +447,18 @@ impl DrawingEditor {
     /// written (unsaved edits go to a copy, as on every close).
     fn resolve(&mut self, ws: &mut Workspace, keep_mine: bool) {
         if !keep_mine && self.conflict == Some(Elsewhere::Deleted) {
-            self.done = true;
+            // Closing: the edits are kept in a copy first, and the tab stays if that fails.
+            if self.keep_edits_in_copy(ws) {
+                self.done = true;
+            }
             return;
         }
         let Some(theirs) = self.conflict.take() else { return };
         let mine = self.d.as_ref().map(Drawing::to_text);
         let (copy_text, label) = if keep_mine { (theirs.text().map(str::to_string), "changed elsewhere") } else { (mine, "my edits") };
         if let Some(t) = copy_text {
-            let Some(copy) = drawings::copy_path(ws, &self.path, label) else { return };
-            let Some(vault) = ws.vault().cloned() else { return };
+            let Some(vault) = self.vault.clone() else { return };
+            let Some(copy) = drawings::copy_path_in(&vault, &self.path, label) else { return };
             if let Err(e) = vault.write(&copy, &t) {
                 ws.notify(NoticeLevel::Error, format!("Couldn't keep a copy: {e}"));
                 self.conflict = Some(theirs);
@@ -468,6 +473,30 @@ impl DrawingEditor {
             self.save(ws);
         } else if let Elsewhere::Changed(t) = theirs {
             self.reload(t);
+        }
+    }
+
+    /// Write the edits to a free "(unsaved edits n)" copy beside the file
+    /// (when they can't be written over it), and say so. `false`, with the
+    /// edits still unsaved and the person told, when no copy could be written.
+    fn keep_edits_in_copy(&mut self, ws: &mut Workspace) -> bool {
+        let (Some(d), Some(vault)) = (&self.d, self.vault.clone()) else { return true };
+        let text = d.to_text();
+        if text == self.disk_text {
+            self.dirty = false;
+            return true;
+        }
+        match write_edits_copy(&vault, &self.path, &text) {
+            Ok(copy) => {
+                ws.notify(NoticeLevel::Info, format!("Your edits of “{}” are kept in “{}”.", self.title_text(), copy.file_name()));
+                self.dirty = false;
+                self.conflict = None;
+                true
+            }
+            Err(e) => {
+                ws.notify(NoticeLevel::Error, format!("Couldn't keep a copy of the edits of “{}”: {e}", self.title_text()));
+                false
+            }
         }
     }
 
@@ -2129,7 +2158,38 @@ impl Surface for DrawingEditor {
     }
 
     fn done(&self) -> bool {
-        self.done
+        // Not while edits are unwritten: the tab stays until they are.
+        self.done && !self.dirty
+    }
+
+    fn unsaved(&self) -> bool {
+        self.dirty
+    }
+
+    fn discard(&mut self) {
+        self.dirty = false;
+        self.conflict = None;
+        self.typing = None;
+        if let Some(f) = &self.unsaved {
+            f.set(false);
+        }
+    }
+
+    fn suggested_copy(&self) -> NotePath {
+        let (stem, ext) = drawings::split_name(&self.path);
+        NotePath::join(self.path.folder(), &format!("{stem} (copy){ext}"))
+    }
+
+    fn save_copy_as(&mut self, _ws: &mut Workspace, to: &NotePath) -> Result<(), String> {
+        let (Some(d), Some(vault)) = (&self.d, &self.vault) else { return Err("Nothing to save".into()) };
+        if !excalidraw::is_drawing(to.as_str()) {
+            return Err("Keep the drawing's ending (.excalidraw.md, .excalidraw.json or .excalidraw) so it opens as a drawing".into());
+        }
+        match vault.write_if(to, None, &d.to_text()) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(format!("{} already exists; pick another name", to.file_name())),
+            Err(e) => Err(e.to_string()),
+        }
     }
 
     fn show(&mut self, ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> PanelOut {
@@ -2212,6 +2272,11 @@ impl Surface for DrawingEditor {
             self.drag = None;
             self.finish_typing();
             self.save_as(ws, false);
+            // Edits that can't go over the file (it changed elsewhere) are
+            // kept in a copy beside it; if that fails they stay unsaved.
+            if self.dirty && self.conflict.is_some() {
+                self.keep_edits_in_copy(ws);
+            }
             self.report_unsaved(ws);
         }
     }
@@ -2265,17 +2330,26 @@ impl Drop for DrawingEditor {
         if text == self.disk_text {
             return;
         }
-        let written = self.conflict.is_none() && vault.write_if(&self.path, Some(&self.disk_text), &text).unwrap_or(false);
-        if !written {
-            let (stem, ext) = drawings::split_name(&self.path);
-            if let Some(copy) = (1..1000)
-                .map(|n| NotePath::join(self.path.folder(), &format!("{stem} (unsaved edits {n}){ext}")))
-                .find(|p| !vault.exists(p))
-            {
-                let _ = vault.write(&copy, &text);
-            }
+        let written = self.conflict.is_none() && crate::canvas_ui::write_checked(vault, &self.path, &self.disk_text, &text);
+        if !written && let Err(e) = write_edits_copy(vault, &self.path, &text) {
+            eprintln!("quire: couldn't keep the unsaved edits of {}: {e}", self.path);
         }
     }
+}
+
+/// Write `text` (a drawing's unsaved edits) to a free `(unsaved edits n)`
+/// name beside `path`, never over a file. The copy's path, or why not.
+fn write_edits_copy(vault: &Vault, path: &NotePath, text: &str) -> Result<NotePath, String> {
+    let (stem, ext) = drawings::split_name(path);
+    for n in 1..1000 {
+        let copy = NotePath::join(path.folder(), &format!("{stem} (unsaved edits {n}){ext}"));
+        match vault.write_if(&copy, None, text) {
+            Ok(true) => return Ok(copy),
+            Ok(false) => {}
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Err("every name for a copy is taken".to_string())
 }
 
 /// Open the editor for `path`: a drawing note's Markdown tab, if open, is

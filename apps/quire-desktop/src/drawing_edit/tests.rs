@@ -17,7 +17,7 @@ struct Rig {
     ws: Workspace,
     ed: DrawingEditor,
     t: f64,
-    _dir: TempDir,
+    dir: TempDir,
 }
 
 /// A folder removed when dropped.
@@ -60,7 +60,7 @@ impl Rig {
         theme::install_fonts(&ctx);
         ctx.global_style_mut(theme::style);
         ws.index().flush();
-        let mut r = Self { ctx, ws, ed: DrawingEditor::new(&NotePath::new(open)), t: 0.0, _dir: dir };
+        let mut r = Self { ctx, ws, ed: DrawingEditor::new(&NotePath::new(open)), t: 0.0, dir };
         r.frame(vec![]);
         r.frame(vec![]);
         // The pointer over the canvas: its keys go to the editor.
@@ -251,6 +251,51 @@ fn closing_with_unsaved_edits_saves_them() {
     let ed = std::mem::replace(&mut r.ed, DrawingEditor::new(&NotePath::new("x.excalidraw")));
     drop(ed);
     assert!(r.disk("Release.excalidraw").contains("\"x\": 561"), "saved on close");
+}
+
+/// 0.13.2 (F-M1): edits that can't be written are listed when the surfaces
+/// are closed (so quitting asks), and "Save a copy as…" keeps them.
+#[test]
+fn a_drawing_that_cannot_be_written_is_listed_for_the_quit_dialog() {
+    let mut r = Rig::new(&[("Release.excalidraw", RELEASE)], "Release.excalidraw");
+    r.ed.sel = vec!["dia1".into()];
+    r.key(Key::ArrowRight, Modifiers::NONE);
+    assert!(r.ed.dirty);
+    // The file's place is taken by a folder, and every copy name is taken too.
+    let dir = r.dir.path().to_path_buf();
+    std::fs::remove_file(dir.join("Release.excalidraw")).unwrap();
+    std::fs::create_dir(dir.join("Release.excalidraw")).unwrap();
+    for n in 1..1000 {
+        std::fs::write(dir.join(format!("Release (unsaved edits {n}).excalidraw")), "taken").unwrap();
+    }
+    let ed = std::mem::replace(&mut r.ed, DrawingEditor::new(&NotePath::new("x.excalidraw")));
+    let mut surfaces = crate::surfaces::Surfaces::default();
+    surfaces.open(Box::new(ed));
+    surfaces.close_all(&mut r.ws);
+    assert_eq!(surfaces.unsaved_titles(), vec!["Release.excalidraw".to_string()]);
+    assert_eq!(std::fs::read_to_string(dir.join("Release (unsaved edits 7).excalidraw")).unwrap(), "taken", "no file is overwritten");
+    // A way out: a copy under a free name (it must still be a drawing).
+    let s = &mut surfaces.open[0];
+    assert_eq!(s.suggested_copy().as_str(), "Release (copy).excalidraw");
+    assert!(s.save_copy_as(&mut r.ws, &"Release elsewhere.txt".into()).is_err());
+    s.save_copy_as(&mut r.ws, &"Release (copy).excalidraw".into()).unwrap();
+    assert!(std::fs::read_to_string(dir.join("Release (copy).excalidraw")).unwrap().contains("\"x\": 561"));
+    s.discard();
+    assert!(surfaces.unsaved_titles().is_empty());
+}
+
+/// 0.13.2 (F-M1): a drawing saves into the vault it was opened from.
+#[test]
+fn a_drawing_saves_into_its_own_vault_after_a_vault_switch() {
+    let mut r = Rig::new(&[("Release.excalidraw", RELEASE)], "Release.excalidraw");
+    r.ed.sel = vec!["dia1".into()];
+    r.key(Key::ArrowRight, Modifiers::NONE);
+    r.ws.attach_vault(Vault::in_memory(&[]));
+    <DrawingEditor as Surface>::close(&mut r.ed, &mut r.ws);
+    assert!(!r.ed.dirty);
+    let own = std::fs::read_to_string(r.dir.path().join("Release.excalidraw")).unwrap();
+    assert!(own.contains("\"x\": 561"), "saved in the vault it came from");
+    assert!(!r.ws.vault().unwrap().exists(&NotePath::new("Release.excalidraw")), "nothing was written into the other vault");
 }
 
 #[test]
@@ -528,7 +573,8 @@ fn renamed_and_deleted_drawings() {
     assert!(!v.exists(&NotePath::new("Plan.excalidraw")));
     r.ed.resolve(&mut r.ws, false);
     assert!(r.ed.done, "Close");
-    assert!(r.ed.dirty, "the edit is still to keep");
+    assert!(!r.ed.dirty, "the edit is already kept in a copy (0.13.2)");
+    assert!(v.exists(&NotePath::new("Plan (unsaved edits 1).excalidraw")), "the edits are kept in a copy");
     let ed = std::mem::replace(&mut r.ed, DrawingEditor::new(&NotePath::new("x.excalidraw")));
     drop(ed);
     assert!(!v.exists(&NotePath::new("Plan.excalidraw")));
