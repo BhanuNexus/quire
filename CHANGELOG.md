@@ -4,10 +4,19 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+*This will ship as 0.13.2.*
+
+### Changed
+- **Sync server container:** the image's health check now asks the running server for `/health` (before, it ran `--version`, which passed even if the server was hung), and the Docker comment and `docs/self-hosting.md` publish the port on `127.0.0.1` only, with the missing steps: cloning the repository, a systemd unit and a token file for the binary, and starting the first vault from a headless machine.
+
 ### Fixed
 - **Release checksums:** `SHA256SUMS` no longer lists itself. 0.13.1's file has one such line (with the hash of an empty file), so `sha256sum -c SHA256SUMS` reports one failure there; every release file's own line is correct.
 
 ## [0.13.1] - 2026-11-16
+
+Quire 0.13.1: a hardening release with no new features. Quire runs git only in repositories you trust, deeply nested notes, BibTeX files and enormous PDF pages no longer crash it, the web server no longer holds large requests from strangers, sync setup no longer freezes the window, and the apps are a little smaller.
+
+> **Before you upgrade:** git is off once in each repository you use as a vault, and auto-commit, pull on start and push after commit wait, until you trust the repository (click `git: off (not trusted)` in the status bar, or use the Git tab). Nothing else needs doing. If you check downloads, the `SHA256SUMS` file of this release lists itself with the hash of an empty file, so `sha256sum -c SHA256SUMS` reports one failure for that line; every file's own line is correct (fixed in the next release).
 
 ### Security
 - **Git:** Quire runs git only in a repository you have trusted on this computer. A repository's own settings and hooks can make git run any program, even on a plain `git status`, and they travel with a copied, unpacked or synced folder: before, opening such a folder as a vault ran them. Now, until you trust it, Quire runs no git there (the status bar says `git: off (not trusted)`; click it, or use the Git tab, to trust it after a short confirmation that also says when the vault's settings turn on auto-commit, pull on start or push after commit). Trust is kept outside the vault, for that repository at that path (plus a random id Quire writes to `quire-trust` in its `.git` folder), so a copy elsewhere, or a different repository later at the same path, isn't trusted; take it back with *Stop trusting this repository* in the Git tab. In a trusted repository git runs as your own git would, hooks, filters, LFS, `core.sshCommand` and signing included. Quire runs git with exactly that repository's folders, and never in a git repository placed inside the vault: it doesn't commit one (and says so), and doesn't look into submodules on status, commit, pull or push. **Upgrading from 0.13.0:** git is off once in each repository, and auto-commit, pull on start and push after commit wait, until you trust it.

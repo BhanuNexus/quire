@@ -19,7 +19,7 @@ Plain <code>.md</code> files in a folder, styled as you type, linked like Obsidi
   <img src="docs/screenshots/editor-light.png" alt="Quire editing a note, with the file list on the left and backlinks, related notes and the outline on the right">
 </picture>
 
-**Open source, all of it.** The app, the CLI, the importers and the future sync server are licensed under the [GNU AGPL v3 or later](LICENSE). Your notes are plain files you own. An optional, paid **managed sync** service will fund development later. You can always sync your folder with iCloud, Dropbox, Syncthing or Git instead, or run the sync server yourself.
+**Open source, all of it.** The app, the CLI, the importers and the sync server are licensed under the [GNU AGPL v3 or later](LICENSE). Your notes are plain files you own. An optional, paid **managed sync** service will fund development later. You can always sync your folder with iCloud, Dropbox, Syncthing or Git instead, or run the sync server yourself.
 
 [Install](#install) · [Features](#what-it-does) · [Roadmap](ROADMAP.md) · [Architecture](ARCHITECTURE.md) · [Contributing](CONTRIBUTING.md) · [Discussions](https://github.com/BhanuNexus/quire/discussions)
 
@@ -38,6 +38,8 @@ Download from [Releases](https://github.com/BhanuNexus/quire/releases). Each rel
 | File names | `Quire-<version>-…` | `Quire-Lite-<version>-…` |
 
 They're the same app working on the same files and settings. Installing one replaces the other, so you can switch either way at any time and your notes, settings and sync carry over. Settings → About says which one you have. Not sure which to take? Take **Quire**.
+
+Sizes are measured on the released Linux x86-64 binary and rounded up. A release fails when a binary is over its budget, which lives in one place: [`packaging/check-size.sh`](packaging/check-size.sh) (76 MiB full, 48 MiB Lite).
 
 
 - **Windows 10/11:** `Quire-<version>-windows-x64-setup.exe` (no admin needed), or the portable zip.
@@ -126,8 +128,8 @@ cargo build --release -p quire-desktop --no-default-features   # ~45 MiB; the fu
 | AI agents, under review | Agents' edits to your notes arrive as suggestions shown in the note (struck-through lines, their version underneath) to accept, reject or edit change by change. The Inbox (Alt+I) collects them; Agent activity shows every run with "Revert run". Per-folder permissions, `AGENTS.md` approval, vault checks |
 | Locked folders | Lock a folder (say `Journal/`) and its notes and files are stored encrypted on disk with your passphrase (XChaCha20-Poly1305, Argon2id); the rest of the vault stays plain Markdown. Unlocked notes are decrypted in memory only, and while unlocked they are in your tasks, agenda, views, graph, backlinks and reminders, with their pictures shown; folders lock on demand, after idle time and on quit. A recovery key is shown once. Agents and the web app never see a locked folder; sync carries the encrypted files ([how it works](docs/design/0.11-secure.md)) |
 | Agent connections | Settings → Agents → Connections: every agent that used the vault, when, its reads, writes and waiting suggestions, its permissions per zone and an activity log. Revoke one in a click, limit one to chosen tags or folders, or turn AI off for the vault |
-| Agent panel | Ctrl+Shift+J: ask about your notes or ask for changes, with `@note` and `#tag` context. Runs on your provider (on-device models are coming in an update); connect Claude Code or Codex (ACP) instead. "Ingest into wiki" turns a source into cited `wiki/` pages |
-| On-device AI (coming in an update) | Behind an experimental switch (Settings → AI → Advanced): models that download once and run offline in a separate process, for meaning search, writing help, the agent, OCR of images and scanned PDFs, and voice-note transcripts. The Balanced writing model uses about 1.3–1.7 GB of memory. To keep everything on your computer today, use a provider such as Ollama or LM Studio |
+| Agent panel | Ctrl+Shift+J: ask about your notes or ask for changes, with `@note` and `#tag` context. Runs on your provider (on-device models are experimental and off by default, see below); connect Claude Code or Codex (ACP) instead. "Ingest into wiki" turns a source into cited `wiki/` pages |
+| On-device AI (experimental, off by default) | Behind an experimental switch (Settings → AI → Advanced): models that download once and run offline in a separate process, for meaning search, writing help, the agent, OCR of images and scanned PDFs, and voice-note transcripts. The Balanced writing model uses about 1.3–1.7 GB of memory. Its models aren't pinned yet, so each says "Not available in this build" until they are. To keep everything on your computer today, use a provider such as Ollama or LM Studio |
 | Voice notes | Full edition: record from the microphone (only between Record and Stop) into the note or today's note; the recording is saved in the vault as WAV. Optional transcript through your provider (the recording is sent to it) or on this computer (experimental) |
 | Answers you can check | Ask says "Not found" when your notes don't answer; cites exact sentences; Save as note keeps quotes as footnotes and flags them when the cited text changes. Staleness digest, contradictions (Preview), thinking timeline (Preview) |
 | Planning | Tasks with dates, repeats and reminders (Obsidian Tasks emoji and Dataview fields), also while Quire is closed (a per-user job runs `quire-cli remind`), Agenda (Alt+A), Calendar, weekly/monthly/yearly notes, flashcards (FSRS, Ctrl+Alt+R), templates with questions |
@@ -192,6 +194,8 @@ Quire reads what these plugins write, in place, so a vault works in both.
 
 ## Keyboard
 
+On macOS, Ctrl is ⌘ and Alt is ⌥. This is the common set. The complete list, with any shortcuts you changed, is in the app (Ctrl+/); it is generated from the command registry (`crates/quire-app/src/commands.rs`), so it cannot drift. Ctrl+O also opens Quick open, and Ctrl+Shift+P the command palette.
+
 | Keys | Action | Keys | Action |
 |---|---|---|---|
 | Ctrl+P | Quick open | Ctrl+K | Command palette |
@@ -206,7 +210,7 @@ Quire reads what these plugins write, in place, so a vault works in both.
 | Ctrl+D | Add next occurrence | Ctrl+Shift+L | Select all occurrences |
 | Ctrl+Alt+↑/↓ | Add cursor above/below | Ctrl+Shift+A | Ask your notes |
 | Ctrl+Alt+H | Version history | Ctrl+, | Settings |
-| Ctrl+Alt+N | New project | F2 / double-click tab | Rename note |
+| Ctrl+Alt+N | New project | Alt+S | Scratchpad |
 | Ctrl+Alt+\\ | Split editor | Ctrl+Shift+[ | Fold/unfold section |
 | Ctrl+G | Graph view | Ctrl+Alt+[ / ] | Fold / unfold all |
 | Ctrl+Alt+E | Export as PDF | Ctrl+Alt+L | Copy link to paragraph |
@@ -215,7 +219,10 @@ Quire reads what these plugins write, in place, so a vault works in both.
 | Ctrl+Alt+Y | Accept suggested change | Ctrl+Alt+Backspace | Reject suggested change |
 | Ctrl+Alt+Shift+Y | Accept all in this note | Alt+A | Agenda |
 | Ctrl+Alt+R | Review flashcards | Ctrl+Alt+C | New canvas |
-| Ctrl+Shift+B | Lock locked folders now | | |
+| Ctrl+Shift+B | Lock locked folders now | Alt+T | Open tasks |
+| Ctrl+Shift+I | Insights panel | Ctrl+Shift+\\ | Show/hide the sidebar |
+| Ctrl+= / Ctrl+- | Zoom in / out (text size) | F3 / Shift+F3 | Find next / previous |
+| Ctrl+Shift+S | Summarize note | Ctrl+Shift+D | Insert today's date |
 | Ctrl+Shift+K | New task | Ctrl+Shift+M | Start / stop the timer on this task |
 | F10 | Formatting toolbar (← → Enter, Esc back) | Ctrl+/ | All shortcuts (change them in Settings → Commands) |
 
@@ -283,7 +290,7 @@ quire-cli ai      models                             # on-device models (experim
 quire-cli bench   10                                 # performance on a 10 MB note
 ```
 
-To use Quire from Claude Desktop or another MCP client, add a server whose command is `quire-cli` with args `["mcp", "/path/to/vault"]`. Add `"--allow-write"` to let it edit: since 0.9 it writes directly only in agent folders (`wiki/`) and suggests changes everywhere else, for you to review in Quire. Settings → Connections has the setup for each app.
+To use Quire from Claude Desktop or another MCP client, add a server whose command is `quire-cli` with args `["mcp", "/path/to/vault"]`. Add `"--allow-write"` to let it edit: since 0.9 it writes directly only in agent folders (`wiki/`) and suggests changes everywhere else, for you to review in Quire. Settings → Connections has the setup for each app and fills in the full path of `quire-cli`; on macOS (inside `Quire.app`, in `Contents/MacOS`) and on Windows (next to `quire.exe`) the installer does not put it on your `PATH`, so a bare `quire-cli` works only after you add it.
 
 Set `QUIRE_TRACE=1` when launching the desktop app to print per-frame timings.
 
@@ -313,7 +320,7 @@ clients.
 ## Known limits
 
 - **Built-in meaning search is a latent semantic index** learned from your own notes. It needs a few dozen notes before it helps much. For neural quality, point *Meaning search* at an embeddings endpoint (e.g. Ollama + `nomic-embed-text`).
-- **On-device AI is coming in an update.** Quire 0.9.0 ships it turned off, because its models aren't pinned and measured yet: nothing on-device is shown, started or downloaded, meaning search uses the built-in index, and OCR is off. Settings → AI → Advanced has "Experimental: show on-device AI" (or set `QUIRE_EXPERIMENTAL_ON_DEVICE=1`); even then a model says "Not available in this build" until it is pinned.
+- **On-device AI is experimental and ships turned off**, because its models aren't pinned and measured yet (the release workflow still lets unpinned models through, `REQUIRE_MODEL_PINS` in `.github/workflows/release.yml`): nothing on-device is shown, started or downloaded, meaning search uses the built-in index, and OCR is off. Settings → AI → Advanced has "Experimental: show on-device AI" (or set `QUIRE_EXPERIMENTAL_ON_DEVICE=1`); even then a model says "Not available in this build" until it is pinned.
 - **On-device models need memory:** the balanced 1.7B chat model uses about 1.3 GB with a short prompt and 1.7 GB with a long one (8 GB of RAM recommended), and generates a few tokens a second on a laptop CPU; it reads long prompts slowly unless "Faster prompts, more memory" is on (about 4 GB then). Speed and memory were measured with models of the real shapes; check them on your computer. A build whose model list isn't pinned yet says "Not available in this build" and downloads nothing.
 - **Voice notes** need the full edition and a microphone; Linux builds of the full edition link the ALSA library. Recordings are WAV (about 1.9 MB a minute). Transcripts on this computer use Whisper (experimental, models not pinned yet); through a provider, the recording is sent to that provider.
 - **Contradictions and the thinking timeline are previews:** their thresholds come from the design, not from measurements on real vaults, and the prompts are English-first.
