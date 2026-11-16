@@ -95,7 +95,7 @@ pub(crate) fn print_plan(plan: &ImportPlan, vault: Option<&quire_app::vault::Vau
 
 pub(crate) fn run(source: &str, vault: &str, from: Option<Source>, folder: &str, write: bool) -> Result<(), String> {
     let plan = quire_import::plan_as(Path::new(source), from, &quire_import::Limits::default())?;
-    let vault = quire_app::secure_state::open_vault(Path::new(vault))?;
+    let vault = super::open_vault(vault)?;
     print_plan(&plan, Some(&vault), folder);
     let target = if folder.is_empty() { "the vault root".to_string() } else { format!("{folder}/") };
     if !write {
@@ -130,7 +130,7 @@ pub(crate) fn run(source: &str, vault: &str, from: Option<Source>, folder: &str,
 }
 
 fn list(vault: &str) -> Result<(), String> {
-    let vault = quire_app::secure_state::open_vault(Path::new(vault))?;
+    let vault = super::open_vault(vault)?;
     let all = quire_app::import_run::list(&vault);
     if all.is_empty() {
         println!("No imports recorded in this vault.");
@@ -143,7 +143,7 @@ fn list(vault: &str) -> Result<(), String> {
 }
 
 fn undo(id: &str, vault: &str) -> Result<(), String> {
-    let vault = quire_app::secure_state::open_vault(Path::new(vault))?;
+    let vault = super::open_vault(vault)?;
     let id = if id == "last" {
         quire_app::import_run::list(&vault).into_iter().find(|r| r.undone_ms.is_none()).map(|r| r.id).ok_or("there is no import to undo")?
     } else {

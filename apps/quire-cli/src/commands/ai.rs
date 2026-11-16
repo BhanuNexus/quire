@@ -154,7 +154,7 @@ fn run_ai(args: &[String]) -> Result<(), String> {
 }
 
 fn run_ingest(args: &[String]) -> Result<(), String> {
-    let vault = quire_app::secure_state::open_vault(std::path::Path::new(arg(args, 1)?))?;
+    let vault = super::open_vault(arg(args, 1)?)?;
     let source = arg(args, 2)?;
     let yes = args.iter().any(|a| a == "--yes" || a == "-y");
     let dry = args.iter().any(|a| a == "--dry-run");

@@ -62,6 +62,24 @@ pub mod subs;
 pub mod tokens;
 pub mod tools;
 
+/// An existing folder, or why not: the entry points (`quire-cli`, `quire-cli
+/// mcp`) open a vault that is there and never make one from a mistyped path.
+///
+/// # Errors
+/// `No folder at <path>` with what to do next, when `root` isn't a folder.
+pub fn require_folder(root: &std::path::Path) -> Result<(), String> {
+    if root.is_dir() {
+        return Ok(());
+    }
+    let shown = root.display();
+    if root.exists() {
+        return Err(format!("{shown} is a file, not a folder. Give the folder that holds your notes."));
+    }
+    Err(format!(
+        "No folder at {shown}. Check the path. To start a new vault, create the folder first (mkdir \"{shown}\"), then run this command again."
+    ))
+}
+
 pub use server::{Conn, Principal, Reply, Server, ServerConfig};
 pub use tools::{Tool, ToolCx, ToolOutput, ToolRegistry, ToolSpec};
 

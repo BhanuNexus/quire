@@ -23,12 +23,7 @@ fn prefs_copy(args: &[String]) -> Result<(), String> {
     let arg = |i: usize| super::arg(args, i);
     let (from, to) = (arg(1)?, arg(2)?);
     let names: Vec<&str> = args.iter().skip(3).map(String::as_str).collect();
-    let open = |p: &str| -> Result<quire_app::vault::Vault, String> {
-        if !std::path::Path::new(p).is_dir() {
-            return Err(format!("{p} is not a folder"));
-        }
-        quire_app::secure_state::open_vault(std::path::Path::new(p))
-    };
+    let open = |p: &str| -> Result<quire_app::vault::Vault, String> { super::open_vault(p) };
     let (src, dst) = (open(from)?, open(to)?);
     let mut prefs = VaultPrefs::load(&dst);
     let copied = prefs.copy_from(&VaultPrefs::load(&src), &names).map_err(|e| e.to_string())?;

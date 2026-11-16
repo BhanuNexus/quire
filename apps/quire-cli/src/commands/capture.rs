@@ -11,7 +11,7 @@ use super::CliCommand;
 pub(crate) const COMMANDS: &[CliCommand] = &[CliCommand {
     name: "capture",
     rank: 10,
-    usage: "  quire-cli capture   <vault> <text…>         add a timestamped line to today's daily note (\\\"-\\\" reads stdin)
+    usage: "  quire-cli capture   <vault> <text…>         add a timestamped line to today's daily note (\"-\" reads stdin)
   quire-cli capture   <vault> --url URL [--folder raw/] [--title T]   save a web page's article (and images) as a note",
     run: capture,
 }];
@@ -22,7 +22,7 @@ fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
 
 fn capture(args: &[String]) -> Result<(), String> {
     let arg = |i: usize| super::arg(args, i);
-    let v = quire_app::secure_state::open_vault(std::path::Path::new(arg(1)?))?;
+    let v = super::open_vault(arg(1)?)?;
     if let Some(url) = flag(args, "--url") {
         return capture_url(&v, url, args);
     }

@@ -85,9 +85,7 @@ fn has(args: &[String], name: &str) -> bool {
 fn run(args: &[String]) -> Result<(), String> {
     let sub = arg(args, 1)?;
     let vault = PathBuf::from(arg(args, 2)?);
-    if !vault.is_dir() {
-        return Err(format!("{} isn't a folder", vault.display()));
-    }
+    quire_mcp::require_folder(&vault)?;
     match sub {
         "join" => join(&vault, args),
         "once" => once(&vault),

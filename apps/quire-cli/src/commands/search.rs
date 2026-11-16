@@ -15,7 +15,7 @@ pub(crate) const COMMANDS: &[CliCommand] = &[
     CliCommand {
         name: "search",
         rank: 2,
-        usage: "  quire-cli search    <vault> <query…>        keyword + meaning search (BM25, #tag, \\\"phrase\\\", -exclude; ≈ = by meaning)",
+        usage: "  quire-cli search    <vault> <query…>        keyword + meaning search (BM25, #tag, \"phrase\", -exclude; ≈ = by meaning)",
         run: search,
     },
     CliCommand {
@@ -58,6 +58,7 @@ fn index(args: &[String]) -> Result<(), String> {
 
 fn search(args: &[String]) -> Result<(), String> {
     let arg = |i: usize| super::arg(args, i);
+    arg(2)?; // the query, before the vault is opened
     let (vault, svc, _) = load(arg(1)?)?;
     // PDF pages too ("paper.pdf p. 3"), from the cache Quire keeps.
     if quire_app::pdf_state::index_pdfs(&vault, &svc) > 0 {
@@ -85,6 +86,7 @@ fn search(args: &[String]) -> Result<(), String> {
 
 fn ask(args: &[String]) -> Result<(), String> {
     let arg = |i: usize| super::arg(args, i);
+    arg(2)?; // the question, before the vault is opened
     let (_, svc, _) = load(arg(1)?)?;
     svc.flush_semantic();
     let q = args[2..].join(" ");
