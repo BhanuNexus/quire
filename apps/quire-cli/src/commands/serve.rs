@@ -76,7 +76,8 @@ Setup guide: docs/serve.md";
 
 fn run(args: &[String]) -> Result<(), String> {
     let first = arg(args, 1)?;
-    if matches!(first, "--help" | "-h" | "help") && !Path::new(first).is_dir() {
+    // `--help` and `-h` are answered before this runs (main); `help` is the word.
+    if first == "help" {
         println!("{HELP}");
         return Ok(());
     }
@@ -242,7 +243,7 @@ but use HTTPS (a reverse proxy or tunnel) for anything beyond your own network."
 mod tests {
     #[test]
     fn help_says_beta_and_that_the_server_holds_plain_notes() {
-        let args: Vec<String> = ["serve", "--help"].map(String::from).to_vec();
+        let args: Vec<String> = ["serve", "help"].map(String::from).to_vec();
         assert_eq!(super::run(&args), Ok(()));
         assert!(super::HELP.contains("Beta, for self-hosters"));
         assert!(super::HELP.contains("decrypted copy"));

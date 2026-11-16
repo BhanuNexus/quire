@@ -12,7 +12,8 @@ pub(crate) const COMMANDS: &[CliCommand] = &[CliCommand {
     name: "capture",
     rank: 10,
     usage: "  quire-cli capture   <vault> <text…>         add a timestamped line to today's daily note (\"-\" reads stdin)
-  quire-cli capture   <vault> --url URL [--folder raw/] [--title T]   save a web page's article (and images) as a note",
+  quire-cli capture   <vault> --url URL [--folder raw/] [--title T]   save a web page's article (and images) as a note
+                      put -- before text that starts with a dash, such as -h: quire-cli capture <vault> -- -h",
     run: capture,
 }];
 

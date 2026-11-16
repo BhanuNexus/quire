@@ -88,7 +88,7 @@ fn run(args: &[String]) -> Result<(), String> {
             }
             revert(&store, &sel, args.iter().any(|a| a == "--write"))
         }
-        other => return Err(format!("unknown agent command “{other}”\n\n{}", super::usage())),
+        other => return Err(super::unknown_subcommand(args, "command", other)),
     };
     print!("{out}");
     Ok(())
@@ -183,7 +183,7 @@ fn revert(store: &AgentStore, sel: &RevertSelector, write: bool) -> String {
 /// this vault's zones, approved on this device since the person made it.
 fn agents_md(args: &[String]) -> Result<(), String> {
     if arg(args, 1)? != "init" {
-        return Err(super::usage());
+        return Err(super::bad_usage(args));
     }
     let p = store(arg(args, 2)?)?.create_instructions()?;
     println!("wrote {p}: add what this vault is for and what agents should avoid.");
@@ -207,7 +207,7 @@ fn skill(args: &[String]) -> Result<(), String> {
             println!("installed {}", file.display());
             Ok(())
         }
-        _ => Err(super::usage()),
+        _ => Err(super::bad_usage(args)),
     }
 }
 

@@ -10,7 +10,7 @@ use std::sync::atomic::AtomicBool;
 use quire_app::switch_state::{plan_folder, unified_diff, write_tidied};
 use quire_app::vault::NotePath;
 
-use super::{CliCommand, usage};
+use super::{CliCommand, bad_usage};
 
 pub(crate) const COMMANDS: &[CliCommand] = &[CliCommand {
     name: "format",
@@ -22,7 +22,7 @@ pub(crate) const COMMANDS: &[CliCommand] = &[CliCommand {
 
 fn run(args: &[String]) -> Result<(), String> {
     let pos: Vec<&str> = args.iter().skip(1).filter(|a| !a.starts_with("--")).map(String::as_str).collect();
-    let (Some(root), at) = (pos.first(), pos.get(1).copied().unwrap_or("")) else { return Err(usage()) };
+    let (Some(root), at) = (pos.first(), pos.get(1).copied().unwrap_or("")) else { return Err(bad_usage(args)) };
     let write = args.iter().any(|a| a == "--write");
     let vault = super::open_vault(root)?;
     let opts = quire_app::switch_state::lint_options(&vault);

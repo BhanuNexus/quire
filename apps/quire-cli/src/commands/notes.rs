@@ -14,7 +14,8 @@ pub(crate) const COMMANDS: &[CliCommand] = &[
     CliCommand {
         name: "replace",
         rank: 4,
-        usage: "  quire-cli replace   <vault> <find> <with> [--regex] [--write]   vault-wide replace (dry run unless --write)",
+        usage: "  quire-cli replace   <vault> <find> <with> [--regex] [--write]   vault-wide replace (dry run unless --write);
+                      put -- before a <find> or <with> that starts with a dash",
         run: replace,
     },
     CliCommand {
