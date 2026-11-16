@@ -1,9 +1,0 @@
-# Check-runs that the Tag release workflow's pre-flight ignores when it asks
-# whether CI passed on the commit it is about to tag
-# (packaging/check-ci-green.sh, docs/design/0.13.2-pipe.md §1).
-#
-# EMPTY BY DEFAULT, and it should stay empty. One line per exception:
-#     <exact check-run name>   # why it is safe to ignore, and when to delete this line
-# A line without a "# reason" is an error. Prefer fixing the cause (for a code
-# scanning false positive, dismiss the alert in Security > Code scanning with the
-# reason) over listing it here.

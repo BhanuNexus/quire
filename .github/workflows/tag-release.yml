@@ -11,8 +11,8 @@
 # that can be known before the tag exists is checked here:
 #   * the version matches Cargo.toml and has a CHANGELOG.md section;
 #   * CI passed on the commit: the CI and CodeQL workflows succeeded on its push
-#     and every check-run on it finished with success (packaging/check-ci-green.sh;
-#     the exceptions, empty by default, are in packaging/ci-exceptions.txt);
+#     and every check-run of those two runs finished with success or skipped
+#     (packaging/check-ci-green.sh; other check-runs are information only);
 #   * the Flatpak builder image is the digest recorded in
 #     packaging/flatpak/builder-image.digest (the Release workflow stops on a
 #     mismatch, dry run or not);

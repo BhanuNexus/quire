@@ -17,10 +17,9 @@ check() { # name status conclusion started suite app
 }
 good="[$(check lint completed '"success"' 2026-01-01T00:01:00Z), $(check dco completed '"skipped"' 2026-01-01T00:01:00Z), $(check "test (windows-latest)" completed '"success"' 2026-01-01T00:01:00Z)]"
 
-run() { # runs checks [exceptions]
+run() { # runs checks
   printf '%s' "$1" > "$work/runs.json"; printf '%s' "$2" > "$work/checks.json"
-  printf '%s' "${3:-# nothing}" > "$work/exceptions.txt"
-  CI_RUNS_FILE="$work/runs.json" CI_CHECK_RUNS_FILE="$work/checks.json" CI_EXCEPTIONS_FILE="$work/exceptions.txt" CI_ALSO_REQUIRED_FILE=/dev/null \
+  CI_RUNS_FILE="$work/runs.json" CI_CHECK_RUNS_FILE="$work/checks.json" CI_ALSO_REQUIRED_FILE=/dev/null \
     "$tool" owner/repo abc123 > "$work/out.txt" 2>&1
 }
 expect_pass() { if ! run "${@:2}"; then echo "FAIL: $1 was refused"; cat "$work/out.txt"; exit 1; fi; echo "ok: $1"; }
@@ -51,12 +50,10 @@ expect_fail "a queued re-run after a success" "$runs_ok" "[$(check lint complete
 # A name outside CI and CodeQL decides only when opted in.
 printf '%s' "$runs_ok" > "$work/runs.json"; printf '%s' "${good%]}, $(check advisories completed '"failure"' 2026-01-01T00:01:00Z 9)]" > "$work/checks.json"
 printf 'advisories  # test\n' > "$work/also.txt"
-if CI_RUNS_FILE="$work/runs.json" CI_CHECK_RUNS_FILE="$work/checks.json" CI_EXCEPTIONS_FILE=/dev/null CI_ALSO_REQUIRED_FILE="$work/also.txt" "$tool" owner/repo abc123 > "$work/out.txt" 2>&1; then
+if CI_RUNS_FILE="$work/runs.json" CI_CHECK_RUNS_FILE="$work/checks.json" CI_ALSO_REQUIRED_FILE="$work/also.txt" "$tool" owner/repo abc123 > "$work/out.txt" 2>&1; then
   echo "FAIL: an opted-in failing check was accepted"; exit 1
 fi
 echo "ok: an opted-in check that failed is refused"
 bad="[$(check lint completed '"failure"' 2026-01-01T00:01:00Z 1)]"
 expect_fail "a failed CI check-run" "$runs_ok" "$bad"
-expect_pass "the same, listed with a reason" "$runs_ok" "$bad" 'lint   # a test'
-expect_fail "an exception with no reason" "$runs_ok" "$bad" 'lint'
 echo "All check-ci-green tests passed."
