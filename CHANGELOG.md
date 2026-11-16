@@ -5,6 +5,10 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 ## [Unreleased]
 
 ### Fixed
+- **Sync no longer deletes notes on your other devices when it can't read the vault's folder.** A vault on a drive that was pulled out, a network share that dropped, or a folder that couldn't be read was taken as "every note deleted", and each note was moved to the trash on every other device. Now sync stops and says so, and sends nothing until the folder can be read; a note is sent as deleted only once it is really gone. A pass that would delete more than 10 notes and more than half of the vault at once also stops and asks first: if you meant it, run `quire-cli sync allow-deletes <vault>`.
+- **A note whose name this computer can't store no longer stops sync on it.** A note made on another system with `:`, `?`, `*` or a trailing dot in its name (or named `aux.md`, `con.md`…) stopped every sync on Windows, and this device's own changes never left it; two notes whose names differ only in capitals did the same on Windows and macOS. Now that note is skipped on this device, with a notice saying which one and why, and everything else syncs. It arrives once it is renamed on another device, and is never deleted or renamed back.
+- **Sync's own files are written safely:** its record of what it synced is flushed to disk, a failure to save it is shown, and a damaged one is kept as `.unreadable` with a notice instead of being replaced silently. In a sync folder, files two devices may write at once no longer share one temporary file name, and a device no longer reports "Another computer is syncing as this one" after it failed to note what it wrote.
+- Conflict copies are named so that every system can store them, whatever the other device is called.
 - **Release checksums:** `SHA256SUMS` no longer lists itself. 0.13.1's file has one such line (with the hash of an empty file), so `sha256sum -c SHA256SUMS` reports one failure there; every release file's own line is correct.
 
 ## [0.13.1] - 2026-11-16
