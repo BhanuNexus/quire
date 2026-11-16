@@ -1,16 +1,32 @@
 # Start a release from the Actions tab (handy from a phone):
 # Actions → Tag release → Run workflow on main, and type the version.
 #
-# It checks the version against Cargo.toml and CHANGELOG.md, creates the
-# annotated tag `vX.Y.Z` on the current main commit, and starts the Release
-# workflow on that tag. (A tag created with the workflow token doesn't trigger
-# other workflows by itself, so Release is started explicitly.)
+# From a terminal, the same:
+#   gh api repos/BhanuNexus/quire/actions/workflows/tag-release.yml/dispatches \
+#     -f ref=main -f 'inputs[version]=X.Y.Z'
+# Add -f 'inputs[check_only]=true' to run only the checks below and create nothing.
+#
+# The `tag-guard` job runs first and creates nothing. A tag can be used once
+# (a failed release run cannot be repeated on the same version), so everything
+# that can be known before the tag exists is checked here:
+#   * the version matches Cargo.toml and has a CHANGELOG.md section;
+#   * CI passed on the commit: the CI and CodeQL workflows succeeded on its push
+#     and every check-run on it finished with success (packaging/check-ci-green.sh;
+#     the exceptions, empty by default, are in packaging/ci-exceptions.txt);
+#   * the Flatpak builder image is the digest recorded in
+#     packaging/flatpak/builder-image.digest (the Release workflow stops on a
+#     mismatch, dry run or not);
+#   * the on-device models are pinned, when the Release workflow requires it.
+# Only then does `tag` create the annotated tag `vX.Y.Z` on the commit that was
+# checked (the main commit this run was started on) and start the Release workflow
+# on it. (A tag created with the workflow token doesn't trigger other workflows
+# by itself, so Release is started explicitly.)
 #
 # The tagger is the author of the tagged commit, so the tag is credited to the
 # person who wrote the release commit rather than to whoever pressed the button.
 #
 # Pushing a tag yourself (`git tag -a vX.Y.Z && git push origin vX.Y.Z`) still
-# works and does the same thing.
+# works and does the same thing, without these checks.
 name: Tag release
 
 on:
@@ -20,6 +36,11 @@ on:
         description: "Version to release, without the v (must match Cargo.toml), e.g. 0.4.0"
         required: true
         type: string
+      check_only:
+        description: "Only run the checks (CI green, builder image, version): create no tag and start no release"
+        required: false
+        default: false
+        type: boolean
 
 permissions: {}
 
@@ -28,13 +49,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  tag:
+  tag-guard:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write # create the tag
-      actions: write # start the Release workflow
+      contents: read # check out the commit; see whether the tag exists
+      checks: read # the commit's check-runs
+      actions: read # the commit's workflow runs
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -53,11 +75,52 @@ jobs:
             exit 1
           fi
           packaging/release-notes.sh "$VERSION" > /dev/null
+      - name: The tag doesn't exist yet
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          if gh api "repos/$REPO/git/ref/tags/v$VERSION" --silent 2>/dev/null; then
+            echo "::error::v$VERSION already exists (a tag is never reused: pick the next version)"
+            exit 1
+          fi
+      - name: CI passed on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$SHA"
+          packaging/check-ci-green.sh "$REPO" "$SHA"
+      - name: The Flatpak builder image is the recorded digest
+        run: packaging/flatpak/check-builder-image.sh
+      - name: On-device models are pinned (when the Release workflow requires it)
+        run: |
+          if grep -q '^  REQUIRE_MODEL_PINS: "true"' .github/workflows/release.yml; then
+            python3 packaging/pin-models.py --check
+          else
+            echo "The Release workflow doesn't require pinned models (REQUIRE_MODEL_PINS)."
+          fi
+
+  tag:
+    needs: tag-guard
+    if: github.ref == 'refs/heads/main' && !inputs.check_only
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the tag
+      actions: write # start the Release workflow
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Create the tag
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
           REPO: ${{ github.repository }}
+          CHECKED_SHA: ${{ github.sha }}
         run: |
           tag="v$VERSION"
           if gh api "repos/$REPO/git/ref/tags/$tag" --silent 2>/dev/null; then
@@ -65,6 +128,11 @@ jobs:
             exit 1
           fi
           sha="$(git rev-parse HEAD)"
+          # The commit the guard checked is the commit that is tagged.
+          if [ "$sha" != "$CHECKED_SHA" ]; then
+            echo "::error::Checked out $sha, but the guard checked $CHECKED_SHA"
+            exit 1
+          fi
           name="$(git log -1 --format=%an "$sha")"
           email="$(git log -1 --format=%ae "$sha")"
           date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

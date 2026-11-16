@@ -1,0 +1,49 @@
+# The files of a release: exactly these, and nothing else, are published
+# (plus SHA256SUMS, which lists them). `<v>` stands for the version.
+#
+# This is the only copy of the list. packaging/release-files.sh reads it, the
+# Release workflow's dry run and its real release both fail when the files
+# they collected are not exactly these, and packaging/test-release-files.sh
+# (CI's `packaging` job) checks the engine rows against release.yml's matrix.
+# Adding or dropping a package means editing this file in the same change.
+
+# Linux: both editions, both architectures (.deb names use amd64 and arm64).
+Quire-<v>-linux-x86_64.tar.gz
+Quire-<v>-linux-x86_64.AppImage
+Quire-<v>-linux-amd64.deb
+Quire-<v>-linux-aarch64.tar.gz
+Quire-<v>-linux-aarch64.AppImage
+Quire-<v>-linux-arm64.deb
+Quire-Lite-<v>-linux-x86_64.tar.gz
+Quire-Lite-<v>-linux-x86_64.AppImage
+Quire-Lite-<v>-linux-amd64.deb
+Quire-Lite-<v>-linux-aarch64.tar.gz
+Quire-Lite-<v>-linux-aarch64.AppImage
+Quire-Lite-<v>-linux-arm64.deb
+
+# The self-hosted sync server (x86_64 only, built with the full edition).
+quire-sync-server-<v>-linux-x86_64.tar.gz
+
+# Flatpak bundles (the full edition only).
+Quire-<v>-linux-x86_64.flatpak
+Quire-<v>-linux-aarch64.flatpak
+
+# macOS (universal).
+Quire-<v>-macos-universal.dmg
+Quire-Lite-<v>-macos-universal.dmg
+
+# Windows: installer and portable archive.
+Quire-<v>-windows-x64-setup.exe
+Quire-<v>-windows-x64-portable.zip
+Quire-Lite-<v>-windows-x64-setup.exe
+Quire-Lite-<v>-windows-x64-portable.zip
+
+# The SBOM (SPDX) of the Rust dependencies.
+Quire-<v>-sbom.spdx.json
+
+# The on-device AI engine downloads, one per target of the `engine` job.
+quire-ai-engine-x86_64-unknown-linux-gnu.gz
+quire-ai-engine-aarch64-unknown-linux-gnu.gz
+quire-ai-engine-aarch64-apple-darwin.gz
+quire-ai-engine-x86_64-apple-darwin.gz
+quire-ai-engine-x86_64-pc-windows-msvc.gz

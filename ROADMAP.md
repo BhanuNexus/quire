@@ -165,7 +165,7 @@ Mobile and sync score low only because they're big. They're still the biggest gr
 1. **Platform order:** desktop polish first (this plan), or start mobile in parallel?
 2. **Sync strategy:** build Quire Sync (revenue, control) or stay "bring your own folder sync" longer?
 3. **Business model:** ✅ decided: everything is open source; managed sync will be an optional paid service.
-4. **Open source:** ✅ decided: AGPL-3.0-or-later for the whole project (app, CLI, importers and the future sync server), developed in public at github.com/BhanuNexus/quire.
+4. **Open source:** ✅ decided: AGPL-3.0-or-later for the whole project (app, CLI, importers and the sync server), developed in public at github.com/BhanuNexus/quire.
 5. **AI default:** keep "offline by default, opt-in providers" as a brand promise?
 
 ---

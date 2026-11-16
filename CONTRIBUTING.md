@@ -1,6 +1,6 @@
 # Contributing to Quire
 
-Thanks for helping! Quire is a community project under the [GNU AGPL v3 or later](LICENSE). Everything here is open source: the app, the CLI, the importers and, later, the sync server.
+Thanks for helping! Quire is a community project under the [GNU AGPL v3 or later](LICENSE). Everything here is open source: the app, the CLI, the importers and the sync server.
 
 ## Ways to help
 
@@ -17,7 +17,7 @@ cargo run -p quire-desktop -- ./sample-vault    # rustup installs the pinned too
 cargo test --workspace
 ```
 
-Linux needs the usual X11/Wayland and OpenGL libraries (`libxkbcommon`, Mesa). Read [ARCHITECTURE.md](ARCHITECTURE.md) before a big change. It explains the layers (text → markdown → vault → index → intel → app → UI) and where each kind of code belongs. In short:
+Linux needs the usual X11/Wayland and OpenGL libraries (`libxkbcommon`, Mesa). If you are an AI agent, or want the full gate, the environment for a small machine and the invariants on one page, read [AGENTS.md](AGENTS.md). Read [ARCHITECTURE.md](ARCHITECTURE.md) before a big change. It explains the layers (text → markdown → vault → index → intel → app → UI) and where each kind of code belongs. In short:
 
 - Logic goes in the crates under `crates/`, with tests next to it.
 - `apps/quire-desktop` only draws and forwards input.
@@ -27,17 +27,19 @@ Linux needs the usual X11/Wayland and OpenGL libraries (`libxkbcommon`, Mesa). R
 
 ```bash
 cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo clippy -p quire-desktop -p quire-cli --no-default-features --all-targets --locked -- -D warnings   # Quire Lite
+cargo test --workspace --locked
+cargo test -p quire-desktop -p quire-cli --no-default-features --locked                                  # Quire Lite
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 cargo deny check     # licences and advisories (cargo install cargo-deny)
 typos                # spelling (cargo install typos-cli, or pip install typos)
 ```
 
-CI runs the same checks on Linux, macOS and Windows. The lints are strict: clippy's pedantic and nursery groups, no `unwrap()` outside tests, and every `#[allow]` must give a `reason = "…"`. If you think a lint is wrong for a piece of code, allow it locally with a reason, or propose switching it off in `Cargo.toml`.
+CI runs the same checks (the tests on Linux x86-64 and ARM64, macOS and Windows) and more: [AGENTS.md](AGENTS.md) has the whole list. The lints are strict: clippy's pedantic and nursery groups, no `unwrap()` outside tests, and every `#[allow]` must give a `reason = "…"`. If you think a lint is wrong for a piece of code, allow it locally with a reason, or propose switching it off in `Cargo.toml`.
 
 - Keep PRs focused, one change per PR. Add tests for behaviour changes.
-- Put user-visible changes under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md).
+- Put each user-visible change, as one short bullet, under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md) (this is the only changelog rule; there are no fragment files).
 - UI changes: include a before/after screenshot.
 - Commit messages: imperative mood, e.g. "Add kanban column limits".
 
