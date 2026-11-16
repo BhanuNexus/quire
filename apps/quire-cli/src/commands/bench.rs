@@ -39,7 +39,7 @@ pub(crate) const COMMANDS: &[CliCommand] = &[CliCommand {
 const SUITES: &[&str] = &["index", "search", "sections", "semantic", "mcp", "pdf", "mcp-pdfs"];
 
 fn run(args: &[String]) -> Result<(), String> {
-    let flag = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str);
+    let flag = |name: &str| super::flag_value(args, name);
     if args.get(1).map(String::as_str) == Some("vault") {
         let dir = args.get(2).ok_or("bench vault <dir> [notes]")?;
         let notes = args.get(3).and_then(|n| n.parse().ok()).unwrap_or(10_000);

@@ -44,10 +44,18 @@ fn tasks(args: &[String]) -> Result<(), String> {
     let arg = |i: usize| super::arg(args, i);
     if let Some(sub @ ("start" | "stop" | "status" | "log" | "report")) = args.get(2).map(String::as_str) {
         let file = quire_app::task_timer::default_timer_path().ok_or("no config folder for the timer")?;
-        return timer_cmd(arg(1)?, sub, &args[3..], &file, chrono::Local::now().fixed_offset()).map(|out| print!("{out}"));
+        return timer_cmd(
+            arg(1)?,
+            sub,
+            &args[3..],
+            super::options(args).len().saturating_sub(3),
+            &file,
+            chrono::Local::now().fixed_offset(),
+        )
+        .map(|out| print!("{out}"));
     }
     let (_, svc, _) = load(arg(1)?)?;
-    if args.iter().any(|a| a == "--agenda") {
+    if super::has_flag(args, "--agenda") {
         let ix = svc.read();
         let all: Vec<(String, quire_app::markdown::Task)> = ix
             .records()
@@ -161,7 +169,7 @@ fn record(vault: &Vault, task: &TaskRef, entry: &quire_app::plan::time::TimeEntr
 }
 
 /// `tasks <vault> start|stop|status|log|report`, with the timer in `file`. Returns what to print.
-fn timer_cmd(root: &str, sub: &str, rest: &[String], file: &Path, now: DateTime<FixedOffset>) -> Result<String, String> {
+fn timer_cmd(root: &str, sub: &str, rest: &[String], literal: usize, file: &Path, now: DateTime<FixedOffset>) -> Result<String, String> {
     use quire_app::plan::time::{self, format_clock, format_duration};
     use quire_app::task_timer::{load_running, save_running};
     let (vault, svc, _) = load(root)?;
@@ -219,7 +227,13 @@ fn timer_cmd(root: &str, sub: &str, rest: &[String], file: &Path, now: DateTime<
     };
     match sub {
         "start" => {
-            let query = rest.iter().filter(|a| !a.starts_with("--")).cloned().collect::<Vec<_>>().join(" ");
+            let query = rest
+                .iter()
+                .enumerate()
+                .filter(|(i, a)| *i >= literal || !a.starts_with("--"))
+                .map(|(_, a)| a.clone())
+                .collect::<Vec<_>>()
+                .join(" ");
             if query.is_empty() {
                 return Err("start needs a task".into());
             }
@@ -233,7 +247,7 @@ fn timer_cmd(root: &str, sub: &str, rest: &[String], file: &Path, now: DateTime<
                 }
                 stop(r, None, &mut out)?;
             }
-            let pomodoro = rest.iter().any(|a| a == "--pomodoro");
+            let pomodoro = rest[..literal.min(rest.len())].iter().any(|a| a == "--pomodoro");
             let r = Running::new(root_abs, task, now, pomodoro);
             save_running(file, Some(&r)).map_err(|e| e.to_string())?;
             let _ = writeln!(
@@ -244,12 +258,12 @@ fn timer_cmd(root: &str, sub: &str, rest: &[String], file: &Path, now: DateTime<
             );
         }
         "stop" => match &running {
-            Some(r) if rest.iter().any(|a| a == "--discard") => {
+            Some(r) if rest[..literal.min(rest.len())].iter().any(|a| a == "--discard") => {
                 swap(r, None)?;
                 let _ = writeln!(out, "Discarded the session on “{}”", r.task.title);
             }
             Some(r) => {
-                let to = match rest.iter().position(|a| a == "--to") {
+                let to = match rest[..literal.min(rest.len())].iter().position(|a| a == "--to") {
                     Some(i) => Some(find_task(&vault, &svc.read(), &rest[i + 1..].join(" "), &prefs)?),
                     None => None,
                 };
@@ -345,15 +359,15 @@ fn agenda_text(a: &quire_app::plan::agenda::Agenda, today: chrono::NaiveDate) ->
 }
 
 /// `--into <name>` and the arguments before it.
-fn split_into(rest: &[String]) -> Result<(Vec<String>, String), String> {
-    let i = rest.iter().position(|a| a == "--into").ok_or("merge needs --into <name>")?;
+fn split_into(rest: &[String], literal: usize) -> Result<(Vec<String>, String), String> {
+    let i = rest[..literal.min(rest.len())].iter().position(|a| a == "--into").ok_or("merge needs --into <name>")?;
     let into = rest.get(i + 1).ok_or("merge needs --into <name>")?.clone();
     Ok((rest[..i].to_vec(), into))
 }
 
 fn tags(args: &[String]) -> Result<(), String> {
-    let write = args.iter().any(|a| a == "--write");
-    let rest: Vec<String> = args.iter().skip(2).filter(|a| *a != "--write").cloned().collect();
+    let write = super::has_flag(args, "--write");
+    let rest: Vec<String> = super::words_without(args, 2, &["--write"]);
     let strip = |t: &str| t.trim_start_matches('#').to_string();
     let op = match rest.first().map(String::as_str) {
         None | Some("list") => {
@@ -367,7 +381,7 @@ fn tags(args: &[String]) -> Result<(), String> {
         }
         Some("rename") if rest.len() == 3 => MetaOp::RenameTag { from: strip(&rest[1]), to: strip(&rest[2]) },
         Some("merge") => {
-            let (from, into) = split_into(&rest[1..])?;
+            let (from, into) = split_into(&rest[1..], super::options(args).len().saturating_sub(3))?;
             MetaOp::MergeTags { from: from.iter().map(|t| strip(t)).collect(), into: strip(&into) }
         }
         Some("delete") if rest.len() == 2 => MetaOp::DeleteTag { tag: strip(&rest[1]) },
@@ -377,8 +391,8 @@ fn tags(args: &[String]) -> Result<(), String> {
 }
 
 fn props(args: &[String]) -> Result<(), String> {
-    let write = args.iter().any(|a| a == "--write");
-    let rest: Vec<String> = args.iter().skip(2).filter(|a| *a != "--write").cloned().collect();
+    let write = super::has_flag(args, "--write");
+    let rest: Vec<String> = super::words_without(args, 2, &["--write"]);
     let op = match rest.first().map(String::as_str) {
         None | Some("list") => {
             let (_, svc, _) = load(super::arg(args, 1)?)?;
@@ -401,7 +415,7 @@ fn props(args: &[String]) -> Result<(), String> {
         }
         Some("rename") if rest.len() == 3 => MetaOp::RenameKey { from: rest[1].clone(), to: rest[2].clone() },
         Some("merge") => {
-            let (from, into) = split_into(&rest[1..])?;
+            let (from, into) = split_into(&rest[1..], super::options(args).len().saturating_sub(3))?;
             MetaOp::MergeKeys { from, into }
         }
         Some("value") if rest.len() == 4 => MetaOp::RenameValue { key: rest[1].clone(), from: rest[2].clone(), to: rest[3].clone() },
@@ -515,32 +529,37 @@ mod tests {
         let root = v.to_str().unwrap();
         let file = dir.path().join("task-timer.json");
         let at = |s: &str| DateTime::parse_from_rfc3339(s).unwrap();
-        let out = timer_cmd(root, "start", &["Write report".into()], &file, at("2026-11-06T10:00:00+01:00")).unwrap();
+        let out = timer_cmd(root, "start", &["Write report".into()], usize::MAX, &file, at("2026-11-06T10:00:00+01:00")).unwrap();
         assert_eq!(out, "Timing “Write report”\n");
-        let out = timer_cmd(root, "status", &[], &file, at("2026-11-06T10:01:05+01:00")).unwrap();
+        let out = timer_cmd(root, "status", &[], usize::MAX, &file, at("2026-11-06T10:01:05+01:00")).unwrap();
         assert_eq!(out, "01:05 running: “Write report” (Tasks/Write report)\n");
         // Starting another task stops and logs the first.
-        let out = timer_cmd(root, "start", &["call".into(), "venue".into()], &file, at("2026-11-06T10:25:00+01:00")).unwrap();
+        let out = timer_cmd(root, "start", &["call".into(), "venue".into()], usize::MAX, &file, at("2026-11-06T10:25:00+01:00")).unwrap();
         assert_eq!(out, "Logged 25m on “Write report”\nTiming “Call Bo about the venue”\n");
         let note = std::fs::read_to_string(v.join("Tasks/Write report.md")).unwrap();
         assert_eq!(
             note,
             "---\ntype: task\nstatus: doing\ntime_entries:\n  - start: 2026-11-06T10:00:00+01:00\n    end: 2026-11-06T10:25:00+01:00\n---\n# Write report\n"
         );
-        let out = timer_cmd(root, "stop", &[], &file, at("2026-11-06T10:40:00+01:00")).unwrap();
+        let out = timer_cmd(root, "stop", &[], usize::MAX, &file, at("2026-11-06T10:40:00+01:00")).unwrap();
         assert_eq!(out, "Logged 15m on “Call Bo about the venue”\n");
         assert_eq!(
             std::fs::read_to_string(v.join("Day.md")).unwrap(),
             "# Day\n- [ ] Call Bo about the venue [time:: 15m]\n- [ ] Call Al\n"
         );
-        assert!(timer_cmd(root, "start", &["call".into()], &file, at("2026-11-06T11:00:00+01:00")).unwrap_err().contains("2 tasks match"));
+        assert!(
+            timer_cmd(root, "start", &["call".into()], usize::MAX, &file, at("2026-11-06T11:00:00+01:00"))
+                .unwrap_err()
+                .contains("2 tasks match")
+        );
         let out =
-            timer_cmd(root, "log", &["Write".into(), "report".into(), "1h5m".into()], &file, at("2026-11-07T09:00:00+01:00")).unwrap();
+            timer_cmd(root, "log", &["Write".into(), "report".into(), "1h5m".into()], usize::MAX, &file, at("2026-11-07T09:00:00+01:00"))
+                .unwrap();
         assert_eq!(out, "Logged 1h5m on “Write report”\n");
-        let out = timer_cmd(root, "report", &["2026-11-04".into()], &file, at("2026-11-08T09:00:00+01:00")).unwrap();
+        let out = timer_cmd(root, "report", &["2026-11-04".into()], usize::MAX, &file, at("2026-11-08T09:00:00+01:00")).unwrap();
         assert!(out.starts_with("Week of Mon 2 Nov 2026\nTask"), "{out}");
         assert!(out.contains("\nWrite report                          ·      ·      ·      ·    25m   1h5m      ·   1h30m\n"), "{out}");
-        assert_eq!(timer_cmd(root, "stop", &[], &file, at("2026-11-08T09:00:00+01:00")).unwrap(), "No timer is running.\n");
+        assert_eq!(timer_cmd(root, "stop", &[], usize::MAX, &file, at("2026-11-08T09:00:00+01:00")).unwrap(), "No timer is running.\n");
         assert!(Vault::open_local(root).unwrap().history(&"Day.md".into()).len() >= 2, "before and after kept");
     }
 }

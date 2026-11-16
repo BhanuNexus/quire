@@ -18,7 +18,7 @@ pub(crate) const COMMANDS: &[CliCommand] = &[CliCommand {
 }];
 
 fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
+    super::flag_value(args, name)
 }
 
 fn num(args: &[String], name: &str, default: u64) -> Result<u64, String> {
@@ -45,7 +45,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let suite = match arg(args, 1)? {
         "synthetic-edits" => quire_mcp::eval::synthetic(num(args, "--seed", 42)?, 300, 200),
         "sample-vault" => {
-            let dir = args.get(2).filter(|a| !a.starts_with("--")).map_or("sample-vault", String::as_str);
+            let dir = args.get(2).filter(|a| !super::is_option(args, 2) || !a.starts_with("--")).map_or("sample-vault", String::as_str);
             quire_mcp::eval::sample_vault(std::path::Path::new(dir))?
         }
         "longmemeval-s" => {
@@ -80,7 +80,7 @@ fn write_report(name: &str, report: &quire_mcp::eval::Report, args: &[String]) -
     let file = dir.join(format!("{name}-{}.json", chrono_date()));
     let pretty = serde_json_pretty(&report.json);
     std::fs::write(&file, &pretty).map_err(|e| format!("{}: {e}", file.display()))?;
-    if args.iter().any(|a| a == "--json") {
+    if super::has_flag(args, "--json") {
         println!("{pretty}");
     } else {
         print!("{}", report.text);

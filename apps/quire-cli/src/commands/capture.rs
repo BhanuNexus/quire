@@ -18,7 +18,7 @@ pub(crate) const COMMANDS: &[CliCommand] = &[CliCommand {
 }];
 
 fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
+    super::flag_value(args, name)
 }
 
 fn capture(args: &[String]) -> Result<(), String> {
@@ -43,7 +43,7 @@ fn capture_url(v: &Vault, url: &str, args: &[String]) -> Result<(), String> {
     let opts = quire_mcp::capture::Options {
         folder: flag(args, "--folder").unwrap_or("raw/").to_string(),
         title: flag(args, "--title").map(str::to_string),
-        allow_private: args.iter().any(|a| a == "--allow-private-urls"),
+        allow_private: super::has_flag(args, "--allow-private-urls"),
     };
     let done = quire_mcp::capture::capture(v, &store, &actor, url, &opts).map_err(|e| match e {
         quire_mcp::capture::CaptureError::Web(quire_import::web::WebError::Blocked(_)) => {
