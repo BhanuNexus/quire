@@ -77,7 +77,7 @@ pub(crate) fn sweep(dir: &Path, age: std::time::Duration) -> usize {
     gone
 }
 
-/// `.<name>.<16 hex digits>.tmp`, as [`write`] names its temporary files.
+/// `.<name>.<16 hex digits>.tmp`, as [`write()`] names its temporary files.
 fn is_leftover(name: &str) -> bool {
     let Some(rest) = name.strip_prefix('.').and_then(|r| r.strip_suffix(".tmp")) else { return false };
     rest.rsplit_once('.').is_some_and(|(base, tag)| !base.is_empty() && tag.len() == 16 && tag.bytes().all(|b| b.is_ascii_hexdigit()))
