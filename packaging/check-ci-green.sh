@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Fails unless CI passed on a commit: the `CI` and `CodeQL` workflows have a
-# successful push run for it, and the latest check-run of every name on it
-# finished with success (or skipped: a job whose `if` is false, such as `dco`,
-# which runs only on pull requests). Check-runs of the `Release` and `Tag release`
-# workflows are not CI and are left out. Names in packaging/ci-exceptions.txt
+# successful push run for it, and the latest check-run of every name in those two
+# runs finished with success (or skipped: a job whose `if` is false, such as `dco`,
+# which runs only on pull requests). Other check-runs on the commit (Dependabot,
+# the weekly Audit, the GitHub Advanced Security "CodeQL" pull-request check, the
+# Release workflows) are printed as information and do not decide, unless named in
+# packaging/ci-also-required.txt (empty). Names in packaging/ci-exceptions.txt
 # (empty by default) are let through.
 #   packaging/check-ci-green.sh <owner/repo> <sha>
 # Needs `gh` with GH_TOKEN (checks: read, actions: read) and `jq`.
@@ -34,6 +36,18 @@ done < "$exceptions_file"
 # Only the fields used below (the full objects are large).
 runs_fields='{name, event, status, conclusion, created_at, check_suite_id}'
 checks_fields='{name, status, conclusion, started_at, app: {slug: .app.slug}, check_suite: {id: .check_suite.id}}'
+required=""
+required_file="${CI_ALSO_REQUIRED_FILE:-$here/ci-also-required.txt}"
+if [ -f "$required_file" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    name="${line%%#*}"
+    name="$(printf '%s' "$name" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    [ -n "$name" ] || continue
+    required+="$name"$'\n'
+    echo "Also required (packaging/ci-also-required.txt): $name"
+  done < "$required_file"
+fi
+
 if [ -n "${CI_RUNS_FILE:-}" ]; then
   runs="$(jq "map($runs_fields)" "$CI_RUNS_FILE")"
 else
@@ -60,34 +74,49 @@ for workflow in CI CodeQL; do
   fi
 done
 
-# The check-runs: the suites of the Release and Tag release workflows are left out.
-verdicts="$(jq -r --argjson runs "$runs" --arg exempt "$exempt" '
-  ($runs | map(select(.name == "Release" or .name == "Tag release") | .check_suite_id)) as $skip
+# The check-runs that decide: those of the push runs of the CI and CodeQL workflows
+# on this commit (by check suite), plus any name in packaging/ci-also-required.txt.
+# Everything else on the commit (Dependabot jobs, the weekly Audit run, the GitHub
+# Advanced Security "CodeQL" pull-request check, the Release workflows) is printed
+# as "info" and does not decide.
+verdicts="$(jq -r --argjson runs "$runs" --arg exempt "$exempt" --arg required "$required" '
+  ($runs | map(select((.name == "CI" or .name == "CodeQL") and .event == "push") | .check_suite_id)) as $suites
   | ($exempt | split("\n") | map(select(length > 0))) as $ex
-  | map(select((.check_suite.id | IN($skip[])) | not))
-  | group_by(.name + "|" + (.app.slug // ""))
-  | map(max_by(.started_at // ""))
+  | ($required | split("\n") | map(select(length > 0))) as $req
+  | group_by(.name + "|" + (.app.slug // "") + "|" + ((.check_suite.id | tostring)))
+  | map(max_by(.started_at // "9999"))
+  | map(. + {judged: ((.check_suite.id | IN($suites[])) or (.name | IN($req[])))})
   | sort_by(.name)
   | .[]
   | (if .status != "completed" then "running"
      elif .conclusion == "success" or .conclusion == "skipped" then "ok"
      elif (.name | IN($ex[])) then "exempt"
      else "bad" end) as $v
-  | [$v, .name, (.app.slug // "?"), .status, (.conclusion // "-")] | @tsv' <<< "$checks")"
+  | [(if .judged then $v else "info" end), .name, (.app.slug // "?"), .status, (.conclusion // "-")] | @tsv' <<< "$checks")"
 
-if [ -z "$verdicts" ]; then
-  echo "::error::No check-runs found on $sha" >&2
+judged="$(printf '%s\n' "$verdicts" | grep -v '^info' | grep -c . || true)"
+if [ "$judged" -eq 0 ]; then
+  echo "::error::No check-runs of the CI and CodeQL push runs found on $sha" >&2
   problems=1
-else
-  printf '%s\n' "$verdicts" | while IFS=$'\t' read -r v name app status conclusion; do
-    printf '  %-7s %-28s %-24s %s/%s\n' "$v" "$name" "$app" "$status" "$conclusion"
+fi
+printf '%s\n' "$verdicts" | sed '/^$/d' | while IFS=$'\t' read -r v name app status conclusion; do
+  printf '  %-7s %-28s %-24s %s/%s\n' "$v" "$name" "$app" "$status" "$conclusion"
+done
+if printf '%s\n' "$verdicts" | grep -q '^\(bad\|running\)'; then
+  printf '%s\n' "$verdicts" | grep '^\(bad\|running\)' | while IFS=$'\t' read -r v name app status conclusion; do
+    echo "::error::Check-run '$name' ($app) is $status/$conclusion on $sha" >&2
   done
-  if printf '%s\n' "$verdicts" | grep -q '^\(bad\|running\)'; then
-    printf '%s\n' "$verdicts" | grep '^\(bad\|running\)' | while IFS=$'\t' read -r v name app status conclusion; do
-      echo "::error::Check-run '$name' ($app) is $status/$conclusion on $sha" >&2
-    done
-    problems=1
-  fi
+  problems=1
+fi
+# Information that does not decide: the weekly advisory audit, shown prominently.
+audit="$(jq -r '[.[] | select(.name == "Audit")] | sort_by(.created_at) | last
+  | if . == null then "none" elif .status != "completed" then "still " + .status else .conclusion end' <<< "$runs")"
+if [ "$audit" = success ]; then
+  echo "Weekly Audit run on this commit: success (it does not decide the result)."
+elif [ "$audit" = none ]; then
+  echo "No weekly Audit run on this commit (it does not decide the result)."
+else
+  echo "::warning::The weekly dependency Audit on $sha is: $audit. It does not block a release; read it before tagging (cargo deny check advisories)."
 fi
 
 if [ "$problems" -ne 0 ]; then

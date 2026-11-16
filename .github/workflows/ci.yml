@@ -111,7 +111,7 @@ jobs:
           assert 'UTImportedTypeDeclarations' not in d
           "
       - name: Shell scripts (errors only; the scripts predate this check's warnings)
-        run: shellcheck --severity=error packaging/*.sh packaging/linux/*.sh packaging/macos/*.sh packaging/windows/*.sh packaging/flatpak/*.sh
+        run: shellcheck --severity=error packaging/*.sh packaging/linux/*.sh packaging/macos/*.sh packaging/windows/*.sh packaging/flatpak/*.sh apps/quire-sync-server/*.sh
       - name: Release file set, SHA256SUMS and CI-check scripts (stand-in files and made-up API answers)
         run: |
           packaging/test-release-files.sh

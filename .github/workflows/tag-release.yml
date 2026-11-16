@@ -50,7 +50,6 @@ concurrency:
 
 jobs:
   tag-guard:
-    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -58,6 +57,14 @@ jobs:
       checks: read # the commit's check-runs
       actions: read # the commit's workflow runs
     steps:
+      - name: Run on main only
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::Tag release must be run on main (this run is on $REF). Dispatch it with ref=main. Nothing was created."
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -81,8 +88,13 @@ jobs:
           VERSION: ${{ inputs.version }}
           REPO: ${{ github.repository }}
         run: |
-          if gh api "repos/$REPO/git/ref/tags/v$VERSION" --silent 2>/dev/null; then
+          # Only "404 Not Found" means the tag is free; any other answer (a 5xx,
+          # a rate limit, no permission) is an error, not a free tag.
+          if out="$(gh api "repos/$REPO/git/ref/tags/v$VERSION" --silent 2>&1)"; then
             echo "::error::v$VERSION already exists (a tag is never reused: pick the next version)"
+            exit 1
+          elif ! printf '%s' "$out" | grep -q 'HTTP 404'; then
+            echo "::error::Couldn't tell whether v$VERSION exists: $out"
             exit 1
           fi
       - name: CI passed on this commit
@@ -105,7 +117,7 @@ jobs:
 
   tag:
     needs: tag-guard
-    if: github.ref == 'refs/heads/main' && !inputs.check_only
+    if: ${{ !inputs.check_only }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -123,8 +135,11 @@ jobs:
           CHECKED_SHA: ${{ github.sha }}
         run: |
           tag="v$VERSION"
-          if gh api "repos/$REPO/git/ref/tags/$tag" --silent 2>/dev/null; then
+          if out="$(gh api "repos/$REPO/git/ref/tags/$tag" --silent 2>&1)"; then
             echo "::error::$tag already exists"
+            exit 1
+          elif ! printf '%s' "$out" | grep -q 'HTTP 404'; then
+            echo "::error::Couldn't tell whether $tag exists: $out"
             exit 1
           fi
           sha="$(git rev-parse HEAD)"

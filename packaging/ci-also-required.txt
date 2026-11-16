@@ -1,0 +1,5 @@
+# Check-runs, other than those of the push runs of the CI and CodeQL workflows,
+# that the Tag release guard must also see succeed (packaging/check-ci-green.sh).
+# One exact check-run name per line, with an optional "# why". EMPTY BY DEFAULT.
+# Dependabot jobs, the weekly Audit run and the GitHub Advanced Security "CodeQL"
+# pull-request check are information only and are not listed here on purpose.

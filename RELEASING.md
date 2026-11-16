@@ -23,6 +23,7 @@ Every edition also has a Quire Lite file (`Quire-Lite-<v>-…`) for Windows, mac
    git tag -s vX.Y.Z -m "Quire X.Y.Z"   # -s signs the tag (recommended); -a works too
    git push origin vX.Y.Z
    ```
+   **Pushing a tag yourself skips the Tag release guard** (CI-green check, builder-image digest): only the Release workflow's own checks run. Prefer the workflow below.
    Or, without a local clone (from a phone, say): **Actions → Tag release → Run workflow** on `main`, with the version. Before it creates anything it checks the version and changelog; that CI passed on the commit (the `CI` and `CodeQL` workflows succeeded on its push and every check-run on it finished with success: `packaging/check-ci-green.sh`); that the Flatpak builder image is still the digest recorded in `packaging/flatpak/builder-image.digest`; and the model pins, when they are required. Then it creates the annotated tag on that `main` commit (credited to the commit's author) and starts the Release workflow on it. Tick *check_only* to run only the checks and create nothing. A check-run that is allowed to fail is named, with a reason, in `packaging/ci-exceptions.txt`, which is empty.
 4. `.github/workflows/release.yml` then:
    1. `preflight` checks that the tag matches `Cargo.toml` and that the changelog has a section for it, and checks that the on-device models are pinned (`packaging/pin-models.py --check`; only a warning while `REQUIRE_MODEL_PINS` at the top of the workflow is `"false"`, as it is now, with on-device AI behind an experimental switch). `check` runs the workspace tests **beside** the builds, not before them; nothing is assembled or published unless it passed;
@@ -52,18 +53,27 @@ In this order. Do not skip a step because an earlier release worked.
 8. Approve the `release` environment when the run reaches `publish`, if reviewers are set.
 9. Check the result: `sha256sum -c SHA256SUMS --ignore-missing` on a download, and `gh attestation verify` on one file (see below).
 
-What the dry run does **not** cover: the attestations, `attest-sbom`, the `release` environment, creating and publishing the release, and anything that depends on the tag itself. A failure there burns the version: fix it and release the next patch. **A tag that has been created is never reused**, whether or not the release run failed, and never delete a tag to make a version available again.
+What runs for the first time only on a real tag (a dry run does not enter them):
 
-## One-time repository settings (maintainers)
+- the `release` environment (its reviewers and any tag policy);
+- `actions/attest-sbom` (its subject globs and the `id-token` and `attestations: write` permissions) and every `attest-build-provenance` step (the engine, Linux, macOS, Windows and `flatpak-attest` jobs), all gated by the tag;
+- `gh release create --draft --verify-tag` with all 28 files and `gh release edit --draft=false` (immutable releases);
+- `release-notes.sh` in `publish`, and `preflight`'s tag-against-`Cargo.toml` and model-pin checks;
+- the whole Tag release workflow (`tag-guard` and `tag`), which can only run on `main`: its first use is with *check_only*. Not covered before: the `GITHUB_TOKEN` reading check-runs and workflow runs, `docker buildx imagetools inspect` there, creating the tag through the API with the commit's author as tagger, and starting the Release workflow.
 
-These can only be changed in the GitHub UI:
+A failure in any of these burns the version: fix it and release the next patch. **A tag that has been created is never reused**, whether or not the release run failed, and never delete a tag to make a version available again.
 
-- **Settings → General → Releases → Enable release immutability.** Published releases can then never have their assets or tag changed.
-- **Settings → Rules → Rulesets → New tag ruleset** for `v*`: restrict creation, update and deletion to maintainers, so release tags can't be moved or deleted.
-- **Settings → Environments → `release`** (created by the first release run): add required reviewers to approve each publish. Optionally limit it to `v*` tags.
-- **Settings → Rules → Rulesets → New branch ruleset** for `main`: require a pull request, the `CI` checks (`lint`, `test (…)` including `ubuntu-24.04-arm`, `test-features`, `deny`, `typos`, `workflows`, `packaging`) and `CodeQL`; block force-pushes.
-- **Settings → Code security:** private vulnerability reporting, Dependabot alerts and security updates, and secret scanning with push protection.
-- **Settings → General → Features:** turn on Discussions.
+**What the guard looks at.** `packaging/check-ci-green.sh` judges the check-runs of the push runs of the `CI` and `CodeQL` workflows on the commit, and requires both runs to exist and to have succeeded. Everything else on the commit is printed as information and does not decide: Dependabot jobs, the weekly Audit run (a failed or unfinished Audit gets a prominent warning, but does not block a release; read it), the Release workflows, and the GitHub Advanced Security check also called "CodeQL". That last one is the code-scanning *pull-request* result ("N new alerts in code changed by this pull request") of the pull request whose head is the commit; it is not the CodeQL workflow. A real alert is fixed or dismissed in Security, Code scanning on its own merits; that is not a precondition of the guard, and the guard does not read it. To make another check-run decide, name it in `packaging/ci-also-required.txt`; to let a failing CI check-run through, name it with a reason in `packaging/ci-exceptions.txt`. Both are empty. The guard looks at the tip of `main` only: a commit pushed together with a newer one has no push runs.
+
+## Owner settings
+
+Only the repository owner can change these (GitHub UI, not a file). Until they are set, nothing enforces the guard:
+
+- **A ruleset for `main`** requiring the CI checks (`lint`, `test (…)` including `ubuntu-24.04-arm`, `test-features`, `deny`, `typos`, `workflows`, `packaging`) and the pull request, and blocking force-pushes. At the last check there was no protection on `main`.
+- **The `v*` tag ruleset:** its include list is empty today, so it matches no tag and only has `non_fast_forward`. Make it match `v*` and restrict creation, update and deletion to maintainers.
+- **Reviewers on the `release` environment**, so each publish is approved.
+
+Also, once: **Settings → General → Releases → Enable release immutability** (published releases can never change), **Settings → Code security** (private vulnerability reporting, Dependabot alerts and security updates, secret scanning with push protection) and **Settings → General → Features → Discussions**.
 
 ## Verifying a download
 

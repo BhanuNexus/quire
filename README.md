@@ -273,7 +273,7 @@ apps/quire-cli         headless frontend, MCP server, importer, benchmark
 quire-cli search  ./sample-vault rope undo           # ≈ marks results found by meaning
 quire-cli ask     ./sample-vault why do editors use ropes
 quire-cli replace ./sample-vault "old" "new" --write # dry run without --write
-quire-cli import  ~/Downloads/notion.zip ./vault --into Imported   # dry run; add --write
+quire-cli import  ~/Downloads/notion.zip ./vault --into Imported   # dry run; add --write (import makes ./vault if missing)
 quire-cli import  --undo last ./vault                # undo the last import
 quire-cli format  ./vault Projects                   # tidy a folder: diff first; add --write
 quire-cli history ./sample-vault "Quire Roadmap"     # saved versions of a note
@@ -308,7 +308,7 @@ only on a machine you trust, and give it just the folders it needs
 runs in the browser is planned separately.
 
 ```bash
-quire-cli sync join ~/vault --server https://sync.example.com --only Work   # or --folder ~/Sync, --s3 …, --webdav …
+mkdir -p ~/vault && quire-cli sync join ~/vault --server https://sync.example.com --only Work   # or --folder ~/Sync, --s3 …, --webdav …
 quire-cli serve passwd                                                       # the web app's passphrase
 quire-cli serve ~/vault --sync --public-url https://notes.example.com        # behind Caddy/nginx for HTTPS
 ```
@@ -341,6 +341,7 @@ clients.
 - Locked notes are in search, quick open, tasks, the agenda, views and Bases, the graph, backlinks and reminders only while their folder is unlocked (from memory; their reminders fire only then), and never in the timeline, flashcards or any AI feature; renaming a plain note doesn't update links inside locked notes. Pictures and Excalidraw drawings in a locked folder show and edit while it is unlocked; PDFs there don't open yet. The CLI and `quire-cli serve` can't unlock a folder for reading beyond `quire-cli unlock --cat`.
 - Connections, allow lists, revoking and "AI off" are enforced by Quire 0.11; a Quire 0.10 device sharing the vault ignores them (it keeps them in the policy file). Revoking an unverified stdio client is matched by the name it reports; a local process can report another name (and can read the vault's files anyway), so give clients you may need to shut out a `--client` key or an HTTP token.
 - **Sync:** removing a device stops it reading what's written afterwards and ignores what it writes, but on a sync folder, S3 or WebDAV every device shares the storage access: take that away too (a new storage key, or stop sharing the folder). Changes another device makes before it hears of the removal (seconds; with a slow sync tool, longer) still use the old key. Removing devices, compaction and authenticated headers on folders and servers need the 0.13 sync format, which Quire 0.12 and older can't sync. A device offline for longer than compaction keeps history (90 days by default) that edited a note others changed gets a conflict copy instead of a merge. "All devices" history keeps the last 90 days and 10 versions per note once compacted; Version history on each device keeps everything as before. A sync server keeps all revisions unless `QUIRE_SYNC_KEEP_DAYS` is set.
+- **Sync safety stops:** a sync pass that would delete a large part of the vault at once (what an unplugged drive or a signed-out cloud folder looks like) sends nothing and waits for you: `quire-cli sync allow-deletes <vault>` if you meant it. A note whose name this computer can't store (`:` or `?` on Windows, names that differ only in capitals) is skipped here with a notice and never deleted. Details: [docs/design/0.13.2-sync.md](docs/design/0.13.2-sync.md).
 - Bases: no grouping, map or list views, `this`, `image`, `icon`, `html` or regular expressions. `file.ctime` is the last change (Quire keeps no creation time) and `file.size` counts characters.
 
 ## Contributing

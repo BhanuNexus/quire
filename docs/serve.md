@@ -49,7 +49,7 @@ On the server, make an empty folder and join the vault you already sync
 from the app:
 
 ```sh
-mkdir -p ~/vault
+mkdir -p ~/vault     # sync join and every other quire-cli command need the folder to exist
 # Through a Quire Sync server (asks for the server token, then the passphrase):
 quire-cli sync join ~/vault --server https://sync.example.com --device "home server"
 # Or through a folder Syncthing/Dropbox keeps on this machine:
