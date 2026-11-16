@@ -1034,6 +1034,12 @@ impl LocalStore for VaultStore {
             && matches!(self.vault.storage().read_bytes(&NotePath::new(path)), Err(quire_vault::VaultError::NotFound(_)))
     }
 
+    fn is_settings(&self, path: &str) -> bool {
+        // Vault settings, the agent policy, the locked-folders record and
+        // review logs; not the review history the agent prunes itself.
+        path.starts_with(SHARED_PREFIX) && !path.starts_with(SHARED_REVIEW_PREFIX)
+    }
+
     fn counts_as_delete(&self, path: &str) -> bool {
         // App data the app prunes itself (review history, vault settings).
         if path.starts_with(".quire/") {
@@ -1609,21 +1615,6 @@ impl Session {
         if res.is_ok() {
             self.store.remember_unselected();
         }
-        match &res {
-            // Sent, or nothing to send any more (the notes came back).
-            Ok(_) if held.is_some() => {
-                let _ = std::fs::remove_file(sync_dir(root).join(HELD_DELETES));
-            }
-            Err(quire_sync::SyncError::ManyDeletes { notes, .. }) => {
-                let now = HeldDeletes::new(notes);
-                // A different set (more went missing, or others than were
-                // allowed): asked again, from scratch.
-                if held.as_ref().is_none_or(|h| h.notes != now.notes) {
-                    let _ = now.save(root);
-                }
-            }
-            _ => {}
-        }
         self.engine.allowed_deletes.clear();
         if self.lane.is_none()
             && runs_shared_lane(root, cfg)
@@ -1643,7 +1634,10 @@ impl Session {
         if let Some((t, e, st)) = self.lane.as_mut()
             && res.is_ok()
         {
+            // Vault settings deletes held back in this lane are allowed the same way.
+            e.allowed_deletes = held.as_ref().map(HeldDeletes::allowed_now).unwrap_or_default();
             let r = snapshot_reads(st).map_err(quire_sync::SyncError::List).and_then(|()| e.sync(st, &*t, &today()));
+            e.allowed_deletes.clear();
             let lane_saved = save_state_named(root, SHARED_STATE_FILE, &e.state);
             saved = saved.and(lane_saved);
             res = match (res, r) {
@@ -1662,6 +1656,15 @@ impl Session {
             if !cfg.shared_state {
                 self.store.shared = true;
             }
+        }
+        match &res {
+            // Sent, or nothing to send any more (the notes came back).
+            Ok(_) if held.is_some() => {
+                let _ = std::fs::remove_file(sync_dir(root).join(HELD_DELETES));
+            }
+            Err(quire_sync::SyncError::ManyDeletes { notes, .. }) => HeldDeletes::new(notes, false).keep(root, held.as_ref()),
+            Err(quire_sync::SyncError::SettingsDeletes { notes }) => HeldDeletes::new(notes, true).keep(root, held.as_ref()),
+            _ => {}
         }
         // Another device turned on sharing vault settings: remember it here.
         if self.store.shared && !self.cfg.shared_state {
@@ -1708,7 +1711,7 @@ impl Session {
             }
             // A note changed mid-pass, or other devices are busy: try again soon.
             Err(quire_sync::SyncError::Local { .. } | quire_sync::SyncError::Busy) => (SyncStatus::Syncing, None, Duration::from_secs(2)),
-            Err(e @ quire_sync::SyncError::ManyDeletes { .. }) => (
+            Err(e @ (quire_sync::SyncError::ManyDeletes { .. } | quire_sync::SyncError::SettingsDeletes { .. })) => (
                 SyncStatus::Error(format!(
                     "{e}. If you deleted them on purpose, choose Send these deletes in Settings → Sync (or run `quire-cli sync allow-deletes \"{}\"`). If not, check that the vault's folder is all there (a drive or cloud folder that went missing); sync goes on by itself once the notes are back.",
                     root.display()
@@ -2096,6 +2099,9 @@ pub struct HeldDeletes {
     /// When they were held back (Unix ms).
     pub at: i64,
     pub notes: Vec<HeldNote>,
+    /// Vault settings files (`.quire/shared/`), not notes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub settings: bool,
     /// Until when they may be sent (Unix ms): set by "Send these deletes".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_until: Option<i64>,
@@ -2108,11 +2114,35 @@ pub struct HeldNote {
     pub path: String,
 }
 
+/// Which held-back set the person saw (0.13.2): how many and a digest of
+/// their ids. Approving checks it, so it never covers more than was shown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldId {
+    pub count: usize,
+    pub digest: String,
+}
+
 impl HeldDeletes {
-    fn new(notes: &[(quire_sync::FileId, String)]) -> Self {
+    fn new(notes: &[(quire_sync::FileId, String)], settings: bool) -> Self {
         let mut notes: Vec<HeldNote> = notes.iter().map(|(f, p)| HeldNote { file: f.0.clone(), path: p.clone() }).collect();
         notes.sort_by(|a, b| a.path.cmp(&b.path));
-        Self { at: crate::history_ops::now_ms(), notes, allowed_until: None }
+        Self { at: crate::history_ops::now_ms(), notes, settings, allowed_until: None }
+    }
+
+    /// Keep this set as the one held back, unless it is what `before`
+    /// holds already (keeping its approval). A different set (more went
+    /// missing, or others than were allowed) is asked again from scratch.
+    fn keep(self, root: &Path, before: Option<&Self>) {
+        if before.is_none_or(|h| h.notes != self.notes) {
+            let _ = self.save(root);
+        }
+    }
+
+    /// What identifies this set for an approval.
+    pub fn id(&self) -> HeldId {
+        let mut ids: Vec<&str> = self.notes.iter().map(|n| n.file.as_str()).collect();
+        ids.sort_unstable();
+        HeldId { count: ids.len(), digest: quire_vault::ContentHash::of(&ids.join("\n")).hex().to_string() }
     }
 
     /// The deletes held back for the vault at `root`, if any.
@@ -2138,9 +2168,19 @@ impl HeldDeletes {
 /// Send the deletes sync held back for the vault at `root`.
 ///
 /// Those of [`HeldDeletes`] exactly, at its next pass within
-/// [`ALLOW_DELETES_FOR`], whichever process runs it. Returns how many.
-pub fn sync_allow_deletes_at(root: &Path) -> Result<usize, String> {
+/// [`ALLOW_DELETES_FOR`], whichever process runs it, and only if they are
+/// still the set the person saw (`seen`, from [`HeldDeletes::id`]): a set
+/// that changed meanwhile is refused, to be looked at again. Returns how
+/// many.
+pub fn sync_allow_deletes_at(root: &Path, seen: &HeldId) -> Result<usize, String> {
     let mut held = HeldDeletes::load(root).ok_or("Sync isn't holding back any deletes for this vault.")?;
+    if held.id() != *seen {
+        return Err(format!(
+            "The deletes held back changed since they were shown: now {} instead of {}. Nothing was sent; look at the new list and choose again.",
+            held.notes.len(),
+            seen.count
+        ));
+    }
     held.allowed_until = Some(crate::history_ops::now_ms() + i64::try_from(ALLOW_DELETES_FOR.as_millis()).unwrap_or(i64::MAX));
     held.save(root)?;
     Ok(held.notes.len())
@@ -3028,13 +3068,17 @@ impl Workspace {
         }
     }
 
-    /// Send the many deletes sync held back, now (see [`sync_allow_deletes_at`]).
-    pub fn sync_allow_deletes(&mut self) -> Result<usize, String> {
+    /// Send the many deletes sync held back, now, if they are still the
+    /// set shown (`seen`; see [`sync_allow_deletes_at`]). On a refusal the
+    /// held set is read again, so the new list shows.
+    pub fn sync_allow_deletes(&mut self, seen: &HeldId) -> Result<usize, String> {
         let (root, _) = self.sync_parts()?;
-        let n = sync_allow_deletes_at(&root)?;
+        let r = sync_allow_deletes_at(&root, seen);
         self.sync.held = HeldDeletes::load(&root);
-        self.sync_nudge();
-        Ok(n)
+        if r.is_ok() {
+            self.sync_nudge();
+        }
+        r
     }
 
     /// The recovery key for this vault, to show again in Settings.
@@ -3895,7 +3939,7 @@ mod tests {
     #[test]
     fn many_deletes_wait_until_the_person_allows_them() {
         let (_dir, va, _, target) = setup_dirs();
-        for i in 0..12 {
+        for i in 0..20 {
             std::fs::write(va.join(format!("{i:02}.md")), format!("note {i}\n")).unwrap();
         }
         sync_create_at(&va, &target, "correct horse battery", "laptop", &Selection::default()).unwrap();
@@ -3904,23 +3948,84 @@ mod tests {
             std::fs::remove_file(va.join(format!("{i:02}.md"))).unwrap();
         }
         let err = sync_once_at(&va).unwrap_err();
-        assert!(err.contains("12 of the 12 notes") && err.contains("Send these deletes in Settings → Sync"), "{err}");
+        assert!(err.contains("12 of the 20 notes") && err.contains("Send these deletes in Settings → Sync"), "{err}");
         assert_eq!(LastPass::load(&va).unwrap().state, "error");
         let held = HeldDeletes::load(&va).unwrap();
         assert_eq!(held.notes.len(), 12);
         assert_eq!(held.notes[0].path, "00.md");
+        let seen = held.id();
+        // Review F-L3: before the person approves, the rest goes missing
+        // too. Approving what they saw is refused; nothing more is sent.
+        for i in 12..20 {
+            std::fs::remove_file(va.join(format!("{i:02}.md"))).unwrap();
+        }
+        assert!(sync_once_at(&va).is_err());
+        let err = sync_allow_deletes_at(&va, &seen).unwrap_err();
+        assert!(err.contains("now 20 instead of 12"), "{err}");
+        assert!(sync_once_at(&va).is_err(), "still held back");
+        let seen = HeldDeletes::load(&va).unwrap().id();
         // An allowance that has run out sends nothing.
-        assert_eq!(sync_allow_deletes_at(&va).unwrap(), 12);
+        assert_eq!(sync_allow_deletes_at(&va, &seen).unwrap(), 20);
         let mut h = HeldDeletes::load(&va).unwrap();
         h.allowed_until = Some(crate::history_ops::now_ms() - 1);
         h.save(&va).unwrap();
         assert!(sync_once_at(&va).is_err());
         // Allowed now: exactly those go, and the record of them with them.
-        assert_eq!(sync_allow_deletes_at(&va).unwrap(), 12);
+        assert_eq!(sync_allow_deletes_at(&va, &seen).unwrap(), 20);
         let r = sync_once_at(&va).unwrap();
-        assert_eq!(r.pushed, 12);
+        assert_eq!(r.pushed, 20);
         assert!(HeldDeletes::load(&va).is_none(), "allowed once");
-        assert!(sync_allow_deletes_at(&va).is_err(), "nothing held back now");
+        assert!(sync_allow_deletes_at(&va, &seen).is_err(), "nothing held back now");
+    }
+
+    /// Review F-I3: deleting `.quire/shared/` (to "reset" settings) asks
+    /// before every vault setting is deleted on every device; one settings
+    /// file, or the review history the agent prunes, never asks.
+    #[test]
+    fn deleting_the_shared_settings_asks_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = folder::sync_root(&dir.path().join("Dropbox"));
+        let space = SpaceId::random().unwrap();
+        let key = VaultKey::generate().unwrap();
+        folder::create_space(&root, &space, &WrappedKey::wrap(&key, "pw", KDF).unwrap()).unwrap();
+        folder::open_lane(&root, &space, folder::SHARED_LANE).unwrap();
+        let (va, vb) = (dir.path().join("A"), dir.path().join("B"));
+        std::fs::create_dir_all(va.join(".quire/shared/srs")).unwrap();
+        std::fs::create_dir_all(va.join(".quire/shared/agent/proposals/me")).unwrap();
+        std::fs::create_dir_all(&vb).unwrap();
+        for (p, t) in [
+            ("vault.toml", "format = 1\n"),
+            ("agent-policy.toml", "x = 1\n"),
+            ("srs/d1.jsonl", "{}\n"),
+            ("agent/proposals/me/p.json", "{}"),
+        ] {
+            std::fs::write(va.join(".quire/shared").join(p), t).unwrap();
+        }
+        let (da, db) = (DeviceId::random().unwrap(), DeviceId::random().unwrap());
+        let lane = |d: &DeviceId| FolderTransport::lane(&root, &space, d.clone(), None, folder::SHARED_LANE);
+        let (ta, tb) = (lane(&da), lane(&db));
+        let mut ea = Engine::new(space.clone(), da, "a", key.keys(), SyncState::default());
+        let mut eb = Engine::new(space.clone(), db, "b", key.keys(), SyncState::default());
+        let pass = |e: &mut Engine, v: &Path, t: &FolderTransport| {
+            let mut st = VaultStore::new(Vault::open_local(v).unwrap()).shared_only();
+            snapshot_reads(&mut st).unwrap();
+            e.sync(&mut st, t, "2026-11-16")
+        };
+        pass(&mut ea, &va, &ta).unwrap();
+        pass(&mut eb, &vb, &tb).unwrap();
+        // One file: sent.
+        std::fs::remove_file(va.join(".quire/shared/agent-policy.toml")).unwrap();
+        pass(&mut ea, &va, &ta).unwrap();
+        // The whole folder: held back.
+        std::fs::remove_dir_all(va.join(".quire/shared")).unwrap();
+        let Err(quire_sync::SyncError::SettingsDeletes { notes }) = pass(&mut ea, &va, &ta) else { panic!("sent") };
+        assert_eq!(notes.len(), 2, "vault.toml and the review log, not the agent's history: {notes:?}");
+        pass(&mut eb, &vb, &tb).unwrap();
+        assert!(vb.join(".quire/shared/vault.toml").exists() && !vb.join(".quire/shared/agent-policy.toml").exists());
+        ea.allowed_deletes = notes.into_iter().map(|(id, _)| id).collect();
+        pass(&mut ea, &va, &ta).unwrap();
+        pass(&mut eb, &vb, &tb).unwrap();
+        assert!(!vb.join(".quire/shared/vault.toml").exists());
     }
 
     /// Reliability review #14: a damaged state file is kept and reported,

@@ -143,17 +143,24 @@ when they save the state:
   before 0.13.2 that saves the state forgets the entry: the note then
   arrives on that device only when it changes again.
 
-* `deletes {since, held, sent}`: the deletes this device sent since
-  `since` (Unix ms, at most an hour ago), out of the most notes it held in
-  that time. A pass whose deletes, added to `sent`, are more than 10 and
-  more than half of `held` sends nothing and asks first. Deletes under
-  `.quire/` and a note replaced by its encrypted file (or back) don't count.
+* `deletes_sent [{at, held, sent}…]`: one entry per pass of the last hour
+  that sent counted deletes (Unix ms on this device's clock, notes held
+  before it, deletes sent), at most 64 (older ones folded together). A pass
+  whose deletes, added to these, are more than 10 and more than half of
+  the most notes held among them sends nothing and asks first. A time
+  after now counts as now. Deletes under `.quire/` and a note replaced by
+  its encrypted file (or back) don't count; more than one vault settings
+  file (`.quire/shared/` outside `agent/`) deleted in one pass asks too.
+  (Development builds of 0.13.2 wrote `deletes {since, held, sent}`
+  instead; it is ignored.)
 
 Not in the state but next to it: `.quire/sync/held-deletes.json` (0.13.2),
 written when a pass held deletes back:
-`{"at": ms, "notes": [{"file": id, "path": p}…], "allowed_until": ms?}`.
+`{"at": ms, "notes": [{"file": id, "path": p}…], "settings": true?, "allowed_until": ms?}`
+(`settings`: vault settings files rather than notes).
 *Send these deletes* in Settings → Sync (or `quire-cli sync allow-deletes
-<vault>`) sets `allowed_until` 15 minutes out; until then, a pass whose
+<vault>`) sets `allowed_until` 15 minutes out, only if `notes` is still the set
+shown (same count and digest of the ids); until then, a pass whose
 counted deletes are all among `notes` sends them. A different set is held
 back again (the file is rewritten without `allowed_until`); the file goes
 once a pass succeeds.

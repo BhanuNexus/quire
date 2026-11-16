@@ -85,8 +85,13 @@ impl SettingsState {
                 path: format!("A long folder name/Sub folder/Note number {i}.md"),
             })
             .collect();
-        let held = quire_app::vault_sync::HeldDeletes { at: 0, notes, allowed_until: None };
-        let sync = SyncForm { held_sample: Some(held), show_held: true, ..Default::default() };
+        let held = quire_app::vault_sync::HeldDeletes { at: 0, notes, settings: false, allowed_until: None };
+        let sync = SyncForm {
+            held_sample: Some(held),
+            show_held: true,
+            held_error: Some("The deletes held back changed since they were shown: now 300 instead of 12. Nothing was sent; look at the new list and choose again.".into()),
+            ..Default::default()
+        };
         all.push(("settings: sync held deletes", Self { tab: SettingsTab::Sync, force_tab: true, sync, ..Default::default() }));
         all
     }
@@ -177,6 +182,8 @@ struct SyncForm {
     devices: DevicesPanel,
     /// 0.13.2: deletes held back because they were many: the list shown.
     show_held: bool,
+    /// Why "Send these deletes" was refused (the set changed meanwhile).
+    held_error: Option<String>,
     /// For layout checks: held-back deletes to show without a vault.
     #[cfg(test)]
     held_sample: Option<quire_app::vault_sync::HeldDeletes>,
@@ -392,14 +399,19 @@ pub(crate) const SOURCE_URL: &str = "https://github.com/BhanuNexus/quire";
 fn held_deletes(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, h: &quire_app::vault_sync::HeldDeletes, pal: &Palette) {
     let n = h.notes.len();
     let allowed = h.allowed_until.is_some_and(|u| u > chrono::Utc::now().timestamp_millis());
+    let (what, place, back) = if h.settings {
+        ("vault settings files", "this vault's .quire/shared folder", "the files are back")
+    } else {
+        ("notes", "this vault's folder", "the notes are back")
+    };
     egui::Frame::NONE.fill(pal.bg).corner_radius(6.0).inner_margin(10.0).show(ui, |ui| {
-        ui.label(RichText::new(format!("{n} notes are gone from this vault's folder")).strong().color(pal.danger));
+        ui.label(RichText::new(format!("{n} {what} are gone from {place}")).strong().color(pal.danger));
         ui.add(
             egui::Label::new(
                 RichText::new(format!(
-                    "Sending this would delete {n} notes on your other devices, so sync sent nothing, not even your other changes. \
+                    "Sending this would delete {n} {what} on your other devices, so sync sent nothing, not even your other changes. \
                      If you deleted them on purpose, send these deletes. If not, check that the vault's folder is all there \
-                     (a drive or cloud folder that went missing); sync goes on by itself once the notes are back."
+                     (a drive or cloud folder that went missing); sync goes on by itself once {back}."
                 ))
                 .size(12.5)
                 .color(pal.muted),
@@ -409,16 +421,19 @@ fn held_deletes(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, h: &quire_app
         ui.horizontal_wrapped(|ui| {
             if allowed {
                 ui.label(RichText::new("Sending at the next sync…").color(pal.accent));
-            } else if ui.button(format!("Send these {n} deletes")).clicked()
-                && let Err(e) = ws.sync_allow_deletes()
-            {
-                f.error = Some(e);
+            } else if ui.button(format!("Send these {n} deletes")).clicked() {
+                // Exactly the set shown here: if it changed meanwhile, the
+                // approval is refused and the new list shows instead.
+                f.held_error = ws.sync_allow_deletes(&h.id()).err();
             }
-            let label = if f.show_held { "Hide the notes" } else { "Show which notes" };
+            let label = if f.show_held { "Hide the list" } else { "Show which" };
             if ui.button(label).clicked() {
                 f.show_held = !f.show_held;
             }
         });
+        if let Some(e) = &f.held_error {
+            ui.add(egui::Label::new(RichText::new(e).size(12.0).color(pal.danger)).wrap());
+        }
         ui.label(RichText::new("Also possible from a terminal: quire-cli sync allow-deletes <vault folder>.").size(11.5).color(pal.muted));
         if f.show_held {
             egui::ScrollArea::vertical().id_salt("held-deletes").max_height(160.0).show(ui, |ui| {

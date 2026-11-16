@@ -33,7 +33,8 @@ pub mod transport;
 
 pub use crypto::{CryptoError, KdfParams, Keys, RecoveryKey, VaultKey, WrappedKey};
 pub use engine::{
-    DELETE_WINDOW_MS, DeleteWindow, Engine, LocalStore, MANY_DELETES, MemoryStore, Report, Skipped, SyncError, SyncState, Tracked, Version,
+    DELETE_WINDOW_MS, DeleteMark, Engine, LocalStore, MANY_DELETES, MANY_SETTINGS_DELETES, MAX_DELETE_MARKS, MemoryStore, Report, Skipped,
+    SyncError, SyncState, Tracked, Version,
 };
 pub use folder::{FolderSpaceInfo, FolderTransport, min_reader, raise_min_reader};
 #[cfg(feature = "http")]
