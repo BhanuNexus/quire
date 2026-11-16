@@ -79,6 +79,13 @@ pub trait LocalStore {
         let _ = path;
         true
     }
+    /// Whether `path` is a vault settings file the person keeps (not
+    /// history the app prunes itself): more than [`MANY_SETTINGS_DELETES`]
+    /// of them deleted in one pass ask first.
+    fn is_settings(&self, path: &str) -> bool {
+        let _ = path;
+        false
+    }
     fn write(&mut self, path: &str, text: &str) -> Result<(), String>;
     fn remove(&mut self, path: &str) -> Result<(), String>;
     /// What [`fingerprint`] gives for the file, so an unchanged attachment
@@ -167,11 +174,21 @@ pub enum SyncError {
     ManyDeletes {
         /// Deletes this pass would send.
         count: usize,
-        /// Deletes already sent within [`DELETE_WINDOW_MS`].
+        /// Deletes already sent within the last [`DELETE_WINDOW_MS`].
         earlier: usize,
-        /// Notes this device held when that window began.
+        /// The most notes this device held in that time.
         of: usize,
         /// The notes this pass would delete, as `(file, path)`.
+        notes: Vec<(FileId, String)>,
+    },
+    /// This pass would delete several vault settings files on every device
+    /// (0.13.2, see [`MANY_SETTINGS_DELETES`]): nothing was sent.
+    #[error(
+        "{} vault settings files are gone from this device's .quire/shared folder. So that they aren't deleted on your other devices by mistake, sync sent nothing",
+        notes.len()
+    )]
+    SettingsDeletes {
+        /// The files, as `(file, path)`.
         notes: Vec<(FileId, String)>,
     },
 }
@@ -195,9 +212,9 @@ pub const DELETE_WINDOW_MS: i64 = 3_600_000;
 
 /// The most deletes sent without asking (0.13.2).
 ///
-/// A pass whose deletes, added to those sent in the last
-/// [`DELETE_WINDOW_MS`], are more than this many notes and more than half
-/// of the notes this device held when that window began, stops instead
+/// A pass whose deletes, added to those sent in the hour before it
+/// ([`DELETE_WINDOW_MS`], sliding), are more than this many notes and more
+/// than half of the most notes this device held in that hour, stops instead
 /// and sends nothing, until the person says these deletes are meant
 /// ([`Engine::allowed_deletes`]). Deletes a store says are explained
 /// ([`LocalStore::counts_as_delete`]) don't count. A folder that is gone or empty for a
@@ -288,18 +305,41 @@ pub struct SyncState {
     /// as usual.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub skipped: BTreeMap<FileId, Skipped>,
-    /// Deletes sent lately, for [`MANY_DELETES`] (0.13.2).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deletes: Option<DeleteWindow>,
+    /// The passes of the last hour that sent deletes, for [`MANY_DELETES`]
+    /// (0.13.2): at most [`MAX_DELETE_MARKS`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deletes_sent: Vec<DeleteMark>,
 }
 
-/// The deletes this device sent since `since` (Unix ms), out of the notes
-/// it held then (see [`MANY_DELETES`]).
+/// One pass that sent deletes counted by [`MANY_DELETES`]: when (Unix ms,
+/// this device's clock), how many notes this device held before it, and
+/// how many deletes it sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeleteWindow {
-    pub since: i64,
+pub struct DeleteMark {
+    pub at: i64,
     pub held: usize,
     pub sent: usize,
+}
+
+/// The most passes [`SyncState::deletes_sent`] keeps; older ones of the
+/// hour are folded together (their deletes added up, the most notes held
+/// kept, the later time kept), so the count is never smaller.
+pub const MAX_DELETE_MARKS: usize = 64;
+
+/// The most vault settings files a pass deletes without asking (0.13.2).
+///
+/// More ask first, like many notes: the app itself deletes at most one at a
+/// time (the locked-folders record when the last locked folder goes),
+/// while a `.quire/shared/` folder deleted to "reset" takes every vault
+/// setting off every device.
+pub const MANY_SETTINGS_DELETES: usize = 1;
+
+/// Whether `m` falls within the hour before `now`. A time after `now` (the
+/// clock was set back) counts as `now`: setting a clock back never starts
+/// the hour again.
+const fn within_hour(m: &DeleteMark, now: i64) -> bool {
+    let at = if m.at > now { now } else { m.at };
+    now - at < DELETE_WINDOW_MS
 }
 
 /// A revision this device couldn't store (see [`SyncState::skipped`]).
@@ -1102,6 +1142,7 @@ impl Engine {
         let mut plan: Vec<(FileId, RevId, Content)> = Vec::new();
         let mut held = 0usize;
         let mut counted: Vec<(FileId, String)> = Vec::new();
+        let mut settings: Vec<(FileId, String)> = Vec::new();
         let ids: Vec<FileId> = self.state.files.keys().cloned().collect();
         for id in ids {
             let t = self.state.files[&id].clone();
@@ -1168,6 +1209,8 @@ impl Engine {
                     } else if local.missing(&t.path) {
                         if local.counts_as_delete(&t.path) {
                             counted.push((id.clone(), t.path.clone()));
+                        } else if local.is_settings(&t.path) {
+                            settings.push((id.clone(), t.path.clone()));
                         }
                         Content { path: t.path.clone(), deleted: true, text: String::new(), from: String::new(), at: 0, actor: None }
                     } else {
@@ -1179,38 +1222,47 @@ impl Engine {
             };
             plan.push((id, t.head.clone(), content));
         }
+        // Several vault settings files at once: asked first too.
+        if settings.len() > MANY_SETTINGS_DELETES && !settings.iter().all(|(id, _)| self.allowed_deletes.contains(id)) {
+            return Err(SyncError::SettingsDeletes { notes: settings });
+        }
+
         let counting: BTreeSet<FileId> = counted.iter().map(|(id, _)| id.clone()).collect();
         // Said to be meant: all of these deletes are among those allowed.
         let allowed = !counting.is_empty() && counting.iter().all(|id| self.allowed_deletes.contains(id));
+        let mut mark = None;
         if !counting.is_empty() {
             let now = now_ms();
-            // Deletes add up within the window, out of the most notes held
-            // in it: a vault that vanishes a part per pass stops too.
-            let mut w = match self.state.deletes {
-                Some(w) if (0..DELETE_WINDOW_MS).contains(&(now - w.since)) => w,
-                _ => DeleteWindow { since: now, held, sent: 0 },
-            };
-            w.held = w.held.max(held);
-            let total = w.sent + counting.len();
-            if total > MANY_DELETES && total * 2 > w.held {
+            // Deletes add up over the hour before now, sliding, out of the
+            // most notes held in it: a vault that vanishes a part per pass,
+            // or across the hour's end, stops too.
+            self.state.deletes_sent.retain(|m| within_hour(m, now));
+            let earlier: usize = self.state.deletes_sent.iter().map(|m| m.sent).sum();
+            let of = self.state.deletes_sent.iter().map(|m| m.held).fold(held, usize::max);
+            let total = earlier + counting.len();
+            if total > MANY_DELETES && total * 2 > of {
                 if !allowed {
-                    return Err(SyncError::ManyDeletes { count: counting.len(), earlier: w.sent, of: w.held, notes: counted });
+                    return Err(SyncError::ManyDeletes { count: counting.len(), earlier, of, notes: counted });
                 }
                 // Counting starts again after deletes the person allowed.
-                w = DeleteWindow { since: now, held: held.saturating_sub(counting.len()), sent: 0 };
+                self.state.deletes_sent.clear();
+            } else {
+                if self.state.deletes_sent.len() >= MAX_DELETE_MARKS {
+                    let (a, b) = (self.state.deletes_sent.remove(0), self.state.deletes_sent[0]);
+                    self.state.deletes_sent[0] = DeleteMark { at: a.at.max(b.at), held: a.held.max(b.held), sent: a.sent + b.sent };
+                }
+                self.state.deletes_sent.push(DeleteMark { at: now, held, sent: 0 });
+                mark = Some(self.state.deletes_sent.len() - 1);
             }
-            self.state.deletes = Some(w);
         }
-
         for (id, head, content) in plan {
             if !self.push_one(server, &id, Some(&head), &content, report)? {
                 return Ok(false);
             }
             if counting.contains(&id)
-                && !allowed
-                && let Some(w) = self.state.deletes.as_mut()
+                && let Some(m) = mark.and_then(|i| self.state.deletes_sent.get_mut(i))
             {
-                w.sent += 1;
+                m.sent += 1;
             }
             if !content.deleted
                 && !local.in_scope(&content.path)

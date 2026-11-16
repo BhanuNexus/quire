@@ -855,3 +855,77 @@ fn a_tracked_note_whose_name_cant_be_stored_here_is_not_deleted() {
     l.sync(&mut sl, &server, TODAY).unwrap();
     assert_eq!(sl.read("10:30 meeting.md").as_deref(), Some("meeting\n"), "not deleted on the other device");
 }
+
+/// Moves every time the engine recorded for the many-deletes rule
+/// `minutes` into the past (a negative number: into the future, as when
+/// the clock is set back).
+fn age(e: &mut Engine, minutes: i64) {
+    for m in &mut e.state.deletes_sent {
+        m.at -= minutes * 60_000;
+    }
+}
+
+fn vault_of(n: usize) -> (MemoryServer, Engine, Engine, MemoryStore, MemoryStore) {
+    let (server, mut a, mut b) = pair();
+    let (mut sa, mut sb) = (MemoryStore::default(), MemoryStore::default());
+    for i in 0..n {
+        sa.write(&format!("{i:03}.md"), &format!("note {i}\n")).unwrap();
+    }
+    a.sync(&mut sa, &server, TODAY).unwrap();
+    b.sync(&mut sb, &server, TODAY).unwrap();
+    (server, a, b, sa, sb)
+}
+
+fn lose(s: &mut MemoryStore, n: usize) {
+    let gone: Vec<String> = s.0.keys().take(n).cloned().collect();
+    for p in gone {
+        s.0.remove(&p);
+    }
+}
+
+/// Review F-L2: one ordinary delete at 9:00, then the folder empties
+/// around 10:00. The hour slides: the stop comes before half is gone.
+#[test]
+fn the_many_deletes_hour_slides_across_its_end() {
+    let (server, mut a, mut b, mut sa, mut sb) = vault_of(400);
+    lose(&mut sa, 1);
+    a.sync(&mut sa, &server, TODAY).unwrap();
+    age(&mut a, 59);
+    lose(&mut sa, 199);
+    a.sync(&mut sa, &server, TODAY).unwrap();
+    age(&mut a, 2);
+    lose(&mut sa, 100);
+    assert!(a.sync(&mut sa, &server, TODAY).is_err(), "199 + 100 of 400 within the last hour: stopped");
+    b.sync(&mut sb, &server, TODAY).unwrap();
+    assert_eq!(sb.0.len(), 200);
+}
+
+/// Review F-L2: a clock set back in the middle never starts the hour again.
+#[test]
+fn a_clock_set_back_doesnt_reset_the_many_deletes_hour() {
+    let (server, mut a, mut b, mut sa, mut sb) = vault_of(400);
+    lose(&mut sa, 200);
+    a.sync(&mut sa, &server, TODAY).unwrap();
+    age(&mut a, -2);
+    lose(&mut sa, 100);
+    assert!(a.sync(&mut sa, &server, TODAY).is_err());
+    b.sync(&mut sb, &server, TODAY).unwrap();
+    assert_eq!(sb.0.len(), 200);
+}
+
+/// The record behind the rule stays small however many passes delete.
+#[test]
+fn the_many_deletes_record_stays_small() {
+    let (server, mut a, _, mut sa, _) = vault_of(400);
+    for _ in 0..100 {
+        lose(&mut sa, 1);
+        a.sync(&mut sa, &server, TODAY).unwrap();
+    }
+    assert!(a.state.deletes_sent.len() <= quire_sync::MAX_DELETE_MARKS);
+    assert_eq!(a.state.deletes_sent.iter().map(|m| m.sent).sum::<usize>(), 100, "folded, never fewer");
+    // An hour later they no longer count.
+    age(&mut a, 61);
+    lose(&mut sa, 1);
+    a.sync(&mut sa, &server, TODAY).unwrap();
+    assert_eq!(a.state.deletes_sent.len(), 1);
+}
