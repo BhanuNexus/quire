@@ -4,7 +4,11 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
-*This will ship as 0.13.2.*
+## [0.13.2] - 2026-11-17
+
+Quire 0.13.2: a data-safety release with no new features. Sync no longer reads a vault it can't list as "every note deleted", and a pass that would delete a large part of the vault waits for you. Files replaced while another program has them open no longer fail on Windows, a locked folder's key change shows its new recovery key first and says how to finish if it stops, and canvases, sketches and drawings keep unsaved edits when a save fails.
+
+**Upgrading:** nothing to do. Devices on 0.13.1 and 0.13.2 sync with each other; the new delete checks apply only on devices running 0.13.2.
 
 ### Changed
 - **Sync server container:** the image's health check now asks the running server for `/health` (before, it ran `--version`, which passed even if the server was hung), and the Docker comment and `docs/self-hosting.md` publish the port on `127.0.0.1` only, with the missing steps: cloning the repository, a systemd unit and a token file for the binary, and starting the first vault from a headless machine.
@@ -609,7 +613,8 @@ Downloads for Windows, macOS (universal) and Linux are attached to the release, 
 ### Added
 - First version: live Markdown styling, wikilinks with rename refactoring, backlinks, related notes, daily notes, templates, command palette, quick open, inline calculator and natural-language dates.
 
-[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.13.1...HEAD
+[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.13.2...HEAD
+[0.13.2]: https://github.com/BhanuNexus/quire/compare/v0.13.1...v0.13.2
 [0.13.1]: https://github.com/BhanuNexus/quire/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/BhanuNexus/quire/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/BhanuNexus/quire/compare/v0.11.0...v0.12.0
