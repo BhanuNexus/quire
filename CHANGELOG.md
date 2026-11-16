@@ -4,6 +4,9 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Fixed
+- **Release checksums:** `SHA256SUMS` no longer lists itself. 0.13.1's file has one such line (with the hash of an empty file), so `sha256sum -c SHA256SUMS` reports one failure there; every release file's own line is correct.
+
 ## [0.13.1] - 2026-11-16
 
 ### Security

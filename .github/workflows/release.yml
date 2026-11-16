@@ -688,7 +688,11 @@ jobs:
           # A file that isn't a release file stays out of the release and the checksums.
           rm -f engine.sha256.* cargo-sources.json
           ls -1
-          sha256sum -- * | sort -k2 > SHA256SUMS
+          # Written outside the folder first: `… > SHA256SUMS` in a pipeline can
+          # create the file before `*` is expanded, and then it lists itself
+          # (0.13.1's does, with the hash of an empty file).
+          sha256sum -- * | sort -k2 > "$RUNNER_TEMP/SHA256SUMS"
+          mv "$RUNNER_TEMP/SHA256SUMS" SHA256SUMS
           cat SHA256SUMS
       - uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
