@@ -51,11 +51,20 @@ pub struct Vault {
     /// Locked folders remembered apart from their key files, shared by
     /// every clone (keyless ones too).
     pub(crate) known: crate::lock::Known,
+    /// Version history that couldn't be thinned out, to tell the person
+    /// once per note (shared by every clone).
+    pub(crate) pruning: Arc<std::sync::Mutex<crate::history::PruneTrouble>>,
 }
 
 impl Vault {
     pub fn new(storage: Arc<dyn Storage>) -> Self {
-        Self { storage, config: VaultConfig::default(), keys: crate::lock::KeyRing::new(), known: crate::lock::Known::default() }
+        Self {
+            storage,
+            config: VaultConfig::default(),
+            keys: crate::lock::KeyRing::new(),
+            known: crate::lock::Known::default(),
+            pruning: Arc::default(),
+        }
     }
 
     pub fn open_local(root: impl AsRef<Path>) -> Result<Self> {
