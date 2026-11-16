@@ -33,11 +33,26 @@ enum Done {
     Locked { folder: String, recovery: Option<String>, remember: bool, conflicts: usize },
     Unlocked { folder: String, id: String },
     Rekeyed { folder: String, recovery: Option<String>, remembered: bool },
-    Failed { folder: String, error: String, recovery: Option<String> },
+    Failed { folder: String, error: String, recovery: Option<String>, what: Conversion },
+}
+
+/// Which conversion a job runs (for what to say when it stops).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Conversion {
+    Lock,
+    UnlockForGood,
+    /// A key change; `begun` once the key file has the new key.
+    ChangeKey {
+        begun: bool,
+    },
 }
 
 struct Job {
     label: String,
+    /// The folder being converted. While it runs, this process's own
+    /// rewrites of its files are not read back as changes made elsewhere.
+    folder: String,
+    what: Conversion,
     rx: Receiver<Done>,
 }
 
@@ -132,6 +147,18 @@ pub fn key_missing_text(folder: &str) -> String {
     format!(
         "{folder}/ is locked, but its key file ({}) is missing or was renamed. Quire keeps it locked and writes nothing plain there. \
          Restore the key file (from a backup, git or another device), or unlock it with the recovery key and a new passphrase to make a new one.",
+        lock::KEY_FILE
+    )
+}
+
+/// What to tell the person about a folder whose unlocking for good didn't
+/// finish (its key file has the `unlocking` name, and this process isn't
+/// running that conversion): until it does, nothing plain is written there.
+pub fn unlock_unfinished_text(folder: &str) -> String {
+    format!(
+        "Unlocking {folder}/ for good didn't finish, so its notes can't be saved yet. Run “Stop locking a folder…” on it again to finish \
+         (it asks for the passphrase). If you didn't start that, someone renamed its key file: rename {} back to {} to keep it locked.",
+        lock::UNLOCKING_FILE,
         lock::KEY_FILE
     )
 }
@@ -309,7 +336,7 @@ impl Workspace {
             // its notes (plain, from before) is encrypted now, in the background.
             let f = folder.to_string();
             std::thread::spawn(move || {
-                for note in v.locked_notes(&f).into_iter().chain(v.history_paths_under(&f)) {
+                for note in v.locked_notes(&f).into_iter().chain(v.history_paths_under(&f).into_iter().flatten()) {
                     let _ = v.rehome_history(&note, &note);
                 }
             });
@@ -520,16 +547,18 @@ impl Workspace {
             let pass = lock::zeroize::Zeroizing::new(pass);
             // The key file first, and its recovery key back before any file is
             // converted: if the conversion then stops, the key is still shown.
+            let failed =
+                |folder, error: VaultError, recovery| Done::Failed { folder, error: error.to_string(), recovery, what: Conversion::Lock };
             let done = match lock::begin_lock(&vault, &f, Some(&pass), KDF, crate::history_ops::now_ms()) {
-                Err(e) => Done::Failed { folder: f, error: e.to_string(), recovery: None },
+                Err(e) => failed(f, e, None),
                 Ok(recovery) => match lock::lock_folder(&vault, &f, Some(&pass), KDF, crate::history_ops::now_ms()) {
                     Ok(r) => Done::Locked { folder: f, recovery, remember, conflicts: r.conflicts.len() },
-                    Err(e) => Done::Failed { folder: f, error: e.to_string(), recovery },
+                    Err(e) => failed(f, e, recovery),
                 },
             };
             let _ = tx.send(done);
         });
-        self.features.secure.job = Some(Job { label: format!("Locking {folder}/…"), rx });
+        self.features.secure.job = Some(Job { label: format!("Locking {folder}/…"), folder, what: Conversion::Lock, rx });
         Ok(())
     }
 
@@ -552,11 +581,11 @@ impl Workspace {
         std::thread::spawn(move || {
             let done = match lock::unlock_folder_permanently(&vault, &f, None) {
                 Ok(_) => Done::Unlocked { folder: f, id },
-                Err(e) => Done::Failed { folder: f, error: e.to_string(), recovery: None },
+                Err(e) => Done::Failed { folder: f, error: e.to_string(), recovery: None, what: Conversion::UnlockForGood },
             };
             let _ = tx.send(done);
         });
-        self.features.secure.job = Some(Job { label: format!("Decrypting {folder}/…"), rx });
+        self.features.secure.job = Some(Job { label: format!("Decrypting {folder}/…"), folder, what: Conversion::UnlockForGood, rx });
         Ok(())
     }
 
@@ -617,8 +646,11 @@ impl Workspace {
     /// Start giving `folder` a new key and passphrase in the background
     /// ([`lock::change_key`]): every file is encrypted again, and old
     /// copies of the key file and the old recovery key stop opening it. The
-    /// new recovery key is then offered once ([`Self::take_recovery_key`]).
-    /// `current_or_recovery` unlocks it first if needed.
+    /// new recovery key is then offered once ([`Self::take_recovery_key`]),
+    /// also when the rest of the change stops: the key file has the new
+    /// key before any file changes. `current_or_recovery` unlocks it first
+    /// if needed. After a key change that didn't finish, that is the new
+    /// passphrase; `new` is then the passphrase the folder keeps.
     pub fn start_changing_key(&mut self, folder: &str, current_or_recovery: &str, new: &str) -> Result<(), String> {
         let vault = self.vault.clone().ok_or("No vault is open")?;
         let folder = folder.trim().trim_matches('/').to_string();
@@ -632,7 +664,7 @@ impl Workspace {
         let key = match FolderKey::from_recovery_key(current_or_recovery) {
             Ok(k) => k,
             Err(_) => kf.unwrap_key(current_or_recovery).map_err(|e| match e {
-                lock::LockError::WrongPassphrase => "Wrong passphrase.".to_string(),
+                lock::LockError::WrongPassphrase => format!("Wrong passphrase.{}", rekey_unfinished(&vault, &folder).unwrap_or_default()),
                 e => e.to_string(),
             })?,
         };
@@ -643,13 +675,23 @@ impl Workspace {
         let (tx, rx) = bounded(1);
         let f = folder.clone();
         std::thread::spawn(move || {
-            let done = match lock::change_key(&vault, &f, &new, crate::history_ops::now_ms()) {
-                Ok(r) => Done::Rekeyed { folder: f, recovery: r.recovery_key, remembered },
-                Err(e) => Done::Failed { folder: f, error: e.to_string(), recovery: None },
+            let failed = |folder, error: VaultError, recovery: Option<String>| {
+                let what = Conversion::ChangeKey { begun: recovery.is_some() };
+                Done::Failed { folder, error: error.to_string(), recovery, what }
+            };
+            // The key file first, and the new recovery key back before any
+            // file changes: if the rest stops, it is still shown.
+            let done = match lock::begin_change_key(&vault, &f, &new, crate::history_ops::now_ms()) {
+                Err(e) => failed(f, e, None),
+                Ok(rk) => match lock::finish_change_key(&vault, &f) {
+                    Ok(_) => Done::Rekeyed { folder: f, recovery: Some(rk), remembered },
+                    Err(e) => failed(f, e, Some(rk)),
+                },
             };
             let _ = tx.send(done);
         });
-        self.features.secure.job = Some(Job { label: format!("Changing the key of {folder}/…"), rx });
+        let what = Conversion::ChangeKey { begun: false };
+        self.features.secure.job = Some(Job { label: format!("Changing the key of {folder}/…"), folder, what, rx });
         Ok(())
     }
 
@@ -780,10 +822,21 @@ impl Workspace {
     }
 }
 
+/// After a key change that didn't finish, what opens the folder now.
+fn rekey_unfinished(vault: &Vault, folder: &str) -> Option<String> {
+    vault.key_file(folder).ok().filter(|(_, kf)| kf.rotating).map(|_| {
+        format!(
+            " A key change of {folder}/ didn't finish: it opens only with the new passphrase chosen then, or the new recovery key shown then \
+             (the old ones no longer open it). Once unlocked, change its key again to finish."
+        )
+    })
+}
+
 fn unlock_error(vault: &Vault, folder: &str, e: &VaultError) -> String {
+    let hint = || rekey_unfinished(vault, folder).unwrap_or_default();
     match e {
-        VaultError::Locked(m) if m.contains("wrong passphrase") => "Wrong passphrase.".into(),
-        VaultError::Damaged { reason, .. } if reason.contains("recovery key") => "That key doesn't open this folder.".into(),
+        VaultError::Locked(m) if m.contains("wrong passphrase") => format!("Wrong passphrase.{}", hint()),
+        VaultError::Damaged { reason, .. } if reason.contains("recovery key") => format!("That key doesn't open this folder.{}", hint()),
         VaultError::NotFound(m) if m.contains("no encrypted file") => format!("{m}."),
         VaultError::NotFound(_) if vault.known_locked().contains(folder) => key_missing_text(folder),
         VaultError::NotFound(_) => format!("{folder}/ isn't a locked folder (its key file, {}, is missing).", lock::KEY_FILE),
@@ -801,8 +854,22 @@ pub(crate) fn tick(ws: &mut Workspace, now: Instant) -> bool {
         opened(ws, &o);
         changed = true;
     }
-    // A finished conversion.
-    if let Some(done) = ws.features.secure.job.as_ref().and_then(|j| j.rx.try_recv().ok()) {
+    // A finished conversion, or one whose thread stopped without a word (a panic).
+    let done = ws.features.secure.job.as_ref().and_then(|j| match j.rx.try_recv() {
+        Ok(d) => Some(d),
+        Err(crossbeam_channel::TryRecvError::Empty) => None,
+        Err(crossbeam_channel::TryRecvError::Disconnected) => {
+            let what = match j.what {
+                Conversion::ChangeKey { .. } => {
+                    let begun = ws.vault.as_ref().is_some_and(|v| v.key_file(&j.folder).is_ok_and(|(_, kf)| kf.rotating));
+                    Conversion::ChangeKey { begun }
+                }
+                w => w,
+            };
+            Some(Done::Failed { folder: j.folder.clone(), error: "it stopped unexpectedly".into(), recovery: None, what })
+        }
+    });
+    if let Some(done) = done {
         ws.features.secure.job = None;
         changed = true;
         finished(ws, done);
@@ -972,6 +1039,7 @@ fn finished(ws: &mut Workspace, done: Done) {
                 ws.request_ui(UiRequest::Feature(Command::LockFolder));
             }
             ws.rebuild_locked_index();
+            ws.recheck_locked_docs();
         }
         Done::Unlocked { folder, id } => {
             if let Some(root) = ws.vault_root() {
@@ -981,22 +1049,45 @@ fn finished(ws: &mut Workspace, done: Done) {
             ws.rebuild_locked_index();
             ws.notify(NoticeLevel::Info, format!("{folder}/ is an ordinary folder again (the encrypted files are in the trash)"));
         }
-        Done::Failed { folder, error, recovery } => {
+        Done::Failed { folder, error, recovery, what } => {
             ws.rebuild_locked_index();
-            let key = if recovery.is_some() {
-                "Its recovery key is shown now: store it."
-            } else {
-                "To see its recovery key, use “Show a locked folder's recovery key…”."
-            };
-            ws.notify(
-                NoticeLevel::Error,
-                format!("Converting {folder}/ stopped: {error}. No plain file was removed before its encrypted copy was checked; run it again to finish. {key}"),
-            );
+            ws.recheck_locked_docs();
+            ws.notify(NoticeLevel::Error, failed_text(&folder, &error, recovery.is_some(), what));
             if let Some(rk) = recovery {
                 ws.features.secure.recovery = Some((folder, rk.into()));
                 ws.request_ui(UiRequest::Feature(Command::LockFolder));
             }
         }
+    }
+}
+
+/// What to tell the person when a conversion of `folder` stopped: what
+/// state the folder is in, and how to finish.
+fn failed_text(folder: &str, error: &str, key_shown: bool, what: Conversion) -> String {
+    match what {
+        Conversion::Lock => {
+            let key = if key_shown {
+                "Its recovery key is shown now: store it."
+            } else {
+                "To see its recovery key, use “Show a locked folder's recovery key…”."
+            };
+            format!(
+                "Locking {folder}/ stopped: {error}. No plain file was removed before its encrypted copy was checked. \
+                 Run “Lock a folder…” on it again to finish. {key}"
+            )
+        }
+        Conversion::UnlockForGood => format!(
+            "Decrypting {folder}/ stopped: {error}. Every note in it still opens, and it opens with its passphrase as before. \
+             Run “Stop locking a folder…” on it again to finish; until then, notes in it can't be saved after Quire restarts."
+        ),
+        Conversion::ChangeKey { begun: false } => format!(
+            "Changing the key of {folder}/ stopped before anything changed: {error}. Its passphrase and recovery key are as before."
+        ),
+        Conversion::ChangeKey { begun: true } => format!(
+            "Changing the key of {folder}/ stopped: {error}. Every note in it still opens, but only with the new passphrase you chose \
+             and the new recovery key (shown now: store it); the old passphrase and recovery key no longer open it. \
+             To finish, run “Change a locked folder's passphrase…” with “Also change the folder's key”, giving the new passphrase as the current one."
+        ),
     }
 }
 
@@ -1021,7 +1112,8 @@ fn plain_left_notice(ws: &mut Workspace, left: &lock::PlainLeft) {
             NoticeLevel::Warn,
             format!(
                 "{}/ has {n} plain file{} next to its encrypted version ({first}). Quire shows the encrypted one and never saves over either. \
-                 Open “Lock a folder…” on it to keep both (the plain one is encrypted under a new name).",
+                 Run “Lock a folder…” on it again: that finishes a lock that was interrupted. Plain files that still differ can then be kept \
+                 as well (“Keep both” encrypts them under a new name).",
                 left.folder,
                 s(n)
             ),
@@ -1100,6 +1192,15 @@ pub(crate) const fn available(ws: &Workspace, cmd: Command) -> bool {
 
 pub(crate) fn vault_event(ws: &mut Workspace, ev: &VaultEvent) {
     let Some(vault) = ws.vault.clone() else { return };
+    // This process's own conversion rewrites the folder's files one by one:
+    // reading them back now (the locked index, versions) would race with
+    // it, and on Windows make its replaces fail. It is all read once, when
+    // the conversion ends (`finished`).
+    if let Some(job) = &ws.features.secure.job
+        && (lock::LockedFolder { path: job.folder.clone(), unlocking: false }).contains(ev.path().as_str())
+    {
+        return;
+    }
     match ev {
         VaultEvent::AttachmentChanged(p) => {
             if lock::is_key_file(p.as_str()) {
@@ -1214,7 +1315,9 @@ fn opened(ws: &mut Workspace, o: &Opened) {
         }
     }
     for f in o.states.iter().filter(|f| f.key_missing) {
-        ws.notify(NoticeLevel::Warn, key_missing_text(&f.folder.path));
+        let unlocking = vault.storage().exists(&NotePath::join(&f.folder.path, lock::UNLOCKING_FILE));
+        let text = if unlocking { unlock_unfinished_text(&f.folder.path) } else { key_missing_text(&f.folder.path) };
+        ws.notify(NoticeLevel::Warn, text);
     }
     for left in &o.left {
         plain_left_notice(ws, left);

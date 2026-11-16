@@ -279,10 +279,16 @@ impl Vault {
     }
 
     /// Notes under `folder` that have (or had) history here, as the path log
-    /// recorded them: notes since deleted or renamed included.
-    pub fn history_paths_under(&self, folder: &str) -> Vec<NotePath> {
+    /// recorded them: notes since deleted or renamed included. A log that
+    /// can't be read is an error, not an empty list (locking relies on it
+    /// to find every snapshot to encrypt).
+    pub fn history_paths_under(&self, folder: &str) -> Result<Vec<NotePath>> {
         let inside = crate::lock::LockedFolder { path: folder.trim_matches('/').to_string(), unlocking: false };
-        let text = self.storage().read(&NotePath::new(PATHS_LOG)).unwrap_or_default();
+        let text = match self.storage().read(&NotePath::new(PATHS_LOG)) {
+            Ok(t) => t,
+            Err(VaultError::NotFound(_)) => String::new(),
+            Err(e) => return Err(e),
+        };
         let mut out: Vec<NotePath> = text
             .lines()
             .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
@@ -291,7 +297,7 @@ impl Vault {
             .collect();
         out.sort();
         out.dedup();
-        out
+        Ok(out)
     }
 
     /// Record `content` as the latest version. Returns true if a snapshot was
@@ -321,7 +327,10 @@ impl Vault {
                 return Ok(false);
             }
             // Within one person's typing burst: the newest snapshot is superseded.
-            let same_burst = !force && prov.is_none() && newest.prov_file.is_none() && now_ms - newest.at_ms < THROTTLE_MS;
+            // A newest snapshot from the future (a clock that was ahead, a
+            // `.quire` from such a machine) is no burst: it stays.
+            let age = now_ms - newest.at_ms;
+            let same_burst = !force && prov.is_none() && newest.prov_file.is_none() && (0..THROTTLE_MS).contains(&age);
             if same_burst && hist.len() > 1 {
                 self.storage().remove(&newest.file)?;
             }
@@ -510,6 +519,23 @@ mod tests {
         v.snapshot(&a, "much later", day + 200 * DAY, true).unwrap();
         let kept: Vec<i64> = v.history(&a).iter().map(|s| s.at_ms).collect();
         assert!(!kept.contains(&before), "{kept:?}");
+    }
+
+    /// Reliability scan item 10: one snapshot dated in the future (a clock
+    /// that was ahead) doesn't make every typing save replace the last.
+    #[test]
+    fn a_snapshot_from_the_future_is_never_replaced() {
+        let v = Vault::in_memory(&[("A.md", "x")]);
+        let a = NotePath::new("A.md");
+        let now = 1_800_000_000_000;
+        v.snapshot(&a, "old", now - DAY, true).unwrap();
+        v.snapshot(&a, "from a clock a day ahead", now + DAY, true).unwrap();
+        for (i, t) in ["one", "two", "three"].iter().enumerate() {
+            v.snapshot(&a, t, now + i as i64 * 10 * MIN, false).unwrap();
+        }
+        let texts: Vec<String> = v.history(&a).iter().map(|s| v.read_snapshot(s).unwrap()).collect();
+        assert!(texts.contains(&"from a clock a day ahead".to_string()), "{texts:?}");
+        assert!(texts.contains(&"one".to_string()) && texts.contains(&"three".to_string()), "{texts:?}");
     }
 
     #[test]

@@ -65,7 +65,7 @@ JSON, `format` 1. Unknown fields are kept when Quire rewrites it.
 | `wrapped_key` | hex of `nonce (24 bytes) ‖ ciphertext (32 bytes) ‖ tag (16 bytes)`: the folder key sealed with XChaCha20-Poly1305 |
 | `check` | hex of the first 16 bytes of `HKDF(folder key, "check")`: tells whether a key (from the recovery key) is this folder's |
 | `previous_key` | optional, after "Change the folder's key": hex of `nonce (24) ‖ ciphertext (32) ‖ tag (16)`, the previous folder key sealed with XChaCha20-Poly1305 under `HKDF(folder key, "previous")`, associated data `"quire-lock previous key v1" ‖ folder_id`. Opens files not encrypted again yet, or written meanwhile by a device that still had the old key |
-| `rotating` | optional, `true` while a key change is under way (some files may still be under the previous key); running it again finishes it |
+| `rotating` | optional, `true` while a key change is under way (some files may still be under the previous key); running it again finishes it. The key file already holds the new key, wrapped by the new passphrase: from then on only the new passphrase and the new recovery key open the folder. Running it again with another new passphrase wraps the same new key with that one (0.13.2) |
 
 Quire accepts Argon2id settings from 65536 KiB and 3 passes (its default)
 up to 4 GiB, 64 passes and 16 lanes, and refuses a key file outside that
