@@ -271,14 +271,25 @@ impl LocalFs {
 
 /// The name of the `n`th file trashed as `name` at `stamp`.
 fn trash_name(stamp: &str, name: &str, n: usize) -> String {
-    if n <= 1 {
-        return format!("{stamp} {name}");
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => (stem, format!(".{ext}")),
+        _ => (name, String::new()),
+    };
+    let suffix = if n <= 1 { String::new() } else { format!(" ({n})") };
+    // A name has at most 255 bytes on most disks (255 UTF-16 units on
+    // Windows, never fewer than the bytes): a long note name is shortened,
+    // on a character boundary, to leave room for the date (0.13.2). The
+    // extension stays; ` (n)` keeps two shortened names apart.
+    let room = TRASH_NAME_MAX.saturating_sub(stamp.len() + 1 + suffix.len() + ext.len());
+    let mut cut = stem.len().min(room);
+    while !stem.is_char_boundary(cut) {
+        cut -= 1;
     }
-    match name.rsplit_once('.') {
-        Some((stem, ext)) if !stem.is_empty() => format!("{stamp} {stem} ({n}).{ext}"),
-        _ => format!("{stamp} {name} ({n})"),
-    }
+    format!("{stamp} {}{suffix}{ext}", &stem[..cut])
 }
+
+/// The longest name [`trash_name`] makes, in bytes.
+const TRASH_NAME_MAX: usize = 255;
 
 /// How long a replace keeps trying while another program has the file
 /// open in a way that blocks it (Windows only).
@@ -867,6 +878,26 @@ mod tests {
         assert_eq!(trash_of(fs.root()).len(), 42);
         assert_eq!(trash_name("s", "README", 3), "s README (3)");
         assert_eq!(trash_name("s", ".env", 2), "s .env (2)");
+    }
+
+    /// Review D-L4 (0.13.2): a note whose name leaves no room for the date
+    /// still goes to the trash, under a shortened name that keeps its
+    /// extension, and two such notes don't take each other's place.
+    #[test]
+    fn a_note_with_a_very_long_name_still_goes_to_the_trash() {
+        let dir = tempfile::tempdir().unwrap();
+        let fs = LocalFs::new(dir.path()).unwrap();
+        let (a, b) = (format!("{}a.md", "n".repeat(240)), format!("{}b.md", "n".repeat(240)));
+        for (p, t) in [(&a, "first"), (&b, "second")] {
+            fs.write_atomic(&NotePath::new(p.as_str()), t).unwrap();
+            fs.trash(&NotePath::new(p.as_str())).unwrap();
+        }
+        let all = trash_of(fs.root());
+        assert_eq!(all.len(), 2, "{all:?}");
+        assert!(all.iter().all(|(n, _)| n.len() <= 255 && Path::new(n).extension().is_some_and(|e| e == "md")), "{all:?}");
+        assert!(all.iter().any(|(_, t)| t == "first") && all.iter().any(|(_, t)| t == "second"));
+        let wide = trash_name("20261116-120000", &format!("{}.md", "語".repeat(90)), 7);
+        assert!(wide.len() <= 255 && wide.ends_with(" (7).md"), "{wide}");
     }
 
     #[test]
