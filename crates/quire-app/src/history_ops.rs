@@ -160,11 +160,13 @@ pub struct DiffLine {
     pub text: String,
 }
 
-/// Tell the person, once, that version history couldn't be written.
+/// Tell the person, once, that version history couldn't be written, and
+/// about folders of the vault that can't be opened (storage notices).
 pub(crate) fn tick(ws: &mut Workspace, _now: std::time::Instant) -> bool {
     // Versions that couldn't be written, and old ones that couldn't be thinned out.
     let pruning = ws.vault.as_ref().and_then(Vault::take_history_trouble);
-    let told: Vec<String> = ws.history.take_failure().into_iter().chain(pruning).collect();
+    let listing = ws.vault.as_ref().and_then(|v| v.storage().take_listing_notice());
+    let told: Vec<String> = ws.history.take_failure().into_iter().chain(pruning).chain(listing).collect();
     for text in &told {
         ws.notify(NoticeLevel::Warn, text.clone());
     }

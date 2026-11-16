@@ -13,6 +13,10 @@ struct Unlocked {
     /// The key before "Change the folder's key", for files not encrypted
     /// again yet.
     previous: Option<FolderKey>,
+    /// SHA-256 of the key file as last found to hold `key` (see
+    /// [`crate::Vault`]'s check before sealing): the key file is parsed
+    /// again only when it changed.
+    confirmed: Option<Vec<u8>>,
 }
 
 /// The keys of the folders unlocked in this process.
@@ -39,7 +43,20 @@ impl KeyRing {
     pub fn insert(&self, folder: &str, id: FolderId, key: FolderKey) {
         let mut v = self.0.write().unwrap_or_else(PoisonError::into_inner);
         v.retain(|u| u.folder != folder);
-        v.push(Box::new(Unlocked { folder: folder.to_string(), id, key, previous: None }));
+        v.push(Box::new(Unlocked { folder: folder.to_string(), id, key, previous: None, confirmed: None }));
+    }
+
+    /// Whether `folder`'s key was last found current in a key file with this digest.
+    pub(crate) fn is_confirmed(&self, folder: &str, digest: &[u8]) -> bool {
+        self.0.read().unwrap_or_else(PoisonError::into_inner).iter().any(|u| u.folder == folder && u.confirmed.as_deref() == Some(digest))
+    }
+
+    /// Note that `folder`'s key is current in the key file with this digest.
+    pub(crate) fn confirm(&self, folder: &str, digest: Vec<u8>) {
+        let mut v = self.0.write().unwrap_or_else(PoisonError::into_inner);
+        if let Some(u) = v.iter_mut().find(|u| u.folder == folder) {
+            u.confirmed = Some(digest);
+        }
     }
 
     /// Keep `previous` as `folder`'s key before a key change.

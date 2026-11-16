@@ -290,6 +290,38 @@ impl Vault {
         self.open_sealed(&f.path, Kind::File, id, &key, &data).map_err(|e| damaged(&stored, &e))
     }
 
+    /// The key to encrypt with in `folder`: the one this process holds, but
+    /// only while the folder's key file still holds it.
+    ///
+    /// Another process (the CLI, another device through sync) may have
+    /// changed the folder's key since this one unlocked it; a file sealed
+    /// with the old key could then end up under a key no key file keeps.
+    /// The key file is read (it is small) and parsed again only when it
+    /// changed since the key was last found current in it. A key file
+    /// that is missing leaves the key as it is (the folder stays locked,
+    /// see [`lock::Known`]). A stale key is refused: unlock the folder again.
+    pub(crate) fn key_for_writing(&self, folder: &str) -> Result<(lock::FolderId, FolderKey)> {
+        let (id, key) = self.keys.get(folder).ok_or_else(|| VaultError::Locked(folder.to_string()))?;
+        let path = NotePath::join(folder, lock::KEY_FILE);
+        let bytes = match self.storage.read_bytes(&path) {
+            Ok(b) => b,
+            Err(VaultError::NotFound(_)) => return Ok((id, key)),
+            Err(e) => return Err(e),
+        };
+        let digest = <sha2::Sha256 as sha2::Digest>::digest(&bytes).to_vec();
+        if self.keys.is_confirmed(folder, &digest) {
+            return Ok((id, key));
+        }
+        let kf = KeyFile::parse(&crate::storage::decode(&bytes)).map_err(|e| damaged(&path, &e))?;
+        if kf.check_key(&key).is_err() || kf.id().ok() != Some(id) {
+            return Err(VaultError::Locked(format!(
+                "{folder} (its key was changed elsewhere: unlock it again with its current passphrase)"
+            )));
+        }
+        self.keys.confirm(folder, digest);
+        Ok((id, key))
+    }
+
     /// Store a file of a locked folder, encrypted (plain while the folder
     /// is being unlocked for good). A plain leftover with no encrypted copy
     /// is replaced; a plain file next to an encrypted copy is left alone (a
@@ -298,7 +330,7 @@ impl Vault {
         if f.unlocking {
             return self.storage.write_bytes_atomic(p, bytes);
         }
-        let (id, key) = self.keys.get(&f.path).ok_or_else(|| VaultError::Locked(f.path.clone()))?;
+        let (id, key) = self.key_for_writing(&f.path)?;
         let stored = lock::stored(p);
         let had_encrypted = self.storage.exists(&stored);
         let sealed = key.seal(Kind::File, id, bytes).map_err(|e| damaged(&stored, &e))?;
@@ -326,7 +358,7 @@ impl Vault {
             self.write_locked(f, p, content.as_bytes())?;
             return Ok(true);
         }
-        let (id, key) = self.keys.get(&f.path).ok_or_else(|| VaultError::Locked(f.path.clone()))?;
+        let (id, key) = self.key_for_writing(&f.path)?;
         let stored = lock::stored(p);
         let raw = match self.storage.read_bytes(&stored) {
             Ok(b) => Some(b),
