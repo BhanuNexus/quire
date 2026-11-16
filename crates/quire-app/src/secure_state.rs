@@ -1258,17 +1258,13 @@ pub(crate) fn vault_event(ws: &mut Workspace, ev: &VaultEvent) {
                 // A folder was locked or unlocked elsewhere (another device, the CLI).
                 let folder = p.folder().to_string();
                 let new = !vault.known_locked().contains(&folder);
-                // The key was changed on another device: the one held here is the old one.
-                let stale = ws.features.secure.job.is_none()
-                    && vault
-                        .keys()
-                        .get(&folder)
-                        .is_some_and(|(_, k)| vault.key_file(&folder).is_ok_and(|(_, kf)| kf.check_key(&k).is_err()));
-                if stale && ws.lock_folder_now(&folder).is_some() {
-                    ws.notify(
-                        NoticeLevel::Warn,
-                        format!("{folder}/ got a new key on another device: unlock it again with its new passphrase."),
-                    );
+                // The key was changed elsewhere (another device, the command
+                // line): the one held here is the old one, and the vault
+                // refuses to seal with it.
+                let stale =
+                    vault.keys().get(&folder).is_some_and(|(_, k)| vault.key_file(&folder).is_ok_and(|(_, kf)| kf.check_key(&k).is_err()));
+                if stale {
+                    key_changed_elsewhere(ws, &folder);
                 }
                 if vault.note_locked_folder(&folder).is_ok() && new {
                     // What this device derived from its notes while they were plain goes too.
@@ -1317,6 +1313,37 @@ pub(crate) fn vault_event(ws: &mut Workspace, ev: &VaultEvent) {
         }
         VaultEvent::Changed(_) | VaultEvent::Removed(_) => {}
     }
+}
+
+/// `folder`'s key was changed elsewhere while it was unlocked here. This
+/// computer's remembered key is tried; otherwise the old key is forgotten
+/// (it no longer seals anything: [`quire_vault::Vault`] refuses it), open
+/// notes without edits close, and notes with edits stay open, kept in
+/// memory until the folder is unlocked again.
+fn key_changed_elsewhere(ws: &mut Workspace, folder: &str) {
+    let Some(vault) = ws.vault.clone() else { return };
+    if let (Some(root), Ok((_, kf))) = (ws.vault_root().map(std::path::Path::to_path_buf), vault.key_file(folder))
+        && let Some(hex) = crate::secrets::store().get(&keychain_name(&root, &kf.folder_id)).map(lock::zeroize::Zeroizing::new)
+        && let Some(key) = FolderKey::from_hex(&hex)
+        && vault.unlock_with_key(folder, key).is_ok()
+    {
+        ws.notify(NoticeLevel::Info, format!("{folder}/ got a new key elsewhere; the key this computer keeps opens it."));
+        return;
+    }
+    let clean: Vec<_> = ws.docs_in(folder).into_iter().filter(|id| ws.doc(*id).is_some_and(|d| !d.is_dirty())).collect();
+    for id in clean {
+        ws.close(id);
+    }
+    vault.lock_folder_now(folder);
+    ws.forget_unlocked_text();
+    ws.rebuild_locked_index();
+    ws.notify(
+        NoticeLevel::Warn,
+        format!(
+            "{folder}/ got a new key elsewhere (another device or the command line). Unlock it again with its current passphrase; \
+             edits not saved yet stay open until then."
+        ),
+    );
 }
 
 /// A vault was opened. Nothing here lists the vault (it runs before the

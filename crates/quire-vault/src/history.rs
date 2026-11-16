@@ -207,7 +207,7 @@ impl Vault {
     /// locked folder's key (`Err(Locked)` while that folder is locked).
     fn snapshot_form(&self, note: &NotePath) -> Result<Option<(crate::lock::FolderId, crate::lock::FolderKey)>> {
         match self.locked_folder(note) {
-            Some(f) if !f.unlocking => self.keys().get(&f.path).map(Some).ok_or(VaultError::Locked(f.path)),
+            Some(f) if !f.unlocking => self.key_for_writing(&f.path).map(Some),
             _ => Ok(None),
         }
     }

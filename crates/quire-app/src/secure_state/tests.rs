@@ -985,3 +985,36 @@ fn the_new_recovery_key_comes_before_any_file_changes() {
     assert!(matches!(rx.recv_timeout(Duration::from_secs(30)).unwrap(), super::Done::Rekeyed { .. }));
     t.join().unwrap();
 }
+
+/// Final review F-L1: while the app holds a folder's key, the command line
+/// changes it twice. The app never seals with its old key: it forgets it
+/// when the key file changes, keeps unsaved edits open, and once unlocked
+/// again with the current passphrase, a new note opens with it afterwards.
+#[test]
+fn a_key_changed_twice_elsewhere_never_seals_with_the_old_key() {
+    let (_d, root) = vault_dir(&[("Journal/Day.md", "# Day\nMARKER-9d1f\n")]);
+    let mut ws = open(&root);
+    lock_and_wait(&mut ws, "Journal");
+    let id = ws.open_note(&np("Journal/Day.md")).unwrap();
+    // The command line, another process: two key changes.
+    let cli = quire_vault::Vault::open_local(&root).unwrap();
+    cli.unlock("Journal", PASS).unwrap();
+    quire_vault::lock::change_key(&cli, "Journal", "second passphrase", 9).unwrap();
+    quire_vault::lock::change_key(&cli, "Journal", "third passphrase", 10).unwrap();
+    // Before the app has seen the key file change: the old key writes nothing.
+    assert!(ws.vault().unwrap().write(&np("Journal/New.md"), "with the old key").is_err());
+    ws.active_doc_mut().unwrap().replace_minimally("# Day\nMARKER-9d1f edited here\n");
+    until(&mut [&mut ws], "the key change to be seen", |w| !w[0].is_unlocked("Journal"));
+    let text = notices(&ws);
+    assert!(text.contains("got a new key elsewhere"), "{text}");
+    assert!(ws.doc(id).is_some_and(crate::document::Document::is_dirty), "the edit stays open");
+    ws.unlock_folder("Journal", "third passphrase", false).unwrap();
+    assert!(ws.save(id));
+    ws.vault().unwrap().write(&np("Journal/New.md"), "written after unlocking again").unwrap();
+    let fresh = quire_vault::Vault::open_local(&root).unwrap();
+    fresh.unlock("Journal", "third passphrase").unwrap();
+    fresh.keys().set_previous("Journal", None);
+    assert_eq!(fresh.read(&np("Journal/New.md")).unwrap(), "written after unlocking again");
+    assert!(fresh.read(&np("Journal/Day.md")).unwrap().contains("edited here"));
+    assert!(leaks(&root, MARK).is_empty());
+}

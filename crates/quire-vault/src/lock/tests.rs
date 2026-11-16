@@ -1131,3 +1131,53 @@ fn a_key_file_replaced_during_a_key_change_is_not_marked_done() {
     assert!(finish_change_key(&v, "Journal").is_err());
     assert_eq!(fs.read(&np("Journal/quire-lock.json")).unwrap(), theirs, "B's key file is left as B wrote it");
 }
+
+// ------------------------------------------------------------ 0.13.2 final review
+
+/// Final review F-L1: a process still holding the folder's key from before
+/// two key changes made elsewhere can't seal a new note with it (no key
+/// file would hold that key); unlocked again, it writes under the current
+/// key, and the note opens with the current passphrase.
+#[test]
+fn a_key_changed_elsewhere_is_not_used_to_write() {
+    let (cli, fs) = vault_with(&journal());
+    lock(&cli);
+    let app = Vault::new(Arc::clone(&fs) as Arc<dyn Storage>);
+    app.unlock("Journal", PASS).unwrap();
+    app.write(&np("Journal/Before.md"), "written with the first key").unwrap();
+    change_key(&cli, "Journal", "second passphrase", 9).unwrap();
+    // Even right after one change, the old key no longer writes.
+    assert!(matches!(app.write(&np("Journal/New.md"), "x"), Err(VaultError::Locked(_))));
+    change_key(&cli, "Journal", "third passphrase", 10).unwrap();
+    let new = np("Journal/New.md");
+    assert!(matches!(app.write(&new, "a note written with a stale key"), Err(VaultError::Locked(_))));
+    assert!(app.snapshot(&new, "a version", 11, true).is_err(), "history isn't sealed with it either");
+    assert!(!fs.exists(&stored(&new)));
+    // Unlocked again: written under the current key.
+    app.unlock("Journal", "third passphrase").unwrap();
+    app.write(&new, "a note written after unlocking again").unwrap();
+    let fresh = Vault::new(Arc::clone(&fs) as Arc<dyn Storage>);
+    fresh.unlock("Journal", "third passphrase").unwrap();
+    fresh.keys().set_previous("Journal", None);
+    assert_eq!(fresh.read(&new).unwrap(), "a note written after unlocking again");
+    assert_eq!(fresh.read(&np("Journal/Before.md")).unwrap(), "written with the first key");
+}
+
+/// Final review F-I4: a damaged file blocks a new key change with a
+/// message that names it, says the key wasn't changed, and says what to
+/// do; once it is moved out, the key change goes through.
+#[test]
+fn a_damaged_file_blocking_a_key_change_is_named() {
+    let (v, fs) = vault_with(&journal());
+    lock(&v);
+    change_key(&v, "Journal", "second passphrase", 9).unwrap();
+    let mut bad = fs.read_bytes(&np("Journal/Day 1.md.qenc")).unwrap();
+    *bad.last_mut().unwrap() ^= 1;
+    fs.write_bytes_atomic(&np("Journal/Bad.md.qenc"), &bad).unwrap();
+    let before = fs.read(&np("Journal/quire-lock.json")).unwrap();
+    let e = begin_change_key(&v, "Journal", "third passphrase", 10).unwrap_err().to_string();
+    assert!(e.contains("Journal/Bad.md.qenc") && e.contains("were not changed") && e.contains("move it out"), "{e}");
+    assert_eq!(fs.read(&np("Journal/quire-lock.json")).unwrap(), before, "the key file is as it was");
+    fs.remove(&np("Journal/Bad.md.qenc")).unwrap();
+    change_key(&v, "Journal", "third passphrase", 11).unwrap();
+}
