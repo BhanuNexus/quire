@@ -22,6 +22,15 @@ the vault on a machine you control, kept in sync, serving
 Both share one port and one process. The notes on the server are plain
 Markdown files, like on every other device.
 
+## Self-hosting in order
+
+1. **Token and sync server** (only if you use the Quire Sync server): [self-hosting.md](self-hosting.md), steps 1 and 2.
+2. **HTTPS** in front of each server you run, and check it ([self-hosting.md](self-hosting.md) step 3; step 3 below for this server).
+3. **First vault**: made in the desktop app, or on the machine itself with `quire-cli sync join --create --recovery-key-file` (step 1 below).
+4. **More devices** join the same vault ([self-hosting.md](self-hosting.md) step 4).
+5. **Back up** the sync server's database and this machine's `~/vault`.
+6. **`quire-cli serve`**: this page, from step 1.
+
 ## What you need
 
 * An always-on machine you trust with the plain text of your notes: a small

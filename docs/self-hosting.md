@@ -8,6 +8,16 @@ Quire Sync keeps your vault the same on every device. The server only ever store
 
 The server is one program with one database file. It's licensed under the AGPL like the rest of Quire.
 
+## Self-hosting in order
+
+1. **Pick a token** (step 1).
+2. **Run the server**: Docker (2a) or the binary with systemd (2b). The release has the server for **Linux x86_64 only**; on ARM64, build it yourself (Docker does, on an ARM64 machine).
+3. **Put HTTPS in front** (step 3) and check `https://…/health`.
+4. **Make the first vault**: in the desktop app, or on a machine with only `quire-cli` (step 4).
+5. **Join more devices** (step 4).
+6. **Back up** the database file (Backups).
+7. **Optional:** `quire-cli serve`, to read and edit in a browser and let agents in. It is a different program and holds your notes in plain text: [serve.md](serve.md).
+
 ## What you need
 
 - A machine that's always on: a small VPS, a home server or a NAS.
@@ -23,18 +33,60 @@ openssl rand -hex 32
 
 ## 2a. Run with Docker
 
+There is no prebuilt image: you build it from the source, which takes a few minutes. You need Docker and git.
+
 ```bash
+git clone https://github.com/BhanuNexus/quire && cd quire
+git checkout vX.Y.Z      # the release you want (see Releases); skip for the newest development version
 docker build -f apps/quire-sync-server/Dockerfile -t quire-sync-server .
 docker run -d --name quire-sync --restart unless-stopped -p 127.0.0.1:8787:8787 \
   -e QUIRE_SYNC_TOKEN=<your token> -v quire-sync:/data quire-sync-server
 ```
 
+`-p 127.0.0.1:8787:8787` keeps the port on this machine, for the HTTPS proxy of step 3. Don't write it as `-p 8787:8787`: that publishes plain HTTP on every network interface. The token in `-e` shows in `docker inspect` and in your shell history; to avoid that, put `QUIRE_SYNC_TOKEN=<your token>` in a file readable only by you and use `--env-file <file>` instead. `docker ps` shows *healthy* once the server answers `/health`.
+
 ## 2b. Or run the binary
 
-Download `quire-sync-server-<version>-linux-x86_64.tar.gz` from [Releases](https://github.com/BhanuNexus/quire/releases) (or build it with `cargo build --release -p quire-sync-server`), then:
+Download `quire-sync-server-<version>-linux-x86_64.tar.gz` from [Releases](https://github.com/BhanuNexus/quire/releases) (x86_64 only; on ARM64 build it with `cargo build --release -p quire-sync-server`). To try it:
 
 ```bash
 QUIRE_SYNC_TOKEN=<your token> QUIRE_SYNC_DB=/var/lib/quire/sync.sqlite ./quire-sync-server
+```
+
+To keep it running, install it and run it with systemd. The token goes in a file only the server can read, not on a command line:
+
+```bash
+tar -xzf quire-sync-server-<version>-linux-x86_64.tar.gz
+sudo install -m 755 quire-sync-server-<version>-linux-x86_64/quire-sync-server /usr/local/bin/
+sudo useradd --system --home-dir /var/lib/quire-sync --create-home --shell /usr/sbin/nologin quire-sync
+sudo install -d -m 755 /etc/quire-sync
+openssl rand -hex 32 | sudo tee /etc/quire-sync/token > /dev/null    # or put the token from step 1 in this file
+sudo chown root:quire-sync /etc/quire-sync/token && sudo chmod 640 /etc/quire-sync/token
+```
+
+`/etc/systemd/system/quire-sync.service`:
+
+```ini
+[Unit]
+Description=Quire Sync server
+After=network-online.target
+
+[Service]
+User=quire-sync
+Environment=QUIRE_SYNC_ADDR=127.0.0.1:8787
+Environment=QUIRE_SYNC_DB=/var/lib/quire-sync/sync.sqlite
+Environment=QUIRE_SYNC_TOKEN_FILE=/etc/quire-sync/token
+ExecStart=/usr/local/bin/quire-sync-server
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now quire-sync
+journalctl -u quire-sync -f     # "listening on 127.0.0.1:8787"
 ```
 
 | Variable | Default | Meaning |
@@ -61,6 +113,14 @@ Check it: `curl https://sync.example.com/health` prints `ok`.
 ## 4. Connect Quire
 
 On the first device: **Settings → Sync**, enter the server address and token, choose **Start a new sync vault** and pick a passphrase. Quire shows a recovery key once; keep it somewhere safe.
+
+**No desktop on the first machine?** A headless machine with only `quire-cli` can start the vault from a folder of notes, and keeps the recovery key out of the terminal:
+
+```bash
+quire-cli sync join ~/vault --server https://sync.example.com --create --recovery-key-file ~/vault-recovery-key.txt --device "home server"
+```
+
+It asks for the server token and a passphrase (or read them from `--token-file` and `--passphrase-file`). The other options, and serving the vault to a browser, are in [serve.md](serve.md#1-sync-the-vault-onto-the-machine).
 
 On every other device: open the folder you want to sync (an empty one is fine), **Settings → Sync**, enter the address and token, choose **Join from another device**, **Find vaults on the server**, pick the vault and enter the passphrase (or the recovery key).
 
