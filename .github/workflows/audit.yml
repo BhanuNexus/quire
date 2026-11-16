@@ -1,0 +1,31 @@
+# Weekly check of the dependency advisories (RustSec). `cargo deny check
+# advisories` also runs on every push and pull request (ci.yml, `deny`), but an
+# advisory published between pushes only shows on the next push, which may be a
+# week away. A failed run here is reported by GitHub like any failed workflow.
+# What each ignore in deny.toml waits for: docs/dependency-ignores.md.
+name: Audit
+
+on:
+  schedule:
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: audit
+  cancel-in-progress: false
+
+jobs:
+  advisories:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read # check out Cargo.lock and deny.toml
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check advisories
