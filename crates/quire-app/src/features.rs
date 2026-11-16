@@ -81,6 +81,7 @@ pub(crate) fn tick(ws: &mut Workspace, now: Instant) -> bool {
         | nav::tick(ws, now)
         | canvas_state::tick(ws, now)
         | secure_state::tick(ws, now)
+        | crate::history_ops::tick(ws, now)
         | links_state::tick(ws, now)
         | switch_state::tick(ws, now)
 }
