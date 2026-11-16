@@ -123,7 +123,7 @@ struct Attributed {
 }
 
 impl LocalStore for Attributed {
-    fn list(&self) -> Vec<String> {
+    fn list(&self) -> Result<Vec<String>, String> {
         self.files.list()
     }
     fn read(&self, path: &str) -> Option<String> {

@@ -40,8 +40,8 @@ impl Scoped {
 }
 
 impl LocalStore for Scoped {
-    fn list(&self) -> Vec<String> {
-        self.disk.keys().filter(|p| self.inside(p)).cloned().collect()
+    fn list(&self) -> Result<Vec<String>, String> {
+        Ok(self.disk.keys().filter(|p| self.inside(p)).cloned().collect())
     }
     fn read(&self, path: &str) -> Option<String> {
         self.disk.get(path).filter(|_| self.inside(path)).cloned()
@@ -431,7 +431,7 @@ fn simulate_selections(seed: u64, n: usize, steps: usize) {
         let (e, d) = &mut devs[i];
         token += 1;
         let word = format!("w{token}");
-        let held: Vec<String> = d.list();
+        let held: Vec<String> = d.list().unwrap();
         let op = rng.below(10);
         if std::env::var_os("SYNC_TRACE").is_some() {
             eprintln!("step {token}: dev {i} op {op} only {:?}\n  disk {:?}", d.only, d.disk);

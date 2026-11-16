@@ -172,7 +172,7 @@ fn notes_renames_and_deletes_travel() {
     c.devs[1].store.0.remove("Ideas.md");
     c.settle();
     c.assert_agree();
-    assert_eq!(c.devs[0].store.list(), vec!["Projects/Plan.md".to_string()]);
+    assert_eq!(c.devs[0].store.list().unwrap(), vec!["Projects/Plan.md".to_string()]);
 }
 
 #[test]
@@ -207,7 +207,7 @@ fn overlapping_edits_before_either_device_saw_the_other_keep_both() {
     c.assert_agree();
     let all: String = c.devs[0].store.0.values().cloned().collect();
     assert!(all.contains("Ship it on Friday.") && all.contains("Ship it to everyone."), "{all}");
-    assert_eq!(c.devs[0].store.list().len(), 2, "one note and one conflict copy: {:?}", c.devs[0].store);
+    assert_eq!(c.devs[0].store.list().unwrap().len(), 2, "one note and one conflict copy: {:?}", c.devs[0].store);
 }
 
 #[test]
@@ -295,7 +295,7 @@ const NAMES: [&str; 5] = ["A.md", "B.md", "Notes/C.md", "D.md", "pic.png"];
 fn random_edit(store: &mut MemoryStore, rng: &mut Rng, token: &mut u64, additive: bool) -> Option<String> {
     *token += 1;
     let word = format!("w{token}");
-    let paths = store.list();
+    let paths = store.list().unwrap();
     match rng.below(if additive { 3 } else { 6 }) {
         0 | 1 if !paths.is_empty() => {
             let p = paths[rng.below(paths.len())].clone();
@@ -432,4 +432,49 @@ fn history_includes_the_version_that_lost_a_tie() {
     for v in ["Ship it.", "Ship it Friday.", "Ship it Monday."] {
         assert!(h.iter().any(|x| x.text.contains(v)), "{v} missing from history");
     }
+}
+
+/// Reliability review #1, the receiving side: a sync folder that vanished
+/// (signed out of the cloud drive) or lost its logs deletes nothing here;
+/// only a delete another device sent does.
+#[test]
+fn a_sync_folder_that_vanished_or_emptied_deletes_nothing_here() {
+    let mut c = Cloud::new(2);
+    for i in 0..12 {
+        c.devs[0].store.write(&format!("Note {i}.md"), "text\n").unwrap();
+    }
+    c.settle();
+    assert_eq!(c.devs[1].store.0.len(), 12);
+    // The other device's logs are gone from this replica.
+    fs::remove_dir_all(c.devs[1].root.join(&c.space.0).join("devices")).unwrap();
+    let d = &mut c.devs[1];
+    let _ = d.engine.sync(&mut d.store, &d.transport, TODAY);
+    assert_eq!(c.devs[1].store.0.len(), 12);
+    // The whole folder is gone.
+    fs::remove_dir_all(&c.devs[1].root).unwrap();
+    let d = &mut c.devs[1];
+    let _ = d.engine.sync(&mut d.store, &d.transport, TODAY);
+    assert_eq!(c.devs[1].store.0.len(), 12, "every note still here");
+}
+
+/// Reliability review #14: a line is written to this device's log only
+/// once its length is noted; otherwise the next scan would read this
+/// device's own line as another computer writing as this one.
+#[test]
+fn a_line_whose_length_cant_be_noted_is_not_written() {
+    let c = Cloud::new(1);
+    let d = &c.devs[0];
+    // A state folder that isn't there: nothing can be noted in it.
+    let t = FolderTransport::new(&d.root, &c.space, d.id.clone(), Some(&d.state.join("missing")));
+    let mut e = Engine::new(c.space.clone(), d.id.clone(), "device", c.key.keys(), SyncState::default());
+    let mut store = MemoryStore::default();
+    store.write("Plan.md", "plan\n").unwrap();
+    assert!(e.sync(&mut store, &t, TODAY).is_err());
+    let lane = d.root.join(&c.space.0).join("devices").join(&d.id.0);
+    let written: u64 = fs::read_dir(&lane).into_iter().flatten().flatten().map(|f| f.metadata().unwrap().len()).sum();
+    assert_eq!(written, 0, "no line in the log");
+    // With its state folder, the same device syncs, and sees no stranger.
+    let mut e = Engine::new(c.space.clone(), d.id.clone(), "device", c.key.keys(), SyncState::default());
+    e.sync(&mut store, &d.transport, TODAY).unwrap();
+    assert_eq!(d.transport.problem(), None);
 }

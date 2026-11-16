@@ -125,3 +125,29 @@ Device-local and ignored by 0.9 (serde defaults):
   are applied from their latest revision in the pulled batch only, never by
   replaying their history.
 
+
+## Engine state additions (0.13.2, `state*.json`)
+
+Device-local; older versions ignore the field (serde defaults) and drop it
+when they save the state:
+
+* `skipped {file id: {path, rev, why}}`: a revision from another device
+  that this one couldn't store, because its name is one this computer
+  refuses (`:`, `?`, a trailing dot, `aux.md`… on Windows; a name longer
+  than the disk allows) or because a different file here already has that
+  name when capital letters don't count (Windows, macOS). The revision is
+  skipped here: what this device has of the note stays as it was and is
+  neither sent nor sent as deleted, and the person is told once. It is
+  tried again (fetched from the note's history) when the name can be
+  stored here; a newer revision of the note is applied as usual. A version
+  before 0.13.2 that saves the state forgets the entry: the note then
+  arrives on that device only when it changes again.
+
+Not in the state but next to it: `.quire/sync/allow-deletes` (0.13.2), an
+empty file. When a pass would send deletes for more than 10 notes and more
+than half of the notes this device holds, it sends nothing and asks; this
+file (`quire-cli sync allow-deletes <vault>`) says the deletes are meant.
+The next pass that finishes sends them and removes the file.
+
+A state file that can't be parsed is copied to `<name>.unreadable` and sync
+starts afresh, with a notice (0.13.2; before, it started afresh silently).

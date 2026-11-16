@@ -9,6 +9,7 @@
 //! * [`keyring`]: key epochs and device keys, for removing a device (0.13)
 //! * [`compact`]: snapshots that fold old revisions away (0.13)
 //! * [`folder`]: sync through a folder Dropbox, iCloud Drive or similar already syncs
+//! * [`names`]: which note names this computer can store (0.13.2)
 //! * `http` (feature `http`): a transport for `quire-sync-server`
 //! * `remote` (feature `remote`): S3-compatible storage and WebDAV, the
 //!   folder transport's rules over object storage
@@ -20,16 +21,18 @@ pub mod compact;
 pub mod crypto;
 pub mod engine;
 pub mod folder;
+mod fsx;
 #[cfg(feature = "http")]
 pub mod http;
 pub mod keyring;
+pub mod names;
 pub mod protocol;
 #[cfg(feature = "remote")]
 pub mod remote;
 pub mod transport;
 
 pub use crypto::{CryptoError, KdfParams, Keys, RecoveryKey, VaultKey, WrappedKey};
-pub use engine::{Engine, LocalStore, MemoryStore, Report, SyncError, SyncState, Tracked, Version};
+pub use engine::{Engine, LocalStore, MANY_DELETES, MemoryStore, Report, Skipped, SyncError, SyncState, Tracked, Version};
 pub use folder::{FolderSpaceInfo, FolderTransport, min_reader, raise_min_reader};
 #[cfg(feature = "http")]
 pub use http::{HttpTransport, Negotiated, SpaceInfo};

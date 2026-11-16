@@ -133,12 +133,10 @@ pub(crate) fn is_segment_name(name: &str) -> bool {
     name.len() == 12 && name.is_char_boundary(6) && &name[6..] == ".jsonl" && name[..6].bytes().all(|b| b.is_ascii_digit())
 }
 
-/// Write a small file so readers see the old version or the new one, never half.
-fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, bytes)?;
-    fs::rename(&tmp, path)
-}
+// Small files are written so readers see the old version or the new one,
+// never half, even after a power cut; in the shared folder too, where
+// another device may write the same file at the same time (0.13.2).
+use crate::fsx::write_atomically;
 
 /// Make a new vault in `root` (see [`sync_root`]) that every Quire since
 /// 0.8 reads.
@@ -726,7 +724,7 @@ impl FolderTransport {
         };
         let out = *e;
         if changed && let Some(f) = &self.seen_file {
-            let _ = write_atomically(f, &serde_json::to_vec(&seen).unwrap_or_default());
+            let _ = crate::fsx::write_quickly(f, &serde_json::to_vec(&seen).unwrap_or_default());
         }
         out
     }
@@ -995,7 +993,7 @@ impl FolderTransport {
     fn next_seq(&self, ix: &mut Index) -> u64 {
         ix.seq += 1;
         if let Some(f) = &self.seq_file {
-            let _ = write_atomically(f, ix.seq.to_string().as_bytes());
+            let _ = crate::fsx::write_quickly(f, ix.seq.to_string().as_bytes());
         }
         ix.seq
     }
@@ -1061,8 +1059,10 @@ impl FolderTransport {
         line.extend_from_slice(&json);
         line.push(b'\n');
         // Noted before writing: a crash in between leaves the file shorter
-        // than noted, never longer.
-        self.note_own(&path, before + line.len() as u64);
+        // than noted, never longer. Not noted, not written: a line this
+        // device wrote but didn't note would read as another computer
+        // writing as this one.
+        self.note_own(&path, before + line.len() as u64).map_err(werr)?;
         f.write_all(&line).map_err(werr)?;
         f.sync_data().map_err(werr)?;
         ix.mine.insert(r.rev.clone());
@@ -1071,11 +1071,11 @@ impl FolderTransport {
     }
 
     /// Note that this device's log file `path` is `len` bytes long.
-    fn note_own(&self, path: &Path, len: u64) {
-        let (Some(f), Some(name)) = (&self.own_file, path.file_name().and_then(|n| n.to_str())) else { return };
+    fn note_own(&self, path: &Path, len: u64) -> std::io::Result<()> {
+        let (Some(f), Some(name)) = (&self.own_file, path.file_name().and_then(|n| n.to_str())) else { return Ok(()) };
         let mut own: BTreeMap<String, u64> = fs::read(f).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         own.insert(name.to_string(), len);
-        let _ = write_atomically(f, &serde_json::to_vec(&own).unwrap_or_default());
+        write_atomically(f, &serde_json::to_vec(&own).unwrap_or_default())
     }
 
     /// How long this device wrote its log file `path`, if it noted it (a
