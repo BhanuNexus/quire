@@ -32,7 +32,9 @@ pub mod remote;
 pub mod transport;
 
 pub use crypto::{CryptoError, KdfParams, Keys, RecoveryKey, VaultKey, WrappedKey};
-pub use engine::{Engine, LocalStore, MANY_DELETES, MemoryStore, Report, Skipped, SyncError, SyncState, Tracked, Version};
+pub use engine::{
+    DELETE_WINDOW_MS, DeleteWindow, Engine, LocalStore, MANY_DELETES, MemoryStore, Report, Skipped, SyncError, SyncState, Tracked, Version,
+};
 pub use folder::{FolderSpaceInfo, FolderTransport, min_reader, raise_min_reader};
 #[cfg(feature = "http")]
 pub use http::{HttpTransport, Negotiated, SpaceInfo};

@@ -70,6 +70,15 @@ pub trait LocalStore {
         let _ = (path, own);
         None
     }
+    /// Whether a delete of `path` counts toward [`MANY_DELETES`]. Stores say
+    /// no for deletes that are explained and never a sign of a folder gone
+    /// missing: app data the app prunes itself, and a note whose plain file
+    /// was replaced by its encrypted one (locking a folder, or the other way
+    /// round). Those are sent like any delete, after the same checks.
+    fn counts_as_delete(&self, path: &str) -> bool {
+        let _ = path;
+        true
+    }
     fn write(&mut self, path: &str, text: &str) -> Result<(), String>;
     fn remove(&mut self, path: &str) -> Result<(), String>;
     /// What [`fingerprint`] gives for the file, so an unchanged attachment
@@ -154,18 +163,44 @@ pub enum SyncError {
     List(String),
     /// This pass would delete many of the notes on every device at once
     /// (0.13.2, see [`MANY_DELETES`]): nothing was sent.
-    #[error(
-        "{count} of the {of} notes on this device are gone from its folder. So that a folder that went missing doesn't delete them on your other devices, sync sent nothing"
-    )]
-    ManyDeletes { count: usize, of: usize },
+    #[error("{}", many_deletes_text(*count, *earlier, *of))]
+    ManyDeletes {
+        /// Deletes this pass would send.
+        count: usize,
+        /// Deletes already sent within [`DELETE_WINDOW_MS`].
+        earlier: usize,
+        /// Notes this device held when that window began.
+        of: usize,
+        /// The notes this pass would delete, as `(file, path)`.
+        notes: Vec<(FileId, String)>,
+    },
 }
 
-/// The most deletes a pass sends without asking (0.13.2).
+fn many_deletes_text(count: usize, earlier: usize, of: usize) -> String {
+    let gone = if earlier == 0 {
+        format!("{count} of the {of} notes on this device are gone from its folder")
+    } else {
+        format!("{count} more of the {of} notes on this device are gone from its folder ({earlier} were deleted in the last hour already)")
+    };
+    format!("{gone}. So that a folder that went missing doesn't delete them on your other devices, sync sent nothing")
+}
+
+/// How long deletes add up for [`MANY_DELETES`]: an hour.
 ///
-/// A pass that would send deletes for more than this many notes, and for
-/// more than half of the notes this device holds, stops instead and sends
-/// nothing, until the person says the deletes are meant
-/// ([`Engine::allow_many_deletes`]). A folder that is gone or empty for a
+/// A folder that
+/// empties gradually (a cloud client removing files, a drive failing)
+/// does so within minutes, over passes a minute or two apart; a person
+/// tidying up for longer than an hour is asked at most once an hour.
+pub const DELETE_WINDOW_MS: i64 = 3_600_000;
+
+/// The most deletes sent without asking (0.13.2).
+///
+/// A pass whose deletes, added to those sent in the last
+/// [`DELETE_WINDOW_MS`], are more than this many notes and more than half
+/// of the notes this device held when that window began, stops instead
+/// and sends nothing, until the person says these deletes are meant
+/// ([`Engine::allowed_deletes`]). Deletes a store says are explained
+/// ([`LocalStore::counts_as_delete`]) don't count. A folder that is gone or empty for a
 /// while (a drive pulled out, a cloud folder signed out) looks exactly like
 /// every note deleted; a person rarely deletes most of a vault at once,
 /// and deleting a few notes of a small vault never asks.
@@ -253,6 +288,18 @@ pub struct SyncState {
     /// as usual.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub skipped: BTreeMap<FileId, Skipped>,
+    /// Deletes sent lately, for [`MANY_DELETES`] (0.13.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deletes: Option<DeleteWindow>,
+}
+
+/// The deletes this device sent since `since` (Unix ms), out of the notes
+/// it held then (see [`MANY_DELETES`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteWindow {
+    pub since: i64,
+    pub held: usize,
+    pub sent: usize,
 }
 
 /// A revision this device couldn't store (see [`SyncState::skipped`]).
@@ -329,9 +376,10 @@ pub struct Engine {
     pub device_name: String,
     keys: KeySet,
     pub state: SyncState,
-    /// Send the deletes of a pass even when they are many
-    /// ([`MANY_DELETES`]): set when the person said they are meant.
-    pub allow_many_deletes: bool,
+    /// Deletes the person said are meant ([`MANY_DELETES`]): a pass whose
+    /// counted deletes are all among these sends them however many they
+    /// are. Set by the caller for one pass.
+    pub allowed_deletes: BTreeSet<FileId>,
 }
 
 impl std::fmt::Debug for Engine {
@@ -352,7 +400,7 @@ fn backoff(round: usize) {
 
 impl Engine {
     pub fn new(space: SpaceId, device: DeviceId, device_name: impl Into<String>, keys: impl Into<KeySet>, state: SyncState) -> Self {
-        Self { space, device, device_name: device_name.into(), keys: keys.into(), state, allow_many_deletes: false }
+        Self { space, device, device_name: device_name.into(), keys: keys.into(), state, allowed_deletes: BTreeSet::new() }
     }
 
     /// Use these keys from now on (the vault's key changed: 0.13).
@@ -1053,7 +1101,7 @@ impl Engine {
         // too much sends nothing at all.
         let mut plan: Vec<(FileId, RevId, Content)> = Vec::new();
         let mut held = 0usize;
-        let mut deletes = 0usize;
+        let mut counted: Vec<(FileId, String)> = Vec::new();
         let ids: Vec<FileId> = self.state.files.keys().cloned().collect();
         for id in ids {
             let t = self.state.files[&id].clone();
@@ -1110,8 +1158,17 @@ impl Engine {
                         known.insert(to.clone());
                         // Moved into a folder this device doesn't sync: a rename, not a delete.
                         Content { actor: None, path: to, deleted: false, text, from: String::new(), at: 0 }
+                    } else if let Some(why) = local.unstorable(&t.path, Some(&t.path)) {
+                        // A name this computer can't store (the vault came here
+                        // from another system): "not found" means nothing for
+                        // it. Kept as skipped, never sent as deleted.
+                        report.skipped.push((t.path.clone(), why.clone()));
+                        self.state.skipped.insert(id.clone(), Skipped { path: t.path.clone(), rev: t.head.clone(), why });
+                        continue;
                     } else if local.missing(&t.path) {
-                        deletes += 1;
+                        if local.counts_as_delete(&t.path) {
+                            counted.push((id.clone(), t.path.clone()));
+                        }
                         Content { path: t.path.clone(), deleted: true, text: String::new(), from: String::new(), at: 0, actor: None }
                     } else {
                         // Not listed, yet still there (it couldn't be read just
@@ -1122,13 +1179,38 @@ impl Engine {
             };
             plan.push((id, t.head.clone(), content));
         }
-        if deletes > MANY_DELETES && deletes * 2 > held && !self.allow_many_deletes {
-            return Err(SyncError::ManyDeletes { count: deletes, of: held });
+        let counting: BTreeSet<FileId> = counted.iter().map(|(id, _)| id.clone()).collect();
+        // Said to be meant: all of these deletes are among those allowed.
+        let allowed = !counting.is_empty() && counting.iter().all(|id| self.allowed_deletes.contains(id));
+        if !counting.is_empty() {
+            let now = now_ms();
+            // Deletes add up within the window, out of the most notes held
+            // in it: a vault that vanishes a part per pass stops too.
+            let mut w = match self.state.deletes {
+                Some(w) if (0..DELETE_WINDOW_MS).contains(&(now - w.since)) => w,
+                _ => DeleteWindow { since: now, held, sent: 0 },
+            };
+            w.held = w.held.max(held);
+            let total = w.sent + counting.len();
+            if total > MANY_DELETES && total * 2 > w.held {
+                if !allowed {
+                    return Err(SyncError::ManyDeletes { count: counting.len(), earlier: w.sent, of: w.held, notes: counted });
+                }
+                // Counting starts again after deletes the person allowed.
+                w = DeleteWindow { since: now, held: held.saturating_sub(counting.len()), sent: 0 };
+            }
+            self.state.deletes = Some(w);
         }
 
         for (id, head, content) in plan {
             if !self.push_one(server, &id, Some(&head), &content, report)? {
                 return Ok(false);
+            }
+            if counting.contains(&id)
+                && !allowed
+                && let Some(w) = self.state.deletes.as_mut()
+            {
+                w.sent += 1;
             }
             if !content.deleted
                 && !local.in_scope(&content.path)
@@ -1216,6 +1298,10 @@ impl Engine {
             PushOutcome::Conflict { .. } => Ok(false),
         }
     }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(0))
 }
 
 /// `("Notes/Plan", ".md")`; `("README", "")` when there's no extension.

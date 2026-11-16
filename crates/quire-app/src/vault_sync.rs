@@ -622,6 +622,14 @@ pub fn lock_sync(root: &Path) -> Result<SyncLock, LockError> {
     }
 }
 
+/// Where iCloud keeps a note it evicted: `Notes/.Idea.md.icloud`.
+fn icloud_stub(path: &str) -> String {
+    match path.rsplit_once('/') {
+        Some((dir, name)) => format!("{dir}/.{name}.icloud"),
+        None => format!(".{path}.icloud"),
+    }
+}
+
 /// The engine state's file: `state.json`, or `state-partial.json` while a
 /// selection is set. Quire 0.9, which knows nothing of selections, never
 /// reads the latter: if it opened this folder it would start afresh, which
@@ -644,7 +652,9 @@ fn load_state(root: &Path, cfg: &SyncConfig) -> SyncState {
 fn scrub_locked_text(vault: &Vault, state: &mut SyncState) {
     let locked = |p: &str| !quire_sync::engine::is_attachment(p) && vault.locked_folder(&NotePath::new(p)).is_some();
     for t in state.files.values_mut() {
-        if t.deleted && locked(&t.path) {
+        // Deleted, or gone from its path while its delete waits (0.13.2):
+        // either way its plain text is no longer on this disk.
+        if locked(&t.path) && (t.deleted || !vault.storage().exists(&NotePath::new(&t.path))) {
             t.base.clear();
         }
         if let Some(k) = t.kept.as_mut().filter(|k| locked(&k.path)) {
@@ -794,6 +804,14 @@ impl VaultStore {
         };
         self.case_blind.set(Some(b));
         b
+    }
+
+    /// Whether `path` opens a file here that its folder doesn't list under
+    /// exactly that name (the disk takes it for another name).
+    fn answers_for_another(&self, path: &str) -> bool {
+        let Some(abs) = self.vault.storage().absolute(&NotePath::new(path)) else { return false };
+        let (Some(dir), Some(name)) = (abs.parent(), abs.file_name()) else { return false };
+        abs.exists() && std::fs::read_dir(dir).is_ok_and(|rd| !rd.flatten().any(|e| e.file_name() == name))
     }
 
     /// Remember that `path` is here now (`true`) or gone, for names that
@@ -1008,10 +1026,27 @@ impl LocalStore for VaultStore {
 
     fn missing(&self, path: &str) -> bool {
         // Only "not found" counts: a file that can't be read just now is
-        // still here.
+        // still here. So is one iCloud evicted to a `.Name.md.icloud` stub
+        // ("Optimise Mac Storage"): it downloads again when opened.
         !self.outside_lane(path)
             && !self.unsure.get()
+            && !self.vault.storage().exists(&NotePath::new(icloud_stub(path)))
             && matches!(self.vault.storage().read_bytes(&NotePath::new(path)), Err(quire_vault::VaultError::NotFound(_)))
+    }
+
+    fn counts_as_delete(&self, path: &str) -> bool {
+        // App data the app prunes itself (review history, vault settings).
+        if path.starts_with(".quire/") {
+            return false;
+        }
+        // A note replaced by its encrypted file (locking a folder), or an
+        // encrypted file by its plain note (unlocking for good).
+        let exists = |p: &str| self.vault.storage().exists(&NotePath::new(p));
+        let swapped = match path.strip_suffix(".qenc") {
+            Some(plain) => exists(plain),
+            None => exists(&format!("{path}.qenc")) || self.vault.locked_folder(&NotePath::new(path)).is_some(),
+        };
+        !swapped
     }
 
     fn unstorable(&self, path: &str, own: Option<&str>) -> Option<String> {
@@ -1021,8 +1056,15 @@ impl LocalStore for VaultStore {
         if !self.case_blind() || own.is_some_and(|o| quire_sync::names::same_ignoring_case(o, path)) {
             return None;
         }
-        let other = self.folded.get(&quire_sync::names::fold_case(path)).filter(|p| p.as_str() != path)?;
-        Some(format!("“{other}” is already here, and this computer doesn't tell names apart by capital letters"))
+        if let Some(other) = self.folded.get(&quire_sync::names::fold_case(path)).filter(|p| p.as_str() != path) {
+            return Some(format!("“{other}” is already here, and this computer doesn't tell names apart by capital letters"));
+        }
+        // Another folding this disk applies (Unicode forms on macOS, say):
+        // the name opens a file that isn't listed under it.
+        if own.is_none() && self.seen.get(path).is_none_or(Option::is_none) && self.answers_for_another(path) {
+            return Some("another file here has a name this computer takes as the same".into());
+        }
+        None
     }
 
     fn held_back(&self, path: &str) -> bool {
@@ -1548,9 +1590,10 @@ impl Session {
             let _ = LastPass::record(&self.root, &status, None);
             return Pass { status, report: None, again: poll.min(Duration::from_secs(30)) };
         }
-        // The person said the many deletes the last pass held back are meant.
-        let allow = sync_dir(root).join(ALLOW_DELETES);
-        self.engine.allow_many_deletes = allow.exists();
+        // The deletes the last pass held back, if the person said (within
+        // the last 15 minutes) they are meant.
+        let held = HeldDeletes::load(root);
+        self.engine.allowed_deletes = held.as_ref().map(HeldDeletes::allowed_now).unwrap_or_default();
         let mut res = self.engine.sync(&mut self.store, self.link.transport(), &today());
         // S3 and WebDAV: upload what the pass pushed (kept here until then).
         if let Link::Remote(t) = &self.link {
@@ -1565,12 +1608,23 @@ impl Session {
         let mut saved = save_state(root, cfg, &self.engine.state);
         if res.is_ok() {
             self.store.remember_unselected();
-            if self.engine.allow_many_deletes {
-                // Once: the next pass that would delete as much asks again.
-                let _ = std::fs::remove_file(&allow);
-            }
         }
-        self.engine.allow_many_deletes = false;
+        match &res {
+            // Sent, or nothing to send any more (the notes came back).
+            Ok(_) if held.is_some() => {
+                let _ = std::fs::remove_file(sync_dir(root).join(HELD_DELETES));
+            }
+            Err(quire_sync::SyncError::ManyDeletes { notes, .. }) => {
+                let now = HeldDeletes::new(notes);
+                // A different set (more went missing, or others than were
+                // allowed): asked again, from scratch.
+                if held.as_ref().is_none_or(|h| h.notes != now.notes) {
+                    let _ = now.save(root);
+                }
+            }
+            _ => {}
+        }
+        self.engine.allowed_deletes.clear();
         if self.lane.is_none()
             && runs_shared_lane(root, cfg)
             && let Some(dir) = &cfg.folder
@@ -1656,7 +1710,7 @@ impl Session {
             Err(quire_sync::SyncError::Local { .. } | quire_sync::SyncError::Busy) => (SyncStatus::Syncing, None, Duration::from_secs(2)),
             Err(e @ quire_sync::SyncError::ManyDeletes { .. }) => (
                 SyncStatus::Error(format!(
-                    "{e}. If you deleted them on purpose, run `quire-cli sync allow-deletes \"{}\"` and they are sent at the next pass. If not, check that the vault's folder is all there (a drive or cloud folder that went missing); sync goes on by itself once the notes are back.",
+                    "{e}. If you deleted them on purpose, choose Send these deletes in Settings → Sync (or run `quire-cli sync allow-deletes \"{}\"`). If not, check that the vault's folder is all there (a drive or cloud folder that went missing); sync goes on by itself once the notes are back.",
                     root.display()
                 )),
                 None,
@@ -2025,19 +2079,71 @@ pub fn sync_once_at(root: &Path) -> Result<Report, String> {
     }
 }
 
-/// In `.quire/sync/`: the person said the deletes a pass held back are
-/// meant (0.13.2). The next pass that finishes sends them and removes it.
-const ALLOW_DELETES: &str = "allow-deletes";
+/// In `.quire/sync/`: the deletes a pass held back because they were many
+/// ([`HeldDeletes`], 0.13.2).
+const HELD_DELETES: &str = "held-deletes.json";
 
-/// Send the deletes sync held back because they were many.
+/// How long "Send these deletes" stays good for.
+pub const ALLOW_DELETES_FOR: Duration = Duration::from_mins(15);
+
+/// Deletes sync held back because they were many.
 ///
-/// More than [`quire_sync::MANY_DELETES`] notes and more than half of the
-/// vault ([`quire_sync::SyncError::ManyDeletes`]): they are sent at the
-/// next pass of the vault at `root`, whichever process runs it
-/// (`quire-cli sync allow-deletes`).
-pub fn sync_allow_deletes_at(root: &Path) -> Result<(), String> {
-    SyncConfig::load(root).ok_or("Sync isn't set up for this vault.")?;
-    crate::atomic::write(&sync_dir(root).join(ALLOW_DELETES), b"", false).map_err(|e| e.to_string())
+/// More than [`quire_sync::MANY_DELETES`] notes and more than half of the vault,
+/// [`quire_sync::SyncError::ManyDeletes`]), and whether the person said
+/// they are meant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldDeletes {
+    /// When they were held back (Unix ms).
+    pub at: i64,
+    pub notes: Vec<HeldNote>,
+    /// Until when they may be sent (Unix ms): set by "Send these deletes".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_until: Option<i64>,
+}
+
+/// One note whose delete is held back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldNote {
+    pub file: String,
+    pub path: String,
+}
+
+impl HeldDeletes {
+    fn new(notes: &[(quire_sync::FileId, String)]) -> Self {
+        let mut notes: Vec<HeldNote> = notes.iter().map(|(f, p)| HeldNote { file: f.0.clone(), path: p.clone() }).collect();
+        notes.sort_by(|a, b| a.path.cmp(&b.path));
+        Self { at: crate::history_ops::now_ms(), notes, allowed_until: None }
+    }
+
+    /// The deletes held back for the vault at `root`, if any.
+    pub fn load(root: &Path) -> Option<Self> {
+        let b = std::fs::read(sync_dir(root).join(HELD_DELETES)).ok()?;
+        serde_json::from_slice(&b).ok()
+    }
+
+    fn save(&self, root: &Path) -> Result<(), String> {
+        let b = serde_json::to_vec_pretty(self).map_err(|e| e.to_string())?;
+        crate::atomic::write(&sync_dir(root).join(HELD_DELETES), &b, false).map_err(|e| e.to_string())
+    }
+
+    /// The notes whose deletes may be sent now: these, while allowed.
+    fn allowed_now(&self) -> std::collections::BTreeSet<quire_sync::FileId> {
+        if self.allowed_until.is_none_or(|u| u <= crate::history_ops::now_ms()) {
+            return std::collections::BTreeSet::new();
+        }
+        self.notes.iter().map(|n| quire_sync::FileId(n.file.clone())).collect()
+    }
+}
+
+/// Send the deletes sync held back for the vault at `root`.
+///
+/// Those of [`HeldDeletes`] exactly, at its next pass within
+/// [`ALLOW_DELETES_FOR`], whichever process runs it. Returns how many.
+pub fn sync_allow_deletes_at(root: &Path) -> Result<usize, String> {
+    let mut held = HeldDeletes::load(root).ok_or("Sync isn't holding back any deletes for this vault.")?;
+    held.allowed_until = Some(crate::history_ops::now_ms() + i64::try_from(ALLOW_DELETES_FOR.as_millis()).unwrap_or(i64::MAX));
+    held.save(root)?;
+    Ok(held.notes.len())
 }
 
 /// "Also sync vault settings and review history" for the vault at `root`.
@@ -2083,6 +2189,8 @@ pub struct SyncHandle {
     setup: SetupJob,
     /// Files already said to be too big to sync, this session.
     held_back_said: std::collections::BTreeSet<String>,
+    /// Deletes held back because they were many (0.13.2), as last read.
+    pub held: Option<HeldDeletes>,
 }
 
 /// What Settings → Sync asks for in the background, one at a time.
@@ -2921,11 +3029,12 @@ impl Workspace {
     }
 
     /// Send the many deletes sync held back, now (see [`sync_allow_deletes_at`]).
-    pub fn sync_allow_deletes(&self) -> Result<(), String> {
+    pub fn sync_allow_deletes(&mut self) -> Result<usize, String> {
         let (root, _) = self.sync_parts()?;
-        sync_allow_deletes_at(&root)?;
+        let n = sync_allow_deletes_at(&root)?;
+        self.sync.held = HeldDeletes::load(&root);
         self.sync_nudge();
-        Ok(())
+        Ok(n)
     }
 
     /// The recovery key for this vault, to show again in Settings.
@@ -2959,7 +3068,12 @@ impl Workspace {
         }
         for e in events {
             match e {
-                SyncEvent::Status(s) => self.sync.status = s,
+                SyncEvent::Status(s) => {
+                    if !matches!(s, SyncStatus::Syncing) {
+                        self.sync.held = self.vault_root().and_then(HeldDeletes::load);
+                    }
+                    self.sync.status = s;
+                }
                 SyncEvent::Report(r) => {
                     for p in &r.conflict_copies {
                         self.notify(
@@ -3651,6 +3765,107 @@ mod tests {
         }
     }
 
+    /// Review D-M1: locking a folder that holds most of the vault replaces
+    /// each plain note by its encrypted file. That is no deletion to stop
+    /// for: the pass goes through, the other device gets the encrypted
+    /// files and loses the plain ones, and no plain text stays in the state.
+    #[test]
+    fn locking_most_of_a_vault_syncs_and_leaves_no_plain_text() {
+        let mut notes: Vec<(String, String)> = (0..25).map(|i| (format!("Journal/{i:02}.md"), format!("secret day {i}\n"))).collect();
+        notes.extend((0..15).map(|i| (format!("Notes/{i:02}.md"), format!("note {i}\n"))));
+        let refs: Vec<(&str, &str)> = notes.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
+        let mut p = Pair::new(&refs);
+        let va = Vault::open_local(&p.va).unwrap();
+        quire_vault::lock::lock_folder(&va, "Journal", Some("a passphrase for the test"), quire_vault::lock::Kdf::TEST, 1).unwrap();
+        // Even before the deletes go (a pass that fails for another
+        // reason), the plain text of the locked notes leaves the state.
+        let mut waiting = p.ea.state.clone();
+        assert!(serde_json::to_string(&waiting).unwrap().contains("secret day"));
+        scrub_locked_text(&va, &mut waiting);
+        assert!(!serde_json::to_string(&waiting).unwrap().contains("secret day"));
+        p.a().unwrap();
+        p.b().unwrap();
+        let b = files(&p.vb);
+        assert!(
+            !b.iter().any(|f| f.starts_with("Journal/") && Path::new(f).extension().is_some_and(|e| e == "md")),
+            "plain copies gone: {b:?}"
+        );
+        assert_eq!(b.iter().filter(|f| f.ends_with(".md.qenc")).count(), 25, "{b:?}");
+        let state = std::fs::read_to_string(p.va.join(".quire/sync/state.json")).unwrap_or_default();
+        let state = if state.is_empty() { serde_json::to_string(&p.ea.state).unwrap() } else { state };
+        assert!(!state.contains("secret day"), "no plain text of a locked note in the sync state");
+        // Unlocking for good the other way round: the encrypted files go.
+    }
+
+    /// Review D-M2: the agent's own pruning of review history (more than
+    /// half of the settings lane at once) never stops that lane.
+    #[test]
+    fn pruning_review_history_never_stops_the_settings_lane() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = folder::sync_root(&dir.path().join("Dropbox"));
+        let space = SpaceId::random().unwrap();
+        let key = VaultKey::generate().unwrap();
+        folder::create_space(&root, &space, &WrappedKey::wrap(&key, "pw", KDF).unwrap()).unwrap();
+        folder::open_lane(&root, &space, folder::SHARED_LANE).unwrap();
+        let (va, vb) = (dir.path().join("A"), dir.path().join("B"));
+        std::fs::create_dir_all(va.join(".quire/shared/agent/proposals/me")).unwrap();
+        std::fs::create_dir_all(&vb).unwrap();
+        for i in 0..30 {
+            std::fs::write(va.join(format!(".quire/shared/agent/proposals/me/p{i:02}.json")), format!("{{\"n\":{i}}}")).unwrap();
+        }
+        std::fs::write(va.join(".quire/shared/vault.toml"), "format = 1\n").unwrap();
+        let (da, db) = (DeviceId::random().unwrap(), DeviceId::random().unwrap());
+        let lane = |d: &DeviceId| FolderTransport::lane(&root, &space, d.clone(), None, folder::SHARED_LANE);
+        let (ta, tb) = (lane(&da), lane(&db));
+        let mut ea = Engine::new(space.clone(), da, "a", key.keys(), SyncState::default());
+        let mut eb = Engine::new(space.clone(), db, "b", key.keys(), SyncState::default());
+        let pass = |e: &mut Engine, v: &Path, t: &FolderTransport| {
+            let mut st = VaultStore::new(Vault::open_local(v).unwrap()).shared_only();
+            snapshot_reads(&mut st).unwrap();
+            e.sync(&mut st, t, "2026-11-16")
+        };
+        pass(&mut ea, &va, &ta).unwrap();
+        pass(&mut eb, &vb, &tb).unwrap();
+        assert!(vb.join(".quire/shared/agent/proposals/me/p00.json").exists());
+        // Thirty days later the agent prunes what was resolved.
+        std::fs::remove_dir_all(va.join(".quire/shared/agent/proposals/me")).unwrap();
+        pass(&mut ea, &va, &ta).unwrap();
+        pass(&mut eb, &vb, &tb).unwrap();
+        assert!(!vb.join(".quire/shared/agent/proposals/me/p00.json").exists());
+        assert!(vb.join(".quire/shared/vault.toml").exists());
+    }
+
+    /// Review D-M3: iCloud (macOS 13 and older) evicts a note to a hidden
+    /// `.Note.md.icloud` stub; the note is not deleted, so no delete is sent.
+    #[test]
+    fn a_note_evicted_to_an_icloud_stub_is_not_sent_as_deleted() {
+        let mut p = Pair::new(&[("Plan.md", "plan\n"), ("Notes/Idea.md", "idea\n")]);
+        std::fs::remove_file(p.va.join("Notes/Idea.md")).unwrap();
+        std::fs::write(p.va.join("Notes/.Idea.md.icloud"), b"bplist00").unwrap();
+        p.a().unwrap();
+        p.b().unwrap();
+        assert_eq!(files(&p.vb), ["Notes/Idea.md", "Plan.md"]);
+    }
+
+    /// Review D-L4: a note whose name is too long to go to the trash with
+    /// the trash's date in front still goes there when another device
+    /// deletes it, so that delete doesn't fail every pass.
+    #[test]
+    fn a_note_with_a_very_long_name_can_be_deleted_by_another_device() {
+        let long = format!("{}.md", "n".repeat(243));
+        let mut p = Pair::new(&[(long.as_str(), "long\n"), ("Plan.md", "plan\n")]);
+        std::fs::remove_file(p.va.join(&long)).unwrap();
+        p.a().unwrap();
+        p.b().unwrap();
+        assert_eq!(files(&p.vb), ["Plan.md"]);
+        assert!(
+            std::fs::read_dir(p.vb.join(".trash"))
+                .unwrap()
+                .flatten()
+                .any(|e| Path::new(&e.file_name()).extension().is_some_and(|x| x == "md"))
+        );
+    }
+
     /// Reliability review #1: a vault folder that can't be listed (a USB
     /// drive pulled out, a network share that dropped) is never read as
     /// "every note was deleted here".
@@ -3689,12 +3904,23 @@ mod tests {
             std::fs::remove_file(va.join(format!("{i:02}.md"))).unwrap();
         }
         let err = sync_once_at(&va).unwrap_err();
-        assert!(err.contains("12 of the 12 notes") && err.contains("quire-cli sync allow-deletes"), "{err}");
+        assert!(err.contains("12 of the 12 notes") && err.contains("Send these deletes in Settings → Sync"), "{err}");
         assert_eq!(LastPass::load(&va).unwrap().state, "error");
-        sync_allow_deletes_at(&va).unwrap();
+        let held = HeldDeletes::load(&va).unwrap();
+        assert_eq!(held.notes.len(), 12);
+        assert_eq!(held.notes[0].path, "00.md");
+        // An allowance that has run out sends nothing.
+        assert_eq!(sync_allow_deletes_at(&va).unwrap(), 12);
+        let mut h = HeldDeletes::load(&va).unwrap();
+        h.allowed_until = Some(crate::history_ops::now_ms() - 1);
+        h.save(&va).unwrap();
+        assert!(sync_once_at(&va).is_err());
+        // Allowed now: exactly those go, and the record of them with them.
+        assert_eq!(sync_allow_deletes_at(&va).unwrap(), 12);
         let r = sync_once_at(&va).unwrap();
         assert_eq!(r.pushed, 12);
-        assert!(!sync_dir(&va).join(ALLOW_DELETES).exists(), "allowed once");
+        assert!(HeldDeletes::load(&va).is_none(), "allowed once");
+        assert!(sync_allow_deletes_at(&va).is_err(), "nothing held back now");
     }
 
     /// Reliability review #14: a damaged state file is kept and reported,
@@ -3741,6 +3967,36 @@ mod tests {
         let mut store = VaultStore::new(Vault::in_memory(&[("Plan.md", "big plan\n")]));
         snapshot_reads(&mut store).unwrap();
         assert_eq!(store.unstorable("plan.md", None), None);
+    }
+
+    /// Review D-L3, on a real macOS disk: two notes whose names are one
+    /// name to APFS (`é` written as one character and as two) end with one
+    /// skipped and reported, and the pass finishes (no copy every pass).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn names_the_disk_takes_as_one_are_skipped_not_copied() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = folder::sync_root(&dir.path().join("Dropbox"));
+        let space = SpaceId::random().unwrap();
+        let key = VaultKey::generate().unwrap();
+        folder::create_space(&root, &space, &WrappedKey::wrap(&key, "pw", KDF).unwrap()).unwrap();
+        let (dl, dm) = (DeviceId::random().unwrap(), DeviceId::random().unwrap());
+        let mut el = Engine::new(space.clone(), dl.clone(), "linux", key.keys(), SyncState::default());
+        let mut em = Engine::new(space.clone(), dm.clone(), "mac", key.keys(), SyncState::default());
+        let (tl, tm) = (FolderTransport::new(&root, &space, dl, None), FolderTransport::new(&root, &space, dm, None));
+        let mut linux = quire_sync::MemoryStore::default();
+        linux.write("Ol\u{e9}.md", "composed\n").unwrap();
+        linux.write("Ole\u{301}.md", "decomposed\n").unwrap();
+        el.sync(&mut linux, &tl, "2026-11-16").unwrap();
+        let vm = dir.path().join("Mac");
+        std::fs::create_dir_all(vm.join(".quire")).unwrap();
+        for _ in 0..3 {
+            let mut st = VaultStore::new(Vault::open_local(&vm).unwrap());
+            snapshot_reads(&mut st).unwrap();
+            em.sync(&mut st, &tm, "2026-11-16").unwrap();
+        }
+        assert_eq!(files(&vm).len(), 1, "{:?}", files(&vm));
+        assert_eq!(em.state.skipped.len(), 1);
     }
 
     /// The same on a real Windows or macOS disk, and the names Windows refuses.
