@@ -389,7 +389,7 @@ mod tests {
         w.tick(Instant::now() + Duration::from_secs(10));
         assert_eq!((tries(&w), told(&w)), (2, 1));
         std::fs::remove_dir(dir.path().join("N.md")).unwrap();
-        w.tick(Instant::now() + Duration::from_secs(60));
+        w.tick(Instant::now() + Duration::from_mins(1));
         assert_eq!(tries(&w), 0);
         assert!(!w.doc(id).unwrap().is_dirty());
         assert!(std::fs::read_to_string(dir.path().join("N.md")).unwrap().contains("edited"));

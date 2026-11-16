@@ -617,7 +617,7 @@ mod tests {
         v.snapshot(&a, "old 1", old, true).unwrap();
         v.snapshot(&a, "old 2", old + HOUR, true).unwrap();
         assert!(v.snapshot(&a, "new", now, true).unwrap(), "kept although thinning failed");
-        assert!(v.read_snapshot(&v.history(&a)[0]).unwrap() == "new");
+        assert_eq!(v.read_snapshot(&v.history(&a)[0]).unwrap(), "new");
         let told = v.take_history_trouble().unwrap();
         assert!(told.contains("couldn't remove old versions of “A”"), "{told}");
         assert!(v.snapshot(&a, "newer", now + HOUR, true).unwrap());

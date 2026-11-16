@@ -217,7 +217,7 @@ impl LocalFs {
     /// accepts the file as it is now: the check and the rename are one step
     /// under [`one_write_at_a_time`]. The locked-folder check runs again
     /// there (a key file may have arrived since). Returns whether it wrote.
-    fn place(&self, path: &NotePath, abs: &Path, mut pending: Pending, still: Option<&dyn Fn(Option<&[u8]>) -> bool>) -> Result<bool> {
+    fn place(&self, path: &NotePath, abs: &Path, mut pending: Pending, still: Option<&Still<'_>>) -> Result<bool> {
         retry_unlocked(|| {
             if let Some(still) = still {
                 let now = match std::fs::read(abs) {
@@ -356,6 +356,9 @@ fn is_read_busy(e: &std::io::Error) -> bool {
     cfg!(windows) && matches!(e.raw_os_error(), Some(32 | 33))
 }
 
+/// The check of a compare-and-swap ([`Storage::write_bytes_if`]).
+type Still<'a> = dyn Fn(Option<&[u8]>) -> bool + 'a;
+
 /// One try of a write under [`one_write_at_a_time`]: done, or blocked by
 /// another program for now (with the error to give if it stays so).
 enum Step<T> {
@@ -451,7 +454,7 @@ impl Storage for LocalFs {
     }
 
     /// Lists again when a folder vanished while it was being listed (a
-    /// folder renamed meanwhile), up to [`LIST_TRIES`] times, then fails:
+    /// folder renamed meanwhile), up to three times, then fails:
     /// a listing missing a folder must not be taken for deleted notes.
     fn list(&self) -> Result<Vec<NotePath>> {
         stable_listing(|vanished| {

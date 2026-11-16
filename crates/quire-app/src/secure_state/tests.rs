@@ -925,7 +925,7 @@ impl quire_vault::Storage for Gate {
         self.inner.write_bytes_atomic(p, b)
     }
     fn write_bytes_if(&self, p: &NotePath, still: &dyn Fn(Option<&[u8]>) -> bool, b: &[u8]) -> quire_vault::Result<bool> {
-        if p.as_str().ends_with(".qenc")
+        if quire_vault::lock::is_encrypted_name(p.as_str())
             && let Some(go) = self.go.lock().unwrap().take()
         {
             let _ = go.recv();
