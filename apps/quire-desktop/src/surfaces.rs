@@ -36,6 +36,11 @@ pub(crate) trait Surface {
     fn close(&mut self, ws: &mut Workspace) {
         let _ = ws;
     }
+    /// Edits that are not written yet (after [`Self::close`] failed to
+    /// write them): its tab stays open rather than losing them.
+    fn unsaved(&self) -> bool {
+        false
+    }
 }
 
 /// For a file Quire can't edit yet: say so, and offer the system's viewer.
@@ -111,8 +116,16 @@ impl Surfaces {
         });
         if let Some(i) = close {
             self.open[i].close(ws);
-            self.open.remove(i);
-            self.active = None;
+            if self.open[i].unsaved() {
+                // The write failed (the person was told why): keep the tab, and the edits in it.
+                ws.notify(
+                    quire_app::workspace::NoticeLevel::Warn,
+                    format!("{} wasn't closed because its changes couldn't be saved.", self.open[i].title()),
+                );
+            } else {
+                self.open.remove(i);
+                self.active = None;
+            }
         }
     }
 
