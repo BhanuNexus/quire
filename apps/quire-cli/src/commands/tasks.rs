@@ -422,6 +422,7 @@ fn refactor(root: &str, op: &MetaOp, write: bool) -> Result<(), String> {
     if let Some(why) = op.problem() {
         return Err(why);
     }
+    quire_mcp::require_folder(Path::new(root))?;
     let vault = Vault::open_local(root).map_err(|e| e.to_string())?;
     let edits = plan_vault(&vault, op)?;
     print!("{}", preview_text(op, &edits));

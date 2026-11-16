@@ -104,9 +104,7 @@ fn passwd(args: &[String]) -> Result<(), String> {
 }
 
 fn serve(vault: &Path, args: &[String]) -> Result<(), String> {
-    if !vault.is_dir() {
-        return Err(format!("{} isn't a folder", vault.display()));
-    }
+    quire_mcp::require_folder(vault)?;
     let port: u16 = flag(args, "--port").map_or(Ok(7311), |p| p.parse().map_err(|_| format!("--port takes a number, not “{p}”")))?;
     let bind: IpAddr = flag(args, "--bind")
         .map_or_else(|| Ok(IpAddr::from([127, 0, 0, 1])), |b| b.parse().map_err(|_| format!("--bind takes an IP address, not “{b}”")))?;

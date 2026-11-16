@@ -9,7 +9,9 @@ use std::time::{Duration, Instant};
 
 use egui::{Color32, Pos2, RichText, Sense, Stroke, Vec2};
 use quire_app::Workspace;
+use quire_app::drawings::{self, Saved};
 use quire_app::vault::{NotePath, Vault};
+use quire_app::workspace::NoticeLevel;
 use quire_canvas::ink::{self, Item, Point, Shape, ShapeKind, Sketch, Stroke as InkStroke, Tool};
 
 use crate::panels::PanelOut;
@@ -349,6 +351,8 @@ pub(crate) struct SketchSurface {
     settings: InkSettings,
     gesture: Option<Gesture>,
     ctx: Option<egui::Context>,
+    /// A save failed and the person was told; cleared by the next one that works.
+    save_failed: bool,
 }
 
 impl SketchSurface {
@@ -367,6 +371,7 @@ impl SketchSurface {
             settings: InkSettings::default(),
             gesture: None,
             ctx: None,
+            save_failed: false,
         }
     }
 
@@ -383,16 +388,46 @@ impl SketchSurface {
         self.vault = Some(vault);
     }
 
-    fn save(&mut self) {
-        let (Some(vault), Some(Ok(sk))) = (&self.vault, &self.sketch) else { return };
+    /// Write the sketch over the text last read or written, with a history
+    /// version and a nudge to sync. A failed write keeps the edits (still
+    /// dirty) and tells the person once.
+    fn save(&mut self, ws: &mut Workspace) {
+        let Some(Ok(sk)) = &self.sketch else { return };
         let text = ink::to_svg(sk);
-        if text != self.disk_text && vault.storage().write_atomic(&self.path, &text).is_ok() {
-            self.disk_text = text;
-            if let (Some(ctx), Some(abs)) = (&self.ctx, vault.storage().absolute(&self.path)) {
-                super::loader::forget(ctx, &abs);
-            }
+        if text == self.disk_text {
+            self.dirty = false;
+            return;
         }
-        self.dirty = false;
+        let name = self.path.file_name().to_string();
+        let failure = match drawings::save_drawing(ws, &self.path, &self.disk_text, &text) {
+            Saved::Written => {
+                self.disk_text = text;
+                self.dirty = false;
+                self.save_failed = false;
+                if let (Some(ctx), Some(abs)) = (&self.ctx, ws.vault().and_then(|v| v.storage().absolute(&self.path))) {
+                    super::loader::forget(ctx, &abs);
+                }
+                return;
+            }
+            Saved::ChangedElsewhere(Some(theirs)) => {
+                // Their version is in history now; ours is kept and saved next.
+                self.disk_text = theirs;
+                ws.notify(
+                    NoticeLevel::Warn,
+                    format!("{name} changed elsewhere; your drawing is kept and the other version is in its history."),
+                );
+                self.last_edit = Instant::now();
+                return;
+            }
+            Saved::ChangedElsewhere(None) => format!("{name} can't be read to check it"),
+            Saved::Failed(m) => m,
+        };
+        self.dirty = true;
+        self.last_edit = Instant::now();
+        if !self.save_failed {
+            ws.notify(NoticeLevel::Error, format!("Couldn't save {name}: {failure}. Your changes are still here; Quire will keep trying."));
+        }
+        self.save_failed = true;
     }
 
     fn edit(&mut self) {
@@ -410,8 +445,12 @@ impl SketchSurface {
 
 impl Drop for SketchSurface {
     fn drop(&mut self) {
-        if self.dirty {
-            self.save();
+        // No workspace here: the same checked write, without history.
+        if self.dirty
+            && let (Some(vault), Some(Ok(sk))) = (&self.vault, &self.sketch)
+        {
+            let text = ink::to_svg(sk);
+            let _ = vault.write_if(&self.path, Some(&self.disk_text), &text);
         }
     }
 }
@@ -419,6 +458,22 @@ impl Drop for SketchSurface {
 impl Surface for SketchSurface {
     fn path(&self) -> &NotePath {
         &self.path
+    }
+
+    fn tick(&mut self, ws: &mut Workspace) {
+        if self.dirty && (!self.save_failed || self.last_edit.elapsed() > Duration::from_millis(600)) {
+            self.save(ws);
+        }
+    }
+
+    fn close(&mut self, ws: &mut Workspace) {
+        if self.dirty {
+            self.save(ws);
+        }
+    }
+
+    fn unsaved(&self) -> bool {
+        self.dirty
     }
 
     fn show(&mut self, ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> PanelOut {
@@ -429,7 +484,7 @@ impl Surface for SketchSurface {
             self.load(ws);
         }
         if self.dirty && self.last_edit.elapsed() > Duration::from_millis(600) {
-            self.save();
+            self.save(ws);
         } else if self.dirty {
             ui.ctx().request_repaint_after(Duration::from_millis(650));
         }

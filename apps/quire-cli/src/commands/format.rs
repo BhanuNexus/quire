@@ -24,7 +24,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let pos: Vec<&str> = args.iter().skip(1).filter(|a| !a.starts_with("--")).map(String::as_str).collect();
     let (Some(root), at) = (pos.first(), pos.get(1).copied().unwrap_or("")) else { return Err(usage()) };
     let write = args.iter().any(|a| a == "--write");
-    let vault = quire_app::secure_state::open_vault(std::path::Path::new(root))?;
+    let vault = super::open_vault(root)?;
     let opts = quire_app::switch_state::lint_options(&vault);
     // A note's path (with or without `.md`) or a folder.
     let note = NotePath::new(if at.to_ascii_lowercase().ends_with(".md") { at.to_string() } else { format!("{at}.md") });

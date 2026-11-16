@@ -203,8 +203,18 @@ pub fn modified(cx: &ToolCx<'_>, path: &NotePath) -> Option<String> {
 pub fn write_error(e: &WriteError) -> ToolOutput {
     let mut message = e.to_string();
     match e {
-        WriteError::PermissionDenied { .. } => {
-            message.push_str(". Ask the person to change the zone in Quire (Settings → Agents), or write under wiki/.");
+        WriteError::PermissionDenied { path, zone, mode } => {
+            use quire_agent::policy::Mode;
+            let what = match mode {
+                Mode::Deny => "neither read nor write",
+                Mode::Read => "only read",
+                Mode::Propose => "only suggest changes",
+                Mode::CreateOnly => "only create new notes",
+                Mode::Direct => "write",
+            };
+            message = format!(
+                "{path} is in the “{zone}” zone, where you can {what}. Call vault_info for the zones you can write in, or ask the person to change this zone in Quire (Settings → Agents)."
+            );
         }
         WriteError::VersionConflict { current, .. } => {
             let _ = write!(

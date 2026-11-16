@@ -44,7 +44,7 @@ pub(crate) const COMMANDS: &[CliCommand] = &[
 ];
 
 fn store(vault: &str) -> Result<AgentStore, String> {
-    let v = quire_app::secure_state::open_vault(Path::new(vault))?;
+    let v = super::open_vault(vault)?;
     Ok(AgentStore::open(&v, quire_app::device::this_device(), std::sync::Arc::new(SystemClock)))
 }
 

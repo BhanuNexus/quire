@@ -89,8 +89,20 @@ fn save_hidden(ws: &mut Workspace, id: DocId) -> bool {
     {
         ws.history.keep_first(&vault, &path, &orig, now - 1);
     }
-    match vault.write(&path, &text) {
-        Ok(()) => {
+    // Written only over what this note last read or wrote, as a tab save is
+    // (`Workspace::save`): a change that landed meanwhile (sync, another
+    // program) and wasn't taken in yet is never overwritten.
+    let written = match doc.disk_text() {
+        Some(b) if vault.locked_folder(&path).is_some() => crate::secure_state::save_locked(&vault, &path, &b, &text),
+        Some(b) => vault.storage().write_bytes_if(
+            &path,
+            &|now| now.is_none_or(|n| String::from_utf8_lossy(n.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(n)) == *b),
+            text.as_bytes(),
+        ),
+        None => vault.write(&path, &text).map(|()| true),
+    };
+    match written {
+        Ok(true) => {
             ws.history.keep_with(&vault, &path, &text, now, false, None);
             if let Some(d) = ws.features.nav.hidden.iter_mut().find(|d| d.id == id) {
                 d.mark_saved(&text);
@@ -99,10 +111,48 @@ fn save_hidden(ws: &mut Workspace, id: DocId) -> bool {
             ws.sync_nudge();
             true
         }
+        Ok(false) => {
+            // The other version is a version too: keep it before anything
+            // else happens, then take it in (merged, or kept beside ours).
+            if let Ok(theirs) = vault.read(&path) {
+                ws.history.keep(&vault, &path, &theirs, now, true);
+                absorb_hidden(ws, &path, &theirs);
+            }
+            false
+        }
         Err(e) => {
             ws.notify(NoticeLevel::Error, format!("Couldn't save {}: {e}", path.stem()));
             false
         }
+    }
+}
+
+/// A change made elsewhere to a note edited through an embed, taken in:
+/// reloaded, or merged with the edits here. Edits that can't be merged are
+/// kept, and the other version stays in version history.
+fn absorb_hidden(ws: &mut Workspace, p: &NotePath, content: &str) {
+    let Some(i) = ws.features.nav.hidden.iter().position(|d| d.path.as_ref() == Some(p)) else { return };
+    let doc = &mut ws.features.nav.hidden[i];
+    if doc.matches_disk(content) {
+        return;
+    }
+    if !doc.is_dirty() {
+        doc.reload(content);
+        return;
+    }
+    let mine = doc.text().to_string();
+    let base = doc.disk_text();
+    let r = merge::merge(base.as_deref(), &mine, content);
+    if r.is_clean() {
+        doc.replace_minimally(&r.text);
+        doc.set_disk_base(content);
+    } else {
+        doc.set_disk_base(content);
+        let name = p.stem().to_string();
+        ws.notify(
+            NoticeLevel::Warn,
+            format!("“{name}” also changed elsewhere in the same places; your edits in the embed were kept and the other version is in its history"),
+        );
     }
 }
 
@@ -184,28 +234,17 @@ pub(super) fn next_deadline(ws: &Workspace) -> Option<Instant> {
 pub(super) fn vault_event(ws: &mut Workspace, ev: &VaultEvent) {
     match ev {
         VaultEvent::Changed(p) => {
-            let Some(i) = ws.features.nav.hidden.iter().position(|d| d.path.as_ref() == Some(p)) else { return };
+            if !ws.features.nav.hidden.iter().any(|d| d.path.as_ref() == Some(p)) {
+                return;
+            }
             let Some(content) = ws.vault().and_then(|v| v.read(p).ok()) else { return };
-            let doc = &mut ws.features.nav.hidden[i];
-            if doc.matches_disk(&content) {
-                return;
+            // Their version is a version too (a sync version may exist nowhere else).
+            if let Some(vault) = ws.vault().cloned()
+                && ws.features.nav.hidden.iter().any(|d| d.path.as_ref() == Some(p) && d.is_dirty() && !d.matches_disk(&content))
+            {
+                ws.history.keep(&vault, p, &content, crate::history_ops::now_ms(), true);
             }
-            if !doc.is_dirty() {
-                doc.reload(&content);
-                return;
-            }
-            let mine = doc.text().to_string();
-            let base = doc.disk_text();
-            let r = merge::merge(base.as_deref(), &mine, &content);
-            if r.is_clean() {
-                doc.replace_minimally(&r.text);
-                doc.set_disk_base(&content);
-            } else {
-                // Keep what was typed here; the other version is in version history.
-                doc.set_disk_base(&content);
-                let name = p.stem().to_string();
-                ws.notify(NoticeLevel::Warn, format!("“{name}” also changed elsewhere; your edits in the embed were kept"));
-            }
+            absorb_hidden(ws, p, &content);
         }
         VaultEvent::Removed(p) => {
             let gone: Vec<DocId> = ws.features.nav.hidden.iter().filter(|d| d.path.as_ref() == Some(p)).map(|d| d.id).collect();
@@ -268,5 +307,39 @@ mod tests {
         assert_eq!(&*ws.doc(tab).unwrap().text(), "one two\n");
         assert!(ws.features.nav.hidden.is_empty());
         assert_eq!(embed_doc(&mut ws, &NotePath::new("Target.md")), Some(tab), "an open note is edited in its tab");
+    }
+
+    #[test]
+    fn saving_through_an_embed_never_overwrites_a_change_made_elsewhere() {
+        let mut ws = ws_with(&[("Host.md", "![[Target]]\n"), ("Target.md", "one\n\ntwo\n")]);
+        ws.open_note(&"Host.md".into()).unwrap();
+        let t = embed_doc(&mut ws, &NotePath::new("Target.md")).unwrap();
+        embed_doc_mut(&mut ws, t).unwrap().apply(Transaction::insert(3, " here"), EditKind::Other).unwrap();
+        // Sync lands another line before the watcher reports it.
+        ws.vault().unwrap().write(&"Target.md".into(), "one\n\ntwo there\n").unwrap();
+        assert!(!save_embedded(&mut ws, t), "the checked write refuses");
+        assert_eq!(ws.vault().unwrap().read(&"Target.md".into()).unwrap(), "one\n\ntwo there\n", "theirs untouched");
+        // Different lines: both changes are in the embed now, and the next save keeps both.
+        assert_eq!(&*embed_doc_ref(&ws, t).unwrap().text(), "one here\n\ntwo there\n");
+        assert!(save_embedded(&mut ws, t));
+        assert_eq!(ws.vault().unwrap().read(&"Target.md".into()).unwrap(), "one here\n\ntwo there\n");
+    }
+
+    #[test]
+    fn a_conflicting_change_is_kept_in_history_before_the_embed_saves_over_it() {
+        let mut ws = ws_with(&[("Host.md", "![[Target]]\n"), ("Target.md", "one\n")]);
+        ws.open_note(&"Host.md".into()).unwrap();
+        let t = embed_doc(&mut ws, &NotePath::new("Target.md")).unwrap();
+        embed_doc_mut(&mut ws, t).unwrap().apply(Transaction::insert(3, " mine"), EditKind::Other).unwrap();
+        ws.vault().unwrap().write(&"Target.md".into(), "one theirs\n").unwrap();
+        assert!(!save_embedded(&mut ws, t));
+        assert_eq!(ws.vault().unwrap().read(&"Target.md".into()).unwrap(), "one theirs\n", "not overwritten by the failed save");
+        assert!(ws.notices(Duration::from_mins(1)).any(|n| n.text.contains("history")), "the person is told");
+        ws.flush_history();
+        let vault = ws.vault().unwrap();
+        assert!(
+            vault.history(&"Target.md".into()).iter().any(|v| vault.read_snapshot(v).is_ok_and(|c| c == "one theirs\n")),
+            "their version is in history"
+        );
     }
 }

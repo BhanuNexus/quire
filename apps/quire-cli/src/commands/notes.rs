@@ -49,7 +49,7 @@ pub(crate) const COMMANDS: &[CliCommand] = &[
 
 fn replace(args: &[String]) -> Result<(), String> {
     let arg = |i: usize| super::arg(args, i);
-    let vault = quire_app::secure_state::open_vault(std::path::Path::new(arg(1)?))?;
+    let vault = super::open_vault(arg(1)?)?;
     let opts = FindOptions { regex: args.iter().any(|a| a == "--regex"), ..Default::default() };
     let write = args.iter().any(|a| a == "--write");
     let re = compile(arg(2)?, opts)?;
@@ -151,7 +151,7 @@ fn history(args: &[String]) -> Result<(), String> {
     let arg = |i: usize| super::arg(args, i);
     let (_, svc, _) = load(arg(1)?)?;
     let p = find_note(&svc.read(), arg(2)?)?;
-    let v = quire_app::secure_state::open_vault(std::path::Path::new(arg(1)?))?;
+    let v = super::open_vault(arg(1)?)?;
     for s in v.history(&p) {
         let when = quire_app::chrono_fmt(s.at_ms);
         let len = v.read_snapshot(&s).map_or(0, |t| t.chars().count());

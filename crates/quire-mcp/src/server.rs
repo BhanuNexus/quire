@@ -190,6 +190,7 @@ impl Server {
     }
 
     pub fn open_with(root: &str, mut config: ServerConfig) -> Result<Self, String> {
+        crate::require_folder(Path::new(root))?;
         let vault = quire_app::secure_state::open_vault(Path::new(root))?;
         let watcher = VaultWatcher::start(&PathBuf::from(root).canonicalize().map_err(|e| e.to_string())?).ok();
         if config.state_dir.is_none() {
@@ -776,6 +777,31 @@ impl Core {
             && store.policy().clients.get(&actor.id).is_some_and(|c| c.approve_in_client)
     }
 
+    /// Why this connection may not call a tool, and what to do about it.
+    fn denied_message(&self, conn: &Conn, name: &str, access: crate::tools::Access, grant: Grant) -> String {
+        use crate::tools::Access;
+        let writes = matches!(access, Access::Write | Access::Network);
+        match &conn.principal {
+            Principal::Stdio if writes && !grant.write => crate::tools::legacy::READ_ONLY.to_string(),
+            Principal::Token(_) if writes && self.config.read_only => {
+                "This server was started with --read-only, so nothing can be changed through it. The person must restart `quire-cli serve` without --read-only to allow edits or suggestions."
+                    .to_string()
+            }
+            Principal::Token(_) if writes && !grant.write => {
+                "This connection can only read. Ask the person for a token with the notes:propose scope (quire-cli mcp token create --name N --scope notes:read,notes:propose, or approve write access when you reconnect), then connect again."
+                    .to_string()
+            }
+            _ => {
+                let scope = match access {
+                    Access::Ask => "notes:ask",
+                    Access::Read => "notes:read",
+                    Access::Write | Access::Network => "notes:propose",
+                };
+                format!("“{name}” needs the {scope} permission, which this connection doesn't have. Call vault_info to see what you may do.")
+            }
+        }
+    }
+
     fn tools_call(&self, era: &Era, params: &Value, conn: &Conn, cancel: &CancelFlag) -> Value {
         let name = params.get("name").and_then(Value::as_str).unwrap_or_default();
         let args = params.get("arguments").cloned().filter(Value::is_object).unwrap_or_else(|| json!({}));
@@ -808,8 +834,7 @@ impl Core {
                 }
                 out
             }
-            Some(_) if !grant.write => ToolOutput::error("denied_by_policy", crate::tools::legacy::READ_ONLY),
-            Some(_) => ToolOutput::error("denied_by_policy", format!("Your access doesn't include {name}.")),
+            Some(t) => ToolOutput::error("denied_by_policy", self.denied_message(conn, name, t.spec().access, grant)),
             None => ToolOutput::error("not_found", format!("Unknown tool {name}")),
         };
         tool_result(era, out)

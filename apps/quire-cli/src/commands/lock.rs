@@ -65,9 +65,7 @@ fn has(args: &[String], name: &str) -> bool {
 
 fn open(args: &[String]) -> Result<(PathBuf, Vault), String> {
     let root = PathBuf::from(arg(args, 1)?);
-    if !root.is_dir() {
-        return Err(format!("{} isn't a folder", root.display()));
-    }
+    quire_mcp::require_folder(&root)?;
     let v = quire_app::secure_state::open_vault(&root)?;
     Ok((root, v))
 }

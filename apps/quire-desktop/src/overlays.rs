@@ -548,7 +548,7 @@ pub(crate) fn show(ctx: &egui::Context, overlay: &mut Overlay, ws: &mut Workspac
             egui::Modal::new(egui::Id::unique("quire-open-vault")).show(ctx, |ui| {
                 ui.set_width(460.0);
                 ui.heading("Open a vault");
-                ui.label(RichText::new("Any folder of Markdown files works. It's created if it doesn't exist.").color(pal.muted));
+                ui.label(RichText::new("Any folder of Markdown files works.").color(pal.muted));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ui.add(egui::TextEdit::singleline(input).hint_text("/path/to/notes").desired_width(320.0));
@@ -558,10 +558,24 @@ pub(crate) fn show(ctx: &egui::Context, overlay: &mut Overlay, ws: &mut Workspac
                         *input = dir.display().to_string();
                     }
                 });
+                // A mistyped path must not quietly become a new empty vault:
+                // a folder that isn't there is made only when asked for.
+                let path = std::path::Path::new(input.trim());
+                let typed = !input.trim().is_empty();
+                let missing = typed && !path.exists();
+                if missing {
+                    ui.label(
+                        RichText::new(format!("No folder at {}. Check the path, or make it as a new, empty vault.", path.display()))
+                            .color(pal.muted),
+                    );
+                } else if typed && !path.is_dir() {
+                    ui.label(RichText::new(format!("{} is a file, not a folder.", path.display())).color(pal.muted));
+                }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Open").clicked() && !input.trim().is_empty() {
-                        match ws.open_vault(std::path::Path::new(input.trim())) {
+                    let label = if missing { "Make folder and open" } else { "Open" };
+                    if ui.add_enabled(typed && (missing || path.is_dir()), egui::Button::new(label)).clicked() {
+                        match ws.open_vault(path) {
                             Ok(()) => res.close = true,
                             Err(e) => ws.notify(NoticeLevel::Error, e),
                         }

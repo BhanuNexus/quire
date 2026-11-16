@@ -14,8 +14,24 @@ fn run(args: &[String]) -> Result<(), String> {
         "--version" | "-V" | "version" => {
             println!("quire-cli {}{}", env!("CARGO_PKG_VERSION"), if cfg!(feature = "typeset") { "" } else { " (Lite)" });
         }
-        "--help" | "-h" | "help" => println!("{}", commands::usage()),
-        name => return commands::find(name).map_or_else(|| Err(commands::usage()), |c| (c.run)(args)),
+        "--help" | "-h" => println!("{}", commands::usage()),
+        "help" => match args.get(1) {
+            None => println!("{}", commands::usage()),
+            Some(name) => {
+                let c = commands::find(name).ok_or_else(|| commands::unknown_command(name))?;
+                println!("{}", commands::command_usage(c));
+            }
+        },
+        name => {
+            let c = commands::find(name).ok_or_else(|| commands::unknown_command(name))?;
+            // `quire-cli <command> --help` is help, whatever else follows; it
+            // never opens a vault. (`serve` has a longer help of its own.)
+            if c.name != "serve" && args.iter().skip(1).take(2).any(|a| matches!(a.as_str(), "--help" | "-h")) {
+                println!("{}", commands::command_usage(c));
+                return Ok(());
+            }
+            return (c.run)(args);
+        }
     }
     Ok(())
 }
@@ -26,7 +42,8 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("{e}");
-            ExitCode::FAILURE
+            // 2: how the command was typed was wrong; 1: it ran and failed.
+            if commands::was_usage_error() { ExitCode::from(2) } else { ExitCode::FAILURE }
         }
     }
 }
