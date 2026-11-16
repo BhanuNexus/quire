@@ -44,7 +44,8 @@ pub(crate) const COMMANDS: &[CliCommand] = &[CliCommand {
                         --allow-http allows http:// to a computer on your network (S3, WebDAV)
   quire-cli sync once   <vault>                 one sync pass
   quire-cli sync allow-deletes <vault>          send the deletes sync held back because they were many (more than
-                        10 notes and more than half of the vault): at this device's next pass, by whatever runs it
+                        10 notes and more than half of the vault within an hour): exactly those, at this device's
+                        next pass within 15 minutes, by whatever runs it
   quire-cli sync watch  <vault> [--poll 60s]    keep syncing until Ctrl+C or SIGTERM
   quire-cli sync status <vault>                 how sync is set up and how the last pass went
   quire-cli sync test   <vault> [WHERE]         check the storage (or the one this vault syncs with): sign-in,
@@ -92,8 +93,10 @@ fn run(args: &[String]) -> Result<(), String> {
         "join" => join(&vault, args),
         "once" => once(&vault),
         "allow-deletes" => {
-            vault_sync::sync_allow_deletes_at(&vault)?;
-            println!("The deletes go out at this device's next sync pass (`quire-cli sync once`, `watch`, or the app's next pass).");
+            let n = vault_sync::sync_allow_deletes_at(&vault)?;
+            println!(
+                "The {n} deletes held back go out at this device's next sync pass within 15 minutes (`quire-cli sync once`, `watch`, or the app's next pass); after that, or if more notes are gone by then, sync asks again."
+            );
             Ok(())
         }
         "watch" => {

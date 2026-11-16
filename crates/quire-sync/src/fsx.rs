@@ -56,6 +56,33 @@ fn write(path: &Path, bytes: &[u8], durable: bool) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Remove temporary files [`write_atomically`] left in `dir` (a crash
+/// between creating one and renaming it) that are older than `age`: any
+/// device's, since none takes longer than a moment to write. Returns how
+/// many went. Only names of exactly that shape are touched.
+pub(crate) fn sweep(dir: &Path, age: std::time::Duration) -> usize {
+    let Ok(rd) = fs::read_dir(dir) else { return 0 };
+    let now = std::time::SystemTime::now();
+    let mut gone = 0;
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !is_leftover(&name) {
+            continue;
+        }
+        let old = e.metadata().ok().and_then(|m| m.modified().ok()).and_then(|t| now.duration_since(t).ok()).is_some_and(|d| d > age);
+        if old && e.file_type().is_ok_and(|t| t.is_file()) && fs::remove_file(e.path()).is_ok() {
+            gone += 1;
+        }
+    }
+    gone
+}
+
+/// `.<name>.<16 hex digits>.tmp`, as [`write`] names its temporary files.
+fn is_leftover(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix('.').and_then(|r| r.strip_suffix(".tmp")) else { return false };
+    rest.rsplit_once('.').is_some_and(|(base, tag)| !base.is_empty() && tag.len() == 16 && tag.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,5 +116,17 @@ mod tests {
         let f = dir.path().join("missing-folder").join("x.json");
         assert!(write_atomically(&f, b"x").is_err());
         assert!(!f.exists());
+    }
+
+    #[test]
+    fn old_leftovers_are_swept_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let left = dir.path().join(".space.json.0123456789abcdef.tmp");
+        fs::write(&left, b"half").unwrap();
+        fs::write(dir.path().join(".space.json.notatag.tmp"), b"x").unwrap();
+        fs::write(dir.path().join("space.tmp"), b"x").unwrap();
+        assert_eq!(sweep(dir.path(), std::time::Duration::from_hours(1)), 0, "too new");
+        assert_eq!(sweep(dir.path(), std::time::Duration::ZERO), 1);
+        assert!(!left.exists() && dir.path().join("space.tmp").exists());
     }
 }

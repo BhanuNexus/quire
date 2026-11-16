@@ -78,6 +78,16 @@ impl SettingsState {
             let sync = SyncForm { devices: DevicesPanel::sample(step), ..Default::default() };
             all.push(("settings: sync devices", Self { tab: SettingsTab::Sync, force_tab: true, sync, ..Default::default() }));
         }
+        // 0.13.2: deletes held back, with the list of notes open.
+        let notes = (0..300)
+            .map(|i| quire_app::vault_sync::HeldNote {
+                file: format!("{i:032x}"),
+                path: format!("A long folder name/Sub folder/Note number {i}.md"),
+            })
+            .collect();
+        let held = quire_app::vault_sync::HeldDeletes { at: 0, notes, allowed_until: None };
+        let sync = SyncForm { held_sample: Some(held), show_held: true, ..Default::default() };
+        all.push(("settings: sync held deletes", Self { tab: SettingsTab::Sync, force_tab: true, sync, ..Default::default() }));
         all
     }
 }
@@ -165,6 +175,11 @@ struct SyncForm {
     saving_credentials: Option<Receiver<Result<String, String>>>,
     /// 0.13: Settings → Sync → Devices and the sync format.
     devices: DevicesPanel,
+    /// 0.13.2: deletes held back because they were many: the list shown.
+    show_held: bool,
+    /// For layout checks: held-back deletes to show without a vault.
+    #[cfg(test)]
+    held_sample: Option<quire_app::vault_sync::HeldDeletes>,
     // 0.13.1: "Find vaults", "Start syncing" and "Join and sync" run off the
     // UI thread, in the workspace (see `Workspace::sync_setup_running`), so
     // closing this dialog never drops what they finish.
@@ -372,11 +387,63 @@ pub(crate) const SOURCE_URL: &str = "https://github.com/BhanuNexus/quire";
 
 // ------------------------------------------------------------------ sync
 
+/// Deletes sync held back because they were many (0.13.2): what happened,
+/// which notes, and "Send these deletes".
+fn held_deletes(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, h: &quire_app::vault_sync::HeldDeletes, pal: &Palette) {
+    let n = h.notes.len();
+    let allowed = h.allowed_until.is_some_and(|u| u > chrono::Utc::now().timestamp_millis());
+    egui::Frame::NONE.fill(pal.bg).corner_radius(6.0).inner_margin(10.0).show(ui, |ui| {
+        ui.label(RichText::new(format!("{n} notes are gone from this vault's folder")).strong().color(pal.danger));
+        ui.add(
+            egui::Label::new(
+                RichText::new(format!(
+                    "Sending this would delete {n} notes on your other devices, so sync sent nothing, not even your other changes. \
+                     If you deleted them on purpose, send these deletes. If not, check that the vault's folder is all there \
+                     (a drive or cloud folder that went missing); sync goes on by itself once the notes are back."
+                ))
+                .size(12.5)
+                .color(pal.muted),
+            )
+            .wrap(),
+        );
+        ui.horizontal_wrapped(|ui| {
+            if allowed {
+                ui.label(RichText::new("Sending at the next sync…").color(pal.accent));
+            } else if ui.button(format!("Send these {n} deletes")).clicked()
+                && let Err(e) = ws.sync_allow_deletes()
+            {
+                f.error = Some(e);
+            }
+            let label = if f.show_held { "Hide the notes" } else { "Show which notes" };
+            if ui.button(label).clicked() {
+                f.show_held = !f.show_held;
+            }
+        });
+        ui.label(RichText::new("Also possible from a terminal: quire-cli sync allow-deletes <vault folder>.").size(11.5).color(pal.muted));
+        if f.show_held {
+            egui::ScrollArea::vertical().id_salt("held-deletes").max_height(160.0).show(ui, |ui| {
+                for note in &h.notes {
+                    ui.add(egui::Label::new(RichText::new(&note.path).size(12.0)).wrap());
+                }
+            });
+        }
+    });
+}
+
 fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palette) {
     use quire_app::vault_sync::SyncStatus;
     if f.devices.sample {
         sync_devices(ui, &mut f.devices, ws, true, pal);
         return;
+    }
+    #[cfg(test)]
+    if let Some(h) = f.held_sample.clone() {
+        held_deletes(ui, f, ws, &h, pal);
+        return;
+    }
+    if let Some(h) = ws.sync.held.clone() {
+        held_deletes(ui, f, ws, &h, pal);
+        ui.add_space(8.0);
     }
     if ws.vault_root().is_none() {
         ui.label(RichText::new("Open a notes folder first; sync works per folder.").color(pal.muted));

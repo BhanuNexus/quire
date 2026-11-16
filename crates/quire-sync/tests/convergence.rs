@@ -619,8 +619,9 @@ fn deleting_most_of_a_vault_at_once_waits_for_the_person() {
     sa.0.clear();
     sa.write("New.md", "typed meanwhile\n").unwrap();
     let err = a.sync(&mut sa, &server, TODAY).unwrap_err();
-    assert!(matches!(err, quire_sync::SyncError::ManyDeletes { count: 20, of: 20 }), "{err}");
-    assert!(err.to_string().starts_with("20 of the 20 notes"), "{err}");
+    // Twenty more, after ten within the hour: thirty of the thirty held then.
+    assert!(matches!(err, quire_sync::SyncError::ManyDeletes { count: 20, earlier: 10, of: 30, .. }), "{err}");
+    assert!(err.to_string().starts_with("20 more of the 30 notes"), "{err}");
     b.sync(&mut sb, &server, TODAY).unwrap();
     assert_eq!(sb.list().unwrap().len(), 20, "nothing deleted on the other device");
     assert_eq!(sa.list().unwrap(), ["New.md"], "nothing written here either");
@@ -631,10 +632,16 @@ fn deleting_most_of_a_vault_at_once_waits_for_the_person() {
     a.sync(&mut sa2, &server, TODAY).unwrap();
     b.sync(&mut sb, &server, TODAY).unwrap();
     assert_eq!(sb.list().unwrap().len(), 21);
-    // Deleted on purpose, and said so: sent.
-    sa2.0.retain(|p, _| p == "New.md");
-    assert!(a.sync(&mut sa2, &server, TODAY).is_err());
-    a.allow_many_deletes = true;
+    // Deleted on purpose, and said so: exactly those are sent.
+    sa2.0.retain(|p, _| p == "New.md" || p == "Notes/29.md");
+    let Err(quire_sync::SyncError::ManyDeletes { notes, .. }) = a.sync(&mut sa2, &server, TODAY) else { panic!("not held back") };
+    assert_eq!(notes.len(), 19);
+    // One more went meanwhile: not what was allowed, so asked again.
+    sa2.0.remove("Notes/29.md");
+    a.allowed_deletes = notes.into_iter().map(|(id, _)| id).collect();
+    let Err(quire_sync::SyncError::ManyDeletes { notes, .. }) = a.sync(&mut sa2, &server, TODAY) else { panic!("sent more than allowed") };
+    assert_eq!(notes.len(), 20);
+    a.allowed_deletes = notes.into_iter().map(|(id, _)| id).collect();
     let r = a.sync(&mut sa2, &server, TODAY).unwrap();
     assert_eq!(r.pushed, 20);
     b.sync(&mut sb, &server, TODAY).unwrap();
@@ -801,4 +808,50 @@ fn conflict_copies_get_names_every_system_can_store() {
     let r = sync(&mut devs[1], &server);
     assert_eq!(r.conflict_copies.len(), 1);
     assert_eq!(quire_sync::names::windows_problem(&r.conflict_copies[0]), None, "{:?}", r.conflict_copies);
+}
+
+/// Review D-M3: a vault that disappears a half at a time, pass after pass,
+/// still stops before it is all deleted on the other devices.
+#[test]
+fn a_vault_that_disappears_in_halves_still_stops() {
+    let (server, mut a, mut b) = pair();
+    let (mut sa, mut sb) = (MemoryStore::default(), MemoryStore::default());
+    for i in 0..400 {
+        sa.write(&format!("{i:03}.md"), &format!("note {i}\n")).unwrap();
+    }
+    a.sync(&mut sa, &server, TODAY).unwrap();
+    b.sync(&mut sb, &server, TODAY).unwrap();
+    let mut stopped = false;
+    for _ in 0..9 {
+        let keep: Vec<String> = sa.0.keys().cloned().collect();
+        for p in &keep[..keep.len().div_ceil(2)] {
+            sa.0.remove(p);
+        }
+        if a.sync(&mut sa, &server, TODAY).is_err() {
+            stopped = true;
+            break;
+        }
+    }
+    assert!(stopped, "never stopped");
+    b.sync(&mut sb, &server, TODAY).unwrap();
+    assert!(sb.0.len() >= 100, "most notes kept on the other device: {}", sb.0.len());
+}
+
+/// Review D-L2: a note tracked under a name this computer can't store (the
+/// vault and its sync state copied here from another system) is never
+/// sent as deleted.
+#[test]
+fn a_tracked_note_whose_name_cant_be_stored_here_is_not_deleted() {
+    let (server, mut l, _) = pair();
+    let mut sl = MemoryStore::default();
+    sl.write("10:30 meeting.md", "meeting\n").unwrap();
+    sl.write("Plan.md", "plan\n").unwrap();
+    l.sync(&mut sl, &server, TODAY).unwrap();
+    // The vault, with its state, moves to Windows: the file can't come along.
+    let mut w = Engine::new(l.space.clone(), l.device.clone(), "w", l.keys().clone(), l.state.clone());
+    let mut sw = WindowsLike::default();
+    sw.0.write("Plan.md", "plan\n").unwrap();
+    let _ = w.sync(&mut sw, &server, TODAY);
+    l.sync(&mut sl, &server, TODAY).unwrap();
+    assert_eq!(sl.read("10:30 meeting.md").as_deref(), Some("meeting\n"), "not deleted on the other device");
 }
