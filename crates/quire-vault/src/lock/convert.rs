@@ -455,12 +455,7 @@ pub fn begin_change_key(vault: &Vault, folder: &str, passphrase: &str, now_ms: i
         // brought to the current key first, so the new key file's previous
         // key (the current one) opens everything; otherwise nothing changes.
         if let Some(prev) = vault.keys().previous(&folder) {
-            bring_to_key(vault, &folder, id, &prev, &current).map_err(|e| {
-                VaultError::InvalidName(format!(
-                    "{folder}/ still has files under its key from before the last key change, and they couldn't all be encrypted again \
-                     ({e}); nothing was changed. Try again in a moment."
-                ))
-            })?;
+            bring_to_key(vault, &folder, id, &prev, &current).map_err(|e| previous_key_left(&folder, &e))?;
         }
         let new = FolderKey::generate().map_err(|e| damaged(&key_path, &e))?;
         let mut next = KeyFile::new(id, &new, passphrase, kf.kdf, now_ms).map_err(|e| damaged(&key_path, &e))?;
@@ -526,6 +521,23 @@ pub fn finish_change_key(vault: &Vault, folder: &str) -> Result<ConvertReport> {
     }
     let _ = vault.note_locked_folder(&folder);
     Ok(report)
+}
+
+/// Why a new key change of `folder` didn't start: files under the
+/// previous key couldn't all be brought to the current one. Says which
+/// file, what changed (the key file not at all; some files may already be
+/// under the current key, which reads the same), and what to do.
+fn previous_key_left(folder: &str, e: &VaultError) -> VaultError {
+    let unchanged = "The folder's key, passphrase and recovery key were not changed. Files that were still under the key from before \
+                     the last key change may already have been encrypted again with the current key; they read the same.";
+    VaultError::InvalidName(match e {
+        VaultError::Damaged { path, reason } => format!(
+            "{path} opens with neither the current key of {folder}/ nor its previous one ({reason}), so its key wasn't changed. \
+             {unchanged} Restore that file from version history or from another device, or move it out of the folder, then change \
+             the key again."
+        ),
+        e => format!("{folder}/'s key wasn't changed: {e}. {unchanged} Run the key change again."),
+    })
 }
 
 /// Encrypt every file and history snapshot of `folder` still under `old`
