@@ -5,8 +5,8 @@
 # which runs only on pull requests). Other check-runs on the commit (Dependabot,
 # the weekly Audit, the GitHub Advanced Security "CodeQL" pull-request check, the
 # Release workflows) are printed as information and do not decide, unless named in
-# packaging/ci-also-required.txt (empty). Names in packaging/ci-exceptions.txt
-# (empty by default) are let through.
+# packaging/ci-also-required.txt (empty). There is no exception list: a failed job
+# fails its workflow run, which is required to succeed.
 #   packaging/check-ci-green.sh <owner/repo> <sha>
 # Needs `gh` with GH_TOKEN (checks: read, actions: read) and `jq`.
 # CI_CHECK_RUNS_FILE and CI_RUNS_FILE (JSON arrays of check-runs and of workflow
@@ -16,23 +16,6 @@ set -euo pipefail
 repo="${1:?usage: check-ci-green.sh <owner/repo> <sha>}"
 sha="${2:?usage: check-ci-green.sh <owner/repo> <sha>}"
 here="$(cd "$(dirname "$0")" && pwd)"
-exceptions_file="${CI_EXCEPTIONS_FILE:-$here/ci-exceptions.txt}"
-
-# The exception list: one check-run name per line, each with a reason.
-exempt=""
-while IFS= read -r line || [ -n "$line" ]; do
-  case "$line" in ''|'#'*) continue ;; esac
-  name="${line%%#*}"
-  name="$(printf '%s' "$name" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
-  [ -n "$name" ] || continue
-  case "$line" in
-    *'#'*[![:space:]]*) ;;
-    *) echo "::error::$exceptions_file: '$name' has no '# reason'" >&2; exit 1 ;;
-  esac
-  exempt+="$name"$'\n'
-  echo "Exception (packaging/ci-exceptions.txt): $name"
-done < "$exceptions_file"
-
 # Only the fields used below (the full objects are large).
 runs_fields='{name, event, status, conclusion, created_at, check_suite_id}'
 checks_fields='{name, status, conclusion, started_at, app: {slug: .app.slug}, check_suite: {id: .check_suite.id}}'
@@ -79,9 +62,8 @@ done
 # Everything else on the commit (Dependabot jobs, the weekly Audit run, the GitHub
 # Advanced Security "CodeQL" pull-request check, the Release workflows) is printed
 # as "info" and does not decide.
-verdicts="$(jq -r --argjson runs "$runs" --arg exempt "$exempt" --arg required "$required" '
+verdicts="$(jq -r --argjson runs "$runs" --arg required "$required" '
   ($runs | map(select((.name == "CI" or .name == "CodeQL") and .event == "push") | .check_suite_id)) as $suites
-  | ($exempt | split("\n") | map(select(length > 0))) as $ex
   | ($required | split("\n") | map(select(length > 0))) as $req
   | group_by(.name + "|" + (.app.slug // "") + "|" + ((.check_suite.id | tostring)))
   | map(max_by(.started_at // "9999"))
@@ -90,7 +72,6 @@ verdicts="$(jq -r --argjson runs "$runs" --arg exempt "$exempt" --arg required "
   | .[]
   | (if .status != "completed" then "running"
      elif .conclusion == "success" or .conclusion == "skipped" then "ok"
-     elif (.name | IN($ex[])) then "exempt"
      else "bad" end) as $v
   | [(if .judged then $v else "info" end), .name, (.app.slug // "?"), .status, (.conclusion // "-")] | @tsv' <<< "$checks")"
 

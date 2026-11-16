@@ -83,7 +83,7 @@ has a first history version marked "Imported (Source)".
 
 ## From the command line
 
-`quire-cli import` makes the vault folder if it is missing. Every other `quire-cli` command needs an existing folder and stops with `No folder at …` otherwise (`mkdir` it first).
+`quire-cli import` makes the vault folder only with `--write`, and only one level: the parent folder must exist (so an unplugged drive is never recreated on the wrong disk). A dry run makes nothing. Every other `quire-cli` command needs an existing folder and stops with `No folder at …` otherwise (`mkdir` it first).
 
 ```bash
 quire-cli import ~/Downloads/export.jex ./vault                 # dry run
