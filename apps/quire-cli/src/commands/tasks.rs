@@ -293,7 +293,7 @@ fn timer_cmd(root: &str, sub: &str, rest: &[String], literal: usize, file: &Path
         }
         _ => {
             let day = match rest.first() {
-                Some(d) => chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").map_err(|_| format!("“{d}” isn't a date (YYYY-MM-DD)"))?,
+                Some(d) => quire_base::time::parse_ymd(d).ok_or_else(|| format!("“{d}” isn't a date (YYYY-MM-DD)"))?,
                 None => now.date_naive(),
             };
             let ix = svc.read();

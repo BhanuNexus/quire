@@ -219,17 +219,13 @@ pub(crate) const SKILL_SOURCE: &str = "SKILL.source.json";
 /// size, SHA-256 and first lines are shown first; it is installed only
 /// with `--yes`, with a `SKILL.source.json` beside it.
 fn install_imported(dir: &Path, from: &Path, yes: bool) -> Result<(), String> {
-    use sha2::Digest as _;
     if from.to_string_lossy().contains("://") {
         return Err("--from takes a file. Download the skill first, so you can read what you install.".into());
     }
     let bytes = std::fs::read(from).map_err(|e| format!("{}: {e}", from.display()))?;
     let text = String::from_utf8(bytes.clone()).map_err(|_| format!("{} isn't text", from.display()))?;
     let source = from.canonicalize().unwrap_or_else(|_| from.to_path_buf());
-    let sha = sha2::Sha256::digest(&bytes).iter().fold(String::new(), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    });
+    let sha = quire_base::enc::sha256_hex(&bytes);
     println!("Skill from {}", source.display());
     println!("  {} bytes, SHA-256 {sha}", bytes.len());
     println!("  Its text (shown as data; it hasn't run):");

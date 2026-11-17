@@ -118,12 +118,14 @@ fn pdf(args: &[String]) -> Result<(), String> {
     let p = find_note(&ix, arg(2)?)?;
     let src = ix.source(&p).unwrap_or_default().to_string();
     let out = args.get(3).cloned().unwrap_or_else(|| format!("{}.pdf", p.stem()));
-    // Written into the vault first (so images resolve the same way), then moved.
+    // Written into the vault first (so images resolve the same way), then
+    // written whole to `out` (another disk is fine) and removed.
     let tmp = quire_app::vault::NotePath::new(format!(".quire/export-{}.pdf", std::process::id()));
     let written = quire_app::export_pdf::export_pdf(&v, p.stem(), &src, &tmp)?;
-    std::fs::rename(&written, &out)
-        .or_else(|_| std::fs::copy(&written, &out).map(|_| ()).and_then(|()| std::fs::remove_file(&written)))
-        .map_err(|e| e.to_string())?;
+    let moved = std::fs::read(&written)
+        .and_then(|pdf| quire_base::fs::write_atomic(std::path::Path::new(&out), &pdf, quire_base::fs::Options::EXISTING_FOLDER));
+    let _ = std::fs::remove_file(&written);
+    moved.map_err(|e| e.to_string())?;
     println!("wrote {out}");
     Ok(())
 }

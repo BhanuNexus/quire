@@ -155,11 +155,14 @@ mod mock {
         pub(super) fn start() -> Result<Self, String> {
             let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
             let url = format!("http://{}", listener.local_addr().map_err(|e| e.to_string())?);
-            std::thread::spawn(move || {
-                for stream in listener.incoming().flatten() {
-                    let _ = serve(stream);
-                }
-            });
+            std::thread::Builder::new()
+                .name("quire-eval-server".into())
+                .spawn(move || {
+                    for stream in listener.incoming().flatten() {
+                        let _ = serve(stream);
+                    }
+                })
+                .expect("the system starts a thread");
             Ok(Self { url })
         }
     }

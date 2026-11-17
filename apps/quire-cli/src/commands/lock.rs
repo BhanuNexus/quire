@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use quire_app::vault::lock::zeroize::Zeroizing;
 use quire_app::vault::lock::{self, FolderKey, Kdf};
 use quire_app::vault::{NotePath, Vault};
+use quire_base::time::now_ms;
 
 use super::sync::{prompt_hidden, read_secret};
 use super::{CliCommand, arg};
@@ -72,10 +73,6 @@ fn open(args: &[String]) -> Result<(PathBuf, Vault), String> {
 
 fn folder_arg(args: &[String]) -> Result<String, String> {
     Ok(arg(args, 2)?.trim().trim_matches('/').to_string())
-}
-
-fn now_ms() -> i64 {
-    chrono::Utc::now().timestamp_millis()
 }
 
 fn passphrase(what: &str, args: &[String]) -> Result<Zeroizing<String>, String> {
