@@ -29,7 +29,6 @@ argon2 = "0.6"
 hkdf = "0.13"
 hmac = "0.13"
 sha2 = "0.11"
-getrandom = "0.4"
 zeroize = { version = "1", features = ["derive"] }
 # 0.13: device keys, so removing a device can hand the vault's new key to
 # the other devices only (docs/design/0.13-sync.md). The dalek crates are

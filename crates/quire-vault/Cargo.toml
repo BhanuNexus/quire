@@ -34,7 +34,6 @@ chacha20poly1305 = { workspace = true, features = ["zeroize"] }
 argon2 = "0.6"
 hkdf = "0.13"
 hmac = "0.13"
-getrandom.workspace = true
 zeroize = { version = "1", features = ["derive"] }
 
 [lints]
