@@ -120,9 +120,12 @@ impl LanguageModel for LocalModel {
 /// Run a request on a background thread; poll the receiver from the UI.
 pub fn spawn(model: Arc<dyn LanguageModel>, task: Assist, req: LlmRequest) -> Receiver<Result<String, LlmError>> {
     let (tx, rx) = bounded(1);
-    std::thread::spawn(move || {
-        let _ = tx.send(model.complete(&task, &req));
-    });
+    std::thread::Builder::new()
+        .name("quire-llm".into())
+        .spawn(move || {
+            let _ = tx.send(model.complete(&task, &req));
+        })
+        .expect("the system starts a thread");
     rx
 }
 
@@ -148,27 +151,25 @@ mod remote {
         OpenAiCompatible,
     }
 
-    /// Trust the operating system's certificate store, so company proxies and
-    /// self-signed local servers the user has trusted work as in a browser.
-    fn system_tls() -> ureq::tls::TlsConfig {
-        ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build()
-    }
+    use quire_base::net::{Redirects, Timeouts};
 
+    /// The operating system's certificate store is trusted (company proxies
+    /// and self-signed local servers the user has trusted work as in a
+    /// browser), and the client names itself `Quire/<version> (+llm)`.
     fn agent(timeout: Duration) -> ureq::Agent {
-        ureq::Agent::config_builder().timeout_global(Some(timeout)).http_status_as_error(false).tls_config(system_tls()).build().into()
+        quire_base::net::agent("llm", Timeouts::total(timeout), Redirects::Follow(10))
     }
 
     /// For streamed replies: no overall limit (a long answer is fine), but a
     /// server that goes quiet for a minute is given up on.
     fn stream_agent() -> ureq::Agent {
-        ureq::Agent::config_builder()
-            .timeout_connect(Some(Duration::from_secs(15)))
-            .timeout_recv_response(Some(Duration::from_mins(3)))
-            .timeout_per_read(Some(Duration::from_mins(1)))
-            .http_status_as_error(false)
-            .tls_config(system_tls())
-            .build()
-            .into()
+        let timeouts = Timeouts {
+            connect: Some(Duration::from_secs(15)),
+            reply: Some(Duration::from_mins(3)),
+            per_read: Some(Duration::from_mins(1)),
+            total: None,
+        };
+        quire_base::net::agent("llm", timeouts, Redirects::Follow(10))
     }
 
     fn err_from(status: u16, body: &Value) -> LlmError {

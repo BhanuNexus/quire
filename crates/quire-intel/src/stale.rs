@@ -103,7 +103,7 @@ pub fn parse_days(s: &str) -> Option<u32> {
 
 /// A `YYYY-MM-DD` date (times after it are ignored).
 pub fn parse_date(s: &str) -> Option<NaiveDate> {
-    NaiveDate::parse_from_str(s.trim().get(..10)?, "%Y-%m-%d").ok()
+    quire_base::time::parse_ymd_prefix(s.trim())
 }
 
 const PHRASES: &[&str] = &[

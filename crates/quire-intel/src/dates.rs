@@ -78,7 +78,7 @@ pub fn parse_natural_date(phrase: &str, today: NaiveDate) -> Option<NaiveDate> {
             let this_year = NaiveDate::from_ymd_opt(today.year(), m, d)?;
             if this_year < today { NaiveDate::from_ymd_opt(today.year() + 1, m, d) } else { Some(this_year) }
         }
-        [iso] => NaiveDate::parse_from_str(iso, "%Y-%m-%d").ok(),
+        [iso] => quire_base::time::parse_ymd(iso),
         _ => None,
     }
 }
