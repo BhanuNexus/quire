@@ -88,7 +88,8 @@ fn export(args: &[String]) -> Result<(), String> {
     }));
     let html = render::html_document(p.stem(), &body);
     let out = args.get(3).cloned().unwrap_or_else(|| format!("{}.html", p.stem()));
-    std::fs::write(&out, html).map_err(|e| e.to_string())?;
+    quire_base::fs::write_atomic(std::path::Path::new(&out), html.as_bytes(), quire_base::fs::Options::EXISTING_FOLDER)
+        .map_err(|e| e.to_string())?;
     println!("wrote {out}");
     Ok(())
 }

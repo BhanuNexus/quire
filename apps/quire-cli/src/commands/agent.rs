@@ -203,7 +203,8 @@ fn skill(args: &[String]) -> Result<(), String> {
             }
             std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
             let file = dir.join("SKILL.md");
-            std::fs::write(&file, SKILL).map_err(|e| format!("{}: {e}", file.display()))?;
+            quire_base::fs::write_atomic(&file, SKILL.as_bytes(), quire_base::fs::Options::STATE)
+                .map_err(|e| format!("{}: {e}", file.display()))?;
             println!("installed {}", file.display());
             Ok(())
         }
@@ -248,7 +249,8 @@ fn install_imported(dir: &Path, from: &Path, yes: bool) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     // Marked in the file itself too, so a copy or a renamed folder (without
     // SKILL.source.json) stays untrusted: front matter can only lower trust.
-    std::fs::write(&file, mark_untrusted(&text)).map_err(|e| format!("{}: {e}", file.display()))?;
+    quire_base::fs::write_atomic(&file, mark_untrusted(&text).as_bytes(), quire_base::fs::Options::STATE)
+        .map_err(|e| format!("{}: {e}", file.display()))?;
     let meta = serde_json::json!({
         "format": 1,
         "source": source.to_string_lossy(),
@@ -258,7 +260,8 @@ fn install_imported(dir: &Path, from: &Path, yes: bool) -> Result<(), String> {
         "trust": "untrusted",
     });
     let meta = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
-    std::fs::write(dir.join(SKILL_SOURCE), format!("{meta}\n")).map_err(|e| format!("{}: {e}", dir.display()))?;
+    quire_base::fs::write_atomic(&dir.join(SKILL_SOURCE), format!("{meta}\n").as_bytes(), quire_base::fs::Options::STATE)
+        .map_err(|e| format!("{}: {e}", dir.display()))?;
     println!("installed {} (source recorded in {SKILL_SOURCE})", file.display());
     if dir.ancestors().any(|a| a.join(".quire").is_dir()) {
         println!("It is inside a Quire vault: agents get it as untrusted data, and changes to it are suggestions.");
