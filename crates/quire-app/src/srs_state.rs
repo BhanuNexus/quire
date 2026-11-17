@@ -337,6 +337,8 @@ pub(crate) fn track_edits(ws: &mut Workspace) {
     if renames.is_empty() {
         return;
     }
+    // Written to the review log in one order, whatever the hash order of `now`.
+    renames.sort();
     let at = now_ms();
     let device = ws.device().id.clone();
     for (path, from, to) in renames {
