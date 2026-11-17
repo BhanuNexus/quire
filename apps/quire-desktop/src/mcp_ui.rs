@@ -507,20 +507,23 @@ impl CaptureDialog {
         let Some(vault) = ws.vault().cloned() else { return };
         let url = self.url.trim().to_string();
         let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let store = AgentStore::open(&vault, quire_app::device::this_device(), std::sync::Arc::new(SystemClock));
-            let actor = Actor::import("url", &store.device().id);
-            let res = quire_mcp::capture::capture(&vault, &store, &actor, &url, &quire_mcp::capture::Options::default())
-                .map(|d| {
-                    let note = match d.outcome {
-                        SubmitOutcome::Applied { .. } => format!("Saved {} ({} images).", d.path, d.images),
-                        SubmitOutcome::Proposed { .. } => format!("Suggested {} for review.", d.path),
-                    };
-                    (d.path, note)
-                })
-                .map_err(|e| e.to_string());
-            let _ = tx.send(res);
-        });
+        std::thread::Builder::new()
+            .name("quire-mcp-check".into())
+            .spawn(move || {
+                let store = AgentStore::open(&vault, quire_app::device::this_device(), std::sync::Arc::new(SystemClock));
+                let actor = Actor::import("url", &store.device().id);
+                let res = quire_mcp::capture::capture(&vault, &store, &actor, &url, &quire_mcp::capture::Options::default())
+                    .map(|d| {
+                        let note = match d.outcome {
+                            SubmitOutcome::Applied { .. } => format!("Saved {} ({} images).", d.path, d.images),
+                            SubmitOutcome::Proposed { .. } => format!("Suggested {} for review.", d.path),
+                        };
+                        (d.path, note)
+                    })
+                    .map_err(|e| e.to_string());
+                let _ = tx.send(res);
+            })
+            .expect("the system starts a thread");
         self.busy = Some(rx);
         self.error = None;
     }

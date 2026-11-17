@@ -483,7 +483,7 @@ pub(crate) fn view(ui: &mut Ui, ws: &Workspace, pal: &Palette, spec: &ViewSpec, 
             let h = row
                 .date
                 .as_deref()
-                .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+                .and_then(quire_base::time::parse_ymd)
                 .map_or_else(|| "No date".into(), |d| d.format("%A %-d %B %Y").to_string());
             if last.as_ref() != Some(&h) {
                 heading(ui, &h, last.is_none());
@@ -533,12 +533,7 @@ fn view_row(ui: &mut Ui, ws: &Workspace, pal: &Palette, spec: &ViewSpec, row: &V
                     ws.plan_request(Action::OpenAt { path: row.path.clone(), offset: 0 });
                 }
                 let mut bits: Vec<String> = Vec::new();
-                if let Some(d) = row
-                    .date
-                    .as_deref()
-                    .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
-                    .filter(|_| spec.layout != Layout::Timeline)
-                {
+                if let Some(d) = row.date.as_deref().and_then(quire_base::time::parse_ymd).filter(|_| spec.layout != Layout::Timeline) {
                     bits.push(relative(d, today));
                 }
                 bits.extend(extra.iter().map(|s| (*s).to_string()));

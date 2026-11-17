@@ -120,28 +120,31 @@ pub(crate) fn speller(lang: &str, ctx: &egui::Context) -> Option<Arc<Speller>> {
     }
     slots.insert(lang.to_string(), Slot::Loading);
     let (lang, ctx) = (lang.to_string(), ctx.clone());
-    std::thread::spawn(move || {
-        // A bad dictionary file on the system mustn't leave spelling stuck "loading".
-        let loaded = std::panic::catch_unwind(|| Speller::load(&lang))
-            .unwrap_or_else(|_| Err(quire_spell::SpellError::UnknownLanguage(lang.clone())));
-        let slot = match loaded {
-            Ok(s) => {
-                if let Some(path) = user_dictionary_path()
-                    && path.parent().is_none_or(|d| std::fs::create_dir_all(d).is_ok())
-                    && let Ok(dict) = UserDictionary::load(path)
-                {
-                    s.set_user_dictionary(dict);
+    std::thread::Builder::new()
+        .name("quire-spell-load".into())
+        .spawn(move || {
+            // A bad dictionary file on the system mustn't leave spelling stuck "loading".
+            let loaded = std::panic::catch_unwind(|| Speller::load(&lang))
+                .unwrap_or_else(|_| Err(quire_spell::SpellError::UnknownLanguage(lang.clone())));
+            let slot = match loaded {
+                Ok(s) => {
+                    if let Some(path) = user_dictionary_path()
+                        && path.parent().is_none_or(|d| std::fs::create_dir_all(d).is_ok())
+                        && let Ok(dict) = UserDictionary::load(path)
+                    {
+                        s.set_user_dictionary(dict);
+                    }
+                    for w in EVERYDAY {
+                        s.ignore(w);
+                    }
+                    Slot::Ready(Arc::new(s))
                 }
-                for w in EVERYDAY {
-                    s.ignore(w);
-                }
-                Slot::Ready(Arc::new(s))
-            }
-            Err(_) => Slot::Failed,
-        };
-        registry().lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(lang, slot);
-        ctx.request_repaint();
-    });
+                Err(_) => Slot::Failed,
+            };
+            registry().lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(lang, slot);
+            ctx.request_repaint();
+        })
+        .expect("the system starts a thread");
     None
 }
 

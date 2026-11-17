@@ -947,16 +947,19 @@ impl CanvasSurface {
             let bytes = self.vault.as_ref().and_then(|v| v.storage().read_bytes(path).ok());
             let (tx, rx) = crossbeam_channel::bounded(1);
             let c = ctx.clone();
-            std::thread::spawn(move || {
-                let img = bytes.and_then(|b| {
-                    let doc = quire_pdf::PdfDoc::open(b).ok()?;
-                    let w = doc.page_info(0).ok()?.width.max(1.0);
-                    let img = quire_pdf::render_page(&doc, 0, 360.0 / w).ok()?;
-                    Some(egui::ColorImage::from_rgba_unmultiplied([img.width as usize, img.height as usize], &img.rgba))
-                });
-                let _ = tx.send(img);
-                c.request_repaint();
-            });
+            std::thread::Builder::new()
+                .name("quire-canvas-image".into())
+                .spawn(move || {
+                    let img = bytes.and_then(|b| {
+                        let doc = quire_pdf::PdfDoc::open(b).ok()?;
+                        let w = doc.page_info(0).ok()?.width.max(1.0);
+                        let img = quire_pdf::render_page(&doc, 0, 360.0 / w).ok()?;
+                        Some(egui::ColorImage::from_rgba_unmultiplied([img.width as usize, img.height as usize], &img.rgba))
+                    });
+                    let _ = tx.send(img);
+                    c.request_repaint();
+                })
+                .expect("the system starts a thread");
             self.previews.pdf.insert(path.clone(), PdfThumb::Pending(rx));
         }
         let entry = self.previews.pdf.get_mut(path)?;

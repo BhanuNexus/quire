@@ -34,6 +34,7 @@ use quire_app::{Command, Workspace};
 use quire_assistant::acp::{AcpAgent, AcpClient, AcpEvent, PermissionAnswer, PermissionRequest, VaultHost};
 use quire_assistant::conversation::{self, Conversation, Item};
 use quire_assistant::runner::{self, Capability, RunEvent, RunLimits, RunSpec, ToolHost};
+use quire_base::time::now_ms;
 
 use crate::panels::PanelOut;
 use crate::registry::FeatureUi;
@@ -147,10 +148,6 @@ impl AgentPanelUi {
         }
         self.model.as_ref().and_then(|(_, _, m)| m.clone())
     }
-}
-
-fn now_ms() -> i64 {
-    chrono::Utc::now().timestamp_millis()
 }
 
 /// Whether the tab is offered.
@@ -951,7 +948,10 @@ impl AgentPanelUi {
             prompt.push_str(&runner::mentions_message(&notes, &tags, &[]));
             prompt.push_str(text);
             let slot = Arc::clone(&self.acp);
-            std::thread::spawn(move || run_acp(&a, &root, &prompt, &agent, &device, &slot, &cancel, &tx));
+            std::thread::Builder::new()
+                .name("quire-acp".into())
+                .spawn(move || run_acp(&a, &root, &prompt, &agent, &device, &slot, &cancel, &tx))
+                .expect("the system starts a thread");
             return;
         }
         let Some((model, provider, tier)) = model else { return };
@@ -969,40 +969,43 @@ impl AgentPanelUi {
         let max_steps = ws.settings.agent_panel.max_steps.max(1);
         let read_only = !self.agent_mode;
         let label = format!("Agent panel ({})", model.name());
-        std::thread::spawn(move || {
-            let actor = runner::panel_actor(&provider, &label, Some(model.name()), &device);
-            runner::grant(&agent, &actor, cap);
-            let host = if cap == Capability::ChatOnly {
-                None
-            } else {
-                let mut slot = host_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                let key = root.clone().unwrap_or_default();
-                match slot.as_ref() {
-                    Some((k, h)) if *k == key => Some(Arc::clone(h)),
-                    _ => {
-                        let h = Arc::new(ToolHost::open(vault, root.as_deref(), agent.clone()));
-                        *slot = Some((key, Arc::clone(&h)));
-                        Some(h)
+        std::thread::Builder::new()
+            .name("quire-agent-panel".into())
+            .spawn(move || {
+                let actor = runner::panel_actor(&provider, &label, Some(model.name()), &device);
+                runner::grant(&agent, &actor, cap);
+                let host = if cap == Capability::ChatOnly {
+                    None
+                } else {
+                    let mut slot = host_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let key = root.clone().unwrap_or_default();
+                    match slot.as_ref() {
+                        Some((k, h)) if *k == key => Some(Arc::clone(h)),
+                        _ => {
+                            let h = Arc::new(ToolHost::open(vault, root.as_deref(), agent.clone()));
+                            *slot = Some((key, Arc::clone(&h)));
+                            Some(h)
+                        }
                     }
-                }
-            };
-            let core = model.locality() == quire_app::intel::chat::Locality::Device;
-            let spec = RunSpec {
-                model: model.as_ref(),
-                host: host.as_deref(),
-                actor: &actor,
-                capability: cap,
-                core_tools: core,
-                read_only,
-                limits: RunLimits { max_steps, max_tokens: 0 },
-                system: runner::system_for(&agent, !read_only && cap != Capability::ChatOnly, cap != Capability::ChatOnly),
-                max_reply_tokens: if core { 1024 } else { 2048 },
-            };
-            runner::run(&spec, &mut messages, &cancel, &mut |ev| {
-                let _ = tx.send(Msg::Run(ev));
-            });
-            let _ = tx.send(Msg::Finished { messages: Some(messages), error: None });
-        });
+                };
+                let core = model.locality() == quire_app::intel::chat::Locality::Device;
+                let spec = RunSpec {
+                    model: model.as_ref(),
+                    host: host.as_deref(),
+                    actor: &actor,
+                    capability: cap,
+                    core_tools: core,
+                    read_only,
+                    limits: RunLimits { max_steps, max_tokens: 0 },
+                    system: runner::system_for(&agent, !read_only && cap != Capability::ChatOnly, cap != Capability::ChatOnly),
+                    max_reply_tokens: if core { 1024 } else { 2048 },
+                };
+                runner::run(&spec, &mut messages, &cancel, &mut |ev| {
+                    let _ = tx.send(Msg::Run(ev));
+                });
+                let _ = tx.send(Msg::Finished { messages: Some(messages), error: None });
+            })
+            .expect("the system starts a thread");
     }
 }
 

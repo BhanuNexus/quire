@@ -453,7 +453,7 @@ fn chips(ui: &mut Ui, ws: &Workspace, pal: &Palette, b: &Board<'_>, field: &str,
         });
     }
     if field != "due" {
-        let d = due.as_deref().and_then(|d| NaiveDate::parse_from_str(d.get(..10)?, "%Y-%m-%d").ok());
+        let d = due.as_deref().and_then(quire_base::time::parse_ymd_prefix);
         let (text, color) = match d {
             Some(d) if d < today => (format!("due {}", crate::agenda_ui::relative(d, today)), pal.danger),
             Some(d) => (format!("due {}", crate::agenda_ui::relative(d, today)), pal.text),

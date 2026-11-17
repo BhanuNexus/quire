@@ -419,9 +419,9 @@ pub(crate) fn settings_tab(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut Featu
                         let name = m.name().to_string();
                         let (tx, rx) = mpsc::channel();
                         if let Some(vault) = vault {
-                            std::thread::spawn(move || {
+                            std::thread::Builder::new().name("quire-trust".into()).spawn(move || {
                                 let _ = tx.send(quire_app::trust_jobs::claims::estimate(&vault, &notes, &name));
-                            });
+                            }).expect("the system starts a thread");
                             st.estimate = Some(rx);
                         }
                     } else {
