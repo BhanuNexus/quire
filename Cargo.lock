@@ -6180,7 +6180,6 @@ dependencies = [
  "notify",
  "quire-base",
  "quire-markdown",
- "quire-sync",
  "serde",
  "serde_json",
  "sha2",

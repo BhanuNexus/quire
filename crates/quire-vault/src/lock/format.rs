@@ -118,14 +118,14 @@ impl FolderKey {
     /// characters and a 4-character check, in groups of four), as Quire
     /// Sync writes its recovery key.
     pub fn recovery_key(&self) -> String {
-        quire_sync::VaultKey::from_bytes(self.0).recovery_key().to_string()
+        quire_base::recovery::encode(&self.0)
     }
 
     /// The key a recovery key stands for (its own checksum checked; whether
     /// it opens a folder is [`KeyFile::check_key`]).
     pub fn from_recovery_key(text: &str) -> Result<Self, LockError> {
-        let k = quire_sync::VaultKey::from_recovery_key(text).map_err(|_| LockError::BadRecoveryKey)?;
-        Ok(Self(*k.as_bytes()))
+        let k = zeroize::Zeroizing::new(quire_base::recovery::decode(text).ok_or(LockError::BadRecoveryKey)?);
+        Ok(Self(*k))
     }
 
     /// For the OS keychain ("unlock automatically on this computer").
@@ -511,6 +511,17 @@ pub(crate) use quire_base::enc::{hex, unhex};
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A folder's recovery key is written as Quire Sync writes its own
+    /// (the 0.12 vector), since 0.14 through `quire_base::recovery`.
+    #[test]
+    fn recovery_keys_keep_their_format() {
+        let k = FolderKey::from_bytes([42; 32]);
+        let rk = "58N2-MAHA-58N2-MAHA-58N2-MAHA-58N2-MAHA-58N2-MAHA-58N2-MAHA-58N0-ME2E";
+        assert_eq!(k.recovery_key(), rk);
+        assert_eq!(FolderKey::from_recovery_key(&rk.to_lowercase()).unwrap().0, [42; 32]);
+        assert!(matches!(FolderKey::from_recovery_key("58N2"), Err(LockError::BadRecoveryKey)));
+    }
 
     fn id(b: u8) -> FolderId {
         FolderId([b; 16])
