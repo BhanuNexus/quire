@@ -50,7 +50,7 @@ mod vault_info;
 mod view;
 
 pub use shared::own_pending;
-use shared::*;
+use shared::{stale, window};
 
 /// The read tools, in the design's order (before the canvas tools).
 pub fn tools_before_canvas() -> Vec<Box<dyn Tool>> {

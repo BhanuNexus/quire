@@ -54,7 +54,7 @@ mod shared;
 mod str_replace;
 
 pub(crate) use shared::edit;
-use shared::*;
+use shared::{EXPECTED, props, run_arg, submit, title_for};
 
 /// The write tools after the canvas ones, in the design's order.
 pub fn tools() -> Vec<Box<dyn Tool>> {

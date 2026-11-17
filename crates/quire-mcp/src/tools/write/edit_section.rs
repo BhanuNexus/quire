@@ -4,7 +4,10 @@
 //!
 //! Its definition (name, schema, description) and its handler sit together.
 
-use super::*;
+use super::{
+    Access, Annotations, CallExt, EXPECTED, EditOp, SectionMode, Tool, ToolCx, ToolOutput, Value, edit, json, outcome_schema, props, req,
+    s, tool,
+};
 
 pub(super) fn register() -> Box<dyn Tool> {
     let o = outcome_schema;

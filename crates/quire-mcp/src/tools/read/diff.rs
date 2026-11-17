@@ -4,7 +4,7 @@
 //!
 //! Its definition (name, schema, description) and its handler sit together.
 
-use super::*;
+use super::{Access, Annotations, CallExt, Tool, ToolCx, ToolOutput, Value, existing, json, tool, unified, version_arg};
 
 pub(super) fn register() -> Box<dyn Tool> {
     let r = Annotations::READ;

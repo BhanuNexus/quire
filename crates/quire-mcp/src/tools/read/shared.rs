@@ -3,7 +3,10 @@
 //! Helpers several read tools share: the stale-version reply, line numbering,
 //! the view window, and the caller's own pending suggestion.
 
-use super::*;
+use super::{
+    ContentHash, Cursor, NotePath, ProposalFilter, ProposalStatus, Start, ToolCx, ToolOutput, Value, bounds, json, line_count, opt,
+    section_lines,
+};
 
 /// The text of the caller's own pending proposal for `path`, if any.
 pub fn own_pending(cx: &ToolCx<'_>, path: &NotePath) -> Option<(quire_agent::ProposalId, String)> {
