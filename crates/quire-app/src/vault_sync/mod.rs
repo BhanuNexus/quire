@@ -14,6 +14,14 @@
 //! `.quire/sync/state.json` the engine's state. The vault key (and a server's
 //! token, or the storage's credentials) live in the OS keychain (or the
 //! private secrets file), never in the vault.
+//!
+//! The code is split by part, each a child module that re-exports its items
+//! here, so paths such as `vault_sync::SyncConfig` do not change:
+//! `config` (what a setup is), `state` (the lock and the engine's files),
+//! `store` (the vault as the engine sees it), `session` (one pass),
+//! `worker` (the background thread), `deletes` (held mass deletes), `setup`
+//! (create, join, move and stop), `workspace` (the `impl Workspace` methods)
+//! and `harden` (devices, key trust, compaction, upgrades).
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
