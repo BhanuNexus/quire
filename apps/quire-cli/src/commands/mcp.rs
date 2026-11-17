@@ -97,7 +97,7 @@ fn stdio(args: &[String]) -> Result<(), String> {
         allow_private_urls: has(args, "--allow-private-urls"),
         // WS-D: the built-in prompts and the person's AI for `ask` in model mode.
         prompts: quire_assistant::prompts::mcp_defs(),
-        chat: quire_app::ai::chat_model(&quire_app::Settings::load()),
+        chat: quire_app::ai::chat_model(&super::load_settings()),
         ..ServerConfig::default()
     };
     let srv = Server::open_with(arg(args, 1)?, cfg)?;
@@ -130,7 +130,7 @@ fn serve_http(args: &[String]) -> Result<(), String> {
             allow_write: true,
             allow_private_urls: has(args, "--allow-private-urls"),
             prompts: quire_assistant::prompts::mcp_defs(),
-            chat: quire_app::ai::chat_model(&quire_app::Settings::load()),
+            chat: quire_app::ai::chat_model(&super::load_settings()),
             ..ServerConfig::default()
         },
     )?;

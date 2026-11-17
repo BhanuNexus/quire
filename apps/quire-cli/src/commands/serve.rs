@@ -138,7 +138,7 @@ fn serve(vault: &Path, args: &[String]) -> Result<(), String> {
             read_only,
             allow_private_urls: has(args, "--allow-private-urls"),
             prompts: quire_assistant::prompts::mcp_defs(),
-            chat: quire_app::ai::chat_model(&quire_app::Settings::load()),
+            chat: quire_app::ai::chat_model(&super::load_settings()),
             ..ServerConfig::default()
         },
     )?;

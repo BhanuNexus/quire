@@ -102,9 +102,12 @@ fn write_sample(dir: &Path) -> std::io::Result<()> {
 impl QuireApp {
     pub(crate) fn new(cc: &eframe::CreationContext<'_>, vault_arg: Option<PathBuf>) -> Self {
         let fonts = theme::install_fonts(&cc.egui_ctx);
-        let settings = Settings::load();
+        let (settings, settings_problem) = Settings::load_reporting();
         let session = Session::path().map(|p| Session::load_from(&p)).unwrap_or_default();
         let mut ws = Workspace::new(settings);
+        if let Some(problem) = settings_problem {
+            ws.notify(NoticeLevel::Warn, problem);
+        }
         // 0.10: "Record voice note…" is offered when this build can record.
         ws.features.ai.voice.can_record = crate::voice_ui::CAN_RECORD;
         // 0.12: a Markdown file as the argument (`quire notes.md`, a file association) opens in

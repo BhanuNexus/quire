@@ -596,6 +596,10 @@ fn features(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette, out: &mut Pane
                     .wrap(),
             );
         }
+        if let Some(e) = ws.index().semantic().as_deref().and_then(|s| s.cache_problem().map(str::to_string)) {
+            let text = format!("Search works, but {e}; the next start embeds the notes again.");
+            ui.add(egui::Label::new(RichText::new(text).size(12.0).color(pal.warn)).wrap());
+        }
     });
 }
 
