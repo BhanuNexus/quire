@@ -13,7 +13,7 @@ use std::fmt::Write as _;
 
 use quire_agent::{Change, ChangeSet, OpKind, SubmitOutcome};
 use quire_app::find::{FindOptions, compile, replace_in_string};
-use quire_app::intel::{extractive_answer, retrieve};
+use quire_app::intel::{extractive_answer, retrieve_where};
 use quire_app::vault::{ContentHash, NotePath};
 use serde_json::{Value, json};
 
@@ -145,9 +145,7 @@ fn resolve(cx: &ToolCx<'_>, note: &str) -> Result<NotePath, String> {
 
 fn search_notes(cx: &ToolCx<'_>, a: &Value) -> ToolOutput {
     let limit = a.get("limit").and_then(Value::as_u64).unwrap_or(10).clamp(1, 50) as usize;
-    let mut hits = cx.index.hybrid_search(&s(a, "query"), limit * 3);
-    hits.retain(|h| visible(cx, &h.path));
-    hits.truncate(limit);
+    let hits = cx.index.hybrid_search_where(&s(a, "query"), limit, &|p| visible(cx, p));
     if hits.is_empty() {
         return ToolOutput::text("No matching notes.");
     }
@@ -208,8 +206,7 @@ fn ask_notes(cx: &ToolCx<'_>, a: &Value) -> ToolOutput {
     let q = s(a, "question");
     let sem = cx.index.semantic();
     let ix = cx.index.read();
-    let mut sources = retrieve(&ix, sem.as_deref(), &q, 6);
-    sources.retain(|src| visible(cx, &src.path));
+    let sources = retrieve_where(&ix, sem.as_deref(), &q, 6, &|p| visible(cx, p));
     let mut out = extractive_answer(&q, &sources, sem.as_deref());
     out.push_str("\n\nSources:\n");
     for src in &sources {

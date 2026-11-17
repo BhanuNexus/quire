@@ -143,6 +143,12 @@ type Candidate = (usize, Option<String>, String, f32, f32);
 
 /// Find the passages most likely to answer `question`.
 pub fn retrieve(ix: &Index, semantic: Option<&SemanticIndex>, question: &str, k: usize) -> Vec<Source> {
+    retrieve_where(ix, semantic, question, k, &|_| true)
+}
+
+/// [`retrieve`] from the notes `keep` accepts (what an agent may see):
+/// other notes take no places and no numbers.
+pub fn retrieve_where(ix: &Index, semantic: Option<&SemanticIndex>, question: &str, k: usize, keep: quire_index::Keep<'_>) -> Vec<Source> {
     let q_terms: Vec<String> = {
         let mut seen = HashSet::new();
         content_tokens(question).filter(|t| seen.insert(t.clone())).take(10).collect()
@@ -152,7 +158,7 @@ pub fn retrieve(ix: &Index, semantic: Option<&SemanticIndex>, question: &str, k:
     let mut cand: HashMap<(NotePath, usize), Candidate> = HashMap::new();
 
     if let Some(sem) = semantic {
-        for (ci, sim) in sem.search(question, 24) {
+        for (ci, sim) in sem.search_where(question, 24, keep) {
             let c = &sem.chunks[ci];
             cand.insert((c.path.clone(), c.range.start), (c.range.end, c.heading.clone(), c.text.clone(), sim, sim));
         }
@@ -163,7 +169,7 @@ pub fn retrieve(ix: &Index, semantic: Option<&SemanticIndex>, question: &str, k:
     // counts for little).
     let mut note_hits: HashMap<NotePath, f32> = HashMap::new();
     for t in &q_terms {
-        for h in ix.search(&format!("{t} "), 30) {
+        for h in ix.search_where(&format!("{t} "), 30, keep) {
             *note_hits.entry(h.path).or_default() += h.score;
         }
     }
@@ -630,6 +636,20 @@ mod tests {
 
     fn sem(ix: &Index) -> SemanticIndex {
         build_lsa_index(ix.paths().iter().flat_map(|p| chunk_note(p, ix.source(p).unwrap())).collect())
+    }
+
+    /// Notes the caller may not see (an agent's deny zone) take no places
+    /// and no numbers: the sources it gets are numbered from 1.
+    #[test]
+    fn retrieve_where_numbers_only_what_it_keeps() {
+        let ix = ix();
+        let sem = sem(&ix);
+        let q = "why is undo cheap with ropes?";
+        let all = retrieve(&ix, Some(&sem), q, 4);
+        let top = all[0].path.clone();
+        let kept = retrieve_where(&ix, Some(&sem), q, 4, &|p| *p != top);
+        assert!(!kept.is_empty() && kept.iter().all(|s| s.path != top), "{kept:?}");
+        assert_eq!(kept.iter().map(|s| s.n).collect::<Vec<_>>(), (1..=kept.len()).collect::<Vec<_>>());
     }
 
     #[test]

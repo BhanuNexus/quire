@@ -4,8 +4,12 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Security
+- **Agents:** `ask` and `search` (and the older `ask_notes` and `search_notes`) no longer give away that notes an agent may not see match its question: hidden notes no longer take numbers in the list of sources ("[3]" first) or places within the requested number of results.
+
 ### Fixed
 - **Skills, properties and settings:** a skill installed with `quire-cli skill install --from` whose front matter ends with `...` now stays untrusted when its `SKILL.md` is copied, any `trust: untrusted` in a note's front matter now wins over another `trust` line, and a property value that starts or ends with a space keeps it. An unreadable settings file is now reported in the app (it was only printed to the terminal), and Settings → AI says when the embedding cache can't be saved.
+- **Quick capture:** a long text no longer pushes the Quick capture dialog past the top and bottom of a small window; the text scrolls inside it, so the buttons stay in reach.
 - **Locked folders:** `quire-cli tags … --write`, `props … --write` and `lint` now keep a locked folder locked when its key file is missing, as the app does: they no longer rewrite a plain note there, or keep a plain copy of it in history.
 
 ## [0.13.2] - 2026-11-17

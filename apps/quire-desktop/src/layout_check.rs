@@ -72,6 +72,12 @@ fn overlays(ws: &mut Workspace) -> Vec<(&'static str, Overlay)> {
         ("palette", Overlay::palette(Mode::Commands)),
         ("quick open", Overlay::palette(Mode::Notes)),
         ("tasks", Overlay::palette(Mode::Tasks)),
+        ("new note from template", Overlay::palette(Mode::Templates)),
+        ("quick capture", Overlay::Capture { text: String::new(), focused: false, minimize: false }),
+        (
+            "quick capture: long text",
+            Overlay::Capture { text: lines(40, "Captured line {} with some words"), focused: false, minimize: true },
+        ),
         ("rename", Overlay::Rename { input: "Long".into(), focused: false }),
         ("delete", Overlay::ConfirmDelete),
         ("open vault", Overlay::OpenVault { input: String::new() }),
@@ -104,6 +110,82 @@ fn overlays(ws: &mut Workspace) -> Vec<(&'static str, Overlay)> {
         v.push(("tour", Overlay::Tour { step }));
     }
     v
+}
+
+/// What kind of dialog `o` is: the variant's name, the palette's mode, or
+/// the type of a dialog in its own file. No `_` arm: a new variant of
+/// `Overlay` or `Mode` doesn't compile until it is named here.
+fn kind(o: &Overlay) -> String {
+    let name = match o {
+        Overlay::Palette { mode, .. } => match mode {
+            Mode::Commands => "Commands",
+            Mode::Notes => "Notes",
+            Mode::Templates => "Templates",
+            Mode::Tasks => "Tasks",
+        },
+        Overlay::Rename { .. } => "Rename",
+        Overlay::ConfirmDelete => "ConfirmDelete",
+        Overlay::OpenVault { .. } => "OpenVault",
+        Overlay::VaultReplace { .. } => "VaultReplace",
+        Overlay::Settings(_) => "Settings",
+        Overlay::History(_) => "History",
+        Overlay::NewProject(_) => "NewProject",
+        Overlay::Publish(_) => "Publish",
+        Overlay::Folder(_) => "Folder",
+        Overlay::Tour { .. } => "Tour",
+        Overlay::SyncConflicts => "SyncConflicts",
+        Overlay::Graph(_) => "Graph",
+        Overlay::Capture { .. } => "Capture",
+        Overlay::Feature(view) => view.type_name().rsplit("::").next().unwrap_or_default(),
+    };
+    name.to_string()
+}
+
+/// The names written in `enum <name> { … }` of `src`: one variant per line.
+fn variants(src: &str, name: &str) -> Vec<String> {
+    let start = src.find(&format!("enum {name} {{")).unwrap_or_else(|| panic!("enum {name} is in the source"));
+    let body = &src[start..];
+    let body = &body[body.find('{').unwrap_or_default() + 1..body.find("\n}").unwrap_or_default()];
+    body.lines()
+        .filter(|l| l.starts_with("    ") && !l.starts_with("     ") && !l.trim_start().starts_with("//"))
+        .filter_map(|l| l.trim().split(|c: char| !c.is_alphanumeric()).next().filter(|w| w.starts_with(char::is_uppercase)))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Every type in the crate's source with `impl OverlayView for <type>`.
+fn overlay_views(dir: &std::path::Path, out: &mut Vec<String>) {
+    for entry in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())).flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            overlay_views(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            let src = std::fs::read_to_string(&path).unwrap_or_default();
+            for l in src.lines() {
+                if let Some((_, rest)) = l.split_once("OverlayView for ")
+                    && l.trim_start().starts_with("impl")
+                {
+                    out.push(rest.split(|c: char| !c.is_alphanumeric() && c != '_').next().unwrap_or_default().to_string());
+                }
+            }
+        }
+    }
+}
+
+/// Every variant of `Overlay` (each palette mode on its own) and every
+/// `OverlayView` in the crate has at least one sample in [`overlays`].
+#[test]
+fn every_kind_of_dialog_has_a_sample() {
+    let mut ws = workspace_with(false);
+    let sampled: std::collections::BTreeSet<String> = overlays(&mut ws).iter().map(|(_, o)| kind(o)).collect();
+    let src = include_str!("overlays.rs");
+    let mut wanted: Vec<String> = variants(src, "Overlay").into_iter().filter(|v| v != "Palette" && v != "Feature").collect();
+    wanted.extend(variants(src, "Mode"));
+    let before = wanted.len();
+    overlay_views(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut wanted);
+    assert!(before >= 17 && wanted.len() >= before + 24, "the source scan found the variants and dialogs: {wanted:?}");
+    let missing: Vec<&String> = wanted.iter().filter(|w| !sampled.contains(*w)).collect();
+    assert!(missing.is_empty(), "add a sample to `layout_samples` (registry.rs) or `overlays` (layout_check.rs) for {missing:?}");
 }
 
 fn input(screen: Rect, frame: usize) -> RawInput {

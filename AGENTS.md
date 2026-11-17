@@ -79,9 +79,9 @@ Each is tagged by what enforces it: `[test]`, `[lint]` (clippy or cargo-deny; th
 - A crate depends only on lower layers (`ARCHITECTURE.md` §3); third-party crates stay in their layer. `[test]` `packaging/check-layering.py`; `[lint]` cargo-deny bans
 - No work before the first frame, and no per-frame disk, index-lock or vault-sized work in `show`/`ui`: cache it. `[test]` CI `perf` job (startup only); `[review only]` per frame
 - Escape, close, quit and lock never drop unsaved text. `[review only]` (tests for canvas and sketch only)
-- A new dialog is an `OverlayView` listed in `layout_samples` (`apps/quire-desktop/src/registry.rs`). `[test]` `layout_check` (listed ones only)
-- A default shortcut must pass `Keymap::conflicts` on all three platforms (AltGr, Option, reserved keys). `[review only]`
-- Every MCP tool that returns paths or titles filters with `common::visible` (`crates/quire-mcp/src/tools/common.rs`). `[test]` for the 0.8 tools only: `the_0_8_tools_respect_deny_zones` and three more in `crates/quire-mcp/tests/security.rs`; newer tools are `[review only]`
+- A new dialog is an `OverlayView` listed in `layout_samples` (`apps/quire-desktop/src/registry.rs`). `[test]` `layout_check`; `every_kind_of_dialog_has_a_sample` fails for an `OverlayView` or `Overlay` variant without a sample
+- A default shortcut must pass `Keymap::conflicts` on all three platforms (AltGr, Option, reserved keys). `[test]` `every_default_shortcut_passes_the_conflict_checker` (`crates/quire-app/src/keymap.rs`; 24 older defaults are listed there with their conflict)
+- Every MCP tool that returns paths, titles, counts or snippets hides what `common::visible` hides; a ranked list ranks only visible notes. `[test]` `crates/quire-mcp/tests/visibility.rs` (every read tool of the registry); `[review only]` for write tools. Known gap: the index's word statistics still count hidden notes (`docs/design/0.14-health-gates.md`)
 - Make file names Windows-safe (reserved names, `:?*`, trailing space or dot): `quire_sync::names`. `[test]` for sync names; `[review only]` for new code
 - A persisted-format change keeps old data loadable and gets a note in `docs/formats/`. `[review only]`
 - No workstream or phase labels (`WS-B`, `F0`) and no bare `design §4.6` in code comments: name the feature, or write `docs/design/<note>.md` §N for a section that exists. `[test]` `packaging/check-comment-labels.sh`

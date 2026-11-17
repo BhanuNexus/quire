@@ -15,6 +15,7 @@ use std::ops::Range;
 
 use quire_vault::NotePath;
 
+use crate::Keep;
 use crate::actor::IndexService;
 use crate::chunk::parts;
 use crate::fulltext::{Query, snippet};
@@ -149,12 +150,12 @@ impl Index {
     }
 
     /// Parts of notes matching `query`'s keywords, best first.
-    fn keyword_parts(&self, q: &Query, allowed: Option<&HashSet<NotePath>>, limit: usize) -> Vec<Cand> {
+    fn keyword_parts(&self, q: &Query, allowed: Option<&HashSet<NotePath>>, keep: Keep<'_>, limit: usize) -> Vec<Cand> {
         let mut notes: Vec<(NotePath, f32)> = self
             .fulltext
             .rank(q)
             .into_iter()
-            .filter(|(p, _)| allowed.is_none_or(|a| a.contains(p)))
+            .filter(|(p, _)| allowed.is_none_or(|a| a.contains(p)) && keep(p))
             .filter(|(p, _)| {
                 let Some(rec) = self.get(p) else { return false };
                 if !q.tags.iter().all(|t| rec.has_tag(t)) {
@@ -214,6 +215,19 @@ impl Index {
     /// Search by section: keyword parts and meaning passages
     /// fused, then attachment pages when `filters.kind` asks for them.
     pub fn search_sections(&self, semantic: Option<&SemanticIndex>, query: &str, filters: &SearchFilters, limit: usize) -> Vec<SectionHit> {
+        self.search_sections_where(semantic, query, filters, limit, &|_| true)
+    }
+
+    /// [`Self::search_sections`] over the notes `keep` accepts: the `limit`
+    /// best of those, so other notes take no places.
+    pub fn search_sections_where(
+        &self,
+        semantic: Option<&SemanticIndex>,
+        query: &str,
+        filters: &SearchFilters,
+        limit: usize,
+        keep: Keep<'_>,
+    ) -> Vec<SectionHit> {
         let q = Query::parse(query);
         if q.is_empty() || limit == 0 {
             return Vec::new();
@@ -221,7 +235,7 @@ impl Index {
         let allowed = self.allowed(filters);
         let mut fused: HashMap<(NotePath, usize), Cand> = HashMap::new();
         if filters.kind != SearchKind::Attachments {
-            for (rank, c) in self.keyword_parts(&q, allowed.as_ref(), limit).into_iter().enumerate() {
+            for (rank, c) in self.keyword_parts(&q, allowed.as_ref(), keep, limit).into_iter().enumerate() {
                 let score = 1.0 / (RRF_K + rank as f32 + 1.0);
                 fused.insert((c.path.clone(), c.range.start), Cand { score, ..c });
             }
@@ -229,7 +243,7 @@ impl Index {
             if q.phrases.is_empty()
                 && let Some(sem) = semantic
             {
-                self.meaning_parts(sem, &q, allowed.as_ref(), &mut fused);
+                self.meaning_parts(sem, &q, allowed.as_ref(), keep, &mut fused);
             }
         }
         let mut hits: Vec<Cand> = fused.into_values().collect();
@@ -265,11 +279,12 @@ impl Index {
         sem: &SemanticIndex,
         q: &Query,
         allowed: Option<&HashSet<NotePath>>,
+        keep: Keep<'_>,
         fused: &mut HashMap<(NotePath, usize), Cand>,
     ) {
         let text: String = q.terms.iter().chain(q.prefix.iter()).cloned().collect::<Vec<_>>().join(" ");
         let mut rank = 0usize;
-        for (ci, sim) in sem.search(&text, 80) {
+        for (ci, sim) in sem.search_where(&text, 80, keep) {
             let c = &sem.chunks[ci];
             let Some(rec) = self.get(&c.path) else { continue };
             let Some(src) = self.source(&c.path) else { continue };
@@ -349,8 +364,13 @@ impl Index {
 impl IndexService {
     /// Search, returning the matching section of each hit.
     pub fn search_sections(&self, query: &str, filters: &SearchFilters, limit: usize) -> Vec<SectionHit> {
+        self.search_sections_where(query, filters, limit, &|_| true)
+    }
+
+    /// [`Self::search_sections`] over the notes `keep` accepts.
+    pub fn search_sections_where(&self, query: &str, filters: &SearchFilters, limit: usize, keep: Keep<'_>) -> Vec<SectionHit> {
         let sem = self.semantic();
-        self.read().search_sections(sem.as_deref(), query, filters, limit)
+        self.read().search_sections_where(sem.as_deref(), query, filters, limit, keep)
     }
 }
 
@@ -364,6 +384,23 @@ mod tests {
         svc.load(quire_vault::Vault::in_memory(notes));
         svc.flush_semantic();
         svc
+    }
+
+    /// A note the caller may not see (an agent's deny zone) takes no place
+    /// in the results: the next note gets it.
+    #[test]
+    fn notes_the_caller_may_not_see_take_no_places() {
+        let s = svc(&[("A.md", "# A\n\nrocket rocket rocket\n"), ("B.md", "# B\n\nrocket\n"), ("C.md", "# C\n\nrocket fuel\n")]);
+        let all = s.search_sections("rocket", &SearchFilters::default(), 1);
+        assert_eq!(all.len(), 1);
+        let top = all[0].path.clone();
+        let keep = |p: &NotePath| *p != top;
+        let kept = s.search_sections_where("rocket", &SearchFilters::default(), 1, &keep);
+        assert!(kept.len() == 1 && kept[0].path != top, "{kept:?}");
+        let words = s.read().search_where("rocket", 1, &keep);
+        assert!(words.len() == 1 && words[0].path != top);
+        let hybrid = s.hybrid_search_where("rocket", 1, &keep);
+        assert!(hybrid.len() == 1 && hybrid[0].path != top);
     }
 
     #[test]

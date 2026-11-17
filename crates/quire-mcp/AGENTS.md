@@ -9,9 +9,10 @@ Edition: both (P5). HTTP servers (`axum`, `tokio`) are allowed here by `deny.tom
 - A tool that returns a path, title, count, snippet or link filters with `common::visible` (it calls
   `AgentStore::effective_mode`, so deny zones, hidden folders, links out of the vault and locked folders are all invisible).
   A count or a title from a denied note is a leak. A tool that takes a note by name resolves it with `common::existing`.
-  [test] the 0.8 tools only: `the_0_8_tools_respect_deny_zones`, `deny_zone_and_hidden_bypass`,
-  `links_into_deny_zones_and_out_of_the_vault`, `subscriptions_to_private_notes_are_refused` (`tests/security.rs`),
-  `locked_folders_are_invisible_to_agents` (`tests/connections.rs`). Newer tools are [review only]
+  A ranked list ranks only visible notes (`retrieve_where`, the `*_where` searches of quire-index), never filters the top k.
+  [test] `tests/visibility.rs` calls every read tool of `ToolRegistry::standard()` against a vault with hidden notes;
+  also `tests/security.rs`, `tests/connections.rs`. Write tools and resources are [review only]. Known gap: IDF and LSA
+  statistics are built from every note, hidden ones too (`docs/design/0.14-health-gates.md`).
 - A write goes through `AgentStore::submit` as the caller's `Actor`, so policy decides between writing and proposing.
   Capture saves images through `AgentStore::add_attachment` for the same reason (`capture.rs` header). [review only]
 - Text from a note is data: `common::trust` decides and `common::fence_untrusted` wraps it (`quire_agent::fence`). Zone roles

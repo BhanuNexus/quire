@@ -7,7 +7,7 @@ One short section per job: where the code goes, what to register, which test mus
 - Add a variant to `Command` and a row to `COMMANDS` (`crates/quire-app/src/commands.rs`). That gives it a palette entry, a menu item and a line in the shortcut list. Pick its `Owner`.
 - Handle it in `Workspace::run` (`workspace.rs`) or in its feature's `*_state.rs` module. The handler goes in `quire-app`, never in `apps/quire-desktop`.
 - Give it no default key unless `Keymap::conflicts` (`keymap.rs`) accepts it on all three platforms: AltGr (`Ctrl+Alt+<letter>` is a letter on German keyboards), Option on macOS, and reserved keys.
-- Tests that must pass: `shortcuts_are_unique` and `every_command_is_registered_once_with_an_owner` (`commands.rs`). Only duplicates are tested for keys; the conflict check is on you.
+- Tests that must pass: `shortcuts_are_unique` and `every_command_is_registered_once_with_an_owner` (`commands.rs`), and `every_default_shortcut_passes_the_conflict_checker` (`keymap.rs`), which fails on any conflict a new default key has.
 - A CLI subcommand is a different thing: a module in `apps/quire-cli/src/commands/` with a `COMMANDS` table, added to `all()` in its `mod.rs`.
 - Add a changelog bullet if a person sees it.
 
@@ -22,7 +22,7 @@ One short section per job: where the code goes, what to register, which test mus
 ## Add a dialog
 
 - Implement `OverlayView` in its own `*_ui.rs` file under `apps/quire-desktop/src/`, and open it through `ui_target` in `registry.rs` (`UiTarget::Overlay`) from a command's `UiRequest::Feature`. Do not grow `dialogs.rs` for a new dialog.
-- Add every interesting state (empty, long text, an error) to `layout_samples` (`registry.rs`). Nothing fails if you forget it, so a dialog left out is never laid out in a test.
+- Add every interesting state (empty, long text, an error) to `layout_samples` (`registry.rs`). `every_kind_of_dialog_has_a_sample` (`layout_check.rs`) fails while a new `OverlayView` or `Overlay` variant has none.
 - Avoid vertical separators and `available_size()` that fill the height: a dialog then grows on every repaint (`layout_check.rs` explains). `cargo test -p quire-desktop layout_check` runs the check.
 - No disk, index-lock or vault-sized work in `show`/`ui` (it runs every frame): compute once and cache it.
 - Escape, close, quit and lock must not drop unsaved text.
@@ -33,7 +33,7 @@ One short section per job: where the code goes, what to register, which test mus
 - Add a file `crates/quire-mcp/src/tools/read/<name>.rs` (or `write/<name>.rs`): a `pub(super) fn register() -> Box<dyn Tool>` holding the `ToolSpec` (name, schemas, access) and the handler next to it.
 - Add it to `tools_before_canvas()` in `tools/read/mod.rs` or `tools()` in `tools/write/mod.rs` (`ToolRegistry::standard()` in `tools/mod.rs` calls them in a fixed order), and add its name to the order test `every_0_9_tool_is_there_in_the_designs_order` in the same file. The test also requires a description of more than 80 characters that contains the word `Example`, and an output schema.
 - Bound every list. Take `limit` with its default and maximum stated in the schema; if the result can exceed `DEFAULT_MAX_TOKENS`, also take `max_tokens` and a cursor (`bounds.rs`).
-- Filter every returned path or title with `common::visible` (hidden folders, deny zones, locked folders). A count or title from a denied note is a leak.
+- Filter every returned path or title with `common::visible` (hidden folders, deny zones, locked folders). A count or title from a denied note is a leak. `crates/quire-mcp/tests/visibility.rs` calls every read tool of the registry against a vault with hidden notes; a ranked list must rank only visible notes (`retrieve_where`, `*_where` in `quire-index`), not filter after taking the top k.
 - Set the access class: `Annotations::READ`, `WRITE` or `CREATE`; write tools are not listed to read-only clients.
 - Update the lists agents read: `skills/quire/SKILL.md`, `docs/agents.md`, `instructions.rs`. Do not add names to `legacy`, whose names are frozen.
 

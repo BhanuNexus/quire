@@ -243,6 +243,12 @@ impl Index {
     }
 
     pub fn search(&self, query: &str, limit: usize) -> Vec<SearchHit> {
+        self.search_where(query, limit, &|_| true)
+    }
+
+    /// [`Self::search`] over the notes `keep` accepts: the `limit` best of
+    /// those, so other notes take no places.
+    pub fn search_where(&self, query: &str, limit: usize, keep: crate::Keep<'_>) -> Vec<SearchHit> {
         let q = Query::parse(query);
         if q.is_empty() {
             return Vec::new();
@@ -253,6 +259,9 @@ impl Index {
             .rank(&q)
             .into_iter()
             .filter(|(path, _)| {
+                if !keep(path) {
+                    return false;
+                }
                 let Some(rec) = self.records.get(path) else { return false };
                 if !q.tags.iter().all(|t| rec.has_tag(t)) {
                     return false;

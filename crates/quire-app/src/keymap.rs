@@ -300,37 +300,82 @@ mod tests {
         assert!(km.duplicates().is_empty(), "the defaults have no duplicates");
     }
 
-    /// 0.11 review L2: no default shortcut is one the checker says can't
-    /// work on some platform, and the 0.11 ones have no conflict at all
-    /// (Ctrl+Alt+T opens a terminal on Linux, Option+N types ñ on a Mac,
-    /// AltGr+Shift+L types Ł in Poland).
+    /// Every built-in default shortcut, checked by the same checker Settings
+    /// uses for a person's own keys, for all three platforms at once.
+    ///
+    /// The defaults below were already flagged when this test was written
+    /// (0.14): each is listed with what the checker says. Any other default
+    /// must have no conflict at all, so a new command's default key fails
+    /// here unless it works everywhere. A listed default that no longer has
+    /// that conflict fails too: take its row out.
     #[test]
-    fn defaults_work_everywhere() {
-        let km = Keymap::new(&CommandSettings::default());
-        // Older defaults the checker flags on one platform, kept as they were.
-        let known = [
-            Command::AddCursorAbove,
-            Command::AddCursorBelow,
-            Command::NextTab,
-            Command::PrevTab,
-            Command::InlineCode,
-            Command::FindReplace,
+    fn every_default_shortcut_passes_the_conflict_checker() {
+        use Command as C;
+        // (command, keys, what the checker says).
+        // Reserved on one platform: the shortcut can't fire there. Kept as they
+        // were before the checker existed (0.11 review L2); changing a default
+        // is a decision for its own release.
+        let blocked: &[(Command, &str, &str)] = &[
+            (C::NextTab, "Ctrl+Tab", "macOS: switching apps and windows"),
+            (C::PrevTab, "Ctrl+Shift+Tab", "macOS: switching apps and windows"),
+            (C::InlineCode, "Ctrl+Backtick", "macOS: switching apps and windows"),
+            (C::FindReplace, "Ctrl+H", "macOS: ⌘H hides the app"),
+            (C::AddCursorAbove, "Ctrl+Alt+ArrowUp", "Linux: switches workspaces on many desktops"),
+            (C::AddCursorBelow, "Ctrl+Alt+ArrowDown", "Linux: switches workspaces on many desktops"),
         ];
-        let flagged: Vec<String> = km
-            .bindings()
-            .iter()
-            .filter(|(combo, action)| km.conflicts(combo, action).iter().any(Conflict::blocks))
-            .filter(|(_, action)| !matches!(action, Action::Command(c) if known.contains(c)))
-            .map(|(combo, action)| format!("{} for {action:?}", combo.label(false)))
-            .collect();
-        assert!(flagged.is_empty(), "{flagged:?}");
-        for cmd in [Command::NewTask, Command::StartStopTimer, Command::LockNow] {
-            let keys = km.keys_of(cmd);
-            assert!(!keys.is_empty(), "{cmd:?} has a key");
-            for combo in keys {
-                assert_eq!(km.conflicts(&combo, &Action::Command(cmd)), vec![], "{cmd:?}: {}", combo.label(false));
+        // Warnings: the shortcut works, but where AltGr (Windows) or Option
+        // (macOS) with the key types a character, the app lets typing win
+        // (`altgr_typed`) or drops the character.
+        let warned: &[(Command, &str, &str)] = &[
+            (C::DailyNote, "Alt+D", "Option"),
+            (C::Scratchpad, "Alt+S", "Option"),
+            (C::ShowTasks, "Alt+T", "Option"),
+            (C::OpenInbox, "Alt+I", "Option"),
+            (C::NextHunk, "Alt+CloseBracket", "Option"),
+            (C::PrevHunk, "Alt+OpenBracket", "Option"),
+            (C::ShowAgenda, "Alt+A", "Option"),
+            (C::ExportPdf, "Ctrl+Alt+E", "AltGr"),
+            (C::ShowHistory, "Ctrl+Alt+H", "AltGr"),
+            (C::NewProject, "Ctrl+Alt+N", "AltGr"),
+            (C::CopyParagraphLink, "Ctrl+Alt+L", "AltGr"),
+            (C::FoldAll, "Ctrl+Alt+OpenBracket", "AltGr"),
+            (C::UnfoldAll, "Ctrl+Alt+CloseBracket", "AltGr"),
+            (C::SplitEditor, "Ctrl+Alt+Backslash", "AltGr"),
+            (C::AcceptHunk, "Ctrl+Alt+Y", "AltGr"),
+            (C::AcceptAllInFile, "Ctrl+Alt+Shift+Y", "AltGr"),
+            (C::StartReview, "Ctrl+Alt+R", "AltGr"),
+            (C::NewCanvas, "Ctrl+Alt+C", "AltGr"),
+        ];
+        let said = |c: &Conflict| match c {
+            Conflict::Taken(a) => format!("taken by {}", a.id()),
+            Conflict::Reserved { platform, why } => format!("{}: {why}", platform.name()),
+            Conflict::AltGr => "AltGr".into(),
+            Conflict::MacOption => "Option".into(),
+        };
+        let km = Keymap::new(&CommandSettings::default());
+        assert!(km.bindings().len() >= 80, "every default of COMMANDS is bound: {}", km.bindings().len());
+        let mut wrong = Vec::new();
+        let mut seen = Vec::new();
+        for (combo, action) in km.bindings() {
+            let Action::Command(cmd) = action else { panic!("the defaults bind no macro") };
+            let got: Vec<String> = km.conflicts(combo, action).iter().map(said).collect();
+            let listed = blocked.iter().chain(warned).find(|(c, k, _)| c == cmd && *k == combo.spec());
+            let want: Vec<String> = listed.map(|(_, _, w)| vec![(*w).to_string()]).unwrap_or_default();
+            if got != want {
+                wrong.push(format!("{cmd:?} {}: the checker says {got:?}, the table {want:?}", combo.spec()));
+            }
+            let blocks = km.conflicts(combo, action).iter().any(Conflict::blocks);
+            if blocks != blocked.iter().any(|(c, k, _)| c == cmd && *k == combo.spec()) {
+                wrong.push(format!("{cmd:?} {}: blocks={blocks}, listed in the wrong table", combo.spec()));
+            }
+            seen.push((*cmd, combo.spec()));
+        }
+        for (c, k, _) in blocked.iter().chain(warned) {
+            if !seen.iter().any(|(sc, sk)| sc == c && sk == k) {
+                wrong.push(format!("{c:?} {k}: no longer a default; take its row out"));
             }
         }
+        assert!(wrong.is_empty(), "a default shortcut must pass `Keymap::conflicts` on every platform:\n{}", wrong.join("\n"));
     }
 
     #[test]

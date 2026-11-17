@@ -45,12 +45,18 @@ impl IndexService {
     /// Keyword + meaning search over notes. Falls back to keywords only
     /// while the semantic index is still building.
     pub fn hybrid_search(&self, query: &str, limit: usize) -> Vec<HybridHit> {
+        self.hybrid_search_where(query, limit, &|_| true)
+    }
+
+    /// [`Self::hybrid_search`] over the notes `keep` accepts: the `limit`
+    /// best of those, so other notes take no places.
+    pub fn hybrid_search_where(&self, query: &str, limit: usize, keep: crate::Keep<'_>) -> Vec<HybridHit> {
         let q = Query::parse(query);
         if q.is_empty() {
             return Vec::new();
         }
         let ix = self.read();
-        let keyword = ix.search(query, 50);
+        let keyword = ix.search_where(query, 50, keep);
         let mut fused: HashMap<NotePath, HybridHit> = HashMap::new();
         for (rank, h) in keyword.into_iter().enumerate() {
             let score = 1.0 / (RRF_K + rank as f32 + 1.0);
@@ -74,7 +80,7 @@ impl IndexService {
         {
             let text_query: String = q.terms.iter().chain(q.prefix.iter()).cloned().collect::<Vec<_>>().join(" ");
             let mut seen: HashMap<NotePath, usize> = HashMap::new();
-            for (ci, sim) in sem.search(&text_query, 80) {
+            for (ci, sim) in sem.search_where(&text_query, 80, keep) {
                 let c = &sem.chunks[ci];
                 let Some(rec) = ix.get(&c.path) else { continue };
                 if !q.tags.iter().all(|t| rec.has_tag(t)) {

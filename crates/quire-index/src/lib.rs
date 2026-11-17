@@ -35,6 +35,11 @@ pub use fuzzy::QuickOpenHit;
 pub use graph::{Backlink, Direction, LinkGraph};
 pub use hybrid::HybridHit;
 pub use index::Index;
+
+/// Which notes a search may return, for a caller that may not see every
+/// note (an agent): a search over the notes it accepts, so the others take
+/// no places in the results.
+pub type Keep<'a> = &'a dyn Fn(&quire_vault::NotePath) -> bool;
 pub use joined::{CrossLinks, Joined};
 pub use record::NoteRecord;
 pub use relations::{Dendron, Hier, LinkConfig, Relation, Relations, TrailMode, TypeStyle};
