@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The first-run AI choice (design §7.1): a two-step dialog after the tour
+//! The first-run AI choice (`docs/design/0.9.md` §7.1): a two-step dialog after the tour
 //! of a new install (and from "Set up AI…"), and a dismissible card above
 //! the note for people upgrading from 0.8.
 //!
@@ -10,7 +10,6 @@
 //! experimental and off (`[ai_local] experimental`), step 1 has only the
 //! first two, and a note in place of the third.
 //!
-//! Owned by WS-D.
 
 use egui::{RichText, Stroke};
 use quire_app::ai::{catalog, installed};

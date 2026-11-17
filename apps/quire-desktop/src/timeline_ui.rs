@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The Thinking timeline tab: claims on a time axis for a topic (design §C.7).
+//! The Thinking timeline tab: claims on a time axis for a topic (`docs/design/0.9.md` §C.7).
 //!
-//! Owned by WS-C. A topic is a tag, a note or words; each claim found in
+//! A topic is a tag, a note or words; each claim found in
 //! the notes' saved versions sits on a vertical axis by day: ● when it
 //! appeared, ○ when it was taken out, ⚡ when another note contradicted it.
 //! Clicking a claim opens its note there. A Preview: claims come from the

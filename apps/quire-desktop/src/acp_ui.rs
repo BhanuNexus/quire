@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Connecting an external agent over ACP (design §D.6): the warning dialog,
+//! Connecting an external agent over ACP (`docs/design/0.9.md` §D.6): the warning dialog,
 //! which must be acknowledged before anything is started, and the
 //! permission dialog shown when the agent asks to do something.
 //!
-//! Owned by WS-D (included by `agent_panel_ui.rs`).
+//! Included by `agent_panel_ui.rs`.
 
 use egui::{RichText, Stroke};
 use quire_app::{Command, Workspace};

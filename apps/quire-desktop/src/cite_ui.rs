@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Citations in the desktop (design §G.3): the "Insert citation" picker,
+//! Citations in the desktop (`docs/design/0.9.md` §G.3): the "Insert citation" picker,
 //! the "Import bibliography" dialog with its dry run, and Settings →
 //! Citations (library files, the PDF export's style, a watched file).
 //!
-//! Owned by WS-G. Registered in `registry.rs` (`ui_target`, `SETTINGS_TABS`,
+//! Registered in `registry.rs` (`ui_target`, `SETTINGS_TABS`,
 //! `layout_samples`).
 
 use std::sync::Arc;

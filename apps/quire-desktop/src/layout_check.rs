@@ -98,7 +98,7 @@ fn overlays(ws: &mut Workspace) -> Vec<(&'static str, Overlay)> {
     for (name, st) in SettingsState::every_tab() {
         v.push((name, Overlay::Settings(Box::new(st))));
     }
-    // Every feature dialog, from each workstream's block in the registry.
+    // Every feature dialog, from each feature area's block in the registry.
     v.extend(crate::registry::layout_samples(ws));
     for step in 0..crate::dialogs::TOUR_STEPS {
         v.push(("tour", Overlay::Tour { step }));

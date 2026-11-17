@@ -48,25 +48,25 @@ pub(crate) struct TabDef {
 /// UI state of every feature's panels, one field per owner file.
 #[derive(Default)]
 pub(crate) struct FeatureUi {
-    // ---- WS-A
+    // ---- Agent
     pub inbox: crate::inbox_ui::InboxUi,
     pub activity: crate::activity_ui::ActivityUi,
     pub agents_settings: crate::agents_settings::AgentsSettingsUi,
-    // ---- WS-B
+    // ---- MCP
     pub mcp: crate::mcp_ui::McpUi,
-    // ---- WS-C
+    // ---- Trust
     pub timeline: crate::timeline_ui::TimelineUi,
     pub trust: crate::trust_ui::TrustSettingsUi,
-    // ---- WS-D
+    // ---- AI
     pub agent_panel: crate::agent_panel_ui::AgentPanelUi,
     pub ai_settings: crate::ai_settings_ui::AiSettingsUi,
-    // ---- WS-E
+    // ---- Planning
     pub agenda: crate::agenda_ui::AgendaUi,
     pub calendar: crate::calendar_ui::CalendarUi,
-    // ---- WS-F
+    // ---- Editor
     pub themes: crate::theme_ui::ThemeUi,
     pub git: crate::git_ui::GitUi,
-    // ---- WS-G
+    // ---- Spatial
     pub canvas: crate::canvas_ui::CanvasUi,
     // ---- 0.11 editor: Settings → Commands and Toolbar, the toolbar, Insights rows
     pub commands: crate::commands_ui::CommandsUi,
@@ -111,23 +111,23 @@ fn insights_tab(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pal: 
 }
 
 pub(crate) const RIGHT_TABS: &[TabDef] = &[
-    // ---- F0 (built in)
+    // ---- Built in
     TabDef { id: INSIGHTS, label: label!("Insights"), available: always, show: insights_tab },
-    // ---- WS-A
+    // ---- Agent
     TabDef { id: "inbox", label: crate::inbox_ui::label, available: crate::inbox_ui::available, show: crate::inbox_ui::show },
     TabDef { id: "activity", label: label!("Activity"), available: crate::activity_ui::available, show: crate::activity_ui::show },
-    // ---- WS-C
+    // ---- Trust
     TabDef { id: "timeline", label: label!("Timeline"), available: crate::timeline_ui::available, show: crate::timeline_ui::show },
-    // ---- WS-D
+    // ---- AI
     TabDef { id: "agent", label: label!("Agent"), available: crate::agent_panel_ui::available, show: crate::agent_panel_ui::show },
-    // ---- WS-E
+    // ---- Planning
     TabDef { id: "agenda", label: label!("Agenda"), available: crate::agenda_ui::available, show: crate::agenda_ui::show },
-    // ---- WS-F
+    // ---- Editor
     TabDef { id: "git", label: crate::git_ui::label, available: crate::git_ui::available, show: crate::git_ui::show },
 ];
 
 pub(crate) const SIDEBAR_TABS: &[TabDef] = &[
-    // ---- WS-E
+    // ---- Planning
     TabDef { id: "agenda", label: label!("Agenda"), available: crate::agenda_ui::available, show: crate::agenda_ui::show },
     TabDef { id: "calendar", label: label!("Calendar"), available: crate::calendar_ui::available, show: crate::calendar_ui::show },
     // ---- 0.12 typed links
@@ -142,19 +142,19 @@ pub(crate) const SIDEBAR_TABS: &[TabDef] = &[
 /// Feature tabs of Settings, after the built-in Editor and Sync tabs (About
 /// comes last). The AI tab is one of them (`id: "ai"`).
 pub(crate) const SETTINGS_TABS: &[TabDef] = &[
-    // ---- WS-A
+    // ---- Agent
     TabDef { id: "agents", label: label!("Agents"), available: crate::agents_settings::available, show: crate::agents_settings::show },
-    // ---- WS-B (HTTP MCP and tokens: a section of the Agents tab, or a tab here)
+    // ---- MCP (HTTP MCP and tokens: a section of the Agents tab, or a tab here)
     TabDef { id: "mcp", label: label!("Connections"), available: crate::mcp_ui::available, show: crate::mcp_ui::show },
-    // ---- WS-C: Ask, citations, staleness and contradictions are in AI → Features
-    // ---- WS-D
+    // ---- Trust: Ask, citations, staleness and contradictions are in AI → Features
+    // ---- AI
     TabDef { id: "ai", label: label!("AI"), available: crate::ai_settings_ui::available, show: crate::ai_settings_ui::show },
-    // ---- WS-E
+    // ---- Planning
     TabDef { id: "planning", label: label!("Planning"), available: crate::agenda_ui::available, show: crate::agenda_ui::settings_tab },
-    // ---- WS-F
+    // ---- Editor
     TabDef { id: "editing", label: label!("Editing"), available: crate::view::settings::available, show: crate::view::settings::show },
     TabDef { id: "appearance", label: label!("Appearance"), available: crate::theme_ui::available, show: crate::theme_ui::show },
-    // ---- WS-G
+    // ---- Spatial
     TabDef {
         id: "citations",
         label: label!("Citations"),
@@ -181,15 +181,15 @@ pub(crate) struct BannerDef {
     pub show: ShowFn,
 }
 
-/// Bars above the note, top to bottom, by workstream.
+/// Bars above the note, top to bottom, by feature area.
 pub(crate) const EDITOR_BANNERS: &[BannerDef] = &[
-    // ---- WS-A: "Claude Code suggests 4 changes · Why … · ◀ Prev  Next ▶ · …"
+    // ---- Agent: "Claude Code suggests 4 changes · Why … · ◀ Prev  Next ▶ · …"
     BannerDef { id: "review", available: crate::inbox_ui::review_ui::banner_available, show: crate::inbox_ui::review_ui::banner },
-    // ---- WS-C: "2 citations in this note no longer match the cited text · Check again"
+    // ---- Trust: "2 citations in this note no longer match the cited text · Check again"
     BannerDef { id: "citations", available: crate::trust_ui::banner_available, show: crate::trust_ui::banner },
-    // ---- WS-D: "New in 0.9: AI is your choice…" for people upgrading from 0.8
+    // ---- AI: "New in 0.9: AI is your choice…" for people upgrading from 0.8
     BannerDef { id: "ai-upgrade", available: crate::onboarding_ui::banner_available, show: crate::onboarding_ui::banner },
-    // ---- WS-G: a canvas open as text (for review): its changes in words
+    // ---- Spatial: a canvas open as text (for review): its changes in words
     BannerDef { id: "canvas-review", available: crate::canvas_ui::banner_available, show: crate::canvas_ui::banner },
     // ---- 0.10 people: an Excalidraw note's picture, read-only
     BannerDef { id: "drawing", available: crate::drawing_ui::banner_available, show: crate::drawing_ui::banner },
@@ -206,9 +206,9 @@ pub(crate) struct HoverDef {
     pub tip: fn(&Workspace, &str, usize) -> Option<String>,
 }
 
-/// Tooltips over the note's text, first match wins, by workstream.
+/// Tooltips over the note's text, first match wins, by feature area.
 pub(crate) const EDITOR_HOVERS: &[HoverDef] = &[
-    // ---- WS-G: a citation's full reference
+    // ---- Spatial: a citation's full reference
     HoverDef { tip: quire_app::citations::hover_text },
 ];
 
@@ -233,9 +233,9 @@ pub(crate) struct InboxKindDef {
     pub actions: fn(&mut egui::Ui, &Workspace, &StoredItem, &Palette) -> Option<InboxAct>,
 }
 
-/// Inbox item kinds with their own text and actions, by workstream.
+/// Inbox item kinds with their own text and actions, by feature area.
 pub(crate) const INBOX_KINDS: &[InboxKindDef] = &[
-    // ---- WS-C: contradictions, staleness, citations
+    // ---- Trust: contradictions, staleness, citations
     InboxKindDef { handles: crate::trust_ui::is_trust_item, body: crate::trust_ui::inbox_body, actions: crate::trust_ui::inbox_actions },
 ];
 
@@ -259,28 +259,28 @@ pub(crate) enum UiTarget {
     Surface(fn() -> Box<dyn crate::surfaces::Surface>),
 }
 
-/// The UI a `UiRequest::Feature(cmd)` opens, by workstream.
+/// The UI a `UiRequest::Feature(cmd)` opens, by feature area.
 pub(crate) const fn ui_target(cmd: Command) -> Option<UiTarget> {
     Some(match cmd {
-        // ---- WS-A
+        // ---- Agent
         Command::OpenInbox | Command::LintVault => UiTarget::Right("inbox"),
         Command::ShowAgentActivity => UiTarget::Right("activity"),
         Command::UndoAgentChanges => UiTarget::Overlay(crate::activity_ui::RevertOverlay::make),
         // 0.11: Connections is a view of the Agents tab (`secure_state` picks it).
         Command::AgentSettings | Command::AgentConnections => UiTarget::Settings("agents"),
-        // ---- WS-B
+        // ---- MCP
         Command::ConnectAgent => UiTarget::Settings("mcp"),
         Command::CaptureWebPage => UiTarget::Overlay(crate::mcp_ui::CaptureDialog::make),
-        // ---- WS-C
+        // ---- Trust
         Command::ThinkingTimeline => UiTarget::Right("timeline"),
-        // ---- WS-D
+        // ---- AI
         Command::ToggleAgentPanel => UiTarget::Right("agent"),
         Command::AiSetup => UiTarget::Overlay(crate::onboarding_ui::OnboardingOverlay::make),
         Command::IngestIntoWiki => UiTarget::Overlay(crate::agent_panel_ui::ingest_ui::IngestDialog::make),
         Command::ConnectExternalAgent => UiTarget::Overlay(crate::agent_panel_ui::acp_ui::ConnectOverlay::make),
         // ---- 0.10 AI
         Command::RecordVoiceNote => UiTarget::Overlay(crate::voice_ui::VoiceDialog::make),
-        // ---- WS-E
+        // ---- Planning
         Command::ShowAgenda => UiTarget::Sidebar("agenda"),
         Command::ShowCalendar => UiTarget::Sidebar("calendar"),
         Command::RenameTag | Command::RenameProperty => UiTarget::Overlay(crate::meta_refactor_ui::RefactorOverlay::make),
@@ -288,10 +288,10 @@ pub(crate) const fn ui_target(cmd: Command) -> Option<UiTarget> {
         // ---- 0.11 tasks
         Command::NewTask => UiTarget::Overlay(crate::task_ui::NewTaskDialog::make),
         Command::TimeReport => UiTarget::Overlay(crate::task_ui::TimeReportOverlay::make),
-        // ---- WS-F
+        // ---- Editor
         Command::ChooseTheme => UiTarget::Settings("appearance"),
         Command::GitTrust => UiTarget::Overlay(crate::git_ui::TrustDialog::make),
-        // ---- WS-G
+        // ---- Spatial
         Command::InsertCitation => UiTarget::Overlay(crate::cite_ui::CitePicker::make),
         Command::ImportBibliography => UiTarget::Overlay(crate::cite_ui::ImportDialog::make),
         // ---- 0.11 security
@@ -325,15 +325,15 @@ pub(crate) fn not_available(ws: &mut Workspace, cmd: Command) {
 /// Draw a feature's widget under a line, in `ui` (as wide as the text).
 /// Returns the height used and an action if one was clicked.
 pub(crate) fn paint_widget(ui: &mut egui::Ui, ws: &Workspace, id: WidgetId, pal: &Palette) -> (f32, Option<ActionId>) {
-    // Route by `id.owner` to the owner's painter, one arm per workstream:
-    // ---- WS-A review toolbars · WS-C citation drift · WS-E task widgets
-    // ---- WS-F embedded editors · WS-G canvas and PDF previews
+    // Route by `id.owner` to the owner's painter, one arm per feature area:
+    // agent review toolbars, trust citation drift, planning task widgets,
+    // editor embedded editors, spatial canvas and PDF previews.
     match id.owner {
-        // ---- WS-A
+        // ---- Agent
         quire_app::Owner::Agent => crate::inbox_ui::review_ui::paint_widget(ui, ws, id, pal),
-        // ---- WS-C: notes under drifted citations
+        // ---- Trust: notes under drifted citations
         quire_app::Owner::Trust => crate::trust_ui::paint_widget(ui, ws, id, pal),
-        // ---- WS-E: Dataview/Tasks results, Kanban boards, template fields
+        // ---- Planning: Dataview/Tasks results, Kanban boards, template fields
         quire_app::Owner::Plan => crate::agenda_ui::paint_widget(ui, ws, id, pal),
         quire_app::Owner::Core => (0.0, None),
         _ => {
@@ -353,9 +353,9 @@ pub(crate) fn has_surface(path: &NotePath) -> bool {
 pub(crate) fn open_surface(path: &NotePath) -> Option<Box<dyn crate::surfaces::Surface>> {
     let ext = path.as_str().rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
     match ext.as_str() {
-        // ---- WS-E: `.base` (Obsidian Bases)
+        // ---- Planning: `.base` (Obsidian Bases)
         "base" => Some(Box::new(crate::base_surface::BaseSurface::new(path))),
-        // ---- WS-G: `.canvas`, `.pdf`, sketches (`.svg`)
+        // ---- Spatial: `.canvas`, `.pdf`, sketches (`.svg`)
         "canvas" => Some(Box::new(crate::canvas_ui::CanvasSurface::new(path))),
         "pdf" => Some(Box::new(crate::pdf_ui::PdfSurface::new(path))),
         "svg" => Some(Box::new(crate::canvas_ui::SketchSurface::new(path))),
@@ -369,28 +369,28 @@ pub(crate) fn open_surface(path: &NotePath) -> Option<Box<dyn crate::surfaces::S
 }
 
 /// Every feature overlay in a state worth checking, for `layout_check`.
-/// Each workstream adds its dialogs (in every interesting state) to its block.
+/// Each feature area adds its dialogs (in every interesting state) to its block.
 #[cfg(test)]
 pub(crate) fn layout_samples(ws: &mut Workspace) -> Vec<(&'static str, crate::overlays::Overlay)> {
     use crate::overlays::Overlay;
     vec![
-        // ---- F0
+        // ---- Built in
         ("shortcuts (feature overlay)", Overlay::Feature(Box::new(crate::overlays::ShortcutsOverlay::default()))),
-        // ---- WS-A
+        // ---- Agent
         ("undo agent changes", Overlay::Feature(crate::activity_ui::RevertOverlay::make(ws))),
         ("undo agent changes: plan", Overlay::Feature(Box::new(crate::activity_ui::RevertOverlay::sample()))),
-        // ---- WS-B
+        // ---- MCP
         ("mcp: consent", crate::mcp_ui::layout_sample(0)),
         ("mcp: consent, error", crate::mcp_ui::layout_sample(1)),
         ("capture web page", crate::mcp_ui::layout_sample(2)),
         ("capture web page, error", crate::mcp_ui::layout_sample(3)),
-        // ---- WS-C
+        // ---- Trust
         ("ask", Overlay::Feature(Box::new(crate::ask_ui::AskOverlay::sample(crate::ask_ui::samples::empty)))),
         ("ask: what do you expect", Overlay::Feature(Box::new(crate::ask_ui::AskOverlay::sample(crate::ask_ui::samples::expect)))),
         ("ask: evidence", Overlay::Feature(Box::new(crate::ask_ui::AskOverlay::sample(crate::ask_ui::samples::evidence)))),
         ("ask: answer", Overlay::Feature(Box::new(crate::ask_ui::AskOverlay::sample(crate::ask_ui::samples::answer)))),
         ("ask: not found", Overlay::Feature(Box::new(crate::ask_ui::AskOverlay::sample(crate::ask_ui::samples::not_found)))),
-        // ---- WS-D
+        // ---- AI
         ("set up AI: choose", Overlay::Feature(crate::onboarding_ui::OnboardingOverlay::make(ws))),
         ("set up AI: chosen", Overlay::Feature(Box::new(crate::onboarding_ui::OnboardingOverlay::sample(1)))),
         ("set up AI: on this computer", Overlay::Feature(Box::new(crate::onboarding_ui::OnboardingOverlay::sample(2)))),
@@ -406,7 +406,7 @@ pub(crate) fn layout_samples(ws: &mut Workspace) -> Vec<(&'static str, crate::ov
         ("voice: recording", Overlay::Feature(Box::new(crate::voice_ui::VoiceDialog::sample(1)))),
         ("voice: transcribing", Overlay::Feature(Box::new(crate::voice_ui::VoiceDialog::sample(2)))),
         ("voice: failed", Overlay::Feature(Box::new(crate::voice_ui::VoiceDialog::sample(3)))),
-        // ---- WS-E
+        // ---- Planning
         ("rename tag", Overlay::Feature(Box::new(crate::meta_refactor_ui::RefactorOverlay::sample(false, false)))),
         ("rename tag: preview", Overlay::Feature(Box::new(crate::meta_refactor_ui::RefactorOverlay::sample(false, true)))),
         ("change a property value: preview", Overlay::Feature(Box::new(crate::meta_refactor_ui::RefactorOverlay::sample(true, true)))),
@@ -418,14 +418,14 @@ pub(crate) fn layout_samples(ws: &mut Workspace) -> Vec<(&'static str, crate::ov
         ("new task", Overlay::Feature(Box::new(crate::task_ui::NewTaskDialog::sample(false)))),
         ("new task: error", Overlay::Feature(Box::new(crate::task_ui::NewTaskDialog::sample(true)))),
         ("time this week", Overlay::Feature(crate::task_ui::TimeReportOverlay::make(ws))),
-        // ---- WS-F
+        // ---- Editor
         ("trust a git repository", Overlay::Feature(Box::new(crate::git_ui::TrustDialog::sample(false, false, false)))),
         ("trust a git repository: automatic settings", Overlay::Feature(Box::new(crate::git_ui::TrustDialog::sample(true, false, false)))),
         ("trust a git repository: error", Overlay::Feature(Box::new(crate::git_ui::TrustDialog::sample(true, true, false)))),
         ("trust a git repository: git folder elsewhere", Overlay::Feature(Box::new(crate::git_ui::TrustDialog::sample(true, false, true)))),
         // ---- 0.11 editor
         ("diagram, full screen", Overlay::Feature(Box::new(crate::diagram_ui::DiagramOverlay::new("graph TD; A-->B".into())))),
-        // ---- WS-G
+        // ---- Spatial
         ("insert citation: no library", Overlay::Feature(Box::new(crate::cite_ui::CitePicker::sample(false)))),
         ("insert citation", Overlay::Feature(Box::new(crate::cite_ui::CitePicker::sample(true)))),
         ("import bibliography", Overlay::Feature(Box::new(crate::cite_ui::ImportDialog::sample(false)))),

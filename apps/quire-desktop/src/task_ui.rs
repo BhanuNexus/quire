@@ -3,8 +3,6 @@
 //! Task notes and time tracking in the desktop app (0.11): the timer
 //! button on task rows and cards, "New task…", "Time this week", and the
 //! agenda's task-note cards, board and calendar.
-//!
-//! Owned by the 0.11 tasks workstream.
 
 use chrono::{Datelike, Duration, Local, NaiveDate};
 use egui::{Id, RichText, Sense, Stroke, Ui};

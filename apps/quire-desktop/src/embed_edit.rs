@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Editing embeds in place (design §F.2).
+//! Editing embeds in place (`docs/design/0.9.md` §F.2).
 //!
 //! A line that is only `![[Note]]`, `![[Note#Heading]]` or `![[Note#^id]]`
 //! gets the embedded text under it, editable. Edits go to the embedded note

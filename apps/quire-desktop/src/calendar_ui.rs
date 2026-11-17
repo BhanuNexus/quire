@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The Calendar sidebar tab: a month grid of periodic notes and due tasks (design §E.4).
+//! The Calendar sidebar tab: a month grid of periodic notes and due tasks (`docs/design/0.9.md` §E.4).
 //!
 //! A dot means the day has a daily note, a ring that tasks are due, and a
 //! darker day that more was written in its note. Clicking a day opens (or
 //! makes) its daily note; clicking a week number, the weekly note. Also the
 //! periodic-notes section of Settings → Planning.
 //!
-//! Owned by WS-E. Registered in `registry.rs`.
+//! Registered in `registry.rs`.
 
 use std::fmt::Write as _;
 

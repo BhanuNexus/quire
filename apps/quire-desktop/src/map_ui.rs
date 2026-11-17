@@ -4,8 +4,6 @@
 //! outline (Natural Earth 1:110m land, bundled). Drag to pan, scroll or
 //! pinch (or + and −) to zoom, click a pin to open its note. Nothing is
 //! fetched from the network.
-//!
-//! Owned by the 0.11 tasks workstream.
 
 use std::fmt::Write as _;
 

@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Hunk review in the editor (design §7.3): the widget under each
+//! Hunk review in the editor (`docs/design/0.9.md` §7.3): the widget under each
 //! suggested change, the bar under a note's title when suggestions wait,
 //! and the review banner above the note (`registry::EDITOR_BANNERS`).
 //!
 //! The lines a hunk replaces are tinted and struck through by the editor
 //! (decorations from `quire_app::agent_state`); this file draws what goes
 //! under them: the agent's lines, **✓ Accept · × Reject · Edit**, the
-//! conflict warning, and the inline editor. Owned by WS-A.
+//! conflict warning, and the inline editor.
 
 use egui::{Align, Color32, Key, KeyboardShortcut, Layout, Modifiers, RichText, Stroke};
 use quire_app::Owner;
@@ -42,7 +42,7 @@ fn tool_button(ui: &mut egui::Ui, label: &str, color: Color32, hint: &str) -> bo
     ui.add(egui::Button::new(RichText::new(label).size(12.5).color(color)).corner_radius(4.0)).on_hover_text(hint).clicked()
 }
 
-/// Draw WS-A's widget `id` under a line. Returns its height and a clicked action.
+/// Draw the review widget `id` under a line. Returns its height and a clicked action.
 pub(crate) fn paint_widget(ui: &mut egui::Ui, ws: &Workspace, id: WidgetId, pal: &Palette) -> (f32, Option<ActionId>) {
     if id.id & 0xFFFF_0000 == TITLE_WIDGET && id.id >> 32 == 0 {
         return title_bar(ui, ws, id.id, pal);
@@ -216,7 +216,7 @@ pub(crate) fn rationale(ui: &mut egui::Ui, p: &Proposal, pal: &Palette) {
     });
 }
 
-/// The red chip on suggestions based on untrusted content (§A.3).
+/// The red chip on suggestions based on untrusted content.
 pub(crate) fn untrusted_chip(ui: &mut egui::Ui, p: &Proposal, pal: &Palette) {
     let Some(src) = &p.untrusted_source else { return };
     let instructions = p.changes.iter().any(|c| {

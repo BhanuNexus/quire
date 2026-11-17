@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Obsidian compatibility in the desktop (design §E.5): `.base` files open
+//! Obsidian compatibility in the desktop (`docs/design/0.9.md` §E.5): `.base` files open
 //! as a view surface; Dataview and Tasks blocks show their results under
 //! the block; Kanban plugin boards show as a board whose cards you drag.
 //!
-//! Owned by WS-E. Registered in `registry.rs` (`open_surface`, `paint_widget`).
+//! Registered in `registry.rs` (`open_surface`, `paint_widget`).
 
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -25,7 +25,7 @@ use crate::surfaces::Surface;
 use crate::theme::Palette;
 use crate::view_ui::ViewAction;
 
-/// Turn what a rendered view asks for into WS-E actions (views drawn here
+/// Turn what a rendered view asks for into planning actions (views drawn here
 /// only see `&Workspace`).
 fn route(ws: &Workspace, a: ViewAction) {
     match a {

@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Rename, merge or delete tags and properties across the vault, with a
-//! preview of every note that changes (design §E.1).
+//! preview of every note that changes (`docs/design/0.9.md` §E.1).
 //!
-//! Owned by WS-E. Opened by "Rename tag…" and "Rename property…"; shown
+//! Opened by "Rename tag…" and "Rename property…"; shown
 //! as a dialog (`registry::UiTarget::Overlay`).
 
 use std::collections::HashSet;

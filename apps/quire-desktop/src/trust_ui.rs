@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Trust tools in the desktop (design §C, §7.2, §7.3), owned by WS-C:
+//! Trust tools in the desktop (`docs/design/0.9.md` §C, §7.2, §7.3):
 //!
 //! * the Inbox's contradiction, staleness and citation items, with their
 //!   actions (registered in `registry::INBOX_KINDS`);

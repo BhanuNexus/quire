@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The canvas editor (design §G.1): a surface for `.canvas` files.
+//! The canvas editor (`docs/design/0.9.md` §G.1): a surface for `.canvas` files.
 //!
 //! Pan (scroll, middle or Space drag, the hand tool), zoom (Ctrl+scroll,
 //! pinch; 10 %–400 %), a grid with snap; select, marquee, move, resize,
@@ -2248,7 +2248,7 @@ impl Surface for CanvasSurface {
     }
 }
 
-/// §9: a 1,000-card canvas, drawn without a window; the time of each pan
+/// `docs/design/0.9.md` §9: a 1,000-card canvas, drawn without a window; the time of each pan
 /// frame at three zoom levels, in ms (the test below and `QUIRE_BENCH=canvas`).
 #[cfg(any(test, feature = "bench"))]
 pub(crate) fn bench_thousand_cards() -> Vec<f64> {
@@ -2713,7 +2713,7 @@ mod tests {
         assert!(Arc::ptr_eq(&shapes, &s.galleys["t"].1));
     }
 
-    /// §9: a 1,000-card canvas draws within budget (release: ≤ 8 ms; this
+    /// `docs/design/0.9.md` §9: a 1,000-card canvas draws within budget (release: ≤ 8 ms; this
     /// dev build of our code is slower, so the bound here is loose).
     #[test]
     fn a_thousand_cards_draw_quickly() {

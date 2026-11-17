@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! "Ask your notes" (design §C.4): a question, optionally what you expect,
+//! "Ask your notes" (`docs/design/0.9.md` §C.4): a question, optionally what you expect,
 //! the evidence grouped by topic, then the answer with its sources, or
 //! "Not found in your notes" with the nearest passages. An answer can be
 //! saved as a note whose citations Quire keeps checking.
 //!
-//! Owned by WS-C (moved out of `overlays.rs`); opened by `UiRequest::Ask`.
+//! Moved out of `overlays.rs`; opened by `UiRequest::Ask`.
 
 use std::collections::HashSet;
 

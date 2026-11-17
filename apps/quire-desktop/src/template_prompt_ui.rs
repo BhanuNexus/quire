@@ -1,10 +1,9 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! A template's questions, asked in place (design §E.3): under a view
+//! A template's questions, asked in place (`docs/design/0.9.md` §E.3): under a view
 //! with `new: Templates/X.md` ("+ New"), and under a note that still has
 //! `{{prompt:…}}` fields to fill in.
 //!
-//! Owned by WS-E.
 
 use std::collections::HashMap;
 

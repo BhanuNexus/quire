@@ -13,8 +13,6 @@
 //!   edits, or the task line's fields).
 //! * "+" in a column makes a note from the view's template, or a task note,
 //!   with the column's value set.
-//!
-//! Owned by the 0.11 tasks workstream.
 
 use chrono::{Duration, Local, NaiveDate};
 use egui::{Color32, Id, Rect, RichText, Sense, Stroke, Ui};

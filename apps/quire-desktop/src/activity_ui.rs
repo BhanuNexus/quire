@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The Agent activity tab: a lane per agent, runs and their events (design §A.9).
+//! The Agent activity tab: a lane per agent, runs and their events (`docs/design/0.9.md` §A.9).
 //!
-//! Owned by WS-A. Built from the ledger of this device and, with shared
+//! Built from the ledger of this device and, with shared
 //! review history, of the other devices: a timeline with one lane per agent
 //! (grouped by device), then the runs, newest first, each opening to its
 //! events. A run from another device is undone here like one from this one.

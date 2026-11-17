@@ -140,7 +140,7 @@ pub(crate) fn show(ui: &mut Ui, ws: &Workspace, pal: &Palette, spec_src: &str, f
                         act = Some(ViewAction::Open(p));
                     }
                 }
-                // WS-E: task rows, agenda and timeline layouts.
+                // Task rows, agenda and timeline layouts.
                 _ if spec.tasks => crate::agenda_ui::view(ui, ws, pal, &spec, r, key),
                 Layout::Agenda | Layout::Timeline => crate::agenda_ui::view(ui, ws, pal, &spec, r, key),
                 Layout::Table => table(ui, pal, &spec, r, key, &mut act),
@@ -148,7 +148,7 @@ pub(crate) fn show(ui: &mut Ui, ws: &Workspace, pal: &Palette, spec_src: &str, f
                 Layout::Calendar => calendar(ui, pal, r, key, &mut act),
             },
         }
-        // WS-E: "+ New" for views with `new: Templates/…`.
+        // "+ New" for views with `new: Templates/…`.
         if let Ok(r) = result.as_ref() {
             crate::template_prompt_ui::new_button(ui, ws, pal, &spec, from, &r.groups, key);
         }

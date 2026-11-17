@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The PDF surface (design §G.2).
+//! The PDF surface (`docs/design/0.9.md` §G.2).
 //!
 //! Full edition: pages are rendered on a worker thread at the zoom and
 //! screen density, the 12 most recent page images are kept, and only pages
@@ -32,7 +32,7 @@ use crate::panels::PanelOut;
 use crate::surfaces::Surface;
 use crate::theme::Palette;
 
-/// Page images kept (design §G.2).
+/// Page images kept.
 const TEXTURES: usize = 12;
 #[cfg_attr(not(feature = "typeset"), expect(dead_code, reason = "Lite shows text only, with no page view"))]
 const GAP: f32 = 16.0;
