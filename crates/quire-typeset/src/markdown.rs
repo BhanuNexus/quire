@@ -46,7 +46,7 @@ pub struct PdfOptions<'a> {
     pub load_image: ImageLoader<'a>,
     /// Paper size.
     pub page: PageSize,
-    /// Citations and the works they cite (design §G.3); `None` for none.
+    /// Citations and the works they cite; `None` for none.
     pub bibliography: Option<Bibliography>,
 }
 

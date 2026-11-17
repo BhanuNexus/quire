@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Recurrence rules (design §E.2): `every month on the 1st`, `every 2 weeks
+//! Recurrence rules (`docs/design/0.9.md` §E.2): `every month on the 1st`, `every 2 weeks
 //! on Mon, Thu`, or `RRULE:` text, as one [`Rule`] type.
 //!
 //! The rules are a subset of RFC 5545: `FREQ` (daily, weekly, monthly,

@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Pandoc-style citations (design §G.3): `[@key]`, `[@key, p. 4]`,
+//! Pandoc-style citations (`docs/design/0.9.md` §G.3): `[@key]`, `[@key, p. 4]`,
 //! `[see @a; @b]`, `[-@key]` (without the author) and `@key` in prose.
 //!
 //! [`scan`] finds them outside code, math, HTML and link targets.

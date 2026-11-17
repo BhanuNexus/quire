@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Spaced repetition (design §E.6): review logs, card state and the FSRS-6
+//! Spaced repetition (`docs/design/0.9.md` §E.6): review logs, card state and the FSRS-6
 //! scheduler.
 //!
 //! Each device appends its reviews to `.quire/shared/srs/<device-id>.jsonl`,

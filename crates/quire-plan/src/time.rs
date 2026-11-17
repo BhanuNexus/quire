@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Time spent on tasks (design 0.11-tasks §2): time entries in a task
+//! Time spent on tasks (`docs/design/0.11-tasks.md` §2): time entries in a task
 //! note's front matter, durations on inline tasks, and the weekly report.
 //!
 //! A task note keeps one entry per work session:

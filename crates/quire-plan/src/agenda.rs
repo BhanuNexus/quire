@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The agenda: overdue tasks, today's, the next seven days, and today's
-//! time blocks (design §E.2).
+//! time blocks (`docs/design/0.9.md` §E.2).
 
 use chrono::{Duration, NaiveDate, NaiveTime};
 use quire_markdown::Task;

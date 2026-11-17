@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Flashcards written in notes (design §E.6).
+//! Flashcards written in notes (`docs/design/0.9.md` §E.6).
 //!
 //! Three forms, in notes tagged `#flashcards` or with `srs: true`:
 //!

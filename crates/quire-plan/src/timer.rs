@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The running task timer and pomodoro cycles (design 0.11-tasks §1).
+//! The running task timer and pomodoro cycles (`docs/design/0.11-tasks.md` §1).
 //!
 //! One timer runs per device. Its state is a small JSON file in the app's
 //! config folder (`quire-app::task_timer` reads and writes it), so a timer

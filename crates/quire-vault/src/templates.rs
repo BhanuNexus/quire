@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Note templates: declarative placeholders, never code (design §E.3, P7).
+//! Note templates: declarative placeholders, never code (`docs/design/0.9.md` §E.3, P7).
 //!
 //! * dates: `{{date}}`, `{{date:%A}}`, `{{date+7d:%Y-%m-%d}}`,
 //!   `{{date:next monday}}`, `{{date-1w}}`; `{{time}}`, `{{time:%H:%M}}`;

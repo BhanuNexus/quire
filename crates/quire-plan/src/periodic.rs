@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Periodic notes: the `[periodic]` section of `.quire/shared/vault.toml`
-//! (design §E.4). Read and written with `VaultPrefs::section("periodic")`.
+//! (`docs/design/0.9.md` §E.4). Read and written with `VaultPrefs::section("periodic")`.
 //!
 //! Every key is optional; [`PeriodicPrefs::resolve`] fills in the defaults,
 //! so a file that sets only `weekly.folder` keeps the other weekly defaults.

@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Task notes: a note that is one task (design 0.9 §E.2, 0.11-tasks §1).
+//! Task notes: a note that is one task (`docs/design/0.9.md` §E.2, 0.11-tasks §1).
 //!
 //! A note is a task when its front matter says `type: task`, or when its
 //! front-matter tags hold the task tag (`task` by default, as TaskNotes
