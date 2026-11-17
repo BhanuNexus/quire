@@ -20,6 +20,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
+use quire_base::enc::hex;
+use quire_base::net::{Redirects, Timeouts};
+use quire_base::time::now_ms;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -138,10 +141,7 @@ impl Manifest {
         }
         self.format = MANIFEST_FORMAT;
         let text = toml::to_string(self).map_err(std::io::Error::other)?;
-        std::fs::create_dir_all(models)?;
-        let tmp = models.join("installed.toml.tmp");
-        std::fs::write(&tmp, text)?;
-        std::fs::rename(tmp, Self::path(models))
+        quire_base::fs::write_atomic(&Self::path(models), text.as_bytes(), quire_base::fs::Options::STATE)
     }
 
     /// Every file of `entry` is on disk and was verified against the hash
@@ -176,18 +176,6 @@ pub fn sha256_file(path: &Path) -> std::io::Result<String> {
     Ok(hex(&h.finalize()))
 }
 
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-}
-
 /// `url` with its scheme and host replaced by `mirror`'s (`""`: unchanged).
 pub fn mirrored(url: &str, mirror: &str) -> String {
     let mirror = mirror.trim().trim_end_matches('/');
@@ -207,15 +195,15 @@ pub struct Downloader {
 
 impl Downloader {
     pub fn new(mirror: &str) -> Self {
-        let agent = ureq::Agent::config_builder()
-            .timeout_connect(Some(Duration::from_secs(20)))
-            .timeout_recv_response(Some(Duration::from_mins(1)))
-            .timeout_per_read(Some(Duration::from_secs(45)))
-            .http_status_as_error(false)
-            .user_agent(concat!("Quire/", env!("CARGO_PKG_VERSION"), " (+models)"))
-            .tls_config(ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build())
-            .build()
-            .into();
+        // No limit for the whole download (models are large); a server that
+        // goes quiet is given up on. Mirrors may redirect to a CDN.
+        let timeouts = Timeouts {
+            connect: Some(Duration::from_secs(20)),
+            reply: Some(Duration::from_mins(1)),
+            per_read: Some(Duration::from_secs(45)),
+            total: None,
+        };
+        let agent = quire_base::net::agent("models", timeouts, Redirects::Follow(10));
         Self { agent, mirror: mirror.to_string() }
     }
 
