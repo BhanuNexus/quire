@@ -3,7 +3,7 @@
 //! Small conversions the importers share: times, tag and page names, and
 //! rewriting text outside code.
 
-use chrono::{DateTime, NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use quire_vault::sanitize_title;
 
 /// `2026-11-01T12:00:00Z` for unix seconds.
@@ -17,7 +17,7 @@ pub(crate) fn parse_time(s: &str) -> Option<i64> {
     if let Ok(d) = DateTime::parse_from_rfc3339(s) {
         return Some(d.timestamp());
     }
-    NaiveDate::parse_from_str(s.get(..10)?, "%Y-%m-%d").ok()?.and_hms_opt(0, 0, 0).map(|d| d.and_utc().timestamp())
+    quire_base::time::parse_ymd_prefix(s)?.and_hms_opt(0, 0, 0).map(|d| d.and_utc().timestamp())
 }
 
 /// A tag Quire can use: no `#`, no spaces.

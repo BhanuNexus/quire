@@ -681,24 +681,7 @@ pub(crate) fn file_name(p: &str) -> &str {
     p.rsplit('/').next().unwrap_or(p)
 }
 
-pub(crate) fn percent_decode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%'
-            && let Some(hex) = b.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok())
-            && let Ok(v) = u8::from_str_radix(hex, 16)
-        {
-            out.push(v);
-            i += 3;
-            continue;
-        }
-        out.push(b[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
+pub(crate) use quire_base::enc::percent_decode_lossy as percent_decode;
 
 #[cfg(test)]
 mod tests {

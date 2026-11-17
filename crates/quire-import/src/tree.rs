@@ -66,39 +66,10 @@ fn is_junk(p: &str) -> bool {
         || p.ends_with("Thumbs.db")
 }
 
-/// Names Windows treats as devices, whatever the extension.
-fn reserved(name: &str) -> bool {
-    let stem = name.split('.').next().unwrap_or(name).trim_end().to_ascii_uppercase();
-    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem.as_bytes()[3].is_ascii_digit())
-}
-
-/// A relative path made of plain names, or why it isn't.
+/// A relative path made of plain names, or why it isn't
+/// ([`quire_base::path::clean_import_entry`] with these limits).
 pub(crate) fn clean_path(raw: &str, limits: &Limits) -> Result<String, &'static str> {
-    let p = raw.replace('\\', "/");
-    if p.chars().any(|c| c == '\0' || c.is_control()) {
-        return Err("a control character in its name");
-    }
-    if p.starts_with('/') || p.as_bytes().get(1) == Some(&b':') {
-        return Err("an absolute path");
-    }
-    let mut parts = Vec::new();
-    for seg in p.split('/') {
-        match seg {
-            "" | "." => {}
-            ".." => return Err("a path that leaves the export (..)"),
-            s if s.len() > limits.max_name => return Err("a name that is too long"),
-            s if reserved(s) => return Err("a name Windows reserves"),
-            s => parts.push(s),
-        }
-    }
-    if parts.is_empty() {
-        return Err("an empty name");
-    }
-    if parts.len() > limits.max_depth + 1 {
-        return Err("folders nested too deeply");
-    }
-    Ok(parts.join("/"))
+    quire_base::path::clean_import_entry(raw, limits.max_name, limits.max_depth)
 }
 
 /// Unix seconds of a zip entry's time (the zip format has no zone: read as UTC).
