@@ -74,6 +74,11 @@ pub(crate) trait OverlayView {
     fn closed(&mut self, ws: &mut Workspace) {
         let _ = ws;
     }
+    /// The dialog's type: `layout_check` checks that every one has a sample.
+    #[cfg(test)]
+    fn type_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
 }
 
 impl Overlay {
