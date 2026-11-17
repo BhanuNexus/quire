@@ -6,7 +6,7 @@ For an agent or a person starting cold. (Not the `AGENTS.md` a user keeps in a *
 
 - A local-first notes app in Rust (AGPL-3.0-or-later): plain Markdown files in a folder you own. An egui desktop app (`apps/quire-desktop`) and a CLI (`apps/quire-cli`); `quire-cli serve` is the web app and the MCP server; `apps/quire-sync-server` is the optional end-to-end encrypted sync server.
 - Offline by default; no plugins; no AI without opt-in. **Two editions:** full, and Lite (`--no-default-features` on the desktop and CLI: no math, Mermaid, PDF export or voice). Both are built, tested and released; persisted formats never depend on the edition (P5).
-- The crates and their layers: `ARCHITECTURE.md` §3 (checked against `cargo metadata` in CI). Each risky crate has its own `AGENTS.md`: read it before changing that crate.
+- The crates and their layers: `ARCHITECTURE.md` §3 (checked against `cargo metadata` in CI). Nested `AGENTS.md` files hold the rules of the risky crates: `crates/quire-vault`, `crates/quire-sync`, `crates/quire-app`, `crates/quire-mcp`, `crates/quire-agent` and `apps/quire-desktop`. Read the one next to `Cargo.toml` before changing that crate.
 
 ## Where to start
 
@@ -68,20 +68,20 @@ From `docs/design/0.9.md` §1; code review checks them.
 
 Each is tagged by what enforces it: `[test]`, `[lint]` (clippy or cargo-deny; the message says what to use) or `[review only]` (you are the check).
 
-- Write every persisted file atomically: `Storage::write_bytes_atomic` (vault), `quire_base::fs::write_atomic` (app state). Never `fs::write`, `fs::rename`, `File::create` or tempfile `persist`. `[lint]` disallowed-methods <!-- verify after merge -->
+- Write every persisted file atomically: `Storage::write_bytes_atomic` (vault), `quire_base::fs::write_atomic` (app state: `Options::STATE`, secrets: `Options::SECRET`). Never `fs::write`, `fs::rename`, `File::create` or tempfile `persist`. `[lint]` disallowed-methods in `clippy.toml`
 - When the new bytes depend on what you read, use `Storage::write_bytes_if` (compare-and-swap), not read then write. `[review only]`
 - A failed listing or read is an error, never "empty" or "all deleted": sync turns missing notes into deletes. `[test]` `a_listing_that_lost_a_folder_is_retried_then_refused` and the held-deletes tests
-- Open a vault with `secure_state::open_vault`, never `Vault::open_local` (keeps locked folders locked). `[lint]` disallowed-methods <!-- verify after merge -->
-- Parse YAML only through `frontmatter::load_yaml` (nesting limit). `[lint]` disallowed-methods <!-- verify after merge -->
-- Network only through the shared HTTP client builder in `quire_base`, and only in crates `deny.toml` names. `[lint]` disallowed-methods and cargo-deny bans <!-- verify after merge -->
-- Start a process only with `git::run_git` (git) or a stated reason; libraries return errors instead of `process::exit`. `[lint]` disallowed-methods <!-- verify after merge -->
-- Random bytes come from the one function that returns an error; never carry on with zeros. `[lint]` disallowed-methods <!-- verify after merge -->
+- Open a vault with `quire_app::secure_state::open_vault`, never `Vault::open_local` (keeps locked folders locked). `[lint]` disallowed-methods
+- Parse YAML only through `quire_markdown::frontmatter::load_yaml` (nesting limit of 64). `[lint]` disallowed-methods
+- Network only through `quire_base::net::agent` or `config` (the `net` feature), and only in crates `deny.toml` names for `ureq`. `[lint]` disallowed-methods and cargo-deny bans
+- Start a process only with `quire_app::git::run_git` (git) or an `#[expect]` that states the reason; libraries return errors instead of `process::exit`. `[lint]` disallowed-methods
+- Random bytes come from `quire_base::rand::fill` or `bytes`, which return an error; never carry on with zeros. `[lint]` disallowed-methods
 - A crate depends only on lower layers (`ARCHITECTURE.md` §3); third-party crates stay in their layer. `[test]` `packaging/check-layering.py`; `[lint]` cargo-deny bans
 - No work before the first frame, and no per-frame disk, index-lock or vault-sized work in `show`/`ui`: cache it. `[test]` CI `perf` job (startup only); `[review only]` per frame
 - Escape, close, quit and lock never drop unsaved text. `[review only]` (tests for canvas and sketch only)
 - A new dialog is an `OverlayView` listed in `layout_samples` (`apps/quire-desktop/src/registry.rs`). `[test]` `layout_check` (listed ones only)
 - A default shortcut must pass `Keymap::conflicts` on all three platforms (AltGr, Option, reserved keys). `[review only]`
-- Every MCP tool that returns paths or titles filters with `common::visible`. `[test]` four named tests in `crates/quire-mcp/tests/security.rs` <!-- verify after merge -->
+- Every MCP tool that returns paths or titles filters with `common::visible` (`crates/quire-mcp/src/tools/common.rs`). `[test]` for the 0.8 tools only: `the_0_8_tools_respect_deny_zones` and three more in `crates/quire-mcp/tests/security.rs`; newer tools are `[review only]`
 - Make file names Windows-safe (reserved names, `:?*`, trailing space or dot): `quire_sync::names`. `[test]` for sync names; `[review only]` for new code
 - A persisted-format change keeps old data loadable and gets a note in `docs/formats/`. `[review only]`
 

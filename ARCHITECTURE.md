@@ -96,7 +96,7 @@ quire/
 └── sample-vault/              # demo notes used by tests and screenshots
 ```
 
-The tree above is abridged. The table below is the **layer table**: all 22 workspace members (plus `quire-base`, planned) with their layer and the workspace crates each depends on directly (normal and build dependencies, any feature, from `cargo metadata --no-deps`; **dev-dependencies are not counted**).
+The tree above is abridged. The table below is the **layer table**: all 23 workspace members with their layer and the workspace crates each depends on directly (normal and build dependencies, any feature, from `cargo metadata --no-deps`; **dev-dependencies are not counted**).
 
 **This table is the one place the layers are written down.** `packaging/check-layering.py` (CI's `packaging` job) reads it and compares it with `cargo metadata`, so a new crate, a new dependency or a wrong layer fails CI until the table is edited. The rules it enforces:
 
