@@ -214,9 +214,9 @@ fn refuses_folders_it_cant_lock() {
     for bad in ["", "/", ".quire", "Templates", "Templates/Sub", "a/../b"] {
         assert!(refuse_to_lock(&v, bad).is_some(), "{bad:?}");
     }
-    // 0.14, quire_base::path::Rule::VaultFolder: a drive, `:` and control
-    // characters too (a folder Windows can't have, or outside the vault).
-    for bad in ["C:/x", "c:x", "a:b", "a\u{7}b"] {
+    // 0.14, quire_base::path::Rule::VaultFolder: a drive and control
+    // characters too (outside the vault, or a name no system shows).
+    for bad in ["C:/x", "c:x", "a\u{7}b"] {
         assert!(refuse_to_lock(&v, bad).is_some(), "{bad:?}");
     }
     lock(&v);

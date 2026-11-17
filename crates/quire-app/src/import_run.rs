@@ -429,19 +429,20 @@ mod tests {
         let plan = undo_plan(&v, &rec);
         assert_eq!(plan.trash, vec![NotePath::new("Imported/Ok.md")]);
         assert!(!valid_id("i_../x") && !valid_id("../x") && valid_id("i_17"));
-        // 0.14, quire_base::path::Rule::PlainNote: a name with `:` or a
-        // control character is not one an import makes; left alone.
-        let v = Vault::in_memory(&[("Imported/a:b.md", "x"), ("Imported/c\u{7}.md", "y")]);
+        // 0.14, quire_base::path::Rule::PlainNote: a name with a control
+        // character is not one an import makes; left alone. A `:` in a
+        // name is a name.
+        let v = Vault::in_memory(&[("Imported/Q1: Plans.md", "x"), ("Imported/c\u{7}.md", "y")]);
         let rec = ImportRecord {
             id: "i_6".into(),
             folder: "Imported".into(),
             notes: vec![
-                Item { path: NotePath::new("Imported/a:b.md"), hash: ContentHash::of("x") },
+                Item { path: NotePath::new("Imported/Q1: Plans.md"), hash: ContentHash::of("x") },
                 Item { path: NotePath::new("Imported/c\u{7}.md"), hash: ContentHash::of("y") },
             ],
             ..ImportRecord::default()
         };
-        assert_eq!(undo_plan(&v, &rec), UndoPlan::default());
+        assert_eq!(undo_plan(&v, &rec).trash, vec![NotePath::new("Imported/Q1: Plans.md")]);
     }
 
     #[test]

@@ -10,8 +10,9 @@
 //! | Rule | For | Hidden segments | `:` | Control chars |
 //! |---|---|---|---|---|
 //! | [`Rule::NoteFile`] | a file an agent or the web app names | only `.quire` (policy then decides) | no | no |
-//! | [`Rule::VaultFolder`] | a folder new notes go to, a folder to lock or sync | no | no | no |
-//! | [`Rule::PlainNote`] | a file Quire may remove for an import's undo | no, not even `.quire` | no | no |
+//! | [`Rule::VaultFolder`] | a folder to lock or to sync | no | in a name, not as a drive | no |
+//! | [`Rule::ViewFolder`] | a folder a shared view makes notes in | no | no | no |
+//! | [`Rule::PlainNote`] | a file Quire may remove for an import's undo | no, not even `.quire` | in a name, not as a drive | no |
 //! | [`Rule::BucketPrefix`] | a folder inside an S3 bucket or WebDAV share | yes | yes | no |
 //! | [`Rule::HideEntry`] | a folder to hide from the web app | yes | yes | yes |
 //! | [`Rule::InsideRoot`] | the last guard before `root.join(path)` | yes | not as a drive | yes |
@@ -35,9 +36,15 @@ pub enum Rule {
     /// hidden segment except `.quire` (any case), which the agent policy
     /// then denies.
     NoteFile,
-    /// A folder of the vault that notes go to, or that is locked or synced:
-    /// as [`Self::NoteFile`], and no hidden segment at all.
+    /// A folder of the vault that is locked or synced: relative, no empty,
+    /// `.`, `..` or hidden segment, no `\` or control character, and not a
+    /// drive (`C:`). A `:` inside a name is fine, as for any note on macOS
+    /// and Linux (`Q1: Plans`).
     VaultFolder,
+    /// A folder new notes go to when a view says so (a view can come from a
+    /// shared file): [`Self::VaultFolder`], and no `:` at all, as the 0.11
+    /// security review chose for it.
+    ViewFolder,
     /// A file Quire removes on someone's behalf without asking (an import's
     /// undo, from a record that could have been edited): the same check as
     /// [`Self::VaultFolder`], so never inside `.quire`.
@@ -93,13 +100,16 @@ impl Rule {
                 if s.is_empty() || s.ends_with('/') {
                     return Err(PathError::NotAFile);
                 }
-                plain(s, |seg| seg.eq_ignore_ascii_case(".quire"))
+                plain(s, |seg| seg.eq_ignore_ascii_case(".quire"), false)
             }
-            Self::VaultFolder | Self::PlainNote => {
+            Self::VaultFolder | Self::PlainNote | Self::ViewFolder => {
                 if s.is_empty() {
                     return Err(PathError::Empty);
                 }
-                plain(s, |_| false)
+                if leaves_root(s) || (self == Self::ViewFolder && s.contains(':')) {
+                    return Err(PathError::NotRelative);
+                }
+                plain(s, |_| false, true)
             }
             Self::BucketPrefix | Self::HideEntry => {
                 if s.is_empty() {
@@ -135,12 +145,13 @@ impl Rule {
 }
 
 /// The shared core of the strict rules, in the order the reasons are
-/// given: control characters, then not relative, then segments.
-fn plain(s: &str, hidden_ok: impl Fn(&str) -> bool) -> Result<(), PathError> {
+/// given: control characters, then not relative, then segments. A `:` is
+/// refused unless `colon_ok` (the caller has refused drives already).
+fn plain(s: &str, hidden_ok: impl Fn(&str) -> bool, colon_ok: bool) -> Result<(), PathError> {
     if s.chars().any(char::is_control) {
         return Err(PathError::ControlCharacter);
     }
-    if s.starts_with('/') || s.contains(':') || s.contains('\\') {
+    if s.starts_with('/') || (!colon_ok && s.contains(':')) || s.contains('\\') {
         return Err(PathError::NotRelative);
     }
     for seg in s.split('/') {
@@ -257,6 +268,12 @@ mod tests {
         let want = ["notes/a.md", "a..b.md", "  notes  "];
         assert_eq!(accepted(Rule::VaultFolder), want);
         assert_eq!(accepted(Rule::PlainNote), want);
+        assert_eq!(accepted(Rule::ViewFolder), want);
+        // A `:` in a name is a name (macOS, Linux); only a view's folder
+        // refuses it, and a drive is refused by all three.
+        assert!(Rule::VaultFolder.accepts("Q1: Plans") && Rule::PlainNote.accepts("Imported/Q1: Plans.md"));
+        assert_eq!(Rule::ViewFolder.check("Q1: Plans"), Err(PathError::NotRelative));
+        assert_eq!(Rule::VaultFolder.check("C:/x"), Err(PathError::NotRelative));
         // `a..b` is a name, not a step up.
         assert!(Rule::VaultFolder.accepts("Projects/v1..v2"));
         assert_eq!(Rule::VaultFolder.check(".quire"), Err(PathError::Hidden));

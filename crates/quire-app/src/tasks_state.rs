@@ -917,13 +917,13 @@ fn set_board(ws: &mut Workspace, target: &BoardTarget, setting: &BoardSetting) {
 }
 
 /// Whether a view's folder is one new notes may go to: the vault's root
-/// (empty), or a [`quire_base::path::Rule::VaultFolder`] (inside the vault,
+/// (empty), or a [`quire_base::path::Rule::ViewFolder`] (inside the vault,
 /// no hidden segment such as `.quire/`, `.trash/`, `.git/`, `x/.drafts/`).
 /// `\` counts as `/`, and a trailing `/` is fine.
 pub(crate) fn safe_new_note_folder(folder: &str) -> Result<(), String> {
     let f = folder.replace('\\', "/");
     let rel = f.strip_suffix('/').unwrap_or(&f);
-    let ok = !f.starts_with('/') && (rel.is_empty() || quire_base::path::Rule::VaultFolder.accepts(rel));
+    let ok = !f.starts_with('/') && (rel.is_empty() || quire_base::path::Rule::ViewFolder.accepts(rel));
     if ok { Ok(()) } else { Err(format!("New notes can't go in “{folder}”: pick a folder inside the vault that isn't hidden")) }
 }
 
@@ -1419,7 +1419,7 @@ mod tests {
         for ok in ["", "Tasks", "Projects/2026", "Notes with spaces", "Tasks/", "Projects\\2026", "v1..v2"] {
             assert!(safe_new_note_folder(ok).is_ok(), "{ok}");
         }
-        // 0.14, quire_base::path::Rule::VaultFolder: an empty segment too.
+        // 0.14, quire_base::path::Rule::ViewFolder: an empty segment too.
         assert!(safe_new_note_folder("a//b").is_err());
         let mut w = ws(&[("A.md", "x\n")]);
         new_note_in(&mut w, ".quire/agent", "Plan", &[]);
