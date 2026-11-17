@@ -6,6 +6,15 @@ iA Writer, the linked‑knowledge model of Obsidian / Logseq, and private, on‑
 "intelligence" — without Electron, without a database lock‑in, and without a network
 round‑trip for anything that matters.
 
+> **How to read this file.** §1 to §8 describe the layers and are kept true
+> (the crate table in §3 is checked against `cargo metadata` by
+> `packaging/check-layering.py`). **§9 to §12 are history**: the extension seams
+> and the v2 and v3 plans of 0.7 and 0.8, kept as a record of what was
+> intended. They are not instructions and not a description of today's code.
+> §9 in particular lists a plugin host; Quire has no plugins (invariant P7 in
+> [AGENTS.md](AGENTS.md)). For which design notes are current, see
+> [docs/design/README.md](docs/design/README.md).
+
 ---
 
 ## 1. Goals and non‑goals
@@ -28,11 +37,11 @@ mobile apps. The architecture leaves seams for each (see §9).
 
 ```
  ┌──────────────────────────────── Frontends (adapters) ───────────────────────────────┐
- │  quire-desktop (egui/eframe)          quire-cli               future: GPUI, TUI, web │
+ │  quire-desktop (egui/eframe)          quire-cli               quire-web (serve)      │
  └───────────────▲───────────────────────────▲───────────────────────────────────────────┘
                  │ Commands / Actions        │
  ┌───────────────┴───────────────────────────┴───────────── Application ─────────────────┐
- │  quire-app   Workspace · Document · CommandRegistry · Settings · Session · Events     │
+ │  quire-app   Workspace · Document · Command · Settings · Session · Features              │
  └──────▲──────────────▲──────────────────▲────────────────────▲────────────────────────┘
         │              │                  │                    │
  ┌──────┴─────┐ ┌──────┴───────┐ ┌────────┴────────┐ ┌─────────┴─────────┐   Services
@@ -76,7 +85,7 @@ quire/
 │   ├── quire-typeset/         # Typst as a library: LaTeX math → SVG (MiTeX), Mermaid → SVG, Markdown → PDF
 │   ├── quire-spell/           # Markdown-aware spell checking (spellbook, bundled en_US/en_GB, system Hunspell)
 │   └── quire-app/             # application layer, UI‑agnostic
-│       └── src/ lib.rs  document.rs  workspace.rs  commands.rs  settings.rs  session.rs
+│       └── src/ lib.rs  document.rs  workspace.rs  commands.rs  settings/  session.rs
 │                find.rs  find_state.rs  attach.rs  ask_state.rs
 ├── apps/
 │   ├── quire-desktop/         # egui frontend
@@ -129,7 +138,7 @@ The tree above is abridged. These are **all 22 workspace members**, ordered so t
   undo step.
 
 ### quire-markdown (pure)
-* `syntax::highlight(&str) -> Vec<Span>` – byte ranges + `SpanKind` (heading level,
+* `syntax::highlight(&str) -> Vec<StyleRun>` – byte ranges + a `Style` (heading level,
   strong, emphasis, code, link, wikilink, tag, task, quote, list marker, …). Built on
   `pulldown-cmark`'s offset iterator plus a scanner for Obsidian extensions
   (`[[links]]`, `#tags`, `==highlight==`).
@@ -153,11 +162,11 @@ The tree above is abridged. These are **all 22 workspace members**, ordered so t
 * `NoteRecord` – derived, rebuildable facts about a note (title, headings, links,
   tags, tasks, term frequencies).
 * `FullText` – inverted index, BM25 ranking, prefix matching, snippet extraction.
-* `Fuzzy` – quick‑open over titles/paths with `nucleo-matcher` (the fzf‑class matcher
-  used by Helix).
+* `fuzzy` – quick‑open over titles/paths (`Index::quick_open`, returning `QuickOpenHit`s).
 * `LinkGraph` – forward links, backlinks, unresolved links, tag counts, orphans.
-* `IndexActor` – owns the index on a worker thread; the UI sends `IndexMsg::Upsert`
-  / `Remove` / `Query` over a channel and never blocks on indexing.
+* `IndexService` (`actor.rs`) – owns the index on a worker thread; the UI sends
+  `IndexMsg::Upsert` / `Remove` / `Flush` over a channel and reads the model through
+  a lock, so it never blocks on indexing.
 
 ### quire-intel (local first)
 * `related` – TF‑IDF cosine similarity between notes ("Related notes").
@@ -168,9 +177,9 @@ The tree above is abridged. These are **all 22 workspace members**, ordered so t
 * `calc` – inline calculator: a line ending in `=` (Heynote/Soulver style) is
   evaluated; supports `+ - * / ^ %`, parentheses, functions, previous‑line `ans`.
 * `dates` – natural‑language dates: `@today`, `@tomorrow`, `@next friday`, `@in 3 days`.
-* `llm` – `trait LanguageModel` (Strategy). Default build ships no network code. The
-  `remote-llm` feature adds an Anthropic Messages API provider for rewrite/summarize/
-  ask‑your‑vault.
+* `llm` – `trait LanguageModel` (Strategy). Remote providers (Anthropic Messages API,
+  OpenAI‑compatible) are used for rewrite/summarize/ask‑your‑vault only when the user
+  has turned AI on and chosen one (P6).
 
 ### quire-app (application)
 * `Document` – buffer + path + history + dirty flag + **revision counter**; derived
@@ -178,8 +187,9 @@ The tree above is abridged. These are **all 22 workspace members**, ordered so t
   unchanged work.
 * `Workspace` – open vault, tabs, active doc, index actor handle, autosave scheduler,
   scratchpad, recent files.
-* `CommandRegistry` – every user‑visible action is a `Command { id, title, keys }`;
-  the palette, menus and shortcuts are all generated from it.
+* `Command` and the `COMMANDS` table (`commands.rs`) – every user‑visible action is a
+  `Command` variant with a row in `COMMANDS`; the palette, menus and shortcuts are all
+  generated from it. `Workspace::run` executes one.
 * `Settings` (TOML) and `Session` (open tabs/cursor positions, JSON) in the OS
   config dir.
 
@@ -196,15 +206,15 @@ The tree above is abridged. These are **all 22 workspace members**, ordered so t
 | Pattern | Where | Why |
 |---|---|---|
 | Ports & Adapters (hexagonal) | `Storage`, `LanguageModel`, frontends | Swap disk/memory, offline/remote, egui/GPUI without touching logic |
-| Command | `Transaction`, `CommandRegistry` | One path for every edit → undo, macros, replays, collaboration later |
+| Command | `Transaction`, `Command` / `COMMANDS` | One path for every edit → undo, macros, replays, collaboration later |
 | Inverse‑operation undo + undo tree | `History` | No full‑text snapshots; branch‑preserving undo |
-| Actor | `IndexActor` | Indexing off the UI thread, no locks visible to callers |
+| Actor | `IndexService` | Indexing off the UI thread, no locks visible to callers |
 | Repository | `Vault` | Notes addressed by id/path, storage details hidden |
 | Strategy | ranking, `LanguageModel`, highlight engine | Replace BM25 or the parser independently |
-| Observer / event stream | `VaultEvent`, `WorkspaceEvent` | Watcher → index → UI updates decoupled |
+| Observer / event stream | `VaultEvent`, `DecorationEvent` | Watcher → index → UI updates decoupled |
 | Memoization keyed by revision | `Document` derived data, highlight cache | Recompute only on change |
-| Unidirectional data flow | UI → `Action` → `Workspace::dispatch` → state → render | Immediate‑mode UI stays a pure view of state |
-| Newtype IDs | `NoteId`, `DocId`, `Revision` | No mixing up indices and paths |
+| Unidirectional data flow | UI → `Command` → `Workspace::run` → state → render | Immediate‑mode UI stays a pure view of state |
+| Newtype IDs | `NotePath`, `DocId` | No mixing up indices and paths |
 
 ---
 
@@ -213,7 +223,7 @@ The tree above is abridged. These are **all 22 workspace members**, ordered so t
 **Keystroke**
 1. Frontend receives text input → builds a `Transaction` (the egui adapter diffs the
    widget's edit into a minimal Change).
-2. `Workspace::apply(doc, tx)` → `Buffer` updated, inverse pushed to `History`,
+2. `Document::apply(tx, kind)` → `Buffer` updated, inverse pushed to `History`,
    `revision += 1`, autosave deadline reset (default 800 ms idle).
 3. Next frame: highlight cache misses on the new revision → `syntax::highlight`
    (≈ 1–3 ms per 100 KB) → styled layout.
@@ -287,10 +297,10 @@ new adapter crate, not a rewrite.
 
 ## 9. Extension seams
 
-* **Plugins**: `CommandRegistry` + `WorkspaceEvent` are the plugin surface; a
-  `wasmtime` host would expose them with a capability list.
-* **Sync**: Transactions map directly onto CRDT ops; a `SyncProvider` port sits
-  beside `Storage`.
+* **Plugins**: dropped. An early draft proposed a WASM plugin host; Quire runs no
+  third‑party code (invariant P7).
+* **Sync**: built differently from this sketch: `quire-sync` is an end‑to‑end encrypted
+  engine over a `Transport` trait (server, folder, S3, WebDAV), not CRDT ops.
 * **Semantic search**: `quire-index` already has the record pipeline; add an
   `Embedder` port and an ANN index next to `FullText`.
 * **Alternate UI**: implement a frontend against `quire-app`; nothing below it knows
@@ -329,7 +339,7 @@ Replaces egui's `TextEdit`, which re-lays out the whole string on every change.
 * In-note bar (Ctrl+F / Ctrl+H): live match count, next/prev, replace one, replace all (one undoable transaction), matches painted in the editor.
 * Vault-wide (Ctrl+Shift+H): preview every match with context, choose files, then apply. Open notes get an undoable transaction; closed notes are rewritten atomically and re-indexed.
 
-### 11.3 Attachments (`quire-vault::attachments`)
+### 11.3 Attachments (`quire-vault`, `Vault::save_attachment`)
 
 * `Storage` gains byte-level `read_bytes` / `write_bytes_atomic`.
 * `Vault::save_attachment(name, bytes)` stores into `attachments/` with a unique name.
@@ -461,8 +471,8 @@ Scope comes from ROADMAP.md §5 (v3). Working assumption until the product decis
 | Providers & keys | `quire-intel::llm::remote`, `quire-app::{ai, secrets}` | Anthropic + OpenAI-compatible; `probe()` backs *Test connection*. Keychain via `keyring`, 0600 file fallback (the UI names which one is in use). |
 | Neural embeddings | `quire-intel::embed`, `quire-index::semantic::VectorCache` | Batched `/v1/embeddings`; cache keyed by passage hash + model. In the UI test, editing one sentence re-embedded 1 of 17 passages. Any error falls back to LSA and shows a notice. |
 | Version history | `quire-vault::history`, `quire-app::history_ops`, `dialogs::history` | The first save also keeps the on-disk original. Closed-note writes (kanban moves, vault replace, MCP) snapshot before and after. |
-| MCP | `apps/quire-cli/src/mcp.rs` | Protocol versions 2025-11-25 back to 2024-11-05. Write tools are not even listed without `--allow-write`. |
-| Math, diagrams, PDF | `crates/quire-typeset`, `apps/quire-desktop/src/typeset_ui.rs`, `quire-app::export_pdf` | Pure Rust: MiTeX converts LaTeX math to Typst math, Typst lays it out, `typst-svg`/`typst-pdf` export; Mermaid via `mermaid-rs-renderer`. Fonts embedded (Inter, JetBrains Mono NL, STIX Two Math). The desktop renders on one worker thread to textures (resvg), cached per source/size/colour/scale; panics in a renderer are caught (release builds unwind). `blocks::figures` finds `$$` and ```` ```mermaid ```` blocks; live preview collapses them to their picture unless the caret is inside. |
+| MCP | `crates/quire-mcp` | Protocol versions 2025-11-25 back to 2024-11-05. Write tools are not even listed without `--allow-write`. |
+| Math, diagrams, PDF | `crates/quire-typeset`, `apps/quire-desktop/src/typeset_ui/`, `quire-app::export_pdf` | Pure Rust: MiTeX converts LaTeX math to Typst math, Typst lays it out, `typst-svg`/`typst-pdf` export; Mermaid via `mermaid-rs-renderer`. Fonts embedded (Inter, JetBrains Mono NL, STIX Two Math). The desktop renders on one worker thread to textures (resvg), cached per source/size/colour/scale; panics in a renderer are caught (release builds unwind). `blocks::figures` finds `$$` and ```` ```mermaid ```` blocks; live preview collapses them to their picture unless the caret is inside. |
 | Callouts & paragraph ids | `quire-markdown::callout`, `render::with_callouts`, `view/mod.rs` | One table of kinds/aliases/colours/glyphs used by the editor, preview (egui_commonmark alerts), HTML/site export and PDF. `^id` anchors: `callout::find_block` for jumps, `render::anchor_block_ids` for HTML. |
 | Spelling | `crates/quire-spell`, `apps/quire-desktop/src/spell_ui.rs` | Visible lines only, per-line cache in the speller; ranges overlapping code/math runs are dropped; the word at the caret isn't flagged. Dictionaries load on a background thread. |
 | Quick capture | `quire-app::capture`, `apps/quire-desktop/src/capture_key.rs` | `global-hotkey` (X11 on Linux); entries go under a Log/Inbox heading if the daily note has one, into the open document when it's open. |
