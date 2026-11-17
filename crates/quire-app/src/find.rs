@@ -14,7 +14,7 @@ pub struct FindOptions {
     pub whole_word: bool,
     pub regex: bool,
     /// Accents must match ("cafe" doesn't find "café"). Off by default in
-    /// the find bar (design §C.2); regular expressions always match as written.
+    /// the find bar; regular expressions always match as written.
     pub match_accents: bool,
 }
 
@@ -26,7 +26,7 @@ impl Default for FindOptions {
 }
 
 impl FindOptions {
-    /// The in-note find bar's start: accents optional (design §C.2).
+    /// The in-note find bar's start: accents optional.
     pub fn find_bar() -> Self {
         Self { match_accents: false, ..Self::default() }
     }

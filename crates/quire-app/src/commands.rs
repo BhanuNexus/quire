@@ -91,8 +91,8 @@ pub enum Command {
     EvaluateLine,
     LinkAllSuggestions,
     // ---- 0.9. Every variant below dispatches to `features::run`; the
-    // workstream that owns it is noted. Handlers live in the owner's module.
-    // WS-A: agent store, review, inbox
+    // feature area that owns it is noted. Handlers live in the owner's module.
+    // Agent store, review, inbox
     OpenInbox,
     NextHunk,
     PrevHunk,
@@ -105,21 +105,21 @@ pub enum Command {
     CreateAgentInstructions,
     LintVault,
     AgentSettings,
-    // WS-B: MCP, capture
+    // MCP and capture
     CaptureWebPage,
     ConnectAgent,
-    // WS-C: trust tools
+    // Trust tools
     CheckCitations,
     ThinkingTimeline,
     MarkReviewed,
-    // WS-D: on-device AI, agent panel
+    // On-device AI, agent panel
     ToggleAgentPanel,
     IngestIntoWiki,
     AiSetup,
     ConnectExternalAgent,
     // 0.10 AI: voice notes
     RecordVoiceNote,
-    // WS-E: planning and metadata
+    // Planning and metadata
     ShowAgenda,
     ShowCalendar,
     OpenWeeklyNote,
@@ -141,7 +141,7 @@ pub enum Command {
     StartPomodoro,
     StopTimer,
     TimeReport,
-    // WS-F: editor and UI
+    // Editor and UI
     ToggleVim,
     ChooseTheme,
     GitCommitNow,
@@ -150,7 +150,7 @@ pub enum Command {
     GitTrust,
     ToggleTwoPaneBrowser,
     OpenHomepage,
-    // WS-G: canvas, PDF, citations
+    // Canvas, PDF, citations
     NewCanvas,
     InsertSketch,
     InsertCitation,
@@ -199,7 +199,7 @@ pub enum Command {
     EmbedNewDrawing,
 }
 
-/// Which workstream's module handles a 0.9 command (design §6.2).
+/// Which feature area's module handles a 0.9 command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Owner {
     /// A 0.8 command, handled in `Workspace::run`.
@@ -471,7 +471,7 @@ commands! {
     AskVault,         "Assist", "Ask your notes…",                [cmd_shift("A")], false;
     EvaluateLine,     "Assist", "Evaluate math on this line",     [cmd("Enter")], true;
     LinkAllSuggestions,"Assist","Link all suggested mentions",    [], true;
-    // ---- 0.9: keys are final (design §7.3; changes recorded in §6.1).
+    // ---- 0.9: keys are final (`docs/design/0.9.md` §7.3; changes recorded in §6.1).
     // Ctrl+Alt is AltGr on Windows: the desktop drops a Ctrl+Alt shortcut in
     // a frame where text was typed, so AltGr+C still types ć on a Polish
     // layout instead of making a canvas.

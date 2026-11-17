@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! WS-F's entry point into the workspace.
+//! The editor's entry point into the workspace.
 //!
 //! Editor and navigation: Vim mode, tab modes, positions, sorting, the homepage, themes and git commands.
 //!
 //! `features.rs` calls the functions below for every Editor-owned command,
 //! every frame, every vault event and every decorated document; this file
-//! (and the modules it uses) belongs to WS-F. State lives in
+//! (and the modules it uses) belongs to that feature. State lives in
 //! `ws.features.nav` (and `ws.features.git`, `ws.features.themes`).
 
 mod browse;
@@ -37,7 +37,7 @@ const PREFS_CHECK: Duration = Duration::from_secs(5);
 /// How long a Vim message stays in the status bar.
 const VIM_MESSAGE: Duration = Duration::from_secs(6);
 
-/// WS-F's state, kept in `ws.features.nav`.
+/// State of the editor feature, kept in `ws.features.nav`.
 #[derive(Default)]
 pub struct NavState {
     /// Vim keys (when `editing.vim` is on).
@@ -62,7 +62,7 @@ pub struct NavState {
     positions: Positions,
     positions_dirty: bool,
     last_stash: Option<Instant>,
-    /// Vault preferences WS-F reads: manual order and sort modes.
+    /// Vault preferences the editor reads: manual order and sort modes.
     pub(crate) order: std::collections::BTreeMap<String, Vec<String>>,
     pub(crate) sort: std::collections::BTreeMap<String, String>,
     /// Bumped when `order` or `sort` change, so a sorted file list can be
@@ -277,7 +277,7 @@ fn check_prefs(ws: &mut Workspace, now: Instant) -> bool {
     false
 }
 
-/// Load the sections WS-F uses from `.quire/shared/vault.toml`.
+/// Load the sections the editor uses from `.quire/shared/vault.toml`.
 fn read_prefs(ws: &mut Workspace) {
     let Some(vault) = ws.vault().cloned() else { return };
     let prefs = VaultPrefs::load(&vault);

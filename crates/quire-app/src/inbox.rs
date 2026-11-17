@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The Inbox's data: everything waiting for the person, loaded off the UI
-//! thread and grouped for the Inbox tab (design §A.5, §7.3).
+//! thread and grouped for the Inbox tab (`docs/design/0.9.md` §A.5, §7.3).
 //!
 //! * Suggested changes, grouped by run (or by proposal when there is no run).
 //! * Checks (lint findings), batched by check.
@@ -205,8 +205,8 @@ impl InboxData {
             + usize::from(self.instructions.as_ref().is_some_and(|i| !i.approved))
     }
 
-    /// Checks and staleness reach the badge once a week (design §A.5's
-    /// weekly digest): when the person hasn't looked at them for 7 days.
+    /// Checks and staleness reach the badge once a week (the weekly
+    /// digest, `docs/design/0.9.md` §A.5): when the person hasn't looked at them for 7 days.
     pub const fn digest_due(&self) -> bool {
         self.loaded_at_ms - self.device.digest_seen >= DIGEST_MS
     }

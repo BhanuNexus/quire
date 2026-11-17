@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Editor decorations: how features draw on a note without owning the
-//! editor (design §6.1 F0.12).
+//! editor.
 //!
 //! A feature returns [`Decoration`]s for a document (tinted or struck-through
 //! lines, ghost lines with action buttons, or a widget of its own under a

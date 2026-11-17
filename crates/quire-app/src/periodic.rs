@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Periodic notes and the calendar (design §E.4).
+//! Periodic notes and the calendar (`docs/design/0.9.md` §E.4).
 //!
 //! `[periodic]` in `.quire/shared/vault.toml` says where daily, weekly,
 //! monthly and yearly notes go, how they're named and which template they
@@ -8,7 +8,7 @@
 //! calendar marks each day: a daily note exists, tasks are due, and how
 //! many words that day's note has.
 //!
-//! Owned by WS-E; kept in `ws.features.periodic`.
+//! Kept in `ws.features.periodic`.
 
 use std::cell::RefCell;
 use std::collections::HashMap;

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! WS-G's entry point into the workspace: canvases, sketches, PDFs and
-//! citations (design §G).
+//! Entry point of the spatial features into the workspace: canvases, sketches, PDFs and
+//! citations (`docs/design/0.9.md` §G).
 //!
 //! `features.rs` calls the functions below for every Spatial-owned command,
 //! every frame, every vault event and every decorated document. Canvas
@@ -25,7 +25,7 @@ use crate::decor::{Decoration, DecorationEvent, StatusItem};
 use crate::document::Document;
 use crate::workspace::{NoticeLevel, UiRequest, Workspace};
 
-/// WS-G's canvas state, kept in `ws.features.canvas`.
+/// State of the canvas feature, kept in `ws.features.canvas`.
 #[derive(Debug, Default)]
 pub struct CanvasState {
     /// Bumped per file when a canvas or sketch changes on disk, so an open

@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! First-run AI choice (design §7.1).
+//! First-run AI choice (`docs/design/0.9.md` §7.1).
 //!
 //! * A new install shows the two-step dialog once, right after the tour.
 //! * Someone upgrading from 0.8 (the tour was done before this version
@@ -10,7 +10,7 @@
 //! "Use a provider" opens the provider form, "On this computer" turns the
 //! chosen capabilities on and starts their downloads only on "Download now".
 //!
-//! Owned by WS-D; kept in `ws.features.onboarding`.
+//! Kept in `ws.features.onboarding`.
 
 use crate::Command;
 use crate::workspace::{UiRequest, Workspace};

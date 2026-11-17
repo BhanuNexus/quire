@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Background work with budgets (design §9).
+//! Background work with budgets (`docs/design/0.9.md` §9).
 //!
 //! A [`Job`] does its work in small [`Job::step`]s (at most ~20 ms each,
 //! holding the index lock for at most ~2 ms). One worker thread, started

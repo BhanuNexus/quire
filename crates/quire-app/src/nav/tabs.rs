@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Tab modes and where you were in each note (design §F.3).
+//! Tab modes and where you were in each note (`docs/design/0.9.md` §F.3).
 //!
 //! In reuse mode (the default) a note opened with a single click takes over
 //! the "preview" tab, shown in italics, instead of adding a tab; editing it,

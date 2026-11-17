@@ -224,7 +224,7 @@ impl Workspace {
         self.sync.config.as_ref().is_some_and(|c| c.shared_state)
     }
 
-    /// "Also sync vault settings and review history" (design §B.5). A 0.8
+    /// "Also sync vault settings and review history". A 0.8
     /// device would see the settings files as deleted and pass that on, so
     /// turning it on first keeps them away from 0.8: a 0.9 server answers
     /// older clients `426`; a sync folder carries them in a separate lane.

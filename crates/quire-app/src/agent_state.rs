@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! WS-A's entry point into the workspace.
+//! The agent store's entry point into the workspace.
 //!
 //! Agent store and review: the inbox, hunk review in the editor, agent activity and revert.
 //!
 //! `features.rs` calls the functions below for every Agent-owned command,
 //! every frame, every vault event and every decorated document; this file
-//! (and the modules it uses) belongs to WS-A. State lives in
+//! (and the modules it uses) belongs to that feature. State lives in
 //! `ws.features.agent`.
 //!
 //! * [`review`] — a proposal under review in the editor
@@ -91,7 +91,7 @@ impl<T: Send + 'static> Bg<T> {
     }
 }
 
-/// The agent activity timeline's data (design §A.9).
+/// The agent activity timeline's data.
 pub mod activity {
     use quire_agent::{ActorKind, LedgerEntry, LedgerQuery, Op};
 
@@ -220,7 +220,7 @@ fn reviewer_label(p: &quire_agent::Proposal) -> String {
     }
 }
 
-/// WS-A's state, kept in `ws.features.agent`.
+/// State of the agent store feature, kept in `ws.features.agent`.
 #[derive(Default)]
 pub struct AgentState {
     /// The proposal under review in the editor.

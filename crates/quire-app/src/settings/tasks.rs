@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `[tasks]` in settings.toml: tasks 2.0 (design §E.2).
+//! `[tasks]` in settings.toml: tasks 2.0 (`docs/design/0.9.md` §E.2).
 //!
-//! Owned by WS-E. Every field defaults to off or unchanged; keys this
+//! Every field defaults to off or unchanged; keys this
 //! version doesn't know are kept in `other`, so older and newer Quire
 //! versions can share the file.
 

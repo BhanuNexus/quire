@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Flashcard review sessions (design §E.6).
+//! Flashcard review sessions (`docs/design/0.9.md` §E.6).
 //!
 //! Cards come from notes tagged `#flashcards` or with `srs: true`. Each
 //! answer is appended to this device's log in `.quire/shared/srs/`; card
@@ -8,7 +8,7 @@
 //! edited (it vanishes and a similar one appears in the same note) its
 //! history carries over, recorded as a rename in the log.
 //!
-//! Owned by WS-E; kept in `ws.features.srs`.
+//! Kept in `ws.features.srs`.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};

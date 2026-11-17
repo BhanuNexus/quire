@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `[appearance]` in settings.toml: themes and accent colour (design §F.4).
+//! `[appearance]` in settings.toml: themes and accent colour (`docs/design/0.9.md` §F.4).
 //!
-//! Owned by WS-F. Every field defaults to off or unchanged; keys this
+//! Every field defaults to off or unchanged; keys this
 //! version doesn't know are kept in `other`, so older and newer Quire
 //! versions can share the file.
 

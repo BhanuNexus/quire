@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Tag and property refactors with preview (design §E.1).
+//! Tag and property refactors with preview (`docs/design/0.9.md` §E.1).
 //!
 //! [`plan`] works out every note's new text for a [`MetaOp`] (pure, also
 //! used by the CLI). The workspace previews it off the UI thread, applies
@@ -10,7 +10,7 @@
 //! left it gets its old text back; a note edited since gets a three-way
 //! merge that keeps the later edits, or is left alone if they conflict.
 //!
-//! Owned by WS-E; kept in `ws.features.meta`.
+//! Kept in `ws.features.meta`.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;

@@ -20,7 +20,7 @@ pub fn export_pdf(vault: &Vault, title: &str, text: &str, out: &NotePath) -> Res
         let p = vault.resolve_file(t).or_else(|| Some(NotePath::new(t.trim_start_matches("./"))))?;
         vault.storage().read_bytes(&p).ok()
     };
-    // WS-G: `[@key]` citations and the reference list (Typst, embedded style).
+    // `[@key]` citations and the reference list (Typst, embedded style).
     let (text, bibliography) = crate::citations::for_pdf(vault, text);
     let opts = quire_typeset::PdfOptions {
         title: title.to_string(),

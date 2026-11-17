@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Theme files, accent colour, icons and tag colours (design §F.4).
+//! Theme files, accent colour, icons and tag colours (`docs/design/0.9.md` §F.4).
 //!
 //! A theme is data: a TOML file with colour tokens for light and dark and
 //! optional fonts (docs/formats/themes.md). No expressions, no imports.
@@ -12,7 +12,7 @@
 //! `[icons]` and `[tags.colors]`) so they travel with it; note icons come
 //! from front matter (`icon: 📘`).
 //!
-//! Owned by WS-F; kept in `ws.features.themes`.
+//! Kept in `ws.features.themes`.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;

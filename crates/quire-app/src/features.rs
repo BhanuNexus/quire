@@ -27,40 +27,40 @@ use crate::{agent_state, assistant_state, canvas_state, links_state, mcp_state, 
 /// Decorations cached for (document, revision, generation).
 type DecorCache = RefCell<Option<((DocId, u64, u64), Rc<Vec<Decoration>>)>>;
 
-/// Every feature's state. One field per module; the comment names the owner.
+/// Every feature's state. One field per module; the comment names the feature area.
 #[derive(Default)]
 pub struct Features {
-    /// WS-A: inbox, review, activity (`agent_state.rs`).
+    /// Agent: inbox, review, activity (`agent_state.rs`).
     pub agent: agent_state::AgentState,
-    /// WS-B: HTTP MCP, tokens, capture (`mcp_state.rs`).
+    /// MCP: HTTP MCP, tokens, capture (`mcp_state.rs`).
     pub mcp: mcp_state::McpState,
-    /// WS-C: trust jobs and timeline (`trust_jobs.rs`).
+    /// Trust: trust jobs and timeline (`trust_jobs.rs`).
     pub trust: trust_jobs::TrustState,
-    /// WS-D: agent panel and ACP (`assistant_state.rs`).
+    /// AI: agent panel and ACP (`assistant_state.rs`).
     pub assistant: assistant_state::AssistantState,
-    /// WS-D: on-device AI (`ai.rs`).
+    /// AI: on-device AI (`ai.rs`).
     pub ai: crate::ai::LocalAiState,
-    /// WS-D: first-run AI choice (`onboarding.rs`).
+    /// AI: first-run AI choice (`onboarding.rs`).
     pub onboarding: crate::onboarding::OnboardingState,
-    /// WS-E: tasks, agenda, reminders (`tasks_state.rs`).
+    /// Planning: tasks, agenda, reminders (`tasks_state.rs`).
     pub tasks: tasks_state::TasksState,
-    /// WS-E: periodic notes and calendar (`periodic.rs`).
+    /// Planning: periodic notes and calendar (`periodic.rs`).
     pub periodic: crate::periodic::PeriodicState,
-    /// WS-E: flashcards (`srs_state.rs`).
+    /// Planning: flashcards (`srs_state.rs`).
     pub srs: crate::srs_state::SrsState,
-    /// WS-E: tag and property refactors (`meta_refactor.rs`).
+    /// Planning: tag and property refactors (`meta_refactor.rs`).
     pub meta: crate::meta_refactor::MetaState,
-    /// WS-F: navigation, tab modes, Vim (`nav.rs`).
+    /// Editor: navigation, tab modes, Vim (`nav.rs`).
     pub nav: nav::NavState,
-    /// WS-F: git (`git.rs`).
+    /// Editor: git (`git.rs`).
     pub git: crate::git::GitState,
-    /// WS-F: themes and icons (`themes.rs`).
+    /// Editor: themes and icons (`themes.rs`).
     pub themes: crate::themes::ThemesState,
-    /// WS-G: canvas (`canvas_state.rs`).
+    /// Spatial: canvas (`canvas_state.rs`).
     pub canvas: canvas_state::CanvasState,
-    /// WS-G: PDF (`pdf_state.rs`).
+    /// Spatial: PDF (`pdf_state.rs`).
     pub pdf: crate::pdf_state::PdfState,
-    /// WS-G: citations (`citations.rs`).
+    /// Spatial: citations (`citations.rs`).
     pub citations: crate::citations::CitationsState,
     /// 0.11 security: locked folders, connections (`secure_state.rs`).
     pub secure: secure_state::SecureState,
@@ -217,7 +217,7 @@ impl Workspace {
         self.features.decor_generation += 1;
     }
 
-    /// Status-bar items from every feature, in workstream order.
+    /// Status-bar items from every feature, in feature-area order.
     pub fn status_items(&self) -> Vec<StatusItem> {
         let mut out = Vec::new();
         agent_state::status(self, &mut out);

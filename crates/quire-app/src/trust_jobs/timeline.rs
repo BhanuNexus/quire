@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The thinking timeline's data (design §C.7), built on a worker thread.
+//! The thinking timeline's data (`docs/design/0.9.md` §C.7), built on a worker thread.
 //!
 //! For a topic (a tag, a note or a search) it takes the notes in scope (at
 //! most [`MAX_NOTES`]), replays each note's saved versions (at most 20) and

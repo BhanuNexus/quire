@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! WS-C's entry point into the workspace.
+//! The trust tools' entry point into the workspace.
 //!
-//! Trust tools (design §C): citation drift and verify checks, claims and
+//! Trust tools (`docs/design/0.9.md` §C): citation drift and verify checks, claims and
 //! contradictions, staleness and the thinking timeline.
 //!
 //! `features.rs` calls the functions below for every Trust-owned command,
 //! every frame, every vault event and every decorated document; this file
-//! (and the modules it uses) belongs to WS-C. State lives in
+//! (and the modules it uses) belongs to that feature. State lives in
 //! `ws.features.trust`; the jobs share [`TrustShared`] with it.
 
 pub mod citations;
@@ -133,7 +133,7 @@ pub struct ReconcileRequest {
     pub anchors: Vec<Anchor>,
 }
 
-/// WS-C's state, kept in `ws.features.trust`.
+/// State of the trust tools feature, kept in `ws.features.trust`.
 pub struct TrustState {
     pub shared: Arc<TrustShared>,
     pub timeline: TimelineState,
@@ -244,7 +244,7 @@ impl Workspace {
         store.submit(&Actor::human(&store.device().id), cs).map(drop).map_err(|e| e.to_string())
     }
 
-    /// "Mark reviewed": `reviewed: <today>` (design §C.6).
+    /// "Mark reviewed": `reviewed: <today>`.
     pub fn mark_reviewed(&mut self, path: &NotePath) {
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
         match self.set_note_properties(path, &[("reviewed", Value::Str(today))]) {
@@ -260,7 +260,7 @@ impl Workspace {
         }
     }
 
-    /// "Mark superseded": `superseded_by: [[by]]` on `path` (design §C.5).
+    /// "Mark superseded": `superseded_by: [[by]]` on `path`.
     pub fn mark_superseded(&mut self, path: &NotePath, by: &NotePath, fingerprint: Option<&str>) {
         let link = format!("[[{}]]", by.without_ext());
         match self.set_note_properties(path, &[("superseded_by", Value::Str(link))]) {

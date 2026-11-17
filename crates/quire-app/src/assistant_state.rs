@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! WS-D's entry point into the workspace.
+//! The assistant's entry point into the workspace.
 //!
 //! The agent panel, the external agent (ACP), on-device AI (downloads, OCR),
 //! the first-run AI choice, and the wiki loop's upkeep: `wiki/index.md`
@@ -9,7 +9,7 @@
 //!
 //! `features.rs` calls the functions below for every Assistant-owned command,
 //! every frame, every vault event and every decorated document; this file
-//! (and the modules it uses) belongs to WS-D. State lives in
+//! (and the modules it uses) belongs to that feature. State lives in
 //! `ws.features.assistant` (and `ws.features.ai`, `ws.features.onboarding`).
 
 pub mod wiki;
@@ -24,7 +24,7 @@ use crate::decor::{Decoration, DecorationEvent, StatusItem};
 use crate::document::Document;
 use crate::workspace::{UiRequest, Workspace};
 
-/// WS-D's state, kept in `ws.features.assistant`.
+/// State of the assistant feature, kept in `ws.features.assistant`.
 #[derive(Default)]
 pub struct AssistantState {
     wiki: Option<wiki_job::Handle>,

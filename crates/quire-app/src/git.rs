@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Git integration (design §F.5): detection, auto-commit timer, last result.
+//! Git integration (`docs/design/0.9.md` §F.5): detection, auto-commit timer, last result.
 //!
 //! Quire runs the system `git` (so your credential helpers and ssh-agent
 //! work) on a background thread, never on the UI thread, with prompts off
@@ -10,7 +10,7 @@
 //! pull and push are off so two systems never write the same files.
 //!
 //! Settings are in the vault (`[git]` in `.quire/shared/vault.toml`).
-//! Owned by WS-F; kept in `ws.features.git`.
+//! Kept in `ws.features.git`.
 //!
 //! A repository's own settings (`.git/config`) and hooks travel with a
 //! copied, unpacked or synced folder, and they can make git run any program,
