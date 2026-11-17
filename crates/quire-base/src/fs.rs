@@ -66,7 +66,9 @@ impl Options {
 ///
 /// The temporary file is `.<name>.<16 hex digits>.tmp` beside `path`:
 /// hidden, so nothing that lists the folder takes it for a file of its
-/// own, and of a shape [`sweep_leftovers`] recognises.
+/// own, and of a shape [`sweep_leftovers`] recognises. A very long name is
+/// cut in the temporary name (never in the destination) so that it fits
+/// the 255-byte limit.
 pub fn write_atomic(path: &Path, bytes: &[u8], opts: Options) -> std::io::Result<()> {
     Prepared::new(path, bytes, opts)?.place(path)
 }
@@ -132,9 +134,10 @@ impl Prepared {
             fs::create_dir_all(dir)?;
         }
         let name = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = shorten(&name, MAX_TMP_BASE);
         let mut tries = 0;
         let (path, mut file) = loop {
-            let tag = crate::rand::bytes::<8>()?;
+            let tag = tmp_tag();
             let path = dir.join(format!(".{name}.{}.tmp", crate::enc::hex(&tag)));
             let mut o = OpenOptions::new();
             o.write(true).create_new(true);
@@ -203,6 +206,36 @@ impl Drop for Prepared {
             let _ = fs::remove_file(&self.path);
         }
     }
+}
+
+/// The longest base name in a temporary name: `.` + base + `.` + 16 hex
+/// digits + `.tmp` is then at most 255 bytes, the usual file name limit.
+const MAX_TMP_BASE: usize = 255 - 22;
+
+/// `name` cut to at most `max` bytes at a character boundary. The
+/// temporary name only has to be unique and beside the destination.
+fn shorten(name: &str, max: usize) -> &str {
+    let mut end = name.len().min(max);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    &name[..end]
+}
+
+/// The unique part of a temporary name. Unpredictability is not needed (the
+/// file is made with `create_new` and a clash is retried), so when the
+/// system has no random numbers a tag from the process id, a counter and the
+/// time is used rather than failing the save.
+fn tmp_tag() -> [u8; 8] {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    if let Ok(tag) = crate::rand::bytes::<8>() {
+        return tag;
+    }
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(0));
+    // The counter alone separates tags within a process; the rest, other processes.
+    let mixed = nanos.rotate_left(17) ^ (u64::from(std::process::id()) << 32) ^ n;
+    mixed.to_be_bytes()
 }
 
 fn folder_of(path: &Path) -> &Path {
@@ -309,6 +342,32 @@ mod tests {
             assert_eq!(fs::read(&q).unwrap(), b"key");
             assert_eq!(fs::metadata(&q).unwrap().permissions().mode() & 0o777, 0o600);
         }
+    }
+
+    #[test]
+    fn a_name_near_the_limit_still_gets_a_temporary_file() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a".repeat(250), "é".repeat(125), "a".repeat(255)] {
+            let p = dir.path().join(&name);
+            write(&p, b"x", false).unwrap();
+            assert_eq!(fs::read(&p).unwrap(), b"x");
+            let prepared = Prepared::new(&p, b"y", Options::STATE).unwrap();
+            let tmp = prepared.path().file_name().unwrap().to_string_lossy().into_owned();
+            assert!(tmp.len() <= 255 && is_leftover(&tmp), "{} bytes", tmp.len());
+        }
+    }
+
+    #[test]
+    fn without_random_numbers_a_file_is_still_written_with_distinct_temporary_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("state.toml");
+        crate::rand::failing(|| {
+            write(&p, b"one", false).unwrap();
+            let (a, b) = (Prepared::new(&p, b"x", Options::STATE).unwrap(), Prepared::new(&p, b"x", Options::STATE).unwrap());
+            assert_ne!(a.path(), b.path());
+        });
+        assert_eq!(fs::read(&p).unwrap(), b"one");
+        assert_eq!(names(dir.path()), ["state.toml"]);
     }
 
     #[test]

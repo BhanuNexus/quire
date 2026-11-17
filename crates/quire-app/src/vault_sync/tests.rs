@@ -1493,3 +1493,22 @@ fn the_0_8_simulation_sees_the_delete_the_lanes_prevent() {
     mixed(&mut f);
     assert!(f.shared(0, "vault.toml").is_none(), "deleted through the 0.8 device");
 }
+
+#[test]
+fn a_stored_selection_with_an_unusable_folder_keeps_the_rest_and_says_so() {
+    let s = |v: &[&str]| v.iter().map(|x| (*x).to_string()).collect::<Vec<_>>();
+    // Entering one is refused.
+    assert!(Selection::new(&s(&["A: Archive"]), &[]).is_err());
+    // Stored: the bad entry is dropped, the good one still applies.
+    let (sel, warnings) = Selection::lenient(&s(&["Work", "A: Archive"]), &s(&["Work/Old", "../x"]));
+    assert_eq!((sel.only.as_slice(), sel.exclude.as_slice()), (&["Work/".to_string()][..], &["Work/Old/".to_string()][..]));
+    assert!(sel.includes("Work/a.md") && !sel.includes("Work/Old/a.md") && !sel.includes("Plan.md"));
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert!(warnings[0].contains("A: Archive"), "{warnings:?}");
+    // Only unusable entries: nothing syncs (never everything), and it is said.
+    let (sel, warnings) = Selection::lenient(&s(&["A: Archive"]), &[]);
+    assert!(!sel.is_everything() && !sel.includes("Plan.md") && !sel.includes("Archive/a.md"));
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    // A good selection has no warnings.
+    assert!(Selection::lenient(&s(&["Work"]), &[]).1.is_empty());
+}

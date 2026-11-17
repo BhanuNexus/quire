@@ -146,8 +146,10 @@ mod tests {
     /// (health research, `diff/pct.rs`), with what each behaviour gives.
     #[test]
     fn percent_decoding_on_the_differential_inputs() {
-        let cases: [(&str, Option<&str>, &str); 8] = [
+        let cases: [(&str, Option<&str>, &str); 9] = [
             ("a%20b", Some("a b"), "a b"),
+            // An escape at the very end: two copies left it as written.
+            ("a%20", Some("a "), "a "),
             ("%C3%A9t%C3%A9", Some("été"), "été"),
             ("100%", None, "100%"),
             ("%zz", None, "%zz"),

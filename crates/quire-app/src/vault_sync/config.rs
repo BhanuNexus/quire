@@ -167,24 +167,53 @@ pub struct Selection {
     pub exclude: Vec<String>,
 }
 
+/// A folder name as typed, as a prefix with a trailing `/`.
+fn norm_folder(f: &String) -> Result<String, String> {
+    let t = f.trim().trim_start_matches("./").trim_matches('/');
+    if !quire_base::path::Rule::VaultFolder.accepts(t) {
+        return Err(format!("“{f}” isn't a folder in the vault (a relative path, not hidden, without `..`)"));
+    }
+    Ok(format!("{t}/"))
+}
+
+fn sorted(mut v: Vec<String>) -> Vec<String> {
+    v.sort();
+    v.dedup();
+    v
+}
+
 impl Selection {
     /// Folder names as typed (`Work`, `Work/`, `./Work`, `Projects/2026`).
     /// Names are compared exactly, case included.
     pub fn new(only: &[String], exclude: &[String]) -> Result<Self, String> {
-        let norm = |f: &String| -> Result<String, String> {
-            let t = f.trim().trim_start_matches("./").trim_matches('/');
-            if !quire_base::path::Rule::VaultFolder.accepts(t) {
-                return Err(format!("“{f}” isn't a folder in the vault (a relative path, not hidden, without `..`)"));
-            }
-            Ok(format!("{t}/"))
-        };
-        let list = |v: &[String]| -> Result<Vec<String>, String> {
-            let mut out = v.iter().map(norm).collect::<Result<Vec<_>, _>>()?;
-            out.sort();
-            out.dedup();
-            Ok(out)
-        };
+        let list = |v: &[String]| -> Result<Vec<String>, String> { Ok(sorted(v.iter().map(norm_folder).collect::<Result<Vec<_>, _>>()?)) };
         Ok(Self { only: list(only)?, exclude: list(exclude)? })
+    }
+
+    /// [`Self::new`] for a selection already stored (maybe written by hand):
+    /// an entry that can't be used is dropped, with a warning, and the rest
+    /// still applies. Such an entry names no folder a vault can hold, so
+    /// dropping it changes nothing that would have synced. If every `only`
+    /// entry is unusable, nothing syncs (never everything) until it is fixed.
+    pub fn lenient(only: &[String], exclude: &[String]) -> (Self, Vec<String>) {
+        let mut warnings = Vec::new();
+        let mut keep = |v: &[String], what: &str| {
+            let mut ok = Vec::new();
+            for f in v {
+                match norm_folder(f) {
+                    Ok(n) => ok.push(n),
+                    Err(e) => warnings.push(format!("Sync ignores “{f}” in its {what} list: {e}.")),
+                }
+            }
+            sorted(ok)
+        };
+        let mut sel = Self { only: keep(only, "only"), exclude: keep(exclude, "exclude") };
+        if sel.only.is_empty() && !only.is_empty() {
+            // Nothing usable was asked for: hold nothing rather than everything.
+            sel.only = vec!["\u{0}/".into()];
+            warnings.push("Sync has no usable folder in its only list, so this device syncs nothing until it is fixed.".into());
+        }
+        (sel, warnings)
     }
 
     pub const fn is_everything(&self) -> bool {
@@ -448,13 +477,14 @@ impl SyncConfig {
         }
     }
 
-    /// The folders this device syncs.
+    /// The folders this device syncs; see [`Selection::lenient`].
     pub fn selection(&self) -> Selection {
-        Selection::new(&self.only, &self.exclude).unwrap_or_else(|_| Selection {
-            // Written by hand and unreadable: hold nothing rather than guess.
-            only: vec!["\u{0}/".into()],
-            exclude: Vec::new(),
-        })
+        self.selection_with_warnings().0
+    }
+
+    /// [`Self::selection`] and what was dropped from it, in words.
+    pub fn selection_with_warnings(&self) -> (Selection, Vec<String>) {
+        Selection::lenient(&self.only, &self.exclude)
     }
 
     pub fn load(root: &Path) -> Option<Self> {

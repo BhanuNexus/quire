@@ -517,7 +517,7 @@ pub fn publish_with(
     }
     std::fs::create_dir_all(out).map_err(|e| format!("can't create {}: {e}", out.display()))?;
     let write = |name: &str, text: &str| {
-        quire_base::fs::write_atomic(&out.join(name), text.as_bytes(), quire_base::fs::Options::STATE)
+        quire_base::fs::write_atomic(&out.join(name), text.as_bytes(), quire_base::fs::Options::STATE.lazy())
             .map_err(|e| format!("can't write {name}: {e}"))
     };
 
@@ -631,7 +631,7 @@ pub fn publish_with(
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        quire_base::fs::write_atomic(&dest, &bytes, quire_base::fs::Options::STATE).map_err(|e| format!("can't copy {f}: {e}"))?;
+        quire_base::fs::write_atomic(&dest, &bytes, quire_base::fs::Options::STATE.lazy()).map_err(|e| format!("can't copy {f}: {e}"))?;
         report.files += 1;
     }
     Ok(report)

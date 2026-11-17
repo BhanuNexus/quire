@@ -133,12 +133,13 @@ impl Session {
         let engine = Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), keys.clone(), state);
         // In a sync folder, vault settings travel in a lane of their own,
         // which 0.8 never reads; the notes lane never touches them.
+        let (selection, selection_warnings) = cfg.selection_with_warnings();
         let store = if cfg.folder.is_some() {
             VaultStore::new(vault.clone()).notes_only()
         } else {
             VaultStore::new(vault.clone()).with_shared_state(cfg.shared_state)
         }
-        .with_selection(cfg.selection());
+        .with_selection(selection);
         // Other devices see this one under its sync name ("home server").
         let mut device = crate::device::this_device();
         if !cfg.device_name.trim().is_empty() {
@@ -163,7 +164,7 @@ impl Session {
             refreshed: false,
             key_stuck: None,
             compacted: false,
-            notices: notice.into_iter().collect(),
+            notices: notice.into_iter().chain(selection_warnings).collect(),
             _lock: lock,
         })
     }
