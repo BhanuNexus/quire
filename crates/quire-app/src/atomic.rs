@@ -3,7 +3,7 @@
 //! Writing app state files so a crash or power cut leaves the old file or
 //! the new one, never half of each.
 //!
-//! [`write`] and [`write_new_private`] moved to `quire_base::fs` (0.14), the
+//! [`write`](fn@write) and [`write_new_private`] moved to `quire_base::fs` (0.14), the
 //! one atomic writer of the workspace; they stay here for existing callers.
 
 use std::path::{Path, PathBuf};

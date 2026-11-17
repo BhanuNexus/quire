@@ -12,7 +12,7 @@
 //!
 //! - [`write_atomic`] with [`Options`]: app state, config, caches, files in
 //!   a shared sync folder.
-//! - [`write`] and [`write_new_private`]: the old `quire_app::atomic` API.
+//! - [`write`](fn@write) and [`write_new_private`]: the old `quire_app::atomic` API.
 //! - [`Prepared`] and [`replace_file`]: for a caller that makes its own
 //!   temporary file (`Storage` for vault files, which keeps `tempfile`'s
 //!   `.tmp…` names that history skips) and only needs the rename.
