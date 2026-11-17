@@ -443,7 +443,8 @@ mod tests {
             assert_eq!(run(&both), "exact / exact / upper / -");
         }
         assert_eq!(run(&[("CLIENT", "a"), ("client", "b")]), "a / a /  / -");
-        let answers: HashMap<String, String> = [("name", "lower"), ("NAME", "upper"), ("Name", "exact")].map(|(k, v)| (k.into(), v.into())).into();
+        let answers: HashMap<String, String> =
+            [("name", "lower"), ("NAME", "upper"), ("Name", "exact")].map(|(k, v)| (k.into(), v.into())).into();
         assert_eq!(answer_for(&answers, "Name").map(String::as_str), Some("exact"));
         assert_eq!(answer_for(&answers, "nAme").map(String::as_str), Some("upper"));
         assert_eq!(answer_for(&answers, "other"), None);
