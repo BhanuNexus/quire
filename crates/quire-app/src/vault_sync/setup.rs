@@ -13,9 +13,12 @@ use super::{
 /// Run `f` on a thread of its own; its result arrives on the receiver.
 pub(super) fn in_background<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Receiver<T> {
     let (tx, rx) = crossbeam_channel::bounded(1);
-    std::thread::spawn(move || {
-        let _ = tx.send(f());
-    });
+    std::thread::Builder::new()
+        .name("quire-sync-setup".into())
+        .spawn(move || {
+            let _ = tx.send(f());
+        })
+        .expect("the system starts a thread");
     rx
 }
 

@@ -173,11 +173,7 @@ impl Selection {
     pub fn new(only: &[String], exclude: &[String]) -> Result<Self, String> {
         let norm = |f: &String| -> Result<String, String> {
             let t = f.trim().trim_start_matches("./").trim_matches('/');
-            let bad = t.is_empty()
-                || t.contains('\\')
-                || t.chars().any(char::is_control)
-                || t.split('/').any(|seg| seg.is_empty() || seg == "." || seg == ".." || seg.starts_with('.'));
-            if bad {
+            if !quire_base::path::Rule::VaultFolder.accepts(t) {
                 return Err(format!("“{f}” isn't a folder in the vault (a relative path, not hidden, without `..`)"));
             }
             Ok(format!("{t}/"))

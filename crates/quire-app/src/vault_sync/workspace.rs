@@ -246,9 +246,12 @@ impl Workspace {
         let cfg = SyncConfig::load(&root).ok_or("Sync isn't set up for this vault")?;
         let (tx, rx) = crossbeam_channel::bounded(1);
         if on && !cfg.shared_state {
-            std::thread::spawn(move || {
-                let _ = tx.send(raise_min_reader(&cfg));
-            });
+            std::thread::Builder::new()
+                .name("quire-sync-shared".into())
+                .spawn(move || {
+                    let _ = tx.send(raise_min_reader(&cfg));
+                })
+                .expect("the system starts a thread");
         } else {
             let _ = tx.send(Ok(()));
         }
@@ -333,9 +336,12 @@ impl Workspace {
     /// "Test connection" off the UI thread.
     pub fn sync_test_in_background(target: SyncTarget) -> Receiver<Result<String, String>> {
         let (tx, rx) = crossbeam_channel::bounded(1);
-        std::thread::spawn(move || {
-            let _ = tx.send(sync_test(&target));
-        });
+        std::thread::Builder::new()
+            .name("quire-sync-test".into())
+            .spawn(move || {
+                let _ = tx.send(sync_test(&target));
+            })
+            .expect("the system starts a thread");
         rx
     }
 
@@ -353,9 +359,12 @@ impl Workspace {
     pub fn sync_set_remote_secret_in_background(&self, secret: RemoteSecret) -> Result<Receiver<Result<String, String>>, String> {
         let (root, _) = self.sync_parts()?;
         let (tx, rx) = crossbeam_channel::bounded(1);
-        std::thread::spawn(move || {
-            let _ = tx.send(sync_set_remote_secret_at(&root, &secret));
-        });
+        std::thread::Builder::new()
+            .name("quire-sync-secret".into())
+            .spawn(move || {
+                let _ = tx.send(sync_set_remote_secret_at(&root, &secret));
+            })
+            .expect("the system starts a thread");
         Ok(rx)
     }
 
@@ -369,28 +378,30 @@ impl Workspace {
         let token = store.get(&token_name(&cfg.space)).unwrap_or_default();
         let (tx, rx) = crossbeam_channel::bounded(1);
         let path = path.as_str().to_string();
-        std::thread::spawn(move || {
-            // S3 and WebDAV: read the mirror the worker keeps, not the storage.
-            let keys = harden::keyset(&cfg.space, &key);
-            let link = if cfg.remote.is_some() {
-                let mirror = RemoteTransport::mirror_root(&remote_dir(&root));
-                let mut t = FolderTransport::new(&mirror, &cfg.space, cfg.device.clone(), None);
-                t.set_check_lines(false);
-                Ok(Link::Folder(Box::new(t)))
-            } else {
-                Link::new(&cfg, &token, None, None)
-            };
-            // Older key epochs, from the vault's key records (0.13).
-            let link = link.map(|l| l.with_keys(&keys));
-            let keys = link
-                .as_ref()
-                .ok()
-                .and_then(|l| l.admin().key_records().ok())
-                .map_or_else(|| keys.clone(), |recs| quire_sync::keyring::resolve(&keys, &recs, &cfg.device, None, &Pins::default()).keys);
-            let link = link.map(|l| l.with_keys(&keys));
-            let engine = Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), keys, load_state(&root, &cfg));
-            let _ = tx.send(link.and_then(|l| engine.history(l.transport(), &path).map_err(|e| e.to_string())));
-        });
+        std::thread::Builder::new()
+            .name("quire-sync-review".into())
+            .spawn(move || {
+                // S3 and WebDAV: read the mirror the worker keeps, not the storage.
+                let keys = harden::keyset(&cfg.space, &key);
+                let link = if cfg.remote.is_some() {
+                    let mirror = RemoteTransport::mirror_root(&remote_dir(&root));
+                    let mut t = FolderTransport::new(&mirror, &cfg.space, cfg.device.clone(), None);
+                    t.set_check_lines(false);
+                    Ok(Link::Folder(Box::new(t)))
+                } else {
+                    Link::new(&cfg, &token, None, None)
+                };
+                // Older key epochs, from the vault's key records (0.13).
+                let link = link.map(|l| l.with_keys(&keys));
+                let keys = link.as_ref().ok().and_then(|l| l.admin().key_records().ok()).map_or_else(
+                    || keys.clone(),
+                    |recs| quire_sync::keyring::resolve(&keys, &recs, &cfg.device, None, &Pins::default()).keys,
+                );
+                let link = link.map(|l| l.with_keys(&keys));
+                let engine = Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), keys, load_state(&root, &cfg));
+                let _ = tx.send(link.and_then(|l| engine.history(l.transport(), &path).map_err(|e| e.to_string())));
+            })
+            .expect("the system starts a thread");
         Some(rx)
     }
 
