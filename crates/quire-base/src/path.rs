@@ -160,7 +160,10 @@ fn plain(s: &str, hidden_ok: impl Fn(&str) -> bool) -> Result<(), PathError> {
 pub fn leaves_root(p: &str) -> bool {
     let b = p.as_bytes();
     let drive = b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':';
-    drive || p.starts_with('/') || p.starts_with('\\') || Path::new(p).components().any(|c| matches!(c, Component::Prefix(_) | Component::RootDir))
+    drive
+        || p.starts_with('/')
+        || p.starts_with('\\')
+        || Path::new(p).components().any(|c| matches!(c, Component::Prefix(_) | Component::RootDir))
 }
 
 /// An archive or export entry's path made of plain names, or why it isn't.
@@ -264,7 +267,19 @@ mod tests {
     fn bucket_prefix_allows_hidden_segments_and_colons() {
         assert_eq!(
             accepted(Rule::BucketPrefix),
-            ["notes/a.md", "C:/x.md", "c:x.md", ".hidden/a.md", ".quire/x.json", ".QUIRE/x", "a/.git/x", "a:b.md", "a..b.md", "  notes  ", "x/...md"]
+            [
+                "notes/a.md",
+                "C:/x.md",
+                "c:x.md",
+                ".hidden/a.md",
+                ".quire/x.json",
+                ".QUIRE/x",
+                "a/.git/x",
+                "a:b.md",
+                "a..b.md",
+                "  notes  ",
+                "x/...md"
+            ]
         );
     }
 

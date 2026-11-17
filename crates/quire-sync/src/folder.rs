@@ -1317,7 +1317,8 @@ impl FolderTransport {
         };
         m.seal(&keys);
         // The manifest goes last: until it's there, the snapshot isn't used.
-        write_atomic(&tmp.join("manifest.json"), &serde_json::to_vec_pretty(&m).unwrap_or_default(), Options::EXISTING_FOLDER).map_err(werr)?;
+        write_atomic(&tmp.join("manifest.json"), &serde_json::to_vec_pretty(&m).unwrap_or_default(), Options::EXISTING_FOLDER)
+            .map_err(werr)?;
         fs::rename(&tmp, &dir).map_err(werr)?;
         drop(ix);
         self.mark_seen(&m);
