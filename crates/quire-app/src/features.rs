@@ -1,13 +1,16 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The 0.9 feature hub: where the workspace hands work to features.
+//! The feature hub: where the workspace hands per-feature work to features.
 //!
-//! `workspace.rs` is frozen after the foundation step (design §6.3), so it
-//! calls only the functions here. Each workstream has one entry module
-//! (`agent_state`, `mcp_state`, `trust_jobs`, `assistant_state`,
-//! `tasks_state`, `nav`, `canvas_state`) with the same set of functions, and
-//! keeps its state in a field of [`Features`]. Adding a feature means
-//! filling in those functions, never editing this file or the workspace.
+//! `workspace.rs` calls the functions here (`tick`, `command_available`,
+//! `decorations`, `status_items`) instead of each feature directly. Each
+//! feature has one entry module (`agent_state`, `mcp_state`, `trust_jobs`,
+//! `assistant_state`, `tasks_state`, `nav`, `canvas_state`, ...) with the same
+//! set of functions, and keeps its state in a field of [`Features`].
+//! To add a feature: write its entry module, add a field to [`Features`], and
+//! call the module from the functions below. `workspace.rs` and this file are
+//! among the most-edited files in the repository; they are not frozen. Keep
+//! each edit small and merge often.
 
 use std::cell::RefCell;
 use std::rc::Rc;

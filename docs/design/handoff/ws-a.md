@@ -1,5 +1,10 @@
 # WS-A hand-off: requests and notes for other workstreams
 
+Status: record
+Area: 0.9 workstream hand-off (WS-A)
+
+A record of a pass; not a description of today's code.
+
 What WS-A (agent store and review) needs from files it doesn't own, what it
 worked around meanwhile, and what other workstreams can now use.
 

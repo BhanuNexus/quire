@@ -1,5 +1,10 @@
 # WS-E hand-off: requests and notes for integration
 
+Status: record
+Area: 0.9 workstream hand-off (WS-E)
+
+A record of a pass; not a description of today's code.
+
 What WS-E needs from files it doesn't own, and the small additions it made
 at registration points. Everything below is small; none of it blocks
 WS-E's features, which work around it today.

@@ -1,11 +1,9 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The subcommands, one module per area (design §6.1 F0.10). Each module
-//! lists its commands in a `COMMANDS` table; [`all`] joins the tables and
-//! the help text is built from them. Owners: `search`, `notes`, `import`,
-//! `bench` (frozen after F0); `capture`, `mcp`, `agent`, `eval` (WS-B);
-//! `lint` (WS-A); `ai` (WS-D); `tasks` (WS-E); `sync`, `serve` (0.10 serve);
-//! `lock`, `unlock`, `status` (0.11 security); `links`, `tree` (0.12 typed links); `format` (0.12 switching tools).
+//! The subcommands, one module per area. Each module lists its commands in a
+//! `COMMANDS` table; [`all`] joins the tables and the help text is built from
+//! them. To add a subcommand: write a module with a `COMMANDS` table, declare
+//! it below and add the table to [`all`]. No module here is frozen.
 
 mod agent;
 mod ai;

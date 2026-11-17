@@ -2,8 +2,10 @@
 #
 # Push a tag `vX.Y.Z` (matching Cargo.toml and a CHANGELOG.md section) to
 # release, or run the "Tag release" workflow, which checks the commit first,
-# then creates the tag and starts this one on it. Run this by hand on a branch
-# for a dry run: the same jobs, including the tests, the Flatpak builder image
+# then creates the tag and starts this one on it. On a tag the `check` job
+# does not re-run the tests: it proves that CI passed on the tagged commit
+# (packaging/check-ci-green.sh). Run this by hand on a branch
+# for a dry run: the same jobs, including the full test run, the Flatpak builder image
 # check, and the checks of the release's file set and SHA256SUMS (`assemble`),
 # but nothing is attested, no release is created, and the `release` environment
 # (`publish`) is not entered. Files are uploaded as workflow artifacts only.
@@ -89,9 +91,14 @@ jobs:
             python3 packaging/pin-models.py --check --warn
           fi
 
-  # The workspace tests run beside the builds, not before them (0.13.2: they
-  # took 22 minutes of a 56-minute release, and the same tree has passed CI).
-  # Nothing is published without them: `assemble` and `publish` need this job.
+  # The tests. They run beside the builds, not before them (0.13.2: they took
+  # 22 minutes of a 56-minute release). Nothing is published without this job:
+  # `assemble` and `publish` need it.
+  #   * On a tag: the tests are not run again. The same commit already passed
+  #     CI on main (the `CI` and `CodeQL` push runs), and the job proves that
+  #     with packaging/check-ci-green.sh in seconds. A tag on a commit CI never
+  #     passed fails here, so a release cannot publish without green tests.
+  #   * On a dry run from a branch: no guard ran, so the whole test run is made.
   check:
     needs: preflight
     runs-on: ubuntu-latest
@@ -99,15 +106,30 @@ jobs:
     timeout-minutes: 50
     permissions:
       contents: read
+      checks: read # the commit's check-runs (tag runs)
+      actions: read # the commit's workflow runs (tag runs)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: CI already passed on the tagged commit (tag runs)
+        if: env.IS_RELEASE == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$SHA"
+          packaging/check-ci-green.sh "$REPO" "$SHA"
       - name: Install the pinned toolchain
+        if: env.IS_RELEASE != 'true'
         run: rustup show active-toolchain || rustup toolchain install
       - name: ALSA headers (the full edition records voice notes through cpal)
+        if: env.IS_RELEASE != 'true'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
-      - run: cargo test --workspace --locked
+      - name: Workspace tests (dry runs from a branch)
+        if: env.IS_RELEASE != 'true'
+        run: cargo test --workspace --locked
 
   # The on-device AI engine (design §D.3): built per target first, so each
   # app build can embed the SHA-256 of the engine it may download

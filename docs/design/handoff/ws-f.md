@@ -1,5 +1,10 @@
 # WS-F hand-off: requests for files WS-F doesn't own
 
+Status: record
+Area: 0.9 workstream hand-off (WS-F)
+
+A record of a pass; not a description of today's code.
+
 WS-F (editor and UI) worked around each of these; each is a small change in
 a frozen or other-owned file. Ordered by how much a user would notice.
 

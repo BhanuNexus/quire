@@ -1,10 +1,12 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Where 0.9 features plug into the desktop (design §6.1 F0.12, §6.3).
+//! Where features plug into the desktop.
 //!
-//! `app.rs`, `panels.rs`, `overlays.rs` and `dialogs.rs` are frozen after
-//! the foundation step. A feature's UI lives in its own files and is
-//! registered here, in the block of lines that belongs to its workstream:
+//! A feature's UI lives in its own files and is registered here. A new
+//! dialog is an `OverlayView` in its own `*_ui.rs` file, listed in
+//! `layout_samples`. `app.rs`, `panels.rs`, `overlays.rs` and `dialogs.rs` are
+//! shared chrome and are among the most-edited files; they change whenever
+//! the shared chrome changes, so keep edits small and merge often.
 //!
 //! * [`RIGHT_TABS`] — tabs of the right panel (Insights is built in)
 //! * [`SIDEBAR_TABS`] — extra sidebar tabs (Files, Search, Tags, Tasks are built in)
@@ -17,7 +19,7 @@
 //! * [`open_surface`] — editors for non-Markdown files (`surfaces.rs`)
 //! * `layout_samples` — every feature overlay, for `layout_check` (tests)
 //!
-//! Each table is in workstream order; add to your block only.
+//! Each table is grouped by feature; add a new entry next to its feature's.
 
 use quire_app::agent::inbox::{InboxItem, StoredItem};
 use quire_app::decor::{ActionId, WidgetId};

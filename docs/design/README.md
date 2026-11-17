@@ -2,6 +2,8 @@
 
 There is one note per piece of work, written when it was done. They are a record of why, so most of them are history by now. This page says which still describe the code, which are records of a release pass, and which are superseded. When a note and the code disagree, the code wins; for saved files, [`../formats/`](../formats/README.md) wins over any note.
 
+Every note starts with a block under its title: `Status: current | record | superseded by <note>`, `Area:` and (for `current`) `Code:`. `packaging/check-design-notes.sh` checks the block, that each note is listed on this page, and that no note links outside the repository; CI blocks on it. A `record` note starts with "A record of a pass; not a description of today's code."
+
 Status here follows what a note *is* (the design of a shipped feature, a record of a pass, or a build log). It was not re-checked line by line against the code.
 
 ## Read first
@@ -30,9 +32,10 @@ Status here follows what a note *is* (the design of a shipped feature, a record 
 These say what a pass found, changed and left. Read them for the reasoning behind a decision, not for the current state.
 
 - 0.13.1, the hardening pass: [0.13.1-deps.md](0.13.1-deps.md), [0.13.1-parse.md](0.13.1-parse.md), [0.13.1-perf.md](0.13.1-perf.md), [0.13.1-qa.md](0.13.1-qa.md), [0.13.1-sec.md](0.13.1-sec.md). What each dependency ignore waits for is kept up to date in [../dependency-ignores.md](../dependency-ignores.md).
-- 0.13.2, the data-safety pass: `0.13.2-*.md`, one note per team, written as the work lands (this release's own notes; read the one for the area you touch).
+- 0.13.2, the data-safety pass: [0.13.2-store.md](0.13.2-store.md) (storage and locks), [0.13.2-sync.md](0.13.2-sync.md) (sync safety), [0.13.2-ui.md](0.13.2-ui.md) (saves and entry points). The pipeline note, [0.13.2-pipe.md](0.13.2-pipe.md), is listed above under Packaging.
+- 0.14, the codebase-health pass: [0.14-health-docs.md](0.14-health-docs.md) (instructions and checks, current) and the other teams' `0.14-health-*.md`, each with a `Status:` block.
 - Earlier passes: [0.10-perf.md](0.10-perf.md), [0.12-loose.md](0.12-loose.md), [0.12-verify.md](0.12-verify.md).
-- The 0.9 build: [F0-notes.md](F0-notes.md) and [handoff/](handoff/) (the workstream hand-offs of 2026-11-03: `ws-a.md` to `ws-g.md`). Nothing in them is a rule for today's work.
+- The 0.9 build: [F0-notes.md](F0-notes.md) and the workstream hand-offs of 2026-11-03: [ws-a](handoff/ws-a.md), [ws-b](handoff/ws-b.md), [ws-c](handoff/ws-c.md), [ws-d](handoff/ws-d.md), [ws-e](handoff/ws-e.md), [ws-f](handoff/ws-f.md), [ws-g](handoff/ws-g.md). Nothing in them is a rule for today's work.
 
 ## Superseded
 

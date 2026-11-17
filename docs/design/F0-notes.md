@@ -1,5 +1,10 @@
 # 0.9 foundation (F0): notes for the workstreams
 
+Status: record
+Area: the 0.9 foundation hand-off
+
+A record of a pass; not a description of today's code.
+
 What F0 landed, which files each workstream owns from now on, where to
 register things, and what to watch out for. Read with `0.9.md` (§6 has the
 plan; "Changes during F0" at the end of §6.1 lists where F0 differs from it).

@@ -70,6 +70,22 @@ allow = [
 ]
 
 [bans]
+# Layering for third-party crates. `wrappers` are the only direct parents
+# allowed; the error names the rule. The workspace's own layering is checked
+# by packaging/check-layering.py. `quire-base` is the planned bottom crate
+# (it holds the shared HTTP client builder): a wrapper not in the graph is
+# harmless until it lands.
+deny = [
+  { crate = "egui", wrappers = ["quire-desktop", "eframe", "egui_extras", "egui_commonmark", "egui_commonmark_backend", "egui-winit", "egui_glow"], reason = "quire-desktop only draws; logic goes in quire-app (UI-agnostic)" },
+  { crate = "eframe", wrappers = ["quire-desktop"], reason = "only the desktop app draws" },
+  { crate = "rfd", wrappers = ["quire-desktop"], reason = "dialogs belong to the desktop adapter" },
+  { crate = "axum", wrappers = ["quire-mcp", "quire-web", "quire-sync-server", "quire-cli"], reason = "HTTP servers live in quire-mcp, quire-web and quire-sync-server" },
+  { crate = "tokio", wrappers = ["quire-mcp", "quire-web", "quire-sync-server", "quire-cli", "axum", "hyper", "hyper-util", "tower", "wasm-bindgen-futures"], reason = "no async below the servers (Cargo.toml: future_not_send = allow, 'no async here')" },
+  { crate = "ureq", wrappers = ["quire-ai", "quire-app", "quire-base", "quire-cli", "quire-import", "quire-intel", "quire-mcp", "quire-sync", "quire-web"], reason = "P6: network code only in these crates; a new one needs review" },
+  { crate = "typst", wrappers = ["quire-typeset"], reason = "Typst stays behind quire-typeset (full edition only)" },
+  { crate = "candle-core", wrappers = ["quire-ai-engine", "candle-nn", "candle-transformers"], reason = "inference only in the engine sidecar process" },
+  { crate = "rusqlite", wrappers = ["quire-sync-server"], reason = "only the sync server keeps a database" },
+]
 multiple-versions = "allow"
 wildcards = "deny"
 allow-wildcard-paths = true
