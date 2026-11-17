@@ -6,7 +6,12 @@
 //! exports can't be downloaded in the test environment. Each test says which
 //! variant it covers. See docs/design/0.13.1-qa.md for what is still only
 //! verified against hand-built text.
-#![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::tests_outside_test_module,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+)]
 
 use std::path::Path;
 

@@ -4,6 +4,12 @@
 //! §6.2 WS-D acceptance): the expected pages, citations, index and log;
 //! the person's note gets a suggestion, not an edit; and "Revert run"
 //! restores the vault byte for byte.
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::tests_outside_test_module,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+)]
 
 use std::collections::BTreeMap;
 use std::path::Path;

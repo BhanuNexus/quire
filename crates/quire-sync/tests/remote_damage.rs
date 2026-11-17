@@ -4,7 +4,12 @@
 //! revision objects (0.12 review H2, M5, M6; data review L2). Sync carries
 //! on with what it can verify, says what it skipped, and the device that
 //! wrote a lost object puts it back.
-#![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::tests_outside_test_module,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+)]
 
 use std::path::Path;
 use std::sync::Arc;

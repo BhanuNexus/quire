@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Behaviour tests for the Markdown-aware spell checker.
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::tests_outside_test_module,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+)]
 
 use std::time::{Duration, Instant};
 

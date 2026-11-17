@@ -5,7 +5,12 @@
 //! still do"), and that each attempt now fails: lowering the vault's level,
 //! making up a device to win a key change, writing into another device's
 //! lane, and planting a snapshot.
-#![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::tests_outside_test_module,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;

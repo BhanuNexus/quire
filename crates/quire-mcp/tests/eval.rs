@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The `synthetic-edits` suite at full size runs well within CI's minute
 //! (design §B.6) and reports every metric.
-#![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::tests_outside_test_module,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+)]
 
 use std::time::{Duration, Instant};
 

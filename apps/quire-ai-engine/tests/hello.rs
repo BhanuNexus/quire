@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The app's engine handle talks to the real binary.
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::tests_outside_test_module,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+)]
 
 #[test]
 fn the_client_handle_says_hello_to_this_binary() {

@@ -5,7 +5,12 @@
 //! the run ends in a suggestion, the Inbox lists it, the person reviews and
 //! accepts it in the note, history records who made the version, Agent
 //! activity shows the run, and "Revert run" restores the note.
-#![expect(clippy::unwrap_used, reason = "a test: any failure should fail it")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::tests_outside_test_module,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+)]
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;

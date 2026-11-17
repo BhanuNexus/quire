@@ -4,7 +4,12 @@
 //! copies between them: files arrive late, out of order and half-written.
 //! Every device must still end up with the same notes, and no text anyone
 //! wrote may be lost.
-#![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::tests_outside_test_module,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+)]
 
 use std::fs;
 use std::path::{Path, PathBuf};

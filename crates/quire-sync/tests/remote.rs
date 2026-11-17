@@ -8,7 +8,12 @@
 //! `real_servers` runs the same two-device check against moto (S3) and
 //! `WsgiDAV` (WebDAV) when `QUIRE_SYNC_REAL_SERVERS` names a Python that has
 //! them (see `docs/design/0.12-sync.md`).
-#![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::tests_outside_test_module,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+)]
 
 use std::collections::BTreeSet;
 use std::sync::Arc;

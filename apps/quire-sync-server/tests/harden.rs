@@ -4,7 +4,12 @@
 //! a device, key changes by compare-and-swap, bound headers once the space
 //! is upgraded, Quire 0.12 clients kept out with a clear error, and
 //! compaction with a device that was offline.
-#![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::tests_outside_test_module,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;

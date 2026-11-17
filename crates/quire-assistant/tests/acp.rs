@@ -7,6 +7,12 @@
 //!
 //! The agent runs once in-process over pipes, and once as a real process
 //! (this test binary, started again with `QUIRE_ACP_TEST_AGENT` set).
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::tests_outside_test_module,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+)]
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;

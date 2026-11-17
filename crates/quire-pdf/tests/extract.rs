@@ -4,6 +4,12 @@
 //! pages match their gold text to at least 95 % of characters; a scan is
 //! reported as needing OCR; links are found; highlights re-anchor after the
 //! PDF is saved again.
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::tests_outside_test_module,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+)]
 
 use quire_pdf::PdfDoc;
 use quire_pdf::annot;

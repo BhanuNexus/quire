@@ -3,7 +3,12 @@
 //! 0.12 typed links: seeded property tests (parsing, byte identity on
 //! rename, implied reverse edges, cycles, renames and moves keep typed
 //! links) and real-world Dataview and Breadcrumbs vault snippets.
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::tests_outside_test_module,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+)]
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;

@@ -4,6 +4,12 @@
 //! every JSON reader of the canvas crate, not overflow the stack. Each case
 //! runs on an ordinary spawned thread (2 MiB), so an overflow aborts the
 //! test run and fails it.
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::tests_outside_test_module,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+)]
 
 use quire_canvas::{drawing, excalidraw, model, ojson};
 
