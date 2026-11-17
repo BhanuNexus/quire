@@ -206,6 +206,10 @@ jobs:
         run: |
           packaging/test-check-design-notes.sh
           packaging/check-design-notes.sh
+      - name: Code comments carry no workstream labels or bare design-section references
+        run: |
+          packaging/test-check-comment-labels.sh
+          packaging/check-comment-labels.sh
 
   typos:
     runs-on: ubuntu-latest
