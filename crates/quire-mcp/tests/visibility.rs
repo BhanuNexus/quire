@@ -62,10 +62,10 @@ const MARKERS: &[&str] = &["zq", "Private/diary", ".obsidian/", ".trash/", "Jour
 /// which are built from every note of the vault, hidden ones included: what
 /// a hidden note says shifts which visible notes rank high enough to be
 /// shown ("by meaning"), and a word found only in hidden notes can bring up
-/// a visible one. Known and not fixed (docs/design/0.14-health-gates.md
-/// §2): their replies may differ from the plain vault's in which visible
-/// notes they show, but must name nothing hidden and number their sources
-/// from 1 without gaps.
+/// a visible one. Known and not fixed: see
+/// `docs/design/0.14-health-gates.md` §2. Their replies may differ from the
+/// plain vault's in which visible notes they show, but must name nothing
+/// hidden and number their sources from 1 without gaps.
 const RANKED: &[&str] = &["search", "search_notes", "ask", "ask_notes"];
 
 /// Hidden notes and names an agent may ask for.
