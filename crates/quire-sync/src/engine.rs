@@ -37,6 +37,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use quire_base::time::now_ms;
 use quire_text::merge;
 
 use crate::crypto::CryptoError;
@@ -145,8 +146,7 @@ pub fn is_attachment(path: &str) -> bool {
 /// How the engine remembers a file's synced contents: notes in full (they're
 /// the ancestor for the next merge), attachments as a hash.
 pub fn fingerprint(path: &str, text: &str) -> String {
-    use sha2::Digest;
-    if is_attachment(path) { format!("sha256:{}", crate::crypto::hex(&sha2::Sha256::digest(text.as_bytes()))) } else { text.to_string() }
+    if is_attachment(path) { format!("sha256:{}", quire_base::enc::sha256_hex(text.as_bytes())) } else { text.to_string() }
 }
 
 /// Whether `text` is what was last synced (`base`, a note's text or an
@@ -1350,10 +1350,6 @@ impl Engine {
             PushOutcome::Conflict { .. } => Ok(false),
         }
     }
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(0))
 }
 
 /// `("Notes/Plan", ".md")`; `("README", "")` when there's no extension.

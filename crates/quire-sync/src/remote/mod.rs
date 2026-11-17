@@ -197,14 +197,17 @@ pub trait ObjectStore: Send + Sync + std::fmt::Debug {
     }
 }
 
-/// A prefix or folder as typed (`/notes/`, `a/b`), checked: no `.`, `..`,
-/// empty parts, backslashes or control characters.
+/// A prefix or folder as typed (`/notes/`, `a/b`), checked.
+///
+/// Trimmed of spaces and slashes, then [`quire_base::path::Rule::BucketPrefix`]:
+/// no `.`, `..`, empty parts, backslashes or control characters. Empty is
+/// the bucket's root.
 pub fn clean_prefix(p: &str) -> Result<String, StoreError> {
     let t = p.trim().trim_matches('/');
     if t.is_empty() {
         return Ok(String::new());
     }
-    if t.contains('\\') || t.chars().any(char::is_control) || t.split('/').any(|s| s.is_empty() || s == "." || s == "..") {
+    if !quire_base::path::Rule::BucketPrefix.accepts(t) {
         return Err(StoreError::Config(format!("“{p}” isn't a usable folder name in the bucket")));
     }
     Ok(t.to_string())

@@ -135,10 +135,7 @@ impl Manifest {
 }
 
 /// SHA-256 of `b`, hex.
-pub fn sha256_hex(b: &[u8]) -> String {
-    use sha2::Digest;
-    hex(&sha2::Sha256::digest(b))
-}
+pub use quire_base::enc::sha256_hex;
 
 /// `000004-<device>`.
 pub fn name(generation: u32, maker: &DeviceId) -> String {

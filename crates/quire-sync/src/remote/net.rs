@@ -103,23 +103,14 @@ impl Http {
     /// and the requests in the clear past the one hop the person allowed.
     /// `https://` goes through such a proxy as usual (TLS end to end).
     pub fn new(timeout: Duration, plain_http: bool) -> Self {
-        let mut config = ureq::Agent::config_builder();
+        let timeouts = quire_base::net::Timeouts { total: Some(timeout), connect: Some(Duration::from_secs(15)), ..Default::default() };
+        // Redirects aren't followed: a store that sends Quire elsewhere
+        // could send signed requests or a password to another host.
+        let mut config = quire_base::net::config("", timeouts, quire_base::net::Redirects::Refuse).allow_non_standard_methods(true);
         if plain_http {
             config = config.proxy(None);
         }
-        let agent = config
-            .timeout_global(Some(timeout))
-            .timeout_connect(Some(Duration::from_secs(15)))
-            .http_status_as_error(false)
-            // Redirects aren't followed: a store that sends Quire elsewhere
-            // could send signed requests or a password to another host.
-            .max_redirects(0)
-            .max_redirects_will_error(false)
-            .allow_non_standard_methods(true)
-            .user_agent(format!("Quire/{}", env!("CARGO_PKG_VERSION")))
-            .tls_config(ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build())
-            .build()
-            .into();
+        let agent = config.build().into();
         Self { agent, retry: Retry::DEFAULT }
     }
 

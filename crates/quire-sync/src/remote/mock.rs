@@ -132,16 +132,22 @@ impl MockServer {
         state.dirs.lock().unwrap_or_else(PoisonError::into_inner).insert(String::new());
         let stop = Arc::new(AtomicBool::new(false));
         let (st, sp) = (Arc::clone(&state), Arc::clone(&stop));
-        std::thread::spawn(move || {
-            for conn in listener.incoming() {
-                if sp.load(Ordering::Relaxed) {
-                    return;
+        std::thread::Builder::new()
+            .name("quire-mock-accept".into())
+            .spawn(move || {
+                for conn in listener.incoming() {
+                    if sp.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let Ok(conn) = conn else { continue };
+                    let (st, kind) = (Arc::clone(&st), kind.clone());
+                    std::thread::Builder::new()
+                        .name("quire-mock-conn".into())
+                        .spawn(move || serve(conn, &st, &kind, port))
+                        .expect("the system starts a thread");
                 }
-                let Ok(conn) = conn else { continue };
-                let (st, kind) = (Arc::clone(&st), kind.clone());
-                std::thread::spawn(move || serve(conn, &st, &kind, port));
-            }
-        });
+            })
+            .expect("the system starts a thread");
         Self { port, state, stop }
     }
 

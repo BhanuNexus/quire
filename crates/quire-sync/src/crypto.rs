@@ -49,9 +49,7 @@ pub enum CryptoError {
 }
 
 pub(crate) fn random_bytes<const N: usize>() -> Result<[u8; N], CryptoError> {
-    let mut b = [0u8; N];
-    getrandom::fill(&mut b).map_err(|_| CryptoError::NoRandomness)?;
-    Ok(b)
+    quire_base::rand::bytes().map_err(|_| CryptoError::NoRandomness)
 }
 
 /// The secret that encrypts a vault. Wiped from memory when dropped.
@@ -374,20 +372,7 @@ impl DigestPrefix for Sha256 {
     }
 }
 
-pub(crate) fn hex(b: &[u8]) -> String {
-    use std::fmt::Write as _;
-    b.iter().fold(String::with_capacity(b.len() * 2), |mut s, x| {
-        let _ = write!(s, "{x:02x}");
-        s
-    })
-}
-
-pub(crate) fn unhex(s: &str) -> Option<Vec<u8>> {
-    if !s.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
-}
+pub(crate) use quire_base::enc::{hex, unhex};
 
 pub(crate) mod hex_bytes {
     use serde::{Deserialize, Deserializer, Serializer};
