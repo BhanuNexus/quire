@@ -767,7 +767,15 @@ fn capture(ctx: &egui::Context, text: &mut String, focused: &mut bool, minimize:
                 .color(pal.muted),
         );
         ui.add_space(6.0);
-        let r = ui.add(egui::TextEdit::multiline(text).desired_rows(3).desired_width(f32::INFINITY).hint_text("What's on your mind?"));
+        // Long text scrolls inside the dialog, which stays on screen.
+        let max_h = (ctx.content_rect().height() * 0.4).max(80.0);
+        let r = egui::ScrollArea::vertical()
+            .id_salt("quire-capture-text")
+            .max_height(max_h)
+            .show(ui, |ui| {
+                ui.add(egui::TextEdit::multiline(text).desired_rows(3).desired_width(f32::INFINITY).hint_text("What's on your mind?"))
+            })
+            .inner;
         if !*focused {
             r.request_focus();
             *focused = true;
