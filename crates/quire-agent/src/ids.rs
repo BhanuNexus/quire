@@ -21,7 +21,7 @@ fn time_part(ms: i64) -> String {
 /// OS has no randomness to give (ids stay unique within a process).
 fn random_part(n: usize) -> String {
     let mut bytes = vec![0_u8; n];
-    if getrandom::fill(&mut bytes).is_err() {
+    if quire_base::rand::fill(&mut bytes).is_err() {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
         let mut x = u64::try_from(nanos & u128::from(u64::MAX)).unwrap_or(0) ^ COUNTER.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed);

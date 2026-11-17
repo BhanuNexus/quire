@@ -92,16 +92,9 @@ pub struct StateDir {
     dir: PathBuf,
 }
 
-/// Write `bytes` to `path` through a temporary file and a rename.
+/// Write `bytes` to `path` whole ([`quire_base::fs::write_atomic`]).
 fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&tmp);
-    })
+    quire_base::fs::write_atomic(path, bytes, quire_base::fs::Options::STATE)
 }
 
 impl StateDir {
