@@ -6,7 +6,7 @@
 //! bytes. What a revision says (path and text) is a [`Content`], encrypted
 //! and padded so its length gives little away.
 //!
-//! **Protocol versions** (design 0.9 §B.5). Version 1 is Quire 0.8. Version
+//! **Protocol versions** (`docs/design/0.9.md` §B.5). Version 1 is Quire 0.8. Version
 //! 2 (0.9) adds `GET /v1/info`, the `Quire-Sync-Protocol` request header, a
 //! per-space minimum (`PUT /v1/spaces/{id}/min_protocol`) and an optional
 //! `actor` in [`Content`] (who made the change, for attribution on other
@@ -85,7 +85,7 @@ pub struct ProtocolRange {
     pub max: u32,
 }
 
-/// Who made a change (design 0.9 §A.1): enough to show "Claude Code" on
+/// Who made a change: enough to show "Claude Code" on
 /// another device. Absent for changes typed by the person.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActorRef {

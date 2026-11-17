@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Sync protocol versions across a mixed fleet (design §B.5): a 0.9 client
+//! Sync protocol versions across a mixed fleet (`docs/design/0.9.md` §B.5): a 0.9 client
 //! with a 0.8 server and the reverse, per-space minimums, and agent
 //! attribution travelling with revisions.
 #![allow(

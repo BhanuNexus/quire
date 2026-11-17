@@ -90,7 +90,7 @@ struct Seen {
 
 /// `space.json`. From 0.9 on a reader refuses a space only when
 /// `min_reader` is above what it reads, and otherwise ignores a newer
-/// `format`; 0.8 refuses any `format` above 1 (design §B.5).
+/// `format`; 0.8 refuses any `format` above 1.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SpaceFile {
     format: u32,
@@ -188,7 +188,7 @@ pub fn min_reader(root: &Path, space: &SpaceId) -> Result<u32, TransportError> {
 }
 
 /// Keep readers older than `min` out of this space: `format` and
-/// `min_reader` become `min`, so Quire 0.8 refuses it (design §B.5). Other
+/// `min_reader` become `min`, so Quire 0.8 refuses it. Other
 /// fields are kept. It never lowers either.
 pub fn raise_min_reader(root: &Path, space: &SpaceId, min: u32) -> Result<(), TransportError> {
     let dir = root.join(&space.0);
@@ -318,7 +318,7 @@ pub struct FolderTransport {
     /// The highest level this device knows the space had: lower in
     /// `space.json` stops sync ([`LOWERED`]).
     floor: AtomicU32,
-    /// What other devices' lines and snapshots must be (0.13 §2).
+    /// What other devices' lines and snapshots must be (`docs/design/0.13-sync.md` §2).
     rules: Mutex<LaneRules>,
     /// How long a snapshot settles (tests shorten it).
     settle: i64,

@@ -62,7 +62,7 @@ struct Enrolled {
     token: String,
 }
 
-/// What a server speaks, from `GET /v1/info` (design §B.5).
+/// What a server speaks, from `GET /v1/info`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Negotiated {
     /// Both speak this version.
