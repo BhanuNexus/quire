@@ -57,7 +57,9 @@ pub fn refuse_to_lock(vault: &Vault, folder: &str) -> Option<String> {
     if folder.is_empty() {
         return Some("The whole vault can't be locked; choose a folder.".into());
     }
-    if folder.split('/').any(|s| s.is_empty() || s == "." || s == ".." || s.starts_with('.')) || folder.contains('\\') {
+    // A folder of plain names only: never `.quire/` or another hidden or
+    // app folder, nothing outside the vault.
+    if !quire_base::path::Rule::VaultFolder.accepts(folder) {
         return Some(format!("{folder}/ is a hidden or app folder."));
     }
     let tpl = vault.config.templates_folder.trim_matches('/');

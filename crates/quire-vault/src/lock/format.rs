@@ -74,9 +74,7 @@ pub enum LockError {
 }
 
 pub(crate) fn random<const N: usize>() -> Result<[u8; N], LockError> {
-    let mut b = [0u8; N];
-    getrandom::fill(&mut b).map_err(|_| LockError::NoRandomness)?;
-    Ok(b)
+    quire_base::rand::bytes().map_err(|_| LockError::NoRandomness)
 }
 
 /// A locked folder's random id, in its key file and every file's header.
@@ -508,20 +506,7 @@ fn constant_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-pub(crate) fn hex(b: &[u8]) -> String {
-    use std::fmt::Write as _;
-    b.iter().fold(String::with_capacity(b.len() * 2), |mut s, x| {
-        let _ = write!(s, "{x:02x}");
-        s
-    })
-}
-
-pub(crate) fn unhex(s: &str) -> Option<Vec<u8>> {
-    if !s.len().is_multiple_of(2) || !s.is_ascii() {
-        return None;
-    }
-    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
-}
+pub(crate) use quire_base::enc::{hex, unhex};
 
 #[cfg(test)]
 mod tests {
