@@ -28,7 +28,7 @@ pub struct Resolver {
 }
 
 #[derive(Debug, Default, Clone)]
-#[allow(clippy::struct_field_names, reason = "by_path / by_name / by_alias read as lookup tables")]
+#[expect(clippy::struct_field_names, reason = "by_path / by_name / by_alias read as lookup tables")]
 struct Tables {
     by_path: HashMap<String, NotePath>,
     by_name: HashMap<String, Vec<NotePath>>,

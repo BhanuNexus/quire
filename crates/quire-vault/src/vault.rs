@@ -146,7 +146,7 @@ impl Vault {
     }
 
     /// First free `folder/Title.md`, then `Title 1.md`, `Title 2.md`…
-    #[allow(clippy::unnecessary_wraps, reason = "same Result signature as the other path-creating calls it is chained with")]
+    #[expect(clippy::unnecessary_wraps, reason = "same Result signature as the other path-creating calls it is chained with")]
     pub fn unique_path(&self, folder: &str, title: &str) -> Result<NotePath> {
         let base = sanitize_title(title);
         let base = if base.is_empty() { "Untitled".to_string() } else { base };

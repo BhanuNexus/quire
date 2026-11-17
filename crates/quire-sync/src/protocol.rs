@@ -151,12 +151,12 @@ pub struct LanePos {
     pub n: u64,
 }
 
-#[allow(clippy::trivially_copy_pass_by_ref, reason = "serde's skip_serializing_if passes a reference")]
+#[expect(clippy::trivially_copy_pass_by_ref, reason = "serde's skip_serializing_if passes a reference")]
 const fn is_zero(n: &u64) -> bool {
     *n == 0
 }
 
-#[allow(clippy::trivially_copy_pass_by_ref, reason = "serde's skip_serializing_if passes a reference")]
+#[expect(clippy::trivially_copy_pass_by_ref, reason = "serde's skip_serializing_if passes a reference")]
 const fn is_zero32(n: &u32) -> bool {
     *n == 0
 }

@@ -325,7 +325,7 @@ fn orthonormalize(m: &mut [Vec<f32>], cols: usize) {
 
 /// Eigen-decomposition of a small symmetric matrix by cyclic Jacobi rotations.
 /// Returns (eigenvalues, eigenvectors as columns).
-#[allow(clippy::needless_range_loop, reason = "index-based numeric code reads clearer here")]
+#[expect(clippy::needless_range_loop, reason = "index-based numeric code reads clearer here")]
 fn jacobi_eigen(mut a: Vec<Vec<f64>>) -> (Vec<f64>, Vec<Vec<f64>>) {
     let n = a.len();
     let mut v = vec![vec![0.0; n]; n];
@@ -370,7 +370,7 @@ fn jacobi_eigen(mut a: Vec<Vec<f64>>) -> (Vec<f64>, Vec<Vec<f64>>) {
 
 impl Lsa {
     /// Fit on passages. `max_dims` caps the latent dimensionality.
-    #[allow(clippy::needless_range_loop, reason = "matrix indices read clearer than zipped iterators")]
+    #[expect(clippy::needless_range_loop, reason = "matrix indices read clearer than zipped iterators")]
     pub fn fit(texts: &[&str], max_dims: usize) -> Self {
         let docs: Vec<HashMap<String, u32>> = texts
             .iter()
@@ -544,7 +544,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // The cache's folder is a file, so the cache can't be written.
         std::fs::write(dir.path().join("blocked"), "x").unwrap();
-        let mut cache = VectorCache::open(&dir.path().join("blocked/emb.bin"), "m1");
+        let mut cache = VectorCache::open(dir.path().join("blocked/emb.bin"), "m1");
         let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let ix = SemanticIndex::try_with_cache(corpus(), Box::new(CountingEmbedder(count)), &mut cache).unwrap();
         assert!(!ix.is_empty());

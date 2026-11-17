@@ -325,7 +325,7 @@ impl Settings {
 mod compat;
 
 #[cfg(test)]
-#[allow(clippy::float_cmp, reason = "values round-trip exactly through TOML")]
+#[expect(clippy::float_cmp, reason = "values round-trip exactly through TOML")]
 mod tests {
     use super::*;
 

@@ -38,7 +38,7 @@ static MATH_CACHE: Cache<MathKey, Result<Rendered, TypesetError>> = Cache::new()
 /// The SVG has zero margin and a transparent background; `display` selects
 /// display style (`$$…$$`). Results, including errors, are cached, so calling
 /// this every frame is cheap.
-#[allow(clippy::trivially_copy_pass_by_ref, reason = "by reference so the style can grow without an API change")]
+#[expect(clippy::trivially_copy_pass_by_ref, reason = "by reference so the style can grow without an API change")]
 pub fn math_svg(latex: &str, display: bool, opts: &MathStyle) -> Result<Rendered, TypesetError> {
     if !opts.size_pt.is_finite() || !(1.0..=1000.0).contains(&opts.size_pt) {
         return Err(TypesetError::Invalid(format!("font size {} pt is out of range", opts.size_pt)));
