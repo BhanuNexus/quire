@@ -76,6 +76,7 @@ fn scan(root: &Path) -> Seen {
             }
             match e.file_type() {
                 Ok(t) if t.is_dir() => todo.push(p),
+                #[expect(clippy::filetype_is_file, reason = "a symlinked note is skipped, as the vault listing skips it")]
                 Ok(t) if t.is_file() => {
                     let m = e.metadata().ok();
                     out.insert(NotePath::new(rel), (m.as_ref().and_then(|m| m.modified().ok()), m.map_or(0, |m| m.len())));

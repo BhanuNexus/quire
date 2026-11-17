@@ -4,6 +4,9 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Fixed
+- **Skills, properties and settings:** a skill installed with `quire-cli skill install --from` whose front matter ends with `...` now stays untrusted when its `SKILL.md` is copied, any `trust: untrusted` in a note's front matter now wins over another `trust` line, and a property value that starts or ends with a space keeps it. An unreadable settings file is now reported in the app (it was only printed to the terminal), and Settings → AI says when the embedding cache can't be saved.
+
 ## [0.13.2] - 2026-11-17
 
 Quire 0.13.2: a data-safety release with no new features. Sync no longer reads a vault it can't list as "every note deleted", and a pass that would delete a large part of the vault waits for you. Files replaced while another program has them open no longer fail on Windows, a locked folder's key change shows its new recovery key first and says how to finish if it stops, and canvases, sketches and drawings keep unsaved edits when a save fails.

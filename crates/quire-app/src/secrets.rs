@@ -14,10 +14,8 @@ pub trait SecretStore {
     fn kind(&self) -> String;
 }
 
-#[cfg(feature = "keychain")]
 struct Keychain;
 
-#[cfg(feature = "keychain")]
 impl SecretStore for Keychain {
     fn get(&self, key: &str) -> Option<String> {
         keyring::Entry::new("Quire", key).ok()?.get_password().ok()
@@ -93,7 +91,6 @@ pub fn store() -> Box<dyn SecretStore> {
     if let Some(p) = std::env::var_os("QUIRE_SECRETS_FILE") {
         return Box::new(FileSecrets::new(p));
     }
-    #[cfg(feature = "keychain")]
     if keychain_usable() {
         return Box::new(Keychain);
     }
@@ -102,7 +99,6 @@ pub fn store() -> Box<dyn SecretStore> {
 }
 
 /// Whether the OS keychain works here, decided once per process.
-#[cfg(feature = "keychain")]
 fn keychain_usable() -> bool {
     static USABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *USABLE.get_or_init(|| {

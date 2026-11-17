@@ -69,7 +69,9 @@ impl Graph {
         }
         let mut depth: HashMap<NotePath, usize> = HashMap::new();
         match scope {
-            Scope::All { orphans } => {
+            Scope::All { orphans } =>
+            {
+                #[expect(clippy::iter_over_hash_type, reason = "fills a map")]
                 for (p, n) in &adj {
                     if *orphans || !n.is_empty() {
                         depth.insert(p.clone(), 0);

@@ -16,6 +16,7 @@ tempfile.workspace = true
 thiserror.workspace = true
 # The vault's replace-by-rename (Windows: works while the file is open).
 quire-vault.workspace = true
+quire-markdown.workspace = true
 
 [lints]
 workspace = true

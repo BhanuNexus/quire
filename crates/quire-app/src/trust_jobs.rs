@@ -23,7 +23,7 @@ use std::time::Instant;
 
 use quire_agent::{Actor, Change, ChangeSet};
 use quire_index::semantic::SemanticIndex;
-use quire_intel::anchor::{self, Anchor, AnchorStatus};
+use quire_intel::anchor::{self, Anchor};
 use quire_intel::chat::ChatModel;
 use quire_markdown::Value;
 use quire_vault::{NotePath, VaultEvent};
@@ -630,15 +630,6 @@ pub(crate) fn status(ws: &Workspace, out: &mut Vec<StatusItem>) {
             command: Some(Command::CheckCitations),
             warn: true,
         });
-    }
-}
-
-/// Whether `status` is worth showing for an anchor (drift items).
-pub fn drift_words(status: &AnchorStatus) -> &'static str {
-    match status {
-        AnchorStatus::Exact | AnchorStatus::Moved { .. } => "still matches",
-        AnchorStatus::Drifted { .. } => "the cited text changed",
-        AnchorStatus::Lost => "the cited text is gone",
     }
 }
 

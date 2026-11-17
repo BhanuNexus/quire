@@ -207,6 +207,22 @@ fn date_modified_is_set_when_the_note_changes_or_is_edited() {
 }
 
 #[test]
+fn a_loose_opener_is_left_alone() {
+    // `---  ` is not front matter for Quire's reader (`frontmatter::fences`),
+    // but trimming it would make it so: the note keeps its bytes.
+    let src = "---  \nb:   1\ntags:  [x]\n---\nbody   \n";
+    let o = only(|o| {
+        o.date_modified = true;
+        o.front_matter = true;
+    });
+    let out = lint(src, &o, &Cx { stamp: "2026-11-10T09:30", edited: true });
+    assert_eq!(out.text, src);
+    assert!(out.reverted.is_empty(), "{:?}", out.reverted);
+    let trail = only(|o| o.trailing_spaces = true);
+    assert!(run(src, &trail).starts_with("---  \n"));
+}
+
+#[test]
 fn math_html_and_comments_are_never_touched() {
     let src = "$$\n*a*   \n$$\n\n<div>\n* x   \n</div>\n\n<!-- *c*   -->\n\ntext $a *b* c$ end  \n";
     let o = Options { emphasis: Emphasis::Underscore, list_marker: ListMarker::Dash, ..Options::default() };

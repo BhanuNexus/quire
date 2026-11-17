@@ -317,6 +317,7 @@ pub(crate) fn track_edits(ws: &mut Workspace) {
         now.entry(c.path.clone()).or_default().push((c.card.id.clone(), c.card.question.clone()));
     }
     let mut renames = Vec::new();
+    #[expect(clippy::iter_over_hash_type, reason = "the renames are sorted before they are written")]
     for (path, cur) in &now {
         let Some(old) = ws.features.srs.known.get(path) else { continue };
         let cur_ids: HashSet<&str> = cur.iter().map(|c| c.0.as_str()).collect();
@@ -337,6 +338,8 @@ pub(crate) fn track_edits(ws: &mut Workspace) {
     if renames.is_empty() {
         return;
     }
+    // Written to the review log in one order, whatever the hash order of `now`.
+    renames.sort();
     let at = now_ms();
     let device = ws.device().id.clone();
     for (path, from, to) in renames {

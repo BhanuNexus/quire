@@ -3,7 +3,12 @@
 //! Sync protocol versions across a mixed fleet (design §B.5): a 0.9 client
 //! with a 0.8 server and the reverse, per-space minimums, and agent
 //! attribution travelling with revisions.
-#![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::tests_outside_test_module,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+)]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

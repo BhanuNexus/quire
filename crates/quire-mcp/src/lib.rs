@@ -49,7 +49,6 @@ pub mod capture;
 pub mod consent;
 pub mod edit;
 pub mod eval;
-#[cfg(feature = "http")]
 pub mod http;
 pub mod instructions;
 pub mod mrtr;

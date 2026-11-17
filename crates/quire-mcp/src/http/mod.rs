@@ -34,7 +34,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, State};
-use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -480,9 +480,6 @@ impl Reply {
 pub(crate) fn no_store() -> [(header::HeaderName, HeaderValue); 2] {
     [(header::CACHE_CONTROL, HeaderValue::from_static("no-store")), (header::PRAGMA, HeaderValue::from_static("no-cache"))]
 }
-
-/// For tests: the methods `/mcp` refuses.
-pub const REFUSED_METHODS: [Method; 2] = [Method::GET, Method::DELETE];
 
 /// A body from a string, for HTML pages.
 pub(crate) fn html(status: StatusCode, page: String) -> Response {

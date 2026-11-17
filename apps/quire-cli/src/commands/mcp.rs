@@ -97,7 +97,7 @@ fn stdio(args: &[String]) -> Result<(), String> {
         allow_private_urls: has(args, "--allow-private-urls"),
         // WS-D: the built-in prompts and the person's AI for `ask` in model mode.
         prompts: quire_assistant::prompts::mcp_defs(),
-        chat: quire_app::ai::chat_model(&quire_app::Settings::load()),
+        chat: quire_app::ai::chat_model(&super::load_settings()),
         ..ServerConfig::default()
     };
     let srv = Server::open_with(arg(args, 1)?, cfg)?;
@@ -130,7 +130,7 @@ fn serve_http(args: &[String]) -> Result<(), String> {
             allow_write: true,
             allow_private_urls: has(args, "--allow-private-urls"),
             prompts: quire_assistant::prompts::mcp_defs(),
-            chat: quire_app::ai::chat_model(&quire_app::Settings::load()),
+            chat: quire_app::ai::chat_model(&super::load_settings()),
             ..ServerConfig::default()
         },
     )?;
@@ -139,6 +139,7 @@ fn serve_http(args: &[String]) -> Result<(), String> {
     eprintln!("Quire MCP is listening at {}", http.urls().resource);
     eprintln!("Clients sign in with OAuth (approve them here or in the app), or use a token from `quire-cli mcp token create`.");
     let mut seen = std::collections::HashSet::new();
+    #[expect(clippy::infinite_loop, reason = "the server runs until the process is stopped")]
     loop {
         for r in consent.pending(now()) {
             if seen.insert(r.id.clone()) {

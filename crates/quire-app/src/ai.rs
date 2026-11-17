@@ -30,9 +30,6 @@ pub mod ocr;
 
 pub use quire_ai::catalog::{ENGINE_ID, Purpose, Tier, human_size};
 
-pub const PROVIDERS: &[(&str, &str)] =
-    &[("local", "Offline (built-in)"), ("anthropic", "Anthropic (Claude)"), ("openai", "OpenAI-compatible (OpenAI, Ollama, LM Studio…)")];
-
 pub fn default_base_url(provider: &str) -> &'static str {
     match provider {
         "anthropic" => "https://api.anthropic.com",
@@ -163,23 +160,18 @@ pub fn device_chat(settings: &Settings) -> Option<(Arc<LocalChat>, Tier)> {
 /// The configured cloud or server provider as a chat model (with tools and
 /// streaming), if there is one.
 pub fn provider_chat(settings: &Settings) -> Option<Arc<dyn ChatModel>> {
-    #[cfg(feature = "remote-llm")]
-    {
-        let (base, model) = resolved(settings);
-        match settings.ai_provider.as_str() {
-            "anthropic" => {
-                let key = secrets::api_key(secrets::store().as_ref(), "anthropic")?;
-                return Some(Arc::new(quire_intel::llm::AnthropicModel::new(key, model).with_base_url(base)));
-            }
-            "openai" => {
-                let key = secrets::api_key(secrets::store().as_ref(), "openai");
-                return Some(Arc::new(quire_intel::llm::OpenAiCompatible::new(base, model, key)));
-            }
-            _ => {}
+    let (base, model) = resolved(settings);
+    match settings.ai_provider.as_str() {
+        "anthropic" => {
+            let key = secrets::api_key(secrets::store().as_ref(), "anthropic")?;
+            Some(Arc::new(quire_intel::llm::AnthropicModel::new(key, model).with_base_url(base)))
         }
+        "openai" => {
+            let key = secrets::api_key(secrets::store().as_ref(), "openai");
+            Some(Arc::new(quire_intel::llm::OpenAiCompatible::new(base, model, key)))
+        }
+        _ => None,
     }
-    let _ = settings;
-    None
 }
 
 /// The chat model features use: the provider, else the on-device model.
@@ -210,22 +202,19 @@ pub const fn locality_words(l: Locality) -> &'static str {
 }
 
 pub(crate) fn make_assistant(settings: &Settings) -> Arc<dyn LanguageModel> {
-    #[cfg(feature = "remote-llm")]
-    {
-        // The secret store (OS keychain) is only touched when a provider is configured.
-        let (base, model) = resolved(settings);
-        match settings.ai_provider.as_str() {
-            "anthropic" => {
-                if let Some(key) = secrets::api_key(secrets::store().as_ref(), "anthropic") {
-                    return Arc::new(quire_intel::llm::AnthropicModel::new(key, model).with_base_url(base));
-                }
+    // The secret store (OS keychain) is only touched when a provider is configured.
+    let (base, model) = resolved(settings);
+    match settings.ai_provider.as_str() {
+        "anthropic" => {
+            if let Some(key) = secrets::api_key(secrets::store().as_ref(), "anthropic") {
+                return Arc::new(quire_intel::llm::AnthropicModel::new(key, model).with_base_url(base));
             }
-            "openai" => {
-                let key = secrets::api_key(secrets::store().as_ref(), "openai");
-                return Arc::new(quire_intel::llm::OpenAiCompatible::new(base, model, key));
-            }
-            _ => {}
         }
+        "openai" => {
+            let key = secrets::api_key(secrets::store().as_ref(), "openai");
+            return Arc::new(quire_intel::llm::OpenAiCompatible::new(base, model, key));
+        }
+        _ => {}
     }
     if let Some((chat, _)) = device_chat(settings) {
         return Arc::new(ChatLanguageModel::new(chat));
@@ -378,7 +367,6 @@ impl Workspace {
             self.index.set_semantic_builder(Some(builder));
             return;
         }
-        #[cfg(feature = "remote-llm")]
         if self.settings.embeddings == "endpoint" {
             use quire_index::semantic::{SemanticIndex, VectorCache};
             let base = embed_base_url(&self.settings);
@@ -412,20 +400,12 @@ impl Workspace {
         let (base, _) = resolved(&self.settings);
         let key = secrets::api_key(secrets::store().as_ref(), &provider);
         std::thread::spawn(move || {
-            #[cfg(feature = "remote-llm")]
-            let r = {
-                use quire_intel::llm::{ProviderKind, probe};
-                match provider.as_str() {
-                    "anthropic" if key.is_none() => Err("Add an API key first".to_string()),
-                    "anthropic" => probe(ProviderKind::Anthropic, &base, key.as_deref()).map_err(|e| e.to_string()),
-                    "openai" => probe(ProviderKind::OpenAiCompatible, &base, key.as_deref()).map_err(|e| e.to_string()),
-                    _ => Ok("Offline assistant — nothing to connect".to_string()),
-                }
-            };
-            #[cfg(not(feature = "remote-llm"))]
-            let r = {
-                let _ = (provider, base, key);
-                Err("This build has no network providers".to_string())
+            use quire_intel::llm::{ProviderKind, probe};
+            let r = match provider.as_str() {
+                "anthropic" if key.is_none() => Err("Add an API key first".to_string()),
+                "anthropic" => probe(ProviderKind::Anthropic, &base, key.as_deref()).map_err(|e| e.to_string()),
+                "openai" => probe(ProviderKind::OpenAiCompatible, &base, key.as_deref()).map_err(|e| e.to_string()),
+                _ => Ok("Offline assistant — nothing to connect".to_string()),
             };
             let _ = tx.send(r);
         });
@@ -499,19 +479,21 @@ impl Workspace {
         let ctl = Control::new();
         let (tx, rx) = unbounded();
         let mirror = self.settings.ai_local.mirror_url.clone();
-        {
+        let spawned = {
             let ctl = ctl.clone();
             let id = id.clone();
-            std::thread::Builder::new()
-                .name("quire-model-download".into())
-                .spawn(move || {
-                    let d = Downloader::new(&mirror);
-                    let r = d.fetch(&entry, &dir, &ctl, &mut |p| {
-                        let _ = tx.send(DlMsg::Progress(id.clone(), p));
-                    });
-                    let _ = tx.send(DlMsg::Finished(id, r));
-                })
-                .ok();
+            std::thread::Builder::new().name("quire-model-download".into()).spawn(move || {
+                let d = Downloader::new(&mirror);
+                let r = d.fetch(&entry, &dir, &ctl, &mut |p| {
+                    let _ = tx.send(DlMsg::Progress(id.clone(), p));
+                });
+                let _ = tx.send(DlMsg::Finished(id, r));
+            })
+        };
+        // Without its thread the download would show as running forever.
+        if let Err(e) = spawned {
+            st.downloads.insert(id, Dl::Failed(format!("couldn't start the download: {e}")));
+            return;
         }
         st.downloads.insert(id.clone(), Dl::Running { done: 0, total: catalog().size_of(&id), rate: 0.0 });
         st.active = Some((id, ctl));
@@ -675,7 +657,6 @@ impl Workspace {
 mod tests {
     use super::*;
 
-    #[cfg(feature = "remote-llm")]
     #[test]
     fn unreachable_embedding_endpoint_falls_back_to_lsa() {
         let mut w =

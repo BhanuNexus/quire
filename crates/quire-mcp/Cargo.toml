@@ -9,12 +9,6 @@ repository.workspace = true
 homepage.workspace = true
 publish.workspace = true
 
-[features]
-default = ["http"]
-# Streamable HTTP and the OAuth authorization server (design §4.6): axum and
-# tokio join here; the runtime is created only when the server is turned on.
-http = ["dep:axum", "dep:tokio", "dep:futures-core"]
-
 [dependencies]
 quire-app.workspace = true
 quire-agent.workspace = true
@@ -31,10 +25,12 @@ base64.workspace = true
 ureq.workspace = true
 # MRTR request states.
 chacha20poly1305.workspace = true
-axum = { workspace = true, optional = true }
-tokio = { workspace = true, optional = true, features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
+# Streamable HTTP and the OAuth authorization server (design §4.6): the
+# runtime is created only when the server is turned on.
+axum.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
 # The `Stream` trait for event streams.
-futures-core = { workspace = true, optional = true }
+futures-core.workspace = true
 
 [dev-dependencies]
 quire-app = { workspace = true, features = ["weak-kdf"] }

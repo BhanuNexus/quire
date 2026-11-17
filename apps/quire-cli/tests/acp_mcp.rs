@@ -3,7 +3,12 @@
 //! The MCP server Quire offers an external (ACP) agent starts with the
 //! arguments the agent is given, and the agent's tool calls are recorded as
 //! the same actor as its file requests (`acp:<name>`).
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::tests_outside_test_module,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+)]
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};

@@ -410,7 +410,7 @@ struct Tip {
     k: u32,
 }
 
-#[allow(clippy::trivially_copy_pass_by_ref, reason = "serde's skip_serializing_if passes a reference")]
+#[expect(clippy::trivially_copy_pass_by_ref, reason = "serde's skip_serializing_if passes a reference")]
 const fn is_zero(n: &u32) -> bool {
     *n == 0
 }
@@ -882,6 +882,7 @@ impl RemoteTransport {
         }
         let saved: HashMap<String, Progress> =
             fs::read(self.progress_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        #[expect(clippy::iter_over_hash_type, reason = "fills a map")]
         for (name, p) in saved {
             if is_id(&name) && name != self.device.0 {
                 m.fetched.insert(DeviceId(name), p);

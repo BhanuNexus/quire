@@ -77,7 +77,7 @@ impl HeightIndex {
 }
 
 #[cfg(test)]
-#[allow(clippy::float_cmp, reason = "sums of small integers are exact in f32")]
+#[expect(clippy::float_cmp, reason = "sums of small integers are exact in f32")]
 mod tests {
     use super::*;
 

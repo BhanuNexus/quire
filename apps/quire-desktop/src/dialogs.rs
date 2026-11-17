@@ -1,13 +1,15 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Settings, version history and import dialogs.
+//! Dialogs: Settings (with its built-in Editor, Sync and About tabs; the
+//! other tabs are registered in `registry::SETTINGS_TABS`), version
+//! history, projects, publish, folders, the tour and sync conflicts.
 
 use crossbeam_channel::Receiver;
 use egui::{RichText, Ui};
 use quire_app::history_ops::{DiffKind, diff, diff_stats};
 use quire_app::vault::Snapshot;
 use quire_app::workspace::NoticeLevel;
-use quire_app::{Command, Theme, Workspace, ai};
+use quire_app::{Command, Theme, Workspace};
 
 use crate::theme::Palette;
 
@@ -30,9 +32,6 @@ fn modal(ctx: &egui::Context, name: &str, pal: &Palette) -> egui::Modal {
 
 #[derive(Default)]
 pub(crate) struct SettingsState {
-    key_input: String,
-    test: Option<Receiver<Result<String, String>>>,
-    test_result: Option<Result<String, String>>,
     tab: SettingsTab,
     sync: SyncForm,
     /// Show `tab` even if its feature isn't offered (layout tests).
@@ -55,12 +54,8 @@ impl SettingsState {
     /// Every tab, built in and registered (offered or not), for `layout_check`.
     #[cfg(test)]
     pub(crate) fn every_tab() -> Vec<(&'static str, Self)> {
-        let builtin = [
-            ("settings: editor", SettingsTab::Editor),
-            ("settings: ai", SettingsTab::Ai),
-            ("settings: sync", SettingsTab::Sync),
-            ("settings: about", SettingsTab::About),
-        ];
+        let builtin =
+            [("settings: editor", SettingsTab::Editor), ("settings: sync", SettingsTab::Sync), ("settings: about", SettingsTab::About)];
         let mut all: Vec<(&'static str, Self)> = builtin
             .into_iter()
             .chain(crate::registry::SETTINGS_TABS.iter().map(|t| ("settings: feature tab", SettingsTab::Feature(t.id))))
@@ -101,11 +96,9 @@ impl SettingsState {
 enum SettingsTab {
     #[default]
     Editor,
-    Ai,
     Sync,
     About,
-    /// A tab registered in `registry::SETTINGS_TABS`, by id. A registered
-    /// `"ai"` tab replaces the built-in AI tab.
+    /// A tab registered in `registry::SETTINGS_TABS`, by id (AI is one).
     Feature(&'static str),
 }
 
@@ -279,15 +272,6 @@ impl SyncForm {
 pub(crate) fn settings(ctx: &egui::Context, st: &mut SettingsState, ws: &mut Workspace, pal: &Palette) -> (bool, Option<Command>) {
     let mut close = false;
     let mut run = None;
-    if let Some(rx) = &st.test
-        && let Ok(r) = rx.try_recv()
-    {
-        st.test_result = Some(r);
-        st.test = None;
-    }
-    if st.test.is_some() {
-        ctx.request_repaint_after(std::time::Duration::from_millis(100));
-    }
     let before = ws.settings.clone();
     modal(ctx, "quire-settings", pal).show(ctx, |ui| {
         let w = modal_width(ctx, 720.0);
@@ -297,7 +281,6 @@ pub(crate) fn settings(ctx: &egui::Context, st: &mut SettingsState, ws: &mut Wor
         ui.set_width(w);
         ui.set_max_width(w);
         let feature_tabs = crate::registry::offered(crate::registry::SETTINGS_TABS, ws);
-        let ai_replaced = feature_tabs.iter().any(|t| t.id == "ai");
         #[cfg(test)]
         let forced = st.force_tab;
         #[cfg(not(test))]
@@ -307,9 +290,6 @@ pub(crate) fn settings(ctx: &egui::Context, st: &mut SettingsState, ws: &mut Wor
             && !feature_tabs.iter().any(|t| t.id == id)
         {
             st.tab = SettingsTab::Editor;
-        }
-        if st.tab == SettingsTab::Ai && ai_replaced {
-            st.tab = SettingsTab::Feature("ai");
         }
         ui.heading("Settings");
         ui.separator();
@@ -335,9 +315,6 @@ pub(crate) fn settings(ctx: &egui::Context, st: &mut SettingsState, ws: &mut Wor
                         }
                     };
                     tab(ui, SettingsTab::Editor, "Editor".into());
-                    if !ai_replaced {
-                        tab(ui, SettingsTab::Ai, "AI & search".into());
-                    }
                     tab(ui, SettingsTab::Sync, "Sync".into());
                     for t in &feature_tabs {
                         tab(ui, SettingsTab::Feature(t.id), (t.label)(ws));
@@ -353,7 +330,6 @@ pub(crate) fn settings(ctx: &egui::Context, st: &mut SettingsState, ws: &mut Wor
                         ui.set_max_width(ui.available_width());
                         match st.tab {
                             SettingsTab::Editor => editor_settings(ui, ws),
-                            SettingsTab::Ai => ai_settings(ui, st, ws, pal),
                             SettingsTab::Sync => sync_settings(ui, &mut st.sync, ws, pal),
                             SettingsTab::About => about(ui, ws, pal),
                             SettingsTab::Feature(id) => {
@@ -382,7 +358,6 @@ pub(crate) fn settings(ctx: &egui::Context, st: &mut SettingsState, ws: &mut Wor
         != (&before.ai_provider, &before.ai_base_url, &before.ai_model, &before.embeddings, &before.embed_model, &before.embed_base_url);
     if ai_changed {
         ws.apply_ai_settings();
-        st.test_result = None;
     }
     if ws.settings != before {
         let _ = ws.settings.save();
@@ -1205,102 +1180,6 @@ fn editor_settings(ui: &mut Ui, ws: &mut Workspace) {
         });
         ui.end_row();
     });
-}
-
-fn ai_settings(ui: &mut Ui, st: &mut SettingsState, ws: &mut Workspace, pal: &Palette) {
-    ui.label(
-        RichText::new("Quire works offline. Nothing leaves this computer unless you pick a provider here.").size(12.5).color(pal.muted),
-    );
-    ui.add_space(6.0);
-    let provider = ws.settings.ai_provider.clone();
-    egui::Grid::new("settings-ai").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
-        ui.label("Assistant");
-        ui.vertical(|ui| {
-            let s = &mut ws.settings;
-            ui.radio_value(&mut s.ai_provider, "local".to_string(), "Offline (built in)");
-            ui.radio_value(&mut s.ai_provider, "openai".to_string(), "OpenAI-compatible (Ollama, LM Studio, OpenAI…)");
-            ui.radio_value(&mut s.ai_provider, "anthropic".to_string(), "Anthropic (Claude)");
-        });
-        ui.end_row();
-        if provider != "local" {
-            let s = &mut ws.settings;
-            ui.label("Server");
-            ui.add(egui::TextEdit::singleline(&mut s.ai_base_url).hint_text(ai::default_base_url(&provider)).desired_width(320.0));
-            ui.end_row();
-            ui.label("Model");
-            ui.add(egui::TextEdit::singleline(&mut s.ai_model).hint_text(ai::default_model(&provider)).desired_width(320.0));
-            ui.end_row();
-            ui.label("API key");
-            ui.vertical(|ui| {
-                let has = ai::has_api_key(&provider);
-                ui.horizontal(|ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut st.key_input)
-                            .password(true)
-                            .hint_text(if has { "•••••• saved" } else { "paste key" })
-                            .desired_width(220.0),
-                    );
-                    if ui.add_enabled(!st.key_input.trim().is_empty(), egui::Button::new("Save key")).clicked() {
-                        match ws.save_api_key(&provider, &st.key_input) {
-                            Ok(()) => ws.notify(NoticeLevel::Info, "Key saved"),
-                            Err(e) => ws.notify(NoticeLevel::Error, e),
-                        }
-                        st.key_input.clear();
-                    }
-                    if has && ui.button("Remove").clicked() {
-                        let _ = ws.save_api_key(&provider, "");
-                    }
-                });
-                let note = if provider == "openai" { " · not needed for local servers" } else { "" };
-                ui.label(RichText::new(format!("Stored in {}{note}", ai::secret_store_kind())).size(11.5).color(pal.muted));
-            });
-            ui.end_row();
-        }
-        ui.label("");
-        ui.horizontal(|ui| {
-            if ui.add_enabled(st.test.is_none(), egui::Button::new("Test connection")).clicked() {
-                st.test = Some(ws.test_ai_connection());
-                st.test_result = None;
-            }
-            if st.test.is_some() {
-                ui.add(egui::Spinner::new());
-            }
-            match &st.test_result {
-                Some(Ok(m)) => {
-                    ui.label(RichText::new(format!("✓ {m}")).color(pal.accent));
-                }
-                Some(Err(e)) => {
-                    ui.label(RichText::new(e).color(pal.danger));
-                }
-                None => {}
-            }
-        });
-        ui.end_row();
-        ui.label("Meaning search");
-        ui.vertical(|ui| {
-            let s = &mut ws.settings;
-            ui.radio_value(&mut s.embeddings, "lsa".to_string(), "Built in (offline, instant)");
-            ui.radio_value(&mut s.embeddings, "endpoint".to_string(), "Neural embeddings from an endpoint");
-            if s.embeddings == "endpoint" {
-                ui.horizontal(|ui| {
-                    ui.label("Model");
-                    ui.add(egui::TextEdit::singleline(&mut s.embed_model).desired_width(160.0));
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Server");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut s.embed_base_url)
-                            .hint_text("same as assistant, or http://localhost:11434")
-                            .desired_width(240.0),
-                    );
-                });
-            }
-        });
-        ui.end_row();
-    });
-    if let Some(e) = ws.index().semantic_error() {
-        ui.label(RichText::new(format!("Embeddings unavailable ({e}); using the built-in index.")).size(12.0).color(pal.warn));
-    }
 }
 
 // ------------------------------------------------------------------ history

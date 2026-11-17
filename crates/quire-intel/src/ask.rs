@@ -187,6 +187,7 @@ pub fn retrieve(ix: &Index, semantic: Option<&SemanticIndex>, question: &str, k:
     // two kinds compare fairly.
     if let Some(sem) = semantic {
         let qv = sem.embed_query(question);
+        #[expect(clippy::iter_over_hash_type, reason = "scores each candidate on its own")]
         for ((path, start), e) in &mut cand {
             if e.4 == 0.0
                 && let Some(v) = sem.vector_of(path, *start)
@@ -200,6 +201,7 @@ pub fn retrieve(ix: &Index, semantic: Option<&SemanticIndex>, question: &str, k:
     // A section whose heading names what is asked ("Status" for "what is
     // the status…") answers it more likely than one that mentions it.
     // Only the heading's own words count: not the note's title (an H1).
+    #[expect(clippy::iter_over_hash_type, reason = "scores each candidate on its own")]
     for ((path, _), e) in &mut cand {
         if let Some(h) = &e.1 {
             let title: HashSet<String> =

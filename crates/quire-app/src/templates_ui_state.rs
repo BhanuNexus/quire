@@ -49,7 +49,7 @@ pub fn pending_prompts(text: &str) -> Vec<Prompt> {
 }
 
 fn answer<'a>(answers: &'a HashMap<String, String>, p: &'a Prompt) -> &'a str {
-    answers.iter().find(|(k, _)| k.eq_ignore_ascii_case(&p.key)).map_or(p.default.as_str(), |(_, v)| v.as_str())
+    templates::answer_for(answers, &p.key).map_or(p.default.as_str(), String::as_str)
 }
 
 impl Workspace {

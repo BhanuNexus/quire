@@ -5,6 +5,12 @@
 //! toggle. The only text a toggle may add or take away is markers and
 //! whole fence lines, and toggling twice gives the original back for the
 //! simple toggles.
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::tests_outside_test_module,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+)]
 
 use quire_markdown::format::{self, Edit, Inline, List};
 use quire_text::{Buffer, Selection};

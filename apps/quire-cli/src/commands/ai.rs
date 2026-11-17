@@ -12,7 +12,6 @@ use std::sync::Arc;
 
 use quire_ai::catalog::{Catalog, human_size};
 use quire_ai::download::{Control, Downloader, Installed1, Progress, install_from_files};
-use quire_app::Settings;
 use quire_app::agent::{Actor, AgentStore, SystemClock, Via};
 use quire_app::intel::chat::{CancelFlag, Locality};
 use quire_app::vault::NotePath;
@@ -57,7 +56,7 @@ fn later() -> String {
 fn run_ai(args: &[String]) -> Result<(), String> {
     let catalog = Catalog::builtin();
     let dir = models_dir()?;
-    let on = Settings::load().ai_local.on_device();
+    let on = super::load_settings().ai_local.on_device();
     let sub = args.get(1).map(String::as_str);
     if !on && matches!(sub, Some("download" | "install" | "engine")) {
         return Err(later());
@@ -87,7 +86,7 @@ fn run_ai(args: &[String]) -> Result<(), String> {
         Some("download") => {
             let id = arg(args, 2)?;
             let e = catalog.get(id).ok_or_else(|| format!("no model called {id}; see `quire-cli ai models`"))?;
-            let settings = Settings::load();
+            let settings = super::load_settings();
             let d = Downloader::new(&settings.ai_local.mirror_url);
             let tty = std::io::stderr().is_terminal();
             let mut last = 0;
@@ -132,7 +131,7 @@ fn run_ai(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         Some("engine") => {
-            let settings = Settings::load();
+            let settings = super::load_settings();
             let e = quire_app::ai::engine(&settings);
             let Some(path) = e.path() else {
                 return Err("the engine isn't installed: `quire-cli ai download engine`".into());
@@ -158,7 +157,7 @@ fn run_ingest(args: &[String]) -> Result<(), String> {
     let source = arg(args, 2)?;
     let yes = super::has_flag(args, "--yes") || super::has_flag(args, "-y");
     let dry = super::has_flag(args, "--dry-run");
-    let settings = Settings::load();
+    let settings = super::load_settings();
     let agent = AgentStore::open(&vault, quire_app::device::this_device(), Arc::new(SystemClock));
     let Some(model) = quire_app::ai::chat_model(&settings) else {
         return Err("ingest needs an AI model: set one up in Quire (Settings → AI)".into());

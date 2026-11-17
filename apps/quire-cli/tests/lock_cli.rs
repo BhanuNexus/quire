@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! `quire-cli lock | unlock | status` end to end (0.11), and a revoked MCP
 //! client refused at start.
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::tests_outside_test_module,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+)]
 
 use std::path::Path;
 use std::process::{Command, Output};

@@ -5,6 +5,7 @@
 //! ```text
 //! cargo run -p quire-typeset --example render_samples -- <output-dir>
 //! ```
+#![expect(clippy::print_stdout, reason = "an example run by hand: it prints what it wrote")]
 
 use std::path::PathBuf;
 use std::time::Instant;

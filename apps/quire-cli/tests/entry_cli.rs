@@ -4,7 +4,12 @@
 //! error and never makes a folder; `--help` never touches the disk; usage
 //! mistakes are one line and exit with code 2.
 
-#![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::tests_outside_test_module,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+)]
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -68,7 +73,7 @@ fn a_file_is_not_a_vault_either() {
 fn an_existing_folder_still_opens() {
     let dir = tempfile::tempdir().unwrap();
     let vault = dir.path().join("vault");
-    std::fs::create_dir(&vault).unwrap();
+    std::fs::create_dir_all(&vault).unwrap();
     std::fs::write(vault.join("A.md"), "# A\n\nhello\n").unwrap();
     let out = cli(dir.path(), &["search", vault.to_str().unwrap(), "hello"]);
     assert!(out.status.success(), "{}", err(&out));
@@ -97,7 +102,7 @@ fn help_works_for_every_command_and_touches_nothing() {
 fn usage_mistakes_are_one_line_with_exit_code_2() {
     let dir = tempfile::tempdir().unwrap();
     let vault = dir.path().join("vault");
-    std::fs::create_dir(&vault).unwrap();
+    std::fs::create_dir_all(&vault).unwrap();
     let out = cli(dir.path(), &["searc", "x"]);
     assert_eq!(out.status.code(), Some(2));
     let e = err(&out);
@@ -119,7 +124,7 @@ fn usage_mistakes_are_one_line_with_exit_code_2() {
 fn help_anywhere_before_a_double_dash_prints_help_and_runs_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let vault = dir.path().join("vault");
-    std::fs::create_dir(&vault).unwrap();
+    std::fs::create_dir_all(&vault).unwrap();
     let v = vault.to_str().unwrap();
     let before = entries(&vault);
     for args in [
@@ -143,7 +148,7 @@ fn help_anywhere_before_a_double_dash_prints_help_and_runs_nothing() {
     assert!(daily.iter().any(|n| n != ".quire"), "a note was written: {daily:?}");
     // A folder named --help, -h or help is not a vault for serve.
     for name in ["--help", "-h", "help"] {
-        std::fs::create_dir(dir.path().join(name)).unwrap();
+        std::fs::create_dir_all(dir.path().join(name)).unwrap();
         let out = cli(dir.path(), &["serve", name]);
         assert!(out.status.success() && String::from_utf8_lossy(&out.stdout).contains("quire-cli serve"), "serve {name}");
     }
@@ -153,7 +158,7 @@ fn help_anywhere_before_a_double_dash_prints_help_and_runs_nothing() {
 fn every_usage_error_is_one_line_with_exit_code_2() {
     let dir = tempfile::tempdir().unwrap();
     let vault = dir.path().join("vault");
-    std::fs::create_dir(&vault).unwrap();
+    std::fs::create_dir_all(&vault).unwrap();
     let v = vault.to_str().unwrap();
     for args in [vec!["sync", "bogus", v], vec!["agent", "bogus", v], vec!["format"], vec!["import"], vec!["tags", v, "bogus"]] {
         let out = cli(dir.path(), &args);
@@ -166,7 +171,7 @@ fn every_usage_error_is_one_line_with_exit_code_2() {
 fn import_makes_its_target_folder_but_only_when_writing() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("src");
-    std::fs::create_dir(&source).unwrap();
+    std::fs::create_dir_all(&source).unwrap();
     std::fs::write(source.join("A.md"), "# A\n").unwrap();
     let target = dir.path().join("new-vault");
     let (s, t) = (source.to_str().unwrap(), target.to_str().unwrap());

@@ -443,6 +443,20 @@ fn limits_contracts_and_trust() {
     assert_eq!(store.trust_of(&"raw/paper.md".into(), None), Trust::Untrusted);
     assert_eq!(store.trust_of(&"B.md".into(), Some("---\ntrust: untrusted\n---\n")), Trust::Untrusted);
     assert_eq!(store.trust_of(&"B.md".into(), None), Trust::Trusted);
+    // Front matter only lowers trust: a repeated key, another case, a list
+    // or a `...` closer can't turn an `untrusted` mark back into trusted.
+    for text in [
+        "---\ntrust: untrusted\ntrust: trusted\n---\n",
+        "---\ntrust: trusted\nTrust: Untrusted\n---\n",
+        "---\ntrust: [untrusted]\n---\n",
+        "---\ntrust: untrusted\nname: x\ntrust: trusted\n...\nbody\n---\nmore\n",
+    ] {
+        assert_eq!(store.trust_of(&"B.md".into(), Some(text)), Trust::Untrusted, "{text}");
+    }
+    assert_eq!(store.trust_of(&"B.md".into(), Some("---\ntrust: trusted\n---\n")), Trust::Trusted);
+    // A copied SKILL.md, without the SKILL.source.json beside the original.
+    v.storage().write_atomic(&NotePath::new("skills/copy/SKILL.md"), "---\ntrust: untrusted\ntrust: trusted\n...\nDo this.\n").unwrap();
+    assert_eq!(store.trust_of(&"skills/copy/SKILL.md".into(), None), Trust::Untrusted);
     // Two writes per minute.
     assert_eq!(store.submit(&agent, edit("B.md", "b!")).unwrap_err().code(), "rate_limited");
     clock.advance(61_000);

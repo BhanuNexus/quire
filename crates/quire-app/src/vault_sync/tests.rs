@@ -500,7 +500,7 @@ fn one_sync_process_per_vault_and_device() {
 #[test]
 fn a_selective_config_is_off_limits_to_0_9() {
     #[derive(Deserialize)]
-    #[allow(dead_code, reason = "only parsed")]
+    #[expect(dead_code, reason = "only parsed")]
     struct Config09 {
         space: SpaceId,
         device: DeviceId,
@@ -884,7 +884,7 @@ fn a_damaged_sync_state_is_kept_and_reported() {
     assert!(!std::fs::read_dir(sync_dir(dir.path())).unwrap().flatten().any(|e| e.file_name().to_string_lossy().ends_with(".tmp")));
     // A folder where the file should be: can't be read, so no fresh start.
     std::fs::remove_file(&path).unwrap();
-    std::fs::create_dir(&path).unwrap();
+    std::fs::create_dir_all(&path).unwrap();
     assert!(open_state_named(dir.path(), "state.json").is_err());
 }
 

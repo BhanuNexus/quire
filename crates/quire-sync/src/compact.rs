@@ -220,12 +220,14 @@ pub fn plan<S: std::hash::BuildHasher, T: std::hash::BuildHasher>(
     let recent = now - i64::from(policy.keep_days) * 24 * 3600 * 1000;
     let mut keep: HashSet<RevId> = HashSet::new();
     // Recent, unreadable here, or of a note with no current revision: kept.
+    #[expect(clippy::iter_over_hash_type, reason = "fills a set")]
     for (id, n) in nodes {
         if n.at >= recent || n.opaque || !heads.contains_key(&n.file) {
             keep.insert(id.clone());
         }
     }
     let mut by_file: HashMap<&FileId, Vec<&RevId>> = HashMap::new();
+    #[expect(clippy::iter_over_hash_type, reason = "groups ids by file; each group is only used to fill a set")]
     for (id, n) in nodes {
         by_file.entry(&n.file).or_default().push(id);
     }
@@ -279,6 +281,7 @@ pub fn plan<S: std::hash::BuildHasher, T: std::hash::BuildHasher>(
     keep.retain(|k| nodes.contains_key(k));
     // Ancestor links across what's dropped.
     let mut out_links = Vec::new();
+    #[expect(clippy::iter_over_hash_type, reason = "the links found are sorted below")]
     for k in &keep {
         let Some(n) = nodes.get(k) else { continue };
         let mut todo: VecDeque<RevId> = n.parents.iter().filter(|p| !keep.contains(*p)).cloned().collect();
@@ -301,6 +304,7 @@ pub fn plan<S: std::hash::BuildHasher, T: std::hash::BuildHasher>(
     out_links.sort();
     out_links.dedup();
     let mut stats = Stats::default();
+    #[expect(clippy::iter_over_hash_type, reason = "adds up counts")]
     for (id, n) in nodes {
         if keep.contains(id) {
             stats.kept += 1;

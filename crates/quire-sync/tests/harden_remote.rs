@@ -3,7 +3,12 @@
 //! 0.13 sync hardening through S3-compatible storage and WebDAV (in-memory
 //! storage; the transport is the same for both): compaction, removing a
 //! device, and vaults recorded by Quire 0.12.
-#![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::tests_outside_test_module,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;

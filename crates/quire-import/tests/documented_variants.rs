@@ -6,7 +6,12 @@
 //! exports can't be downloaded in the test environment. Each test says which
 //! variant it covers. See docs/design/0.13.1-qa.md for what is still only
 //! verified against hand-built text.
-#![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::tests_outside_test_module,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+)]
 
 use std::path::Path;
 
@@ -353,7 +358,7 @@ fn logseq_graph_variants() {
 /// table, nested lists, `<pre><code>`, `<br>`, an image from a `_files`
 /// folder with a percent-encoded name, and a charset declared in a meta tag.
 #[test]
-#[allow(clippy::literal_string_with_formatting_args, reason = "CSS braces in an HTML sample")]
+#[expect(clippy::literal_string_with_formatting_args, reason = "CSS braces in an HTML sample")]
 fn html_folder_variants() {
     let html = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Saved page</title><style>p{color:red}</style><script>alert('x')</script></head><body>\n<!--[if gte mso 9]><xml><o:OfficeDocumentSettings/></xml><![endif]-->\n<h1>Saved page</h1><p class=MsoNormal>Hello<o:p></o:p> <b>world</b><br>next line</p>\n<ul><li>one<ul><li>nested</li></ul></li><li>two</li></ul>\n<table><thead><tr><th>A</th><th>B</th></tr></thead><tbody><tr><td>1</td><td>2</td></tr></tbody></table>\n<pre><code>let x = 1;\n</code></pre>\n<img src=\"Saved%20page_files/pic%201.png\" alt=\"pic\">\n<a href=\"other.html\">other</a></body></html>";
     let (_d, p) = import(&[

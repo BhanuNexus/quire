@@ -155,6 +155,7 @@ pub(crate) fn languages() -> Vec<String> {
 /// Add `word` to the personal list (saved), in every loaded language.
 pub(crate) fn add_word(word: &str) {
     let slots = registry().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    #[expect(clippy::iter_over_hash_type, reason = "every speller gets the same word")]
     for slot in slots.values() {
         if let Slot::Ready(s) = slot {
             let _ = s.add_user_word(word);
@@ -165,6 +166,7 @@ pub(crate) fn add_word(word: &str) {
 /// Stop flagging `word` until Quire restarts.
 pub(crate) fn ignore_word(word: &str) {
     let slots = registry().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    #[expect(clippy::iter_over_hash_type, reason = "every speller gets the same word")]
     for slot in slots.values() {
         if let Slot::Ready(s) = slot {
             s.ignore(word);

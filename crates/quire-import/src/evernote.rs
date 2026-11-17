@@ -38,6 +38,8 @@ pub(crate) fn plan(tree: &Tree) -> ImportPlan {
             let source = first(note, "source-url").map(|s| unescape(s.trim()));
 
             let mut by_hash: HashMap<String, String> = HashMap::new();
+            // The attachments in the order the file lists them.
+            let mut order: Vec<String> = Vec::new();
             for res in elements(note, "resource") {
                 let Some(r) = resource(res) else {
                     plan.warnings.push(format!("{title}: an attachment couldn't be decoded"));
@@ -48,7 +50,9 @@ pub(crate) fn plan(tree: &Tree) -> ImportPlan {
                 let target = attachment(&mut taken_files, &name);
                 let embed_name = file_name(&target).to_string();
                 let embed = if r.mime.starts_with("image/") { format!("![[{embed_name}]]") } else { format!("[[{embed_name}]]") };
-                by_hash.insert(hash, embed);
+                if by_hash.insert(hash.clone(), embed).is_none() {
+                    order.push(hash);
+                }
                 plan.files.push(PlannedFile { path: NotePath::new(target), bytes: r.bytes, times: Stamp::default() });
             }
 
@@ -63,8 +67,8 @@ pub(crate) fn plan(tree: &Tree) -> ImportPlan {
             };
             let mut body = to_markdown(&content, &mut media);
             // Attachments not referenced in the body still belong to the note.
-            for (h, e) in &by_hash {
-                if !used.contains(h) {
+            for h in &order {
+                if let Some(e) = by_hash.get(h).filter(|_| !used.contains(h)) {
                     let _ = write!(body, "\n{e}\n");
                 }
             }
@@ -221,6 +225,22 @@ mod tests {
         assert_eq!(p.files[0].path.as_str(), "attachments/map.png");
         assert_eq!(p.files[0].bytes, png);
         assert_eq!(p.notes[1].content, "# Second\n\nHi\n");
+    }
+
+    #[test]
+    fn unreferenced_attachments_keep_the_files_order() {
+        let res = |name: &str| {
+            let b64 = base64::engine::general_purpose::STANDARD.encode(name.as_bytes());
+            format!(
+                "<resource><data encoding=\"base64\">{b64}</data><mime>application/pdf</mime><resource-attributes><file-name>{name}</file-name></resource-attributes></resource>"
+            )
+        };
+        let names = ["d.pdf", "a.pdf", "c.pdf", "b.pdf", "e.pdf", "f.pdf"];
+        let all: String = names.iter().map(|n| res(n)).collect();
+        let enex = format!("<en-export><note><title>N</title><content><![CDATA[<en-note>Hi</en-note>]]></content>{all}</note></en-export>");
+        let body = &plan(&Tree::from_files([("x.enex", enex.as_bytes())])).notes[0].content;
+        let at: Vec<usize> = names.iter().map(|n| body.find(&format!("[[{n}]]")).expect("listed")).collect();
+        assert!(at.is_sorted(), "{body}");
     }
 
     #[test]

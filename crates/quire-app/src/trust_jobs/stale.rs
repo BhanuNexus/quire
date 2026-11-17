@@ -364,6 +364,7 @@ fn sync_inbox(vault: &Vault, agent: &quire_agent::AgentStore, found: &[(InboxIte
             seen.notes.insert(key, hash.hex().to_string());
         }
     }
+    #[expect(clippy::iter_over_hash_type, reason = "each stale item is resolved on its own")]
     for (fp, s) in &stored {
         if !live.contains(fp) {
             let _ = inbox.resolve(fp);

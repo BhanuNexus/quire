@@ -1374,11 +1374,7 @@ pub(crate) fn insights(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette, row
                 }
                 Err(e) => {
                     ui.label(RichText::new(e).color(pal.warn).size(12.5));
-                    ui.label(
-                        RichText::new("Build with --features remote-llm and set ANTHROPIC_API_KEY for generative help.")
-                            .color(pal.muted)
-                            .size(11.5),
-                    );
+                    ui.label(RichText::new("Pick a provider in Settings → AI for generative help.").color(pal.muted).size(11.5));
                     if ui.small_button("Dismiss").clicked() {
                         dismiss = true;
                     }

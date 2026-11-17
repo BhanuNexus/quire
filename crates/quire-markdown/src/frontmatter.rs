@@ -11,6 +11,10 @@
 //! Writers change only the lines of the field they touch:
 //! [`set_field_path`], [`remove_field_path`], [`rename_field_path`] and
 //! [`edit_list_items`] leave every other byte of the note as it was.
+//!
+//! Where the block starts and ends is decided in one place, [`fences`]: any
+//! code that needs to know where front matter ends calls it, so the reader,
+//! the writers, the index, the linter and the spell checker always agree.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -554,32 +558,91 @@ fn parse_entries_at(lines: &[Line<'_>], mut i: usize, indent: usize, depth: usiz
     (out, i)
 }
 
-fn parse_doc(src: &str) -> Option<Doc<'_>> {
-    let (body_start, nl) = if src.starts_with("---\n") {
-        (4, "\n")
-    } else if src.starts_with("---\r\n") {
-        (5, "\r\n")
-    } else {
-        return None;
-    };
-    let mut pos = body_start;
-    let mut lines = Vec::new();
-    let mut close = None;
-    for raw in src[body_start..].split_inclusive('\n') {
-        let full = raw.trim_end_matches(['\n', '\r']);
-        let t = full.trim_end();
-        if t == "---" || t == "..." {
-            close = Some((pos, pos + raw.len()));
-            break;
-        }
-        let indent = full.len() - full.trim_start_matches([' ', '\t']).len();
-        lines.push(Line { start: pos, end: pos + raw.len(), indent, text: t.trim_start(), full });
-        pos += raw.len();
+/// Where a note's front matter is. Found by [`fences`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fences {
+    /// The opening `---` line with its line break: `0..4`, or `0..5` with CRLF.
+    pub open: Range<usize>,
+    /// The closing line with its line break, if it has one.
+    pub close: Range<usize>,
+    /// The opening line's line break, which writers use inside the block.
+    pub nl: &'static str,
+}
+
+impl Fences {
+    /// The lines between the fences.
+    pub const fn inner(&self) -> Range<usize> {
+        self.open.end..self.close.start
     }
-    let (close, block_end) = close?;
+
+    /// Where the body starts: just after the closing line.
+    pub const fn body_start(&self) -> usize {
+        self.close.end
+    }
+}
+
+/// Where the front matter at the start of `src` is: the one rule for every
+/// reader and writer of front matter in Quire.
+///
+/// - **Opens:** the first line of the file is exactly `---`, ended by `\n`
+///   or `\r\n`. Nothing may come before it or after it on the line: a
+///   byte-order mark, a space, a blank line first or `---  ` means the note
+///   has no front matter.
+/// - **Closes:** at the first later line that is `---` or `...` once its
+///   line break and any trailing white space are taken off. A line that is
+///   indented (`  ---`) or longer (`----`, `--- x`) does not close it. The
+///   closing line may be the last line, with no line break.
+/// - **Unclosed:** with no closing line the note has no front matter, and
+///   the whole file is body.
+///
+/// [`is_opening_line`] and [`is_closing_line`] are the same tests, for code
+/// that reads one line at a time.
+pub fn fences(src: &str) -> Option<Fences> {
+    let open_end = src.find('\n')? + 1;
+    let first = &src[..open_end];
+    if !is_opening_line(first) {
+        return None;
+    }
+    let nl = if first.ends_with("\r\n") { "\r\n" } else { "\n" };
+    let mut pos = open_end;
+    for line in src[open_end..].split_inclusive('\n') {
+        if is_closing_line(line) {
+            return Some(Fences { open: 0..open_end, close: pos..pos + line.len(), nl });
+        }
+        pos += line.len();
+    }
+    None
+}
+
+/// Whether `line`, a note's first line, opens front matter: `---` and its
+/// line break (`\n` or `\r\n`), or a line given without its break. See
+/// [`fences`].
+pub fn is_opening_line(line: &str) -> bool {
+    matches!(line, "---" | "---\n" | "---\r\n" | "---\r")
+}
+
+/// Whether `line`, inside front matter, closes it: `---` or `...` once its
+/// line break and trailing white space are taken off. See [`fences`].
+pub fn is_closing_line(line: &str) -> bool {
+    matches!(line.trim_end(), "---" | "...")
+}
+
+fn parse_doc(src: &str) -> Option<Doc<'_>> {
+    let f = fences(src)?;
+    let lines: Vec<Line<'_>> = src[f.inner()]
+        .split_inclusive('\n')
+        .scan(f.open.end, |pos, raw| {
+            let start = *pos;
+            *pos += raw.len();
+            let full = raw.trim_end_matches(['\n', '\r']);
+            let t = full.trim_end();
+            let indent = full.len() - full.trim_start_matches([' ', '\t']).len();
+            Some(Line { start, end: start + raw.len(), indent, text: t.trim_start(), full })
+        })
+        .collect();
     let (entries, _) = parse_entries(&lines, 0, 0);
     let unit = entries.iter().find_map(|e| e.children.first().map(|c| c.indent - e.indent)).filter(|u| *u > 0).unwrap_or(2);
-    Some(Doc { lines, entries, close, block_end, nl, unit })
+    Some(Doc { lines, entries, close: f.close.start, block_end: f.close.end, nl: f.nl, unit })
 }
 
 /// Parse front matter at the very start of `src`, if present.
@@ -590,6 +653,15 @@ pub fn parse(src: &str) -> Option<FrontMatter> {
         fields.insert(e.key, e.value);
     }
     Some(FrontMatter { fields, range: 0..doc.block_end })
+}
+
+/// Every top-level field in the order written, a key written twice included.
+///
+/// [`parse`] keeps the last of two fields with the same key. Code that must
+/// fail safe on a repeated key (any `trust: untrusted` wins) reads them all
+/// here. Empty without front matter.
+pub fn fields_in_order(src: &str) -> Vec<(String, Value)> {
+    parse_doc(src).map(|doc| doc.entries.into_iter().map(|e| (e.key, e.value)).collect()).unwrap_or_default()
 }
 
 // ------------------------------------------------------------------ writer
@@ -673,9 +745,10 @@ pub fn is_date(s: &str) -> bool {
 ///
 /// A value with a line break or another control character is always
 /// written on one line, double-quoted with escapes (`\\n`), so it can't
-/// end the front matter or start another field.
+/// end the front matter or start another field. A value that starts or ends
+/// with white space is quoted, so it reads back as it was given: a plain
+/// scalar loses that white space.
 pub fn yaml_scalar(s: &str) -> String {
-    let s = s.trim();
     if s.chars().any(needs_escape) {
         let mut q = String::with_capacity(s.len() + 2);
         q.push('"');
@@ -696,6 +769,7 @@ pub fn yaml_scalar(s: &str) -> String {
         return q;
     }
     let risky = s.is_empty()
+        || s.trim().len() != s.len()
         || s.contains(": ")
         || s.contains(" #")
         || s.starts_with(['#', '[', '{', '&', '*', '!', '|', '>', '\'', '"', '%', '@', '`', '-', '?'])
@@ -1297,6 +1371,31 @@ mod tests {
     /// A hostile note (synced, shared or imported) nests maps tens of
     /// thousands deep: reading its properties must neither exhaust the
     /// stack nor take quadratic time. Deep parts are kept as text.
+    #[test]
+    fn values_with_edge_spaces_read_back_as_given() {
+        // D5: " A" was written `a: A` and read back as "A"; it is quoted now.
+        for v in [" A", "A ", "  ", " a: b ", "\u{a0}x"] {
+            let out = set_field("body\n", "a", &Value::Str(v.into())).apply("body\n");
+            assert_eq!(parse(&out).unwrap().get("a"), Some(&Value::Str(v.into())), "{v:?} -> {out:?}");
+        }
+        assert_eq!(set_field("", "a", &Value::Str(" A".into())).apply(""), "---\na: \" A\"\n---\n");
+        // Values without edge spaces are written as before.
+        assert_eq!(yaml_scalar("A"), "A");
+        assert_eq!(yaml_scalar("x: y"), "\"x: y\"");
+    }
+
+    #[test]
+    fn fields_in_order_keeps_repeated_keys() {
+        let src = "---\ntrust: untrusted\nname: x\ntrust: trusted\n...\nbody\n";
+        let all = fields_in_order(src);
+        let keys: Vec<&str> = all.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["trust", "name", "trust"]);
+        assert_eq!(all[0].1, Value::Str("untrusted".into()));
+        // `parse` keeps the last one.
+        assert_eq!(parse(src).unwrap().get("trust"), Some(&Value::Str("trusted".into())));
+        assert!(fields_in_order("no front matter").is_empty());
+    }
+
     #[test]
     fn deeply_nested_properties_are_read_without_exhausting_the_stack() {
         let flow = format!("---\ntitle: ok\nk: {}x{}\n---\nbody\n", "{a: ".repeat(100_000), "}".repeat(100_000));

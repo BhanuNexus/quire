@@ -295,6 +295,7 @@ impl Index {
     /// are included with the union count.
     pub fn tags(&self) -> Vec<(String, usize)> {
         let mut counts: BTreeMap<String, std::collections::HashSet<&NotePath>> = BTreeMap::new();
+        #[expect(clippy::iter_over_hash_type, reason = "counts into a BTreeMap")]
         for rec in self.records.values() {
             for tag in &rec.tags {
                 let lower = tag.to_lowercase();

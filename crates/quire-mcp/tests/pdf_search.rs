@@ -5,7 +5,12 @@
 //! `kind: all` lists a page as "paper.pdf p. 1" with `page` in the
 //! structured hit, and a bad `where` is refused with what's wrong. With many
 //! PDFs (0.10) the server answers at once and says how far reading got.
-#![expect(clippy::unwrap_used, reason = "a test: any failure should fail it")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::tests_outside_test_module,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+)]
 
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};

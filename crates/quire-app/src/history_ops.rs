@@ -375,7 +375,7 @@ mod tests {
         w.insert_text("edited ");
         // The file can't be read or replaced: a folder stands where it was.
         std::fs::remove_file(dir.path().join("N.md")).unwrap();
-        std::fs::create_dir(dir.path().join("N.md")).unwrap();
+        std::fs::create_dir_all(dir.path().join("N.md")).unwrap();
         let told = |w: &Workspace| w.notices.iter().filter(|n| n.text.starts_with("Couldn't save")).count();
         let tries = |w: &Workspace| w.doc(id).and_then(|d| d.save_retry).map_or(0, |(_, n)| n);
         w.settings.autosave_ms = 0;

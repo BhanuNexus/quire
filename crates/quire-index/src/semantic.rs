@@ -90,6 +90,7 @@ impl VectorCache {
         }
         let Some(path) = &self.path else { return Ok(()) };
         let mut out = Vec::with_capacity(self.map.len() * 400);
+        #[expect(clippy::iter_over_hash_type, reason = "a cache file read back into a map: the order of its records doesn't matter")]
         for (k, v) in &self.map {
             out.extend_from_slice(&k.to_le_bytes());
             out.extend_from_slice(&(v.len() as u32).to_le_bytes());
@@ -113,6 +114,8 @@ pub struct SemanticIndex {
     pub chunks: Vec<Chunk>,
     vectors: Vec<Vec<f32>>,
     embedder: Box<dyn Embedder>,
+    /// Why the vector cache couldn't be saved, if it couldn't.
+    cache_problem: Option<String>,
 }
 
 impl std::fmt::Debug for SemanticIndex {
@@ -157,7 +160,7 @@ impl SemanticIndex {
                 v
             })
             .collect();
-        Self { chunks, vectors, embedder }
+        Self { chunks, vectors, embedder, cache_problem: None }
     }
 
     /// Build with any embedder, reusing cached vectors and batching the rest.
@@ -184,15 +187,20 @@ impl SemanticIndex {
             })
             .collect();
         let live = keys.into_iter().collect();
-        if let Err(e) = cache.save(&live) {
-            // A cache we can't write only costs speed next time.
-            eprintln!("quire: couldn't save embedding cache: {e}");
-        }
-        Ok(Self { chunks, vectors, embedder })
+        // A cache that can't be written only costs speed next time: the index
+        // is built anyway, and says why (Settings → AI shows it).
+        let cache_problem = cache.save(&live).err().map(|e| format!("couldn't save the embedding cache: {e}"));
+        Ok(Self { chunks, vectors, embedder, cache_problem })
     }
 
     pub fn embedder_name(&self) -> &str {
         self.embedder.name()
+    }
+
+    /// Why the vector cache couldn't be saved when this index was built, if
+    /// it couldn't (the next build embeds those passages again).
+    pub fn cache_problem(&self) -> Option<&str> {
+        self.cache_problem.as_deref()
     }
 
     pub fn len(&self) -> usize {
@@ -318,7 +326,7 @@ fn orthonormalize(m: &mut [Vec<f32>], cols: usize) {
 
 /// Eigen-decomposition of a small symmetric matrix by cyclic Jacobi rotations.
 /// Returns (eigenvalues, eigenvectors as columns).
-#[allow(clippy::needless_range_loop, reason = "index-based numeric code reads clearer here")]
+#[expect(clippy::needless_range_loop, reason = "index-based numeric code reads clearer here")]
 fn jacobi_eigen(mut a: Vec<Vec<f64>>) -> (Vec<f64>, Vec<Vec<f64>>) {
     let n = a.len();
     let mut v = vec![vec![0.0; n]; n];
@@ -363,7 +371,7 @@ fn jacobi_eigen(mut a: Vec<Vec<f64>>) -> (Vec<f64>, Vec<Vec<f64>>) {
 
 impl Lsa {
     /// Fit on passages. `max_dims` caps the latent dimensionality.
-    #[allow(clippy::needless_range_loop, reason = "matrix indices read clearer than zipped iterators")]
+    #[expect(clippy::needless_range_loop, reason = "matrix indices read clearer than zipped iterators")]
     pub fn fit(texts: &[&str], max_dims: usize) -> Self {
         let docs: Vec<HashMap<String, u32>> = texts
             .iter()
@@ -378,6 +386,7 @@ impl Lsa {
         let n = docs.len().max(1);
         let mut df: HashMap<&str, u32> = HashMap::new();
         for d in &docs {
+            #[expect(clippy::iter_over_hash_type, reason = "counts document frequency; the terms are sorted below")]
             for t in d.keys() {
                 *df.entry(t.as_str()).or_default() += 1;
             }
@@ -530,6 +539,19 @@ mod tests {
             self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             vec![text.len() as f32, 1.0]
         }
+    }
+
+    #[test]
+    fn a_cache_that_cannot_be_saved_is_reported_not_printed() {
+        let dir = tempfile::tempdir().unwrap();
+        // The cache's folder is a file, so the cache can't be written.
+        std::fs::write(dir.path().join("blocked"), "x").unwrap();
+        let mut cache = VectorCache::open(dir.path().join("blocked/emb.bin"), "m1");
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let ix = SemanticIndex::try_with_cache(corpus(), Box::new(CountingEmbedder(count)), &mut cache).unwrap();
+        assert!(!ix.is_empty());
+        assert!(ix.cache_problem().is_some_and(|p| p.contains("embedding cache")), "{:?}", ix.cache_problem());
+        assert_eq!(build_lsa_index(corpus()).cache_problem(), None);
     }
 
     #[test]

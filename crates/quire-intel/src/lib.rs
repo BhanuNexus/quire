@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Intelligence that runs on-device, deterministically, in milliseconds.
 //!
-//! Nothing here needs a network or a model download. An optional
-//! [`llm::LanguageModel`] port adds generative features when the user opts in.
+//! The on-device parts need no network or model download. An
+//! [`llm::LanguageModel`] port adds generative features when the person
+//! configures a provider; the providers (and `embed`) are behind the
+//! `remote-llm` feature, which both apps turn on.
 
 pub mod anchor;
 pub mod ask;

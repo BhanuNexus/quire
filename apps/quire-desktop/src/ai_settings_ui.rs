@@ -32,7 +32,7 @@ pub(crate) struct AiSettingsUi {
     confirm_delete: Option<String>,
 }
 
-/// Always offered: it replaces the built-in AI tab.
+/// Always offered.
 pub(crate) const fn available(_ws: &Workspace) -> bool {
     true
 }
@@ -595,6 +595,10 @@ fn features(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette, out: &mut Pane
                 egui::Label::new(RichText::new(format!("Not available ({e}); using the built-in index.")).size(12.0).color(pal.warn))
                     .wrap(),
             );
+        }
+        if let Some(e) = ws.index().semantic().as_deref().and_then(|s| s.cache_problem().map(str::to_string)) {
+            let text = format!("Search works, but {e}; the next start embeds the notes again.");
+            ui.add(egui::Label::new(RichText::new(text).size(12.0).color(pal.warn)).wrap());
         }
     });
 }

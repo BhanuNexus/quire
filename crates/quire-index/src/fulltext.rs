@@ -256,6 +256,7 @@ impl FullText {
 
     fn score_term(&self, postings: &HashMap<u32, f32>, scores: &mut HashMap<u32, f32>, avg: f32) {
         let idf = self.idf(postings.len());
+        #[expect(clippy::iter_over_hash_type, reason = "each id gets one addition per term, so the order between ids changes no sum")]
         for (&id, &tf) in postings {
             let dl = self.doc_len.get(&id).copied().unwrap_or(1.0);
             let s = idf * (tf * (K1 + 1.0)) / (tf + K1 * (1.0 - B + B * dl / avg));
@@ -294,6 +295,10 @@ impl FullText {
                 let mut partial = HashMap::new();
                 self.score_term(p, &mut partial, avg);
                 let factor = if **term == **prefix { 1.0 } else { 0.8 };
+                #[expect(
+                    clippy::iter_over_hash_type,
+                    reason = "each id gets one addition per term, so the order between ids changes no sum"
+                )]
                 for (id, s) in partial {
                     *scores.entry(id).or_default() += s * factor;
                     any.insert(id);

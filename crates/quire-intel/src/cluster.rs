@@ -116,6 +116,7 @@ pub fn evidence_clusters(question: &str, sources: &[Source], semantic: Option<&S
             let mut score: HashMap<&str, f32> = HashMap::new();
             for (i, c) in counts.iter().enumerate() {
                 let (sign, n) = if inside.contains(&i) { (1.0, g.len()) } else { (-1.0, sources.len() - g.len()) };
+                #[expect(clippy::iter_over_hash_type, reason = "each term gets one addition per source, in source order")]
                 for (t, f) in c {
                     *score.entry(t.as_str()).or_insert(0.0) += sign * f / n.max(1) as f32;
                 }

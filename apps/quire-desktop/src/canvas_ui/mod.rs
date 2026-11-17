@@ -433,6 +433,7 @@ impl CanvasSurface {
         if (self.error.is_some() && !self.has_unsaved()) || self.hold.is_some() {
             return;
         }
+        #[expect(clippy::iter_over_hash_type, reason = "each dirty sketch is written to its own file; the order changes nothing written")]
         for (p, e) in &mut self.sketches {
             let t = quire_canvas::ink::to_svg(&e.sketch);
             if e.dirty && t != e.disk_text && write_checked(&vault, p, &e.disk_text, &t) {
@@ -477,6 +478,7 @@ impl CanvasSurface {
     fn drop_edits(&mut self) {
         self.dirty = false;
         self.hold = None;
+        #[expect(clippy::iter_over_hash_type, reason = "clears a flag on each")]
         for e in self.sketches.values_mut() {
             e.dirty = false;
         }
@@ -2464,7 +2466,7 @@ mod tests {
         s.touch();
         // The file's place is taken by a folder: nothing can be written there.
         std::fs::remove_file(dir.path().join("F.canvas")).unwrap();
-        std::fs::create_dir(dir.path().join("F.canvas")).unwrap();
+        std::fs::create_dir_all(dir.path().join("F.canvas")).unwrap();
         s.save(&mut ws);
         assert!(s.dirty, "the edit is still waiting to be saved");
         assert!(s.has_unsaved());
@@ -2561,7 +2563,7 @@ mod tests {
         let mut s = shown(&mut ws, "Q.canvas", TWO);
         edit_a(&mut s, 5);
         std::fs::remove_file(dir.path().join("Q.canvas")).unwrap();
-        std::fs::create_dir(dir.path().join("Q.canvas")).unwrap();
+        std::fs::create_dir_all(dir.path().join("Q.canvas")).unwrap();
         let mut surfaces = crate::surfaces::Surfaces::default();
         surfaces.open(Box::new(s));
         surfaces.close_all(&mut ws);

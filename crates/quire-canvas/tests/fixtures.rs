@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Canvases as Obsidian writes them open, save in Quire's form, and read back equal.
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::tests_outside_test_module,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+)]
 
 use quire_canvas::{NodeKind, parse, to_canonical};
 

@@ -166,6 +166,7 @@ impl CitationsJob {
     }
 
     fn note_citations(&mut self, path: &NotePath, src: &str, resolve: &dyn Fn(&str, &NotePath) -> Option<NotePath>) {
+        #[expect(clippy::iter_over_hash_type, reason = "takes the path out of every set")]
         for set in self.cited_by.values_mut() {
             set.remove(path);
         }
@@ -242,7 +243,10 @@ impl Job for CitationsJob {
             if self.citing.contains(&p) {
                 self.enqueue(&p);
             }
-            for c in self.cited_by.get(&p).cloned().unwrap_or_default() {
+            // In path order, not the set's hash order.
+            let mut citing: Vec<NotePath> = self.cited_by.get(&p).cloned().unwrap_or_default().into_iter().collect();
+            citing.sort();
+            for c in citing {
                 self.enqueue(&c);
             }
         }

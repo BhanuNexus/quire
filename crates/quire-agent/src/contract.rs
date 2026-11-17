@@ -148,11 +148,7 @@ fn is_empty(v: &Value) -> bool {
 
 /// The text after the front matter.
 fn body_of(text: &str) -> &str {
-    let Some(rest) = text.strip_prefix("---\n").or_else(|| text.strip_prefix("---\r\n")) else { return text };
-    rest.find("\n---").map_or(text, |i| {
-        let after = &rest[i + 4..];
-        after.strip_prefix('\n').or_else(|| after.strip_prefix("\r\n")).unwrap_or(after)
-    })
+    frontmatter::fences(text).map_or(text, |f| &text[f.body_start()..])
 }
 
 /// The `[[targets]]` in a property value (without `|alias` or `#heading`).
@@ -298,6 +294,21 @@ body = { max_bytes = 200, must_link_to_source = true }
         assert_eq!(rules(&c.check(&long, &resolves)), ["body:max_bytes"]);
         let msg = &c.check(bad, &resolves)[1].message;
         assert!(msg.contains("concept, entity"), "{msg}");
+    }
+
+    #[test]
+    fn the_body_starts_where_the_reader_says() {
+        // Front matter closed with `...`, and a `---` rule in the body: the
+        // body is everything after `...` (it used to start after the rule).
+        let c = concept();
+        let resolves = |t: &str| t == "Paper";
+        let dots = "---\ntype: concept\nsources: \"[[Paper]]\"\n...\nFrom [[Paper]].\n\n---\nshort\n";
+        assert_eq!(body_of(dots), "From [[Paper]].\n\n---\nshort\n");
+        assert!(c.check(dots, &resolves).is_empty(), "{:?}", c.check(dots, &resolves));
+        // An empty block, and a `----` line that doesn't close it.
+        assert_eq!(body_of("---\n---\nbody\n"), "body\n");
+        assert_eq!(body_of("---\na: 1\n----\nb: 2\n---\nbody\n"), "body\n");
+        assert_eq!(body_of("---\nunclosed\n"), "---\nunclosed\n");
     }
 
     #[test]

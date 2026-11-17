@@ -15,7 +15,6 @@ path = "src/main.rs"
 
 [features]
 default = ["typeset", "voice"]
-remote-llm = ["quire-app/remote-llm"]
 # Math, diagrams and PDF export. `--no-default-features` builds Quire Lite.
 typeset = ["quire-app/typeset", "dep:quire-typeset", "dep:resvg", "quire-pdf/render"]
 # Record voice notes from the microphone (full edition; ALSA on Linux).
@@ -25,7 +24,7 @@ voice = ["dep:cpal"]
 bench = []
 
 [dependencies]
-quire-app = { workspace = true, features = ["remote-llm", "keychain", "update-check"] }
+quire-app.workspace = true
 quire-import.workspace = true
 crossbeam-channel.workspace = true
 eframe.workspace = true
@@ -43,7 +42,7 @@ egui_extras.workspace = true
 image.workspace = true
 # 0.9 workstreams add their crates on their own line below its marker, so
 # parallel branches don't edit the same lines (docs/design/F0-notes.md).
-# WS-B: quire-mcp (with features = ["http"] for the HTTP server)
+# WS-B: quire-mcp
 quire-mcp.workspace = true
 # WS-D: quire-ai, quire-assistant
 quire-ai = { workspace = true, features = ["client"] }

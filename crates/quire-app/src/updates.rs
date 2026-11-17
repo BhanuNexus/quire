@@ -131,7 +131,6 @@ pub fn parse_latest(json: &str) -> Result<Release, String> {
     Ok(Release { version: tag.trim_start_matches('v').to_string(), url: url.to_string() })
 }
 
-#[cfg(feature = "update-check")]
 fn fetch_latest(api_url: &str) -> Result<Release, String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(15)))
@@ -148,11 +147,6 @@ fn fetch_latest(api_url: &str) -> Result<Release, String> {
         .read_to_string()
         .map_err(|e| format!("couldn't read the reply: {e}"))?;
     parse_latest(&body)
-}
-
-#[cfg(not(feature = "update-check"))]
-fn fetch_latest(_api_url: &str) -> Result<Release, String> {
-    Err("this build was made without the update check".into())
 }
 
 fn now_secs() -> i64 {
@@ -296,7 +290,6 @@ mod tests {
     }
 
     /// Serve one canned HTTP reply on a local port.
-    #[cfg(feature = "update-check")]
     fn serve_once(body: &'static str) -> String {
         use std::io::{BufRead, BufReader, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -317,7 +310,6 @@ mod tests {
         url
     }
 
-    #[cfg(feature = "update-check")]
     fn wait(w: &mut Workspace) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !w.poll_updates() {
@@ -326,7 +318,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "update-check")]
     #[test]
     fn finds_and_skips_a_newer_release() {
         let mut w = Workspace::new(crate::Settings { check_updates: true, ..Default::default() });
@@ -351,7 +342,6 @@ mod tests {
         assert!(w.updates.available.is_none(), "a skipped version stays hidden");
     }
 
-    #[cfg(feature = "update-check")]
     #[test]
     fn manual_check_reports_up_to_date_and_off_means_off() {
         let mut w = Workspace::new(crate::Settings::default());

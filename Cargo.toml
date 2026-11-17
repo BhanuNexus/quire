@@ -163,6 +163,8 @@ trivial_numeric_casts = "warn"
 redundant_lifetimes = "warn"
 unit_bindings = "warn"
 missing_unsafe_on_extern = "warn"
+unused_import_braces = "warn"
+non_ascii_idents = "forbid"
 
 [workspace.lints.clippy]
 # Groups: everything correctness/style/perf, plus the stricter pedantic and
@@ -176,7 +178,17 @@ unwrap_used = "warn"                      # use `expect("why it can't fail")` or
 dbg_macro = "warn"
 todo = "warn"
 unimplemented = "warn"
-allow_attributes_without_reason = "warn"  # every #[allow] says why
+allow_attributes_without_reason = "warn"  # every suppression says why
+allow_attributes = "warn"                 # #[expect], not #[allow]: a stale suppression fails the build (test-file headers stay #![allow])
+exit = "warn"                             # only a binary's main exits
+print_stdout = "warn"                     # libraries don't print; a CLI says so once at its crate root
+print_stderr = "warn"                     # in the GUI, stderr reaches nobody: use a notice, or say why
+iter_over_hash_type = "warn"              # P1/P10: output must not follow hash order; sort, or say why the order can't matter
+unused_result_ok = "warn"                 # `.ok();` hides an error: handle it, or `let _ =` with a reason
+create_dir = "warn"                       # create_dir_all, or say why one level only
+tests_outside_test_module = "warn"        # #[test] belongs in a #[cfg(test)] module (integration tests allow it in their header)
+infinite_loop = "warn"                    # a loop that never ends says so (a serve loop)
+filetype_is_file = "warn"                 # is_file() skips symlinks and other kinds: say that this is meant
 clone_on_ref_ptr = "warn"                 # Rc::clone(&x), not x.clone()
 if_then_some_else_none = "warn"
 get_unwrap = "warn"

@@ -3,6 +3,12 @@
 //! On-device AI is experimental in 0.9.0 and off by default: `quire-cli ai`
 //! says so for the subcommands that need models, and runs them once the
 //! experimental switch is on.
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::tests_outside_test_module,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+)]
 
 use std::process::{Command, Output};
 

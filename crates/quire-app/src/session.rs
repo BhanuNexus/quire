@@ -148,7 +148,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("session.json");
         let vault = dir.path().join("vault");
-        std::fs::create_dir(&vault).unwrap();
+        std::fs::create_dir_all(&vault).unwrap();
         std::fs::write(&file, r#"{"vault": null, "from_the_future": {"x": 1}}"#).unwrap();
         let mut pos = Positions::new();
         pos.insert("A.md".into(), Position { caret: 7, scroll: 120.5, at: 1, marks: vec![('a', 2, 0)] });

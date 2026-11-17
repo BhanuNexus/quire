@@ -7,7 +7,12 @@
 //! `ask` with the nearest passages on `/mcp`, and sends a change made on
 //! the server back to the laptop.
 #![cfg(unix)]
-#![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::tests_outside_test_module,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+)]
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};

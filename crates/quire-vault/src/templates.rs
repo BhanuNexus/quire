@@ -13,7 +13,7 @@
 //! Expansion is two-phase: [`required_prompts`], then [`expand`].
 //! Unknown placeholders are kept as written.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::hash::BuildHasher;
 
@@ -154,28 +154,44 @@ pub fn expand_name<S: BuildHasher>(
     expand_text(pattern, vars, folder, &with_defaults(tpl, answers), false).text.trim().to_string()
 }
 
-/// Answers, with each unanswered key's first default (a key repeated
-/// without a default takes it from its first use).
-fn with_defaults<S: BuildHasher>(tpl: &str, answers: &HashMap<String, String, S>) -> HashMap<String, String> {
-    let mut all: HashMap<String, String> = required_prompts(tpl).into_iter().map(|p| (p.key, p.default)).collect();
-    for (k, v) in answers {
-        match all.keys().find(|key| key.eq_ignore_ascii_case(k)).cloned() {
-            Some(key) => {
-                all.insert(key, v.clone());
-            }
-            None => {
-                all.insert(k.clone(), v.clone());
-            }
+/// The answers by prompt key, each unanswered prompt with its default (a key
+/// repeated without a default takes it from its first use).
+///
+/// An answer's key matches a prompt's ignoring ASCII case (`Who` answers
+/// `{{prompt:who}}`). When more than one answer matches the same prompt,
+/// the one written exactly as the prompt's key wins, and otherwise the
+/// first in byte order (`NAME`, then `Name`, then `name`), never the hash
+/// order of `answers`. An answer that matches no prompt is kept under its
+/// own key.
+fn with_defaults<S: BuildHasher>(tpl: &str, answers: &HashMap<String, String, S>) -> BTreeMap<String, String> {
+    let mut all = BTreeMap::new();
+    for p in required_prompts(tpl) {
+        let value = answer_for(answers, &p.key).map_or(p.default, Clone::clone);
+        all.insert(p.key, value);
+    }
+    let given: BTreeMap<&String, &String> = answers.iter().collect();
+    for (k, v) in given {
+        if !all.keys().any(|key| key.eq_ignore_ascii_case(k)) {
+            all.insert(k.clone(), v.clone());
         }
     }
     all
 }
 
-fn answer<'a>(answers: &'a HashMap<String, String>, key: &str) -> Option<&'a String> {
+/// The answer for the prompt `key`: the one written exactly as `key`, else
+/// the first in byte order that matches ignoring ASCII case. It never
+/// depends on the hash order of `answers`.
+pub fn answer_for<'a, S: BuildHasher>(answers: &'a HashMap<String, String, S>, key: &str) -> Option<&'a String> {
+    answers.get(key).or_else(|| answers.iter().filter(|(k, _)| k.eq_ignore_ascii_case(key)).min_by(|a, b| a.0.cmp(b.0)).map(|(_, v)| v))
+}
+
+/// The answer for `key`: written the same, or else the first (in byte
+/// order) that matches ignoring ASCII case.
+fn answer<'a>(answers: &'a BTreeMap<String, String>, key: &str) -> Option<&'a String> {
     answers.get(key).or_else(|| answers.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v))
 }
 
-fn expand_text(tpl: &str, vars: &TemplateVars, folder: &str, answers: &HashMap<String, String>, cursor_ok: bool) -> Expanded {
+fn expand_text(tpl: &str, vars: &TemplateVars, folder: &str, answers: &BTreeMap<String, String>, cursor_ok: bool) -> Expanded {
     let mut out = String::with_capacity(tpl.len() + 32);
     let mut cursor = None;
     let mut at = 0;
@@ -411,5 +427,26 @@ mod tests {
         // A template whose only front matter is the settings loses the block.
         let (s, _) = expand_template("---\nquire-template:\n  folder: X\n---\nBody {{title}}\n", &vars());
         assert_eq!(s, "Body Standup\n");
+    }
+
+    #[test]
+    fn answers_that_differ_only_in_case_give_one_result() {
+        let tpl = "{{prompt:Client}} / {{prompt:client}} / {{prompt:Topic}} / {{prompt:Extra|-}}";
+        let run = |pairs: &[(&str, &str)]| {
+            // A new map each time: each has its own hash order.
+            let answers: HashMap<String, String> = pairs.iter().map(|(k, v)| ((*k).to_string(), (*v).to_string())).collect();
+            expand(tpl, &vars(), "", &answers).text
+        };
+        // The key written as the prompt's wins; otherwise the first in byte order.
+        let both = [("client", "lower"), ("Client", "exact"), ("TOPIC", "upper"), ("topic", "lower")];
+        for _ in 0..64 {
+            assert_eq!(run(&both), "exact / exact / upper / -");
+        }
+        assert_eq!(run(&[("CLIENT", "a"), ("client", "b")]), "a / a /  / -");
+        let answers: HashMap<String, String> =
+            [("name", "lower"), ("NAME", "upper"), ("Name", "exact")].map(|(k, v)| (k.into(), v.into())).into();
+        assert_eq!(answer_for(&answers, "Name").map(String::as_str), Some("exact"));
+        assert_eq!(answer_for(&answers, "nAme").map(String::as_str), Some("upper"));
+        assert_eq!(answer_for(&answers, "other"), None);
     }
 }

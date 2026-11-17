@@ -654,6 +654,7 @@ impl Engine {
             }
         }
         let mut old: Vec<(String, String)> = Vec::new();
+        #[expect(clippy::iter_over_hash_type, reason = "sorted below")]
         for (i, c) in &opened {
             let last = &opened[&latest[&revs[*i].file]];
             if latest[&revs[*i].file] != *i && !c.deleted && (last.deleted || last.path != c.path) && local.in_scope(&c.path) {

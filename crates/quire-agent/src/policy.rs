@@ -295,7 +295,7 @@ impl Default for Policy {
     }
 }
 
-#[allow(clippy::trivially_copy_pass_by_ref, reason = "serde's skip_serializing_if passes a reference")]
+#[expect(clippy::trivially_copy_pass_by_ref, reason = "serde's skip_serializing_if passes a reference")]
 fn is_on(a: &AiSwitch) -> bool {
     *a == AiSwitch::On
 }

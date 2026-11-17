@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Devices editing the same vault through an in-memory server must end up
 //! with identical folders, and must never lose text anyone wrote.
-#![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::tests_outside_test_module,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+)]
 
 use quire_sync::{DeviceId, Engine, LocalStore, MemoryServer, MemoryStore, SpaceId, SyncState, VaultKey};
 
@@ -31,6 +36,7 @@ fn sync(d: &mut Device, server: &MemoryServer) -> quire_sync::Report {
 }
 
 /// Sync everyone until a full round changes nothing.
+#[expect(clippy::print_stderr, reason = "prints the state of a run that doesn't settle")]
 fn settle(devs: &mut [Device], server: &MemoryServer) {
     for round in 0..10 {
         let mut changed = false;

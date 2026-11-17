@@ -28,7 +28,7 @@ pub struct Resolver {
 }
 
 #[derive(Debug, Default, Clone)]
-#[allow(clippy::struct_field_names, reason = "by_path / by_name / by_alias read as lookup tables")]
+#[expect(clippy::struct_field_names, reason = "by_path / by_name / by_alias read as lookup tables")]
 struct Tables {
     by_path: HashMap<String, NotePath>,
     by_name: HashMap<String, Vec<NotePath>>,
@@ -45,6 +45,7 @@ impl Tables {
     }
 
     fn sort(&mut self) {
+        #[expect(clippy::iter_over_hash_type, reason = "sorts each list in place")]
         for v in self.by_name.values_mut() {
             v.sort_by_key(|p| (p.as_str().len(), p.as_str().to_string()));
             v.dedup();
@@ -220,6 +221,7 @@ impl LinkGraph {
     ) {
         let gone: HashSet<&NotePath> = changed.iter().map(|r| &r.path).collect();
         let typed_before: Vec<Option<Vec<(String, NotePath)>>> = gone.iter().map(|p| self.typed.get(*p).cloned()).collect();
+        #[expect(clippy::iter_over_hash_type, reason = "each removed note is unlinked on its own")]
         for p in &gone {
             if let Some(outs) = self.outgoing.remove(*p) {
                 for t in outs {

@@ -181,6 +181,16 @@ pub(crate) fn arg(args: &[String], i: usize) -> Result<&str, String> {
     })
 }
 
+/// The settings; says on stderr when the file couldn't be read (defaults
+/// are used, and a copy of the file is kept).
+pub(crate) fn load_settings() -> quire_app::Settings {
+    let (settings, problem) = quire_app::Settings::load_reporting();
+    if let Some(problem) = problem {
+        eprintln!("quire: {problem}");
+    }
+    settings
+}
+
 /// The vault at `path`, which must be an existing folder: a mistyped path is
 /// an error, never a new empty vault.
 pub(crate) fn open_vault(path: &str) -> Result<Vault, String> {

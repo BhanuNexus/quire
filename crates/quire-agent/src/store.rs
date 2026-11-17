@@ -559,11 +559,7 @@ impl AgentStore {
         }
         let owned = if text.is_none() { self.inner.vault.storage().read(path).ok() } else { None };
         let text = text.or(owned.as_deref());
-        let marked = text
-            .and_then(frontmatter::parse)
-            .and_then(|fm| fm.get("trust").and_then(|v| v.as_str().map(|s| s.trim().eq_ignore_ascii_case("untrusted"))))
-            .unwrap_or(false);
-        if marked { Trust::Untrusted } else { Trust::Trusted }
+        if text.is_some_and(marked_untrusted) { Trust::Untrusted } else { Trust::Trusted }
     }
 
     /// The first untrusted source of a change, in words ("raw/paper.md",
@@ -1480,6 +1476,19 @@ pub(crate) fn set_props(text: &str, set: &[(String, quire_markdown::Value)], rem
         }
     }
     text
+}
+
+/// Whether a note's front matter marks it `trust: untrusted`. It fails
+/// safe: when the key is written more than once, or in another case
+/// (`Trust:`), any one value that says `untrusted` (as text or as a list
+/// item) marks the note, whichever comes last.
+fn marked_untrusted(text: &str) -> bool {
+    let says = |s: &str| s.trim().eq_ignore_ascii_case("untrusted");
+    frontmatter::fields_in_order(text).iter().filter(|(k, _)| k.trim().eq_ignore_ascii_case("trust")).any(|(_, v)| match v {
+        quire_markdown::Value::Str(s) => says(s),
+        quire_markdown::Value::List(items) => items.iter().any(|i| says(i)),
+        quire_markdown::Value::Map(_) => false,
+    })
 }
 
 /// `%20` → space, per byte; invalid sequences are kept as written.

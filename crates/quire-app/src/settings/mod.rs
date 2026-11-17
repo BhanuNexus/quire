@@ -256,7 +256,13 @@ impl Settings {
     /// When the file was last saved by Quire 0.8 (no `written_by`), the
     /// tables and keys it dropped are restored from the sidecar.
     pub fn load_from(path: &Path) -> Self {
-        let Ok(text) = std::fs::read_to_string(path) else { return Self::default() };
+        Self::load_from_reporting(path).0
+    }
+
+    /// [`Settings::load_from`], and what to tell the person when the file
+    /// couldn't be read as settings (defaults are used, and a copy is kept).
+    pub fn load_from_reporting(path: &Path) -> (Self, Option<String>) {
+        let Ok(text) = std::fs::read_to_string(path) else { return (Self::default(), None) };
         let parsed = toml::from_str::<toml::Table>(&text).and_then(|mut t| {
             if older_than_09(t.get("written_by"))
                 && let Ok(side) = std::fs::read_to_string(sidecar_path(path))
@@ -271,15 +277,26 @@ impl Settings {
             t.remove("written_by");
             toml::Value::Table(t).try_into::<Self>()
         });
-        parsed.unwrap_or_else(|e| {
-            let kept = crate::atomic::keep_unreadable(path);
-            eprintln!("quire: couldn't read {} ({e}); using defaults, a copy is at {kept:?}", path.display());
-            Self::default()
-        })
+        match parsed {
+            Ok(s) => (s, None),
+            Err(e) => {
+                let copy = crate::atomic::keep_unreadable(path)
+                    .map_or_else(|| "no copy of it could be made".to_string(), |k| format!("a copy of it is at {}", k.display()));
+                let problem =
+                    format!("Couldn't read the settings file {} ({e}). Quire is using the default settings; {copy}.", path.display());
+                (Self::default(), Some(problem))
+            }
+        }
     }
 
     pub fn load() -> Self {
-        Self::path().map(|p| Self::load_from(&p)).unwrap_or_default()
+        Self::load_reporting().0
+    }
+
+    /// [`Settings::load`], and what to tell the person when the file couldn't
+    /// be read (see [`Settings::load_from_reporting`]).
+    pub fn load_reporting() -> (Self, Option<String>) {
+        Self::path().map(|p| Self::load_from_reporting(&p)).unwrap_or_default()
     }
 
     /// Write the settings, and the sidecar with what Quire 0.8 would drop.
@@ -308,7 +325,7 @@ impl Settings {
 mod compat;
 
 #[cfg(test)]
-#[allow(clippy::float_cmp, reason = "values round-trip exactly through TOML")]
+#[expect(clippy::float_cmp, reason = "values round-trip exactly through TOML")]
 mod tests {
     use super::*;
 
@@ -375,8 +392,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("settings.toml");
         std::fs::write(&p, "font_size = \"not a number\"\n").unwrap();
-        let s = Settings::load_from(&p);
+        let (s, problem) = Settings::load_from_reporting(&p);
         assert_eq!(s.font_size, Settings::default().font_size);
+        // Said to the person (a notice in the desktop app, stderr in the CLI).
+        let problem = problem.expect("the problem is reported");
+        assert!(problem.contains("default settings") && problem.contains("settings.toml.unreadable"), "{problem}");
+        assert_eq!(Settings::load_from_reporting(&dir.path().join("missing.toml")).1, None);
         s.save_to(&p).unwrap();
         let kept = std::fs::read_to_string(dir.path().join("settings.toml.unreadable")).unwrap();
         assert!(kept.contains("not a number"));

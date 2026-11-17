@@ -21,7 +21,7 @@ typeset = ["quire-app/typeset", "quire-web/typeset"]
 eval = []
 
 [dependencies]
-quire-app = { workspace = true, features = ["remote-llm", "keychain", "update-check"] }
+quire-app.workspace = true
 quire-import = { path = "../../crates/quire-import" }
 quire-agent.workspace = true
 quire-mcp.workspace = true

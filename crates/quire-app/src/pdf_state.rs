@@ -193,6 +193,7 @@ pub(crate) fn vault_event(ws: &mut Workspace, ev: &VaultEvent) {
 /// Queue every scanned page not read yet (after on-device OCR is turned on).
 pub fn queue_ocr(ws: &mut Workspace) {
     let mut q: Vec<OcrRequest> = Vec::new();
+    #[expect(clippy::iter_over_hash_type, reason = "sorted right below")]
     for (path, t) in &ws.features.pdf.texts {
         for p in t.image_only.iter().filter(|p| !t.ocr.contains(p)) {
             q.push(OcrRequest { path: path.clone(), page: p - 1, sha256: t.sha256.clone() });

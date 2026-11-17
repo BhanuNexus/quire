@@ -627,7 +627,7 @@ fn unlocking_for_good_keeps_both_when_the_plain_file_differs() {
     let (v, fs) = vault_with(&journal());
     lock(&v);
     let day = np("Journal/Day 1.md");
-    fs.write_atomic(&np("Journal/quire-lock.unlocking.json"), &fs.read(&np("Journal/quire-lock.json")).unwrap()).ok();
+    fs.write_atomic(&np("Journal/quire-lock.unlocking.json"), &fs.read(&np("Journal/quire-lock.json")).unwrap()).unwrap();
     fs.remove(&np("Journal/quire-lock.json")).unwrap();
     // As if an earlier run wrote it and it was edited since (or it came from elsewhere).
     let converting = v.converting("Journal");

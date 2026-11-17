@@ -23,19 +23,15 @@ pub(super) enum Result {
 
 /// Byte range of the lines between the fences, if the note opens with front matter.
 fn locate(text: &str) -> Option<(usize, usize)> {
-    let first = text.split_inclusive('\n').next()?;
-    if first.trim_end() != "---" {
-        return None;
-    }
-    let mut pos = first.len();
-    for line in text[pos..].split_inclusive('\n') {
-        let t = line.trim_end();
-        if t == "---" || t == "..." {
-            return Some((first.len(), pos));
-        }
-        pos += line.len();
-    }
-    None
+    frontmatter::fences(text).map(|f| (f.inner().start, f.inner().end))
+}
+
+/// Whether the first line is a `---` fence with trailing white space
+/// (`---  `). Such a note has no front matter for Quire's reader, but
+/// trimming those spaces would turn its first lines into front matter, so
+/// the linter leaves that block alone.
+fn loose_opener(text: &str) -> bool {
+    text.lines().next().is_some_and(|l| l.trim_end() == "---" && !frontmatter::is_opening_line(l))
 }
 
 struct Entry {
@@ -253,6 +249,7 @@ pub(super) fn set_modified(text: &str, key: &str, stamp: &str, eol: &str) -> Res
         return Result::Unreadable;
     }
     match locate(text) {
+        None if loose_opener(text) => Result::Unreadable,
         None => {
             let rest = if text.trim().is_empty() { String::new() } else { format!("{eol}{text}") };
             let fresh = format!("---{eol}{}: {}{eol}---{eol}{rest}", frontmatter::yaml_scalar(key), frontmatter::yaml_scalar(stamp));

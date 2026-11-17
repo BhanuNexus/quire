@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Selective sync: a device that holds only some folders of a vault never
 //! sends the notes it doesn't hold as deletes, whatever happens to them.
-#![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::tests_outside_test_module,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+)]
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -410,6 +415,7 @@ const SELECTIONS: [&[&str]; 5] = [&[], &["Work/"], &["Home/"], &["Work/", "Archi
 /// two or three devices: no note is ever duplicated, no word typed is
 /// lost unless a device that had it deleted the note, and no delete is
 /// sent that a device didn't make.
+#[expect(clippy::print_stderr, reason = "traces a failing seed's steps")]
 fn simulate_selections(seed: u64, n: usize, steps: usize) {
     let key = VaultKey::generate().unwrap();
     let space = SpaceId::random().unwrap();

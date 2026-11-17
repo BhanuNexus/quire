@@ -200,7 +200,7 @@ fn strip_property_lines(body: &str, header: &[String]) -> String {
 }
 
 /// Minimal RFC 4180 parser: quoted fields, doubled quotes, embedded newlines.
-#[allow(clippy::match_same_arms, reason = "arm order matters: quoted and unquoted chars are pushed after the special cases")]
+#[expect(clippy::match_same_arms, reason = "arm order matters: quoted and unquoted chars are pushed after the special cases")]
 pub(crate) fn parse_csv(text: &str) -> Vec<Vec<String>> {
     let mut rows = Vec::new();
     let mut row = Vec::new();

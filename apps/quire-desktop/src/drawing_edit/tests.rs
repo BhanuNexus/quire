@@ -264,7 +264,7 @@ fn a_drawing_that_cannot_be_written_is_listed_for_the_quit_dialog() {
     // The file's place is taken by a folder, and every copy name is taken too.
     let dir = r.dir.path().to_path_buf();
     std::fs::remove_file(dir.join("Release.excalidraw")).unwrap();
-    std::fs::create_dir(dir.join("Release.excalidraw")).unwrap();
+    std::fs::create_dir_all(dir.join("Release.excalidraw")).unwrap();
     for n in 1..1000 {
         std::fs::write(dir.join(format!("Release (unsaved edits {n}).excalidraw")), "taken").unwrap();
     }

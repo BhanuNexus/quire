@@ -102,7 +102,6 @@ impl TranscribeJob {
 }
 
 /// The host of a base URL, for "at api.openai.com".
-#[cfg_attr(not(any(feature = "remote-llm", test)), expect(dead_code, reason = "only providers have a host"))]
 fn host(url: &str) -> &str {
     let rest = url.split_once("://").map_or(url, |(_, r)| r);
     rest.split(['/', '?']).next().unwrap_or(rest)
@@ -143,14 +142,12 @@ pub fn transcription(settings: &Settings) -> Option<Transcription> {
                 local.transcribe(wav, &language, cancel).map(|r| r.text).map_err(|e| e.to_string())
             }))
         }
-        "provider" => provider_transcription(settings, &language),
+        "provider" => Some(provider_transcription(settings, &language)),
         _ => None,
     }
 }
 
-#[cfg(feature = "remote-llm")]
-#[expect(clippy::unnecessary_wraps, reason = "matches the build without providers, which has none")]
-fn provider_transcription(settings: &Settings, language: &str) -> Option<Transcription> {
+fn provider_transcription(settings: &Settings, language: &str) -> Transcription {
     let language = language.to_string();
     let (base, _) = crate::ai::resolved(settings);
     let key = crate::secrets::api_key(crate::secrets::store().as_ref(), "openai");
@@ -161,19 +158,14 @@ fn provider_transcription(settings: &Settings, language: &str) -> Option<Transcr
     };
     let label = format!("{model} at {}", host(&base));
     let client = quire_intel::llm::OpenAiCompatible::new(base, model.clone(), key);
-    Some(Transcription::custom(Place::Provider, label, move |wav, cancel| {
+    Transcription::custom(Place::Provider, label, move |wav, cancel| {
         let bytes = std::fs::read(wav).map_err(|e| e.to_string())?;
         let name = wav.file_name().map_or_else(|| "voice-note.wav".into(), |n| n.to_string_lossy().into_owned());
         if cancel.is_cancelled() {
             return Err("stopped".into());
         }
         client.transcribe(&model, &bytes, &name, &language).map_err(|e| e.to_string())
-    }))
-}
-
-#[cfg(not(feature = "remote-llm"))]
-fn provider_transcription(_settings: &Settings, _language: &str) -> Option<Transcription> {
-    None
+    })
 }
 
 /// `0:42`, `12:05`.
@@ -299,7 +291,6 @@ mod tests {
         s.ai_provider = "openai".into();
         s.ai_base_url = "https://api.example.com".into();
         assert_eq!(unavailable_reason(&s), None);
-        #[cfg(feature = "remote-llm")]
         assert_eq!(transcription(&s).map(|t| (t.place, t.label)), Some((Place::Provider, "whisper-1 at api.example.com".to_string())));
     }
 

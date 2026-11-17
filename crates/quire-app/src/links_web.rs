@@ -344,7 +344,6 @@ mod tests {
     /// `cargo test -p quire-app --lib links_web::tests::hierarchy_timing -- --ignored --nocapture`.
     #[test]
     #[ignore = "timing, run by hand"]
-    #[allow(clippy::print_stderr, reason = "timing output")]
     fn hierarchy_timing() {
         let files: Vec<(String, String)> = (0..10_000)
             .map(|i| {

@@ -303,7 +303,7 @@ mod tests {
     use super::*;
 
     #[test]
-    #[allow(clippy::float_cmp, reason = "zoom factors are exact here (2 and the cap)")]
+    #[expect(clippy::float_cmp, reason = "zoom factors are exact here (2 and the cap)")]
     fn zoom_keeps_the_point_under_the_pointer() {
         let mut p = Pan::default();
         p.zoom_at(2.0, Vec2::new(100.0, 50.0));
