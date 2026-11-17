@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The model catalog, compiled in from `catalog.toml` (`docs/design/0.9.md` §D.2,
-//! docs/formats/model-catalog.md), plus the engine binary for this target,
-//! whose SHA-256 the release build embeds (`build.rs`).
+//! The model catalog, compiled in from `catalog.toml`, plus the engine binary
+//! for this target, whose SHA-256 the release build embeds (`build.rs`).
+//!
+//! Design: `docs/design/0.9.md` §D.2; format: `docs/formats/model-catalog.md`.
 //!
 //! A file is downloaded only when its SHA-256 is pinned here. An entry with
 //! an unpinned file (empty `sha256`) is listed but can't be downloaded or

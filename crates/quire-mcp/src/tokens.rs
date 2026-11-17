@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Access tokens for MCP over HTTP (`docs/design/0.9.md` §4.6): personal tokens
-//! (`quire-cli mcp token create`, Settings → Agents) and the OAuth access
-//! and refresh tokens Quire's authorization server issues.
+//! Access tokens for MCP over HTTP: personal tokens (`quire-cli mcp token
+//! create`, Settings → Agents) and the OAuth access and refresh tokens
+//! Quire's authorization server issues.
+//!
+//! Design: `docs/design/0.9.md` §4.6.
 //!
 //! Tokens are 256-bit random strings shown once. Only their SHA-256 is kept,
 //! in `<config>/mcp/tokens.json` (mode 0600), with who they belong to, their
