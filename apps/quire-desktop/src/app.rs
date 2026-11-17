@@ -877,6 +877,7 @@ impl eframe::App for QuireApp {
             self.copy_html(ui.ctx(), c);
         }
         // QUIRE_TRACE=1 prints how long each frame's UI work took.
+        #[expect(clippy::print_stderr, reason = "QUIRE_TRACE: frame timings for a developer at a terminal")]
         if std::env::var_os("QUIRE_TRACE").is_some() {
             let ms = started.elapsed().as_secs_f64() * 1000.0;
             let lines = self.ws.active_doc().map_or(0, |d| d.buffer().len_lines());
@@ -1315,6 +1316,7 @@ fn clipboard_keys(events: &mut Vec<egui::Event>, keep: ClipboardKeys, shift_x_cu
 }
 
 /// With `QUIRE_TRACE` set, report sections slower than 8 ms.
+#[expect(clippy::print_stderr, reason = "QUIRE_TRACE: slow sections for a developer at a terminal")]
 fn trace(what: &str, since: Instant) {
     let ms = since.elapsed().as_secs_f64() * 1000.0;
     if ms > 8.0 && std::env::var_os("QUIRE_TRACE").is_some() {

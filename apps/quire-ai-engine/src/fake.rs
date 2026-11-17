@@ -79,9 +79,11 @@ fn text_of(m: &Value) -> String {
 
 fn trap(text: &str) {
     if text.contains("__crash__") {
+        #[expect(clippy::exit, reason = "the fake engine crashes on purpose when a test asks it to (`__crash__`)")]
         std::process::exit(101);
     }
     if text.contains("__hang__") {
+        #[expect(clippy::infinite_loop, reason = "the fake engine hangs on purpose when a test asks it to (`__hang__`)")]
         loop {
             std::thread::sleep(Duration::from_mins(1));
         }

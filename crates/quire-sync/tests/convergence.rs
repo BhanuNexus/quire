@@ -36,6 +36,7 @@ fn sync(d: &mut Device, server: &MemoryServer) -> quire_sync::Report {
 }
 
 /// Sync everyone until a full round changes nothing.
+#[expect(clippy::print_stderr, reason = "prints the state of a run that doesn't settle")]
 fn settle(devs: &mut [Device], server: &MemoryServer) {
     for round in 0..10 {
         let mut changed = false;

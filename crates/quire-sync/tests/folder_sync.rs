@@ -132,6 +132,7 @@ impl Cloud {
     }
 
     /// Spread everything and sync everyone until nothing changes.
+    #[expect(clippy::print_stderr, reason = "prints the state of a run that doesn't settle")]
     fn settle(&mut self) {
         for round in 0..12 {
             self.spread(None);

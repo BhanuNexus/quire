@@ -231,7 +231,9 @@ mod tests {
     fn unreferenced_attachments_keep_the_files_order() {
         let res = |name: &str| {
             let b64 = base64::engine::general_purpose::STANDARD.encode(name.as_bytes());
-            format!("<resource><data encoding=\"base64\">{b64}</data><mime>application/pdf</mime><resource-attributes><file-name>{name}</file-name></resource-attributes></resource>")
+            format!(
+                "<resource><data encoding=\"base64\">{b64}</data><mime>application/pdf</mime><resource-attributes><file-name>{name}</file-name></resource-attributes></resource>"
+            )
         };
         let names = ["d.pdf", "a.pdf", "c.pdf", "b.pdf", "e.pdf", "f.pdf"];
         let all: String = names.iter().map(|n| res(n)).collect();

@@ -70,6 +70,7 @@ pub(crate) fn sweep(dir: &Path, age: std::time::Duration) -> usize {
             continue;
         }
         let old = e.metadata().ok().and_then(|m| m.modified().ok()).and_then(|t| now.duration_since(t).ok()).is_some_and(|d| d > age);
+        #[expect(clippy::filetype_is_file, reason = "only a plain leftover file is removed, never a symlink or anything else")]
         if old && e.file_type().is_ok_and(|t| t.is_file()) && fs::remove_file(e.path()).is_ok() {
             gone += 1;
         }

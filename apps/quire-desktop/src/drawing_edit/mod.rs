@@ -2331,6 +2331,10 @@ impl Drop for DrawingEditor {
             return;
         }
         let written = self.conflict.is_none() && crate::canvas_ui::write_checked(vault, &self.path, &self.disk_text, &text);
+        #[expect(
+            clippy::print_stderr,
+            reason = "the last resort when the editor is dropped without close(): no workspace is left for a notice, so the log is all there is"
+        )]
         if !written && let Err(e) = write_edits_copy(vault, &self.path, &text) {
             eprintln!("quire: couldn't keep the unsaved edits of {}: {e}", self.path);
         }

@@ -166,6 +166,7 @@ impl CitationsJob {
     }
 
     fn note_citations(&mut self, path: &NotePath, src: &str, resolve: &dyn Fn(&str, &NotePath) -> Option<NotePath>) {
+        #[expect(clippy::iter_over_hash_type, reason = "takes the path out of every set")]
         for set in self.cited_by.values_mut() {
             set.remove(path);
         }

@@ -104,6 +104,7 @@ pub(crate) fn run(source: &str, vault: &str, from: Option<Source>, folder: &str,
     let root = Path::new(vault);
     if write && !root.exists() {
         // One level only: a missing parent is an unplugged drive or a typo, not something to make.
+        #[expect(clippy::create_dir, reason = "one level only: a missing parent is an unplugged drive or a typo, not something to make")]
         if let Err(e) = std::fs::create_dir(root) {
             return Err(quire_mcp::require_folder(root)
                 .err()

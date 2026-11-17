@@ -139,6 +139,7 @@ fn serve_http(args: &[String]) -> Result<(), String> {
     eprintln!("Quire MCP is listening at {}", http.urls().resource);
     eprintln!("Clients sign in with OAuth (approve them here or in the app), or use a token from `quire-cli mcp token create`.");
     let mut seen = std::collections::HashSet::new();
+    #[expect(clippy::infinite_loop, reason = "the server runs until the process is stopped")]
     loop {
         for r in consent.pending(now()) {
             if seen.insert(r.id.clone()) {

@@ -86,6 +86,7 @@ fn main() -> eframe::Result {
             return Ok(());
         }
     }
+    #[expect(clippy::print_stdout, reason = "`quire --version` answers on stdout")]
     if std::env::args().nth(1).is_some_and(|a| a == "--version" || a == "-V") {
         println!("Quire {}{}", env!("CARGO_PKG_VERSION"), if cfg!(feature = "typeset") { "" } else { " (Lite)" });
         return Ok(());

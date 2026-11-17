@@ -12,6 +12,11 @@
 //! | `QUIRE_SYNC_DB` | `quire-sync.sqlite` | Database file |
 //! | `QUIRE_SYNC_KEEP_DAYS` | (keep everything) | 0.13: once a day, drop revisions replaced more than this many days ago |
 //! | `QUIRE_SYNC_KEEP_VERSIONS` | `20` | …but always keep each file's newest this many (at least 2) |
+#![expect(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    reason = "a server run from a terminal or a service manager: it reports on stdout and stderr"
+)]
 
 use std::process::ExitCode;
 use std::sync::Arc;

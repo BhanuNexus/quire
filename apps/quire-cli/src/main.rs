@@ -4,6 +4,11 @@
 //!
 //! Subcommands live in `commands/`, one module per area, each with a table
 //! of the commands it adds.
+#![expect(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    reason = "a command-line program: its results go to stdout, its errors and progress to stderr"
+)]
 
 mod commands;
 

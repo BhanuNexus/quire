@@ -90,6 +90,7 @@ impl VectorCache {
         }
         let Some(path) = &self.path else { return Ok(()) };
         let mut out = Vec::with_capacity(self.map.len() * 400);
+        #[expect(clippy::iter_over_hash_type, reason = "a cache file read back into a map: the order of its records doesn't matter")]
         for (k, v) in &self.map {
             out.extend_from_slice(&k.to_le_bytes());
             out.extend_from_slice(&(v.len() as u32).to_le_bytes());
@@ -385,6 +386,7 @@ impl Lsa {
         let n = docs.len().max(1);
         let mut df: HashMap<&str, u32> = HashMap::new();
         for d in &docs {
+            #[expect(clippy::iter_over_hash_type, reason = "counts document frequency; the terms are sorted below")]
             for t in d.keys() {
                 *df.entry(t.as_str()).or_default() += 1;
             }

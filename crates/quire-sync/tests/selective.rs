@@ -415,6 +415,7 @@ const SELECTIONS: [&[&str]; 5] = [&[], &["Work/"], &["Home/"], &["Work/", "Archi
 /// two or three devices: no note is ever duplicated, no word typed is
 /// lost unless a device that had it deleted the note, and no delete is
 /// sent that a device didn't make.
+#[expect(clippy::print_stderr, reason = "traces a failing seed's steps")]
 fn simulate_selections(seed: u64, n: usize, steps: usize) {
     let key = VaultKey::generate().unwrap();
     let space = SpaceId::random().unwrap();

@@ -143,6 +143,7 @@ pub fn serve<B: Backend>(backend: B, idle_exit: Option<Duration>) {
             Err(RecvTimeoutError::Timeout) => {
                 let st = lock(&state);
                 let now = Instant::now();
+                #[expect(clippy::iter_over_hash_type, reason = "each idle model gets its own Unload; their order doesn't matter")]
                 for (m, l) in &st.loaded {
                     if !st.busy && now.duration_since(l.last_used) > l.idle_after {
                         let _ = work_tx.send(Work::Unload(m.clone()));
@@ -396,6 +397,7 @@ fn rss_bytes() -> Option<u64> {
 }
 
 /// Arguments every engine binary understands: `--version`.
+#[expect(clippy::print_stdout, reason = "`--version` answers on stdout")]
 pub fn handle_args(name: &str) -> bool {
     if std::env::args().nth(1).is_some_and(|a| a == "--version" || a == "-V") {
         println!("{name} {}", env!("CARGO_PKG_VERSION"));

@@ -22,6 +22,7 @@ pub struct RelatedNote {
 fn doc_freq(index: &Index) -> HashMap<&str, u32> {
     let mut df: HashMap<&str, u32> = HashMap::new();
     for r in index.records() {
+        #[expect(clippy::iter_over_hash_type, reason = "counts")]
         for t in r.terms.keys() {
             *df.entry(t.as_str()).or_default() += 1;
         }
@@ -40,6 +41,7 @@ pub(crate) fn tfidf<'a>(rec: &'a NoteRecord, df: &HashMap<&str, u32>, n: f32) ->
         .collect();
     let norm = v.values().map(|x| x * x).sum::<f32>().sqrt();
     if norm > 0.0 {
+        #[expect(clippy::iter_over_hash_type, reason = "scales each value on its own")]
         for x in v.values_mut() {
             *x /= norm;
         }

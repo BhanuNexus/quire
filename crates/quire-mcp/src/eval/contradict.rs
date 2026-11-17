@@ -124,6 +124,7 @@ pub fn run(judge: Option<&Arc<dyn ChatModel>>) -> Report {
     // Step 2: candidates of every claim (both directions, as new claims
     // arrive in either order).
     let mut candidate: HashSet<(String, String)> = HashSet::new();
+    #[expect(clippy::iter_over_hash_type, reason = "collects pairs into a set")]
     for (a, b) in refs_by_pair.values() {
         for c in [a, b] {
             for (other, _) in claims.candidates(c, &embed(&c.text), min_cos, &HashSet::new()) {

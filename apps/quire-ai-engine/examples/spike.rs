@@ -7,6 +7,7 @@
 //! the values. Run in release:
 //!
 //!     cargo run --release -p quire-ai-engine --example spike -- <scratch dir> qwen3 compact
+#![expect(clippy::print_stdout, clippy::print_stderr, reason = "a measurement run by hand: it prints its results")]
 
 use std::time::Instant;
 

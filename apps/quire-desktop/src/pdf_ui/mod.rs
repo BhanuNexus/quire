@@ -34,22 +34,22 @@ use crate::theme::Palette;
 
 /// Page images kept (design §G.2).
 const TEXTURES: usize = 12;
-#[cfg_attr(not(feature = "typeset"), allow(dead_code, reason = "Lite shows text only, with no page view"))]
+#[cfg_attr(not(feature = "typeset"), expect(dead_code, reason = "Lite shows text only, with no page view"))]
 const GAP: f32 = 16.0;
 
 enum Req {
-    #[cfg_attr(not(feature = "typeset"), allow(dead_code, reason = "Lite renders no pages"))]
+    #[cfg_attr(not(feature = "typeset"), expect(dead_code, reason = "Lite renders no pages"))]
     Render {
         page: usize,
         key: u32,
     },
-    #[cfg_attr(not(feature = "typeset"), allow(dead_code, reason = "Lite shows text only, with no page view"))]
+    #[cfg_attr(not(feature = "typeset"), expect(dead_code, reason = "Lite shows text only, with no page view"))]
     Text {
         page: usize,
     },
     AllText,
     Find(String),
-    #[cfg_attr(not(feature = "typeset"), allow(dead_code, reason = "Lite has no area highlights"))]
+    #[cfg_attr(not(feature = "typeset"), expect(dead_code, reason = "Lite has no area highlights"))]
     Crop {
         page: usize,
         rect: Quad,
@@ -62,7 +62,7 @@ enum Resp {
         sha: String,
     },
     Failed(String),
-    #[cfg_attr(not(feature = "typeset"), allow(dead_code, reason = "Lite renders no pages"))]
+    #[cfg_attr(not(feature = "typeset"), expect(dead_code, reason = "Lite renders no pages"))]
     Rendered {
         page: usize,
         key: u32,
@@ -78,7 +78,7 @@ enum Resp {
         query: String,
         hits: Vec<(usize, Vec<Quad>)>,
     },
-    #[cfg_attr(not(feature = "typeset"), allow(dead_code, reason = "Lite has no area highlights"))]
+    #[cfg_attr(not(feature = "typeset"), expect(dead_code, reason = "Lite has no area highlights"))]
     Cropped {
         page: usize,
         rect: Quad,
@@ -189,12 +189,12 @@ pub(crate) struct PdfSurface {
     text_pending: HashSet<usize>,
     all_text: Option<Vec<PageText>>,
     /// Page, anchor char and head char of a text selection.
-    #[cfg_attr(not(feature = "typeset"), allow(dead_code, reason = "Lite shows text only, with no page view"))]
+    #[cfg_attr(not(feature = "typeset"), expect(dead_code, reason = "Lite shows text only, with no page view"))]
     selection: Option<(usize, usize, usize)>,
-    #[cfg_attr(not(feature = "typeset"), allow(dead_code, reason = "Lite shows text only, with no page view"))]
+    #[cfg_attr(not(feature = "typeset"), expect(dead_code, reason = "Lite shows text only, with no page view"))]
     selecting: bool,
     /// An area being drawn: page, start and end in PDF points.
-    #[cfg_attr(not(feature = "typeset"), allow(dead_code, reason = "Lite shows text only, with no page view"))]
+    #[cfg_attr(not(feature = "typeset"), expect(dead_code, reason = "Lite shows text only, with no page view"))]
     area: Option<AreaDrag>,
     find_query: String,
     /// Frames left to ask for the focus for the find box.
@@ -359,13 +359,13 @@ impl PdfSurface {
         }
     }
 
-    #[cfg_attr(not(feature = "typeset"), allow(dead_code, reason = "Lite shows text only, with no page view"))]
+    #[cfg_attr(not(feature = "typeset"), expect(dead_code, reason = "Lite shows text only, with no page view"))]
     fn page_height(&self, i: usize) -> f32 {
         self.pages.get(i).map_or(0.0, |p| p.height * self.zoom)
     }
 
     /// Top of page `i` in the scroll area.
-    #[cfg_attr(not(feature = "typeset"), allow(dead_code, reason = "Lite shows text only, with no page view"))]
+    #[cfg_attr(not(feature = "typeset"), expect(dead_code, reason = "Lite shows text only, with no page view"))]
     fn page_top(&self, i: usize) -> f32 {
         (0..i).map(|k| self.page_height(k) + GAP).sum::<f32>() + GAP
     }
@@ -408,7 +408,7 @@ impl PdfSurface {
         }
     }
 
-    #[cfg_attr(not(feature = "typeset"), allow(dead_code, reason = "Lite shows text only, with no page view"))]
+    #[cfg_attr(not(feature = "typeset"), expect(dead_code, reason = "Lite shows text only, with no page view"))]
     fn selected_text(&self) -> Option<(usize, std::ops::Range<usize>, String)> {
         let (page, a, h) = self.selection?;
         let (t, _) = self.texts.get(&page)?;
@@ -418,7 +418,7 @@ impl PdfSurface {
         (s < e).then(|| (page, s..e, chars[s..e].iter().collect()))
     }
 
-    #[cfg_attr(not(feature = "typeset"), allow(dead_code, reason = "Lite shows text only, with no page view"))]
+    #[cfg_attr(not(feature = "typeset"), expect(dead_code, reason = "Lite shows text only, with no page view"))]
     fn make_highlight(&mut self, ws: &mut Workspace, with_comment: bool) {
         let Some((page, range, _)) = self.selected_text() else { return };
         let Some((t, _)) = self.texts.get(&page) else { return };

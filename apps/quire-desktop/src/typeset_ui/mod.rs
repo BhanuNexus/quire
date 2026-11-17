@@ -56,7 +56,7 @@ pub(crate) struct Picture {
 }
 
 #[derive(Clone)]
-#[cfg_attr(not(feature = "typeset"), allow(dead_code, reason = "Quire Lite never renders, so only Pending is made"))]
+#[cfg_attr(not(feature = "typeset"), expect(dead_code, reason = "Quire Lite never renders, so only Pending is made"))]
 pub(crate) enum Out {
     Pending,
     Ready(Picture),

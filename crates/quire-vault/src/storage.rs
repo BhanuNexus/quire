@@ -191,6 +191,10 @@ impl LocalFs {
                 }
                 Err(e) => return Err(io_err(rel)(e)),
             };
+            #[expect(
+                clippy::filetype_is_file,
+                reason = "a symlinked note or folder is skipped, as the watcher and sync skip it: it could point outside the vault"
+            )]
             if ft.is_dir() {
                 self.walk(&path, out, vanished)?;
             } else if ft.is_file() {
@@ -607,6 +611,7 @@ impl Storage for LocalFs {
         let mut out = Vec::new();
         let Ok(entries) = std::fs::read_dir(&dir) else { return Ok(out) };
         for e in entries.flatten() {
+            #[expect(clippy::filetype_is_file, reason = "a symlinked note is skipped, as the vault listing skips it")]
             if e.file_type().is_ok_and(|t| t.is_file()) {
                 out.push(NotePath::join(folder, &e.file_name().to_string_lossy()));
             }

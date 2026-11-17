@@ -882,6 +882,7 @@ impl RemoteTransport {
         }
         let saved: HashMap<String, Progress> =
             fs::read(self.progress_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        #[expect(clippy::iter_over_hash_type, reason = "fills a map")]
         for (name, p) in saved {
             if is_id(&name) && name != self.device.0 {
                 m.fetched.insert(DeviceId(name), p);
