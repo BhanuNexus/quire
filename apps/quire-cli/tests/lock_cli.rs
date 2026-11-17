@@ -112,3 +112,52 @@ fn a_revoked_mcp_client_is_refused_at_start() {
     let o = cli(&home, &["mcp", v, "--client", "other"], &[]);
     assert!(o.status.success(), "{}", text(&o));
 }
+
+/// D3 (0.14): `tags … --write`, `props … --write` and `lint` open the vault
+/// through the locked-folder gate (`secure_state::open_vault`), so a locked
+/// folder whose key file went missing stays locked for them: no plain
+/// write lands in it, and no plain copy of its notes goes into history.
+#[test]
+fn a_locked_folder_whose_key_file_is_missing_stays_locked_for_tag_and_property_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (home, vault) = (dir.path().join("home"), dir.path().join("vault"));
+    std::fs::create_dir_all(vault.join("Daily")).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(vault.join("Daily/Day.md"), "# Day\nD3-SEALED diary\n").unwrap();
+    std::fs::write(vault.join("Plan.md"), "---\ntags: [x]\n---\n# Plan\n").unwrap();
+    let v = vault.to_str().unwrap();
+    let rk = dir.path().join("daily-key.txt");
+    let o = cli(
+        &home,
+        &["lock", v, "Daily", "--recovery-key-file", rk.to_str().unwrap()],
+        &[("QUIRE_LOCK_PASSPHRASE", "correct horse battery")],
+    );
+    assert!(o.status.success(), "{}", text(&o));
+    // The key file goes (a sync client, another program), and a plain note
+    // arrives in the folder.
+    std::fs::remove_file(vault.join("Daily/quire-lock.json")).unwrap();
+    let plain = "---\ntags: [x]\nstatus: open\n---\nD3-PLAIN note\n";
+    std::fs::write(vault.join("Daily/New.md"), plain).unwrap();
+
+    // History is gzipped: ask the vault for the versions it kept.
+    let versions = || {
+        let hv = quire_app::vault::Vault::open_local(&vault).unwrap();
+        hv.history(&quire_app::vault::NotePath::new("Daily/New.md")).len()
+    };
+
+    let o = cli(&home, &["tags", v, "rename", "x", "y", "--write"], &[]);
+    let after = std::fs::read_to_string(vault.join("Daily/New.md")).unwrap();
+    assert_eq!(after, plain, "no plain write into the locked folder: {}", text(&o));
+    assert_eq!(versions(), 0, "no plain copy in history: {}", text(&o));
+    // The locked folder's notes are left out; the rest of the vault changes.
+    assert!(o.status.success() && !text(&o).contains("Daily/New.md"), "{}", text(&o));
+    assert!(std::fs::read_to_string(vault.join("Plan.md")).unwrap().contains("tags: [y]"));
+
+    let o = cli(&home, &["props", v, "rename", "status", "state", "--write"], &[]);
+    assert_eq!(std::fs::read_to_string(vault.join("Daily/New.md")).unwrap(), plain, "{}", text(&o));
+    assert_eq!(versions(), 0, "{}", text(&o));
+
+    let o = cli(&home, &["lint", v], &[]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(holding(&vault, "D3-SEALED").is_empty(), "the locked note stays sealed");
+}

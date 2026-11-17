@@ -4,6 +4,9 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Fixed
+- **Locked folders:** `quire-cli tags … --write`, `props … --write` and `lint` now keep a locked folder locked when its key file is missing, as the app does: they no longer rewrite a plain note there, or keep a plain copy of it in history.
+
 ## [0.13.2] - 2026-11-17
 
 Quire 0.13.2: a data-safety release with no new features. Sync no longer reads a vault it can't list as "every note deleted", and a pass that would delete a large part of the vault waits for you. Files replaced while another program has them open no longer fail on Windows, a locked folder's key change shows its new recovery key first and says how to finish if it stops, and canvases, sketches and drawings keep unsaved edits when a save fails.

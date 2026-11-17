@@ -436,8 +436,9 @@ fn refactor(root: &str, op: &MetaOp, write: bool) -> Result<(), String> {
     if let Some(why) = op.problem() {
         return Err(why);
     }
-    quire_mcp::require_folder(Path::new(root))?;
-    let vault = Vault::open_local(root).map_err(|e| e.to_string())?;
+    // Through the locked-folder gate: a locked folder whose key file is
+    // missing stays locked, so no plain write lands in it (D3).
+    let vault = super::open_vault(root)?;
     let edits = plan_vault(&vault, op)?;
     print!("{}", preview_text(op, &edits));
     if !write {

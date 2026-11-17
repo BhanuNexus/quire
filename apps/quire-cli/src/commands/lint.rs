@@ -7,7 +7,6 @@ use std::fmt::Write as _;
 
 use quire_agent::lint::{Finding, Level, LintNote};
 use quire_agent::{AgentStore, SystemClock};
-use quire_app::vault::Vault;
 
 use super::{CliCommand, arg};
 
@@ -20,9 +19,8 @@ pub(crate) const COMMANDS: &[CliCommand] = &[CliCommand {
 }];
 
 fn run(args: &[String]) -> Result<(), String> {
-    let root = arg(args, 1)?;
-    quire_mcp::require_folder(std::path::Path::new(root))?;
-    let vault = Vault::open_local(root).map_err(|e| e.to_string())?;
+    // Through the locked-folder gate, as every vault the CLI opens (D3).
+    let vault = super::open_vault(arg(args, 1)?)?;
     let json = super::has_flag(args, "--json");
     let store = AgentStore::open(&vault, quire_app::device::this_device(), std::sync::Arc::new(SystemClock));
     let notes: Vec<LintNote> = vault
@@ -82,7 +80,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("A.md"), "# A\n[[Missing]]\n").unwrap();
         std::fs::write(dir.path().join("B.md"), "# B\n[[A]]\n").unwrap();
-        let vault = Vault::open_local(dir.path()).unwrap();
+        let vault = quire_app::vault::Vault::open_local(dir.path()).unwrap();
         let store =
             AgentStore::open(&vault, quire_agent::DeviceInfo { id: "d".into(), name: "D".into() }, std::sync::Arc::new(SystemClock));
         let notes: Vec<LintNote> =
