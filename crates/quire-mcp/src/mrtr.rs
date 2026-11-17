@@ -74,12 +74,7 @@ pub fn args_digest(tool: &str, args: &Value) -> String {
         }
     }
     let c = canonical(&json!({ "tool": tool, "arguments": args }));
-    let mut h = Sha256::new();
-    h.update(c.to_string().as_bytes());
-    h.finalize().iter().fold(String::with_capacity(64), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+    quire_base::enc::sha256_hex(c.to_string().as_bytes())
 }
 
 impl Sealer {

@@ -9,7 +9,6 @@
 //! scopes and expiry. Refresh tokens rotate: each works once, and using one
 //! twice revokes its whole family (someone copied it).
 
-use std::fmt::Write as _;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
@@ -17,7 +16,6 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use quire_agent::Mode;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::tools::Grant;
 
@@ -195,10 +193,7 @@ pub struct Pair {
 }
 
 pub fn hash(token: &str) -> String {
-    Sha256::digest(token.as_bytes()).iter().fold(String::with_capacity(64), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+    quire_base::enc::sha256_hex(token.as_bytes())
 }
 
 fn new_token() -> Result<String, String> {

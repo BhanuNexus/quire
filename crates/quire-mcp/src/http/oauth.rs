@@ -59,9 +59,7 @@ pub struct Code {
 #[derive(Debug, Default)]
 pub struct Codes(HashMap<String, Code>);
 
-fn escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
-}
+use quire_base::enc::escape_html as escape;
 
 fn page(title: &str, body: &str, refresh: Option<&str>) -> String {
     let meta = refresh.map(|u| format!("<meta http-equiv=\"refresh\" content=\"2;url={}\">", escape(u))).unwrap_or_default();
@@ -79,16 +77,7 @@ fn error_page(message: &str) -> Response {
 
 /// Append query parameters to a redirect URI.
 fn with_params(uri: &str, params: &[(&str, &str)]) -> String {
-    let enc = |s: &str| {
-        s.bytes().fold(String::new(), |mut out, b| {
-            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
-                out.push(char::from(b));
-            } else {
-                let _ = write!(out, "%{b:02X}");
-            }
-            out
-        })
-    };
+    let enc = |s: &str| quire_base::enc::percent_encode(s, b"");
     let q: Vec<String> = params.iter().filter(|(_, v)| !v.is_empty()).map(|(k, v)| format!("{k}={}", enc(v))).collect();
     let sep = if uri.contains('?') { '&' } else { '?' };
     format!("{uri}{sep}{}", q.join("&"))
