@@ -14,6 +14,7 @@ use std::collections::HashMap;
 
 use quire_vault::NotePath;
 
+use crate::Keep;
 use crate::chunk::Chunk;
 use crate::tokenize::content_tokens;
 
@@ -214,12 +215,23 @@ impl SemanticIndex {
 
     /// Passages most similar to `query`, best first: (chunk index, cosine).
     pub fn search(&self, query: &str, k: usize) -> Vec<(usize, f32)> {
+        self.search_where(query, k, &|_| true)
+    }
+
+    /// [`Self::search`] over the passages of the notes `keep` accepts: the
+    /// `k` best of those, so other notes take no places.
+    pub fn search_where(&self, query: &str, k: usize, keep: Keep<'_>) -> Vec<(usize, f32)> {
         let q = self.embed_query(query);
         if q.iter().all(|x| *x == 0.0) {
             return Vec::new();
         }
-        let mut scored: Vec<(usize, f32)> =
-            self.vectors.iter().enumerate().map(|(i, v)| (i, dot(&q, v))).filter(|(_, s)| *s > 0.05).collect();
+        let mut scored: Vec<(usize, f32)> = self
+            .vectors
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (i, dot(&q, v)))
+            .filter(|(i, s)| *s > 0.05 && self.chunks.get(*i).is_some_and(|c| keep(&c.path)))
+            .collect();
         scored.sort_by(|a, b| b.1.total_cmp(&a.1));
         scored.truncate(k);
         scored

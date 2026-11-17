@@ -74,7 +74,8 @@ fn search(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         Start::At(n) => n,
         Start::Stale => return stale(&fingerprint),
     };
-    let hits: Vec<_> = cx.index.search_sections(&query, &filters, limit).into_iter().filter(|h| visible(cx, &h.path)).collect();
+    // Only notes the caller may see compete for the `limit` places.
+    let hits = cx.index.search_sections_where(&query, &filters, limit, &|p| visible(cx, p));
     let ix = cx.index.read();
     let mut rows = Vec::new();
     for h in hits.iter().skip(skip) {
