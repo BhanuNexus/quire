@@ -75,9 +75,12 @@ impl Transcription {
         let (tx, rx) = crossbeam_channel::bounded(1);
         let cancel = CancelFlag::new();
         let (run, c) = (Arc::clone(&self.run), cancel.clone());
-        std::thread::spawn(move || {
-            let _ = tx.send(run(&wav, &c));
-        });
+        std::thread::Builder::new()
+            .name("quire-voice".into())
+            .spawn(move || {
+                let _ = tx.send(run(&wav, &c));
+            })
+            .expect("the system starts a thread");
         TranscribeJob { rx, cancel, label: self.label.clone() }
     }
 }

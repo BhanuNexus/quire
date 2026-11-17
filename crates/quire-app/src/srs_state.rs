@@ -15,6 +15,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
+use quire_base::time::now_ms;
 use quire_markdown::srs::{self, Card};
 use quire_plan::srs::{CardState, Rating, ReviewEvent, SRS_DIR, merge_logs, parse_log, replay, whole_days};
 use quire_vault::NotePath;
@@ -67,10 +68,6 @@ pub struct SrsState {
     /// Cards per note at the last look, to notice edited questions.
     known: HashMap<NotePath, Vec<(String, String)>>,
     known_version: u64,
-}
-
-fn now_ms() -> i64 {
-    crate::history_ops::now_ms()
 }
 
 /// Whether a note's cards are reviewed.

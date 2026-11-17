@@ -329,16 +329,22 @@ fn spawn_git(repo: &RepoDirs, dir: &Path, args: &[&str]) -> Result<String, Strin
     // Read output on threads so a chatty git never blocks on a full pipe.
     let mut out = child.stdout.take().ok_or("no stdout")?;
     let mut err = child.stderr.take().ok_or("no stderr")?;
-    let out_t = std::thread::spawn(move || {
-        let mut s = Vec::new();
-        let _ = out.read_to_end(&mut s);
-        s
-    });
-    let err_t = std::thread::spawn(move || {
-        let mut s = Vec::new();
-        let _ = err.read_to_end(&mut s);
-        s
-    });
+    let out_t = std::thread::Builder::new()
+        .name("quire-git-stdout".into())
+        .spawn(move || {
+            let mut s = Vec::new();
+            let _ = out.read_to_end(&mut s);
+            s
+        })
+        .expect("the system starts a thread");
+    let err_t = std::thread::Builder::new()
+        .name("quire-git-stderr".into())
+        .spawn(move || {
+            let mut s = Vec::new();
+            let _ = err.read_to_end(&mut s);
+            s
+        })
+        .expect("the system starts a thread");
     let started = Instant::now();
     let status = loop {
         match child.try_wait() {

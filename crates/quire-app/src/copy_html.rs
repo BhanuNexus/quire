@@ -133,22 +133,7 @@ fn resolve(from: &NotePath, value: &str) -> Option<(NotePath, String)> {
     (!parts.is_empty()).then(|| (NotePath::new(parts.join("/")), frag.to_string()))
 }
 
-fn percent_decode(s: &str) -> Option<String> {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%' {
-            let hex = std::str::from_utf8(b.get(i + 1..i + 3)?).ok()?;
-            out.push(u8::from_str_radix(hex, 16).ok()?);
-            i += 3;
-        } else {
-            out.push(b[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8(out).ok()
-}
+use quire_base::enc::percent_decode_strict as percent_decode;
 
 /// `file:///home/me/Notes/pics/a%20b.png`, `file:///C:/Users/me/…` on Windows.
 pub fn file_url(path: &Path) -> String {
@@ -157,16 +142,7 @@ pub fn file_url(path: &Path) -> String {
     if !s.starts_with('/') {
         s.insert(0, '/');
     }
-    let mut out = String::from("file://");
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' | b':' => out.push(b as char),
-            _ => {
-                let _ = write!(out, "%{b:02X}");
-            }
-        }
-    }
-    out
+    format!("file://{}", quire_base::enc::percent_encode(&s, b"/:"))
 }
 
 /// A callout's colour (`r,g,b`), as in [`render::CALLOUT_CSS`].

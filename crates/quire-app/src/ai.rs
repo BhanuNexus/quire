@@ -411,24 +411,27 @@ impl Workspace {
         let provider = self.settings.ai_provider.clone();
         let (base, _) = resolved(&self.settings);
         let key = secrets::api_key(secrets::store().as_ref(), &provider);
-        std::thread::spawn(move || {
-            #[cfg(feature = "remote-llm")]
-            let r = {
-                use quire_intel::llm::{ProviderKind, probe};
-                match provider.as_str() {
-                    "anthropic" if key.is_none() => Err("Add an API key first".to_string()),
-                    "anthropic" => probe(ProviderKind::Anthropic, &base, key.as_deref()).map_err(|e| e.to_string()),
-                    "openai" => probe(ProviderKind::OpenAiCompatible, &base, key.as_deref()).map_err(|e| e.to_string()),
-                    _ => Ok("Offline assistant — nothing to connect".to_string()),
-                }
-            };
-            #[cfg(not(feature = "remote-llm"))]
-            let r = {
-                let _ = (provider, base, key);
-                Err("This build has no network providers".to_string())
-            };
-            let _ = tx.send(r);
-        });
+        std::thread::Builder::new()
+            .name("quire-ai-check".into())
+            .spawn(move || {
+                #[cfg(feature = "remote-llm")]
+                let r = {
+                    use quire_intel::llm::{ProviderKind, probe};
+                    match provider.as_str() {
+                        "anthropic" if key.is_none() => Err("Add an API key first".to_string()),
+                        "anthropic" => probe(ProviderKind::Anthropic, &base, key.as_deref()).map_err(|e| e.to_string()),
+                        "openai" => probe(ProviderKind::OpenAiCompatible, &base, key.as_deref()).map_err(|e| e.to_string()),
+                        _ => Ok("Offline assistant — nothing to connect".to_string()),
+                    }
+                };
+                #[cfg(not(feature = "remote-llm"))]
+                let r = {
+                    let _ = (provider, base, key);
+                    Err("This build has no network providers".to_string())
+                };
+                let _ = tx.send(r);
+            })
+            .expect("the system starts a thread");
         rx
     }
 
@@ -605,10 +608,13 @@ impl Workspace {
         if stale && st.status_rx.is_none() {
             let e = engine(&self.settings);
             let (tx, rx) = bounded(1);
-            std::thread::spawn(move || {
-                e.refresh_status();
-                let _ = tx.send(e.snapshot());
-            });
+            std::thread::Builder::new()
+                .name("quire-ai-status".into())
+                .spawn(move || {
+                    e.refresh_status();
+                    let _ = tx.send(e.snapshot());
+                })
+                .expect("the system starts a thread");
             st.status_rx = Some(rx);
         }
         st.snapshot.as_ref().map_or_else(|| engine(&self.settings).snapshot(), |(_, s)| s.clone())

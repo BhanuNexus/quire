@@ -133,10 +133,10 @@ pub fn parse_latest(json: &str) -> Result<Release, String> {
 
 #[cfg(feature = "update-check")]
 fn fetch_latest(api_url: &str) -> Result<Release, String> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(15)))
-        .user_agent(format!("Quire/{CURRENT}"))
-        .tls_config(ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build())
+    use quire_base::net::{Redirects, Timeouts};
+    // GitHub's API answers an error status for a problem: kept as an error.
+    let agent: ureq::Agent = quire_base::net::config("", Timeouts::total(std::time::Duration::from_secs(15)), Redirects::Follow(10))
+        .http_status_as_error(true)
         .build()
         .into();
     let body = agent
@@ -202,9 +202,12 @@ impl Workspace {
         self.settings.last_update_check = now_secs();
         let _ = self.settings.save();
         let (tx, rx) = crossbeam_channel::bounded(1);
-        std::thread::spawn(move || {
-            let _ = tx.send(fetch_latest(&url));
-        });
+        std::thread::Builder::new()
+            .name("quire-update-check".into())
+            .spawn(move || {
+                let _ = tx.send(fetch_latest(&url));
+            })
+            .expect("the system starts a thread");
         self.updates.rx = Some(rx);
         self.updates.manual = manual;
         self.updates.status = Some("Checking…".into());

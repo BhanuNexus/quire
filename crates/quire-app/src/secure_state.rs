@@ -360,11 +360,14 @@ impl Workspace {
             // A folder locked on another device: this device's own history of
             // its notes (plain, from before) is encrypted now, in the background.
             let f = folder.to_string();
-            std::thread::spawn(move || {
-                for note in v.locked_notes(&f).into_iter().chain(v.history_paths_under(&f).into_iter().flatten()) {
-                    let _ = v.rehome_history(&note, &note);
-                }
-            });
+            std::thread::Builder::new()
+                .name("quire-lock-history".into())
+                .spawn(move || {
+                    for note in v.locked_notes(&f).into_iter().chain(v.history_paths_under(&f).into_iter().flatten()) {
+                        let _ = v.rehome_history(&note, &note);
+                    }
+                })
+                .expect("the system starts a thread");
         }
         if let Some(v) = &self.vault
             && let Some(left) = lock::plain_left(v).into_iter().find(|p| p.folder == folder)
@@ -568,21 +571,28 @@ impl Workspace {
         let pass = passphrase.to_string();
         let (tx, rx) = bounded(1);
         let f = folder.clone();
-        std::thread::spawn(move || {
-            let pass = lock::zeroize::Zeroizing::new(pass);
-            // The key file first, and its recovery key back before any file is
-            // converted: if the conversion then stops, the key is still shown.
-            let failed =
-                |folder, error: VaultError, recovery| Done::Failed { folder, error: error.to_string(), recovery, what: Conversion::Lock };
-            let done = match lock::begin_lock(&vault, &f, Some(&pass), KDF, crate::history_ops::now_ms()) {
-                Err(e) => failed(f, e, None),
-                Ok(recovery) => match lock::lock_folder(&vault, &f, Some(&pass), KDF, crate::history_ops::now_ms()) {
-                    Ok(r) => Done::Locked { folder: f, recovery, remember, conflicts: r.conflicts.len() },
-                    Err(e) => failed(f, e, recovery),
-                },
-            };
-            let _ = tx.send(done);
-        });
+        std::thread::Builder::new()
+            .name("quire-lock".into())
+            .spawn(move || {
+                let pass = lock::zeroize::Zeroizing::new(pass);
+                // The key file first, and its recovery key back before any file is
+                // converted: if the conversion then stops, the key is still shown.
+                let failed = |folder, error: VaultError, recovery| Done::Failed {
+                    folder,
+                    error: error.to_string(),
+                    recovery,
+                    what: Conversion::Lock,
+                };
+                let done = match lock::begin_lock(&vault, &f, Some(&pass), KDF, crate::history_ops::now_ms()) {
+                    Err(e) => failed(f, e, None),
+                    Ok(recovery) => match lock::lock_folder(&vault, &f, Some(&pass), KDF, crate::history_ops::now_ms()) {
+                        Ok(r) => Done::Locked { folder: f, recovery, remember, conflicts: r.conflicts.len() },
+                        Err(e) => failed(f, e, recovery),
+                    },
+                };
+                let _ = tx.send(done);
+            })
+            .expect("the system starts a thread");
         self.features.secure.job = Some(Job { label: format!("Locking {folder}/…"), folder, what: Conversion::Lock, rx });
         Ok(())
     }
@@ -603,13 +613,16 @@ impl Workspace {
         let id = vault.key_file(&folder).map(|(_, kf)| kf.folder_id).unwrap_or_default();
         let (tx, rx) = bounded(1);
         let f = folder.clone();
-        std::thread::spawn(move || {
-            let done = match lock::unlock_folder_permanently(&vault, &f, None) {
-                Ok(_) => Done::Unlocked { folder: f, id },
-                Err(e) => Done::Failed { folder: f, error: e.to_string(), recovery: None, what: Conversion::UnlockForGood },
-            };
-            let _ = tx.send(done);
-        });
+        std::thread::Builder::new()
+            .name("quire-unlock".into())
+            .spawn(move || {
+                let done = match lock::unlock_folder_permanently(&vault, &f, None) {
+                    Ok(_) => Done::Unlocked { folder: f, id },
+                    Err(e) => Done::Failed { folder: f, error: e.to_string(), recovery: None, what: Conversion::UnlockForGood },
+                };
+                let _ = tx.send(done);
+            })
+            .expect("the system starts a thread");
         self.features.secure.job = Some(Job { label: format!("Decrypting {folder}/…"), folder, what: Conversion::UnlockForGood, rx });
         Ok(())
     }
@@ -699,7 +712,10 @@ impl Workspace {
         let new = lock::zeroize::Zeroizing::new(new.to_string());
         let (tx, rx) = bounded(2);
         let f = folder.clone();
-        std::thread::spawn(move || run_key_change(&vault, f, &new, remembered, &tx));
+        std::thread::Builder::new()
+            .name("quire-lock-key".into())
+            .spawn(move || run_key_change(&vault, f, &new, remembered, &tx))
+            .expect("the system starts a thread");
         let what = Conversion::ChangeKey { begun: false };
         self.features.secure.job = Some(Job { label: format!("Changing the key of {folder}/…"), folder, what, rx });
         Ok(())
@@ -779,18 +795,21 @@ impl Workspace {
             }
         }
         let (tx, rx) = bounded(1);
-        std::thread::spawn(move || {
-            let mut ix = Index::new();
-            for f in &unlocked {
-                for p in vault.locked_notes(f) {
-                    if let Ok(text) = vault.read(&p) {
-                        ix.insert_record(quire_index::NoteRecord::from_source(p, &text), text);
+        std::thread::Builder::new()
+            .name("quire-lock-folders".into())
+            .spawn(move || {
+                let mut ix = Index::new();
+                for f in &unlocked {
+                    for p in vault.locked_notes(f) {
+                        if let Ok(text) = vault.read(&p) {
+                            ix.insert_record(quire_index::NoteRecord::from_source(p, &text), text);
+                        }
                     }
                 }
-            }
-            ix.refresh();
-            let _ = tx.send(ix);
-        });
+                ix.refresh();
+                let _ = tx.send(ix);
+            })
+            .expect("the system starts a thread");
         st.building = Some(rx);
     }
 
@@ -1364,13 +1383,16 @@ pub(crate) fn start_pass(ws: &mut Workspace) {
     let Some(vault) = ws.vault.clone() else { return };
     let local = ws.vault_root().and_then(local_record);
     let (tx, rx) = bounded(1);
-    std::thread::spawn(move || {
-        let listing = vault.storage().list().unwrap_or_default();
-        vault.remember_locked_folders_in(local.as_deref(), &listing);
-        let states = vault.locked_folders_in(&listing);
-        let left = if states.is_empty() { Vec::new() } else { lock::plain_left_in(&vault, &listing) };
-        let _ = tx.send(Opened { states, left });
-    });
+    std::thread::Builder::new()
+        .name("quire-lock-scan".into())
+        .spawn(move || {
+            let listing = vault.storage().list().unwrap_or_default();
+            vault.remember_locked_folders_in(local.as_deref(), &listing);
+            let states = vault.locked_folders_in(&listing);
+            let left = if states.is_empty() { Vec::new() } else { lock::plain_left_in(&vault, &listing) };
+            let _ = tx.send(Opened { states, left });
+        })
+        .expect("the system starts a thread");
     ws.features.secure.opening = Some(rx);
 }
 
