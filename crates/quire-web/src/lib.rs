@@ -298,22 +298,7 @@ fn finish(res: Res) -> Response {
 }
 
 /// `%XX` decoded as UTF-8; `None` for bad escapes or bytes.
-pub(crate) fn percent_decode(s: &str) -> Option<String> {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%' {
-            let hex = std::str::from_utf8(b.get(i + 1..i + 3)?).ok()?;
-            out.push(u8::from_str_radix(hex, 16).ok()?);
-            i += 3;
-        } else {
-            out.push(b[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8(out).ok()
-}
+pub(crate) use quire_base::enc::percent_decode_strict as percent_decode;
 
 /// `a=1&b=x+y` (form or query string).
 pub(crate) fn parse_query(s: &str) -> HashMap<String, String> {
@@ -333,15 +318,7 @@ pub(crate) fn url_path(p: &str) -> String {
 
 /// For URL query values.
 pub(crate) fn encode_query(s: &str) -> String {
-    s.bytes().fold(String::new(), |mut out, b| {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~' | b'/') {
-            out.push(char::from(b));
-        } else {
-            use std::fmt::Write as _;
-            let _ = write!(out, "%{b:02X}");
-        }
-        out
-    })
+    quire_base::enc::percent_encode(s, b"/")
 }
 
 #[cfg(test)]

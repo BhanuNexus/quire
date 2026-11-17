@@ -81,8 +81,7 @@ impl LoginStore {
         if passphrase.chars().count() < MIN_PASSPHRASE {
             return Err(format!("Use a passphrase of at least {MIN_PASSPHRASE} characters."));
         }
-        let mut salt = [0u8; 16];
-        getrandom::fill(&mut salt).map_err(|e| e.to_string())?;
+        let salt: [u8; 16] = quire_base::rand::bytes().map_err(|e| e.to_string())?;
         let hash = argon2::Argon2::default().hash_password_with_salt(passphrase.as_bytes(), &salt).map_err(|e| e.to_string())?;
         let mut f = self.load().unwrap_or_default();
         f.format = 1;
@@ -128,8 +127,7 @@ pub struct Session {
 
 /// A random token: 32 bytes, base64url.
 pub fn random_token() -> Option<String> {
-    let mut b = [0u8; 32];
-    getrandom::fill(&mut b).ok()?;
+    let b: [u8; 32] = quire_base::rand::bytes().ok()?;
     Some(URL_SAFE_NO_PAD.encode(b))
 }
 
