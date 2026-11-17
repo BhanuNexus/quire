@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Canvases as Obsidian writes them open, save in Quire's form, and read back equal.
 
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
+
 use quire_canvas::{NodeKind, parse, to_canonical};
 
 #[test]

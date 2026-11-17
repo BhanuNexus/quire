@@ -6,6 +6,8 @@
 //! model runs, idle models unloaded, and an exit after ten minutes with
 //! nothing loaded (the app starts the engine again when it needs it).
 
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicBool, Ordering};

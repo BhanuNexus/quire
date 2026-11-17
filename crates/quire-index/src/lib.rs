@@ -7,6 +7,8 @@
 //! shares a read model behind an `RwLock`, so the UI reads without waiting
 //! for parsing and never blocks typing on indexing.
 
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+
 mod actor;
 pub mod attach;
 pub mod background;

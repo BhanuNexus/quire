@@ -18,6 +18,8 @@
 //! come from captured web pages or agents) can't run scripts or load
 //! anything from elsewhere.
 
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+
 pub mod auth;
 mod edit;
 mod html;

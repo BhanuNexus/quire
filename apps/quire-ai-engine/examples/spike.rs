@@ -8,6 +8,8 @@
 //!
 //!     cargo run --release -p quire-ai-engine --example spike -- <scratch dir> qwen3 compact
 
+#![expect(clippy::disallowed_methods, reason = "a developer spike writes its output file directly")]
+
 use std::time::Instant;
 
 use candle_core::quantized::gguf_file::Value as V;

@@ -16,6 +16,8 @@
 //!
 //! The design is in `docs/design/sync.md`.
 
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+
 pub mod admin;
 pub mod compact;
 pub mod crypto;

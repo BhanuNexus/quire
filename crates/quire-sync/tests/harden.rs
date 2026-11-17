@@ -3,6 +3,7 @@
 //! 0.13 sync hardening through a synced folder (`docs/design/0.13-sync.md`):
 //! upgraded vaults, compaction, removing a device, revisions lost for good.
 #![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;

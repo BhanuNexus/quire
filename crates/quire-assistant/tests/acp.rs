@@ -8,6 +8,8 @@
 //! The agent runs once in-process over pipes, and once as a real process
 //! (this test binary, started again with `QUIRE_ACP_TEST_AGENT` set).
 
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::sync::Arc;

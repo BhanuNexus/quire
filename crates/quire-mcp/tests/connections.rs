@@ -5,6 +5,7 @@
 //! folders are invisible, a revoked client is refused, and "AI off" refuses
 //! everyone.
 #![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
 
 use std::fmt::Write as _;
 

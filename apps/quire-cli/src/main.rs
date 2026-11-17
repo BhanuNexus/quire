@@ -5,6 +5,8 @@
 //! Subcommands live in `commands/`, one module per area, each with a table
 //! of the commands it adds.
 
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+
 mod commands;
 
 use std::process::ExitCode;

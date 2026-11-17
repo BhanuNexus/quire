@@ -5,6 +5,7 @@
 //! Usage: `quire [VAULT_DIR]`. Without an argument the last vault is reopened.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
 
 mod activity_ui;
 mod agenda_ui;

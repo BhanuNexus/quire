@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The real server over HTTP, with real engines on both ends.
 #![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
 
 use std::fmt::Write as _;
 use std::sync::Arc;

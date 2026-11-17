@@ -3,6 +3,7 @@
 //! Devices editing the same vault through an in-memory server must end up
 //! with identical folders, and must never lose text anyone wrote.
 #![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
 
 use quire_sync::{DeviceId, Engine, LocalStore, MemoryServer, MemoryStore, SpaceId, SyncState, VaultKey};
 

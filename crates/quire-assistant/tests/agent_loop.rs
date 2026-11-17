@@ -5,6 +5,8 @@
 //! suggestion, not a write; the small model gets no tools; one change per
 //! message for the balanced model; Ask mode changes nothing.
 
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
+
 use std::sync::Arc;
 
 use quire_agent::{AgentStore, DeviceInfo, ProposalFilter, SystemClock};

@@ -60,6 +60,7 @@ pub fn user_agent(purpose: &str) -> String {
 /// its own (a proxy, non-standard methods) before `.build()`.
 ///
 /// `purpose` goes in the user agent (`""` for none).
+#[expect(clippy::disallowed_methods, reason = "this is the one place that configures an HTTP client")]
 pub fn config(purpose: &str, timeouts: Timeouts, redirects: Redirects) -> ConfigBuilder<AgentScope> {
     let tls = ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build();
     let max = match redirects {

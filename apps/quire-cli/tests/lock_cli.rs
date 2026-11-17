@@ -3,6 +3,8 @@
 //! `quire-cli lock | unlock | status` end to end (0.11), and a revoked MCP
 //! client refused at start.
 
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
+
 use std::path::Path;
 use std::process::{Command, Output};
 

@@ -4,6 +4,7 @@
 //! with a 0.8 server and the reverse, per-space minimums, and agent
 //! attribution travelling with revisions.
 #![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

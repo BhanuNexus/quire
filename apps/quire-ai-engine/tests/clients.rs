@@ -5,6 +5,8 @@
 //! fallback when the engine is missing), chat with streaming and tool calls,
 //! OCR, Stop, crashes and restarts, a hung engine, and the idle exit.
 
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
+
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 

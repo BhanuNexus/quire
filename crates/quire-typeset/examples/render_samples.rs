@@ -6,6 +6,8 @@
 //! cargo run -p quire-typeset --example render_samples -- <output-dir>
 //! ```
 
+#![expect(clippy::disallowed_methods, reason = "a developer example writes its sample files directly")]
+
 use std::path::PathBuf;
 use std::time::Instant;
 

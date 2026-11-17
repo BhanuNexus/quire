@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The app's engine handle talks to the real binary.
 
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
+
 #[test]
 fn the_client_handle_says_hello_to_this_binary() {
     let engine = quire_ai::engine::Engine::at(env!("CARGO_BIN_EXE_quire-ai-engine"));

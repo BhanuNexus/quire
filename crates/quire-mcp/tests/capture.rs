@@ -4,6 +4,7 @@
 //! the expected Markdown, images and front matter, and the SSRF, size,
 //! redirect and charset rules.
 #![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};

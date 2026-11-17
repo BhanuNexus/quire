@@ -6,6 +6,7 @@
 //! unapproved policy can't lower, subscriptions to private notes, and the
 //! identity of unverified stdio clients.
 #![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
 
 use quire_agent::{AgentStore, DeviceInfo, FixedClock, LedgerQuery};
 use quire_app::vault::Vault;

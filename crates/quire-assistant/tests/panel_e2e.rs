@@ -6,6 +6,7 @@
 //! accepts it in the note, history records who made the version, Agent
 //! activity shows the run, and "Revert run" restores the note.
 #![expect(clippy::unwrap_used, reason = "a test: any failure should fail it")]
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;

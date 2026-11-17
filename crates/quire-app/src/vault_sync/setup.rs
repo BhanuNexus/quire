@@ -435,6 +435,10 @@ pub fn sync_set_selection_at(root: &Path, selection: &Selection) -> Result<(), S
     if from != to {
         let dir = sync_dir(root);
         if dir.join(from).exists() {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "the sync state is renamed on purpose: its file name follows the folder selection"
+            )]
             std::fs::rename(dir.join(from), dir.join(to)).map_err(|e| e.to_string())?;
         }
     }

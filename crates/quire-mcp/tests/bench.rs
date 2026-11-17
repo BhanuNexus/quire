@@ -6,6 +6,7 @@
 //! `cargo test -p quire-mcp --release --test bench -- --ignored` (set
 //! `QUIRE_BENCH_ENFORCE=1` to fail when over budget).
 #![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
 
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};

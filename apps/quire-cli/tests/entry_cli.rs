@@ -5,6 +5,7 @@
 //! mistakes are one line and exit with code 2.
 
 #![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
 
 use std::path::Path;
 use std::process::{Command, Output};

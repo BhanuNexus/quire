@@ -6,6 +6,7 @@
 //! making up a device to win a key change, writing into another device's
 //! lane, and planting a snapshot.
 #![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;

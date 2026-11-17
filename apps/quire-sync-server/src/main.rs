@@ -13,6 +13,8 @@
 //! | `QUIRE_SYNC_KEEP_DAYS` | (keep everything) | 0.13: once a day, drop revisions replaced more than this many days ago |
 //! | `QUIRE_SYNC_KEEP_VERSIONS` | `20` | …but always keep each file's newest this many (at least 2) |
 
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+
 use std::process::ExitCode;
 use std::sync::Arc;
 

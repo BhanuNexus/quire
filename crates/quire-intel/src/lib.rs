@@ -5,6 +5,8 @@
 //! Nothing here needs a network or a model download. An optional
 //! [`llm::LanguageModel`] port adds generative features when the user opts in.
 
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+
 pub mod anchor;
 pub mod ask;
 pub mod calc;

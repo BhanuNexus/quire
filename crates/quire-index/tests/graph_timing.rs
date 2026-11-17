@@ -5,6 +5,7 @@
 //! `cargo test -p quire-index --test graph_timing -- --ignored --nocapture`.
 
 #![allow(clippy::unwrap_used, clippy::print_stderr, reason = "test code")]
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
 
 use std::fmt::Write as _;
 use std::time::Instant;

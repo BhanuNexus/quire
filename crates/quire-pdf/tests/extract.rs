@@ -5,6 +5,8 @@
 //! reported as needing OCR; links are found; highlights re-anchor after the
 //! PDF is saved again.
 
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
+
 use quire_pdf::PdfDoc;
 use quire_pdf::annot;
 use quire_pdf::find::{anchor_for, find, find_in, reanchor};

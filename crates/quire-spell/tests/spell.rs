@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Behaviour tests for the Markdown-aware spell checker.
 
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
+
 use std::time::{Duration, Instant};
 
 use quire_spell::{LineContext, SpellError, Speller, UserDictionary};

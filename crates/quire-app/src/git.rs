@@ -20,6 +20,8 @@
 //! which refuses a repository that isn't trusted at that moment. In a trusted
 //! repository git runs as your own git would, hooks and all.
 
+#![expect(clippy::disallowed_methods, reason = "this module is the one place that runs git (run_git, with its trust checks)")]
+
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command as Proc, Stdio};

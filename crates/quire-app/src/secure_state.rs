@@ -145,6 +145,7 @@ pub fn local_record(root: &std::path::Path) -> Option<std::path::PathBuf> {
 /// (docs/formats/locked-folders.md#remembered-locked-folders). Use it
 /// wherever a vault on disk is opened to be written.
 pub fn open_vault(root: &std::path::Path) -> Result<Vault, String> {
+    #[expect(clippy::disallowed_methods, reason = "this is the gate: it opens the vault, then remembers its locked folders")]
     let v = Vault::open_local(root).map_err(|e| e.to_string())?;
     v.remember_locked_folders(local_record(root).as_deref());
     Ok(v)
@@ -155,6 +156,10 @@ pub fn open_vault(root: &std::path::Path) -> Result<Vault, String> {
 /// checking them against the disk waits for a background pass
 /// ([`vault_opened`]). Until then every recorded folder counts as locked.
 pub(crate) fn open_vault_now(root: &std::path::Path) -> Result<Vault, String> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the gate for the app's first frame: it opens the vault, then applies the locked-folder records"
+    )]
     let v = Vault::open_local(root).map_err(|e| e.to_string())?;
     v.remember_locked_records(local_record(root).as_deref());
     Ok(v)

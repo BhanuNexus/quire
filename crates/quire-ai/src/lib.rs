@@ -12,6 +12,8 @@
 //! * `engine` — starting and talking to the engine process (`client`)
 //! * `local` — `LocalEmbedder`, `LocalChat`, `LocalOcr` (`client`)
 
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+
 #[cfg(feature = "client")]
 pub mod catalog;
 #[cfg(feature = "client")]

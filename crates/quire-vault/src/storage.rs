@@ -1,5 +1,10 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
+
+#![expect(
+    clippy::disallowed_methods,
+    reason = "Storage is the one place that renames notes, moves them to the trash and puts a written file in place"
+)]
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};

@@ -4,6 +4,7 @@
 //! arguments the agent is given, and the agent's tool calls are recorded as
 //! the same actor as its file requests (`acp:<name>`).
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};

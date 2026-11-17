@@ -6,6 +6,8 @@
 //! whole fence lines, and toggling twice gives the original back for the
 //! simple toggles.
 
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
+
 use quire_markdown::format::{self, Edit, Inline, List};
 use quire_text::{Buffer, Selection};
 

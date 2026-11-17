@@ -12,6 +12,8 @@
 //! Fonts are embedded (Inter, `JetBrains Mono NL`, STIX Two Math)
 //! and parsed once per process. Math and diagram renders are cached.
 
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+
 mod cache;
 mod diagram;
 pub mod fonts;

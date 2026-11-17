@@ -5,6 +5,7 @@
 //! checks and provenance, read-only mode, the sample vault, and MCP with
 //! OAuth approved through the web app.
 #![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
 
 use std::collections::HashMap;
 use std::fmt::Write as _;

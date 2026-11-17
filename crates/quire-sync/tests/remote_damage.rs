@@ -5,6 +5,7 @@
 //! on with what it can verify, says what it skipped, and the device that
 //! wrote a lost object puts it back.
 #![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
 
 use std::path::Path;
 use std::sync::Arc;

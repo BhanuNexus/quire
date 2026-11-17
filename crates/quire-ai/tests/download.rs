@@ -6,6 +6,7 @@
 //! Cancel deletes it, a mirror keeps the path, and "Install from file…"
 //! matches files by hash.
 #![cfg(feature = "client")]
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;

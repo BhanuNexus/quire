@@ -6,6 +6,7 @@
 //! then calls `search`.
 #![cfg(feature = "http")]
 #![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
 
 use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Read, Write};

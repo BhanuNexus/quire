@@ -334,6 +334,7 @@ const SETUP_TIMEOUT: Duration = Duration::from_mins(1);
 impl AcpClient {
     /// Start the agent in `cwd` (the vault folder).
     pub fn spawn(agent: &AcpAgent, cwd: &Path) -> Result<Self, String> {
+        #[expect(clippy::disallowed_methods, reason = "starts the ACP agent the person set up in settings, in the vault folder")]
         let mut child = Command::new(&agent.command)
             .args(&agent.args)
             .envs(agent.env.iter().map(|(k, v)| (k, v)))

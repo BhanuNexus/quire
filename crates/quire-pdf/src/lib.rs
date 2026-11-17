@@ -7,6 +7,8 @@
 //! Everything that runs the PDF interpreter is wrapped in `catch_unwind`:
 //! an odd PDF gives an error ("can't render this page"), never a crash.
 
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+
 pub mod annot;
 pub mod find;
 #[cfg(feature = "text")]

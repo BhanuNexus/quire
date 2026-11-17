@@ -8,6 +8,7 @@
 //! the server back to the laptop.
 #![cfg(unix)]
 #![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};

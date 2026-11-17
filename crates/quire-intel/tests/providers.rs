@@ -5,6 +5,7 @@
 //! from pieces, usage, stop reasons, errors, servers that don't stream, and
 //! stopping mid-reply.
 #![cfg(feature = "remote-llm")]
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;

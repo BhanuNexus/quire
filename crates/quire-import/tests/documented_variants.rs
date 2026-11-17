@@ -7,6 +7,7 @@
 //! variant it covers. See docs/design/0.13.1-qa.md for what is still only
 //! verified against hand-built text.
 #![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
 
 use std::path::Path;
 

@@ -3,6 +3,8 @@
 //! Application layer. Frontends render [`Workspace`] state and send it
 //! [`Command`]s; nothing here knows which UI toolkit is in use.
 
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+
 pub mod agent_state;
 pub mod ai;
 pub mod ask_state;

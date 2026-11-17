@@ -5,6 +5,8 @@
 //! [`Storage`] is the port; [`LocalFs`] and [`MemFs`] are adapters. [`Vault`]
 //! is the repository that knows about notes, names, templates and refactors.
 
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+
 mod hash;
 mod history;
 pub mod lock;

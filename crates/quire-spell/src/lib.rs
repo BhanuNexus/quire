@@ -21,6 +21,8 @@
 //! assert_eq!(speller.suggest("mispeled", 3)[0], "misspelled");
 //! ```
 
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+
 mod cache;
 mod scan;
 mod speller;

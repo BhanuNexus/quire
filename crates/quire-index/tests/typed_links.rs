@@ -4,6 +4,7 @@
 //! rename, implied reverse edges, cycles, renames and moves keep typed
 //! links) and real-world Dataview and Breadcrumbs vault snippets.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;

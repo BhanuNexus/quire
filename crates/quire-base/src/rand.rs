@@ -8,6 +8,8 @@
 //! handled (`#[must_use]`), and `clippy.toml` refuses `getrandom::fill`
 //! everywhere else.
 
+#![expect(clippy::disallowed_methods, reason = "this module is the one place that calls getrandom::fill")]
+
 /// The system's random source failed (rare: a sandbox without
 /// `getrandom(2)`, or entropy not yet available early at boot).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -12,6 +12,8 @@
 //! export or the target folder, links, hidden folders, device names, and
 //! files past the [`Limits`] (see `tree.rs`).
 
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+
 mod bear;
 mod convert;
 mod dayone;

@@ -9,6 +9,8 @@
 //! All positions in this crate are **char indices** (Unicode scalar values),
 //! matching `ropey` and most UI toolkits' cursor models.
 
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+
 mod buffer;
 mod change;
 mod history;

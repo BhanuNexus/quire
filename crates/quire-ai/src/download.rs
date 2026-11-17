@@ -293,6 +293,10 @@ impl Downloader {
         }
         let resp = req.call().map_err(|e| DownloadError::Http(e.to_string()))?;
         let status = resp.status().as_u16();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a model is downloaded into its .part file, resumed by appending, and renamed into place once verified"
+        )]
         let mut out = match status {
             206 => OpenOptions::new().append(true).open(part)?,
             200 => {
@@ -353,6 +357,10 @@ fn place(entry: &CatalogEntry, f: &CatalogFile, part: &Path, models: &Path) -> R
     }
     if entry.purpose == Purpose::Engine && Path::new(&f.name).extension().is_some_and(|e| e.eq_ignore_ascii_case("gz")) {
         let tmp = dest.with_extension("tmp");
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the engine (tens of MiB) is unpacked as a stream into a temporary file, checked and made executable before its rename"
+        )]
         {
             let mut gz = flate2::read::GzDecoder::new(File::open(part)?);
             let mut out = File::create(&tmp)?;
@@ -366,11 +374,13 @@ fn place(entry: &CatalogEntry, f: &CatalogFile, part: &Path, models: &Path) -> R
             return Err(DownloadError::Checksum { file: ENGINE_BIN.into() });
         }
         make_executable(&tmp)?;
+        #[expect(clippy::disallowed_methods, reason = "the checked, executable engine replaces the old one")]
         std::fs::rename(&tmp, &dest)?;
         let _ = std::fs::remove_file(part);
     } else {
         // Windows only flushes a handle opened for writing.
         OpenOptions::new().write(true).open(part)?.sync_all()?;
+        #[expect(clippy::disallowed_methods, reason = "a verified .part download becomes the model file")]
         std::fs::rename(part, &dest)?;
     }
     Ok(())
@@ -461,6 +471,7 @@ pub fn install_from_files(catalog: &Catalog, paths: &[PathBuf], models: &Path) -
                 let tmp = dest.with_extension("tmp");
                 std::fs::copy(p, &tmp)?;
                 make_executable(&tmp)?;
+                #[expect(clippy::disallowed_methods, reason = "a copied engine, made executable, replaces the old one")]
                 std::fs::rename(tmp, dest)?;
             } else {
                 let part = dir.join(format!("{}.part", f.name));

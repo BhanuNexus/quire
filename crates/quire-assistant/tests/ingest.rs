@@ -5,6 +5,8 @@
 //! the person's note gets a suggestion, not an edit; and "Revert run"
 //! restores the vault byte for byte.
 
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
+
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;

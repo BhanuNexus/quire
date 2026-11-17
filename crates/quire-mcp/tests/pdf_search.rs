@@ -6,6 +6,7 @@
 //! structured hit, and a bad `where` is refused with what's wrong. With many
 //! PDFs (0.10) the server answers at once and says how far reading got.
 #![expect(clippy::unwrap_used, reason = "a test: any failure should fail it")]
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
 
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};

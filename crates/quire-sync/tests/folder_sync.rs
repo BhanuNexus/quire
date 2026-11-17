@@ -5,6 +5,7 @@
 //! Every device must still end up with the same notes, and no text anyone
 //! wrote may be lost.
 #![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
 
 use std::fs;
 use std::path::{Path, PathBuf};

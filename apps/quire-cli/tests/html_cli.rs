@@ -3,6 +3,8 @@
 //! `quire-cli html <vault> <note>` prints the note as "Copy as HTML" copies
 //! it (issue #17).
 
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
+
 use std::process::Command;
 
 #[test]

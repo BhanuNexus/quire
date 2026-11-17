@@ -9,6 +9,7 @@
 //! `WsgiDAV` (WebDAV) when `QUIRE_SYNC_REAL_SERVERS` names a Python that has
 //! them (see `docs/design/0.12-sync.md`).
 #![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
 
 use std::collections::BTreeSet;
 use std::sync::Arc;

@@ -5,6 +5,7 @@
 //! is upgraded, Quire 0.12 clients kept out with a clear error, and
 //! compaction with a device that was offline.
 #![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;

@@ -5,6 +5,8 @@
 //! runs on an ordinary spawned thread (2 MiB), so an overflow aborts the
 //! test run and fails it.
 
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
+
 use quire_canvas::{drawing, excalidraw, model, ojson};
 
 fn deep_json_inputs() -> Vec<String> {

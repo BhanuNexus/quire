@@ -3,6 +3,7 @@
 //! Selective sync: a device that holds only some folders of a vault never
 //! sends the notes it doesn't hold as deletes, whatever happens to them.
 #![allow(clippy::unwrap_used, reason = "test code")]
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
 
 use std::collections::{BTreeMap, BTreeSet};
 

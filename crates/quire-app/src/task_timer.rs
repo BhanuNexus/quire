@@ -61,6 +61,7 @@ pub fn load_running(path: &Path) -> Result<Option<Running>, String> {
                 n += 1;
                 bad = path.with_extension(format!("json.bad{n}"));
             }
+            #[expect(clippy::disallowed_methods, reason = "a damaged timer file is moved aside under a new name, on purpose")]
             let kept = std::fs::rename(path, &bad).map_or_else(|_| path.display().to_string(), |()| bad.display().to_string());
             Err(format!("The timer file was damaged ({e}); it was kept as {kept} and no timer is running"))
         }

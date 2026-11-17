@@ -13,6 +13,8 @@
 //! * [`excalidraw`] — Excalidraw drawings read as pictures (SVG and draw ops)
 //! * [`drawing`] — Excalidraw drawings as editable files (0.13), on [`ojson`]
 
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+
 pub mod drawing;
 pub mod excalidraw;
 pub mod geom;

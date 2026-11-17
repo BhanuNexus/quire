@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! `quire-cli format` and `quire-cli import --undo` (0.12 switching tools).
 
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
+
 use std::path::Path;
 use std::process::{Command, Output};
 

@@ -1374,6 +1374,7 @@ impl RemoteTransport {
         }
         write_atomic(&tmp.join("manifest.json"), &bytes, Options::EXISTING_FOLDER).map_err(werr)?;
         let _ = fs::remove_dir_all(&dir);
+        #[expect(clippy::disallowed_methods, reason = "a fetched snapshot folder takes its name in one step (a folder, not a file)")]
         fs::rename(&tmp, &dir).map_err(werr)?;
         Ok(true)
     }
@@ -1438,8 +1439,10 @@ impl RemoteTransport {
         fs::create_dir_all(&tmp).map_err(werr)?;
         append_raw(&tmp, &keep)?;
         if dir.exists() {
+            #[expect(clippy::disallowed_methods, reason = "the old log folder steps aside for the new one (a folder swap)")]
             fs::rename(&dir, &old).map_err(werr)?;
         }
+        #[expect(clippy::disallowed_methods, reason = "the rewritten log folder takes the old one's place (a folder swap)")]
         fs::rename(&tmp, &dir).map_err(werr)?;
         let _ = fs::remove_dir_all(&old);
         Ok(())

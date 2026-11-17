@@ -602,6 +602,10 @@ fn kill_proc(shared: &Shared) {
 
 /// `nice -n 10 <engine>` on Unix when `nice` exists (setting the priority
 /// in the child would need unsafe code); below-normal priority on Windows.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "starts the on-device AI engine, a Quire binary the person installed (P6: only when AI is turned on)"
+)]
 fn command(path: &Path) -> Command {
     #[cfg(unix)]
     {

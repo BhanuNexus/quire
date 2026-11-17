@@ -21,6 +21,8 @@
 //! Vault notes are written through `quire_vault::Storage`, which builds on
 //! this module and adds the locked-folder check and one write at a time.
 
+#![expect(clippy::disallowed_methods, reason = "this module is the one place that renames a file into place")]
+
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
