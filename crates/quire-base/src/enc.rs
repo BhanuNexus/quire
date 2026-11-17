@@ -148,7 +148,7 @@ mod tests {
     fn percent_decoding_on_the_differential_inputs() {
         let cases: [(&str, Option<&str>, &str); 8] = [
             ("a%20b", Some("a b"), "a b"),
-            ("caf%C3%A9", Some("café"), "café"),
+            ("%C3%A9t%C3%A9", Some("été"), "été"),
             ("100%", None, "100%"),
             ("%zz", None, "%zz"),
             ("%2", None, "%2"),
