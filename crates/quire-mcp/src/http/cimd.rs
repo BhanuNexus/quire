@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! OAuth Client ID Metadata Documents (design §4.6): a client's `client_id`
+//! OAuth Client ID Metadata Documents (`docs/design/0.9.md` §4.6): a client's `client_id`
 //! is an `https://` URL whose JSON says its name and redirect URIs.
 //!
 //! The document is fetched with a 5 s timeout, at most 64 KB and no

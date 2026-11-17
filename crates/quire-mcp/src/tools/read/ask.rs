@@ -49,7 +49,7 @@ fn ask(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         let (untrusted, origin) = trust(cx, &src.path, note);
         any_untrusted |= untrusted;
         if note.get(src.offset..src.end.max(src.offset)).is_some() {
-            // WS-C: the one or two sentences of the passage that answer the question.
+            // The one or two sentences of the passage that answer the question.
             let anchor = quire_app::intel::ask::source_anchor(note, src, &q);
             let mut c = serde_json::to_value(&anchor).unwrap_or_default();
             c["uri"] = note_uri(&src.path).into();
@@ -64,7 +64,7 @@ fn ask(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     }
     let extractive = extractive_answer(&q, &sources, sem.as_deref());
     drop(ix);
-    // WS-C: calibrated with `quire-cli eval synthetic-edits` (design §C.4).
+    // Calibrated with `quire-cli eval synthetic-edits`.
     // A model decides itself (NOT_FOUND) whenever something was found.
     let mut abstained = if model { sources.is_empty() } else { quire_app::intel::ask::should_abstain(&sources, sem.as_deref()) };
     if model && !ext.grant.ask {
@@ -100,7 +100,7 @@ fn ask(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         (extractive, "extractive".to_string())
     };
     let mut text = answer.clone();
-    // Abstaining, the three nearest passages (design §C.4), with anchors, so
+    // Abstaining, the three nearest passages, with anchors, so
     // the agent can show what came closest; nothing is cited.
     let nearest: Vec<Value> = if abstained { citations.iter().take(3).cloned().collect() } else { Vec::new() };
     if abstained {

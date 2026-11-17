@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Capture a web page into the vault (design §B.3): the MCP tool
+//! Capture a web page into the vault (`docs/design/0.9.md` §B.3): the MCP tool
 //! `capture_url`, `quire-cli capture --url` and the app's "Capture web
 //! page…" all come here.
 //!

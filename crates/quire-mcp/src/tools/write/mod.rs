@@ -3,8 +3,8 @@
 //! One file per tool, each holding its definition and its handler; `shared`
 //! holds the submit path they use. [`tools`] lists them in the design's order.
 //!
-//! The 0.9 write tools (design §4.2, rows 18–30) and optimistic concurrency
-//! (§B.2, §4.4).
+//! The 0.9 write tools (`docs/design/0.9.md` §4.2, rows 18–30) and optimistic concurrency
+//! (`docs/design/0.9.md` §B.2, §4.4).
 //!
 //! Every write goes through `AgentStore::submit`: in an agent zone it
 //! applies, in the person's notes it becomes a proposal they review. An
@@ -18,7 +18,7 @@
 //! * otherwise `version_conflict`, with the diff since that version and, if
 //!   a clean three-way merge exists, the merged text.
 //!
-//! When the vault lets a client approve changes itself (MRTR, §4.5), a
+//! When the vault lets a client approve changes itself (MRTR, `docs/design/0.9.md` §4.5), a
 //! write that would be a proposal asks the client first.
 
 use std::fmt::Write as _;

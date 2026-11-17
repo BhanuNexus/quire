@@ -144,7 +144,7 @@ pub(super) fn submit(
     }
 }
 
-/// Write a change the person approved in the agent's client (design §4.5):
+/// Write a change the person approved in the agent's client:
 /// as the person, with the agent recorded as the source.
 pub(super) fn apply_approved(cx: &ToolCx<'_>, path: &NotePath, mut cs: ChangeSet, extra: Value) -> ToolOutput {
     let mut approver = Actor::human(&cx.agent.device().id);

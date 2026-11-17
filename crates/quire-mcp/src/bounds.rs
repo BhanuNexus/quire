@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Token bounds and cursors (design §B.1).
+//! Token bounds and cursors (`docs/design/0.9.md` §B.1).
 //!
 //! Results are bounded by an estimate that over-counts for prose:
 //! `ceil(utf8 bytes / 3)` (prose is closer to 4 characters a token). A

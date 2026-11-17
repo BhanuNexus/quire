@@ -3,7 +3,7 @@
 //! The tools of Quire 0.8, moved here unchanged.
 //!
 //! Names, schemas and texts are 0.8's. Since 0.9 `--allow-write` writes
-//! *per policy* (design §B.4): directly in agent zones (`wiki/`), and as
+//! *per policy* (`docs/design/0.9.md` §B.4): directly in agent zones (`wiki/`), and as
 //! suggestions the person reviews everywhere else, never under `.quire/`.
 //! Every applied write has provenance and a ledger entry. Reads go through
 //! the same path guard and `deny` zones as the 0.9 tools, and untrusted
@@ -239,7 +239,7 @@ fn list_tags(cx: &ToolCx<'_>, _a: &Value) -> ToolOutput {
     ToolOutput::text(if tags.is_empty() { "No tags.".into() } else { tags.join(", ") })
 }
 
-/// Submit one change as the caller (design §B.4: `--allow-write` writes
+/// Submit one change as the caller (`docs/design/0.9.md` §B.4: `--allow-write` writes
 /// per policy since 0.9): applied in agent zones, a suggestion elsewhere.
 /// Returns 0.8's message when applied, or says it awaits review.
 fn submit(cx: &ToolCx<'_>, path: &NotePath, change: Change, expected: Option<ContentHash>, done: String) -> ToolOutput {

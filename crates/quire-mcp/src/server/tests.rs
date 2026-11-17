@@ -186,7 +186,7 @@ fn allow_write_writes_per_policy() {
     assert!(prov.actor.unverified);
     assert!(prov.actor.client.as_ref().is_some_and(|c| c.self_reported));
     let store = AgentStore::open(&vault, DeviceInfo { id: "d_test".into(), name: "t".into() }, Arc::new(SystemClock));
-    // The second write to Ideas amends the first suggestion (design §A.4), keeping both changes.
+    // The second write to Ideas amends the first suggestion, keeping both changes.
     let pending = store.proposals(&ProposalFilter::pending());
     assert_eq!(pending.len(), 2);
     let ideas = pending.iter().find(|p| p.files.iter().any(|f| f.as_str() == "Ideas.md")).unwrap();
@@ -280,7 +280,7 @@ fn modern_clients_discover_list_and_call() {
     assert_eq!(r[5]["error"]["code"], code::INVALID_PARAMS, "no version and no initialize");
     assert_eq!(r[6]["error"]["code"], code::UNSUPPORTED_VERSION);
     assert_eq!(r[6]["error"]["data"]["requested"], "2030-01-01");
-    // The view example of design §4.2.
+    // The view example of `docs/design/0.9.md` §4.2.
     let v = &r[7]["result"];
     assert_eq!(
         v["content"][0]["text"].as_str().unwrap().lines().next().unwrap(),
@@ -504,7 +504,7 @@ fn read_tools_answer_with_structure() {
     assert_eq!(sc(&r[3])["nodes"][0]["path"], "Ideas.md");
     assert!(sc(&r[4])["tags"].as_array().unwrap().iter().any(|t| t["tag"] == "cs/ideas"));
     assert!(sc(&r[5])["keys"].as_array().unwrap().iter().any(|k| k["key"] == "status"));
-    // Dates come from the task parser (WS-E); the line and text are ours.
+    // Dates come from the task parser; the line and text are ours.
     assert_eq!(sc(&r[6])["tasks"][0]["line"], 7);
     assert!(sc(&r[6])["tasks"][0]["text"].as_str().unwrap().contains("write more"));
     let raw = body(&r[7]);
@@ -794,7 +794,7 @@ fn cancelled_requests_get_no_answer() {
     assert!(r.len() < 40, "some were cancelled ({} answered)", r.len());
 }
 
-/// §4.7: one recorded session per era. Run with `QUIRE_BLESS=1` to re-record.
+/// `docs/design/0.9.md` §4.7: one recorded session per era. Run with `QUIRE_BLESS=1` to re-record.
 #[test]
 fn recorded_sessions_per_era() {
     let fixtures = [
@@ -875,7 +875,7 @@ fn normalize(mut v: Value) -> Value {
     v
 }
 
-/// The `tasks` tool gives what the planning parser (WS-E) reads from a task line.
+/// The `tasks` tool gives what the planning parser reads from a task line.
 #[test]
 fn tasks_carry_the_planning_fields() {
     let v = Vault::in_memory(&[(

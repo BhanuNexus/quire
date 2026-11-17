@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The MCP read-tool budget (design §9): on 10,000 notes, `view` within
+//! The MCP read-tool budget (`docs/design/0.9.md` §9): on 10,000 notes, `view` within
 //! 10 ms and `search` p95 within 50 ms, and results within their token
 //! bound. Budgets are for release builds, so this is ignored by default:
 //! `cargo test -p quire-mcp --release --test bench -- --ignored` (set

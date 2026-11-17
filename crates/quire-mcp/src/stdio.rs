@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! MCP over stdio (design §B.1): newline-delimited JSON-RPC.
+//! MCP over stdio (`docs/design/0.9.md` §B.1): newline-delimited JSON-RPC.
 //!
 //! The calling thread reads; two workers answer requests, so a slow `ask`
 //! doesn't hold up `notifications/cancelled`; one writer owns the output,

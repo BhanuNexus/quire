@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The served-version cache (design §B.2).
+//! The served-version cache (`docs/design/0.9.md` §B.2).
 //!
 //! Every text Quire hands an agent (`view`, `read_version`, resources) is kept by its hash in
 //! `.quire/cache/served/<hex>.md.gz`, so an edit made against an older

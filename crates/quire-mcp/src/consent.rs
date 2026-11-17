@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Consent requests from the OAuth authorization server (design §4.6).
+//! Consent requests from the OAuth authorization server (`docs/design/0.9.md` §4.6).
 //!
 //! When an MCP client asks for access over HTTP, the server writes a request
 //! to `<config>/mcp/consent/<id>.json` and the browser waits. The person

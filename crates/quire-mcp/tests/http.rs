@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! MCP over Streamable HTTP, end to end on loopback (design §4.6, §4.7):
+//! MCP over Streamable HTTP, end to end on loopback (`docs/design/0.9.md` §4.6, §4.7):
 //! the header validation matrix, Origin and Host checks, authentication,
 //! and a client that completes OAuth with a Client ID Metadata Document,
 //! then calls `search`.

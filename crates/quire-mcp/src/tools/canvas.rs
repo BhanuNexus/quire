@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `canvas_read` and `canvas_apply` (design §G.1, §4.2). Owned by WS-G;
-//! registered after WS-B's read tools in `ToolRegistry::standard`.
+//! `canvas_read` and `canvas_apply` (`docs/design/0.9.md` §G.1, §4.2). Registered
+//! after the read tools in `ToolRegistry::standard`.
 //!
 //! A canvas is a JSON Canvas file. Agents read its nodes and edges (text
 //! cut to what fits in each node and to the token budget) and change it with

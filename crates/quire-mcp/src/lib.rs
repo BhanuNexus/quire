@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Quire over the Model Context Protocol (design 0.9 §B, §4).
+//! Quire over the Model Context Protocol (`docs/design/0.9.md` §B, §4).
 //!
 //! * [`tools`] — the note tools: one registry shared by MCP, the agent panel and ACP
 //! * [`protocol`] — protocol versions, eras (2026-07-28 and older), result shapes

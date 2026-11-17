@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Change notifications (design §4.3): `subscriptions/listen` (2026-07-28)
+//! Change notifications (`docs/design/0.9.md` §4.3): `subscriptions/listen` (2026-07-28)
 //! and the older `resources/subscribe`, in one table.
 //!
 //! Each subscription has a sink (the stdio writer or an HTTP event stream).

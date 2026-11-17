@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Approval in the agent's client (design §4.5, MCP multi round-trip requests).
+//! Approval in the agent's client (`docs/design/0.9.md` §4.5, MCP multi round-trip requests).
 //!
 //! When a client may approve changes itself (`approve_in_client` in the
 //! vault's agent policy, and the client declared `elicitation`), a write

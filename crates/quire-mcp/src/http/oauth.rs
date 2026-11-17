@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Quire's OAuth 2.1 authorization server for MCP over HTTP (design §4.6).
+//! Quire's OAuth 2.1 authorization server for MCP over HTTP (`docs/design/0.9.md` §4.6).
 //!
 //! 1. A client calls `/mcp` without a token and gets `401` pointing at the
 //!    protected-resource metadata (RFC 9728), which names this server as the
