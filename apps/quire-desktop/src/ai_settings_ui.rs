@@ -32,7 +32,7 @@ pub(crate) struct AiSettingsUi {
     confirm_delete: Option<String>,
 }
 
-/// Always offered: it replaces the built-in AI tab.
+/// Always offered.
 pub(crate) const fn available(_ws: &Workspace) -> bool {
     true
 }

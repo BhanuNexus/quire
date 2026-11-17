@@ -137,16 +137,15 @@ pub(crate) const SIDEBAR_TABS: &[TabDef] = &[
     },
 ];
 
-/// Feature tabs of Settings, after the built-in Editor, AI & search, Sync
-/// and About tabs. WS-D's rebuilt AI tab replaces the built-in one by
-/// registering `id: "ai"` here.
+/// Feature tabs of Settings, after the built-in Editor and Sync tabs (About
+/// comes last). The AI tab is one of them (`id: "ai"`).
 pub(crate) const SETTINGS_TABS: &[TabDef] = &[
     // ---- WS-A
     TabDef { id: "agents", label: label!("Agents"), available: crate::agents_settings::available, show: crate::agents_settings::show },
     // ---- WS-B (HTTP MCP and tokens: a section of the Agents tab, or a tab here)
     TabDef { id: "mcp", label: label!("Connections"), available: crate::mcp_ui::available, show: crate::mcp_ui::show },
     // ---- WS-C: Ask, citations, staleness and contradictions are in AI → Features
-    // ---- WS-D: replaces the built-in "AI & search" tab
+    // ---- WS-D
     TabDef { id: "ai", label: label!("AI"), available: crate::ai_settings_ui::available, show: crate::ai_settings_ui::show },
     // ---- WS-E
     TabDef { id: "planning", label: label!("Planning"), available: crate::agenda_ui::available, show: crate::agenda_ui::settings_tab },
