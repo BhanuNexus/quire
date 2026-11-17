@@ -33,7 +33,7 @@ These say what a pass found, changed and left. Read them for the reasoning behin
 
 - 0.13.1, the hardening pass: [0.13.1-deps.md](0.13.1-deps.md), [0.13.1-parse.md](0.13.1-parse.md), [0.13.1-perf.md](0.13.1-perf.md), [0.13.1-qa.md](0.13.1-qa.md), [0.13.1-sec.md](0.13.1-sec.md). What each dependency ignore waits for is kept up to date in [../dependency-ignores.md](../dependency-ignores.md).
 - 0.13.2, the data-safety pass: [0.13.2-store.md](0.13.2-store.md) (storage and locks), [0.13.2-sync.md](0.13.2-sync.md) (sync safety), [0.13.2-ui.md](0.13.2-ui.md) (saves and entry points). The pipeline note, [0.13.2-pipe.md](0.13.2-pipe.md), is listed above under Packaging.
-- 0.14, the codebase-health pass: its notes are `0.14-health-*.md`, one per team, each with a `Status:` block (listed here when the branches merge).
+- 0.14, the codebase-health pass: [0.14-health-docs.md](0.14-health-docs.md) (instructions and checks, current) and the other teams' `0.14-health-*.md`, each with a `Status:` block.
 - Earlier passes: [0.10-perf.md](0.10-perf.md), [0.12-loose.md](0.12-loose.md), [0.12-verify.md](0.12-verify.md).
 - The 0.9 build: [F0-notes.md](F0-notes.md) and the workstream hand-offs of 2026-11-03: [ws-a](handoff/ws-a.md), [ws-b](handoff/ws-b.md), [ws-c](handoff/ws-c.md), [ws-d](handoff/ws-d.md), [ws-e](handoff/ws-e.md), [ws-f](handoff/ws-f.md), [ws-g](handoff/ws-g.md). Nothing in them is a rule for today's work.
 
