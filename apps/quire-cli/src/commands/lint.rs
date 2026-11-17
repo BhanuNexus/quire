@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `quire-cli lint <vault> [--json]` (design §A.8): the vault checks the app
-//! runs in the background, printed (or as JSON). Owned by WS-A.
+//! `quire-cli lint <vault> [--json]` (`docs/design/0.9.md` §A.8): the vault checks the app
+//! runs in the background, printed (or as JSON).
 
 use std::fmt::Write as _;
 

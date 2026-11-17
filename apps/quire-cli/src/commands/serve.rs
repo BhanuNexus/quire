@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! `quire-cli serve` (Beta, for self-hosters): one HTTP server for a vault,
 //! with the web app for people and MCP (with its OAuth sign-in) for agents
-//! on the same port (design 0.10-serve §2). `--sync` keeps the vault synced
+//! on the same port (`docs/design/0.10-serve.md` §2). `--sync` keeps the vault synced
 //! in the same process. The server reads the plain notes, so it holds a
 //! decrypted copy of what it syncs; it is not "Quire on the web" (a later,
 //! end-to-end encrypted browser app).
