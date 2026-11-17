@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Undoing what an agent (or a batch) did, from the ledger (design §A.1):
+//! Undoing what an agent (or a batch) did, from the ledger (`docs/design/0.9.md` §A.1):
 //! "undo everything Claude Code did since 14:00".
 //!
 //! [`AgentStore::revert_plan`] is a dry run. For each note it undoes the

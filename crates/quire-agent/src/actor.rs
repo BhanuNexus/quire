@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Who did something, and the record of it kept with each version
-//! (design §2.5, docs/formats/provenance.md).
+//! (`docs/design/0.9.md` §2.5, docs/formats/provenance.md).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -13,7 +13,7 @@ use serde_json::Map;
 
 use crate::ids::{ProposalId, RunId};
 
-/// Unknown fields kept on rewrite (design §2.4).
+/// Unknown fields kept on rewrite.
 pub type Other = Map<String, serde_json::Value>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -49,7 +49,7 @@ pub enum Via {
     Acp,
     Cli,
     App,
-    /// Approved in the agent's own app (MCP elicitation, design §4.5).
+    /// Approved in the agent's own app (MCP elicitation, `docs/design/0.9.md` §4.5).
     ClientApproval,
     /// Arrived from another device through Quire Sync.
     Sync,
@@ -79,7 +79,7 @@ pub struct Actor {
     pub trace: Option<String>,
     /// The id was made from what the client says about itself (no
     /// Quire-assigned key): its `[clients]` entry can narrow what it may
-    /// do but never widen it (design §A.2).
+    /// do but never widen it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unverified: bool,
     #[serde(flatten)]
@@ -128,7 +128,7 @@ impl Actor {
 
     /// An agent that only named itself (no Quire-assigned key), e.g. an MCP
     /// stdio client without `--client`. Its id ends in `?`, so it can never
-    /// be the id of a client Quire verified (design §A.2).
+    /// be the id of a client Quire verified.
     pub fn unverified_agent(id: &str, label: impl Into<String>, via: Via, device: &str) -> Self {
         let mut a = Self::new(ActorKind::Agent, format!("{}?", id.trim_end_matches('?')), label, via, device);
         a.unverified = true;
@@ -201,7 +201,7 @@ impl Clock for FixedClock {
 pub enum Trust {
     #[default]
     Trusted,
-    /// Derived from captured, imported or `raw/` content (design §A.3).
+    /// Derived from captured, imported or `raw/` content.
     Untrusted,
 }
 

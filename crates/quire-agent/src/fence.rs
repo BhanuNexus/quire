@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Untrusted text in `<untrusted-source>` data blocks (design §A.3, P8).
+//! Untrusted text in `<untrusted-source>` data blocks (`docs/design/0.9.md` §A.3, P8).
 //!
 //! Everything that hands untrusted text to a model goes through here: MCP
 //! `view` and `resources/read`, ACP `fs/read_text_file`, and the ingest

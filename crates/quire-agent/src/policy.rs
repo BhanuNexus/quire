@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Zones and modes: what an agent may do where (design §A.2,
+//! Zones and modes: what an agent may do where (`docs/design/0.9.md` §A.2,
 //! docs/formats/policy.md).
 //!
 //! `.quire/shared/agent-policy.toml` maps folders to roles and modes. The
@@ -267,7 +267,7 @@ pub struct Policy {
     pub zones: Vec<Zone>,
     pub limits: Limits,
     pub clients: BTreeMap<String, ClientPolicy>,
-    /// Write contracts (design §A.7), kept as written until WS-A types them.
+    /// Write contracts, kept as written until they are typed.
     #[serde(rename = "contract")]
     pub contracts: Vec<toml::Table>,
     /// "AI off" for this vault (0.11).

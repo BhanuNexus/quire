@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The vault's agent instructions: `AGENTS.md` or `CLAUDE.md` at the root
-//! (design §A.6).
+//! (`docs/design/0.9.md` §A.6).
 //!
 //! They tell agents how this vault works. Like the policy, they travel with
 //! the vault, so agents see a changed file only after the person approves

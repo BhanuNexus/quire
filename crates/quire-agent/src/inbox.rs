@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The inbox: everything waiting for the person (design §A.5,
+//! The inbox: everything waiting for the person (`docs/design/0.9.md` §A.5,
 //! docs/formats/inbox.md).
 //!
 //! Proposals come from the proposal store. Every other item is a file
@@ -42,7 +42,7 @@ pub enum Verdict {
     Tension,
 }
 
-/// Why a note looks stale (design §C.6).
+/// Why a note looks stale.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "reason", rename_all = "snake_case")]
 pub enum StaleReason {

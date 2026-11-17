@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Reviewing and deciding proposals, and their lifecycle (design §A.4).
+//! Reviewing and deciding proposals, and their lifecycle (`docs/design/0.9.md` §A.4).
 //!
 //! * [`AgentStore::review`] — the hunks of one file of a proposal, rebased
 //!   on the current text (the open note's buffer, or the file).
@@ -552,7 +552,7 @@ impl AgentStore {
             }
         }
         store.purge_archive(now - PURGE_AFTER_MS, now);
-        // Read events are kept for 30 days (design §A.1).
+        // Read events are kept for 30 days.
         self.ledger().prune_reads(now - 30 * 86_400_000, now);
         n
     }

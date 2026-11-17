@@ -3,7 +3,7 @@
 //! The ledger: one JSON line per agent event.
 //!
 //! Per device and month, at `.quire/agent/ledger/<device-id>/<yyyy-mm>.jsonl`
-//! (design §A.1, docs/formats/ledger.md). Appends lock the file; readers
+//! (`docs/design/0.9.md` §A.1, docs/formats/ledger.md). Appends lock the file; readers
 //! skip lines they can't parse or that have a newer `v`. With shared review
 //! history on, other devices' ledgers arrive read-only under
 //! `.quire/shared/agent/ledger/` ([`crate::shared`]).

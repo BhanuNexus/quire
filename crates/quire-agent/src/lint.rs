@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Vault lint: deterministic checks over every note (design §A.8).
+//! Vault lint: deterministic checks over every note (`docs/design/0.9.md` §A.8).
 //!
 //! | Check | Finds | Quick fix |
 //! |---|---|---|

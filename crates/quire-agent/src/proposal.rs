@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Proposals: an agent's suggested changes, one JSON file each, at
-//! `.quire/agent/proposals/<id>.json` (design §A.4, docs/formats/proposals.md).
+//! `.quire/agent/proposals/<id>.json` (`docs/design/0.9.md` §A.4, docs/formats/proposals.md).
 //!
 //! This module owns the file format and its I/O. Rebasing, hunks and
-//! decisions ([`Review`], [`Decided`]) are WS-A's; their types are here so
-//! the UI and tools can be written against them.
+//! decisions ([`Review`], [`Decided`]) are computed in `review.rs`; their types
+//! are here so the UI and tools can be written against them.
 
 use std::io::{Read, Write};
 use std::ops::Range;
@@ -322,7 +322,7 @@ pub struct Proposal {
     pub rationale: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<SourceRef>,
-    /// `untrusted` when a source is untrusted content (design §A.3).
+    /// `untrusted` when a source is untrusted content.
     #[serde(default, skip_serializing_if = "is_trusted")]
     pub trust: Trust,
     /// The first untrusted source, for the "Based on untrusted content" chip.
@@ -448,7 +448,7 @@ impl ProposalFilter {
     }
 }
 
-/// One reviewable change within a file (WS-A computes these).
+/// One reviewable change within a file (`review.rs` computes these).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hunk {
     /// `h_` + 12 hex of sha256(path ∥ old lines ∥ new lines).

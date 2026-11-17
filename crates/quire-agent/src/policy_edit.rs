@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Changing `agent-policy.toml` from Settings → Agents without losing what
 //! the person wrote by hand: comments, order and unknown keys survive
-//! (`toml_edit`, design §2.4).
+//! (`toml_edit`, `docs/design/0.9.md` §2.4).
 
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 

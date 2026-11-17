@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The agent store: everything about non-human writers (design 0.9 §A).
+//! The agent store: everything about non-human writers (`docs/design/0.9.md` §A).
 //!
 //! * [`actor`] — who did something, and provenance records
 //! * [`policy`] — zones, modes and hard rules
