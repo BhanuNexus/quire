@@ -6,23 +6,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
+use quire_base::fs::{Prepared, REPLACE_PATIENCE, is_busy, is_read_busy, retry_busy};
+use quire_base::path::Rule;
+
 use crate::{NotePath, Result, VaultError, io_err};
 
 /// Folders never shown as notes (VCS, app metadata, trash).
 pub(crate) fn is_hidden(path: &str) -> bool {
     path.split('/').any(|seg| seg.starts_with('.') || seg == "node_modules")
-}
-
-/// A path that `root.join` would not keep under `root` on some system:
-/// rooted (`/x`, `\\x`), a drive (`C:`, `C:/x`, `c:x`) or another prefix
-/// (`\\\\?\\…`). On Windows `root.join("C:/…")` replaces the root.
-pub(crate) fn leaves_root(p: &str) -> bool {
-    let b = p.as_bytes();
-    let drive = b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':';
-    drive
-        || p.starts_with('/')
-        || p.starts_with('\\')
-        || Path::new(p).components().any(|c| matches!(c, std::path::Component::Prefix(_) | std::path::Component::RootDir))
 }
 
 /// Storage port. Paths are vault-relative.
@@ -153,7 +144,8 @@ impl LocalFs {
     }
 
     fn abs(&self, p: &NotePath) -> Result<PathBuf> {
-        if p.as_str().split('/').any(|s| s == "..") || leaves_root(p.as_str()) {
+        // The last guard before the root is joined: no `..`, nothing absolute.
+        if !Rule::InsideRoot.accepts(p.as_str()) {
             return Err(VaultError::InvalidName(p.to_string()));
         }
         Ok(self.root.join(p.as_str()))
@@ -204,7 +196,7 @@ impl LocalFs {
     /// be put in place with [`Self::place`]. Done without
     /// [`one_write_at_a_time`] held, so a slow disk's flush doesn't hold
     /// up every other write.
-    fn prepare(&self, path: &NotePath, contents: &[u8]) -> Result<(PathBuf, Pending)> {
+    fn prepare(&self, path: &NotePath, contents: &[u8]) -> Result<(PathBuf, Prepared)> {
         let abs = self.abs(path)?;
         self.no_plain_into_locked(path)?;
         let dir = abs.parent().unwrap_or(&self.root);
@@ -220,14 +212,15 @@ impl LocalFs {
             let mode = std::fs::metadata(&abs).map_or(0o644, |m| m.permissions().mode());
             let _ = tmp.as_file().set_permissions(std::fs::Permissions::from_mode(mode));
         }
-        Ok((abs, Pending::keep(tmp).map_err(io_err(path.to_string()))?))
+        // `tempfile`'s `.tmp…` name: history skips those as writes in flight.
+        Ok((abs, Prepared::adopt(tmp).map_err(io_err(path.to_string()))?))
     }
 
     /// Put a [`Self::prepare`]d file in place, if `still` (when given)
     /// accepts the file as it is now: the check and the rename are one step
     /// under [`one_write_at_a_time`]. The locked-folder check runs again
     /// there (a key file may have arrived since). Returns whether it wrote.
-    fn place(&self, path: &NotePath, abs: &Path, mut pending: Pending, still: Option<&Still<'_>>) -> Result<bool> {
+    fn place(&self, path: &NotePath, abs: &Path, mut pending: Prepared, still: Option<&Still<'_>>) -> Result<bool> {
         retry_unlocked(|| {
             if let Some(still) = still {
                 let now = match std::fs::read(abs) {
@@ -241,11 +234,8 @@ impl LocalFs {
                 }
             }
             self.no_plain_into_locked(path)?;
-            match std::fs::rename(&pending.path, abs) {
-                Ok(()) => {
-                    pending.placed = true;
-                    Ok(Step::Done(true))
-                }
+            match pending.try_place(abs) {
+                Ok(()) => Ok(Step::Done(true)),
                 Err(e) if is_busy(&e) => Ok(Step::Busy(io_err(path.to_string())(e))),
                 Err(e) => Err(io_err(path.to_string())(e)),
             }
@@ -380,25 +370,6 @@ fn trash_name(stamp: &str, name: &str, n: usize) -> String {
 /// The longest name [`trash_name`] makes, in bytes.
 const TRASH_NAME_MAX: usize = 255;
 
-/// How long one write, rename or read keeps trying, in all, while another
-/// program has the file open in a way that blocks it (Windows only).
-const REPLACE_PATIENCE: Duration = Duration::from_millis(300);
-
-/// Whether a rename failed because another program has the file open
-/// right now (Windows: access denied, which a file open without delete
-/// sharing gives, or a sharing violation): worth a short retry. Never on
-/// other systems, where an open file doesn't block a rename.
-fn is_busy(e: &std::io::Error) -> bool {
-    cfg!(windows) && matches!(e.raw_os_error(), Some(5 | 32))
-}
-
-/// Whether a read failed because another program holds the file right now
-/// (Windows: a sharing or lock violation, as while a log is appended to).
-/// Not access denied: that is also a real permission error, or a folder.
-fn is_read_busy(e: &std::io::Error) -> bool {
-    cfg!(windows) && matches!(e.raw_os_error(), Some(32 | 33))
-}
-
 /// The check of a compare-and-swap ([`Storage::write_bytes_if`]).
 type Still<'a> = dyn Fn(Option<&[u8]>) -> bool + 'a;
 
@@ -430,65 +401,6 @@ fn retry_unlocked<T>(mut op: impl FnMut() -> Result<Step<T>>) -> Result<T> {
             Step::Busy(e) => return Err(e),
         }
     }
-}
-
-/// A flushed temporary file, an ordinary file now (not removed when the
-/// handle closes), removed on drop unless it was renamed into place.
-struct Pending {
-    path: PathBuf,
-    placed: bool,
-}
-
-impl Pending {
-    /// Closes the file; `keep` makes it an ordinary file (Windows marks
-    /// temporary files) that `tempfile` no longer removes on drop.
-    fn keep(tmp: tempfile::NamedTempFile) -> std::io::Result<Self> {
-        Ok(Self { path: tmp.into_temp_path().keep().map_err(|e| e.error)?, placed: false })
-    }
-}
-
-impl Drop for Pending {
-    fn drop(&mut self) {
-        if !self.placed {
-            let _ = std::fs::remove_file(&self.path);
-        }
-    }
-}
-
-/// Run `op` until it succeeds, fails for another reason than `busy`, or
-/// `patience` is used up (waits double from 5 ms, at most 50 ms each).
-fn retry_busy<T>(
-    mut op: impl FnMut() -> std::io::Result<T>,
-    patience: Duration,
-    busy: impl Fn(&std::io::Error) -> bool,
-) -> std::io::Result<T> {
-    let start = Instant::now();
-    let mut wait = Duration::from_millis(5);
-    loop {
-        match op() {
-            Err(e) if busy(&e) && start.elapsed() + wait <= patience => {
-                std::thread::sleep(wait);
-                wait = (wait * 2).min(Duration::from_millis(50));
-            }
-            r => return r,
-        }
-    }
-}
-
-/// Put the finished temporary file `tmp` in place of `dest`, all at once.
-///
-/// It is renamed with [`std::fs::rename`], which on Windows 10 1607 and
-/// later replaces a file even while others have it open for reading (the
-/// POSIX semantics of `FileRenameInfoEx`); `tempfile`'s own `persist` uses
-/// the older `MoveFileExW`, which fails then. A replace that another
-/// program blocks (Windows Defender, Search, a sync client, or one of
-/// Quire's own readers) is retried for a few hundred milliseconds. The
-/// temporary file is removed if the replace fails.
-pub fn replace_file(tmp: tempfile::NamedTempFile, dest: &Path) -> std::io::Result<()> {
-    let mut pending = Pending::keep(tmp)?;
-    retry_busy(|| std::fs::rename(&pending.path, dest), REPLACE_PATIENCE, is_busy)?;
-    pending.placed = true;
-    Ok(())
 }
 
 impl Storage for LocalFs {
@@ -923,8 +835,8 @@ mod tests {
         for p in ["\\\\server\\share\\x.md", "/etc/x.md"] {
             assert!(fs.absolute(&NotePath::new(p)).unwrap().starts_with(fs.root()), "{p}");
         }
-        assert!(leaves_root("/etc/passwd") && leaves_root("\\x"));
-        assert!(!leaves_root("Meeting: notes.md") && !leaves_root("a/C:/x.md"));
+        assert!(quire_base::path::leaves_root("/etc/passwd") && quire_base::path::leaves_root("\\x"));
+        assert!(!quire_base::path::leaves_root("Meeting: notes.md") && !quire_base::path::leaves_root("a/C:/x.md"));
         assert!(fs.absolute(&NotePath::new("Meeting: notes.md")).is_some());
     }
 
@@ -1111,36 +1023,6 @@ mod tests {
         assert_eq!(texts.len(), 40);
     }
 
-    #[test]
-    fn a_replace_blocked_for_a_moment_is_retried_and_one_blocked_for_good_gives_up() {
-        let busy = |e: &std::io::Error| e.kind() == std::io::ErrorKind::WouldBlock;
-        let blocked = || std::io::Error::from(std::io::ErrorKind::WouldBlock);
-        let mut tries = 0;
-        let r = retry_busy(
-            || {
-                tries += 1;
-                if tries < 4 { Err(blocked()) } else { Ok(tries) }
-            },
-            Duration::from_millis(400),
-            busy,
-        );
-        assert_eq!(r.unwrap(), 4);
-        let start = Instant::now();
-        assert!(retry_busy(|| Err::<(), _>(blocked()), Duration::from_millis(100), busy).is_err());
-        assert!(start.elapsed() < Duration::from_millis(400), "bounded: {:?}", start.elapsed());
-        // Another error is not retried.
-        let mut tries = 0;
-        let r = retry_busy(
-            || {
-                tries += 1;
-                Err::<(), _>(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
-            },
-            Duration::from_millis(400),
-            busy,
-        );
-        assert!(r.is_err() && tries == 1);
-    }
-
     /// Review D-L5: a write blocked by another program waits without the
     /// process-wide write lock (other writes go on meanwhile), and gives up
     /// within one bound for the whole write.
@@ -1184,7 +1066,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("dest/inside")).unwrap();
         let mut tmp = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
         tmp.write_all(b"x").unwrap();
-        assert!(replace_file(tmp, &dir.path().join("dest")).is_err());
+        assert!(crate::replace_file(tmp, &dir.path().join("dest")).is_err());
         let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().map(|e| e.file_name()).collect();
         assert_eq!(names, ["dest"], "{names:?}");
         // And a check that fails drops its prepared file.
