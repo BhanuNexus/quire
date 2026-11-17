@@ -225,16 +225,17 @@ impl SemanticIndex {
         if q.iter().all(|x| *x == 0.0) {
             return Vec::new();
         }
-        let mut scored: Vec<(usize, f32)> = self
-            .vectors
-            .iter()
-            .enumerate()
-            .map(|(i, v)| (i, dot(&q, v)))
-            .filter(|(i, s)| *s > 0.05 && self.chunks.get(*i).is_some_and(|c| keep(&c.path)))
-            .collect();
+        let mut scored: Vec<(usize, f32)> =
+            self.vectors.iter().enumerate().map(|(i, v)| (i, dot(&q, v))).filter(|(_, s)| *s > 0.05).collect();
         scored.sort_by(|a, b| b.1.total_cmp(&a.1));
-        scored.truncate(k);
+        // `keep` after sorting, on the best passages only: it can be costly
+        // (an agent's policy), and it is asked once per note.
+        let mut seen: HashMap<&NotePath, bool> = HashMap::new();
         scored
+            .into_iter()
+            .filter(|(i, _)| self.chunks.get(*i).is_some_and(|c| *seen.entry(&c.path).or_insert_with(|| keep(&c.path))))
+            .take(k)
+            .collect()
     }
 
     /// The stored unit vector of the passage of `path` starting at byte `start`.

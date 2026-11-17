@@ -259,9 +259,6 @@ impl Index {
             .rank(&q)
             .into_iter()
             .filter(|(path, _)| {
-                if !keep(path) {
-                    return false;
-                }
                 let Some(rec) = self.records.get(path) else { return false };
                 if !q.tags.iter().all(|t| rec.has_tag(t)) {
                     return false;
@@ -273,10 +270,13 @@ impl Index {
             })
             .collect();
         ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        ranked.truncate(limit);
+        // `keep` after sorting, until `limit` are kept: it can be costly (an
+        // agent's policy), so it runs on the best hits only, not on every match.
         // Snippets only for what is shown.
         ranked
             .into_iter()
+            .filter(|(path, _)| keep(path))
+            .take(limit)
             .filter_map(|(path, score)| {
                 let rec = self.records.get(&path)?;
                 let (snippet, highlights) = snippet(&rec.plain, &terms, 140);

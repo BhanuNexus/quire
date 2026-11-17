@@ -155,7 +155,7 @@ impl Index {
             .fulltext
             .rank(q)
             .into_iter()
-            .filter(|(p, _)| allowed.is_none_or(|a| a.contains(p)) && keep(p))
+            .filter(|(p, _)| allowed.is_none_or(|a| a.contains(p)))
             .filter(|(p, _)| {
                 let Some(rec) = self.get(p) else { return false };
                 if !q.tags.iter().all(|t| rec.has_tag(t)) {
@@ -168,7 +168,10 @@ impl Index {
             })
             .collect();
         notes.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        notes.truncate((limit * KEYWORD_NOTES_PER_HIT).max(20));
+        // `keep` after sorting, on the best notes only (it can be costly: an
+        // agent's policy); the others take no places all the same.
+        let notes: Vec<(NotePath, f32)> =
+            notes.into_iter().filter(|(p, _)| keep(p)).take((limit * KEYWORD_NOTES_PER_HIT).max(20)).collect();
         let top = notes.first().map_or(1.0, |n| n.1.max(1e-6));
         let weights: Vec<(&str, f32)> = q.terms.iter().map(|t| (t.as_str(), self.fulltext.term_idf(t).max(0.1))).collect();
         let prefix = q.prefix.as_deref().map(|p| (p, self.fulltext.term_idf(p).max(0.5)));
@@ -326,11 +329,12 @@ impl Index {
                 let (path, page) = key.as_str().rsplit_once("#page=")?;
                 let page: usize = page.parse().ok()?;
                 let path = NotePath::new(path);
-                (score > 0.0 && folder_ok(&path, folder.as_deref()) && keep(&path)).then_some((path, page, score))
+                (score > 0.0 && folder_ok(&path, folder.as_deref())).then_some((path, page, score))
             })
             .collect();
         pages.sort_by(|a, b| b.2.total_cmp(&a.2).then_with(|| a.0.cmp(&b.0)).then(a.1.cmp(&b.1)));
-        pages.truncate(limit);
+        // `keep` after sorting, on the best pages only.
+        let pages: Vec<(NotePath, usize, f32)> = pages.into_iter().filter(|(p, _, _)| keep(p)).take(limit).collect();
         let terms = q.highlight_terms();
         let page_hits = pages.into_iter().filter_map(|(path, page, _)| {
             let text = self.attachment(&path)?.pages.get(page - 1)?;
