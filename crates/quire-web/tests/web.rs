@@ -50,6 +50,20 @@ fn write(root: &Path, p: &str, text: &str) {
     std::fs::write(f, text).unwrap();
 }
 
+/// Notes in hidden folders take no places in search: a visible note that
+/// ranks below 200 of them is still found.
+#[test]
+fn hidden_notes_take_no_places_in_web_search() {
+    let hidden: Vec<(String, String)> =
+        (0..210).map(|i| (format!("Private/n{i}.md"), format!("# Rocket {i}\n\nrocket rocket rocket\n"))).collect();
+    let mut files: Vec<(&str, &str)> = hidden.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
+    let long = format!("# Notes\n\nA rocket, once. {}\n", "Other words. ".repeat(200));
+    files.push(("Notes.md", &long));
+    let env = start_with(&files, true, |_| {});
+    let s = Browser::signed_in(&env).get("/search?q=rocket");
+    assert!(s.body.contains("1 note<") && s.body.contains("Notes.md") && !s.body.contains("Private"), "{}", s.body);
+}
+
 fn start_with(files: &[(&str, &str)], read_only: bool, setup: impl FnOnce(&mut WebConfig)) -> Env {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("vault");

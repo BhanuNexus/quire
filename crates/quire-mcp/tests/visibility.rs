@@ -40,16 +40,19 @@ const POLICY: &str = "format = 1\ndefault = \"read\"\n[[zone]]\npath = \"Private
 const VISIBLE: &[(&str, &str)] = &[
     (
         "Ideas.md",
-        "---\ntags: [shared]\nstatus: open\nup: \"[[Plan]]\"\n---\n# Ideas\n\nshared words here, see [[Plan]], [[diary]], [[Day]] and [[hidden]].\n\nparent:: [[diary]]\n[supports:: [[Day]]]\n\n## Next\n\n- [ ] a visible task #shared\n- [x] done task 2026-11-01\n",
+        "---\ntags: [shared]\nstatus: open\nup: \"[[Plan]]\"\n---\n# Ideas\n\nshared words here (Ideas.md), see [[Plan]], [[diary]], [[Day]] and [[hidden]].\n\nparent:: [[diary]]\n[supports:: [[Day]]]\n\n## Next\n\n- [ ] a visible task #shared\n- [x] done task 2026-11-01\n",
     ),
-    ("Plan.md", "---\ntags: [shared, plan]\nstatus: draft\n---\n# Plan\n\nshared plan for [[Ideas]].\n\n- [ ] plan the shared work\n"),
+    (
+        "Plan.md",
+        "---\ntags: [shared, plan]\nstatus: draft\n---\n# Plan\n\nshared plan for [[Ideas]] (Ideas.md).\n\n- [ ] plan the shared work\n",
+    ),
     ("wiki/Page.md", "# Page\n\nshared words in the wiki. [[Ideas]]\n"),
 ];
 
 /// A hidden note: every place a tool could repeat it carries `zq`.
 fn secret(name: &str) -> String {
     format!(
-        "---\ntags: [secrettagzq, shared]\nsecretpropzq: secretvaluezq{name}\nstatus: secretstatuszq\nup: \"[[Ideas]]\"\n---\n# Secret title zq {name}\n\nshared words here secretbodyzq{name}, see [[Ideas]] and [[Plan]].\n\nparent:: [[Ideas]]\n[secretlinkzq:: [[Plan]]]\n\n## Secret heading zq\n\n- [ ] secrettaskzq {name} #shared #secrettagzq\n"
+        "---\ntags: [secrettagzq, shared]\nsecretpropzq: secretvaluezq{name}\nstatus: secretstatuszq\nup: \"[[Ideas]]\"\n---\n# Secret title zq {name}\n\nshared words here secretbodyzq{name}, see [[Ideas]] (Ideas.md) and [[Plan]].\n\nparent:: [[Ideas]]\n[secretlinkzq:: [[Plan]]]\n\n## Secret heading zq\n\n- [ ] secrettaskzq {name} #shared #secrettagzq\n"
     )
 }
 
@@ -94,6 +97,9 @@ const HIDDEN_ARGS: &[&str] = &[
     "from: #secrettagzq",
     "from: \"Private\"\ngroup: status",
     "status = secretstatuszq",
+    // A condition with a line break would add view keys: sorted so a hidden
+    // note comes first, then cut to one row before the caller hides it.
+    "status != none\nsort: status desc\nlimit: 1",
 ];
 
 /// Ordinary values, tried in order until a call succeeds in the plain vault.
@@ -143,6 +149,11 @@ fn vault(dir: &Path, hidden: bool) -> PathBuf {
     }
     if hidden {
         write(&root, "Private/diary.md", &secret("diary"));
+        // Enough hidden notes to fill a page of hits: one that took a place
+        // would push a visible note out.
+        for i in 1..=10 {
+            write(&root, &format!("Private/diary {i}.md"), &secret(&format!("diary{i}")));
+        }
         write(&root, ".obsidian/hidden.md", &secret("hidden"));
         write(&root, ".trash/20261101-120000 diary.md", &secret("trashed"));
         write(&root, "Journal/Day.md", &secret("Day"));
@@ -151,6 +162,29 @@ fn vault(dir: &Path, hidden: bool) -> PathBuf {
     }
     settle_times(&root);
     root
+}
+
+/// Text of PDF pages, as the PDF reader would index it: one visible PDF in
+/// both vaults, and with the hidden notes one in the deny zone and one in a
+/// hidden folder, with the same words (so `search` with `kind: attachments`
+/// or `all` ranks them together).
+fn attachments(srv: &Server, hidden: bool) {
+    use quire_app::index::attach::{AttachmentKind, AttachmentText, TextSource};
+    let mut pdfs = vec![("wiki/scan.pdf", "Ideas.md shared words here, in a scanned page.")];
+    if hidden {
+        pdfs.push(("Private/diary.pdf", "Ideas.md shared words here secretpdfzq, shared words, Ideas.md."));
+        pdfs.push((".obsidian/scan.pdf", "Ideas.md shared words here secretpdfzq, shared words, Ideas.md."));
+    }
+    for (path, text) in pdfs {
+        srv.index().upsert_attachment(AttachmentText {
+            path: quire_app::vault::NotePath::new(path),
+            kind: AttachmentKind::Pdf,
+            pages: vec![text.to_string()],
+            source_hash: "ab".into(),
+            by: TextSource::Embedded,
+        });
+    }
+    srv.index().flush();
 }
 
 /// A read-only server over `root`, its policy approved on this device;
@@ -163,12 +197,15 @@ fn server(root: &Path, unlock: bool) -> Server {
     let shown = store.policy_state().file_hash();
     store.approve_policy(shown.as_ref()).unwrap();
     let cfg = ServerConfig { device: Some(device()), state_dir: Some(state), clock: FixedClock::new(NOW_MS), ..ServerConfig::default() };
-    if !unlock {
-        return Server::open_with(root.to_str().unwrap(), cfg).unwrap();
-    }
-    let v = quire_app::secure_state::open_vault(root).unwrap();
-    v.unlock("Journal", PASSPHRASE).unwrap();
-    Server::with_config(v, None, cfg)
+    let srv = if unlock {
+        let v = quire_app::secure_state::open_vault(root).unwrap();
+        v.unlock("Journal", PASSPHRASE).unwrap();
+        Server::with_config(v, None, cfg)
+    } else {
+        Server::open_with(root.to_str().unwrap(), cfg).unwrap()
+    };
+    attachments(&srv, root.join("Private").exists());
+    srv
 }
 
 fn call(srv: &Server, name: &str, args: &Value) -> Value {
@@ -262,6 +299,22 @@ fn source_numbers(reply: &Value) -> Vec<u64> {
     text.split('[').skip(1).filter_map(|part| part.split_once("] ").and_then(|(n, _)| n.parse().ok())).collect()
 }
 
+/// Tools whose number of hits must match the plain vault's whenever both
+/// had room for more (fewer hits than `limit`): even where ranking differs
+/// (see [`RANKED`]), a hidden note must never take a place. Hits found by
+/// meaning alone are not counted: whether a passage is close enough by
+/// meaning depends on the meaning model, which hidden notes shift (the
+/// known gap in [`RANKED`]). Keyword hits and PDF pages are.
+const COUNTED: &[&str] = &["search", "search_notes"];
+
+/// All hits, and those not found by meaning alone, in a reply of a
+/// [`COUNTED`] tool (one `- ` line each).
+fn hit_count(reply: &Value) -> (usize, usize) {
+    let text = reply["result"]["content"][0]["text"].as_str().unwrap_or_default();
+    let hits: Vec<&str> = text.lines().filter(|l| l.starts_with("- ")).collect();
+    (hits.len(), hits.iter().filter(|l| !l.ends_with("(by meaning)")).count())
+}
+
 /// A value for a property of `schema`, from `s` where it takes a string.
 fn value_for(schema: &Value, s: &str) -> Option<Value> {
     match schema["type"].as_str() {
@@ -307,15 +360,24 @@ fn base_args(srv: &Server, name: &str, schema: &Value) -> Value {
     args
 }
 
+/// Every value worth trying for a property: hidden names, ordinary values
+/// and the rest. An object (`search`'s `filters`) gets each of its own
+/// properties in turn with every value of that.
+fn values(prop: &Value) -> Vec<Value> {
+    if prop["type"] == "object" {
+        let Some(props) = prop["properties"].as_object() else { return Vec::new() };
+        return props.iter().flat_map(|(key, sub)| values(sub).into_iter().map(move |v| json!({ key.as_str(): v }))).collect();
+    }
+    HIDDEN_ARGS.iter().chain(VISIBLE_ARGS).filter_map(|s| value_for(prop, s)).chain(other_values(prop)).collect()
+}
+
 /// The calls to make: the ordinary arguments, then each property in turn
 /// with every hidden name and every other value it takes.
 fn probes(base: &Value, schema: &Value) -> Vec<Value> {
     let mut out = vec![base.clone()];
     let Some(props) = schema["properties"].as_object() else { return out };
     for (key, prop) in props {
-        let values: Vec<Value> =
-            HIDDEN_ARGS.iter().chain(VISIBLE_ARGS).filter_map(|s| value_for(prop, s)).chain(other_values(prop)).collect();
-        for v in values {
+        for v in values(prop) {
             let mut a = base.clone();
             a[key] = v;
             out.push(a);
@@ -332,6 +394,9 @@ fn read_tools_never_tell_a_vault_with_hidden_notes_apart() {
     let hidden_dir = tempfile::tempdir().unwrap();
     let hidden_root = vault(hidden_dir.path(), true);
     let servers = [("locked", server(&hidden_root, false)), ("unlocked", server(&hidden_root, true))];
+    // The PDF pages are searchable, so `kind: attachments` probes something.
+    let pages = call(&plain, "search", &json!({"query": "Ideas.md", "filters": {"kind": "attachments"}}));
+    assert!(pages.to_string().contains("scan.pdf p. 1"), "{pages}");
 
     let registry = ToolRegistry::standard();
     let read: Vec<_> = registry.all().map(|t| t.spec().clone()).filter(|s| matches!(s.access, Access::Read | Access::Ask)).collect();
@@ -354,7 +419,15 @@ fn read_tools_never_tell_a_vault_with_hidden_notes_apart() {
                 let numbers = source_numbers(&got);
                 let numbered = numbers.iter().enumerate().all(|(i, n)| *n == i as u64 + 1);
                 let ranked = RANKED.contains(&spec.name);
-                if ranked && got_text != want_text && marker.is_none() && numbered {
+                let limit = args["limit"].as_u64().map_or(10, |n| n as usize);
+                let (want_n, got_n) = (hit_count(&want), hit_count(&got));
+                let places = !COUNTED.contains(&spec.name) || want_n.0 >= limit || got_n.0 >= limit || want_n.1 == got_n.1;
+                if !places {
+                    leaks.push(format!(
+                        "{} {args} ({how}): {} hits not by meaning, the plain vault {}:\n  plain:  {want}\n  hidden: {got}",
+                        spec.name, got_n.1, want_n.1
+                    ));
+                } else if ranked && got_text != want_text && marker.is_none() && numbered {
                     tolerated += 1;
                 } else if got_text != want_text || marker.is_some() || !numbered {
                     leaks.push(format!(

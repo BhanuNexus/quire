@@ -613,15 +613,10 @@ impl Cx<'_> {
             return self.page("Search", "", None, &main);
         }
         let hidden = self.hidden();
-        let ix = self.web.cfg.server.index().read();
-        let found = ix.search(&q, 200);
-        drop(ix);
-        // The full check (symlinks) for what is shown.
-        let hits: Vec<_> = found
-            .into_iter()
-            .filter(|h| Guard::listed(&hidden, &h.path) && self.web.guard.check(h.path.as_str()).is_ok())
-            .take(50)
-            .collect();
+        // Only notes the web shows compete for the 50 places, with the full
+        // check (symlinks) for each.
+        let shown = |p: &NotePath| Guard::listed(&hidden, p) && self.web.guard.check(p.as_str()).is_ok();
+        let hits = self.web.cfg.server.index().read().search_where(&q, 50, &shown);
         let _ = write!(
             main,
             "<p class=\"muted\" role=\"status\">{}</p><ol class=\"results\">",
