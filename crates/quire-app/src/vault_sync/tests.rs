@@ -500,7 +500,7 @@ fn one_sync_process_per_vault_and_device() {
 #[test]
 fn a_selective_config_is_off_limits_to_0_9() {
     #[derive(Deserialize)]
-    #[allow(dead_code, reason = "only parsed")]
+    #[expect(dead_code, reason = "only parsed")]
     struct Config09 {
         space: SpaceId,
         device: DeviceId,
