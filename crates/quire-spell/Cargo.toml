@@ -10,6 +10,7 @@ homepage.workspace = true
 publish.workspace = true
 
 [dependencies]
+quire-base.workspace = true
 spellbook.workspace = true
 flate2.workspace = true
 tempfile.workspace = true

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/quire-base",
     "crates/quire-text",
     "crates/quire-markdown",
     "crates/quire-vault",
@@ -40,6 +41,9 @@ publish = false
 authors = ["The Quire contributors"]
 
 [workspace.dependencies]
+# The bottom crate: shared helpers (atomic writes, random bytes, path rules,
+# encodings, the HTTP client builder behind `net`). No workspace dependencies.
+quire-base = { path = "crates/quire-base" }
 quire-text = { path = "crates/quire-text" }
 quire-markdown = { path = "crates/quire-markdown" }
 quire-vault = { path = "crates/quire-vault" }

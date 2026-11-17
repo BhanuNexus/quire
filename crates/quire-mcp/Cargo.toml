@@ -16,6 +16,7 @@ default = ["http"]
 http = ["dep:axum", "dep:tokio", "dep:futures-core"]
 
 [dependencies]
+quire-base.workspace = true
 quire-app.workspace = true
 quire-agent.workspace = true
 quire-import.workspace = true

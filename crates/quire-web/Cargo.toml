@@ -15,6 +15,7 @@ default = []
 typeset = ["quire-app/typeset"]
 
 [dependencies]
+quire-base.workspace = true
 quire-app.workspace = true
 quire-agent.workspace = true
 quire-mcp.workspace = true

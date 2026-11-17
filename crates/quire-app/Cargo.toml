@@ -16,7 +16,7 @@ remote-llm = ["quire-intel/remote-llm"]
 # Store API keys in the OS keychain instead of a 0600 file.
 keychain = ["dep:keyring"]
 # Opt-in daily check for a newer release on GitHub (off until the user turns it on).
-update-check = ["dep:ureq"]
+update-check = ["dep:ureq", "quire-base/net"]
 # Math, Mermaid diagrams and PDF export (Typst). About 40 MB of the full app;
 # Quire Lite is built without it.
 typeset = ["dep:quire-typeset", "quire-pdf/render"]
@@ -24,6 +24,7 @@ typeset = ["dep:quire-typeset", "quire-pdf/render"]
 weak-kdf = ["quire-vault/weak-kdf"]
 
 [dependencies]
+quire-base.workspace = true
 quire-text.workspace = true
 quire-markdown.workspace = true
 quire-vault.workspace = true

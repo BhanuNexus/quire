@@ -17,6 +17,7 @@ text = ["dep:hayro-interpret", "dep:kurbo"]
 render = ["text", "dep:hayro"]
 
 [dependencies]
+quire-base.workspace = true
 quire-markdown.workspace = true
 quire-vault.workspace = true
 serde.workspace = true

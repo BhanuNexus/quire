@@ -15,6 +15,7 @@ publish.workspace = true
 weak-kdf = []
 
 [dependencies]
+quire-base.workspace = true
 quire-markdown.workspace = true
 chrono.workspace = true
 tempfile.workspace = true
