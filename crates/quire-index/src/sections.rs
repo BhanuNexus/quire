@@ -60,7 +60,7 @@ impl SearchFilters {
     /// Whether `where_` reads; the message says what's wrong.
     pub fn validate(&self) -> Result<(), String> {
         match &self.where_ {
-            Some(w) if !w.trim().is_empty() => crate::views::parse(&format!("where: {w}")).map(drop),
+            Some(w) if !w.trim().is_empty() => crate::views::parse_where(w).map(drop),
             _ => Ok(()),
         }
     }
@@ -121,15 +121,16 @@ fn trimmed(src: &str, range: &Range<usize>) -> Range<usize> {
 }
 
 impl Index {
-    /// Notes that pass the filters (`None`: every note does).
-    fn allowed(&self, f: &SearchFilters) -> Option<HashSet<NotePath>> {
+    /// Notes that pass the filters (`None`: every note does). The `where`
+    /// condition is run over the notes `keep` accepts only.
+    fn allowed(&self, f: &SearchFilters, keep: Keep<'_>) -> Option<HashSet<NotePath>> {
         let folder = f.folder.as_deref().map(|x| x.trim_matches('/').to_lowercase()).filter(|x| !x.is_empty());
         let where_rows: Option<HashSet<NotePath>> = match f.where_.as_deref().map(str::trim).filter(|w| !w.is_empty()) {
             None => None,
             Some(w) => {
-                let Ok(spec) = crate::views::parse(&format!("where: {w}")) else { return Some(HashSet::new()) };
+                let Ok(spec) = crate::views::parse_where(w) else { return Some(HashSet::new()) };
                 let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-                Some(crate::views::run(&spec, self, &today, None).rows.into_iter().map(|r| r.path).collect())
+                Some(crate::views::run_over(&spec, self, &today, None, keep).rows.into_iter().map(|r| r.path).collect())
             }
         };
         if folder.is_none() && f.tags.is_empty() && where_rows.is_none() && f.modified_after.is_none() && f.modified_before.is_none() {
@@ -235,7 +236,7 @@ impl Index {
         if q.is_empty() || limit == 0 {
             return Vec::new();
         }
-        let allowed = self.allowed(filters);
+        let allowed = self.allowed(filters, keep);
         let mut fused: HashMap<(NotePath, usize), Cand> = HashMap::new();
         if filters.kind != SearchKind::Attachments {
             for (rank, c) in self.keyword_parts(&q, allowed.as_ref(), keep, limit).into_iter().enumerate() {
@@ -405,6 +406,22 @@ mod tests {
         assert!(words.len() == 1 && words[0].path != top);
         let hybrid = s.hybrid_search_where("rocket", 1, &keep);
         assert!(hybrid.len() == 1 && hybrid[0].path != top);
+    }
+
+    /// The `where` filter runs over the notes `keep` accepts, and a
+    /// condition with a line break (an added `limit:`) matches nothing.
+    #[test]
+    fn the_where_filter_sees_only_what_keep_accepts() {
+        let s = svc(&[("Ideas.md", "---\nsalary: 50\n---\n# Ideas\n\npay\n"), ("HR/Bob.md", "---\nsalary: 900\n---\n# Bob\n\npay\n")]);
+        let keep = |p: &NotePath| !p.as_str().starts_with("HR/");
+        let paths = |w: &str| -> Vec<String> {
+            let f = SearchFilters { where_: Some(w.to_string()), ..SearchFilters::default() };
+            s.search_sections_where("pay", &f, 10, &keep).into_iter().map(|h| h.path.to_string()).collect()
+        };
+        assert_eq!(paths("salary > 10"), ["Ideas.md"]);
+        let injected = SearchFilters { where_: Some("salary > 10\nsort: path\nlimit: 1".into()), ..SearchFilters::default() };
+        assert!(injected.validate().is_err());
+        assert!(paths("salary > 10\nsort: path\nlimit: 1").is_empty());
     }
 
     #[test]

@@ -286,6 +286,20 @@ fn parse_filter(clause: &str) -> Result<Filter, String> {
     Err(format!("can't read the condition “{c}” (try: status != done)"))
 }
 
+/// Parse a lone condition, as callers pass it in a `where` argument
+/// (`status != done and due < today`): a spec with only those filters.
+///
+/// A line break is refused: spliced into `where: …`, it would start new
+/// keys (`limit:`, `sort:`) that cut the rows before a caller filters them
+/// for what it may show, and how many were cut says what it may not.
+pub fn parse_where(condition: &str) -> Result<ViewSpec, String> {
+    if condition.contains(['\n', '\r']) {
+        return Err("a condition is one line: remove the line break".to_string());
+    }
+    let spec = parse(&format!("where: {condition}"))?;
+    Ok(ViewSpec { filters: spec.filters, ..ViewSpec::default() })
+}
+
 /// Parse a view block's body.
 pub fn parse(src: &str) -> Result<ViewSpec, String> {
     let mut spec = ViewSpec::default();
@@ -830,7 +844,9 @@ pub fn run_in<'a>(
 ) -> ViewResult {
     let folders: Vec<Option<String>> =
         spec.from.iter().map(|s| if let Source::Folder(f) = s { Some(resolve_folder(f, current)) } else { None }).collect();
-    let notes = records.filter(|r| keep(&r.path)).filter(|r| {
+    // `keep` (an agent's policy, say) can be costly: it is asked only about
+    // notes that pass the cheaper tests first.
+    let notes = records.filter(|r| {
         spec.from.is_empty()
             || spec.from.iter().zip(&folders).any(|(s, folder)| match s {
                 Source::All => true,
@@ -843,6 +859,7 @@ pub fn run_in<'a>(
     };
     let mut rows: Vec<ViewRow> = if spec.tasks {
         let mut rows: Vec<(TaskFields<'_>, ViewRow)> = notes
+            .filter(|r| keep(&r.path))
             .flat_map(|r| {
                 let as_note = note_as_task(r).map(|n| TaskFields { note: r, task: n.task.clone(), info: Some(n) });
                 r.tasks.iter().cloned().map(move |task| TaskFields { note: r, task, info: None }).chain(as_note)
@@ -874,6 +891,7 @@ pub fn run_in<'a>(
         let mut rows: Vec<(&NoteRecord, ViewRow)> = notes
             .filter(|r| Some(&r.path) != current)
             .filter(|r| spec.filters.iter().all(|f| matches(*r, f, today)))
+            .filter(|r| keep(&r.path))
             .map(|r| {
                 let cells = spec.fields.iter().map(|f| field(r, f).unwrap_or_default()).collect();
                 let group = spec.group.as_deref().and_then(|g| list_values(r, g).into_iter().next()).unwrap_or_default();
@@ -1606,6 +1624,24 @@ mod tests {
 
     fn titles(r: &ViewResult) -> Vec<&str> {
         r.rows.iter().map(|r| r.title.as_str()).collect()
+    }
+
+    /// A `where` argument is one condition: a line break could add
+    /// `limit:` and cut rows before the caller hides what it may not show.
+    #[test]
+    fn a_where_condition_is_one_line() {
+        let ix = index();
+        let spec = parse_where("status != done").unwrap();
+        assert_eq!(spec.filters.len(), 1);
+        assert_eq!(titles(&run(&spec, &ix, "2026-11-10", None)).len(), 3);
+        for bad in ["status != done\nlimit: 1", "status != done\rsort: title", "status != done\r\nlimit: 1"] {
+            assert!(parse_where(bad).unwrap_err().contains("line break"), "{bad:?}");
+        }
+        // Rows come only from the notes `keep` accepts, whatever the order.
+        let keep = |p: &NotePath| !p.as_str().starts_with("Notes/");
+        let kept = run_over(&spec, &ix, "2026-11-10", None, &keep);
+        assert_eq!(kept.rows.len(), 2);
+        assert!(kept.rows.iter().all(|r| keep(&r.path)));
     }
 
     #[test]

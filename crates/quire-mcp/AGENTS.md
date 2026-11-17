@@ -9,7 +9,8 @@ Edition: both (P5). HTTP servers (`axum`, `tokio`) are allowed here by `deny.tom
 - A tool that returns a path, title, count, snippet or link filters with `common::visible` (it calls
   `AgentStore::effective_mode`, so deny zones, hidden folders, links out of the vault and locked folders are all invisible).
   A count or a title from a denied note is a leak. A tool that takes a note by name resolves it with `common::existing`.
-  A ranked list ranks only visible notes (`retrieve_where`, the `*_where` searches of quire-index), never filters the top k.
+  A ranked list ranks only visible notes (`retrieve_where`, the `*_where` searches of quire-index), never filters the top k;
+  a `where` argument is parsed with `views::parse_where` (one line) and run with `views::run_over` and `visible`.
   [test] `tests/visibility.rs` calls every read tool of `ToolRegistry::standard()` against a vault with hidden notes;
   also `tests/security.rs`, `tests/connections.rs`. Write tools and resources are [review only]. Known gap: IDF and LSA
   statistics are built from every note, hidden ones too (`docs/design/0.14-health-gates.md`).

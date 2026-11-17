@@ -6,6 +6,7 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ### Security
 - **Agents:** `ask` and `search` (and the older `ask_notes` and `search_notes`) no longer give away that notes an agent may not see match its question: hidden notes no longer take numbers in the list of sources ("[3]" first) or places within the requested number of results.
+- **Agents:** a `where` condition given to `list` or `search` can no longer be used to learn about notes an agent may not see: a condition with a line break is refused, and the condition is checked only against notes the agent may see.
 
 ### Fixed
 - **Skills, properties and settings:** a skill installed with `quire-cli skill install --from` whose front matter ends with `...` now stays untrusted when its `SKILL.md` is copied, any `trust: untrusted` in a note's front matter now wins over another `trust` line, and a property value that starts or ends with a space keeps it. An unreadable settings file is now reported in the app (it was only printed to the terminal), and Settings → AI says when the embedding cache can't be saved.
