@@ -234,6 +234,10 @@ impl VaultStore {
             for e in entries.flatten() {
                 let name = e.file_name().to_string_lossy().into_owned();
                 let Ok(kind) = e.file_type() else { continue };
+                #[expect(
+                    clippy::filetype_is_file,
+                    reason = "a symlinked file or folder is not synced, as the vault listing skips it: it could point outside the vault"
+                )]
                 if kind.is_dir() && !name.starts_with('.') && todo.len() < 1_000 {
                     todo.push((e.path(), format!("{rel}/{name}")));
                 } else if kind.is_file() {
