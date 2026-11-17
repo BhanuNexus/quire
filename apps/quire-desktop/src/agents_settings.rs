@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Settings → Agents: zones, connected clients, the external agent, activity logging (design §7.2).
+//! Settings → Agents: zones, connected clients, the external agent, activity logging (`docs/design/0.9.md` §7.2).
 //!
-//! Owned by WS-A. Edits `.quire/shared/agent-policy.toml` in place (comments
+//! Edits `.quire/shared/agent-policy.toml` in place (comments
 //! and anything Quire doesn't know survive) and approves the result on this
 //! device. A policy changed elsewhere is shown with what it would allow and
 //! waits for approval here.

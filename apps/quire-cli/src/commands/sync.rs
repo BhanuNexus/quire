@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! `quire-cli sync`: Quire Sync without the app, for a server or a home box
-//! that keeps a copy of the vault (design 0.10-serve §1).
+//! that keeps a copy of the vault (`docs/design/0.10-serve.md` §1).
 //!
 //! The same engine, transports, conflict handling and history as the app:
 //! `join` sets a vault folder up like Settings → Sync does, `once` runs one

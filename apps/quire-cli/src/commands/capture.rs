@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! `quire-cli capture`: add a line to today's note, or with `--url`
-//! capture a web page into `raw/` (design §B.3).
+//! capture a web page into `raw/` (`docs/design/0.9.md` §B.3).
 
 use quire_agent::{Actor, AgentStore, SubmitOutcome, SystemClock};
 use quire_app::vault::Vault;

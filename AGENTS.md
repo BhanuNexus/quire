@@ -32,7 +32,7 @@ cargo test -p quire-pdf --features render --locked
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items --locked
 cargo deny check advisories bans licenses sources   # cargo install cargo-deny
 typos                                                # cargo install typos-cli
-python3 -I packaging/check-layering.py && packaging/check-design-notes.sh
+python3 -I packaging/check-layering.py && packaging/check-design-notes.sh && packaging/check-comment-labels.sh
 packaging/test-unpack-engine.sh && packaging/test-release-files.sh && packaging/test-check-ci-green.sh
 shellcheck --severity=error packaging/*.sh packaging/*/*.sh apps/quire-sync-server/*.sh
 pipx run zizmor==1.31.1 --offline --format=github .github/workflows/
@@ -84,6 +84,7 @@ Each is tagged by what enforces it: `[test]`, `[lint]` (clippy or cargo-deny; th
 - Every MCP tool that returns paths or titles filters with `common::visible` (`crates/quire-mcp/src/tools/common.rs`). `[test]` for the 0.8 tools only: `the_0_8_tools_respect_deny_zones` and three more in `crates/quire-mcp/tests/security.rs`; newer tools are `[review only]`
 - Make file names Windows-safe (reserved names, `:?*`, trailing space or dot): `quire_sync::names`. `[test]` for sync names; `[review only]` for new code
 - A persisted-format change keeps old data loadable and gets a note in `docs/formats/`. `[review only]`
+- No workstream or phase labels (`WS-B`, `F0`) and no bare `design §4.6` in code comments: name the feature, or write `docs/design/<note>.md` §N for a section that exists. `[test]` `packaging/check-comment-labels.sh`
 
 ## Commits and the changelog
 

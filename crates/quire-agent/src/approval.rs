@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! What this device approved for a vault (design §A.2, P7):
+//! What this device approved for a vault (`docs/design/0.9.md` §A.2, P7):
 //! `<config>/vaults/<vault-key>/state.toml`.
 //!
 //! A vault's agent policy and its agent instructions (`AGENTS.md`,

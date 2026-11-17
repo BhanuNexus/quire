@@ -6,7 +6,7 @@
 //! network. The `remote-llm` feature (on in both apps, through quire-app)
 //! adds [`AnthropicModel`] (the Messages API) and [`OpenAiCompatible`] (any
 //! `/v1/chat/completions` server). Both are [`ChatModel`](crate::chat::ChatModel)s
-//! with tools and streaming (design §D.4), and [`LanguageModel`]s for the
+//! with tools and streaming (`docs/design/0.9.md` §D.4), and [`LanguageModel`]s for the
 //! one-shot assist features, built on the same streaming call.
 
 use std::sync::Arc;

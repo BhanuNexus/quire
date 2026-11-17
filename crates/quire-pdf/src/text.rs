@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Text with positions, one [`PageText`] per page (design §G.2).
+//! Text with positions, one [`PageText`] per page (`docs/design/0.9.md` §G.2).
 //!
 //! A `hayro_interpret::Device` collects every glyph's Unicode text and box
 //! in PDF user space. Lines are rebuilt in content order: a glyph continues

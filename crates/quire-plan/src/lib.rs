@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Planning: tasks with dates and recurrence, the agenda, reminders,
-//! periodic notes and spaced repetition (design 0.9 §E). Pure logic over
+//! periodic notes and spaced repetition (`docs/design/0.9.md` §E). Pure logic over
 //! parsed notes; no I/O and no UI.
 //!
 //! * [`recur`] — recurrence rules (an RFC 5545 subset) and next occurrences

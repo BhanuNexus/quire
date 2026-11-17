@@ -21,7 +21,7 @@ pub enum SuggestKind {
     Tag,
     /// `/query` → a block to insert.
     Slash,
-    /// `[@query` → a work in the bibliography (WS-G, `citations.rs`).
+    /// `[@query` → a work in the bibliography (`citations.rs`).
     Cite,
 }
 
@@ -168,7 +168,7 @@ impl Workspace {
         let line = buf.char_to_line(sel.head);
         let line_start = buf.line_to_char(line);
         let before = buf.slice(line_start..sel.head);
-        // WS-G: `[@` completes citation keys from the bibliography.
+        // `[@` completes citation keys from the bibliography.
         if let Some((col, query, items)) = crate::citations::suggestions(self, &before)
             && !in_code(&doc.text(), line)
         {

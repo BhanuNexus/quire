@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Flashcard review (design §E.6): the question, Space for the answer, then
+//! Flashcard review (`docs/design/0.9.md` §E.6): the question, Space for the answer, then
 //! 1–4 (Again, Hard, Good, Easy), each showing when the card comes back.
 //!
-//! Owned by WS-E. Opened by "Review flashcards" (Ctrl+Alt+R) and "Review
+//! Opened by "Review flashcards" (Ctrl+Alt+R) and "Review
 //! this note's flashcards"; shown from the Plan panel tab.
 
 use egui::{Key, Modifiers, RichText, Ui};

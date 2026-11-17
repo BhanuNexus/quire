@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! "Ingest into wiki…" (design §D.7): pick a source in `raw/` (or a web
+//! "Ingest into wiki…" (`docs/design/0.9.md` §D.7): pick a source in `raw/` (or a web
 //! page to capture first), see what it will cost on a cloud model, run it
 //! in the background with Stop, and see what changed, with Revert run.
 //!
-//! Owned by WS-D (included by `agent_panel_ui.rs`).
+//! Included by `agent_panel_ui.rs`.
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};

@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! WS-D's day-1 spike (design §6.2): how fast and how big candle's
+//! The day-1 spike: how fast and how big candle's
 //! quantized Qwen3 and BERT are on this machine. The weights are random,
 //! with the real models' shapes (`Qwen3-1.7B` at `Q4_K`, `bge-small-en-v1.5`),
 //! which is enough for speed and memory: the arithmetic doesn't depend on

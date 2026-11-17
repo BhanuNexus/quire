@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Working with notes: vault-wide replace, export, PDF, publish, HTML for
-//! pasting, version history and the calculator. Frozen after F0 (`html`
-//! came with issue #17).
+//! pasting, version history and the calculator. The `html`
+//! command came with issue #17.
 
 use quire_app::find::{FindOptions, compile, replace_in_string};
 use quire_app::intel::{Calculator, format_number};
@@ -79,7 +79,7 @@ fn export(args: &[String]) -> Result<(), String> {
     let (vault, svc, _) = load(arg(1)?)?;
     let ix = svc.read();
     let p = find_note(&ix, arg(2)?)?;
-    // WS-G: `[@key]` citations as author-date text and a reference list.
+    // `[@key]` citations as author-date text and a reference list.
     let src = quire_app::citations::render_with_vault(&vault, ix.source(&p).unwrap_or_default());
     // 0.12: the note's own HTML is cleaned (no scripts, event handlers or `javascript:` links),
     // so the page is safe to open whatever the note holds.

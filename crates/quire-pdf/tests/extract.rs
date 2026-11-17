@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Text extraction on the fixtures (design §6.2 WS-G acceptance): born-digital
+//! Text extraction on the fixtures: born-digital
 //! pages match their gold text to at least 95 % of characters; a scan is
 //! reported as needing OCR; links are found; highlights re-anchor after the
 //! PDF is saved again.
@@ -135,7 +135,7 @@ fn extraction_speed() {
         doc.page_text(i).unwrap();
     }
     let per_page = t.elapsed().as_secs_f64() * 1000.0 / doc.page_count() as f64;
-    // §9: ≤ 50 ms a page in release; a dev build of this crate gets slack.
+    // `docs/design/0.9.md` §9: ≤ 50 ms a page in release; a dev build of this crate gets slack.
     assert!(per_page < 500.0, "{per_page:.1} ms a page");
     eprintln!("text extraction: {per_page:.1} ms a page (dev build)");
 }

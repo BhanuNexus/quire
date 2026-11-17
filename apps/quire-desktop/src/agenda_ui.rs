@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The Agenda (right panel and sidebar): reminders, overdue, today with its
-//! time blocks, and the next seven days (design §E.2). Also draws task
-//! rows and the agenda and timeline layouts of `quire-view` blocks, WS-E's
-//! widgets under note lines, and hosts WS-E's dialogs.
+//! time blocks, and the next seven days (`docs/design/0.9.md` §E.2). Also draws task
+//! rows and the agenda and timeline layouts of `quire-view` blocks, the planning
+//! widgets under note lines, and hosts the planning dialogs.
 //!
-//! Owned by WS-E. Registered in `registry.rs`.
+//! Registered in `registry.rs`.
 
 use chrono::{Local, NaiveDate, NaiveTime, Timelike};
 use egui::{Color32, Id, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
@@ -547,7 +547,7 @@ fn view_row(ui: &mut Ui, ws: &Workspace, pal: &Palette, spec: &ViewSpec, row: &V
 
 // ---------------------------------------------------------------- widgets
 
-/// WS-E's widgets under note lines: Dataview/Tasks results, Kanban boards,
+/// The planning widgets under note lines: Dataview/Tasks results, Kanban boards,
 /// template fields to fill in.
 pub(crate) fn paint_widget(ui: &mut Ui, ws: &Workspace, id: WidgetId, pal: &Palette) -> (f32, Option<ActionId>) {
     let top = ui.min_rect().top();

@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! MCP over Streamable HTTP, with Quire's own OAuth authorization server (design §4.6).
+//! MCP over Streamable HTTP, with Quire's own OAuth authorization server (`docs/design/0.9.md` §4.6).
 //!
 //! Off unless the person turns it on (Settings → Connections, or
 //! `quire-cli mcp serve-http`); it listens on 127.0.0.1:7311 by default.

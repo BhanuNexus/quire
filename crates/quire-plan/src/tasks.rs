@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Completing a task (design §E.2): the line gets `[x]` and `✅ today`; a
+//! Completing a task (`docs/design/0.9.md` §E.2): the line gets `[x]` and `✅ today`; a
 //! recurring task also gets its next occurrence, a copy with every date
 //! moved by the same number of days.
 

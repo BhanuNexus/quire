@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Obsidian Bases with formulas and summaries: one view of a `.base` file
-//! worked out against the index (design §E.5, 0.10).
+//! worked out against the index (`docs/design/0.9.md` §E.5, 0.10).
 //!
 //! The view's `quire-view` spec picks and sorts the notes; then each note
 //! is checked against the base's filter expression (when the spec can't

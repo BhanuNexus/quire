@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The wiki's upkeep as a background job (design §D.7, §9):
+//! The wiki's upkeep as a background job (`docs/design/0.9.md` §D.7, §9):
 //!
 //! * `index`: 10 s after a page in `wiki/` changes, `wiki/index.md` is
 //!   regenerated between its markers and written as `job:index` (waiting

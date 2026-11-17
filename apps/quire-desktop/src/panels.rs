@@ -734,7 +734,7 @@ pub(crate) fn sidebar(
             // Files with an editor of their own (`.base`, `.canvas`, `.pdf`) next to the notes.
             let others: Vec<NotePath> = ws.other_files().into_iter().filter(crate::registry::has_surface).collect();
             let mut ev = FileEvents::default();
-            // The agent instructions (`AGENTS.md`/`CLAUDE.md`) pinned on top (design §A.6).
+            // The agent instructions (`AGENTS.md`/`CLAUDE.md`) pinned on top.
             let instructions = ws.features.agent.inbox.instructions.as_ref().map(|i| (i.path.clone(), i.approved));
             if let Some((pinned, approved)) = &instructions {
                 let r = instructions_row(ui, pinned, *approved, active_path.as_ref() == Some(pinned), pal);
@@ -1603,7 +1603,7 @@ pub(crate) fn preview(ui: &mut egui::Ui, ws: &mut Workspace, cache: &mut CommonM
     }
     // Mermaid blocks become display math holding a marker; the math hook draws the diagram.
     let text = doc.text().to_string();
-    // WS-C: ⚠ after footnotes whose cited text changed (as the editor shows).
+    // ⚠ after footnotes whose cited text changed (as the editor shows).
     let text = match doc.path.clone() {
         Some(p) => crate::trust_ui::mark_flagged_citations(ws, &p, text),
         None => text,
@@ -1630,7 +1630,7 @@ pub(crate) fn preview(ui: &mut egui::Ui, ws: &mut Workspace, cache: &mut CommonM
     } else {
         text
     };
-    // WS-G: `[@key]` citations as author-date text and a reference list.
+    // `[@key]` citations as author-date text and a reference list.
     let text = quire_app::citations::render_source(ws, &text);
     // 0.12: pictures in locked folders show from memory while unlocked.
     let ctx = ui.ctx().clone();

@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Qwen3's chat template and its Hermes-style tool calls (design §D.3: one
+//! Qwen3's chat template and its Hermes-style tool calls (`docs/design/0.9.md` §D.3: one
 //! model family, so both are written out here instead of interpreting the
 //! Jinja template that ships with the model).
 //!

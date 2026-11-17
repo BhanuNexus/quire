@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The providers against loopback servers that replay SSE fixtures in each
-//! API's wire format (design §D.4): streaming text, tool calls assembled
+//! API's wire format (`docs/design/0.9.md` §D.4): streaming text, tool calls assembled
 //! from pieces, usage, stop reasons, errors, servers that don't stream, and
 //! stopping mid-reply.
 #![cfg(feature = "remote-llm")]

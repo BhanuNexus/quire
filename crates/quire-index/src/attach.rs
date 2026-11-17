@@ -3,8 +3,8 @@
 //! Text of attachments (PDFs and images).
 //!
 //! The jobs that extract it send it in: PDF text (`quire-pdf`) and OCR
-//! (`quire-ai`). Stored per path; search over it arrives with WS-C (design
-//! §C.1, "attachment documents").
+//! (`quire-ai`). Stored per path; search over it is planned
+//! (`docs/design/0.9.md` §C.1, "attachment documents").
 
 use quire_vault::NotePath;
 

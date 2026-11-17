@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `quire-cli eval <suite> …` (design §B.6), built only with the `eval`
+//! `quire-cli eval <suite> …` (`docs/design/0.9.md` §B.6), built only with the `eval`
 //! feature and never in releases. The suites and metrics are in
 //! `quire_mcp::eval`; this writes `target/eval/<suite>-<date>.json`.
 

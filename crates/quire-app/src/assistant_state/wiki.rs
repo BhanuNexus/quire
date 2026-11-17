@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The wiki's `index.md` and `log.md` (design §D.7), made without a model:
+//! The wiki's `index.md` and `log.md` (`docs/design/0.9.md` §D.7), made without a model:
 //!
 //! * [`index_block`] lists every page in `wiki/` between
 //!   `<!-- quire:index:start -->` and `<!-- quire:index:end -->`, grouped by

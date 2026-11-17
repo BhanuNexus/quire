@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Vim keys (design §F.1): a pure state machine over a [`Buffer`].
+//! Vim keys (`docs/design/0.9.md` §F.1): a pure state machine over a [`Buffer`].
 //!
 //! The editor feeds keys to [`VimState::handle`] with the current buffer and
 //! selection and gets an [`Outcome`] back: at most one [`Transaction`] (so

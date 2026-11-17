@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Chat with tools: the port every model sits behind in 0.9 (cloud
 //! providers, a local server, the on-device engine, and [`ScriptedChat`] in
-//! tests). Design §2.5 and §D.4.
+//! tests). See `docs/design/0.9.md` §2.5 and §D.4.
 //!
 //! A model streams [`ChatEvent`]s into a sink. The older one-shot
 //! [`LanguageModel`] port stays for the assist features; [`LanguageModelChat`]
 //! adapts any of its providers to [`ChatModel`] (text only, no tools) until
-//! WS-D gives the providers native tool use and streaming.
+//! the providers have native tool use and streaming.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};

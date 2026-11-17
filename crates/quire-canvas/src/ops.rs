@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Changes to a canvas as data: the operations agents send (`canvas_apply`,
-//! design §G.1) and a node-level description of what changed between two
+//! `docs/design/0.9.md` §G.1) and a node-level description of what changed between two
 //! versions (for review and tool results).
 
 use serde_json::{Map, Value, json};

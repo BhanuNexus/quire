@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The web app of `quire-cli serve` (design 0.10-serve §2): read and lightly
+//! The web app of `quire-cli serve` (`docs/design/0.10-serve.md` §2): read and lightly
 //! edit a vault in a browser, on the same port as MCP over HTTP.
 //!
 //! Server-rendered pages with a little plain JavaScript, everything embedded

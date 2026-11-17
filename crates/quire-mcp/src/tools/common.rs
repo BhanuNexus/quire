@@ -147,7 +147,7 @@ pub fn existing(cx: &ToolCx<'_>, a: &Value, k: &str) -> Result<NotePath, ToolOut
     }
 }
 
-/// `trusted` or `untrusted` (design §A.3), and where untrusted text came from.
+/// `trusted` or `untrusted`, and where untrusted text came from.
 ///
 /// Zone roles come from every policy that limits agents plus the defaults
 /// (`AgentStore::trust_of`), so an unapproved policy file can't relabel raw/.
@@ -165,7 +165,7 @@ pub fn trust(cx: &ToolCx<'_>, path: &NotePath, text: &str) -> (bool, Option<Stri
     (labelled || imported(), origin)
 }
 
-/// Wrap untrusted text so an agent treats it as data (design §A.3): the
+/// Wrap untrusted text so an agent treats it as data: the
 /// shared helper in `quire_agent::fence`.
 pub fn fence_untrusted(path: &NotePath, origin: Option<&str>, body: &str) -> String {
     quire_agent::fence::fence_untrusted(path.as_str(), origin, body)
@@ -217,7 +217,7 @@ pub fn write_error(e: &WriteError) -> ToolOutput {
     ToolOutput::Err { code: e.code(), message, structured }
 }
 
-/// The outcome object every write returns (design §4.2).
+/// The outcome object every write returns.
 pub fn outcome(path: &NotePath, out: &SubmitOutcome, extra: Value) -> ToolOutput {
     let uri = note_uri(path);
     let (mut s, text) = match out {

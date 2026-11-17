@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Retrieval evaluation (design §B.6), behind `quire-cli eval` (feature
+//! Retrieval evaluation (`docs/design/0.9.md` §B.6), behind `quire-cli eval` (feature
 //! `eval`, never in releases).
 //!
 //! * **`synthetic-edits`**: generated from a seed, so every run is the same.

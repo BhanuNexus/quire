@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `[ai_local]` in settings.toml: on-device AI (design §D.1–§D.3).
+//! `[ai_local]` in settings.toml: on-device AI (`docs/design/0.9.md` §D.1–§D.3).
 //!
 //! Nothing runs or downloads unless turned on.
 //!
@@ -9,7 +9,7 @@
 //! `QUIRE_EXPERIMENTAL_ON_DEVICE=1` is set for testing. The capability keys
 //! keep their values either way, so turning it on later restores them.
 //!
-//! Owned by WS-D. Every field defaults to off or unchanged; keys this
+//! Every field defaults to off or unchanged; keys this
 //! version doesn't know are kept in `other`, so older and newer Quire
 //! versions can share the file.
 

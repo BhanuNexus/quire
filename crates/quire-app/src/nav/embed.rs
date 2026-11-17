@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Notes edited inside another note's `![[embed]]` (design §F.2).
+//! Notes edited inside another note's `![[embed]]` (`docs/design/0.9.md` §F.2).
 //!
 //! An embed edits the target note's own [`Document`]: the open tab when the
 //! note is open, otherwise a hidden document kept here (the workspace has no

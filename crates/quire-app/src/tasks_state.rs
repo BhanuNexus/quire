@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! WS-E's entry point into the workspace.
+//! The planning entry point into the workspace.
 //!
 //! Planning and metadata: tasks, agenda, reminders and the commands of
 //! periodic notes, flashcards, templates, Obsidian compatibility and
@@ -8,7 +8,7 @@
 //!
 //! `features.rs` calls the functions below for every Plan-owned command,
 //! every frame, every vault event and every decorated document; this file
-//! (and the modules it uses) belongs to WS-E. State lives in
+//! (and the modules it uses) belongs to that feature. State lives in
 //! `ws.features.tasks`.
 
 use std::cell::RefCell;
@@ -175,7 +175,7 @@ pub enum BoardSetting {
 /// The agenda, for (the notes' version, today).
 type AgendaCache = RefCell<Option<(((u64, u64), NaiveDate), Rc<Agenda>)>>;
 
-/// WS-E's state, kept in `ws.features.tasks`.
+/// State of the planning feature, kept in `ws.features.tasks`.
 #[derive(Debug, Default)]
 pub struct TasksState {
     ready: bool,
@@ -210,7 +210,7 @@ const fn id(kind: u64, payload: u64) -> u64 {
     (kind << KIND_SHIFT) | (payload & ((1 << KIND_SHIFT) - 1))
 }
 
-/// A widget the desktop draws for WS-E under a line of a note.
+/// A widget the desktop draws for the planning feature under a line of a note.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlanWidget {
     /// The `n`th Dataview/Tasks block of the note: its results.
@@ -1029,7 +1029,7 @@ pub(crate) fn next_deadline(ws: &Workspace) -> Option<Instant> {
     due.map(|d| Instant::now() + d)
 }
 
-/// Whether a Plan-owned command is ready to offer. All of WS-E's are; the
+/// Whether a Plan-owned command is ready to offer. All of the planning ones are; the
 /// ones that need context say so when run without it.
 pub(crate) const fn available(ws: &Workspace, cmd: Command) -> bool {
     let _ = ws;

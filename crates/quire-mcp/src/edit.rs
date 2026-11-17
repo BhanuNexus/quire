@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The edits agents make, as pure functions of a note's text (design §4.2).
+//! The edits agents make, as pure functions of a note's text (`docs/design/0.9.md` §4.2).
 //!
 //! Most are *content-addressed* (they find their place by text: a string,
 //! a heading, the end of a section), so they can be re-applied to a newer
-//! version of the note when the agent's version is stale (§B.2). `insert`
+//! version of the note when the agent's version is stale (`docs/design/0.9.md` §B.2). `insert`
 //! names a line number and can't be.
 
 use quire_app::markdown::{Value, frontmatter, outline};

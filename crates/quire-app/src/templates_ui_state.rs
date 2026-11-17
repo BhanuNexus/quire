@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Making notes from templates (design §E.3).
+//! Making notes from templates (`docs/design/0.9.md` §E.3).
 //!
 //! * "+ New" in a view (`new: Templates/Project.md`) asks the template's
 //!   questions in the view, then makes the note in the template's
@@ -10,7 +10,6 @@
 //!   `{{prompt:…}}` and the note offers to fill them in (as does any note
 //!   made by the 0.8 "New note from template" command).
 //!
-//! Owned by WS-E.
 
 use std::collections::HashMap;
 

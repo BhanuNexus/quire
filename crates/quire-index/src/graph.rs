@@ -20,7 +20,7 @@ pub struct Backlink {
 }
 
 /// Name → path resolution tables built from the current records: by
-/// lowercase text, and by folded text (accents and case ignored, §C.2).
+/// lowercase text, and by folded text (accents and case ignored, `docs/design/0.9.md` §C.2).
 #[derive(Debug, Default, Clone)]
 pub struct Resolver {
     exact: Tables,

@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `[mcp_http]` in settings.toml: MCP over HTTP (design §4.6).
+//! `[mcp_http]` in settings.toml: MCP over HTTP (`docs/design/0.9.md` §4.6).
 //!
 //! Off by default; always needs a token.
 //!
-//! Owned by WS-B. Every field defaults to off or unchanged; keys this
+//! Every field defaults to off or unchanged; keys this
 //! version doesn't know are kept in `other`, so older and newer Quire
 //! versions can share the file.
 

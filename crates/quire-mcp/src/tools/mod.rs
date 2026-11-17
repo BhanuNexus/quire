@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The note tools (design §2.5, §4.2): one registry shared by MCP, the agent
+//! The note tools (`docs/design/0.9.md` §2.5, §4.2): one registry shared by MCP, the agent
 //! panel and ACP, so every agent sees the same tools with the same limits.
 //!
 //! A tool is a [`ToolSpec`] (name, schema, annotations, what access it
@@ -9,7 +9,7 @@
 //! runtime; write tools are left out for clients without a write grant.
 //!
 //! Each module registers its tools in `standard()`, in its own line:
-//! `legacy` (F0, the 0.8 tools), WS-B's tools, `canvas` (WS-G).
+//! `legacy` (the 0.8 tools), the 0.9 read and write tools, `canvas`.
 //!
 //! The MCP server calls [`Tool::call_with`], which also passes what only a
 //! protocol session knows ([`CallExt`]: the served-version cache, whether
@@ -118,7 +118,7 @@ pub enum ToolOutput {
         message: String,
         structured: Value,
     },
-    /// Ask the client first (MRTR, design §4.5).
+    /// Ask the client first (MRTR, `docs/design/0.9.md` §4.5).
     InputRequired {
         requests: Value,
         state: String,
@@ -299,13 +299,13 @@ impl ToolRegistry {
     /// The tools Quire offers, in their fixed order.
     pub fn standard() -> Self {
         let mut tools: Vec<Box<dyn Tool>> = Vec::new();
-        // ---- F0: the 0.8 tools, unchanged.
+        // ---- the 0.8 tools, unchanged.
         tools.extend(legacy::tools());
-        // ---- WS-B: the 0.9 tools (design §4.2), in the table's order.
+        // ---- the 0.9 read tools, in the table's order.
         tools.extend(read::tools_before_canvas());
-        // ---- WS-G
+        // ---- canvas
         tools.extend(canvas::tools());
-        // ---- WS-B: the rest of §4.2 after the canvas tools.
+        // ---- the 0.9 write tools, after the canvas tools (`docs/design/0.9.md` §4.2).
         tools.extend(write::tools());
         // ---- 0.12 typed links
         tools.extend(links::tools());

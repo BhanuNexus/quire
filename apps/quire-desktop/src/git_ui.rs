@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The Git tab of the right panel (design §F.5): the working tree, commit,
+//! The Git tab of the right panel (`docs/design/0.9.md` §F.5): the working tree, commit,
 //! pull and push, the vault's git settings, and the git history of the
 //! open note next to Quire's own version history; and the confirmation for
 //! trusting a repository, without which Quire runs no git in it.

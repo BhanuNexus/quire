@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The agent loop of the in-app panel (design §D.5).
+//! The agent loop of the in-app panel (`docs/design/0.9.md` §D.5).
 //!
 //! Model turns, tool calls through Quire's tool registry (the same one MCP serves), writes
 //! through `AgentStore::submit` (so they are suggestions in the person's own
@@ -25,7 +25,7 @@ use quire_mcp::tools::{Access, CallExt, Grant, ToolCx, ToolOutput, ToolRegistry}
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// What the panel lets a model do, by how capable it is (design §D.5).
+/// What the panel lets a model do, by how capable it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {

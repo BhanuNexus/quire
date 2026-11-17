@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Timing runs of the real app for the CI `perf` job (design 0.9 §9,
+//! Timing runs of the real app for the CI `perf` job (`docs/design/0.9.md` §9,
 //! docs/design/0.10-perf.md). Only in builds with the `bench` feature,
 //! never in releases.
 //!

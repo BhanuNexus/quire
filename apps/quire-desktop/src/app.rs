@@ -150,7 +150,7 @@ impl QuireApp {
             }
         }
         egui_extras::install_image_loaders(&cc.egui_ctx);
-        // WS-G: Quire sketches (`*-ink-*.svg`) as pictures in notes, both editions.
+        // Quire sketches (`*-ink-*.svg`) as pictures in notes, both editions.
         crate::canvas_ui::install_sketch_loader(&cc.egui_ctx);
         crate::drawing_ui::install(&cc.egui_ctx);
         let mut editor = EditorState::default();
@@ -806,7 +806,7 @@ impl eframe::App for QuireApp {
     }
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // The first frame is on screen: now read the vault (design §9).
+        // The first frame is on screen: now read the vault.
         if self.first_frame_shown {
             self.ws.start_deferred();
         } else {

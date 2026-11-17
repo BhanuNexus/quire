@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Reviewing an agent's suggestion in the editor (design §A.4, §7.3).
+//! Reviewing an agent's suggestion in the editor (`docs/design/0.9.md` §A.4, §7.3).
 //!
 //! A [`ReviewSession`] is one proposal open for review, on one of its notes.
 //! Its hunks are worked out against the live buffer (rebased on every edit)
@@ -604,7 +604,7 @@ mod tests {
     use crate::Settings;
     use crate::vault::Vault;
 
-    /// Design §6.2 WS-A acceptance: an MCP `str_replace` on a person's note
+    /// Acceptance: an MCP `str_replace` on a person's note
     /// makes a proposal; its two hunks are accepted one by one in the open
     /// editor, and Ctrl+Z undoes the second (which comes back for review).
     #[test]

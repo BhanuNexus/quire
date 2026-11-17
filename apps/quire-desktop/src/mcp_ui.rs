@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Settings → Connections: connect AI apps to this vault (design §7.2), the
+//! Settings → Connections: connect AI apps to this vault (`docs/design/0.9.md` §7.2), the
 //! MCP server over HTTP, tokens, requests from apps that want access, and
 //! "Capture web page…".
 //!
@@ -108,7 +108,7 @@ fn start_host(s: &McpHttpSettings, root: &std::path::Path) -> Result<Box<dyn Mcp
     // Over HTTP, what a client may do depends on its token's scopes.
     let srv = Server::open_with(
         &root.to_string_lossy(),
-        // WS-D: the built-in prompts and the person's AI for `ask` in model mode.
+        // The built-in prompts and the person's AI for `ask` in model mode.
         ServerConfig {
             allow_write: true,
             prompts: quire_assistant::prompts::mcp_defs(),
@@ -402,7 +402,7 @@ fn tokens(ui: &mut egui::Ui, pal: &Palette, me: &mut McpUi, store: &TokenStore) 
     }
 }
 
-/// "`<app>` wants to use your notes": approve or deny (design §4.6).
+/// "`<app>` wants to use your notes": approve or deny.
 pub(crate) struct ConsentDialog {
     prompt: ConsentPrompt,
     error: Option<String>,
@@ -483,7 +483,7 @@ impl OverlayView for ConsentDialog {
     }
 }
 
-/// "Capture web page…": a URL into `raw/` (design §B.3).
+/// "Capture web page…": a URL into `raw/`.
 #[derive(Default)]
 pub(crate) struct CaptureDialog {
     url: String,

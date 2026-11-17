@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Text in images and scanned PDF pages (design §D.3).
+//! Text in images and scanned PDF pages (`docs/design/0.9.md` §D.3).
 //!
 //! A background job that runs only when "Read text in images and scanned PDFs" is on and its
 //! model is installed, and only while the person is idle. Results go to the
 //! index as attachment text (source `Ocr`) and are cached in
 //! `.quire/cache/ocr/<sha256>.json`, so each file is read once.
 //!
-//! PDFs: WS-G's PDF text job lists the pages that are only a picture
+//! PDFs: the PDF text job lists the pages that are only a picture
 //! (`pdf_state::take_ocr_requests`); this job reads them and hands the text
 //! back (`pdf_state::ocr_result`), which caches it with the PDF's text and
 //! sends the whole PDF to the index again. Pages with text stay as they are.

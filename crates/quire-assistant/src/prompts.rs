@@ -3,7 +3,7 @@
 //! Built-in prompts: `quire_ingest`, `quire_lint`, `quire_answer`, `quire_maintain_index`.
 //!
 //! The same texts drive the panel and are served over MCP (`prompts/list`),
-//! so external agents follow Quire's conventions (design §4.3). The panel's
+//! so external agents follow Quire's conventions (`docs/design/0.9.md` §4.3). The panel's
 //! own system prompt and the ingest steps' prompts are here too, so every
 //! instruction Quire gives a model is in one file.
 

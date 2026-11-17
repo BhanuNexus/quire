@@ -206,7 +206,7 @@ impl IndexService {
     }
 
     /// The shared model, for background jobs that outlive a borrow of the
-    /// service. Hold the read lock briefly (design §9: at most 2 ms).
+    /// service. Hold the read lock briefly (`docs/design/0.9.md` §9: at most 2 ms).
     pub fn handle(&self) -> Arc<RwLock<Index>> {
         Arc::clone(&self.index)
     }

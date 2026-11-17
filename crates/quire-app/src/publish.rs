@@ -528,7 +528,7 @@ pub fn publish_with(
     let mut tags: BTreeMap<String, Vec<&quire_index::NoteRecord>> = BTreeMap::new();
     let mut search = Vec::new();
 
-    // WS-G: `[@key]` citations as author-date text and a reference list.
+    // `[@key]` citations as author-date text and a reference list.
     let library = crate::citations::vault_library(vault);
     let note_url = |p: &NotePath| url.get(p).cloned();
     let show_typed = match typed {

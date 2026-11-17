@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Which notes may be out of date (design §C.6). Deterministic and offline.
+//! Which notes may be out of date (`docs/design/0.9.md` §C.6). Deterministic and offline.
 //!
 //! ```text
 //! age      = days since max(last human edit, `reviewed:` date)
@@ -143,7 +143,7 @@ fn phrase_count(lower: &str, p: &str) -> u32 {
     n
 }
 
-/// Time-bound phrases in `text` with their counts (design §C.6, English):
+/// Time-bound phrases in `text` with their counts:
 /// the list above, plus a year at least a year ago in a present-tense sentence.
 pub fn time_bound(text: &str, today: NaiveDate) -> Vec<(String, u32)> {
     let lower = text.to_lowercase();

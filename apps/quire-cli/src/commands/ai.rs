@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! On-device AI and the wiki loop from the command line (design §D.2,
-//! §D.7). Owned by WS-D.
+//! On-device AI and the wiki loop from the command line (`docs/design/0.9.md` §D.2, §D.7).
 //!
 //! * `quire-cli ai models | download <id> | install <file>… | delete <id> | engine`
 //! * `quire-cli ingest <vault> <source|url> [--yes] [--dry-run]`
@@ -42,7 +41,7 @@ fn models_dir() -> Result<PathBuf, String> {
     quire_app::ai::models_dir().ok_or_else(|| "no folder for models on this system".to_string())
 }
 
-/// While on-device AI is off (`[ai_local] experimental`, design §D.1).
+/// While on-device AI is off (`[ai_local] experimental`, `docs/design/0.9.md` §D.1).
 fn later() -> String {
     format!(
         "on-device AI is coming in an update, so this build doesn't download or run models. \

@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `quire-cli bench`: performance check on synthetic data (design §9 baselines).
+//! `quire-cli bench`: performance check on synthetic data (`docs/design/0.9.md` §9 baselines).
 //!
-//! * `bench [size_mb]`: the readable report (F0).
+//! * `bench [size_mb]`: the readable report.
 //! * `bench --suite index,search,sections,semantic,mcp,pdf,mcp-pdfs [--runs N]`:
-//!   the §9 measures as JSON lines `{"suite", "metric", "value"}` (ms), each
+//!   the `docs/design/0.9.md` §9 measures as JSON lines `{"suite", "metric", "value"}` (ms), each
 //!   the median of `N` runs, for the CI `perf` job
 //!   (`packaging/perf-check.py`, docs/design/0.10-perf.md).
 //! * `bench vault <dir> [notes]`: write a synthetic vault for the desktop
@@ -229,7 +229,7 @@ fn suite(name: &str, runs: usize) {
     }
 }
 
-/// §9: parse and index 2,000 notes (≤ 420 ms).
+/// `docs/design/0.9.md` §9: parse and index 2,000 notes (≤ 420 ms).
 fn index_suite(runs: usize) {
     let dir = TempDir::new("index");
     if let Err(e) = write_notes(&dir.0, 2_000) {
@@ -258,7 +258,7 @@ fn two_thousand() -> IndexService {
     svc
 }
 
-/// §9: note search ≤ 10 ms, section search ≤ 15 ms (2,000 notes); the
+/// `docs/design/0.9.md` §9: note search ≤ 10 ms, section search ≤ 15 ms (2,000 notes); the
 /// semantic scan (part of section search) on its own.
 fn search_suite(name: &str, runs: usize) {
     let svc = two_thousand();
@@ -310,7 +310,7 @@ fn mcp_call(srv: &Server, conn: &Conn, tool: &str, args: &Value) -> Value {
     }
 }
 
-/// §9: MCP read tools on 10,000 notes: `view` ≤ 10 ms, `search` p95 ≤ 50 ms
+/// `docs/design/0.9.md` §9: MCP read tools on 10,000 notes: `view` ≤ 10 ms, `search` p95 ≤ 50 ms
 /// (as `crates/quire-mcp/tests/bench.rs`).
 fn mcp_suite(runs: usize) {
     let words = ["rope", "undo", "tree", "editor", "buffer", "cursor", "merge", "sync", "note", "index", "query", "vault"];
@@ -394,7 +394,7 @@ pub(crate) fn synthetic_pdf(pages: usize, lines_per_page: usize, seed: u64) -> V
     out.into_bytes()
 }
 
-/// §9: PDF text extraction ≤ 50 ms a page: a 40-page synthetic PDF, and
+/// `docs/design/0.9.md` §9: PDF text extraction ≤ 50 ms a page: a 40-page synthetic PDF, and
 /// any PDFs named in `QUIRE_BENCH_PDFS` (a folder; CI points it at the
 /// quire-pdf fixtures).
 fn pdf_suite(runs: usize) {

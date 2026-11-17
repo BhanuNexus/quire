@@ -5,8 +5,8 @@
 //! feature widgets under a line. The editor view calls these per visible
 //! line; clicks come back as `DecorationEvent`s.
 //!
-//! WS-A owns the look of ghost lines and their toolbar (review); WS-F owns
-//! the hook lines in `view/mod.rs`.
+//! The review code owns the look of ghost lines and their toolbar; the
+//! editor code owns the hook lines in `view/mod.rs`.
 
 use egui::{Color32, Pos2, Rect, RichText, Stroke, Vec2};
 use quire_app::Workspace;

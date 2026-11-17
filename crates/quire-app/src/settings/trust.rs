@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `[trust]` in settings.toml: trust tools (design §C).
+//! `[trust]` in settings.toml: trust tools (`docs/design/0.9.md` §C).
 //!
-//! Owned by WS-C. Every field defaults to off or unchanged; keys this
+//! Every field defaults to off or unchanged; keys this
 //! version doesn't know are kept in `other`, so older and newer Quire
 //! versions can share the file.
 

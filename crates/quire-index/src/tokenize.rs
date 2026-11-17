@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Words for search, and diacritic folding (design §C.2).
+//! Words for search, and diacritic folding (`docs/design/0.9.md` §C.2).
 //!
 //! [`fold`] makes text comparable regardless of accents and case: NFKD,
 //! then diacritical marks dropped, then lowercase, plus the letters that
@@ -71,7 +71,7 @@ fn fold_char(c: char, emit: &mut impl FnMut(char)) {
 }
 
 /// `s` folded, with a map from each folded char's index to the index of
-/// the original char it came from (design §C.2).
+/// the original char it came from.
 pub fn fold(s: &str) -> (String, Vec<u32>) {
     let mut out = String::with_capacity(s.len());
     let mut map = Vec::with_capacity(s.len());

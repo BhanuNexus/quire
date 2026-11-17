@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The Agent tab: the in-app agent conversation (design §7.4, §D.5, §D.6).
+//! The Agent tab: the in-app agent conversation (`docs/design/0.9.md` §7.4, §D.5, §D.6).
 //!
 //! A header names the model and where it runs ("claude-sonnet-5-5 · cloud",
 //! "Qwen3 1.7B · this computer", or the amber "External: Codex"). The
@@ -13,7 +13,7 @@
 //! Runs happen on a background thread: the UI only draws what arrives, so a
 //! slow or stuck model never holds up the editor, and Stop answers at once.
 //!
-//! Owned by WS-D. Registered in `registry.rs`.
+//! Registered in `registry.rs`.
 
 #[path = "acp_ui.rs"]
 pub(crate) mod acp_ui;

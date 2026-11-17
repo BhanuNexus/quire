@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The contradiction suite (design §C.5).
+//! The contradiction suite (`docs/design/0.9.md` §C.5).
 //!
 //! Claim pairs labelled contradiction, tension, compatible or unrelated, run through the same
 //! steps as the app (vectors from the vault's embedder, candidates by

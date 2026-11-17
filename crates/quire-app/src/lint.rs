@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The vault lint job (design §A.8, §9).
+//! The vault lint job (`docs/design/0.9.md` §A.8, §9).
 //!
 //! It runs 30 seconds after the notes stop changing (or at once for "Check
 //! the vault"), reads the notes from the index a few at a time, and keeps

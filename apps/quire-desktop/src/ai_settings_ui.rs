@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Settings → AI (design §7.2), replacing 0.8's "AI & search" tab:
+//! Settings → AI (`docs/design/0.9.md` §7.2), replacing 0.8's "AI & search" tab:
 //!
 //! * **Provider** — the cloud or server model (0.8's form, with Test connection);
 //! * **On this computer** — one row per capability with its state, progress,
@@ -10,7 +10,7 @@
 //!   the trust features (Ask style, contradictions, staleness, citations);
 //! * **Background work** — what the jobs are doing.
 //!
-//! Owned by WS-D. Registered as the `"ai"` Settings tab.
+//! Registered as the `"ai"` Settings tab.
 
 use crossbeam_channel::Receiver;
 use egui::{RichText, Stroke};
@@ -108,7 +108,7 @@ pub(crate) fn show(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pa
     }
     section(ui, pal, "Features");
     features(ui, ws, pal, &mut out);
-    // Ask, citations, staleness and contradictions (WS-C's settings).
+    // Ask, citations, staleness and contradictions (the trust settings).
     if crate::trust_ui::settings_available(ws) {
         let trust = crate::trust_ui::settings_tab(ui, ws, st, pal);
         out.run = out.run.or(trust.run);

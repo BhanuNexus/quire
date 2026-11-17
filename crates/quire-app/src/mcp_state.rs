@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! WS-B's entry point into the workspace: MCP over HTTP while the app runs,
+//! Entry point of MCP into the workspace: MCP over HTTP while the app runs,
 //! requests from apps that want to connect, and web capture.
 //!
 //! `quire-app` can't depend on `quire-mcp` (which sits above it), so the
@@ -61,7 +61,7 @@ pub fn register_host_factory(f: HostFactory) {
 /// How often the consent folder is checked while the server runs.
 const POLL: Duration = Duration::from_millis(800);
 
-/// WS-B's state, kept in `ws.features.mcp`.
+/// State of the MCP feature, kept in `ws.features.mcp`.
 #[derive(Default)]
 pub struct McpState {
     host: Option<Box<dyn McpHost>>,

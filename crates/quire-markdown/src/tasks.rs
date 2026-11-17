@@ -5,7 +5,7 @@
 //! Dates, recurrence, priority and reminders, in the Obsidian Tasks emoji
 //! format (`📅 2026-12-01`) or as Dataview fields (`[due:: 2026-12-01]`),
 //! plus Day Planner time blocks at the start (`14:00 - 15:30 Write report`).
-//! See design §E.2 and docs/formats/tasks.md.
+//! See `docs/design/0.9.md` §E.2 and docs/formats/tasks.md.
 //!
 //! Fields are read from the end of the line, the way Obsidian Tasks reads
 //! them: everything before the first field is the description. Fields Quire

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Noticing other processes: an MCP server or the CLI writing proposals,
-//! inbox findings or the shared policy while the app is open (design §A.4
+//! inbox findings or the shared policy while the app is open (`docs/design/0.9.md` §A.4
 //! "Multi-process").
 //!
 //! The vault watcher ignores `.quire/`, so this is a second, small watcher

@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The in-app assistant (design 0.9 §D.5–§D.7).
+//! The in-app assistant (`docs/design/0.9.md` §D.5–§D.7).
 //!
 //! * [`prompts`] — the built-in prompt texts, shared with MCP `prompts/list`
 //! * [`runner`] — the agent loop behind the agent panel, over Quire's tools

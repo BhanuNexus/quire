@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Ask your vault: retrieve passages, then answer with citations, or say
-//! the notes don't answer it (design §C.4).
+//! the notes don't answer it (`docs/design/0.9.md` §C.4).
 //!
 //! Retrieval fuses meaning (semantic index) with keywords (BM25 per term).
 //! With a language model the passages become numbered sources it must cite
@@ -30,7 +30,7 @@ use crate::llm::LlmRequest;
 /// (built-in LSA embedder) …
 ///
 /// Calibrated with `quire-cli eval synthetic-edits` and the sample vault
-/// (design §C.4, "Calibration"): LSA similarities don't compare across
+///: LSA similarities don't compare across
 /// vaults (0.52–0.95 for the suite's unanswerable questions, 0.22–0.62 for
 /// the sample vault's answerable ones), so the value is the highest that
 /// says "Not found" to none of the questions whose answer is in the text of
@@ -38,7 +38,7 @@ use crate::llm::LlmRequest;
 pub const TAU_SEM_LSA: f32 = 0.30;
 /// … or this (embedders other than LSA).
 ///
-/// 0.10 calibration (design §C.4): `quire-cli eval --embedder mock` (deterministic hashed vectors through
+/// 0.10 calibration: `quire-cli eval --embedder mock` (deterministic hashed vectors through
 /// the endpoint embedder, not a trained model) gives the sample vault's
 /// answerable questions similarities of 0.21–0.39 with coverage down to
 /// 0.27, so the design's 0.35 said "Not found" to 2 of 12 of them; 0.20 is
@@ -235,7 +235,7 @@ pub fn tau_sem(semantic: Option<&SemanticIndex>) -> f32 {
     }
 }
 
-/// Whether to answer "Not found in your notes" (design §C.4): nothing was
+/// Whether to answer "Not found in your notes": nothing was
 /// retrieved, or the best passage is neither close in meaning nor covers
 /// the question's distinctive words.
 pub fn should_abstain(sources: &[Source], semantic: Option<&SemanticIndex>) -> bool {
@@ -533,7 +533,7 @@ pub struct AnswerMeta<'a> {
     pub answered_by: &'a str,
 }
 
-/// The saved answer note (design §C.4): front matter, the `ai` callout,
+/// The saved answer note: front matter, the `ai` callout,
 /// the answer with `[^n]` footnotes, and a citation footnote for each.
 pub fn answer_note(meta: &AnswerMeta<'_>, answer: &Answer) -> String {
     use quire_markdown::frontmatter::yaml_scalar;
@@ -728,7 +728,7 @@ mod tests {
         ix
     }
 
-    /// The calibration's guard (design §C.4): on the sample vault, questions
+    /// The calibration's guard: on the sample vault, questions
     /// its text answers never get "Not found"; unrelated ones do.
     #[test]
     fn abstain_is_calibrated_on_the_sample_vault() {

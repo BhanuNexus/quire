@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Tasks and metadata from the command line (design §E.1, §E.2). Owned by WS-E.
+//! Tasks and metadata from the command line (`docs/design/0.9.md` §E.1, §E.2).
 //!
 //! `tags` and `props` show what a rename, merge or delete would change and
 //! write it only with `--write`; each written note keeps a version before

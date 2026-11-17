@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The `synthetic-edits` suite at full size runs well within CI's minute
-//! (design §B.6) and reports every metric.
+//! (`docs/design/0.9.md` §B.6) and reports every metric.
 #![allow(
     clippy::unwrap_used,
     clippy::panic,

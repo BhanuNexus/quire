@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Downloading models (design §D.2).
+//! Downloading models (`docs/design/0.9.md` §D.2).
 //!
 //! One file at a time into `<models>/<id>/<file>.part`, hashed while it streams, resumed with
 //! `Range` after a pause or a dropped connection, checked against the

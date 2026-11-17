@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Protocol versions and eras (design §4.1).
+//! Protocol versions and eras (`docs/design/0.9.md` §4.1).
 //!
 //! A request whose `params._meta` names `io.modelcontextprotocol/protocolVersion`
 //! is *modern* (2026-07-28): results carry `resultType` and the server's

@@ -20,7 +20,7 @@ pub struct SyncConfig {
     pub device_name: String,
     /// Also sync `.quire/shared/` (vault settings, agent policy, review
     /// logs). On a server, turning it on raises the space's minimum so 0.8
-    /// clients stop (design §B.5). In a sync folder it travels in a lane of
+    /// clients stop. In a sync folder it travels in a lane of
     /// its own that 0.8 never reads, so 0.8 devices keep syncing notes.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub shared_state: bool,

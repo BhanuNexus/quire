@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The citation check (design §C.3): drift and, when asked, verify.
+//! The citation check (`docs/design/0.9.md` §C.3): drift and, when asked, verify.
 //!
 //! The job finds the notes that cite others (`quire:cite` footnotes), and
 //! checks a note again whenever it, or a note it cites, changes. A quote

@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! A stand-in backend for tests and UI checks (design §6.2: "a fake engine
+//! A stand-in backend for tests and UI checks ("a fake engine
 //! drives every client path"). It speaks the real protocol through the same
 //! loop, with tiny deterministic "models":
 //!

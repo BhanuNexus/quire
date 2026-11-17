@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! PDFs in the vault (design §G.2). Owned by WS-G; kept in `ws.features.pdf`.
+//! PDFs in the vault (`docs/design/0.9.md` §G.2). Kept in `ws.features.pdf`.
 //!
 //! * **Search.** A background job reads each PDF's text (cached in
 //!   `.quire/cache/pdf-text/<sha256>.json`) and gives it to the index as an

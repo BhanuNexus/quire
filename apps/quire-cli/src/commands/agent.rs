@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! `quire-cli agent …`: what agents did and suggested, and deciding on it
-//! (design §B.4); `quire-cli agents-md init` and `quire-cli skill` (§A.6).
-//! Hunks are reviewed and decided by the agent store (WS-A).
+//! (`docs/design/0.9.md` §B.4); `quire-cli agents-md init` and `quire-cli skill` (`docs/design/0.9.md` §A.6).
+//! Hunks are reviewed and decided by the agent store.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -151,7 +151,7 @@ fn decide(store: &AgentStore, id: &str, accept: bool, hunks: Option<&[String]>) 
 }
 
 /// Undo agent changes: a dry run, carried out with `write` (undos that
-/// conflict with later edits become one suggestion to review, design §A.1).
+/// conflict with later edits become one suggestion to review, `docs/design/0.9.md` §A.1).
 fn revert(store: &AgentStore, sel: &RevertSelector, write: bool) -> String {
     let plan = store.revert_plan(sel);
     let mut out = format!("{} change{} selected.\n", plan.events.len(), if plan.events.len() == 1 { "" } else { "s" });
@@ -180,7 +180,7 @@ fn revert(store: &AgentStore, sel: &RevertSelector, write: bool) -> String {
     out
 }
 
-/// Write the starter `AGENTS.md` (design §A.6): the agent store's text for
+/// Write the starter `AGENTS.md`: the agent store's text for
 /// this vault's zones, approved on this device since the person made it.
 fn agents_md(args: &[String]) -> Result<(), String> {
     if arg(args, 1)? != "init" {

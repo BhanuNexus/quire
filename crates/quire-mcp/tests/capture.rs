@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Web capture against fixture pages served on loopback (design §B.3):
+//! Web capture against fixture pages served on loopback (`docs/design/0.9.md` §B.3):
 //! the expected Markdown, images and front matter, and the SSRF, size,
 //! redirect and charset rules.
 #![allow(

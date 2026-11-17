@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Write contracts: what agent-written notes in a folder (or of a `type`)
-//! must look like (design §A.7, docs/formats/policy.md).
+//! must look like (`docs/design/0.9.md` §A.7, docs/formats/policy.md).
 //!
 //! ```toml
 //! [[contract]]

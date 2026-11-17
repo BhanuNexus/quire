@@ -36,7 +36,7 @@ use crate::subs::{Filter, Sink, Subscriptions, Visibility};
 use crate::tokens::TokenGrant;
 use crate::tools::{CallExt, Grant, ToolCx, ToolOutput, ToolRegistry};
 
-/// How long a client may cache lists (design §4.1).
+/// How long a client may cache lists.
 const TOOLS_TTL_MS: u64 = 300_000;
 const DISCOVER_TTL_MS: u64 = 60_000;
 /// The background pump's period.
@@ -514,7 +514,7 @@ impl Core {
                         .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '.' { c } else { '-' })
                         .collect();
                     // Self-reported: per-client policy overrides can't widen
-                    // (design §A.2), and the id ends in `?`, so it is never a
+                    //, and the id ends in `?`, so it is never a
                     // verified client's id.
                     Actor::unverified_agent(&format!("mcp:{key}"), name, Via::McpStdio, &self.device.id)
                 }
@@ -638,7 +638,7 @@ impl Core {
         let mut c = conn.clone();
         c.client.clone_from(&client);
         // Older clients get no unsolicited list notifications, so none are
-        // promised; over HTTP they get no streams at all (design §4.6).
+        // promised; over HTTP they get no streams at all.
         let result = json!({
             "protocolVersion": version,
             "capabilities": { "tools": { "listChanged": false }, "resources": { "subscribe": !conn.http, "listChanged": false }, "prompts": { "listChanged": false } },
@@ -648,7 +648,7 @@ impl Core {
         Reply::Initialized { response: rpc_result(id, result), version: version.to_string(), client, caps }
     }
 
-    /// Which era answers this request (design §4.1).
+    /// Which era answers this request.
     fn era(method: &str, params: &Value, conn: &Conn) -> Result<Era, Value> {
         if let Some(v) = protocol::requested_version(params) {
             return protocol::era_for(v);

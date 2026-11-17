@@ -1,8 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Reading the vault: index stats, search, ask, quick open, backlinks,
-//! related notes and link suggestions. Frozen after F0 (WS-C changes the
-//! engines underneath, not these commands).
+//! related notes and link suggestions.
 
 use std::time::Instant;
 

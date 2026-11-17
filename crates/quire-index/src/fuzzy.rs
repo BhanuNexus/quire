@@ -21,7 +21,7 @@ pub(crate) fn quick_open<'a>(records: impl Iterator<Item = &'a NoteRecord>, quer
     let mut config = Config::DEFAULT.match_paths();
     config.normalize = true;
     let mut matcher = Matcher::new(config);
-    // Folding the query too makes accents optional both ways (§C.2): "lodz"
+    // Folding the query too makes accents optional both ways: "lodz"
     // and "łódź" both find "Łódź".
     let pattern = Pattern::parse(&crate::tokenize::fold_str(query), CaseMatching::Ignore, Normalization::Smart);
     let mut buf = Vec::new();

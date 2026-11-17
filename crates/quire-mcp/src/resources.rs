@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Resources, resource templates and prompts (design §4.3).
+//! Resources, resource templates and prompts (`docs/design/0.9.md` §4.3).
 //!
 //! * `quire://note/{+path}` and `quire://note/{+path}{?section,lines}`: a note
 //!   (or part of it) as Markdown, with its version in `_meta`.

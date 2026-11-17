@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `quire-cli mcp`: the MCP server (design §B.4, §4.6).
+//! `quire-cli mcp`: the MCP server (`docs/design/0.9.md` §B.4, §4.6).
 //!
 //! * `mcp <vault> [--allow-write] [--client KEY]`: stdio, for clients that
 //!   start Quire themselves (Claude Desktop, Claude Code).
@@ -95,7 +95,7 @@ fn stdio(args: &[String]) -> Result<(), String> {
         allow_write,
         client_key,
         allow_private_urls: has(args, "--allow-private-urls"),
-        // WS-D: the built-in prompts and the person's AI for `ask` in model mode.
+        // The built-in prompts and the person's AI for `ask` in model mode.
         prompts: quire_assistant::prompts::mcp_defs(),
         chat: quire_app::ai::chat_model(&super::load_settings()),
         ..ServerConfig::default()

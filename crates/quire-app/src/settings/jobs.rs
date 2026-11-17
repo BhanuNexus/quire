@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `[jobs]` in settings.toml: background work (design §9).
+//! `[jobs]` in settings.toml: background work (`docs/design/0.9.md` §9).
 //!
-//! Owned by WS-C (shared runner: F0). Every field defaults to off or unchanged; keys this
+//! Every field defaults to off or unchanged; keys this
 //! version doesn't know are kept in `other`, so older and newer Quire
 //! versions can share the file.
 

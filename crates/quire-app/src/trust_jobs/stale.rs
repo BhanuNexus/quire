@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The staleness job (design §C.6).
+//! The staleness job (`docs/design/0.9.md` §C.6).
 //!
 //! Once a day, and after changes at most hourly, it scores every note and
 //! keeps the Inbox's "Getting stale" in step. It reaches the status bar

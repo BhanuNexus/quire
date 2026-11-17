@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The vault's agent instructions (`AGENTS.md` or `CLAUDE.md`, design §A.6)
+//! The vault's agent instructions (`AGENTS.md` or `CLAUDE.md`, `docs/design/0.9.md` §A.6)
 //! and the device-local state that says whether they're approved.
 //!
 //! Instructions reach agents only once the person approved their current
@@ -27,7 +27,7 @@ pub fn find(vault: &Vault) -> Option<(NotePath, String)> {
 }
 
 /// The 16-hex FNV-1a key of a vault folder, as used by
-/// `<config>/vaults/<vault-key>/` (design §2.4). The agent store's function,
+/// `<config>/vaults/<vault-key>/`. The agent store's function,
 /// so the app, the CLI and this server share one `state.toml`.
 pub use quire_agent::approval::vault_key;
 
@@ -47,7 +47,7 @@ pub fn approved(state_dir: Option<&Path>, hash: &ContentHash) -> bool {
 }
 
 /// Whether `key` in this device's `state.toml` names `hash`
-/// (`approved_instructions`, `approved_policy`: design §A.2).
+/// (`approved_instructions`, `approved_policy`: `docs/design/0.9.md` §A.2).
 pub fn approved_value(state_dir: Option<&Path>, key: &str, hash: &ContentHash) -> bool {
     let Some(dir) = state_dir else { return false };
     let Ok(text) = std::fs::read_to_string(dir.join("state.toml")) else { return false };

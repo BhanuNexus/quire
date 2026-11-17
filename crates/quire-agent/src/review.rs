@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Hunk review: an edit proposal rebased on the note as it is now, split
-//! into hunks the person accepts, rejects or edits one by one (design §A.4).
+//! into hunks the person accepts, rejects or edits one by one (`docs/design/0.9.md` §A.4).
 //!
 //! Everything here is pure text work; [`crate::AgentStore`] loads and saves
 //! the proposal around it.
@@ -628,7 +628,7 @@ mod tests {
         assert_eq!(char_range_of_lines(t, &(0..0)), 0..0);
     }
 
-    // ---- property tests (seeded, deterministic; design §A.4)
+    // ---- property tests (seeded, deterministic)
 
     struct Rng(u64);
     impl Rng {

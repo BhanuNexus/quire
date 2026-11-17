@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Access tokens for MCP over HTTP (design §4.6): personal tokens
+//! Access tokens for MCP over HTTP (`docs/design/0.9.md` §4.6): personal tokens
 //! (`quire-cli mcp token create`, Settings → Agents) and the OAuth access
 //! and refresh tokens Quire's authorization server issues.
 //!
@@ -88,7 +88,7 @@ impl Scopes {
         Grant { write: w, ask: self.ask, network: w }
     }
 
-    /// The most a token with these scopes may do anywhere (design §4.6):
+    /// The most a token with these scopes may do anywhere:
     /// read; propose (so `direct` zones become proposals); or what the zones say.
     pub const fn cap(self) -> Option<Mode> {
         if self.write {

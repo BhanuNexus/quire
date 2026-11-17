@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Obsidian compatibility (design §E.5): what Obsidian plugins keep in a
+//! Obsidian compatibility (`docs/design/0.9.md` §E.5): what Obsidian plugins keep in a
 //! vault, read by Quire without running anything.
 //!
 //! * [`base`] — Obsidian Bases (`.base` YAML) as `quire-view` specs;

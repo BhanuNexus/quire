@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The 0.9 read tools (design §4.2, rows 1–16).
+//! The 0.9 read tools (`docs/design/0.9.md` §4.2, rows 1–16).
 //!
 //! One file per tool, each holding its definition and its handler. `shared`
 //! holds what several of them use. [`tools_before_canvas`] lists them in the

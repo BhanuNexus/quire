@@ -77,7 +77,7 @@ fn save_answer(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
 }
 
 /// Footnotes for `save_answer`: each citation as `[[Note#Heading]] — “quote”`
-/// with a `quire:cite` comment (design §C.3), and the sources they name.
+/// with a `quire:cite` comment, and the sources they name.
 fn footnotes(cx: &ToolCx<'_>, citations: &[Value]) -> Result<(String, Vec<SourceRef>, Vec<String>), ToolOutput> {
     let mut out = String::new();
     let mut sources = Vec::new();

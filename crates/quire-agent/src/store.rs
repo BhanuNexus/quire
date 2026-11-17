@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! [`AgentStore`]: the one write path for everything that isn't the person
-//! typing (design §2.5). MCP, the agent panel, ACP, the CLI and Quire's
+//! typing (`docs/design/0.9.md` §2.5). MCP, the agent panel, ACP, the CLI and Quire's
 //! jobs all call [`AgentStore::submit`], so policy is enforced in one place.
 //!
 //! A change set is applied when every change in it may be applied directly
@@ -143,7 +143,7 @@ impl PolicyState {
     }
 }
 
-/// Who last wrote each note, from the ledger (design §C.1 `last_actor`).
+/// Who last wrote each note, from the ledger (`docs/design/0.9.md` §C.1 `last_actor`).
 #[derive(Default)]
 struct LastActors {
     stamp: Vec<(NotePath, Option<std::time::SystemTime>)>,
@@ -492,7 +492,7 @@ impl AgentStore {
         candidates
     }
 
-    /// Where `path` really leads (design §A.2 step 1). The path must be
+    /// Where `path` really leads. The path must be
     /// canonical ([`canonical_path`]: NFC, relative, no `..`, no hidden
     /// folders); links on the way are followed, and the file they reach must
     /// be inside the vault and outside hidden folders too. A link that leads
@@ -521,7 +521,7 @@ impl AgentStore {
 
     // ------------------------------------------------------------ trust
 
-    /// Whether `path` is untrusted content (design §A.3): in a `raw` zone,
+    /// Whether `path` is untrusted content: in a `raw` zone,
     /// brought in by an importer, or marked `trust: untrusted`. `text` is
     /// its text when the caller has it (front matter can only lower trust).
     pub fn trust_of(&self, path: &NotePath, text: Option<&str>) -> Trust {
@@ -897,7 +897,7 @@ impl AgentStore {
             if let Ok(text) = self.inner.vault.storage().read(&path) {
                 let current = ContentHash::of(&text);
                 if current != *expected {
-                    // The served-version cache (WS-B) fills in the diff and a merged preview.
+                    // The served-version cache fills in the diff and a merged preview.
                     return Err(WriteError::VersionConflict {
                         path,
                         expected: expected.clone(),

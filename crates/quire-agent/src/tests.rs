@@ -523,7 +523,7 @@ fn a_big_note_with_many_hunks_reviews_quickly() {
     let t = std::time::Instant::now();
     let r = store.review(&id, &"Big.md".into(), &read(&v, "Big.md"));
     assert_eq!(r.hunks.len(), 200);
-    // Debug build; the release budget (§9) is far below this.
+    // Debug build; the release budget is far below this.
     assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
 }
 

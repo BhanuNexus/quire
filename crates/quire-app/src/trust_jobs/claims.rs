@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Claims and the contradiction finder (design §C.5), a Preview that is
+//! Claims and the contradiction finder (`docs/design/0.9.md` §C.5), a Preview that is
 //! off until the person turns it on (Settings → AI).
 //!
 //! While the person is idle, the job goes through changed passages: their
@@ -438,7 +438,7 @@ mod tests {
         serde_json::json!([{"text": text, "source_span": span, "subject": subject, "polarity": "positive"}]).to_string()
     }
 
-    /// The scripted-model fixture of §6.2 WS-C: exactly the expected Inbox
+    /// The scripted-model fixture: exactly the expected Inbox
     /// item, and no second request on a cache hit.
     #[test]
     fn finds_a_contradiction_once_and_caches() {

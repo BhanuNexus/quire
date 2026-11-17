@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Web capture: fetch a page, keep its article, convert it to Markdown
-//! (design §B.3).
+//! (`docs/design/0.9.md` §B.3).
 //!
 //! 1. GET over http or https only: at most 10 MB, 20 s and 5 redirects.
 //!    Private, loopback and link-local addresses are refused unless

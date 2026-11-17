@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Browsing the vault: sort order per folder (with a manual order you drag
-//! into shape), links to folders, and display titles (design §F.3, §E.1).
+//! into shape), links to folders, and display titles (`docs/design/0.9.md` §F.3, §E.1).
 //!
 //! Sort modes and manual order live in the vault, so they travel with it:
 //! `[sort] "Projects/" = "manual"` and `[order."Projects/"] = ["Plan.md", …]`

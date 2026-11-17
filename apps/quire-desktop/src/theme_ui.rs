@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Settings → Appearance: theme files, the accent colour and tag colours
-//! (design §F.4).
+//! (`docs/design/0.9.md` §F.4).
 
 use egui::{Color32, RichText, Ui};
 use quire_app::Workspace;

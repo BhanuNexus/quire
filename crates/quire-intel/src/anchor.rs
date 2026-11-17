@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Span citations that notice when the cited text changes (design §C.3).
+//! Span citations that notice when the cited text changes (`docs/design/0.9.md` §C.3).
 //!
 //! An [`Anchor`] records a passage of a note: its version, line range, the
 //! quoted text (whole sentences) and a little context on each side.
@@ -32,11 +32,11 @@ const MAX_QUOTE: usize = 400;
 const QUOTE_KEEP: usize = 150;
 const CONTEXT: usize = 32;
 const ELLIPSIS: char = '…';
-/// Below this a re-found passage is `Lost` (design §C.3).
+/// Below this a re-found passage is `Lost`.
 pub const DRIFT_MIN: f32 = 0.75;
 /// A passage in the mapped region at least this similar has only moved.
 pub const MOVED_MIN: f32 = 0.9;
-/// Offline "weak support": content-term Jaccard below this (design §C.3).
+/// Offline "weak support": content-term Jaccard below this.
 pub const WEAK_SUPPORT: f32 = 0.2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -580,7 +580,7 @@ pub fn lexical_support(claim: &str, span: &str) -> f32 {
     jaccard(&term_set(claim), &term_set(span))
 }
 
-/// The verify request: does `span` support `claim`? (design §C.3)
+/// The verify request: does `span` support `claim`?
 pub fn verify_request(claim: &str, span: &str) -> ChatRequest {
     let mut req = ChatRequest::simple(
         "You check citations in a person's notes. Decide whether the cited passage supports the claim. \
@@ -648,7 +648,7 @@ mod tests {
         assert_eq!(serde_json::from_str::<Anchor>(&json).unwrap(), a);
     }
 
-    /// The test matrix of §6.2 WS-C: an edit before the span, inside it,
+    /// The test matrix: an edit before the span, inside it,
     /// deleted, duplicated, a moved paragraph, a renamed note.
     #[test]
     fn resolution_matrix() {

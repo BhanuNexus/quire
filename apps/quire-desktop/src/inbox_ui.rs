@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The Inbox tab of the right panel: suggested changes, checks, contradictions, stale notes (design §7.3).
+//! The Inbox tab of the right panel: suggested changes, checks, contradictions, stale notes (`docs/design/0.9.md` §7.3).
 //!
-//! Owned by WS-A. Suggested changes are grouped by agent run with Review,
+//! Suggested changes are grouped by agent run with Review,
 //! Accept all and Reject all; checks are batched per kind with their quick
 //! fixes; a changed agent policy or `AGENTS.md` waits here for approval.
 //! Filters by kind, agent and folder; snooze for a day or a week; resolved

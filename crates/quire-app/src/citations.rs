@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The bibliography library (design §G.3). Owned by WS-G; kept in
+//! The bibliography library (`docs/design/0.9.md` §G.3). Kept in
 //! `ws.features.citations`.
 //!
 //! * The library is one or more BibTeX files in the vault, named in

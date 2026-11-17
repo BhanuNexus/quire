@@ -43,7 +43,7 @@ impl Default for FindState {
             replace_mode: false,
             query: String::new(),
             replacement: String::new(),
-            // Accents are optional in the find bar (design §C.2, "Match accents" off).
+            // Accents are optional in the find bar (`docs/design/0.9.md` §C.2, "Match accents" off).
             opts: FindOptions::find_bar(),
             cache: MatchCache::default(),
             vault_open: false,

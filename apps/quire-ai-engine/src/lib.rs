@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The engine's request loop (design §D.3), shared by the real engine and
+//! The engine's request loop (`docs/design/0.9.md` §D.3), shared by the real engine and
 //! the test stand-in: JSON lines on stdin, replies and streamed events on
 //! stdout, model work on one worker thread so `cancel` is heard while a
 //! model runs, idle models unloaded, and an exit after ten minutes with

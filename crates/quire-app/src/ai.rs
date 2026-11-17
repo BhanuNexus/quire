@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Wiring settings + secrets to the assistant, the semantic embedder and the
-//! on-device models (design §D.1–§D.3).
+//! on-device models (`docs/design/0.9.md` §D.1–§D.3).
 //!
 //! Nothing on this computer runs or downloads until the person turns a
 //! capability on *and* its model is installed (they pressed Download, or
@@ -66,7 +66,7 @@ pub fn embed_base_url(settings: &Settings) -> String {
 // ------------------------------------------------------------------ models
 
 /// What Quire says while on-device AI is off (the experimental switch,
-/// design §D.1): onboarding, Settings → AI and refused downloads.
+/// `docs/design/0.9.md` §D.1): onboarding, Settings → AI and refused downloads.
 pub const ON_DEVICE_LATER: &str =
     "On-device AI is coming in an update. Use a provider such as Ollama or LM Studio to keep everything on this computer today.";
 
@@ -111,7 +111,7 @@ pub fn engine(settings: &Settings) -> Engine {
     let e = E.get_or_init(|| Engine::new(EngineConfig::default()));
     let found = Engine::find_with_source(models_dir().as_deref());
     // A downloaded engine must still be the file that was verified, and one
-    // next to the app the file this build was packaged with (design §D.3).
+    // next to the app the file this build was packaged with.
     let binary = catalog().get(ENGINE_ID).and_then(|en| en.other.get(BINARY_SHA256)).and_then(toml::Value::as_str);
     let sha256 = found.as_ref().and_then(|(_, src)| src.required_sha256(quire_ai::catalog::bundled_engine_sha256(), binary));
     let (path, source) = found.map_or((None, None), |(p, s)| (Some(p), Some(s)));
@@ -268,7 +268,7 @@ enum DlMsg {
     Finished(String, Result<(), DownloadError>),
 }
 
-/// On-device AI state (WS-D): downloads in progress and the engine's
+/// On-device AI state: downloads in progress and the engine's
 /// status. Kept in `ws.features.ai`; the settings are `ws.settings.ai_local`.
 #[derive(Default)]
 pub struct LocalAiState {

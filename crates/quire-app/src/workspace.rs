@@ -179,7 +179,7 @@ pub struct Workspace {
     pub sync: crate::vault_sync::SyncHandle,
     /// 0.9 features' state; see `features.rs`.
     pub features: crate::features::Features,
-    /// Background jobs (design §9).
+    /// Background jobs.
     pub jobs: crate::jobs::JobRunner,
     /// The agent store of the open vault.
     pub(crate) agent: Option<quire_agent::AgentStore>,
@@ -352,7 +352,7 @@ impl Workspace {
     /// [`Self::open_vault`], except that reading every note into the index,
     /// watching the folder and syncing wait for [`Self::start_deferred`].
     /// The app opens its startup vault this way and starts them after its
-    /// first frame, so a large vault doesn't delay the window (design §9:
+    /// first frame, so a large vault doesn't delay the window (`docs/design/0.9.md` §9:
     /// nothing but settings is read before the first frame).
     ///
     /// Sync starts only once the watcher runs, so every note it writes is
@@ -586,7 +586,7 @@ impl Workspace {
                 crate::nav::FolderLink::Folder(_) => None,
             };
         }
-        // WS-G: a PDF, canvas or other file opens in its editor (`[[paper.pdf#page=3]]`).
+        // A PDF, canvas or other file opens in its editor (`[[paper.pdf#page=3]]`).
         if crate::canvas_state::open_file_link(self, target, heading) {
             return None;
         }
@@ -1189,7 +1189,7 @@ impl Workspace {
         }
         let doc = self.active_doc()?;
         let title = doc.title();
-        // WS-G: `[@key]` citations as author-date text and a reference list.
+        // `[@key]` citations as author-date text and a reference list.
         let text = crate::citations::render_source(self, &doc.text());
         let html = {
             let ix = self.index.read();
@@ -1384,7 +1384,7 @@ impl Workspace {
     pub fn follow_link_at_caret(&mut self) -> bool {
         match self.link_at_caret() {
             Some((t, h)) => self.open_link(&t, h.as_deref()).is_some(),
-            // WS-G: a `[@key]` citation opens its PDF or library entry.
+            // A `[@key]` citation opens its PDF or library entry.
             None => crate::citations::follow_at_caret(self),
         }
     }
@@ -2175,7 +2175,7 @@ mod tests {
         assert_eq!(w.run(Command::QuickOpen), Some(UiRequest::QuickOpen));
     }
 
-    /// The joins the integration added (docs/design/F0-notes.md, wave 1).
+    /// The joins the integration added (`docs/design/F0-notes.md`).
     #[test]
     fn integration_wave_1_joins() {
         let mut w = Workspace::new(Settings::default());
@@ -2230,7 +2230,7 @@ mod tests {
     }
 
     /// An agent's suggestion accepted in the editor is saved with provenance
-    /// that Version history shows (WS-A's review, F0's history).
+    /// that Version history shows (the agent review, the history).
     #[test]
     fn accepted_suggestions_carry_provenance_into_history() {
         let mut w = Workspace::new(Settings::default());

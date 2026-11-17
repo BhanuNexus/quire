@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! When task reminders (`⏰ 2026-11-30 09:00`) fire (design §E.2).
+//! When task reminders (`⏰ 2026-11-30 09:00`) fire (`docs/design/0.9.md` §E.2).
 //!
 //! The schedule is rebuilt from the index; firing and snoozing live in the
 //! app. Reminders fire only while Quire runs; ones missed in the last week

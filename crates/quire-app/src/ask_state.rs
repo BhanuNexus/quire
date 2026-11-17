@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Ask your vault: state and workspace operations (design §C.4).
+//! Ask your vault: state and workspace operations (`docs/design/0.9.md` §C.4).
 //!
 //! A question is answered from the vault's passages: by the AI model when
 //! one is set up (citing `[n]`, or `NOT_FOUND`), else by quoting the best

@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Task reminders while Quire runs (design §E.2).
+//! Task reminders while Quire runs (`docs/design/0.9.md` §E.2).
 //!
 //! The schedule is rebuilt from the index when it changes. A reminder that
 //! comes due shows in the app (a notice and the Agenda) and, where the
@@ -8,7 +8,7 @@
 //! min". Snoozes are kept on this device for the session. Reminders missed
 //! in the last week while Quire was closed are listed once at start.
 //!
-//! Owned by WS-E; kept in `ws.features.tasks.reminders`.
+//! Kept in `ws.features.tasks.reminders`.
 
 use std::collections::{HashMap, HashSet};
 
