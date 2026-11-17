@@ -180,17 +180,7 @@ fn field_prefix(before: &str) -> Option<String> {
 
 /// Where the body starts (after the front matter).
 fn body_start(src: &str) -> usize {
-    if !(src.starts_with("---\n") || src.starts_with("---\r\n")) {
-        return 0;
-    }
-    let mut pos = src.find('\n').map_or(src.len(), |i| i + 1);
-    for line in src[pos..].split_inclusive('\n') {
-        pos += line.len();
-        if matches!(line.trim_end(), "---" | "...") {
-            return pos;
-        }
-    }
-    0
+    quire_markdown::frontmatter::fences(src).map_or(0, |f| f.body_start())
 }
 
 /// Most list items read from one note (a runaway list stops here).
