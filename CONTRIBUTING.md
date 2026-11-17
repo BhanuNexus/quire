@@ -39,7 +39,7 @@ typos                # spelling (cargo install typos-cli, or pip install typos)
 CI runs the same checks (the tests on Linux x86-64 and ARM64, macOS and Windows) and more: [AGENTS.md](AGENTS.md) has the whole list. The lints are strict: clippy's pedantic and nursery groups, no `unwrap()` outside tests, and every `#[allow]` must give a `reason = "…"`. If you think a lint is wrong for a piece of code, allow it locally with a reason, or propose switching it off in `Cargo.toml`.
 
 - Keep PRs focused, one change per PR. Add tests for behaviour changes.
-- Put each user-visible change, as one short bullet, under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md) (this is the only changelog rule; there are no fragment files).
+- A user-visible change gets one bullet under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md) (Added, Changed, Fixed or Security): at most two sentences, about what a person sees, not what the code does. Detail goes in the design note. Good: "On a slow disk, one save no longer holds up every other save while it is flushed to disk." There are no fragment files. CI warns when a change to `crates/` or `apps/` has no changelog line; if none is due, label the pull request `no-changelog`.
 - UI changes: include a before/after screenshot.
 - Commit messages: imperative mood, e.g. "Add kanban column limits".
 
