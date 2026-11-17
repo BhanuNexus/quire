@@ -285,12 +285,11 @@ fn mark_untrusted(text: &str) -> String {
         let Some(edit) = frontmatter::remove_field(&text, &key) else { break };
         text = edit.apply(&text);
     }
-    match frontmatter::fences(&text) {
-        Some(f) => format!("{}trust: untrusted{}{}", &text[f.open.clone()], f.nl, &text[f.open.end..]),
-        None => {
-            let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
-            format!("---{nl}trust: untrusted{nl}---{nl}{text}")
-        }
+    if let Some(f) = frontmatter::fences(&text) {
+        format!("{}trust: untrusted{}{}", &text[f.open.clone()], f.nl, &text[f.open.end..])
+    } else {
+        let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
+        format!("---{nl}trust: untrusted{nl}---{nl}{text}")
     }
 }
 
