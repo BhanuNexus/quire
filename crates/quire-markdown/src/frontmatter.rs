@@ -755,6 +755,7 @@ pub fn load_yaml(text: &str) -> Result<Vec<yaml_rust2::Yaml>, String> {
     if !yaml_depth_ok(text) {
         return Err("it is nested too deeply to read".into());
     }
+    #[expect(clippy::disallowed_methods, reason = "load_yaml is the one YAML parse, after the depth check above")]
     yaml_rust2::YamlLoader::load_from_str(text).map_err(|e| e.to_string())
 }
 
