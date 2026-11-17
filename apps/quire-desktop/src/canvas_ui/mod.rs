@@ -2464,7 +2464,7 @@ mod tests {
         s.touch();
         // The file's place is taken by a folder: nothing can be written there.
         std::fs::remove_file(dir.path().join("F.canvas")).unwrap();
-        std::fs::create_dir(dir.path().join("F.canvas")).unwrap();
+        std::fs::create_dir_all(dir.path().join("F.canvas")).unwrap();
         s.save(&mut ws);
         assert!(s.dirty, "the edit is still waiting to be saved");
         assert!(s.has_unsaved());
@@ -2561,7 +2561,7 @@ mod tests {
         let mut s = shown(&mut ws, "Q.canvas", TWO);
         edit_a(&mut s, 5);
         std::fs::remove_file(dir.path().join("Q.canvas")).unwrap();
-        std::fs::create_dir(dir.path().join("Q.canvas")).unwrap();
+        std::fs::create_dir_all(dir.path().join("Q.canvas")).unwrap();
         let mut surfaces = crate::surfaces::Surfaces::default();
         surfaces.open(Box::new(s));
         surfaces.close_all(&mut ws);

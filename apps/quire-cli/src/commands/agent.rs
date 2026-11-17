@@ -413,7 +413,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let args = |a: &[&str]| a.iter().map(ToString::to_string).collect::<Vec<_>>();
         let vault = dir.path().join("vault");
-        std::fs::create_dir(&vault).unwrap();
+        std::fs::create_dir_all(&vault).unwrap();
         // The store's starter text, approved on this device (a temporary state folder here).
         let st = store(vault.to_str().unwrap()).unwrap();
         st.set_state_dir(Some(dir.path().join("state")));
