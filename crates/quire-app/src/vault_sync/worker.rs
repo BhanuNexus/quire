@@ -208,7 +208,7 @@ impl SyncWorker {
     }
 
     /// Sync the vault at `root` in the background, as set up by
-    /// [`sync_join_at`] or [`sync_create_at`], without the app: passes run
+    /// [`super::sync_join_at`] or [`super::sync_create_at`], without the app: passes run
     /// when another device changes something, after [`Self::nudge`], and
     /// every `poll` otherwise.
     pub fn start_headless(root: &Path, poll: Duration) -> Result<Self, String> {
