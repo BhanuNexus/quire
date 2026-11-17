@@ -207,3 +207,24 @@ fn the_seven_finders_at_3f33a14() {
     println!("{got}");
     assert_eq!(got, AT_3F33A14, "\n{got}");
 }
+
+/// The one rule: `frontmatter::fences` answers what the reader answered at
+/// 3f33a14 on every case, and the live finders in this crate agree with it.
+#[test]
+fn one_rule_is_the_readers() {
+    let header: Vec<&str> = AT_3F33A14.lines().next().unwrap_or_default().split_whitespace().collect();
+    let col = header.iter().position(|h| *h == "parse").expect("a parse column");
+    for ((name, src), row) in FENCE_CASES.iter().zip(AT_3F33A14.lines().skip(1)) {
+        let cells: Vec<&str> = row.split_whitespace().collect();
+        let was = cells[cells.len() - (header.len() - col)];
+        let now = frontmatter::fences(src).map(|f| f.body_start());
+        assert_eq!(cell(now), was, "{name}: {src:?}");
+        assert_eq!(reader(src), now, "{name}");
+        assert_eq!(blocks(src), now, "{name}");
+        if let Some(f) = frontmatter::fences(src) {
+            assert!(frontmatter::is_opening_line(&src[f.open.clone()]), "{name}");
+            assert!(frontmatter::is_closing_line(&src[f.close.clone()]), "{name}");
+            assert_eq!(f.nl, if src.starts_with("---\r\n") { "\r\n" } else { "\n" });
+        }
+    }
+}

@@ -19,22 +19,9 @@ pub fn verbatim_blocks(src: &str) -> Vec<Range<usize>> {
     let mut pos = 0;
     let bytes = src.as_bytes();
     // Front matter.
-    if src.starts_with("---\n") || src.starts_with("---\r\n") {
-        let mut p = src.find('\n').map_or(src.len(), |i| i + 1);
-        let mut closed = None;
-        while p < src.len() {
-            let end = src[p..].find('\n').map_or(src.len(), |i| p + i + 1);
-            let line = src[p..end].trim_end();
-            if line == "---" || line == "..." {
-                closed = Some(end);
-                break;
-            }
-            p = end;
-        }
-        if let Some(end) = closed {
-            out.push(0..end);
-            pos = end;
-        }
+    if let Some(f) = crate::frontmatter::fences(src) {
+        out.push(0..f.body_start());
+        pos = f.body_start();
     }
     let mut open: Option<(usize, u8, usize)> = None; // (start, fence char, fence len)
     while pos < src.len() {

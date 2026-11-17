@@ -11,6 +11,10 @@
 //! Writers change only the lines of the field they touch:
 //! [`set_field_path`], [`remove_field_path`], [`rename_field_path`] and
 //! [`edit_list_items`] leave every other byte of the note as it was.
+//!
+//! Where the block starts and ends is decided in one place, [`fences`]: any
+//! code that needs to know where front matter ends calls it, so the reader,
+//! the writers, the index, the linter and the spell checker always agree.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -554,32 +558,91 @@ fn parse_entries_at(lines: &[Line<'_>], mut i: usize, indent: usize, depth: usiz
     (out, i)
 }
 
-fn parse_doc(src: &str) -> Option<Doc<'_>> {
-    let (body_start, nl) = if src.starts_with("---\n") {
-        (4, "\n")
-    } else if src.starts_with("---\r\n") {
-        (5, "\r\n")
-    } else {
-        return None;
-    };
-    let mut pos = body_start;
-    let mut lines = Vec::new();
-    let mut close = None;
-    for raw in src[body_start..].split_inclusive('\n') {
-        let full = raw.trim_end_matches(['\n', '\r']);
-        let t = full.trim_end();
-        if t == "---" || t == "..." {
-            close = Some((pos, pos + raw.len()));
-            break;
-        }
-        let indent = full.len() - full.trim_start_matches([' ', '\t']).len();
-        lines.push(Line { start: pos, end: pos + raw.len(), indent, text: t.trim_start(), full });
-        pos += raw.len();
+/// Where a note's front matter is. Found by [`fences`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fences {
+    /// The opening `---` line with its line break: `0..4`, or `0..5` with CRLF.
+    pub open: Range<usize>,
+    /// The closing line with its line break, if it has one.
+    pub close: Range<usize>,
+    /// The opening line's line break, which writers use inside the block.
+    pub nl: &'static str,
+}
+
+impl Fences {
+    /// The lines between the fences.
+    pub const fn inner(&self) -> Range<usize> {
+        self.open.end..self.close.start
     }
-    let (close, block_end) = close?;
+
+    /// Where the body starts: just after the closing line.
+    pub const fn body_start(&self) -> usize {
+        self.close.end
+    }
+}
+
+/// Where the front matter at the start of `src` is: the one rule for every
+/// reader and writer of front matter in Quire.
+///
+/// - **Opens:** the first line of the file is exactly `---`, ended by `\n`
+///   or `\r\n`. Nothing may come before it or after it on the line: a
+///   byte-order mark, a space, a blank line first or `---  ` means the note
+///   has no front matter.
+/// - **Closes:** at the first later line that is `---` or `...` once its
+///   line break and any trailing white space are taken off. A line that is
+///   indented (`  ---`) or longer (`----`, `--- x`) does not close it. The
+///   closing line may be the last line, with no line break.
+/// - **Unclosed:** with no closing line the note has no front matter, and
+///   the whole file is body.
+///
+/// [`is_opening_line`] and [`is_closing_line`] are the same tests, for code
+/// that reads one line at a time.
+pub fn fences(src: &str) -> Option<Fences> {
+    let open_end = src.find('\n')? + 1;
+    let first = &src[..open_end];
+    if !is_opening_line(first) {
+        return None;
+    }
+    let nl = if first.ends_with("\r\n") { "\r\n" } else { "\n" };
+    let mut pos = open_end;
+    for line in src[open_end..].split_inclusive('\n') {
+        if is_closing_line(line) {
+            return Some(Fences { open: 0..open_end, close: pos..pos + line.len(), nl });
+        }
+        pos += line.len();
+    }
+    None
+}
+
+/// Whether `line`, a note's first line, opens front matter: `---` and its
+/// line break (`\n` or `\r\n`), or a line given without its break. See
+/// [`fences`].
+pub fn is_opening_line(line: &str) -> bool {
+    matches!(line, "---" | "---\n" | "---\r\n" | "---\r")
+}
+
+/// Whether `line`, inside front matter, closes it: `---` or `...` once its
+/// line break and trailing white space are taken off. See [`fences`].
+pub fn is_closing_line(line: &str) -> bool {
+    matches!(line.trim_end(), "---" | "...")
+}
+
+fn parse_doc(src: &str) -> Option<Doc<'_>> {
+    let f = fences(src)?;
+    let lines: Vec<Line<'_>> = src[f.inner()]
+        .split_inclusive('\n')
+        .scan(f.open.end, |pos, raw| {
+            let start = *pos;
+            *pos += raw.len();
+            let full = raw.trim_end_matches(['\n', '\r']);
+            let t = full.trim_end();
+            let indent = full.len() - full.trim_start_matches([' ', '\t']).len();
+            Some(Line { start, end: start + raw.len(), indent, text: t.trim_start(), full })
+        })
+        .collect();
     let (entries, _) = parse_entries(&lines, 0, 0);
     let unit = entries.iter().find_map(|e| e.children.first().map(|c| c.indent - e.indent)).filter(|u| *u > 0).unwrap_or(2);
-    Some(Doc { lines, entries, close, block_end, nl, unit })
+    Some(Doc { lines, entries, close: f.close.start, block_end: f.close.end, nl: f.nl, unit })
 }
 
 /// Parse front matter at the very start of `src`, if present.
