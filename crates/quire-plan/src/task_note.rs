@@ -273,7 +273,7 @@ pub fn note_task(props: &BTreeMap<String, Value>, title: &str) -> Option<Task> {
 pub type Changes = Vec<(String, Option<Value>)>;
 
 fn date(s: Option<&str>) -> Option<NaiveDate> {
-    NaiveDate::parse_from_str(s?.get(..10)?, "%Y-%m-%d").ok()
+    quire_base::time::parse_ymd_prefix(s?)
 }
 
 /// Shift a date (keeping a time after it) by `days`.

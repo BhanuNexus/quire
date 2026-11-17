@@ -33,7 +33,7 @@ pub fn parse_line(line: &str) -> Option<(usize, Task)> {
 }
 
 fn date(s: Option<&str>) -> Option<NaiveDate> {
-    NaiveDate::parse_from_str(s?.get(..10)?, "%Y-%m-%d").ok()
+    quire_base::time::parse_ymd_prefix(s?)
 }
 
 /// Complete the task on `line` (no newline) on `today`. `None` when the line
