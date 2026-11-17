@@ -1,5 +1,10 @@
 # WS-G hand-off: spatial and reading
 
+Status: record
+Area: 0.9 workstream hand-off (WS-G)
+
+A record of a pass; not a description of today's code.
+
 What WS-G (canvas and ink, PDFs, citations) touched outside its own files and
 why, what other workstreams can now use, and what it asks of them.
 

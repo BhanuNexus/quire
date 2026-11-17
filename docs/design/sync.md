@@ -1,6 +1,11 @@
 # Quire Sync: design
 
-*Status: shipped as a beta in 0.5.0 (server); folder sync follows. Tracks [#14](https://github.com/BhanuNexus/quire/issues/14).*
+Status: superseded by 0.13-sync.md
+Area: the first sync design (encryption, beta in 0.5.0)
+
+Superseded: read the note named above and `../formats/sync-protocol.md` instead. Kept for the encryption reasoning it records.
+
+*Origin: shipped as a beta in 0.5.0 (server); folder sync follows. Tracks [#14](https://github.com/BhanuNexus/quire/issues/14).*
 
 Quire Sync keeps a vault the same on every device. The server is open source (AGPL), runs as one binary anyone can host, and only ever stores encrypted data. The paid **managed sync** service runs the same server for people who don't want to host it.
 

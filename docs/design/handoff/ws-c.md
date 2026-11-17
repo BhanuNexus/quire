@@ -1,5 +1,10 @@
 # WS-C hand-off: retrieval and trust intelligence
 
+Status: record
+Area: 0.9 workstream hand-off (WS-C)
+
+A record of a pass; not a description of today's code.
+
 What WS-C (design §3.C, §6.2) built, what it touched outside its own files
 and why, what it needs from others, and the numbers its thresholds rest on.
 

@@ -1,5 +1,10 @@
 # WS-B hand-off: requests to other workstreams and the integrator
 
+Status: record
+Area: 0.9 workstream hand-off (WS-B)
+
+A record of a pass; not a description of today's code.
+
 What WS-B needs from files it doesn't own, what it touched outside its own
 files (and why), and what to check at integration. Newest first.
 

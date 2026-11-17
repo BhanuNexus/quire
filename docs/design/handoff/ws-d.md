@@ -1,5 +1,10 @@
 # WS-D hand-off: on-device AI, providers, assistant, onboarding, wiki loop
 
+Status: record
+Area: 0.9 workstream hand-off (WS-D)
+
+A record of a pass; not a description of today's code.
+
 What WS-D built, what it touched outside its own files (and why), the
 day-1 spike, what is left for a maintainer with network access, and
 requests to other workstreams. Newest first.
