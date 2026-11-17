@@ -13,7 +13,7 @@
 //! Behind the `net` feature: only the crates P6 allows to reach the
 //! network turn it on (`quire-sync` with `http`, `quire-import`,
 //! `quire-intel` with `remote-llm`, `quire-ai` with `client`,
-//! `quire-app` with `update-check`).
+//! `quire-app`, always).
 
 use std::time::Duration;
 

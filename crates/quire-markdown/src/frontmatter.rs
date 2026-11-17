@@ -1369,9 +1369,6 @@ impl Edit {
 mod tests {
     use super::*;
 
-    /// A hostile note (synced, shared or imported) nests maps tens of
-    /// thousands deep: reading its properties must neither exhaust the
-    /// stack nor take quadratic time. Deep parts are kept as text.
     #[test]
     fn values_with_edge_spaces_read_back_as_given() {
         // D5: " A" was written `a: A` and read back as "A"; it is quoted now.
@@ -1397,6 +1394,9 @@ mod tests {
         assert!(fields_in_order("no front matter").is_empty());
     }
 
+    /// A hostile note (synced, shared or imported) nests maps tens of
+    /// thousands deep: reading its properties must neither exhaust the
+    /// stack nor take quadratic time. Deep parts are kept as text.
     #[test]
     fn deeply_nested_properties_are_read_without_exhausting_the_stack() {
         let flow = format!("---\ntitle: ok\nk: {}x{}\n---\nbody\n", "{a: ".repeat(100_000), "}".repeat(100_000));

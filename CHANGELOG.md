@@ -9,6 +9,8 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ### Fixed
 - **Skills, properties and settings:** a skill installed with `quire-cli skill install --from` whose front matter ends with `...` now stays untrusted when its `SKILL.md` is copied, any `trust: untrusted` in a note's front matter now wins over another `trust` line, and a property value that starts or ends with a space keeps it. An unreadable settings file is now reported in the app (it was only printed to the terminal), and Settings → AI says when the embedding cache can't be saved.
+- **Links:** a link whose target ends in an escape such as `%20` now resolves to its note in the agent store and in Markdown link extraction (the last escape of a target was left undecoded).
+- **Sync:** a stored sync selection naming a folder Quire can't use (such as `A: Archive`) no longer makes a device sync nothing: the entry is dropped and the next sync report says so.
 - **Quick capture:** a long text no longer pushes the Quick capture dialog past the top and bottom of a small window; the text scrolls inside it, so the buttons stay in reach.
 - **Locked folders:** `quire-cli tags … --write`, `props … --write` and `lint` now keep a locked folder locked when its key file is missing, as the app does: they no longer rewrite a plain note there, or keep a plain copy of it in history.
 
