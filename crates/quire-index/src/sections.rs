@@ -268,7 +268,7 @@ impl Index {
             })
             .collect();
         if filters.kind != SearchKind::Notes && !filters.notes_only() {
-            out = self.merge_pages(out, &q, filters, limit);
+            out = self.merge_pages(out, &q, filters, limit, keep);
         }
         out
     }
@@ -316,7 +316,7 @@ impl Index {
     }
 
     /// Attachment pages matching `q`, fused with the note hits by rank.
-    fn merge_pages(&self, notes: Vec<SectionHit>, q: &Query, filters: &SearchFilters, limit: usize) -> Vec<SectionHit> {
+    fn merge_pages(&self, notes: Vec<SectionHit>, q: &Query, filters: &SearchFilters, limit: usize, keep: Keep<'_>) -> Vec<SectionHit> {
         let folder = filters.folder.as_deref().map(|x| x.trim_matches('/').to_lowercase()).filter(|x| !x.is_empty());
         let mut pages: Vec<(NotePath, usize, f32)> = self
             .attachment_text
@@ -326,7 +326,7 @@ impl Index {
                 let (path, page) = key.as_str().rsplit_once("#page=")?;
                 let page: usize = page.parse().ok()?;
                 let path = NotePath::new(path);
-                (score > 0.0 && folder_ok(&path, folder.as_deref())).then_some((path, page, score))
+                (score > 0.0 && folder_ok(&path, folder.as_deref()) && keep(&path)).then_some((path, page, score))
             })
             .collect();
         pages.sort_by(|a, b| b.2.total_cmp(&a.2).then_with(|| a.0.cmp(&b.0)).then(a.1.cmp(&b.1)));
@@ -481,6 +481,30 @@ mod tests {
         s.remove_attachment(NotePath::new("papers/Ropes.pdf"));
         s.flush();
         assert!(s.search_sections("boehm", &only, 5).is_empty());
+    }
+
+    /// Attachment pages a caller may not see take no places: `keep` applies
+    /// to pages as it does to notes (an agent's deny zone).
+    #[test]
+    fn hidden_attachment_pages_are_not_ranked() {
+        let s = svc(&[("Notes.md", "# Notes\nsalary notes\n")]);
+        for p in ["Private/salary.pdf", "papers/salary.pdf"] {
+            s.upsert_attachment(AttachmentText {
+                path: NotePath::new(p),
+                kind: AttachmentKind::Pdf,
+                pages: vec!["confidential salary review".into()],
+                source_hash: "ab".into(),
+                by: TextSource::Embedded,
+            });
+        }
+        s.flush();
+        let keep = |p: &NotePath| !p.as_str().starts_with("Private/");
+        for kind in [SearchKind::Attachments, SearchKind::All] {
+            let f = SearchFilters { kind, ..Default::default() };
+            let hits = s.search_sections_where("salary", &f, 1 + usize::from(kind == SearchKind::All), &keep);
+            assert!(hits.iter().all(|h| keep(&h.path)), "{kind:?}: {hits:?}");
+            assert!(hits.iter().any(|h| h.path.as_str() == "papers/salary.pdf"), "{kind:?}: {hits:?}");
+        }
     }
 
     /// Timing on 2,000 notes (`docs/design/0.9.md` §9: ≤ 15 ms in release). Run with

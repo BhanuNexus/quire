@@ -75,7 +75,9 @@ fn search(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         Start::Stale => return stale(&fingerprint),
     };
     // Only notes the caller may see compete for the `limit` places.
-    let hits = cx.index.search_sections_where(&query, &filters, limit, &|p| visible(cx, p));
+    let mut hits = cx.index.search_sections_where(&query, &filters, limit, &|p| visible(cx, p));
+    // A second guard: whatever the index returns, nothing hidden leaves.
+    hits.retain(|h| visible(cx, &h.path));
     let ix = cx.index.read();
     let mut rows = Vec::new();
     for h in hits.iter().skip(skip) {
