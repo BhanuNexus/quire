@@ -398,11 +398,6 @@ fn build(glyphs: Vec<RawGlyph>) -> PageText {
     out
 }
 
-/// Plain text of every page, for search (`AttachmentText::pages`).
-pub fn plain_pages(pages: &[PageText]) -> Vec<String> {
-    pages.iter().map(PageText::text).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

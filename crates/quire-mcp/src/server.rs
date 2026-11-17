@@ -884,10 +884,5 @@ pub fn tool_result(era: &Era, out: ToolOutput) -> Value {
     v
 }
 
-/// The device-local state folder for a vault on disk, if any.
-pub fn state_dir_for(root: &Path) -> Option<PathBuf> {
-    Some(quire_app::settings::config_dir()?.join("vaults").join(instructions::vault_key(root)))
-}
-
 #[cfg(test)]
 mod tests;

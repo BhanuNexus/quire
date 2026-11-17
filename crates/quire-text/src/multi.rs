@@ -5,7 +5,7 @@
 //! multi-cursor edit as a single step.
 
 use crate::motion::{next_word_end, prev_word_start, word_at};
-use crate::{Assoc, Buffer, Change, Selection, Transaction};
+use crate::{Buffer, Change, Selection, Transaction};
 
 /// Sort by position and merge selections that overlap or share a caret.
 pub fn normalize(mut sels: Vec<Selection>) -> Vec<Selection> {
@@ -117,11 +117,6 @@ pub fn add_cursor_vertical(buf: &Buffer, sel: Selection, dir: isize) -> Option<S
     }
     let r = buf.line_range(target as usize);
     Some(Selection::cursor((r.start + col).min(r.end)))
-}
-
-/// Map secondary selections through a transaction made elsewhere (e.g. a smart edit).
-pub fn map_all(tx: &Transaction, sels: &[Selection]) -> Vec<Selection> {
-    normalize(sels.iter().map(|s| Selection::new(tx.map_pos(s.anchor, Assoc::After), tx.map_pos(s.head, Assoc::After))).collect())
 }
 
 #[cfg(test)]

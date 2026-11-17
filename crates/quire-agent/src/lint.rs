@@ -36,17 +36,6 @@ use crate::contract::Contract;
 use crate::inbox::{InboxItem, LintCheck};
 use crate::policy::{Policy, ZoneRole};
 
-pub const ALL_CHECKS: [LintCheck; 8] = [
-    LintCheck::BrokenLink,
-    LintCheck::BrokenBlock,
-    LintCheck::Orphan,
-    LintCheck::MissingConcept,
-    LintCheck::MissingProperty,
-    LintCheck::DuplicateTitle,
-    LintCheck::EmptyNote,
-    LintCheck::StaleIndex,
-];
-
 impl LintCheck {
     /// The name used in `vault.toml` and the CLI.
     pub const fn name(self) -> &'static str {

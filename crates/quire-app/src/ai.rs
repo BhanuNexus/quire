@@ -30,9 +30,6 @@ pub mod ocr;
 
 pub use quire_ai::catalog::{ENGINE_ID, Purpose, Tier, human_size};
 
-pub const PROVIDERS: &[(&str, &str)] =
-    &[("local", "Offline (built-in)"), ("anthropic", "Anthropic (Claude)"), ("openai", "OpenAI-compatible (OpenAI, Ollama, LM Studio…)")];
-
 pub fn default_base_url(provider: &str) -> &'static str {
     match provider {
         "anthropic" => "https://api.anthropic.com",
