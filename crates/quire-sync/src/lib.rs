@@ -21,7 +21,6 @@ pub mod compact;
 pub mod crypto;
 pub mod engine;
 pub mod folder;
-mod fsx;
 #[cfg(feature = "http")]
 pub mod http;
 pub mod keyring;
