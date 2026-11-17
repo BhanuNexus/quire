@@ -655,6 +655,15 @@ pub fn parse(src: &str) -> Option<FrontMatter> {
     Some(FrontMatter { fields, range: 0..doc.block_end })
 }
 
+/// Every top-level field in the order written, a key written twice included.
+///
+/// [`parse`] keeps the last of two fields with the same key. Code that must
+/// fail safe on a repeated key (any `trust: untrusted` wins) reads them all
+/// here. Empty without front matter.
+pub fn fields_in_order(src: &str) -> Vec<(String, Value)> {
+    parse_doc(src).map(|doc| doc.entries.into_iter().map(|e| (e.key, e.value)).collect()).unwrap_or_default()
+}
+
 // ------------------------------------------------------------------ writer
 
 /// A front-matter edit: replace `range` (bytes of the source) with `text`.
@@ -1360,6 +1369,18 @@ mod tests {
     /// A hostile note (synced, shared or imported) nests maps tens of
     /// thousands deep: reading its properties must neither exhaust the
     /// stack nor take quadratic time. Deep parts are kept as text.
+    #[test]
+    fn fields_in_order_keeps_repeated_keys() {
+        let src = "---\ntrust: untrusted\nname: x\ntrust: trusted\n...\nbody\n";
+        let all = fields_in_order(src);
+        let keys: Vec<&str> = all.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["trust", "name", "trust"]);
+        assert_eq!(all[0].1, Value::Str("untrusted".into()));
+        // `parse` keeps the last one.
+        assert_eq!(parse(src).unwrap().get("trust"), Some(&Value::Str("trusted".into())));
+        assert!(fields_in_order("no front matter").is_empty());
+    }
+
     #[test]
     fn deeply_nested_properties_are_read_without_exhausting_the_stack() {
         let flow = format!("---\ntitle: ok\nk: {}x{}\n---\nbody\n", "{a: ".repeat(100_000), "}".repeat(100_000));
