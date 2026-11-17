@@ -312,12 +312,11 @@ impl InboxLoader {
             }
             let (tx, rx) = std::sync::mpsc::channel();
             self.rx = Some(rx);
-            std::thread::Builder::new()
-                .name("quire-inbox".into())
-                .spawn(move || {
-                    let _ = tx.send(load(&store, resolved, expire));
-                })
-                .ok();
+            // A thread that can't start drops `tx`: the next poll sees the
+            // channel closed and stops waiting, so the error needs no handling.
+            let _ = std::thread::Builder::new().name("quire-inbox".into()).spawn(move || {
+                let _ = tx.send(load(&store, resolved, expire));
+            });
         }
         out
     }

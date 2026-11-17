@@ -137,7 +137,8 @@ pub fn reanchor(a: &PdfAnchor, pages: &[PageText]) -> Option<PdfAnchor> {
     Some(n)
 }
 
-#[cfg(all(test, feature = "text"))]
+#[cfg(test)]
+#[cfg(feature = "text")]
 mod tests {
     use super::*;
     use crate::text::TextLine;

@@ -479,19 +479,21 @@ impl Workspace {
         let ctl = Control::new();
         let (tx, rx) = unbounded();
         let mirror = self.settings.ai_local.mirror_url.clone();
-        {
+        let spawned = {
             let ctl = ctl.clone();
             let id = id.clone();
-            std::thread::Builder::new()
-                .name("quire-model-download".into())
-                .spawn(move || {
-                    let d = Downloader::new(&mirror);
-                    let r = d.fetch(&entry, &dir, &ctl, &mut |p| {
-                        let _ = tx.send(DlMsg::Progress(id.clone(), p));
-                    });
-                    let _ = tx.send(DlMsg::Finished(id, r));
-                })
-                .ok();
+            std::thread::Builder::new().name("quire-model-download".into()).spawn(move || {
+                let d = Downloader::new(&mirror);
+                let r = d.fetch(&entry, &dir, &ctl, &mut |p| {
+                    let _ = tx.send(DlMsg::Progress(id.clone(), p));
+                });
+                let _ = tx.send(DlMsg::Finished(id, r));
+            })
+        };
+        // Without its thread the download would show as running forever.
+        if let Err(e) = spawned {
+            st.downloads.insert(id, Dl::Failed(format!("couldn't start the download: {e}")));
+            return;
         }
         st.downloads.insert(id.clone(), Dl::Running { done: 0, total: catalog().size_of(&id), rate: 0.0 });
         st.active = Some((id, ctl));
