@@ -1132,22 +1132,7 @@ fn parse_wiki_size(spec: &str) -> Option<f64> {
 }
 
 fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && i + 2 < bytes.len()
-            && let Ok(v) = u8::from_str_radix(s.get(i + 1..i + 3).unwrap_or(""), 16)
-        {
-            out.push(v);
-            i += 3;
-            continue;
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8(out).unwrap_or_else(|_| s.to_owned())
+    String::from_utf8(quire_base::enc::percent_decode_bytes(s)).unwrap_or_else(|_| s.to_owned())
 }
 
 /// The file extension Typst should see and the natural width in points, if
