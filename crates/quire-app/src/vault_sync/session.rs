@@ -1,7 +1,12 @@
 //! One sync session: the link to a transport, `Session` and its passes
 //! (enroll, compact, key refresh), the review import and export, and `LastPass`.
 
-use super::*;
+use super::{
+    Arc, BTreeMap, Deserialize, DeviceSecret, Duration, Engine, FolderTransport, HELD_DELETES, Hardening, HeldDeletes, HttpTransport,
+    Instant, KeySet, LanePos, ObjectStore, Path, PathBuf, Pins, RemoteProfile, RemoteSecret, RemoteTransport, Report, SHARED_STATE_FILE,
+    Serialize, SpaceAdmin, SyncConfig, SyncLock, SyncStatus, Transport, Vault, VaultKey, VaultStore, folder, harden, open_state_named,
+    runs_shared_lane, save_state, save_state_named, scrub_locked_text, secrets, snapshot_reads, state_file, sync_dir, today, token_name,
+};
 
 pub(super) enum Msg {
     Nudge,

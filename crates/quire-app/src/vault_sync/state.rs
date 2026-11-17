@@ -1,7 +1,7 @@
 //! The sync engine's files in `.quire/sync/`: the per-process lock, state
 //! load and save, and the shared lane's state.
 
-use super::*;
+use super::{NotePath, Path, PathBuf, SyncConfig, SyncState, Vault, folder, sync_dir};
 
 /// Where `config.json` keeps the device id while a selection is set: Quire
 /// 0.9 needs `device`, so it doesn't take the file for a sync setup. 0.9

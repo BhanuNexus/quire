@@ -1,7 +1,14 @@
 //! The `impl Workspace` side of sync: the methods the app and the CLI call to
 //! set sync up, run a pass, change its settings and read its status.
 
-use super::*;
+use super::{
+    APP_POLL, DeviceRemoved, Engine, FolderTransport, HeldDeletes, HeldId, HttpTransport, Link, NotePath, NoticeLevel, Path, PathBuf, Pins,
+    Receiver, RecoveryKey, RemoteSecret, RemoteTransport, Selection, SetupDone, SetupKind, SetupResult, SpaceId, SpaceInfo, SyncConfig,
+    SyncDevices, SyncEvent, SyncHandle, SyncStatus, SyncTarget, SyncVaultInfo, SyncVersion, SyncWorker, UpgradeInfo, Vault, Workspace,
+    folder, harden, in_background, key_name, load_state, raise_min_reader, read_key, remote, remote_dir, secrets, skipped_notice,
+    sync_allow_deletes_at, sync_create_at, sync_devices_at, sync_dir, sync_join_at, sync_remove_device_at, sync_set_remote_secret_at,
+    sync_test, sync_upgrade_at, sync_upgrade_info_at, token_name,
+};
 
 impl Workspace {
     fn sync_parts(&self) -> Result<(PathBuf, Vault), String> {

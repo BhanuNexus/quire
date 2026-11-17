@@ -1,7 +1,11 @@
 //! The background sync thread (`SyncWorker`), its poll intervals, and the
 //! one-shot `sync_once_at` the CLI uses.
 
-use super::*;
+use super::{
+    ALREADY_SYNCING, Arc, AtomicBool, AtomicU64, Duration, FolderTransport, HttpTransport, Instant, Link, LockError, Msg, Ordering, Path,
+    PathBuf, Receiver, Report, Sender, Session, SyncConfig, SyncEvent, SyncStatus, Vault, VaultKey, folder, lock_sync, read_key, secrets,
+    sync_dir, token_name,
+};
 
 /// The background sync thread for one vault.
 pub struct SyncWorker {

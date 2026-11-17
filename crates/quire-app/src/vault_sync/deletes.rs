@@ -1,7 +1,7 @@
 //! Mass deletes held for a decision: `HeldDeletes`, the allow-for-15-minutes
 //! call, the shared-lane switch and the notice for a file that can't be stored.
 
-use super::*;
+use super::{Deserialize, Duration, Path, Serialize, SyncConfig, raise_min_reader, sync_dir};
 
 /// In `.quire/sync/`: the deletes a pass held back because they were many
 /// ([`HeldDeletes`], 0.13.2).

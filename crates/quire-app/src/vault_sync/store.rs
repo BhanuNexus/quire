@@ -1,7 +1,7 @@
 //! How sync sees the vault: `VaultStore`, the `LocalStore` the engine reads
 //! and writes notes through, and the lanes (which files a store syncs).
 
-use super::*;
+use super::{HashMap, LocalStore, MAX_SHARED_BYTES, NotePath, SHARED_PREFIX, SHARED_REVIEW_PREFIX, Selection, Vault, icloud_stub};
 
 /// Attachments bigger than this don't sync (each change is sent whole).
 pub const MAX_ATTACHMENT_BYTES: u64 = 10 * 1024 * 1024;

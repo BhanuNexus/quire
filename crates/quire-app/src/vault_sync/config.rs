@@ -1,7 +1,10 @@
 //! What a vault's sync setup is: `SyncConfig` and its profiles, secrets,
 //! selection and targets, the keychain names, and the folder checks.
 
-use super::*;
+use super::{
+    Arc, Deserialize, DeviceId, Instant, KdfParams, ObjectStore, PARTIAL_DEVICE, Path, PathBuf, REMOTE_DEVICE, Serialize, SpaceId,
+    VaultKey, folder, remote, secrets, sync_list,
+};
 
 /// What's stored in `.quire/sync/config.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

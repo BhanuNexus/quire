@@ -2,7 +2,13 @@
 //! and stop jobs that run off the UI thread, and the selection and summary
 //! calls.
 
-use super::*;
+use super::{
+    ALREADY_SYNCING, APP_POLL, Arc, DeviceId, DeviceRemoved, FolderTransport, Hardening, HeldDeletes, HttpTransport, KDF, LastPass, Link,
+    LockError, Path, PathBuf, Receiver, RecoveryKey, RemoteSecret, RemoteTransport, Selection, Session, SpaceId, SyncConfig, SyncLock,
+    SyncState, SyncStatus, SyncTarget, SyncVaultInfo, SyncWorker, VaultKey, Workspace, WrappedKey, folder, harden, key_name, load_state,
+    lock_sync, open_parts, remote, remote_dir, save_state, secrets, state_file, sync_dir, sync_folder_root, sync_share_at, sync_test,
+    token_name,
+};
 
 /// Run `f` on a thread of its own; its result arrives on the receiver.
 pub(super) fn in_background<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Receiver<T> {
