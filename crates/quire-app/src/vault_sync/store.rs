@@ -77,7 +77,7 @@ impl VaultStore {
     /// Whether the vault's disk ignores capital letters in names (Windows,
     /// macOS by default): `.quire` is found as `.QUIRE` too. A vault with
     /// no folder on disk (in memory) tells them apart.
-    fn case_blind(&self) -> bool {
+    pub(super) fn case_blind(&self) -> bool {
         if let Some(b) = self.case_blind.get() {
             return b;
         }
