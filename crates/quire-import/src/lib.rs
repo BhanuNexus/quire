@@ -31,7 +31,7 @@ pub mod obsidian;
 mod roam;
 mod tree;
 pub mod yaml;
-// WS-B: URL capture.
+// URL capture.
 pub mod web;
 
 use std::path::Path;

@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! JSON Canvas 1.0 (`.canvas` files) and ink sketches (design 0.9 §G.1).
+//! JSON Canvas 1.0 (`.canvas` files) and ink sketches (`docs/design/0.9.md` §G.1).
 //! No egui here: the model, its canonical file form, geometry, the edit
 //! operations agents send, and the ink codec.
 //!

@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! PDF annotations as a Markdown note (design §G.2, docs/formats/pdf-annotations.md).
+//! PDF annotations as a Markdown note (`docs/design/0.9.md` §G.2, docs/formats/pdf-annotations.md).
 //!
 //! `paper.pdf`'s highlights live in `paper (annotations).md` beside it. Each
 //! highlight is a quote callout with a block id, the reader's comment, and

@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! PDFs (design 0.9 §G.2): text with positions for search and highlights
+//! PDFs (`docs/design/0.9.md` §G.2): text with positions for search and highlights
 //! (`text`, both editions), page images (`render`, full edition), and
 //! annotations kept in a Markdown note next to the PDF.
 //!
