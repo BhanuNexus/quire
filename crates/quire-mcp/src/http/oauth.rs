@@ -180,12 +180,11 @@ pub(crate) async fn authorize(State(st): State<Arc<HttpState>>, Query(q): Query<
         (client.client_id.clone(), client.name.clone(), client.host.clone(), redirect_uri.to_string(), st.urls.resource.clone());
     let (challenge, state_s, actor) = (challenge.to_string(), state.to_string(), client.actor());
     // The browser's secret (only its hash is kept) and the code to compare.
-    let mut raw = [0u8; 32];
-    if getrandom::fill(&mut raw).is_err() {
+    let (Ok(raw), Ok(code)) = (quire_base::rand::bytes::<32>(), crate::consent::verify_code()) else {
         return error_page("No randomness available.");
-    }
+    };
     let secret = URL_SAFE_NO_PAD.encode(raw);
-    let (browser, code) = (hash(&secret), crate::consent::verify_code());
+    let browser = hash(&secret);
     let code2 = code.clone();
     let created = tokio::task::spawn_blocking(move || {
         let id = consent.create(&cid, &name, &host, &redirect, &names, &resource, now_ms())?;
@@ -299,10 +298,9 @@ pub(crate) async fn wait(State(st): State<Arc<HttpState>>, Query(q): Query<HashM
             if !tokio::task::spawn_blocking(move || consent.mark_used(&id2)).await.unwrap_or(false) {
                 return error_page("This request was already completed.");
             }
-            let mut raw = [0u8; 32];
-            if getrandom::fill(&mut raw).is_err() {
+            let Ok(raw) = quire_base::rand::bytes::<32>() else {
                 return error_page("No randomness available.");
-            }
+            };
             let code = URL_SAFE_NO_PAD.encode(raw);
             let entry = Code {
                 client_id: r.client_id.clone(),
