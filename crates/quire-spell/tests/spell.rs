@@ -231,8 +231,13 @@ fn fenced_code_across_lines() {
 fn front_matter_only_at_top() {
     let doc = "---\ntitel: Somthing\ntags: [wrk]\n---\nBody wrng\n\n---\nnot frnt matter\n";
     assert_eq!(bad_doc(doc), ["wrng", "frnt"]);
-    // With a byte-order mark too.
-    assert_eq!(bad_doc("\u{feff}---\nkee: vaule\n---\nfine"), Vec::<&str>::new());
+    // Front matter is where the reader finds it (`frontmatter::fences`). A
+    // byte-order mark before `---`, a `---  ` opener or a block that never
+    // closes is not front matter, so its lines are checked like the rest.
+    assert_eq!(bad_doc("\u{feff}---\nkee: vaule\n---\nfine"), ["kee", "vaule"]);
+    assert_eq!(bad_doc("---  \nkee: vaule\n---\nfine"), ["kee", "vaule"]);
+    assert_eq!(bad_doc("---\nkee: vaule\nno closer wrng\n"), ["kee", "vaule", "wrng"]);
+    assert_eq!(bad_doc("---\nkee: vaule\n...\nwrng\n"), ["wrng"]);
 }
 
 #[test]

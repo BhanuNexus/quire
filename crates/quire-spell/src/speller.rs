@@ -308,7 +308,7 @@ impl Speller {
     /// Bypasses the line cache.
     pub fn check_document(&self, text: &str) -> Vec<(usize, Range<usize>)> {
         let personal = self.personal();
-        let mut ctx = LineContext::new();
+        let mut ctx = LineContext::for_document(text);
         let mut out = Vec::new();
         for (n, line) in text.split('\n').enumerate() {
             out.extend(self.misspellings_uncached(line, &mut ctx, &personal).into_iter().map(|r| (n, r)));

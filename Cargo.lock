@@ -6068,6 +6068,7 @@ name = "quire-spell"
 version = "0.13.2"
 dependencies = [
  "flate2",
+ "quire-markdown",
  "quire-vault",
  "spellbook",
  "tempfile",

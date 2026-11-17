@@ -33,6 +33,9 @@ pub struct LineContext {
     indented_code: bool,
     /// Inside a list, where indented lines are item content, not code.
     in_list: bool,
+    /// A `---` first line opens front matter: false when the document's
+    /// front matter never closes (see [`LineContext::for_document`]).
+    front_matter: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -58,9 +61,18 @@ impl Default for LineContext {
 }
 
 impl LineContext {
-    /// Context for the first line of a document.
+    /// Context for the first line of a document, taking a `---` first line
+    /// to open front matter.
     pub const fn new() -> Self {
-        Self { block: Block::Normal, started: false, paragraph: false, indented_code: false, in_list: false }
+        Self { block: Block::Normal, started: false, paragraph: false, indented_code: false, in_list: false, front_matter: true }
+    }
+
+    /// Context for the first line of `text`, which knows whether its front
+    /// matter closes. Front matter is where
+    /// [`quire_markdown::frontmatter::fences`] says: a `---` first line
+    /// whose block never closes is a rule, and the lines after it are prose.
+    pub fn for_document(text: &str) -> Self {
+        Self { front_matter: quire_markdown::frontmatter::fences(text).is_some(), ..Self::new() }
     }
 
     /// True while inside a fenced code block, front matter, `$$` math block or
@@ -80,6 +92,8 @@ impl LineContext {
         self.started = true;
         let mut line = line.strip_suffix('\n').unwrap_or(line);
         line = line.strip_suffix('\r').unwrap_or(line);
+        // Before the byte-order mark is taken off: `\u{feff}---` opens nothing.
+        let opens = first && self.front_matter && quire_markdown::frontmatter::is_opening_line(line);
         if first {
             line = line.strip_prefix('\u{feff}').unwrap_or(line);
         }
@@ -87,8 +101,7 @@ impl LineContext {
         match self.block {
             Block::Normal => {}
             Block::FrontMatter => {
-                let t = line.trim_end();
-                if t == "---" || t == "..." {
+                if quire_markdown::frontmatter::is_closing_line(line) {
                     self.end_block();
                 }
                 return false;
@@ -113,7 +126,7 @@ impl LineContext {
             }
         }
 
-        if first && line.trim_end() == "---" {
+        if opens {
             self.block = Block::FrontMatter;
             return false;
         }
@@ -573,6 +586,34 @@ mod tests {
         for s in ["](", "](\\", "](()", "]( x", "](a\\)b)"] {
             let mut n = 0;
             for_each_word(s, &mut |_| n += 1);
+        }
+    }
+
+    include!("../../quire-markdown/tests/fences/cases.rs");
+
+    /// Where the line-by-line scan takes the body to start: after the line
+    /// that ends front matter (`None`: no front matter).
+    fn body_start(src: &str) -> Option<usize> {
+        let mut ctx = LineContext::for_document(src);
+        let (mut pos, mut opened) = (0, false);
+        for line in src.split_inclusive('\n') {
+            ctx.advance(line);
+            pos += line.len();
+            if ctx.block == Block::FrontMatter {
+                opened = true;
+            } else {
+                return opened.then_some(pos);
+            }
+        }
+        opened.then_some(pos)
+    }
+
+    /// The same place as `frontmatter::fences`, on every shared case.
+    #[test]
+    fn front_matter_ends_where_the_reader_says() {
+        for (name, src) in FENCE_CASES {
+            let expected = quire_markdown::frontmatter::fences(src).map(|f| f.body_start());
+            assert_eq!(body_start(src), expected, "{name}: {src:?}");
         }
     }
 }
