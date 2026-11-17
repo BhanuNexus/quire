@@ -10,6 +10,8 @@
     reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
 )]
 
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
+
 use std::process::{Command, Output};
 
 fn cli(home: &std::path::Path, args: &[&str], env_on: bool) -> Output {

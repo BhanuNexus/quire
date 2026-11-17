@@ -6,7 +6,7 @@
 //! app. Reminders fire only while Quire runs; ones missed in the last week
 //! are listed once at start.
 
-use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime};
+use chrono::{Duration, NaiveDateTime, NaiveTime};
 
 /// A reminder with only a date fires at this time.
 pub const DEFAULT_TIME: (u32, u32) = (9, 0);
@@ -36,7 +36,7 @@ pub fn parse_at(s: &str) -> Option<NaiveDateTime> {
     if let Ok(t) = NaiveDateTime::parse_from_str(&s.replacen('T', " ", 1), "%Y-%m-%d %H:%M") {
         return Some(t);
     }
-    let d = NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()?;
+    let d = quire_base::time::parse_ymd(s)?;
     Some(d.and_time(NaiveTime::from_hms_opt(DEFAULT_TIME.0, DEFAULT_TIME.1, 0)?))
 }
 

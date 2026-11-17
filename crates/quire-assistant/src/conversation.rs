@@ -164,9 +164,7 @@ pub fn save(root: &Path, c: &Conversation) -> std::io::Result<()> {
     {
         return Ok(());
     }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(c).map_err(std::io::Error::other)?)?;
-    std::fs::rename(tmp, path)
+    quire_base::fs::write_atomic(&path, &serde_json::to_vec_pretty(c).map_err(std::io::Error::other)?, quire_base::fs::Options::STATE)
 }
 
 /// Every conversation kept, newest first; ones older than 30 days are deleted.

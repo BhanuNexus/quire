@@ -16,9 +16,10 @@ default = []
 # on-device parts (quire-agent) builds without network code. quire-app and
 # quire-assistant turn it on, so both editions of both apps ship it; nothing
 # connects until the person configures a provider.
-remote-llm = ["dep:ureq"]
+remote-llm = ["dep:ureq", "quire-base/net"]
 
 [dependencies]
+quire-base.workspace = true
 quire-markdown.workspace = true
 quire-vault.workspace = true
 quire-index.workspace = true

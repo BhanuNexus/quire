@@ -14,33 +14,11 @@ use crate::scan::{Inline, WikiLink, scan_inlines};
 /// Resolves a wikilink to an `href`. `None` marks it as unresolved.
 pub type Resolver<'a> = &'a dyn Fn(&WikiLink) -> Option<String>;
 
-pub fn escape_html(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            _ => out.push(c),
-        }
-    }
-    out
-}
+pub use quire_base::enc::escape_html;
 
 /// Minimal percent-encoding for path segments in URLs.
 pub fn encode_url(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => out.push(b as char),
-            _ => {
-                let _ = write!(out, "%{b:02X}");
-            }
-        }
-    }
-    out
+    quire_base::enc::percent_encode(s, b"/")
 }
 
 fn is_image(target: &str) -> bool {

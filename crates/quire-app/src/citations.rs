@@ -1060,9 +1060,12 @@ pub fn reload(ws: &mut Workspace) {
     let prefs = CitationPrefs::load(&vault);
     ws.features.citations.prefs = prefs.clone();
     let (tx, rx) = crossbeam_channel::bounded(1);
-    std::thread::spawn(move || {
-        let _ = tx.send(read_library(&vault, &prefs));
-    });
+    std::thread::Builder::new()
+        .name("quire-citations".into())
+        .spawn(move || {
+            let _ = tx.send(read_library(&vault, &prefs));
+        })
+        .expect("the system starts a thread");
     ws.features.citations.loading = Some(rx);
 }
 

@@ -6,6 +6,8 @@
 //! model runs, idle models unloaded, and an exit after ten minutes with
 //! nothing loaded (the app starts the engine again when it needs it).
 
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -109,15 +111,18 @@ pub fn serve<B: Backend>(backend: B, idle_exit: Option<Duration>) {
             .expect("the worker thread starts");
     }
     let (line_tx, line_rx) = channel::<Option<String>>();
-    std::thread::spawn(move || {
-        for line in std::io::stdin().lock().lines() {
-            let Ok(line) = line else { break };
-            if line_tx.send(Some(line)).is_err() {
-                return;
+    std::thread::Builder::new()
+        .name("quire-engine-stdin".into())
+        .spawn(move || {
+            for line in std::io::stdin().lock().lines() {
+                let Ok(line) = line else { break };
+                if line_tx.send(Some(line)).is_err() {
+                    return;
+                }
             }
-        }
-        let _ = line_tx.send(None);
-    });
+            let _ = line_tx.send(None);
+        })
+        .expect("the system starts a thread");
     let idle_exit = idle_exit.unwrap_or(EXIT_WHEN_EMPTY);
     let mut greeted = false;
     loop {

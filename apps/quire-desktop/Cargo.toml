@@ -24,6 +24,7 @@ voice = ["dep:cpal"]
 bench = []
 
 [dependencies]
+quire-base.workspace = true
 quire-app.workspace = true
 quire-import.workspace = true
 crossbeam-channel.workspace = true

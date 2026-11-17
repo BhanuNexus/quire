@@ -98,12 +98,7 @@ impl VectorCache {
                 out.extend_from_slice(&x.to_le_bytes());
             }
         }
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, out)?;
-        std::fs::rename(tmp, path)?;
+        quire_base::fs::write_atomic(path, &out, quire_base::fs::Options::STATE)?;
         self.dirty = false;
         Ok(())
     }

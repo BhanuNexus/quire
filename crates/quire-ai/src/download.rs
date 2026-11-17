@@ -20,6 +20,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
+use quire_base::enc::hex;
+use quire_base::net::{Redirects, Timeouts};
+use quire_base::time::now_ms;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -138,10 +141,7 @@ impl Manifest {
         }
         self.format = MANIFEST_FORMAT;
         let text = toml::to_string(self).map_err(std::io::Error::other)?;
-        std::fs::create_dir_all(models)?;
-        let tmp = models.join("installed.toml.tmp");
-        std::fs::write(&tmp, text)?;
-        std::fs::rename(tmp, Self::path(models))
+        quire_base::fs::write_atomic(&Self::path(models), text.as_bytes(), quire_base::fs::Options::STATE)
     }
 
     /// Every file of `entry` is on disk and was verified against the hash
@@ -176,18 +176,6 @@ pub fn sha256_file(path: &Path) -> std::io::Result<String> {
     Ok(hex(&h.finalize()))
 }
 
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-}
-
 /// `url` with its scheme and host replaced by `mirror`'s (`""`: unchanged).
 pub fn mirrored(url: &str, mirror: &str) -> String {
     let mirror = mirror.trim().trim_end_matches('/');
@@ -207,15 +195,15 @@ pub struct Downloader {
 
 impl Downloader {
     pub fn new(mirror: &str) -> Self {
-        let agent = ureq::Agent::config_builder()
-            .timeout_connect(Some(Duration::from_secs(20)))
-            .timeout_recv_response(Some(Duration::from_mins(1)))
-            .timeout_per_read(Some(Duration::from_secs(45)))
-            .http_status_as_error(false)
-            .user_agent(concat!("Quire/", env!("CARGO_PKG_VERSION"), " (+models)"))
-            .tls_config(ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build())
-            .build()
-            .into();
+        // No limit for the whole download (models are large); a server that
+        // goes quiet is given up on. Mirrors may redirect to a CDN.
+        let timeouts = Timeouts {
+            connect: Some(Duration::from_secs(20)),
+            reply: Some(Duration::from_mins(1)),
+            per_read: Some(Duration::from_secs(45)),
+            total: None,
+        };
+        let agent = quire_base::net::agent("models", timeouts, Redirects::Follow(10));
         Self { agent, mirror: mirror.to_string() }
     }
 
@@ -305,6 +293,10 @@ impl Downloader {
         }
         let resp = req.call().map_err(|e| DownloadError::Http(e.to_string()))?;
         let status = resp.status().as_u16();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a model is downloaded into its .part file, resumed by appending, and renamed into place once verified"
+        )]
         let mut out = match status {
             206 => OpenOptions::new().append(true).open(part)?,
             200 => {
@@ -365,6 +357,10 @@ fn place(entry: &CatalogEntry, f: &CatalogFile, part: &Path, models: &Path) -> R
     }
     if entry.purpose == Purpose::Engine && Path::new(&f.name).extension().is_some_and(|e| e.eq_ignore_ascii_case("gz")) {
         let tmp = dest.with_extension("tmp");
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the engine (tens of MiB) is unpacked as a stream into a temporary file, checked and made executable before its rename"
+        )]
         {
             let mut gz = flate2::read::GzDecoder::new(File::open(part)?);
             let mut out = File::create(&tmp)?;
@@ -378,11 +374,13 @@ fn place(entry: &CatalogEntry, f: &CatalogFile, part: &Path, models: &Path) -> R
             return Err(DownloadError::Checksum { file: ENGINE_BIN.into() });
         }
         make_executable(&tmp)?;
+        #[expect(clippy::disallowed_methods, reason = "the checked, executable engine replaces the old one")]
         std::fs::rename(&tmp, &dest)?;
         let _ = std::fs::remove_file(part);
     } else {
         // Windows only flushes a handle opened for writing.
         OpenOptions::new().write(true).open(part)?.sync_all()?;
+        #[expect(clippy::disallowed_methods, reason = "a verified .part download becomes the model file")]
         std::fs::rename(part, &dest)?;
     }
     Ok(())
@@ -473,6 +471,7 @@ pub fn install_from_files(catalog: &Catalog, paths: &[PathBuf], models: &Path) -
                 let tmp = dest.with_extension("tmp");
                 std::fs::copy(p, &tmp)?;
                 make_executable(&tmp)?;
+                #[expect(clippy::disallowed_methods, reason = "a copied engine, made executable, replaces the old one")]
                 std::fs::rename(tmp, dest)?;
             } else {
                 let part = dir.join(format!("{}.part", f.name));

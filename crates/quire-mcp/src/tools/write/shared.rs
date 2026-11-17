@@ -78,14 +78,22 @@ pub(super) fn submit(
         let digest = mrtr::args_digest(tool, a);
         let now = cx.agent.now_ms();
         let ask_again = || {
-            let state = sealer.seal(&StatePayload {
+            let sealed = sealer.seal(&StatePayload {
                 principal: cx.actor.id.clone(),
                 exp: now + mrtr::STATE_TTL_MS,
                 method: ext.method.to_string(),
                 args_digest: digest.clone(),
                 base_version: base.to_string(),
             });
-            ToolOutput::InputRequired { requests: mrtr::approval_request(path.as_str(), diff), state }
+            match sealed {
+                Ok(state) => ToolOutput::InputRequired { requests: mrtr::approval_request(path.as_str(), diff), state },
+                // D2: no state under a zero nonce; nothing is written.
+                Err(e) => ToolOutput::Err {
+                    code: "no_randomness",
+                    message: format!("Quire can't ask for approval right now ({e}); nothing was written."),
+                    structured: json!({"error": "no_randomness"}),
+                },
+            }
         };
         match (ext.request_state, ext.input_responses) {
             (Some(state), Some(responses)) => {

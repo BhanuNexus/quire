@@ -15,6 +15,8 @@
 //! their version defines. A 2026-07-28 client names its version in every
 //! request's `_meta` and can start with `server/discover`.
 
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+
 /// A JSON value written as JSON, for the tool and resource schemas: kept in
 /// the binary as its text and parsed when the tool list is made (0.13.1),
 /// instead of the code `json!` expands each one to (about 0.2 MB a binary).

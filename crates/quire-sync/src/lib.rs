@@ -17,12 +17,13 @@
 //! The wire format is `docs/formats/sync-protocol.md`; the current design is in
 //! `docs/design/0.12-sync.md` and `docs/design/0.13-sync.md`.
 
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+
 pub mod admin;
 pub mod compact;
 pub mod crypto;
 pub mod engine;
 pub mod folder;
-mod fsx;
 #[cfg(feature = "http")]
 pub mod http;
 pub mod keyring;

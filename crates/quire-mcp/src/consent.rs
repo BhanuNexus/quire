@@ -69,13 +69,13 @@ impl Request {
 }
 
 /// A short code for the person to compare: 8 letters and digits that
-/// can't be confused (no 0/O, 1/I/L), as `XXXX-XXXX`.
-pub fn verify_code() -> String {
+/// can't be confused (no 0/O, 1/I/L), as `XXXX-XXXX`. An error, never
+/// `AAAA-AAAA`, when the system has no random numbers (0.14).
+pub fn verify_code() -> Result<String, quire_base::rand::NoRandomness> {
     const ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
-    let mut b = [0u8; 8];
-    let _ = getrandom::fill(&mut b);
+    let b: [u8; 8] = quire_base::rand::bytes()?;
     let c: String = b.iter().map(|x| char::from(ALPHABET[usize::from(*x) % ALPHABET.len()])).collect();
-    format!("{}-{}", &c[..4], &c[4..])
+    Ok(format!("{}-{}", &c[..4], &c[4..]))
 }
 
 #[derive(Debug, Clone)]
@@ -83,12 +83,11 @@ pub struct ConsentStore {
     dir: PathBuf,
 }
 
-fn random_id() -> String {
+fn random_id() -> Result<String, quire_base::rand::NoRandomness> {
     use base64::Engine as _;
-    let mut b = [0u8; 12];
-    let _ = getrandom::fill(&mut b);
+    let b: [u8; 12] = quire_base::rand::bytes()?;
     // Short enough to type in `quire-cli mcp approve`, too long to guess.
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b).replace(['-', '_'], "x")
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b).replace(['-', '_'], "x"))
 }
 
 impl ConsentStore {
@@ -126,7 +125,7 @@ impl ConsentStore {
         if self.pending(now).len() >= MAX_PENDING {
             return Err("too many connection requests are waiting; deny some in Quire first".into());
         }
-        let id = random_id();
+        let id = random_id().map_err(|e| e.to_string())?;
         let r = Request {
             format: CONSENT_FORMAT,
             id: id.clone(),
@@ -260,8 +259,14 @@ mod tests {
             assert_eq!(wins, 1, "round {round}");
             assert_eq!(st.get(&id).unwrap().state, State::Used);
         }
-        let code = verify_code();
+        let code = verify_code().unwrap();
         assert_eq!(code.len(), 9);
+        // D2 (0.14): without random numbers there is no code (it was
+        // `AAAA-AAAA`) and no request (its id was all zeros).
+        assert!(quire_base::rand::failing(verify_code).is_err());
+        let before = st.pending(0).len();
+        assert!(quire_base::rand::failing(|| st.create("c", "n", "h", "r", &["notes:read"], "r", 0)).is_err());
+        assert_eq!(st.pending(0).len(), before);
         assert!(code.chars().all(|c| c == '-' || c.is_ascii_uppercase() || c.is_ascii_digit()));
     }
 }

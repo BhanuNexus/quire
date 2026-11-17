@@ -7,6 +7,8 @@
 //! ```
 #![expect(clippy::print_stdout, reason = "an example run by hand: it prints what it wrote")]
 
+#![expect(clippy::disallowed_methods, reason = "a developer example writes its sample files directly")]
+
 use std::path::PathBuf;
 use std::time::Instant;
 

@@ -12,9 +12,7 @@ use similar::{ChangeTag, TextDiff};
 
 use crate::workspace::{NoticeLevel, Workspace};
 
-pub fn now_ms() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
-}
+pub use quire_base::time::now_ms;
 
 enum Job {
     /// Keep `text` as a version.

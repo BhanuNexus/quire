@@ -8,6 +8,8 @@
 //! * [`acp`] — connecting an external agent (Agent Client Protocol)
 //! * [`wiki`] — "Ingest into wiki…"
 
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+
 pub mod acp;
 pub mod conversation;
 pub mod prompts;

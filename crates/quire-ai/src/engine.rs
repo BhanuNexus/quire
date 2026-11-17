@@ -401,18 +401,21 @@ impl Engine {
                 // end the request before it is restarted.
                 self.send_cancel(id);
                 let shared = Arc::clone(&self.shared);
-                std::thread::spawn(move || {
-                    let deadline = Instant::now() + Duration::from_secs(5);
-                    loop {
-                        match rx.recv_timeout(Duration::from_millis(100)) {
-                            Ok(r) if r.event.is_none() => return,
-                            Ok(_) | Err(RecvTimeoutError::Timeout) if Instant::now() < deadline => {}
-                            Err(RecvTimeoutError::Disconnected) => return,
-                            _ => break,
+                std::thread::Builder::new()
+                    .name("quire-ai-cancel".into())
+                    .spawn(move || {
+                        let deadline = Instant::now() + Duration::from_secs(5);
+                        loop {
+                            match rx.recv_timeout(Duration::from_millis(100)) {
+                                Ok(r) if r.event.is_none() => return,
+                                Ok(_) | Err(RecvTimeoutError::Timeout) if Instant::now() < deadline => {}
+                                Err(RecvTimeoutError::Disconnected) => return,
+                                _ => break,
+                            }
                         }
-                    }
-                    kill_proc(&shared);
-                });
+                        kill_proc(&shared);
+                    })
+                    .expect("the system starts a thread");
                 return Err(EngineError::Cancelled);
             }
             match rx.recv_timeout(Duration::from_millis(50)) {
@@ -599,6 +602,10 @@ fn kill_proc(shared: &Shared) {
 
 /// `nice -n 10 <engine>` on Unix when `nice` exists (setting the priority
 /// in the child would need unsafe code); below-normal priority on Windows.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "starts the on-device AI engine, a Quire binary the person installed (P6: only when AI is turned on)"
+)]
 fn command(path: &Path) -> Command {
     #[cfg(unix)]
     {

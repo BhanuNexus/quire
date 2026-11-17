@@ -916,14 +916,15 @@ fn set_board(ws: &mut Workspace, target: &BoardTarget, setting: &BoardSetting) {
     }
 }
 
-/// Whether a view's folder is one new notes may go to: inside the vault,
-/// with no hidden segment (`.quire/`, `.trash/`, `.git/`, `x/.drafts/`).
+/// Whether a view's folder is one new notes may go to: the vault's root
+/// (empty), or a [`quire_base::path::Rule::ViewFolder`] (inside the vault,
+/// no hidden segment such as `.quire/`, `.trash/`, `.git/`, `x/.drafts/`).
+/// `\` counts as `/`, and a trailing `/` is fine.
 pub(crate) fn safe_new_note_folder(folder: &str) -> Result<(), String> {
     let f = folder.replace('\\', "/");
-    let bad = f.starts_with('/')
-        || f.contains(':')
-        || f.split('/').any(|seg| seg == ".." || seg.starts_with('.') || seg.chars().any(char::is_control));
-    if bad { Err(format!("New notes can't go in “{folder}”: pick a folder inside the vault that isn't hidden")) } else { Ok(()) }
+    let rel = f.strip_suffix('/').unwrap_or(&f);
+    let ok = !f.starts_with('/') && (rel.is_empty() || quire_base::path::Rule::ViewFolder.accepts(rel));
+    if ok { Ok(()) } else { Err(format!("New notes can't go in “{folder}”: pick a folder inside the vault that isn't hidden")) }
 }
 
 /// A note with `preset` front matter and its title as a heading, not opened.
@@ -1415,9 +1416,11 @@ mod tests {
         for bad in [".quire/agent", "a/.drafts", "../x", "/etc", "C:/x", "a/../../b", ".trash"] {
             assert!(safe_new_note_folder(bad).is_err(), "{bad}");
         }
-        for ok in ["", "Tasks", "Projects/2026", "Notes with spaces"] {
+        for ok in ["", "Tasks", "Projects/2026", "Notes with spaces", "Tasks/", "Projects\\2026", "v1..v2"] {
             assert!(safe_new_note_folder(ok).is_ok(), "{ok}");
         }
+        // 0.14, quire_base::path::Rule::ViewFolder: an empty segment too.
+        assert!(safe_new_note_folder("a//b").is_err());
         let mut w = ws(&[("A.md", "x\n")]);
         new_note_in(&mut w, ".quire/agent", "Plan", &[]);
         assert!(!w.vault().unwrap().exists(&".quire/agent/Plan.md".into()));

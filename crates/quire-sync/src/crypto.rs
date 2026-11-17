@@ -49,9 +49,7 @@ pub enum CryptoError {
 }
 
 pub(crate) fn random_bytes<const N: usize>() -> Result<[u8; N], CryptoError> {
-    let mut b = [0u8; N];
-    getrandom::fill(&mut b).map_err(|_| CryptoError::NoRandomness)?;
-    Ok(b)
+    quire_base::rand::bytes().map_err(|_| CryptoError::NoRandomness)
 }
 
 /// The secret that encrypts a vault. Wiped from memory when dropped.
@@ -300,94 +298,17 @@ impl std::fmt::Display for RecoveryKey {
     }
 }
 
-/// Crockford base32: no I, L, O or U, so it's hard to misread.
-const B32: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-
 impl RecoveryKey {
     fn encode(key: &[u8; 32]) -> Self {
-        let mut bits: u64 = 0;
-        let mut n = 0;
-        let mut chars = String::with_capacity(70);
-        for &b in key {
-            bits = (bits << 8) | u64::from(b);
-            n += 8;
-            while n >= 5 {
-                n -= 5;
-                chars.push(char::from(B32[((bits >> n) & 31) as usize]));
-            }
-        }
-        if n > 0 {
-            chars.push(char::from(B32[((bits << (5 - n)) & 31) as usize]));
-        }
-        let check = Sha256::digest_prefix(key);
-        for i in 0..4 {
-            chars.push(char::from(B32[usize::from(check[i] & 31)]));
-        }
-        let grouped: Vec<String> = chars.as_bytes().chunks(4).map(|c| String::from_utf8_lossy(c).into_owned()).collect();
-        Self(grouped.join("-"))
+        Self(quire_base::recovery::encode(key))
     }
 
     fn decode(text: &str) -> Result<[u8; 32], CryptoError> {
-        let mut vals = Vec::with_capacity(56);
-        for c in text.chars().filter(|c| !c.is_whitespace() && *c != '-') {
-            let c = match c.to_ascii_uppercase() {
-                'O' => '0',
-                'I' | 'L' => '1',
-                c => c,
-            };
-            let v = B32.iter().position(|&b| char::from(b) == c).ok_or(CryptoError::BadRecoveryKey)?;
-            vals.push(v as u64);
-        }
-        if vals.len() != 56 {
-            return Err(CryptoError::BadRecoveryKey);
-        }
-        let (data, check) = vals.split_at(52);
-        let mut out = Vec::with_capacity(33);
-        let mut bits: u64 = 0;
-        let mut n = 0;
-        for &v in data {
-            bits = (bits << 5) | v;
-            n += 5;
-            if n >= 8 {
-                n -= 8;
-                out.push(((bits >> n) & 0xff) as u8);
-            }
-        }
-        let key: [u8; 32] = out.get(..32).and_then(|s| s.try_into().ok()).ok_or(CryptoError::BadRecoveryKey)?;
-        let want = Sha256::digest_prefix(&key);
-        if check.iter().zip(want).any(|(&c, w)| c != u64::from(w & 31)) {
-            return Err(CryptoError::BadRecoveryKey);
-        }
-        Ok(key)
+        quire_base::recovery::decode(text).ok_or(CryptoError::BadRecoveryKey)
     }
 }
 
-trait DigestPrefix {
-    fn digest_prefix(data: &[u8]) -> [u8; 4];
-}
-
-impl DigestPrefix for Sha256 {
-    fn digest_prefix(data: &[u8]) -> [u8; 4] {
-        use sha2::Digest;
-        let d = Self::digest(data);
-        [d[0], d[1], d[2], d[3]]
-    }
-}
-
-pub(crate) fn hex(b: &[u8]) -> String {
-    use std::fmt::Write as _;
-    b.iter().fold(String::with_capacity(b.len() * 2), |mut s, x| {
-        let _ = write!(s, "{x:02x}");
-        s
-    })
-}
-
-pub(crate) fn unhex(s: &str) -> Option<Vec<u8>> {
-    if !s.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
-}
+pub(crate) use quire_base::enc::{hex, unhex};
 
 pub(crate) mod hex_bytes {
     use serde::{Deserialize, Deserializer, Serializer};

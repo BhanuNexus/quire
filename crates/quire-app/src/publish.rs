@@ -516,7 +516,10 @@ pub fn publish_with(
         });
     }
     std::fs::create_dir_all(out).map_err(|e| format!("can't create {}: {e}", out.display()))?;
-    let write = |name: &str, text: &str| std::fs::write(out.join(name), text).map_err(|e| format!("can't write {name}: {e}"));
+    let write = |name: &str, text: &str| {
+        quire_base::fs::write_atomic(&out.join(name), text.as_bytes(), quire_base::fs::Options::STATE)
+            .map_err(|e| format!("can't write {name}: {e}"))
+    };
 
     let mut taken = BTreeSet::new();
     let url: HashMap<NotePath, String> = chosen.iter().map(|r| (r.path.clone(), format!("{}.html", slug(&r.path, &mut taken)))).collect();
@@ -628,7 +631,7 @@ pub fn publish_with(
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        std::fs::write(&dest, bytes).map_err(|e| format!("can't copy {f}: {e}"))?;
+        quire_base::fs::write_atomic(&dest, &bytes, quire_base::fs::Options::STATE).map_err(|e| format!("can't copy {f}: {e}"))?;
         report.files += 1;
     }
     Ok(report)

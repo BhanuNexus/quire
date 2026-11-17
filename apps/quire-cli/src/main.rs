@@ -10,6 +10,8 @@
     reason = "a command-line program: its results go to stdout, its errors and progress to stderr"
 )]
 
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+
 mod commands;
 
 use std::process::ExitCode;

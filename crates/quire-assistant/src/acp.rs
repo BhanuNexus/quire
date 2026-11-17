@@ -334,6 +334,7 @@ const SETUP_TIMEOUT: Duration = Duration::from_mins(1);
 impl AcpClient {
     /// Start the agent in `cwd` (the vault folder).
     pub fn spawn(agent: &AcpAgent, cwd: &Path) -> Result<Self, String> {
+        #[expect(clippy::disallowed_methods, reason = "starts the ACP agent the person set up in settings, in the vault folder")]
         let mut child = Command::new(&agent.command)
             .args(&agent.args)
             .envs(agent.env.iter().map(|(k, v)| (k, v)))
@@ -348,16 +349,19 @@ impl AcpClient {
         let tail: Arc<Mutex<VecDeque<String>>> = Arc::default();
         if let Some(err) = child.stderr.take() {
             let tail = Arc::clone(&tail);
-            std::thread::spawn(move || {
-                for line in BufReader::new(err).lines() {
-                    let Ok(line) = line else { break };
-                    let mut t = tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    t.push_back(line.chars().take(300).collect());
-                    while t.len() > 5 {
-                        t.pop_front();
+            std::thread::Builder::new()
+                .name("quire-acp-stderr".into())
+                .spawn(move || {
+                    for line in BufReader::new(err).lines() {
+                        let Ok(line) = line else { break };
+                        let mut t = tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        t.push_back(line.chars().take(300).collect());
+                        while t.len() > 5 {
+                            t.pop_front();
+                        }
                     }
-                }
-            });
+                })
+                .expect("the system starts a thread");
         }
         let mut c = Self::with_io(stdout, stdin);
         c.child = Some(child);
@@ -368,18 +372,21 @@ impl AcpClient {
     /// Over any pair of streams (tests use pipes).
     pub fn with_io(reader: impl Read + Send + 'static, writer: impl Write + Send + 'static) -> Self {
         let (tx, rx) = channel();
-        std::thread::spawn(move || {
-            for line in BufReader::new(reader).lines() {
-                let Ok(line) = line else { break };
-                // Agents sometimes log to stdout; only JSON-RPC lines count.
-                if let Ok(v) = serde_json::from_str::<Value>(line.trim())
-                    && v.get("jsonrpc").is_some()
-                    && tx.send(v).is_err()
-                {
-                    break;
+        std::thread::Builder::new()
+            .name("quire-acp-read".into())
+            .spawn(move || {
+                for line in BufReader::new(reader).lines() {
+                    let Ok(line) = line else { break };
+                    // Agents sometimes log to stdout; only JSON-RPC lines count.
+                    if let Ok(v) = serde_json::from_str::<Value>(line.trim())
+                        && v.get("jsonrpc").is_some()
+                        && tx.send(v).is_err()
+                    {
+                        break;
+                    }
                 }
-            }
-        });
+            })
+            .expect("the system starts a thread");
         Self {
             writer: Arc::new(Mutex::new(Box::new(writer))),
             incoming: rx,

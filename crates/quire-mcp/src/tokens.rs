@@ -9,7 +9,6 @@
 //! scopes and expiry. Refresh tokens rotate: each works once, and using one
 //! twice revokes its whole family (someone copied it).
 
-use std::fmt::Write as _;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
@@ -17,7 +16,6 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use quire_agent::Mode;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::tools::Grant;
 
@@ -195,22 +193,19 @@ pub struct Pair {
 }
 
 pub fn hash(token: &str) -> String {
-    Sha256::digest(token.as_bytes()).iter().fold(String::with_capacity(64), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+    quire_base::enc::sha256_hex(token.as_bytes())
 }
 
 fn new_token() -> Result<String, String> {
-    let mut b = [0u8; 32];
-    getrandom::fill(&mut b).map_err(|_| "no randomness available".to_string())?;
+    let b: [u8; 32] = quire_base::rand::bytes().map_err(|_| "no randomness available".to_string())?;
     Ok(format!("{PREFIX}{}", URL_SAFE_NO_PAD.encode(b)))
 }
 
-fn new_family() -> String {
-    let mut b = [0u8; 9];
-    let _ = getrandom::fill(&mut b);
-    URL_SAFE_NO_PAD.encode(b)
+/// A token family's id: an error, never all zeros (one family for every
+/// token), when the system has no random numbers (0.14).
+fn new_family() -> Result<String, String> {
+    let b: [u8; 9] = quire_base::rand::bytes().map_err(|_| "no randomness available".to_string())?;
+    Ok(URL_SAFE_NO_PAD.encode(b))
 }
 
 /// The token file, read and written under a lock so the app and the CLI can share it.
@@ -275,6 +270,7 @@ impl TokenStore {
             return Err("a token name is 1–64 letters, digits, -, _ or .".into());
         }
         let token = new_token()?;
+        let family = new_family()?;
         self.update(|list| {
             if list.iter().any(|r| r.kind == Kind::Personal && r.name == name) {
                 return Err(format!("a token named {name} exists; revoke it first"));
@@ -290,7 +286,7 @@ impl TokenStore {
                 created: now,
                 last_used: None,
                 expires,
-                family: new_family(),
+                family: family.clone(),
                 used: false,
                 other: serde_json::Map::new(),
             });
@@ -301,7 +297,7 @@ impl TokenStore {
 
     /// Issue an access and a refresh token for an OAuth client.
     pub fn issue(&self, client_id: &str, label: &str, actor: &str, scopes: Scopes, resource: &str, now: i64) -> Result<Pair, String> {
-        self.issue_in(client_id, label, actor, scopes, resource, now, &new_family())
+        self.issue_in(client_id, label, actor, scopes, resource, now, &new_family()?)
     }
 
     fn issue_in(
@@ -500,6 +496,20 @@ mod tests {
         assert!(st.authenticate(&tok, "x", 3).is_none());
         let exp = st.create_personal("short", Scopes::parse("notes:read").unwrap(), Some(10), 1).unwrap();
         assert!(st.authenticate(&exp, "x", 9).is_some() && st.authenticate(&exp, "x", 10).is_none(), "expires");
+    }
+
+    /// D2 (0.14): without random numbers no token is issued, rather than
+    /// one in the all-zero family every such token would share (a replay
+    /// of one would revoke them all).
+    #[test]
+    fn no_token_without_random_numbers() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = TokenStore::in_dir(dir.path());
+        let fail = |f: &dyn Fn() -> bool| quire_base::rand::failing(f);
+        assert!(fail(&|| st.create_personal("laptop", Scopes::default(), None, 1).is_err()));
+        assert!(fail(&|| st.issue("c", "App", "oauth:c", Scopes::default(), "r", 0).is_err()));
+        assert!(st.list().is_empty());
+        assert_ne!(new_family().unwrap(), new_family().unwrap());
     }
 
     #[test]

@@ -14,6 +14,8 @@
     reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
 )]
 
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::sync::Arc;

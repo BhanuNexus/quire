@@ -81,6 +81,7 @@ fn memory_bytes() -> Option<u64> {
     if cfg!(target_os = "linux") {
         parse_meminfo(&std::fs::read_to_string("/proc/meminfo").ok()?)
     } else if cfg!(target_os = "macos") {
+        #[expect(clippy::disallowed_methods, reason = "reads the memory size on macOS (sysctl), with fixed arguments")]
         let out = std::process::Command::new("/usr/sbin/sysctl").args(["-n", "hw.memsize"]).output().ok()?;
         String::from_utf8_lossy(&out.stdout).trim().parse().ok()
     } else if cfg!(windows) {
@@ -100,6 +101,7 @@ fn parse_meminfo(info: &str) -> Option<u64> {
 /// systems; removed from the newest), with no console window.
 fn windows_memory() -> Option<u64> {
     let run = |program: &str, args: &[&str]| -> Option<String> {
+        #[expect(clippy::disallowed_methods, reason = "reads the memory size on Windows (PowerShell, then wmic), with fixed arguments")]
         let mut cmd = std::process::Command::new(program);
         cmd.args(args).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null());
         #[cfg(windows)]

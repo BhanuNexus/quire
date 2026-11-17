@@ -6,6 +6,8 @@
 //! embeddings, ocrs for OCR. A model that fails or runs out of memory takes
 //! this process down, never the app.
 
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+
 fn main() {
     if quire_ai_engine::handle_args("quire-ai-engine") {
         return;

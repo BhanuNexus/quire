@@ -64,11 +64,14 @@ impl Workspace {
         let text = doc.text().to_string();
         let out = NotePath::new(format!("Exports/{title}.pdf"));
         let (tx, rx) = crossbeam_channel::bounded(1);
-        std::thread::spawn(move || {
-            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| export_pdf(&vault, &title, &text, &out)))
-                .unwrap_or_else(|_| Err("the typesetter failed on this note".into()));
-            let _ = tx.send(r);
-        });
+        std::thread::Builder::new()
+            .name("quire-pdf-export".into())
+            .spawn(move || {
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| export_pdf(&vault, &title, &text, &out)))
+                    .unwrap_or_else(|_| Err("the typesetter failed on this note".into()));
+                let _ = tx.send(r);
+            })
+            .expect("the system starts a thread");
         self.pdf_job = Some(rx);
         self.notify(NoticeLevel::Info, "Making PDF…");
     }

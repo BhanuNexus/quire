@@ -5,6 +5,8 @@
 //! [`Storage`] is the port; [`LocalFs`] and [`MemFs`] are adapters. [`Vault`]
 //! is the repository that knows about notes, names, templates and refactors.
 
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+
 mod hash;
 mod history;
 pub mod lock;
@@ -22,8 +24,10 @@ pub use history::{Snapshot, retained};
 pub use locked::LockedFolderState;
 pub use note::{NotePath, sanitize_title};
 pub use prefs::{PrefsError, VaultPrefs};
+/// Moved to `quire_base::fs` (0.14); this path stays for existing callers.
+pub use quire_base::fs::replace_file;
 pub use refactor::{LinkRewrite, rewrite_links};
-pub use storage::{LocalFs, MemFs, SingleFile, Storage, replace_file};
+pub use storage::{LocalFs, MemFs, SingleFile, Storage};
 pub use templates::{TemplateVars, expand_template};
 pub use vault::{RenameReport, Vault, VaultConfig};
 pub use watch::{VaultEvent, VaultWatcher};

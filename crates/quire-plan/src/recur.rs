@@ -189,7 +189,7 @@ fn parse_natural(text: &str) -> Result<Rule, RecurError> {
             }
             "until" => {
                 i += 1;
-                let d = words.get(i).and_then(|w| NaiveDate::parse_from_str(w, "%Y-%m-%d").ok()).ok_or_else(err)?;
+                let d = words.get(i).and_then(|w| quire_base::time::parse_ymd(w)).ok_or_else(err)?;
                 rule.until = Some(d);
                 i += 1;
             }

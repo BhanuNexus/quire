@@ -10,6 +10,8 @@
 //! * `bench vault <dir> [notes]`: write a synthetic vault for the desktop
 //!   runs (`notes` notes of ~4 KB and `Big.md` of 100 KB).
 
+#![expect(clippy::disallowed_methods, reason = "benchmarks build and open their own temporary vaults")]
+
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 

@@ -8,6 +8,8 @@
     reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
 )]
 
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
+
 use std::sync::Once;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};

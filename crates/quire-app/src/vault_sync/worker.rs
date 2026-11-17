@@ -50,160 +50,172 @@ impl SyncWorker {
             let (tx, stop, known) = (tx.clone(), Arc::clone(&stop), Arc::clone(&known));
             match Link::new(&cfg, &token, Some(&sync_dir(&root)), None) {
                 // Can't even make a client (a bad address): the worker says why.
-                Err(_) => std::thread::spawn(|| {}),
+                Err(_) => std::thread::Builder::new().name("quire-sync-poll".into()).spawn(|| {}).expect("the system starts a thread"),
                 // S3 and WebDAV: one listing of the devices' tips a minute
                 // (see docs/sync-backends.md for what that costs).
-                Ok(Link::Remote(t)) => std::thread::spawn(move || {
-                    // Less often when asked (`sync watch --poll 5m`).
-                    let every = if poll > APP_POLL { poll } else { REMOTE_POLL };
-                    let mut last = t.fingerprint().ok();
-                    let _ = tx.send(Msg::Remote);
-                    while !stop.load(Ordering::Relaxed) {
-                        for _ in 0..every.as_secs() {
-                            if stop.load(Ordering::Relaxed) {
-                                return;
-                            }
-                            std::thread::sleep(Duration::from_secs(1));
-                        }
-                        let now = t.fingerprint().ok();
-                        if now.is_some() && now != last {
-                            last = now;
-                            let _ = tx.send(Msg::Remote);
-                        }
-                    }
-                }),
-                // A server answers a long poll as soon as something changes.
-                Ok(Link::Server(mut http)) => {
-                    let (server, space) = (cfg.server.clone(), cfg.space.clone());
-                    std::thread::spawn(move || {
+                Ok(Link::Remote(t)) => std::thread::Builder::new()
+                    .name("quire-sync-poll".into())
+                    .spawn(move || {
+                        // Less often when asked (`sync watch --poll 5m`).
+                        let every = if poll > APP_POLL { poll } else { REMOTE_POLL };
+                        let mut last = t.fingerprint().ok();
+                        let _ = tx.send(Msg::Remote);
                         while !stop.load(Ordering::Relaxed) {
-                            match http.wait(known.load(Ordering::Relaxed), 25) {
-                                Ok(latest) if latest > known.load(Ordering::Relaxed) => {
-                                    let _ = tx.send(Msg::Remote);
-                                    std::thread::sleep(Duration::from_millis(300));
+                            for _ in 0..every.as_secs() {
+                                if stop.load(Ordering::Relaxed) {
+                                    return;
                                 }
-                                Ok(_) => {}
-                                Err(_) => {
-                                    // The worker may have swapped the server's token
-                                    // for this device's own (0.13): use what's kept now.
-                                    if let Some(t) = secrets::store().get(&token_name(&space)) {
-                                        http = HttpTransport::new(&server, space.clone(), &t);
-                                    }
-                                    std::thread::sleep(Duration::from_secs(15));
-                                }
+                                std::thread::sleep(Duration::from_secs(1));
+                            }
+                            let now = t.fingerprint().ok();
+                            if now.is_some() && now != last {
+                                last = now;
+                                let _ = tx.send(Msg::Remote);
                             }
                         }
                     })
+                    .expect("the system starts a thread"),
+                // A server answers a long poll as soon as something changes.
+                Ok(Link::Server(mut http)) => {
+                    let (server, space) = (cfg.server.clone(), cfg.space.clone());
+                    std::thread::Builder::new()
+                        .name("quire-sync-poll".into())
+                        .spawn(move || {
+                            while !stop.load(Ordering::Relaxed) {
+                                match http.wait(known.load(Ordering::Relaxed), 25) {
+                                    Ok(latest) if latest > known.load(Ordering::Relaxed) => {
+                                        let _ = tx.send(Msg::Remote);
+                                        std::thread::sleep(Duration::from_millis(300));
+                                    }
+                                    Ok(_) => {}
+                                    Err(_) => {
+                                        // The worker may have swapped the server's token
+                                        // for this device's own (0.13): use what's kept now.
+                                        if let Some(t) = secrets::store().get(&token_name(&space)) {
+                                            http = HttpTransport::new(&server, space.clone(), &t);
+                                        }
+                                        std::thread::sleep(Duration::from_secs(15));
+                                    }
+                                }
+                            }
+                        })
+                        .expect("the system starts a thread")
                 }
                 // A folder is checked every couple of seconds (sizes and
                 // times only, so it's cheap).
                 Ok(Link::Folder(dir)) => {
                     let lane =
                         cfg.folder.as_ref().map(|r| FolderTransport::lane(r, &cfg.space, cfg.device.clone(), None, folder::SHARED_LANE));
-                    std::thread::spawn(move || {
-                        let print = |d: &FolderTransport| d.fingerprint() ^ lane.as_ref().map_or(0, |l| l.fingerprint().rotate_left(1));
-                        let mut last = print(&dir);
-                        // The worker's first pass may have read the folder before
-                        // `last` was taken; a write in between would never show up
-                        // as a change. One more pass after taking it closes that gap.
-                        let _ = tx.send(Msg::Remote);
-                        while !stop.load(Ordering::Relaxed) {
-                            std::thread::sleep(Duration::from_secs(2));
-                            let now = print(&dir);
-                            if now != last {
-                                last = now;
-                                let _ = tx.send(Msg::Remote);
+                    std::thread::Builder::new()
+                        .name("quire-sync-poll".into())
+                        .spawn(move || {
+                            let print = |d: &FolderTransport| d.fingerprint() ^ lane.as_ref().map_or(0, |l| l.fingerprint().rotate_left(1));
+                            let mut last = print(&dir);
+                            // The worker's first pass may have read the folder before
+                            // `last` was taken; a write in between would never show up
+                            // as a change. One more pass after taking it closes that gap.
+                            let _ = tx.send(Msg::Remote);
+                            while !stop.load(Ordering::Relaxed) {
+                                std::thread::sleep(Duration::from_secs(2));
+                                let now = print(&dir);
+                                if now != last {
+                                    last = now;
+                                    let _ = tx.send(Msg::Remote);
+                                }
                             }
-                        }
-                    })
+                        })
+                        .expect("the system starts a thread")
                 }
             };
         }
 
         let worker_stop = Arc::clone(&stop);
-        let thread = std::thread::spawn(move || {
-            let stop = worker_stop;
-            // One sync per vault and device: while another process syncs
-            // this vault, wait (saying so) and take over when it stops.
-            let mut told = false;
-            let since = Instant::now();
-            let lock = loop {
-                match lock_sync(&root) {
-                    Ok(l) => break l,
-                    Err(e) => {
-                        // A worker of this process being replaced lets go after
-                        // its pass: wait for that quietly, for a while.
-                        let quiet = matches!(e, LockError::Busy { in_this_process: true }) && since.elapsed() < Duration::from_secs(3);
-                        if !quiet && !told {
-                            let what = match &e {
-                                LockError::Busy { .. } => {
-                                    SyncStatus::Elsewhere(format!("{ALREADY_SYNCING}. This one takes over when it stops."))
-                                }
-                                LockError::Io(_) => SyncStatus::Error(e.to_string()),
-                            };
-                            let _ = events.send(SyncEvent::Status(what));
-                            told = true;
-                        }
-                        let wait = if quiet { Duration::from_millis(200) } else { Duration::from_secs(5) };
-                        if matches!(msgs.recv_timeout(wait), Ok(Msg::Stop)) || stop.load(Ordering::Relaxed) {
-                            return;
-                        }
-                    }
-                }
-            };
-            let mut session = match Session::new(root, vault, cfg, &token, key, lock) {
-                Ok(s) => s,
-                Err(e) => {
-                    let _ = events.send(SyncEvent::Status(SyncStatus::Error(e)));
-                    return;
-                }
-            };
-            // A server that needs a newer Quire says so plainly instead of failing each pass.
-            if let Some(notice) = session.too_old() {
-                let _ = events.send(SyncEvent::Status(SyncStatus::Error(notice)));
-                return;
-            }
-            let mut wait = Duration::ZERO;
-            loop {
-                match msgs.recv_timeout(wait) {
-                    Ok(Msg::Stop) => return,
-                    Ok(Msg::Nudge) => {
-                        // Let a burst of saves finish first.
-                        std::thread::sleep(Duration::from_millis(800));
-                        while let Ok(m) = msgs.try_recv() {
-                            if matches!(m, Msg::Stop) {
+        let thread = std::thread::Builder::new()
+            .name("quire-sync".into())
+            .spawn(move || {
+                let stop = worker_stop;
+                // One sync per vault and device: while another process syncs
+                // this vault, wait (saying so) and take over when it stops.
+                let mut told = false;
+                let since = Instant::now();
+                let lock = loop {
+                    match lock_sync(&root) {
+                        Ok(l) => break l,
+                        Err(e) => {
+                            // A worker of this process being replaced lets go after
+                            // its pass: wait for that quietly, for a while.
+                            let quiet = matches!(e, LockError::Busy { in_this_process: true }) && since.elapsed() < Duration::from_secs(3);
+                            if !quiet && !told {
+                                let what = match &e {
+                                    LockError::Busy { .. } => {
+                                        SyncStatus::Elsewhere(format!("{ALREADY_SYNCING}. This one takes over when it stops."))
+                                    }
+                                    LockError::Io(_) => SyncStatus::Error(e.to_string()),
+                                };
+                                let _ = events.send(SyncEvent::Status(what));
+                                told = true;
+                            }
+                            let wait = if quiet { Duration::from_millis(200) } else { Duration::from_secs(5) };
+                            if matches!(msgs.recv_timeout(wait), Ok(Msg::Stop)) || stop.load(Ordering::Relaxed) {
                                 return;
                             }
                         }
                     }
-                    Ok(Msg::Compact) => {
-                        let _ = events.send(SyncEvent::Status(SyncStatus::Syncing));
-                        // Key changes first: a removed device's late lines must not go into a snapshot.
-                        session.refresh_keys();
-                        let said = match &session.key_stuck {
-                            Some(why) => format!("Compaction waits: {why}"),
-                            None => session.compact(true).unwrap_or_else(|e| format!("Compaction failed: {e}")),
-                        };
-                        let _ = events.send(SyncEvent::Notice(said));
+                };
+                let mut session = match Session::new(root, vault, cfg, &token, key, lock) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let _ = events.send(SyncEvent::Status(SyncStatus::Error(e)));
+                        return;
                     }
-                    Ok(Msg::Remote) | Err(_) => {}
-                }
-                if stop.load(Ordering::Relaxed) {
+                };
+                // A server that needs a newer Quire says so plainly instead of failing each pass.
+                if let Some(notice) = session.too_old() {
+                    let _ = events.send(SyncEvent::Status(SyncStatus::Error(notice)));
                     return;
                 }
-                let _ = events.send(SyncEvent::Status(SyncStatus::Syncing));
-                let pass = session.pass(poll);
-                if matches!(pass.status, SyncStatus::Synced(_)) {
-                    session.maybe_compact();
+                let mut wait = Duration::ZERO;
+                loop {
+                    match msgs.recv_timeout(wait) {
+                        Ok(Msg::Stop) => return,
+                        Ok(Msg::Nudge) => {
+                            // Let a burst of saves finish first.
+                            std::thread::sleep(Duration::from_millis(800));
+                            while let Ok(m) = msgs.try_recv() {
+                                if matches!(m, Msg::Stop) {
+                                    return;
+                                }
+                            }
+                        }
+                        Ok(Msg::Compact) => {
+                            let _ = events.send(SyncEvent::Status(SyncStatus::Syncing));
+                            // Key changes first: a removed device's late lines must not go into a snapshot.
+                            session.refresh_keys();
+                            let said = match &session.key_stuck {
+                                Some(why) => format!("Compaction waits: {why}"),
+                                None => session.compact(true).unwrap_or_else(|e| format!("Compaction failed: {e}")),
+                            };
+                            let _ = events.send(SyncEvent::Notice(said));
+                        }
+                        Ok(Msg::Remote) | Err(_) => {}
+                    }
+                    if stop.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let _ = events.send(SyncEvent::Status(SyncStatus::Syncing));
+                    let pass = session.pass(poll);
+                    if matches!(pass.status, SyncStatus::Synced(_)) {
+                        session.maybe_compact();
+                    }
+                    known.store(session.engine.state.cursor, Ordering::Relaxed);
+                    if let Some(r) = pass.report {
+                        let _ = events.send(SyncEvent::Report(r));
+                    }
+                    wait = pass.again;
+                    let _ = events.send(SyncEvent::Status(pass.status));
                 }
-                known.store(session.engine.state.cursor, Ordering::Relaxed);
-                if let Some(r) = pass.report {
-                    let _ = events.send(SyncEvent::Report(r));
-                }
-                wait = pass.again;
-                let _ = events.send(SyncEvent::Status(pass.status));
-            }
-        });
+            })
+            .expect("the system starts a thread");
         Self { tx, rx, stop, thread: Some(thread) }
     }
 

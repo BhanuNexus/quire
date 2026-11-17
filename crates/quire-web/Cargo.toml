@@ -15,6 +15,7 @@ default = []
 typeset = ["quire-app/typeset"]
 
 [dependencies]
+quire-base.workspace = true
 quire-app.workspace = true
 quire-agent.workspace = true
 quire-mcp.workspace = true
@@ -24,7 +25,6 @@ serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 sha2.workspace = true
-getrandom.workspace = true
 base64.workspace = true
 chrono.workspace = true
 similar.workspace = true

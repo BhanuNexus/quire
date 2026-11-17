@@ -1837,14 +1837,17 @@ impl Workspace {
         if job.as_ref().is_none_or(|(k, _)| *k != key) {
             let slot = Arc::new(std::sync::Mutex::new(None));
             let (out, index, semantic, text) = (Arc::clone(&slot), self.index.shared(), self.index.semantic(), text.to_string());
-            std::thread::spawn(move || {
-                quire_index::background::lower_priority();
-                let ix = index.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-                let ins = compute_insights(&ix, semantic.as_deref(), path.as_ref(), &text, &plain, large);
-                if let Ok(mut o) = out.lock() {
-                    *o = Some(ins);
-                }
-            });
+            std::thread::Builder::new()
+                .name("quire-similar".into())
+                .spawn(move || {
+                    quire_index::background::lower_priority();
+                    let ix = index.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let ins = compute_insights(&ix, semantic.as_deref(), path.as_ref(), &text, &plain, large);
+                    if let Ok(mut o) = out.lock() {
+                        *o = Some(ins);
+                    }
+                })
+                .expect("the system starts a thread");
             *job = Some((key, slot));
         }
         match &*self.insights_cache.borrow() {

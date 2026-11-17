@@ -125,14 +125,10 @@ struct ErrorBody {
 
 const PAGE: u32 = 1000;
 
+/// Redirects are followed as before 0.14 (ureq drops the `Authorization`
+/// header on the way, so the token never reaches another host).
 fn agent(timeout: Duration) -> ureq::Agent {
-    ureq::Agent::config_builder()
-        .timeout_global(Some(timeout))
-        .http_status_as_error(false)
-        .user_agent(format!("Quire/{}", env!("CARGO_PKG_VERSION")))
-        .tls_config(ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build())
-        .build()
-        .into()
+    quire_base::net::agent("", quire_base::net::Timeouts::total(timeout), quire_base::net::Redirects::Follow(10))
 }
 
 impl HttpTransport {

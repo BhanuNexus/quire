@@ -74,12 +74,7 @@ pub fn args_digest(tool: &str, args: &Value) -> String {
         }
     }
     let c = canonical(&json!({ "tool": tool, "arguments": args }));
-    let mut h = Sha256::new();
-    h.update(c.to_string().as_bytes());
-    h.finalize().iter().fold(String::with_capacity(64), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+    quire_base::enc::sha256_hex(c.to_string().as_bytes())
 }
 
 impl Sealer {
@@ -88,7 +83,7 @@ impl Sealer {
         let mut key = [0u8; 32];
         // Without randomness there's no safe key; an all-zero key would be guessable,
         // so fall back to a hash of the time and address, which is at least unique per run.
-        if getrandom::fill(&mut key).is_err() {
+        if quire_base::rand::fill(&mut key).is_err() {
             let seed = format!("{:?}{:p}", std::time::SystemTime::now(), &key);
             key.copy_from_slice(&Sha256::digest(seed.as_bytes()));
         }
@@ -111,15 +106,16 @@ impl Sealer {
         s
     }
 
-    pub fn seal(&self, p: &StatePayload) -> String {
-        let mut nonce = [0u8; 24];
-        let _ = getrandom::fill(&mut nonce);
+    /// `p` sealed under a fresh random nonce, or an error when the system
+    /// has no random numbers: never a zero nonce, which would repeat (0.14).
+    pub fn seal(&self, p: &StatePayload) -> Result<String, quire_base::rand::NoRandomness> {
+        let nonce: [u8; 24] = quire_base::rand::bytes()?;
         let plain = serde_json::to_vec(p).unwrap_or_default();
         let cipher = XChaCha20Poly1305::new((&self.key).into());
         let ct = cipher.encrypt(&XNonce::from(nonce), Payload { msg: &plain, aad: AAD }).unwrap_or_default();
         let mut out = nonce.to_vec();
         out.extend_from_slice(&ct);
-        URL_SAFE_NO_PAD.encode(out)
+        Ok(URL_SAFE_NO_PAD.encode(out))
     }
 
     /// Open `state` and check it belongs to this caller, call and version.
@@ -221,7 +217,7 @@ mod tests {
     fn states_bind_principal_request_and_time() {
         let s = Sealer::ephemeral();
         let p = payload();
-        let state = s.seal(&p);
+        let state = s.seal(&p).unwrap();
         assert_eq!(s.open(&state, &p.principal, "tools/call", &p.args_digest, 500), Ok(p.clone()));
         assert_eq!(s.open(&state, "mcp:other", "tools/call", &p.args_digest, 500), Err(StateError::WrongPrincipal));
         assert_eq!(s.open(&state, &p.principal, "tools/call", &p.args_digest, 2_000), Err(StateError::Expired));
@@ -234,6 +230,18 @@ mod tests {
         assert_eq!(s.open(&URL_SAFE_NO_PAD.encode(bytes), &p.principal, "tools/call", &p.args_digest, 500), Err(StateError::Unreadable));
         assert_eq!(Sealer::ephemeral().open(&state, &p.principal, "tools/call", &p.args_digest, 500), Err(StateError::Unreadable));
         assert_eq!(s.open("short", &p.principal, "tools/call", &p.args_digest, 500), Err(StateError::Unreadable));
+    }
+
+    /// D2 (0.14): without random numbers no state is sealed, rather than
+    /// one under an all-zero nonce.
+    #[test]
+    fn no_state_is_sealed_without_random_numbers() {
+        let s = Sealer::ephemeral();
+        let p = payload();
+        assert_eq!(quire_base::rand::failing(|| s.seal(&p)), Err(quire_base::rand::NoRandomness));
+        // Two states of the same payload never share a nonce.
+        let (a, b) = (URL_SAFE_NO_PAD.decode(s.seal(&p).unwrap()).unwrap(), URL_SAFE_NO_PAD.decode(s.seal(&p).unwrap()).unwrap());
+        assert_ne!(a[..24], b[..24]);
     }
 
     #[test]

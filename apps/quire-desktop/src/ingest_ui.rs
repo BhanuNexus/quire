@@ -203,24 +203,27 @@ impl IngestDialog {
         let c2 = cancel.clone();
         let device = ws.device().id.clone();
         let provider = ws.settings.ai_provider.clone();
-        std::thread::spawn(move || {
-            let actor = Actor::agent(format!("panel:{provider}"), format!("Ingest ({})", model.name()), Via::App, &device);
-            let now = chrono::Local::now();
-            let job = quire_assistant::wiki::Ingest {
-                model: model.as_ref(),
-                agent: &agent,
-                actor: &actor,
-                source,
-                today: now.format("%Y-%m-%d").to_string(),
-                now: now.format("%Y-%m-%d %H:%M").to_string(),
-            };
-            let tx2 = tx.clone();
-            if let Err(e) = ingest(&job, &c2, &mut |ev| {
-                let _ = tx2.send(Ok(ev));
-            }) {
-                let _ = tx.send(Err(e));
-            }
-        });
+        std::thread::Builder::new()
+            .name("quire-ingest".into())
+            .spawn(move || {
+                let actor = Actor::agent(format!("panel:{provider}"), format!("Ingest ({})", model.name()), Via::App, &device);
+                let now = chrono::Local::now();
+                let job = quire_assistant::wiki::Ingest {
+                    model: model.as_ref(),
+                    agent: &agent,
+                    actor: &actor,
+                    source,
+                    today: now.format("%Y-%m-%d").to_string(),
+                    now: now.format("%Y-%m-%d %H:%M").to_string(),
+                };
+                let tx2 = tx.clone();
+                if let Err(e) = ingest(&job, &c2, &mut |ev| {
+                    let _ = tx2.send(Ok(ev));
+                }) {
+                    let _ = tx.send(Err(e));
+                }
+            })
+            .expect("the system starts a thread");
         self.state = State::Running { rx, cancel, step: "Starting".into() };
     }
 }

@@ -68,6 +68,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+use quire_base::fs::{Options, write_atomic};
 use serde::{Deserialize, Serialize};
 
 use crate::compact::{Manifest, Policy};
@@ -196,14 +197,17 @@ pub trait ObjectStore: Send + Sync + std::fmt::Debug {
     }
 }
 
-/// A prefix or folder as typed (`/notes/`, `a/b`), checked: no `.`, `..`,
-/// empty parts, backslashes or control characters.
+/// A prefix or folder as typed (`/notes/`, `a/b`), checked.
+///
+/// Trimmed of spaces and slashes, then [`quire_base::path::Rule::BucketPrefix`]:
+/// no `.`, `..`, empty parts, backslashes or control characters. Empty is
+/// the bucket's root.
 pub fn clean_prefix(p: &str) -> Result<String, StoreError> {
     let t = p.trim().trim_matches('/');
     if t.is_empty() {
         return Ok(String::new());
     }
-    if t.contains('\\') || t.chars().any(char::is_control) || t.split('/').any(|s| s.is_empty() || s == "." || s == "..") {
+    if !quire_base::path::Rule::BucketPrefix.accepts(t) {
         return Err(StoreError::Config(format!("“{p}” isn't a usable folder name in the bucket")));
     }
     Ok(t.to_string())
@@ -632,14 +636,6 @@ fn mirror_line(r: &Revision, n: u64) -> Vec<u8> {
     serde_json::to_vec(&Revision { seq: n, ..r.clone() }).unwrap_or_default()
 }
 
-fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension("tmp");
-    let mut f = fs::File::create(&tmp)?;
-    f.write_all(bytes)?;
-    f.sync_data()?;
-    fs::rename(&tmp, path)
-}
-
 /// Append whole lines to a device's mirrored log, starting a fresh line
 /// after a torn one, and a new segment past 1 MiB. If the write fails, the
 /// file is cut back to where it was, so no part of the batch stays.
@@ -870,7 +866,7 @@ impl RemoteTransport {
     fn save_progress(&self, m: &Mirror) -> Result<(), TransportError> {
         let map: std::collections::BTreeMap<&str, &Progress> = m.fetched.iter().map(|(d, p)| (d.0.as_str(), p)).collect();
         let json = serde_json::to_vec(&map).unwrap_or_default();
-        write_atomically(&self.progress_path(), &json).map_err(|e| io_err("can't write the sync mirror", &e))
+        write_atomic(&self.progress_path(), &json, Options::EXISTING_FOLDER).map_err(|e| io_err("can't write the sync mirror", &e))
     }
 
     /// Read the counts and the outbox from the mirror; restore this
@@ -1375,10 +1371,11 @@ impl RemoteTransport {
             if b.len() as u64 != p.size || crate::compact::sha256_hex(&b) != p.sha256 {
                 return Ok(false);
             }
-            write_atomically(&tmp.join(&p.name), &b).map_err(werr)?;
+            write_atomic(&tmp.join(&p.name), &b, Options::EXISTING_FOLDER).map_err(werr)?;
         }
-        write_atomically(&tmp.join("manifest.json"), &bytes).map_err(werr)?;
+        write_atomic(&tmp.join("manifest.json"), &bytes, Options::EXISTING_FOLDER).map_err(werr)?;
         let _ = fs::remove_dir_all(&dir);
+        #[expect(clippy::disallowed_methods, reason = "a fetched snapshot folder takes its name in one step (a folder, not a file)")]
         fs::rename(&tmp, &dir).map_err(werr)?;
         Ok(true)
     }
@@ -1410,7 +1407,7 @@ impl RemoteTransport {
         m.stuck.clear();
         m.seen.clear();
         self.save_progress(m)?;
-        write_atomically(&path, name.as_bytes()).map_err(|e| io_err("can't write the sync mirror", &e))?;
+        write_atomic(&path, name.as_bytes(), Options::EXISTING_FOLDER).map_err(|e| io_err("can't write the sync mirror", &e))?;
         m.snaps.insert(name);
         self.folder.reload();
         Ok(true)
@@ -1443,8 +1440,10 @@ impl RemoteTransport {
         fs::create_dir_all(&tmp).map_err(werr)?;
         append_raw(&tmp, &keep)?;
         if dir.exists() {
+            #[expect(clippy::disallowed_methods, reason = "the old log folder steps aside for the new one (a folder swap)")]
             fs::rename(&dir, &old).map_err(werr)?;
         }
+        #[expect(clippy::disallowed_methods, reason = "the rewritten log folder takes the old one's place (a folder swap)")]
         fs::rename(&tmp, &dir).map_err(werr)?;
         let _ = fs::remove_dir_all(&old);
         Ok(())
@@ -1553,7 +1552,7 @@ impl RemoteTransport {
             } else {
                 let Some(b) = self.store.get(&format!("{}keys/{stem}.json", space_dir(&self.space)), MAX_SMALL)? else { continue };
                 let _ = fs::create_dir_all(&cache);
-                let _ = write_atomically(&file, &b);
+                let _ = write_atomic(&file, &b, Options::EXISTING_FOLDER);
                 b
             };
             if let Ok(r) = serde_json::from_slice::<EpochRecord>(&bytes)

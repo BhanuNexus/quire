@@ -23,16 +23,17 @@ use unicode_normalization::UnicodeNormalization;
 /// Where hidden folders are set in a vault.
 pub const VAULT_TOML: &str = ".quire/shared/vault.toml";
 
-/// Folder prefixes as written (`Journal`, `Journal/`), normalized to
-/// lowercase NFC with a trailing `/`. Entries that aren't relative folder
-/// paths are dropped.
+/// Folder prefixes as written (`Journal`, `Journal/`), normalized.
+///
+/// Lowercase NFC with a trailing `/`. Entries that aren't relative folder
+/// paths ([`quire_base::path::Rule::HideEntry`], the loosest rule: a dropped
+/// entry hides nothing) are dropped.
 pub fn normalize_hidden(list: &[String]) -> Vec<String> {
     let mut out: Vec<String> = list
         .iter()
         .filter_map(|f| {
             let t: String = f.trim().trim_start_matches("./").trim_matches('/').nfc().collect::<String>().to_lowercase();
-            let ok = !t.is_empty() && !t.contains('\\') && t.split('/').all(|s| !s.is_empty() && s != "." && s != "..");
-            ok.then(|| format!("{t}/"))
+            quire_base::path::Rule::HideEntry.accepts(&t).then(|| format!("{t}/"))
         })
         .collect();
     out.sort();

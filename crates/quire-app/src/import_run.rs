@@ -253,11 +253,13 @@ pub struct UndoPlan {
     pub missing: Vec<NotePath>,
 }
 
-/// A path from a record that is still inside the folder the import used and plain.
+/// A path from a record that is still inside the folder the import used and
+/// plain ([`quire_base::path::Rule::PlainNote`]: a record can be edited, and
+/// undo moves what it lists to the trash without asking).
 fn trustworthy(rec: &ImportRecord, p: &NotePath) -> bool {
     let s = p.as_str();
     let inside = rec.folder.is_empty() || s.starts_with(&format!("{}/", rec.folder));
-    inside && !s.split('/').any(|seg| seg.is_empty() || seg == ".." || seg == "." || seg.starts_with('.')) && !s.contains('\\')
+    inside && quire_base::path::Rule::PlainNote.accepts(s)
 }
 
 pub fn undo_plan(vault: &Vault, rec: &ImportRecord) -> UndoPlan {
@@ -427,6 +429,20 @@ mod tests {
         let plan = undo_plan(&v, &rec);
         assert_eq!(plan.trash, vec![NotePath::new("Imported/Ok.md")]);
         assert!(!valid_id("i_../x") && !valid_id("../x") && valid_id("i_17"));
+        // 0.14, quire_base::path::Rule::PlainNote: a name with a control
+        // character is not one an import makes; left alone. A `:` in a
+        // name is a name.
+        let v = Vault::in_memory(&[("Imported/Q1: Plans.md", "x"), ("Imported/c\u{7}.md", "y")]);
+        let rec = ImportRecord {
+            id: "i_6".into(),
+            folder: "Imported".into(),
+            notes: vec![
+                Item { path: NotePath::new("Imported/Q1: Plans.md"), hash: ContentHash::of("x") },
+                Item { path: NotePath::new("Imported/c\u{7}.md"), hash: ContentHash::of("y") },
+            ],
+            ..ImportRecord::default()
+        };
+        assert_eq!(undo_plan(&v, &rec).trash, vec![NotePath::new("Imported/Q1: Plans.md")]);
     }
 
     #[test]

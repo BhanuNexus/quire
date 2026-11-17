@@ -16,6 +16,11 @@
 //! administrator rights, and turning it off removes exactly what was
 //! installed.
 
+#![expect(
+    clippy::disallowed_methods,
+    reason = "this module installs reminder jobs with the system's own scheduler (systemd, cron, launchd, Task Scheduler), on the person's request"
+)]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

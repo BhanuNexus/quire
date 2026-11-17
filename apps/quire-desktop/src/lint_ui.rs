@@ -327,9 +327,12 @@ impl LintFolderDialog {
         let cancel = Arc::new(AtomicBool::new(false));
         self.cancel = Arc::clone(&cancel);
         let (tx, rx) = channel();
-        std::thread::spawn(move || {
-            let _ = tx.send(quire_app::switch_state::plan_folder(&vault, &folder, &opts, &skip, &cancel));
-        });
+        std::thread::Builder::new()
+            .name("quire-lint".into())
+            .spawn(move || {
+                let _ = tx.send(quire_app::switch_state::plan_folder(&vault, &folder, &opts, &skip, &cancel));
+            })
+            .expect("the system starts a thread");
         self.rx = Some(rx);
         self.stage = Stage::Reading;
     }

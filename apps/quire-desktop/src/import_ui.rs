@@ -175,9 +175,12 @@ impl ImportWizard {
         let path = expand_home(self.typed.trim());
         let kind = self.kind;
         let (tx, rx) = channel();
-        std::thread::spawn(move || {
-            let _ = tx.send(quire_import::plan_as(&path, kind, &Limits::default()));
-        });
+        std::thread::Builder::new()
+            .name("quire-import-scan".into())
+            .spawn(move || {
+                let _ = tx.send(quire_import::plan_as(&path, kind, &Limits::default()));
+            })
+            .expect("the system starts a thread");
         self.reading = Some(rx);
         self.plan = None;
         self.error = None;
@@ -192,10 +195,13 @@ impl ImportWizard {
         let folder = self.folder.trim().trim_matches('/').to_string();
         let (tx, rx) = channel();
         let asked = folder.clone();
-        std::thread::spawn(move || {
-            let c = plan.clashes(&vault, &folder).into_iter().map(|(a, b)| (a.as_str().to_string(), b.as_str().to_string())).collect();
-            let _ = tx.send((asked, c));
-        });
+        std::thread::Builder::new()
+            .name("quire-import-plan".into())
+            .spawn(move || {
+                let c = plan.clashes(&vault, &folder).into_iter().map(|(a, b)| (a.as_str().to_string(), b.as_str().to_string())).collect();
+                let _ = tx.send((asked, c));
+            })
+            .expect("the system starts a thread");
         self.clash_rx = Some(rx);
     }
 
@@ -208,14 +214,17 @@ impl ImportWizard {
         let cancel = Arc::new(AtomicBool::new(false));
         let (done, total) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(plan.notes.len() + plan.files.len())));
         let (c2, d2, t2) = (Arc::clone(&cancel), Arc::clone(&done), Arc::clone(&total));
-        std::thread::spawn(move || {
-            let now = quire_app::history_ops::now_ms();
-            let r = quire_app::import_run::run(&vault, &plan, &folder, &origin, &device, now, Some(&c2), &mut |p| {
-                d2.store(p.done, Ordering::Relaxed);
-                t2.store(p.total, Ordering::Relaxed);
-            });
-            let _ = tx.send(r);
-        });
+        std::thread::Builder::new()
+            .name("quire-import".into())
+            .spawn(move || {
+                let now = quire_app::history_ops::now_ms();
+                let r = quire_app::import_run::run(&vault, &plan, &folder, &origin, &device, now, Some(&c2), &mut |p| {
+                    d2.store(p.done, Ordering::Relaxed);
+                    t2.store(p.total, Ordering::Relaxed);
+                });
+                let _ = tx.send(r);
+            })
+            .expect("the system starts a thread");
         self.running = Some(Running { rx, cancel, done, total });
         self.step = Step::Importing;
     }

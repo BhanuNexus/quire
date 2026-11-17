@@ -150,7 +150,7 @@ impl NewTaskDialog {
             let d = match s.to_ascii_lowercase().as_str() {
                 "today" => today,
                 "tomorrow" => today + Duration::days(1),
-                _ => NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| format!("The {what} date should look like 2026-11-20"))?,
+                _ => quire_base::time::parse_ymd(s).ok_or_else(|| format!("The {what} date should look like 2026-11-20"))?,
             };
             Ok(Some(d.format("%Y-%m-%d").to_string()))
         };
@@ -580,7 +580,7 @@ pub(crate) fn note_cards(ui: &mut Ui, ws: &Workspace, pal: &Palette, notes: &[(N
                     let c = if n.task.priority.is_some_and(|p| p <= 1) { pal.danger } else { pal.muted };
                     ui.label(RichText::new(p).size(11.0).color(c));
                 }
-                if let Some(d) = n.task.due.as_deref().and_then(|d| NaiveDate::parse_from_str(d.get(..10)?, "%Y-%m-%d").ok()) {
+                if let Some(d) = n.task.due.as_deref().and_then(quire_base::time::parse_ymd_prefix) {
                     let c = if d < today { pal.danger } else { pal.text };
                     ui.label(RichText::new(format!("due {}", crate::agenda_ui::relative(d, today))).size(11.0).color(c));
                 }

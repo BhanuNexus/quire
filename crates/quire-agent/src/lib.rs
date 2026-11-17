@@ -15,6 +15,8 @@
 //!
 //! File formats are described in `docs/formats/`.
 
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+
 pub mod actor;
 pub mod approval;
 pub mod change;

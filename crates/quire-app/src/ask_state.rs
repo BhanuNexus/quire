@@ -295,14 +295,17 @@ fn stream_answer(model: Arc<dyn ChatModel>, req: quire_intel::chat::ChatRequest,
     let cancel = CancelFlag::new();
     let by = model.name().to_string();
     let c = cancel.clone();
-    std::thread::spawn(move || {
-        let r = model.chat(&req, &c, &mut |ev| {
-            if let ChatEvent::Text { text } = ev {
-                let _ = tx.send(AskMsg::Text(text));
-            }
-        });
-        let _ = tx.send(AskMsg::Done(r));
-    });
+    std::thread::Builder::new()
+        .name("quire-ask".into())
+        .spawn(move || {
+            let r = model.chat(&req, &c, &mut |ev| {
+                if let ChatEvent::Text { text } = ev {
+                    let _ = tx.send(AskMsg::Text(text));
+                }
+            });
+            let _ = tx.send(AskMsg::Done(r));
+        })
+        .expect("the system starts a thread");
     PendingAnswer { sources, rx, cancel, by }
 }
 

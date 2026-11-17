@@ -31,8 +31,6 @@ use std::io::Read as _;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
-use sha2::{Digest, Sha256};
-
 /// Limits for one capture.
 #[derive(Debug, Clone)]
 pub struct FetchOptions {
@@ -348,13 +346,9 @@ fn agent(opts: &FetchOptions, direct: bool, timeout: Duration) -> ureq::Agent {
     // (allowed with `allow_private`) never use one.
     let proxy = if direct { None } else { opts.proxy.as_deref().map_or_else(ureq::Proxy::try_from_env, |p| ureq::Proxy::new(p).ok()) };
     let exempt = proxy.as_ref().map(|p| (bare_host(p.host()), p.port()));
-    let config = ureq::Agent::config_builder()
-        .timeout_global(Some(timeout))
-        .http_status_as_error(false)
-        .max_redirects(0)
-        .user_agent(format!("Quire/{} (+capture)", env!("CARGO_PKG_VERSION")))
+    // Redirects are followed by `fetch`, which checks each address first.
+    let config = quire_base::net::config("capture", quire_base::net::Timeouts::total(timeout), quire_base::net::Redirects::Refuse)
         .proxy(proxy)
-        .tls_config(ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build())
         .build();
     ureq::Agent::with_parts(
         config,
@@ -657,23 +651,7 @@ pub fn decode_data_uri(uri: &str, max: u64) -> Option<Vec<u8>> {
     (bytes.len() as u64 <= max).then_some(bytes)
 }
 
-fn percent_decode(s: &str) -> Vec<u8> {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%'
-            && let Some(v) = s.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())
-        {
-            out.push(v);
-            i += 3;
-            continue;
-        }
-        out.push(b[i]);
-        i += 1;
-    }
-    out
-}
+use quire_base::enc::percent_decode_bytes as percent_decode;
 
 fn image_name(src: &str, ext: &str) -> String {
     if src.starts_with("data:") {
@@ -754,10 +732,7 @@ pub fn capture(url: &str, opts: &FetchOptions) -> Result<Captured, WebError> {
             });
             continue;
         };
-        let sha256: String = Sha256::digest(&bytes).iter().fold(String::new(), |mut s, b| {
-            let _ = write!(s, "{b:02x}");
-            s
-        });
+        let sha256 = quire_base::enc::sha256_hex(&bytes);
         let name = image_name(&src, ext);
         images.push(Image { src, bytes, ext, sha256, name });
     }

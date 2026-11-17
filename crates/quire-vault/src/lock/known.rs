@@ -305,11 +305,8 @@ impl crate::Vault {
         if let Some(local) = self.known.local()
             && mine_before != now.as_slice()
         {
-            if let Some(dir) = local.parent() {
-                let _ = std::fs::create_dir_all(dir);
-            }
-            let tmp = local.with_extension("json.tmp");
-            let _ = std::fs::write(&tmp, Record::text(&now)).and_then(|()| std::fs::rename(&tmp, &local));
+            // Best effort, as above: this process remembers the folder either way.
+            let _ = quire_base::fs::write_atomic(&local, Record::text(&now).as_bytes(), quire_base::fs::Options::STATE);
         }
         self.storage.set_locked_folders(&self.known.hint());
     }

@@ -11,6 +11,8 @@
     reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
 )]
 
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
+
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;

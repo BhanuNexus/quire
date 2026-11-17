@@ -11,7 +11,7 @@
 //! for search, a notice for chat, no OCR text.
 
 use std::collections::{HashMap, HashSet};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -153,11 +153,7 @@ impl F16Cache {
                 out.extend_from_slice(&x.to_le_bytes());
             }
         }
-        if let Some(d) = p.parent() {
-            let _ = std::fs::create_dir_all(d);
-        }
-        let tmp = p.with_extension("f16.tmp");
-        if std::fs::write(&tmp, &out).and_then(|()| std::fs::rename(&tmp, &p)).is_ok() {
+        if quire_base::fs::write_atomic(&p, &out, quire_base::fs::Options::STATE).is_ok() {
             self.unsaved = 0;
         }
     }
@@ -453,14 +449,8 @@ pub fn read_ocr_cache(path: &Path, model: &str) -> Option<Vec<String>> {
 }
 
 pub fn write_ocr_cache(path: &Path, model: &str, pages: &[String]) -> std::io::Result<()> {
-    if let Some(d) = path.parent() {
-        std::fs::create_dir_all(d)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    let mut f = std::fs::File::create(&tmp)?;
-    f.write_all(json!({ "format": 1, "model": model, "pages": pages }).to_string().as_bytes())?;
-    f.sync_all()?;
-    std::fs::rename(tmp, path)
+    let text = json!({ "format": 1, "model": model, "pages": pages }).to_string();
+    quire_base::fs::write_atomic(path, text.as_bytes(), quire_base::fs::Options::STATE)
 }
 
 #[cfg(test)]

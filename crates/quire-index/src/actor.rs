@@ -12,6 +12,7 @@ use std::sync::{Arc, RwLock, RwLockReadGuard};
 use std::thread::JoinHandle;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
+use quire_base::time::now_ms;
 use quire_vault::{NotePath, Vault};
 
 use crate::chunk::chunk_note;
@@ -264,11 +265,6 @@ impl Drop for IndexService {
             let _ = w.join();
         }
     }
-}
-
-/// Now, Unix ms.
-fn now_ms() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
 type Parsed = (NoteRecord, String, i64);

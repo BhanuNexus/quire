@@ -204,29 +204,15 @@ pub struct Resolved {
     pub real: NotePath,
 }
 
-/// A vault path an agent may name: NFC, relative, no `..`, no hidden
-/// segments except `.quire` (which policy then denies), no control characters.
+/// A vault path an agent may name: NFC, then
+/// [`quire_base::path::Rule::NoteFile`] (relative, no `..`, no hidden
+/// segments except `.quire`, which policy then denies, no control characters).
 pub fn canonical_path(p: &NotePath) -> Result<NotePath, WriteError> {
     let s: String = p.as_str().nfc().collect();
-    let bad = |reason: &str| Err(WriteError::InvalidPath { reason: format!("{s}: {reason}") });
-    if s.is_empty() || s.ends_with('/') {
-        return bad("not a file path");
+    match quire_base::path::Rule::NoteFile.check(&s) {
+        Ok(()) => Ok(NotePath::new(s)),
+        Err(why) => Err(WriteError::InvalidPath { reason: format!("{s}: {why}") }),
     }
-    if s.chars().any(char::is_control) {
-        return bad("contains control characters");
-    }
-    if s.starts_with('/') || s.contains(':') || s.contains('\\') {
-        return bad("must be relative to the vault");
-    }
-    for seg in s.split('/') {
-        if seg.is_empty() || seg == "." || seg == ".." {
-            return bad("has an empty, `.` or `..` segment");
-        }
-        if seg.starts_with('.') && !seg.eq_ignore_ascii_case(".quire") {
-            return bad("is inside a hidden folder");
-        }
-    }
-    Ok(NotePath::new(s))
 }
 
 /// Where `path` really leads, for any caller with a vault.
@@ -1492,21 +1478,4 @@ fn marked_untrusted(text: &str) -> bool {
 }
 
 /// `%20` → space, per byte; invalid sequences are kept as written.
-pub(crate) fn percent_decode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%'
-            && i + 2 < b.len()
-            && let Some(v) = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok())
-        {
-            out.push(v);
-            i += 3;
-            continue;
-        }
-        out.push(b[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
+pub(crate) use quire_base::enc::percent_decode_lossy as percent_decode;

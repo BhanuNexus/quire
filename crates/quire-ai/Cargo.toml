@@ -15,9 +15,10 @@ build = "build.rs"
 # LocalEmbedder/LocalChat/LocalOcr clients. Without it only `protocol` is
 # built, which is all the engine sidecar links. Neither side contains
 # inference code.
-client = ["dep:toml", "dep:ureq", "dep:sha2", "dep:base64", "dep:half", "dep:flate2", "dep:quire-index", "dep:quire-intel"]
+client = ["dep:toml", "dep:ureq", "quire-base/net", "dep:sha2", "dep:base64", "dep:half", "dep:flate2", "dep:quire-index", "dep:quire-intel"]
 
 [dependencies]
+quire-base.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml = { workspace = true, optional = true }

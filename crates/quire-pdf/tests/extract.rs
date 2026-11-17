@@ -11,6 +11,8 @@
     reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
 )]
 
+#![allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly")]
+
 use quire_pdf::PdfDoc;
 use quire_pdf::annot;
 use quire_pdf::find::{anchor_for, find, find_in, reanchor};

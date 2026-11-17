@@ -3,8 +3,56 @@ msrv = "1.97"
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-print-in-tests = true
+allow-panic-in-tests = true
+allow-dbg-in-tests = true
 avoid-breaking-exported-api = false
 too-many-arguments-threshold = 8
 # 0.11: the TaskNotes plugin's name in docs ("..": keep clippy's defaults).
 # 0.12 sync: storage names in docs.
 doc-valid-idents = ["TaskNotes", "WebDAV", "SigV4", "MinIO", "ownCloud", ".."]
+
+# The project's rules, as lints (0.14, docs/design/0.14-health-base.md).
+# Clippy prints `reason` under the error, so each says what to use instead;
+# with `replacement`, `cargo clippy --fix` switches a call over.
+#
+# One clippy.toml serves the whole workspace: a crate's own clippy.toml
+# would replace this file, not add to it (rust-clippy #7353), so there is
+# none. The module that owns a raw call says so once, at its top:
+#   #![expect(clippy::disallowed_methods, reason = "this module is the one place that ...")]
+# and any other legitimate call says why, on the call:
+#   #[expect(clippy::disallowed_methods, reason = "...")]
+# An expect that stops matching fails the build, so none goes stale.
+# Tests may use std directly: each crate root has
+#   #![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+# and each file under tests/ the same #![allow].
+#
+# Not here yet (a ratchet, later): the wall clock, std::env::var and
+# Result::unwrap_or_default.
+disallowed-methods = [
+  # P4: writes are atomic, through quire-base.
+  { path = "std::fs::rename", reason = "P4: to replace a file use quire_base::fs::write_atomic (or replace_file for a temporary file you made); notes go through Storage. Renaming a folder or a note on purpose? #[expect] with the reason" },
+  { path = "std::fs::write", reason = "P4: not atomic, a crash leaves half a file. Use quire_base::fs::write_atomic (app state: Options::STATE, secrets: Options::SECRET); vault files: Storage::write_bytes_atomic" },
+  { path = "std::fs::File::create", reason = "P4: truncates the file in place. Use quire_base::fs::write_atomic; vault files: Storage::write_bytes_atomic; a download in parts: #[expect] with the reason" },
+  { path = "tempfile::NamedTempFile::persist", reason = "MoveFileExW on Windows fails while anyone has the file open: use quire_base::fs::replace_file" },
+  { path = "tempfile::NamedTempFile::persist_noclobber", reason = "use quire_base::fs::replace_file (or write_new_private for a file that must be new)" },
+  { path = "tempfile::TempPath::persist", reason = "use quire_base::fs::replace_file" },
+  # P4/P3: a vault on disk is opened through the gate that remembers locked folders.
+  { path = "quire_vault::Vault::open_local", reason = "open a vault with quire_app::secure_state::open_vault, which keeps locked folders locked when a key file is missing" },
+  # 0.13.1-parse: every YAML parse goes through the depth check.
+  { path = "yaml_rust2::YamlLoader::load_from_str", reason = "use quire_markdown::frontmatter::load_yaml (refuses nesting deeper than 64)" },
+  # P6: HTTP clients are configured in one place.
+  { path = "ureq::Agent::config_builder", reason = "P6: use quire_base::net::config or agent (TLS roots, user agent, timeouts, an explicit redirect policy)" },
+  { path = "ureq::Agent::new_with_defaults", reason = "P6: no timeouts; use quire_base::net::agent" },
+  { path = "ureq::Agent::new_with_config", reason = "P6: use quire_base::net::config" },
+  { path = "ureq::get", reason = "P6: the global agent has no timeouts; use quire_base::net::agent" },
+  { path = "ureq::post", reason = "P6: the global agent has no timeouts; use quire_base::net::agent" },
+  { path = "ureq::put", reason = "P6: use quire_base::net::agent" },
+  { path = "ureq::delete", reason = "P6: use quire_base::net::agent" },
+  # P6/P7: starting a process is a decision; git has one gate.
+  { path = "std::process::Command::new", reason = "P6/P7: git goes through quire_app::git::run_git (trust checks); any other program needs #[expect] with the reason" },
+  { path = "std::process::exit", reason = "libraries return errors; only a binary's main decides the exit code" },
+  # A failed random source must never become an all-zero key, nonce or id.
+  { path = "getrandom::fill", reason = "use quire_base::rand::fill or bytes and handle the error: `let _ = getrandom::fill(..)` leaves zeros", replacement = "quire_base::rand::fill" },
+  # Panics and profilers show a thread's name.
+  { path = "std::thread::spawn", reason = "name the thread: std::thread::Builder::new().name(\"quire-...\".into()).spawn(..).expect(\"the system starts a thread\")" },
+]

@@ -136,7 +136,7 @@ pub(crate) fn is_segment_name(name: &str) -> bool {
 // Small files are written so readers see the old version or the new one,
 // never half, even after a power cut; in the shared folder too, where
 // another device may write the same file at the same time (0.13.2).
-use crate::fsx::write_atomically;
+use quire_base::fs::{Options, sweep_leftovers, write_atomic};
 
 /// Make a new vault in `root` (see [`sync_root`]) that every Quire since
 /// 0.8 reads.
@@ -158,7 +158,7 @@ pub fn create_space_at(root: &Path, space: &SpaceId, key: &WrappedKey, level: u3
         other: serde_json::Map::new(),
     };
     let json = serde_json::to_vec_pretty(&file).unwrap_or_default();
-    write_atomically(&dir.join("space.json"), &json).map_err(|e| io_err("can't write to the sync folder", &e))
+    write_atomic(&dir.join("space.json"), &json, Options::EXISTING_FOLDER).map_err(|e| io_err("can't write to the sync folder", &e))
 }
 
 fn read_space(dir: &Path) -> Result<SpaceFile, TransportError> {
@@ -196,7 +196,7 @@ pub fn raise_min_reader(root: &Path, space: &SpaceId, min: u32) -> Result<(), Tr
     f.format = f.format.max(min);
     f.min_reader = Some(f.min_reader.unwrap_or(1).max(min));
     let json = serde_json::to_vec_pretty(&f).unwrap_or_default();
-    write_atomically(&dir.join("space.json"), &json).map_err(|e| io_err("can't write to the sync folder", &e))
+    write_atomic(&dir.join("space.json"), &json, Options::EXISTING_FOLDER).map_err(|e| io_err("can't write to the sync folder", &e))
 }
 
 /// The vaults in `root`, oldest first.
@@ -724,7 +724,7 @@ impl FolderTransport {
         };
         let out = *e;
         if changed && let Some(f) = &self.seen_file {
-            let _ = crate::fsx::write_quickly(f, &serde_json::to_vec(&seen).unwrap_or_default());
+            let _ = write_atomic(f, &serde_json::to_vec(&seen).unwrap_or_default(), Options::EXISTING_FOLDER.lazy());
         }
         out
     }
@@ -993,7 +993,7 @@ impl FolderTransport {
     fn next_seq(&self, ix: &mut Index) -> u64 {
         ix.seq += 1;
         if let Some(f) = &self.seq_file {
-            let _ = crate::fsx::write_quickly(f, ix.seq.to_string().as_bytes());
+            let _ = write_atomic(f, ix.seq.to_string().as_bytes(), Options::EXISTING_FOLDER.lazy());
         }
         ix.seq
     }
@@ -1075,7 +1075,7 @@ impl FolderTransport {
         let (Some(f), Some(name)) = (&self.own_file, path.file_name().and_then(|n| n.to_str())) else { return Ok(()) };
         let mut own: BTreeMap<String, u64> = fs::read(f).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         own.insert(name.to_string(), len);
-        write_atomically(f, &serde_json::to_vec(&own).unwrap_or_default())
+        write_atomic(f, &serde_json::to_vec(&own).unwrap_or_default(), Options::EXISTING_FOLDER)
     }
 
     /// How long this device wrote its log file `path`, if it noted it (a
@@ -1284,7 +1284,7 @@ impl FolderTransport {
                 return Ok(());
             }
             let pname = format!("part-{:06}.jsonl", parts.len() + 1);
-            write_atomically(&tmp.join(&pname), buf).map_err(werr)?;
+            write_atomic(&tmp.join(&pname), buf, Options::EXISTING_FOLDER).map_err(werr)?;
             parts.push(Part { name: pname, size: buf.len() as u64, sha256: sha256_hex(buf), lines: *lines });
             buf.clear();
             *lines = 0;
@@ -1317,7 +1317,9 @@ impl FolderTransport {
         };
         m.seal(&keys);
         // The manifest goes last: until it's there, the snapshot isn't used.
-        write_atomically(&tmp.join("manifest.json"), &serde_json::to_vec_pretty(&m).unwrap_or_default()).map_err(werr)?;
+        write_atomic(&tmp.join("manifest.json"), &serde_json::to_vec_pretty(&m).unwrap_or_default(), Options::EXISTING_FOLDER)
+            .map_err(werr)?;
+        #[expect(clippy::disallowed_methods, reason = "a finished snapshot folder takes its name in one step (a folder, not a file)")]
         fs::rename(&tmp, &dir).map_err(werr)?;
         drop(ix);
         self.mark_seen(&m);
@@ -1332,9 +1334,9 @@ impl FolderTransport {
         // Temporary files a crash left in the shared folder (0.13.2): a day
         // old is long past any write in progress.
         let day = std::time::Duration::from_hours(24);
-        let mut swept = crate::fsx::sweep(&self.dir, day) + crate::fsx::sweep(&self.dir.join("keys"), day);
+        let mut swept = sweep_leftovers(&self.dir, day) + sweep_leftovers(&self.dir.join("keys"), day);
         if let Ok(rd) = fs::read_dir(self.dir.join("devices")) {
-            swept += rd.flatten().map(|e| crate::fsx::sweep(&e.path(), day)).sum::<usize>();
+            swept += rd.flatten().map(|e| sweep_leftovers(&e.path(), day)).sum::<usize>();
         }
         let Some((m, _, settled)) = self.generation_settled() else { return swept };
         if !settled {
@@ -1388,7 +1390,7 @@ impl FolderTransport {
         let werr = |e: std::io::Error| io_err("can't write to the sync folder", &e);
         fs::create_dir_all(&dir).map_err(werr)?;
         let path = dir.join(format!("{:06}-{}.json", r.epoch, r.maker));
-        write_atomically(&path, &serde_json::to_vec_pretty(r).unwrap_or_default()).map_err(werr)
+        write_atomic(&path, &serde_json::to_vec_pretty(r).unwrap_or_default(), Options::EXISTING_FOLDER).map_err(werr)
     }
 
     /// Every device's record (0.13 devices publish one).
@@ -1408,7 +1410,7 @@ impl FolderTransport {
         let dir = self.dir.join("devices").join(&self.device.0);
         let werr = |e: std::io::Error| io_err("can't write to the sync folder", &e);
         fs::create_dir_all(&dir).map_err(werr)?;
-        write_atomically(&dir.join("device.json"), &serde_json::to_vec_pretty(r).unwrap_or_default()).map_err(werr)
+        write_atomic(&dir.join("device.json"), &serde_json::to_vec_pretty(r).unwrap_or_default(), Options::EXISTING_FOLDER).map_err(werr)
     }
 }
 

@@ -80,22 +80,7 @@ pub fn s3_list(body: &[u8], prefix: &str) -> Result<S3Page, StoreError> {
 }
 
 /// Decode `%xx` escapes; `None` for broken ones or bytes that aren't UTF-8.
-pub fn percent_decode(s: &str) -> Option<String> {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%' {
-            let hex = s.get(i + 1..i + 3)?;
-            out.push(u8::from_str_radix(hex, 16).ok()?);
-            i += 3;
-        } else {
-            out.push(b[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8(out).ok()
-}
+pub use quire_base::enc::percent_decode_strict as percent_decode;
 
 const DAV: &str = "DAV:";
 

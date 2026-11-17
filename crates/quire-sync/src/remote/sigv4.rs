@@ -11,7 +11,7 @@
 //! `x-amz-content-sha256`, which is signed.
 
 use hmac::{Hmac, KeyInit, Mac};
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 
 use crate::crypto::hex;
 
@@ -48,18 +48,7 @@ pub struct Request<'a> {
 /// Percent-encode as SigV4 wants: everything but `A-Z a-z 0-9 - _ . ~`,
 /// and `/` too unless `keep_slash`.
 pub fn uri_encode(s: &str, keep_slash: bool) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(char::from(b)),
-            b'/' if keep_slash => out.push('/'),
-            _ => {
-                use std::fmt::Write as _;
-                let _ = write!(out, "%{b:02X}");
-            }
-        }
-    }
-    out
+    quire_base::enc::percent_encode(s, if keep_slash { b"/" } else { b"" })
 }
 
 /// An object key as a URL path (`/bucket/a b` → `/bucket/a%20b`).
@@ -74,9 +63,7 @@ pub fn canonical_query(query: &[(String, String)]) -> String {
     pairs.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("&")
 }
 
-pub fn sha256_hex(data: &[u8]) -> String {
-    hex(&Sha256::digest(data))
-}
+pub use quire_base::enc::sha256_hex;
 
 fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
     let mut mac = Hmac::<Sha256>::new_from_slice(key).unwrap_or_else(|_| unreachable!("HMAC takes any key length"));

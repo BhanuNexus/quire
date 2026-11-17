@@ -13,6 +13,8 @@
 //! All ranges in this crate are **byte** ranges into the source `&str`
 //! unless a function says otherwise; editing helpers convert to char indices.
 
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+
 pub mod blocks;
 pub mod callout;
 pub mod cite;

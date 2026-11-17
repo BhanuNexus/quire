@@ -69,7 +69,7 @@ impl Agenda {
 
 /// `YYYY-MM-DD` (a time after it is ignored).
 pub fn parse_date(s: Option<&str>) -> Option<NaiveDate> {
-    NaiveDate::parse_from_str(s?.get(..10)?, "%Y-%m-%d").ok()
+    quire_base::time::parse_ymd_prefix(s?)
 }
 
 /// `H:MM` or `HH:MM`.

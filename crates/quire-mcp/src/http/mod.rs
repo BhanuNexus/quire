@@ -40,6 +40,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use base64::Engine as _;
 use quire_app::intel::chat::CancelFlag;
+use quire_base::time::now_ms;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
@@ -315,10 +316,6 @@ fn header_text(h: &HeaderMap, name: &str) -> Option<String> {
         return String::from_utf8(base64::engine::general_purpose::STANDARD.decode(b).ok()?).ok();
     }
     Some(raw.to_string())
-}
-
-fn now_ms() -> i64 {
-    quire_app::history_ops::now_ms()
 }
 
 /// Sets the request's cancel flag if the client goes away first.

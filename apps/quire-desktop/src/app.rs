@@ -93,7 +93,7 @@ fn write_sample(dir: &Path) -> std::io::Result<()> {
             std::fs::create_dir_all(parent)?;
         }
         if !p.exists() {
-            std::fs::write(p, body)?;
+            quire_base::fs::write_atomic(&p, body.as_bytes(), quire_base::fs::Options::STATE)?;
         }
     }
     Ok(())

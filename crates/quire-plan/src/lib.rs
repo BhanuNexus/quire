@@ -14,6 +14,8 @@
 //! * [`time`] — time entries, durations and the weekly report
 //! * [`timer`] — the running timer and pomodoro cycles
 
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+
 pub mod agenda;
 pub mod periodic;
 pub mod recur;

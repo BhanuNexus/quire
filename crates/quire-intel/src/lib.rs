@@ -7,6 +7,8 @@
 //! configures a provider; the providers (and `embed`) are behind the
 //! `remote-llm` feature, which both apps turn on.
 
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+
 pub mod anchor;
 pub mod ask;
 pub mod calc;

@@ -21,6 +21,7 @@ typeset = ["quire-app/typeset", "quire-web/typeset"]
 eval = []
 
 [dependencies]
+quire-base.workspace = true
 quire-app.workspace = true
 quire-import = { path = "../../crates/quire-import" }
 quire-agent.workspace = true
@@ -37,8 +38,6 @@ quire-web.workspace = true
 tokio = { workspace = true, features = ["rt", "signal", "macros"] }
 # 0.10 perf: `bench --suite pdf` times text extraction (already linked through quire-app).
 quire-pdf.workspace = true
-# 0.11: `skill install --from` shows the SHA-256 of what it installs.
-sha2.workspace = true
 
 [dev-dependencies]
 quire-app = { workspace = true, features = ["weak-kdf"] }

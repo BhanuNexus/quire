@@ -33,6 +33,8 @@
 //! 0.8). A client older than its space's minimum gets `426` with
 //! `{"error": …, "min": N}`.
 
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+
 pub mod store;
 
 use std::collections::HashMap;

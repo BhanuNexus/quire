@@ -10,7 +10,8 @@
     clippy::unwrap_used,
     clippy::panic,
     clippy::tests_outside_test_module,
-    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+    clippy::disallowed_methods,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test; it builds fixtures with std directly"
 )]
 
 use std::path::Path;

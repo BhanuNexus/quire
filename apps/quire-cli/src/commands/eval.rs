@@ -79,7 +79,8 @@ fn write_report(name: &str, report: &quire_mcp::eval::Report, args: &[String]) -
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let file = dir.join(format!("{name}-{}.json", chrono_date()));
     let pretty = serde_json_pretty(&report.json);
-    std::fs::write(&file, &pretty).map_err(|e| format!("{}: {e}", file.display()))?;
+    quire_base::fs::write_atomic(&file, pretty.as_bytes(), quire_base::fs::Options::STATE)
+        .map_err(|e| format!("{}: {e}", file.display()))?;
     if super::has_flag(args, "--json") {
         println!("{pretty}");
     } else {
@@ -155,11 +156,14 @@ mod mock {
         pub(super) fn start() -> Result<Self, String> {
             let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
             let url = format!("http://{}", listener.local_addr().map_err(|e| e.to_string())?);
-            std::thread::spawn(move || {
-                for stream in listener.incoming().flatten() {
-                    let _ = serve(stream);
-                }
-            });
+            std::thread::Builder::new()
+                .name("quire-eval-server".into())
+                .spawn(move || {
+                    for stream in listener.incoming().flatten() {
+                        let _ = serve(stream);
+                    }
+                })
+                .expect("the system starts a thread");
             Ok(Self { url })
         }
     }

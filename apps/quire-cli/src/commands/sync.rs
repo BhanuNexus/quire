@@ -291,6 +291,7 @@ pub(crate) fn prompt_hidden(prompt: &str) -> Result<String, String> {
 }
 
 fn stty(args: &[&str]) -> bool {
+    #[expect(clippy::disallowed_methods, reason = "turns terminal echo off and on around a typed passphrase (stty, fixed arguments)")]
     std::process::Command::new("stty").args(args).stdin(std::process::Stdio::inherit()).status().is_ok_and(|s| s.success())
 }
 

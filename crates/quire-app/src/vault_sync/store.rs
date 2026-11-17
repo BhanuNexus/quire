@@ -445,8 +445,10 @@ impl LocalStore for VaultStore {
             // never written, so never deleted here either.
             return Ok(());
         }
-        if path.starts_with(SHARED_PREFIX) {
-            if path.contains("/.") || path.contains("..") {
+        if let Some(rest) = path.strip_prefix(SHARED_PREFIX) {
+            // A plain settings file (quire_base::path::Rule::PlainNote), and,
+            // as before, no `..` anywhere in its name.
+            if !quire_base::path::Rule::PlainNote.accepts(rest) || rest.contains("..") {
                 return Err("not a vault settings file".into());
             }
             // Another device shares vault settings through this space, so

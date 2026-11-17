@@ -17,12 +17,12 @@ text = ["dep:hayro-interpret", "dep:kurbo"]
 render = ["text", "dep:hayro"]
 
 [dependencies]
+quire-base.workspace = true
 quire-markdown.workspace = true
 quire-vault.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 strsim.workspace = true
-sha2.workspace = true
 hayro-interpret = { workspace = true, optional = true }
 hayro = { workspace = true, optional = true }
 # The geometry types in hayro-interpret's `Device` trait (not re-exported).

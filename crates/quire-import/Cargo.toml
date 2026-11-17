@@ -10,6 +10,7 @@ homepage.workspace = true
 publish.workspace = true
 
 [dependencies]
+quire-base = { workspace = true, features = ["net"] }
 quire-vault.workspace = true
 quire-markdown.workspace = true
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
@@ -20,7 +21,6 @@ md5 = "0.8"
 ureq.workspace = true
 dom_smoothie.workspace = true
 encoding_rs.workspace = true
-sha2.workspace = true
 # Captured images are decoded before they are kept (PNG, JPEG, GIF, WebP).
 image.workspace = true
 # WS-E: Obsidian Bases (.base YAML)

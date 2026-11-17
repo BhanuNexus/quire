@@ -53,20 +53,9 @@ pub fn note_uri(p: &NotePath) -> String {
     format!("quire://note/{}", encode_path(p.as_str()))
 }
 
+/// Each segment percent-encoded, `/` kept.
 pub fn encode_path(p: &str) -> String {
-    p.split('/').map(encode_segment).collect::<Vec<_>>().join("/")
-}
-
-fn encode_segment(seg: &str) -> String {
-    let mut out = String::with_capacity(seg.len());
-    for b in seg.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
-            out.push(char::from(b));
-        } else {
-            let _ = write!(out, "%{b:02X}");
-        }
-    }
-    out
+    quire_base::enc::percent_encode(p, b"/")
 }
 
 /// Undo [`encode_path`]; `None` for broken escapes or invalid UTF-8.
@@ -115,7 +104,7 @@ pub fn parse_time(s: &str, now_ms: i64) -> Option<i64> {
     if let Ok(d) = chrono::DateTime::parse_from_rfc3339(s) {
         return Some(d.timestamp_millis());
     }
-    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok().and_then(|d| d.and_hms_opt(0, 0, 0)).map(|d| d.and_utc().timestamp_millis())
+    quire_base::time::parse_ymd(s).and_then(|d| d.and_hms_opt(0, 0, 0)).map(|d| d.and_utc().timestamp_millis())
 }
 
 /// The path an agent named, checked (NFC, relative, no hidden folders).

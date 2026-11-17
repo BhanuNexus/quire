@@ -7,6 +7,8 @@
 //! Everything that runs the PDF interpreter is wrapped in `catch_unwind`:
 //! an odd PDF gives an error ("can't render this page"), never a crash.
 
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+
 pub mod annot;
 pub mod find;
 #[cfg(feature = "text")]
@@ -92,11 +94,4 @@ pub fn render_page(doc: &PdfDoc, page: usize, scale: f32) -> Result<PageImage, P
 }
 
 /// Hex SHA-256 of a file's bytes (cache keys and `pdf_sha256`).
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::Digest as _;
-    use std::fmt::Write as _;
-    sha2::Sha256::digest(bytes).iter().fold(String::with_capacity(64), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
-}
+pub use quire_base::enc::sha256_hex;

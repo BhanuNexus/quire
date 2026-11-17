@@ -74,9 +74,7 @@ pub enum LockError {
 }
 
 pub(crate) fn random<const N: usize>() -> Result<[u8; N], LockError> {
-    let mut b = [0u8; N];
-    getrandom::fill(&mut b).map_err(|_| LockError::NoRandomness)?;
-    Ok(b)
+    quire_base::rand::bytes().map_err(|_| LockError::NoRandomness)
 }
 
 /// A locked folder's random id, in its key file and every file's header.
@@ -120,14 +118,14 @@ impl FolderKey {
     /// characters and a 4-character check, in groups of four), as Quire
     /// Sync writes its recovery key.
     pub fn recovery_key(&self) -> String {
-        quire_sync::VaultKey::from_bytes(self.0).recovery_key().to_string()
+        quire_base::recovery::encode(&self.0)
     }
 
     /// The key a recovery key stands for (its own checksum checked; whether
     /// it opens a folder is [`KeyFile::check_key`]).
     pub fn from_recovery_key(text: &str) -> Result<Self, LockError> {
-        let k = quire_sync::VaultKey::from_recovery_key(text).map_err(|_| LockError::BadRecoveryKey)?;
-        Ok(Self(*k.as_bytes()))
+        let k = zeroize::Zeroizing::new(quire_base::recovery::decode(text).ok_or(LockError::BadRecoveryKey)?);
+        Ok(Self(*k))
     }
 
     /// For the OS keychain ("unlock automatically on this computer").
@@ -508,24 +506,22 @@ fn constant_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-pub(crate) fn hex(b: &[u8]) -> String {
-    use std::fmt::Write as _;
-    b.iter().fold(String::with_capacity(b.len() * 2), |mut s, x| {
-        let _ = write!(s, "{x:02x}");
-        s
-    })
-}
-
-pub(crate) fn unhex(s: &str) -> Option<Vec<u8>> {
-    if !s.len().is_multiple_of(2) || !s.is_ascii() {
-        return None;
-    }
-    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
-}
+pub(crate) use quire_base::enc::{hex, unhex};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A folder's recovery key is written as Quire Sync writes its own
+    /// (the 0.12 vector), since 0.14 through `quire_base::recovery`.
+    #[test]
+    fn recovery_keys_keep_their_format() {
+        let k = FolderKey::from_bytes([42; 32]);
+        let rk = "58N2-MAHA-58N2-MAHA-58N2-MAHA-58N2-MAHA-58N2-MAHA-58N2-MAHA-58N0-ME2E";
+        assert_eq!(k.recovery_key(), rk);
+        assert_eq!(FolderKey::from_recovery_key(&rk.to_lowercase()).unwrap().0, [42; 32]);
+        assert!(matches!(FolderKey::from_recovery_key("58N2"), Err(LockError::BadRecoveryKey)));
+    }
 
     fn id(b: u8) -> FolderId {
         FolderId([b; 16])

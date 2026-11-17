@@ -18,6 +18,7 @@ typeset = ["dep:quire-typeset", "quire-pdf/render"]
 weak-kdf = ["quire-vault/weak-kdf"]
 
 [dependencies]
+quire-base = { workspace = true, features = ["net"] }
 quire-text.workspace = true
 quire-markdown.workspace = true
 quire-vault.workspace = true
