@@ -116,6 +116,12 @@ jobs:
         run: |
           packaging/test-release-files.sh
           packaging/test-check-ci-green.sh
+      - name: Crate layering (ARCHITECTURE.md's layer table against cargo metadata; builds nothing)
+        env:
+          RUSTUP_TOOLCHAIN: stable
+        run: |
+          python3 -I packaging/test-check-layering.py
+          python3 -I packaging/check-layering.py
 
   typos:
     runs-on: ubuntu-latest
