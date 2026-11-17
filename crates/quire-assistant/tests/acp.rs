@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The external-agent bridge against a scripted ACP agent (design §6.2
-//! WS-D acceptance): its file writes become suggestions (direct only in the
+//! The external-agent bridge against a scripted ACP agent:
+//! its file writes become suggestions (direct only in the
 //! agent zone), it reads back its own pending text, files outside the vault
 //! are refused, and an `execute` permission is denied by default.
 //!

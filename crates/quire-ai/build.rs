@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Embeds the engine's pins (design §D.3).
+//! Embeds the engine's pins (`docs/design/0.9.md` §D.3).
 //!
 //! * `engine.sha256.<target>`: the release workflow builds `quire-ai-engine`
 //!   first and writes `"<sha256> <size> <binary-sha256>"` (the `.gz` asset's

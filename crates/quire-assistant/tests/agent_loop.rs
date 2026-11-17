@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The panel's agent loop with a scripted model (design §6.2 WS-D
-//! acceptance): a three-step tool loop (search, view, edit) ends in a
+//! The panel's agent loop with a scripted model:
+//! a three-step tool loop (search, view, edit) ends in a
 //! suggestion, not a write; the small model gets no tools; one change per
 //! message for the balanced model; Ask mode changes nothing.
 #![allow(

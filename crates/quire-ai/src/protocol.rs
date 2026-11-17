@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The engine protocol: one JSON object per line over the engine's stdio
-//! (design §D.3, docs/formats/engine-protocol.md).
+//! (`docs/design/0.9.md` §D.3, docs/formats/engine-protocol.md).
 //!
 //! Requests are `{id, method, params}`. Replies are `{id, result}` or
 //! `{id, error}`, and streams send `{id, event}` lines before the final

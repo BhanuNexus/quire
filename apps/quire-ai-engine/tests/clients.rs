@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Every client path against the stand-in engine (`quire-ai-engine-fake`,
-//! design §6.2 WS-D acceptance): the embedder (with its f16 cache and the
+//! Every client path against the stand-in engine (`quire-ai-engine-fake`):
+//! the embedder (with its f16 cache and the
 //! fallback when the engine is missing), chat with streaming and tool calls,
 //! OCR, Stop, crashes and restarts, a hung engine, and the idle exit.
 #![allow(

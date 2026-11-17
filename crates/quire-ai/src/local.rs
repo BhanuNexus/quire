@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The app's on-device models, all served by the engine process (design §D.3).
+//! The app's on-device models, all served by the engine process (`docs/design/0.9.md` §D.3).
 //!
 //! [`LocalEmbedder`] for meaning search, [`LocalChat`] for writing
 //! and the agent panel, [`LocalOcr`] for text in images and scans,

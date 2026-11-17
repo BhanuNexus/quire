@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! On-device AI, client side (design 0.9 §D). Contains no inference code:
+//! On-device AI, client side (`docs/design/0.9.md` §D). Contains no inference code:
 //! models run in the separate `quire-ai-engine` process, which speaks
 //! [`protocol`] over stdio.
 //!

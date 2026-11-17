@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The real models (design §D.3).
+//! The real models (`docs/design/0.9.md` §D.3).
 //!
 //! Candle's quantized Qwen3 for writing and the agent, candle's BERT for embeddings (BGE, E5), and ocrs for OCR, with
 //! hayro rendering PDF pages to read scans. Tokenizers use the pure-Rust

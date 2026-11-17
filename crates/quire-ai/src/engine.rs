@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The engine process (design §D.3).
+//! The engine process (`docs/design/0.9.md` §D.3).
 //!
 //! It is found on disk, started on the first
 //! request at a lower priority, restarted at most twice after a crash, and

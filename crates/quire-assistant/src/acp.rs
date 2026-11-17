@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! An external agent over the Agent Client Protocol (design §D.6), with
+//! An external agent over the Agent Client Protocol (`docs/design/0.9.md` §D.6), with
 //! Quire as the client: JSON-RPC 2.0 over the agent's stdio, one line per
 //! message, protocol version 1.
 //!

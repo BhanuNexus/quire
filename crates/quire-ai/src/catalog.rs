@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The model catalog, compiled in from `catalog.toml` (design §D.2,
+//! The model catalog, compiled in from `catalog.toml` (`docs/design/0.9.md` §D.2,
 //! docs/formats/model-catalog.md), plus the engine binary for this target,
 //! whose SHA-256 the release build embeds (`build.rs`).
 //!
@@ -24,7 +24,7 @@ pub enum Purpose {
 }
 
 /// How capable a language model is, which decides what the agent panel lets
-/// it do (design §D.5).
+/// it do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Tier {

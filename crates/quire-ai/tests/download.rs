@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The downloader against a loopback server that speaks `Range` (design
-//! §6.2 WS-D acceptance): a download resumes after a forced disconnect,
+//! The downloader against a loopback server that speaks `Range`: a download
+//! resumes after a forced disconnect,
 //! a wrong hash is rejected (after one retry), Pause keeps the part and
 //! Cancel deletes it, a mirror keeps the path, and "Install from file…"
 //! matches files by hash.

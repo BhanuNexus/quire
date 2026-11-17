@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! "Ingest into wiki…" (design §D.7).
+//! "Ingest into wiki…" (`docs/design/0.9.md` §D.7).
 //!
 //! A source note becomes a summary page
 //! in `wiki/sources/`, concept pages in `wiki/concepts/` (new, or a section

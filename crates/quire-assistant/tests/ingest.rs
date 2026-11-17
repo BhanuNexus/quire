@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! "Ingest into wiki…" with a scripted model on a fixture source (design
-//! §6.2 WS-D acceptance): the expected pages, citations, index and log;
+//! "Ingest into wiki…" with a scripted model on a fixture source:
+//! the expected pages, citations, index and log;
 //! the person's note gets a suggestion, not an edit; and "Revert run"
 //! restores the vault byte for byte.
 #![allow(

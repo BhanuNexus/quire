@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Agent panel conversations (design §D.5).
+//! Agent panel conversations (`docs/design/0.9.md` §D.5).
 //!
 //! They are kept in `.quire/agent/conversations/<id>.json` (format 1,
 //! docs/formats/agent-state.md) on this device, deleted 30 days after their
