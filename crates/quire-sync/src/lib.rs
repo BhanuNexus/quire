@@ -14,7 +14,8 @@
 //! * `remote` (feature `remote`): S3-compatible storage and WebDAV, the
 //!   folder transport's rules over object storage
 //!
-//! The design is in `docs/design/sync.md`.
+//! The wire format is `docs/formats/sync-protocol.md`; the current design is in
+//! `docs/design/0.12-sync.md` and `docs/design/0.13-sync.md`.
 
 pub mod admin;
 pub mod compact;
