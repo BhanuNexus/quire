@@ -17,7 +17,6 @@
     clippy::print_stderr,
     reason = "a server run from a terminal or a service manager: it reports on stdout and stderr"
 )]
-
 #![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
 
 use std::process::ExitCode;

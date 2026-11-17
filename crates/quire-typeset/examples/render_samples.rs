@@ -6,7 +6,6 @@
 //! cargo run -p quire-typeset --example render_samples -- <output-dir>
 //! ```
 #![expect(clippy::print_stdout, reason = "an example run by hand: it prints what it wrote")]
-
 #![expect(clippy::disallowed_methods, reason = "a developer example writes its sample files directly")]
 
 use std::path::PathBuf;

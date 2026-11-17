@@ -33,14 +33,11 @@ import sys
 # Edges to them are left out of the "Depends on" comparison, so the check
 # passes before and after the crate lands. Remove the entry when it has landed
 # and the table lists its edges.
-PLANNED = {"quire-base"}  # remove when the foundations branch lands
+PLANNED: set[str] = set()
 
 # Edges that break the layer rule today and are on their way out. The edge is
 # optional in the "Depends on" comparison, so the check passes with or without it.
-TEMPORARY_EDGES = {
-    # remove when the foundations branch lands (recovery-key codec moves to quire-base)
-    ("quire-vault", "quire-sync"),
-}
+TEMPORARY_EDGES: set[tuple[str, str]] = set()
 
 # (crate, dependency, feature): a library crate that turns on an optional
 # feature of another workspace crate, kept until it is removed.
@@ -48,6 +45,10 @@ FEATURE_ALLOW = {
     # quire-assistant picks quire-ai's HTTP client; remove if the assistant gets
     # the client another way (its own feature, or quire-ai's default).
     ("quire-assistant", "quire-ai", "client"),
+    # quire-base's `net` feature is its HTTP client builder: a crate turns it on
+    # for its own network code. Which crates may have network code is cargo-deny's
+    # ureq list (deny.toml), not this check.
+    ("quire-import", "quire-base", "net"),
 }
 
 # Crates (besides apps/*) that may choose another crate's features.

@@ -90,11 +90,10 @@ class Layering(unittest.TestCase):
 
     def test_same_layer_edge_must_be_named(self):
         packages, rows, same = base_world()
-        packages[3]["dependencies"].append(dep("quire-sync"))  # vault -> sync is TEMPORARY, use sync -> vault
-        packages[2]["dependencies"].append(dep("quire-vault"))
-        rows[2] = (2, "quire-sync", "crates/quire-sync", ["quire-text", "quire-vault"])
+        packages[3]["dependencies"].append(dep("quire-sync"))  # vault -> sync, both layer 2
+        rows[3] = (2, "quire-vault", "crates/quire-vault", ["quire-markdown", "quire-sync"])
         errors = self.run_check(packages, rows, same)
-        self.assertOneError(errors, "quire-sync", "quire-vault", "same layer")
+        self.assertOneError(errors, "quire-vault", "quire-sync", "same layer")
 
     def test_named_same_layer_edge_passes(self):
         # quire-web -> quire-mcp is named in base_world and passes there.
@@ -144,15 +143,17 @@ class Layering(unittest.TestCase):
     def test_feature_rules(self):
         packages, rows, same = base_world()
         # a library crate (not quire-app) turns on a feature
-        packages[3]["dependencies"].append(dep("quire-sync", features=["http"]))  # vault -> sync is the temporary edge
+        packages[5]["dependencies"].append(dep("quire-sync", features=["http"]))  # mcp -> sync
+        rows[5] = (4, "quire-mcp", "crates/quire-mcp", ["quire-app", "quire-sync"])
         errors = self.run_check(packages, rows, same)
-        self.assertOneError(errors, "quire-vault", "feature `http`", "only apps/* and quire-app")
+        self.assertOneError(errors, "quire-mcp", "feature `http`", "only apps/* and quire-app")
 
     def test_default_feature_is_not_a_choice(self):
         packages, rows, same = base_world()
         packages[2]["features"] = {"default": ["http"], "http": []}
         packages[4]["dependencies"][1] = dep("quire-sync", features=["http"])
-        packages[3]["dependencies"].append(dep("quire-sync", features=["http"]))
+        packages[5]["dependencies"].append(dep("quire-sync", features=["http"]))
+        rows[5] = (4, "quire-mcp", "crates/quire-mcp", ["quire-app", "quire-sync"])
         self.assertEqual(self.run_check(packages, rows, same), [])
 
     def test_feature_allow_list(self):
@@ -162,25 +163,17 @@ class Layering(unittest.TestCase):
         rows += [(4, "quire-ai", "crates/quire-ai", ["quire-text"]), (5, "quire-assistant", "crates/quire-assistant", ["quire-ai"])]
         self.assertEqual(self.run_check(packages, rows, same), [])
 
-    def test_temporary_vault_sync_edge_passes_in_both_states(self):
+    def test_base_is_the_bottom_layer(self):
         packages, rows, same = base_world()
-        without = self.run_check(packages, rows, same)
-        packages[3]["dependencies"].append(dep("quire-sync"))
-        for listed in (False, True):
-            rows[3] = (2, "quire-vault", "crates/quire-vault", ["quire-markdown"] + (["quire-sync"] if listed else []))
-            self.assertEqual(self.run_check(packages, rows, same), [], f"listed={listed}")
-        self.assertEqual(without, [])
-
-    def test_planned_base_may_be_absent_or_present(self):
-        packages, rows, same = base_world()
-        rows.insert(0, (0, "quire-base", "crates/quire-base", []))
-        self.assertEqual(self.run_check(packages, rows, same), [])  # row, no crate yet
-        packages.insert(0, pkg("quire-base", "crates/quire-base"))
-        packages[2]["dependencies"].append(dep("quire-base"))  # markdown -> base: lower layer, not in the table
+        packages.insert(0, pkg("quire-base", "crates/quire-base", features={"default": [], "net": []}))
+        rows = [(0, "quire-base", "crates/quire-base", [])] + [(r[0] + 1, r[1], r[2], r[3]) for r in rows]
+        packages[2]["dependencies"].append(dep("quire-base"))  # markdown -> base
+        rows[2] = (2, "quire-markdown", "crates/quire-markdown", ["quire-base", "quire-text"])
         self.assertEqual(self.run_check(packages, rows, same), [])
         packages[0]["dependencies"].append(dep("quire-markdown"))  # base -> markdown: upward
+        rows[0] = (0, "quire-base", "crates/quire-base", ["quire-markdown"])
         errors = self.run_check(packages, rows, same)
-        self.assertTrue(any("quire-base" in e and "higher layer" in e for e in errors), errors)
+        self.assertOneError(errors, "quire-base", "higher layer")
 
     def test_same_layer_name_across_layers_is_flagged(self):
         packages, rows, same = base_world()

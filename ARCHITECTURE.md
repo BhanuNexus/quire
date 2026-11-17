@@ -109,36 +109,35 @@ The layers (and the order of rows) go from the bottom up. The drawing in §2 is 
 
 | Layer | Crate | Path | What it is | Depends on (workspace crates) |
 |---|---|---|---|---|
-| 0 | `quire-base` | `crates/quire-base` | shared helpers every crate may use: atomic file writer, random bytes, path checks, HTTP client builder, small utilities (planned; lands with the foundations branch) <!-- verify after merge --> | none |
-| 0 | `quire-canvas` | `crates/quire-canvas` | JSON Canvas model and serializer, ink SVG, Excalidraw | none |
-| 0 | `quire-text` | `crates/quire-text` | rope buffer, changes, transactions, undo tree (no I/O) | none |
-| 0 | `quire-typeset` | `crates/quire-typeset` | math, Mermaid and PDF export through Typst (the full edition only) | none |
-| 1 | `quire-markdown` | `crates/quire-markdown` | Markdown syntax, front matter, extraction, rendering, smart edits | quire-text |
-| 2 | `quire-plan` | `crates/quire-plan` | tasks, recurrence, agenda, reminders, periodic notes, flashcards | quire-markdown |
-| 2 | `quire-sync` | `crates/quire-sync` | end-to-end encrypted sync engine and its folder, S3 and WebDAV transports | quire-text |
-| 2 | `quire-vault` | `crates/quire-vault` | storage port, local and in-memory adapters, notes, templates, refactors, history | quire-markdown, quire-sync |
-| 3 | `quire-import` | `crates/quire-import` | importers (Logseq, Obsidian, Notion, Bear, Evernote, Roam, Keep, Joplin, Day One, HTML) | quire-markdown, quire-vault |
-| 3 | `quire-index` | `crates/quire-index` | full-text, fuzzy and semantic search, link graph (actor thread) | quire-markdown, quire-plan, quire-vault |
-| 3 | `quire-pdf` | `crates/quire-pdf` | PDF text with positions, page rendering, annotation notes | quire-markdown, quire-vault |
-| 3 | `quire-spell` | `crates/quire-spell` | Markdown-aware spell checking (Hunspell dictionaries) | quire-vault |
-| 4 | `quire-intel` | `crates/quire-intel` | related notes, link and tag suggestions, summaries, calculator, LLM port | quire-index, quire-markdown, quire-vault |
-| 5 | `quire-agent` | `crates/quire-agent` | agent store: actors, zones, policy, proposals, approvals, ledger | quire-intel, quire-markdown, quire-text, quire-vault |
-| 5 | `quire-ai` | `crates/quire-ai` | on-device AI client: model catalog, downloads, engine process and its protocol | quire-index, quire-intel |
-| 6 | `quire-app` | `crates/quire-app` | UI-agnostic application layer: Workspace, documents, commands, settings, sessions, sync glue | quire-agent, quire-ai, quire-canvas, quire-import, quire-index, quire-intel, quire-markdown, quire-pdf, quire-plan, quire-sync, quire-text, quire-typeset, quire-vault |
-| 7 | `quire-assistant` | `crates/quire-assistant` | in-app agent panel loop, ACP bridge, wiki workflows | quire-agent, quire-ai, quire-app, quire-mcp |
-| 7 | `quire-mcp` | `crates/quire-mcp` | note tools and the MCP server (stdio and HTTP) | quire-agent, quire-app, quire-import |
-| 7 | `quire-web` | `crates/quire-web` | the web app of `quire-cli serve` | quire-agent, quire-app, quire-mcp |
-| 8 | `quire-ai-engine` | `apps/quire-ai-engine` | on-device AI engine: a separate process speaking JSON lines over stdio | quire-ai |
-| 8 | `quire-cli` | `apps/quire-cli` | headless Quire: search, import, export, tasks, sync, MCP, `serve` | quire-agent, quire-ai, quire-app, quire-assistant, quire-import, quire-mcp, quire-pdf, quire-web |
-| 8 | `quire-desktop` | `apps/quire-desktop` | egui desktop app (draws and forwards input) | quire-ai, quire-app, quire-assistant, quire-canvas, quire-import, quire-mcp, quire-pdf, quire-spell, quire-typeset |
-| 8 | `quire-sync-server` | `apps/quire-sync-server` | self-hostable sync server (sees only encrypted data) | quire-sync |
+| 0 | `quire-base` | `crates/quire-base` | shared helpers every crate may use: atomic file writer, random bytes, path rules, HTTP client builder (the `net` feature), encodings, hashes, dates | none |
+| 1 | `quire-canvas` | `crates/quire-canvas` | JSON Canvas model and serializer, ink SVG, Excalidraw | none |
+| 1 | `quire-text` | `crates/quire-text` | rope buffer, changes, transactions, undo tree (no I/O) | none |
+| 1 | `quire-typeset` | `crates/quire-typeset` | math, Mermaid and PDF export through Typst (the full edition only) | quire-base |
+| 2 | `quire-markdown` | `crates/quire-markdown` | Markdown syntax, front matter, extraction, rendering, smart edits | quire-base, quire-text |
+| 3 | `quire-plan` | `crates/quire-plan` | tasks, recurrence, agenda, reminders, periodic notes, flashcards | quire-base, quire-markdown |
+| 3 | `quire-sync` | `crates/quire-sync` | end-to-end encrypted sync engine and its folder, S3 and WebDAV transports | quire-base, quire-text |
+| 3 | `quire-vault` | `crates/quire-vault` | storage port, local and in-memory adapters, notes, templates, refactors, history | quire-base, quire-markdown |
+| 4 | `quire-import` | `crates/quire-import` | importers (Logseq, Obsidian, Notion, Bear, Evernote, Roam, Keep, Joplin, Day One, HTML) | quire-base, quire-markdown, quire-vault |
+| 4 | `quire-index` | `crates/quire-index` | full-text, fuzzy and semantic search, link graph (actor thread) | quire-base, quire-markdown, quire-plan, quire-vault |
+| 4 | `quire-pdf` | `crates/quire-pdf` | PDF text with positions, page rendering, annotation notes | quire-base, quire-markdown, quire-vault |
+| 4 | `quire-spell` | `crates/quire-spell` | Markdown-aware spell checking (Hunspell dictionaries) | quire-base, quire-markdown, quire-vault |
+| 5 | `quire-intel` | `crates/quire-intel` | related notes, link and tag suggestions, summaries, calculator, LLM port | quire-base, quire-index, quire-markdown, quire-vault |
+| 6 | `quire-agent` | `crates/quire-agent` | agent store: actors, zones, policy, proposals, approvals, ledger | quire-base, quire-intel, quire-markdown, quire-text, quire-vault |
+| 6 | `quire-ai` | `crates/quire-ai` | on-device AI client: model catalog, downloads, engine process and its protocol | quire-base, quire-index, quire-intel |
+| 7 | `quire-app` | `crates/quire-app` | UI-agnostic application layer: Workspace, documents, commands, settings, sessions, sync glue | quire-agent, quire-ai, quire-base, quire-canvas, quire-import, quire-index, quire-intel, quire-markdown, quire-pdf, quire-plan, quire-sync, quire-text, quire-typeset, quire-vault |
+| 8 | `quire-assistant` | `crates/quire-assistant` | in-app agent panel loop, ACP bridge, wiki workflows | quire-agent, quire-ai, quire-app, quire-base, quire-mcp |
+| 8 | `quire-mcp` | `crates/quire-mcp` | note tools and the MCP server (stdio and HTTP) | quire-agent, quire-app, quire-base, quire-import |
+| 8 | `quire-web` | `crates/quire-web` | the web app of `quire-cli serve` | quire-agent, quire-app, quire-base, quire-mcp |
+| 9 | `quire-ai-engine` | `apps/quire-ai-engine` | on-device AI engine: a separate process speaking JSON lines over stdio | quire-ai |
+| 9 | `quire-cli` | `apps/quire-cli` | headless Quire: search, import, export, tasks, sync, MCP, `serve` | quire-agent, quire-ai, quire-app, quire-assistant, quire-base, quire-import, quire-mcp, quire-pdf, quire-web |
+| 9 | `quire-desktop` | `apps/quire-desktop` | egui desktop app (draws and forwards input) | quire-ai, quire-app, quire-assistant, quire-base, quire-canvas, quire-import, quire-mcp, quire-pdf, quire-spell, quire-typeset |
+| 9 | `quire-sync-server` | `apps/quire-sync-server` | self-hostable sync server (sees only encrypted data) | quire-sync |
 
 Same-layer edges (the only ones allowed; the check reads these lines):
 
 - `quire-web` → `quire-mcp`
 - `quire-assistant` → `quire-mcp`
 
-Known exception, on its way out: `quire-vault` → `quire-sync` (two recovery-key calls in `lock/format.rs`) breaks the rule; `packaging/check-layering.py` tolerates it and the table may list it or not, until the foundations work removes it. `quire-base` is the planned bottom crate; the check leaves its edges out of the comparison until it exists. <!-- verify after merge: remove the exception, the `quire-base` plan note and `PLANNED` in the script, and list its edges -->
 
 ---
 
