@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Evidence clusters for ask-before-tell (design §C.4).
+//! Evidence clusters for ask-before-tell (`docs/design/0.9.md` §C.4).
 //!
 //! The retrieved passages grouped by meaning, each group named by its most
 //! distinctive words, so the person sees what the notes say before the

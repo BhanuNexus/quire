@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Section-level search for agents and the panel (design §C.1).
+//! Section-level search for agents and the panel (`docs/design/0.9.md` §C.1).
 //!
 //! A hit is a *part* of a note (a heading's text up to the next heading,
 //! split when long; [`crate::chunk::parts`]) with its line range, so a
@@ -211,7 +211,7 @@ impl Index {
         out
     }
 
-    /// Search by section (design §C.1): keyword parts and meaning passages
+    /// Search by section: keyword parts and meaning passages
     /// fused, then attachment pages when `filters.kind` asks for them.
     pub fn search_sections(&self, semantic: Option<&SemanticIndex>, query: &str, filters: &SearchFilters, limit: usize) -> Vec<SectionHit> {
         let q = Query::parse(query);
@@ -446,7 +446,7 @@ mod tests {
         assert!(s.search_sections("boehm", &only, 5).is_empty());
     }
 
-    /// Timing on 2,000 notes (design §9: ≤ 15 ms in release). Run with
+    /// Timing on 2,000 notes (`docs/design/0.9.md` §9: ≤ 15 ms in release). Run with
     /// `cargo test -p quire-index --release -- --ignored section_search_speed --nocapture`.
     #[test]
     #[ignore = "a benchmark"]

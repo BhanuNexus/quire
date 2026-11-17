@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Finding claims that disagree (design §C.5 steps 2–3).
+//! Finding claims that disagree (`docs/design/0.9.md` §C.5 steps 2–3).
 //!
 //! Every claim gets a vector from the active embedder and sits in a
 //! [`ClaimIndex`]. A new claim's candidates are its nearest claims in other
@@ -20,7 +20,7 @@ use serde_json::Value;
 
 use crate::chat::ChatRequest;
 
-/// Candidate cosine with a neural embedder (calibrated, §C.5).
+/// Candidate cosine with a neural embedder (calibrated, `docs/design/0.9.md` §C.5).
 pub const CANDIDATE_MIN_NEURAL: f32 = 0.55;
 /// … and with the built-in LSA embedder.
 pub const CANDIDATE_MIN_LSA: f32 = 0.35;
@@ -117,7 +117,7 @@ impl ClaimIndex {
         self.by_id.get(id).and_then(|v| v.first()).map(|&i| self.entries[i].vector.as_slice())
     }
 
-    /// The nearest claims to `claim` (design §C.5 step 2): at least
+    /// The nearest claims to `claim`: at least
     /// `min_cos` similar, in another passage, sharing a subject word, and
     /// not in an `excluded` note (superseded or past `valid_until`).
     /// `raw` notes are only ever the other side, never the subject: callers
@@ -151,7 +151,7 @@ pub struct JudgeSide<'a> {
     pub modified: &'a str,
 }
 
-/// The judge request for a pair (design §C.5 step 3).
+/// The judge request for a pair.
 pub fn judge_request(a: &JudgeSide<'_>, b: &JudgeSide<'_>) -> ChatRequest {
     let side = |n: &str, s: &JudgeSide<'_>| {
         format!(

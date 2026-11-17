@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The thinking timeline (design §C.7): when claims about a topic appeared,
+//! The thinking timeline (`docs/design/0.9.md` §C.7): when claims about a topic appeared,
 //! were taken back, or were contradicted.
 //!
 //! Events come from two places. The claim job appends to
