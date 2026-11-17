@@ -109,7 +109,7 @@ The layers (and the order of rows) go from the bottom up. The drawing in §2 is 
 
 | Layer | Crate | Path | What it is | Depends on (workspace crates) |
 |---|---|---|---|---|
-| 0 | `quire-base` | `crates/quire-base` | shared helpers every crate may use: atomic file writer, random bytes, path checks, HTTP client builder, small utilities (planned; lands with the foundations branch) | none |
+| 0 | `quire-base` | `crates/quire-base` | shared helpers every crate may use: atomic file writer, random bytes, path checks, HTTP client builder, small utilities (planned; lands with the foundations branch) <!-- verify after merge --> | none |
 | 0 | `quire-canvas` | `crates/quire-canvas` | JSON Canvas model and serializer, ink SVG, Excalidraw | none |
 | 0 | `quire-text` | `crates/quire-text` | rope buffer, changes, transactions, undo tree (no I/O) | none |
 | 0 | `quire-typeset` | `crates/quire-typeset` | math, Mermaid and PDF export through Typst (the full edition only) | none |
@@ -138,7 +138,7 @@ Same-layer edges (the only ones allowed; the check reads these lines):
 - `quire-web` → `quire-mcp`
 - `quire-assistant` → `quire-mcp`
 
-Known exception, on its way out: `quire-vault` → `quire-sync` (two recovery-key calls in `lock/format.rs`) breaks the rule; `packaging/check-layering.py` tolerates it and the table may list it or not, until the foundations work removes it. `quire-base` is the planned bottom crate; the check leaves its edges out of the comparison until it exists.
+Known exception, on its way out: `quire-vault` → `quire-sync` (two recovery-key calls in `lock/format.rs`) breaks the rule; `packaging/check-layering.py` tolerates it and the table may list it or not, until the foundations work removes it. `quire-base` is the planned bottom crate; the check leaves its edges out of the comparison until it exists. <!-- verify after merge: remove the exception, the `quire-base` plan note and `PLANNED` in the script, and list its edges -->
 
 ---
 
