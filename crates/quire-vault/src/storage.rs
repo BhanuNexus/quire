@@ -1061,7 +1061,10 @@ mod tests {
         stop.store(true, std::sync::atomic::Ordering::SeqCst);
         t.join().unwrap();
         assert!(r.is_err());
-        assert!(took >= Duration::from_millis(200) && took < REPLACE_PATIENCE + Duration::from_millis(200), "{took:?}");
+        // One bound, not one per try: well under twice the patience plus the
+        // last sleep. Shared CI runners oversleep (590 ms seen on Windows for
+        // a 300 ms patience), so the margin is wide.
+        assert!(took >= Duration::from_millis(200) && took < REPLACE_PATIENCE * 3, "{took:?}");
         assert!(free_while_waiting.load(std::sync::atomic::Ordering::SeqCst) > 5, "the lock was free while waiting");
         // Reads retry only on sharing or lock violations, never on access denied.
         let denied = std::io::Error::from_raw_os_error(5);
