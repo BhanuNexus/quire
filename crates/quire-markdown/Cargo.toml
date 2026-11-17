@@ -19,6 +19,8 @@ yaml-rust2.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+# Property tests with shrinking and a committed regression file (tests/props.rs).
+proptest = { version = "1", default-features = false, features = ["std"] }
 
 [lints]
 workspace = true

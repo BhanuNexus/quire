@@ -745,9 +745,10 @@ pub fn is_date(s: &str) -> bool {
 ///
 /// A value with a line break or another control character is always
 /// written on one line, double-quoted with escapes (`\\n`), so it can't
-/// end the front matter or start another field.
+/// end the front matter or start another field. A value that starts or ends
+/// with white space is quoted, so it reads back as it was given: a plain
+/// scalar loses that white space.
 pub fn yaml_scalar(s: &str) -> String {
-    let s = s.trim();
     if s.chars().any(needs_escape) {
         let mut q = String::with_capacity(s.len() + 2);
         q.push('"');
@@ -768,6 +769,7 @@ pub fn yaml_scalar(s: &str) -> String {
         return q;
     }
     let risky = s.is_empty()
+        || s.trim().len() != s.len()
         || s.contains(": ")
         || s.contains(" #")
         || s.starts_with(['#', '[', '{', '&', '*', '!', '|', '>', '\'', '"', '%', '@', '`', '-', '?'])
@@ -1369,6 +1371,19 @@ mod tests {
     /// A hostile note (synced, shared or imported) nests maps tens of
     /// thousands deep: reading its properties must neither exhaust the
     /// stack nor take quadratic time. Deep parts are kept as text.
+    #[test]
+    fn values_with_edge_spaces_read_back_as_given() {
+        // D5: " A" was written `a: A` and read back as "A"; it is quoted now.
+        for v in [" A", "A ", "  ", " a: b ", "\u{a0}x"] {
+            let out = set_field("body\n", "a", &Value::Str(v.into())).apply("body\n");
+            assert_eq!(parse(&out).unwrap().get("a"), Some(&Value::Str(v.into())), "{v:?} -> {out:?}");
+        }
+        assert_eq!(set_field("", "a", &Value::Str(" A".into())).apply(""), "---\na: \" A\"\n---\n");
+        // Values without edge spaces are written as before.
+        assert_eq!(yaml_scalar("A"), "A");
+        assert_eq!(yaml_scalar("x: y"), "\"x: y\"");
+    }
+
     #[test]
     fn fields_in_order_keeps_repeated_keys() {
         let src = "---\ntrust: untrusted\nname: x\ntrust: trusted\n...\nbody\n";
