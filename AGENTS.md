@@ -1,21 +1,26 @@
 # AGENTS.md: working in the Quire repository
 
-For an agent or a person starting cold. (Not to be confused with the `AGENTS.md` a user may keep in a *vault*, which tells agents how to work in their notes: `docs/design/0.9.md` §3.A.2.) Everything below was checked against the code and workflows when it was written; if you find it wrong, fix it in the same change.
+For an agent or a person starting cold. (Not the `AGENTS.md` a user keeps in a *vault*: that one, `docs/agents.md` and `skills/quire/` are for users' notes.) If a line here is wrong, fix it in the same change.
 
 ## What Quire is
 
-- A local-first notes app in Rust (AGPL-3.0-or-later): plain Markdown files in a folder you own, an egui desktop app (`apps/quire-desktop`) and a CLI (`apps/quire-cli`).
-- `quire-cli serve` is the web app and the MCP server for agents; `apps/quire-sync-server` is the optional end-to-end encrypted sync server.
-- Offline by default; no plugins; no AI without opt-in. Design: `ARCHITECTURE.md`, `docs/design/README.md` (which notes are current).
+- A local-first notes app in Rust (AGPL-3.0-or-later): plain Markdown files in a folder you own. An egui desktop app (`apps/quire-desktop`) and a CLI (`apps/quire-cli`); `quire-cli serve` is the web app and the MCP server; `apps/quire-sync-server` is the optional end-to-end encrypted sync server.
+- Offline by default; no plugins; no AI without opt-in. **Two editions:** full, and Lite (`--no-default-features` on the desktop and CLI: no math, Mermaid, PDF export or voice). Both are built, tested and released; persisted formats never depend on the edition (P5).
+- The crates and their layers: `ARCHITECTURE.md` §3 (checked against `cargo metadata` in CI). Each risky crate has its own `AGENTS.md`: read it before changing that crate.
 
-## Two editions
+## Where to start
 
-- **Full** (default features): math, Mermaid and PDF export through Typst, PDF page rendering, voice notes.
-- **Lite** (`--no-default-features` on `quire-desktop` and `quire-cli`): the same app and files without those. Both are built, tested and released. Persisted formats never depend on the edition (P5).
+| Task | Read first |
+|---|---|
+| Add a command, setting, dialog or MCP tool; change a file format or sync | `docs/howto.md` |
+| Which design note to trust | `docs/design/README.md`; each note starts with `Status:` (`current` is a rule, `record` and `superseded` are history) |
+| Persisted formats | `docs/formats/` |
+| Release | `RELEASING.md` (skill: `.claude/skills/release`); a tag is used once |
+| Review a change | `.claude/skills/review-change` |
 
 ## The gate
 
-Run the part your change touches before you commit, and all of it before a release. CI (`.github/workflows/ci.yml`) runs every line below **except `actionlint`**, which no workflow runs: run it by hand when you touch a workflow. Where a line differs from CI's, the comment says so.
+Inner loop, one crate: `cargo test -p <crate> --locked`, `cargo clippy -p <crate> --all-targets --locked -- -D warnings`. Before you push, all of this (CI runs it, except `actionlint`: run that by hand when you touch a workflow):
 
 ```sh
 cargo fmt --all -- --check
@@ -24,24 +29,22 @@ cargo clippy -p quire-desktop -p quire-cli --no-default-features --all-targets -
 cargo test --workspace --locked --no-fail-fast
 cargo test -p quire-desktop -p quire-cli --no-default-features --locked                                  # Lite
 cargo test -p quire-pdf --features render --locked
-cargo run -p quire-cli --features eval --locked -- eval synthetic-edits --json                           # agent edit eval
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items --locked
-cargo deny check advisories bans licenses sources        # cargo install cargo-deny
-typos                                                    # cargo install typos-cli
+cargo deny check advisories bans licenses sources   # cargo install cargo-deny
+typos                                                # cargo install typos-cli
+python3 -I packaging/check-layering.py && packaging/check-design-notes.sh
 packaging/test-unpack-engine.sh && packaging/test-release-files.sh && packaging/test-check-ci-green.sh
-shellcheck --severity=error packaging/*.sh packaging/linux/*.sh packaging/macos/*.sh packaging/windows/*.sh packaging/flatpak/*.sh apps/quire-sync-server/*.sh
-pipx run zizmor==1.31.1 --offline --format=github .github/workflows/   # CI's pinned version
-actionlint                                                # NOT run by CI: run it when you touch a workflow
+shellcheck --severity=error packaging/*.sh packaging/*/*.sh apps/quire-sync-server/*.sh
+pipx run zizmor==1.31.1 --offline --format=github .github/workflows/
 ```
 
-CI's `packaging` job also validates the desktop entry and the AppStream file, parses the Flatpak manifest, compiles the Windows installer script with `makensis` and checks `Info.plist`; those need `desktop-file-utils`, `appstream`, `flatpak-builder` and `nsis`, and you only need them when you change those files. CI also has a `perf` job (speed budgets, `packaging/perf-check.py`) and a DCO job on pull requests. `cargo test --workspace` compiles candle for the on-device AI engine: a cold build takes 10+ minutes.
+CI also runs the agent edit eval, the `perf` budgets (`packaging/perf-check.py`), the desktop-entry, AppStream, Flatpak and installer checks, and a DCO job. `cargo test --workspace` compiles candle: a cold build takes 10+ minutes.
 
-**Small machine** (2 CPUs, about 7 GB RAM): set these on every cargo command, build crate by crate with `-p`, give each worktree its own `target/`, and check `df -h /` before a big build.
+**Small machine** (2 CPUs, about 7 GB RAM): build crate by crate with `-p`, give each worktree its own `target/`, check `df -h /` before a big build, and set on every cargo command:
 
 ```sh
 export CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
-# Only if the pinned toolchain (rust-toolchain.toml) cannot be installed on this machine:
-export RUSTUP_TOOLCHAIN=stable
+export RUSTUP_TOOLCHAIN=stable   # only if the pinned toolchain (rust-toolchain.toml) cannot be installed here
 ```
 
 ## Invariants
@@ -53,64 +56,45 @@ From `docs/design/0.9.md` §1; code review checks them.
 | P1 | Markdown files are the truth. Never lose user text; bytes you did not mean to change stay identical. |
 | P2 | Nothing proprietary is needed to read notes; deleting `.quire/` never loses note content. |
 | P3 | New app state lives under `.quire/` in versioned formats; a reader never rewrites a file of a newer format and keeps unknown fields. |
-| P4 | Writes are atomic: `Storage::write_bytes_atomic` for vault files, `quire_app::atomic::write` for config files. |
+| P4 | Writes are atomic (see the first rule below). |
 | P5 | Persisted formats do not depend on the edition. |
 | P6 | Offline first: no network, download or engine process unless the user turned the feature on. |
 | P7 | No third-party code execution: no plugins, scripts or config that runs commands; shared config that widens agent permissions needs approval on each device. |
-| P8 | Agent output is untrusted data, and agents never edit `AGENTS.md`, `CLAUDE.md`, `.quire/**` or skills without a human accepting a proposal. |
+| P8 | Agent output is untrusted data; agents never edit `AGENTS.md`, `CLAUDE.md`, `.quire/**` or skills without a human accepting a proposal. |
 | P9 | The UI thread never waits on new work (indexing, AI, PDF, OCR, git and lint run off it). |
 | P10 | Tests are deterministic: injected clock, seeded randomness, fake models, no network except loopback servers the test starts. |
 
-A persisted format change needs old data to still load, and a note in `docs/formats/`.
+## Rules learned the hard way
 
-## Workspace
+Each is tagged by what enforces it: `[test]`, `[lint]` (clippy or cargo-deny; the message says what to use) or `[review only]` (you are the check).
 
-22 members, ordered so that every crate comes after the crates it depends on (libraries first, then the apps). "Depends on" lists direct normal and build dependencies on other workspace crates, any feature, from `cargo metadata --no-deps --format-version 1`; **dev-dependencies are not counted** (for example `quire-cli` also dev-depends on `quire-sync` and `quire-sync-server`). Logic goes in crates with tests beside it; `apps/quire-desktop` only draws and forwards input; every user action is a `Command` in `crates/quire-app/src/commands.rs`, which also gives it a palette entry, a shortcut and the in-app shortcut list.
-
-| Crate | Path | What it is | Depends on (workspace crates) |
-|---|---|---|---|
-| `quire-canvas` | `crates/quire-canvas` | JSON Canvas model and serializer, ink SVG, Excalidraw | none |
-| `quire-text` | `crates/quire-text` | rope buffer, changes, transactions, undo tree (no I/O) | none |
-| `quire-markdown` | `crates/quire-markdown` | Markdown syntax, front matter, extraction, rendering, smart edits | quire-text |
-| `quire-plan` | `crates/quire-plan` | tasks, recurrence, agenda, reminders, periodic notes, flashcards | quire-markdown |
-| `quire-sync` | `crates/quire-sync` | end-to-end encrypted sync engine and its folder, S3 and WebDAV transports | quire-text |
-| `quire-typeset` | `crates/quire-typeset` | math, Mermaid and PDF export through Typst (the full edition only) | none |
-| `quire-vault` | `crates/quire-vault` | storage port, local and in-memory adapters, notes, templates, refactors, history | quire-markdown, quire-sync |
-| `quire-spell` | `crates/quire-spell` | Markdown-aware spell checking (Hunspell dictionaries) | quire-vault |
-| `quire-import` | `crates/quire-import` | importers (Logseq, Obsidian, Notion, Bear, Evernote, Roam, Keep, Joplin, Day One, HTML) | quire-markdown, quire-vault |
-| `quire-index` | `crates/quire-index` | full-text, fuzzy and semantic search, link graph (actor thread) | quire-markdown, quire-plan, quire-vault |
-| `quire-intel` | `crates/quire-intel` | related notes, link and tag suggestions, summaries, calculator, LLM port | quire-index, quire-markdown, quire-vault |
-| `quire-agent` | `crates/quire-agent` | agent store: actors, zones, policy, proposals, approvals, ledger | quire-intel, quire-markdown, quire-text, quire-vault |
-| `quire-ai` | `crates/quire-ai` | on-device AI client: model catalog, downloads, engine process and its protocol | quire-index, quire-intel |
-| `quire-pdf` | `crates/quire-pdf` | PDF text with positions, page rendering, annotation notes | quire-markdown, quire-vault |
-| `quire-app` | `crates/quire-app` | UI-agnostic application layer: Workspace, documents, commands, settings, sessions, sync glue | quire-agent, quire-ai, quire-canvas, quire-import, quire-index, quire-intel, quire-markdown, quire-pdf, quire-plan, quire-sync, quire-text, quire-typeset, quire-vault |
-| `quire-mcp` | `crates/quire-mcp` | note tools and the MCP server (stdio and HTTP) | quire-agent, quire-app, quire-import |
-| `quire-assistant` | `crates/quire-assistant` | in-app agent panel loop, ACP bridge, wiki workflows | quire-agent, quire-ai, quire-app, quire-mcp |
-| `quire-web` | `crates/quire-web` | the web app of `quire-cli serve` | quire-agent, quire-app, quire-mcp |
-| `quire-ai-engine` | `apps/quire-ai-engine` | on-device AI engine: a separate process speaking JSON lines over stdio | quire-ai |
-| `quire-cli` | `apps/quire-cli` | headless Quire: search, import, export, tasks, sync, MCP, `serve` | quire-agent, quire-ai, quire-app, quire-assistant, quire-import, quire-mcp, quire-pdf, quire-web |
-| `quire-desktop` | `apps/quire-desktop` | egui desktop app (draws and forwards input) | quire-ai, quire-app, quire-assistant, quire-canvas, quire-import, quire-mcp, quire-pdf, quire-spell, quire-typeset |
-| `quire-sync-server` | `apps/quire-sync-server` | self-hostable sync server (sees only encrypted data) | quire-sync |
-
-## Files many changes collide in
-
-Most-edited files in the history (as of 0.13.1): `CHANGELOG.md`, `Cargo.lock`, `Cargo.toml`, `README.md`, `crates/quire-app/src/workspace.rs`, `crates/quire-app/src/lib.rs`, `crates/quire-app/src/commands.rs`, `crates/quire-app/src/vault_sync.rs`, `apps/quire-desktop/src/app.rs`, `panels.rs`, `dialogs.rs`, `main.rs` and `registry.rs`. Keep edits to them small and merge often; expect a trivial conflict in `CHANGELOG.md`.
+- Write every persisted file atomically: `Storage::write_bytes_atomic` (vault), `quire_base::fs::write_atomic` (app state). Never `fs::write`, `fs::rename`, `File::create` or tempfile `persist`. `[lint]` disallowed-methods <!-- verify after merge -->
+- When the new bytes depend on what you read, use `Storage::write_bytes_if` (compare-and-swap), not read then write. `[review only]`
+- A failed listing or read is an error, never "empty" or "all deleted": sync turns missing notes into deletes. `[test]` `a_listing_that_lost_a_folder_is_retried_then_refused` and the held-deletes tests
+- Open a vault with `secure_state::open_vault`, never `Vault::open_local` (keeps locked folders locked). `[lint]` disallowed-methods <!-- verify after merge -->
+- Parse YAML only through `frontmatter::load_yaml` (nesting limit). `[lint]` disallowed-methods <!-- verify after merge -->
+- Network only through the shared HTTP client builder in `quire_base`, and only in crates `deny.toml` names. `[lint]` disallowed-methods and cargo-deny bans <!-- verify after merge -->
+- Start a process only with `git::run_git` (git) or a stated reason; libraries return errors instead of `process::exit`. `[lint]` disallowed-methods <!-- verify after merge -->
+- Random bytes come from the one function that returns an error; never carry on with zeros. `[lint]` disallowed-methods <!-- verify after merge -->
+- A crate depends only on lower layers (`ARCHITECTURE.md` §3); third-party crates stay in their layer. `[test]` `packaging/check-layering.py`; `[lint]` cargo-deny bans
+- No work before the first frame, and no per-frame disk, index-lock or vault-sized work in `show`/`ui`: cache it. `[test]` CI `perf` job (startup only); `[review only]` per frame
+- Escape, close, quit and lock never drop unsaved text. `[review only]` (tests for canvas and sketch only)
+- A new dialog is an `OverlayView` listed in `layout_samples` (`apps/quire-desktop/src/registry.rs`). `[test]` `layout_check` (listed ones only)
+- A default shortcut must pass `Keymap::conflicts` on all three platforms (AltGr, Option, reserved keys). `[review only]`
+- Every MCP tool that returns paths or titles filters with `common::visible`. `[test]` four named tests in `crates/quire-mcp/tests/security.rs` <!-- verify after merge -->
+- Make file names Windows-safe (reserved names, `:?*`, trailing space or dot): `quire_sync::names`. `[test]` for sync names; `[review only]` for new code
+- A persisted-format change keeps old data loadable and gets a note in `docs/formats/`. `[review only]`
 
 ## Commits and the changelog
 
-- Every commit needs a DCO sign-off: `git commit -s`. CI's `dco` job fails a pull request with an unsigned commit. The project requires no other trailer.
-- Imperative, focused commits: one change each, with tests for behaviour changes.
-- **One changelog rule:** a user-visible change gets one short bullet under `## [Unreleased]` in `CHANGELOG.md` (Added, Changed, Fixed or Security). At release that section is renamed to the version (`RELEASING.md`). There are no changelog fragments and no other changelog file.
-
-## Releasing
-
-Full steps, and the checklist for an agent, in `RELEASING.md`. In short: bump the version and the changelog; wait for CI green on `main`; **dry run** the Release workflow on the branch (`gh api repos/BhanuNexus/quire/actions/workflows/release.yml/dispatches -f ref=<branch>`); run **Tag release** (`gh api repos/BhanuNexus/quire/actions/workflows/tag-release.yml/dispatches -f ref=main -f 'inputs[version]=X.Y.Z'`, add `-f 'inputs[check_only]=true'` first to only check). It refuses to tag unless CI passed on the commit and the Flatpak builder image digest is the recorded one. **A tag is used once**: if a release fails after the tag exists, fix it and release the next version; never delete, move or reuse a tag.
+- Every commit needs a DCO sign-off: `git commit -s` (CI's `dco` job fails a pull request otherwise). No other trailer is required. Imperative, focused commits, with tests for behaviour changes.
+- **One changelog rule:** a user-visible change gets one bullet under `## [Unreleased]` in `CHANGELOG.md` (Added, Changed, Fixed or Security): at most two sentences, about what a person sees, not what the code does. Detail goes in the design note. CI warns when a change to `crates/` or `apps/` has no changelog line; label the pull request `no-changelog` when none is due. No fragments, no other changelog file. Expect a trivial `CHANGELOG.md` conflict; keep edits to shared files small.
 
 ## Never
 
-- Write `unsafe` (`unsafe_code = "forbid"` for the whole workspace) or add an `#[allow]` without a `reason`.
+- Write `unsafe` (forbidden for the workspace) or an `#[allow]` without a `reason`.
 - Add a plugin, script hook or anything that runs third-party code (P7).
 - Kill processes by name pattern (`pkill -f`, `killall`): kill only a PID you started.
-- Lose or silently rewrite user text (P1); change a persisted format without keeping old data loadable.
+- Lose or silently rewrite user text (P1).
 - Edit `Cargo.lock` by hand, or add a dependency without a licence check (`deny.toml`) and a reason.
 - Reuse a release tag, or publish from a commit CI has not passed.
