@@ -10,13 +10,7 @@ homepage.workspace = true
 publish.workspace = true
 
 [features]
-default = ["remote-llm", "keychain", "update-check", "typeset"]
-# Network providers (Anthropic, OpenAI-compatible). Nothing connects unless configured.
-remote-llm = ["quire-intel/remote-llm"]
-# Store API keys in the OS keychain instead of a 0600 file.
-keychain = ["dep:keyring"]
-# Opt-in daily check for a newer release on GitHub (off until the user turns it on).
-update-check = ["dep:ureq"]
+default = ["typeset"]
 # Math, Mermaid diagrams and PDF export (Typst). About 40 MB of the full app;
 # Quire Lite is built without it.
 typeset = ["dep:quire-typeset", "quire-pdf/render"]
@@ -28,7 +22,9 @@ quire-text.workspace = true
 quire-markdown.workspace = true
 quire-vault.workspace = true
 quire-index.workspace = true
-quire-intel.workspace = true
+# The network providers (Anthropic, OpenAI-compatible). Nothing connects
+# unless the person configures a provider.
+quire-intel = { workspace = true, features = ["remote-llm"] }
 quire-typeset = { workspace = true, optional = true }
 chrono.workspace = true
 serde.workspace = true
@@ -38,8 +34,10 @@ directories.workspace = true
 crossbeam-channel.workspace = true
 regex.workspace = true
 png.workspace = true
-keyring = { version = "4", optional = true }
-ureq = { workspace = true, optional = true }
+# API keys go in the OS keychain (a 0600 file where there is none).
+keyring = "4"
+# The daily check for a newer release on GitHub, off until the person turns it on.
+ureq.workspace = true
 flate2 = "1"
 similar.workspace = true
 # 0.12: "remote" adds S3-compatible storage and WebDAV.

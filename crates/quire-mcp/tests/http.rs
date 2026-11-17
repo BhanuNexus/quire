@@ -4,7 +4,6 @@
 //! the header validation matrix, Origin and Host checks, authentication,
 //! and a client that completes OAuth with a Client ID Metadata Document,
 //! then calls `search`.
-#![cfg(feature = "http")]
 #![allow(clippy::unwrap_used, reason = "test code")]
 
 use std::fmt::Write as _;

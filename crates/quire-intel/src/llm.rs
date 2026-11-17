@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Optional generative assistance behind ports.
 //!
-//! The default build has no network code: [`LocalModel`] answers what it can
-//! (summaries) deterministically. Enable the `remote-llm` feature to get
-//! [`AnthropicModel`] (the Messages API) and [`OpenAiCompatible`] (any
+//! [`LocalModel`] answers what it can (summaries) deterministically, with no
+//! network. The `remote-llm` feature (on in both apps, through quire-app)
+//! adds [`AnthropicModel`] (the Messages API) and [`OpenAiCompatible`] (any
 //! `/v1/chat/completions` server). Both are [`ChatModel`](crate::chat::ChatModel)s
 //! with tools and streaming (design §D.4), and [`LanguageModel`]s for the
 //! one-shot assist features, built on the same streaming call.
