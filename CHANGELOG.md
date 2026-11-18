@@ -4,6 +4,12 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+## [0.13.3] - 2026-11-19
+
+Quire 0.13.3: agents connected over MCP can no longer learn anything about notes they aren't allowed to see, through search, Ask or a `where` condition. Errors that were dropped silently are now reported: version history that couldn't follow a rename, an undo that couldn't keep the version before it, and a token revocation that couldn't be saved. Under the hood, a codebase-health pass: shared helpers in one place, stricter checks, and new tests for rules that used to rely on review.
+
+**Upgrading:** nothing to do. Devices on 0.13.x sync with each other.
+
 ### Security
 - **Agents:** `ask` and `search` (and the older `ask_notes` and `search_notes`) no longer give away that notes an agent may not see match its question: hidden notes no longer take numbers in the list of sources ("[3]" first) or places within the requested number of results.
 - **Agents:** a `where` condition given to `list` or `search` can no longer be used to learn about notes an agent may not see: a condition with a line break is refused, and the condition is checked only against notes the agent may see.
@@ -631,7 +637,8 @@ Downloads for Windows, macOS (universal) and Linux are attached to the release, 
 ### Added
 - First version: live Markdown styling, wikilinks with rename refactoring, backlinks, related notes, daily notes, templates, command palette, quick open, inline calculator and natural-language dates.
 
-[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.13.2...HEAD
+[Unreleased]: https://github.com/BhanuNexus/quire/compare/v0.13.3...HEAD
+[0.13.3]: https://github.com/BhanuNexus/quire/compare/v0.13.2...v0.13.3
 [0.13.2]: https://github.com/BhanuNexus/quire/compare/v0.13.1...v0.13.2
 [0.13.1]: https://github.com/BhanuNexus/quire/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/BhanuNexus/quire/compare/v0.12.0...v0.13.0
