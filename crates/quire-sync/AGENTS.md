@@ -28,6 +28,10 @@ Features: `http`, `remote` (S3 and WebDAV, implies `http`), `mock-server` (in-pr
 ## Do not
 - Write sync state or log files with `fs::write` or your own tmp-and-rename. Use `quire_base::fs::write_atomic`; a shared sync
   folder takes `Options::EXISTING_FOLDER` (a missing folder was removed on purpose, so it is not made again).
+- Drop a `Result` with `let _ =` or replace an error with `map_err(|_| ..)`: return it, or put
+  `#[expect(clippy::let_underscore_must_use, reason = "...")]` on the statement saying why losing it is safe (a cache, a
+  crash's leftover, a counter the next pull makes up for). A failed read must never pass for "nothing there".
+  [lint] `#![warn(clippy::let_underscore_must_use, clippy::map_err_ignore)]` in `lib.rs`
 - Build an HTTP client by hand: `quire_base::net::agent` or `config`. The S3 and WebDAV client refuses redirects
   (`remote/net.rs`); the server transport follows 10 (`http.rs`). [lint] `clippy.toml`
 - Add a `quire-vault` or `quire-app` dependency: the edge was removed on purpose (`docs/design/0.14-health-base.md`) so a sync

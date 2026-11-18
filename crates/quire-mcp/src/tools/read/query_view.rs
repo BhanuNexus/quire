@@ -36,9 +36,10 @@ fn query_view(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let rows: Vec<_> = res.rows.iter().take(max).collect();
     let mut text = format!("| {} |\n|{}|\n", columns.join(" | "), " --- |".repeat(columns.len()));
     for r in &rows {
-        let _ = writeln!(text, "| {} | {} |", r.path, r.cells.iter().map(|c| c.replace('|', "\\|")).collect::<Vec<_>>().join(" | "));
+        writeln!(text, "| {} | {} |", r.path, r.cells.iter().map(|c| c.replace('|', "\\|")).collect::<Vec<_>>().join(" | "))
+            .expect("a String takes any text");
     }
-    let _ = write!(text, "{} of {} rows", rows.len(), res.total);
+    write!(text, "{} of {} rows", rows.len(), res.total).expect("a String takes any text");
     let st_rows: Vec<Value> = rows
         .iter()
         .map(|r| {

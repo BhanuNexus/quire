@@ -18,6 +18,7 @@
 //! `docs/design/0.12-sync.md` and `docs/design/0.13-sync.md`.
 
 #![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+#![warn(clippy::let_underscore_must_use, clippy::map_err_ignore)]
 
 pub mod admin;
 pub mod compact;

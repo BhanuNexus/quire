@@ -96,7 +96,7 @@ impl Cache {
         {
             return Ok(c.clone());
         }
-        let url = HttpUrl::parse(client_id).map_err(|_| "client_id must be an https URL".to_string())?;
+        let url = HttpUrl::parse(client_id).map_err(|e| format!("client_id must be an https URL ({e})"))?;
         let loopback_http = self.policy.allow_http_loopback && !url.https && matches!(url.host.as_str(), "127.0.0.1" | "localhost" | "::1");
         if !url.https && !loopback_http {
             return Err("client_id must be an https URL".into());
@@ -111,7 +111,7 @@ impl Cache {
         }
         let opts = FetchOptions { allow_private: loopback_http, max_redirects: 0, timeout: TIMEOUT, ..FetchOptions::default() };
         let got = web::fetch(client_id, &opts, MAX_DOC).map_err(|e| format!("couldn't read the client's metadata at {client_id}: {e}"))?;
-        let doc: Value = serde_json::from_slice(&got.bytes).map_err(|_| "the client's metadata isn't JSON".to_string())?;
+        let doc: Value = serde_json::from_slice(&got.bytes).map_err(|e| format!("the client's metadata isn't JSON ({e})"))?;
         if doc.get("client_id").and_then(Value::as_str) != Some(client_id) {
             return Err("the client's metadata names a different client_id".into());
         }

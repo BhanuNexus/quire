@@ -311,7 +311,7 @@ impl Vault {
             return self.move_locked(from, to).map(|_| ());
         }
         self.storage.rename(from, to)?;
-        let _ = self.move_history(from, to);
+        self.move_history_or_tell(from, to);
         Ok(())
     }
 

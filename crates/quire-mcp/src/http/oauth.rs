@@ -216,7 +216,7 @@ fn same_browser(headers: &HeaderMap, id: &str, r: &crate::consent::Request) -> b
 
 fn waiting(st: &HttpState, id: &str, name: &str, host: &str, code: &str, scopes: Scopes) -> Response {
     let wants = scopes.describe().iter().fold(String::new(), |mut s, d| {
-        let _ = write!(s, "<li>{}</li>", escape(d));
+        write!(s, "<li>{}</li>", escape(d)).expect("a String takes any text");
         s
     });
     let body = format!(
@@ -378,8 +378,15 @@ pub(crate) async fn token(State(st): State<Arc<HttpState>>, Form(f): Form<HashMa
 pub(crate) async fn revoke(State(st): State<Arc<HttpState>>, Form(f): Form<HashMap<String, String>>) -> Response {
     let token = f.get("token").cloned().unwrap_or_default();
     let tokens = st.tokens.clone();
-    let _ = tokio::task::spawn_blocking(move || tokens.revoke_token(&token)).await;
-    (StatusCode::OK, [(header::CACHE_CONTROL, "no-store")]).into_response()
+    // An unknown token is fine (RFC 7009: 200); a revocation that couldn't be
+    // saved is not, or the client would drop a token that still works.
+    match tokio::task::spawn_blocking(move || tokens.revoke_token(&token)).await {
+        Ok(Ok(())) => (StatusCode::OK, [(header::CACHE_CONTROL, "no-store")]).into_response(),
+        Ok(Err(e)) => {
+            json_error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable", &format!("the token couldn't be revoked: {e}"))
+        }
+        Err(e) => json_error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable", &format!("the token couldn't be revoked: {e}")),
+    }
 }
 
 #[cfg(test)]

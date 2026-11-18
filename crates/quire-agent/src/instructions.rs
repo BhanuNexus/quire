@@ -73,11 +73,11 @@ pub fn starter(policy: &Policy) -> String {
          This is a Quire vault: plain Markdown notes. Read this before you change anything.\n\n\
          ## Where you may write\n\n",
     );
-    let _ = writeln!(s, "- Agent-owned pages: {agent}. Write and maintain these directly.");
-    let _ = writeln!(s, "- Sources: {raw}. Add new captured sources here; never edit them.");
-    let _ = writeln!(s, "- Everything else is the owner's: {default}.");
+    writeln!(s, "- Agent-owned pages: {agent}. Write and maintain these directly.").expect("a String takes any text");
+    writeln!(s, "- Sources: {raw}. Add new captured sources here; never edit them.").expect("a String takes any text");
+    writeln!(s, "- Everything else is the owner's: {default}.").expect("a String takes any text");
     if !private.is_empty() {
-        let _ = writeln!(s, "- Private: {} — you can't see these.", private.join(", "));
+        writeln!(s, "- Private: {} — you can't see these.", private.join(", ")).expect("a String takes any text");
     }
     s.push_str(
         "\n## Conventions\n\n\
@@ -117,7 +117,7 @@ impl AgentStore {
         let path = NotePath::new(NAMES[0]);
         let text = starter(&self.policy());
         self.vault().storage().write_atomic(&path, &text).map_err(|e| e.to_string())?;
-        let _ = self.vault().snapshot(&path, &text, self.now_ms(), true);
+        self.keep_version(&path, &text, self.now_ms(), None);
         self.approve_instructions(&ContentHash::of(&text))?;
         Ok(path)
     }

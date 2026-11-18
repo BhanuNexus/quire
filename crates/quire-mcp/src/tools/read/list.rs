@@ -81,12 +81,12 @@ fn list_tool(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         "No notes.\n".to_string()
     } else {
         page.iter().fold(String::new(), |mut s, r| {
-            let _ = writeln!(s, "- {} — {}", r.path, r.title);
+            writeln!(s, "- {} — {}", r.path, r.title).expect("a String takes any text");
             s
         })
     };
     if let Some(c) = &next {
-        let _ = write!(text, "… {} more; call list again with cursor=\"{c}\"", notes.len() - skip - page.len());
+        write!(text, "… {} more; call list again with cursor=\"{c}\"", notes.len() - skip - page.len()).expect("a String takes any text");
     }
     let rows: Vec<Value> = page
         .iter()

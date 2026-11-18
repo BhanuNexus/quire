@@ -31,6 +31,10 @@ Edition: both (P5). HTTP servers (`axum`, `tokio`) are allowed here by `deny.tom
 
 ## Do not
 - Read or write a vault file from a tool without the guard: `fs`, `Vault::read` and `Storage` on a path an agent gave you skip policy.
+- Drop a `Result` with `let _ =` or replace an error with `map_err(|_| ..)`: a write that failed (a token revoked, a cache
+  entry) is answered as failed or kept with `#[expect(clippy::let_underscore_must_use, reason = "...")]` saying why losing it
+  is right; only a missing note is "not found" (a path the guard hides is too, on purpose). Write into a `String` with
+  `.expect("a String takes any text")`. [lint] `#![warn(clippy::let_underscore_must_use, clippy::map_err_ignore)]` in `lib.rs`
 - Build an HTTP client by hand (only `ureq` as a dev-dependency here; the network is in `quire_import::web`).
 
 ## Where things go

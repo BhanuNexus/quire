@@ -64,7 +64,8 @@ fn properties(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     rows.sort_by(|x, y| y.1.0.cmp(&x.1.0).then_with(|| x.0.cmp(&y.0)));
     let mut text = String::new();
     for (k, (n, types, ex)) in &rows {
-        let _ = writeln!(text, "- {k}: {n} notes, {} (e.g. {})", types.iter().copied().collect::<Vec<_>>().join("/"), ex.join("; "));
+        writeln!(text, "- {k}: {n} notes, {} (e.g. {})", types.iter().copied().collect::<Vec<_>>().join("/"), ex.join("; "))
+            .expect("a String takes any text");
     }
     if rows.is_empty() {
         text.push_str("No properties.");

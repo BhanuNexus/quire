@@ -9,12 +9,17 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 - **Agents:** a `where` condition given to `list` or `search` can no longer be used to learn about notes an agent may not see: a condition with a line break is refused, and the condition is checked only against notes the agent may see.
 
 ### Fixed
+- **MCP over HTTP:** revoking an OAuth token (`/oauth/revoke`) when Quire can't save the change now answers with an error instead of "revoked", so the client no longer forgets a token that still works.
 - **Web app (beta):** search no longer misses matching notes, or shows fewer than it could, when many notes in folders hidden from the web match too.
 - **Skills, properties and settings:** a skill installed with `quire-cli skill install --from` whose front matter ends with `...` now stays untrusted when its `SKILL.md` is copied, any `trust: untrusted` in a note's front matter now wins over another `trust` line, and a property value that starts or ends with a space keeps it. An unreadable settings file is now reported in the app (it was only printed to the terminal), and Settings → AI says when the embedding cache can't be saved.
 - **Links:** a link whose target ends in an escape such as `%20` now resolves to its note in the agent store and in Markdown link extraction (the last escape of a target was left undecoded).
 - **Sync:** a stored sync selection naming a folder Quire can't use (such as `A: Archive`) no longer makes a device sync nothing: the entry is dropped and the next sync report says so.
 - **Agents:** `tasks`, `links`, `neighbors`, `properties` and `list` give the same answer every time they are asked the same question; before, which items made it into a list cut at its limit could change between calls.
 - **Quick capture:** a long text no longer pushes the Quick capture dialog past the top and bottom of a small window; the text scrolls inside it, so the buttons stay in reach.
+- **Version history:** when a renamed or moved note's old versions can't all be moved with it (a read-only `.quire/history` folder, for example), Quire now says so once instead of leaving some of them under the old name without a word.
+- **Agents and suggestions:** a note Quire can't read at that moment (held open by another program, no permission) is no longer reported as not existing when an agent edits it or you accept a suggestion for it; the error now says what went wrong.
+- **Undoing an agent's changes:** an undo no longer rewrites or deletes a note when the version from before the undo can't be kept in version history (a read-only `.quire/history` folder, for example); that step is reported as failed instead, as an agent's own writes already were.
+- **Agents:** when an agent's change is made but its version can't be kept in history or it can't be recorded in the activity log, Quire now says so once instead of dropping the error.
 - **Locked folders:** `quire-cli tags … --write`, `props … --write` and `lint` now keep a locked folder locked when its key file is missing, as the app does: they no longer rewrite a plain note there, or keep a plain copy of it in history.
 
 ## [0.13.2] - 2026-11-17

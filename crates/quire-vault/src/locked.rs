@@ -161,6 +161,7 @@ impl Vault {
     ) -> std::result::Result<Vec<u8>, LockError> {
         match key.open(kind, id, data) {
             Err(LockError::Damaged) => match self.keys.previous(folder) {
+                #[expect(clippy::map_err_ignore, reason = "the current key's error is reported; the previous key is only a fallback")]
                 Some(prev) => prev.open(kind, id, data).map_err(|_| LockError::Damaged),
                 None => Err(LockError::Damaged),
             },
@@ -218,6 +219,10 @@ impl Vault {
             Err(e) => return Err(e),
         };
         self.storage.write_atomic(&path, &kf.to_json())?;
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the record only backs up the key file, which is written and read back; an error here must not report a lock or key change that happened as failed"
+        )]
         let _ = self.note_locked_folder(folder);
         Ok(())
     }
@@ -409,7 +414,7 @@ impl Vault {
         {
             // Within one folder: the encrypted file moves as it is (names aren't bound).
             self.storage.rename(&lock::stored(from), &lock::stored(to))?;
-            let _ = self.move_history(from, to);
+            self.move_history_or_tell(from, to);
             return Ok(RenameReport { old_path: from.clone(), new_path: to.clone(), updated: vec![] });
         }
         let bytes = self.read_file(from)?;

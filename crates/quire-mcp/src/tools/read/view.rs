@@ -53,7 +53,8 @@ fn view(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         out.push_str(&w.body);
     }
     if let Some(c) = &w.next {
-        let _ = write!(out, "… cut at line {} of {}; continue with view {{\"path\": \"{path}\", \"cursor\": \"{c}\"}}", w.shown_to, w.last);
+        write!(out, "… cut at line {} of {}; continue with view {{\"path\": \"{path}\", \"cursor\": \"{c}\"}}", w.shown_to, w.last)
+            .expect("a String takes any text");
     }
     let ix = cx.index.read();
     let title = ix.get(&path).map_or_else(|| path.stem().to_string(), |r| r.title.clone());

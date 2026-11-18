@@ -36,6 +36,8 @@ impl AgentWatcher {
         .map_err(|e| e.to_string())?;
         for d in WATCHED {
             let dir = root.join(d);
+            // A folder that can't be made makes `watch` below fail with its error.
+            #[expect(clippy::let_underscore_must_use, reason = "see above")]
             let _ = std::fs::create_dir_all(&dir);
             w.watch(&dir, RecursiveMode::NonRecursive).map_err(|e| e.to_string())?;
         }

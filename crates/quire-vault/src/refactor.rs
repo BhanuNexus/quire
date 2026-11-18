@@ -101,7 +101,7 @@ fn dq(s: &str) -> String {
             '\\' => q.push_str("\\\\"),
             '"' => q.push_str("\\\""),
             c if c.is_control() => {
-                let _ = std::fmt::Write::write_fmt(&mut q, format_args!("\\u{:04X}", u32::from(c)));
+                std::fmt::Write::write_fmt(&mut q, format_args!("\\u{:04X}", u32::from(c))).expect("a String takes any text");
             }
             c => q.push(c),
         }

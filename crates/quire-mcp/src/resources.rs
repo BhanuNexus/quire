@@ -59,6 +59,8 @@ impl ReadCx<'_> {
 
     /// The path guard: the canonical path, if the actor may read it.
     fn guard(&self, p: &NotePath) -> Result<NotePath, ReadError> {
+        // A path the actor may not read is invisible: "not found", whatever the reason.
+        #[expect(clippy::map_err_ignore, reason = "see above")]
         self.agent.guard(self.actor, p, OpKind::Read).map_err(|_| ReadError::NotFound)
     }
 }
@@ -85,6 +87,8 @@ pub fn uri_visible(agent: &AgentStore, actor: &Actor, uri: &str) -> bool {
 pub enum ReadError {
     NotFound,
     BadRequest(String),
+    /// It is there, but couldn't be read now (held open, no permission).
+    Unreadable(String),
 }
 
 pub fn templates() -> Value {
@@ -177,7 +181,7 @@ pub fn read(cx: &ReadCx<'_>, uri: &str) -> Result<Value, ReadError> {
         let a = ix.attachment(&path).ok_or(ReadError::NotFound)?;
         let mut text = String::new();
         for (i, page) in a.pages.iter().enumerate() {
-            let _ = write!(text, "--- page {} ---\n{}\n", i + 1, page.trim_end());
+            write!(text, "--- page {} ---\n{}\n", i + 1, page.trim_end()).expect("a String takes any text");
         }
         return Ok(json!({"contents": [{"uri": uri, "mimeType": "text/plain", "text": text}]}));
     }
@@ -186,7 +190,11 @@ pub fn read(cx: &ReadCx<'_>, uri: &str) -> Result<Value, ReadError> {
     if !path.is_markdown() {
         return Err(ReadError::NotFound);
     }
-    let full = cx.vault.read(&path).map_err(|_| ReadError::NotFound)?;
+    // Only a missing note is "not found"; one that can't be read now says why.
+    let full = cx.vault.read(&path).map_err(|e| match e {
+        quire_app::vault::VaultError::NotFound(_) => ReadError::NotFound,
+        e => ReadError::Unreadable(e.to_string()),
+    })?;
     let version = cx.served.store(&full);
     let total = full.lines().count();
     let range = match (section, lines) {
@@ -241,10 +249,10 @@ fn vault_index(cx: &ReadCx<'_>) -> String {
     for p in ix.paths().iter().filter(|p| cx.visible(p)) {
         if folder.as_deref() != Some(p.folder()) {
             folder = Some(p.folder().to_string());
-            let _ = write!(out, "\n## {}\n\n", if p.folder().is_empty() { "(top level)" } else { p.folder() });
+            write!(out, "\n## {}\n\n", if p.folder().is_empty() { "(top level)" } else { p.folder() }).expect("a String takes any text");
         }
         let title = ix.get(p).map_or_else(|| p.stem().to_string(), |r| r.title.clone());
-        let _ = writeln!(out, "- [[{}]] — {title}", p.without_ext());
+        writeln!(out, "- [[{}]] — {title}", p.without_ext()).expect("a String takes any text");
     }
     out
 }
@@ -262,7 +270,7 @@ fn proposal(cx: &ReadCx<'_>, uri: &str, id: &str) -> Result<Value, ReadError> {
             (Some(path), Some(base), Some(new), _) => diff.push_str(&unified(&base, new, path.as_str())),
             (Some(path), _, _, Some(text)) => diff.push_str(&unified("", text, path.as_str())),
             _ => {
-                let _ = writeln!(diff, "{}", serde_json::to_string(ch).unwrap_or_default());
+                writeln!(diff, "{}", serde_json::to_string(ch).unwrap_or_default()).expect("a String takes any text");
             }
         }
     }

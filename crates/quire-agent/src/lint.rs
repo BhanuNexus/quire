@@ -495,7 +495,7 @@ pub fn lint(input: &LintInput<'_>) -> Vec<Finding> {
                 text.push('\n');
             }
             for n in &unlisted {
-                let _ = writeln!(text, "- [[{}]]", n.path.stem());
+                writeln!(text, "- [[{}]]", n.path.stem()).expect("a String takes any text");
             }
             push(
                 LintCheck::StaleIndex,

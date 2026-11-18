@@ -3,7 +3,7 @@
 //! The bytes of locked folders (docs/formats/locked-folders.md): `.qenc`
 //! files and `quire-lock.json`, the folder's wrapped key.
 
-use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+use chacha20poly1305::aead::{Aead, Error as AeadError, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
@@ -73,8 +73,13 @@ pub enum LockError {
     NoRandomness,
 }
 
+/// The nonce in `b`; `None` when it has the wrong length (the only way it fails).
+fn nonce_of(b: &[u8]) -> Option<XNonce> {
+    XNonce::try_from(b).ok()
+}
+
 pub(crate) fn random<const N: usize>() -> Result<[u8; N], LockError> {
-    quire_base::rand::bytes().map_err(|_| LockError::NoRandomness)
+    quire_base::rand::bytes().map_err(|quire_base::rand::NoRandomness| LockError::NoRandomness)
 }
 
 /// A locked folder's random id, in its key file and every file's header.
@@ -187,7 +192,7 @@ impl FolderKey {
         let mut key = self.subkey(b"file");
         let cipher = XChaCha20Poly1305::new((&key).into());
         key.zeroize();
-        let ct = cipher.encrypt(&XNonce::from(nonce), Payload { msg: plain, aad: &out }).map_err(|_| LockError::Damaged)?;
+        let ct = cipher.encrypt(&XNonce::from(nonce), Payload { msg: plain, aad: &out }).map_err(|AeadError| LockError::Damaged)?;
         out.extend_from_slice(&nonce);
         out.extend_from_slice(&ct);
         Ok(out)
@@ -207,8 +212,8 @@ impl FolderKey {
         let mut key = self.subkey(b"file");
         let cipher = XChaCha20Poly1305::new((&key).into());
         key.zeroize();
-        let nonce = XNonce::try_from(nonce).map_err(|_| LockError::Truncated)?;
-        cipher.decrypt(&nonce, Payload { msg: ct, aad }).map_err(|_| LockError::Damaged)
+        let nonce = nonce_of(nonce).ok_or(LockError::Truncated)?;
+        cipher.decrypt(&nonce, Payload { msg: ct, aad }).map_err(|AeadError| LockError::Damaged)
     }
 }
 
@@ -410,7 +415,7 @@ impl KeyFile {
         let cipher = XChaCha20Poly1305::new((&wrap).into());
         wrap.zeroize();
         let aad = [WRAP_AAD, &id.0].concat();
-        let ct = cipher.encrypt(&XNonce::from(nonce), Payload { msg: &key.0, aad: &aad }).map_err(|_| LockError::Damaged)?;
+        let ct = cipher.encrypt(&XNonce::from(nonce), Payload { msg: &key.0, aad: &aad }).map_err(|AeadError| LockError::Damaged)?;
         self.salt = hex(&salt);
         self.wrapped_key = hex(&[nonce.as_slice(), &ct].concat());
         Ok(())
@@ -452,13 +457,15 @@ impl KeyFile {
         let cipher = XChaCha20Poly1305::new((&wrap).into());
         wrap.zeroize();
         let aad = [WRAP_AAD, &id.0].concat();
-        let nonce = XNonce::try_from(nonce).map_err(|_| LockError::KeyFile("bad nonce".into()))?;
-        let mut plain = cipher.decrypt(&nonce, Payload { msg: ct, aad: &aad }).map_err(|_| LockError::WrongPassphrase)?;
+        let nonce = nonce_of(nonce).ok_or_else(|| LockError::KeyFile("bad nonce".into()))?;
+        let mut plain = cipher.decrypt(&nonce, Payload { msg: ct, aad: &aad }).map_err(|AeadError| LockError::WrongPassphrase)?;
         let arr: Option<[u8; 32]> = plain.as_slice().try_into().ok();
         plain.zeroize();
         let key = FolderKey(arr.ok_or(LockError::WrongPassphrase)?);
         // A key file whose check doesn't match its own key was tampered with.
-        self.check_key(&key).map_err(|_| LockError::KeyFile("its check value doesn't match its key".into()))?;
+        if self.check_key(&key).is_err() {
+            return Err(LockError::KeyFile("its check value doesn't match its key".into()));
+        }
         Ok(key)
     }
 
@@ -476,8 +483,8 @@ impl KeyFile {
         let cipher = XChaCha20Poly1305::new((&k).into());
         k.zeroize();
         let aad = [PREVIOUS_AAD, &id.0].concat();
-        let nonce = XNonce::try_from(nonce).map_err(|_| LockError::KeyFile("bad nonce".into()))?;
-        let mut plain = cipher.decrypt(&nonce, Payload { msg: ct, aad: &aad }).map_err(|_| LockError::Damaged)?;
+        let nonce = nonce_of(nonce).ok_or_else(|| LockError::KeyFile("bad nonce".into()))?;
+        let mut plain = cipher.decrypt(&nonce, Payload { msg: ct, aad: &aad }).map_err(|AeadError| LockError::Damaged)?;
         let arr: Option<[u8; 32]> = plain.as_slice().try_into().ok();
         plain.zeroize();
         Ok(Some(FolderKey(arr.ok_or(LockError::Damaged)?)))
@@ -491,7 +498,7 @@ impl KeyFile {
         let cipher = XChaCha20Poly1305::new((&k).into());
         k.zeroize();
         let aad = [PREVIOUS_AAD, &id.0].concat();
-        let ct = cipher.encrypt(&XNonce::from(nonce), Payload { msg: &previous.0, aad: &aad }).map_err(|_| LockError::Damaged)?;
+        let ct = cipher.encrypt(&XNonce::from(nonce), Payload { msg: &previous.0, aad: &aad }).map_err(|AeadError| LockError::Damaged)?;
         self.previous_key = Some(hex(&[nonce.as_slice(), &ct].concat()));
         Ok(())
     }

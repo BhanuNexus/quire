@@ -17,6 +17,11 @@
 //! Faults on demand: failed requests, a cut connection, expired
 //! credentials, a skewed clock, and hostile replies.
 
+#![expect(
+    clippy::let_underscore_must_use,
+    reason = "a test server: writes into a String can't fail, and a client that hung up needs no answer"
+)]
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Read, Write};

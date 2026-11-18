@@ -12,7 +12,7 @@ use super::{Entry, StoreError};
 const NODES_LIMIT: u32 = 400_000;
 
 fn parse(body: &[u8]) -> Result<roxmltree::Document<'_>, StoreError> {
-    let text = std::str::from_utf8(body).map_err(|_| StoreError::Refused("the storage sent a listing that isn't UTF-8".into()))?;
+    let text = std::str::from_utf8(body).map_err(|e| StoreError::Refused(format!("the storage sent a listing that isn't UTF-8 ({e})")))?;
     let opt = roxmltree::ParsingOptions { allow_dtd: false, nodes_limit: NODES_LIMIT, entity_resolver: None };
     roxmltree::Document::parse_with_options(text, opt)
         .map_err(|e| StoreError::Refused(format!("the storage sent XML Quire can't read ({e})")))

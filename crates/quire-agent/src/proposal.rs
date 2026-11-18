@@ -207,8 +207,10 @@ impl ProposalChange {
         self.base = Some(ContentHash::of(text));
         if text.len() > INLINE_BASE_LIMIT {
             let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-            let _ = e.write_all(text.as_bytes());
-            self.base_text_gz = Some(base64::engine::general_purpose::STANDARD.encode(e.finish().unwrap_or_default()));
+            // Into memory: these cannot fail, and an empty base would lose the text the hunks are made against.
+            e.write_all(text.as_bytes()).expect("compressing into memory cannot fail");
+            self.base_text_gz =
+                Some(base64::engine::general_purpose::STANDARD.encode(e.finish().expect("compressing into memory cannot fail")));
             self.base_text = None;
         } else {
             self.base_text = Some(text.to_string());
@@ -613,8 +615,8 @@ impl ProposalStore {
     }
 
     /// Delete the archived copy of `p`.
-    pub fn remove_archived(&self, p: &Proposal) {
-        let _ = self.vault.storage().remove(&Self::archive_file(&p.id, p.updated));
+    pub fn remove_archived(&self, p: &Proposal) -> Result<(), WriteError> {
+        Ok(self.vault.storage().remove(&Self::archive_file(&p.id, p.updated))?)
     }
 
     /// Bring an archived proposal back as pending (an expired one, say).
@@ -631,6 +633,10 @@ impl ProposalStore {
             }
         }
         self.save(&p)?;
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "a copy left in the archive only lists it there too; the waiting one is the one acted on"
+        )]
         let _ = self.vault.storage().remove(&old);
         Ok(())
     }

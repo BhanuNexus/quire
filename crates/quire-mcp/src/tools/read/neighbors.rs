@@ -84,8 +84,8 @@ fn neighbors(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     }
     let mut text = format!("Notes linked with {start} ({} found):\n", nodes.len());
     for n in &nodes {
-        let _ =
-            writeln!(text, "- {} ({} link{} away)", n["path"].as_str().unwrap_or(""), n["depth"], if n["depth"] == 1 { "" } else { "s" });
+        writeln!(text, "- {} ({} link{} away)", n["path"].as_str().unwrap_or(""), n["depth"], if n["depth"] == 1 { "" } else { "s" })
+            .expect("a String takes any text");
     }
     let links = nodes.iter().filter_map(|n| n["path"].as_str()).map(|p| note_link(&NotePath::new(p))).collect();
     ToolOutput::ok(text.trim_end().to_string(), json!({"nodes": nodes, "edges": edges})).with_links(links)

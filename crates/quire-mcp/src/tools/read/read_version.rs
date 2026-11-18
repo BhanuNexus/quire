@@ -61,7 +61,7 @@ fn read_version(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     };
     let mut out = format!("# {path} at version {version} (lines {}–{} of {})\n{}", w.first, w.shown_to, w.total, w.body);
     if let Some(c) = &w.next {
-        let _ = write!(out, "… cut; continue with cursor=\"{c}\"");
+        write!(out, "… cut; continue with cursor=\"{c}\"").expect("a String takes any text");
     }
     let st = json!({"text": text.lines().skip(w.first - 1).take(w.shown_to + 1 - w.first.min(w.shown_to + 1)).collect::<Vec<_>>().join("\n"),
         "version": version, "at": at, "actor": actor, "truncated": w.next.is_some(), "next_cursor": w.next});

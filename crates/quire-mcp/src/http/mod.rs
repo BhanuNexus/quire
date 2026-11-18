@@ -111,7 +111,7 @@ impl Urls {
             let issuer = format!("http://{}:{port}", host_of(shown));
             return Ok(Self { resource: format!("{issuer}/mcp"), issuer, hosts, origin: None });
         }
-        let u = quire_import::web::HttpUrl::parse(public).map_err(|_| format!("the public URL {public} isn't an http(s) URL"))?;
+        let u = quire_import::web::HttpUrl::parse(public).map_err(|e| format!("the public URL {public} isn't an http(s) URL ({e})"))?;
         let origin = u.origin();
         let default_port = if u.https { 443 } else { 80 };
         hosts.push(if u.port == default_port { u.host.clone() } else { format!("{}:{}", u.host, u.port) });
@@ -201,8 +201,13 @@ impl HttpServer {
                 rt.block_on(async move {
                     let Ok(listener) = tokio::net::TcpListener::from_std(listener) else { return };
                     let app = router(state).merge(extra.router);
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "the server stops for good either way; a failure to serve is seen by the client"
+                    )]
                     let _ = axum::serve(listener, app.into_make_service())
                         .with_graceful_shutdown(async {
+                            #[expect(clippy::let_underscore_must_use, reason = "the sender dropped also means stop")]
                             let _ = stop_rx.await;
                         })
                         .await;
@@ -227,9 +232,11 @@ impl HttpServer {
 
     fn shutdown(&mut self) {
         if let Some(tx) = self.stop.take() {
+            #[expect(clippy::let_underscore_must_use, reason = "the server already stopped")]
             let _ = tx.send(());
         }
         if let Some(t) = self.thread.take() {
+            #[expect(clippy::let_underscore_must_use, reason = "a panic in the server thread was already reported by it; stopping goes on")]
             let _ = t.join();
         }
     }
@@ -455,6 +462,7 @@ async fn mcp(State(st): State<Arc<HttpState>>, headers: HeaderMap, body: Body) -
         Reply::Listen { id, filter, sees } => {
             let (tx, rx) = mpsc::unbounded_channel::<Value>();
             let sink: crate::subs::Sink = Arc::new(move |v| {
+                #[expect(clippy::let_underscore_must_use, reason = "the receiver is gone only when the connection closed; nothing to tell")]
                 let _ = tx.send(v);
             });
             let handle = st.server.listen(conn_id, id, &filter, sink, sees);

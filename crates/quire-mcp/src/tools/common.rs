@@ -206,10 +206,10 @@ pub fn write_error(e: &WriteError) -> ToolOutput {
             );
         }
         WriteError::VersionConflict { current, .. } => {
-            let _ = write!(
+            write!(
                 message,
                 ". The diff since your version and a merged preview are attached; re-read with `view` or retry with expected_version={current}."
-            );
+            ).expect("a String takes any text");
         }
         _ => {}
     }

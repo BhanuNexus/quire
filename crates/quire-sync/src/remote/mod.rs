@@ -298,8 +298,8 @@ fn read_space(store: &dyn ObjectStore, space: &SpaceId) -> Result<SpaceFile, Tra
     let bytes = store
         .get(&format!("{}space.json", space_dir(space)), MAX_SMALL)?
         .ok_or_else(|| TransportError::Refused("this vault isn't in the storage".into()))?;
-    let f: SpaceFile =
-        serde_json::from_slice(&bytes).map_err(|_| TransportError::Refused("the vault's space.json in the storage is damaged".into()))?;
+    let f: SpaceFile = serde_json::from_slice(&bytes)
+        .map_err(|e| TransportError::Refused(format!("the vault's space.json in the storage is damaged ({e})")))?;
     if f.space != *space {
         return Err(TransportError::Refused("the vault's space.json in the storage names another vault".into()));
     }
@@ -391,6 +391,7 @@ pub fn probe(store: &dyn ObjectStore) -> Result<Probe, StoreError> {
         _ => false,
     };
     let back = store.get(&key, MAX_SMALL)?;
+    #[expect(clippy::let_underscore_must_use, reason = "a probe object left behind is harmless; what was read back decides")]
     let _ = store.delete(&key);
     if back.as_deref() != Some(body.as_bytes()) {
         return Err(StoreError::Refused("the storage didn't give back what Quire wrote".into()));
@@ -456,6 +457,7 @@ struct TempDir(PathBuf);
 
 impl Drop for TempDir {
     fn drop(&mut self) {
+        #[expect(clippy::let_underscore_must_use, reason = "cleanup in drop: nobody to tell")]
         let _ = fs::remove_dir_all(&self.0);
     }
 }
@@ -677,6 +679,8 @@ fn append_raw(dir: &Path, lines: &[Vec<u8>]) -> Result<(), TransportError> {
         buf.push(b'\n');
     }
     if let Err(e) = f.write_all(&buf).and_then(|()| f.sync_data()) {
+        // Readers skip half a line anyway (a crash leaves the same).
+        #[expect(clippy::let_underscore_must_use, reason = "cleanup after a failed write, whose error is returned")]
         let _ = f.set_len(len);
         return Err(werr(e));
     }
@@ -1312,6 +1316,8 @@ impl RemoteTransport {
     pub fn level(&self) -> u32 {
         let mut m = self.lock();
         if !m.started {
+            // A getter: `start` runs again, and fails with its error, on the next refresh or push.
+            #[expect(clippy::let_underscore_must_use, reason = "see above")]
             let _ = self.start(&mut m);
         }
         m.level
@@ -1359,6 +1365,7 @@ impl RemoteTransport {
         }
         let tmp = self.mirror.join("snapshots").join(format!(".{name}.tmp"));
         let werr = |e: std::io::Error| io_err("can't write the sync mirror", &e);
+        #[expect(clippy::let_underscore_must_use, reason = "a crash's leftover; a stray file in it isn't in the manifest")]
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).map_err(werr)?;
         let names: Vec<&crate::compact::Part> = man.parts.iter().filter(|p| crate::compact::parse_part(&p.name)).collect();
@@ -1374,6 +1381,7 @@ impl RemoteTransport {
             write_atomic(&tmp.join(&p.name), &b, Options::EXISTING_FOLDER).map_err(werr)?;
         }
         write_atomic(&tmp.join("manifest.json"), &bytes, Options::EXISTING_FOLDER).map_err(werr)?;
+        #[expect(clippy::let_underscore_must_use, reason = "if it stays, the rename below fails with the error")]
         let _ = fs::remove_dir_all(&dir);
         #[expect(clippy::disallowed_methods, reason = "a fetched snapshot folder takes its name in one step (a folder, not a file)")]
         fs::rename(&tmp, &dir).map_err(werr)?;
@@ -1399,6 +1407,8 @@ impl RemoteTransport {
                 // (`tidy`): another one may still win, with another cut.
                 continue;
             }
+            // Its lines before the cut are in the snapshot: copies left here read as the same revisions.
+            #[expect(clippy::let_underscore_must_use, reason = "best effort, see above")]
             let _ = fs::remove_dir_all(self.device_dir(d));
             let p = m.fetched.entry(d.clone()).or_default();
             p.done = c.n;
@@ -1435,7 +1445,9 @@ impl RemoteTransport {
         }
         let werr = |e: std::io::Error| io_err("can't write the sync mirror", &e);
         let (tmp, old) = (dir.with_extension("new"), dir.with_extension("old"));
+        #[expect(clippy::let_underscore_must_use, reason = "a crash's leftover; the folder is made again below")]
         let _ = fs::remove_dir_all(&tmp);
+        #[expect(clippy::let_underscore_must_use, reason = "a crash's leftover; if it stays, the rename below fails with the error")]
         let _ = fs::remove_dir_all(&old);
         fs::create_dir_all(&tmp).map_err(werr)?;
         append_raw(&tmp, &keep)?;
@@ -1445,6 +1457,7 @@ impl RemoteTransport {
         }
         #[expect(clippy::disallowed_methods, reason = "the rewritten log folder takes the old one's place (a folder swap)")]
         fs::rename(&tmp, &dir).map_err(werr)?;
+        #[expect(clippy::let_underscore_must_use, reason = "the old copy, already replaced; removed again next time")]
         let _ = fs::remove_dir_all(&old);
         Ok(())
     }
@@ -1484,9 +1497,12 @@ impl RemoteTransport {
             let base = format!("{}snapshots/{}/", space_dir(&self.space), e.name);
             for f in self.store.list(&base).unwrap_or_default().iter().filter(|f| !f.dir) {
                 if f.name == "manifest" || crate::compact::parse_part(&f.name) {
+                    // An older snapshot: one left behind is listed and tried again on the next tidy.
+                    #[expect(clippy::let_underscore_must_use, reason = "see above")]
                     let _ = self.store.delete(&format!("{base}{}", f.name));
                 }
             }
+            #[expect(clippy::let_underscore_must_use, reason = "the local copy of an older snapshot, tried again on the next tidy")]
             let _ = fs::remove_dir_all(self.mirror.join("snapshots").join(&e.name));
         }
         Ok(())
@@ -1519,6 +1535,8 @@ impl RemoteTransport {
         // Another device made one meanwhile: let it settle.
         let there = self.store.list(&format!("{}snapshots/", space_dir(&self.space)))?;
         if there.iter().any(|e| e.dir && crate::compact::parse_name(&e.name).is_some_and(|(g, _)| g >= man.generation)) {
+            // A newer one is in the storage: this copy only makes the next fetch redo it.
+            #[expect(clippy::let_underscore_must_use, reason = "see above")]
             let _ = fs::remove_dir_all(&local);
             self.folder.reload();
             return Ok(Compacted::Busy("another device is compacting".into()));
@@ -1551,7 +1569,10 @@ impl RemoteTransport {
                 b
             } else {
                 let Some(b) = self.store.get(&format!("{}keys/{stem}.json", space_dir(&self.space)), MAX_SMALL)? else { continue };
+                // A cache: what isn't kept is fetched again next time.
+                #[expect(clippy::let_underscore_must_use, reason = "a cache, see above")]
                 let _ = fs::create_dir_all(&cache);
+                #[expect(clippy::let_underscore_must_use, reason = "a cache, see above")]
                 let _ = write_atomic(&file, &b, Options::EXISTING_FOLDER);
                 b
             };
@@ -2025,6 +2046,7 @@ mod tests {
             assert!(two.flush().is_err(), "conditional: {conditional}");
             assert!(two.problem().is_some_and(|p| p.contains("Another computer")));
             // One sees a tip it didn't write once two wrote one, or two's objects.
+            #[expect(clippy::let_underscore_must_use, reason = "the pull only makes `one` read the tip; the push below is the check")]
             let _ = one.pull(0);
             assert!(two.push(&rev(&FileId::random().unwrap(), &[], &d)).is_err());
         }

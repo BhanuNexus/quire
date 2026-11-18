@@ -16,6 +16,7 @@
 //! request's `_meta` and can start with `server/discover`.
 
 #![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+#![warn(clippy::let_underscore_must_use, clippy::map_err_ignore)]
 
 /// A JSON value written as JSON, for the tool and resource schemas: kept in
 /// the binary as its text and parsed when the tool list is made (0.13.1),
@@ -124,6 +125,7 @@ mod require_folder_tests {
     #[test]
     fn mkdir_is_suggested_only_when_the_parent_folder_is_there() {
         let dir = std::env::temp_dir().join(format!("quire-require-folder-{}", std::process::id()));
+        #[expect(clippy::let_underscore_must_use, reason = "a test's temporary folder, there or not")]
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         assert!(require_folder(&dir).is_ok());
@@ -140,6 +142,7 @@ mod require_folder_tests {
             let e = require_folder(&dir.join("dangling")).unwrap_err();
             assert!(e.contains("link") && !e.contains("mkdir \""), "{e}");
         }
+        #[expect(clippy::let_underscore_must_use, reason = "a test's temporary folder, there or not")]
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

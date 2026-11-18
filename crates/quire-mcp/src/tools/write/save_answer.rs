@@ -108,7 +108,8 @@ fn footnotes(cx: &ToolCx<'_>, citations: &[Value]) -> Result<(String, Vec<Source
         let lines = format!("{}-{}", anchor.lines.0, anchor.lines.1);
         let hex = anchor.version.hex().to_string();
         let args = comment::format_args(&[("v", "1"), ("sha", &hex), ("l", &lines), ("p", &anchor.prefix), ("s", &anchor.suffix)]);
-        let _ = writeln!(out, "[^{}]: [[{target}]] — “{}” {}", i + 1, anchor.quote.replace('\n', " "), comment::format("cite", &args));
+        writeln!(out, "[^{}]: [[{target}]] — “{}” {}", i + 1, anchor.quote.replace('\n', " "), comment::format("cite", &args))
+            .expect("a String takes any text");
         links.push(format!("[[{target}]]"));
         let mut src = SourceRef::uri(note_uri(&path));
         src.anchor = Some(anchor);

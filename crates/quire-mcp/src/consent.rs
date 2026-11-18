@@ -211,6 +211,7 @@ impl ConsentStore {
             let stale =
                 e.path().file_stem().and_then(|s| s.to_str()).and_then(|id| self.get(id)).is_none_or(|r| r.expires + 86_400_000 < now);
             if stale && e.path().extension().is_some_and(|x| x == "json" || x == "used") {
+                #[expect(clippy::let_underscore_must_use, reason = "an expired request, pruned again next time")]
                 let _ = std::fs::remove_file(e.path());
             }
         }

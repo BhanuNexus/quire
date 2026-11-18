@@ -71,7 +71,7 @@ pub fn check_scheme(url: &str, allow_http: bool) -> Result<(), StoreError> {
             "Leave the user name and password out of the address: put them in their own fields (they're kept in the keychain).".into(),
         ));
     }
-    let uri: ureq::http::Uri = url.parse().map_err(|_| StoreError::Config(format!("“{url}” isn't a web address")))?;
+    let uri: ureq::http::Uri = url.parse().map_err(|e| StoreError::Config(format!("“{url}” isn't a web address ({e})")))?;
     match uri.scheme_str() {
         Some("https") => Ok(()),
         Some("http") => {

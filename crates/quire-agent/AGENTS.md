@@ -26,12 +26,17 @@ quire-assistant, quire-cli. Edition: both (P5).
 - Other devices' review files are untrusted input: a file belongs to the device in its path, every path is re-checked, trust is only
   lowered. [test] `forged_ledger_lines_never_write_hidden_absolute_or_other_devices_paths`,
   `mirrored_proposals_with_bad_paths_or_actors_are_not_taken_in` (`shared_tests.rs`)
-- An agent delete, rename or edit of a note writes only when the "before" version was saved to history (`?`, not `let _ =`).
-  [test] `no_edit_is_written_without_the_version_from_before`
+- An agent delete, rename or edit of a note, and an undo of one, writes only when the "before" version was saved to history (`?`, not `let _ =`).
+  [test] `no_edit_is_written_without_the_version_from_before`, `an_undo_is_not_written_without_the_version_from_before`
 
 ## Do not
 - Write a vault or state file around `Storage` or `quire_base::fs::write_atomic`: `approval.rs` has its `write_atomic` wrapper
   (`Options::STATE`) for state files. [lint] `clippy.toml`
+- Drop a `Result` with `let _ =` or replace an error with `map_err(|_| ..)`. The version from before a write is taken with `?`;
+  after a write that stands, keep the new version with `AgentStore::keep_version` and log with `AgentStore::record`, which tell
+  the person once (`Vault::tell_once`) instead of losing the error; otherwise `#[expect(clippy::let_underscore_must_use,
+  reason = "...")]` saying why losing it is right. Only `VaultError::NotFound` becomes `WriteError::NotFound` (`WriteError::from`).
+  [lint] `#![warn(clippy::let_underscore_must_use, clippy::map_err_ignore)]` in `lib.rs`
 - Decide where front matter ends yourself: `quire_markdown::frontmatter::fences` (contracts measure the body with it).
 - Add a second path check or a second "is this hidden" test; extend `canonical_path` or `quire_base::path::Rule` instead.
 - Let a proposal or shared file change `AGENTS.md`, `CLAUDE.md`, skills or `.quire/**` without a person accepting it (P8): these are

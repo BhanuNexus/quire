@@ -336,7 +336,7 @@ fn big_proposals_are_packed_and_old_history_leaves() {
         x ^= x << 13;
         x ^= x >> 7;
         x ^= x << 17;
-        let _ = writeln!(huge, "{x:016x}");
+        writeln!(huge, "{x:016x}").unwrap();
     }
     let mut big = s.store.proposal(&id).unwrap();
     big.id = ProposalId::new(T0 + 5);
@@ -436,7 +436,7 @@ fn forge(d: &Dev, dev: &str, name: &str, lines: &[LedgerEntry], texts: &[&str]) 
     let mut t = String::new();
     for text in texts {
         let hash = ContentHash::of(text);
-        let _ = writeln!(t, "{{\"v\":1,\"hash\":\"{hash}\",\"gz\":\"{}\"}}", shared::gzip_b64(text.as_bytes()));
+        writeln!(t, "{{\"v\":1,\"hash\":\"{hash}\",\"gz\":\"{}\"}}", shared::gzip_b64(text.as_bytes())).unwrap();
     }
     st.write_atomic(&NotePath::new(format!("{TEXTS_DIR}/{dev}/{month}.jsonl")), &t).unwrap();
 }

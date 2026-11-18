@@ -69,7 +69,8 @@ pub fn for_agents(vault: &Vault, state_dir: Option<&Path>, limit: usize) -> Opti
     }
     let mut out = text[..cut].to_string();
     if cut < text.len() {
-        let _ = write!(out, "\n… (cut; read the whole file as resource quire://vault/instructions or `view` {path})");
+        write!(out, "\n… (cut; read the whole file as resource quire://vault/instructions or `view` {path})")
+            .expect("a String takes any text");
     }
     Some((path, true, out))
 }

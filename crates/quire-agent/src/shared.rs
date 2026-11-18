@@ -135,8 +135,9 @@ fn recent_months(now_ms: i64, n: usize) -> Vec<String> {
 
 pub(crate) fn gzip_b64(bytes: &[u8]) -> String {
     let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-    let _ = e.write_all(bytes);
-    base64::engine::general_purpose::STANDARD.encode(e.finish().unwrap_or_default())
+    // Into memory: these cannot fail, and empty bytes would share no text.
+    e.write_all(bytes).expect("compressing into memory cannot fail");
+    base64::engine::general_purpose::STANDARD.encode(e.finish().expect("compressing into memory cannot fail"))
 }
 
 fn gunzip_b64(s: &str) -> Option<Vec<u8>> {
@@ -311,6 +312,7 @@ impl AgentStore {
         let st = self.vault().storage();
         for f in st.list_under(folder).unwrap_or_default() {
             if !keep.contains(f.file_name()) {
+                #[expect(clippy::let_underscore_must_use, reason = "a stale shared file, removed again on the next export")]
                 let _ = st.remove(&f);
             }
         }
@@ -344,6 +346,7 @@ impl AgentStore {
         // Never for git: the vault's own git repository keeps `.quire/shared/`.
         let ignore = NotePath::new(format!("{SHARED_AGENT_DIR}/.gitignore"));
         if !st.exists(&ignore) {
+            #[expect(clippy::let_underscore_must_use, reason = "tried again on every export; sharing works without it")]
             let _ = st.write_atomic(&ignore, "# Quire: review history shared through Quire Sync. Not for git.\n*\n");
         }
         let dev = DeviceFile { format: SHARED_FORMAT, id: me.clone(), name: self.device().name.clone(), other: Other::new() };
@@ -461,7 +464,9 @@ impl AgentStore {
                 .and_then(|b| serde_json::from_slice::<DecisionsFile>(&b).ok())
                 .is_some_and(|d| now - d.updated <= KEEP_RESOLVED_MS);
             if !recent_file {
+                #[expect(clippy::let_underscore_must_use, reason = "an old decisions file, removed again on the next pass")]
                 let _ = st.remove(&f);
+                #[expect(clippy::let_underscore_must_use, reason = "an old decisions file, removed again on the next pass")]
                 let _ = st.remove(&NotePath::new(format!("{SENT_DECISIONS_DIR}/{}", f.file_name())));
             }
         }
@@ -763,6 +768,10 @@ impl AgentStore {
             if store.save_if(&merged, loaded).unwrap_or(false) {
                 report.updated += 1;
                 if merged.status != ProposalStatus::Pending {
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "a settled proposal left in place is never shown as waiting: its status says settled"
+                    )]
                     let _ = store.archive(&merged.id);
                 }
             }
@@ -788,7 +797,11 @@ impl AgentStore {
                 self.settle_quiet(&mut merged);
                 merged.status = merged.settled_status().unwrap_or(ProposalStatus::Pending);
                 if merged.status == ProposalStatus::Pending && store.save(&merged).is_ok() {
-                    store.remove_archived(&old);
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "a copy left in the archive only lists it there too; the waiting one is the one acted on"
+                    )]
+                    let _ = store.remove_archived(&old);
                     archived.retain(|p| p.id != old.id);
                     report.updated += 1;
                 }
@@ -899,6 +912,10 @@ impl AgentStore {
             report.decided += 1;
             if p.status != ProposalStatus::Pending {
                 report.settled += 1;
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "a settled proposal left in place is never shown as waiting: its status says settled"
+                )]
                 let _ = store.archive(&p.id);
                 if was_pending {
                     let op = if p.status == ProposalStatus::Rejected { Op::Reject } else { Op::Accept };
@@ -947,9 +964,17 @@ impl AgentStore {
         p.status = p.settled_status().unwrap_or(ProposalStatus::Pending);
         store.save(&p)?;
         if let Some(old) = archived {
-            store.remove_archived(&old);
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "a copy left in the archive only lists it there too; the waiting one is the one acted on"
+            )]
+            let _ = store.remove_archived(&old);
         }
         if p.status != ProposalStatus::Pending {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "a settled proposal left in place is never shown as waiting: its status says settled"
+            )]
             let _ = store.archive(&p.id);
         }
         let mut e = LedgerEntry::new(crate::actor::Actor::human(&me), Op::Revert, now);
