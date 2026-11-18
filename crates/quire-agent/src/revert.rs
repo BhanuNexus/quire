@@ -452,7 +452,8 @@ impl AgentStore {
                             m.text
                         };
                         let text = &text;
-                        let _ = vault.snapshot(&s.path, &cur, now - 1, true);
+                        // Without the version from before, this undo couldn't be undone: no write then.
+                        vault.snapshot(&s.path, &cur, now - 1, true)?;
                         e.snap_before = self.newest_snapshot(&s.path);
                         e.before = Some(ContentHash::of(&cur));
                         vault.storage().write_atomic(&s.path, text)?;
@@ -466,7 +467,7 @@ impl AgentStore {
                             proposed.push(ProposalChange::delete(&s.path));
                             return Ok(());
                         }
-                        let _ = vault.snapshot(&s.path, &cur, now - 1, true);
+                        vault.snapshot(&s.path, &cur, now - 1, true)?;
                         e.snap_before = self.newest_snapshot(&s.path);
                         e.before = Some(ContentHash::of(&cur));
                         vault.trash(&s.path)?;

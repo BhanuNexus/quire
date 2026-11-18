@@ -867,3 +867,24 @@ fn a_note_that_cant_be_read_is_not_reported_as_missing() {
     *storage.failing.lock().unwrap() = None;
     assert_eq!(read(&vault, "Rope.md"), "a\nb\n");
 }
+
+/// Undoing an agent's change rewrites a note only when the version from
+/// before the undo is in history, like every agent write.
+#[test]
+fn an_undo_is_not_written_without_the_version_from_before() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("wiki")).unwrap();
+    std::fs::write(dir.path().join("wiki/Ropes.md"), "# Ropes\n").unwrap();
+    let vault = Vault::open_local(dir.path()).unwrap();
+    let store = AgentStore::open(&vault, DeviceInfo { id: "d_test".into(), name: "Test".into() }, FixedClock::new(T0));
+    let agent = Actor::agent("mcp:claude-code", "Claude Code", Via::McpStdio, "d_test");
+    store.submit(&agent, edit("wiki/Ropes.md", "# Ropes\nagent\n")).unwrap();
+    let plan = store.revert_plan(&RevertSelector { actor: Some(agent.id), ..Default::default() });
+    assert!(matches!(plan.steps.as_slice(), [RevertStep { action: RevertAction::Restore { .. }, .. }]), "{plan:?}");
+    // History's folder can't be written any more: a file stands where it goes.
+    std::fs::remove_dir_all(dir.path().join(".quire/history")).unwrap();
+    std::fs::write(dir.path().join(".quire/history"), "not a folder").unwrap();
+    let report = store.revert_apply(&plan, "Undo");
+    assert_eq!((report.applied, report.failed.len()), (0, 1), "{report:?}");
+    assert_eq!(read(&vault, "wiki/Ropes.md"), "# Ropes\nagent\n");
+}
