@@ -431,6 +431,10 @@ impl Vault {
 
 /// Notes whose old versions couldn't be thinned out or moved with a rename
 /// ([`Vault::take_history_trouble`]).
+///
+/// One message waits at a time. A note counts as told only when its message
+/// is the one waiting, so trouble that arrives while another message waits is
+/// told later, not dropped.
 #[derive(Debug, Default)]
 pub(crate) struct PruneTrouble {
     told: std::collections::HashSet<NotePath>,
@@ -439,7 +443,7 @@ pub(crate) struct PruneTrouble {
 
 impl PruneTrouble {
     fn note(&mut self, note: &NotePath, e: &VaultError) {
-        if self.told.insert(note.clone()) && self.untold.is_none() {
+        if self.untold.is_none() && self.told.insert(note.clone()) {
             self.untold = Some(format!(
                 "Quire couldn't remove old versions of “{}” from its history ({e}). New versions are still kept; \
                  check that the vault's .quire/history folder can be written.",
@@ -449,13 +453,13 @@ impl PruneTrouble {
     }
 
     fn tell(&mut self, about: &NotePath, text: impl FnOnce() -> String) {
-        if self.told.insert(about.clone()) && self.untold.is_none() {
+        if self.untold.is_none() && self.told.insert(about.clone()) {
             self.untold = Some(text());
         }
     }
 
     fn moving(&mut self, from: &NotePath, to: &NotePath, e: &VaultError) {
-        if self.told.insert(to.clone()) && self.untold.is_none() {
+        if self.untold.is_none() && self.told.insert(to.clone()) {
             self.untold = Some(format!(
                 "“{}” was renamed to “{}”, but Quire couldn't move all of its old versions with it ({e}). \
                  Some may still be listed under the old name; check that the vault's .quire/history folder can be written.",
@@ -661,6 +665,23 @@ mod tests {
 
     /// A rename whose history can't follow is still a rename, and the
     /// person is told once instead of the error being dropped.
+    /// Trouble that arrives while another message waits is told after it,
+    /// not dropped; each is told once.
+    #[test]
+    fn a_second_trouble_waits_its_turn() {
+        let mut t = PruneTrouble::default();
+        let (a, ledger) = (NotePath::new("A.md"), NotePath::new(".quire/ledger"));
+        t.tell(&a, || "version".into());
+        t.tell(&ledger, || "ledger".into());
+        assert_eq!(t.untold.take().as_deref(), Some("version"));
+        t.tell(&a, || "version again".into());
+        t.tell(&ledger, || "ledger".into());
+        assert_eq!(t.untold.take().as_deref(), Some("ledger"));
+        t.tell(&a, || "version again".into());
+        t.tell(&ledger, || "ledger again".into());
+        assert_eq!(t.untold.take(), None, "each is told once");
+    }
+
     #[test]
     fn a_rename_whose_history_cant_follow_is_told() {
         let v = Vault::new(std::sync::Arc::new(NoRemove(crate::MemFs::with_files([("A.md", "x")]))));
