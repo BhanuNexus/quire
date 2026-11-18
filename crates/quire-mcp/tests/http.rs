@@ -561,3 +561,25 @@ fn subscriptions_stream_events() {
     assert!(got.contains("\"toolsListChanged\":true") && !got.contains("promptsListChanged"), "{got}");
     assert!(got.contains("\"io.modelcontextprotocol/subscriptionId\":1"));
 }
+
+/// A revocation that can't be saved is not answered "revoked": the client
+/// would forget a token that still works.
+#[test]
+fn a_revocation_that_cant_be_saved_is_not_reported_done() {
+    let env = start("");
+    let token = env.tokens.create_personal("t", Scopes::parse("notes:read").unwrap(), None, 0).unwrap();
+    let url = format!("{}/oauth/revoke", env.base);
+    let works = || env.tokens.authenticate(&token, "", 1).is_some();
+    // The token store can't be locked for writing: a folder stands where its lock file goes.
+    let lock = env.tokens.path().parent().unwrap().join("tokens.lock");
+    let _ = std::fs::remove_file(&lock);
+    std::fs::create_dir_all(&lock).unwrap();
+    let r = form(&url, &[("token", &token)]);
+    assert_eq!(r.status, 503, "{}", r.body);
+    assert_eq!(r.json()["error"], "temporarily_unavailable");
+    assert!(works(), "still valid, and the client was told so");
+    std::fs::remove_dir(&lock).unwrap();
+    assert_eq!(form(&url, &[("token", &token)]).status, 200);
+    assert!(!works());
+    assert_eq!(form(&url, &[("token", "quire_unknown")]).status, 200, "an unknown token is fine");
+}
