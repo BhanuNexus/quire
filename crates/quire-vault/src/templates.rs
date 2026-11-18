@@ -14,6 +14,7 @@
 //! Unknown placeholders are kept as written.
 
 use std::collections::{BTreeMap, HashMap};
+use std::fmt::Write as _;
 use std::hash::BuildHasher;
 
 use chrono::{DateTime, Datelike, Duration, Local, Months, NaiveDate, Weekday};
@@ -243,7 +244,11 @@ fn render_date(key: &str, now: DateTime<Local>) -> Option<String> {
     if items.iter().any(|i| matches!(i, chrono::format::Item::Error)) {
         return None;
     }
-    Some(date.format_with_items(items.into_iter()).to_string())
+    // `to_string` would panic on an item that fails to format (`%#z` parses
+    // but can't be written): such a placeholder stays as typed.
+    let mut out = String::new();
+    write!(out, "{}", date.format_with_items(items.into_iter())).ok()?;
+    Some(out)
 }
 
 /// `+7d`, `-1w`, `+2m`, `+1y` from now.
@@ -386,6 +391,8 @@ mod tests {
         assert_eq!(e("{{date:tomorrow}} {{date:end of month}}"), "2026-11-02 2026-11-30");
         assert_eq!(e("{{time:%H}}h in {{folder}}"), "09h in Meetings");
         assert_eq!(e("{{date:%Q}} {{date+3x}} {{date:someday}}"), "{{date:%Q}} {{date+3x}} {{date:someday}}", "bad ones stay as written");
+        // Parses, but can't be written (it used to panic): stays as typed.
+        assert_eq!(e("{{date:%#z}} {{time:%#z}}"), "{{date:%#z}} {{time:%#z}}");
         let sunday = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
         assert_eq!(relative_day("sunday", sunday), Some(sunday));
         assert_eq!(relative_day("next sunday", sunday), Some(NaiveDate::from_ymd_opt(2026, 11, 8).unwrap()));
