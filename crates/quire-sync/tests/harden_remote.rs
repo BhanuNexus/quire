@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! 0.13 sync hardening through S3-compatible storage and WebDAV (in-memory
 //! storage; the transport is the same for both): compaction, removing a
-//! device, and vaults recorded by Quire 0.12.
+//! device, and vaults recorded by Quire 0.12. A key change is also checked
+//! over HTTP to the mock S3 and WebDAV servers.
 #![allow(
     clippy::unwrap_used,
     clippy::panic,
@@ -19,8 +20,15 @@ use quire_sync::admin::{self, Removal};
 use quire_sync::compact::Policy;
 use quire_sync::folder::Compacted;
 use quire_sync::keyring::{DeviceSecret, KeyError};
-use quire_sync::remote::{self, MemoryObjects, ObjectStore, RemoteTransport};
-use quire_sync::{DeviceId, Engine, KdfParams, KeySet, LocalStore, MemoryStore, Pins, SpaceId, SyncState, VaultKey, WrappedKey};
+use quire_sync::remote::mock::{Kind, MockServer};
+use quire_sync::remote::net::Retry;
+use quire_sync::remote::{
+    self, MemoryObjects, ObjectStore, RemoteTransport, S3Config, S3Credentials, S3Store, WebDavConfig, WebDavCredentials, WebDavStore,
+};
+use quire_sync::{
+    DeviceId, Engine, KdfParams, KeySet, LocalStore, MemoryStore, Pins, Sealing, SpaceId, SyncState, Transport, VaultKey, WrappedKey,
+};
+use zeroize::Zeroizing;
 
 const TODAY: &str = "2026-11-12";
 const ALL: Policy = Policy { keep_days: 0, min_versions: 1 };
@@ -38,12 +46,13 @@ struct Dev {
 
 impl Dev {
     fn new(store: &Arc<MemoryObjects>, space: &SpaceId, keys: &KeySet, name: &str) -> Self {
+        Self::on(Arc::clone(store) as Arc<dyn ObjectStore>, space, keys, name)
+    }
+
+    fn on(store: Arc<dyn ObjectStore>, space: &SpaceId, keys: &KeySet, name: &str) -> Self {
         let state = tempfile::tempdir().unwrap();
         let id = DeviceId::random().unwrap();
-        let t = RemoteTransport::new(Arc::clone(store) as Arc<dyn ObjectStore>, space, id.clone(), Some(state.path()))
-            .unwrap()
-            .with_keys(keys.clone())
-            .with_settle(0);
+        let t = RemoteTransport::new(store, space, id.clone(), Some(state.path())).unwrap().with_keys(keys.clone()).with_settle(0);
         Self {
             engine: Engine::new(space.clone(), id.clone(), name, keys.clone(), SyncState::default()),
             id,
@@ -241,6 +250,82 @@ fn a_removed_device_cant_read_new_objects_or_get_its_own_taken() {
     a.sync();
     b.sync();
     assert!(a.local.read("Planted.md").is_none() && b.local.read("Planted.md").is_none());
+}
+
+/// A device whose session started before the vault was upgraded hears
+/// of a key change: it seals the new way from then on, over real HTTP to
+/// the mock S3 and WebDAV servers.
+#[test]
+fn after_a_key_change_a_remote_device_seals_at_the_vaults_new_level() {
+    let s3 = MockServer::start(Kind::S3 {
+        bucket: "notes".into(),
+        access_key: "AKIDQUIRE".into(),
+        secret_key: "s3cr3t/key+".into(),
+        region: "eu-central-1".into(),
+    });
+    let dav = MockServer::start(Kind::WebDav { user: "asha".into(), password: "app pass".into() });
+    let s3_store = S3Config {
+        endpoint: s3.origin(),
+        region: "eu-central-1".into(),
+        bucket: "notes".into(),
+        prefix: "vault".into(),
+        virtual_hosted: false,
+        allow_http: false,
+    };
+    let s3_creds = S3Credentials { access_key: "AKIDQUIRE".into(), secret_key: Zeroizing::new("s3cr3t/key+".into()), session_token: None };
+    let dav_creds = WebDavCredentials { user: "asha".into(), password: Zeroizing::new("app pass".into()) };
+    let stores: [Arc<dyn ObjectStore>; 2] = [
+        Arc::new(S3Store::new(s3_store, s3_creds).unwrap().with_retry(Retry::QUICK)),
+        Arc::new(WebDavStore::new(&WebDavConfig { url: dav.dav_url(), allow_http: false }, &dav_creds).unwrap().with_retry(Retry::QUICK)),
+    ];
+    for store in stores {
+        let space = SpaceId::random().unwrap();
+        let key = VaultKey::generate().unwrap();
+        remote::create_space(&*store, &space, &WrappedKey::wrap(&key, "pass phrase", KdfParams::TEST).unwrap()).unwrap();
+        let keys = KeySet::new(&key);
+        let (mut a, mut b, mut r) = (
+            Dev::on(Arc::clone(&store), &space, &keys, "a"),
+            Dev::on(Arc::clone(&store), &space, &keys, "b"),
+            Dev::on(Arc::clone(&store), &space, &keys, "r"),
+        );
+        for d in [&mut a, &mut b, &mut r] {
+            admin::publish_self(&d.t, &space, &d.id, &d.secret, "x", &d.keys, &BTreeMap::new()).unwrap();
+            assert!(d.refresh(&space).is_none());
+            d.sync();
+        }
+        // B's session read the level before the upgrade.
+        assert_eq!(b.t.sealing(), Sealing::Bound);
+        admin::upgrade(&a.t).unwrap();
+        let ends = a.t.lane_ends().unwrap();
+        let removal = Removal {
+            space: &space,
+            me: &a.id,
+            secret: &a.secret,
+            keys: &a.keys,
+            target: &r.id,
+            passphrase: "new pass",
+            kdf: KdfParams::TEST,
+            lanes: BTreeMap::from([(String::new(), ends.get(&r.id).copied().unwrap_or_default())]),
+            removed: &BTreeSet::new(),
+            seen: BTreeMap::new(),
+            snapshots: Vec::new(),
+        };
+        admin::remove_device(&a.t, &removal, &mut a.pins).unwrap();
+        assert!(a.refresh(&space).is_none());
+        a.write("New.md", "after the removal\n");
+        a.sync();
+        b.sync();
+        assert!(b.t.take_key_news());
+        assert!(b.refresh(&space).is_none());
+        assert_eq!(b.keys.current(), 1);
+        assert_eq!(b.t.level(), remote::LEVEL_HARDENED);
+        assert_eq!(b.t.sealing(), Sealing::Epoch, "not the old way under the new key");
+        b.write("From B.md", "sent under the new key\n");
+        b.sync();
+        assert_eq!(b.local.read("New.md").unwrap(), "after the removal\n");
+        a.sync();
+        assert_eq!(a.local.read("From B.md").unwrap(), "sent under the new key\n");
+    }
 }
 
 /// Objects as Quire 0.12 uploaded them (bound `v2` headers), recorded.

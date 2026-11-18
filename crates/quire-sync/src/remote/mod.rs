@@ -908,7 +908,7 @@ impl RemoteTransport {
             Ok(f) if f.min_reader < self.folder.floor() => return Err(TransportError::Refused(crate::folder::LOWERED.into())),
             Ok(f) => f.min_reader,
             // Unreadable now (offline, credentials): what is known of it.
-            Err(_) => FORMAT.max(self.folder.floor()),
+            Err(_) => FORMAT.max(self.folder.floor()).max(m.level),
         };
         self.folder.set_level(m.level);
         let tip = self.read_tip(&self.device)?.map_or(0, |t| t.n);
@@ -1321,6 +1321,21 @@ impl RemoteTransport {
             let _ = self.start(&mut m);
         }
         m.level
+    }
+
+    /// [`Self::level`], read from `space.json` now and kept for sealing
+    /// (after a key change, the vault may have been upgraded since this
+    /// session started). Lower than the floor or than what this session
+    /// read stops sync ([`crate::folder::LOWERED`]).
+    pub fn read_level(&self) -> Result<u32, TransportError> {
+        let l = read_space(&*self.store, &self.space)?.min_reader;
+        let mut m = self.lock();
+        if l < self.folder.floor().max(m.level) {
+            return Err(TransportError::Refused(crate::folder::LOWERED.into()));
+        }
+        m.level = l;
+        self.folder.set_level(l);
+        Ok(l)
     }
 
     /// Upgrade the vault to 0.13 sync (`docs/design/0.13-sync.md` §3).
