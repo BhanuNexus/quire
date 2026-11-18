@@ -12,3 +12,6 @@ packaging/flatpak/cargo-sources.json
 /.flatpak-builder/
 /flatpak_app/
 /repo/
+
+# Python bytecode from the packaging scripts
+__pycache__/

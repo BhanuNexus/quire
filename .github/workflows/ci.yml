@@ -67,11 +67,11 @@ jobs:
           fi
 
   changelog:
-    # Fails when a pull request changes source under crates/ or apps/ (not tests,
-    # fixtures or *.md) and not CHANGELOG.md, unless it is labelled
-    # `no-changelog` or comes from Dependabot (packaging/check-changelog.py).
-    # Skipped on a push to main, which counts as passed in `ci-result`. Adding the
-    # label does not re-run CI: re-run this job.
+    # Warns (the owner's decision: a warning, not a gate) when a pull request
+    # changes source under crates/ or apps/ (not tests, fixtures or *.md) and
+    # not CHANGELOG.md, unless it is labelled `no-changelog` or comes from
+    # Dependabot (packaging/check-changelog.py). To make it block, remove
+    # `continue-on-error` below. Skipped on a push to main.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -83,6 +83,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Changelog line, or the no-changelog label
+        continue-on-error: true
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}

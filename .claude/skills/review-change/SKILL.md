@@ -31,7 +31,7 @@ Review the diff against these questions. For each one that applies, look in the 
 - New dependency? Licence in `deny.toml`, a reason in the pull request, and `cargo deny check`.
 
 ## Docs
-- User-visible change: one `CHANGELOG.md` bullet under `[Unreleased]`, at most two sentences, about what a person sees; details go in the design note (CI fails a source change without a `CHANGELOG.md` change unless the pull request is labelled `no-changelog`).
+- User-visible change: one `CHANGELOG.md` bullet under `[Unreleased]`, at most two sentences, about what a person sees; details go in the design note (CI warns on a source change without a `CHANGELOG.md` change unless the pull request is labelled `no-changelog`).
 - Does a design note or format doc the change touches still say what is true, and does the note have its `Status:` block (`packaging/check-design-notes.sh`)?
 - Are comments free of workstream labels (`WS-A`) and of "frozen" claims?
 

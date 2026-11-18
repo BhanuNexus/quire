@@ -90,7 +90,7 @@ Each is tagged by what enforces it: `[test]`, `[lint]` (clippy or cargo-deny; th
 ## Commits and the changelog
 
 - Every commit needs a DCO sign-off: `git commit -s` (CI's `dco` job fails a pull request otherwise). No other trailer is required. Imperative, focused commits, with tests for behaviour changes.
-- **One changelog rule:** a user-visible change gets one bullet under `## [Unreleased]` in `CHANGELOG.md` (Added, Changed, Fixed or Security): at most two sentences, about what a person sees, not what the code does. Detail goes in the design note. CI's `changelog` job fails a pull request that changes source under `crates/` or `apps/` (not `tests/`, fixtures or `*.md`) without `CHANGELOG.md`, unless it is labelled `no-changelog` (re-run the job after labelling) or comes from Dependabot (`packaging/check-changelog.py`). No fragments, no other changelog file. Expect a trivial `CHANGELOG.md` conflict; keep edits to shared files small.
+- **One changelog rule:** a user-visible change gets one bullet under `## [Unreleased]` in `CHANGELOG.md` (Added, Changed, Fixed or Security): at most two sentences, about what a person sees, not what the code does. Detail goes in the design note. CI's `changelog` job warns on a pull request that changes source under `crates/` or `apps/` (not `tests/`, fixtures or `*.md`) without `CHANGELOG.md`, unless it is labelled `no-changelog` or comes from Dependabot (`packaging/check-changelog.py`). No fragments, no other changelog file. Expect a trivial `CHANGELOG.md` conflict; keep edits to shared files small.
 
 ## Never
 
