@@ -125,7 +125,7 @@ class Affected(unittest.TestCase):
         self.assertEqual(self.crates("crates/quire-canvas/testdata/x.md"), ["quire-app", "quire-canvas", "quire-cli", "quire-desktop"])
 
     def test_everything_triggers(self):
-        for f in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "rust-toolchain", ".cargo/config.toml", ".github/workflows/ci.yml", ".github/workflows/release.yml"):
+        for f in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "rust-toolchain", ".cargo/config.toml", ".config/nextest.toml", ".github/workflows/ci.yml", ".github/workflows/release.yml"):
             crates, everything, _, _ = self.run_affected(f)
             self.assertTrue(everything, f)
             self.assertEqual(crates, sorted(CRATES), f)

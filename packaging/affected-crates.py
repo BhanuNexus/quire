@@ -16,7 +16,7 @@ Rules:
     nothing, unless a source file includes it or it is a test fixture (under
     `tests/`, `testdata/` or `fixtures/`).
   * The root `Cargo.toml`, `Cargo.lock`, `rust-toolchain`/`rust-toolchain.toml`,
-    `.cargo/` and the workflow files (`.github/workflows/`) mean everything.
+    `.cargo/`, `.config/` (nextest) and the workflow files (`.github/workflows/`) mean everything.
   * Everything else (docs, packaging, `.claude/`, ...) affects no crate.
 
 Usage:
@@ -45,7 +45,7 @@ import subprocess
 import sys
 
 EVERYTHING_FILES = {"Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml"}
-EVERYTHING_PREFIXES = (".cargo/", ".github/workflows/")
+EVERYTHING_PREFIXES = (".cargo/", ".config/", ".github/workflows/")
 # Change the lint and perf jobs' result without changing any crate.
 LINT_CONFIG = {"clippy.toml", "rustfmt.toml", "packaging/perf-check.py"}
 LOCAL_DIRS = ("tests", "benches", "examples")

@@ -1,0 +1,20 @@
+# cargo-nextest settings (CI installs it; locally it is optional: `cargo test`
+# still works). CI runs `cargo nextest run --profile ci` and, because nextest
+# does not run doctests, `cargo test --doc` beside it.
+
+[profile.default]
+# One failure does not hide the next: the whole run reports at the end.
+fail-fast = false
+
+[profile.ci]
+fail-fast = false
+# No retries: a test that passes on the second try is a flaky test, and a retry
+# would hide it.
+retries = 0
+# A test that runs over 60 s is reported as slow; at 5 minutes (60 s x 5) it is
+# terminated and fails, so a hung test no longer burns the job's 50 minutes.
+slow-timeout = { period = "60s", terminate-after = 5 }
+
+[profile.ci.junit]
+# Written to target/nextest/ci/junit.xml; ci.yml uploads it as an artifact.
+path = "junit.xml"
