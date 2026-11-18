@@ -1,0 +1,42 @@
+# Weekly: the property tests of quire-markdown (front matter, tidying, the text
+# scanners) at 50,000 cases each. Normal CI runs the default 256, about a second
+# (crates/quire-markdown/tests/props.rs). A failing case shrinks to a small
+# input and proptest saves it to tests/props.proptest-regressions: copy that
+# line from the log into the file, fix the bug, and commit both.
+name: Proptest
+
+on:
+  schedule:
+    - cron: "47 3 * * 5"
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: Cases per property
+        default: "50000"
+
+permissions: {}
+
+concurrency:
+  group: proptest
+  cancel-in-progress: false
+
+jobs:
+  props:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read # check out the code
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: proptest
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Property tests
+        env:
+          PROPTEST_CASES: ${{ inputs.cases || '50000' }}
+        run: cargo test -p quire-markdown --test props --locked

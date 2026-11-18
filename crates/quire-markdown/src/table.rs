@@ -145,6 +145,91 @@ mod tests {
     }
 
     #[test]
+    fn centres_a_column_and_puts_the_odd_space_on_the_right() {
+        // Widths 5 and 3. "Item" has one spare space, "ab" three, "1" two.
+        let out = format(&["|Item|Qty|", "|:-:|:-:|", "|Ropes|1|", "|ab|22|"]).unwrap();
+        assert_eq!(out, vec!["| Item  | Qty |", "| :---: | :-: |", "| Ropes |  1  |", "|  ab   | 22  |"]);
+    }
+
+    #[test]
+    fn a_column_is_at_least_three_wide_and_grows_with_its_widest_cell() {
+        let out = format(&["|a|abc|abcd|", "|-|:-:|--:|", "|x|y|z|"]).unwrap();
+        assert_eq!(out, vec!["| a   | abc | abcd |", "| --- | :-: | ---: |", "| x   |  y  |    z |"]);
+        // Wide characters count by their display width (two columns each).
+        let out = format(&["|日本|b|", "|-|-|", "|c|d|"]).unwrap();
+        assert_eq!(out, vec!["| 日本 | b   |", "| ---- | --- |", "| c    | d   |"]);
+    }
+
+    #[test]
+    fn a_ragged_row_is_padded_to_every_column() {
+        let out = format(&["|a|b|c|", "|-|-|-|", "|x|"]).unwrap();
+        assert_eq!(out[2], "| x   |     |     |");
+    }
+
+    /// Reformats `text` with the caret at the start, in the middle and at the end of every
+    /// cell, and checks the caret is still on the same row, in the same cell, just after the
+    /// cell's opening `| `.
+    fn caret_stays_in_its_cell(text: &str) {
+        let mut line_start = 0;
+        for (n, line) in text.split('\n').enumerate() {
+            let parts: Vec<&str> = line.split('|').collect();
+            let is_table_row = line.starts_with('|');
+            for k in 1..parts.len().saturating_sub(1) {
+                let content = parts[k];
+                if !is_table_row || content.is_empty() {
+                    continue;
+                }
+                let cell_start = line_start + parts[..k].iter().map(|p| p.chars().count()).sum::<usize>() + k;
+                let len = content.chars().count();
+                for caret in [cell_start, cell_start + len / 2, cell_start + len] {
+                    let buf = Buffer::from(text);
+                    let tx = format_at(&buf, Selection::cursor(caret)).unwrap_or_else(|| panic!("{text:?} at {caret}: no change"));
+                    let mut b = buf;
+                    tx.apply(&mut b).unwrap();
+                    let head = tx.selection().unwrap().head;
+                    let (row, col) = (b.char_to_line(head), head - b.line_range(b.char_to_line(head)).start);
+                    let formatted = b.line(row);
+                    let ctx = format!("{text:?}: caret {caret} (cell {k} of row {n}) moved to {head} in {:?}", b.to_string());
+                    assert_eq!(row, n, "{ctx}");
+                    assert_eq!(formatted.chars().skip(col.saturating_sub(2)).take(2).collect::<String>(), "| ", "{ctx}");
+                    assert_eq!(formatted.chars().take(col).filter(|&c| c == '|').count(), k, "{ctx}");
+                }
+            }
+            line_start += line.chars().count() + 1;
+        }
+    }
+
+    #[test]
+    fn format_at_keeps_the_caret_in_every_cell_of_every_row() {
+        // Surrounded by text, at the very start of the buffer, at the very end, and alone.
+        caret_stays_in_its_cell("intro\n|a|bb|\n|-|-|\n|ccc|日本|\n|é|dddd|\nafter");
+        caret_stays_in_its_cell("|a|bb|\n|-|-|\n|ccc|日本|\n|é|dddd|\nafter");
+        caret_stays_in_its_cell("intro\n\n|a|bb|\n|-|-|\n|ccc|日本|\n|é|dddd|");
+        caret_stays_in_its_cell("|a|bb|\n|-|-|\n|ccc|d|");
+        caret_stays_in_its_cell("|a|bb|ccc|\n|-|-|-|\n|x|y|z|\n");
+        caret_stays_in_its_cell("text\n\n| x | yy |\n|:-:|--:|\n|1|2|\n\nmore |not| a table");
+    }
+
+    #[test]
+    fn a_caret_left_of_the_first_pipe_goes_to_the_first_cell() {
+        let text = "|a|bb|\n|-|-|\n|ccc|d|";
+        let buf = Buffer::from(text);
+        let tx = format_at(&buf, Selection::cursor(0)).unwrap();
+        let mut b = buf;
+        tx.apply(&mut b).unwrap();
+        assert_eq!(tx.selection().unwrap().head, 2, "after the opening `| `: {:?}", b.to_string());
+    }
+
+    #[test]
+    fn format_at_changes_nothing_outside_a_table_or_in_a_formatted_one() {
+        let prose = Buffer::from("just text\n| not a table\nmore");
+        assert!(format_at(&prose, Selection::cursor(2)).is_none(), "a caret outside a table row");
+        assert!(format_at(&prose, Selection::cursor(12)).is_none(), "one row is not a table");
+        let done = Buffer::from("| a   | bb  |\n| --- | --- |\n| ccc | d   |");
+        assert!(format_at(&done, Selection::cursor(3)).is_none());
+    }
+
+    #[test]
     fn rejects_non_tables() {
         assert!(format(&["| a | b |", "| not | delim |"]).is_none());
     }

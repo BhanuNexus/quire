@@ -7,6 +7,9 @@ extend-exclude = [
   "crates/quire-spell/tests/",
   # Vim test cases: key sequences and words cut by the cursor marker.
   "crates/quire-text/testdata/vim/",
+  # Fuzzer corpus and crash inputs: arbitrary bytes.
+  "fuzz/corpus/",
+  "fuzz/artifacts/",
 ]
 
 [default.extend-words]

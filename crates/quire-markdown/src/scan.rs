@@ -239,6 +239,26 @@ mod tests {
     }
 
     #[test]
+    fn the_scan_carries_on_after_each_kind_and_after_verbatim_text() {
+        // Ranges, one after another, with code, a link target and an unclosed form between them.
+        let src = "[[a]] #t ==h== `[[no]]` [[b|c]] ![[e]] [x](#y) ==open #z\n``` \n#no\n```\n[[last]]";
+        let got: Vec<(usize, usize)> = scan_inlines(src).iter().map(|i| (i.range().start, i.range().end)).collect();
+        let at = |needle: &str| {
+            let s = src.find(needle).unwrap();
+            (s, s + needle.len())
+        };
+        assert_eq!(got, vec![at("[[a]]"), at("#t"), at("==h=="), at("[[b|c]]"), at("![[e]]"), at("#z"), at("[[last]]")]);
+    }
+
+    #[test]
+    fn wikilink_edges() {
+        assert!(names("[[]] [[ ]] [[|x]] [[a\nb]] [[a [[b]]").iter().all(|n| n != "link:"), "{:?}", names("[[]] [[|x]]"));
+        assert_eq!(names("[[a [[b]]"), vec!["link:b"], "the inner link wins over an unclosed outer one");
+        assert_eq!(names("[[a#h|al]] [[#only]]"), vec!["link:a", "link:"]);
+        assert_eq!(names("==a== == b== ==c ==="), vec!["hl:==a=="]);
+    }
+
+    #[test]
     fn tag_in_url_is_ignored() {
         assert!(names("visit https://x.dev/#anchor now").is_empty());
         assert_eq!(names("(#idea), #todo"), vec!["tag:idea", "tag:todo"]);

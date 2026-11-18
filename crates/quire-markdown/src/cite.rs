@@ -321,6 +321,75 @@ mod tests {
     }
 
     #[test]
+    fn a_bare_key_ends_before_trailing_punctuation() {
+        for (s, key) in [
+            ("ada", "ada"),
+            ("ada.", "ada"),
+            ("ada, and", "ada"),
+            ("ada) x", "ada"),
+            ("ada?", "ada"),
+            ("ada:", "ada"),
+            ("ada's", "ada"),
+            ("a.b.", "a.b"),
+            ("a-b-", "a-b"),
+            ("a1..", "a1"),
+            ("_x_.", "_x_"),
+            ("é.", "é"),
+            ("日本語/x.", "日本語/x"),
+        ] {
+            assert_eq!(key_at(s), Some((key.to_string(), key.len())), "{s:?}");
+        }
+        for s in ["", ".x", "-a", "?", ".."] {
+            assert_eq!(key_at(s), None, "{s:?}");
+        }
+    }
+
+    #[test]
+    fn a_braced_key_is_trimmed_and_must_be_one_line_and_not_empty() {
+        assert_eq!(key_at("{a b} c"), Some(("a b".to_string(), 5)));
+        assert_eq!(key_at("{ a }"), Some(("a".to_string(), 5)));
+        for s in ["{}", "{ }", "{a\nb}", "{abc"] {
+            assert_eq!(key_at(s), None, "{s:?}");
+        }
+        assert!(scan("@{} x [@{ }] @{a\nb} y").is_empty());
+        let src = "[@{ a b }] and @{c d}, then";
+        let c = scan(src);
+        assert_eq!(c.iter().map(|c| &src[c.range.clone()]).collect::<Vec<_>>(), ["[@{ a b }]", "@{c d}"]);
+        assert_eq!(keys(src), ["a b", "c d"]);
+    }
+
+    #[test]
+    fn a_citation_key_stops_at_punctuation_in_text_and_in_brackets() {
+        let src = "See @ada, @babbage1864. Also (@ada) and [@ada.], [@ada]. End @ada";
+        let c = scan(src);
+        assert_eq!(
+            c.iter().map(|c| &src[c.range.clone()]).collect::<Vec<_>>(),
+            ["@ada", "@babbage1864", "@ada", "[@ada.]", "[@ada]", "@ada"]
+        );
+        assert!(c.iter().all(|c| c.items[0].key.chars().all(char::is_alphanumeric)));
+    }
+
+    #[test]
+    fn a_wikilink_is_skipped_whole_and_the_scan_carries_on_after_it() {
+        for (src, found) in [
+            ("[[note]] [@ada]", &[(9, 15)][..]),
+            ("[[a]][@ada]", &[(5, 11)][..]),
+            ("[[a]] @ada", &[(6, 10)][..]),
+            ("[[note]]\n[[other]] [@ada] [[x]] @babbage1864", &[(19, 25), (32, 44)][..]),
+            // Inside a wikilink, `@` and `[@key]` are not citations.
+            ("[[@ada]] x", &[][..]),
+            ("[[a@b]] x", &[][..]),
+            ("[[x [@ada]] y", &[][..]),
+            // No closing `]]`: only the `[[` is skipped.
+            ("[[unclosed [@ada]", &[(11, 17)][..]),
+            ("[[ [@ada] @babbage1864", &[(3, 9), (10, 22)][..]),
+        ] {
+            let got: Vec<_> = scan(src).into_iter().map(|c| (c.range.start, c.range.end)).collect();
+            assert_eq!(got, found.to_vec(), "{src:?}");
+        }
+    }
+
+    #[test]
     fn renders_known_citations_and_a_reference_list() {
         let src = "# Notes\n\nUndo is cheap [@ada, p. 4; @babbage1864]. @ada showed it. Unknown [@nobody] stays.\n";
         let out = render(src, &Lib);

@@ -7,7 +7,8 @@
 //!
 //! `real_servers` runs the same two-device check against moto (S3) and
 //! `WsgiDAV` (WebDAV) when `QUIRE_SYNC_REAL_SERVERS` names a Python that has
-//! them (see `docs/design/0.12-sync.md`).
+//! them (see `docs/design/0.12-sync.md`). With `CI` set and the variable
+//! missing it fails; `QUIRE_SYNC_REAL_SERVERS=skip` is the explicit opt-out.
 #![allow(
     clippy::unwrap_used,
     clippy::panic,
@@ -368,14 +369,51 @@ fn hostile_servers_are_refused_without_harm() {
     }
 }
 
+/// What `QUIRE_SYNC_REAL_SERVERS` asks of `real_servers`: `Some(python)` runs the
+/// test, `None` skips it, `Err` fails it. A run with `CI` set must say whether it
+/// is meant to skip (`QUIRE_SYNC_REAL_SERVERS=skip`, as the regular CI jobs do)
+/// or to run (the weekly `real-servers` workflow); a missing variable there is a
+/// misconfigured job, and a silent pass would hide that the test never ran. On a
+/// developer machine (no `CI`) a missing variable still skips.
+fn real_servers_setting(var: Option<std::ffi::OsString>, ci: bool) -> Result<Option<std::ffi::OsString>, String> {
+    match var {
+        Some(v) if v == "skip" => Ok(None),
+        Some(v) => Ok(Some(v)),
+        None if ci => {
+            Err("QUIRE_SYNC_REAL_SERVERS is not set but CI is: set it to a Python with moto[server] and wsgidav + cheroot to run \
+             this test, or to `skip` in a job that is meant to skip it (the weekly `real-servers` workflow runs it)"
+                .into())
+        }
+        None => Ok(None),
+    }
+}
+
+#[test]
+fn the_real_server_setting_fails_a_misconfigured_ci_job() {
+    use std::ffi::OsString;
+    let py = || Some(OsString::from("/venv/bin/python"));
+    assert_eq!(real_servers_setting(py(), true), Ok(py()));
+    assert_eq!(real_servers_setting(py(), false), Ok(py()));
+    assert_eq!(real_servers_setting(Some("skip".into()), true), Ok(None));
+    assert_eq!(real_servers_setting(Some("skip".into()), false), Ok(None));
+    assert_eq!(real_servers_setting(None, false), Ok(None));
+    assert!(real_servers_setting(None, true).unwrap_err().contains("QUIRE_SYNC_REAL_SERVERS"));
+}
+
 /// Against real servers: moto's S3 (`moto_server`, which checks SigV4 and
-/// conditional writes) and `WsgiDAV`. Off unless `QUIRE_SYNC_REAL_SERVERS`
-/// is a Python with `moto[server]` and `wsgidav` + `cheroot` installed.
+/// conditional writes) and `WsgiDAV`. Runs only when `QUIRE_SYNC_REAL_SERVERS`
+/// is a Python with `moto[server]` and `wsgidav` + `cheroot` installed (the
+/// weekly `real-servers` workflow); skips when it is `skip`, or unset outside CI.
 #[test]
 fn real_servers() {
-    let Some(python) = std::env::var_os("QUIRE_SYNC_REAL_SERVERS") else {
-        eprintln!("skipped: set QUIRE_SYNC_REAL_SERVERS to a Python with moto[server] and wsgidav");
-        return;
+    let ci = std::env::var_os("CI").is_some_and(|v| !v.is_empty());
+    let python = match real_servers_setting(std::env::var_os("QUIRE_SYNC_REAL_SERVERS"), ci) {
+        Ok(Some(python)) => python,
+        Ok(None) => {
+            eprintln!("skipped: set QUIRE_SYNC_REAL_SERVERS to a Python with moto[server] and wsgidav");
+            return;
+        }
+        Err(e) => panic!("{e}"),
     };
     // Ports the system hands out (not a number derived from the process id,
     // which two runs or another program can share). Both are held until just

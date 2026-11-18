@@ -1,0 +1,60 @@
+# Weekly (and on demand): a count of three rules that cannot be at zero yet, which
+# may only go down: `Result::unwrap_or_default` (a failed read becomes empty data,
+# the shape of the 0.13.2 sync mass-delete bug), the wall clock (`SystemTime::now`,
+# `Utc::now`, `Local::now`) and `std::env::var`, in non-test code.
+#
+# Clippy runs with its own configuration (packaging/ratchet/clippy.toml, through
+# CLIPPY_CONF_DIR), so the main clippy.toml and the merge-blocking lint job are not
+# touched. packaging/ratchet.py counts the hits, prints a table to the job summary
+# and fails when a count is above the baseline in packaging/ratchet.toml. After
+# removing uses, lowering a baseline is a one-line edit of that file; a rule at 0
+# moves into clippy.toml.
+name: Ratchet
+
+on:
+  schedule:
+    - cron: "11 5 * * 2"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ratchet
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
+jobs:
+  count:
+    runs-on: ubuntu-latest
+    # A cold cache builds candle's type information: the lint job's time.
+    timeout-minutes: 40
+    permissions:
+      contents: read # check out the code
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: ALSA headers (the full edition records voice notes through cpal)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: ratchet
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: The ratchet script's own tests
+        run: python3 -I packaging/test-ratchet.py
+      - name: Clippy over the non-test code, with the ratchet configuration
+        env:
+          CLIPPY_CONF_DIR: ${{ github.workspace }}/packaging/ratchet
+        # Library and binary targets only: no #[cfg(test)] code, no tests/, benches or examples.
+        # Everything but the ratchet's own lint is allowed, so only its hits are in the output.
+        run: >-
+          cargo clippy --workspace --lib --bins --locked --message-format=json
+          -- -A clippy::all -A clippy::pedantic -A clippy::nursery -W clippy::disallowed_methods
+          > "$RUNNER_TEMP/clippy.json"
+      - name: Count against the baseline (packaging/ratchet.toml)
+        run: python3 -I packaging/ratchet.py "$RUNNER_TEMP/clippy.json" --summary "$GITHUB_STEP_SUMMARY"

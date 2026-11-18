@@ -192,3 +192,5 @@ The integration tests run against in-process mock servers by default. To run the
 python3 -m venv /tmp/q && /tmp/q/bin/pip install 'moto[server]' wsgidav cheroot
 QUIRE_SYNC_REAL_SERVERS=/tmp/q/bin/python cargo test -p quire-sync --test remote real_servers -- --nocapture
 ```
+
+The same check runs every week in CI (`.github/workflows/real-servers.yml`). In any run with `CI` set the test fails when `QUIRE_SYNC_REAL_SERVERS` is missing; set it to `skip` to skip on purpose.

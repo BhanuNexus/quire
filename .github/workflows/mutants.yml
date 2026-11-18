@@ -1,0 +1,141 @@
+# Mutation testing (cargo-mutants): change the code a little (`>` to `>=`, delete
+# a match arm) and see whether a test notices. A mutant no test catches is a line
+# whose behaviour nothing checks, which is exactly the mistake an edit makes.
+#
+#   * Pull requests: only the lines the pull request changes (`--in-diff`), in the
+#     pure-logic crates below, whose tests are fast. ADVISORY: the job may fail
+#     (`continue-on-error`) and is not a required check; missed mutants are listed
+#     in the job summary. Make it required, as "no missed mutants in changed
+#     lines", once it has run clean for two weeks (the owner's call: branch
+#     protection).
+#   * Weekly: all of quire-markdown (about 4,000 mutants, hours when run one after
+#     another), in shards that run side by side. Results are artifacts.
+#
+# Settings: .cargo/mutants.toml.
+name: Mutants
+
+on:
+  pull_request:
+    paths:
+      - "crates/quire-markdown/**"
+      - "crates/quire-import/**"
+      - "crates/quire-canvas/**"
+      - ".cargo/mutants.toml"
+      - ".github/workflows/mutants.yml"
+  schedule:
+    - cron: "37 1 * * 6"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: mutants-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+jobs:
+  in-diff:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Advisory: a failure here (missed mutants, or the time limit) never blocks.
+    continue-on-error: true
+    permissions:
+      contents: read # check out the code
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: mutants
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+        with:
+          tool: cargo-mutants@27.1.0
+      - name: The lines this pull request changes
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: git diff "$BASE...$HEAD" -- crates/quire-markdown crates/quire-import crates/quire-canvas > git.diff
+      - name: Mutate those lines
+        run: >-
+          cargo mutants --no-shuffle -vV --in-diff git.diff -j2
+          -p quire-markdown -p quire-import -p quire-canvas
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Mutants in the changed lines (advisory)"
+            for f in missed timeout; do
+              if [ -s "mutants.out/$f.txt" ]; then
+                echo "### $f"; echo '```'; cat "mutants.out/$f.txt"; echo '```'
+              fi
+            done
+            if [ -s mutants.out/outcomes.json ]; then
+              echo "Caught: $(grep -c '"summary": "CaughtMutant"' mutants.out/outcomes.json || true)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: mutants-in-diff
+          path: mutants.out
+          if-no-files-found: ignore
+          retention-days: 14
+
+  weekly:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: read # check out the code
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: mutants
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+        with:
+          tool: cargo-mutants@27.1.0
+      - name: All of quire-markdown, one eighth
+        env:
+          SHARD: ${{ matrix.shard }}
+        # Exit status 2 (missed mutants) is the result, not a failure of the job:
+        # the lists are in the artifact and the summary. 1 and 4 are real errors.
+        run: |
+          status=0
+          cargo mutants --no-shuffle -vV -j2 -p quire-markdown --shard "$SHARD/8" || status=$?
+          {
+            echo "## quire-markdown mutants, shard $SHARD/8 (exit $status)"
+            for f in missed timeout; do
+              if [ -s "mutants.out/$f.txt" ]; then
+                echo "### $f ($(wc -l < "mutants.out/$f.txt"))"; echo '```'; cat "mutants.out/$f.txt"; echo '```'
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+          case "$status" in 0|2|3) exit 0 ;; *) exit "$status" ;; esac
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: mutants-quire-markdown-shard-${{ matrix.shard }}
+          path: mutants.out
+          if-no-files-found: ignore
+          retention-days: 30

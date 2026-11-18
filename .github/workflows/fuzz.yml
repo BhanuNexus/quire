@@ -1,0 +1,64 @@
+# Weekly: coverage-guided fuzzing of the parsers (fuzz/README.md lists the
+# targets). Runs on a nightly compiler, which libFuzzer's sanitizer flags need;
+# the rest of the project stays on the pinned stable toolchain, so `+nightly`
+# is passed to cargo explicitly and nothing here touches rust-toolchain.toml.
+# A crash fails the run and is uploaded as an artifact (fuzz/artifacts/).
+name: Fuzz
+
+on:
+  schedule:
+    - cron: "23 2 * * 0"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Seconds each target runs
+        default: "300"
+
+permissions: {}
+
+concurrency:
+  group: fuzz
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read # check out the code
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [front_matter, scan_inlines, obsidian_expr, sync_wire, sync_xml]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Nightly toolchain (for libFuzzer only)
+        run: rustup toolchain install nightly --profile minimal
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: fuzz
+          shared-key: fuzz-${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install cargo-fuzz
+        run: cargo +nightly install cargo-fuzz --locked
+      - name: Corpus from earlier runs
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      - name: Fuzz ${{ matrix.target }}
+        env:
+          TARGET: ${{ matrix.target }}
+          SECONDS_PER_TARGET: ${{ inputs.seconds || '300' }}
+        run: >-
+          cargo +nightly fuzz run "$TARGET" --target x86_64-unknown-linux-gnu --
+          "-max_total_time=$SECONDS_PER_TARGET" -rss_limit_mb=2048 -timeout=10
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore

@@ -1,0 +1,17 @@
+# The ratchet's clippy configuration: three rules that cannot be at zero yet.
+# Used ONLY by .github/workflows/ratchet.yml, through CLIPPY_CONF_DIR, so the
+# main clippy.toml (which blocks a merge) is not affected. Each rule moves into
+# the main clippy.toml when its count in packaging/ratchet.toml reaches 0.
+# packaging/ratchet.py maps each path below to its rule, so keep the two in step.
+msrv = "1.97"
+disallowed-methods = [
+  # A failed read or listing turned into empty data: the shape of the 0.13.2
+  # sync mass-delete bug. Handle the error, or say why empty is right.
+  { path = "core::result::Result::unwrap_or_default", reason = "ratchet: a failed read becomes empty data" },
+  # The wall clock: take the time from the caller (P10: an injected clock).
+  { path = "std::time::SystemTime::now", reason = "ratchet: wall clock" },
+  { path = "chrono::Utc::now", reason = "ratchet: wall clock" },
+  { path = "chrono::Local::now", reason = "ratchet: wall clock" },
+  # Configuration read from the environment, anywhere in the code.
+  { path = "std::env::var", reason = "ratchet: environment variable" },
+]

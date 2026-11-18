@@ -1,0 +1,16 @@
+# The ratchet's baseline: how many uses of each rule's methods the non-test code has
+# today (library and binary targets, `disallowed_methods` under
+# packaging/ratchet/clippy.toml). The weekly `Ratchet` workflow
+# (.github/workflows/ratchet.yml, packaging/ratchet.py) fails when a count is
+# ABOVE its number here, and says so when it is below. Lowering a number is a
+# one-line edit; raising one is a decision the pull request must defend. At 0, a
+# rule moves into the main clippy.toml.
+#
+# Measured 2026-11-18 on 69c664f, `cargo clippy --workspace --lib --bins`.
+[baseline]
+# Result::unwrap_or_default: a failed read or listing becomes empty data.
+unwrap_or_default = 187
+# SystemTime::now, Utc::now, Local::now (Instant::now is not counted).
+wall_clock = 109
+# std::env::var.
+env_var = 21
