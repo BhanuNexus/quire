@@ -207,7 +207,7 @@ impl AgentStore {
             vault.snapshot(path, &current, now - 1, true)?;
             let before = self.newest_snapshot(path);
             vault.storage().write_atomic(path, text)?;
-            let _ = vault.snapshot_with(path, text, now, true, Some(&self.accepted_provenance(p, text).to_json()));
+            self.keep_version(path, text, now, Some(&self.accepted_provenance(p, text).to_json()));
             Ok((before, self.newest_snapshot(path)))
         })
     }
@@ -287,11 +287,17 @@ impl AgentStore {
                 // The note couldn't be written: put the proposal back as it was.
                 let mut back = prior;
                 back.updated = now + 1;
+                // If even that fails, the note's write error below is still the one to report.
+                #[expect(clippy::let_underscore_must_use, reason = "see above")]
                 let _ = store.save_if(&back, now);
                 return Err(e.into());
             }
         };
         if p.status != ProposalStatus::Pending {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "a settled proposal left in place is never shown as waiting: its status says settled"
+            )]
             let _ = store.archive(&p.id);
         }
         for (op, n) in [(Op::Accept, applied.accepted), (Op::Reject, applied.rejected)] {
@@ -344,6 +350,10 @@ impl AgentStore {
         }
         store.save(p)?;
         if p.status != ProposalStatus::Pending {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "a settled proposal left in place is never shown as waiting: its status says settled"
+            )]
             let _ = store.archive(&p.id);
         }
         Ok(())
@@ -404,7 +414,7 @@ impl AgentStore {
             ChangeOp::Create => {
                 let text = c.text.unwrap_or_default();
                 vault.storage().write_atomic(subject, &text)?;
-                let _ = vault.snapshot_with(subject, &text, now, true, Some(&self.accepted_provenance(&p, &text).to_json()));
+                self.keep_version(subject, &text, now, Some(&self.accepted_provenance(&p, &text).to_json()));
                 self.log_decision(&p, Op::Accept, subject, Some(&text));
             }
             ChangeOp::Delete => {
@@ -512,6 +522,8 @@ impl AgentStore {
             }
             if changed {
                 p.updated = self.now_ms().max(p.updated + 1);
+                // Not saved: the suggestion still names the old path, and accepting it says the note isn't there.
+                #[expect(clippy::let_underscore_must_use, reason = "see above")]
                 let _ = store.save(&p);
             }
         }
@@ -586,7 +598,11 @@ impl AgentStore {
             return false;
         }
         if archived {
-            store.remove_archived(&current);
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "a copy left in the archive only lists it there too; the waiting one is the one acted on"
+            )]
+            let _ = store.remove_archived(&current);
         }
         let mut e = LedgerEntry::new(Actor::human(&self.device().id), Op::Revert, now);
         e.proposal = Some(prior.id.clone());

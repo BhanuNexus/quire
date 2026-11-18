@@ -513,7 +513,7 @@ fn reverting_an_agent_run_keeps_the_persons_later_lines() {
 fn a_big_note_with_many_hunks_reviews_quickly() {
     let lines = |changed: bool| {
         (0..5_000).fold(String::new(), |mut s, i| {
-            let _ = writeln!(s, "line {i}{}", if changed && i % 25 == 0 { " changed" } else { "" });
+            writeln!(s, "line {i}{}", if changed && i % 25 == 0 { " changed" } else { "" }).unwrap();
             s
         })
     };
@@ -785,6 +785,7 @@ fn no_edit_is_written_without_the_version_from_before() {
     let agent = Actor::agent("mcp:claude-code", "Claude Code", Via::McpStdio, "d_test");
     // History's folder can't be made: a file stands where it goes.
     std::fs::create_dir_all(dir.path().join(".quire")).unwrap();
+    #[expect(clippy::let_underscore_must_use, reason = "there may be nothing to remove")]
     let _ = std::fs::remove_dir_all(dir.path().join(".quire/history"));
     std::fs::write(dir.path().join(".quire/history"), "not a folder").unwrap();
     let r = store.submit(&agent, ChangeSet::one(Change::Edit { path: "wiki/Ropes.md".into(), new_text: "# Ropes\nchanged\n".into() }));
@@ -800,10 +801,12 @@ fn no_edit_is_written_without_the_version_from_before() {
 }
 
 /// A vault whose note `failing` can't be read (a file held open on Windows,
-/// a permission taken away), as `std::fs` reports it.
+/// a permission taken away), as `std::fs` reports it; with `no_append`, the
+/// ledger takes no lines.
 struct Unreadable {
     inner: quire_vault::MemFs,
     failing: std::sync::Mutex<Option<NotePath>>,
+    no_append: bool,
 }
 
 impl quire_vault::Storage for Unreadable {
@@ -841,6 +844,13 @@ impl quire_vault::Storage for Unreadable {
     fn remove(&self, p: &NotePath) -> quire_vault::Result<()> {
         self.inner.remove(p)
     }
+    fn append_line(&self, p: &NotePath, line: &str) -> quire_vault::Result<()> {
+        if self.no_append && p.as_str().starts_with(ledger::LEDGER_DIR) {
+            let source = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+            return Err(quire_vault::VaultError::Io { path: p.to_string(), source });
+        }
+        self.inner.append_line(p, line)
+    }
 }
 
 /// A note that can't be read is not a note that doesn't exist: neither an
@@ -850,6 +860,7 @@ fn a_note_that_cant_be_read_is_not_reported_as_missing() {
     let storage = Arc::new(Unreadable {
         inner: quire_vault::MemFs::with_files([("wiki/A.md", "one\n"), ("Rope.md", "a\nb\n")]),
         failing: std::sync::Mutex::new(Some(NotePath::new("wiki/A.md"))),
+        no_append: false,
     });
     let vault = Vault::new(Arc::<Unreadable>::clone(&storage));
     let store = AgentStore::open(&vault, DeviceInfo { id: "d_test".into(), name: "Test".into() }, FixedClock::new(T0));
@@ -887,4 +898,24 @@ fn an_undo_is_not_written_without_the_version_from_before() {
     let report = store.revert_apply(&plan, "Undo");
     assert_eq!((report.applied, report.failed.len()), (0, 1), "{report:?}");
     assert_eq!(read(&vault, "wiki/Ropes.md"), "# Ropes\nagent\n");
+}
+
+/// An agent's change that the activity log can't record still stands, and
+/// the person is told once (it was dropped without a word).
+#[test]
+fn a_change_the_ledger_cant_record_is_told_once() {
+    let storage = Arc::new(Unreadable {
+        inner: quire_vault::MemFs::with_files([("wiki/A.md", "one\n")]),
+        failing: std::sync::Mutex::new(None),
+        no_append: true,
+    });
+    let vault = Vault::new(Arc::<Unreadable>::clone(&storage));
+    let store = AgentStore::open(&vault, DeviceInfo { id: "d_test".into(), name: "Test".into() }, FixedClock::new(T0));
+    let agent = Actor::agent("mcp:claude-code", "Claude Code", Via::McpStdio, "d_test");
+    assert!(matches!(store.submit(&agent, edit("wiki/A.md", "two\n")).unwrap(), SubmitOutcome::Applied { .. }));
+    assert_eq!(read(&vault, "wiki/A.md"), "two\n");
+    let told = vault.take_history_trouble().unwrap();
+    assert!(told.contains("activity log"), "{told}");
+    store.submit(&agent, edit("wiki/A.md", "three\n")).unwrap();
+    assert!(vault.take_history_trouble().is_none(), "once");
 }

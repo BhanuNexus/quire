@@ -17,6 +17,7 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 - **Version history:** when a renamed or moved note's old versions can't all be moved with it (a read-only `.quire/history` folder, for example), Quire now says so once instead of leaving some of them under the old name without a word.
 - **Agents and suggestions:** a note Quire can't read at that moment (held open by another program, no permission) is no longer reported as not existing when an agent edits it or you accept a suggestion for it; the error now says what went wrong.
 - **Undoing an agent's changes:** an undo no longer rewrites or deletes a note when the version from before the undo can't be kept in version history (a read-only `.quire/history` folder, for example); that step is reported as failed instead, as an agent's own writes already were.
+- **Agents:** when an agent's change is made but its version can't be kept in history or it can't be recorded in the activity log, Quire now says so once instead of dropping the error.
 - **Locked folders:** `quire-cli tags … --write`, `props … --write` and `lint` now keep a locked folder locked when its key file is missing, as the app does: they no longer rewrite a plain note there, or keep a plain copy of it in history.
 
 ## [0.13.2] - 2026-11-17

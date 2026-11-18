@@ -72,7 +72,7 @@ pub fn escape_attr(s: &str) -> String {
 pub fn block(attrs: &[(&str, &str)], body: &str) -> String {
     let mut open = format!("<{TAG}");
     for (k, v) in attrs {
-        let _ = write!(open, " {k}=\"{}\"", escape_attr(v));
+        write!(open, " {k}=\"{}\"", escape_attr(v)).expect("a String takes any text");
     }
     let body = escape_body(body);
     let nl = if body.ends_with('\n') { "" } else { "\n" };

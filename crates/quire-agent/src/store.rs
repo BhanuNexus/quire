@@ -247,12 +247,16 @@ pub fn resolve_at(root: &std::path::Path, path: &NotePath) -> Result<Resolved, W
             }
         }
     };
+    #[expect(clippy::map_err_ignore, reason = "not under the root is the only way it fails")]
     let rel = found.strip_prefix(&root).map_err(|_| outside("leads outside the vault"))?;
     let mut segs: Vec<String> = Vec::new();
     for c in rel.components() {
         segs.push(c.as_os_str().to_str().ok_or_else(|| outside("leads to a file name Quire can't read"))?.to_string());
     }
     segs.extend(tail.into_iter().rev());
+    // The path as named passed `canonical_path` above; where it leads fails it
+    // only through a link, and nearly always into a hidden folder.
+    #[expect(clippy::map_err_ignore, reason = "see above: the reason names the path given, not the link's target")]
     let real = canonical_path(&NotePath::new(segs.join("/"))).map_err(|_| outside("leads into a hidden folder"))?;
     Ok(Resolved { path, real })
 }
@@ -830,9 +834,11 @@ impl AgentStore {
         if record {
             times.push(now);
             let text = times.iter().fold(String::new(), |mut s, t| {
-                let _ = writeln!(s, "{t}");
+                writeln!(s, "{t}").expect("a String takes any text");
                 s
             });
+            // Not kept: at worst this write goes uncounted, as with a racing process.
+            #[expect(clippy::let_underscore_must_use, reason = "see above")]
             let _ = storage.write_atomic(&file, &text);
         }
         Ok(())
@@ -915,6 +921,7 @@ impl AgentStore {
         } else {
             self.propose(actor, &cs, &planned, policy.limits.max_pending_per_client)
         }?;
+        #[expect(clippy::let_underscore_must_use, reason = "the write is done: this only counts it (checked before it)")]
         let _ = self.rate_check(actor, policy.limits.writes_per_minute, true);
         Ok(out)
     }
@@ -946,7 +953,8 @@ impl AgentStore {
         if let Some(src) = source {
             e.other.insert("source".into(), serde_json::Value::from(src));
         }
-        let _ = self.ledger().append(&e);
+        self.record(&e);
+        #[expect(clippy::let_underscore_must_use, reason = "the write is done: this only counts it (checked before it)")]
         let _ = self.rate_check(actor, policy.limits.writes_per_minute, true);
         Ok(path)
     }
@@ -984,7 +992,7 @@ impl AgentStore {
             match p.change {
                 Change::Create { path, text } => {
                     vault.storage().write_atomic(&path, &text)?;
-                    let _ = vault.snapshot_with(&path, &text, now, true, Some(&self.provenance(actor, cs, Op::Create, &text)));
+                    self.keep_version(&path, &text, now, Some(&self.provenance(actor, cs, Op::Create, &text)));
                     entry.op = Op::Create;
                     entry.after = Some(ContentHash::of(&text));
                     entry.snap_after = self.newest_snapshot(&path);
@@ -1000,7 +1008,7 @@ impl AgentStore {
                         vault.snapshot(&path, &before, now - 1, true)?;
                         entry.snap_before = self.newest_snapshot(&path);
                         vault.storage().write_atomic(&path, &new_text)?;
-                        let _ = vault.snapshot_with(&path, &new_text, now, true, Some(&self.provenance(actor, cs, Op::Write, &new_text)));
+                        self.keep_version(&path, &new_text, now, Some(&self.provenance(actor, cs, Op::Write, &new_text)));
                         entry.snap_after = self.newest_snapshot(&path);
                     }
                     entry.before = Some(ContentHash::of(&before));
@@ -1024,13 +1032,14 @@ impl AgentStore {
                         let mut e = LedgerEntry::new(actor.clone(), Op::Write, now).path(&other);
                         e.run.clone_from(&cs.run);
                         e.batch.clone_from(&batch);
-                        let _ = vault.snapshot(&other, &old_text, now - 1, true);
+                        // Written already (the rename rewrote its links): kept, or told.
+                        self.keep_version(&other, &old_text, now - 1, None);
                         e.snap_before = self.newest_snapshot(&other);
-                        let _ = vault.snapshot_with(&other, &new_text, now, true, Some(&self.provenance(actor, cs, Op::Write, &new_text)));
+                        self.keep_version(&other, &new_text, now, Some(&self.provenance(actor, cs, Op::Write, &new_text)));
                         e.snap_after = self.newest_snapshot(&other);
                         e.before = Some(ContentHash::of(&old_text));
                         e.after = Some(ContentHash::of(&new_text));
-                        let _ = self.ledger().append(&e);
+                        self.record(&e);
                     }
                     self.rename_hook(&from, &to);
                     entry.op = Op::Rename;
@@ -1060,7 +1069,7 @@ impl AgentStore {
                 entry.from = Some(from.id.clone());
             }
             // The ledger is a record, not the write: a failure to log never undoes the change.
-            let _ = self.ledger().append(&entry);
+            self.record(&entry);
         }
         Ok(SubmitOutcome::Applied { versions })
     }
@@ -1297,6 +1306,10 @@ impl AgentStore {
             self.carry_rejections(actor, &mut prop);
             store.save(&prop)?;
             if prop.status != ProposalStatus::Pending {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "a settled proposal left in place is never shown as waiting: its status says settled"
+                )]
                 let _ = store.archive(&prop.id);
             }
             (prop, false)
@@ -1307,7 +1320,7 @@ impl AgentStore {
             e.run.clone_from(&cs.run);
             e.before = p.before.as_deref().map(ContentHash::of);
             e.after = p.after.as_deref().map(ContentHash::of);
-            let _ = self.ledger().append(&e);
+            self.record(&e);
         }
         Ok(SubmitOutcome::Proposed { id: proposal.id, amended })
     }
@@ -1320,9 +1333,34 @@ impl AgentStore {
         ProposalStore::new(self.inner.vault.clone()).load(id)
     }
 
-    /// Append to this device's ledger.
+    /// Append to this device's ledger. The ledger is a record, not the
+    /// write: a failure never undoes a change, and is told to the person once
+    /// (with the history notices, `Vault::take_history_trouble`).
     pub fn record(&self, entry: &LedgerEntry) {
-        let _ = self.ledger().append(entry);
+        if let Err(e) = self.ledger().append(entry) {
+            self.inner.vault.tell_once(&NotePath::new(crate::ledger::LEDGER_DIR), || {
+                format!(
+                    "Quire couldn't record an agent's change in its activity log ({e}). The change was made, but the log \
+                     and undoing that agent's work may miss it; check that the vault's .quire folder can be written."
+                )
+            });
+        }
+    }
+
+    /// Keep `text`, just written to `path`, as a version in history, with
+    /// its provenance. The write stands either way; a failure is told to the
+    /// person once. (The version from *before* a write is taken with `?`:
+    /// without it, nothing is written.)
+    pub(crate) fn keep_version(&self, path: &NotePath, text: &str, at: i64, prov: Option<&serde_json::Value>) {
+        if let Err(e) = self.inner.vault.snapshot_with(path, text, at, true, prov) {
+            self.inner.vault.tell_once(path, || {
+                format!(
+                    "Quire couldn't keep a version of “{}” in its history ({e}). The change itself was made; check that \
+                     the vault's .quire/history folder can be written.",
+                    path.stem()
+                )
+            });
+        }
     }
 
     /// Ledger entries of this device and, with shared review history, of
@@ -1383,14 +1421,14 @@ impl AgentStore {
         let mut n = 0;
         for p in store.list().iter().filter(|p| touches(p)) {
             // Archived, then the archived copy deleted: nothing of it is left.
-            if store.archive(&p.id).is_ok() {
-                store.remove_archived(p);
+            if store.archive(&p.id).is_ok() && store.remove_archived(p).is_ok() {
                 n += 1;
             }
         }
         for p in store.archived(self.now_ms()).iter().filter(|p| touches(p)) {
-            store.remove_archived(p);
-            n += 1;
+            if store.remove_archived(p).is_ok() {
+                n += 1;
+            }
         }
         n
     }
