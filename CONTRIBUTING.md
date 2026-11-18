@@ -36,6 +36,8 @@ cargo deny check     # licences and advisories (cargo install cargo-deny)
 typos                # spelling (cargo install typos-cli, or pip install typos)
 ```
 
+With `CI` set in the environment (some packaging and CI systems set it), the real S3 and WebDAV sync test fails instead of skipping: set `QUIRE_SYNC_REAL_SERVERS=skip` to skip it, as Quire's own CI does.
+
 CI runs the same checks (the tests on Linux x86-64 and ARM64, macOS and Windows) and more: [AGENTS.md](AGENTS.md) has the whole list. The lints are strict: clippy's pedantic and nursery groups, no `unwrap()` outside tests, and every `#[allow]` must give a `reason = "…"`. If you think a lint is wrong for a piece of code, allow it locally with a reason, or propose switching it off in `Cargo.toml`.
 
 - Keep PRs focused, one change per PR. Add tests for behaviour changes.
