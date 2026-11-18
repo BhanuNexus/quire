@@ -409,7 +409,7 @@ impl Vault {
         {
             // Within one folder: the encrypted file moves as it is (names aren't bound).
             self.storage.rename(&lock::stored(from), &lock::stored(to))?;
-            let _ = self.move_history(from, to);
+            self.move_history_or_tell(from, to);
             return Ok(RenameReport { old_path: from.clone(), new_path: to.clone(), updated: vec![] });
         }
         let bytes = self.read_file(from)?;

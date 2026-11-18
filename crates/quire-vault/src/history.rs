@@ -384,6 +384,14 @@ impl Vault {
         Ok(())
     }
 
+    /// Move a note's history after the note itself was renamed. The rename
+    /// stands either way; a failure is told once ([`Vault::take_history_trouble`]).
+    pub(crate) fn move_history_or_tell(&self, from: &NotePath, to: &NotePath) {
+        if let Err(e) = self.move_history(from, to) {
+            self.pruning.lock().unwrap_or_else(std::sync::PoisonError::into_inner).moving(from, to, &e);
+        }
+    }
+
     /// Move a note's history when it is renamed.
     pub fn move_history(&self, from: &NotePath, to: &NotePath) -> Result<()> {
         let (a, b) = (folder_for(from), folder_for(to));
@@ -412,7 +420,8 @@ impl Vault {
     }
 }
 
-/// Notes whose old versions couldn't be thinned out ([`Vault::take_history_trouble`]).
+/// Notes whose old versions couldn't be thinned out or moved with a rename
+/// ([`Vault::take_history_trouble`]).
 #[derive(Debug, Default)]
 pub(crate) struct PruneTrouble {
     told: std::collections::HashSet<NotePath>,
@@ -426,6 +435,17 @@ impl PruneTrouble {
                 "Quire couldn't remove old versions of “{}” from its history ({e}). New versions are still kept; \
                  check that the vault's .quire/history folder can be written.",
                 note.stem()
+            ));
+        }
+    }
+
+    fn moving(&mut self, from: &NotePath, to: &NotePath, e: &VaultError) {
+        if self.told.insert(to.clone()) && self.untold.is_none() {
+            self.untold = Some(format!(
+                "“{}” was renamed to “{}”, but Quire couldn't move all of its old versions with it ({e}). \
+                 Some may still be listed under the old name; check that the vault's .quire/history folder can be written.",
+                from.stem(),
+                to.stem()
             ));
         }
     }
@@ -621,6 +641,20 @@ mod tests {
         let told = v.take_history_trouble().unwrap();
         assert!(told.contains("couldn't remove old versions of “A”"), "{told}");
         assert!(v.snapshot(&a, "newer", now + HOUR, true).unwrap());
+        assert!(v.take_history_trouble().is_none(), "once");
+    }
+
+    /// A rename whose history can't follow is still a rename, and the
+    /// person is told once instead of the error being dropped.
+    #[test]
+    fn a_rename_whose_history_cant_follow_is_told() {
+        let v = Vault::new(std::sync::Arc::new(NoRemove(crate::MemFs::with_files([("A.md", "x")]))));
+        let (a, b) = (NotePath::new("A.md"), NotePath::new("B.md"));
+        v.snapshot(&a, "x", 1_800_000_000_000, true).unwrap();
+        v.rename_note(&a, "B").unwrap();
+        assert!(v.storage().exists(&b) && !v.storage().exists(&a), "the rename stands");
+        let told = v.take_history_trouble().unwrap();
+        assert!(told.contains("“A” was renamed to “B”") && told.contains("old versions"), "{told}");
         assert!(v.take_history_trouble().is_none(), "once");
     }
 

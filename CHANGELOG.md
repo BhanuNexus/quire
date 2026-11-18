@@ -14,6 +14,7 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 - **Links:** a link whose target ends in an escape such as `%20` now resolves to its note in the agent store and in Markdown link extraction (the last escape of a target was left undecoded).
 - **Sync:** a stored sync selection naming a folder Quire can't use (such as `A: Archive`) no longer makes a device sync nothing: the entry is dropped and the next sync report says so.
 - **Quick capture:** a long text no longer pushes the Quick capture dialog past the top and bottom of a small window; the text scrolls inside it, so the buttons stay in reach.
+- **Version history:** when a renamed or moved note's old versions can't all be moved with it (a read-only `.quire/history` folder, for example), Quire now says so once instead of leaving some of them under the old name without a word.
 - **Locked folders:** `quire-cli tags … --write`, `props … --write` and `lint` now keep a locked folder locked when its key file is missing, as the app does: they no longer rewrite a plain note there, or keep a plain copy of it in history.
 
 ## [0.13.2] - 2026-11-17
