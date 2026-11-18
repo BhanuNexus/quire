@@ -11,7 +11,7 @@
 //!   user's sync passphrase with Argon2id, so a new device can join.
 //! * The [`RecoveryKey`] is the vault key itself, written for humans.
 
-use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+use chacha20poly1305::aead::{Aead, Error as AeadError, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
@@ -49,7 +49,7 @@ pub enum CryptoError {
 }
 
 pub(crate) fn random_bytes<const N: usize>() -> Result<[u8; N], CryptoError> {
-    quire_base::rand::bytes().map_err(|_| CryptoError::NoRandomness)
+    quire_base::rand::bytes().map_err(|quire_base::rand::NoRandomness| CryptoError::NoRandomness)
 }
 
 /// The secret that encrypts a vault. Wiped from memory when dropped.
@@ -201,7 +201,7 @@ pub fn sealed_epoch(sealed: &[u8]) -> Option<u32> {
 pub(crate) fn seal_with(key: &[u8; 32], plain: &[u8], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let nonce: [u8; NONCE_LEN] = random_bytes()?;
     let cipher = XChaCha20Poly1305::new(key.into());
-    let ct = cipher.encrypt(&XNonce::from(nonce), Payload { msg: plain, aad }).map_err(|_| CryptoError::Tampered)?;
+    let ct = cipher.encrypt(&XNonce::from(nonce), Payload { msg: plain, aad }).map_err(|AeadError| CryptoError::Tampered)?;
     let mut out = Vec::with_capacity(1 + NONCE_LEN + ct.len());
     out.push(SEALED_V1);
     out.extend_from_slice(&nonce);
@@ -219,8 +219,9 @@ pub(crate) fn open_with(key: &[u8; 32], sealed: &[u8], aad: &[u8]) -> Result<Vec
     }
     let (nonce, ct) = rest.split_at(NONCE_LEN);
     let cipher = XChaCha20Poly1305::new(key.into());
-    let nonce = XNonce::try_from(nonce).map_err(|_| CryptoError::Truncated)?;
-    cipher.decrypt(&nonce, Payload { msg: ct, aad }).map_err(|_| CryptoError::WrongPassphrase)
+    // A nonce of the wrong length is the only way `try_from` fails.
+    let nonce = XNonce::try_from(nonce).ok().ok_or(CryptoError::Truncated)?;
+    cipher.decrypt(&nonce, Payload { msg: ct, aad }).map_err(|AeadError| CryptoError::WrongPassphrase)
 }
 
 /// Argon2id settings for deriving a key from a passphrase. Stored next to the
@@ -251,11 +252,15 @@ pub struct WrappedKey {
 }
 
 fn passphrase_key(passphrase: &str, salt: &[u8], p: KdfParams) -> Result<[u8; 32], CryptoError> {
-    let params = argon2::Params::new(p.memory_kib, p.iterations, p.parallelism, Some(32)).map_err(|_| CryptoError::WrongPassphrase)?;
+    // Parameters or a salt Argon2 refuses came with the wrapped key: damaged
+    // data, not a wrong passphrase (asking again would never help).
+    #[expect(clippy::map_err_ignore, reason = "see above; `Tampered` carries no detail")]
+    let params = argon2::Params::new(p.memory_kib, p.iterations, p.parallelism, Some(32)).map_err(|_| CryptoError::Tampered)?;
     let argon = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
     // Overwritten by Argon2; random rather than zero, so a key is never predictable.
     let mut out: [u8; 32] = random_bytes()?;
-    argon.hash_password_into(passphrase.as_bytes(), salt, &mut out).map_err(|_| CryptoError::WrongPassphrase)?;
+    #[expect(clippy::map_err_ignore, reason = "see above; `Tampered` carries no detail")]
+    argon.hash_password_into(passphrase.as_bytes(), salt, &mut out).map_err(|_| CryptoError::Tampered)?;
     Ok(out)
 }
 
@@ -275,9 +280,9 @@ impl WrappedKey {
         let opened = open_with(&k, &self.sealed, WRAP_AAD);
         k.zeroize();
         let mut bytes = opened?;
-        let arr: [u8; 32] = bytes.as_slice().try_into().map_err(|_| CryptoError::Tampered)?;
+        let arr: Option<[u8; 32]> = bytes.as_slice().try_into().ok();
         bytes.zeroize();
-        Ok(VaultKey(arr))
+        Ok(VaultKey(arr.ok_or(CryptoError::Tampered)?))
     }
 }
 

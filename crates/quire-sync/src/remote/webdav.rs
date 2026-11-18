@@ -68,7 +68,7 @@ impl WebDavStore {
     pub fn new(cfg: &WebDavConfig, creds: &WebDavCredentials) -> Result<Self, StoreError> {
         let url = cfg.url.trim();
         check_scheme(url, cfg.allow_http)?;
-        let uri: ureq::http::Uri = url.parse().map_err(|_| StoreError::Config(format!("“{url}” isn't a web address")))?;
+        let uri: ureq::http::Uri = url.parse().map_err(|e| StoreError::Config(format!("“{url}” isn't a web address ({e})")))?;
         if uri.query().is_some() {
             return Err(StoreError::Config("The WebDAV address can't have a `?` part".into()));
         }

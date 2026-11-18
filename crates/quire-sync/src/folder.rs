@@ -164,7 +164,7 @@ pub fn create_space_at(root: &Path, space: &SpaceId, key: &WrappedKey, level: u3
 fn read_space(dir: &Path) -> Result<SpaceFile, TransportError> {
     let bytes = fs::read(dir.join("space.json")).map_err(|e| io_err("can't read the vault in the sync folder", &e))?;
     let f: SpaceFile = serde_json::from_slice(&bytes)
-        .map_err(|_| TransportError::Refused("the vault's space.json is damaged or still downloading".into()))?;
+        .map_err(|e| TransportError::Refused(format!("the vault's space.json is damaged or still downloading ({e})")))?;
     if f.min_reader.is_some_and(|m| m > READER_FORMAT) {
         return Err(TransportError::Refused("this vault was made by a newer Quire; update Quire on this device".into()));
     }
@@ -376,6 +376,8 @@ impl FolderTransport {
     pub fn lane(root: &Path, space: &SpaceId, device: DeviceId, state_dir: Option<&Path>, lane: &str) -> Self {
         let dir = state_dir.map(|d| d.join(format!("lane-{lane}")));
         if let Some(d) = &dir {
+            // Without it, the lane's counters aren't kept (see `next_seq`); nothing else is stored there.
+            #[expect(clippy::let_underscore_must_use, reason = "best effort, see above")]
             let _ = fs::create_dir_all(d);
         }
         let mut t = Self::new(root, space, device, dir.as_deref());
@@ -724,6 +726,9 @@ impl FolderTransport {
         };
         let out = *e;
         if changed && let Some(f) = &self.seen_file {
+            // Not kept: the snapshot counts as seen later, so it settles (and
+            // old logs go) later, never sooner.
+            #[expect(clippy::let_underscore_must_use, reason = "losing it only delays tidying, see above")]
             let _ = write_atomic(f, &serde_json::to_vec(&seen).unwrap_or_default(), Options::EXISTING_FOLDER.lazy());
         }
         out
@@ -987,12 +992,17 @@ impl FolderTransport {
         f.seek(SeekFrom::Start(m.loc.offset)).map_err(|e| io_err("can't read the sync folder", &e))?;
         let mut buf = vec![0; m.loc.len];
         f.read_exact(&mut buf).map_err(|e| io_err("can't read the sync folder", &e))?;
-        serde_json::from_slice(&buf).map_err(|_| TransportError::Refused("a log file in the sync folder changed unexpectedly".into()))
+        serde_json::from_slice(&buf)
+            .map_err(|e| TransportError::Refused(format!("a log file in the sync folder changed unexpectedly ({e})")))
     }
 
     fn next_seq(&self, ix: &mut Index) -> u64 {
         ix.seq += 1;
         if let Some(f) = &self.seq_file {
+            // Not kept: after a restart the counter starts lower, and `pull`
+            // (which the engine runs before every push) raises it past the
+            // engine's cursor again (`ix.seq.max(after)`).
+            #[expect(clippy::let_underscore_must_use, reason = "the next pull makes up for it, see above")]
             let _ = write_atomic(f, ix.seq.to_string().as_bytes(), Options::EXISTING_FOLDER.lazy());
         }
         ix.seq
@@ -1173,11 +1183,13 @@ impl FolderTransport {
     /// [`Self::generation`], and whether it has settled here.
     pub fn generation_settled(&self) -> Option<(Manifest, i64, bool)> {
         let mut ix = self.lock();
-        let _ = self.scan(&mut ix);
+        // A folder that couldn't be read now gives the snapshot known from
+        // before, never as settled: tidying deletes nothing on a failed read.
+        let read = self.scan(&mut ix).is_ok();
         let m = ix.snap.as_ref()?.manifest.clone();
         let now = unix_now();
         let seen = self.load_seen().get(&m.name()).copied().unwrap_or(Seen { at: now, ticks: 0, last: now });
-        Some((m, seen.at, self.settled(&seen, now)))
+        Some((m, seen.at, read && self.settled(&seen, now)))
     }
 
     /// Whether every lane was read without a gap up to where it was read
@@ -1271,6 +1283,7 @@ impl FolderTransport {
         let dir = self.snapshots_dir().join(&name);
         let tmp = self.snapshots_dir().join(format!(".{name}.tmp"));
         let werr = |e: std::io::Error| io_err("can't write to the sync folder", &e);
+        #[expect(clippy::let_underscore_must_use, reason = "a crash's leftover; a stray file in it isn't in the manifest")]
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).map_err(werr)?;
         // Kept revisions in log order of their files, so parents come first.

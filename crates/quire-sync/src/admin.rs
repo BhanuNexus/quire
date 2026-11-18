@@ -218,8 +218,9 @@ pub fn refresh_keys_trusting(
     if r.keys.current() > keys.current() {
         verified(space, &r.keys, &devs, pins, r.records.values().next_back(), !pending(&r.keys));
         // A key change needs an upgraded vault: read its level again, so
-        // the transport seals the new way.
-        let _ = admin.level();
+        // the transport seals the new way. A failed read fails the refresh
+        // (tried again next pass) rather than sealing the old way under the new key.
+        admin.level()?;
     }
     r.vouched = vouched(space, &r.keys, &devs, pins);
     admin.set_keys(&r.keys);

@@ -82,7 +82,7 @@ impl S3Store {
     pub fn new(cfg: S3Config, creds: S3Credentials) -> Result<Self, StoreError> {
         let endpoint = cfg.endpoint.trim().trim_end_matches('/').to_string();
         check_scheme(&endpoint, cfg.allow_http)?;
-        let uri: ureq::http::Uri = endpoint.parse().map_err(|_| StoreError::Config(format!("“{endpoint}” isn't a web address")))?;
+        let uri: ureq::http::Uri = endpoint.parse().map_err(|e| StoreError::Config(format!("“{endpoint}” isn't a web address ({e})")))?;
         if !uri.path().trim_matches('/').is_empty() {
             return Err(StoreError::Config("The endpoint is the storage's address only, without a bucket or folder after it".into()));
         }

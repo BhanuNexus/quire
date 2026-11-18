@@ -180,7 +180,8 @@ pub fn open_from(me: &DeviceSecret, maker: &[u8; 32], eph: &[u8; 32], sealed: &[
     let s = me.secret();
     let (mut a, mut b) = (agree(&s, eph)?, agree(&s, maker)?);
     let mut k = box_key(&a, &b, eph, &me.public(), maker, context);
-    let out = open_with(&k, sealed, context).map_err(|_| CryptoError::Tampered);
+    // Here a key that doesn't open the box means the box was changed.
+    let out = open_with(&k, sealed, context).map_err(|e| if e == CryptoError::WrongPassphrase { CryptoError::Tampered } else { e });
     a.zeroize();
     b.zeroize();
     k.zeroize();
@@ -371,6 +372,13 @@ pub enum KeyError {
     WrongPassphrase,
 }
 
+/// Why a key didn't open with a passphrase: a wrong passphrase only when it
+/// was one. Damaged data or no random numbers are said as such, or the person
+/// would be asked to type the passphrase again forever.
+fn passphrase_error(e: &CryptoError) -> KeyError {
+    if *e == CryptoError::WrongPassphrase { KeyError::WrongPassphrase } else { KeyError::Invalid(e.to_string()) }
+}
+
 const RECORD_MAC: &str = "quire-sync/epoch-record/v1";
 
 impl EpochRecord {
@@ -478,25 +486,25 @@ impl EpochRecord {
         }
         let eph: [u8; 32] = unhex(&m.eph).and_then(|e| e.as_slice().try_into().ok()).ok_or_else(|| KeyError::Invalid("bad key".into()))?;
         let mut bytes = open_from(secret, maker_key, &eph, &m.sealed, &self.context())
-            .map_err(|_| KeyError::Invalid("its key for this device doesn't open".into()))?;
-        let arr: Result<[u8; 32], _> = bytes.as_slice().try_into();
+            .map_err(|e| KeyError::Invalid(format!("its key for this device doesn't open ({e})")))?;
+        let arr: Option<[u8; 32]> = bytes.as_slice().try_into().ok();
         bytes.zeroize();
-        self.checked(VaultKey::from_bytes(arr.map_err(|_| KeyError::Invalid("bad key".into()))?))
+        self.checked(VaultKey::from_bytes(arr.ok_or_else(|| KeyError::Invalid("bad key".into()))?))
     }
 
     /// This epoch's key, from the sync passphrase.
     pub fn open_with_passphrase(&self, passphrase: &str) -> Result<VaultKey, KeyError> {
-        let k = self.wrapped.unwrap(passphrase).map_err(|_| KeyError::WrongPassphrase)?;
+        let k = self.wrapped.unwrap(passphrase).map_err(|e| passphrase_error(&e))?;
         self.checked(k)
     }
 
     /// The previous epoch's key, from this one's.
     pub fn prev_key(&self, key: &VaultKey) -> Result<VaultKey, KeyError> {
         let mut bytes = open_with(&new_bytes(key), &self.prev, &Self::prev_aad(&self.space, self.epoch))
-            .map_err(|_| KeyError::Invalid("the previous key doesn't open".into()))?;
-        let arr: Result<[u8; 32], _> = bytes.as_slice().try_into();
+            .map_err(|e| KeyError::Invalid(format!("the previous key doesn't open ({e})")))?;
+        let arr: Option<[u8; 32]> = bytes.as_slice().try_into().ok();
         bytes.zeroize();
-        Ok(VaultKey::from_bytes(arr.map_err(|_| KeyError::Invalid("bad key".into()))?))
+        Ok(VaultKey::from_bytes(arr.ok_or_else(|| KeyError::Invalid("bad key".into()))?))
     }
 
     pub fn removes(&self, d: &DeviceId) -> bool {
@@ -740,7 +748,7 @@ pub fn join_with_passphrase(epoch0: &WrappedKey, records: &[EpochRecord], passph
         if !records.is_empty() {
             return Err(KeyError::WrongPassphrase);
         }
-        return epoch0.unwrap(passphrase).map(|k| KeySet::new(&k)).map_err(|_| KeyError::WrongPassphrase);
+        return epoch0.unwrap(passphrase).map(|k| KeySet::new(&k)).map_err(|e| passphrase_error(&e));
     };
     Ok(walk_down(epoch, key, records))
 }

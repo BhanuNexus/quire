@@ -295,12 +295,13 @@ impl Content {
         let len_bytes: [u8; 4] = plain.get(..4).and_then(|b| b.try_into().ok()).ok_or(CryptoError::Truncated)?;
         let len = u32::from_le_bytes(len_bytes) as usize;
         let json = plain.get(4..4 + len).ok_or(CryptoError::Truncated)?;
+        #[expect(clippy::map_err_ignore, reason = "authenticated bytes that aren't a revision count as changed data")]
         serde_json::from_slice(json).map_err(|_| CryptoError::Tampered)
     }
 
     fn padded(&self) -> Result<Vec<u8>, CryptoError> {
         let json = serde_json::to_vec(self).unwrap_or_default();
-        let len = u32::try_from(json.len()).map_err(|_| CryptoError::Truncated)?;
+        let len = u32::try_from(json.len()).ok().ok_or(CryptoError::Truncated)?; // over 4 GiB
         let mut plain = Vec::with_capacity(padded_len(json.len() + 4));
         plain.extend_from_slice(&len.to_le_bytes());
         plain.extend_from_slice(&json);

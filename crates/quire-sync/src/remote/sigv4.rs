@@ -91,7 +91,7 @@ fn canonical_headers(headers: &[(String, String)]) -> (String, String) {
     }
     let block = merged.iter().fold(String::new(), |mut s, (k, v)| {
         use std::fmt::Write as _;
-        let _ = writeln!(s, "{k}:{v}");
+        writeln!(s, "{k}:{v}").expect("a String takes any text");
         s
     });
     let names = merged.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>().join(";");
