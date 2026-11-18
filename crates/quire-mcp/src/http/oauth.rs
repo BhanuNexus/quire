@@ -382,10 +382,12 @@ pub(crate) async fn revoke(State(st): State<Arc<HttpState>>, Form(f): Form<HashM
     // saved is not, or the client would drop a token that still works.
     match tokio::task::spawn_blocking(move || tokens.revoke_token(&token)).await {
         Ok(Ok(())) => (StatusCode::OK, [(header::CACHE_CONTROL, "no-store")]).into_response(),
-        Ok(Err(e)) => {
-            json_error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable", &format!("the token couldn't be revoked: {e}"))
-        }
-        Err(e) => json_error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable", &format!("the token couldn't be revoked: {e}")),
+        // The endpoint needs no sign-in: the reply names no file or path.
+        Ok(Err(_)) | Err(_) => json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "temporarily_unavailable",
+            "the token couldn't be revoked: Quire couldn't save its token list. Try again later.",
+        ),
     }
 }
 
