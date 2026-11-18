@@ -379,13 +379,11 @@ mod tests {
         for p in &paths {
             let mut o: Vec<String> = ix.graph().outgoing(p).iter().map(ToString::to_string).collect();
             o.sort();
-            let mut b: Vec<String> =
+            // Not sorted: a patch must keep the lists in the order a rebuild gives.
+            let b: Vec<String> =
                 ix.backlinks(p).iter().map(|b| format!("{} {:?} {:?} {}", b.from, b.link.range, b.link.field, b.context)).collect();
-            b.sort();
-            let mut r: Vec<String> = ix.relations().of(p).iter().map(|e| format!("{e:?}")).collect();
-            r.sort();
-            let mut i: Vec<String> = ix.relations().incoming(p).iter().map(|e| format!("{e:?}")).collect();
-            i.sort();
+            let r: Vec<String> = ix.relations().of(p).iter().map(|e| format!("{e:?}")).collect();
+            let i: Vec<String> = ix.relations().incoming(p).iter().map(|e| format!("{e:?}")).collect();
             out.push(format!("{p}\n out {o:?}\n back {b:?}\n rel {r:?}\n in {i:?}"));
         }
         let mut u: Vec<String> = ix
@@ -393,8 +391,7 @@ mod tests {
             .unresolved()
             .iter()
             .map(|(t, v)| {
-                let mut v: Vec<&str> = v.iter().map(NotePath::as_str).collect();
-                v.sort_unstable();
+                let v: Vec<&str> = v.iter().map(NotePath::as_str).collect();
                 format!("{t} {v:?}")
             })
             .collect();

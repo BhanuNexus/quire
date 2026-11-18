@@ -150,26 +150,30 @@ impl LinkGraph {
         let resolver = Resolver::build(records.clone());
         let mut g = Self { resolver, ..Default::default() };
         for rec in records.clone() {
-            g.add_note(rec, source(&rec.path));
+            g.add_note(rec, source(&rec.path), false);
         }
         g.order_all();
         g.relate(records, source, cfg);
         g
     }
 
-    /// Notes arrive in hash order: put every backlink list in path order (a
-    /// note's own links keep the order written), so a list cut at a limit is
-    /// the same on every run.
+    /// Notes arrive in hash order: put every backlink list and unresolved
+    /// list in path order (a note's own links keep the order written), so a
+    /// list cut at a limit is the same on every run.
     fn order_all(&mut self) {
         #[expect(clippy::iter_over_hash_type, reason = "sorts each list in place")]
         for v in self.backlinks.values_mut() {
             v.sort_by(|a, b| a.from.cmp(&b.from));
         }
+        #[expect(clippy::iter_over_hash_type, reason = "sorts each list in place")]
+        for v in self.unresolved.values_mut() {
+            v.sort();
+        }
     }
 
     /// One note's links: its outgoing list, its backlinks in the notes it
     /// links to, its unresolved targets and its typed links.
-    fn add_note(&mut self, rec: &NoteRecord, src: Option<&str>) {
+    fn add_note(&mut self, rec: &NoteRecord, src: Option<&str>, in_order: bool) {
         let mut seen = HashSet::new();
         let mut typed: Vec<(String, NotePath)> = Vec::new();
         for link in rec.links.iter().filter(|l| l.is_internal()) {
@@ -192,10 +196,15 @@ impl LinkGraph {
                 None => {
                     // Attachments that aren't notes (images, PDFs) aren't "unresolved notes".
                     if !link.target.contains('.') {
-                        // In path order (short lists): the same on every run.
+                        // In path order: a build sorts once at the end
+                        // (`order_all`), a patch inserts in place.
                         let v = self.unresolved.entry(link.target.clone()).or_default();
-                        let at = v.partition_point(|q| q <= &rec.path);
-                        v.insert(at, rec.path.clone());
+                        if in_order {
+                            let at = v.partition_point(|q| q <= &rec.path);
+                            v.insert(at, rec.path.clone());
+                        } else {
+                            v.push(rec.path.clone());
+                        }
                     }
                 }
             }
@@ -258,7 +267,7 @@ impl LinkGraph {
         let mut done: HashSet<&NotePath> = HashSet::new();
         for rec in changed {
             if done.insert(&rec.path) {
-                self.add_note(rec, source(&rec.path));
+                self.add_note(rec, source(&rec.path), true);
             }
         }
         // The lists the changed notes were appended to, back in path order.
