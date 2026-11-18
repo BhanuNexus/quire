@@ -68,14 +68,15 @@ fn tasks(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
                 break;
             }
             let line = src[..t.offset.min(src.len())].matches('\n').count() + 1;
-            let _ = writeln!(
+            writeln!(
                 text,
                 "- [{}] {} ({}:{line}{})",
                 if t.done { "x" } else { " " },
                 t.text,
                 r.path,
                 t.due.as_deref().map(|d| format!(", due {d}")).unwrap_or_default()
-            );
+            )
+            .expect("a String takes any text");
             rows.push(json!({"path": r.path, "line": line, "text": t.text, "due": t.due, "scheduled": t.scheduled, "start": t.start,
                 "completed": t.done_on, "reminder": t.reminder, "time": t.time_block.as_ref().map(|(a, b)| format!("{a}-{b}")),
                 "priority": t.priority, "recurrence": t.recurrence, "done": t.done}));

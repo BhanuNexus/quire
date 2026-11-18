@@ -77,14 +77,15 @@ fn recent_activity(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput
     events.truncate(limit);
     let mut text = format!("{} change{} since {}:\n", events.len(), if events.len() == 1 { "" } else { "s" }, iso(since));
     for (_, e) in &events {
-        let _ = writeln!(
+        writeln!(
             text,
             "- {} {} {} {}",
             e["at"].as_str().unwrap_or(""),
             e["actor"].as_str().unwrap_or(""),
             e["op"].as_str().unwrap_or(""),
             e["path"].as_str().unwrap_or("")
-        );
+        )
+        .expect("a String takes any text");
     }
     ToolOutput::ok(text.trim_end().to_string(), json!({"events": events.into_iter().map(|(_, v)| v).collect::<Vec<_>>()}))
 }

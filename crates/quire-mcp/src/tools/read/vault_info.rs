@@ -63,23 +63,25 @@ fn vault_info(cx: &ToolCx<'_>, ext: &CallExt<'_>, _a: &Value) -> ToolOutput {
     });
     let mut text = format!("Vault: {notes} notes, {attachments} attachments.\nYou are {} ({}).\nZones:\n", cx.actor.label, cx.actor.id);
     for z in &zones {
-        let _ = writeln!(
+        writeln!(
             text,
             "- {} ({}): you may {}",
             z["path"].as_str().unwrap_or(""),
             z["role"].as_str().unwrap_or(""),
             z["mode_for_you"].as_str().unwrap_or("")
-        );
+        )
+        .expect("a String takes any text");
     }
     if let Some(i) = &instr {
-        let _ = writeln!(
+        writeln!(
             text,
             "Instructions: {} ({}). Read them first: resource quire://vault/instructions.",
             i["path"].as_str().unwrap_or(""),
             if i["approved"] == true { "approved" } else { "awaiting the person's review; don't rely on them" }
-        );
+        )
+        .expect("a String takes any text");
     }
-    let _ = write!(text, "Your pending suggestions: {mine}. Cite notes as [[Note#Heading]].");
+    write!(text, "Your pending suggestions: {mine}. Cite notes as [[Note#Heading]].").expect("a String takes any text");
     ToolOutput::ok(text, st)
 }
 

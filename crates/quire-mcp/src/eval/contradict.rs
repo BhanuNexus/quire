@@ -219,12 +219,14 @@ pub fn run(judge: Option<&Arc<dyn ChatModel>>) -> Report {
     });
     let mut text = format!("contradictions ({} pairs, judge {})\n", pairs.len(), json["judge"].as_str().unwrap_or_default());
     for k in ["candidate_recall", "extra_candidate_pairs", "inbox_items", "inbox_precision", "inbox_recall", "kind_accuracy"] {
-        let _ = writeln!(text, "  {k:<24} {}", json[k]);
+        writeln!(text, "  {k:<24} {}", json[k]).expect("a String takes any text");
     }
-    let _ = writeln!(text, "  {:<24} contradiction ≥ {CONTRADICTION_MIN}, tension ≥ {TENSION_MIN}, candidates ≥ {min_cos}", "cut-offs");
-    let _ = writeln!(text, "  sweep (contradiction, tension: precision / recall):");
+    writeln!(text, "  {:<24} contradiction ≥ {CONTRADICTION_MIN}, tension ≥ {TENSION_MIN}, candidates ≥ {min_cos}", "cut-offs")
+        .expect("a String takes any text");
+    writeln!(text, "  sweep (contradiction, tension: precision / recall):").expect("a String takes any text");
     for row in &sweep {
-        let _ = writeln!(text, "    {} {}: {} / {}", row["contradiction_min"], row["tension_min"], row["precision"], row["recall"]);
+        writeln!(text, "    {} {}: {} / {}", row["contradiction_min"], row["tension_min"], row["precision"], row["recall"])
+            .expect("a String takes any text");
     }
     Report { json, text }
 }

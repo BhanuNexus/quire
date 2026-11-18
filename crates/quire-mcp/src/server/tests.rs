@@ -325,7 +325,7 @@ fn text_of(v: &Vault, p: &str) -> String {
 #[test]
 fn views_are_bounded_with_cursors() {
     let long: String = (1..=400).fold(String::new(), |mut s, i| {
-        let _ = writeln!(s, "line {i} of a long note with some words");
+        writeln!(s, "line {i} of a long note with some words").expect("a String takes any text");
         s
     });
     let vault = Vault::in_memory(&[("Long.md", long.as_str())]);
@@ -716,6 +716,7 @@ fn subscriptions_end_with_a_result_and_notify_on_changes() {
     srv.start_pump();
     let (tx, rx) = std::sync::mpsc::channel::<Value>();
     let sink: Sink = Arc::new(move |v| {
+        #[expect(clippy::let_underscore_must_use, reason = "the test may have stopped listening")]
         let _ = tx.send(v);
     });
     let conn = srv.new_conn();
@@ -832,7 +833,7 @@ fn recorded_sessions_per_era() {
         }
         let path = format!("{}/tests/fixtures/mcp-0.9-{name}.jsonl", env!("CARGO_MANIFEST_DIR"));
         let text = got.iter().fold(String::new(), |mut s, v| {
-            let _ = writeln!(s, "{v}");
+            writeln!(s, "{v}").expect("a String takes any text");
             s
         });
         if std::env::var_os("QUIRE_BLESS").is_some() {

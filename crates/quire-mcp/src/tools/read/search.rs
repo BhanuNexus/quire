@@ -112,7 +112,7 @@ fn search(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let mut text =
         if shown.is_empty() { "No matching notes.".to_string() } else { shown.iter().map(|r| r.0.as_str()).collect::<Vec<_>>().join("\n") };
     if let Some(c) = &next {
-        let _ = write!(text, "\n… more results: call search again with cursor=\"{c}\"");
+        write!(text, "\n… more results: call search again with cursor=\"{c}\"").expect("a String takes any text");
     }
     let links = shown.iter().map(|r| note_link(&r.2)).collect();
     let mut st = json!({"hits": shown.iter().map(|r| r.1.clone()).collect::<Vec<_>>(), "next_cursor": next, "truncated": truncated});
@@ -120,7 +120,8 @@ fn search(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     if let Some((done, total)) = ext.pdf_indexing.filter(|_| filters.kind != SearchKind::Notes) {
         st["indexing"] = json!({"done": done, "total": total});
         let of = if total == 0 { String::new() } else { format!(" ({done} of {total} read)") };
-        let _ = write!(text, "\n(Quire is still reading the vault's PDFs{of}: PDF pages may be missing. Search again in a moment.)");
+        write!(text, "\n(Quire is still reading the vault's PDFs{of}: PDF pages may be missing. Search again in a moment.)")
+            .expect("a String takes any text");
     }
     ToolOutput::ok(text, st).with_links(links)
 }

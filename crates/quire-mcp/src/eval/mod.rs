@@ -212,7 +212,7 @@ pub fn longmemeval(json_text: &str, limit: usize) -> Result<Suite, String> {
                 for turn in sess.as_array().into_iter().flatten() {
                     let role = turn.get("role").and_then(Value::as_str).unwrap_or("user");
                     let content = turn.get("content").and_then(Value::as_str).unwrap_or_default().replace('\n', " ");
-                    let _ = writeln!(t, "**{role}:** {content}\n");
+                    writeln!(t, "**{role}:** {content}\n").expect("a String takes any text");
                 }
                 t
             });
@@ -485,12 +485,13 @@ pub fn run_with(suite: &Suite, k: usize, semantic: Option<quire_app::index::Sema
     for key in
         ["recall_at_k", "note_recall_at_k", "citation_span_accuracy", "abstain_precision", "abstain_recall", "view_tokens_per_answer"]
     {
-        let _ = writeln!(text, "  {key:<24} {}", json[key]);
+        writeln!(text, "  {key:<24} {}", json[key]).expect("a String takes any text");
     }
-    let _ = writeln!(text, "  {:<24} p50 {} ms, p95 {} ms", "latency", json["latency_ms"]["p50"], json["latency_ms"]["p95"]);
-    let _ = writeln!(text, "  {:<24} {} (τ_sem {})", "embedder", json["embedder"], json["tau_sem"]);
+    writeln!(text, "  {:<24} p50 {} ms, p95 {} ms", "latency", json["latency_ms"]["p50"], json["latency_ms"]["p95"])
+        .expect("a String takes any text");
+    writeln!(text, "  {:<24} {} (τ_sem {})", "embedder", json["embedder"], json["tau_sem"]).expect("a String takes any text");
     let af = &json["abstain_features"];
-    let _ = writeln!(
+    writeln!(
         text,
         "  {:<24} answerable sim {} cov {}; unanswerable sim {} cov {}",
         "abstain features",
@@ -498,10 +499,11 @@ pub fn run_with(suite: &Suite, k: usize, semantic: Option<quire_app::index::Sema
         af["answerable"]["coverage"],
         af["unanswerable"]["sim"],
         af["unanswerable"]["coverage"]
-    );
-    let _ = writeln!(text, "  τ_sem sweep (wrong \"Not found\" / abstain recall):");
+    )
+    .expect("a String takes any text");
+    writeln!(text, "  τ_sem sweep (wrong \"Not found\" / abstain recall):").expect("a String takes any text");
     for row in json["tau_sweep"].as_array().into_iter().flatten() {
-        let _ = writeln!(text, "    {:<5} {:>3} / {}", row["tau"], row["wrong_not_found"], row["abstain_recall"]);
+        writeln!(text, "    {:<5} {:>3} / {}", row["tau"], row["wrong_not_found"], row["abstain_recall"]).expect("a String takes any text");
     }
     Report { json, text }
 }

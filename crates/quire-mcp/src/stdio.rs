@@ -61,6 +61,10 @@ pub fn serve(server: &Server, input: impl BufRead, output: impl Write + Send) ->
                         continue;
                     }
                     if let Reply::Response(v) = reply {
+                        #[expect(
+                            clippy::let_underscore_must_use,
+                            reason = "the receiver is gone only when the connection closed; nothing to tell"
+                        )]
                         let _ = tx.send(v);
                     }
                 }
@@ -69,6 +73,7 @@ pub fn serve(server: &Server, input: impl BufRead, output: impl Write + Send) ->
         let sink: Sink = {
             let tx = Mutex::new(out_tx.clone());
             Arc::new(move |v| {
+                #[expect(clippy::let_underscore_must_use, reason = "the receiver is gone only when the connection closed; nothing to tell")]
                 let _ = tx.lock().unwrap_or_else(PoisonError::into_inner).send(v);
             })
         };
@@ -80,6 +85,10 @@ pub fn serve(server: &Server, input: impl BufRead, output: impl Write + Send) ->
             let msg = match serde_json::from_str::<Value>(&line) {
                 Ok(m) => m,
                 Err(e) => {
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "the receiver is gone only when the connection closed; nothing to tell"
+                    )]
                     let _ = out_tx
                         .send(json!({ "jsonrpc": "2.0", "id": null, "error": { "code": code::PARSE_ERROR, "message": e.to_string() } }));
                     continue;
@@ -106,6 +115,10 @@ pub fn serve(server: &Server, input: impl BufRead, output: impl Write + Send) ->
                         conn.legacy = Some(version);
                         conn.client = client;
                         conn.client_caps = caps;
+                        #[expect(
+                            clippy::let_underscore_must_use,
+                            reason = "the receiver is gone only when the connection closed; nothing to tell"
+                        )]
                         let _ = out_tx.send(response);
                     }
                     Reply::Listen { id, filter, sees } => {
@@ -113,9 +126,17 @@ pub fn serve(server: &Server, input: impl BufRead, output: impl Write + Send) ->
                     }
                     Reply::Subscribe { response, uri, subscribe, sees } => {
                         server.subscribe_legacy(conn_id, &uri, subscribe, Arc::clone(&sink), sees);
+                        #[expect(
+                            clippy::let_underscore_must_use,
+                            reason = "the receiver is gone only when the connection closed; nothing to tell"
+                        )]
                         let _ = out_tx.send(response);
                     }
                     Reply::Response(v) => {
+                        #[expect(
+                            clippy::let_underscore_must_use,
+                            reason = "the receiver is gone only when the connection closed; nothing to tell"
+                        )]
                         let _ = out_tx.send(v);
                     }
                     Reply::None => {}
@@ -125,6 +146,7 @@ pub fn serve(server: &Server, input: impl BufRead, output: impl Write + Send) ->
             let Some(id) = id else { continue };
             let cancel = CancelFlag::new();
             in_flight.lock().unwrap_or_else(PoisonError::into_inner).insert(id.to_string(), cancel.clone());
+            #[expect(clippy::let_underscore_must_use, reason = "the receiver is gone only when the connection closed; nothing to tell")]
             let _ = job_tx.send(Job { msg, id, conn: conn.clone(), cancel });
         }
         drop(job_tx);

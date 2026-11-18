@@ -199,14 +199,14 @@ pub fn hash(token: &str) -> String {
 }
 
 fn new_token() -> Result<String, String> {
-    let b: [u8; 32] = quire_base::rand::bytes().map_err(|_| "no randomness available".to_string())?;
+    let b: [u8; 32] = quire_base::rand::bytes().map_err(|e| e.to_string())?;
     Ok(format!("{PREFIX}{}", URL_SAFE_NO_PAD.encode(b)))
 }
 
 /// A token family's id: an error, never all zeros (one family for every
 /// token), when the system has no random numbers (0.14).
 fn new_family() -> Result<String, String> {
-    let b: [u8; 9] = quire_base::rand::bytes().map_err(|_| "no randomness available".to_string())?;
+    let b: [u8; 9] = quire_base::rand::bytes().map_err(|e| e.to_string())?;
     Ok(URL_SAFE_NO_PAD.encode(b))
 }
 
@@ -378,6 +378,8 @@ impl TokenStore {
             return None;
         }
         if rec.last_used.is_none_or(|t| now - t > TOUCH_EVERY_MS) {
+            // Only when it was last used, for the list in Settings: the token works either way.
+            #[expect(clippy::let_underscore_must_use, reason = "see above")]
             let _ = self.update(|list| {
                 if let Some(r) = list.iter_mut().find(|r| r.hash == h) {
                     r.last_used = Some(now);
@@ -445,7 +447,7 @@ pub fn parse_expiry(s: &str, now: i64) -> Result<Option<i64>, String> {
         return Ok(None);
     }
     let (n, unit) = s.split_at(s.len().saturating_sub(1));
-    let n: i64 = n.parse().map_err(|_| format!("expiry like 30d, 12h or never, not {s}"))?;
+    let n: i64 = n.parse().map_err(|e| format!("expiry like 30d, 12h or never, not {s} ({e})"))?;
     let ms = match unit {
         "d" => 86_400_000,
         "h" => 3_600_000,

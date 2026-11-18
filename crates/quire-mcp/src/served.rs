@@ -34,8 +34,9 @@ fn entry(hash: &ContentHash) -> NotePath {
 
 fn gzip(s: &str) -> Vec<u8> {
     let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-    let _ = e.write_all(s.as_bytes());
-    e.finish().unwrap_or_default()
+    // Into memory: these cannot fail, and an empty entry would give a later merge a wrong base.
+    e.write_all(s.as_bytes()).expect("compressing into memory cannot fail");
+    e.finish().expect("compressing into memory cannot fail")
 }
 
 fn gunzip(b: &[u8]) -> Option<String> {
@@ -62,6 +63,7 @@ impl ServedCache {
             .is_some_and(|age| age < Duration::from_hours(24));
         if !fresh {
             // A failure only costs a later merge its base; the read still works.
+            #[expect(clippy::let_underscore_must_use, reason = "a cache, see above")]
             let _ = self.vault.storage().write_bytes_atomic(&path, &gzip(text));
             if self.stores.fetch_add(1, Ordering::Relaxed).is_multiple_of(EVICT_EVERY) {
                 self.evict();
@@ -106,6 +108,7 @@ impl ServedCache {
         for f in files {
             let Ok(m) = storage.modified(&f) else { continue };
             if now.duration_since(m).is_ok_and(|age| age > TTL) {
+                #[expect(clippy::let_underscore_must_use, reason = "a cache entry, evicted again next time")]
                 let _ = storage.remove(&f);
                 continue;
             }
@@ -117,6 +120,7 @@ impl ServedCache {
         for (i, (_, size, f)) in live.iter().enumerate() {
             total += size;
             if i >= MAX_ENTRIES || total > MAX_BYTES {
+                #[expect(clippy::let_underscore_must_use, reason = "a cache entry, evicted again next time")]
                 let _ = storage.remove(f);
             }
         }
@@ -135,7 +139,7 @@ mod tests {
         v.write(&NotePath::new("A.md"), "two\n").unwrap();
         assert_eq!(c.get(&NotePath::new("A.md"), &h1).as_deref(), Some("one\n"));
         // Not served, but in history.
-        let _ = v.snapshot(&NotePath::new("A.md"), "zero\n", 1, true);
+        v.snapshot(&NotePath::new("A.md"), "zero\n", 1, true).unwrap();
         assert_eq!(c.get(&NotePath::new("A.md"), &ContentHash::of("zero\n")).as_deref(), Some("zero\n"));
         assert_eq!(c.get(&NotePath::new("A.md"), &ContentHash::of("never\n")), None);
         // The current text needs no cache.

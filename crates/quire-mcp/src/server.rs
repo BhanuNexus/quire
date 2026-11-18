@@ -288,6 +288,8 @@ impl Server {
     /// change notifications. Stops when the last handle to the server goes.
     pub fn start_pump(&self) {
         let weak: Weak<Core> = Arc::downgrade(&self.core);
+        // Without the thread, edits made elsewhere reach the index and subscribers only when the vault is read again.
+        #[expect(clippy::let_underscore_must_use, reason = "best effort, see above")]
         let _ = std::thread::Builder::new().name("mcp-pump".into()).spawn(move || {
             let mut ticks = 0u32;
             while let Some(core) = weak.upgrade() {
@@ -563,7 +565,7 @@ impl Core {
         };
         let mut s = format!("Tools for the user's Quire notes vault ({n} notes){mode}. Cite notes as [[Note]] when you use them.");
         if let Some((path, _, text)) = instructions::for_agents(&self.vault, self.config.state_dir.as_deref(), instructions::INLINE_LIMIT) {
-            let _ = write!(s, "\n\nVault instructions ({path}):\n{text}");
+            write!(s, "\n\nVault instructions ({path}):\n{text}").expect("a String takes any text");
         }
         s
     }
@@ -726,6 +728,7 @@ impl Core {
             ReadError::NotFound if uri.is_empty() => protocol::error(code::INVALID_PARAMS, "Not found"),
             ReadError::NotFound => protocol::resource_not_found(era, uri),
             ReadError::BadRequest(m) => protocol::error(code::INVALID_PARAMS, m),
+            ReadError::Unreadable(m) => protocol::error(code::INTERNAL, m),
         }
     }
 

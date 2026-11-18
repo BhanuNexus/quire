@@ -158,7 +158,7 @@ fn links(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         let arrow = if r["direction"] == "in" { "←" } else { "→" };
         let t = r["type"].as_str().unwrap_or("link");
         let implied = if r["implied"] == true { " (implied)" } else { "" };
-        let _ = writeln!(text, "- {arrow} {t}{implied}: {}", r["path"].as_str().unwrap_or_default());
+        writeln!(text, "- {arrow} {t}{implied}: {}", r["path"].as_str().unwrap_or_default()).expect("a String takes any text");
     }
     let notes = rows.iter().filter_map(|r| r["path"].as_str()).map(|q| note_link(&NotePath::new(q))).collect();
     ToolOutput::ok(text.trim_end().to_string(), json!({"path": p, "links": rows, "types": all_types, "truncated": total > limit}))
@@ -242,7 +242,8 @@ fn hierarchy(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
             let (rows, cut) = walk(cx, &ix, &p, h, depth, limit);
             truncated |= cut;
             let names: Vec<&str> = rows.iter().filter_map(|r| r["path"].as_str()).collect();
-            let _ = writeln!(text, "{key}: {}", if names.is_empty() { "none".to_string() } else { names.join(", ") });
+            writeln!(text, "{key}: {}", if names.is_empty() { "none".to_string() } else { names.join(", ") })
+                .expect("a String takes any text");
             st[key] = rows.into();
         }
     }
@@ -250,7 +251,8 @@ fn hierarchy(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         let sibs: Vec<Value> =
             visible_siblings(cx, rel, &p).iter().take(limit).map(|q| json!({"path": q, "title": title(&ix, q)})).collect();
         let names: Vec<&str> = sibs.iter().filter_map(|r| r["path"].as_str()).collect();
-        let _ = writeln!(text, "siblings: {}", if names.is_empty() { "none".to_string() } else { names.join(", ") });
+        writeln!(text, "siblings: {}", if names.is_empty() { "none".to_string() } else { names.join(", ") })
+            .expect("a String takes any text");
         st["siblings"] = sibs.into();
         let step = |forward: bool| visible_step(cx, rel, &p, forward);
         st["previous"] = json!(step(false));
@@ -260,7 +262,7 @@ fn hierarchy(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         // Only paths every note of which the caller may see.
         let trails: Vec<Vec<NotePath>> = rel.trails_where(&p, 8, 32, &|q| visible(cx, q));
         for t in &trails {
-            let _ = writeln!(text, "trail: {}", t.iter().map(NotePath::stem).collect::<Vec<_>>().join(" › "));
+            writeln!(text, "trail: {}", t.iter().map(NotePath::stem).collect::<Vec<_>>().join(" › ")).expect("a String takes any text");
         }
         st["trails"] = json!(trails);
     }

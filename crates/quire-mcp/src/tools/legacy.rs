@@ -211,7 +211,8 @@ fn ask_notes(cx: &ToolCx<'_>, a: &Value) -> ToolOutput {
     out.push_str("\n\nSources:\n");
     for src in &sources {
         let body = src.text.split_once('\n').map_or(src.text.as_str(), |(_, b)| b);
-        let _ = write!(out, "\n[{}] {} ({})\n{}\n", src.n, src.citation(), src.path, body.chars().take(1500).collect::<String>());
+        write!(out, "\n[{}] {} ({})\n{}\n", src.n, src.citation(), src.path, body.chars().take(1500).collect::<String>())
+            .expect("a String takes any text");
     }
     ToolOutput::text(out)
 }

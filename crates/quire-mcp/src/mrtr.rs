@@ -100,8 +100,11 @@ impl Sealer {
         }
         let s = Self::ephemeral();
         if let Some(dir) = path.parent() {
+            #[expect(clippy::let_underscore_must_use, reason = "the write below fails then, see there")]
             let _ = std::fs::create_dir_all(dir);
         }
+        // Not kept: states sealed now don't open after a restart, and the client asks again.
+        #[expect(clippy::let_underscore_must_use, reason = "see above")]
         let _ = quire_app::atomic::write(path, &s.key, true);
         s
     }
@@ -119,6 +122,7 @@ impl Sealer {
     }
 
     /// Open `state` and check it belongs to this caller, call and version.
+    #[expect(clippy::map_err_ignore, reason = "every way a state fails to open is `Unreadable`: the client learns nothing more")]
     pub fn open(&self, state: &str, principal: &str, method: &str, digest: &str, now_ms: i64) -> Result<StatePayload, StateError> {
         let bytes = URL_SAFE_NO_PAD.decode(state.trim()).map_err(|_| StateError::Unreadable)?;
         if bytes.len() < 24 + 16 {
@@ -158,7 +162,7 @@ pub fn approval_request(path: &str, diff: &str) -> Value {
     let lines: Vec<&str> = diff.lines().collect();
     let mut shown = lines.iter().take(40).copied().collect::<Vec<_>>().join("\n");
     if lines.len() > 40 {
-        let _ = write!(shown, "\n… {} more lines; review the rest in Quire", lines.len() - 40);
+        write!(shown, "\n… {} more lines; review the rest in Quire", lines.len() - 40).expect("a String takes any text");
     }
     json!({
         APPROVE_KEY: {

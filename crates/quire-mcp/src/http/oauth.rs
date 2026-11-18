@@ -216,7 +216,7 @@ fn same_browser(headers: &HeaderMap, id: &str, r: &crate::consent::Request) -> b
 
 fn waiting(st: &HttpState, id: &str, name: &str, host: &str, code: &str, scopes: Scopes) -> Response {
     let wants = scopes.describe().iter().fold(String::new(), |mut s, d| {
-        let _ = write!(s, "<li>{}</li>", escape(d));
+        write!(s, "<li>{}</li>", escape(d)).expect("a String takes any text");
         s
     });
     let body = format!(

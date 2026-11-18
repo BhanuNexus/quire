@@ -89,10 +89,10 @@ pub fn note_text(c: &web::Captured, title: &str, markdown: &str, captured: &str)
         yaml_scalar(a.site_name.as_deref().unwrap_or(&c.url.site()))
     );
     if let Some(b) = &a.byline {
-        let _ = writeln!(fm, "author: {}", yaml_scalar(b));
+        writeln!(fm, "author: {}", yaml_scalar(b)).expect("a String takes any text");
     }
     if let Some(p) = &a.published {
-        let _ = writeln!(fm, "published: {}", yaml_scalar(p));
+        writeln!(fm, "published: {}", yaml_scalar(p)).expect("a String takes any text");
     }
     fm.push_str("trust: untrusted\n---\n\n");
     let body = markdown.trim_start();

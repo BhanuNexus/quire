@@ -42,7 +42,7 @@ fn history(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
             .and_then(|p| p.get("actor").and_then(|a| a.get("id")).and_then(Value::as_str).map(str::to_string))
             .unwrap_or_else(|| "human".into());
         let version = ContentHash::of(t);
-        let _ = writeln!(text, "- {} by {actor}: {version} (+{added} −{removed})", iso(snap.at_ms));
+        writeln!(text, "- {} by {actor}: {version} (+{added} −{removed})", iso(snap.at_ms)).expect("a String takes any text");
         rows.push(json!({"id": snap.at_ms.to_string(), "at": iso(snap.at_ms), "actor": actor, "version": version, "added": added, "removed": removed}));
     }
     if rows.is_empty() {

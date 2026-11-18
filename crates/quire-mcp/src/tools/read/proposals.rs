@@ -41,7 +41,8 @@ fn proposals(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let mut text = String::new();
     for p in &list {
         let st = serde_json::to_value(p.status).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
-        let _ = writeln!(text, "- {} [{st}] {} ({})", p.id, p.title, p.files.iter().map(NotePath::as_str).collect::<Vec<_>>().join(", "));
+        writeln!(text, "- {} [{st}] {} ({})", p.id, p.title, p.files.iter().map(NotePath::as_str).collect::<Vec<_>>().join(", "))
+            .expect("a String takes any text");
     }
     if list.is_empty() {
         text.push_str("No suggestions.");

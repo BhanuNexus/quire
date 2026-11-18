@@ -51,14 +51,15 @@ fn outline_tool(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
                 (!id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')).then(|| format!("^{id}"))
             })
             .collect();
-        let _ = writeln!(
+        writeln!(
             out,
             "{}{} {} (lines {line}–{end}){}",
             "  ".repeat(usize::from(h.level.saturating_sub(1))),
             "#".repeat(usize::from(h.level)),
             h.text,
             if ids.is_empty() { String::new() } else { format!(" {}", ids.join(" ")) }
-        );
+        )
+        .expect("a String takes any text");
         rows.push(json!({"level": h.level, "text": h.text, "line": line, "end_line": end, "block_ids": ids}));
     }
     if heads.is_empty() {
