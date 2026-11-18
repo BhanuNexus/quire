@@ -77,7 +77,7 @@ def main():
     if ok:
         print(msg)
         return 0
-    print(f"::error title=No changelog line::{msg.splitlines()[0]}")
+    print(f"::warning title=No changelog line::{msg.splitlines()[0]}")
     print(msg)
     return 1
 
