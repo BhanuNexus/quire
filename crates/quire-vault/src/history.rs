@@ -362,6 +362,14 @@ impl Vault {
         self.pruning.lock().unwrap_or_else(std::sync::PoisonError::into_inner).untold.take()
     }
 
+    /// Tell the person once, with the history notices ([`Self::take_history_trouble`]),
+    /// that something kept beside `about` (a version, a record of who changed
+    /// it) couldn't be written, when the change itself stands. For callers
+    /// above the vault, such as the agent store; once per `about`.
+    pub fn tell_once(&self, about: &NotePath, text: impl FnOnce() -> String) {
+        self.pruning.lock().unwrap_or_else(std::sync::PoisonError::into_inner).tell(about, text);
+    }
+
     /// Thin out old snapshots, removing provenance with its snapshot, and
     /// delete provenance files whose snapshot is gone (Quire 0.8 prunes
     /// snapshots without knowing about them).
@@ -437,6 +445,12 @@ impl PruneTrouble {
                  check that the vault's .quire/history folder can be written.",
                 note.stem()
             ));
+        }
+    }
+
+    fn tell(&mut self, about: &NotePath, text: impl FnOnce() -> String) {
+        if self.told.insert(about.clone()) && self.untold.is_none() {
+            self.untold = Some(text());
         }
     }
 
