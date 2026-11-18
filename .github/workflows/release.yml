@@ -129,6 +129,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
       - name: Workspace tests (dry runs from a branch)
         if: env.IS_RELEASE != 'true'
+        env:
+          # real_servers fails in CI unless told to skip (real-servers.yml runs it weekly).
+          QUIRE_SYNC_REAL_SERVERS: skip
         run: cargo test --workspace --locked
 
   # The on-device AI engine (design §D.3): built per target first, so each

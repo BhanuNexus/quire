@@ -27,6 +27,9 @@ env:
   # links and the build caches are much smaller than with full debug info.
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
   CARGO_PROFILE_TEST_DEBUG: line-tables-only
+  # crates/quire-sync/tests/remote.rs `real_servers` fails in CI unless told to
+  # skip: the weekly workflow real-servers.yml is the one that runs it.
+  QUIRE_SYNC_REAL_SERVERS: skip
 
 jobs:
   changes:

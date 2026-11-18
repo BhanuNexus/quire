@@ -1,0 +1,56 @@
+# Weekly: the two-devices-at-once sync check against real S3 and WebDAV servers
+# (crates/quire-sync/tests/remote.rs, `real_servers`). Regular CI runs it as a
+# skip (QUIRE_SYNC_REAL_SERVERS=skip in ci.yml), because it needs Python servers;
+# without this workflow nothing would ever run it.
+#
+# The test starts its own servers from a Python environment: moto's S3 server
+# (SigV4 checked, IAM policy of docs/sync-backends.md enforced, conditional
+# writes) and WsgiDAV (Basic auth). The versions are not pinned on purpose: the
+# point is to notice when a server's behaviour moves under us. A real cloud
+# bucket (AWS S3, Backblaze B2, a hosted WebDAV) is not covered: that needs a
+# bucket and credentials, which only the repository owner can add as secrets
+# (see docs/sync-backends.md, "Testing against your own server").
+#
+# A failed run is reported by GitHub like any failed workflow.
+name: Real servers
+
+on:
+  schedule:
+    - cron: "17 3 * * 3"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: real-servers
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read # check out the code
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: real-servers
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Python environment with moto and WsgiDAV
+        run: |
+          python3 -m venv "$RUNNER_TEMP/servers"
+          "$RUNNER_TEMP/servers/bin/pip" install --quiet 'moto[server]' wsgidav cheroot
+          "$RUNNER_TEMP/servers/bin/pip" list 2>/dev/null | grep -iE '^(moto|wsgidav|cheroot|boto3) '
+      - name: Two devices against moto (S3) and WsgiDAV (WebDAV)
+        env:
+          QUIRE_SYNC_REAL_SERVERS: ${{ runner.temp }}/servers/bin/python
+        run: cargo test -p quire-sync --test remote real_servers --locked -- --nocapture --exact
