@@ -46,7 +46,10 @@ fn tasks(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let ix = cx.index.read();
     let mut rows = Vec::new();
     let mut text = String::new();
-    for r in ix.records().filter(|r| visible(cx, &r.path)) {
+    // In path order, so `limit` and the examples are the same on every call.
+    let mut notes: Vec<_> = ix.records().filter(|r| visible(cx, &r.path)).collect();
+    notes.sort_by(|x, y| x.path.cmp(&y.path));
+    for r in notes {
         if only_path.as_ref().is_some_and(|p| !r.path.as_str().eq_ignore_ascii_case(p) && !r.path.without_ext().eq_ignore_ascii_case(p)) {
             continue;
         }

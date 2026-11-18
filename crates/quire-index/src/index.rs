@@ -489,6 +489,34 @@ mod tests {
         assert!(patched > 200, "most edits patch the graph ({patched})");
     }
 
+    /// Lists an agent tool cuts at a limit come out in the same order on
+    /// every run: backlinks, typed links (both ways) and unresolved links do
+    /// not follow hash order.
+    #[test]
+    fn link_lists_do_not_follow_hash_order() {
+        let notes: Vec<(String, String)> = (0..40)
+            .map(|i| (format!("N{i:02}.md"), format!("up:: [[Hub]]\nsee [[Hub]] and [[Missing]]\nsupports:: [[N{:02}]]\n", (i + 1) % 40)))
+            .chain([("Hub.md".to_string(), "# Hub\n".to_string())])
+            .collect();
+        let raw = |order: &mut dyn Iterator<Item = &(String, String)>| {
+            let mut ix = Index::new();
+            for (p, t) in order {
+                ix.insert_record(NoteRecord::from_source(NotePath::new(p.as_str()), t), t.clone());
+            }
+            ix.refresh();
+            let hub = NotePath::new("Hub.md");
+            let back: Vec<String> = ix.backlinks(&hub).iter().map(|b| format!("{} {:?}", b.from, b.link.range)).collect();
+            let incoming: Vec<String> = ix.relations().incoming(&hub).iter().map(|e| format!("{e:?}")).collect();
+            let unresolved: Vec<String> = ix.graph().unresolved().iter().map(|(t, v)| format!("{t} {v:?}")).collect();
+            format!("{back:?}\n{incoming:?}\n{unresolved:?}")
+        };
+        let first = raw(&mut notes.iter());
+        for _ in 0..5 {
+            assert_eq!(raw(&mut notes.iter().rev()), first);
+            assert_eq!(raw(&mut notes.iter()), first);
+        }
+    }
+
     #[test]
     fn bm25_ranks_and_filters() {
         let ix = index();

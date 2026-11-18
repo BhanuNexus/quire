@@ -39,7 +39,10 @@ fn properties(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let only = opt(a, "key").map(|k| k.to_lowercase());
     let ix = cx.index.read();
     let mut keys: BTreeMap<String, (usize, BTreeSet<&'static str>, Vec<String>)> = BTreeMap::new();
-    for r in ix.records().filter(|r| visible(cx, &r.path)) {
+    // In path order, so `limit` and the examples are the same on every call.
+    let mut notes: Vec<_> = ix.records().filter(|r| visible(cx, &r.path)).collect();
+    notes.sort_by(|x, y| x.path.cmp(&y.path));
+    for r in notes {
         for (k, v) in &r.properties {
             if only.as_ref().is_some_and(|o| *o != k.to_lowercase()) {
                 continue;

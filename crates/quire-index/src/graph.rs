@@ -152,8 +152,19 @@ impl LinkGraph {
         for rec in records.clone() {
             g.add_note(rec, source(&rec.path));
         }
+        g.order_all();
         g.relate(records, source, cfg);
         g
+    }
+
+    /// Notes arrive in hash order: put every backlink list in path order (a
+    /// note's own links keep the order written), so a list cut at a limit is
+    /// the same on every run.
+    fn order_all(&mut self) {
+        #[expect(clippy::iter_over_hash_type, reason = "sorts each list in place")]
+        for v in self.backlinks.values_mut() {
+            v.sort_by(|a, b| a.from.cmp(&b.from));
+        }
     }
 
     /// One note's links: its outgoing list, its backlinks in the notes it
@@ -181,7 +192,10 @@ impl LinkGraph {
                 None => {
                     // Attachments that aren't notes (images, PDFs) aren't "unresolved notes".
                     if !link.target.contains('.') {
-                        self.unresolved.entry(link.target.clone()).or_default().push(rec.path.clone());
+                        // In path order (short lists): the same on every run.
+                        let v = self.unresolved.entry(link.target.clone()).or_default();
+                        let at = v.partition_point(|q| q <= &rec.path);
+                        v.insert(at, rec.path.clone());
                     }
                 }
             }
@@ -198,8 +212,10 @@ impl LinkGraph {
         source: &dyn Fn(&NotePath) -> Option<&'a str>,
         cfg: &LinkConfig,
     ) {
-        let typed: Vec<(NotePath, String, NotePath)> =
+        let mut typed: Vec<(NotePath, String, NotePath)> =
             self.typed.iter().flat_map(|(from, list)| list.iter().map(|(f, to)| (from.clone(), f.clone(), to.clone()))).collect();
+        // Path order (each note's links in the order written), not hash order.
+        typed.sort_by(|a, b| a.0.cmp(&b.0));
         self.derived = crate::derived::derive(records, source, &self.resolver, cfg);
         self.relations = Relations::build(typed, self.derived.clone(), cfg);
     }
@@ -243,6 +259,15 @@ impl LinkGraph {
         for rec in changed {
             if done.insert(&rec.path) {
                 self.add_note(rec, source(&rec.path));
+            }
+        }
+        // The lists the changed notes were appended to, back in path order.
+        let mut touched: Vec<NotePath> = changed.iter().flat_map(|r| self.outgoing(&r.path).to_vec()).collect();
+        touched.sort();
+        touched.dedup();
+        for t in touched {
+            if let Some(v) = self.backlinks.get_mut(&t) {
+                v.sort_by(|a, b| a.from.cmp(&b.from));
             }
         }
         let typed_same = gone.iter().zip(typed_before).all(|(p, before)| self.typed.get(*p) == before.as_ref());

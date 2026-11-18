@@ -63,7 +63,7 @@ fn list_tool(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
             notes = keyed.into_iter().map(|(_, r)| r).collect();
         }
         "title" => notes.sort_by(|x, y| x.title.to_lowercase().cmp(&y.title.to_lowercase()).then_with(|| x.path.cmp(&y.path))),
-        _ => notes.sort_by_key(|x| x.path.as_str().to_lowercase()),
+        _ => notes.sort_by(|x, y| x.path.as_str().to_lowercase().cmp(&y.path.as_str().to_lowercase()).then_with(|| x.path.cmp(&y.path))),
     }
     let mut key = a.clone();
     if let Some(o) = key.as_object_mut() {
