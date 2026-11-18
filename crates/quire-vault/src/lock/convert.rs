@@ -146,6 +146,7 @@ pub fn begin_lock(vault: &Vault, folder: &str, passphrase: Option<&str>, kdf: Kd
     }
     let key_path = NotePath::join(&folder, KEY_FILE);
     if vault.storage().exists(&key_path) {
+        #[expect(clippy::let_underscore_must_use, reason = "already locked: its key file keeps it locked; the record only backs that up")]
         let _ = vault.note_locked_folder(&folder);
         return Ok(None);
     }
@@ -484,6 +485,11 @@ pub fn begin_change_key(vault: &Vault, folder: &str, passphrase: &str, now_ms: i
         vault.keys().insert(&folder, id, again.clone());
         vault.keys().set_previous(&folder, Some(current));
     }
+    // The new recovery key must reach the person (the key file holds the new key now).
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "the record only backs up the key file, which is written and read back; an error here must not report a lock or key change that happened as failed"
+    )]
     let _ = vault.note_locked_folder(&folder);
     Ok(again.recovery_key())
 }
@@ -521,6 +527,10 @@ pub fn finish_change_key(vault: &Vault, folder: &str) -> Result<ConvertReport> {
             "{folder}/'s key file changed while its key was being changed (another device?); run it again to finish."
         )));
     }
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "the record only backs up the key file, which is written and read back; an error here must not report a lock or key change that happened as failed"
+    )]
     let _ = vault.note_locked_folder(&folder);
     Ok(report)
 }

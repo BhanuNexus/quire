@@ -219,6 +219,10 @@ impl LocalFs {
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = std::fs::metadata(&abs).map_or(0o644, |m| m.permissions().mode());
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "best effort: the text is written either way, only with the temporary file's mode"
+            )]
             let _ = tmp.as_file().set_permissions(std::fs::Permissions::from_mode(mode));
         }
         // `tempfile`'s `.tmp…` name: history skips those as writes in flight.
@@ -293,6 +297,7 @@ impl LocalFs {
         // Over the empty file just made, which only this call knows of.
         let r = std::fs::rename(&src, &dest);
         if r.is_err() {
+            #[expect(clippy::let_underscore_must_use, reason = "cleanup after a failed rename; the rename's error is returned")]
             let _ = std::fs::remove_file(&dest);
         }
         r
@@ -558,6 +563,7 @@ impl Storage for LocalFs {
         buf.push_str(line);
         buf.push('\n');
         let written = f.write_all(buf.as_bytes()).map_err(io_err(path.to_string()));
+        #[expect(clippy::let_underscore_must_use, reason = "closing the file below releases the lock anyway")]
         let _ = f.unlock();
         written
     }

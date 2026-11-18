@@ -33,6 +33,10 @@ quire-pdf, quire-spell. Edition: both (P5).
   have open fails: use the `Storage` methods, or `quire_base::fs::replace_file` for a temporary file you made.
 - Call `Vault::open_local` outside `quire_app::secure_state::open_vault`: a locked folder whose key file is missing would be
   treated as plain. [lint] `clippy.toml`
+- Drop a `Result` with `let _ =`, or turn an error into another with `map_err(|_| ..)`: pass it up with `?`, tell the person
+  (`Vault::take_history_trouble` collects history trouble), or put `#[expect(clippy::let_underscore_must_use, reason = "...")]`
+  on the statement saying why losing it is right. A dropped save or history error is lost work nobody hears about.
+  [lint] `#![warn(clippy::let_underscore_must_use, clippy::map_err_ignore)]` in `lib.rs`
 - Write to storage inside the `still` closure of `write_bytes_if` or `trash_if` (it runs under the write lock).
 - Add a `Storage` method whose default silently ignores locked folders (`set_locked_folders` is a no-op by default on purpose).
 

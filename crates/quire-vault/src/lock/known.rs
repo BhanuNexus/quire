@@ -297,15 +297,18 @@ impl crate::Vault {
         if shared_before != shared_now {
             let p = NotePath::new(SHARED_RECORD);
             let r = if shared_now.is_empty() { self.storage.remove(&p) } else { self.storage.write_atomic(&p, &Record::text(shared_now)) };
-            // Best effort: this process remembers the folder either way, and
-            // this device's own record is the one nobody else can change.
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "best effort: this process remembers the folder either way, and this device's own record \
+                          is the one nobody else can change"
+            )]
             let _ = r;
         }
         let now = self.known.folders();
         if let Some(local) = self.known.local()
             && mine_before != now.as_slice()
         {
-            // Best effort, as above: this process remembers the folder either way.
+            #[expect(clippy::let_underscore_must_use, reason = "best effort, as above: this process remembers the folder either way")]
             let _ = quire_base::fs::write_atomic(&local, Record::text(&now).as_bytes(), quire_base::fs::Options::STATE);
         }
         self.storage.set_locked_folders(&self.known.hint());

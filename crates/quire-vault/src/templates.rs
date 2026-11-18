@@ -14,7 +14,6 @@
 //! Unknown placeholders are kept as written.
 
 use std::collections::{BTreeMap, HashMap};
-use std::fmt::Write as _;
 use std::hash::BuildHasher;
 
 use chrono::{DateTime, Datelike, Duration, Local, Months, NaiveDate, Weekday};
@@ -244,9 +243,7 @@ fn render_date(key: &str, now: DateTime<Local>) -> Option<String> {
     if items.iter().any(|i| matches!(i, chrono::format::Item::Error)) {
         return None;
     }
-    let mut s = String::new();
-    let _ = write!(s, "{}", date.format_with_items(items.into_iter()));
-    Some(s)
+    Some(date.format_with_items(items.into_iter()).to_string())
 }
 
 /// `+7d`, `-1w`, `+2m`, `+1y` from now.

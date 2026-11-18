@@ -132,6 +132,8 @@ impl Rescanner {
     /// Learn the vault as it is now, in the background (what a rescan compares with).
     fn start(self: &Arc<Self>) {
         let me = Arc::clone(self);
+        // Without this first scan, the first rescan reports every file as changed: more work, nothing lost.
+        #[expect(clippy::let_underscore_must_use, reason = "best effort, see above")]
         let _ = std::thread::Builder::new().name("quire-watch-scan".into()).spawn(move || {
             let _one = me.running.lock().unwrap_or_else(PoisonError::into_inner);
             let now = scan(&me.root);
@@ -165,10 +167,14 @@ impl Rescanner {
             return;
         }
         let me = Arc::clone(self);
-        let _ = std::thread::Builder::new().name("quire-watch-rescan".into()).spawn(move || {
+        let started = std::thread::Builder::new().name("quire-watch-rescan".into()).spawn(move || {
             std::thread::sleep(RESCAN_SETTLE);
             me.rescan_now();
         });
+        if started.is_err() {
+            // No thread now: a later ask tries again, instead of waiting forever for this one.
+            self.pending.store(false, Ordering::SeqCst);
+        }
     }
 
     fn rescan_now(&self) {
@@ -178,7 +184,9 @@ impl Rescanner {
         let now = scan(&self.root);
         let before = self.seen.lock().unwrap_or_else(PoisonError::into_inner).replace(now.clone()).unwrap_or_default();
         for ev in differences(&before, &now) {
-            let _ = self.tx.send(ev);
+            if self.tx.send(ev).is_err() {
+                break; // the watcher was dropped
+            }
         }
     }
 }
@@ -216,6 +224,7 @@ impl VaultWatcher {
                 }
                 if let Some(msg) = VaultEvent::from_fs(rel.clone(), ev.kind, p.exists()) {
                     on_event.saw(&rel, p);
+                    #[expect(clippy::let_underscore_must_use, reason = "the receiver is gone only when the watcher was dropped")]
                     let _ = tx.send(msg);
                 }
             }

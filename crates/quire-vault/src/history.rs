@@ -64,8 +64,9 @@ fn folder_for(note: &NotePath) -> String {
 
 fn gzip(s: &str) -> Vec<u8> {
     let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-    let _ = e.write_all(s.as_bytes());
-    e.finish().unwrap_or_default()
+    // Into memory: these cannot fail, and an empty snapshot would lose the version.
+    e.write_all(s.as_bytes()).expect("compressing into memory cannot fail");
+    e.finish().expect("compressing into memory cannot fail")
 }
 
 fn gunzip(b: &[u8]) -> std::io::Result<String> {

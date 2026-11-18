@@ -6,6 +6,7 @@
 //! is the repository that knows about notes, names, templates and refactors.
 
 #![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
+#![warn(clippy::let_underscore_must_use, clippy::map_err_ignore)]
 
 mod hash;
 mod history;

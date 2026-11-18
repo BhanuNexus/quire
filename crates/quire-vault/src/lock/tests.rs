@@ -604,6 +604,7 @@ fn an_interrupted_lock_keeps_a_newer_encrypted_edit_from_another_device() {
     let fs = loop {
         let fs = Arc::new(MemFs::with_files(files.iter().copied()));
         let crashing = Vault::new(Arc::new(Crash { inner: Arc::clone(&fs), left: AtomicUsize::new(n) }));
+        #[expect(clippy::let_underscore_must_use, reason = "the crash makes it fail at some step; the test checks what is left")]
         let _ = lock_folder(&crashing, "Journal", Some(PASS), Kdf::TEST, 1);
         let all = ["Journal/Day 1.md", "Journal/Trips/Lisbon.md", "Journal/photo.jpg"];
         if all.iter().all(|p| fs.exists(&np(p)) && fs.exists(&stored(&np(p)))) {
@@ -996,6 +997,7 @@ fn keep_both_makes_no_copy_of_a_file_identical_to_its_encrypted_one() {
     let fs = loop {
         let fs = Arc::new(MemFs::with_files(files.iter().copied()));
         let crashing = Vault::new(Arc::new(Crash { inner: Arc::clone(&fs), left: AtomicUsize::new(n) }));
+        #[expect(clippy::let_underscore_must_use, reason = "the crash makes it fail at some step; the test checks what is left")]
         let _ = lock_folder(&crashing, "Journal", Some(PASS), Kdf::TEST, 1);
         if fs.exists(&np("Journal/Day 1.md")) && fs.exists(&stored(&np("Journal/Day 1.md"))) {
             break fs;
