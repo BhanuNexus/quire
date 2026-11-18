@@ -1,0 +1,61 @@
+# Coverage-guided fuzzing (cargo-fuzz / libFuzzer) of the parsers that read bytes
+# another device or server can send. See fuzz/README.md; weekly in
+# .github/workflows/fuzz.yml.
+#
+# A separate workspace on purpose: `cargo ... --workspace`, `cargo deny`, the
+# layering check and the release never see this crate, and the project stays
+# stable-only (running a target needs a nightly compiler for libFuzzer's
+# sanitizer flags; `cargo check` on stable is enough to keep it compiling).
+[package]
+name = "quire-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "AGPL-3.0-or-later"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+quire-markdown = { path = "../crates/quire-markdown" }
+quire-import = { path = "../crates/quire-import" }
+quire-sync = { path = "../crates/quire-sync", features = ["remote"] }
+
+[workspace]
+
+[[bin]]
+name = "front_matter"
+path = "fuzz_targets/front_matter.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "scan_inlines"
+path = "fuzz_targets/scan_inlines.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "obsidian_expr"
+path = "fuzz_targets/obsidian_expr.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sync_wire"
+path = "fuzz_targets/sync_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sync_xml"
+path = "fuzz_targets/sync_xml.rs"
+test = false
+doc = false
+bench = false

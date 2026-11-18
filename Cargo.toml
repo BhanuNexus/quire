@@ -1,5 +1,7 @@
 [workspace]
 resolver = "3"
+# fuzz/ is its own workspace (cargo-fuzz, nightly only): keep it out of every --workspace command.
+exclude = ["fuzz"]
 members = [
     "crates/quire-base",
     "crates/quire-text",
