@@ -798,3 +798,72 @@ fn no_edit_is_written_without_the_version_from_before() {
     assert!(r.is_err(), "{r:?}");
     assert_eq!(read(&vault, "wiki/Ropes.md"), "# Ropes\n");
 }
+
+/// A vault whose note `failing` can't be read (a file held open on Windows,
+/// a permission taken away), as `std::fs` reports it.
+struct Unreadable {
+    inner: quire_vault::MemFs,
+    failing: std::sync::Mutex<Option<NotePath>>,
+}
+
+impl quire_vault::Storage for Unreadable {
+    fn list(&self) -> quire_vault::Result<Vec<NotePath>> {
+        self.inner.list()
+    }
+    fn read_bytes(&self, p: &NotePath) -> quire_vault::Result<Vec<u8>> {
+        if self.failing.lock().unwrap().as_ref() == Some(p) {
+            let source = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+            return Err(quire_vault::VaultError::Io { path: p.to_string(), source });
+        }
+        self.inner.read_bytes(p)
+    }
+    fn write_bytes_atomic(&self, p: &NotePath, b: &[u8]) -> quire_vault::Result<()> {
+        self.inner.write_bytes_atomic(p, b)
+    }
+    fn rename(&self, a: &NotePath, b: &NotePath) -> quire_vault::Result<()> {
+        self.inner.rename(a, b)
+    }
+    fn trash(&self, p: &NotePath) -> quire_vault::Result<()> {
+        self.inner.trash(p)
+    }
+    fn exists(&self, p: &NotePath) -> bool {
+        self.inner.exists(p)
+    }
+    fn modified(&self, p: &NotePath) -> quire_vault::Result<std::time::SystemTime> {
+        self.inner.modified(p)
+    }
+    fn absolute(&self, _: &NotePath) -> Option<std::path::PathBuf> {
+        None
+    }
+    fn list_under(&self, f: &str) -> quire_vault::Result<Vec<NotePath>> {
+        self.inner.list_under(f)
+    }
+    fn remove(&self, p: &NotePath) -> quire_vault::Result<()> {
+        self.inner.remove(p)
+    }
+}
+
+/// A note that can't be read is not a note that doesn't exist: neither an
+/// agent's edit nor accepting a suggestion says "doesn't exist" for it.
+#[test]
+fn a_note_that_cant_be_read_is_not_reported_as_missing() {
+    let storage = Arc::new(Unreadable {
+        inner: quire_vault::MemFs::with_files([("wiki/A.md", "one\n"), ("Rope.md", "a\nb\n")]),
+        failing: std::sync::Mutex::new(Some(NotePath::new("wiki/A.md"))),
+    });
+    let vault = Vault::new(Arc::<Unreadable>::clone(&storage));
+    let store = AgentStore::open(&vault, DeviceInfo { id: "d_test".into(), name: "Test".into() }, FixedClock::new(T0));
+    let agent = Actor::agent("mcp:claude-code", "Claude Code", Via::McpStdio, "d_test");
+    let e = store.submit(&agent, edit("wiki/A.md", "two\n")).unwrap_err();
+    assert_eq!(e.code(), "io", "{e}");
+    // Accepting a suggestion for a note that can't be read now.
+    let SubmitOutcome::Proposed { id, .. } = store.submit(&agent, edit("Rope.md", "A\nb\n")).unwrap() else { panic!() };
+    let path = NotePath::new("Rope.md");
+    let hunks = store.review(&id, &path, "a\nb\n").hunks;
+    *storage.failing.lock().unwrap() = Some(path.clone());
+    let e = store.accept_in_file(&id, &path, &[accept(&hunks[0])], None).unwrap_err();
+    assert!(matches!(e, DecideError::Write(WriteError::Io(_))), "{e:?}");
+    assert!(store.proposal(&id).is_some(), "still waiting");
+    *storage.failing.lock().unwrap() = None;
+    assert_eq!(read(&vault, "Rope.md"), "a\nb\n");
+}

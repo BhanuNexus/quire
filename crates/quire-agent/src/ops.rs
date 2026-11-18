@@ -194,7 +194,9 @@ impl AgentStore {
         decisions: &[HunkDecision],
         seen: Option<i64>,
     ) -> Result<Decided, DecideError> {
-        let current = self.vault().read(path).map_err(|_| WriteError::NotFound { path: path.clone() })?;
+        // Only a missing note is `NotFound`: a note that can't be read now (held
+        // open, no permission) says so, and is never taken for one that's gone.
+        let current = self.vault().read(path).map_err(WriteError::from)?;
         self.decide_inner(id, path, decisions, &current, seen, |p, text| {
             if text == current {
                 return Ok((None, None));

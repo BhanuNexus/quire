@@ -657,7 +657,8 @@ impl AgentStore {
 
     pub(crate) fn plan_one(&self, actor: &Actor, change: Change, limit: u64) -> Result<Planned, WriteError> {
         let vault = &self.inner.vault;
-        let read = |p: &NotePath| vault.storage().read(p).map_err(|_| WriteError::NotFound { path: p.clone() });
+        // Only a missing note is `NotFound` (see `WriteError::from`); any other read error is `Io`.
+        let read = |p: &NotePath| vault.storage().read(p).map_err(WriteError::from);
         let mut props = None;
         let (change, op, before, after) = match change {
             Change::Create { path, text } => {
