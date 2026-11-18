@@ -38,7 +38,7 @@ shellcheck --severity=error packaging/*.sh packaging/*/*.sh apps/quire-sync-serv
 pipx run zizmor==1.31.1 --offline --format=github .github/workflows/
 ```
 
-CI runs the workspace tests with `cargo nextest run --profile ci` (`.config/nextest.toml`: a test over 5 minutes is terminated; JUnit is uploaded) plus `cargo test --doc`, which nextest does not run; `cargo test` stays the local default. CI also runs the agent edit eval, the `perf` budgets (`packaging/perf-check.py`), the desktop-entry, AppStream, Flatpak and installer checks, and a DCO job. `cargo test --workspace` compiles candle: a cold build takes 10+ minutes.
+CI runs the workspace tests with `cargo nextest run --profile ci` (`.config/nextest.toml`: a test over 5 minutes is terminated; JUnit is uploaded) plus `cargo test --doc`, which nextest does not run; `cargo test` stays the local default. Weekly workflows (see each file's header, `docs/design/0.14-health-ci.md`): `real-servers` (the S3 and WebDAV sync test; it fails in CI unless `QUIRE_SYNC_REAL_SERVERS` is set, `skip` to opt out), `proptest` (50,000 cases), `fuzz`, `mutants` (also advisory on pull requests that touch `quire-markdown`, `quire-import` or `quire-canvas`) and `ratchet` (counts that may only go down: `packaging/ratchet.toml`). CI also runs the agent edit eval, the `perf` budgets (`packaging/perf-check.py`), the desktop-entry, AppStream, Flatpak and installer checks, and a DCO job. `cargo test --workspace` compiles candle: a cold build takes 10+ minutes.
 
 **Small machine** (2 CPUs, about 7 GB RAM): build crate by crate with `-p`, give each worktree its own `target/`, check `df -h /` before a big build, and set on every cargo command:
 
