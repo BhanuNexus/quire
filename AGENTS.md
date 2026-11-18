@@ -34,6 +34,7 @@ cargo deny check advisories bans licenses sources   # cargo install cargo-deny
 typos                                                # cargo install typos-cli
 python3 -I packaging/check-layering.py && packaging/check-design-notes.sh && packaging/check-comment-labels.sh
 packaging/test-unpack-engine.sh && packaging/test-release-files.sh && packaging/test-check-ci-green.sh
+python3 -I packaging/test-check-changelog.py && python3 -I packaging/test-ratchet.py
 shellcheck --severity=error packaging/*.sh packaging/*/*.sh apps/quire-sync-server/*.sh
 pipx run zizmor==1.31.1 --offline --format=github .github/workflows/
 ```
@@ -89,7 +90,7 @@ Each is tagged by what enforces it: `[test]`, `[lint]` (clippy or cargo-deny; th
 ## Commits and the changelog
 
 - Every commit needs a DCO sign-off: `git commit -s` (CI's `dco` job fails a pull request otherwise). No other trailer is required. Imperative, focused commits, with tests for behaviour changes.
-- **One changelog rule:** a user-visible change gets one bullet under `## [Unreleased]` in `CHANGELOG.md` (Added, Changed, Fixed or Security): at most two sentences, about what a person sees, not what the code does. Detail goes in the design note. CI warns when a change to `crates/` or `apps/` has no changelog line; label the pull request `no-changelog` when none is due. No fragments, no other changelog file. Expect a trivial `CHANGELOG.md` conflict; keep edits to shared files small.
+- **One changelog rule:** a user-visible change gets one bullet under `## [Unreleased]` in `CHANGELOG.md` (Added, Changed, Fixed or Security): at most two sentences, about what a person sees, not what the code does. Detail goes in the design note. CI's `changelog` job fails a pull request that changes source under `crates/` or `apps/` (not `tests/`, fixtures or `*.md`) without `CHANGELOG.md`, unless it is labelled `no-changelog` (re-run the job after labelling) or comes from Dependabot (`packaging/check-changelog.py`). No fragments, no other changelog file. Expect a trivial `CHANGELOG.md` conflict; keep edits to shared files small.
 
 ## Never
 

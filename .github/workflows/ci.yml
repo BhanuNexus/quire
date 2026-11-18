@@ -67,9 +67,11 @@ jobs:
           fi
 
   changelog:
-    # A warning, never a failure: a change to crates/ or apps/ should carry a
-    # CHANGELOG.md line unless the pull request is labelled `no-changelog`.
-    # (Adding the label does not re-run CI: re-run this job.)
+    # Fails when a pull request changes source under crates/ or apps/ (not tests,
+    # fixtures or *.md) and not CHANGELOG.md, unless it is labelled
+    # `no-changelog` or comes from Dependabot (packaging/check-changelog.py).
+    # Skipped on a push to main, which counts as passed in `ci-result`. Adding the
+    # label does not re-run CI: re-run this job.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -85,20 +87,8 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
           LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
-        run: |
-          if ! git diff --name-only "$BASE...$HEAD" | grep -qE '^(crates|apps)/'; then
-            echo "No change under crates/ or apps/: no changelog line needed."
-            exit 0
-          fi
-          if printf '%s' "$LABELS" | grep -q '"no-changelog"'; then
-            echo "Labelled no-changelog."
-            exit 0
-          fi
-          if git diff "$BASE...$HEAD" -- CHANGELOG.md | grep -q '^+[^+]'; then
-            echo "CHANGELOG.md has a new line."
-            exit 0
-          fi
-          echo "::warning title=No changelog line::This pull request changes crates/ or apps/ but adds no line to CHANGELOG.md. Add one bullet under [Unreleased] (what a person sees, at most two sentences), or label the pull request no-changelog. See AGENTS.md."
+          ACTOR: ${{ github.actor }}
+        run: python3 -I packaging/check-changelog.py --base "$BASE" --head "$HEAD" --labels "$LABELS" --actor "$ACTOR"
 
   lint:
     needs: changes
@@ -205,6 +195,8 @@ jobs:
           python3 -I packaging/check-layering.py
       - name: Affected-crates script (which crates a pull request tests)
         run: python3 -I packaging/test-affected-crates.py
+      - name: Changelog check script (made-up path lists and a throwaway git repository)
+        run: python3 -I packaging/test-check-changelog.py
       - name: Ratchet script (the weekly count of rules that may only go down; made-up clippy output)
         run: python3 -I packaging/test-ratchet.py
       - name: Design notes carry a status block, are listed, and link only inside the repository
