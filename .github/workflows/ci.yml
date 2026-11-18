@@ -205,6 +205,8 @@ jobs:
           python3 -I packaging/check-layering.py
       - name: Affected-crates script (which crates a pull request tests)
         run: python3 -I packaging/test-affected-crates.py
+      - name: Ratchet script (the weekly count of rules that may only go down; made-up clippy output)
+        run: python3 -I packaging/test-ratchet.py
       - name: Design notes carry a status block, are listed, and link only inside the repository
         run: |
           packaging/test-check-design-notes.sh
