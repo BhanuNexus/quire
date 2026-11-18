@@ -106,6 +106,9 @@ pub(super) struct Session {
     pins: Pins,
     /// This session published its device record and looked for key changes.
     refreshed: bool,
+    /// Key news taken from the transport and not yet acted on: a refresh
+    /// that fails keeps it, so the next pass tries again.
+    key_news: bool,
     /// Why this device can't take the vault's newest key (it was removed).
     pub(super) key_stuck: Option<String>,
     /// Compaction was tried this session.
@@ -162,6 +165,7 @@ impl Session {
             secret,
             pins,
             refreshed: false,
+            key_news: false,
             key_stuck: None,
             compacted: false,
             notices: notice.into_iter().chain(selection_warnings).collect(),
@@ -208,12 +212,12 @@ impl Session {
         if let Some((t, _, _)) = &self.lane {
             t.set_floor(h.level);
         }
-        let news = match &self.link {
+        self.key_news |= match &self.link {
             Link::Remote(t) => t.take_key_news(),
             // A folder is read here; a server answers one small request.
             _ => true,
         };
-        if !news && self.refreshed {
+        if !self.key_news && self.refreshed {
             return;
         }
         let Some(secret) = self.secret.clone() else { return };
@@ -243,8 +247,12 @@ impl Session {
             &mut self.pins,
             &h.trust,
         ) else {
+            // Offline, or the level unreadable after a key change: the
+            // news is kept and every pass tries again until it works. Not
+            // reported here; the pass reports the storage's own errors.
             return;
         };
+        self.key_news = false;
         harden::save_pins(&self.root, &self.pins);
         if r.keys.current() > self.keys.current() && harden::store_keys(&self.cfg.space, &r.keys).is_ok() {
             if let Some(k) = r.keys.current_raw() {

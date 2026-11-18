@@ -442,6 +442,46 @@ fn a_failed_move_keeps_the_old_setup_and_unsent_changes_stop_it() {
     assert!(SyncConfig::load(&va).unwrap().transport_label().starts_with("folder"));
 }
 
+/// A device that hears of a key change while the storage is failing tries
+/// the key refresh again on its next pass, in the same session: it doesn't
+/// keep the old key until another key change or a restart.
+#[test]
+fn a_key_refresh_that_fails_is_tried_again_next_pass() {
+    let (srv, target) = remote_targets().remove(0);
+    let dir = tempfile::tempdir().unwrap();
+    let (va, vb, vc) = (dir.path().join("A"), dir.path().join("B"), dir.path().join("C"));
+    for d in [&va, &vb, &vc] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    std::fs::write(va.join("Plan.md"), "# Plan\n").unwrap();
+    sync_create_at(&va, &target, "correct horse battery", "laptop", &Selection::default()).unwrap();
+    sync_once_at(&va).unwrap();
+    let space = sync_list(&target).unwrap().remove(0).space;
+    sync_join_at(&vb, &target, &space, "correct horse battery", "phone", &Selection::default()).unwrap();
+    sync_join_at(&vc, &target, &space, "correct horse battery", "tablet", &Selection::default()).unwrap();
+    for v in [&vb, &vc] {
+        sync_once_at(v).unwrap();
+    }
+    // B's long-lived session (as in the worker) has made its first pass.
+    let (vault, cfg, token, key) = open_parts(&vb).unwrap();
+    let mut b = Session::new(vb.clone(), vault, cfg, &token, key, lock_sync(&vb).unwrap()).unwrap();
+    assert!(matches!(b.pass(APP_POLL).status, SyncStatus::Synced(_)));
+    // A removes the tablet: a new vault key, and a note sealed with it.
+    let tablet = sync_devices_at(&va).unwrap().devices.into_iter().find(|d| d.label.starts_with("tablet")).unwrap().id;
+    sync_remove_device_at(&va, &tablet, "second pass phrase").unwrap();
+    std::fs::write(va.join("After.md"), "after the removal\n").unwrap();
+    sync_once_at(&va).unwrap();
+    // B hears of it, and the storage fails on the pass that would take the key.
+    b.pass(APP_POLL);
+    assert!(!vb.join("After.md").exists());
+    srv.state.expired.store(true, Ordering::Relaxed);
+    assert!(!matches!(b.pass(APP_POLL).status, SyncStatus::Synced(_)));
+    srv.state.expired.store(false, Ordering::Relaxed);
+    let status = b.pass(APP_POLL).status;
+    assert!(matches!(status, SyncStatus::Synced(_)), "the refresh wasn't tried again: {status:?}");
+    assert_eq!(std::fs::read_to_string(vb.join("After.md")).unwrap(), "after the removal\n", "the refresh was tried again");
+}
+
 /// Review finding 5: one sync process per vault and device. A second
 /// worker (the app next to `serve --sync`) waits and says so, then takes
 /// over; one-off commands refuse.
