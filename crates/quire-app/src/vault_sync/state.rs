@@ -1,7 +1,7 @@
 //! The sync engine's files in `.quire/sync/`: the per-process lock, state
 //! load and save, and the shared lane's state.
 
-use super::{NotePath, Path, PathBuf, SyncConfig, SyncState, Vault, folder, sync_dir};
+use super::{NotePath, Path, PathBuf, SyncConfig, SyncState, Vault, folder, journal, sync_dir};
 
 /// Where `config.json` keeps the device id while a selection is set: Quire
 /// 0.9 needs `device`, so it doesn't take the file for a sync setup. 0.9
@@ -98,12 +98,16 @@ pub(super) fn icloud_stub(path: &str) -> String {
 /// reads the latter: if it opened this folder it would start afresh, which
 /// can't delete anything, rather than read notes outside the selection as
 /// deleted.
+/// Since 0.14 the state is a folder named after it (`state.d`, see
+/// [`journal`]); the file is read once, to migrate.
 pub(super) fn state_file(cfg: &SyncConfig) -> &'static str {
     if cfg.selection().is_everything() { "state.json" } else { "state-partial.json" }
 }
 
+/// The engine state as last saved, for a look (a fresh one when there's
+/// none or it can't be read). A pass opens it with [`journal::Journal::open`].
 pub(super) fn load_state(root: &Path, cfg: &SyncConfig) -> SyncState {
-    load_state_named(root, state_file(cfg))
+    journal::peek(root, state_file(cfg))
 }
 
 /// 0.11: no plain text of a locked folder's notes stays in the sync state.
@@ -111,17 +115,20 @@ pub(super) fn load_state(root: &Path, cfg: &SyncConfig) -> SyncState {
 /// was moved in) is gone from its path once the delete is sent, and its
 /// text with it; what can stay longer is cleared here: the last synced text
 /// of deleted notes and of copies kept outside the selection, at paths in
-/// a locked folder.
+/// a locked folder. Their texts then leave the packs at the next commit
+/// (`journal::Journal::commit`).
 pub(super) fn scrub_locked_text(vault: &Vault, state: &mut SyncState) {
-    let locked = |p: &str| !quire_sync::engine::is_attachment(p) && vault.locked_folder(&NotePath::new(p)).is_some();
+    let locked = |p: &str| in_locked_folder(vault, p);
+    let empty = quire_sync::Print::of("");
     for t in state.files.values_mut() {
         // Deleted, or gone from its path while its delete waits (0.13.2):
         // either way its plain text is no longer on this disk.
-        if locked(&t.path) && (t.deleted || !vault.storage().exists(&NotePath::new(&t.path))) {
-            t.base.clear();
+        if locked(&t.path) && t.base != empty && (t.deleted || !vault.storage().exists(&NotePath::new(&t.path))) {
+            t.base = empty;
+            t.disk = None;
         }
         if let Some(k) = t.kept.as_mut().filter(|k| locked(&k.path)) {
-            k.base.clear();
+            k.base = empty;
         }
     }
     for (p, left) in &mut state.left {
@@ -131,53 +138,18 @@ pub(super) fn scrub_locked_text(vault: &Vault, state: &mut SyncState) {
     }
 }
 
-pub(super) fn save_state(root: &Path, cfg: &SyncConfig, state: &SyncState) -> Result<(), String> {
-    save_state_named(root, state_file(cfg), state)
+/// Whether `path` is a note in a locked folder of `vault` now.
+pub(super) fn in_locked_folder(vault: &Vault, path: &str) -> bool {
+    !quire_sync::engine::is_attachment(path) && vault.locked_folder(&NotePath::new(path)).is_some()
 }
 
 /// The engine state of a sync folder's settings lane.
 pub(super) const SHARED_STATE_FILE: &str = "state-shared.json";
-
-/// The engine state as saved, for a look (a fresh one when there's none or
-/// it can't be read). A pass opens it with [`open_state_named`].
-fn load_state_named(root: &Path, name: &str) -> SyncState {
-    std::fs::read_to_string(sync_dir(root).join(name)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
-}
-
-/// The engine state for a sync session (0.13.2). None saved yet: a fresh
-/// one. A file that can't be read now (no permission, a disk error) is an
-/// error: starting afresh over it would forget what was synced. A file
-/// that is there but damaged is kept aside, sync starts afresh, and the
-/// notice says so.
-pub(super) fn open_state_named(root: &Path, name: &str) -> Result<(SyncState, Option<String>), String> {
-    let path = sync_dir(root).join(name);
-    let bytes = match std::fs::read(&path) {
-        Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((SyncState::default(), None)),
-        Err(e) => return Err(format!("Couldn't read what sync did last ({}): {e}", path.display())),
-    };
-    if let Ok(state) = serde_json::from_slice(&bytes) {
-        return Ok((state, None));
-    }
-    let aside = crate::atomic::keep_unreadable(&path).ok_or_else(|| format!("Couldn't keep a copy of the damaged {}", path.display()))?;
-    let notice = format!(
-        "Sync's record of what it last did on this device was damaged, so it started afresh (the old record is kept as “{}”). Nothing is deleted; a note that differs from the synced version is kept next to it as a copy, like “Plan (2).md”.",
-        aside.display()
-    );
-    Ok((SyncState::default(), Some(notice)))
-}
-
-/// Saved whole and flushed to disk, so a power cut leaves the old state or
-/// the new one (0.13.2).
-pub(super) fn save_state_named(root: &Path, name: &str, state: &SyncState) -> Result<(), String> {
-    let bytes = serde_json::to_vec(state).map_err(|e| e.to_string())?;
-    crate::atomic::write(&sync_dir(root).join(name), &bytes, false).map_err(|e| e.to_string())
-}
 
 /// Whether a sync folder's settings lane runs on this device: turned on
 /// here, or started by another device and never run (so never turned off)
 /// here.
 pub(super) fn runs_shared_lane(root: &Path, cfg: &SyncConfig) -> bool {
     let Some(dir) = &cfg.folder else { return false };
-    cfg.shared_state || (folder::lane_exists(dir, &cfg.space, folder::SHARED_LANE) && !sync_dir(root).join(SHARED_STATE_FILE).exists())
+    cfg.shared_state || (folder::lane_exists(dir, &cfg.space, folder::SHARED_LANE) && !journal::exists(root, SHARED_STATE_FILE))
 }

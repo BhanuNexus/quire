@@ -281,12 +281,24 @@ pub(super) fn open_parts(root: &Path) -> Result<(Vault, SyncConfig, String, Vaul
 
 /// One sync pass of the vault at `root`, in this thread (`quire-cli sync once`).
 pub fn sync_once_at(root: &Path) -> Result<Report, String> {
+    sync_pass_at(root, false)
+}
+
+/// [`sync_once_at`], reading every note again first: a change that kept its
+/// file's size and time is found too (`docs/design/0.14-sync-speed.md` §3.1;
+/// a running sync does this by itself once a day).
+pub fn sync_verify_at(root: &Path) -> Result<Report, String> {
+    sync_pass_at(root, true)
+}
+
+fn sync_pass_at(root: &Path, verify: bool) -> Result<Report, String> {
     let (vault, cfg, token, key) = open_parts(root)?;
     let lock = lock_sync(root).map_err(|e| match e {
         LockError::Busy { .. } => format!("{ALREADY_SYNCING}; it keeps this vault in sync, nothing to do here."),
         LockError::Io(_) => e.to_string(),
     })?;
     let mut session = Session::new(root.to_path_buf(), vault, cfg, &token, key, lock)?;
+    session.verify = verify;
     if let Some(notice) = session.too_old() {
         return Err(notice);
     }

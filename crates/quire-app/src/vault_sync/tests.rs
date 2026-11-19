@@ -9,17 +9,17 @@ fn vault_store_never_overwrites_a_newer_save() {
     let vault = Vault::open_local(dir.path()).unwrap();
     vault.write(&NotePath::new("A.md"), "one").unwrap();
     let mut store = VaultStore::new(vault.clone());
-    snapshot_reads(&mut store).unwrap();
+    begin_pass(&mut store).unwrap();
     // The editor saves after the snapshot…
     vault.write(&NotePath::new("A.md"), "edited in the app").unwrap();
     // …so the engine's write is refused.
     assert!(store.write("A.md", "from sync").is_err());
     assert_eq!(vault.read(&NotePath::new("A.md")).unwrap(), "edited in the app");
-    snapshot_reads(&mut store).unwrap();
+    begin_pass(&mut store).unwrap();
     store.write("A.md", "from sync").unwrap();
     assert_eq!(store.list().unwrap(), vec!["A.md".to_string()]);
     // Deletes go to the trash.
-    snapshot_reads(&mut store).unwrap();
+    begin_pass(&mut store).unwrap();
     store.remove("A.md").unwrap();
     assert!(store.read("A.md").is_none());
 }
@@ -577,12 +577,12 @@ fn a_selective_config_is_off_limits_to_0_9() {
 fn sync_writes_check_the_file_as_one_step() {
     let vault = Vault::in_memory(&[("Plan.md", "one\n")]);
     let mut store = VaultStore::new(vault.clone());
-    snapshot_reads(&mut store).unwrap();
+    begin_pass(&mut store).unwrap();
     vault.write(&NotePath::new("Plan.md"), "one, saved meanwhile\n").unwrap();
     assert!(store.write("Plan.md", "from sync\n").is_err());
     assert!(store.remove("Plan.md").is_err());
     assert_eq!(vault.read(&NotePath::new("Plan.md")).unwrap(), "one, saved meanwhile\n");
-    snapshot_reads(&mut store).unwrap();
+    begin_pass(&mut store).unwrap();
     store.write("Plan.md", "from sync\n").unwrap();
     assert_eq!(vault.read(&NotePath::new("Plan.md")).unwrap(), "from sync\n");
     assert!(store.write("New.md", "new\n").is_ok(), "a new file, where none was read");
@@ -632,12 +632,13 @@ fn a_selective_device_never_deletes_what_it_doesnt_hold() {
     assert_eq!(std::fs::read_to_string(va.join("Journal/Today.md")).unwrap(), "private day, later\n");
     let s = sync_summary_at(&vb).unwrap();
     assert_eq!((s.tracked, s.outside), (3, 2));
-    assert!(sync_dir(&vb).join("state-partial.json").exists() && !sync_dir(&vb).join("state.json").exists());
+    assert!(sync_dir(&vb).join("state-partial.d").exists() && !sync_dir(&vb).join("state.d").exists());
+    assert!(!sync_dir(&vb).join("state-partial.json").exists() && !sync_dir(&vb).join("state.json").exists());
     // Widening fetches the rest, still deleting nothing.
     sync_set_selection_at(&vb, &Selection::default()).unwrap();
     sync_once_at(&vb).unwrap();
     assert!(vb.join("Journal/Today.md").exists() && vb.join("Inbox.md").exists());
-    assert!(sync_dir(&vb).join("state.json").exists());
+    assert!(sync_dir(&vb).join("state.d").exists() && !sync_dir(&vb).join("state-partial.d").exists());
     assert_eq!(std::fs::read_to_string(va.join("Work/Plan.md")).unwrap(), "plan\n");
 }
 
@@ -678,7 +679,7 @@ impl Pair {
     fn pass(e: &mut Engine, root: &Path, t: &FolderTransport) -> Result<Report, String> {
         let v = Vault::open_local(root).map_err(|e| e.to_string())?;
         let mut st = VaultStore::new(v);
-        snapshot_reads(&mut st)?;
+        begin_pass(&mut st)?;
         e.sync(&mut st, t, "2026-11-16").map_err(|e| e.to_string())
     }
 
@@ -701,14 +702,27 @@ fn locking_most_of_a_vault_syncs_and_leaves_no_plain_text() {
     notes.extend((0..15).map(|i| (format!("Notes/{i:02}.md"), format!("note {i}\n"))));
     let refs: Vec<(&str, &str)> = notes.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
     let mut p = Pair::new(&refs);
+    // Device A's record on disk, as its session keeps it.
+    let mut opened = journal::Journal::open(&p.va, "state.json").unwrap();
+    for pr in journal::live_prints(&p.ea.state) {
+        let text = p.ea.bases().get(&pr).unwrap().unwrap();
+        quire_sync::Bases::put(&mut opened.bases, pr, &text).unwrap();
+    }
+    opened.journal.commit(&p.ea.state, 0, &|_: &str| false).unwrap();
+    let in_packs = |p: &Pair| journal::pack_texts(&p.va, "state.json").iter().any(|t| t.contains("secret day"));
+    assert!(in_packs(&p));
     let va = Vault::open_local(&p.va).unwrap();
     quire_vault::lock::lock_folder(&va, "Journal", Some("a passphrase for the test"), quire_vault::lock::Kdf::TEST, 1).unwrap();
     // Even before the deletes go (a pass that fails for another
     // reason), the plain text of the locked notes leaves the state.
     let mut waiting = p.ea.state.clone();
-    assert!(serde_json::to_string(&waiting).unwrap().contains("secret day"));
+    let as_saved =
+        |s: &SyncState, e: &Engine| serde_json::to_string(&quire_sync::bases::State13::from_state(s, e.bases()).unwrap()).unwrap();
+    assert!(as_saved(&waiting, &p.ea).contains("secret day"));
     scrub_locked_text(&va, &mut waiting);
-    assert!(!serde_json::to_string(&waiting).unwrap().contains("secret day"));
+    assert!(!as_saved(&waiting, &p.ea).contains("secret day"));
+    opened.journal.commit(&waiting, 0, &|p: &str| in_locked_folder(&va, p)).unwrap();
+    assert!(!in_packs(&p), "no pack holds the plain text of a locked note, in the same commit");
     p.a().unwrap();
     p.b().unwrap();
     let b = files(&p.vb);
@@ -717,9 +731,11 @@ fn locking_most_of_a_vault_syncs_and_leaves_no_plain_text() {
         "plain copies gone: {b:?}"
     );
     assert_eq!(b.iter().filter(|f| f.ends_with(".md.qenc")).count(), 25, "{b:?}");
-    let state = std::fs::read_to_string(p.va.join(".quire/sync/state.json")).unwrap_or_default();
-    let state = if state.is_empty() { serde_json::to_string(&p.ea.state).unwrap() } else { state };
-    assert!(!state.contains("secret day"), "no plain text of a locked note in the sync state");
+    let mut after = p.ea.state.clone();
+    scrub_locked_text(&va, &mut after);
+    assert!(!as_saved(&after, &p.ea).contains("secret day"), "no plain text of a locked note in the sync state");
+    opened.journal.commit(&after, 0, &|p: &str| in_locked_folder(&va, p)).unwrap();
+    assert!(!in_packs(&p));
     // Unlocking for good the other way round: the encrypted files go.
 }
 
@@ -747,7 +763,7 @@ fn pruning_review_history_never_stops_the_settings_lane() {
     let mut eb = Engine::new(space.clone(), db, "b", key.keys(), SyncState::default());
     let pass = |e: &mut Engine, v: &Path, t: &FolderTransport| {
         let mut st = VaultStore::new(Vault::open_local(v).unwrap()).shared_only();
-        snapshot_reads(&mut st).unwrap();
+        begin_pass(&mut st).unwrap();
         e.sync(&mut st, t, "2026-11-16")
     };
     pass(&mut ea, &va, &ta).unwrap();
@@ -798,12 +814,18 @@ fn a_vault_that_cant_be_listed_sends_no_deletes() {
     assert_eq!(files(&p.vb), ["Plan.md", "Work/Ideas.md", "Work/Notes.md"]);
     // The vault's folder is gone: the store's listing fails.
     let v = Vault::open_local(&p.va).unwrap();
-    let mut st = VaultStore::new(v);
-    snapshot_reads(&mut st).unwrap();
+    let mut st = VaultStore::new(v.clone());
+    begin_pass(&mut st).unwrap();
     let away = p.va.with_file_name("A-unplugged");
     std::fs::rename(&p.va, &away).unwrap();
-    let err = p.ea.sync(&mut st, &p.ta, "2026-11-16").unwrap_err();
-    assert!(matches!(err, quire_sync::SyncError::List(_)), "{err}");
+    let mut fresh = VaultStore::new(v);
+    assert!(begin_pass(&mut fresh).is_err(), "a pass that starts now stops at its listing");
+    // One that listed it just before: nothing it can't find is sent as deleted.
+    for t in p.ea.state.files.values_mut() {
+        t.disk = None;
+    }
+    #[expect(clippy::let_underscore_must_use, reason = "it fails or does nothing; what matters is what the other device gets")]
+    let _ = p.ea.sync(&mut st, &p.ta, "2026-11-16");
     p.b().unwrap();
     assert_eq!(files(&p.vb), ["Plan.md", "Work/Ideas.md", "Work/Notes.md"], "nothing deleted on the other device");
     std::fs::rename(&away, &p.va).unwrap();
@@ -857,6 +879,37 @@ fn many_deletes_wait_until_the_person_allows_them() {
     assert!(sync_allow_deletes_at(&va, &seen).is_err(), "nothing held back now");
 }
 
+/// A vault synced by Quire 0.13 (its `state.json`) moves to the 0.14
+/// record on its first pass: nothing is sent or copied, and merges still
+/// find their base (`docs/design/0.14-sync-speed.md` §3.7).
+#[test]
+fn a_vault_synced_by_013_migrates_and_still_merges() {
+    let (_dir, va, vb, target) = setup_dirs();
+    std::fs::write(va.join("Plan.md"), "one\ntwo\nthree\n").unwrap();
+    std::fs::write(va.join("Ideas.md"), "ideas\n").unwrap();
+    sync_create_at(&va, &target, "correct horse battery", "laptop", &Selection::default()).unwrap();
+    sync_once_at(&va).unwrap();
+    let space = SyncConfig::load(&va).unwrap().space;
+    sync_join_at(&vb, &target, &space, "correct horse battery", "phone", &Selection::default()).unwrap();
+    sync_once_at(&vb).unwrap();
+    // What a 0.13 build would have left on device A.
+    let o = journal::Journal::open(&va, "state.json").unwrap();
+    let old = quire_sync::bases::State13::from_state(&o.state, &o.bases).unwrap();
+    drop(o);
+    std::fs::remove_dir_all(sync_dir(&va).join("state.d")).unwrap();
+    std::fs::write(sync_dir(&va).join("state.json"), serde_json::to_vec(&old).unwrap()).unwrap();
+    std::fs::write(vb.join("Plan.md"), "ONE\ntwo\nthree\n").unwrap();
+    sync_once_at(&vb).unwrap();
+    std::fs::write(va.join("Plan.md"), "one\ntwo\nTHREE\n").unwrap();
+    let r = sync_once_at(&va).unwrap();
+    assert!(r.conflict_copies.is_empty() && r.merged == ["Plan.md"], "{r:?}");
+    assert_eq!(std::fs::read_to_string(va.join("Plan.md")).unwrap(), "ONE\ntwo\nTHREE\n");
+    assert!(!sync_dir(&va).join("state.json").exists() && sync_dir(&va).join("state.d").is_dir());
+    assert_eq!(files(&va), ["Ideas.md", "Plan.md"]);
+    sync_once_at(&vb).unwrap();
+    assert_eq!(std::fs::read_to_string(vb.join("Plan.md")).unwrap(), "ONE\ntwo\nTHREE\n");
+}
+
 /// Review F-I3: deleting `.quire/shared/` (to "reset" settings) asks
 /// before every vault setting is deleted on every device; one settings
 /// file, or the review history the agent prunes, never asks.
@@ -884,7 +937,7 @@ fn deleting_the_shared_settings_asks_first() {
     let mut eb = Engine::new(space.clone(), db, "b", key.keys(), SyncState::default());
     let pass = |e: &mut Engine, v: &Path, t: &FolderTransport| {
         let mut st = VaultStore::new(Vault::open_local(v).unwrap()).shared_only();
-        snapshot_reads(&mut st).unwrap();
+        begin_pass(&mut st).unwrap();
         e.sync(&mut st, t, "2026-11-16")
     };
     pass(&mut ea, &va, &ta).unwrap();
@@ -908,24 +961,28 @@ fn deleting_the_shared_settings_asks_first() {
 /// not silently replaced; one that can't be read stops the session.
 #[test]
 fn a_damaged_sync_state_is_kept_and_reported() {
+    use super::journal::Journal;
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(sync_dir(dir.path())).unwrap();
-    assert_eq!(open_state_named(dir.path(), "state.json").unwrap(), (SyncState::default(), None));
+    let o = Journal::open(dir.path(), "state.json").unwrap();
+    assert_eq!((o.state, o.notices.len()), (SyncState::default(), 0));
     let path = sync_dir(dir.path()).join("state.json");
     std::fs::write(&path, b"{\"cursor\": 12, \"fil").unwrap();
-    let (state, notice) = open_state_named(dir.path(), "state.json").unwrap();
-    assert_eq!(state, SyncState::default());
-    assert!(notice.is_some_and(|n| n.contains("started afresh")));
+    let mut o = Journal::open(dir.path(), "state.json").unwrap();
+    assert_eq!(o.state, SyncState::default());
+    assert!(o.notices.iter().any(|n| n.contains("started afresh")), "{:?}", o.notices);
     assert_eq!(std::fs::read(sync_dir(dir.path()).join("state.json.unreadable")).unwrap(), b"{\"cursor\": 12, \"fil");
-    // Saved whole, with no temporary file left.
+    assert!(!path.exists(), "moved to the new record");
+    // Saved, with no temporary file left.
     let s = SyncState { cursor: 7, ..SyncState::default() };
-    save_state_named(dir.path(), "state.json", &s).unwrap();
-    assert_eq!(open_state_named(dir.path(), "state.json").unwrap().0.cursor, 7);
-    assert!(!std::fs::read_dir(sync_dir(dir.path())).unwrap().flatten().any(|e| e.file_name().to_string_lossy().ends_with(".tmp")));
-    // A folder where the file should be: can't be read, so no fresh start.
-    std::fs::remove_file(&path).unwrap();
-    std::fs::create_dir_all(&path).unwrap();
-    assert!(open_state_named(dir.path(), "state.json").is_err());
+    assert!(o.journal.commit(&s, 0, &|_: &str| false).unwrap());
+    assert_eq!(Journal::open(dir.path(), "state.json").unwrap().state.cursor, 7);
+    let d = sync_dir(dir.path()).join("state.d");
+    assert!(!std::fs::read_dir(&d).unwrap().flatten().any(|e| e.file_name().to_string_lossy().ends_with(".tmp")));
+    // A file where the folder should be: can't be read, so no fresh start.
+    std::fs::remove_dir_all(&d).unwrap();
+    std::fs::write(&d, b"x").unwrap();
+    assert!(Journal::open(dir.path(), "state.json").is_err());
 }
 
 /// Reliability review #3, as the app's store sees it: on a disk that
@@ -936,7 +993,7 @@ fn names_that_differ_only_in_capitals_are_one_file_on_some_disks() {
     let vault = Vault::in_memory(&[("Plan.md", "big plan\n"), ("Notes/Idea.md", "idea\n")]);
     let mut store = VaultStore::new(vault);
     store.case_blind.set(Some(true));
-    snapshot_reads(&mut store).unwrap();
+    begin_pass(&mut store).unwrap();
     assert!(store.unstorable("plan.md", None).is_some_and(|why| why.contains("“Plan.md”")));
     assert!(store.unstorable("NOTES/idea.md", None).is_some());
     assert_eq!(store.unstorable("plan.md", Some("Plan.md")), None, "the note's own file");
@@ -946,7 +1003,7 @@ fn names_that_differ_only_in_capitals_are_one_file_on_some_disks() {
     assert_eq!(store.unstorable("plan.md", None), None, "gone, so it can be stored");
     // On a disk that tells capitals apart, both are fine.
     let mut store = VaultStore::new(Vault::in_memory(&[("Plan.md", "big plan\n")]));
-    snapshot_reads(&mut store).unwrap();
+    begin_pass(&mut store).unwrap();
     assert_eq!(store.unstorable("plan.md", None), None);
 }
 
@@ -973,7 +1030,7 @@ fn names_the_disk_takes_as_one_are_skipped_not_copied() {
     std::fs::create_dir_all(vm.join(".quire")).unwrap();
     for _ in 0..3 {
         let mut st = VaultStore::new(Vault::open_local(&vm).unwrap());
-        snapshot_reads(&mut st).unwrap();
+        begin_pass(&mut st).unwrap();
         em.sync(&mut st, &tm, "2026-11-16").unwrap();
     }
     assert_eq!(files(&vm).len(), 1, "{:?}", files(&vm));
@@ -1006,7 +1063,7 @@ fn this_disk_refuses_what_sync_skips() {
     let vw = dir.path().join("Here");
     std::fs::create_dir_all(vw.join(".quire")).unwrap();
     let mut st = VaultStore::new(Vault::open_local(&vw).unwrap());
-    snapshot_reads(&mut st).unwrap();
+    begin_pass(&mut st).unwrap();
     assert!(st.case_blind(), "this test is for a disk that ignores capitals");
     let r = ew.sync(&mut st, &tw, "2026-11-16").unwrap();
     assert_eq!(r.skipped.len(), if cfg!(windows) { 3 } else { 1 }, "{r:?}");
@@ -1014,7 +1071,7 @@ fn this_disk_refuses_what_sync_skips() {
     assert_eq!(here.len(), 2, "{here:?}");
     assert!(here.contains(&"fine.md".to_string()) && (here.contains(&"Plan.md".to_string()) || here.contains(&"plan.md".to_string())));
     std::fs::write(vw.join("fine.md"), "fine, from here\n").unwrap();
-    snapshot_reads(&mut st).unwrap();
+    begin_pass(&mut st).unwrap();
     ew.sync(&mut st, &tw, "2026-11-16").unwrap();
     el.sync(&mut linux, &tl, "2026-11-16").unwrap();
     assert_eq!(linux.read("fine.md").unwrap(), "fine, from here\n");
@@ -1053,7 +1110,7 @@ fn a_synced_file_grown_too_big_is_held_back_not_deleted() {
     std::fs::write(va.join("Board.excalidraw"), b"{\"type\":\"excalidraw\"}").unwrap();
     let pass = |e: &mut Engine, v: &Vault, t: &FolderTransport| {
         let mut st = VaultStore::new(v.clone());
-        snapshot_reads(&mut st).unwrap();
+        begin_pass(&mut st).unwrap();
         e.sync(&mut st, t, "2026-11-13").unwrap()
     };
     pass(&mut ea, &a, &ta);
@@ -1077,16 +1134,18 @@ fn attachments_sync_as_bytes_and_big_ones_stay_local() {
     std::fs::write(dir.path().join("huge.mov"), vec![0u8; usize::try_from(MAX_ATTACHMENT_BYTES).unwrap() + 1]).unwrap();
     vault.write(&NotePath::new("N.md"), "![[a.png]]").unwrap();
     let mut store = VaultStore::new(vault);
+    assert!(store.list().is_err(), "no listing before a pass lists the vault");
+    begin_pass(&mut store).unwrap();
     let mut listed = store.list().unwrap();
     listed.sort();
     assert_eq!(listed, ["N.md", "attachments/a.png"], "too-big files stay out");
     let text = store.read("attachments/a.png").unwrap();
-    snapshot_reads(&mut store).unwrap();
+    begin_pass(&mut store).unwrap();
     store.write("attachments/b.png", &text).unwrap();
     assert_eq!(std::fs::read(dir.path().join("attachments/b.png")).unwrap(), png);
-    assert_eq!(store.digest("attachments/b.png"), Some(quire_sync::engine::fingerprint("attachments/b.png", &text)));
+    assert_eq!(store.print("attachments/b.png"), Some(quire_sync::Print::of(&text)));
     // A change underneath is noticed for attachments too.
-    snapshot_reads(&mut store).unwrap();
+    begin_pass(&mut store).unwrap();
     std::fs::write(dir.path().join("attachments/a.png"), [1u8, 2, 3]).unwrap();
     assert!(store.write("attachments/a.png", &text).is_err());
 }
@@ -1153,19 +1212,22 @@ fn vault_settings_sync_only_when_turned_on() {
     vault.write(&NotePath::new("A.md"), "a").unwrap();
     vault.storage().write_atomic(&NotePath::new(".quire/shared/vault.toml"), "format = 1\n").unwrap();
     vault.storage().write_atomic(&NotePath::new(".quire/agent/ledger/x.jsonl"), "{}\n").unwrap();
-    let off = VaultStore::new(vault.clone());
+    let mut off = VaultStore::new(vault.clone());
+    begin_pass(&mut off).unwrap();
     assert_eq!(off.list().unwrap(), vec!["A.md".to_string()], "never .quire/ by default");
     let mut on = VaultStore::new(vault.clone()).with_shared_state(true);
-    assert_eq!(on.list().unwrap(), vec!["A.md".to_string(), ".quire/shared/vault.toml".to_string()], "only the shared folder");
+    begin_pass(&mut on).unwrap();
+    assert_eq!(on.list().unwrap(), vec![".quire/shared/vault.toml".to_string(), "A.md".to_string()], "only the shared folder");
     vault.storage().write_atomic(&NotePath::new(".quire/shared/srs/d1.jsonl"), "{}\n").unwrap();
+    begin_pass(&mut on).unwrap();
     assert!(on.list().unwrap().contains(&".quire/shared/srs/d1.jsonl".to_string()), "review logs in subfolders too");
-    snapshot_reads(&mut on).unwrap();
+    begin_pass(&mut on).unwrap();
     on.write(".quire/shared/agent-policy.toml", &b64().encode("format = 1\n")).unwrap();
     assert_eq!(vault.storage().read(&NotePath::new(".quire/shared/agent-policy.toml")).unwrap(), "format = 1\n");
     assert!(on.write(".quire/shared/../x.toml", "").is_err());
     // A device that hasn't turned it on joins in as soon as another device's settings arrive.
     let mut joined = VaultStore::new(vault);
-    snapshot_reads(&mut joined).unwrap();
+    begin_pass(&mut joined).unwrap();
     joined.incoming(&quire_sync::Content {
         path: ".quire/shared/srs/d1.jsonl".into(),
         deleted: false,
@@ -1209,7 +1271,7 @@ fn agent_attribution_travels_with_versions() {
         at: 1,
         actor: Some(a),
     };
-    snapshot_reads(&mut vs).unwrap();
+    begin_pass(&mut vs).unwrap();
     vs.incoming(&content);
     vs.write("wiki/B.md", &content.text).unwrap();
     let snap = vault.history(&NotePath::new("wiki/B.md")).remove(0);
@@ -1343,11 +1405,11 @@ impl Fleet {
             return;
         }
         let mut notes = VaultStore::new(self.vaults[i].clone()).notes_only();
-        snapshot_reads(&mut notes).unwrap();
+        begin_pass(&mut notes).unwrap();
         self.engines[i].sync(&mut notes, &main, "2026-11-03").unwrap();
         let lane = FolderTransport::lane(&self.root, &self.space, self.devices[i].clone(), None, folder::SHARED_LANE);
         let mut shared = VaultStore::new(self.vaults[i].clone()).shared_only();
-        snapshot_reads(&mut shared).unwrap();
+        begin_pass(&mut shared).unwrap();
         self.lanes[i].sync(&mut shared, &lane, "2026-11-03").unwrap();
     }
 
@@ -1368,11 +1430,11 @@ impl Fleet {
     fn pass_09(&mut self, i: usize) {
         let main = FolderTransport::new(&self.root, &self.space, self.devices[i].clone(), None);
         let mut notes = VaultStore::new(self.vaults[i].clone()).notes_only();
-        snapshot_reads(&mut notes).unwrap();
+        begin_pass(&mut notes).unwrap();
         self.engines[i].sync(&mut notes, &main, "2026-11-03").unwrap();
         let lane = FolderTransport::lane(&self.root, &self.space, self.devices[i].clone(), None, folder::SHARED_LANE);
         let mut shared = VaultStore::new(self.vaults[i].clone()).shared_only();
-        snapshot_reads(&mut shared).unwrap();
+        begin_pass(&mut shared).unwrap();
         self.lanes[i].sync(&mut shared, &lane, "2026-11-03").unwrap();
     }
 
@@ -1507,7 +1569,7 @@ fn review_a_0_8_device_never_deletes_shared_vault_settings() {
     // A settings file that reached the notes lane anyway (a build from
     // before the lanes) is neither written nor deleted by 0.9 there.
     let mut notes = VaultStore::new(f.vaults[0].clone()).notes_only();
-    snapshot_reads(&mut notes).unwrap();
+    begin_pass(&mut notes).unwrap();
     notes.remove(".quire/shared/vault.toml").unwrap();
     notes.write(".quire/shared/vault.toml", "x").unwrap();
     assert_eq!(f.shared(0, "vault.toml").as_deref(), Some("format = 1\n"));
@@ -1523,7 +1585,7 @@ fn the_0_8_simulation_sees_the_delete_the_lanes_prevent() {
     let mixed = |f: &mut Fleet| {
         let main = FolderTransport::new(&f.root, &f.space, f.devices[0].clone(), None);
         let mut st = VaultStore::new(f.vaults[0].clone()).with_shared_state(true);
-        snapshot_reads(&mut st).unwrap();
+        begin_pass(&mut st).unwrap();
         f.engines[0].sync(&mut st, &main, "2026-11-03").unwrap();
     };
     for _ in 0..3 {

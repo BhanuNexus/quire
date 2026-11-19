@@ -11,13 +11,15 @@
 //! (0.12) straight to S3-compatible storage or a WebDAV folder.
 //!
 //! Per vault, `.quire/sync/config.json` holds where it syncs and its ids, and
-//! `.quire/sync/state.json` the engine's state. The vault key (and a server's
+//! `.quire/sync/state.d/` the engine's state (`journal`; 0.13 kept it in
+//! `state.json`). The vault key (and a server's
 //! token, or the storage's credentials) live in the OS keychain (or the
 //! private secrets file), never in the vault.
 //!
 //! The code is split by part, each a child module that re-exports its items
 //! here, so paths such as `vault_sync::SyncConfig` do not change:
 //! `config` (what a setup is), `state` (the lock and the engine's files),
+//! `journal` (the engine state on disk: checkpoint, journal, base packs),
 //! `store` (the vault as the engine sees it), `session` (one pass),
 //! `worker` (the background thread), `deletes` (held mass deletes), `setup`
 //! (create, join, move and stop), `workspace` (the `impl Workspace` methods)
@@ -60,6 +62,7 @@ mod config;
 pub use config::*;
 mod state;
 pub use state::*;
+mod journal;
 mod store;
 pub use store::*;
 mod session;
@@ -72,5 +75,7 @@ mod setup;
 pub use setup::*;
 mod workspace;
 
+#[cfg(test)]
+mod store_tests;
 #[cfg(test)]
 mod tests;

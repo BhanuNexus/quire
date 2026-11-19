@@ -5,9 +5,8 @@
 use super::{
     ALREADY_SYNCING, APP_POLL, Arc, DeviceId, DeviceRemoved, FolderTransport, Hardening, HeldDeletes, HttpTransport, KDF, LastPass, Link,
     LockError, Path, PathBuf, Receiver, RecoveryKey, RemoteSecret, RemoteTransport, Selection, Session, SpaceId, SyncConfig, SyncLock,
-    SyncState, SyncStatus, SyncTarget, SyncVaultInfo, SyncWorker, VaultKey, Workspace, WrappedKey, folder, harden, key_name, load_state,
-    lock_sync, open_parts, remote, remote_dir, save_state, secrets, state_file, sync_dir, sync_folder_root, sync_share_at, sync_test,
-    token_name,
+    SyncStatus, SyncTarget, SyncVaultInfo, SyncWorker, VaultKey, Workspace, WrappedKey, folder, harden, journal, key_name, load_state,
+    lock_sync, open_parts, remote, remote_dir, secrets, state_file, sync_dir, sync_folder_root, sync_share_at, sync_test, token_name,
 };
 
 /// Run `f` on a thread of its own; its result arrives on the receiver.
@@ -234,7 +233,6 @@ fn create_at(
         secrets::store().set(&token_name(&cfg.space), own)?;
     }
     Hardening { device_token: own_token.is_some(), ..Hardening::default() }.save(root)?;
-    let _ = save_state(root, &cfg, &SyncState::default());
     Ok((key.recovery_key(), cfg))
 }
 
@@ -283,7 +281,8 @@ pub fn sync_join_at(
     }
     cfg.save(root)?;
     Hardening { device_token: own_token.is_some(), ..Hardening::default() }.save(root)?;
-    let _ = save_state(root, &cfg, &SyncState::default());
+    // A new device id: what sync did here before is not this device's.
+    journal::remove(root, state_file(&cfg));
     let _ = std::fs::remove_file(sync_dir(root).join("folder-seq"));
     // A new device id: a mirror from an earlier setup holds nothing to send.
     let _ = std::fs::remove_dir_all(remote_dir(root));
@@ -321,17 +320,10 @@ fn remove_sync_secrets(space: &SpaceId) {
 /// WebDAV mirror.
 fn remove_sync_files(root: &Path) {
     let dir = sync_dir(root);
-    for f in [
-        "config.json",
-        "state.json",
-        "state-partial.json",
-        "state-shared.json",
-        "last.json",
-        "folder-seq",
-        "hardening.json",
-        "peers.json",
-        "snapshots-seen.json",
-    ] {
+    for name in ["state.json", "state-partial.json", "state-shared.json"] {
+        journal::remove(root, name);
+    }
+    for f in ["config.json", "last.json", "folder-seq", "hardening.json", "peers.json", "snapshots-seen.json"] {
         let _ = std::fs::remove_file(dir.join(f));
     }
     let _ = std::fs::remove_dir_all(remote_dir(root));
@@ -433,14 +425,9 @@ pub fn sync_set_selection_at(root: &Path, selection: &Selection) -> Result<(), S
     cfg.exclude.clone_from(&selection.exclude);
     let to = state_file(&cfg);
     if from != to {
-        let dir = sync_dir(root);
-        if dir.join(from).exists() {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "the sync state is renamed on purpose: its file name follows the folder selection"
-            )]
-            std::fs::rename(dir.join(from), dir.join(to)).map_err(|e| e.to_string())?;
-        }
+        // Its name follows the folder selection (both forms: a 0.13 file
+        // not migrated yet, and the 0.14 folder).
+        journal::rename_record(root, from, to)?;
     }
     cfg.save(root)
 }
