@@ -309,7 +309,7 @@ fn an_edit_in_the_same_tick_is_found_by_the_next_scan_and_verify_finds_one_that_
 }
 
 #[test]
-fn a_listing_or_read_error_is_an_error_and_changes_no_row() {
+fn a_listing_error_is_an_error_and_changes_no_row() {
     let fs = Fake::new();
     let probe = Probe::new(Arc::clone(&fs) as Arc<dyn Storage>);
     let m = Manifest::open_with_clock(&vault_of(&probe), fs.clock());
@@ -326,18 +326,63 @@ fn a_listing_or_read_error_is_an_error_and_changes_no_row() {
     probe.fail_list.store(true, Ordering::SeqCst);
     assert!(m.scan().is_err());
     assert!(m.verify().is_err());
-    assert_eq!((m.since(0).unwrap(), m.generation()), (before.clone(), generation), "never \"all gone\"");
-    probe.fail_list.store(false, Ordering::SeqCst);
-    // A file listed but unreadable fails the whole scan: the delete of a.md
-    // and the new c.md wait too.
-    *probe.fail_read.lock().unwrap() = Some(np("b.md"));
-    assert!(m.scan().is_err());
-    assert_eq!((m.since(0).unwrap(), m.generation()), (before, generation));
+    assert_eq!((m.since(0).unwrap(), m.generation()), (before, generation), "never \"all gone\"");
     assert!(rx.try_recv().is_err(), "subscribers hear nothing");
-    *probe.fail_read.lock().unwrap() = None;
+    probe.fail_list.store(false, Ordering::SeqCst);
     let d = m.scan().unwrap();
     assert_eq!((d.changed.len(), d.removed.len()), (2, 1));
     assert_eq!(*rx.try_recv().unwrap(), d);
+}
+
+#[test]
+fn one_unreadable_file_among_many_keeps_its_row_and_the_others_update() {
+    let fs = Fake::new();
+    let probe = Probe::new(Arc::clone(&fs) as Arc<dyn Storage>);
+    let m = Manifest::open_with_clock(&vault_of(&probe), fs.clock());
+    for i in 0..10 {
+        fs.put(&format!("n{i}.md"), b"one");
+    }
+    fs.tick(10 * SEC);
+    m.scan().unwrap();
+    let rx = m.subscribe();
+    let old = m.get(&np("n3.md")).unwrap();
+    let changed = |d: &Delta| d.changed.iter().map(|r| r.path.to_string()).collect::<Vec<_>>();
+    let fail = |p: Option<&str>| *probe.fail_read.lock().unwrap() = p.map(np);
+    // Every note changes, and n3.md can't be read (a share lock, `chmod 000`).
+    for i in 0..10 {
+        fs.put(&format!("n{i}.md"), b"two!");
+    }
+    fs.put("new.md", b"new");
+    fs.tick(10 * SEC);
+    fail(Some("n3.md"));
+    let d = m.scan().unwrap();
+    let others: Vec<String> = (0..10).filter(|i| *i != 3).map(|i| format!("n{i}.md")).chain(["new.md".into()]).collect();
+    assert_eq!(changed(&d), others, "the others update");
+    assert!(d.removed.is_empty(), "nothing is tombstoned");
+    assert_eq!(d.unread.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), ["n3.md"]);
+    assert!(d.unread[0].1.contains("permission denied"), "{:?}", d.unread);
+    assert_eq!(*rx.try_recv().unwrap(), d, "the others' changes are sent, with what was unread");
+    let kept = m.get(&np("n3.md")).unwrap();
+    assert_eq!((kept.hash, kept.generation), (old.hash, old.generation), "the old row stays");
+    assert!(kept.is_racy(), "tried again by the next scan");
+    // Readable again: found by the next scan. A new file that can't be
+    // read has no row yet.
+    fs.put("later.md", b"later");
+    fs.tick(10 * SEC);
+    fail(Some("later.md"));
+    let d = m.scan().unwrap();
+    assert_eq!(changed(&d), ["n3.md"]);
+    assert_eq!(d.unread.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), ["later.md"]);
+    assert!(!m.has(&np("later.md")) && d.removed.is_empty());
+    assert_eq!(*rx.try_recv().unwrap(), d);
+    // A scan whose only news is an unreadable file sends nothing.
+    fail(Some("later.md"));
+    let d = m.scan().unwrap();
+    assert!(d.is_empty() && d.unread.len() == 1);
+    assert!(rx.try_recv().is_err());
+    fail(None);
+    assert_eq!(changed(&m.scan().unwrap()), ["later.md"]);
+    assert_eq!(summary(&m), cold(Arc::clone(&fs) as Arc<dyn Storage>));
 }
 
 #[test]
@@ -398,6 +443,60 @@ fn own_writes_update_the_row_at_once_and_count_as_racy() {
     assert_eq!(probe.reads(), 1);
     assert!(rx.try_recv().is_err(), "own writes are not sent to subscribers");
     assert!(!m.get(&np("new.md")).unwrap().is_racy());
+}
+
+#[test]
+fn an_observed_change_reaches_subscribers_and_an_own_write_does_not() {
+    let fs = Fake::new();
+    let probe = Probe::new(Arc::clone(&fs) as Arc<dyn Storage>);
+    let m = Manifest::open_with_clock(&vault_of(&probe), fs.clock());
+    fs.put("a.md", b"a");
+    fs.put("b.md", b"b");
+    fs.tick(10 * SEC);
+    m.scan().unwrap();
+    let rx = m.subscribe();
+    let g = m.generation();
+    // Another program changed a.md; sync reads it before any scan.
+    fs.put("a.md", b"a, edited elsewhere");
+    assert_eq!(m.observed(&np("a.md"), b"a, edited elsewhere"), FileHash::of(b"a, edited elsewhere"));
+    let d = rx.try_recv().expect("an observed change is sent");
+    assert_eq!((d.generation, d.epoch, d.verified), (g + 1, m.epoch(), false));
+    assert_eq!(d.changed.iter().map(|r| (r.path.as_str(), r.hash)).collect::<Vec<_>>(), [("a.md", FileHash::of(b"a, edited elsewhere"))]);
+    assert!(d.removed.is_empty() && d.unread.is_empty());
+    assert_eq!(m.get(&np("a.md")).unwrap().hash, FileHash::of(b"a, edited elsewhere"));
+    assert_eq!(m.generation(), g + 1);
+    // The same bytes again, or bytes the row already has: nothing.
+    m.observed(&np("a.md"), b"a, edited elsewhere");
+    m.observed(&np("b.md"), b"b");
+    assert!(rx.try_recv().is_err());
+    assert_eq!(m.generation(), g + 1);
+    assert!(!m.get(&np("b.md")).unwrap().is_racy(), "an observed match leaves the row alone");
+    // Our own write is not sent.
+    fs.put("b.md", b"b, saved by us");
+    m.note_written(&np("b.md"), b"b, saved by us");
+    assert!(rx.try_recv().is_err(), "own writes are not sent");
+    // The next scan reads both again and sends nothing: no duplicate.
+    fs.tick(10 * SEC);
+    probe.reads();
+    assert!(m.scan().unwrap().is_empty());
+    assert_eq!(probe.reads(), 2);
+    assert!(rx.try_recv().is_err(), "no duplicate");
+    // Observed while the table is held: queued, sent once applied.
+    fs.put("c.md", b"c");
+    {
+        let _held = m.shared.table.read().unwrap();
+        std::thread::scope(|s| {
+            s.spawn(|| m.observed(&np("c.md"), b"c")).join().unwrap();
+        });
+        assert!(rx.try_recv().is_err(), "not applied yet");
+        assert!(m.has(&np("c.md")), "answered from the queue");
+    }
+    assert_eq!(m.generation(), g + 3);
+    assert_eq!(rx.try_recv().unwrap().changed[0].path, np("c.md"));
+    fs.tick(10 * SEC);
+    assert!(m.scan().unwrap().is_empty());
+    assert!(rx.try_recv().is_err());
+    assert_eq!(summary(&m), cold(Arc::clone(&fs) as Arc<dyn Storage>));
 }
 
 #[test]
@@ -522,9 +621,10 @@ impl Rng {
 
 /// Incremental equals rebuilt (`docs/design/0.14-architecture.md` §7 rule 4):
 /// after random creates, edits (some in the same tick as a scan, some
-/// keeping the size), renames, deletes, own writes and scans, a scan gives
-/// the rows a manifest built from nothing gives, hash by hash; and the
-/// deltas subscribers got, with our own writes, add up to the same.
+/// keeping the size), renames, deletes, own writes, observed reads and
+/// scans, a scan gives the rows a manifest built from nothing gives, hash
+/// by hash; and the deltas subscribers got, with our own writes, add up to
+/// the same.
 #[test]
 fn after_random_changes_a_scan_equals_a_manifest_built_from_nothing() {
     let cases: u64 = std::env::var("PROPTEST_CASES").ok().and_then(|c| c.parse().ok()).unwrap_or(200);
@@ -540,7 +640,12 @@ fn after_random_changes_a_scan_equals_a_manifest_built_from_nothing() {
             // Same size or not: one or two letters.
             let content = vec![b'a' + rng.below(3) as u8; 1 + rng.below(2) as usize];
             match rng.below(10) {
-                0..=2 => fs.put(p.as_str(), &content),
+                0..=1 => fs.put(p.as_str(), &content),
+                // Found by reading: its delta, not this call, tells `seen`.
+                2 => {
+                    fs.put(p.as_str(), &content);
+                    m.observed(&p, &content);
+                }
                 3 => {
                     fs.put(p.as_str(), &content);
                     seen.insert(p.clone(), m.note_written(&p, &content));
@@ -645,9 +750,11 @@ fn on_disk_a_scan_with_nothing_changed_opens_no_file_and_the_table_survives_a_re
     assert!(!m.is_dirty());
     assert!(dir.path().join(CACHE_PATH).is_file());
     let (epoch, generation) = (m.epoch(), m.generation());
-    // The next start: loaded, nothing read, the same rows, epoch and generation.
+    // The next start: loaded, nothing read, the same rows and generation,
+    // and a new epoch.
     let again = Manifest::open_with_clock(&vault_of(&probe), later());
-    assert_eq!((again.epoch(), again.generation()), (epoch, generation));
+    assert_eq!(again.generation(), generation);
+    assert_ne!(again.epoch(), epoch);
     assert!(!again.scanned() && again.has(&np("f1/n1.md")));
     assert!(again.scan().unwrap().is_empty());
     assert_eq!(probe.reads(), 0);
@@ -669,6 +776,26 @@ fn a_symlinked_note_or_folder_is_not_listed() {
     m.scan().unwrap();
     assert!(m.has(&np("real.md")));
     assert!(!m.has(&np("link.md")) && !m.has(&np("linked/x.md")));
+}
+
+#[test]
+fn every_open_has_a_new_epoch() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = Arc::new(LocalFs::new(dir.path()).unwrap());
+    local.write_atomic(&np("a.md"), "a").unwrap();
+    let a = Manifest::open_with_clock(&vault_of(&local), later());
+    a.scan().unwrap();
+    a.flush().unwrap();
+    // Two opens of the same file, as after a crash or in two processes:
+    // the same rows, never the same epoch.
+    let (b, c) = (Manifest::open_with_clock(&vault_of(&local), later()), Manifest::open_with_clock(&vault_of(&local), later()));
+    assert_eq!((b.generation(), c.generation()), (a.generation(), a.generation()));
+    assert_eq!(b.rows(), a.rows());
+    let epochs: HashSet<[u8; 16]> = [a.epoch(), b.epoch(), c.epoch()].into_iter().collect();
+    assert_eq!(epochs.len(), 3);
+    // Built from nothing (no place on disk) too.
+    let fs = Fake::new();
+    assert_ne!(Manifest::open(&vault_of(&fs)).epoch(), Manifest::open(&vault_of(&fs)).epoch());
 }
 
 #[test]
@@ -790,18 +917,24 @@ fn the_body_round_trips_and_any_doubt_is_no_table() {
     let t = m.shared.table.read().unwrap();
     let body = encode(&t, &origin);
     let back = decode(&body, &origin).unwrap();
-    assert_eq!((back.epoch, back.generation, back.floor), (t.epoch, t.generation, t.floor));
+    assert_eq!((back.generation, back.floor), (t.generation, t.floor));
     assert_eq!(back.rows, t.rows);
+    assert!(back.rows[&np("a.md")].gone, "a tombstone round-trips");
     assert!(decode(&body, &[8u8; 32]).is_none(), "another origin");
     assert!(decode(&body[..body.len() - 1], &origin).is_none(), "short");
     let mut long = body.clone();
     long.push(0);
     assert!(decode(&long, &origin).is_none(), "bytes left over");
+    // The first row is `a.md`, a tombstone: its flags follow its path.
+    let flags_at = 32 + 24 + 1 + "a.md".len();
+    assert_eq!(body[flags_at], GONE);
     let mut flags = body.clone();
-    *flags.last_mut().unwrap() |= 4;
+    flags[flags_at] |= 4;
     assert!(decode(&flags, &origin).is_none(), "an unknown flag");
+    flags[flags_at] = GONE | RACY;
+    assert!(decode(&flags, &origin).is_none(), "a racy tombstone");
     let mut generation = body;
-    generation[48..56].copy_from_slice(&0u64.to_le_bytes());
+    generation[32..40].copy_from_slice(&0u64.to_le_bytes());
     assert!(decode(&generation, &origin).is_none(), "a row from a later generation");
     let bad = |path: &str| {
         let mut b = Table::fresh([0; 16]);
@@ -811,7 +944,7 @@ fn the_body_round_trips_and_any_doubt_is_no_table() {
         );
         let mut enc = encode(&b, &origin);
         // Put the raw path back as written, bypassing NotePath's clean-up.
-        let at = 32 + 16 + 24 + 1;
+        let at = 32 + 24 + 1;
         enc.splice(at..at + np(path).as_str().len(), path.bytes());
         enc[at - 1] = path.len() as u8;
         decode(&enc, &origin)
@@ -819,6 +952,40 @@ fn the_body_round_trips_and_any_doubt_is_no_table() {
     assert!(bad("ok.md").is_some());
     assert!(bad("../escape.md").is_none());
     assert!(bad("/abs.md").is_none());
+}
+
+#[test]
+fn a_removed_notes_hash_leaves_no_trace_in_the_cache_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = Arc::new(LocalFs::new(dir.path()).unwrap());
+    let (day, plan) = ("# Day\nsecret\n", "# Plan\nalso secret\n");
+    local.write_atomic(&np("Journal/Day.md"), day).unwrap();
+    local.write_atomic(&np("Plan.md"), plan).unwrap();
+    local.write_atomic(&np("Kept.md"), "kept").unwrap();
+    let m = Manifest::open_with_clock(&vault_of(&local), later());
+    m.scan().unwrap();
+    m.flush().unwrap();
+    let file = dir.path().join(CACHE_PATH);
+    let holds = |h: FileHash| std::fs::read(&file).unwrap().windows(32).any(|w| w == h.0);
+    let hashes = [FileHash::of(day.as_bytes()), FileHash::of(plan.as_bytes())];
+    assert!(hashes.iter().all(|h| holds(*h)), "the live rows are there");
+    // One goes as a locking would take it (gone from the listing), one by
+    // our own removal.
+    local.remove(&np("Journal/Day.md")).unwrap();
+    local.remove(&np("Plan.md")).unwrap();
+    m.note_removed(&np("Plan.md"));
+    assert_eq!(m.scan().unwrap().removed, [np("Journal/Day.md")]);
+    let tombs: Vec<Row> = m.since(0).unwrap().into_iter().filter(|r| r.gone).collect();
+    assert_eq!(tombs.len(), 2);
+    assert!(tombs.iter().all(|r| r.hash == FileHash([0; 32]) && r.size == 0), "{tombs:?}");
+    m.flush().unwrap();
+    for h in hashes {
+        assert!(!holds(h), "{h:?} is still in the cache file");
+    }
+    assert!(holds(FileHash::of(b"kept")));
+    // The tombstones themselves survive a restart.
+    let again = Manifest::open_with_clock(&vault_of(&local), later());
+    assert_eq!(again.since(0).unwrap().iter().filter(|r| r.gone).count(), 2);
 }
 
 /// Budgets (`docs/design/0.14-build-plan.md`, A2; report only): a warm scan
@@ -866,4 +1033,88 @@ fn budget(n: usize) {
         "manifest, {n} files: cold scan {cold:?}, warm scan best of 5 {best:?}, load {load:?}, file {size} bytes ({:.1} a row)",
         size as f64 / n as f64
     );
+}
+
+/// A reader of `len` seeded bytes that are never all in memory: it makes
+/// each piece when asked, hashes what it gave, and remembers the biggest
+/// piece it was asked for.
+struct Endless {
+    left: u64,
+    rng: Rng,
+    given: Sha256,
+    biggest: usize,
+}
+
+impl std::io::Read for Endless {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.biggest = self.biggest.max(buf.len());
+        let n = buf.len().min(usize::try_from(self.left).unwrap_or(usize::MAX));
+        // Uneven pieces, as a disk gives them.
+        let n = n.min(1 + self.rng.below(HASH_BUFFER as u64 + 7) as usize);
+        for b in &mut buf[..n] {
+            *b = self.rng.next() as u8;
+        }
+        self.given.update(&buf[..n]);
+        self.left -= n as u64;
+        Ok(n)
+    }
+}
+
+#[test]
+fn hashing_100_mb_never_holds_it_all() {
+    let len = 100 * 1024 * 1024;
+    let mut r = Endless { left: len, rng: Rng(0x5eed), given: Sha256::new(), biggest: 0 };
+    let (hash, n) = FileHash::of_reader(&mut r).unwrap();
+    assert_eq!(n, len);
+    assert_eq!(hash.0, <[u8; 32]>::from(r.given.finalize()));
+    assert!(r.biggest <= HASH_BUFFER, "asked for {} bytes at once", r.biggest);
+}
+
+#[test]
+fn a_streamed_hash_equals_the_one_shot_hash_across_buffer_boundaries() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = LocalFs::new(dir.path()).unwrap();
+    let mem = MemFs::new();
+    let b = HASH_BUFFER;
+    let mut sizes = vec![0, 1, b - 1, b, b + 1, 2 * b - 1, 2 * b, 2 * b + 1, 3 * b + 17];
+    let mut rng = Rng(0xb0b);
+    sizes.extend((0..12).map(|_| rng.below(5 * b as u64) as usize));
+    for (i, size) in sizes.into_iter().enumerate() {
+        let bytes: Vec<u8> = (0..size).map(|_| rng.next() as u8).collect();
+        let p = np(&format!("f{i}.bin"));
+        local.write_bytes_atomic(&p, &bytes).unwrap();
+        mem.write_bytes_atomic(&p, &bytes).unwrap();
+        let want = (FileHash::of(&bytes), size as u64);
+        assert_eq!(local.hash_file(&p).unwrap(), want, "LocalFs, {size} bytes");
+        assert_eq!(mem.hash_file(&p).unwrap(), want, "the default, {size} bytes");
+        assert_eq!(FileHash::of_reader(&bytes[..]).unwrap(), want, "{size} bytes");
+    }
+    assert!(matches!(local.hash_file(&np("missing.bin")), Err(VaultError::NotFound(_))));
+}
+
+#[test]
+fn verify_where_reads_only_the_files_it_is_given() {
+    let fs = Fake::new();
+    let probe = Probe::new(Arc::clone(&fs) as Arc<dyn Storage>);
+    let m = Manifest::open_with_clock(&vault_of(&probe), fs.clock());
+    fs.put("a.md", b"aaaa");
+    fs.put("video.mp4", b"vvvv");
+    fs.tick(10 * SEC);
+    m.scan().unwrap();
+    probe.reads();
+    // Both change, keeping size and time: only verify can see it.
+    fs.put_keeping_time("a.md", b"bbbb");
+    fs.put_keeping_time("video.mp4", b"wwww");
+    let notes = |p: &NotePath| p.as_str() == "a.md";
+    let d = m.verify_where(&notes).unwrap();
+    assert!(d.verified);
+    assert_eq!(probe.reads(), 1, "the video is not read");
+    assert_eq!(d.changed.iter().map(|r| (r.path.as_str(), r.hash)).collect::<Vec<_>>(), [("a.md", FileHash::of(b"bbbb"))]);
+    // A file the predicate turns down still follows the scan rules: a
+    // changed size is read.
+    fs.put("video.mp4", b"a longer video");
+    fs.tick(10 * SEC);
+    let d = m.verify_where(&notes).unwrap();
+    assert_eq!(probe.reads(), 2);
+    assert_eq!(d.changed.iter().map(|r| r.path.as_str()).collect::<Vec<_>>(), ["video.mp4"]);
 }

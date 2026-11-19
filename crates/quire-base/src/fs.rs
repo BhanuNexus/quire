@@ -17,7 +17,9 @@
 //!   temporary file (`Storage` for vault files, which keeps `tempfile`'s
 //!   `.tmp…` names that history skips) and only needs the rename.
 //! - [`sweep_leftovers`]: temporary files a crash left behind.
-//! - [`failing`]: for tests, a write whose rename fails.
+//! - `failing`: for tests, a write whose rename fails. Only in this crate's
+//!   tests and with the `test-hooks` feature, which other crates turn on as
+//!   a dev-dependency feature; a build never has it.
 //!
 //! Vault notes are written through `quire_vault::Storage`, which builds on
 //! this module and adds the locked-folder check and one write at a time.
@@ -193,6 +195,7 @@ impl Prepared {
     /// caller that runs its own retry loop ([`is_busy`] tells which errors
     /// are worth one).
     pub fn try_place(&mut self, dest: &Path) -> std::io::Result<()> {
+        #[cfg(any(test, feature = "test-hooks"))]
         if FAILING.get() {
             return Err(std::io::Error::other("a test made this write fail (quire_base::fs::failing)"));
         }
@@ -225,6 +228,7 @@ impl Drop for Prepared {
     }
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 thread_local! {
     static FAILING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -234,7 +238,9 @@ thread_local! {
 /// The temporary file is written, then the rename fails and it is removed, as
 /// when the disk fills or another program holds the destination. For tests
 /// that show a failed write leaves the old file (other crates' tests can't
-/// make the disk fail). Nothing else sets it.
+/// make the disk fail, so they turn on the `test-hooks` feature as a
+/// dev-dependency feature). Nothing else sets it.
+#[cfg(any(test, feature = "test-hooks"))]
 pub fn failing<T>(f: impl FnOnce() -> T) -> T {
     struct Reset(bool);
     impl Drop for Reset {

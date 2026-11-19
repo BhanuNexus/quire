@@ -128,6 +128,7 @@ impl<'a> Overlap<'a> {
     /// Does `from..to` (not empty) overlap a range? A `from` before the last one
     /// asked is answered too, by looking the index up again.
     pub(crate) fn hits(&mut self, from: usize, to: usize) -> bool {
+        // cargo-mutants: equivalent: with `end == from`, `>=` only looks the index up again and gets the one the loop below reaches.
         if self.next > 0 && self.ranges[self.next - 1].end > from {
             self.next = self.ranges.partition_point(|r| r.end <= from);
         }
@@ -287,6 +288,7 @@ impl<'a> Cursor<'a> {
         let body_start = start + 2;
         let close = self.close_at(body_start)?;
         if close == body_start
+            // cargo-mutants: equivalent: `n` is a `\n` and `close` a `]`, so they are never the same byte and `<=` answers like `<`.
             || self.newline_at(body_start).is_some_and(|n| n < close)
             || self.open_at(body_start).is_some_and(|o| o + 2 <= close)
         {
@@ -535,5 +537,41 @@ mod tests {
             assert_eq!(overlap.hits(a, b), any(a, b), "{a}..{b}");
         }
         assert!(!Overlap::new(&[]).hits(0, 1));
+    }
+
+    /// A `find` that counts how often it really searches.
+    fn counted<'a>(calls: &'a std::cell::Cell<u32>, needle: &'a str) -> impl Fn(&str) -> Option<usize> + 'a {
+        move |t| {
+            calls.set(calls.get() + 1);
+            t.find(needle)
+        }
+    }
+
+    #[test]
+    fn next_answers_a_hit_exactly_at_the_asking_position_without_searching_again() {
+        let calls = std::cell::Cell::new(0);
+        let mut next = Next::default();
+        assert_eq!(next.find("ab\ncd", 0, counted(&calls, "\n")), Some(2));
+        assert_eq!(next.find("ab\ncd", 2, counted(&calls, "\n")), Some(2));
+        assert_eq!(calls.get(), 1);
+        // Past the hit it does search again, and finds there is none.
+        assert_eq!(next.find("ab\ncd", 3, counted(&calls, "\n")), None);
+        assert_eq!(calls.get(), 2);
+    }
+
+    #[test]
+    fn next_asked_again_at_the_same_position_does_not_search_again() {
+        let calls = std::cell::Cell::new(0);
+        let mut next = Next::default();
+        assert_eq!(next.find("ab\ncd", 1, counted(&calls, "\n")), Some(2));
+        assert_eq!(next.find("ab\ncd", 1, counted(&calls, "\n")), Some(2));
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn a_cursor_with_a_base_gives_note_offsets_for_the_line_end() {
+        let mut c = Cursor::at("ab\ncd", 10);
+        assert_eq!(c.line_end(10), 12);
+        assert_eq!(c.line_end(13), 15);
     }
 }

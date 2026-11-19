@@ -15,17 +15,31 @@
 //! trusted; any other file is read and hashed, and its row changes only if
 //! the hash did. A row whose time is within [`RACY_WINDOW`] of the scan
 //! (a coarse clock, or an edit in the same tick as the scan) is never
-//! trusted on the next scan. [`Manifest::verify`] trusts no row. A listing
-//! error is an error, never "all gone", and changes no row.
+//! trusted on the next scan. [`Manifest::verify`] trusts no row, and
+//! [`Manifest::verify_where`] none of the files it is given. Files are
+//! hashed through [`Storage::hash_file`], in pieces where the storage can
+//! (a video is never read into memory whole). A listing
+//! error is an error, never "all gone", and changes no row. A file that
+//! can't be read (locked by another program, no permission, an I/O error)
+//! keeps its row, racy and never removed, and is named in
+//! [`Delta::unread`]: one such file never stops the others' updates.
 //!
 //! **Our own writes.** [`Manifest::note_written`] and [`Manifest::note_removed`]
 //! update the row at once and never wait for a scan in progress (P9): while
 //! the table is busy they queue, and [`Manifest::get`] and [`Manifest::has`]
 //! already answer with them. Such a row is hashed again by the next scan.
 //!
+//! **Changes found by reading.** [`Manifest::observed`] is for bytes Quire
+//! read but did not write (sync or the editor reading a note another
+//! program changed): when the hash is new, the row changes at once and
+//! every subscriber gets a [`Delta`] with that row, so a change found by
+//! reading reaches the index as one found by a scan does.
+//!
 //! **Sharing.** A [`Manifest`] is a handle: clones share one table, so one
-//! scanner serves a vault. Each scan's [`Delta`] goes to every
-//! [`Manifest::subscribe`]r. The table persists through
+//! scanner serves a vault. Each scan's [`Delta`] that changed something,
+//! and each observed change, goes to every [`Manifest::subscribe`]r. A
+//! subscriber hears only what happens after it subscribed, and never our
+//! own writes: it reconciles with [`Manifest::since`] at start. The table persists through
 //! [`quire_base::cache`] at `.quire/cache/manifest` when the storage has a
 //! place on disk ([`Manifest::flush`]); a missing, damaged, newer or foreign
 //! file only costs a scan that reads every file.
@@ -44,12 +58,16 @@ use crate::{FileStat, NotePath, Result, Storage, Vault, VaultError};
 /// Where the manifest is kept, vault-relative.
 pub const CACHE_PATH: &str = ".quire/cache/manifest";
 /// The layout of the manifest's body (`docs/formats/manifest.md`).
-pub const FORMAT: u32 = 1;
+/// 2: tombstones carry no hash, size or time, and the epoch is not stored.
+pub const FORMAT: u32 = 2;
 /// What derives the rows: SHA-256 of the stored bytes, the racy rule.
 pub const BUILDER: u32 = 1;
 /// A row whose time is this close to its scan (or later) is hashed again
 /// by the next scan.
 pub const RACY_WINDOW: Duration = Duration::from_secs(2);
+/// The buffer [`FileHash::of_reader`] (and so [`Storage::hash_file`] on
+/// [`crate::LocalFs`]) reads a file through.
+pub const HASH_BUFFER: usize = 64 * 1024;
 /// Tombstones kept at least; above this and a quarter of the live rows,
 /// the oldest go (see [`Manifest::since`]).
 const MIN_TOMBSTONES: usize = 1024;
@@ -66,6 +84,26 @@ impl FileHash {
     /// The hash of `bytes`.
     pub fn of(bytes: &[u8]) -> Self {
         Self(Sha256::digest(bytes).into())
+    }
+
+    /// The hash of everything `reader` gives, and how many bytes that was,
+    /// read in pieces of [`HASH_BUFFER`] bytes: the whole is never in
+    /// memory at once.
+    pub fn of_reader(mut reader: impl std::io::Read) -> std::io::Result<(Self, u64)> {
+        let mut hasher = Sha256::new();
+        let mut buf = vec![0u8; HASH_BUFFER];
+        let mut len = 0u64;
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => return Ok((Self(hasher.finalize().into()), len)),
+                Ok(n) => {
+                    hasher.update(&buf[..n]);
+                    len += n as u64;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     /// Lower-case hex, 64 characters.
@@ -86,12 +124,13 @@ pub struct Row {
     /// Vault-relative, as the storage names it (`Journal/Day.md.qenc` in a
     /// locked folder).
     pub path: NotePath,
-    /// Bytes on disk when it was hashed.
+    /// Bytes on disk when it was hashed; 0 for a tombstone.
     pub size: u64,
     /// Modification time in nanoseconds since the Unix epoch as the listing
-    /// gave it; 0 when unknown (never trusted).
+    /// gave it; 0 when unknown (never trusted) and for a tombstone.
     pub mtime_ns: u64,
-    /// SHA-256 of the bytes; for a tombstone, of the last bytes seen.
+    /// SHA-256 of the bytes; all zeros for a tombstone (no consumer needs
+    /// it, and a locked note's plain-text hash must not stay behind).
     pub hash: FileHash,
     /// The generation in which this row last changed (hash, appearance or
     /// removal; a new size or time with the same hash is no change).
@@ -107,6 +146,14 @@ impl Row {
     /// Whether the next scan reads this file whatever its size and time.
     pub const fn is_racy(&self) -> bool {
         self.racy
+    }
+
+    /// Make this row a tombstone of `generation`. A tombstone keeps only its
+    /// path and generation: no hash, size or time (the hash of a note's
+    /// plain text must not outlive it once its folder is locked).
+    fn bury(&mut self, generation: u64) {
+        (self.gone, self.generation) = (true, generation);
+        (self.hash, self.size, self.mtime_ns, self.racy) = (FileHash([0; 32]), 0, 0, false);
     }
 
     /// Whether a listing's `stat` lets a scan keep this row without reading.
@@ -126,12 +173,19 @@ pub struct Delta {
     pub changed: Vec<Row>,
     /// Files no longer listed, sorted.
     pub removed: Vec<NotePath>,
-    /// From [`Manifest::verify`] (no row was trusted).
+    /// Files listed but not readable (locked by another program, no
+    /// permission, an I/O error), sorted, with the error. Each keeps its
+    /// row, marked racy so the next scan tries again, and is never taken
+    /// for removed. Not a change: a [`Delta`] with only these is not sent
+    /// to subscribers.
+    pub unread: Vec<(NotePath, String)>,
+    /// From [`Manifest::verify`] (no row was trusted) or
+    /// [`Manifest::verify_where`] (no row of the files it was given).
     pub verified: bool,
 }
 
 impl Delta {
-    /// Nothing changed.
+    /// Nothing changed ([`Self::unread`] is not a change).
     pub const fn is_empty(&self) -> bool {
         self.changed.is_empty() && self.removed.is_empty()
     }
@@ -140,10 +194,17 @@ impl Delta {
 /// The clock a manifest reads for the racy rule (injected in tests, P10).
 pub type Clock = Arc<dyn Fn() -> SystemTime + Send + Sync>;
 
-/// One of our own writes, waiting for the table.
+/// One of our own writes, or bytes a read found, waiting for the table.
 #[derive(Debug, Clone)]
 enum Own {
-    Written { path: NotePath, size: u64, hash: FileHash },
+    /// `observed`: found by reading, not written by us, so a change is
+    /// sent to subscribers ([`Manifest::observed`]).
+    Written {
+        path: NotePath,
+        size: u64,
+        hash: FileHash,
+        observed: bool,
+    },
     Removed(NotePath),
 }
 
@@ -171,11 +232,24 @@ struct Table {
     touched: HashSet<NotePath>,
     /// Scans finished in this process.
     scans: u64,
+    /// Deltas of observed changes not yet sent to subscribers: whoever
+    /// applied them sends them once the table is free.
+    outbox: Vec<Delta>,
 }
 
 impl Table {
     fn fresh(epoch: [u8; 16]) -> Self {
-        Self { epoch, generation: 0, floor: 0, rows: BTreeMap::new(), version: 0, scanning: false, touched: HashSet::new(), scans: 0 }
+        Self {
+            epoch,
+            generation: 0,
+            floor: 0,
+            rows: BTreeMap::new(),
+            version: 0,
+            scanning: false,
+            touched: HashSet::new(),
+            scans: 0,
+            outbox: Vec::new(),
+        }
     }
 
     fn apply_own(&mut self, own: Own) {
@@ -184,15 +258,22 @@ impl Table {
         }
         let next = self.generation + 1;
         match own {
-            Own::Written { path, size, hash } => {
+            Own::Written { path, size, hash, observed } => {
                 match self.rows.get_mut(&path) {
+                    // Bytes a read found that the row already has: nothing
+                    // to record (the row's time and size stay the listing's).
+                    Some(r) if observed && !r.gone && r.hash == hash => return,
                     Some(r) if !r.gone && r.hash == hash => {
                         r.size = size;
                         r.mtime_ns = 0;
                         r.racy = true;
                     }
                     _ => {
-                        self.rows.insert(path.clone(), Row { path, size, mtime_ns: 0, hash, generation: next, gone: false, racy: true });
+                        let row = Row { path: path.clone(), size, mtime_ns: 0, hash, generation: next, gone: false, racy: true };
+                        if observed {
+                            self.outbox.push(Delta { epoch: self.epoch, generation: next, changed: vec![row.clone()], ..Delta::default() });
+                        }
+                        self.rows.insert(path, row);
                         self.generation = next;
                     }
                 }
@@ -202,8 +283,7 @@ impl Table {
                 if let Some(r) = self.rows.get_mut(&path)
                     && !r.gone
                 {
-                    r.gone = true;
-                    r.generation = next;
+                    r.bury(next);
                     self.generation = next;
                     self.version += 1;
                 }
@@ -219,10 +299,22 @@ impl Table {
     }
 
     /// Fold a scan's result in: `listed` is every path the listing gave
-    /// that was still there to read, `read` the rows of files it hashed.
-    fn apply_scan(&mut self, listed: &HashSet<NotePath>, read: Vec<Row>, verified: bool) -> Delta {
+    /// that was still there to read (unreadable ones included), `read` the
+    /// rows of files it hashed, `unread` the files it could not read.
+    fn apply_scan(&mut self, listed: &HashSet<NotePath>, read: Vec<Row>, mut unread: Vec<(NotePath, String)>, verified: bool) -> Delta {
         let next = self.generation + 1;
-        let mut delta = Delta { verified, ..Delta::default() };
+        for (p, _) in &unread {
+            if let Some(r) = self.rows.get_mut(p)
+                && !r.gone
+                && !r.racy
+                && !self.touched.contains(p)
+            {
+                r.racy = true;
+                self.version += 1;
+            }
+        }
+        unread.sort();
+        let mut delta = Delta { unread, verified, ..Delta::default() };
         for mut row in read {
             if self.touched.contains(&row.path) {
                 continue;
@@ -243,8 +335,7 @@ impl Table {
         }
         for (p, r) in &mut self.rows {
             if !r.gone && !listed.contains(p) && !self.touched.contains(p) {
-                r.gone = true;
-                r.generation = next;
+                r.bury(next);
                 delta.removed.push(p.clone());
             }
         }
@@ -336,8 +427,8 @@ impl Drop for ScanMark<'_> {
 
 impl Manifest {
     /// The manifest of `vault`'s storage: the cached table at
-    /// [`CACHE_PATH`] if it is valid, else an empty one with a new epoch.
-    /// Reads no note. Rows from the cache are only as good as the last
+    /// [`CACHE_PATH`] if it is valid, else an empty one. Either way with a
+    /// new epoch ([`Self::epoch`]). Reads no note. Rows from the cache are only as good as the last
     /// scan that wrote them: [`Self::scan`] before trusting them.
     pub fn open(vault: &Vault) -> Self {
         Self::open_with_clock(vault, Arc::new(SystemTime::now))
@@ -350,7 +441,10 @@ impl Manifest {
         let origin: [u8; 32] =
             Sha256::digest(file.as_ref().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default().as_bytes()).into();
         let loaded = file.as_ref().and_then(|f| cache::read(f, Kind::MANIFEST, FORMAT, BUILDER)).and_then(|b| decode(&b, &origin));
-        let table = loaded.unwrap_or_else(|| Table::fresh(new_epoch(&origin)));
+        let mut table = loaded.unwrap_or_else(|| Table::fresh([0; 16]));
+        // New on every open: after a crash, or with another process's file,
+        // the same generation numbers can come back with other rows.
+        table.epoch = new_epoch(&origin);
         let saved = Saved { version: table.version, kept_newer: false };
         Self {
             shared: Arc::new(Shared {
@@ -380,76 +474,101 @@ impl Manifest {
         if lock(&self.shared.pending).is_empty() {
             return;
         }
-        if let Ok(mut t) = self.shared.table.try_write() {
-            t.drain(&self.shared.pending);
-        }
+        let Ok(mut t) = self.shared.table.try_write() else { return };
+        t.drain(&self.shared.pending);
+        let out = std::mem::take(&mut t.outbox);
+        drop(t);
+        self.send(out);
     }
 
     /// List the vault and bring every row up to date (see the module docs).
     ///
-    /// A listing error, or a file that is listed but can't be read for
-    /// another reason than being gone, is an error and changes no row. A
-    /// file gone between the listing and its read counts as not listed.
+    /// A listing error is an error and changes no row. A file that is
+    /// listed but can't be read for another reason than being gone keeps
+    /// its row (marked racy, never removed) and is named in
+    /// [`Delta::unread`]; the other files are brought up to date. A file
+    /// gone between the listing and its read counts as not listed.
     /// Subscribers get the [`Delta`] when it isn't empty. Another scan in
     /// progress is waited for; own writes never are.
     pub fn scan(&self) -> Result<Delta> {
-        self.run_scan(true)
+        self.run_scan(&|_| true, false)
     }
 
     /// [`Self::scan`] trusting no row: every file is read and hashed. For a
     /// change that kept a file's size and time (sync runs it when idle, at
-    /// most once a day, and on `quire-cli sync once --verify`).
+    /// most once a day, and on `quire-cli sync once --verify`). Reads the
+    /// whole vault, videos included: a consumer that tracks only some files
+    /// uses [`Self::verify_where`].
     pub fn verify(&self) -> Result<Delta> {
-        self.run_scan(false)
+        self.run_scan(&|_| false, true)
     }
 
-    fn run_scan(&self, trust_stat: bool) -> Result<Delta> {
+    /// [`Self::verify`] for the files `which` accepts: those are read and
+    /// hashed whatever their size and time say; every other file is
+    /// scanned as by [`Self::scan`]. Sync passes the notes it tracks, so a
+    /// daily verify does not read every attachment. The [`Delta`] says
+    /// `verified`.
+    pub fn verify_where(&self, which: &dyn Fn(&NotePath) -> bool) -> Result<Delta> {
+        self.run_scan(&|p| !which(p), true)
+    }
+
+    /// One scan: a listed file is kept without reading only when `trust`
+    /// accepts its path and its row trusts the listing's stat.
+    fn run_scan(&self, trust: &dyn Fn(&NotePath) -> bool, verified: bool) -> Result<Delta> {
         let sh = &*self.shared;
         let _one = lock(&sh.scanning);
         let start_ns = FileStat::nanos((sh.clock)());
-        // From before the listing: an own write made from here on (even
-        // one queued now) is newer than what the scan sees, so its row is
-        // left to the next scan.
-        {
+        // Own writes queued before now are older than the listing: they are
+        // applied first, unmarked, and the scan hashes them like any racy
+        // row. From here on the table is marked as scanning, so an own write
+        // made while the scan lists and reads (applied at once, or queued and
+        // applied when the scan ends) goes into `touched`, and the scan
+        // leaves that row to the next scan.
+        let early = {
             let mut t = self.write();
+            t.drain(&sh.pending);
             t.scanning = true;
             t.touched.clear();
-            t.drain(&sh.pending);
-        }
+            std::mem::take(&mut t.outbox)
+        };
+        self.send(early);
         let mark = ScanMark(&sh.table);
         let listing = sh.storage.list_stat()?;
         let to_read: Vec<(NotePath, Option<FileStat>)> = {
             let t = self.read();
-            listing.iter().filter(|(p, st)| !(trust_stat && t.rows.get(p).is_some_and(|r| r.trusts(*st)))).cloned().collect()
+            listing.iter().filter(|(p, st)| !(trust(p) && t.rows.get(p).is_some_and(|r| r.trusts(*st)))).cloned().collect()
         };
         let mut read = Vec::with_capacity(to_read.len());
         let mut vanished = HashSet::new();
+        let mut unread = Vec::new();
         for (path, stat) in to_read {
-            match sh.storage.read_bytes(&path) {
-                Ok(bytes) => {
+            match sh.storage.hash_file(&path) {
+                Ok((hash, size)) => {
                     let mtime_ns = stat.map_or(0, |s| s.mtime_ns);
                     let racy = mtime_ns == 0 || mtime_ns.saturating_add(RACY_NS) > start_ns;
-                    let hash = FileHash::of(&bytes);
-                    read.push(Row { path, size: bytes.len() as u64, mtime_ns, hash, generation: 0, gone: false, racy });
+                    read.push(Row { path, size, mtime_ns, hash, generation: 0, gone: false, racy });
                 }
                 Err(VaultError::NotFound(_)) => {
                     vanished.insert(path);
                 }
-                Err(e) => return Err(e),
+                // Locked by another program, no permission, a bad sector:
+                // this file only. Its row stays, racy, and is never taken
+                // for removed (it is still listed).
+                Err(e) => unread.push((path, e.to_string())),
             }
         }
         let listed: HashSet<NotePath> = listing.into_iter().map(|(p, _)| p).filter(|p| !vanished.contains(p)).collect();
-        let delta = {
+        let (delta, late) = {
             let mut t = self.write();
-            let delta = t.apply_scan(&listed, read, !trust_stat);
+            let delta = t.apply_scan(&listed, read, unread, verified);
             t.drain(&sh.pending);
-            delta
+            (delta, std::mem::take(&mut t.outbox))
         };
         drop(mark);
         if !delta.is_empty() {
-            let shared = Arc::new(delta.clone());
-            lock(&sh.subscribers).retain(|s| s.send(Arc::clone(&shared)).is_ok());
+            self.send(vec![delta.clone()]);
         }
+        self.send(late);
         Ok(delta)
     }
 
@@ -464,7 +583,22 @@ impl Manifest {
     /// scan. Not passed to subscribers: the writer tells them itself.
     pub fn note_written(&self, path: &NotePath, bytes: &[u8]) -> FileHash {
         let hash = FileHash::of(bytes);
-        self.own(Own::Written { path: path.clone(), size: bytes.len() as u64, hash });
+        self.own(Own::Written { path: path.clone(), size: bytes.len() as u64, hash, observed: false });
+        hash
+    }
+
+    /// Record that a read found `bytes` at `path` (the storage path and the
+    /// bytes as stored), and give their hash: for bytes Quire did not write
+    /// itself, such as a note another program changed that sync or the
+    /// editor just read. When the hash differs from the row (or there is no
+    /// row), the row changes as for [`Self::note_written`] and every
+    /// subscriber gets a [`Delta`] with that one row; the same bytes again
+    /// change nothing. The next scan reads the file again and, finding the
+    /// same bytes, sends nothing more. Never waits: while a scan holds the
+    /// table it is queued, and the [`Delta`] goes out when it is applied.
+    pub fn observed(&self, path: &NotePath, bytes: &[u8]) -> FileHash {
+        let hash = FileHash::of(bytes);
+        self.own(Own::Written { path: path.clone(), size: bytes.len() as u64, hash, observed: true });
         hash
     }
 
@@ -475,12 +609,27 @@ impl Manifest {
     }
 
     fn own(&self, own: Own) {
-        match self.shared.table.try_write() {
-            Ok(mut t) => {
-                t.drain(&self.shared.pending);
-                t.apply_own(own);
-            }
-            Err(_) => lock(&self.shared.pending).push(own),
+        let Ok(mut t) = self.shared.table.try_write() else {
+            lock(&self.shared.pending).push(own);
+            return;
+        };
+        t.drain(&self.shared.pending);
+        t.apply_own(own);
+        let out = std::mem::take(&mut t.outbox);
+        drop(t);
+        self.send(out);
+    }
+
+    /// Send `deltas` to every subscriber, in order, forgetting the ones
+    /// that hung up. Called with the table free.
+    fn send(&self, deltas: Vec<Delta>) {
+        if deltas.is_empty() {
+            return;
+        }
+        let mut subs = lock(&self.shared.subscribers);
+        for d in deltas {
+            let d = Arc::new(d);
+            subs.retain(|s| s.send(Arc::clone(&d)).is_ok());
         }
     }
 
@@ -491,7 +640,11 @@ impl Manifest {
         let queued = lock(&self.shared.pending).iter().rev().find(|o| o.path() == path).cloned();
         let t = self.read();
         match queued {
-            Some(Own::Written { path, size, hash }) => {
+            // Observed bytes the row already has change nothing.
+            Some(Own::Written { observed: true, hash, .. }) if t.rows.get(path).is_some_and(|r| !r.gone && r.hash == hash) => {
+                t.rows.get(path).cloned()
+            }
+            Some(Own::Written { path, size, hash, .. }) => {
                 Some(Row { path, size, mtime_ns: 0, hash, generation: t.generation + 1, gone: false, racy: true })
             }
             Some(Own::Removed(_)) => None,
@@ -509,7 +662,7 @@ impl Manifest {
     /// Every row that changed after `generation`, tombstones included,
     /// sorted by path; `None` when tombstones that old were dropped, so the
     /// caller compares everything with [`Self::rows`] instead (as for
-    /// another epoch). Own writes still queued come in a later generation.
+    /// another process). Own writes still queued come in a later generation.
     pub fn since(&self, generation: u64) -> Option<Vec<Row>> {
         self.settle();
         let t = self.read();
@@ -529,8 +682,11 @@ impl Manifest {
         self.read().generation
     }
 
-    /// 16 random bytes, new whenever the table was built from nothing. A
-    /// persisted `(epoch, generation)` cursor is valid only while this matches.
+    /// 16 random bytes, new on every [`Self::open`]: a generation means
+    /// something only next to the epoch it came with, so only within this
+    /// process. A consumer that persists what it saw compares by hash on
+    /// its next start; it never keeps an `(epoch, generation)` cursor
+    /// across processes.
     pub fn epoch(&self) -> [u8; 16] {
         self.read().epoch
     }
@@ -541,7 +697,15 @@ impl Manifest {
         self.read().scans > 0
     }
 
-    /// Every later scan's [`Delta`] that changed something.
+    /// Every later scan's [`Delta`] that changed something, and one for each
+    /// [`Self::observed`] change. Own writes ([`Self::note_written`],
+    /// [`Self::note_removed`]) are not sent: the writer tells others itself.
+    ///
+    /// Nothing from before the call is sent: a subscriber reconciles at
+    /// start with [`Self::since`] (from the generation it knows, after
+    /// subscribing; [`Self::rows`] when it knows none or `since` gives
+    /// `None`), then applies the deltas. A change may then arrive both ways;
+    /// compare by hash.
     pub fn subscribe(&self) -> Receiver<Arc<Delta>> {
         let (tx, rx) = crossbeam_channel::unbounded();
         lock(&self.shared.subscribers).push(tx);
@@ -617,7 +781,6 @@ fn put_varint(out: &mut Vec<u8>, mut v: u64) {
 fn encode(t: &Table, origin: &[u8; 32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(80 + t.rows.len() * 80);
     out.extend_from_slice(origin);
-    out.extend_from_slice(&t.epoch);
     out.extend_from_slice(&t.generation.to_le_bytes());
     out.extend_from_slice(&t.floor.to_le_bytes());
     out.extend_from_slice(&(t.rows.len() as u64).to_le_bytes());
@@ -625,11 +788,13 @@ fn encode(t: &Table, origin: &[u8; 32]) -> Vec<u8> {
         let p = r.path.as_str().as_bytes();
         put_varint(&mut out, p.len() as u64);
         out.extend_from_slice(p);
-        put_varint(&mut out, r.size);
-        out.extend_from_slice(&r.mtime_ns.to_le_bytes());
-        out.extend_from_slice(&r.hash.0);
-        put_varint(&mut out, r.generation);
         out.push(if r.gone { GONE } else { 0 } | if r.racy { RACY } else { 0 });
+        put_varint(&mut out, r.generation);
+        if !r.gone {
+            put_varint(&mut out, r.size);
+            out.extend_from_slice(&r.mtime_ns.to_le_bytes());
+            out.extend_from_slice(&r.hash.0);
+        }
     }
     out
 }
@@ -669,14 +834,15 @@ impl<'a> Reader<'a> {
 }
 
 /// The table in `body`, `None` for anything doubtful (another origin,
-/// a bad path, rows out of order, unknown flags, a generation from the
-/// future, bytes left over).
+/// a bad path, rows out of order, unknown flags, a racy tombstone, a
+/// generation from the future, bytes left over). Its epoch is left for
+/// the caller to set.
 fn decode(body: &[u8], origin: &[u8; 32]) -> Option<Table> {
     let mut r = Reader(body);
     if r.array::<32>()? != *origin {
         return None;
     }
-    let mut t = Table::fresh(r.array::<16>()?);
+    let mut t = Table::fresh([0; 16]);
     t.generation = r.u64()?;
     t.floor = r.u64()?;
     let count = r.u64()?;
@@ -691,16 +857,20 @@ fn decode(body: &[u8], origin: &[u8; 32]) -> Option<Table> {
         if path.as_str() != raw || last.as_ref().is_some_and(|l| *l >= path) {
             return None;
         }
-        let size = r.varint()?;
-        let mtime_ns = r.u64()?;
-        let hash = FileHash(r.array::<32>()?);
-        let generation = r.varint()?;
         let flags = r.take(1)?[0];
-        if flags & !(GONE | RACY) != 0 || generation > t.generation {
+        let generation = r.varint()?;
+        let (gone, racy) = (flags & GONE != 0, flags & RACY != 0);
+        if flags & !(GONE | RACY) != 0 || (gone && racy) || generation > t.generation {
             return None;
         }
+        let mut row = Row { path: path.clone(), size: 0, mtime_ns: 0, hash: FileHash([0; 32]), generation, gone, racy };
+        if !gone {
+            row.size = r.varint()?;
+            row.mtime_ns = r.u64()?;
+            row.hash = FileHash(r.array::<32>()?);
+        }
         last = Some(path.clone());
-        t.rows.insert(path.clone(), Row { path, size, mtime_ns, hash, generation, gone: flags & GONE != 0, racy: flags & RACY != 0 });
+        t.rows.insert(path, row);
     }
     r.0.is_empty().then_some(t)
 }

@@ -15,6 +15,9 @@ default = []
 # that P6 allows to reach the network turn it on, so ureq stays out of
 # every other crate's build (the sync server, the AI engine).
 net = ["dep:ureq"]
+# Test hooks (`fs::failing`): only other crates' tests turn it on, as a
+# dev-dependency feature; a build never has it.
+test-hooks = []
 
 [dependencies]
 # Every one of these was already in the tree; none is a workspace crate.
