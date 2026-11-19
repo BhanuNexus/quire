@@ -7,7 +7,11 @@ exclude_globs = ["**/tests/**", "**/tests.rs", "**/testdata/**", "**/hostile.rs"
 
 # A changed Debug or Display text is not a behaviour. (The mutant's name reads
 # "replace <impl Display for Foo>::fmt -> Result with Ok(Default::default())".)
-exclude_re = ["impl (Debug|Display) for"]
+exclude_re = [
+    "impl (Debug|Display) for",
+    # A `\n` and the `]` of `]]` are never the same byte (see the comment in `wikilink_at`).
+    "replace < with <= in Cursor::wikilink_at",
+]
 
 # A mutant that loops forever is stopped after 3 x the unmutated test time
 # (at least a minute), and counts as caught.
