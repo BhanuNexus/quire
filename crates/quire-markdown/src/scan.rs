@@ -128,6 +128,7 @@ impl<'a> Overlap<'a> {
     /// Does `from..to` (not empty) overlap a range? A `from` before the last one
     /// asked is answered too, by looking the index up again.
     pub(crate) fn hits(&mut self, from: usize, to: usize) -> bool {
+        // cargo-mutants: equivalent: with `end == from`, `>=` only looks the index up again and gets the one the loop below reaches.
         if self.next > 0 && self.ranges[self.next - 1].end > from {
             self.next = self.ranges.partition_point(|r| r.end <= from);
         }

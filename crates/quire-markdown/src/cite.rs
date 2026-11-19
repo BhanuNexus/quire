@@ -483,4 +483,13 @@ mod tests {
         let star = render("[-@ada]", &Lib);
         assert!(star.starts_with("(1843)"), "{star}");
     }
+
+    #[test]
+    fn a_citation_inside_a_wikilink_is_skipped_up_to_the_closing_brackets() {
+        // The scan resumes after the `]]`, not at the last bytes of the link, where the `@k` starts.
+        assert!(scan("[[a @k]]").is_empty());
+        let v = scan("[[a @k]] @j");
+        assert_eq!(v.len(), 1);
+        assert_eq!(keys_of(&v[0]), vec!["j"]);
+    }
 }
