@@ -29,9 +29,17 @@
 //! the table is busy they queue, and [`Manifest::get`] and [`Manifest::has`]
 //! already answer with them. Such a row is hashed again by the next scan.
 //!
+//! **Changes found by reading.** [`Manifest::observed`] is for bytes Quire
+//! read but did not write (sync or the editor reading a note another
+//! program changed): when the hash is new, the row changes at once and
+//! every subscriber gets a [`Delta`] with that row, so a change found by
+//! reading reaches the index as one found by a scan does.
+//!
 //! **Sharing.** A [`Manifest`] is a handle: clones share one table, so one
-//! scanner serves a vault. Each scan's [`Delta`] goes to every
-//! [`Manifest::subscribe`]r. The table persists through
+//! scanner serves a vault. Each scan's [`Delta`] that changed something,
+//! and each observed change, goes to every [`Manifest::subscribe`]r. A
+//! subscriber hears only what happens after it subscribed, and never our
+//! own writes: it reconciles with [`Manifest::since`] at start. The table persists through
 //! [`quire_base::cache`] at `.quire/cache/manifest` when the storage has a
 //! place on disk ([`Manifest::flush`]); a missing, damaged, newer or foreign
 //! file only costs a scan that reads every file.
@@ -176,10 +184,17 @@ impl Delta {
 /// The clock a manifest reads for the racy rule (injected in tests, P10).
 pub type Clock = Arc<dyn Fn() -> SystemTime + Send + Sync>;
 
-/// One of our own writes, waiting for the table.
+/// One of our own writes, or bytes a read found, waiting for the table.
 #[derive(Debug, Clone)]
 enum Own {
-    Written { path: NotePath, size: u64, hash: FileHash },
+    /// `observed`: found by reading, not written by us, so a change is
+    /// sent to subscribers ([`Manifest::observed`]).
+    Written {
+        path: NotePath,
+        size: u64,
+        hash: FileHash,
+        observed: bool,
+    },
     Removed(NotePath),
 }
 
@@ -207,11 +222,24 @@ struct Table {
     touched: HashSet<NotePath>,
     /// Scans finished in this process.
     scans: u64,
+    /// Deltas of observed changes not yet sent to subscribers: whoever
+    /// applied them sends them once the table is free.
+    outbox: Vec<Delta>,
 }
 
 impl Table {
     fn fresh(epoch: [u8; 16]) -> Self {
-        Self { epoch, generation: 0, floor: 0, rows: BTreeMap::new(), version: 0, scanning: false, touched: HashSet::new(), scans: 0 }
+        Self {
+            epoch,
+            generation: 0,
+            floor: 0,
+            rows: BTreeMap::new(),
+            version: 0,
+            scanning: false,
+            touched: HashSet::new(),
+            scans: 0,
+            outbox: Vec::new(),
+        }
     }
 
     fn apply_own(&mut self, own: Own) {
@@ -220,15 +248,22 @@ impl Table {
         }
         let next = self.generation + 1;
         match own {
-            Own::Written { path, size, hash } => {
+            Own::Written { path, size, hash, observed } => {
                 match self.rows.get_mut(&path) {
+                    // Bytes a read found that the row already has: nothing
+                    // to record (the row's time and size stay the listing's).
+                    Some(r) if observed && !r.gone && r.hash == hash => return,
                     Some(r) if !r.gone && r.hash == hash => {
                         r.size = size;
                         r.mtime_ns = 0;
                         r.racy = true;
                     }
                     _ => {
-                        self.rows.insert(path.clone(), Row { path, size, mtime_ns: 0, hash, generation: next, gone: false, racy: true });
+                        let row = Row { path: path.clone(), size, mtime_ns: 0, hash, generation: next, gone: false, racy: true };
+                        if observed {
+                            self.outbox.push(Delta { epoch: self.epoch, generation: next, changed: vec![row.clone()], ..Delta::default() });
+                        }
+                        self.rows.insert(path, row);
                         self.generation = next;
                     }
                 }
@@ -428,9 +463,11 @@ impl Manifest {
         if lock(&self.shared.pending).is_empty() {
             return;
         }
-        if let Ok(mut t) = self.shared.table.try_write() {
-            t.drain(&self.shared.pending);
-        }
+        let Ok(mut t) = self.shared.table.try_write() else { return };
+        t.drain(&self.shared.pending);
+        let out = std::mem::take(&mut t.outbox);
+        drop(t);
+        self.send(out);
     }
 
     /// List the vault and bring every row up to date (see the module docs).
@@ -476,12 +513,14 @@ impl Manifest {
         // made while the scan lists and reads (applied at once, or queued and
         // applied when the scan ends) goes into `touched`, and the scan
         // leaves that row to the next scan.
-        {
+        let early = {
             let mut t = self.write();
             t.drain(&sh.pending);
             t.scanning = true;
             t.touched.clear();
-        }
+            std::mem::take(&mut t.outbox)
+        };
+        self.send(early);
         let mark = ScanMark(&sh.table);
         let listing = sh.storage.list_stat()?;
         let to_read: Vec<(NotePath, Option<FileStat>)> = {
@@ -508,17 +547,17 @@ impl Manifest {
             }
         }
         let listed: HashSet<NotePath> = listing.into_iter().map(|(p, _)| p).filter(|p| !vanished.contains(p)).collect();
-        let delta = {
+        let (delta, late) = {
             let mut t = self.write();
             let delta = t.apply_scan(&listed, read, unread, verified);
             t.drain(&sh.pending);
-            delta
+            (delta, std::mem::take(&mut t.outbox))
         };
         drop(mark);
         if !delta.is_empty() {
-            let shared = Arc::new(delta.clone());
-            lock(&sh.subscribers).retain(|s| s.send(Arc::clone(&shared)).is_ok());
+            self.send(vec![delta.clone()]);
         }
+        self.send(late);
         Ok(delta)
     }
 
@@ -533,7 +572,22 @@ impl Manifest {
     /// scan. Not passed to subscribers: the writer tells them itself.
     pub fn note_written(&self, path: &NotePath, bytes: &[u8]) -> FileHash {
         let hash = FileHash::of(bytes);
-        self.own(Own::Written { path: path.clone(), size: bytes.len() as u64, hash });
+        self.own(Own::Written { path: path.clone(), size: bytes.len() as u64, hash, observed: false });
+        hash
+    }
+
+    /// Record that a read found `bytes` at `path` (the storage path and the
+    /// bytes as stored), and give their hash: for bytes Quire did not write
+    /// itself, such as a note another program changed that sync or the
+    /// editor just read. When the hash differs from the row (or there is no
+    /// row), the row changes as for [`Self::note_written`] and every
+    /// subscriber gets a [`Delta`] with that one row; the same bytes again
+    /// change nothing. The next scan reads the file again and, finding the
+    /// same bytes, sends nothing more. Never waits: while a scan holds the
+    /// table it is queued, and the [`Delta`] goes out when it is applied.
+    pub fn observed(&self, path: &NotePath, bytes: &[u8]) -> FileHash {
+        let hash = FileHash::of(bytes);
+        self.own(Own::Written { path: path.clone(), size: bytes.len() as u64, hash, observed: true });
         hash
     }
 
@@ -544,12 +598,27 @@ impl Manifest {
     }
 
     fn own(&self, own: Own) {
-        match self.shared.table.try_write() {
-            Ok(mut t) => {
-                t.drain(&self.shared.pending);
-                t.apply_own(own);
-            }
-            Err(_) => lock(&self.shared.pending).push(own),
+        let Ok(mut t) = self.shared.table.try_write() else {
+            lock(&self.shared.pending).push(own);
+            return;
+        };
+        t.drain(&self.shared.pending);
+        t.apply_own(own);
+        let out = std::mem::take(&mut t.outbox);
+        drop(t);
+        self.send(out);
+    }
+
+    /// Send `deltas` to every subscriber, in order, forgetting the ones
+    /// that hung up. Called with the table free.
+    fn send(&self, deltas: Vec<Delta>) {
+        if deltas.is_empty() {
+            return;
+        }
+        let mut subs = lock(&self.shared.subscribers);
+        for d in deltas {
+            let d = Arc::new(d);
+            subs.retain(|s| s.send(Arc::clone(&d)).is_ok());
         }
     }
 
@@ -560,7 +629,11 @@ impl Manifest {
         let queued = lock(&self.shared.pending).iter().rev().find(|o| o.path() == path).cloned();
         let t = self.read();
         match queued {
-            Some(Own::Written { path, size, hash }) => {
+            // Observed bytes the row already has change nothing.
+            Some(Own::Written { observed: true, hash, .. }) if t.rows.get(path).is_some_and(|r| !r.gone && r.hash == hash) => {
+                t.rows.get(path).cloned()
+            }
+            Some(Own::Written { path, size, hash, .. }) => {
                 Some(Row { path, size, mtime_ns: 0, hash, generation: t.generation + 1, gone: false, racy: true })
             }
             Some(Own::Removed(_)) => None,
@@ -610,7 +683,15 @@ impl Manifest {
         self.read().scans > 0
     }
 
-    /// Every later scan's [`Delta`] that changed something.
+    /// Every later scan's [`Delta`] that changed something, and one for each
+    /// [`Self::observed`] change. Own writes ([`Self::note_written`],
+    /// [`Self::note_removed`]) are not sent: the writer tells others itself.
+    ///
+    /// Nothing from before the call is sent: a subscriber reconciles at
+    /// start with [`Self::since`] (from the generation it knows, after
+    /// subscribing; [`Self::rows`] when it knows none or `since` gives
+    /// `None`), then applies the deltas. A change may then arrive both ways;
+    /// compare by hash.
     pub fn subscribe(&self) -> Receiver<Arc<Delta>> {
         let (tx, rx) = crossbeam_channel::unbounded();
         lock(&self.shared.subscribers).push(tx);

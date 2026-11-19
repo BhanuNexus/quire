@@ -46,6 +46,17 @@ About 87 bytes a row with typical paths (`Folder 12/Sub 3/A note with a title 12
 * **Racy.** A row whose time is less than 2 s before its scan, or after it, is
   hashed again by the next scan (coarse clocks, an edit in the same tick as the
   scan). A row Quire recorded for its own write has time 0 and is racy.
+* **Own writes and observed reads.** Bytes Quire wrote itself
+  (`note_written`) update the row at once and are not sent to subscribers:
+  the writer tells others itself. Bytes Quire read but did not write
+  (`observed`: sync or the editor reading a note another program changed)
+  update the row the same way and, when the hash is new, are sent to every
+  subscriber as a delta of that one row; the next scan, finding the same
+  bytes, sends nothing more.
+* **Subscribers.** A subscriber hears only what happens after it subscribed,
+  and never own writes. At start it subscribes, then reconciles with
+  `since(gen)` (or every row, when it knows no `gen` or `since` says the
+  tombstones are gone), comparing by hash.
 * **Generations.** `gen` goes up by one for each scan, or each own write or
   removal, that changed at least one row. A consumer's in-process cursor is a
   `gen`; a persisted `(epoch, gen)` cursor is valid only while the epoch

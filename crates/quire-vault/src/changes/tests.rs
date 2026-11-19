@@ -446,6 +446,60 @@ fn own_writes_update_the_row_at_once_and_count_as_racy() {
 }
 
 #[test]
+fn an_observed_change_reaches_subscribers_and_an_own_write_does_not() {
+    let fs = Fake::new();
+    let probe = Probe::new(Arc::clone(&fs) as Arc<dyn Storage>);
+    let m = Manifest::open_with_clock(&vault_of(&probe), fs.clock());
+    fs.put("a.md", b"a");
+    fs.put("b.md", b"b");
+    fs.tick(10 * SEC);
+    m.scan().unwrap();
+    let rx = m.subscribe();
+    let g = m.generation();
+    // Another program changed a.md; sync reads it before any scan.
+    fs.put("a.md", b"a, edited elsewhere");
+    assert_eq!(m.observed(&np("a.md"), b"a, edited elsewhere"), FileHash::of(b"a, edited elsewhere"));
+    let d = rx.try_recv().expect("an observed change is sent");
+    assert_eq!((d.generation, d.epoch, d.verified), (g + 1, m.epoch(), false));
+    assert_eq!(d.changed.iter().map(|r| (r.path.as_str(), r.hash)).collect::<Vec<_>>(), [("a.md", FileHash::of(b"a, edited elsewhere"))]);
+    assert!(d.removed.is_empty() && d.unread.is_empty());
+    assert_eq!(m.get(&np("a.md")).unwrap().hash, FileHash::of(b"a, edited elsewhere"));
+    assert_eq!(m.generation(), g + 1);
+    // The same bytes again, or bytes the row already has: nothing.
+    m.observed(&np("a.md"), b"a, edited elsewhere");
+    m.observed(&np("b.md"), b"b");
+    assert!(rx.try_recv().is_err());
+    assert_eq!(m.generation(), g + 1);
+    assert!(!m.get(&np("b.md")).unwrap().is_racy(), "an observed match leaves the row alone");
+    // Our own write is not sent.
+    fs.put("b.md", b"b, saved by us");
+    m.note_written(&np("b.md"), b"b, saved by us");
+    assert!(rx.try_recv().is_err(), "own writes are not sent");
+    // The next scan reads both again and sends nothing: no duplicate.
+    fs.tick(10 * SEC);
+    probe.reads();
+    assert!(m.scan().unwrap().is_empty());
+    assert_eq!(probe.reads(), 2);
+    assert!(rx.try_recv().is_err(), "no duplicate");
+    // Observed while the table is held: queued, sent once applied.
+    fs.put("c.md", b"c");
+    {
+        let _held = m.shared.table.read().unwrap();
+        std::thread::scope(|s| {
+            s.spawn(|| m.observed(&np("c.md"), b"c")).join().unwrap();
+        });
+        assert!(rx.try_recv().is_err(), "not applied yet");
+        assert!(m.has(&np("c.md")), "answered from the queue");
+    }
+    assert_eq!(m.generation(), g + 3);
+    assert_eq!(rx.try_recv().unwrap().changed[0].path, np("c.md"));
+    fs.tick(10 * SEC);
+    assert!(m.scan().unwrap().is_empty());
+    assert!(rx.try_recv().is_err());
+    assert_eq!(summary(&m), cold(Arc::clone(&fs) as Arc<dyn Storage>));
+}
+
+#[test]
 fn own_writes_never_wait_for_the_table() {
     let fs = Fake::new();
     let m = Manifest::open_with_clock(&vault_of(&fs), fs.clock());
@@ -567,9 +621,10 @@ impl Rng {
 
 /// Incremental equals rebuilt (`docs/design/0.14-architecture.md` §7 rule 4):
 /// after random creates, edits (some in the same tick as a scan, some
-/// keeping the size), renames, deletes, own writes and scans, a scan gives
-/// the rows a manifest built from nothing gives, hash by hash; and the
-/// deltas subscribers got, with our own writes, add up to the same.
+/// keeping the size), renames, deletes, own writes, observed reads and
+/// scans, a scan gives the rows a manifest built from nothing gives, hash
+/// by hash; and the deltas subscribers got, with our own writes, add up to
+/// the same.
 #[test]
 fn after_random_changes_a_scan_equals_a_manifest_built_from_nothing() {
     let cases: u64 = std::env::var("PROPTEST_CASES").ok().and_then(|c| c.parse().ok()).unwrap_or(200);
@@ -585,7 +640,12 @@ fn after_random_changes_a_scan_equals_a_manifest_built_from_nothing() {
             // Same size or not: one or two letters.
             let content = vec![b'a' + rng.below(3) as u8; 1 + rng.below(2) as usize];
             match rng.below(10) {
-                0..=2 => fs.put(p.as_str(), &content),
+                0..=1 => fs.put(p.as_str(), &content),
+                // Found by reading: its delta, not this call, tells `seen`.
+                2 => {
+                    fs.put(p.as_str(), &content);
+                    m.observed(&p, &content);
+                }
                 3 => {
                     fs.put(p.as_str(), &content);
                     seen.insert(p.clone(), m.note_written(&p, &content));
