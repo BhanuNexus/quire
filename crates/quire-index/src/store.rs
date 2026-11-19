@@ -190,12 +190,35 @@ pub(crate) fn encode_segment(entries: &[Entry<'_>]) -> Vec<u8> {
     w.buf
 }
 
-/// A decoded segment: its term table and each note's record and source.
-pub(crate) struct Segment {
-    pub(crate) table: Vec<String>,
-    pub(crate) notes: Vec<(Stored, String)>,
+/// A segment's section B (the notes' texts), still deflated: decoded after
+/// keyword search is ready, or on demand for one note before that.
+#[derive(Debug)]
+pub(crate) struct Texts {
+    deflated: Vec<u8>,
+    len: usize,
 }
 
+impl Texts {
+    /// Every text of the segment, one after another.
+    pub(crate) fn inflate(&self) -> Option<Vec<u8>> {
+        inflate(&self.deflated, self.len)
+    }
+
+    /// One note's text out of [`Self::inflate`]'s bytes.
+    pub(crate) fn text(all: &[u8], range: &std::ops::Range<usize>) -> Option<String> {
+        std::str::from_utf8(all.get(range.clone())?).ok().map(str::to_string)
+    }
+}
+
+/// A decoded segment: its term table, each note's record and the range of
+/// its text in section B, and section B itself, still deflated.
+pub(crate) struct Segment {
+    pub(crate) table: Vec<String>,
+    pub(crate) notes: Vec<(Stored, std::ops::Range<usize>)>,
+    pub(crate) texts: std::sync::Arc<Texts>,
+}
+
+/// Section A of a segment decoded; section B checked for its length only.
 pub(crate) fn decode_segment(body: &[u8]) -> Option<Segment> {
     let mut r = Reader::new(body);
     let n_terms = r.count()?;
@@ -204,7 +227,7 @@ pub(crate) fn decode_segment(body: &[u8]) -> Option<Segment> {
     let a_len = r.usize()?;
     let a = inflate(r.bytes()?, a_len)?;
     let b_len = r.usize()?;
-    let b = inflate(r.bytes()?, b_len)?;
+    let texts = Texts { deflated: r.bytes()?.to_vec(), len: b_len };
     if !r.is_empty() {
         return None;
     }
@@ -214,11 +237,40 @@ pub(crate) fn decode_segment(body: &[u8]) -> Option<Segment> {
     for _ in 0..n {
         let stored = decode_record(&mut ra, table.len())?;
         let len = ra.usize()?;
-        let src = std::str::from_utf8(b.get(at..at.checked_add(len)?)?).ok()?.to_string();
-        at += len;
-        notes.push((stored, src));
+        let end = at.checked_add(len)?;
+        notes.push((stored, at..end));
+        at = end;
     }
-    (ra.is_empty() && at == b.len()).then_some(Segment { table, notes })
+    (ra.is_empty() && at == b_len).then(|| Segment { table, notes, texts: std::sync::Arc::new(texts) })
+}
+
+/// `f` over `jobs` on up to `threads` threads (at least one), each taking
+/// the next job until none is left; results in job order, `None` where a
+/// thread failed.
+pub(crate) fn pool<T: Sync, R: Send>(jobs: &[T], threads: usize, f: impl Fn(&T) -> R + Sync) -> Vec<Option<R>> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut slots: Vec<Option<R>> = (0..jobs.len()).map(|_| None).collect();
+    std::thread::scope(|s| {
+        let workers: Vec<_> = (0..threads.clamp(1, jobs.len().max(1)))
+            .map(|_| {
+                s.spawn(|| {
+                    crate::background::lower_priority();
+                    let mut done = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(job) = jobs.get(i) else { break done };
+                        done.push((i, f(job)));
+                    }
+                })
+            })
+            .collect();
+        for w in workers {
+            for (i, r) in w.join().unwrap_or_default() {
+                slots[i] = Some(r);
+            }
+        }
+    });
+    slots
 }
 
 /// Whether any of `paths` is in a locked folder now. Asks once per folder.
@@ -338,34 +390,10 @@ impl Store {
             }
         }
         let jobs: Vec<(u64, Vec<(u32, NotePath)>)> = wanted.into_iter().collect();
-        // Inflate and decode on a small pool: each thread takes the next
-        // segment until none is left, so one slow segment doesn't hold up a
-        // fixed share. Results go back in segment order: the same install
-        // order, and so the same term ids, on every run.
-        let next = std::sync::atomic::AtomicUsize::new(0);
+        // Section A of each segment on a small pool, back in segment order:
+        // the same install order, and so the same term ids, on every run.
         let dir = &self.dir;
-        let mut slots: Vec<Option<(Option<Segment>, Vec<NotePath>)>> = (0..jobs.len()).map(|_| None).collect();
-        std::thread::scope(|s| {
-            let workers: Vec<_> = (0..threads.clamp(1, jobs.len().max(1)))
-                .map(|_| {
-                    s.spawn(|| {
-                        crate::background::lower_priority();
-                        let mut done = Vec::new();
-                        loop {
-                            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            let Some((id, want)) = jobs.get(i) else { break done };
-                            done.push((i, read_segment(dir, *id, want)));
-                        }
-                    })
-                })
-                .collect();
-            for w in workers {
-                // A thread that panicked gave nothing: its segments' notes are parsed below.
-                for (i, r) in w.join().unwrap_or_default() {
-                    slots[i] = Some(r);
-                }
-            }
-        });
+        let slots = pool(&jobs, threads, |(id, want)| read_segment(dir, *id, want));
         let mut segments = Vec::new();
         let mut rows = rows;
         for (slot, (_, want)) in slots.into_iter().zip(&jobs) {
@@ -409,6 +437,14 @@ impl Store {
         if self.rows.keys().any(|p| !self.current.contains_key(p)) {
             self.removal.get_or_insert_with(Instant::now);
             self.touch();
+        }
+    }
+
+    /// Notes whose text couldn't be decoded: their rows go, so they are
+    /// parsed and written again.
+    pub(crate) fn forget_rows(&mut self, paths: &[NotePath]) {
+        for p in paths {
+            self.rows.remove(p);
         }
     }
 
@@ -585,7 +621,7 @@ fn read_segment(dir: &Path, id: u64, want: &[(u32, NotePath)]) -> (Option<Segmen
     else {
         return (None, all_missed());
     };
-    let mut slots: Vec<Option<(Stored, String)>> = seg.notes.drain(..).map(Some).collect();
+    let mut slots: Vec<Option<(Stored, std::ops::Range<usize>)>> = seg.notes.drain(..).map(Some).collect();
     let mut missed = Vec::new();
     for (slot, p) in want {
         match slots.get_mut(*slot as usize).and_then(Option::take) {

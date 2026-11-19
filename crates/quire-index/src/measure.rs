@@ -182,7 +182,7 @@ fn measure() {
         let mut r = Reader::new(&seg.a);
         for (_, src) in srcs {
             let s = decode_record(&mut r, table.len()).expect("decodes");
-            ix.insert_stored(s, &map, src.clone());
+            ix.insert_stored(s, &map, Some(src.clone()));
         }
     }
     ix.recount();

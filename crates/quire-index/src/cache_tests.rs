@@ -135,10 +135,10 @@ fn cache_bytes(v: &Vault) -> Vec<u8> {
             if let Some(seg) =
                 cache::read(&path, Kind::RECORDS_SEGMENT, st::FORMAT, st::DERIVE_VERSION).and_then(|b| st::decode_segment(&b))
             {
-                for (s, src) in seg.notes {
+                for (s, _) in seg.notes {
                     out.extend(format!("{:?}", s.rec).bytes());
-                    out.extend(src.bytes());
                 }
+                out.extend(seg.texts.inflate().unwrap_or_default());
                 out.extend(seg.table.join(" ").bytes());
             }
         }
@@ -238,6 +238,70 @@ fn a_warm_start_after_edits_while_closed_equals_a_cold_one() {
     }
 }
 
+/// Between keyword search being ready and the texts being decoded
+/// (`docs/design/0.14-index-startup.md` §3.6, phases 1 and 2): search hits are
+/// complete with their snippets, and every caller asking for a note's text
+/// gets exactly the text its record was made from, decoded on demand.
+#[test]
+fn between_the_phases_answers_are_complete_and_texts_come_on_demand() {
+    let dir = tempfile::tempdir().expect("temp");
+    let v = vault_of(dir.path(), st::SEGMENT_NOTES + 40);
+    drop(service(&v));
+    let want = {
+        let svc = IndexService::spawn();
+        svc.load(v.clone());
+        svc.flush();
+        let ix = svc.read();
+        let hits: Vec<String> = ["rope", "ro", "editor task", "#topic", "\"rope tree\"", "missing -draft"]
+            .iter()
+            .flat_map(|q| {
+                ix.search(q, 1000)
+                    .into_iter()
+                    .map(move |h| format!("{q}: {} {} {} {:?}", h.path, h.score.to_bits(), h.snippet, h.highlights))
+            })
+            .collect();
+        let texts: Vec<(NotePath, String, u32)> = ix
+            .paths()
+            .into_iter()
+            .map(|p| {
+                let s = ix.source(&p).expect("text").to_string();
+                let line = ix.line_of(&p, s.len() / 2);
+                (p, s, line)
+            })
+            .collect();
+        (hits, texts, ix.tasks(true), ix.tags())
+    };
+    let index = RwLock::new(Index::new());
+    let shared = Shared::default();
+    let (_c, parse, texts) = load_cached(&v, Manifest::open(&v), crate::relations::LinkConfig::default(), &index, &shared);
+    assert!(parse.is_empty(), "every note comes from the cache");
+    assert_eq!(texts.len(), 2, "two segments, their texts not decoded yet");
+    {
+        let ix = index.read().expect("lock");
+        let hits: Vec<String> = ["rope", "ro", "editor task", "#topic", "\"rope tree\"", "missing -draft"]
+            .iter()
+            .flat_map(|q| {
+                ix.search(q, 1000)
+                    .into_iter()
+                    .map(move |h| format!("{q}: {} {} {} {:?}", h.path, h.score.to_bits(), h.snippet, h.highlights))
+            })
+            .collect();
+        assert_eq!(hits, want.0, "keyword hits and snippets as a full build gives them");
+        assert_eq!((ix.tasks(true), ix.tags()), (want.2.clone(), want.3.clone()));
+        // Texts and lines on demand, from both segments.
+        for (p, text, line) in want.1.iter().rev() {
+            assert_eq!(ix.source(p), Some(text.as_str()), "{p}");
+            assert_eq!(ix.line_of(p, text.len() / 2), *line, "{p}");
+        }
+    }
+    assert!(fill_texts(&texts, &index, 2).is_empty());
+    let ix = index.read().expect("lock");
+    for (p, text, line) in &want.1 {
+        assert_eq!(ix.source(p), Some(text.as_str()));
+        assert_eq!(ix.line_of(p, text.len() / 2), *line);
+    }
+}
+
 /// Load the cache as a restarted process would, and finish like the worker.
 fn restart(v: &Vault) -> String {
     let svc = service(v);
@@ -261,7 +325,7 @@ fn a_flush_stopped_anywhere_costs_parses_never_results() {
         let index = RwLock::new(Index::new());
         let shared = Shared::default();
         let cfg = crate::relations::LinkConfig::default();
-        let (mut c, parse) = load_cached(&v, m.clone(), cfg.clone(), &index, &shared);
+        let (mut c, parse, _texts) = load_cached(&v, m.clone(), cfg.clone(), &index, &shared);
         assert_eq!(parse.len(), st::SEGMENT_NOTES + 21);
         let full = |c: &mut Cached, index: &RwLock<Index>| {
             let mut ix = index.write().expect("lock");

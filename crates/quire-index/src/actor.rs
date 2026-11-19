@@ -18,9 +18,10 @@ use quire_vault::{NotePath, Vault};
 
 use crate::chunk::chunk_note;
 use crate::index::Index;
+use crate::index::SourceLoader;
 use crate::record::NoteRecord;
 use crate::semantic::{SemanticIndex, build_lsa_index};
-use crate::store::Store;
+use crate::store::{Found, Store, Texts};
 
 /// Wait this long after the last change before rebuilding the semantic index.
 const SEMANTIC_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(700);
@@ -442,7 +443,7 @@ fn load_cached(
     link_config: crate::relations::LinkConfig,
     index: &RwLock<Index>,
     shared: &Shared,
-) -> (Cached, Vec<NotePath>) {
+) -> (Cached, Vec<NotePath>, Pending) {
     let deltas = manifest.subscribe();
     // The index scans only if no scan ran in this process yet.
     let listed = manifest.scanned() || manifest.scan().is_ok();
@@ -456,15 +457,17 @@ fn load_cached(
     let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get).max(1);
     let found = match store.as_mut() {
         Some(s) => s.load(&notes, threads),
-        None => crate::store::Found { segments: Vec::new(), parse: notes.iter().map(|(p, _)| p.clone()).collect() },
+        None => Found { segments: Vec::new(), parse: notes.iter().map(|(p, _)| p.clone()).collect() },
     };
     let hashes: std::collections::HashMap<&NotePath, FileHash> = notes.iter().map(|(p, h)| (p, *h)).collect();
     let mut ix = Index::new();
     ix.set_link_config_quiet(link_config);
+    let mut texts: Pending = Vec::new();
     for seg in found.segments {
         let table: Vec<&str> = seg.table.iter().map(String::as_str).collect();
         let map = ix.intern_all(&table);
-        for (stored, src) in seg.notes {
+        let mut ranges = Vec::with_capacity(seg.notes.len());
+        for (stored, range) in seg.notes {
             let p = stored.rec.path.clone();
             let Some(&hash) = hashes.get(&p) else { continue };
             let modified = manifest
@@ -473,20 +476,85 @@ fn load_cached(
                 .filter(|m| *m > 0)
                 .or_else(|| store.as_ref().and_then(|s| s.row_modified(&p)))
                 .unwrap_or(0);
-            ix.insert_stored(stored, &map, src);
+            // The text comes in the background (`fill_texts`), or on demand.
+            ix.insert_stored(stored, &map, None);
             ix.set_modified(&p, modified);
             if let Some(s) = store.as_mut() {
                 s.note(&p, hash, modified);
             }
             shared.indexed.fetch_add(1, Ordering::Relaxed);
+            ranges.push((p, range));
         }
+        texts.push((seg.texts, ranges));
     }
+    ix.set_source_loader(Some(loader(&texts)));
     ix.recount();
     ix.end_batch();
     shared.notes.store(ix.len(), Ordering::Relaxed);
     *index.write().unwrap_or_else(std::sync::PoisonError::into_inner) = ix;
+    // Keyword search, quick open, tags, tasks and views are complete now.
     shared.version.fetch_add(1, Ordering::Release);
-    (Cached { manifest, deltas, store }, found.parse)
+    (Cached { manifest, deltas, store }, found.parse, texts)
+}
+
+/// Every segment's texts, by note.
+type Pending = Vec<(Arc<Texts>, Vec<(NotePath, std::ops::Range<usize>)>)>;
+
+/// The text of a note installed without it, decoded from its segment on
+/// demand (the segment last decoded is kept, as callers tend to ask for
+/// notes of one folder together).
+fn loader(texts: &Pending) -> SourceLoader {
+    let at: std::collections::HashMap<NotePath, (usize, std::ops::Range<usize>)> =
+        texts.iter().enumerate().flat_map(|(i, (_, notes))| notes.iter().map(move |(p, r)| (p.clone(), (i, r.clone())))).collect();
+    let segments: Vec<Arc<Texts>> = texts.iter().map(|(t, _)| Arc::clone(t)).collect();
+    let last: std::sync::Mutex<Option<(usize, Arc<Vec<u8>>)>> = std::sync::Mutex::new(None);
+    SourceLoader(Arc::new(move |p: &NotePath| {
+        let (i, range) = at.get(p)?;
+        let mut last = last.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let all = match &*last {
+            Some((j, all)) if j == i => Arc::clone(all),
+            _ => {
+                let all = Arc::new(segments.get(*i)?.inflate()?);
+                *last = Some((*i, Arc::clone(&all)));
+                all
+            }
+        };
+        Texts::text(&all, range)
+    }))
+}
+
+/// Phase 2 of a start from the cache: decode every segment's texts on a
+/// pool, in the background (keyword search already answers), then put them
+/// in place under a brief write lock. Gives the notes whose text couldn't be
+/// decoded: they are parsed from their files.
+fn fill_texts(texts: &Pending, index: &RwLock<Index>, threads: usize) -> Vec<NotePath> {
+    type Decoded = (Vec<(NotePath, String, Vec<u32>)>, Vec<NotePath>);
+    let decoded: Vec<Option<Decoded>> = crate::store::pool(texts, threads, |(t, notes)| {
+        let Some(all) = t.inflate() else { return (Vec::new(), notes.iter().map(|(p, _)| p.clone()).collect()) };
+        let mut ok = Vec::with_capacity(notes.len());
+        let mut failed = Vec::new();
+        for (p, r) in notes {
+            match Texts::text(&all, r) {
+                Some(text) => {
+                    let starts = crate::index::line_starts(&text);
+                    ok.push((p.clone(), text, starts));
+                }
+                None => failed.push(p.clone()),
+            }
+        }
+        (ok, failed)
+    });
+    let mut filled = Vec::new();
+    let mut failed = Vec::new();
+    for (d, (_, notes)) in decoded.into_iter().zip(texts) {
+        let (ok, bad) = d.unwrap_or_else(|| (Vec::new(), notes.iter().map(|(p, _)| p.clone()).collect()));
+        filled.extend(ok);
+        failed.extend(bad);
+    }
+    let mut ix = index.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    ix.fill_sources(filled);
+    ix.set_source_loader(None);
+    failed
 }
 
 #[expect(clippy::too_many_lines, reason = "one loop over the worker's messages; each arm is short")]
@@ -545,7 +613,14 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                     prepared.clear();
                     loaded = Some(vault.clone());
                     let cfg = link_config.take().unwrap_or_else(|| crate::relations::LinkConfig::load(&vault));
-                    let (c, parse) = load_cached(&vault, manifest, cfg, index, shared);
+                    let (mut c, mut parse, texts) = load_cached(&vault, manifest, cfg, index, shared);
+                    // Phase 2: the texts, while keyword search already answers.
+                    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get).max(1);
+                    let failed = fill_texts(&texts, index, threads);
+                    if let Some(s) = c.store.as_mut() {
+                        s.forget_rows(&failed);
+                    }
+                    parse.extend(failed);
                     cached = Some(c);
                     shared.read.store(parse.len(), Ordering::Relaxed);
                     // Catch up: the notes the cache didn't have, through the

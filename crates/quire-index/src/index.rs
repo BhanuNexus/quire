@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, OnceLock};
 
 use quire_markdown::Task;
 use quire_vault::NotePath;
@@ -16,10 +17,17 @@ use crate::terms::TermId;
 #[derive(Debug, Default)]
 pub struct Index {
     records: HashMap<NotePath, NoteRecord>,
-    sources: HashMap<NotePath, String>,
+    /// Each note's text. A note installed from the startup cache before its
+    /// text was decoded has an empty cell until then; [`Index::source`]
+    /// fills it on demand through `pending` (`docs/design/0.14-index-startup.md` §3.6).
+    sources: HashMap<NotePath, OnceLock<String>>,
+    /// Gives the text of a note whose cell is still empty, while the
+    /// startup cache's texts are being decoded.
+    pending: Option<SourceLoader>,
     pub(crate) fulltext: FullText,
     graph: LinkGraph,
-    /// Byte offset of each line's start, per note (line numbers for hits).
+    /// Byte offset of each line's start, per note (line numbers for hits);
+    /// missing for a note whose text isn't decoded yet (computed on demand).
     line_starts: HashMap<NotePath, Vec<u32>>,
     /// Last change, Unix ms: the file's time at load, the time of an update after.
     modified: HashMap<NotePath, i64>,
@@ -29,6 +37,32 @@ pub struct Index {
     pub(crate) attachment_text: FullText,
     /// 0.12: which typed links are hierarchy edges (vault.toml `[links]`).
     link_config: crate::relations::LinkConfig,
+}
+
+/// The text of a note installed before its text was decoded: the same
+/// text the record was made from, decoded on demand (`None` if it can't
+/// be: the caller then sees a note without text).
+#[derive(Clone)]
+pub(crate) struct SourceLoader(pub(crate) Arc<LoadText>);
+
+/// Decodes one note's text.
+pub(crate) type LoadText = dyn Fn(&NotePath) -> Option<String> + Send + Sync;
+
+impl std::fmt::Debug for SourceLoader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SourceLoader")
+    }
+}
+
+/// A note's text from its cell, decoded on demand if the cell is empty.
+fn source_in<'a>(sources: &'a HashMap<NotePath, OnceLock<String>>, pending: Option<&SourceLoader>, p: &NotePath) -> Option<&'a str> {
+    let cell = sources.get(p)?;
+    if let Some(s) = cell.get() {
+        return Some(s);
+    }
+    let text = (pending?.0)(p)?;
+    // Another caller (or the fill) may have set it meanwhile: the same text.
+    Some(cell.get_or_init(|| text))
 }
 
 /// Byte offsets where each line starts.
@@ -73,9 +107,9 @@ impl Index {
     /// which was [`Index::graph_patchable`] when stored. Costs the changed
     /// notes' links and one pass for derived edges, not a rebuild.
     pub fn patch_graph(&mut self, changed: &[NotePath]) {
-        let sources = &self.sources;
+        let (sources, pending) = (&self.sources, self.pending.as_ref());
         let recs: Vec<&NoteRecord> = changed.iter().filter_map(|p| self.records.get(p)).collect();
-        self.graph.patch(&recs, self.records.values(), &|p| sources.get(p).map(String::as_str), &self.link_config);
+        self.graph.patch(&recs, self.records.values(), &|p| source_in(sources, pending, p), &self.link_config);
     }
 
     /// Whether a note is indexed.
@@ -95,13 +129,15 @@ impl Index {
         rec.terms = content.into_iter().map(|(t, n)| (self.fulltext.intern(&t), n)).collect();
         rec.terms.sort_unstable();
         self.line_starts.insert(rec.path.clone(), line_starts(&src));
-        self.sources.insert(rec.path.clone(), src);
+        self.sources.insert(rec.path.clone(), OnceLock::from(src));
         self.records.insert(rec.path.clone(), rec);
     }
 
     /// Insert a record from the startup cache: `map` turns the segment's
     /// term ids into this index's ([`Self::intern_all`]). No graph refresh.
-    pub(crate) fn insert_stored(&mut self, stored: crate::codec::Stored, map: &[TermId], src: String) {
+    /// `src` `None`: its text comes later ([`Self::fill_sources`]), or on
+    /// demand through the loader ([`Self::set_source_loader`]).
+    pub(crate) fn insert_stored(&mut self, stored: crate::codec::Stored, map: &[TermId], src: Option<String>) {
         let crate::codec::Stored { mut rec, bm25, len } = stored;
         let tf: Vec<(TermId, f32)> = bm25.into_iter().map(|(t, f)| (map[t as usize], f)).collect();
         self.fulltext.upsert_ids(&rec.path, &tf, len);
@@ -109,9 +145,34 @@ impl Index {
             *t = map[t.index()];
         }
         rec.terms.sort_unstable();
-        self.line_starts.insert(rec.path.clone(), line_starts(&src));
-        self.sources.insert(rec.path.clone(), src);
+        if let Some(src) = src {
+            self.line_starts.insert(rec.path.clone(), line_starts(&src));
+            self.sources.insert(rec.path.clone(), OnceLock::from(src));
+        } else {
+            self.line_starts.remove(&rec.path);
+            self.sources.insert(rec.path.clone(), OnceLock::new());
+        }
         self.records.insert(rec.path.clone(), rec);
+    }
+
+    /// While the cache's texts are decoded: how to get one on demand.
+    pub(crate) fn set_source_loader(&mut self, loader: Option<SourceLoader>) {
+        self.pending = loader;
+    }
+
+    /// The decoded texts (with their line starts) of notes inserted
+    /// without one. A note removed or replaced meanwhile is left alone.
+    pub(crate) fn fill_sources(&mut self, texts: Vec<(NotePath, String, Vec<u32>)>) {
+        for (p, text, starts) in texts {
+            let Some(cell) = self.sources.get(&p) else { continue };
+            if cell.get().is_none() {
+                // Set unless a caller decoded it first: the same text.
+                drop(cell.set(text));
+            }
+            if cell.get().is_some() && !self.line_starts.contains_key(&p) {
+                self.line_starts.insert(p, starts);
+            }
+        }
     }
 
     /// Intern a segment's term table at once; the result maps its ids.
@@ -185,7 +246,15 @@ impl Index {
 
     /// The 1-based line holding byte `byte` of a note.
     pub fn line_of(&self, p: &NotePath, byte: usize) -> u32 {
-        let Some(starts) = self.line_starts.get(p) else { return 1 };
+        let owned;
+        let starts = if let Some(s) = self.line_starts.get(p) {
+            s
+        } else {
+            // Text not decoded yet: from the text, decoded on demand.
+            let Some(src) = self.source(p) else { return 1 };
+            owned = line_starts(src);
+            &owned
+        };
         let b = u32::try_from(byte).unwrap_or(u32::MAX);
         u32::try_from(starts.partition_point(|s| *s <= b)).unwrap_or(u32::MAX).max(1)
     }
@@ -208,8 +277,8 @@ impl Index {
     /// Build the link graph for the current records without touching the index, so a
     /// caller can do it under a read lock and `install_graph` it under a brief write.
     pub fn build_graph(&self) -> LinkGraph {
-        let sources = &self.sources;
-        LinkGraph::build(self.records.values(), &|p| sources.get(p).map(String::as_str), &self.link_config)
+        let (sources, pending) = (&self.sources, self.pending.as_ref());
+        LinkGraph::build(self.records.values(), &|p| source_in(sources, pending, p), &self.link_config)
     }
 
     /// Replace the link graph with one from `build_graph` on the same records.
@@ -252,8 +321,11 @@ impl Index {
         self.records.get(p)
     }
 
+    /// A note's text. Right after a start from the cache, before its text
+    /// is decoded in the background, the text is decoded here on demand
+    /// from the cache: always the text the note's record was made from.
     pub fn source(&self, p: &NotePath) -> Option<&str> {
-        self.sources.get(p).map(String::as_str)
+        source_in(&self.sources, self.pending.as_ref(), p)
     }
 
     /// Store the text of an attachment (replaces older text for that path)
