@@ -1206,6 +1206,9 @@ pub(crate) fn forget_derived(ws: &mut Workspace, folder: &str) {
             ws.notify(NoticeLevel::Info, format!("Removed {n} agent suggestion{} about notes in {folder}/", if n == 1 { "" } else { "s" }));
         }
     }
+    // The index's startup cache: deleted now by its worker, which also
+    // keeps a write already scheduled from putting the text back.
+    ws.index.purge_cache();
     if let Some(root) = ws.vault_root() {
         clear_caches(root);
     }
@@ -1214,7 +1217,7 @@ pub(crate) fn forget_derived(ws: &mut Workspace, folder: &str) {
 /// The caches under `.quire/cache/` that can hold text or vectors of notes.
 pub fn clear_caches(root: &std::path::Path) {
     let cache = root.join(".quire").join("cache");
-    for dir in ["served", "claims", "contradict", "pdf-text", "ocr"] {
+    for dir in ["served", "claims", "contradict", "pdf-text", "ocr", "index"] {
         let _ = std::fs::remove_dir_all(cache.join(dir));
     }
     for e in std::fs::read_dir(&cache).into_iter().flatten().flatten() {

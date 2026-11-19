@@ -1,26 +1,28 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The bytes of a note's record in the startup cache
-//! (`docs/design/0.14-index-startup.md` §3.6; format: `docs/formats/index-cache.md`).
+//! The bytes of the startup cache (`docs/design/0.14-index-startup.md` §3.6;
+//! format: `docs/formats/index-cache.md`).
 //!
-//! Hand-written, chosen by measurement (the design note's §3.6 table). Every
-//! encoder destructures its type without `..`, so a new field in
-//! `quire_markdown::{Link, Task, Heading, Stats}` or [`NoteRecord`] does not
-//! compile until it is encoded here; the round-trip test and the golden
-//! `DERIVE_VERSION` test catch the rest.
+//! A note's record is JSON through serde derives, chosen by measurement
+//! (`docs/design/0.14-index-startup.md` §3.6, its table): a new field of
+//! `quire_markdown::{Link, Task, Heading, Stats}` is encoded without anyone
+//! remembering to, and [`encode_record`] destructures [`NoteRecord`] without
+//! `..`, so a new field there does not compile until it is placed. The
+//! golden `DERIVE_VERSION` test catches a change in what is derived.
 //!
-//! Integers are unsigned LEB128 varints unless said otherwise; a string is
-//! its byte length and its UTF-8 bytes; an option is a byte 0 or 1, then the
-//! value. Decoding never panics: any doubt is `None`, and the caller treats
-//! the whole segment as "no cache".
+//! The framing around records (index rows, segment headers) uses
+//! [`Writer`] and [`Reader`]: unsigned LEB128 varints, a string as its byte
+//! length and its UTF-8 bytes. Decoding never panics: any doubt is `None`,
+//! and the caller treats the whole file as "no cache".
 
 use std::collections::BTreeMap;
-use std::ops::Range;
 
-use quire_markdown::{Heading, Link, LinkKind, Stats, Task, Value};
+use quire_markdown::{Heading, Link, Stats, Task, Value};
 use quire_vault::NotePath;
+use serde::{Deserialize, Serialize};
 
 use crate::record::NoteRecord;
+use crate::terms::TermId;
 
 /// Bytes being written.
 #[derive(Debug, Default)]
@@ -50,10 +52,6 @@ impl Writer {
         self.u64(((v << 1) ^ (v >> 63)) as u64);
     }
 
-    pub(crate) fn f32(&mut self, v: f32) {
-        self.buf.extend_from_slice(&v.to_bits().to_le_bytes());
-    }
-
     pub(crate) fn bytes(&mut self, b: &[u8]) {
         self.usize(b.len());
         self.buf.extend_from_slice(b);
@@ -61,29 +59,6 @@ impl Writer {
 
     pub(crate) fn str(&mut self, s: &str) {
         self.bytes(s.as_bytes());
-    }
-
-    fn bool(&mut self, v: bool) {
-        self.buf.push(u8::from(v));
-    }
-
-    fn opt_str(&mut self, s: Option<&str>) {
-        self.bool(s.is_some());
-        if let Some(s) = s {
-            self.str(s);
-        }
-    }
-
-    fn range(&mut self, r: &Range<usize>) {
-        self.usize(r.start);
-        self.usize(r.end);
-    }
-
-    fn strs(&mut self, v: &[String]) {
-        self.usize(v.len());
-        for s in v {
-            self.str(s);
-        }
     }
 }
 
@@ -134,10 +109,6 @@ impl<'a> Reader<'a> {
         Some(((v >> 1) as i64) ^ -((v & 1) as i64))
     }
 
-    pub(crate) fn f32(&mut self) -> Option<f32> {
-        Some(f32::from_bits(u32::from_le_bytes(self.take(4)?.try_into().ok()?)))
-    }
-
     pub(crate) fn take(&mut self, n: usize) -> Option<&'a [u8]> {
         if n > self.buf.len() {
             return None;
@@ -155,204 +126,56 @@ impl<'a> Reader<'a> {
     pub(crate) fn str(&mut self) -> Option<&'a str> {
         std::str::from_utf8(self.bytes()?).ok()
     }
-
-    fn string(&mut self) -> Option<String> {
-        self.str().map(str::to_string)
-    }
-
-    fn bool(&mut self) -> Option<bool> {
-        match self.take(1)? {
-            [0] => Some(false),
-            [1] => Some(true),
-            _ => None,
-        }
-    }
-
-    #[expect(clippy::option_option, reason = "the outer None is damaged bytes, the inner one an absent value")]
-    fn opt_string(&mut self) -> Option<Option<String>> {
-        if self.bool()? { self.string().map(Some) } else { Some(None) }
-    }
-
-    fn range(&mut self) -> Option<Range<usize>> {
-        let start = self.usize()?;
-        let end = self.usize()?;
-        (start <= end).then_some(start..end)
-    }
-
-    fn strings(&mut self) -> Option<Vec<String>> {
-        let n = self.count()?;
-        (0..n).map(|_| self.string()).collect()
-    }
 }
 
-/// One note's record as the cache holds it: terms are ids into the
-/// segment's own sorted term table.
+/// One note's record as the cache holds it.
 #[derive(Debug, Clone)]
 pub(crate) struct Stored {
-    /// The record; its `terms` are segment-local ids (`TermId(local)`).
+    /// The record; its `terms` are ids into the segment's term table.
     pub(crate) rec: NoteRecord,
     /// BM25 terms (segment-local id, weight) and the document length.
     pub(crate) bm25: Vec<(u32, f32)>,
     pub(crate) len: f32,
 }
 
-fn encode_heading(w: &mut Writer, h: &Heading) {
-    let Heading { level, text, offset, anchor } = h;
-    w.buf.push(*level);
-    w.str(text);
-    w.usize(*offset);
-    w.str(anchor);
+/// A record as written: borrowed, so encoding copies nothing.
+#[derive(Serialize)]
+struct RecordOut<'a> {
+    path: &'a str,
+    name: &'a str,
+    title: &'a str,
+    aliases: &'a [String],
+    headings: &'a [Heading],
+    links: &'a [Link],
+    tags: &'a [String],
+    tasks: &'a [Task],
+    stats: &'a Stats,
+    properties: &'a BTreeMap<String, Value>,
+    plain: &'a str,
+    content: &'a [(u32, u32)],
+    bm25: &'a [(u32, f32)],
+    len: f32,
 }
 
-fn decode_heading(r: &mut Reader<'_>) -> Option<Heading> {
-    let level = *r.take(1)?.first()?;
-    Some(Heading { level, text: r.string()?, offset: r.usize()?, anchor: r.string()? })
-}
-
-fn encode_link(w: &mut Writer, l: &Link) {
-    let Link { kind, target, heading, display, range, field } = l;
-    w.buf.push(match kind {
-        LinkKind::Wiki => 0,
-        LinkKind::Embed => 1,
-        LinkKind::Relative => 2,
-        LinkKind::External => 3,
-    });
-    w.str(target);
-    w.opt_str(heading.as_deref());
-    w.str(display);
-    w.range(range);
-    w.opt_str(field.as_deref());
-}
-
-fn decode_link(r: &mut Reader<'_>) -> Option<Link> {
-    let kind = match r.take(1)? {
-        [0] => LinkKind::Wiki,
-        [1] => LinkKind::Embed,
-        [2] => LinkKind::Relative,
-        [3] => LinkKind::External,
-        _ => return None,
-    };
-    Some(Link { kind, target: r.string()?, heading: r.opt_string()?, display: r.string()?, range: r.range()?, field: r.opt_string()? })
-}
-
-fn encode_task(w: &mut Writer, t: &Task) {
-    let Task {
-        done,
-        text,
-        offset,
-        due,
-        scheduled,
-        start,
-        done_on,
-        created,
-        recurrence,
-        priority,
-        reminder,
-        time_block,
-        meta_range,
-        time_spent,
-        estimate,
-    } = t;
-    w.bool(*done);
-    w.str(text);
-    w.usize(*offset);
-    for s in [due, scheduled, start, done_on, created, recurrence] {
-        w.opt_str(s.as_deref());
-    }
-    w.bool(priority.is_some());
-    if let Some(p) = priority {
-        w.buf.push(*p);
-    }
-    w.opt_str(reminder.as_deref());
-    w.bool(time_block.is_some());
-    if let Some((a, b)) = time_block {
-        w.str(a);
-        w.str(b);
-    }
-    w.bool(meta_range.is_some());
-    if let Some(m) = meta_range {
-        w.range(m);
-    }
-    w.opt_str(time_spent.as_deref());
-    w.opt_str(estimate.as_deref());
-}
-
-fn decode_task(r: &mut Reader<'_>) -> Option<Task> {
-    let done = r.bool()?;
-    let text = r.string()?;
-    let offset = r.usize()?;
-    let due = r.opt_string()?;
-    let scheduled = r.opt_string()?;
-    let start = r.opt_string()?;
-    let done_on = r.opt_string()?;
-    let created = r.opt_string()?;
-    let recurrence = r.opt_string()?;
-    let priority = if r.bool()? { Some(*r.take(1)?.first()?) } else { None };
-    let reminder = r.opt_string()?;
-    let time_block = if r.bool()? { Some((r.string()?, r.string()?)) } else { None };
-    let meta_range = if r.bool()? { Some(r.range()?) } else { None };
-    let time_spent = r.opt_string()?;
-    let estimate = r.opt_string()?;
-    Some(Task {
-        done,
-        text,
-        offset,
-        due,
-        scheduled,
-        start,
-        done_on,
-        created,
-        recurrence,
-        priority,
-        reminder,
-        time_block,
-        meta_range,
-        time_spent,
-        estimate,
-    })
-}
-
-fn encode_value(w: &mut Writer, v: &Value) {
-    match v {
-        Value::Str(s) => {
-            w.buf.push(0);
-            w.str(s);
-        }
-        Value::List(l) => {
-            w.buf.push(1);
-            w.strs(l);
-        }
-        Value::Map(m) => {
-            w.buf.push(2);
-            w.usize(m.len());
-            for (k, v) in m {
-                w.str(k);
-                encode_value(w, v);
-            }
-        }
-    }
-}
-
-/// Front matter nests at most 64 levels (`frontmatter::load_yaml`); a deeper
-/// value here is damage.
-fn decode_value(r: &mut Reader<'_>, depth: usize) -> Option<Value> {
-    if depth > 64 {
-        return None;
-    }
-    Some(match r.take(1)? {
-        [0] => Value::Str(r.string()?),
-        [1] => Value::List(r.strings()?),
-        [2] => {
-            let n = r.count()?;
-            let mut m = BTreeMap::new();
-            for _ in 0..n {
-                let k = r.string()?;
-                m.insert(k, decode_value(r, depth + 1)?);
-            }
-            Value::Map(m)
-        }
-        _ => return None,
-    })
+/// A record as read. Its fields are [`RecordOut`]'s: one missing or of
+/// another shape fails the segment.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecordIn {
+    path: String,
+    name: String,
+    title: String,
+    aliases: Vec<String>,
+    headings: Vec<Heading>,
+    links: Vec<Link>,
+    tags: Vec<String>,
+    tasks: Vec<Task>,
+    stats: Stats,
+    properties: BTreeMap<String, Value>,
+    plain: String,
+    content: Vec<(u32, u32)>,
+    bm25: Vec<(u32, f32)>,
+    len: f32,
 }
 
 /// Write a record. `content` and `bm25` are segment-local term ids.
@@ -374,69 +197,24 @@ pub(crate) fn encode_record(w: &mut Writer, rec: &NoteRecord, content: &[(u32, u
         content: _,      // the same terms as text, only before an insert
         search_terms: _, // `bm25` and `len`: what the keyword index holds
     } = rec;
-    w.str(path.as_str());
-    w.str(name);
-    w.str(title);
-    w.strs(aliases);
-    w.usize(headings.len());
-    for h in headings {
-        encode_heading(w, h);
-    }
-    w.usize(links.len());
-    for l in links {
-        encode_link(w, l);
-    }
-    w.strs(tags);
-    w.usize(tasks.len());
-    for t in tasks {
-        encode_task(w, t);
-    }
-    let Stats { words, chars, lines, reading_minutes } = stats;
-    for n in [words, chars, lines, reading_minutes] {
-        w.usize(*n);
-    }
-    w.usize(properties.len());
-    for (k, v) in properties {
-        w.str(k);
-        encode_value(w, v);
-    }
-    w.str(plain);
-    w.usize(content.len());
-    for (t, n) in content {
-        w.u64(u64::from(*t));
-        w.u64(u64::from(*n));
-    }
-    w.usize(bm25.len());
-    for (t, f) in bm25 {
-        w.u64(u64::from(*t));
-        w.f32(*f);
-    }
-    w.f32(len);
+    let out =
+        RecordOut { path: path.as_str(), name, title, aliases, headings, links, tags, tasks, stats, properties, plain, content, bm25, len };
+    // Serialising these types into memory can't fail: no map has a key that
+    // isn't a string and no weight is NaN.
+    let json = serde_json::to_vec(&out).unwrap_or_default();
+    w.bytes(&json);
 }
 
 /// Read a record written by [`encode_record`]; term ids must be below `terms`.
 pub(crate) fn decode_record(r: &mut Reader<'_>, terms: usize) -> Option<Stored> {
-    let path = NotePath::new(r.str()?);
-    let name = r.string()?;
-    let title = r.string()?;
-    let aliases = r.strings()?;
-    let headings = (0..r.count()?).map(|_| decode_heading(r)).collect::<Option<Vec<_>>>()?;
-    let links = (0..r.count()?).map(|_| decode_link(r)).collect::<Option<Vec<_>>>()?;
-    let tags = r.strings()?;
-    let tasks = (0..r.count()?).map(|_| decode_task(r)).collect::<Option<Vec<_>>>()?;
-    let stats = Stats { words: r.usize()?, chars: r.usize()?, lines: r.usize()?, reading_minutes: r.usize()? };
-    let mut properties = BTreeMap::new();
-    for _ in 0..r.count()? {
-        let k = r.string()?;
-        properties.insert(k, decode_value(r, 0)?);
+    let RecordIn { path, name, title, aliases, headings, links, tags, tasks, stats, properties, plain, content, bm25, len } =
+        serde_json::from_slice(r.bytes()?).ok()?;
+    let ok = |t: u32| (t as usize) < terms;
+    if !content.iter().all(|(t, _)| ok(*t)) || !bm25.iter().all(|(t, _)| ok(*t)) || path.is_empty() {
+        return None;
     }
-    let plain = r.string()?;
-    let id = |r: &mut Reader<'_>| r.u64().and_then(|t| u32::try_from(t).ok()).filter(|t| (*t as usize) < terms);
-    let content = (0..r.count()?).map(|_| Some((crate::TermId(id(r)?), u32::try_from(r.u64()?).ok()?))).collect::<Option<Vec<_>>>()?;
-    let bm25 = (0..r.count()?).map(|_| Some((id(r)?, r.f32()?))).collect::<Option<Vec<_>>>()?;
-    let len = r.f32()?;
     let rec = NoteRecord {
-        path,
+        path: NotePath::new(path),
         name,
         title,
         aliases,
@@ -447,7 +225,7 @@ pub(crate) fn decode_record(r: &mut Reader<'_>, terms: usize) -> Option<Stored> 
         stats,
         properties,
         plain,
-        terms: content,
+        terms: content.into_iter().map(|(t, n)| (TermId(t), n)).collect(),
         content: Vec::new(),
         search_terms: (Vec::new(), 0.0),
     };

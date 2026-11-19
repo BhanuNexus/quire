@@ -57,8 +57,8 @@ validated against this device's files by each cache's own rules.
 | `kind` | Cache | File | Body format |
 |---|---|---|---|
 | 1 | vault manifest | `.quire/cache/manifest` | [manifest.md](manifest.md) |
-| 2 | index startup cache, row per note | `.quire/cache/index/records.idx` | reserved (`0.14-index-startup.md` §3.6) |
-| 3 | index startup cache, segment | `.quire/cache/index/r-<16 hex>.seg` | reserved |
+| 2 | index startup cache, row per note | `.quire/cache/index/records.idx` | [index-cache.md](index-cache.md) |
+| 3 | index startup cache, segment | `.quire/cache/index/r-<16 hex>.seg` | [index-cache.md](index-cache.md) |
 | 4 | passage cache, row per note | `.quire/cache/index/passages.idx` | reserved |
 | 5 | passage cache, segment | `.quire/cache/index/p-<16 hex>.seg` | reserved |
 | 6 | LSA model | `.quire/cache/index/lsa-<16 hex>.model` | reserved |

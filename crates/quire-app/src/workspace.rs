@@ -152,6 +152,9 @@ pub struct Workspace {
     /// 0.12: a file opened on its own, outside any vault (`open_single_file`).
     single_file: Option<PathBuf>,
     pub(crate) index: IndexService,
+    /// The vault's manifest, which the index loads through (with its
+    /// startup cache) once the deferred start runs.
+    manifest: Option<quire_vault::changes::Manifest>,
     pub(crate) watcher: Option<VaultWatcher>,
     /// The watcher and the index load wait for `start_deferred`.
     pub(crate) deferred_start: bool,
@@ -204,6 +207,7 @@ impl Workspace {
             vault_root: None,
             single_file: None,
             index: IndexService::spawn(),
+            manifest: None,
             watcher: None,
             deferred_start: false,
             docs: Vec::new(),
@@ -398,7 +402,12 @@ impl Workspace {
         // Notes opened before the watcher ran (the restored session) may have
         // changed on disk since they were read: take those changes in now.
         self.recheck_open_notes();
-        self.index.load(vault);
+        // 0.14: notes unchanged since the last start come from the index's
+        // startup cache; only changed ones are read
+        // (`docs/design/0.14-index-startup.md` §3.6).
+        let manifest = quire_vault::changes::Manifest::open(&vault);
+        self.manifest = Some(manifest.clone());
+        self.index.load_cached(vault, manifest);
         // Only now: what sync writes from here on reaches the open notes.
         self.start_sync();
     }
@@ -420,6 +429,7 @@ impl Workspace {
 
     /// Use an existing vault (tests, demos, in-memory scratch vaults).
     pub fn attach_vault(&mut self, vault: Vault) {
+        self.manifest = None;
         self.index.load(vault.clone());
         self.vault_attached(vault);
     }
@@ -427,7 +437,10 @@ impl Workspace {
     /// Re-read every note (after a bulk change such as an import).
     pub fn reload_index(&self) {
         if let Some(v) = self.vault.clone() {
-            self.index.load(v);
+            match self.manifest.clone() {
+                Some(m) => self.index.load_cached(v, m),
+                None => self.index.load(v),
+            }
         }
     }
 

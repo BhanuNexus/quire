@@ -50,6 +50,10 @@ impl NoteRecord {
         let properties = ex.front_matter.as_ref().map(|f| f.fields.clone()).unwrap_or_default();
         let mut content: Vec<(String, u32)> = terms.into_iter().collect();
         content.sort_unstable();
+        // In term order, not hash order: the same note gives the same record
+        // on every build (the cache's golden test hashes it).
+        let mut search_terms = search_terms;
+        search_terms.0.sort_unstable_by(|a, b| a.0.cmp(&b.0));
         Self {
             properties,
             search_terms,

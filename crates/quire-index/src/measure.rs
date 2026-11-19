@@ -1,17 +1,16 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The startup-cache measurement (`docs/design/0.14-index-startup.md` §3.6, §8):
-//! the codec candidates, the deflate of each section, decode speed and the
-//! memory of each part, on the bench vault's notes. Report only; run with
+//! the codec, the deflate of each section, decode speed and the memory of
+//! each part, on the bench vault's notes (the other candidates were measured
+//! when the codec was chosen; their numbers are in the design note). Report only; run with
 //! `cargo test --release -p quire-index measure -- --ignored --nocapture`
 //! (`QUIRE_MEASURE_NOTES`, default 10,000).
 
-use std::collections::BTreeMap;
 use std::io::{Read as _, Write as _};
 use std::time::Instant;
 
 use quire_vault::NotePath;
-use serde::{Deserialize, Serialize};
 
 use crate::codec::{Reader, Writer, decode_record, encode_record};
 use crate::index::Index;
@@ -74,131 +73,13 @@ fn inflate(b: &[u8], n: usize) -> Vec<u8> {
     out
 }
 
-// The derived candidates' types: the record's own shape, with serde derives.
-
-#[derive(Serialize, Deserialize)]
-struct MHeading {
-    level: u8,
-    text: String,
-    offset: usize,
-    anchor: String,
-}
-
-#[derive(Serialize, Deserialize)]
-struct MLink {
-    kind: u8,
-    target: String,
-    heading: Option<String>,
-    display: String,
-    range: std::ops::Range<usize>,
-    field: Option<String>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct MTask {
-    done: bool,
-    text: String,
-    offset: usize,
-    dates: [Option<String>; 6],
-    priority: Option<u8>,
-    reminder: Option<String>,
-    time_block: Option<(String, String)>,
-    meta_range: Option<std::ops::Range<usize>>,
-    time_spent: Option<String>,
-    estimate: Option<String>,
-}
-
-/// Tagged, as a binary serde format needs (it can't read `Value`'s `untagged` form).
-#[derive(Serialize, Deserialize)]
-enum MValue {
-    Str(String),
-    List(Vec<String>),
-    Map(BTreeMap<String, Self>),
-}
-
-#[derive(Serialize, Deserialize)]
-struct MRec {
-    path: String,
-    name: String,
-    title: String,
-    aliases: Vec<String>,
-    headings: Vec<MHeading>,
-    links: Vec<MLink>,
-    tags: Vec<String>,
-    tasks: Vec<MTask>,
-    stats: [usize; 4],
-    properties: BTreeMap<String, MValue>,
-    plain: String,
-    content: Vec<(u32, u32)>,
-    bm25: Vec<(u32, f32)>,
-    len: f32,
-}
-
-fn mvalue(v: &quire_markdown::Value) -> MValue {
-    match v {
-        quire_markdown::Value::Str(s) => MValue::Str(s.clone()),
-        quire_markdown::Value::List(l) => MValue::List(l.clone()),
-        quire_markdown::Value::Map(m) => MValue::Map(m.iter().map(|(k, v)| (k.clone(), mvalue(v))).collect()),
-    }
-}
-
-fn mirror(rec: &NoteRecord, content: Vec<(u32, u32)>, bm25: Vec<(u32, f32)>, len: f32) -> MRec {
-    MRec {
-        path: rec.path.to_string(),
-        name: rec.name.clone(),
-        title: rec.title.clone(),
-        aliases: rec.aliases.clone(),
-        headings: rec
-            .headings
-            .iter()
-            .map(|h| MHeading { level: h.level, text: h.text.clone(), offset: h.offset, anchor: h.anchor.clone() })
-            .collect(),
-        links: rec
-            .links
-            .iter()
-            .map(|l| MLink {
-                kind: l.kind as u8,
-                target: l.target.clone(),
-                heading: l.heading.clone(),
-                display: l.display.clone(),
-                range: l.range.clone(),
-                field: l.field.clone(),
-            })
-            .collect(),
-        tags: rec.tags.clone(),
-        tasks: rec
-            .tasks
-            .iter()
-            .map(|t| MTask {
-                done: t.done,
-                text: t.text.clone(),
-                offset: t.offset,
-                dates: [t.due.clone(), t.scheduled.clone(), t.start.clone(), t.done_on.clone(), t.created.clone(), t.recurrence.clone()],
-                priority: t.priority,
-                reminder: t.reminder.clone(),
-                time_block: t.time_block.clone(),
-                meta_range: t.meta_range.clone(),
-                time_spent: t.time_spent.clone(),
-                estimate: t.estimate.clone(),
-            })
-            .collect(),
-        stats: [rec.stats.words, rec.stats.chars, rec.stats.lines, rec.stats.reading_minutes],
-        properties: rec.properties.iter().map(|(k, v)| (k.clone(), mvalue(v))).collect(),
-        plain: rec.plain.clone(),
-        content,
-        bm25,
-        len,
-    }
-}
-
 /// A record's content and BM25 terms as segment-local ids.
 type Ids = (Vec<(u32, u32)>, Vec<(u32, f32)>);
 
 /// One segment of up to 512 notes, as each candidate encodes section A.
 struct Seg {
     table: Vec<String>,
-    hand: Vec<u8>,
-    json: Vec<u8>,
+    a: Vec<u8>,
     sources: Vec<u8>,
     n: usize,
 }
@@ -224,7 +105,7 @@ fn measure() {
     println!("parse (one thread): {:.0} ms", ms(t));
 
     // Segments of 512 notes; each with its own sorted term table.
-    let mut t_enc = [0.0f64; 2];
+    let mut t_enc = 0.0f64;
     let mut segs = Vec::new();
     for (part, srcs) in recs.chunks(512).zip(notes.chunks(512)) {
         let mut table: Vec<&str> = part
@@ -245,48 +126,35 @@ fn measure() {
         for (r, (c, b)) in part.iter().zip(&ids) {
             encode_record(&mut w, r, c, b, r.search_terms.1);
         }
-        t_enc[0] += ms(t);
-        let mirrors: Vec<MRec> = part.iter().zip(&ids).map(|(r, (c, b))| mirror(r, c.clone(), b.clone(), r.search_terms.1)).collect();
-        let t = Instant::now();
-        let json = serde_json::to_vec(&mirrors).expect("json");
-        t_enc[1] += ms(t);
+        t_enc += ms(t);
         let mut sources = Vec::new();
         for (_, s) in srcs {
             sources.extend_from_slice(s.as_bytes());
         }
-        segs.push(Seg { table: table.iter().map(|s| (*s).to_string()).collect(), hand: w.buf, json, sources, n: part.len() });
+        segs.push(Seg { table: table.iter().map(|s| (*s).to_string()).collect(), a: w.buf, sources, n: part.len() });
     }
     let table_bytes: usize = segs.iter().map(|s| s.table.iter().map(|t| t.len() + 1).sum::<usize>()).sum();
     println!("segments {}  term tables {:.1} MB", segs.len(), table_bytes as f64 / 1e6);
     println!("| codec | encode ms | section A raw MB | deflated MB | deflate ms | inflate ms | decode ms |");
-    for (k, name) in ["hand", "serde_json"].iter().enumerate() {
-        let bytes: Vec<&Vec<u8>> = segs.iter().map(|s| [&s.hand, &s.json][k]).collect();
-        let raw: usize = bytes.iter().map(|b| b.len()).sum();
-        let t = Instant::now();
-        let deflated: Vec<Vec<u8>> = bytes.iter().map(|b| deflate(b)).collect();
-        let t_def = ms(t);
-        let def: usize = deflated.iter().map(Vec::len).sum();
-        let t = Instant::now();
-        let inflated: Vec<Vec<u8>> = deflated.iter().zip(&bytes).map(|(d, b)| inflate(d, b.len())).collect();
-        let t_inf = ms(t);
-        let t = Instant::now();
-        let mut count = 0;
-        for (seg, b) in segs.iter().zip(&inflated) {
-            match k {
-                0 => {
-                    let mut r = Reader::new(b);
-                    for _ in 0..seg.n {
-                        let s = decode_record(&mut r, seg.table.len()).expect("decodes");
-                        count += s.bm25.len();
-                    }
-                }
-                _ => count += serde_json::from_slice::<Vec<MRec>>(b).expect("json").len(),
-            }
+    let raw: usize = segs.iter().map(|s| s.a.len()).sum();
+    let t = Instant::now();
+    let deflated: Vec<Vec<u8>> = segs.iter().map(|s| deflate(&s.a)).collect();
+    let t_def = ms(t);
+    let def: usize = deflated.iter().map(Vec::len).sum();
+    let t = Instant::now();
+    let inflated: Vec<Vec<u8>> = deflated.iter().zip(&segs).map(|(d, s)| inflate(d, s.a.len())).collect();
+    let t_inf = ms(t);
+    let t = Instant::now();
+    let mut count = 0;
+    for (seg, b) in segs.iter().zip(&inflated) {
+        let mut r = Reader::new(b);
+        for _ in 0..seg.n {
+            count += decode_record(&mut r, seg.table.len()).expect("decodes").bm25.len();
         }
-        let t_dec = ms(t);
-        assert!(count > 0);
-        println!("| {name} | {:.0} | {:.1} | {:.1} | {t_def:.0} | {t_inf:.0} | {t_dec:.0} |", t_enc[k], raw as f64 / 1e6, def as f64 / 1e6);
     }
+    let t_dec = ms(t);
+    assert!(count > 0);
+    println!("| codec.rs | {t_enc:.0} | {:.1} | {:.1} | {t_def:.0} | {t_inf:.0} | {t_dec:.0} |", raw as f64 / 1e6, def as f64 / 1e6);
     let raw_b: usize = segs.iter().map(|s| s.sources.len()).sum();
     let t = Instant::now();
     let def_b: Vec<Vec<u8>> = segs.iter().map(|s| deflate(&s.sources)).collect();
@@ -311,7 +179,7 @@ fn measure() {
     for (seg, (_, srcs)) in segs.iter().zip(notes.chunks(512).enumerate()) {
         let table: Vec<&str> = seg.table.iter().map(String::as_str).collect();
         let map = ix.intern_all(&table);
-        let mut r = Reader::new(&seg.hand);
+        let mut r = Reader::new(&seg.a);
         for (_, src) in srcs {
             let s = decode_record(&mut r, table.len()).expect("decodes");
             ix.insert_stored(s, &map, src.clone());
@@ -368,4 +236,49 @@ fn measure() {
         ms(t),
         dims
     );
+}
+
+/// Start-up time and peak memory of `IndexService` on a bench vault on disk,
+/// one mode per process (peak RSS is per process): `QUIRE_MEASURE_DIR`,
+/// `QUIRE_MEASURE_MODE` = `write` (make the vault), `cold` (`load`, no
+/// cache), `cached` (`load_cached`; run twice: the first writes the cache).
+#[test]
+#[ignore = "a measurement on a vault on disk; see the doc comment"]
+fn measure_start() {
+    let (Ok(dir), Ok(mode)) = (std::env::var("QUIRE_MEASURE_DIR"), std::env::var("QUIRE_MEASURE_MODE")) else { return };
+    let dir = std::path::PathBuf::from(dir);
+    let n: usize = std::env::var("QUIRE_MEASURE_NOTES").ok().and_then(|v| v.parse().ok()).unwrap_or(10_000);
+    if mode == "write" {
+        let past = std::time::SystemTime::now() - std::time::Duration::from_hours(1);
+        for i in 0..n {
+            let f = dir.join(format!("Folder {}/Note {i}.md", i % 50));
+            std::fs::create_dir_all(f.parent().expect("folder")).expect("folder");
+            std::fs::write(&f, synthetic(4096, i as u64)).expect("write");
+            std::fs::File::options().write(true).open(&f).and_then(|h| h.set_modified(past)).expect("time");
+        }
+        return;
+    }
+    let v = quire_vault::Vault::open_local(&dir).expect("vault");
+    let svc = crate::IndexService::spawn();
+    let t = Instant::now();
+    if mode == "cold" {
+        svc.load(v);
+    } else {
+        svc.load_cached(v.clone(), quire_vault::changes::Manifest::open(&v));
+    }
+    while svc.version() == 0 {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let first = ms(t);
+    svc.flush();
+    let all = ms(t);
+    println!(
+        "{mode}: notes {} read {} | first install {first:.0} ms | all (graph too) {all:.0} ms | peak RSS {} MB",
+        svc.note_count(),
+        svc.notes_read(),
+        rss_kb("VmHWM:") / 1024
+    );
+    let t = Instant::now();
+    svc.flush_cache();
+    println!("{mode}: cache flush {:.0} ms", ms(t));
 }

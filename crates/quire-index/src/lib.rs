@@ -13,7 +13,6 @@ mod actor;
 pub mod attach;
 pub mod background;
 pub mod chunk;
-#[cfg(test)]
 mod codec;
 mod derived;
 mod fulltext;
@@ -29,6 +28,7 @@ mod record;
 pub mod relations;
 mod sections;
 pub mod semantic;
+pub mod store;
 mod terms;
 pub mod tokenize;
 pub mod views;
