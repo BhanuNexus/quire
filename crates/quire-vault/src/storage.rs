@@ -14,6 +14,7 @@ use std::time::{Duration, Instant, SystemTime};
 use quire_base::fs::{Prepared, REPLACE_PATIENCE, is_busy, is_read_busy, retry_busy};
 use quire_base::path::Rule;
 
+use crate::changes::FileHash;
 use crate::{NotePath, Result, VaultError, io_err};
 
 /// Folders never shown as notes (VCS, app metadata, trash).
@@ -52,6 +53,16 @@ pub trait Storage: Send + Sync {
         Ok(self.list()?.into_iter().map(|p| (p, None)).collect())
     }
     fn read_bytes(&self, path: &NotePath) -> Result<Vec<u8>>;
+    /// The SHA-256 of a file's bytes as stored, and how many bytes that was
+    /// (what the vault manifest records). Fails as [`Self::read_bytes`]
+    /// fails. The default reads the file whole; [`LocalFs`] reads it in
+    /// pieces of [`crate::changes::HASH_BUFFER`] bytes, so a 2 GB video is
+    /// never one 2 GB allocation. An adapter that wraps another forwards
+    /// this method, or loses the streaming.
+    fn hash_file(&self, path: &NotePath) -> Result<(FileHash, u64)> {
+        let bytes = self.read_bytes(path)?;
+        Ok((FileHash::of(&bytes), bytes.len() as u64))
+    }
     /// Crash-safe write: readers see the old or the new content, never half.
     fn write_bytes_atomic(&self, path: &NotePath, bytes: &[u8]) -> Result<()>;
     /// Text read: strips a UTF-8 BOM and decodes lossily so one stray byte never blocks opening a note.
@@ -543,6 +554,15 @@ impl Storage for LocalFs {
         let abs = self.abs(path)?;
         // Windows: a log being appended to is locked for that moment.
         retry_busy(|| std::fs::read(&abs), REPLACE_PATIENCE, is_read_busy).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound { VaultError::NotFound(path.to_string()) } else { io_err(path.to_string())(e) }
+        })
+    }
+
+    fn hash_file(&self, path: &NotePath) -> Result<(FileHash, u64)> {
+        let abs = self.abs(path)?;
+        // As `read_bytes`: a file being written by another program is
+        // retried for a moment on Windows. A retry starts the hash again.
+        retry_busy(|| std::fs::File::open(&abs).and_then(FileHash::of_reader), REPLACE_PATIENCE, is_read_busy).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound { VaultError::NotFound(path.to_string()) } else { io_err(path.to_string())(e) }
         })
     }

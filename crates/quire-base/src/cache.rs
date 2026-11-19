@@ -5,8 +5,9 @@
 //!
 //! A fixed header names which cache the file is ([`Kind`]), the layout of
 //! its body (`format`) and the version of the code that derived it
-//! (`builder`), and carries the body's length and SHA-256. The body is
-//! private to the cache.
+//! (`builder`), and carries the body's length and a SHA-256 over the
+//! header's other fields and the body, so damage to the header is caught
+//! as damage to the body is. The body is private to the cache.
 //!
 //! - [`read()`] gives the body only when every field matches and the hash is
 //!   right. **Any doubt is "no cache"**: a cache is never migrated, a
@@ -14,9 +15,11 @@
 //! - [`write()`] replaces the whole file through [`crate::fs::write_atomic_parts`]
 //!   with `Options::STATE.lazy()`: atomic, not flushed. A power cut can
 //!   leave an old or a missing cache, never a torn one, and the hash catches
-//!   a torn body where the filesystem reorders writes. A file of a newer
-//!   `format` than the caller's is left alone (P3): a newer build may still
-//!   be using it.
+//!   a torn body where the filesystem reorders writes. A valid file of a
+//!   newer `format` than the caller's is left alone (P3): a newer build may
+//!   still be using it. Valid means its length and hash check out, so a
+//!   damaged file is replaced even when its header looks newer (the hash
+//!   covers `format` too).
 //!
 //! The bytes do not depend on the edition (P5).
 
@@ -27,12 +30,16 @@ use sha2::{Digest as _, Sha256};
 
 use crate::fs::Options;
 
-/// The first eight bytes of every cache file.
-pub const MAGIC: [u8; 8] = *b"QUIRECA1";
+/// The first eight bytes of every cache file. `QUIRECA1` (a hash of the
+/// body only) was never released and is never trusted.
+pub const MAGIC: [u8; 8] = *b"QUIRECA2";
 
 /// Bytes before the body: magic 8, kind 2, format 4, builder 4, flags 4,
-/// body length 8, body hash 32.
+/// body length 8, hash 32.
 pub const HEADER_LEN: usize = 8 + 2 + 4 + 4 + 4 + 8 + 32;
+
+/// The header bytes the hash covers: all of it but the hash itself.
+const HASHED: usize = HEADER_LEN - 32;
 
 /// Which cache a file holds. The numbers are a registry, kept here so two
 /// caches never share one, and listed in `docs/formats/cache-container.md`.
@@ -72,7 +79,7 @@ struct Header {
     format: u32,
     builder: u32,
     body_len: u64,
-    body_hash: [u8; 32],
+    hash: [u8; 32],
 }
 
 impl Header {
@@ -82,9 +89,10 @@ impl Header {
         h[8..10].copy_from_slice(&self.kind.0.to_le_bytes());
         h[10..14].copy_from_slice(&self.format.to_le_bytes());
         h[14..18].copy_from_slice(&self.builder.to_le_bytes());
-        // 18..22: flags, none defined; written as 0, ignored when read.
+        // 18..22: flags, none defined; written as 0, their value ignored
+        // when read (covered by the hash all the same).
         h[22..30].copy_from_slice(&self.body_len.to_le_bytes());
-        h[30..].copy_from_slice(&self.body_hash);
+        h[30..].copy_from_slice(&self.hash);
         h
     }
 
@@ -99,35 +107,69 @@ impl Header {
         let (builder, rest) = rest.split_first_chunk::<4>()?;
         let (_flags, rest) = rest.split_first_chunk::<4>()?;
         let (body_len, rest) = rest.split_first_chunk::<8>()?;
-        let body_hash: [u8; 32] = rest.try_into().ok()?;
+        let hash: [u8; 32] = rest.try_into().ok()?;
         Some(Self {
             kind: Kind(u16::from_le_bytes(*kind)),
             format: u32::from_le_bytes(*format),
             builder: u32::from_le_bytes(*builder),
             body_len: u64::from_le_bytes(*body_len),
-            body_hash,
+            hash,
         })
     }
 }
 
-/// The header at the start of `file`, `None` if there is none.
-fn read_header(file: &mut std::fs::File) -> Option<Header> {
-    let mut h = [0u8; HEADER_LEN];
-    file.read_exact(&mut h).ok()?;
-    Header::decode(&h)
+/// The header at the start of `file` and its raw bytes, `None` if there
+/// is none.
+fn read_header(file: &mut std::fs::File) -> Option<(Header, [u8; HEADER_LEN])> {
+    let mut raw = [0u8; HEADER_LEN];
+    file.read_exact(&mut raw).ok()?;
+    Some((Header::decode(&raw)?, raw))
+}
+
+/// A hasher that has taken the hashed part of the header `raw`; the body
+/// follows.
+fn hasher_after(raw: &[u8; HEADER_LEN]) -> Sha256 {
+    let mut hasher = Sha256::new();
+    hasher.update(&raw[..HASHED]);
+    hasher
+}
+
+/// Whether the rest of `file`, after its header `h` (raw bytes `raw`), is
+/// exactly the body the header names, and the hash over the header and
+/// that body is right. Read in pieces, so a big file of a newer build is
+/// never held whole.
+fn checks_out(file: &mut std::fs::File, h: &Header, raw: &[u8; HEADER_LEN]) -> bool {
+    if file.metadata().ok().and_then(|m| m.len().checked_sub(HEADER_LEN as u64)) != Some(h.body_len) {
+        return false;
+    }
+    let mut hasher = hasher_after(raw);
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut seen = 0u64;
+    loop {
+        match file.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                hasher.update(&buf[..n]);
+                seen += n as u64;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return false,
+        }
+    }
+    seen == h.body_len && hasher.finalize().as_slice() == h.hash
 }
 
 /// The body of the cache at `path`, or `None`.
 ///
 /// `None` for a missing or unreadable file, a wrong magic, another `kind`,
 /// `format` or `builder`, a file shorter or longer than its header says, or
-/// a body whose hash is wrong.
+/// a hash (over the header and the body) that is wrong.
 ///
 /// The body is read once into a buffer of exactly its size: no second copy.
 pub fn read(path: &Path, kind: Kind, format: u32, builder: u32) -> Option<Vec<u8>> {
     let mut file = std::fs::File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
-    let h = read_header(&mut file)?;
+    let (h, raw) = read_header(&mut file)?;
     if h.kind != kind || h.format != format || h.builder != builder {
         return None;
     }
@@ -140,7 +182,9 @@ pub fn read(path: &Path, kind: Kind, format: u32, builder: u32) -> Option<Vec<u8
     let mut body = Vec::new();
     body.try_reserve_exact(n).ok()?;
     file.take(h.body_len).read_to_end(&mut body).ok()?;
-    if body.len() != n || Sha256::digest(&body).as_slice() != h.body_hash {
+    let mut hasher = hasher_after(&raw);
+    hasher.update(&body);
+    if body.len() != n || hasher.finalize().as_slice() != h.hash {
         return None;
     }
     Some(body)
@@ -149,17 +193,23 @@ pub fn read(path: &Path, kind: Kind, format: u32, builder: u32) -> Option<Vec<u8
 /// Replace the cache at `path` with `body` (see the module docs).
 ///
 /// Its folder is made if needed. A file there of the same `kind` and a newer `format`
-/// is left alone ([`Written::KeptNewer`]); anything else there is replaced.
+/// is left alone ([`Written::KeptNewer`]) if its length and hash check out;
+/// anything else there is replaced (one flipped bit in `format` must not keep a
+/// damaged file forever: the hash covers it).
 pub fn write(path: &Path, kind: Kind, format: u32, builder: u32, body: &[u8]) -> std::io::Result<Written> {
     if let Ok(mut old) = std::fs::File::open(path)
-        && let Some(h) = read_header(&mut old)
+        && let Some((h, raw)) = read_header(&mut old)
         && h.kind == kind
         && h.format > format
+        && checks_out(&mut old, &h, &raw)
     {
         return Ok(Written::KeptNewer);
     }
-    let header = Header { kind, format, builder, body_len: body.len() as u64, body_hash: Sha256::digest(body).into() };
-    crate::fs::write_atomic_parts(path, &[&header.encode(), body], Options::STATE.lazy())?;
+    let mut raw = Header { kind, format, builder, body_len: body.len() as u64, hash: [0; 32] }.encode();
+    let mut hasher = hasher_after(&raw);
+    hasher.update(body);
+    raw[HASHED..].copy_from_slice(&hasher.finalize());
+    crate::fs::write_atomic_parts(path, &[&raw, body], Options::STATE.lazy())?;
     Ok(Written::Written)
 }
 
@@ -187,7 +237,7 @@ mod tests {
         assert_eq!(write(&p, K, 3, 7, b"").unwrap(), Written::Written);
         assert_eq!(read(&p, K, 3, 7).as_deref(), Some(&b""[..]));
         assert_eq!(fs::read(&p).unwrap().len(), HEADER_LEN);
-        assert_eq!(&fs::read(&p).unwrap()[..8], b"QUIRECA1");
+        assert_eq!(&fs::read(&p).unwrap()[..8], b"QUIRECA2");
         assert_eq!(names(&dir.path().join("cache")), ["thing"], "no temporary file left");
     }
 
@@ -214,13 +264,12 @@ mod tests {
         assert_eq!(damaged(&|b| b.clear()), None, "empty file");
         assert_eq!(damaged(&|b| b.truncate(b.len() - 1)), None, "truncated body");
         assert_eq!(damaged(&|b| b.push(0)), None, "a byte too many");
+        // Every byte, header included (flags too), is covered.
         for i in 0..good.len() {
-            if (18..22).contains(&i) {
-                continue; // flags: none defined, ignored
-            }
             assert_eq!(damaged(&|b| b[i] ^= 0x01), None, "byte {i} flipped");
         }
-        assert_eq!(damaged(&|b| b[20] = 0xff), Some(b"some body bytes".to_vec()), "flags are ignored");
+        // The layout before the hash covered the header is never trusted.
+        assert_eq!(damaged(&|b| b[7] = b'1'), None, "QUIRECA1");
         // A length bigger than the file allocates nothing.
         assert_eq!(damaged(&|b| b[22..30].copy_from_slice(&u64::MAX.to_le_bytes())), None);
         // A folder where the file should be.
@@ -242,6 +291,50 @@ mod tests {
         fs::write(&p, b"junk").unwrap();
         assert_eq!(write(&p, K, 1, 1, b"x").unwrap(), Written::Written);
         assert_eq!(read(&p, K, 1, 1).as_deref(), Some(&b"x"[..]));
+    }
+
+    /// What a test does to a file's bytes, and its name.
+    type Damage<'a> = (&'a str, &'a dyn Fn(&mut Vec<u8>));
+
+    #[test]
+    fn a_damaged_file_that_only_looks_newer_is_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("c");
+        assert_eq!(write(&p, K, 1, 1, b"a body of some length").unwrap(), Written::Written);
+        let good = fs::read(&p).unwrap();
+        // One flipped bit in `format` (1 becomes 0x0100_0001) makes the file
+        // look newer. The hash covers the header, so alone or with other
+        // damage (body, hash, length) it fails the checks and is replaced.
+        let cases: [Damage<'_>; 5] = [
+            ("format bit alone", &|b| b[13] ^= 0x01),
+            ("format bit and a body byte", &|b| {
+                b[13] ^= 0x01;
+                b[HEADER_LEN] ^= 0x01;
+            }),
+            ("format bit and the hash", &|b| {
+                b[13] ^= 0x01;
+                b[40] ^= 0x01;
+            }),
+            ("format bit and a truncated body", &|b| {
+                b[13] ^= 0x01;
+                b.truncate(b.len() - 1);
+            }),
+            ("format bit and the length", &|b| {
+                b[13] ^= 0x01;
+                b[22] ^= 0x01;
+            }),
+        ];
+        for (what, damage) in cases {
+            let mut b = good.clone();
+            damage(&mut b);
+            fs::write(&p, &b).unwrap();
+            assert_eq!(write(&p, K, 1, 1, b"mine").unwrap(), Written::Written, "{what}");
+            assert_eq!(read(&p, K, 1, 1).as_deref(), Some(&b"mine"[..]), "{what}");
+            fs::write(&p, &good).unwrap();
+        }
+        // A real newer file is still kept.
+        assert_eq!(write(&p, K, 2, 1, b"newer").unwrap(), Written::Written);
+        assert_eq!(write(&p, K, 1, 1, b"mine").unwrap(), Written::KeptNewer);
     }
 
     #[test]
