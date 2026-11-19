@@ -381,7 +381,12 @@ impl Lsa {
     /// Fit on passages. `max_dims` caps the latent dimensionality.
     #[expect(clippy::needless_range_loop, reason = "matrix indices read clearer than zipped iterators")]
     pub fn fit(texts: &[&str], max_dims: usize) -> Self {
-        let docs: Vec<HashMap<String, u32>> = texts
+        // Every float sum below runs in a fixed order, so equal passages give equal bits whatever
+        // order they arrive in (`docs/design/0.14-agent-index.md` §3.4). Equal texts are
+        // interchangeable, so sorting them loses nothing.
+        let mut sorted = texts.to_vec();
+        sorted.sort_unstable();
+        let docs: Vec<HashMap<String, u32>> = sorted
             .iter()
             .map(|t| {
                 let mut tf = HashMap::new();
@@ -413,6 +418,8 @@ impl Lsa {
             .map(|d| {
                 let mut c: Vec<(usize, f32)> =
                     d.iter().filter_map(|(t, &f)| vocab.get(t).map(|&i| (i, (1.0 + (f as f32).ln()) * idf[i]))).collect();
+                // The map yields terms in hash order; the norm and the products below add in term order.
+                c.sort_unstable_by_key(|&(i, _)| i);
                 let norm = c.iter().map(|(_, w)| w * w).sum::<f32>().sqrt().max(1e-9);
                 for (_, w) in &mut c {
                     *w /= norm;
@@ -514,7 +521,9 @@ impl Embedder for Lsa {
                 *tf.entry(i).or_default() += 1;
             }
         }
-        let weights: Vec<(usize, f32)> = tf.into_iter().map(|(i, f)| (i, (1.0 + (f as f32).ln()) * self.idf[i])).collect();
+        let mut weights: Vec<(usize, f32)> = tf.into_iter().map(|(i, f)| (i, (1.0 + (f as f32).ln()) * self.idf[i])).collect();
+        // Hash order would change the float sums: add in term-index order.
+        weights.sort_unstable_by_key(|&(i, _)| i);
         let norm = weights.iter().map(|(_, w)| w * w).sum::<f32>().sqrt().max(1e-9);
         for (i, w) in weights {
             let w = w / norm;
@@ -619,5 +628,51 @@ mod tests {
         let rel = ix.related(&NotePath::new("Bread.md"), 3);
         assert_eq!(rel[0].0.as_str(), "Baking.md");
         assert!(ix.search("zzzz unknown", 3).is_empty());
+    }
+
+    /// 120 passages that share words in overlapping ways, so every sum has many terms.
+    fn many_passages() -> Vec<String> {
+        let words = [
+            "rope", "editor", "tree", "buffer", "undo", "markdown", "note", "link", "search", "index", "quick", "fast", "local", "graph",
+            "tag", "plain", "file", "sync", "oven", "flour", "engine", "road", "vehicle", "sugar",
+        ];
+        (0..120usize)
+            .map(|i| {
+                (0..18)
+                    .map(|j| words[(i * 7 + j * j * 3 + i / 5) % words.len()])
+                    .chain(["alpha", "beta", "gamma"].into_iter().skip(i % 3))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect()
+    }
+
+    fn fingerprint(lsa: &Lsa, queries: &[&str]) -> Vec<Vec<u32>> {
+        queries.iter().map(|q| lsa.embed(q).iter().map(|x| x.to_bits()).collect()).collect()
+    }
+
+    /// `docs/design/0.14-agent-index.md` §3.4: the same passages give the same model, bit for bit, whatever
+    /// the order they arrive in and however the hash maps happen to iterate.
+    #[test]
+    fn lsa_is_deterministic() {
+        let owned = many_passages();
+        let texts: Vec<&str> = owned.iter().map(String::as_str).collect();
+        let queries = ["rope buffer editor undo", "flour oven sugar", "engine road vehicle alpha", "sync graph link tag search index"];
+        let first = Lsa::fit(&texts, 24);
+        let want = fingerprint(&first, &queries);
+        assert!(first.dims() > 1, "the corpus must have latent dimensions");
+        // Fresh `HashMap`s seed their hasher anew, so repeated fits already iterate differently.
+        for _ in 0..4 {
+            assert_eq!(fingerprint(&Lsa::fit(&texts, 24), &queries), want, "same order, another fit");
+        }
+        let mut shuffled = texts.clone();
+        for round in 0..4usize {
+            // A fixed permutation per round: rotate by a stride and reverse every other round.
+            shuffled.rotate_left(17 + round * 13);
+            if round % 2 == 1 {
+                shuffled.reverse();
+            }
+            assert_eq!(fingerprint(&Lsa::fit(&shuffled, 24), &queries), want, "shuffled order, round {round}");
+        }
     }
 }

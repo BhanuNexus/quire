@@ -4,6 +4,9 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Security
+- **Agents:** the note count in an agent's connection information (the `initialize` and `server/discover` replies) no longer includes notes the agent may not see.
+
 ### Fixed
 - **Large notes:** a note with a very long line of `[`, thousands of lines starting `[[`, or several megabytes of text with a lot of code and highlights no longer takes seconds to save, index or preview. The text that comes out is unchanged.
 
