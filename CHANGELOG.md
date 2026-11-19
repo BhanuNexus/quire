@@ -4,6 +4,9 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Security
+- **Agents:** the note count in an agent's connection information (the `initialize` and `server/discover` replies) no longer includes notes the agent may not see.
+
 ## [0.13.3] - 2026-11-19
 
 Quire 0.13.3: agents connected over MCP can no longer learn anything about notes they aren't allowed to see, through search, Ask or a `where` condition. Errors that were dropped silently are now reported: version history that couldn't follow a rename, an undo that couldn't keep the version before it, and a token revocation that couldn't be saved. Under the hood, a codebase-health pass: shared helpers in one place, stricter checks, and new tests for rules that used to rely on review.

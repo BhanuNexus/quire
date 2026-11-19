@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
-use quire_agent::{Actor, AgentStore, ClientInfo, Clock, DeviceInfo, Mode, SystemClock, Via};
+use quire_agent::{Actor, AgentStore, ClientInfo, Clock, DeviceInfo, Mode, OpKind, SystemClock, Via};
 use quire_app::index::IndexService;
 use quire_app::intel::chat::{CancelFlag, ChatModel};
 use quire_app::pdf_state::PdfIndexing;
@@ -342,9 +342,10 @@ impl Server {
         self.core.handle(msg, conn, cancel)
     }
 
-    /// The instructions agents see (0.8's sentence, then approved AGENTS.md).
-    pub fn instructions(&self, grant: Grant) -> String {
-        self.core.instructions(grant)
+    /// The instructions `conn` sees (0.8's sentence, then approved AGENTS.md). The note count is
+    /// of the notes that connection may see.
+    pub fn instructions(&self, conn: &Conn) -> String {
+        self.core.instructions(conn, &Value::Null)
     }
 
     /// Serve newline-delimited JSON-RPC on stdio-like streams until the input
@@ -556,8 +557,13 @@ impl Core {
             .clone()
     }
 
-    fn instructions(&self, grant: Grant) -> String {
-        let n = self.index.read().len();
+    /// What `conn` is told when it connects. The note count is of the notes that connection may see:
+    /// a count of every note would tell it how many are hidden (`docs/design/0.14-agent-index.md` §1).
+    fn instructions(&self, conn: &Conn, params: &Value) -> String {
+        let grant = self.grant(conn);
+        let actor = self.actor(conn, params);
+        let store = self.store(&actor, self.cap(conn));
+        let n = self.index.read().paths().iter().filter(|p| store.effective_mode(&actor, p, OpKind::Read) != Mode::Deny).count();
         let mode = if grant.write {
             "; you may write: directly in agent zones (wiki/), and elsewhere as suggestions the person reviews in Quire; every change is kept in version history"
         } else {
@@ -645,7 +651,7 @@ impl Core {
             "protocolVersion": version,
             "capabilities": { "tools": { "listChanged": false }, "resources": { "subscribe": !conn.http, "listChanged": false }, "prompts": { "listChanged": false } },
             "serverInfo": { "name": "quire", "version": env!("CARGO_PKG_VERSION") },
-            "instructions": self.instructions(self.grant(&c)),
+            "instructions": self.instructions(&c, params),
         });
         Reply::Initialized { response: rpc_result(id, result), version: version.to_string(), client, caps }
     }
@@ -682,7 +688,7 @@ impl Core {
             v
         };
         match (method, era) {
-            ("server/discover", _) => Ok(self.discover(conn)),
+            ("server/discover", _) => Ok(self.discover(conn, params)),
             // Removed in 2026-07-28, kept for older clients.
             ("ping" | "logging/setLevel", Era::Legacy(_)) => Ok(json!({})),
             ("tools/list", _) => Ok(lists(self.tools_list(era, conn), TOOLS_TTL_MS)),
@@ -732,12 +738,12 @@ impl Core {
         }
     }
 
-    fn discover(&self, conn: &Conn) -> Value {
+    fn discover(&self, conn: &Conn, params: &Value) -> Value {
         json!({
             "supportedVersions": SUPPORTED,
             "capabilities": Self::capabilities(),
             "serverInfo": protocol::server_info(),
-            "instructions": self.instructions(self.grant(conn)),
+            "instructions": self.instructions(conn, params),
             "ttlMs": DISCOVER_TTL_MS,
             "cacheScope": "private",
         })
