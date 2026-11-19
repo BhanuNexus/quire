@@ -54,7 +54,10 @@ About 87 bytes a row with typical paths (`Folder 12/Sub 3/A note with a title 12
 * **Tombstones** keep the last hash of a removed file. When there are more than
   1,024 and more than a quarter of the live rows, the oldest go and `floor`
   rises.
-* **Never a delete.** A listing error leaves every row as it was. Sync never
+* **Never a delete.** A listing error leaves every row as it was. A file that
+  is listed but can't be read (locked by another program, no permission, an
+  I/O error) keeps its row, marked racy, is never made a tombstone, and is
+  named in the scan's `unread`; the other files are updated as usual. Sync never
   takes a delete from the manifest's tombstones or cached rows (`0.14-sync-speed.md` §3.6).
 
 ## Reading and writing

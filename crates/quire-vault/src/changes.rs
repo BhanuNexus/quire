@@ -19,7 +19,10 @@
 //! [`Manifest::verify_where`] none of the files it is given. Files are
 //! hashed through [`Storage::hash_file`], in pieces where the storage can
 //! (a video is never read into memory whole). A listing
-//! error is an error, never "all gone", and changes no row.
+//! error is an error, never "all gone", and changes no row. A file that
+//! can't be read (locked by another program, no permission, an I/O error)
+//! keeps its row, racy and never removed, and is named in
+//! [`Delta::unread`]: one such file never stops the others' updates.
 //!
 //! **Our own writes.** [`Manifest::note_written`] and [`Manifest::note_removed`]
 //! update the row at once and never wait for a scan in progress (P9): while
@@ -152,13 +155,19 @@ pub struct Delta {
     pub changed: Vec<Row>,
     /// Files no longer listed, sorted.
     pub removed: Vec<NotePath>,
+    /// Files listed but not readable (locked by another program, no
+    /// permission, an I/O error), sorted, with the error. Each keeps its
+    /// row, marked racy so the next scan tries again, and is never taken
+    /// for removed. Not a change: a [`Delta`] with only these is not sent
+    /// to subscribers.
+    pub unread: Vec<(NotePath, String)>,
     /// From [`Manifest::verify`] (no row was trusted) or
     /// [`Manifest::verify_where`] (no row of the files it was given).
     pub verified: bool,
 }
 
 impl Delta {
-    /// Nothing changed.
+    /// Nothing changed ([`Self::unread`] is not a change).
     pub const fn is_empty(&self) -> bool {
         self.changed.is_empty() && self.removed.is_empty()
     }
@@ -246,10 +255,22 @@ impl Table {
     }
 
     /// Fold a scan's result in: `listed` is every path the listing gave
-    /// that was still there to read, `read` the rows of files it hashed.
-    fn apply_scan(&mut self, listed: &HashSet<NotePath>, read: Vec<Row>, verified: bool) -> Delta {
+    /// that was still there to read (unreadable ones included), `read` the
+    /// rows of files it hashed, `unread` the files it could not read.
+    fn apply_scan(&mut self, listed: &HashSet<NotePath>, read: Vec<Row>, mut unread: Vec<(NotePath, String)>, verified: bool) -> Delta {
         let next = self.generation + 1;
-        let mut delta = Delta { verified, ..Delta::default() };
+        for (p, _) in &unread {
+            if let Some(r) = self.rows.get_mut(p)
+                && !r.gone
+                && !r.racy
+                && !self.touched.contains(p)
+            {
+                r.racy = true;
+                self.version += 1;
+            }
+        }
+        unread.sort();
+        let mut delta = Delta { unread, verified, ..Delta::default() };
         for mut row in read {
             if self.touched.contains(&row.path) {
                 continue;
@@ -414,9 +435,11 @@ impl Manifest {
 
     /// List the vault and bring every row up to date (see the module docs).
     ///
-    /// A listing error, or a file that is listed but can't be read for
-    /// another reason than being gone, is an error and changes no row. A
-    /// file gone between the listing and its read counts as not listed.
+    /// A listing error is an error and changes no row. A file that is
+    /// listed but can't be read for another reason than being gone keeps
+    /// its row (marked racy, never removed) and is named in
+    /// [`Delta::unread`]; the other files are brought up to date. A file
+    /// gone between the listing and its read counts as not listed.
     /// Subscribers get the [`Delta`] when it isn't empty. Another scan in
     /// progress is waited for; own writes never are.
     pub fn scan(&self) -> Result<Delta> {
@@ -447,14 +470,17 @@ impl Manifest {
         let sh = &*self.shared;
         let _one = lock(&sh.scanning);
         let start_ns = FileStat::nanos((sh.clock)());
-        // From before the listing: an own write made from here on (even
-        // one queued now) is newer than what the scan sees, so its row is
-        // left to the next scan.
+        // Own writes queued before now are older than the listing: they are
+        // applied first, unmarked, and the scan hashes them like any racy
+        // row. From here on the table is marked as scanning, so an own write
+        // made while the scan lists and reads (applied at once, or queued and
+        // applied when the scan ends) goes into `touched`, and the scan
+        // leaves that row to the next scan.
         {
             let mut t = self.write();
+            t.drain(&sh.pending);
             t.scanning = true;
             t.touched.clear();
-            t.drain(&sh.pending);
         }
         let mark = ScanMark(&sh.table);
         let listing = sh.storage.list_stat()?;
@@ -464,6 +490,7 @@ impl Manifest {
         };
         let mut read = Vec::with_capacity(to_read.len());
         let mut vanished = HashSet::new();
+        let mut unread = Vec::new();
         for (path, stat) in to_read {
             match sh.storage.hash_file(&path) {
                 Ok((hash, size)) => {
@@ -474,13 +501,16 @@ impl Manifest {
                 Err(VaultError::NotFound(_)) => {
                     vanished.insert(path);
                 }
-                Err(e) => return Err(e),
+                // Locked by another program, no permission, a bad sector:
+                // this file only. Its row stays, racy, and is never taken
+                // for removed (it is still listed).
+                Err(e) => unread.push((path, e.to_string())),
             }
         }
         let listed: HashSet<NotePath> = listing.into_iter().map(|(p, _)| p).filter(|p| !vanished.contains(p)).collect();
         let delta = {
             let mut t = self.write();
-            let delta = t.apply_scan(&listed, read, verified);
+            let delta = t.apply_scan(&listed, read, unread, verified);
             t.drain(&sh.pending);
             delta
         };

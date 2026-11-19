@@ -309,7 +309,7 @@ fn an_edit_in_the_same_tick_is_found_by_the_next_scan_and_verify_finds_one_that_
 }
 
 #[test]
-fn a_listing_or_read_error_is_an_error_and_changes_no_row() {
+fn a_listing_error_is_an_error_and_changes_no_row() {
     let fs = Fake::new();
     let probe = Probe::new(Arc::clone(&fs) as Arc<dyn Storage>);
     let m = Manifest::open_with_clock(&vault_of(&probe), fs.clock());
@@ -326,18 +326,63 @@ fn a_listing_or_read_error_is_an_error_and_changes_no_row() {
     probe.fail_list.store(true, Ordering::SeqCst);
     assert!(m.scan().is_err());
     assert!(m.verify().is_err());
-    assert_eq!((m.since(0).unwrap(), m.generation()), (before.clone(), generation), "never \"all gone\"");
-    probe.fail_list.store(false, Ordering::SeqCst);
-    // A file listed but unreadable fails the whole scan: the delete of a.md
-    // and the new c.md wait too.
-    *probe.fail_read.lock().unwrap() = Some(np("b.md"));
-    assert!(m.scan().is_err());
-    assert_eq!((m.since(0).unwrap(), m.generation()), (before, generation));
+    assert_eq!((m.since(0).unwrap(), m.generation()), (before, generation), "never \"all gone\"");
     assert!(rx.try_recv().is_err(), "subscribers hear nothing");
-    *probe.fail_read.lock().unwrap() = None;
+    probe.fail_list.store(false, Ordering::SeqCst);
     let d = m.scan().unwrap();
     assert_eq!((d.changed.len(), d.removed.len()), (2, 1));
     assert_eq!(*rx.try_recv().unwrap(), d);
+}
+
+#[test]
+fn one_unreadable_file_among_many_keeps_its_row_and_the_others_update() {
+    let fs = Fake::new();
+    let probe = Probe::new(Arc::clone(&fs) as Arc<dyn Storage>);
+    let m = Manifest::open_with_clock(&vault_of(&probe), fs.clock());
+    for i in 0..10 {
+        fs.put(&format!("n{i}.md"), b"one");
+    }
+    fs.tick(10 * SEC);
+    m.scan().unwrap();
+    let rx = m.subscribe();
+    let old = m.get(&np("n3.md")).unwrap();
+    let changed = |d: &Delta| d.changed.iter().map(|r| r.path.to_string()).collect::<Vec<_>>();
+    let fail = |p: Option<&str>| *probe.fail_read.lock().unwrap() = p.map(np);
+    // Every note changes, and n3.md can't be read (a share lock, `chmod 000`).
+    for i in 0..10 {
+        fs.put(&format!("n{i}.md"), b"two!");
+    }
+    fs.put("new.md", b"new");
+    fs.tick(10 * SEC);
+    fail(Some("n3.md"));
+    let d = m.scan().unwrap();
+    let others: Vec<String> = (0..10).filter(|i| *i != 3).map(|i| format!("n{i}.md")).chain(["new.md".into()]).collect();
+    assert_eq!(changed(&d), others, "the others update");
+    assert!(d.removed.is_empty(), "nothing is tombstoned");
+    assert_eq!(d.unread.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), ["n3.md"]);
+    assert!(d.unread[0].1.contains("permission denied"), "{:?}", d.unread);
+    assert_eq!(*rx.try_recv().unwrap(), d, "the others' changes are sent, with what was unread");
+    let kept = m.get(&np("n3.md")).unwrap();
+    assert_eq!((kept.hash, kept.generation), (old.hash, old.generation), "the old row stays");
+    assert!(kept.is_racy(), "tried again by the next scan");
+    // Readable again: found by the next scan. A new file that can't be
+    // read has no row yet.
+    fs.put("later.md", b"later");
+    fs.tick(10 * SEC);
+    fail(Some("later.md"));
+    let d = m.scan().unwrap();
+    assert_eq!(changed(&d), ["n3.md"]);
+    assert_eq!(d.unread.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), ["later.md"]);
+    assert!(!m.has(&np("later.md")) && d.removed.is_empty());
+    assert_eq!(*rx.try_recv().unwrap(), d);
+    // A scan whose only news is an unreadable file sends nothing.
+    fail(Some("later.md"));
+    let d = m.scan().unwrap();
+    assert!(d.is_empty() && d.unread.len() == 1);
+    assert!(rx.try_recv().is_err());
+    fail(None);
+    assert_eq!(changed(&m.scan().unwrap()), ["later.md"]);
+    assert_eq!(summary(&m), cold(Arc::clone(&fs) as Arc<dyn Storage>));
 }
 
 #[test]
