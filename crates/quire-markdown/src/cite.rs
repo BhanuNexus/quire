@@ -94,6 +94,8 @@ pub fn scan(src: &str) -> Vec<Citation> {
     }
     let verbatim = crate::scan::verbatim_ranges(src);
     let skip = |at: usize| crate::scan::covering(&verbatim, at).is_some();
+    // The `]]` after each `[[` is looked for once however many `[[` ask (docs/design/0.14-index-startup.md §3.7).
+    let mut cursor = crate::scan::Cursor::new(src);
     let bytes = src.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
@@ -102,7 +104,7 @@ pub fn scan(src: &str) -> Vec<Citation> {
         if b == b'[' && !skip(i) {
             // `[[wikilinks]]` are not citations.
             if src[i..].starts_with("[[") {
-                i += src[i + 2..].find("]]").map_or(2, |e| e + 4);
+                i = cursor.close_at(i + 2).map_or(i + 2, |c| c + 2);
                 continue;
             }
             if let Some(close) = src[i + 1..].find([']', '\n', '[']).filter(|c| src.as_bytes()[i + 1 + c] == b']')

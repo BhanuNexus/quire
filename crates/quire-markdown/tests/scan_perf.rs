@@ -142,6 +142,11 @@ fn inline_scan_is_linear_on_many_open_links() {
 }
 
 #[test]
+fn citation_scan_is_linear_on_many_open_links() {
+    doubles("cite::scan", 25_000, |n| format!("@a\n{}", open_links(n)), |s| sink(cite::scan(s)));
+}
+
+#[test]
 fn highlight_scan_is_linear_on_open_marks() {
     doubles("scan_inlines", 100_000, open_marks, |s| sink(scan_inlines(s)));
     doubles("extract", 100_000, open_marks, |s| sink(extract(s)));
