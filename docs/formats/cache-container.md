@@ -40,10 +40,14 @@ written in place or appended, so several processes on one vault (the app,
 `quire-cli mcp`, `serve`) at worst replace each other's file, and the loser's
 work is redone later.
 
-If the file there holds the same `kind` in a **newer** `format`, it is left
+If the file there holds the same `kind` in a **newer** `format`, and its
+length is 62 + `body_len` and its body's SHA-256 is `body_hash`, it is left
 alone and the cache lives in memory only: a newer Quire on this device may
 still be using it (P3). Anything else (an older format, another builder,
-another kind, junk) is replaced.
+another kind, a newer format whose length or hash is wrong, junk) is
+replaced, so a damaged file whose header only looks newer does not stay
+forever. Known limit: the hash covers the body, not the header, so a flip
+in `format` alone, with the body intact, looks like a real newer file.
 
 A cache that cannot be written (a read-only disk) is a notice once, then
 in-memory operation; never an error that stops the app.

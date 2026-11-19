@@ -14,9 +14,12 @@
 //! - [`write()`] replaces the whole file through [`crate::fs::write_atomic_parts`]
 //!   with `Options::STATE.lazy()`: atomic, not flushed. A power cut can
 //!   leave an old or a missing cache, never a torn one, and the hash catches
-//!   a torn body where the filesystem reorders writes. A file of a newer
-//!   `format` than the caller's is left alone (P3): a newer build may still
-//!   be using it.
+//!   a torn body where the filesystem reorders writes. A valid file of a
+//!   newer `format` than the caller's is left alone (P3): a newer build may
+//!   still be using it. Valid means its length and body hash check out, so
+//!   a damaged file is replaced even when its header looks newer (a flip in
+//!   `format` alone, with the body intact, can't be told from a real newer
+//!   file: the hash covers the body only).
 //!
 //! The bytes do not depend on the edition (P5).
 
@@ -117,6 +120,30 @@ fn read_header(file: &mut std::fs::File) -> Option<Header> {
     Header::decode(&h)
 }
 
+/// Whether the rest of `file`, after its header `h`, is exactly the body
+/// the header names: its length and its SHA-256. Read in pieces, so a big
+/// file of a newer build is never held whole.
+fn body_checks_out(file: &mut std::fs::File, h: &Header) -> bool {
+    if file.metadata().ok().and_then(|m| m.len().checked_sub(HEADER_LEN as u64)) != Some(h.body_len) {
+        return false;
+    }
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut seen = 0u64;
+    loop {
+        match file.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                hasher.update(&buf[..n]);
+                seen += n as u64;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return false,
+        }
+    }
+    seen == h.body_len && hasher.finalize().as_slice() == h.body_hash
+}
+
 /// The body of the cache at `path`, or `None`.
 ///
 /// `None` for a missing or unreadable file, a wrong magic, another `kind`,
@@ -149,12 +176,15 @@ pub fn read(path: &Path, kind: Kind, format: u32, builder: u32) -> Option<Vec<u8
 /// Replace the cache at `path` with `body` (see the module docs).
 ///
 /// Its folder is made if needed. A file there of the same `kind` and a newer `format`
-/// is left alone ([`Written::KeptNewer`]); anything else there is replaced.
+/// is left alone ([`Written::KeptNewer`]) if its length and body hash check out;
+/// anything else there is replaced (one flipped bit in `format` must not keep a
+/// damaged file forever).
 pub fn write(path: &Path, kind: Kind, format: u32, builder: u32, body: &[u8]) -> std::io::Result<Written> {
     if let Ok(mut old) = std::fs::File::open(path)
         && let Some(h) = read_header(&mut old)
         && h.kind == kind
         && h.format > format
+        && body_checks_out(&mut old, &h)
     {
         return Ok(Written::KeptNewer);
     }
@@ -242,6 +272,52 @@ mod tests {
         fs::write(&p, b"junk").unwrap();
         assert_eq!(write(&p, K, 1, 1, b"x").unwrap(), Written::Written);
         assert_eq!(read(&p, K, 1, 1).as_deref(), Some(&b"x"[..]));
+    }
+
+    /// What a test does to a file's bytes, and its name.
+    type Damage<'a> = (&'a str, &'a dyn Fn(&mut Vec<u8>));
+
+    #[test]
+    fn a_damaged_file_that_only_looks_newer_is_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("c");
+        assert_eq!(write(&p, K, 1, 1, b"a body of some length").unwrap(), Written::Written);
+        let good = fs::read(&p).unwrap();
+        // One flipped bit in `format` (1 becomes 0x0100_0001) makes the file
+        // look newer. With any other damage (body, hash, length) it fails
+        // the checks and is replaced.
+        let cases: [Damage<'_>; 4] = [
+            ("format bit and a body byte", &|b| {
+                b[13] ^= 0x01;
+                b[HEADER_LEN] ^= 0x01;
+            }),
+            ("format bit and the hash", &|b| {
+                b[13] ^= 0x01;
+                b[40] ^= 0x01;
+            }),
+            ("format bit and a truncated body", &|b| {
+                b[13] ^= 0x01;
+                b.truncate(b.len() - 1);
+            }),
+            ("format bit and the length", &|b| {
+                b[13] ^= 0x01;
+                b[22] ^= 0x01;
+            }),
+        ];
+        for (what, damage) in cases {
+            let mut b = good.clone();
+            damage(&mut b);
+            fs::write(&p, &b).unwrap();
+            assert_eq!(write(&p, K, 1, 1, b"mine").unwrap(), Written::Written, "{what}");
+            assert_eq!(read(&p, K, 1, 1).as_deref(), Some(&b"mine"[..]), "{what}");
+            fs::write(&p, &good).unwrap();
+        }
+        // The flipped format alone, with a sound body, can't be told from a
+        // real newer file (the hash covers the body, not the header): kept.
+        let mut b = good;
+        b[13] ^= 0x01;
+        fs::write(&p, &b).unwrap();
+        assert_eq!(write(&p, K, 1, 1, b"mine").unwrap(), Written::KeptNewer);
     }
 
     #[test]
