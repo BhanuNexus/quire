@@ -632,12 +632,13 @@ fn a_selective_device_never_deletes_what_it_doesnt_hold() {
     assert_eq!(std::fs::read_to_string(va.join("Journal/Today.md")).unwrap(), "private day, later\n");
     let s = sync_summary_at(&vb).unwrap();
     assert_eq!((s.tracked, s.outside), (3, 2));
-    assert!(sync_dir(&vb).join("state-partial.json").exists() && !sync_dir(&vb).join("state.json").exists());
+    assert!(sync_dir(&vb).join("state-partial.d").exists() && !sync_dir(&vb).join("state.d").exists());
+    assert!(!sync_dir(&vb).join("state-partial.json").exists() && !sync_dir(&vb).join("state.json").exists());
     // Widening fetches the rest, still deleting nothing.
     sync_set_selection_at(&vb, &Selection::default()).unwrap();
     sync_once_at(&vb).unwrap();
     assert!(vb.join("Journal/Today.md").exists() && vb.join("Inbox.md").exists());
-    assert!(sync_dir(&vb).join("state.json").exists());
+    assert!(sync_dir(&vb).join("state.d").exists() && !sync_dir(&vb).join("state-partial.d").exists());
     assert_eq!(std::fs::read_to_string(va.join("Work/Plan.md")).unwrap(), "plan\n");
 }
 
@@ -701,6 +702,15 @@ fn locking_most_of_a_vault_syncs_and_leaves_no_plain_text() {
     notes.extend((0..15).map(|i| (format!("Notes/{i:02}.md"), format!("note {i}\n"))));
     let refs: Vec<(&str, &str)> = notes.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
     let mut p = Pair::new(&refs);
+    // Device A's record on disk, as its session keeps it.
+    let mut opened = journal::Journal::open(&p.va, "state.json").unwrap();
+    for pr in journal::live_prints(&p.ea.state) {
+        let text = p.ea.bases().get(&pr).unwrap().unwrap();
+        quire_sync::Bases::put(&mut opened.bases, pr, &text).unwrap();
+    }
+    opened.journal.commit(&p.ea.state, 0, &[]).unwrap();
+    let in_packs = |p: &Pair| journal::pack_texts(&p.va, "state.json").iter().any(|t| t.contains("secret day"));
+    assert!(in_packs(&p));
     let va = Vault::open_local(&p.va).unwrap();
     quire_vault::lock::lock_folder(&va, "Journal", Some("a passphrase for the test"), quire_vault::lock::Kdf::TEST, 1).unwrap();
     // Even before the deletes go (a pass that fails for another
@@ -709,8 +719,10 @@ fn locking_most_of_a_vault_syncs_and_leaves_no_plain_text() {
     let as_saved =
         |s: &SyncState, e: &Engine| serde_json::to_string(&quire_sync::bases::State13::from_state(s, e.bases()).unwrap()).unwrap();
     assert!(as_saved(&waiting, &p.ea).contains("secret day"));
-    scrub_locked_text(&va, &mut waiting);
+    let cleared = scrub_locked_text(&va, &mut waiting);
     assert!(!as_saved(&waiting, &p.ea).contains("secret day"));
+    opened.journal.commit(&waiting, 0, &cleared).unwrap();
+    assert!(!in_packs(&p), "no pack holds the plain text of a locked note, in the same commit");
     p.a().unwrap();
     p.b().unwrap();
     let b = files(&p.vb);
@@ -719,9 +731,11 @@ fn locking_most_of_a_vault_syncs_and_leaves_no_plain_text() {
         "plain copies gone: {b:?}"
     );
     assert_eq!(b.iter().filter(|f| f.ends_with(".md.qenc")).count(), 25, "{b:?}");
-    let state = std::fs::read_to_string(p.va.join(".quire/sync/state.json")).unwrap_or_default();
-    let state = if state.is_empty() { as_saved(&p.ea.state, &p.ea) } else { state };
-    assert!(!state.contains("secret day"), "no plain text of a locked note in the sync state");
+    let mut after = p.ea.state.clone();
+    let cleared = scrub_locked_text(&va, &mut after);
+    assert!(!as_saved(&after, &p.ea).contains("secret day"), "no plain text of a locked note in the sync state");
+    opened.journal.commit(&after, 0, &cleared).unwrap();
+    assert!(!in_packs(&p));
     // Unlocking for good the other way round: the encrypted files go.
 }
 
@@ -859,6 +873,37 @@ fn many_deletes_wait_until_the_person_allows_them() {
     assert!(sync_allow_deletes_at(&va, &seen).is_err(), "nothing held back now");
 }
 
+/// A vault synced by Quire 0.13 (its `state.json`) moves to the 0.14
+/// record on its first pass: nothing is sent or copied, and merges still
+/// find their base (`docs/design/0.14-sync-speed.md` §3.7).
+#[test]
+fn a_vault_synced_by_013_migrates_and_still_merges() {
+    let (_dir, va, vb, target) = setup_dirs();
+    std::fs::write(va.join("Plan.md"), "one\ntwo\nthree\n").unwrap();
+    std::fs::write(va.join("Ideas.md"), "ideas\n").unwrap();
+    sync_create_at(&va, &target, "correct horse battery", "laptop", &Selection::default()).unwrap();
+    sync_once_at(&va).unwrap();
+    let space = SyncConfig::load(&va).unwrap().space;
+    sync_join_at(&vb, &target, &space, "correct horse battery", "phone", &Selection::default()).unwrap();
+    sync_once_at(&vb).unwrap();
+    // What a 0.13 build would have left on device A.
+    let o = journal::Journal::open(&va, "state.json").unwrap();
+    let old = quire_sync::bases::State13::from_state(&o.state, &o.bases).unwrap();
+    drop(o);
+    std::fs::remove_dir_all(sync_dir(&va).join("state.d")).unwrap();
+    std::fs::write(sync_dir(&va).join("state.json"), serde_json::to_vec(&old).unwrap()).unwrap();
+    std::fs::write(vb.join("Plan.md"), "ONE\ntwo\nthree\n").unwrap();
+    sync_once_at(&vb).unwrap();
+    std::fs::write(va.join("Plan.md"), "one\ntwo\nTHREE\n").unwrap();
+    let r = sync_once_at(&va).unwrap();
+    assert!(r.conflict_copies.is_empty() && r.merged == ["Plan.md"], "{r:?}");
+    assert_eq!(std::fs::read_to_string(va.join("Plan.md")).unwrap(), "ONE\ntwo\nTHREE\n");
+    assert!(!sync_dir(&va).join("state.json").exists() && sync_dir(&va).join("state.d").is_dir());
+    assert_eq!(files(&va), ["Ideas.md", "Plan.md"]);
+    sync_once_at(&vb).unwrap();
+    assert_eq!(std::fs::read_to_string(vb.join("Plan.md")).unwrap(), "ONE\ntwo\nTHREE\n");
+}
+
 /// Review F-I3: deleting `.quire/shared/` (to "reset" settings) asks
 /// before every vault setting is deleted on every device; one settings
 /// file, or the review history the agent prunes, never asks.
@@ -910,24 +955,28 @@ fn deleting_the_shared_settings_asks_first() {
 /// not silently replaced; one that can't be read stops the session.
 #[test]
 fn a_damaged_sync_state_is_kept_and_reported() {
+    use super::journal::Journal;
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(sync_dir(dir.path())).unwrap();
-    assert_eq!(open_state_named(dir.path(), "state.json").unwrap(), (Default::default(), None));
+    let o = Journal::open(dir.path(), "state.json").unwrap();
+    assert_eq!((o.state, o.notices.len()), (SyncState::default(), 0));
     let path = sync_dir(dir.path()).join("state.json");
     std::fs::write(&path, b"{\"cursor\": 12, \"fil").unwrap();
-    let ((state, _), notice) = open_state_named(dir.path(), "state.json").unwrap();
-    assert_eq!(state, SyncState::default());
-    assert!(notice.is_some_and(|n| n.contains("started afresh")));
+    let mut o = Journal::open(dir.path(), "state.json").unwrap();
+    assert_eq!(o.state, SyncState::default());
+    assert!(o.notices.iter().any(|n| n.contains("started afresh")), "{:?}", o.notices);
     assert_eq!(std::fs::read(sync_dir(dir.path()).join("state.json.unreadable")).unwrap(), b"{\"cursor\": 12, \"fil");
-    // Saved whole, with no temporary file left.
+    assert!(!path.exists(), "moved to the new record");
+    // Saved, with no temporary file left.
     let s = SyncState { cursor: 7, ..SyncState::default() };
-    save_state_named(dir.path(), "state.json", &s, &quire_sync::MemoryBases::default()).unwrap();
-    assert_eq!(open_state_named(dir.path(), "state.json").unwrap().0.0.cursor, 7);
-    assert!(!std::fs::read_dir(sync_dir(dir.path())).unwrap().flatten().any(|e| e.file_name().to_string_lossy().ends_with(".tmp")));
-    // A folder where the file should be: can't be read, so no fresh start.
-    std::fs::remove_file(&path).unwrap();
-    std::fs::create_dir_all(&path).unwrap();
-    assert!(open_state_named(dir.path(), "state.json").is_err());
+    assert!(o.journal.commit(&s, 0, &[]).unwrap());
+    assert_eq!(Journal::open(dir.path(), "state.json").unwrap().state.cursor, 7);
+    let d = sync_dir(dir.path()).join("state.d");
+    assert!(!std::fs::read_dir(&d).unwrap().flatten().any(|e| e.file_name().to_string_lossy().ends_with(".tmp")));
+    // A file where the folder should be: can't be read, so no fresh start.
+    std::fs::remove_dir_all(&d).unwrap();
+    std::fs::write(&d, b"x").unwrap();
+    assert!(Journal::open(dir.path(), "state.json").is_err());
 }
 
 /// Reliability review #3, as the app's store sees it: on a disk that

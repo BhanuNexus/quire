@@ -1,11 +1,12 @@
 //! One sync session: the link to a transport, `Session` and its passes
 //! (enroll, compact, key refresh), the review import and export, and `LastPass`.
 
+use super::journal::{Journal, PackBases};
 use super::{
     Arc, BTreeMap, Deserialize, DeviceSecret, Duration, Engine, FolderTransport, HELD_DELETES, Hardening, HeldDeletes, HttpTransport,
     Instant, KeySet, LanePos, ObjectStore, Path, PathBuf, Pins, RemoteProfile, RemoteSecret, RemoteTransport, Report, SHARED_STATE_FILE,
-    Serialize, SpaceAdmin, SyncConfig, SyncLock, SyncStatus, Transport, Vault, VaultKey, VaultStore, folder, harden, open_state_named,
-    runs_shared_lane, save_state, save_state_named, scrub_locked_text, secrets, snapshot_reads, state_file, sync_dir, today, token_name,
+    Serialize, SpaceAdmin, SyncConfig, SyncLock, SyncStatus, Transport, Vault, VaultKey, VaultStore, folder, harden, runs_shared_lane,
+    scrub_locked_text, secrets, snapshot_reads, state_file, sync_dir, today, token_name,
 };
 
 pub(super) enum Msg {
@@ -97,7 +98,12 @@ pub(super) struct Session {
     pub(super) link: Link,
     pub(super) engine: Engine,
     store: VaultStore,
+    /// The engine state's record on disk, and its merge bases.
+    journal: Journal,
+    bases: PackBases,
     lane: Option<(FolderTransport, Engine, VaultStore)>,
+    /// The settings lane's record.
+    lane_journal: Option<(Journal, PackBases)>,
     /// This device's agent store, to share review history (0.10).
     agent: quire_agent::AgentStore,
     /// 0.13: the vault's keys this device has, its own key, pinned keys.
@@ -132,9 +138,9 @@ impl Session {
         // Every revision fetched (S3, WebDAV) or read (a folder) is decrypted
         // before it's used, so a damaged one is skipped rather than stopping sync.
         let link = Link::new(&cfg, token, Some(&sync_dir(&root)), Some(&root))?.with_keys(&keys);
-        let ((state, bases), notice) = open_state_named(&root, state_file(&cfg))?;
-        let engine =
-            Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), keys.clone(), state).with_bases(Box::new(bases));
+        let opened = Journal::open(&root, state_file(&cfg))?;
+        let engine = Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), keys.clone(), opened.state)
+            .with_bases(Box::new(opened.bases.clone()));
         // In a sync folder, vault settings travel in a lane of their own,
         // which 0.8 never reads; the notes lane never touches them.
         let (selection, selection_warnings) = cfg.selection_with_warnings();
@@ -160,7 +166,10 @@ impl Session {
             link,
             engine,
             store,
+            journal: opened.journal,
+            bases: opened.bases,
             lane: None,
+            lane_journal: None,
             agent,
             keys,
             secret,
@@ -169,7 +178,7 @@ impl Session {
             key_news: false,
             key_stuck: None,
             compacted: false,
-            notices: notice.into_iter().chain(selection_warnings).collect(),
+            notices: opened.notices.into_iter().chain(selection_warnings).collect(),
             _lock: lock,
         })
     }
@@ -398,8 +407,10 @@ impl Session {
                 res = Err(quire_sync::SyncError::Transport(e));
             }
         }
-        scrub_locked_text(&self.store.vault, &mut self.engine.state);
-        let mut saved = save_state(root, cfg, &self.engine.state, self.engine.bases());
+        let cleared = scrub_locked_text(&self.store.vault, &mut self.engine.state);
+        let verified_at = self.journal.verified_at();
+        let mut saved = self.journal.commit(&self.engine.state, verified_at, &cleared).map(|_| ());
+        self.notices.extend(self.bases.take_notice());
         if res.is_ok() {
             self.store.remember_unselected();
         }
@@ -410,12 +421,13 @@ impl Session {
         {
             let t = FolderTransport::lane(dir, &cfg.space, cfg.device.clone(), Some(&sync_dir(root)), folder::SHARED_LANE)
                 .with_keys(self.keys.clone());
-            match open_state_named(root, SHARED_STATE_FILE) {
-                Ok(((state, bases), notice)) => {
-                    self.notices.extend(notice);
-                    let e = Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), self.keys.clone(), state)
-                        .with_bases(Box::new(bases));
+            match Journal::open(root, SHARED_STATE_FILE) {
+                Ok(opened) => {
+                    self.notices.extend(opened.notices);
+                    let e = Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), self.keys.clone(), opened.state)
+                        .with_bases(Box::new(opened.bases.clone()));
                     self.lane = Some((t, e, VaultStore::new(self.vault.clone()).shared_only()));
+                    self.lane_journal = Some((opened.journal, opened.bases));
                 }
                 Err(e) => saved = saved.and(Err(e)),
             }
@@ -427,8 +439,11 @@ impl Session {
             e.allowed_deletes = held.as_ref().map(HeldDeletes::allowed_now).unwrap_or_default();
             let r = snapshot_reads(st).map_err(quire_sync::SyncError::List).and_then(|()| e.sync(st, &*t, &today()));
             e.allowed_deletes.clear();
-            let lane_saved = save_state_named(root, SHARED_STATE_FILE, &e.state, e.bases());
-            saved = saved.and(lane_saved);
+            if let Some((j, b)) = self.lane_journal.as_mut() {
+                let lane_saved = j.commit(&e.state, j.verified_at(), &[]).map(|_| ());
+                saved = saved.and(lane_saved);
+                self.notices.extend(b.take_notice());
+            }
             res = match (res, r) {
                 (Ok(mut a), Ok(b)) => {
                     a.pulled += b.pulled;
