@@ -12,7 +12,7 @@ The file is one [cache container](cache-container.md): `kind` 1, `format` 1,
 
 ```
 origin    32 bytes  SHA-256 of the absolute path of this file, as this device names it
-epoch     16 bytes  random; new whenever the table was built from nothing
+epoch     16 bytes  the writing process's epoch; not read back (a new one on every open)
 gen       u64       the current generation
 floor     u64       tombstones of this generation and older were dropped
 count     u64       rows that follow, sorted by path (byte order), no two equal
@@ -58,10 +58,12 @@ About 87 bytes a row with typical paths (`Folder 12/Sub 3/A note with a title 12
   `since(gen)` (or every row, when it knows no `gen` or `since` says the
   tombstones are gone), comparing by hash.
 * **Generations.** `gen` goes up by one for each scan, or each own write or
-  removal, that changed at least one row. A consumer's in-process cursor is a
-  `gen`; a persisted `(epoch, gen)` cursor is valid only while the epoch
-  matches and `gen` is at least `floor`; otherwise it compares everything by
-  hash, which reads no note.
+  removal, that changed at least one row. A generation is meaningful only
+  within one process: the epoch is new on every open (the `epoch` stored in
+  the file is not read back), because after a crash, or with a file another
+  process wrote, the same `gen` can come back naming other rows. A
+  consumer's in-process cursor is a `gen`; a consumer that persists what it
+  saw compares by hash on its next start, which reads no note.
 * **Tombstones** keep the last hash of a removed file. When there are more than
   1,024 and more than a quarter of the live rows, the oldest go and `floor`
   rises.

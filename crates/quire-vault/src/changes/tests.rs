@@ -750,9 +750,11 @@ fn on_disk_a_scan_with_nothing_changed_opens_no_file_and_the_table_survives_a_re
     assert!(!m.is_dirty());
     assert!(dir.path().join(CACHE_PATH).is_file());
     let (epoch, generation) = (m.epoch(), m.generation());
-    // The next start: loaded, nothing read, the same rows, epoch and generation.
+    // The next start: loaded, nothing read, the same rows and generation,
+    // and a new epoch.
     let again = Manifest::open_with_clock(&vault_of(&probe), later());
-    assert_eq!((again.epoch(), again.generation()), (epoch, generation));
+    assert_eq!(again.generation(), generation);
+    assert_ne!(again.epoch(), epoch);
     assert!(!again.scanned() && again.has(&np("f1/n1.md")));
     assert!(again.scan().unwrap().is_empty());
     assert_eq!(probe.reads(), 0);
@@ -774,6 +776,26 @@ fn a_symlinked_note_or_folder_is_not_listed() {
     m.scan().unwrap();
     assert!(m.has(&np("real.md")));
     assert!(!m.has(&np("link.md")) && !m.has(&np("linked/x.md")));
+}
+
+#[test]
+fn every_open_has_a_new_epoch() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = Arc::new(LocalFs::new(dir.path()).unwrap());
+    local.write_atomic(&np("a.md"), "a").unwrap();
+    let a = Manifest::open_with_clock(&vault_of(&local), later());
+    a.scan().unwrap();
+    a.flush().unwrap();
+    // Two opens of the same file, as after a crash or in two processes:
+    // the same rows, never the same epoch.
+    let (b, c) = (Manifest::open_with_clock(&vault_of(&local), later()), Manifest::open_with_clock(&vault_of(&local), later()));
+    assert_eq!((b.generation(), c.generation()), (a.generation(), a.generation()));
+    assert_eq!(b.rows(), a.rows());
+    let epochs: HashSet<[u8; 16]> = [a.epoch(), b.epoch(), c.epoch()].into_iter().collect();
+    assert_eq!(epochs.len(), 3);
+    // Built from nothing (no place on disk) too.
+    let fs = Fake::new();
+    assert_ne!(Manifest::open(&vault_of(&fs)).epoch(), Manifest::open(&vault_of(&fs)).epoch());
 }
 
 #[test]

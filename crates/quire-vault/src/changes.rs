@@ -419,8 +419,8 @@ impl Drop for ScanMark<'_> {
 
 impl Manifest {
     /// The manifest of `vault`'s storage: the cached table at
-    /// [`CACHE_PATH`] if it is valid, else an empty one with a new epoch.
-    /// Reads no note. Rows from the cache are only as good as the last
+    /// [`CACHE_PATH`] if it is valid, else an empty one. Either way with a
+    /// new epoch ([`Self::epoch`]). Reads no note. Rows from the cache are only as good as the last
     /// scan that wrote them: [`Self::scan`] before trusting them.
     pub fn open(vault: &Vault) -> Self {
         Self::open_with_clock(vault, Arc::new(SystemTime::now))
@@ -433,7 +433,10 @@ impl Manifest {
         let origin: [u8; 32] =
             Sha256::digest(file.as_ref().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default().as_bytes()).into();
         let loaded = file.as_ref().and_then(|f| cache::read(f, Kind::MANIFEST, FORMAT, BUILDER)).and_then(|b| decode(&b, &origin));
-        let table = loaded.unwrap_or_else(|| Table::fresh(new_epoch(&origin)));
+        let mut table = loaded.unwrap_or_else(|| Table::fresh([0; 16]));
+        // New on every open: after a crash, or with another process's file,
+        // the same generation numbers can come back with other rows.
+        table.epoch = new_epoch(&origin);
         let saved = Saved { version: table.version, kept_newer: false };
         Self {
             shared: Arc::new(Shared {
@@ -651,7 +654,7 @@ impl Manifest {
     /// Every row that changed after `generation`, tombstones included,
     /// sorted by path; `None` when tombstones that old were dropped, so the
     /// caller compares everything with [`Self::rows`] instead (as for
-    /// another epoch). Own writes still queued come in a later generation.
+    /// another process). Own writes still queued come in a later generation.
     pub fn since(&self, generation: u64) -> Option<Vec<Row>> {
         self.settle();
         let t = self.read();
@@ -671,8 +674,11 @@ impl Manifest {
         self.read().generation
     }
 
-    /// 16 random bytes, new whenever the table was built from nothing. A
-    /// persisted `(epoch, generation)` cursor is valid only while this matches.
+    /// 16 random bytes, new on every [`Self::open`]: a generation means
+    /// something only next to the epoch it came with, so only within this
+    /// process. A consumer that persists what it saw compares by hash on
+    /// its next start; it never keeps an `(epoch, generation)` cursor
+    /// across processes.
     pub fn epoch(&self) -> [u8; 16] {
         self.read().epoch
     }
