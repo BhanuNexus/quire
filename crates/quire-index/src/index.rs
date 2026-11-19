@@ -6,10 +6,11 @@ use quire_markdown::Task;
 use quire_vault::NotePath;
 
 use crate::attach::AttachmentText;
-use crate::fulltext::{FullText, Query, SearchHit, snippet};
+use crate::fulltext::{DocId, FullText, Query, SearchHit, snippet};
 use crate::fuzzy::{QuickOpenHit, quick_open};
 use crate::graph::{Backlink, LinkGraph};
 use crate::record::NoteRecord;
+use crate::terms::TermId;
 
 /// The whole derived model of a vault. Synchronous and self-contained.
 #[derive(Debug, Default)]
@@ -88,6 +89,11 @@ impl Index {
         // 0.13.1: the search terms live in the keyword index now; the record's
         // copy was a second set of every note's words, kept for nothing.
         rec.search_terms = (Vec::new(), 0.0);
+        // Content terms as ids of the same interner (they are among the
+        // note's search terms, so this adds no term).
+        let content = std::mem::take(&mut rec.content);
+        rec.terms = content.into_iter().map(|(t, n)| (self.fulltext.intern(&t), n)).collect();
+        rec.terms.sort_unstable();
         self.line_starts.insert(rec.path.clone(), line_starts(&src));
         self.sources.insert(rec.path.clone(), src);
         self.records.insert(rec.path.clone(), rec);
@@ -96,6 +102,48 @@ impl Index {
     pub fn remove(&mut self, path: &NotePath) {
         self.remove_no_refresh(path);
         self.refresh();
+        self.end_batch();
+    }
+
+    /// A batch of updates is applied and everyone who reads by document id
+    /// has seen it: ids of notes it removed may be given again
+    /// (`docs/design/0.14-index-startup.md` §3.2).
+    pub fn end_batch(&mut self) {
+        self.fulltext.end_batch();
+        self.attachment_text.end_batch();
+    }
+
+    /// After a bulk load: the keyword statistics summed again exactly.
+    pub(crate) fn recount(&mut self) {
+        self.fulltext.recount_len();
+        self.attachment_text.recount_len();
+    }
+
+    /// The keyword index of the notes: stable document ids, interned terms,
+    /// each document's terms and length (for per-view statistics).
+    pub const fn fulltext(&self) -> &FullText {
+        &self.fulltext
+    }
+
+    /// The keyword index of attachment pages (`path#page=N`).
+    pub const fn attachment_fulltext(&self) -> &FullText {
+        &self.attachment_text
+    }
+
+    /// The text of a term id of the notes' keyword index (a record's
+    /// [`NoteRecord::terms`]).
+    pub fn term(&self, id: TermId) -> &str {
+        self.fulltext.term(id)
+    }
+
+    /// The id of a (folded, stemmed) term in the notes' keyword index.
+    pub fn term_id(&self, term: &str) -> Option<TermId> {
+        self.fulltext.term_id(term)
+    }
+
+    /// The document id of a note.
+    pub fn doc_id(&self, path: &NotePath) -> Option<DocId> {
+        self.fulltext.doc_id(path)
     }
 
     pub fn remove_no_refresh(&mut self, path: &NotePath) {
@@ -511,6 +559,99 @@ mod tests {
         for _ in 0..5 {
             assert_eq!(raw(&mut notes.iter().rev()), first);
             assert_eq!(raw(&mut notes.iter()), first);
+        }
+    }
+
+    /// A note keeps its document id across edits; a removed note's id is
+    /// given again only after the batch that removed it
+    /// (`docs/design/0.14-index-startup.md` §3.2).
+    #[test]
+    fn document_ids_are_stable_and_reused_only_after_the_batch() {
+        let mut ix = Index::new();
+        let (a, b, c, d) = (NotePath::new("Alpha.md"), NotePath::new("Beta.md"), NotePath::new("Gamma.md"), NotePath::new("Delta.md"));
+        ix.upsert(a.clone(), "rope tree");
+        ix.upsert(b, "rope bread");
+        let id_a = ix.doc_id(&a).expect("indexed");
+        let names = |ix: &Index, id: DocId| {
+            let mut v: Vec<String> = ix.fulltext().doc_terms(id).iter().map(|t| ix.term(*t).to_string()).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(names(&ix, id_a), ["alpha", "rope", "tree"]);
+        assert_eq!(ix.fulltext().doc_len(id_a), Some(4.0), "two words, the name and the title");
+        ix.upsert(a.clone(), "rope cable");
+        assert_eq!(ix.doc_id(&a), Some(id_a), "an edit keeps the id");
+        assert_eq!(names(&ix, id_a), ["alpha", "cable", "rope"]);
+        // The record's content terms are ids of the same interner.
+        let rec = ix.get(&a).expect("indexed");
+        let content: Vec<&str> = rec.terms.iter().map(|(t, _)| ix.term(*t)).collect();
+        assert!(content.contains(&"cable") && content.contains(&"rope"), "{content:?}");
+        ix.remove_no_refresh(&a);
+        assert_eq!(ix.fulltext().doc_len(id_a), None);
+        assert!(ix.fulltext().doc_terms(id_a).is_empty());
+        ix.upsert(c.clone(), "rope");
+        assert_ne!(ix.doc_id(&c), Some(id_a), "not reused in the batch that removed it");
+        ix.end_batch();
+        ix.upsert(d.clone(), "rope");
+        assert_eq!(ix.doc_id(&d), Some(id_a), "reused after it");
+        assert_eq!(ix.fulltext().doc_count(), 3);
+        // A term no note uses any more is gone from search but keeps its id.
+        assert!(ix.idf("tree").is_none() && ix.term_id("tree").is_some());
+        assert!(ix.search("tree", 5).is_empty());
+    }
+
+    /// Frame rule 4 (`docs/design/0.14-architecture.md` §7): the keyword index
+    /// after random edits and removals answers exactly as one built from the
+    /// same notes.
+    #[test]
+    fn keyword_index_after_edits_equals_a_rebuild() {
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            usize::try_from(seed % n as u64).expect("small")
+        };
+        let words = ["rope", "ropes", "tree", "bread", "editor", "edit", "café", "cafe", "zebra", "undo", "#tag", "#tag/sub"];
+        let mut ix = Index::new();
+        let mut live: BTreeMap<NotePath, String> = BTreeMap::new();
+        for round in 0..300 {
+            let path = NotePath::new(format!("N{}.md", next(12)));
+            if next(4) == 0 {
+                ix.remove_no_refresh(&path);
+                live.remove(&path);
+            } else {
+                let text: Vec<&str> = (0..next(12)).map(|_| words[next(words.len())]).collect();
+                let text = text.join(" ");
+                ix.upsert(path.clone(), &text);
+                live.insert(path, text);
+            }
+            if next(3) == 0 {
+                ix.end_batch();
+            }
+            let mut fresh = Index::new();
+            for (p, t) in &live {
+                fresh.insert_record(NoteRecord::from_source(p.clone(), t), t.clone());
+            }
+            fresh.refresh();
+            for q in ["rope", "ro", "e", "cafe tree", "edit", "#tag", "zebra -undo", "\"rope tree\"", "undo ed"] {
+                let got: Vec<(String, u32, String)> =
+                    ix.search(q, 50).into_iter().map(|h| (h.path.to_string(), h.score.to_bits(), h.snippet)).collect();
+                let want: Vec<(String, u32, String)> =
+                    fresh.search(q, 50).into_iter().map(|h| (h.path.to_string(), h.score.to_bits(), h.snippet)).collect();
+                assert_eq!(got, want, "round {round}, query {q:?}");
+            }
+            for p in live.keys() {
+                let terms = |ix: &Index| {
+                    let rec = ix.get(p).expect("indexed");
+                    let mut v: Vec<(String, u32)> = rec.terms.iter().map(|(t, n)| (ix.term(*t).to_string(), *n)).collect();
+                    v.sort();
+                    v
+                };
+                assert_eq!(terms(&ix), terms(&fresh));
+            }
+            assert_eq!(ix.fulltext().doc_count(), live.len());
+            assert_eq!(ix.fulltext().total_len().to_bits(), fresh.fulltext().total_len().to_bits());
         }
     }
 

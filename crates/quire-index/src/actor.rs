@@ -381,6 +381,7 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                     ix.insert_record(rec, src);
                     ix.set_modified(&path, modified);
                 }
+                ix.recount();
             }
             for item in prepared {
                 match item {
@@ -411,6 +412,7 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
             if !rebuild && !patched.is_empty() {
                 ix.patch_graph(&patched);
             }
+            ix.end_batch();
             shared.notes.store(ix.len(), Ordering::Relaxed);
         }
         if rebuild {
