@@ -87,6 +87,7 @@ F0 is the foundation step, after which its files are frozen).
 | Quire Sync: `/v1/info`, `actor`, `space.json` `min_reader`, `config.json` `shared_state` | protocol 2 | [sync-protocol.md](sync-protocol.md) | WS-B | in use |
 | `.quire/cache/**` | rebuildable; formats are private to their job | — | the job's owner | — |
 | `.quire/cache/**` from 0.14: the header of every cache file | binary, `QUIRECA1` | [cache-container.md](cache-container.md) | 0.14 architecture | written by each 0.14 cache |
+| `.quire/cache/manifest` | cache container, kind 1, format 1 | [manifest.md](manifest.md) | 0.14 architecture | `quire_vault::changes`; not yet used by the app, sync or the index |
 | `<folder>/quire-lock.json`, `*.qenc`, `.quire/history/<fnv>/<ms>.md.gz.qenc` | JSON format 1; binary, version 1 | [locked-folders.md](locked-folders.md) | 0.11 security | written (locked folders) |
 | `.quire/shared/locked-folders.json`, `<config>/vaults/<key>/locked-folders.json` | JSON, format 1 | [locked-folders.md](locked-folders.md#remembered-locked-folders) | 0.11 security | written and read |
 | `.quire/lock/<folder id>.json` (while locking), `.quire/history/paths.jsonl` | JSON format 1, JSONL | [locked-folders.md](locked-folders.md#what-a-conversion-keeps-on-this-device) | 0.11 security | written |
