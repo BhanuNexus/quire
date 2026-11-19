@@ -132,8 +132,9 @@ impl Session {
         // Every revision fetched (S3, WebDAV) or read (a folder) is decrypted
         // before it's used, so a damaged one is skipped rather than stopping sync.
         let link = Link::new(&cfg, token, Some(&sync_dir(&root)), Some(&root))?.with_keys(&keys);
-        let (state, notice) = open_state_named(&root, state_file(&cfg))?;
-        let engine = Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), keys.clone(), state);
+        let ((state, bases), notice) = open_state_named(&root, state_file(&cfg))?;
+        let engine =
+            Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), keys.clone(), state).with_bases(Box::new(bases));
         // In a sync folder, vault settings travel in a lane of their own,
         // which 0.8 never reads; the notes lane never touches them.
         let (selection, selection_warnings) = cfg.selection_with_warnings();
@@ -398,7 +399,7 @@ impl Session {
             }
         }
         scrub_locked_text(&self.store.vault, &mut self.engine.state);
-        let mut saved = save_state(root, cfg, &self.engine.state);
+        let mut saved = save_state(root, cfg, &self.engine.state, self.engine.bases());
         if res.is_ok() {
             self.store.remember_unselected();
         }
@@ -410,9 +411,10 @@ impl Session {
             let t = FolderTransport::lane(dir, &cfg.space, cfg.device.clone(), Some(&sync_dir(root)), folder::SHARED_LANE)
                 .with_keys(self.keys.clone());
             match open_state_named(root, SHARED_STATE_FILE) {
-                Ok((state, notice)) => {
+                Ok(((state, bases), notice)) => {
                     self.notices.extend(notice);
-                    let e = Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), self.keys.clone(), state);
+                    let e = Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), self.keys.clone(), state)
+                        .with_bases(Box::new(bases));
                     self.lane = Some((t, e, VaultStore::new(self.vault.clone()).shared_only()));
                 }
                 Err(e) => saved = saved.and(Err(e)),
@@ -425,7 +427,7 @@ impl Session {
             e.allowed_deletes = held.as_ref().map(HeldDeletes::allowed_now).unwrap_or_default();
             let r = snapshot_reads(st).map_err(quire_sync::SyncError::List).and_then(|()| e.sync(st, &*t, &today()));
             e.allowed_deletes.clear();
-            let lane_saved = save_state_named(root, SHARED_STATE_FILE, &e.state);
+            let lane_saved = save_state_named(root, SHARED_STATE_FILE, &e.state, e.bases());
             saved = saved.and(lane_saved);
             res = match (res, r) {
                 (Ok(mut a), Ok(b)) => {

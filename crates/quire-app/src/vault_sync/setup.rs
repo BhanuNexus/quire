@@ -234,7 +234,7 @@ fn create_at(
         secrets::store().set(&token_name(&cfg.space), own)?;
     }
     Hardening { device_token: own_token.is_some(), ..Hardening::default() }.save(root)?;
-    let _ = save_state(root, &cfg, &SyncState::default());
+    let _ = save_state(root, &cfg, &SyncState::default(), &quire_sync::MemoryBases::default());
     Ok((key.recovery_key(), cfg))
 }
 
@@ -283,7 +283,7 @@ pub fn sync_join_at(
     }
     cfg.save(root)?;
     Hardening { device_token: own_token.is_some(), ..Hardening::default() }.save(root)?;
-    let _ = save_state(root, &cfg, &SyncState::default());
+    let _ = save_state(root, &cfg, &SyncState::default(), &quire_sync::MemoryBases::default());
     let _ = std::fs::remove_file(sync_dir(root).join("folder-seq"));
     // A new device id: a mirror from an earlier setup holds nothing to send.
     let _ = std::fs::remove_dir_all(remote_dir(root));

@@ -12,7 +12,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use quire_sync::engine::fingerprint;
 use quire_sync::{Content, DeviceId, Engine, Keys, LocalStore, MemoryServer, MemoryStore, SpaceId, SyncState, VaultKey};
 
 const TODAY: &str = "2026-11-05";
@@ -65,11 +64,14 @@ impl LocalStore for Scoped {
     fn in_scope(&self, path: &str) -> bool {
         self.inside(path)
     }
-    fn moved_out(&self, base: &str, skip: &BTreeSet<String>) -> Option<(String, String)> {
+    fn moved_out(&self, base: &quire_sync::Print, skip: &BTreeSet<String>) -> Option<(String, String)> {
         self.disk
             .iter()
             .find(|(p, t)| {
-                !self.inside(p) && !skip.contains(*p) && self.before.as_ref().is_none_or(|b| !b.contains(*p)) && fingerprint(p, t) == base
+                !self.inside(p)
+                    && !skip.contains(*p)
+                    && self.before.as_ref().is_none_or(|b| !b.contains(*p))
+                    && quire_sync::Print::of(t) == *base
             })
             .map(|(p, t)| (p.clone(), t.clone()))
     }

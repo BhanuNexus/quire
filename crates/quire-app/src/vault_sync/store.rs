@@ -29,7 +29,7 @@ pub struct VaultStore {
     seen: HashMap<String, Option<String>>,
     /// Attachment fingerprints by (size, modified time), so unchanged images
     /// aren't read and hashed on every pass.
-    digests: std::cell::RefCell<HashMap<String, (u64, std::time::SystemTime, String)>>,
+    digests: std::cell::RefCell<HashMap<String, (u64, std::time::SystemTime, quire_sync::Print)>>,
     /// Sync `.quire/shared/` too.
     pub(super) shared: bool,
     lane: Lane,
@@ -271,10 +271,15 @@ impl VaultStore {
         }
     }
 
+    /// An attachment's fingerprint as `seen` keeps it (`sha256:` and the hex of its print).
+    fn fingerprint(&self, path: &str) -> Option<String> {
+        self.print(path).map(|p| format!("sha256:{}", p.to_hex()))
+    }
+
     fn unchanged_since_read(&self, path: &str) -> Result<(), String> {
         // A path the engine didn't see at the start of the pass must still not exist.
         let expected = self.seen.get(path).cloned().flatten();
-        let now = if quire_sync::engine::is_attachment(path) { self.digest(path) } else { self.current(path) };
+        let now = if quire_sync::engine::is_attachment(path) { self.fingerprint(path) } else { self.current(path) };
         if now == expected { Ok(()) } else { Err("it changed while syncing".into()) }
     }
 }
@@ -398,7 +403,7 @@ impl LocalStore for VaultStore {
         !self.outside_lane(path)
     }
 
-    fn moved_out(&self, base: &str, skip: &std::collections::BTreeSet<String>) -> Option<(String, String)> {
+    fn moved_out(&self, base: &quire_sync::Print, skip: &std::collections::BTreeSet<String>) -> Option<(String, String)> {
         use base64::Engine as _;
         // Only when a selected note went missing; the unselected files on
         // this device are few or none (a server holding some folders). A
@@ -418,23 +423,27 @@ impl LocalStore for VaultStore {
             } else {
                 return None;
             };
-            (!text.trim().is_empty() && quire_sync::engine::fingerprint(p.as_str(), &text) == base).then(|| (p.as_str().to_string(), text))
+            (!text.trim().is_empty() && quire_sync::Print::of(&text) == *base).then(|| (p.as_str().to_string(), text))
         })
     }
 
-    fn digest(&self, path: &str) -> Option<String> {
+    fn print(&self, path: &str) -> Option<quire_sync::Print> {
         if !quire_sync::engine::is_attachment(path) || self.outside_lane(path) {
-            return self.current(path);
+            return self.current(path).map(|t| quire_sync::Print::of(&t));
         }
         let stamp = self.size_and_time(path)?;
         if let Some((n, t, d)) = self.digests.borrow().get(path)
             && (*n, *t) == stamp
         {
-            return Some(d.clone());
+            return Some(*d);
         }
-        let d = quire_sync::engine::fingerprint(path, &self.current(path)?);
-        self.digests.borrow_mut().insert(path.to_string(), (stamp.0, stamp.1, d.clone()));
+        let d = quire_sync::Print::of(&self.current(path)?);
+        self.digests.borrow_mut().insert(path.to_string(), (stamp.0, stamp.1, d));
         Some(d)
+    }
+
+    fn print_stamped(&self, path: &str) -> Option<(quire_sync::Print, Option<quire_sync::Stamp>)> {
+        self.print(path).map(|p| (p, None))
     }
 
     fn write(&mut self, path: &str, text: &str) -> Result<(), String> {
@@ -511,7 +520,7 @@ pub(super) fn snapshot_reads(store: &mut VaultStore) -> Result<(), String> {
     let blind = store.case_blind();
     for p in store.list()? {
         // Attachments are checked by fingerprint (see `unchanged_since_read`).
-        let cur = if quire_sync::engine::is_attachment(&p) { store.digest(&p) } else { store.current(&p) };
+        let cur = if quire_sync::engine::is_attachment(&p) { store.fingerprint(&p) } else { store.current(&p) };
         if blind {
             store.note_name(&p, true);
         }

@@ -40,6 +40,7 @@ use serde::{Deserialize, Serialize};
 use quire_base::time::now_ms;
 use quire_text::merge;
 
+use crate::bases::{Bases, MemoryBases, Print, Stamp};
 use crate::crypto::CryptoError;
 use crate::keyring::KeySet;
 use crate::protocol::{CHAIN, Content, DeviceId, FileId, PushOutcome, RevId, Revision, Sealing, SpaceId};
@@ -87,12 +88,30 @@ pub trait LocalStore {
         let _ = path;
         false
     }
+    /// Write `text` at `path`. Afterwards [`Self::stamp`] gives the stamp of
+    /// exactly the bytes written (or none).
     fn write(&mut self, path: &str, text: &str) -> Result<(), String>;
     fn remove(&mut self, path: &str) -> Result<(), String>;
-    /// What [`fingerprint`] gives for the file, so an unchanged attachment
-    /// needn't be read in full on every pass. Stores can cache it.
-    fn digest(&self, path: &str) -> Option<String> {
-        self.read(path).map(|t| fingerprint(path, &t))
+    /// The stamp of the file at `path` as this pass sees it: equal to
+    /// [`Tracked::disk`] means the file is the one last known equal to its
+    /// base, and the engine doesn't read it (`docs/design/0.14-sync-speed.md` §3.1).
+    /// `None` (the default) when the store can't say: the file is read.
+    fn stamp(&self, path: &str) -> Option<Stamp> {
+        let _ = path;
+        None
+    }
+    /// [`Self::read`] with the stamp of exactly the bytes read.
+    fn read_stamped(&self, path: &str) -> Option<(String, Option<Stamp>)> {
+        self.read(path).map(|t| (t, None))
+    }
+    /// The [`Print`] of the file, so an unchanged attachment needn't be
+    /// read in full. Stores can cache it.
+    fn print(&self, path: &str) -> Option<Print> {
+        self.print_stamped(path).map(|(p, _)| p)
+    }
+    /// [`Self::print`] with the stamp of the bytes it was taken from.
+    fn print_stamped(&self, path: &str) -> Option<(Print, Option<Stamp>)> {
+        self.read_stamped(path).map(|(t, s)| (Print::of(&t), s))
     }
     /// Who wrote the current version of `path`, if not the person (sent
     /// with it, protocol 2).
@@ -114,7 +133,7 @@ pub trait LocalStore {
         let _ = path;
         true
     }
-    /// A file outside the selection whose contents [`fingerprint`] to
+    /// A file outside the selection whose contents have the print
     /// `base`, as `(path, text)`: where a note that left the selection
     /// here went (moved into an unselected folder), so the move is sent as
     /// a rename rather than a delete.
@@ -123,7 +142,7 @@ pub trait LocalStore {
     /// other notes, not this one). Stores should only offer a file that
     /// appeared since their last pass: one that was already there is
     /// another note with the same text, and the note was deleted.
-    fn moved_out(&self, base: &str, skip: &BTreeSet<String>) -> Option<(String, String)> {
+    fn moved_out(&self, base: &Print, skip: &BTreeSet<String>) -> Option<(String, String)> {
         let _ = (base, skip);
         None
     }
@@ -143,16 +162,10 @@ pub fn is_attachment(path: &str) -> bool {
     !["md", "markdown", "txt"].iter().any(|t| ext.eq_ignore_ascii_case(t))
 }
 
-/// How the engine remembers a file's synced contents: notes in full (they're
-/// the ancestor for the next merge), attachments as a hash.
+/// How Quire 0.13 remembered a file's synced contents: notes in full,
+/// attachments as `sha256:` and the hex of their [`Print`].
 pub fn fingerprint(path: &str, text: &str) -> String {
-    if is_attachment(path) { format!("sha256:{}", quire_base::enc::sha256_hex(text.as_bytes())) } else { text.to_string() }
-}
-
-/// Whether `text` is what was last synced (`base`, a note's text or an
-/// attachment's [`fingerprint`]).
-fn same_as_base(path: &str, text: &str, base: &str) -> bool {
-    text == base || (is_attachment(path) && fingerprint(path, text) == base)
+    if is_attachment(path) { format!("sha256:{}", Print::of(text).to_hex()) } else { text.to_string() }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -233,9 +246,9 @@ pub struct Tracked {
     pub synced_path: String,
     pub head: RevId,
     pub head_seq: u64,
-    /// The text as of `head`: the common ancestor for the next merge. For an
-    /// attachment, its [`fingerprint`].
-    pub base: String,
+    /// The text as of `head`, the common ancestor for the next merge, as
+    /// its [`Print`] (the text itself is in the engine's [`Bases`]).
+    pub base: Print,
     pub deleted: bool,
     /// The note is outside this device's selection (selective sync): it is
     /// tracked, never written or pushed here. When the selection grows to
@@ -259,6 +272,13 @@ pub struct Tracked {
     /// [`Revision::chain`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub up: Vec<RevId>,
+    /// The store's [`Stamp`] of the bytes last known equal to `base` at
+    /// `path`: while the store gives the same stamp, the file is unchanged
+    /// and isn't read (`docs/design/0.14-sync-speed.md` §3.1). Set only when
+    /// the engine knows the file holds exactly the base: it wrote that text,
+    /// or read it and found it so (or pushed what it read).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk: Option<Stamp>,
 }
 
 /// The first-parent ancestors a revision built on `r` names.
@@ -270,7 +290,7 @@ fn ancestors_of(r: &Revision) -> Vec<RevId> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeptCopy {
     pub path: String,
-    pub base: String,
+    pub base: Print,
 }
 
 impl Tracked {
@@ -359,7 +379,7 @@ pub struct LeftCopy {
     /// The text it was last synced with, when known: changes made to the
     /// copy since are merged when the note is written there again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub base: Option<String>,
+    pub base: Option<Print>,
 }
 
 /// What one sync pass did, for the status bar and notices.
@@ -420,6 +440,8 @@ pub struct Engine {
     /// counted deletes are all among these sends them however many they
     /// are. Set by the caller for one pass.
     pub allowed_deletes: BTreeSet<FileId>,
+    /// The texts behind the notes' base prints (see [`Bases`]).
+    bases: Box<dyn Bases>,
 }
 
 impl std::fmt::Debug for Engine {
@@ -440,7 +462,55 @@ fn backoff(round: usize) {
 
 impl Engine {
     pub fn new(space: SpaceId, device: DeviceId, device_name: impl Into<String>, keys: impl Into<KeySet>, state: SyncState) -> Self {
-        Self { space, device, device_name: device_name.into(), keys: keys.into(), state, allowed_deletes: BTreeSet::new() }
+        Self {
+            space,
+            device,
+            device_name: device_name.into(),
+            keys: keys.into(),
+            state,
+            allowed_deletes: BTreeSet::new(),
+            bases: Box::new(MemoryBases::default()),
+        }
+    }
+
+    /// Keep merge bases in `bases` (the default keeps them in memory). They
+    /// must hold the text of every note print in `state`; one missing costs
+    /// a merge (both versions kept), never text.
+    #[must_use]
+    pub fn with_bases(mut self, bases: Box<dyn Bases>) -> Self {
+        self.bases = bases;
+        self
+    }
+
+    /// The merge bases (see [`Self::with_bases`]).
+    pub fn bases(&self) -> &dyn Bases {
+        &*self.bases
+    }
+
+    /// The merge bases, to change.
+    pub fn bases_mut(&mut self) -> &mut dyn Bases {
+        &mut *self.bases
+    }
+
+    /// Hand the merge bases over (to an engine started from this one's state);
+    /// this engine keeps none.
+    pub fn take_bases(&mut self) -> Box<dyn Bases> {
+        std::mem::replace(&mut self.bases, Box::new(MemoryBases::default()))
+    }
+
+    /// The print of `text` as the base of `path`, keeping a note's text for
+    /// later merges.
+    fn remember(&mut self, path: &str, text: &str) -> Result<Print, SyncError> {
+        let p = Print::of(text);
+        if !is_attachment(path) {
+            self.bases.put(p, text).map_err(|error| SyncError::Local { path: path.to_string(), error })?;
+        }
+        Ok(p)
+    }
+
+    /// The text behind a note's base print, if it is kept.
+    fn base_text(&self, p: &Print) -> Option<String> {
+        self.bases.get(p)
     }
 
     /// Use these keys from now on (the vault's key changed: 0.13).
@@ -513,6 +583,7 @@ impl Engine {
                 // was last synced. Never sent before that.
                 t.path = k.path;
                 t.base = k.base;
+                t.disk = None;
                 t.deleted = false;
                 t.outside = false;
                 widened = true;
@@ -522,7 +593,7 @@ impl Engine {
             } else if !local.in_scope(&t.path) {
                 if !t.outside && !t.deleted && !is_attachment(&t.path) {
                     // Leaving this device's selection: the copy here derives from this.
-                    t.kept = Some(KeptCopy { path: t.path.clone(), base: t.base.clone() });
+                    t.kept = Some(KeptCopy { path: t.path.clone(), base: t.base });
                 }
                 t.outside = true;
             } else if t.outside {
@@ -593,7 +664,8 @@ impl Engine {
     /// when they merge cleanly.
     fn merge_left(&mut self, local: &dyn LocalStore, path: &str, file: &FileId, incoming: &str) -> Option<String> {
         let left = self.state.left.get(path).filter(|l| l.file == *file && !is_attachment(path))?;
-        let base = left.base.clone()?;
+        // A base that isn't kept any more: not merged, the copy stays.
+        let base = self.base_text(&left.base?)?;
         let mine = local.read(path)?;
         let m = merge::merge3(&base, &mine, incoming);
         m.is_clean().then(|| {
@@ -607,13 +679,11 @@ impl Engine {
     /// count: too many notes are empty.
     fn is_version_of(&self, local: &dyn LocalStore, server: &dyn Transport, path: &str, file: &FileId) -> bool {
         let Some(here) = local.read(path).filter(|h| !h.trim().is_empty()) else { return false };
-        let print = fingerprint(path, &here);
+        let print = Print::of(&here);
         if self.state.files.get(file).is_some_and(|t| !t.deleted && t.base == print) {
             return true;
         }
-        server
-            .history(file)
-            .is_ok_and(|revs| revs.iter().any(|r| self.open(server, r).is_ok_and(|c| !c.deleted && fingerprint(path, &c.text) == print)))
+        server.history(file).is_ok_and(|revs| revs.iter().any(|r| self.open(server, r).is_ok_and(|c| !c.deleted && c.text == here)))
     }
 
     /// A note inside the selection that is tracked but not here yet (see
@@ -653,12 +723,12 @@ impl Engine {
                 opened.insert(i, self.open(server, r)?);
             }
         }
-        let mut old: Vec<(String, String)> = Vec::new();
+        let mut old: Vec<(String, Print)> = Vec::new();
         #[expect(clippy::iter_over_hash_type, reason = "sorted below")]
         for (i, c) in &opened {
             let last = &opened[&latest[&revs[*i].file]];
             if latest[&revs[*i].file] != *i && !c.deleted && (last.deleted || last.path != c.path) && local.in_scope(&c.path) {
-                old.push((c.path.clone(), fingerprint(&c.path, &c.text)));
+                old.push((c.path.clone(), Print::of(&c.text)));
             }
         }
         old.sort();
@@ -669,7 +739,7 @@ impl Engine {
             // reading it could find another file).
             if !lives
                 && local.unstorable(&path, None).is_none()
-                && local.read(&path).is_some_and(|h| !h.trim().is_empty() && fingerprint(&path, &h) == print)
+                && local.read(&path).is_some_and(|h| !h.trim().is_empty() && Print::of(&h) == print)
             {
                 remove(local, &path)?;
             }
@@ -778,8 +848,9 @@ impl Engine {
         let Some(t) = tracked else {
             // A note we haven't seen.
             let mut path = c.path.clone();
+            let mut disk = None;
             if !c.deleted && local.in_scope(&c.path) {
-                if self.same_note_as_holder(local, r, c) {
+                if self.same_note_as_holder(local, r, c)? {
                     return Ok(());
                 }
                 // The same name may have been created here too; that file
@@ -791,8 +862,11 @@ impl Engine {
                 // device changed meanwhile takes the note's changes in.
                 let text = self.arriving(local, server, &path, &r.file, c, report)?;
                 write(local, &path, &text)?;
+                if text == c.text {
+                    disk = stamp_written(&*local, &path);
+                }
             }
-            self.track_at(r, c, &path);
+            self.track_at(r, c, &path, disk)?;
             if let Some(kept) = waiting.flatten().filter(|_| !local.in_scope(&path))
                 && let Some(t) = self.state.files.get_mut(&r.file)
             {
@@ -811,13 +885,25 @@ impl Engine {
         // merge; both versions are kept unless they're the same.
         let unknown_base = fork == Fork::Unknown;
         let lost_tie = !matches!(fork, Fork::Builds);
-        let (base, base_deleted) = match fork {
+        // The ancestor's print, which tells whether the note changed here;
+        // its text is needed only for a merge (from the bases, see `merge_base`).
+        let (base_print, shared_text, base_deleted) = match fork {
             Fork::Base(shared) => {
                 let s = self.open(server, &shared)?;
-                (s.text, s.deleted)
+                (Print::of(&s.text), Some(s.text), s.deleted)
             }
-            Fork::Unknown => (String::new(), true),
-            Fork::Builds => (t.base.clone(), t.deleted),
+            Fork::Unknown => (Print::of(""), None, true),
+            Fork::Builds => (t.base, None, t.deleted),
+        };
+        // The ancestor's text for a three-way merge. None when it is
+        // unknown, or its text isn't kept here any more (a damaged pack):
+        // both versions are kept then, this device's in place
+        // (`docs/design/0.14-sync-speed.md` §3.2).
+        let merge_base = |eng: &Self| -> Option<String> {
+            if unknown_base || base_deleted || is_attachment(&t.path) {
+                return None;
+            }
+            shared_text.clone().or_else(|| eng.base_text(&base_print))
         };
         if !local.in_scope(&t.path) {
             // Outside the selection here: nothing local to protect. It is
@@ -837,9 +923,10 @@ impl Engine {
                 }
                 let text = self.arriving(local, server, &to, &r.file, c, report)?;
                 write(local, &to, &text)?;
-                self.track_at(r, c, &to);
+                let disk = if text == c.text { stamp_written(&*local, &to) } else { None };
+                self.track_at(r, c, &to, disk)?;
             } else {
-                self.track_at(r, c, &c.path);
+                self.track_at(r, c, &c.path, None)?;
                 if let Some(t) = self.state.files.get_mut(&r.file) {
                     t.outside = true;
                     t.kept = kept;
@@ -850,19 +937,15 @@ impl Engine {
         // A deleted note's old path may hold another note now (one it was
         // filed as the same as, or a new one): that file isn't this note's.
         let here = if t.deleted && self.held_by_other(&t.path, &r.file) { None } else { local.read(&t.path) };
-        if unknown_base
-            && !c.deleted
-            && local.in_scope(&c.path)
-            && here.as_deref().is_some_and(|h| same_as_base(&t.path, h, &fingerprint(&t.path, &c.text)))
-        {
+        if unknown_base && !c.deleted && local.in_scope(&c.path) && here.as_deref().is_some_and(|h| h == c.text) {
             // Already the same text: nothing to keep aside.
-            self.track_at(r, c, &t.path);
+            self.track_at(r, c, &t.path, None)?;
             return Ok(());
         }
         let changed_here = match (&here, base_deleted) {
             (None, deleted) => !deleted,
             (Some(_), true) => true,
-            (Some(x), false) => !same_as_base(&t.path, x, &base),
+            (Some(x), false) => Print::of(x) != base_print,
         };
         if !c.deleted && !local.in_scope(&c.path) {
             // Moved out of the selection on another device. Unchanged here:
@@ -871,9 +954,7 @@ impl Engine {
             // its next version); otherwise this device's text stays where it
             // is and is sent as a note of its own, so nothing is lost.
             if let Some(mine) = here.as_ref().filter(|_| changed_here) {
-                let merged = (!is_attachment(&t.path) && !base_deleted && !unknown_base)
-                    .then(|| merge::merge3(&base, mine, &c.text))
-                    .filter(merge::MergeResult::is_clean);
+                let merged = merge_base(self).map(|base| merge::merge3(&base, mine, &c.text)).filter(merge::MergeResult::is_clean);
                 if let Some(m) = merged {
                     let content = Content {
                         actor: local.actor(&t.path),
@@ -883,7 +964,7 @@ impl Engine {
                         from: String::new(),
                         at: 0,
                     };
-                    if self.push_one(server, &r.file, Some(&r.rev), &content, report)? {
+                    if self.push_one(server, &r.file, Some(&r.rev), &content, None, report)? {
                         remove(local, &t.path)?;
                         report.merged.push(c.path.clone());
                     }
@@ -895,7 +976,7 @@ impl Engine {
             } else {
                 remove(local, &t.path)?;
             }
-            self.track_at(r, c, &c.path);
+            self.track_at(r, c, &c.path, None)?;
             return Ok(());
         }
 
@@ -905,11 +986,14 @@ impl Engine {
             if (t.path != to || c.deleted) && here.is_some() {
                 remove(local, &t.path)?;
             }
-            if !c.deleted {
+            let disk = if c.deleted {
+                None
+            } else {
                 self.protect_unsynced(local, &to, &c.text)?;
                 write(local, &to, &c.text)?;
-            }
-            self.track_at(r, c, &to);
+                stamp_written(&*local, &to)
+            };
+            self.track_at(r, c, &to, disk)?;
             return Ok(());
         }
 
@@ -917,7 +1001,7 @@ impl Engine {
             // Edited here, deleted there: keep ours (it's pushed as a revival).
             (Some(_), true) => {
                 report.kept_over_delete.push(t.path.clone());
-                self.track_keep_local(r, &t.path, true);
+                self.track_keep_local(r, &t.path, true)?;
             }
             // Deleted here, edited there: the edit wins.
             (None, false) => {
@@ -925,10 +1009,11 @@ impl Engine {
                 self.protect_unsynced(local, &to, &c.text)?;
                 write(local, &to, &c.text)?;
                 report.kept_over_delete.push(to.clone());
-                self.track_at(r, c, &to);
+                let disk = stamp_written(&*local, &to);
+                self.track_at(r, c, &to, disk)?;
             }
             // Deleted on both sides.
-            (None, true) => self.track_at(r, c, &t.path),
+            (None, true) => self.track_at(r, c, &t.path, None)?,
             // Edited on both sides.
             (Some(mine), false) => {
                 let to = self.claim_path(local, &c.path, &r.file)?;
@@ -939,9 +1024,11 @@ impl Engine {
                     self.protect_unsynced(local, &to, &mine)?;
                 }
                 // Attachments can't be merged: both versions are kept.
-                let merged = (!is_attachment(&to) && !unknown_base)
-                    .then(|| merge::merge3(&base, &mine, &c.text))
+                let merged = merge_base(self)
+                    .filter(|_| !is_attachment(&to))
+                    .map(|base| merge::merge3(&base, &mine, &c.text))
                     .filter(merge::MergeResult::is_clean);
+                let mut disk = None;
                 if let Some(m) = merged {
                     write(local, &to, &m.text)?;
                     report.merged.push(to.clone());
@@ -951,6 +1038,7 @@ impl Engine {
                     // text goes beside it. Each losing device keeps only its own
                     // text, so the same version is never copied twice.
                     write(local, &to, &c.text)?;
+                    disk = stamp_written(&*local, &to);
                     let copy = self.conflict_copy_path(local, &to, &self.device_name, today);
                     write(local, &copy, &mine)?;
                     report.conflict_copies.push(copy);
@@ -961,7 +1049,7 @@ impl Engine {
                     write(local, &copy, &c.text)?;
                     report.conflict_copies.push(copy);
                 }
-                self.track_at(r, c, &to);
+                self.track_at(r, c, &to, disk)?;
             }
         }
         Ok(())
@@ -1002,22 +1090,22 @@ impl Engine {
     /// keeps it; the other is tracked as deleted and its delete is sent, so
     /// every device ends with one note, whichever it saw first. Returns
     /// whether `r` was taken in that way (nothing to write).
-    fn same_note_as_holder(&mut self, local: &dyn LocalStore, r: &Revision, c: &Content) -> bool {
+    fn same_note_as_holder(&mut self, local: &dyn LocalStore, r: &Revision, c: &Content) -> Result<bool, SyncError> {
         let Some(holder) =
             self.state.files.iter().find(|(id, t)| **id != r.file && !t.deleted && t.held() && t.path == c.path).map(|(id, _)| id.clone())
         else {
-            return false;
+            return Ok(false);
         };
-        if !local.read(&c.path).is_some_and(|x| same_as_base(&c.path, &x, &fingerprint(&c.path, &c.text))) {
-            return false;
+        if local.read(&c.path).is_none_or(|x| x != c.text) {
+            return Ok(false);
         }
-        self.track_at(r, c, &c.path);
+        self.track_at(r, c, &c.path, None)?;
         let loser = if r.file < holder { holder } else { r.file.clone() };
         if let Some(t) = self.state.files.get_mut(&loser) {
             t.deleted = true;
             t.absorbed = true;
         }
-        true
+        Ok(true)
     }
 
     /// Where an incoming note goes when it wants `wanted`. If another synced
@@ -1073,7 +1161,10 @@ impl Engine {
         write(local, &aside, &existing)
     }
 
-    fn track_at(&mut self, r: &Revision, c: &Content, path: &str) {
+    /// Track note `r` as synced at `path` with `c`'s text. `disk` is the
+    /// stamp of the file at `path` when it holds exactly that text.
+    fn track_at(&mut self, r: &Revision, c: &Content, path: &str, disk: Option<Stamp>) -> Result<(), SyncError> {
+        let base = self.remember(&c.path, &c.text)?;
         self.state.files.insert(
             r.file.clone(),
             Tracked {
@@ -1081,17 +1172,20 @@ impl Engine {
                 synced_path: c.path.clone(),
                 head: r.rev.clone(),
                 head_seq: r.seq,
-                base: fingerprint(&c.path, &c.text),
+                base,
                 deleted: c.deleted,
                 outside: false,
                 absorbed: false,
                 kept: None,
                 up: ancestors_of(r),
+                disk,
             },
         );
+        Ok(())
     }
 
-    fn track_keep_local(&mut self, r: &Revision, path: &str, deleted: bool) {
+    fn track_keep_local(&mut self, r: &Revision, path: &str, deleted: bool) -> Result<(), SyncError> {
+        let base = self.remember(path, "")?;
         self.state.files.insert(
             r.file.clone(),
             Tracked {
@@ -1099,14 +1193,16 @@ impl Engine {
                 synced_path: path.to_string(),
                 head: r.rev.clone(),
                 head_seq: r.seq,
-                base: String::new(),
+                base,
                 deleted,
                 outside: false,
                 absorbed: false,
                 kept: None,
                 up: ancestors_of(r),
+                disk: None,
             },
         );
+        Ok(())
     }
 
     fn conflict_copy_path(&self, local: &dyn LocalStore, path: &str, from: &str, today: &str) -> String {
@@ -1140,7 +1236,8 @@ impl Engine {
 
         // What to send, worked out whole first, so a pass that would delete
         // too much sends nothing at all.
-        let mut plan: Vec<(FileId, RevId, Content)> = Vec::new();
+        // Each with the stamp of the bytes its text was read from.
+        let mut plan: Vec<(FileId, RevId, Content, Option<Stamp>)> = Vec::new();
         let mut held = 0usize;
         let mut counted: Vec<(FileId, String)> = Vec::new();
         let mut settings: Vec<(FileId, String)> = Vec::new();
@@ -1161,37 +1258,59 @@ impl Engine {
             if t.absorbed {
                 // Filed as the same note as the one at its path: tell the others.
                 let content = Content { path: t.path.clone(), deleted: true, text: String::new(), from: String::new(), at: 0, actor: None };
-                plan.push((id, t.head.clone(), content));
+                plan.push((id, t.head.clone(), content, None));
                 continue;
             }
             if !t.deleted {
                 held += 1;
             }
-            // Compare fingerprints first, so unchanged attachments aren't read.
-            let here = if present.contains(&t.path) { local.digest(&t.path) } else { None };
-            let full = |p: &str| local.read(p);
-            let content = match (here, t.deleted) {
+            let listed = present.contains(&t.path);
+            // The file is the one last known equal to its base: not read
+            // (`docs/design/0.14-sync-speed.md` §3.1).
+            if listed && !t.deleted && t.disk.is_some() && t.path == t.synced_path && local.stamp(&t.path) == t.disk {
+                continue;
+            }
+            // Otherwise compare prints; a note's text is read once, here, and
+            // an attachment's only when its print changed (stores cache it).
+            let here = if !listed {
+                None
+            } else if is_attachment(&t.path) {
+                local.print_stamped(&t.path).map(|(p, s)| (p, s, None))
+            } else {
+                local.read_stamped(&t.path).map(|(x, s)| (Print::of(&x), s, Some(x)))
+            };
+            let full = |p: &str, x: Option<String>, s: Option<Stamp>| x.map(|x| (x, s)).or_else(|| local.read_stamped(p));
+            let (content, stamp) = match (here, t.deleted) {
                 (Some(_), true) if live.contains(&t.path) => continue,
-                (Some(_), true) => {
-                    let Some(x) = full(&t.path) else { continue };
-                    Content { actor: local.actor(&t.path), path: t.path.clone(), deleted: false, text: x, from: String::new(), at: 0 }
+                (Some((_, s, x)), true) => {
+                    let Some((x, s)) = full(&t.path, x, s) else { continue };
+                    (Content { actor: local.actor(&t.path), path: t.path.clone(), deleted: false, text: x, from: String::new(), at: 0 }, s)
                 }
-                (Some(x), false) if x != t.base || t.path != t.synced_path => {
-                    let Some(x) = (if x == t.base && !is_attachment(&t.path) { Some(x) } else { full(&t.path) }) else { continue };
-                    Content { actor: local.actor(&t.path), path: t.path.clone(), deleted: false, text: x, from: String::new(), at: 0 }
+                (Some((p, s, x)), false) if p != t.base || t.path != t.synced_path => {
+                    let Some((x, s)) = full(&t.path, x, s) else { continue };
+                    (Content { actor: local.actor(&t.path), path: t.path.clone(), deleted: false, text: x, from: String::new(), at: 0 }, s)
                 }
-                (Some(_), false) | (None, true) => continue,
+                (Some((_, s, _)), false) => {
+                    // Read and found equal to its base: from now on known by its stamp.
+                    if s.is_some()
+                        && let Some(t) = self.state.files.get_mut(&id)
+                    {
+                        t.disk = s;
+                    }
+                    continue;
+                }
+                (None, true) => continue,
                 (None, false) if local.held_back(&t.path) => {
                     report.held_back.push(t.path.clone());
                     continue;
                 }
                 (None, false) => {
                     // Gone from its path: renamed (same contents elsewhere) or deleted.
-                    if let Some(i) = untracked.iter().position(|p| local.digest(p).as_deref() == Some(t.base.as_str())) {
+                    if let Some(i) = untracked.iter().position(|p| local.print(p) == Some(t.base)) {
                         let to = untracked.remove(i);
-                        let Some(text) = full(&to) else { continue };
-                        Content { actor: local.actor(&to), path: to, deleted: false, text, from: String::new(), at: 0 }
-                    } else if let Some((to, text)) = (!t.base.trim().is_empty())
+                        let Some((text, s)) = local.read_stamped(&to) else { continue };
+                        (Content { actor: local.actor(&to), path: to, deleted: false, text, from: String::new(), at: 0 }, s)
+                    } else if let Some((to, text)) = (t.base != Print::of(""))
                         .then(|| local.moved_out(&t.base, &known))
                         .flatten()
                         .filter(|(to, text)| !known.contains(to) && !text.trim().is_empty())
@@ -1199,7 +1318,7 @@ impl Engine {
                         // Each file is where one note went, at most.
                         known.insert(to.clone());
                         // Moved into a folder this device doesn't sync: a rename, not a delete.
-                        Content { actor: None, path: to, deleted: false, text, from: String::new(), at: 0 }
+                        (Content { actor: None, path: to, deleted: false, text, from: String::new(), at: 0 }, None)
                     } else if let Some(why) = local.unstorable(&t.path, Some(&t.path)) {
                         // A name this computer can't store (the vault came here
                         // from another system): "not found" means nothing for
@@ -1213,7 +1332,10 @@ impl Engine {
                         } else if local.is_settings(&t.path) {
                             settings.push((id.clone(), t.path.clone()));
                         }
-                        Content { path: t.path.clone(), deleted: true, text: String::new(), from: String::new(), at: 0, actor: None }
+                        (
+                            Content { path: t.path.clone(), deleted: true, text: String::new(), from: String::new(), at: 0, actor: None },
+                            None,
+                        )
                     } else {
                         // Not listed, yet still there (it couldn't be read just
                         // now): not deleted. Tried again next pass.
@@ -1221,7 +1343,7 @@ impl Engine {
                     }
                 }
             };
-            plan.push((id, t.head.clone(), content));
+            plan.push((id, t.head.clone(), content, stamp));
         }
         // Several vault settings files at once: asked first too.
         if settings.len() > MANY_SETTINGS_DELETES && !settings.iter().all(|(id, _)| self.allowed_deletes.contains(id)) {
@@ -1256,8 +1378,8 @@ impl Engine {
                 mark = Some(self.state.deletes_sent.len() - 1);
             }
         }
-        for (id, head, content) in plan {
-            if !self.push_one(server, &id, Some(&head), &content, report)? {
+        for (id, head, content, stamp) in plan {
+            if !self.push_one(server, &id, Some(&head), &content, stamp, report)? {
                 return Ok(false);
             }
             if counting.contains(&id)
@@ -1272,15 +1394,15 @@ impl Engine {
             {
                 // Moved here into a folder this device doesn't sync: the file
                 // stays, so a wider selection later merges what's typed in it.
-                t.kept = Some(KeptCopy { path: content.path.clone(), base: content.text.clone() });
+                t.kept = Some(KeptCopy { path: content.path.clone(), base: Print::of(&content.text) });
             }
         }
 
         for path in untracked {
-            let Some(text) = local.read(&path) else { continue };
+            let Some((text, stamp)) = local.read_stamped(&path) else { continue };
             let id = FileId::random()?;
             let content = Content { actor: local.actor(&path), path, deleted: false, text, from: String::new(), at: 0 };
-            if !self.push_one(server, &id, None, &content, report)? {
+            if !self.push_one(server, &id, None, &content, stamp, report)? {
                 return Ok(false);
             }
         }
@@ -1293,6 +1415,7 @@ impl Engine {
         file: &FileId,
         parent: Option<&RevId>,
         content: &Content,
+        disk: Option<Stamp>,
         report: &mut Report,
     ) -> Result<bool, SyncError> {
         let rev = RevId::random()?;
@@ -1330,6 +1453,10 @@ impl Engine {
         };
         match pushed {
             PushOutcome::Accepted { seq } => {
+                let base = self.remember(&content.path, &content.text)?;
+                // The text sent was read from bytes with this stamp: the
+                // file is known equal to the new base while it keeps it.
+                let disk = disk.filter(|_| !content.deleted);
                 self.state.files.insert(
                     file.clone(),
                     Tracked {
@@ -1337,12 +1464,13 @@ impl Engine {
                         synced_path: content.path.clone(),
                         head: r.rev.clone(),
                         head_seq: seq,
-                        base: fingerprint(&content.path, &content.text),
+                        base,
                         deleted: content.deleted,
                         outside: false,
                         absorbed: false,
                         kept: None,
                         up: ancestors_of(&r),
+                        disk,
                     },
                 );
                 report.pushed += 1;
@@ -1366,6 +1494,11 @@ fn split_ext(path: &str) -> (&str, &str) {
         Some(i) if i > path.rfind('/').map_or(0, |s| s + 1) => (&path[..i], &path[i..]),
         _ => (path, ""),
     }
+}
+
+/// The stamp of what the engine just wrote at `path` (see [`LocalStore::write`]).
+fn stamp_written(local: &dyn LocalStore, path: &str) -> Option<Stamp> {
+    local.in_scope(path).then(|| local.stamp(path)).flatten()
 }
 
 fn write(local: &mut dyn LocalStore, path: &str, text: &str) -> Result<(), SyncError> {

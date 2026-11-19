@@ -706,9 +706,11 @@ fn locking_most_of_a_vault_syncs_and_leaves_no_plain_text() {
     // Even before the deletes go (a pass that fails for another
     // reason), the plain text of the locked notes leaves the state.
     let mut waiting = p.ea.state.clone();
-    assert!(serde_json::to_string(&waiting).unwrap().contains("secret day"));
+    let as_saved =
+        |s: &SyncState, e: &Engine| serde_json::to_string(&quire_sync::bases::State13::from_state(s, e.bases()).unwrap()).unwrap();
+    assert!(as_saved(&waiting, &p.ea).contains("secret day"));
     scrub_locked_text(&va, &mut waiting);
-    assert!(!serde_json::to_string(&waiting).unwrap().contains("secret day"));
+    assert!(!as_saved(&waiting, &p.ea).contains("secret day"));
     p.a().unwrap();
     p.b().unwrap();
     let b = files(&p.vb);
@@ -718,7 +720,7 @@ fn locking_most_of_a_vault_syncs_and_leaves_no_plain_text() {
     );
     assert_eq!(b.iter().filter(|f| f.ends_with(".md.qenc")).count(), 25, "{b:?}");
     let state = std::fs::read_to_string(p.va.join(".quire/sync/state.json")).unwrap_or_default();
-    let state = if state.is_empty() { serde_json::to_string(&p.ea.state).unwrap() } else { state };
+    let state = if state.is_empty() { as_saved(&p.ea.state, &p.ea) } else { state };
     assert!(!state.contains("secret day"), "no plain text of a locked note in the sync state");
     // Unlocking for good the other way round: the encrypted files go.
 }
@@ -910,17 +912,17 @@ fn deleting_the_shared_settings_asks_first() {
 fn a_damaged_sync_state_is_kept_and_reported() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(sync_dir(dir.path())).unwrap();
-    assert_eq!(open_state_named(dir.path(), "state.json").unwrap(), (SyncState::default(), None));
+    assert_eq!(open_state_named(dir.path(), "state.json").unwrap(), (Default::default(), None));
     let path = sync_dir(dir.path()).join("state.json");
     std::fs::write(&path, b"{\"cursor\": 12, \"fil").unwrap();
-    let (state, notice) = open_state_named(dir.path(), "state.json").unwrap();
+    let ((state, _), notice) = open_state_named(dir.path(), "state.json").unwrap();
     assert_eq!(state, SyncState::default());
     assert!(notice.is_some_and(|n| n.contains("started afresh")));
     assert_eq!(std::fs::read(sync_dir(dir.path()).join("state.json.unreadable")).unwrap(), b"{\"cursor\": 12, \"fil");
     // Saved whole, with no temporary file left.
     let s = SyncState { cursor: 7, ..SyncState::default() };
-    save_state_named(dir.path(), "state.json", &s).unwrap();
-    assert_eq!(open_state_named(dir.path(), "state.json").unwrap().0.cursor, 7);
+    save_state_named(dir.path(), "state.json", &s, &quire_sync::MemoryBases::default()).unwrap();
+    assert_eq!(open_state_named(dir.path(), "state.json").unwrap().0.0.cursor, 7);
     assert!(!std::fs::read_dir(sync_dir(dir.path())).unwrap().flatten().any(|e| e.file_name().to_string_lossy().ends_with(".tmp")));
     // A folder where the file should be: can't be read, so no fresh start.
     std::fs::remove_file(&path).unwrap();
@@ -1084,7 +1086,7 @@ fn attachments_sync_as_bytes_and_big_ones_stay_local() {
     snapshot_reads(&mut store).unwrap();
     store.write("attachments/b.png", &text).unwrap();
     assert_eq!(std::fs::read(dir.path().join("attachments/b.png")).unwrap(), png);
-    assert_eq!(store.digest("attachments/b.png"), Some(quire_sync::engine::fingerprint("attachments/b.png", &text)));
+    assert_eq!(store.print("attachments/b.png"), Some(quire_sync::Print::of(&text)));
     // A change underneath is noticed for attachments too.
     snapshot_reads(&mut store).unwrap();
     std::fs::write(dir.path().join("attachments/a.png"), [1u8, 2, 3]).unwrap();
