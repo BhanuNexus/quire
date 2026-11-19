@@ -20,7 +20,7 @@
 use std::ops::Range;
 
 use crate::extract::{Link, LinkKind};
-use crate::scan::{Inline, wikilink_at};
+use crate::scan::{Cursor, Inline};
 
 /// How a field is written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -498,6 +498,8 @@ pub(crate) fn front_matter_links(src: &str, end: usize) -> Vec<Link> {
             scan_value(&l.text[value_from..]).comment.map_or(l.text.len(), |c| value_from + c)
         };
         let spans = code_spans(&l.text[..limit]);
+        // One cursor for the line: its `]]` is searched for within the line only.
+        let mut cursor = Cursor::at(&l.text[..limit], l.start);
         let mut i = value_from;
         while let Some(off) = l.text[i.min(limit)..limit].find("[[") {
             let open = i + off;
@@ -506,7 +508,7 @@ pub(crate) fn front_matter_links(src: &str, end: usize) -> Vec<Link> {
                 i = open + 2;
                 continue;
             }
-            match wikilink_at(src, l.start + open) {
+            match cursor.wikilink_at(l.start + open) {
                 Some((Inline::WikiLink { range, link }, end)) if end - l.start <= limit => {
                     let range = if embed { range.start - 1..range.end } else { range };
                     let q = scan_value(&l.text[value_from..open]).quote;

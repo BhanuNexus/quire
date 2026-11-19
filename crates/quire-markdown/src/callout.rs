@@ -157,7 +157,7 @@ pub fn block_id(line: &str) -> Option<(Range<usize>, &str)> {
 }
 
 /// Byte ranges where a trailing `^x` isn't a paragraph id: fenced and
-/// indented code, front matter and display math (`$$ x ^2 $$`).
+/// indented code, front matter and display math (`$$ x ^2 $$`). Sorted and merged.
 pub fn non_prose(src: &str) -> Vec<Range<usize>> {
     use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
     let mut out = crate::blocks::verbatim_blocks(src);
@@ -176,13 +176,14 @@ pub fn non_prose(src: &str) -> Vec<Range<usize>> {
             }
         }
     }
-    out
+    crate::scan::merge(out)
 }
 
 /// Where paragraph `id` is in `src`: the byte range of its block (the
 /// paragraph or list item that ends with ` ^id`), outside code, math and front matter.
 pub fn find_block(src: &str, id: &str) -> Option<Range<usize>> {
     let verbatim = non_prose(src);
+    let mut overlap = crate::scan::Overlap::new(&verbatim);
     let mut at = 0;
     let mut para_start = 0;
     for line in src.split_inclusive('\n') {
@@ -193,7 +194,7 @@ pub fn find_block(src: &str, id: &str) -> Option<Range<usize>> {
             para_start = at;
             continue;
         }
-        if verbatim.iter().any(|r| r.start < start + text.len() && start < r.end) {
+        if overlap.hits(start, start + text.len()) {
             para_start = at;
             continue;
         }
@@ -261,6 +262,71 @@ pub fn new_block_id(src: &str, seed: u64) -> String {
     }
 }
 
+/// The functions as they were before the range cursor (a scan of every range for every
+/// line), kept as the oracle for the new ones.
+#[cfg(test)]
+pub(crate) mod oracle {
+    use super::*;
+
+    pub(crate) fn non_prose(src: &str) -> Vec<Range<usize>> {
+        use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
+        let mut out = crate::blocks::verbatim_blocks(src);
+        if src.contains("$$") || src.contains("\n    ") || src.contains("\n\t") {
+            let mut indented: Option<usize> = None;
+            for (e, r) in Parser::new_ext(src, crate::options()).into_offset_iter() {
+                match e {
+                    Event::DisplayMath(_) => out.push(r),
+                    Event::Start(Tag::CodeBlock(CodeBlockKind::Indented)) => indented = Some(r.start),
+                    Event::End(TagEnd::CodeBlock) => {
+                        if let Some(s) = indented.take() {
+                            out.push(s..r.end);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        out
+    }
+
+    pub(crate) fn find_block(src: &str, id: &str) -> Option<Range<usize>> {
+        let verbatim = non_prose(src);
+        let mut at = 0;
+        let mut para_start = 0;
+        for line in src.split_inclusive('\n') {
+            let start = at;
+            at += line.len();
+            let text = line.trim_end_matches(['\n', '\r']);
+            if text.trim().is_empty() {
+                para_start = at;
+                continue;
+            }
+            if verbatim.iter().any(|r| r.start < start + text.len() && start < r.end) {
+                para_start = at;
+                continue;
+            }
+            let item = {
+                let t = text.trim_start();
+                t.starts_with("- ")
+                    || t.starts_with("* ")
+                    || t.starts_with("+ ")
+                    || t.split_once(". ").is_some_and(|(n, _)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+            };
+            if item {
+                para_start = start;
+            }
+            if let Some((_, found)) = block_id(text)
+                && found == id
+            {
+                // A line that's only `^id` names the block above it.
+                let from = if text.trim().starts_with('^') && start > 0 { prev_block_start(src, start) } else { para_start };
+                return Some(from..start + text.len());
+            }
+        }
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,5 +377,33 @@ mod tests {
         let id = new_block_id(src, 42);
         assert_eq!(id.len(), 6);
         assert!(!src.contains(&format!("^{id}")));
+    }
+
+    #[test]
+    fn block_ranges_are_the_old_ones_on_fixture_and_generated_notes() {
+        use proptest::prelude::*;
+        let check = |src: &str| {
+            let new = non_prose(src);
+            // The new list is the old one sorted and merged: the same bytes.
+            let covered = |v: &[Range<usize>], at: usize| v.iter().any(|r| r.contains(&at));
+            let old = oracle::non_prose(src);
+            assert!(new.windows(2).all(|w| w[0].end < w[1].start), "sorted and merged: {src:?}");
+            for at in 0..=src.len() {
+                assert_eq!(covered(&new, at), covered(&old, at), "{src:?} at {at}");
+            }
+            for id in ["id1", "id2", "id-3", "id4", "id5", "id6", "id7", "nope"] {
+                assert_eq!(find_block(src, id), oracle::find_block(src, id), "{id} in {src:?}");
+            }
+        };
+        for note in crate::test_notes::fixture_notes() {
+            check(&note);
+        }
+        let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(1000));
+        runner
+            .run(&crate::test_notes::note_lines(), |t| {
+                check(&t);
+                Ok(())
+            })
+            .unwrap();
     }
 }

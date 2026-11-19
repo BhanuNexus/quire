@@ -1,0 +1,197 @@
+// SPDX-FileCopyrightText: 2026 The Quire contributors
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//! The scanners must take time in proportion to the note: hostile one-line and
+//! many-line inputs, and a generated 5 MB note (`docs/design/0.14-index-startup.md` §3.7).
+//!
+//! Each check compares the time for `2n` with the time for `n` (best of a few
+//! runs, so it does not depend on how fast the runner is): linear work is about
+//! 2x, the old quadratic scans were about 4x. The absolute budgets of
+//! `docs/design/0.14-build-plan.md` (I0a, I0b) depend on the runner, so they only
+//! print, in the ignored `report_budgets`.
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::tests_outside_test_module,
+    clippy::print_stdout,
+    reason = "an integration test: its tests sit at the top level, and the report prints on purpose"
+)]
+
+use std::fmt::Write as _;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+use quire_markdown::linter::{Cx, Options, lint};
+use quire_markdown::{cite, extract, render, scan_inlines, srs};
+
+/// One line of `n` `[`.
+fn open_brackets(n: usize) -> String {
+    "[".repeat(n)
+}
+
+/// `n` lines of `[[x`.
+fn open_links(n: usize) -> String {
+    "[[x\n".repeat(n)
+}
+
+/// One line of about `n` bytes of `== a ==`-less marks: each `==` opens a body that starts with a space.
+fn open_marks(n: usize) -> String {
+    "== a ".repeat(n / 5)
+}
+
+/// A note of about `bytes` bytes with code, highlights, links, tags, citations,
+/// callouts, block ids, flash cards and fenced blocks on every few lines, so it
+/// has one verbatim range for every line or two.
+fn big_note(bytes: usize) -> String {
+    let mut s = String::from("---\ntitle: Big\ntags: [a, b]\n---\n\n");
+    let mut i = 0;
+    while s.len() < bytes {
+        write!(
+            s,
+            "## Heading {i}\n\nSome prose with `code {i}` and ==mark {i}== and [[Note {i}|alias]] and #tag/{i} and @key{i}.\n\
+             A second line with $x_{i}$ and [text](https://example.com/{i}) and a citation [@key{i}, p. 3] ^b{i}\n\n\
+             > [!note] Title {i}\n> body of the callout\n\n\
+             ```rust\nlet x = [[{i}]];\n```\n\n\
+             Question {i}\n?\nAnswer {i}\n\n"
+        )
+        .unwrap();
+        i += 1;
+    }
+    s
+}
+
+static ALONE: Mutex<()> = Mutex::new(());
+
+/// A note of about `bytes` bytes that is nearly all verbatim ranges and the lines
+/// between them (fences, display math, inline code, highlights, callouts, ids), so
+/// a walk that tests every line against every range shows at a size the parser
+/// itself still reads in linear time.
+fn dense_note(bytes: usize) -> String {
+    let mut s = String::from("---\ntitle: Dense\n---\n");
+    let mut i = 0;
+    while s.len() < bytes {
+        write!(s, "`c{i}` ==m{i}== @k{i} [[n{i}]] ^b{i}\n\n```\nx\n```\n$$\ny ^2\n$$\n> [!note] T{i}\ntext ^i{i}\n\nQ{i}\n?\nA{i}\n\n")
+            .unwrap();
+        i += 1;
+    }
+    s
+}
+
+fn time<T>(f: impl FnOnce() -> T) -> Duration {
+    let t = Instant::now();
+    std::hint::black_box(f());
+    t.elapsed()
+}
+
+/// The best of `runs` timings of `f`.
+fn best(runs: usize, mut f: impl FnMut()) -> Duration {
+    (0..runs).map(|_| time(&mut f)).min().unwrap()
+}
+
+/// `f` over `make(n)` and `make(2n)`: the larger takes under 2.5x the smaller.
+/// A slow moment on the runner can spoil one measurement, so a failed attempt is
+/// measured again; quadratic work fails every attempt (about 4x).
+fn doubles(what: &str, n: usize, make: impl Fn(usize) -> String, f: impl Fn(&str)) {
+    // One at a time: tests that share the cores would time each other.
+    let _alone = ALONE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (small, large) = (make(n), make(2 * n));
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        let a = best(7, || f(&small));
+        let b = best(7, || f(&large));
+        // Too quick to measure: far from quadratic whatever the ratio is.
+        if b < Duration::from_millis(2) {
+            return;
+        }
+        let ratio = b.as_secs_f64() / a.as_secs_f64().max(1e-6);
+        if ratio < 2.5 {
+            return;
+        }
+        seen.push(format!("{a:?} -> {b:?} ({ratio:.1}x)"));
+    }
+    panic!("{what}: size {n} -> {} took {}", 2 * n, seen.join(", then "));
+}
+
+/// Uses a result so the work is not optimised away.
+fn sink<T>(x: T) {
+    std::hint::black_box(x);
+}
+
+/// A line of the report: what, on which input, and how to run it.
+type Row<'a> = (&'a str, &'a str, Box<dyn Fn() + 'a>);
+
+fn lint_all(s: &str) {
+    lint(s, &Options::default(), &Cx::default());
+}
+
+fn resolve(_: &quire_markdown::WikiLink) -> Option<String> {
+    None
+}
+
+#[test]
+fn inline_scan_is_linear_on_open_brackets() {
+    doubles("scan_inlines", 50_000, open_brackets, |s| sink(scan_inlines(s)));
+    doubles("extract", 50_000, open_brackets, |s| sink(extract(s)));
+    doubles("lint", 50_000, open_brackets, lint_all);
+}
+
+#[test]
+fn inline_scan_is_linear_on_many_open_links() {
+    doubles("scan_inlines", 25_000, open_links, |s| sink(scan_inlines(s)));
+    doubles("extract", 25_000, open_links, |s| sink(extract(s)));
+    doubles("lint", 25_000, open_links, lint_all);
+}
+
+#[test]
+fn citation_scan_is_linear_on_many_open_links() {
+    doubles("cite::scan", 25_000, |n| format!("@a\n{}", open_links(n)), |s| sink(cite::scan(s)));
+}
+
+#[test]
+fn highlight_scan_is_linear_on_open_marks() {
+    doubles("scan_inlines", 100_000, open_marks, |s| sink(scan_inlines(s)));
+    doubles("extract", 100_000, open_marks, |s| sink(extract(s)));
+}
+
+#[test]
+fn verbatim_range_walks_are_linear_on_a_big_note() {
+    doubles("srs::cards", 200_000, dense_note, |s| sink(srs::cards(s)));
+    doubles("to_html", 200_000, dense_note, |s| sink(render::to_html(s, &resolve)));
+    doubles("for_preview", 200_000, dense_note, |s| sink(render::for_preview(s, &|_| None)));
+    doubles("cite::scan", 200_000, dense_note, |s| sink(cite::scan(s)));
+    doubles("find_block", 200_000, dense_note, |s| sink(quire_markdown::callout::find_block(s, "nope")));
+}
+
+/// Many paragraphs with a highlight each (the cloze cards of `srs::cards`): the highlights
+/// of a paragraph are found by position, not by a pass over all of them.
+#[test]
+fn cards_are_linear_on_many_highlighted_paragraphs() {
+    doubles("srs::cards", 200_000, |n| "a ==m== b\n\n".repeat(n / 12), |s| sink(srs::cards(s)));
+}
+
+/// The budgets of the build plan, for a person to read; run with
+/// `cargo test --release -p quire-markdown --test scan_perf -- --ignored --nocapture`.
+#[test]
+#[ignore = "report only: the absolute times depend on the machine"]
+fn report_budgets() {
+    let line = open_brackets(100_000);
+    let links = open_links(80_000);
+    let note = big_note(5_000_000);
+    println!("5 MB note: {} bytes", note.len());
+    let rows: Vec<Row<'_>> = vec![
+        ("extract (<= 20 ms)", "100k [", Box::new(|| sink(extract(&line)))),
+        ("lint (<= 100 ms)", "100k [", Box::new(|| lint_all(&line))),
+        ("scan_inlines", "100k [", Box::new(|| sink(scan_inlines(&line)))),
+        ("extract", "80k [[x lines", Box::new(|| sink(extract(&links)))),
+        ("lint", "80k [[x lines", Box::new(|| lint_all(&links))),
+        ("scan_inlines", "80k [[x lines", Box::new(|| sink(scan_inlines(&links)))),
+        ("srs::cards (<= 300 ms)", "5 MB", Box::new(|| sink(srs::cards(&note)))),
+        ("to_html (<= 400 ms)", "5 MB", Box::new(|| sink(render::to_html(&note, &resolve)))),
+        ("for_preview", "5 MB", Box::new(|| sink(render::for_preview(&note, &|_| None)))),
+        ("cite::scan", "5 MB", Box::new(|| sink(cite::scan(&note)))),
+        ("find_block", "5 MB", Box::new(|| sink(quire_markdown::callout::find_block(&note, "nope")))),
+        ("extract", "5 MB", Box::new(|| sink(extract(&note)))),
+    ];
+    for (what, input, f) in rows {
+        println!("{what:28} {input:16} {:?}", best(3, &f));
+    }
+}

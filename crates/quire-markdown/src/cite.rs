@@ -93,7 +93,9 @@ pub fn scan(src: &str) -> Vec<Citation> {
         return Vec::new();
     }
     let verbatim = crate::scan::verbatim_ranges(src);
-    let skip = |at: usize| verbatim.iter().any(|r| r.contains(&at));
+    let skip = |at: usize| crate::scan::covering(&verbatim, at).is_some();
+    // The `]]` after each `[[` is looked for once however many `[[` ask (docs/design/0.14-index-startup.md §3.7).
+    let mut cursor = crate::scan::Cursor::new(src);
     let bytes = src.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
@@ -102,7 +104,7 @@ pub fn scan(src: &str) -> Vec<Citation> {
         if b == b'[' && !skip(i) {
             // `[[wikilinks]]` are not citations.
             if src[i..].starts_with("[[") {
-                i += src[i + 2..].find("]]").map_or(2, |e| e + 4);
+                i = cursor.close_at(i + 2).map_or(i + 2, |c| c + 2);
                 continue;
             }
             if let Some(close) = src[i + 1..].find([']', '\n', '[']).filter(|c| src.as_bytes()[i + 1 + c] == b']')
@@ -269,6 +271,84 @@ fn escape_md(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `scan` as it was before the point lookup (a scan of every range for every `[` and `@`), the oracle.
+    mod old {
+        use super::super::*;
+
+        pub(super) fn scan(src: &str) -> Vec<Citation> {
+            if !src.contains('@') {
+                return Vec::new();
+            }
+            let verbatim = crate::scan::verbatim_ranges(src);
+            let skip = |at: usize| verbatim.iter().any(|r| r.contains(&at));
+            let bytes = src.as_bytes();
+            let mut out = Vec::new();
+            let mut i = 0;
+            while i < src.len() {
+                let b = bytes[i];
+                if b == b'[' && !skip(i) {
+                    // `[[wikilinks]]` are not citations.
+                    if src[i..].starts_with("[[") {
+                        i += src[i + 2..].find("]]").map_or(2, |e| e + 4);
+                        continue;
+                    }
+                    if let Some(close) = src[i + 1..].find([']', '\n', '[']).filter(|c| src.as_bytes()[i + 1 + c] == b']')
+                        && let Some(items) = bracket_items(&src[i + 1..i + 1 + close])
+                    {
+                        let end = i + close + 2;
+                        // `[@key](url)` is a link whose text starts with @.
+                        if !src[end..].starts_with('(') {
+                            out.push(Citation { range: i..end, items, in_text: false });
+                            i = end;
+                            continue;
+                        }
+                    }
+                } else if b == b'@' && !skip(i) {
+                    let before = src[..i].chars().next_back();
+                    if before.is_none_or(|c| c.is_whitespace() || matches!(c, '(' | '"' | '“' | '*' | '_'))
+                        && let Some((key, len)) = key_at(&src[i + 1..])
+                    {
+                        let mut end = i + 1 + len;
+                        let mut locator = String::new();
+                        // `@key [p. 33]`: a locator for an in-text citation.
+                        let rest = &src[end..];
+                        if let Some(l) = rest.strip_prefix(" [")
+                            && let Some(c) = l.find(']')
+                            && !l[..c].contains(['@', '\n', '['])
+                        {
+                            locator = l[..c].trim().to_string();
+                            end += 2 + c + 1;
+                        }
+                        out.push(Citation {
+                            range: i..end,
+                            items: vec![CiteItem { key, prefix: String::new(), locator, suppress_author: false }],
+                            in_text: true,
+                        });
+                        i = end;
+                        continue;
+                    }
+                }
+                i += src[i..].chars().next().map_or(1, char::len_utf8);
+            }
+            out
+        }
+    }
+
+    #[test]
+    fn citations_are_the_old_ones_on_fixture_and_generated_notes() {
+        use proptest::prelude::*;
+        for note in crate::test_notes::fixture_notes() {
+            assert_eq!(scan(&note), old::scan(&note));
+        }
+        let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(1000));
+        runner
+            .run(&crate::test_notes::note_lines(), |t| {
+                prop_assert_eq!(scan(&t), old::scan(&t), "{:?}", t);
+                Ok(())
+            })
+            .unwrap();
+    }
 
     struct Lib;
     impl Formatter for Lib {

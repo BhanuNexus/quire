@@ -85,13 +85,14 @@ fn anchor_block_ids(src: &str) -> String {
         return src.to_string();
     }
     let verbatim = crate::callout::non_prose(src);
+    let mut overlap = crate::scan::Overlap::new(&verbatim);
     let mut out = String::with_capacity(src.len() + 32);
     let mut at = 0;
     for line in src.split_inclusive('\n') {
         let start = at;
         at += line.len();
         let body = line.trim_end_matches(['\n', '\r']);
-        let in_code = verbatim.iter().any(|r| r.start < start + body.len().max(1) && start < r.end);
+        let in_code = overlap.hits(start, start + body.len().max(1));
         match crate::callout::block_id(body).filter(|_| !in_code) {
             Some((range, id)) => {
                 out.push_str(&body[..range.start]);
@@ -309,6 +310,7 @@ fn preview_callouts(src: &str) -> std::borrow::Cow<'_, str> {
         return std::borrow::Cow::Borrowed(src);
     }
     let verbatim = crate::callout::non_prose(src);
+    let mut overlap = crate::scan::Overlap::new(&verbatim);
     let mut out = String::with_capacity(src.len() + 64);
     let mut at = 0;
     for line in src.split_inclusive('\n') {
@@ -316,7 +318,7 @@ fn preview_callouts(src: &str) -> std::borrow::Cow<'_, str> {
         at += line.len();
         let body = line.trim_end_matches(['\n', '\r']);
         let eol = &line[body.len()..];
-        if verbatim.iter().any(|r| r.start < start + body.len().max(1) && start < r.end) {
+        if overlap.hits(start, start + body.len().max(1)) {
             out.push_str(line);
             continue;
         }
@@ -350,6 +352,91 @@ pub fn parse_note_url(url: &str) -> Option<(String, Option<String>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The two line walks as they were before the range cursor, the oracle for the new ones.
+    mod old {
+        use super::super::*;
+
+        pub(super) fn anchor_block_ids(src: &str) -> String {
+            if !src.contains('^') {
+                return src.to_string();
+            }
+            let verbatim = crate::callout::oracle::non_prose(src);
+            let mut out = String::with_capacity(src.len() + 32);
+            let mut at = 0;
+            for line in src.split_inclusive('\n') {
+                let start = at;
+                at += line.len();
+                let body = line.trim_end_matches(['\n', '\r']);
+                let in_code = verbatim.iter().any(|r| r.start < start + body.len().max(1) && start < r.end);
+                match crate::callout::block_id(body).filter(|_| !in_code) {
+                    Some((range, id)) => {
+                        out.push_str(&body[..range.start]);
+                        let _ = write!(out, "<a class=\"block-id\" id=\"^{}\"></a>", escape_html(id));
+                        out.push_str(&line[body.len()..]);
+                    }
+                    None => out.push_str(line),
+                }
+            }
+            out
+        }
+
+        pub(super) fn preview_callouts(src: &str) -> std::borrow::Cow<'_, str> {
+            if !src.contains("[!") && !src.contains('^') {
+                return std::borrow::Cow::Borrowed(src);
+            }
+            let verbatim = crate::callout::oracle::non_prose(src);
+            let mut out = String::with_capacity(src.len() + 64);
+            let mut at = 0;
+            for line in src.split_inclusive('\n') {
+                let start = at;
+                at += line.len();
+                let body = line.trim_end_matches(['\n', '\r']);
+                let eol = &line[body.len()..];
+                if verbatim.iter().any(|r| r.start < start + body.len().max(1) && start < r.end) {
+                    out.push_str(line);
+                    continue;
+                }
+                if let Some(h) = crate::callout::parse_header(body) {
+                    let quotes = &body[..body[..h.marker.end].find("[!").unwrap_or(0)];
+                    let _ = writeln!(out, "{quotes}[!{}]", h.kind.id.to_uppercase());
+                    if !h.title.is_empty() {
+                        // The title as its own bold paragraph, apart from the body.
+                        let _ = writeln!(out, "{quotes}**{}**", h.title);
+                        let _ = writeln!(out, "{}", quotes.trim_end());
+                    }
+                    continue;
+                }
+                match crate::callout::block_id(body) {
+                    Some((r, _)) => {
+                        out.push_str(&body[..r.start]);
+                        out.push_str(eol);
+                    }
+                    None => out.push_str(line),
+                }
+            }
+            std::borrow::Cow::Owned(out)
+        }
+    }
+
+    #[test]
+    fn the_line_walks_give_the_old_output_on_fixture_and_generated_notes() {
+        use proptest::prelude::*;
+        let check = |src: &str| {
+            assert_eq!(anchor_block_ids(src), old::anchor_block_ids(src), "{src:?}");
+            assert_eq!(preview_callouts(src), old::preview_callouts(src), "{src:?}");
+        };
+        for note in crate::test_notes::fixture_notes() {
+            check(&note);
+        }
+        let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(1000));
+        runner
+            .run(&crate::test_notes::note_lines(), |t| {
+                check(&t);
+                Ok(())
+            })
+            .unwrap();
+    }
 
     #[test]
     fn renders_extensions() {

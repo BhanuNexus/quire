@@ -223,7 +223,8 @@ impl Marks {
 
     /// `pos` is strictly inside a verbatim range (code, math, …).
     fn in_verbatim(&self, pos: usize) -> bool {
-        self.verbatim.iter().any(|r| r.start < pos && pos < r.end)
+        let i = self.verbatim.partition_point(|r| r.end <= pos);
+        self.verbatim.get(i).is_some_and(|r| r.start < pos)
     }
 
     /// Spans of `kind` that lie on the line `ls..le`, in line columns.
@@ -1189,5 +1190,18 @@ mod tests {
         assert_eq!(check("Claim.|", insert_footnote), "Claim.[^1]\n\n[^1]: |");
         assert_eq!(check("A.| B.[^1]\n\n[^1]: x\n", insert_footnote), "A.[^2] B.[^1]\n\n[^1]: x\n[^2]: |");
         assert_eq!(check("A.| B.|", insert_footnote), "A.[^1]| B.[^2]|\n\n[^1]: \n[^2]: ");
+    }
+
+    #[test]
+    fn strictly_inside_a_verbatim_range_is_what_the_old_scan_said() {
+        // Sorted, merged ranges as `Marks::of` has them, every position, the old test beside the new.
+        let ranges = vec![0..3, 5..6, 8..20, 22..23, 30..40];
+        let marks = Marks { spans: Vec::new(), verbatim: ranges.clone() };
+        for pos in 0..45 {
+            let old = ranges.iter().any(|r| r.start < pos && pos < r.end);
+            assert_eq!(marks.in_verbatim(pos), old, "pos {pos}");
+        }
+        let none = Marks { spans: Vec::new(), verbatim: Vec::new() };
+        assert!(!none.in_verbatim(0));
     }
 }

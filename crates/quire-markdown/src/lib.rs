@@ -35,6 +35,8 @@ pub mod srs;
 pub mod syntax;
 pub mod table;
 pub mod tasks;
+#[cfg(test)]
+mod test_notes;
 
 pub use extract::{Extracted, Link, LinkKind, Stats, Task, extract};
 pub use frontmatter::{FrontMatter, Kind, Value};
