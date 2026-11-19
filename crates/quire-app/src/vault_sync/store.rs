@@ -66,6 +66,8 @@ pub struct VaultStore {
     unreadable: RefCell<std::collections::BTreeMap<String, String>>,
     /// The next [`begin_pass`] rehashes every file (a verify pass).
     pub(super) verify_next: bool,
+    /// Which files a verify rehashes: the paths sync tracks (`None`: all).
+    pub(super) verify_only: Option<std::collections::HashSet<String>>,
     /// A [`begin_pass`] listed the vault: without one there is no listing.
     began: bool,
     /// Sync `.quire/shared/` too.
@@ -112,6 +114,7 @@ impl VaultStore {
             shared_hashes: RefCell::default(),
             unreadable: RefCell::default(),
             verify_next: false,
+            verify_only: None,
             began: false,
             shared: false,
             lane: Lane::Mixed,
@@ -439,10 +442,10 @@ impl VaultStore {
     }
 
     /// A read found bytes the manifest's row doesn't have (written by
-    /// another program): the row learns them. The one place to switch to
-    /// the manifest's call for bytes Quire didn't write.
-    fn learned(&self, p: &NotePath, bytes: &[u8]) -> FileHash {
-        self.manifest.note_written(p, bytes)
+    /// another program): the row learns them, and its subscribers hear of
+    /// it. Bytes sync wrote itself go through [`Self::wrote`] instead.
+    fn learned(&self, p: &NotePath, bytes: &[u8]) {
+        self.manifest.observed(p, bytes);
     }
 
     /// Record a write of `bytes` at `path` by the engine.
@@ -737,39 +740,26 @@ pub(super) fn begin_pass(store: &mut VaultStore) -> Result<(), String> {
     Ok(())
 }
 
-/// The vault's files with their size and hash, from one manifest scan.
+/// The vault's files with their size and hash, from one manifest scan. A
+/// verify rehashes the files `verify_only` names (the notes sync tracks),
+/// or every file when it names none. A file the scan couldn't read keeps
+/// its row in the manifest; here it is left out and named unreadable.
 fn scan(store: &VaultStore, verify: bool) -> Result<Vec<(String, u64, FileHash)>, String> {
-    let scanned = if verify { store.manifest.verify() } else { store.manifest.scan() };
-    if scanned.is_ok() {
-        return Ok(store.manifest.rows().into_iter().map(|r| (r.path.as_str().to_string(), r.size, r.hash)).collect());
+    let delta = match (&store.verify_only, verify) {
+        (_, false) => store.manifest.scan(),
+        (Some(only), true) => store.manifest.verify_where(&|p: &NotePath| only.contains(p.as_str())),
+        (None, true) => store.manifest.verify(),
     }
-    // The scan stops at the first error, whether the listing failed or one
-    // file couldn't be read. Which: list again. A listing error stops the
-    // pass; otherwise each file the manifest can't vouch for is read here,
-    // and one that can't be read is left out and reported.
-    let storage = store.vault.storage();
-    let listing = storage.list_stat().map_err(|e| e.to_string())?;
-    let mut out = Vec::with_capacity(listing.len());
-    for (path, stat) in listing {
-        if !verify
-            && let Some(r) = store.manifest.get(&path)
-            && !r.is_racy()
-            && r.mtime_ns != 0
-            && stat == Some(FileStat { size: r.size, mtime_ns: r.mtime_ns })
-        {
-            out.push((path.as_str().to_string(), r.size, r.hash));
-            continue;
-        }
-        match storage.read_bytes(&path) {
-            Ok(b) => {
-                let h = store.learned(&path, &b);
-                out.push((path.as_str().to_string(), b.len() as u64, h));
-            }
-            Err(quire_vault::VaultError::NotFound(_)) => {}
-            Err(e) => {
-                store.unreadable.borrow_mut().insert(path.as_str().to_string(), e.to_string());
-            }
-        }
+    .map_err(|e| e.to_string())?;
+    let mut unreadable = store.unreadable.borrow_mut();
+    for (p, e) in delta.unread {
+        unreadable.insert(p.as_str().to_string(), e);
     }
-    Ok(out)
+    Ok(store
+        .manifest
+        .rows()
+        .into_iter()
+        .filter(|r| !unreadable.contains_key(r.path.as_str()))
+        .map(|r| (r.path.as_str().to_string(), r.size, r.hash))
+        .collect())
 }

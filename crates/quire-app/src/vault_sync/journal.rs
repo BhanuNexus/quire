@@ -1125,11 +1125,20 @@ impl Journal {
     /// The packs of records kept aside as damaged (`state.d.unreadable…`)
     /// hold old merge bases nothing reads any more: a purge deletes them,
     /// so they never keep a locked note's text. Their checkpoints and
-    /// journals (prints only) stay for a look.
+    /// journals (prints only) stay for a look. So does a damaged 0.13
+    /// record kept aside (`state.json.unreadable`): it holds note texts
+    /// and nothing reads it, so a purge deletes it too.
     fn purge_aside(&self) {
         let (Some(parent), Some(name)) = (self.dir.parent(), self.dir.file_name()) else { return };
-        let prefix = format!("{}.unreadable", name.to_string_lossy());
+        let name = name.to_string_lossy();
+        let legacy = format!("{}.json.unreadable", name.trim_end_matches(".d"));
+        let prefix = format!("{name}.unreadable");
         for e in std::fs::read_dir(parent).into_iter().flatten().flatten() {
+            if e.file_name().to_string_lossy().starts_with(&legacy) && e.path().is_file() {
+                #[expect(clippy::let_underscore_must_use, reason = "tried again at the next purge")]
+                let _ = remove_file(&e.path());
+                continue;
+            }
             if !e.file_name().to_string_lossy().starts_with(&prefix) || !e.path().is_dir() {
                 continue;
             }

@@ -408,3 +408,21 @@ fn a_verify_counts_even_when_the_pass_fails_after_it() {
     assert!(sync_once_at(&va).is_err());
     assert_eq!(journal::Journal::open(&va, "state.json").unwrap().journal.verified_at(), verified, "not verified again");
 }
+
+/// The daily verify rehashes the notes sync tracks, not every file.
+#[test]
+fn a_verify_reads_only_the_files_it_is_given() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut a, _) = pair(dir.path());
+    a.put("A.md", "a\n");
+    a.put("B.md", "b\n");
+    a.put("film.mov", "a large video, in spirit");
+    a.pass().unwrap();
+    a.pass().unwrap();
+    a.probe.reads();
+    a.store.verify_next = true;
+    a.store.verify_only = Some(std::iter::once("A.md".to_string()).collect());
+    begin_pass(&mut a.store).unwrap();
+    assert_eq!(a.probe.reads(), 1, "only A.md is read again");
+    assert_eq!(a.store.list().unwrap(), ["A.md", "B.md", "film.mov"]);
+}

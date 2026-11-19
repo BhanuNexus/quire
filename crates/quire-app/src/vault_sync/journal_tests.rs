@@ -423,6 +423,13 @@ fn a_purged_text_leaves_every_pack_in_the_same_commit() {
     let aside = state_dir(dir.path(), NAME).with_file_name("state.d.unreadable");
     std::fs::create_dir_all(&aside).unwrap();
     std::fs::copy(state_dir(dir.path(), NAME).join("bases-000001.pack"), aside.join("bases-000001.pack")).unwrap();
+    // And a damaged 0.13 record kept aside, which holds note texts.
+    let legacy_aside = sync_dir(dir.path()).join("state.json.unreadable");
+    std::fs::write(&legacy_aside, b"{\"files\":{\"s\":{\"base\":\"secret day, version 1\n\"").unwrap();
+    // No purge yet: it stays (an ordinary commit never deletes it).
+    state.cursor += 1;
+    o.journal.commit(&state, 0, &none).unwrap();
+    assert!(legacy_aside.exists());
     // The folder is locked: the scrub clears the base and names it.
     state.files.get_mut(&FileId("s".into())).unwrap().base = Print::of("");
     assert!(o.journal.commit(&state, 0, &|p: &str| p.starts_with("Journal/")).unwrap());
@@ -431,6 +438,7 @@ fn a_purged_text_leaves_every_pack_in_the_same_commit() {
         !state_dir(dir.path(), NAME).with_file_name("state.d.unreadable").join("bases-000001.pack").exists(),
         "nor in a record kept aside"
     );
+    assert!(!legacy_aside.exists(), "nor in a damaged 0.13 record kept aside");
     for i in 0..5 {
         assert_eq!(o.bases.get(&Print::of(&format!("plain {i} 3\n"))).unwrap().as_deref(), Some(format!("plain {i} 3\n").as_str()));
     }

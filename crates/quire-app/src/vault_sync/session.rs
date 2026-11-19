@@ -408,6 +408,9 @@ impl Session {
         let now = crate::history_ops::now_ms();
         let verifying = self.verify || verify_due(self.quiet, now, self.verified_at);
         self.store.verify_next = verifying;
+        // A verify rehashes the notes sync tracks here, not every video.
+        self.store.verify_only =
+            verifying.then(|| self.engine.state.files.values().filter(|t| !t.deleted && !t.outside).map(|t| t.path.clone()).collect());
         if let Err(e) = begin_pass(&mut self.store) {
             // Never read as "every note was deleted here" (0.13.2).
             let status = SyncStatus::Error(quire_sync::SyncError::List(e).to_string());

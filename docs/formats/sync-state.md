@@ -86,8 +86,9 @@ passes 16 MiB.
   was sent, or the scrub cleared it), every pack with any unnamed bytes, the
   active one included, is compacted in that same commit, so no version of
   that text, nor the text of a note deleted earlier, stays in a pack; the
-  packs of records kept aside as damaged (`state.d.unreadable…`) are deleted
-  then too (`docs/design/0.11-secure.md`). A pack whose delete fails is
+  packs of records kept aside as damaged (`state.d.unreadable…`) and a
+  damaged 0.13 file kept aside (`state.json.unreadable`, which holds note
+  texts) are deleted then too (`docs/design/0.11-secure.md`). A pack whose delete fails is
   tried again at the next commit.
 * A write that wrote nothing (a full disk) keeps appending to the same
   pack; one that left part of a record behind moves on to a new pack.
