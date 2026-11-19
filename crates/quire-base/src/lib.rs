@@ -4,10 +4,10 @@
 //!
 //! **What belongs here:** stateless, dependency-light helpers for a job
 //! that several crates do and that must be done one way: writing a file
-//! atomically ([`fs`]), random bytes that fail loudly ([`rand`]), whether
+//! atomically ([`fs`]), the header every cache file carries ([`cache`]), random bytes that fail loudly ([`rand`]), whether
 //! a relative path is safe ([`path`]), percent-encoding, HTML escaping and
 //! hex ([`enc`]), the recovery-key codec ([`recovery`]), the clock and
-//! dates ([`time`]), and the HTTP client builder ([`net`], behind the
+//! dates ([`time`]), and the HTTP client builder (`net`, behind the
 //! `net` feature).
 //!
 //! **What does not:** anything that knows about notes, vaults, sync,
@@ -22,6 +22,7 @@
 
 #![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
 
+pub mod cache;
 pub mod enc;
 pub mod fs;
 #[cfg(feature = "net")]
