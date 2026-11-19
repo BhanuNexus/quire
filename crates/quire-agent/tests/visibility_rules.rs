@@ -4,12 +4,12 @@
 //! (`docs/design/0.14-agent-tools.md` §6, the first risk: a note that `Visibility` shows and
 //! `effective` hides is a leak). Written before the step that adds the type (the first build step).
 //!
-//! `quire_agent::Visibility` does not exist yet (step 2 creates it), so this test cannot call it.
 //! It checks a small reference of the rules written here, in the test, against `effective_mode`
 //! over generated vaults and policies. That makes the reference the executable statement of the
 //! rules, and it proves the rules below are the whole of what `effective_mode` does for a read, for
-//! the inputs the generator covers. Step 2 adds a second implementation of [`ReadRules`] for
-//! `Visibility` and runs the same cases through it.
+//! the inputs the generator covers. `quire_agent::Visibility` is a second implementation of
+//! [`ReadRules`], and the same cases run through it: against the reference and against
+//! `effective_mode` directly, with the locked folders given up front and found lazily.
 //!
 //! What the generator covers: hidden folders; encrypted files and key files; a locked folder
 //! (a key file in the folder or above it); `deny`, `read` and `direct` zones as folder prefixes
@@ -19,18 +19,20 @@
 //! `default`, an unverified client, a grant cap (it narrows writes, never reads), and notes whose tags
 //! changed on disk but are not indexed yet.
 //!
-//! TODO(step 2, `docs/design/0.14-agent-tools.md` §8): `Visibility::fingerprint` property test:
-//! over random policies, equal fingerprints give equal answers for every path.
+//! [`equal_fingerprints_give_equal_answers`]: over random policies, two callers whose
+//! `Visibility::fingerprint` is equal get the same answer for every path.
 #![allow(
     clippy::unwrap_used,
     clippy::panic,
     clippy::tests_outside_test_module,
-    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test"
+    clippy::disallowed_methods,
+    reason = "an integration test: its tests sit at the top level, and its helpers unwrap or panic to fail the test; it builds a vault with std directly"
 )]
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-use quire_agent::{Actor, AgentStore, DeviceInfo, FixedClock, Mode, OpKind, Via};
+use quire_agent::{Actor, AgentStore, DeviceInfo, FixedClock, Mode, OpKind, Via, Visibility};
 use quire_vault::{NotePath, Vault};
 
 /// A deterministic generator: the same cases on every run.
@@ -101,9 +103,15 @@ struct Rules {
     key_folders: Vec<String>,
 }
 
-/// What a set of rules says about a path. Step 2 implements it for `Visibility` as well.
+/// What a set of rules says about a path: the reference ([`Rules`]) and `Visibility`.
 trait ReadRules {
     fn allows(&self, path: &str, tags: &[String]) -> bool;
+}
+
+impl ReadRules for Visibility {
+    fn allows(&self, path: &str, tags: &[String]) -> bool {
+        self.allows_with_tags(&NotePath::new(path), tags)
+    }
 }
 
 fn mode(name: &str) -> Mode {
@@ -269,6 +277,11 @@ fn generate(rng: &mut Rng) -> Case {
 
 /// The policy as the person approved it, on a store over the generated vault.
 fn store(case: &Case, state: &std::path::Path) -> AgentStore {
+    store_with(case, &case.policy, state)
+}
+
+/// [`store`] with another policy.
+fn store_with(case: &Case, policy: &str, state: &std::path::Path) -> AgentStore {
     // Key files last, the deepest first: the in-memory storage refuses plain writes into a folder
     // once it is locked.
     let mut files: Vec<(&str, &str)> = case.files.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
@@ -279,8 +292,13 @@ fn store(case: &Case, state: &std::path::Path) -> AgentStore {
     let vault = Vault::in_memory(&files);
     let store = AgentStore::open(&vault, DeviceInfo { id: "d_rules".into(), name: "t".into() }, FixedClock::new(1_793_577_600_000));
     store.set_state_dir(Some(state.to_path_buf()));
-    store.write_policy(&case.policy).unwrap_or_else(|e| panic!("{e}\n{}", case.policy));
+    store.write_policy(policy).unwrap_or_else(|e| panic!("{e}\n{policy}"));
     store
+}
+
+/// Every folder the generator can use: what a listing would hand `AgentStore::visibility`.
+fn all_folders() -> impl Iterator<Item = &'static str> {
+    FOLDERS.iter().copied()
 }
 
 #[test]
@@ -292,9 +310,24 @@ fn the_read_rules_are_what_effective_mode_does() {
     for case_no in 0..150 {
         let case = generate(&mut rng);
         let store = store(&case, state.path());
+        // The locked folders checked up front, and found as paths are asked about.
+        let eager = store.visibility(&actor, all_folders());
+        let lazy = store.visibility(&actor, []);
         for (path, tags) in &case.paths {
             let want = case.rules.allows(path, tags);
             let got = store.effective_mode(&actor, &NotePath::new(path.as_str()), OpKind::Read) != Mode::Deny;
+            for (how, vis) in [("given the folders", &eager), ("finding the folders", &lazy)] {
+                let seen = ReadRules::allows(vis, path, tags);
+                assert_eq!(
+                    seen,
+                    got,
+                    "case {case_no}: Visibility ({how}) says {path} ({tags:?}) is {}, effective_mode says {}\npolicy:\n{}key folders: {:?}",
+                    if seen { "readable" } else { "hidden" },
+                    if got { "readable" } else { "hidden" },
+                    case.policy,
+                    case.rules.key_folders
+                );
+            }
             assert_eq!(
                 want,
                 got,
@@ -311,4 +344,110 @@ fn the_read_rules_are_what_effective_mode_does() {
     }
     // The generator must reach both answers often, or the test proves nothing.
     assert!(shown > checked / 5 && hidden > checked / 5, "{checked} paths: {shown} readable, {hidden} hidden");
+}
+
+/// The same policy with every mode that does not hide a note changed for another one that does
+/// not: the read answers stay, so the fingerprint must too.
+fn other_writes(policy: &str) -> String {
+    policy
+        .lines()
+        .map(|l| {
+            let swap = |l: &str, key: &str| {
+                for (from, to) in [("\"read\"", "\"direct\""), ("\"propose\"", "\"read\""), ("\"direct\"", "\"propose\"")] {
+                    if l.starts_with(key) && l.ends_with(from) {
+                        return l.replace(from, to);
+                    }
+                }
+                l.to_string()
+            };
+            swap(&swap(l, "mode ="), "default =")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
+}
+
+/// `docs/design/0.14-agent-tools.md` §6, the first risk: two callers with equal fingerprints get
+/// equal answers for every path. Over random policies, variants that change only write modes, two
+/// clients (one with an entry in the policy, one without) and the vaults' locked folders.
+#[test]
+fn equal_fingerprints_give_equal_answers() {
+    let state = tempfile::tempdir().unwrap();
+    let mut rng = Rng(0x5EED_CAFE_F00D_0002);
+    let actors =
+        [Actor::agent("mcp:probe", "probe", Via::McpStdio, "d_rules"), Actor::agent("mcp:other", "other", Via::McpStdio, "d_rules")];
+    let cases: Vec<Case> = (0..80).map(|_| generate(&mut rng)).collect();
+    // Every path any case asks about, with its tags: each fingerprint group answers all of them.
+    let mut probes: Vec<(String, Vec<String>)> = cases.iter().flat_map(|c| c.paths.iter().cloned()).collect();
+    probes.sort();
+    probes.dedup();
+    let mut groups: BTreeMap<[u8; 32], Vec<(String, Visibility)>> = BTreeMap::new();
+    for (i, case) in cases.iter().enumerate() {
+        for policy in [case.policy.clone(), other_writes(&case.policy)] {
+            let store = store_with(case, &policy, state.path());
+            for actor in &actors {
+                let vis = store.visibility(actor, all_folders());
+                groups.entry(vis.fingerprint()).or_default().push((format!("case {i}, {}, policy:\n{policy}", actor.id), vis));
+            }
+        }
+    }
+    let mut shared = 0;
+    for members in groups.values() {
+        let Some(((first_how, first), rest)) = members.split_first() else { continue };
+        for (how, vis) in rest {
+            shared += 1;
+            for (path, tags) in &probes {
+                assert_eq!(
+                    ReadRules::allows(first, path, tags),
+                    ReadRules::allows(vis, path, tags),
+                    "equal fingerprints, different answers for {path} ({tags:?}):\n{first_how}\n---\n{how}"
+                );
+            }
+        }
+    }
+    // Write-only variants and clients without an entry must share fingerprints often, and
+    // different read rules must not all collapse into one.
+    assert!(shared > 100, "only {shared} callers shared a fingerprint");
+    assert!(groups.len() > 60, "only {} fingerprints", groups.len());
+}
+
+/// A key file written after the value was made is not seen by it (one call keeps one answer), and is
+/// seen by the next one at once: the locked set is never cached across calls.
+#[test]
+fn a_folder_locked_meanwhile_hides_from_the_next_visibility() {
+    let vault = Vault::in_memory(&[("Work/a.md", "# a\n"), ("Work/Deep/b.md", "# b\n"), ("Notes/c.md", "# c\n")]);
+    let store = AgentStore::open(&vault, DeviceInfo { id: "d_rules".into(), name: "t".into() }, FixedClock::new(1_793_577_600_000));
+    let actor = Actor::agent("mcp:probe", "probe", Via::McpStdio, "d_rules");
+    let shown = |v: &Visibility| ["Work/a.md", "Work/Deep/b.md", "Notes/c.md"].into_iter().filter(|p| v.allows(&NotePath::new(*p))).count();
+    let before = store.visibility(&actor, ["Work", "Work/Deep", "Notes"]);
+    assert_eq!(shown(&before), 3);
+    // Another process locks the folder: only its key file appears.
+    vault.storage().write_atomic(&NotePath::new("Work/quire-lock.json"), "{}").unwrap();
+    let after = store.visibility(&actor, ["Work", "Work/Deep", "Notes"]);
+    assert_eq!(shown(&after), 1, "a locked folder and the folders inside it hide at once");
+    assert_ne!(before.fingerprint(), after.fingerprint(), "a lock changes the fingerprint");
+    let lazy = store.visibility(&actor, []);
+    assert_eq!(shown(&lazy), 1, "a folder not named up front is checked when a path in it is asked about");
+    vault.storage().remove(&NotePath::new("Work/quire-lock.json")).unwrap();
+    assert_eq!(shown(&store.visibility(&actor, ["Work"])), 3, "and unlocking shows them again");
+}
+
+/// A note below a folder that is a symlink is hidden, wherever the link leads: the vault listing
+/// never yields one, so a path like it reached the index some other way.
+#[cfg(unix)]
+#[test]
+fn a_note_below_a_symlinked_folder_is_hidden() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("vault");
+    std::fs::create_dir_all(root.join("Notes")).unwrap();
+    std::fs::write(root.join("Notes/a.md"), "# a\n").unwrap();
+    std::os::unix::fs::symlink(root.join("Notes"), root.join("Alias")).unwrap();
+    let vault = Vault::open_local(&root).unwrap();
+    let store = AgentStore::open(&vault, DeviceInfo { id: "d_rules".into(), name: "t".into() }, FixedClock::new(1_793_577_600_000));
+    store.set_state_dir(Some(dir.path().join("state")));
+    let actor = Actor::agent("mcp:probe", "probe", Via::McpStdio, "d_rules");
+    for vis in [store.visibility(&actor, ["Notes", "Alias"]), store.visibility(&actor, [])] {
+        assert!(vis.allows(&NotePath::new("Notes/a.md")));
+        assert!(!vis.allows(&NotePath::new("Alias/a.md")), "a path through a symlinked folder is refused");
+    }
 }
