@@ -7,24 +7,33 @@ one scan that reads every file, never a result. Design:
 [../design/0.14-architecture.md](../design/0.14-architecture.md) §2.
 Owner: architecture (`quire_vault::changes`).
 
-The file is one [cache container](cache-container.md): `kind` 1, `format` 1,
+The file is one [cache container](cache-container.md): `kind` 1, `format` 2,
 `builder` 1. The body, all integers little-endian, varints unsigned LEB128:
 
 ```
 origin    32 bytes  SHA-256 of the absolute path of this file, as this device names it
-epoch     16 bytes  the writing process's epoch; not read back (a new one on every open)
 gen       u64       the current generation
 floor     u64       tombstones of this generation and older were dropped
 count     u64       rows that follow, sorted by path (byte order), no two equal
 row:
   path_len  varint
   path      UTF-8, vault-relative, `/`-separated, as the storage names it
+  flags     u8      1 = gone (a tombstone), 2 = racy; other bits must be 0, and
+                    a tombstone is never racy
+  gen       varint  the generation in which the row last changed
+  only when not gone:
   size      varint  bytes on disk when hashed
   mtime_ns  u64     nanoseconds since 1970 as the listing gave it; 0 = unknown
   hash      32 bytes SHA-256 of the bytes as stored (no BOM stripping)
-  gen       varint  the generation in which the row last changed
-  flags     u8      1 = gone (a tombstone), 2 = racy; other bits must be 0
 ```
+
+**Format history.** 1 (0.14 development builds only): every row had `size`,
+`mtime_ns` and `hash`, tombstones included, and the header had a 16-byte
+`epoch` after `origin`. 2: a tombstone is its path, flags and `gen` alone, so
+the hash of a removed note (the plain text of a note whose folder was since
+locked) never stays on disk; the epoch is no longer stored, since it is new on
+every open. A format 1 file is not read (a cache is never migrated) and is
+replaced at the first flush.
 
 About 87 bytes a row with typical paths (`Folder 12/Sub 3/A note with a title 1234.md`):
 870 KB at 10,000 files, 4.4 MB at 50,000.
@@ -59,12 +68,13 @@ About 87 bytes a row with typical paths (`Folder 12/Sub 3/A note with a title 12
   tombstones are gone), comparing by hash.
 * **Generations.** `gen` goes up by one for each scan, or each own write or
   removal, that changed at least one row. A generation is meaningful only
-  within one process: the epoch is new on every open (the `epoch` stored in
-  the file is not read back), because after a crash, or with a file another
+  within one process: the epoch is new on every open (and not stored),
+  because after a crash, or with a file another
   process wrote, the same `gen` can come back naming other rows. A
   consumer's in-process cursor is a `gen`; a consumer that persists what it
   saw compares by hash on its next start, which reads no note.
-* **Tombstones** keep the last hash of a removed file. When there are more than
+* **Tombstones** keep only the path and the generation of the removal: no
+  hash, size or time (in memory the hash reads as all zeros). When there are more than
   1,024 and more than a quarter of the live rows, the oldest go and `floor`
   rises.
 * **Never a delete.** A listing error leaves every row as it was. A file that

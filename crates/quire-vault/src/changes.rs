@@ -58,7 +58,8 @@ use crate::{FileStat, NotePath, Result, Storage, Vault, VaultError};
 /// Where the manifest is kept, vault-relative.
 pub const CACHE_PATH: &str = ".quire/cache/manifest";
 /// The layout of the manifest's body (`docs/formats/manifest.md`).
-pub const FORMAT: u32 = 1;
+/// 2: tombstones carry no hash, size or time, and the epoch is not stored.
+pub const FORMAT: u32 = 2;
 /// What derives the rows: SHA-256 of the stored bytes, the racy rule.
 pub const BUILDER: u32 = 1;
 /// A row whose time is this close to its scan (or later) is hashed again
@@ -123,12 +124,13 @@ pub struct Row {
     /// Vault-relative, as the storage names it (`Journal/Day.md.qenc` in a
     /// locked folder).
     pub path: NotePath,
-    /// Bytes on disk when it was hashed.
+    /// Bytes on disk when it was hashed; 0 for a tombstone.
     pub size: u64,
     /// Modification time in nanoseconds since the Unix epoch as the listing
-    /// gave it; 0 when unknown (never trusted).
+    /// gave it; 0 when unknown (never trusted) and for a tombstone.
     pub mtime_ns: u64,
-    /// SHA-256 of the bytes; for a tombstone, of the last bytes seen.
+    /// SHA-256 of the bytes; all zeros for a tombstone (no consumer needs
+    /// it, and a locked note's plain-text hash must not stay behind).
     pub hash: FileHash,
     /// The generation in which this row last changed (hash, appearance or
     /// removal; a new size or time with the same hash is no change).
@@ -144,6 +146,14 @@ impl Row {
     /// Whether the next scan reads this file whatever its size and time.
     pub const fn is_racy(&self) -> bool {
         self.racy
+    }
+
+    /// Make this row a tombstone of `generation`. A tombstone keeps only its
+    /// path and generation: no hash, size or time (the hash of a note's
+    /// plain text must not outlive it once its folder is locked).
+    fn bury(&mut self, generation: u64) {
+        (self.gone, self.generation) = (true, generation);
+        (self.hash, self.size, self.mtime_ns, self.racy) = (FileHash([0; 32]), 0, 0, false);
     }
 
     /// Whether a listing's `stat` lets a scan keep this row without reading.
@@ -273,8 +283,7 @@ impl Table {
                 if let Some(r) = self.rows.get_mut(&path)
                     && !r.gone
                 {
-                    r.gone = true;
-                    r.generation = next;
+                    r.bury(next);
                     self.generation = next;
                     self.version += 1;
                 }
@@ -326,8 +335,7 @@ impl Table {
         }
         for (p, r) in &mut self.rows {
             if !r.gone && !listed.contains(p) && !self.touched.contains(p) {
-                r.gone = true;
-                r.generation = next;
+                r.bury(next);
                 delta.removed.push(p.clone());
             }
         }
@@ -773,7 +781,6 @@ fn put_varint(out: &mut Vec<u8>, mut v: u64) {
 fn encode(t: &Table, origin: &[u8; 32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(80 + t.rows.len() * 80);
     out.extend_from_slice(origin);
-    out.extend_from_slice(&t.epoch);
     out.extend_from_slice(&t.generation.to_le_bytes());
     out.extend_from_slice(&t.floor.to_le_bytes());
     out.extend_from_slice(&(t.rows.len() as u64).to_le_bytes());
@@ -781,11 +788,13 @@ fn encode(t: &Table, origin: &[u8; 32]) -> Vec<u8> {
         let p = r.path.as_str().as_bytes();
         put_varint(&mut out, p.len() as u64);
         out.extend_from_slice(p);
-        put_varint(&mut out, r.size);
-        out.extend_from_slice(&r.mtime_ns.to_le_bytes());
-        out.extend_from_slice(&r.hash.0);
-        put_varint(&mut out, r.generation);
         out.push(if r.gone { GONE } else { 0 } | if r.racy { RACY } else { 0 });
+        put_varint(&mut out, r.generation);
+        if !r.gone {
+            put_varint(&mut out, r.size);
+            out.extend_from_slice(&r.mtime_ns.to_le_bytes());
+            out.extend_from_slice(&r.hash.0);
+        }
     }
     out
 }
@@ -825,14 +834,15 @@ impl<'a> Reader<'a> {
 }
 
 /// The table in `body`, `None` for anything doubtful (another origin,
-/// a bad path, rows out of order, unknown flags, a generation from the
-/// future, bytes left over).
+/// a bad path, rows out of order, unknown flags, a racy tombstone, a
+/// generation from the future, bytes left over). Its epoch is left for
+/// the caller to set.
 fn decode(body: &[u8], origin: &[u8; 32]) -> Option<Table> {
     let mut r = Reader(body);
     if r.array::<32>()? != *origin {
         return None;
     }
-    let mut t = Table::fresh(r.array::<16>()?);
+    let mut t = Table::fresh([0; 16]);
     t.generation = r.u64()?;
     t.floor = r.u64()?;
     let count = r.u64()?;
@@ -847,16 +857,20 @@ fn decode(body: &[u8], origin: &[u8; 32]) -> Option<Table> {
         if path.as_str() != raw || last.as_ref().is_some_and(|l| *l >= path) {
             return None;
         }
-        let size = r.varint()?;
-        let mtime_ns = r.u64()?;
-        let hash = FileHash(r.array::<32>()?);
-        let generation = r.varint()?;
         let flags = r.take(1)?[0];
-        if flags & !(GONE | RACY) != 0 || generation > t.generation {
+        let generation = r.varint()?;
+        let (gone, racy) = (flags & GONE != 0, flags & RACY != 0);
+        if flags & !(GONE | RACY) != 0 || (gone && racy) || generation > t.generation {
             return None;
         }
+        let mut row = Row { path: path.clone(), size: 0, mtime_ns: 0, hash: FileHash([0; 32]), generation, gone, racy };
+        if !gone {
+            row.size = r.varint()?;
+            row.mtime_ns = r.u64()?;
+            row.hash = FileHash(r.array::<32>()?);
+        }
         last = Some(path.clone());
-        t.rows.insert(path.clone(), Row { path, size, mtime_ns, hash, generation, gone: flags & GONE != 0, racy: flags & RACY != 0 });
+        t.rows.insert(path, row);
     }
     r.0.is_empty().then_some(t)
 }

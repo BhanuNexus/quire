@@ -917,18 +917,24 @@ fn the_body_round_trips_and_any_doubt_is_no_table() {
     let t = m.shared.table.read().unwrap();
     let body = encode(&t, &origin);
     let back = decode(&body, &origin).unwrap();
-    assert_eq!((back.epoch, back.generation, back.floor), (t.epoch, t.generation, t.floor));
+    assert_eq!((back.generation, back.floor), (t.generation, t.floor));
     assert_eq!(back.rows, t.rows);
+    assert!(back.rows[&np("a.md")].gone, "a tombstone round-trips");
     assert!(decode(&body, &[8u8; 32]).is_none(), "another origin");
     assert!(decode(&body[..body.len() - 1], &origin).is_none(), "short");
     let mut long = body.clone();
     long.push(0);
     assert!(decode(&long, &origin).is_none(), "bytes left over");
+    // The first row is `a.md`, a tombstone: its flags follow its path.
+    let flags_at = 32 + 24 + 1 + "a.md".len();
+    assert_eq!(body[flags_at], GONE);
     let mut flags = body.clone();
-    *flags.last_mut().unwrap() |= 4;
+    flags[flags_at] |= 4;
     assert!(decode(&flags, &origin).is_none(), "an unknown flag");
+    flags[flags_at] = GONE | RACY;
+    assert!(decode(&flags, &origin).is_none(), "a racy tombstone");
     let mut generation = body;
-    generation[48..56].copy_from_slice(&0u64.to_le_bytes());
+    generation[32..40].copy_from_slice(&0u64.to_le_bytes());
     assert!(decode(&generation, &origin).is_none(), "a row from a later generation");
     let bad = |path: &str| {
         let mut b = Table::fresh([0; 16]);
@@ -938,7 +944,7 @@ fn the_body_round_trips_and_any_doubt_is_no_table() {
         );
         let mut enc = encode(&b, &origin);
         // Put the raw path back as written, bypassing NotePath's clean-up.
-        let at = 32 + 16 + 24 + 1;
+        let at = 32 + 24 + 1;
         enc.splice(at..at + np(path).as_str().len(), path.bytes());
         enc[at - 1] = path.len() as u8;
         decode(&enc, &origin)
@@ -946,6 +952,40 @@ fn the_body_round_trips_and_any_doubt_is_no_table() {
     assert!(bad("ok.md").is_some());
     assert!(bad("../escape.md").is_none());
     assert!(bad("/abs.md").is_none());
+}
+
+#[test]
+fn a_removed_notes_hash_leaves_no_trace_in_the_cache_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = Arc::new(LocalFs::new(dir.path()).unwrap());
+    let (day, plan) = ("# Day\nsecret\n", "# Plan\nalso secret\n");
+    local.write_atomic(&np("Journal/Day.md"), day).unwrap();
+    local.write_atomic(&np("Plan.md"), plan).unwrap();
+    local.write_atomic(&np("Kept.md"), "kept").unwrap();
+    let m = Manifest::open_with_clock(&vault_of(&local), later());
+    m.scan().unwrap();
+    m.flush().unwrap();
+    let file = dir.path().join(CACHE_PATH);
+    let holds = |h: FileHash| std::fs::read(&file).unwrap().windows(32).any(|w| w == h.0);
+    let hashes = [FileHash::of(day.as_bytes()), FileHash::of(plan.as_bytes())];
+    assert!(hashes.iter().all(|h| holds(*h)), "the live rows are there");
+    // One goes as a locking would take it (gone from the listing), one by
+    // our own removal.
+    local.remove(&np("Journal/Day.md")).unwrap();
+    local.remove(&np("Plan.md")).unwrap();
+    m.note_removed(&np("Plan.md"));
+    assert_eq!(m.scan().unwrap().removed, [np("Journal/Day.md")]);
+    let tombs: Vec<Row> = m.since(0).unwrap().into_iter().filter(|r| r.gone).collect();
+    assert_eq!(tombs.len(), 2);
+    assert!(tombs.iter().all(|r| r.hash == FileHash([0; 32]) && r.size == 0), "{tombs:?}");
+    m.flush().unwrap();
+    for h in hashes {
+        assert!(!holds(h), "{h:?} is still in the cache file");
+    }
+    assert!(holds(FileHash::of(b"kept")));
+    // The tombstones themselves survive a restart.
+    let again = Manifest::open_with_clock(&vault_of(&local), later());
+    assert_eq!(again.since(0).unwrap().iter().filter(|r| r.gone).count(), 2);
 }
 
 /// Budgets (`docs/design/0.14-build-plan.md`, A2; report only): a warm scan
