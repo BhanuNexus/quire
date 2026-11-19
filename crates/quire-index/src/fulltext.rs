@@ -322,6 +322,13 @@ impl FullText {
     }
 
     fn insert(&mut self, path: &NotePath, tf: &[(String, f32)], len: f32) {
+        let ids: Vec<(TermId, f32)> = tf.iter().map(|(t, f)| (self.intern(t), *f)).collect();
+        self.upsert_ids(path, &ids, len);
+    }
+
+    /// Index a document whose terms are already interned here (a record
+    /// from the startup cache).
+    pub(crate) fn upsert_ids(&mut self, path: &NotePath, tf: &[(TermId, f32)], len: f32) {
         let id = if let Some(&id) = self.ids.get(path) {
             self.unlink(id);
             id
@@ -338,9 +345,8 @@ impl FullText {
             id
         };
         let mut terms = Vec::with_capacity(tf.len());
-        for (t, f) in tf {
-            let tid = self.intern(t);
-            self.postings[tid.index()].insert(id, *f);
+        for &(tid, f) in tf {
+            self.postings[tid.index()].insert(id, f);
             terms.push(tid);
         }
         self.doc_terms[id.index()] = terms;

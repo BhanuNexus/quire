@@ -99,6 +99,28 @@ impl Index {
         self.records.insert(rec.path.clone(), rec);
     }
 
+    #[cfg(test)]
+    /// Insert a record from the startup cache: `map` turns the segment's
+    /// term ids into this index's ([`Self::intern_all`]). No graph refresh.
+    pub(crate) fn insert_stored(&mut self, stored: crate::codec::Stored, map: &[TermId], src: String) {
+        let crate::codec::Stored { mut rec, bm25, len } = stored;
+        let tf: Vec<(TermId, f32)> = bm25.into_iter().map(|(t, f)| (map[t as usize], f)).collect();
+        self.fulltext.upsert_ids(&rec.path, &tf, len);
+        for (t, _) in &mut rec.terms {
+            *t = map[t.index()];
+        }
+        rec.terms.sort_unstable();
+        self.line_starts.insert(rec.path.clone(), line_starts(&src));
+        self.sources.insert(rec.path.clone(), src);
+        self.records.insert(rec.path.clone(), rec);
+    }
+
+    #[cfg(test)]
+    /// Intern a segment's term table at once; the result maps its ids.
+    pub(crate) fn intern_all(&mut self, table: &[&str]) -> Vec<TermId> {
+        table.iter().map(|t| self.fulltext.intern(t)).collect()
+    }
+
     pub fn remove(&mut self, path: &NotePath) {
         self.remove_no_refresh(path);
         self.refresh();

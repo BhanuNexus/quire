@@ -13,6 +13,8 @@ mod actor;
 pub mod attach;
 pub mod background;
 pub mod chunk;
+#[cfg(test)]
+mod codec;
 mod derived;
 mod fulltext;
 mod fuzzy;
@@ -20,6 +22,8 @@ mod graph;
 mod hybrid;
 mod index;
 pub mod joined;
+#[cfg(test)]
+mod measure;
 mod record;
 // 0.12: typed links and the hierarchy.
 pub mod relations;
