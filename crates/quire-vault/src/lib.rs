@@ -28,7 +28,7 @@ pub use prefs::{PrefsError, VaultPrefs};
 /// Moved to `quire_base::fs` (0.14); this path stays for existing callers.
 pub use quire_base::fs::replace_file;
 pub use refactor::{LinkRewrite, rewrite_links};
-pub use storage::{LocalFs, MemFs, SingleFile, Storage};
+pub use storage::{FileStat, LocalFs, MemFs, SingleFile, Storage};
 pub use templates::{TemplateVars, expand_template};
 pub use vault::{RenameReport, Vault, VaultConfig};
 pub use watch::{VaultEvent, VaultWatcher};
