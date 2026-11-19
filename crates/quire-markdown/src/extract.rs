@@ -11,7 +11,7 @@ use crate::frontmatter::{self, FrontMatter};
 use crate::outline::Heading;
 use crate::scan::{Inline, scan_with};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LinkKind {
     /// `[[Note]]`
     Wiki,
@@ -23,7 +23,7 @@ pub enum LinkKind {
     External,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Link {
     pub kind: LinkKind,
     /// Note name for internal links (no `.md`), URL for external ones.
@@ -46,7 +46,7 @@ impl Link {
 /// A checklist item. The metadata fields come from the text after the task
 /// (`📅 2026-12-01`, `[due:: …]`); see [`crate::tasks`]. Dates are kept as
 /// written (`YYYY-MM-DD`); `quire-plan` interprets them.
-#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Task {
     pub done: bool,
     pub text: String,
@@ -79,7 +79,7 @@ pub struct Task {
     pub estimate: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Stats {
     pub words: usize,
     pub chars: usize,

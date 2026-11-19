@@ -396,6 +396,36 @@ fn a_damaged_or_foreign_cache_equals_a_cold_build() {
     assert_eq!(std::fs::read(&idx).expect("read"), newer, "not overwritten");
 }
 
+/// A cache of an older `format` (records as JSON, before the hand codec)
+/// is ignored, the notes are parsed, and the cache is written again.
+#[test]
+fn a_cache_of_an_older_format_is_ignored_and_rebuilt() {
+    let dir = tempfile::tempdir().expect("temp");
+    let v = vault_of(dir.path(), 10);
+    drop(service(&v));
+    for e in std::fs::read_dir(cache_dir(&v)).expect("cache").flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let kind = if name == "records.idx" {
+            Kind::RECORDS_INDEX
+        } else if name.starts_with("r-") {
+            Kind::RECORDS_SEGMENT
+        } else {
+            continue;
+        };
+        let body = cache::read(&e.path(), kind, st::FORMAT, st::DERIVE_VERSION).expect("current");
+        // An older build's file, as that build left it (a write here would keep the newer one).
+        std::fs::remove_file(e.path()).expect("remove");
+        assert_eq!(cache::write(&e.path(), kind, st::FORMAT - 1, st::DERIVE_VERSION, &body).expect("write"), cache::Written::Written);
+    }
+    let svc = service(&v);
+    assert_eq!(svc.notes_read(), 10, "an older format is no cache");
+    assert_eq!(view(&svc.read()), cold(&v));
+    drop(svc);
+    let svc = service(&v);
+    assert_eq!(svc.notes_read(), 0, "written again in this format");
+    assert_eq!(view(&svc.read()), cold(&v));
+}
+
 /// The marker test (`docs/design/0.14-index-startup.md` §3.6): with a second
 /// service on the vault, (a) a folder locked here, (b) a note moved into a
 /// locked folder elsewhere (its plain file removed here, as sync does) and

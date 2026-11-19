@@ -6006,7 +6006,6 @@ dependencies = [
  "quire-plan",
  "quire-vault",
  "serde",
- "serde_json",
  "tempfile",
  "thread-priority",
  "toml 1.2.1+spec-1.1.0",

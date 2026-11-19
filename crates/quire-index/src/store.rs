@@ -45,7 +45,8 @@ use crate::index::Index;
 /// migrated.
 pub const DERIVE_VERSION: u32 = 1;
 /// The layout of `records.idx` and of a segment.
-pub(crate) const FORMAT: u32 = 1;
+/// 2: records in the hand-written codec (1 held them as JSON, never released).
+pub(crate) const FORMAT: u32 = 2;
 /// Where the cache lives, vault-relative.
 pub const DIR: &str = ".quire/cache/index";
 const INDEX_FILE: &str = "records.idx";
@@ -337,24 +338,38 @@ impl Store {
             }
         }
         let jobs: Vec<(u64, Vec<(u32, NotePath)>)> = wanted.into_iter().collect();
-        let per = jobs.len().div_ceil(threads.max(1)).max(1);
+        // Inflate and decode on a small pool: each thread takes the next
+        // segment until none is left, so one slow segment doesn't hold up a
+        // fixed share. Results go back in segment order: the same install
+        // order, and so the same term ids, on every run.
+        let next = std::sync::atomic::AtomicUsize::new(0);
         let dir = &self.dir;
-        let results: Vec<(Option<Segment>, Vec<NotePath>)> = std::thread::scope(|s| {
-            jobs.chunks(per)
-                .map(|part| {
-                    s.spawn(move || {
+        let mut slots: Vec<Option<(Option<Segment>, Vec<NotePath>)>> = (0..jobs.len()).map(|_| None).collect();
+        std::thread::scope(|s| {
+            let workers: Vec<_> = (0..threads.clamp(1, jobs.len().max(1)))
+                .map(|_| {
+                    s.spawn(|| {
                         crate::background::lower_priority();
-                        part.iter().map(|(id, want)| read_segment(dir, *id, want)).collect::<Vec<_>>()
+                        let mut done = Vec::new();
+                        loop {
+                            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some((id, want)) = jobs.get(i) else { break done };
+                            done.push((i, read_segment(dir, *id, want)));
+                        }
                     })
                 })
-                .collect::<Vec<_>>()
-                .into_iter()
-                .flat_map(|h| h.join().unwrap_or_default())
-                .collect()
+                .collect();
+            for w in workers {
+                // A thread that panicked gave nothing: its segments' notes are parsed below.
+                for (i, r) in w.join().unwrap_or_default() {
+                    slots[i] = Some(r);
+                }
+            }
         });
         let mut segments = Vec::new();
         let mut rows = rows;
-        for (seg, missed) in results {
+        for (slot, (_, want)) in slots.into_iter().zip(&jobs) {
+            let (seg, missed) = slot.unwrap_or_else(|| (None, want.iter().map(|(_, p)| p.clone()).collect()));
             // A row whose segment failed is no row: the note is written again.
             for p in &missed {
                 rows.remove(p);

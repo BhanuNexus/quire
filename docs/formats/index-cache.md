@@ -13,12 +13,15 @@ Owner: index (`quire_index::store`).
 | `r-<16 hex>.seg` | 3, records segment | once; never changed in place |
 
 Each file but the lock is one [cache container](cache-container.md) with
-`format` 1 and `builder` = `quire_index::store::DERIVE_VERSION` (1): the
+`format` 2 and `builder` = `quire_index::store::DERIVE_VERSION` (1): the
 version of what derives a record from a note (`extract`, the tokenizer and
 stemmer, the BM25 weights). A golden test (`crates/quire-index/tests/derive_version.rs`)
 fails when the derivation changes until the version is bumped; any other
-`builder` or `format` discards the file. Varints are unsigned LEB128;
-a string is a varint byte length and UTF-8 bytes.
+`builder` or `format` discards the file (`format` 1 held records as JSON
+during development and was never released). Varints are unsigned LEB128;
+a string is a varint byte length and UTF-8 bytes; an option is a byte 0
+(none) or 1 followed by the value; a list is a varint count and its items;
+an `f32` is its bits, 4 bytes little-endian.
 
 ## `records.idx`
 
@@ -42,14 +45,38 @@ section A  varint inflated length, then a string of raw deflate (level 1)
 section B  varint inflated length, then a string of raw deflate (level 1)
 ```
 
-Section A is, per note in slot order, a string holding the record as JSON,
-then a varint: the byte length of the note's text in section B. Section B is
-the notes' texts one after another, UTF-8. The JSON object has exactly
-these fields (serde derives of `quire_markdown`'s types):
-`path`, `name`, `title`, `aliases`, `headings`, `links`, `tags`, `tasks`,
-`stats`, `properties`, `plain`, `content` (content terms: `[term, count]`
-pairs, `term` an index into the segment's table), `bm25` (`[term, weight]`,
-the keyword index's terms and weights) and `len` (the document length).
+Section A is, per note in slot order, the record below, then a varint: the
+byte length of the note's text in section B. Section B is the notes' texts
+one after another, UTF-8.
+
+```
+path, name, title         strings
+aliases                   list of strings
+headings                  list of: level u8, text string, offset varint, anchor string
+links                     list of: kind u8 (0 wiki, 1 embed, 2 relative, 3 external),
+                          target string, heading option string, display string,
+                          range start varint and end varint, field option string
+tags                      list of strings
+tasks                     list of: done u8 (0 or 1), text string, offset varint,
+                          due, scheduled, start, done_on, created, recurrence
+                          (each an option string), priority option u8,
+                          reminder option string, time_block option (two strings),
+                          meta_range option (start and end varints),
+                          time_spent option string, estimate option string
+stats                     words, chars, lines, reading_minutes: varints
+properties                list of: key string, value
+                          (value: 0 string | 1 list of strings | 2 list of key string and value;
+                          at most 64 levels deep)
+plain                     string
+content                   list of: term varint (into the segment's table), count varint
+bm25                      list of: term varint, weight f32
+len                       f32, the document length
+```
+
+Every field of `NoteRecord` and of `quire_markdown`'s `Heading`, `Link`,
+`Task` and `Stats` is listed: the encoder destructures each type without
+`..`, so a new field does not compile until it has a place here (and
+`format` is bumped).
 
 ## Rules
 

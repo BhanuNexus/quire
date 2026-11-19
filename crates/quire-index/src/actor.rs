@@ -453,7 +453,7 @@ fn load_cached(
     shared.total.store(notes.len(), Ordering::Relaxed);
     shared.indexed.store(0, Ordering::Relaxed);
     let mut store = Store::open(vault);
-    let threads = std::thread::available_parallelism().map_or(2, std::num::NonZero::get).clamp(1, 8);
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get).max(1);
     let found = match store.as_mut() {
         Some(s) => s.load(&notes, threads),
         None => crate::store::Found { segments: Vec::new(), parse: notes.iter().map(|(p, _)| p.clone()).collect() },

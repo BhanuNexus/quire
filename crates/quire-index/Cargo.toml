@@ -28,8 +28,6 @@ serde.workspace = true
 toml.workspace = true
 # 0.14: the startup cache deflates its segments (`docs/design/0.14-index-startup.md` §3.6).
 flate2.workspace = true
-# 0.14: a record in the startup cache is JSON through serde derives (chosen by measurement, §3.6).
-serde_json.workspace = true
 
 [lints]
 workspace = true
