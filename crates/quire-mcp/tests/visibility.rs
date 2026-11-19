@@ -448,3 +448,37 @@ fn read_tools_never_tell_a_vault_with_hidden_notes_apart() {
         read.len()
     );
 }
+
+/// What a client is told when it connects: the legacy `initialize` and the modern `server/discover`.
+fn handshakes(srv: &Server) -> Vec<Value> {
+    let init = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "probe", "version": "1"}}});
+    let discover = json!({"jsonrpc": "2.0", "id": 2, "method": "server/discover", "params": {}});
+    [init, discover]
+        .iter()
+        .map(|line| {
+            let mut out = Vec::new();
+            srv.serve(std::io::Cursor::new(line.to_string()), &mut out).unwrap();
+            let reply: Value = serde_json::from_str(String::from_utf8(out).unwrap().lines().next().unwrap()).unwrap();
+            assert!(reply.get("error").is_none(), "{reply}");
+            reply["result"].clone()
+        })
+        .collect()
+}
+
+/// `docs/design/0.14-agent-index.md` §1: the connection text counts the notes the caller may see, so a
+/// vault with hidden notes tells an agent what the plain vault does.
+#[test]
+fn connection_info_does_not_count_hidden_notes() {
+    let plain_dir = tempfile::tempdir().unwrap();
+    let plain = server(&vault(plain_dir.path(), false), false);
+    let hidden_dir = tempfile::tempdir().unwrap();
+    let hidden_root = vault(hidden_dir.path(), true);
+    let want = handshakes(&plain);
+    for r in &want {
+        let text = r["instructions"].as_str().unwrap();
+        assert!(text.contains("(3 notes)"), "the plain vault has three notes: {text}");
+    }
+    for (how, srv) in [("locked", server(&hidden_root, false)), ("unlocked", server(&hidden_root, true))] {
+        assert_eq!(handshakes(&srv), want, "{how}: the handshake of the vault with hidden notes differs from the plain vault's");
+    }
+}

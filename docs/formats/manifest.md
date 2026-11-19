@@ -7,24 +7,33 @@ one scan that reads every file, never a result. Design:
 [../design/0.14-architecture.md](../design/0.14-architecture.md) §2.
 Owner: architecture (`quire_vault::changes`).
 
-The file is one [cache container](cache-container.md): `kind` 1, `format` 1,
+The file is one [cache container](cache-container.md): `kind` 1, `format` 2,
 `builder` 1. The body, all integers little-endian, varints unsigned LEB128:
 
 ```
 origin    32 bytes  SHA-256 of the absolute path of this file, as this device names it
-epoch     16 bytes  random; new whenever the table was built from nothing
 gen       u64       the current generation
 floor     u64       tombstones of this generation and older were dropped
 count     u64       rows that follow, sorted by path (byte order), no two equal
 row:
   path_len  varint
   path      UTF-8, vault-relative, `/`-separated, as the storage names it
+  flags     u8      1 = gone (a tombstone), 2 = racy; other bits must be 0, and
+                    a tombstone is never racy
+  gen       varint  the generation in which the row last changed
+  only when not gone:
   size      varint  bytes on disk when hashed
   mtime_ns  u64     nanoseconds since 1970 as the listing gave it; 0 = unknown
   hash      32 bytes SHA-256 of the bytes as stored (no BOM stripping)
-  gen       varint  the generation in which the row last changed
-  flags     u8      1 = gone (a tombstone), 2 = racy; other bits must be 0
 ```
+
+**Format history.** 1 (0.14 development builds only): every row had `size`,
+`mtime_ns` and `hash`, tombstones included, and the header had a 16-byte
+`epoch` after `origin`. 2: a tombstone is its path, flags and `gen` alone, so
+the hash of a removed note (the plain text of a note whose folder was since
+locked) never stays on disk; the epoch is no longer stored, since it is new on
+every open. A format 1 file is not read (a cache is never migrated) and is
+replaced at the first flush.
 
 About 87 bytes a row with typical paths (`Folder 12/Sub 3/A note with a title 1234.md`):
 870 KB at 10,000 files, 4.4 MB at 50,000.
@@ -40,19 +49,38 @@ About 87 bytes a row with typical paths (`Folder 12/Sub 3/A note with a title 12
   and times. A row whose size and time equal the listing's, whose time is not 0
   and that is not racy is kept without reading the file. Any other file is read
   and hashed; its row changes, and gets a new `gen`, only when the hash
-  changed. A verify pass reads every file.
+  changed. A verify pass reads every file, or, from `verify_where`, every
+  file a consumer tracks (sync: its notes, not every video). A file is hashed
+  in 64 KiB pieces where the storage can, never read into memory whole.
 * **Racy.** A row whose time is less than 2 s before its scan, or after it, is
   hashed again by the next scan (coarse clocks, an edit in the same tick as the
   scan). A row Quire recorded for its own write has time 0 and is racy.
+* **Own writes and observed reads.** Bytes Quire wrote itself
+  (`note_written`) update the row at once and are not sent to subscribers:
+  the writer tells others itself. Bytes Quire read but did not write
+  (`observed`: sync or the editor reading a note another program changed)
+  update the row the same way and, when the hash is new, are sent to every
+  subscriber as a delta of that one row; the next scan, finding the same
+  bytes, sends nothing more.
+* **Subscribers.** A subscriber hears only what happens after it subscribed,
+  and never own writes. At start it subscribes, then reconciles with
+  `since(gen)` (or every row, when it knows no `gen` or `since` says the
+  tombstones are gone), comparing by hash.
 * **Generations.** `gen` goes up by one for each scan, or each own write or
-  removal, that changed at least one row. A consumer's in-process cursor is a
-  `gen`; a persisted `(epoch, gen)` cursor is valid only while the epoch
-  matches and `gen` is at least `floor`; otherwise it compares everything by
-  hash, which reads no note.
-* **Tombstones** keep the last hash of a removed file. When there are more than
+  removal, that changed at least one row. A generation is meaningful only
+  within one process: the epoch is new on every open (and not stored),
+  because after a crash, or with a file another
+  process wrote, the same `gen` can come back naming other rows. A
+  consumer's in-process cursor is a `gen`; a consumer that persists what it
+  saw compares by hash on its next start, which reads no note.
+* **Tombstones** keep only the path and the generation of the removal: no
+  hash, size or time (in memory the hash reads as all zeros). When there are more than
   1,024 and more than a quarter of the live rows, the oldest go and `floor`
   rises.
-* **Never a delete.** A listing error leaves every row as it was. Sync never
+* **Never a delete.** A listing error leaves every row as it was. A file that
+  is listed but can't be read (locked by another program, no permission, an
+  I/O error) keeps its row, marked racy, is never made a tombstone, and is
+  named in the scan's `unread`; the other files are updated as usual. Sync never
   takes a delete from the manifest's tombstones or cached rows (`0.14-sync-speed.md` §3.6).
 
 ## Reading and writing

@@ -149,6 +149,7 @@ pub fn cards(src: &str) -> Vec<Card> {
     let mut i = 0;
     while i < lines.len() {
         // A paragraph: consecutive non-blank lines outside code and front matter.
+        // cargo-mutants: equivalent: a line that gets as far as `hits` is not blank, so `l.text.len() >= 1` and the `.max(..)` is `start + len` whatever the second operand's `+`.
         let mut usable = |l: &LineInfo<'_>| !l.text.trim().is_empty() && !overlap.hits(l.start, (l.start + l.text.len()).max(l.start + 1));
         if !usable(&lines[i]) {
             i += 1;
@@ -222,6 +223,7 @@ pub fn cards(src: &str) -> Vec<Card> {
         let first = highlights.partition_point(|r| r.start < pa);
         let hl: Vec<&Range<usize>> = highlights[first..]
             .iter()
+            // cargo-mutants: equivalent: a highlight starting at `pb` ends after it and the next filter drops it, so `<=` keeps the same set.
             .take_while(|r| r.start < pb)
             .filter(|r| r.end <= pb)
             .filter(|r| cloze_lines.iter().any(|k| r.start >= para[*k].start && r.start < para[*k].start + para[*k].text.len()))
@@ -570,5 +572,16 @@ mod tests {
         assert!(similarity("What is the capital of France?", "What's the capital of France?") > 0.8);
         assert!(similarity("Capital of France", "Largest ocean") < 0.3);
         assert!((similarity("x", "x") - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_highlight_at_the_very_start_of_a_paragraph_is_a_cloze() {
+        let c = cards("==alpha== beta\n");
+        assert_eq!(c.len(), 1, "{c:?}");
+        assert_eq!(c[0].answer, "alpha");
+        let c = cards("intro\n\n==alpha== beta\n");
+        assert_eq!(c.len(), 1, "{c:?}");
+        assert_eq!(c[0].answer, "alpha");
+        assert_eq!(c[0].question, "[…] beta");
     }
 }

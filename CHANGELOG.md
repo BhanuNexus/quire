@@ -4,6 +4,9 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Security
+- **Agents:** the note count in an agent's connection information (the `initialize` and `server/discover` replies) no longer includes notes the agent may not see.
+
 ### Added
 - **`quire-cli sync once --verify`** reads every note again in that pass, to catch a change that kept a file's size and modification time.
 
