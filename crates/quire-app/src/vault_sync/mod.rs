@@ -76,4 +76,6 @@ pub use setup::*;
 mod workspace;
 
 #[cfg(test)]
+mod store_tests;
+#[cfg(test)]
 mod tests;

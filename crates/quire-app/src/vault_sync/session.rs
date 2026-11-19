@@ -5,8 +5,8 @@ use super::journal::{Journal, PackBases};
 use super::{
     Arc, BTreeMap, Deserialize, DeviceSecret, Duration, Engine, FolderTransport, HELD_DELETES, Hardening, HeldDeletes, HttpTransport,
     Instant, KeySet, LanePos, ObjectStore, Path, PathBuf, Pins, RemoteProfile, RemoteSecret, RemoteTransport, Report, SHARED_STATE_FILE,
-    Serialize, SpaceAdmin, SyncConfig, SyncLock, SyncStatus, Transport, Vault, VaultKey, VaultStore, folder, harden, runs_shared_lane,
-    scrub_locked_text, secrets, snapshot_reads, state_file, sync_dir, today, token_name,
+    Serialize, SpaceAdmin, SyncConfig, SyncLock, SyncStatus, Transport, Vault, VaultKey, VaultStore, begin_pass, folder, harden,
+    runs_shared_lane, scrub_locked_text, secrets, state_file, sync_dir, today, token_name,
 };
 
 pub(super) enum Msg {
@@ -121,6 +121,14 @@ pub(super) struct Session {
     compacted: bool,
     /// Things to tell the person with the next pass's report (0.13.2).
     notices: Vec<String>,
+    /// When every note was last read again (Unix ms), and whether the next
+    /// pass must do it now (`quire-cli sync once --verify`).
+    verified_at: i64,
+    pub(super) verify: bool,
+    /// The last pass had nothing to do (none ran yet: true).
+    quiet: bool,
+    /// When the vault manifest was last written.
+    manifest_saved: Instant,
     /// Held for the session's life: no other process syncs this vault here.
     _lock: SyncLock,
 }
@@ -139,6 +147,7 @@ impl Session {
         // before it's used, so a damaged one is skipped rather than stopping sync.
         let link = Link::new(&cfg, token, Some(&sync_dir(&root)), Some(&root))?.with_keys(&keys);
         let opened = Journal::open(&root, state_file(&cfg))?;
+        let verified_at = opened.journal.verified_at();
         let engine = Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), keys.clone(), opened.state)
             .with_bases(Box::new(opened.bases.clone()));
         // In a sync folder, vault settings travel in a lane of their own,
@@ -179,6 +188,10 @@ impl Session {
             key_stuck: None,
             compacted: false,
             notices: opened.notices.into_iter().chain(selection_warnings).collect(),
+            verified_at,
+            verify: false,
+            quiet: true,
+            manifest_saved: Instant::now(),
             _lock: lock,
         })
     }
@@ -248,6 +261,7 @@ impl Session {
             );
             self.refreshed = true;
         }
+        let before = self.pins.clone();
         let Ok(r) = quire_sync::admin::refresh_keys_trusting(
             admin,
             &self.cfg.space,
@@ -263,7 +277,9 @@ impl Session {
             return;
         };
         self.key_news = false;
-        harden::save_pins(&self.root, &self.pins);
+        if self.pins != before {
+            harden::save_pins(&self.root, &self.pins);
+        }
         if r.keys.current() > self.keys.current() && harden::store_keys(&self.cfg.space, &r.keys).is_ok() {
             if let Some(k) = r.keys.current_raw() {
                 self.key = k.clone();
@@ -387,7 +403,13 @@ impl Session {
             export_review(&self.agent);
         }
         let (root, cfg) = (&self.root, &self.cfg);
-        if let Err(e) = snapshot_reads(&mut self.store) {
+        // Once a day, in a pass after one with nothing to do, every note is
+        // read again: a change that kept its file's size and time
+        // (`docs/design/0.14-sync-speed.md` §3.1).
+        let now = crate::history_ops::now_ms();
+        let verifying = self.verify || (self.quiet && now.saturating_sub(self.verified_at) >= VERIFY_EVERY_MS);
+        self.store.verify_next = verifying;
+        if let Err(e) = begin_pass(&mut self.store) {
             // Never read as "every note was deleted here" (0.13.2).
             let status = SyncStatus::Error(quire_sync::SyncError::List(e).to_string());
             let _ = LastPass::record(&self.root, &status, None);
@@ -408,8 +430,11 @@ impl Session {
             }
         }
         let cleared = scrub_locked_text(&self.store.vault, &mut self.engine.state);
-        let verified_at = self.journal.verified_at();
-        let mut saved = self.journal.commit(&self.engine.state, verified_at, &cleared).map(|_| ());
+        if verifying && res.is_ok() {
+            self.verified_at = now;
+            self.verify = false;
+        }
+        let mut saved = self.journal.commit(&self.engine.state, self.verified_at, &cleared).map(|_| ());
         self.notices.extend(self.bases.take_notice());
         if res.is_ok() {
             self.store.remember_unselected();
@@ -437,7 +462,8 @@ impl Session {
         {
             // Vault settings deletes held back in this lane are allowed the same way.
             e.allowed_deletes = held.as_ref().map(HeldDeletes::allowed_now).unwrap_or_default();
-            let r = snapshot_reads(st).map_err(quire_sync::SyncError::List).and_then(|()| e.sync(st, &*t, &today()));
+            st.verify_next = verifying;
+            let r = begin_pass(st).map_err(quire_sync::SyncError::List).and_then(|()| e.sync(st, &*t, &today()));
             e.allowed_deletes.clear();
             if let Some((j, b)) = self.lane_journal.as_mut() {
                 let lane_saved = j.commit(&e.state, j.verified_at(), &[]).map(|_| ());
@@ -532,10 +558,54 @@ impl Session {
                 "Couldn't save what sync did in {} ({e}). Your notes are fine; sync tries again.",
                 sync_dir(root).display()
             )),
+            // Files that can't be read are named every pass until they can
+            // be: their notes don't sync, the rest does.
+            (Ok(()), SyncStatus::Synced(_) | SyncStatus::Waiting(_)) if !self.store.unreadable().is_empty() => {
+                SyncStatus::Error(unreadable_status(&self.store.unreadable()))
+            }
             (_, s) => s,
         };
+        self.quiet = report.is_none() && matches!(status, SyncStatus::Synced(_));
+        self.save_manifest();
         let _ = LastPass::record(&self.root, &status, report.as_ref());
         Pass { status, report, again }
+    }
+}
+
+/// How often every note is read again in an idle pass: a day.
+const VERIFY_EVERY_MS: i64 = 24 * 3_600_000;
+
+/// The sync status while files can't be read.
+pub(super) fn unreadable_status(files: &[(String, String)]) -> String {
+    let names: Vec<String> = files.iter().take(3).map(|(p, _)| format!("“{p}”")).collect();
+    let more = if files.len() > 3 { format!(" and {} more", files.len() - 3) } else { String::new() };
+    let why = files.first().map(|(_, e)| e.as_str()).unwrap_or_default();
+    format!(
+        "Couldn't read {}{more} ({why}), so {} until Quire can read {}. The rest of the vault synced.",
+        names.join(", "),
+        if files.len() == 1 { "that note doesn't sync" } else { "those notes don't sync" },
+        if files.len() == 1 { "it" } else { "them" },
+    )
+}
+
+impl Session {
+    /// Write the vault manifest when it changed: after a pass with nothing
+    /// to do, or every 5 minutes while busy (it is a cache: lost, it costs
+    /// one scan that reads every note).
+    fn save_manifest(&mut self) {
+        let m = self.store.manifest();
+        if m.is_dirty() && (self.quiet || self.manifest_saved.elapsed() >= Duration::from_mins(5)) {
+            #[expect(clippy::let_underscore_must_use, reason = "a cache that can't be written costs a slower next start, nothing else")]
+            let _ = m.flush();
+            self.manifest_saved = Instant::now();
+        }
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        #[expect(clippy::let_underscore_must_use, reason = "a cache that can't be written costs a slower next start, nothing else")]
+        let _ = self.store.manifest().flush();
     }
 }
 

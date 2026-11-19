@@ -4,10 +4,15 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Added
+- **`quire-cli sync once --verify`** reads every note again in that pass, to catch a change that kept a file's size and modification time.
+
 ### Changed
+- **Sync:** a sync pass with nothing to send no longer reads every note; it reads only notes whose file changed, and once a day reads every note again to catch a change that kept a file's size and time.
 - **Sync:** each device keeps its record of what sync did in a new format, written only when something changed, instead of rewriting a copy of every note after each pass; the first sync after updating moves it over once. Going back to Quire 0.13 starts sync afresh on that device (notes changed there are kept as copies), and sync says so when an older Quire also syncs the same vault on the device.
 
 ### Fixed
+- **Sync:** a note that can't be read (no permission, a disk error) is now named in the sync status on every pass instead of being passed over without a word; it is never sent as deleted or written over, and the rest of the vault keeps syncing.
 - **Large notes:** a note with a very long line of `[`, thousands of lines starting `[[`, or several megabytes of text with a lot of code and highlights no longer takes seconds to save, index or preview. The text that comes out is unchanged.
 
 ## [0.13.3] - 2026-11-19

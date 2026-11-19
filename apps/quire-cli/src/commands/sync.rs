@@ -42,7 +42,8 @@ pub(crate) const COMMANDS: &[CliCommand] = &[CliCommand {
                                                                   the file or a prompt; QUIRE_S3_SESSION_TOKEN optional)
                           --webdav URL --user NAME [--password-file F]   (password: QUIRE_WEBDAV_PASSWORD, the file or a prompt)
                         --allow-http allows http:// to a computer on your network (S3, WebDAV)
-  quire-cli sync once   <vault>                 one sync pass
+  quire-cli sync once   <vault> [--verify]      one sync pass (--verify: read every note again, for changes that
+                        kept their file's size and time; sync does this by itself once a day)
   quire-cli sync allow-deletes <vault> [--list] [--yes]   send the deletes sync held back because they were many
                         (more than 10 notes and more than half of the vault within an hour, or several vault settings
                         files): lists them (--list: all) and asks (--yes when not on a terminal); then exactly those
@@ -92,7 +93,7 @@ fn run(args: &[String]) -> Result<(), String> {
     quire_mcp::require_folder(&vault)?;
     match sub {
         "join" => join(&vault, args),
-        "once" => once(&vault),
+        "once" => once(&vault, has(args, "--verify")),
         "allow-deletes" => allow_deletes(&vault, has(args, "--list"), has(args, "--yes")),
         "watch" => {
             let poll = flag(args, "--poll").map_or(Ok(Duration::from_mins(1)), parse_duration)?;
@@ -559,8 +560,8 @@ fn report_line(r: &vault_sync::SyncReport) -> String {
     s
 }
 
-fn once(vault: &Path) -> Result<(), String> {
-    let r = vault_sync::sync_once_at(vault)?;
+fn once(vault: &Path, verify: bool) -> Result<(), String> {
+    let r = if verify { vault_sync::sync_verify_at(vault)? } else { vault_sync::sync_once_at(vault)? };
     println!("Synced: {}.", report_line(&r));
     for p in &r.conflict_copies {
         println!("Conflict: two devices changed the same lines; the other version was saved as “{p}”.");
