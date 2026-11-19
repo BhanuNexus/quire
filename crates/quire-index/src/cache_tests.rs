@@ -572,6 +572,31 @@ fn only_files_the_manifest_lists_are_indexed() {
     assert!(!holds(&cache_bytes(&v), MARKER), "nothing from outside the vault is cached");
 }
 
+/// A change another part of Quire read (sync, the editor) reaches the index
+/// through the manifest's one-row delta, without a scan; the same bytes
+/// again, or a scan finding them, change nothing more.
+#[test]
+fn an_observed_change_reaches_the_index_once() {
+    let dir = tempfile::tempdir().expect("temp");
+    let v = vault_of(dir.path(), 6);
+    let m = Manifest::open(&v);
+    let svc = IndexService::spawn();
+    svc.load_cached(v.clone(), m.clone());
+    svc.flush();
+    let p = np("F1/N1.md");
+    let text = "# Changed\nobservedword here\n";
+    std::fs::write(dir.path().join(p.as_str()), text).expect("write");
+    m.observed(&p, text.as_bytes());
+    svc.flush();
+    assert_eq!(svc.read().search("observedword", 5).len(), 1, "taken in without a scan");
+    let version = svc.version();
+    m.observed(&p, text.as_bytes());
+    m.scan().expect("scan");
+    svc.flush();
+    assert_eq!(svc.version(), version + 1, "only the flush's batch: no second update");
+    assert_eq!(view(&svc.read()), cold(&v));
+}
+
 /// One writer: the lock holder writes, the other process only reads; when
 /// the holder goes, the other takes over at its next flush.
 #[test]

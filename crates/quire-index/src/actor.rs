@@ -321,6 +321,50 @@ impl Drop for IndexService {
 
 type Parsed = (NoteRecord, String, i64);
 
+/// Read a plain note's bytes: its text and the hash of the bytes as
+/// stored. A read that finds other bytes than the manifest's row is told
+/// to the manifest ([`Manifest::observed`]), which passes it on to every
+/// subscriber. `None` for a note in a locked folder or one that can't be read.
+fn read_note(vault: &Vault, manifest: Option<&Manifest>, p: &NotePath) -> Option<(String, FileHash)> {
+    if vault.locked_folder(p).is_some() {
+        return None;
+    }
+    let bytes = vault.storage().read_bytes(p).ok()?;
+    let hash = match manifest {
+        Some(m) if m.get(p).is_none_or(|r| r.hash != FileHash::of(&bytes)) => m.observed(p, &bytes),
+        _ => FileHash::of(&bytes),
+    };
+    // As `Vault::read` decodes a plain note: without a byte-order mark.
+    let text = String::from_utf8_lossy(bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&bytes)).into_owned();
+    Some((text, hash))
+}
+
+/// [`parse_parallel`] through the manifest: each note with the hash of the
+/// bytes it was read from.
+fn parse_hashed(vault: &Vault, manifest: &Manifest, paths: &[NotePath], shared: &Shared) -> Vec<Prepared> {
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get).max(1);
+    crate::store::pool(paths, threads, |p| {
+        let (src, hash) = read_note(vault, Some(manifest), p)?;
+        let rec = NoteRecord::from_source(p.clone(), &src);
+        shared.indexed.fetch_add(1, Ordering::Relaxed);
+        Some(Prepared::Note(Box::new((rec, src, file_ms(vault, p))), Some(hash)))
+    })
+    .into_iter()
+    .flatten()
+    .flatten()
+    .collect()
+}
+
+/// When a note's file last changed, Unix ms (0 if unknown).
+fn file_ms(vault: &Vault, p: &NotePath) -> i64 {
+    vault
+        .storage()
+        .modified(p)
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
 fn parse_parallel(vault: &Vault, paths: &[NotePath], shared: &Shared) -> Vec<Parsed> {
     let threads = std::thread::available_parallelism().map_or(2, std::num::NonZero::get).clamp(1, 8);
     let chunk = paths.len().div_ceil(threads).max(1);
@@ -334,12 +378,7 @@ fn parse_parallel(vault: &Vault, paths: &[NotePath], shared: &Shared) -> Vec<Par
                         .filter_map(|p| {
                             let src = vault.read(p).ok()?;
                             let rec = NoteRecord::from_source(p.clone(), &src);
-                            let modified = vault
-                                .storage()
-                                .modified(p)
-                                .ok()
-                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                                .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+                            let modified = file_ms(vault, p);
                             shared.indexed.fetch_add(1, Ordering::Relaxed);
                             Some((rec, src, modified))
                         })
@@ -398,24 +437,50 @@ fn indexable(vault: &Vault, p: &NotePath) -> bool {
     p.is_markdown() && !vault.is_template(p) && vault.locked_folder(p).is_none()
 }
 
-/// A scan's changes as work: changed notes read again (unless the index
-/// has that text already), with the file's time; removed ones removed.
-fn from_delta(delta: &Delta, vault: &Vault, ix: &Index) -> Vec<Prepared> {
+/// A manifest change (a scan's, or one row from [`Manifest::observed`]) as
+/// work: changed notes read again unless the index has that text already
+/// (the same change may arrive more than once: compared by hash), with the
+/// file's time; removed ones removed. A file the scan couldn't read
+/// (`Delta::unread`) keeps what the index has.
+fn from_delta(
+    delta: &Delta,
+    vault: &Vault,
+    manifest: &Manifest,
+    known: &dyn Fn(&NotePath) -> Option<FileHash>,
+    ix: &Index,
+) -> Vec<Prepared> {
     let mut out = Vec::new();
     for row in &delta.changed {
-        if !indexable(vault, &row.path) {
+        if !indexable(vault, &row.path) || known(&row.path) == Some(row.hash) {
             continue;
         }
-        if ix.source(&row.path).is_some_and(|s| FileHash::of(s.as_bytes()) == row.hash) {
-            continue;
-        }
-        if let Ok(source) = vault.read(&row.path) {
-            let modified = Some(i64::try_from(row.mtime_ns / 1_000_000).unwrap_or(i64::MAX)).filter(|m| *m > 0).unwrap_or_else(now_ms);
-            out.push(Prepared::Note(Box::new((NoteRecord::from_source(row.path.clone(), &source), source, modified)), None));
+        if let Some((source, hash)) = read_note(vault, Some(manifest), &row.path) {
+            if known(&row.path) == Some(hash) {
+                continue;
+            }
+            // The file's time; an observed row has none: asked of the file.
+            let modified = Some(i64::try_from(row.mtime_ns / 1_000_000).unwrap_or(i64::MAX))
+                .filter(|m| *m > 0)
+                .or_else(|| Some(file_ms(vault, &row.path)).filter(|m| *m > 0))
+                .unwrap_or_else(now_ms);
+            out.push(Prepared::Note(Box::new((NoteRecord::from_source(row.path.clone(), &source), source, modified)), Some(hash)));
         }
     }
     out.extend(delta.removed.iter().filter(|p| ix.contains(p)).cloned().map(Prepared::Remove));
     out
+}
+
+/// A manifest delta as work for the index (see [`from_delta`]).
+fn delta_work(d: &Delta, loaded: Option<&Vault>, cached: Option<&Cached>, index: &RwLock<Index>) -> Vec<Prepared> {
+    let (Some(v), Some(c)) = (loaded, cached) else { return Vec::new() };
+    let ix = index.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+    // What the index holds of each note, by hash: the cache's record of it,
+    // else its text's.
+    let known = |p: &NotePath| match c.store.as_ref().and_then(|s| s.hash_of(p)) {
+        Some(h) => Some(h),
+        None => ix.source(p).map(|s| FileHash::of(s.as_bytes())),
+    };
+    from_delta(d, v, &c.manifest, &known, &ix)
 }
 
 /// Flush the startup cache, at most until `deadline`.
@@ -444,6 +509,9 @@ fn load_cached(
     index: &RwLock<Index>,
     shared: &Shared,
 ) -> (Cached, Vec<NotePath>, Pending) {
+    // Subscribe first, then reconcile with the table as it is now (every
+    // row, below): a change made in between arrives both ways, and the
+    // worker compares by hash. Nothing is kept by generation or epoch.
     let deltas = manifest.subscribe();
     // The index scans only if no scan ran in this process yet.
     let listed = manifest.scanned() || manifest.scan().is_ok();
@@ -568,7 +636,7 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
     loop {
         let (first, from_scan) = match next(rx, cached.as_ref()) {
             Next::Msg(m) => (vec![*m], Vec::new()),
-            Next::Delta(d) => (Vec::new(), loaded.as_ref().map(|v| from_delta(&d, v, &read())).unwrap_or_default()),
+            Next::Delta(d) => (Vec::new(), delta_work(&d, loaded.as_ref(), cached.as_ref(), index)),
             Next::FlushDue => {
                 flush_cache(cached.as_mut(), index, None);
                 continue;
@@ -582,6 +650,14 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
         // Drain whatever else is queued so a burst of saves costs one graph rebuild.
         let mut batch = first;
         batch.extend(rx.try_iter());
+        // Changes the manifest sent before those messages (a save's
+        // `observed`, then a flush): applied in this batch, not after it.
+        let mut from_scan = from_scan;
+        if let Some(c) = &cached {
+            for d in c.deltas.try_iter() {
+                from_scan.extend(delta_work(&d, loaded.as_ref(), Some(c), index));
+            }
+        }
         let mut changed = !from_scan.is_empty();
         let mut prepared: Vec<Prepared> = from_scan;
         let mut reload: Option<Vec<Parsed>> = None;
@@ -621,11 +697,11 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                         s.forget_rows(&failed);
                     }
                     parse.extend(failed);
-                    cached = Some(c);
                     shared.read.store(parse.len(), Ordering::Relaxed);
                     // Catch up: the notes the cache didn't have, through the
                     // per-note path; then one graph build for everything.
-                    prepared.extend(parse_parallel(&vault, &parse, shared).into_iter().map(|p| Prepared::Note(Box::new(p), None)));
+                    prepared.extend(parse_hashed(&vault, &c.manifest, &parse, shared));
+                    cached = Some(c);
                     rebuild = true;
                 }
                 IndexMsg::Upsert { path, source, hash } => {

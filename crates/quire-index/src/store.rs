@@ -440,6 +440,11 @@ impl Store {
         }
     }
 
+    /// The hash of the text the index holds for `p`.
+    pub(crate) fn hash_of(&self, p: &NotePath) -> Option<FileHash> {
+        self.current.get(p).map(|(h, _)| *h)
+    }
+
     /// Notes whose text couldn't be decoded: their rows go, so they are
     /// parsed and written again.
     pub(crate) fn forget_rows(&mut self, paths: &[NotePath]) {
