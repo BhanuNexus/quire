@@ -354,3 +354,28 @@ fn bases_that_cant_be_read_now_fail_the_pass_and_lose_nothing() {
     assert_eq!(devs[1].store.files["Plan.md"], "A\nb\nC\n", "merged once the bases can be read");
     assert_eq!(devs[0].store.files, devs[1].store.files);
 }
+
+/// Bases that refuse every put (a full disk).
+struct Full;
+
+impl quire_sync::Bases for Full {
+    fn get(&self, _: &quire_sync::Print) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+    fn put(&mut self, _: quire_sync::Print, _: &str) -> Result<(), String> {
+        Err("no space left on device".into())
+    }
+}
+
+#[test]
+fn bases_that_cant_be_written_are_their_own_error() {
+    let (server, mut devs) = devices(1, false);
+    let e = &devs[0].engine;
+    devs[0].engine =
+        Engine::new(e.space.clone(), e.device.clone(), "device 0", e.keys().clone(), e.state.clone()).with_bases(Box::new(Full));
+    devs[0].store.edit("Plan.md", "a\n");
+    let d = &mut devs[0];
+    let err = d.engine.sync(&mut d.store, &server, TODAY).unwrap_err();
+    assert!(matches!(err, quire_sync::SyncError::Bases(_)), "{err}");
+    assert!(err.to_string().contains("no space left"), "{err}");
+}

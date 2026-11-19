@@ -178,6 +178,10 @@ pub enum SyncError {
     Local { path: String, error: String },
     #[error("other devices kept changing the same notes; try again")]
     Busy,
+    /// Sync's own record of the last synced texts (its merge bases) can't
+    /// be written or read now: a full disk, a file that can't be read.
+    #[error("couldn't keep sync's record of the last synced text of the notes ({0}); sync tries again")]
+    Bases(String),
     /// The folder of notes couldn't be read whole (0.13.2): nothing was sent.
     #[error("couldn't read the vault's folder ({0}), so sync stopped before sending anything; it goes on once the folder can be read")]
     List(String),
@@ -503,7 +507,7 @@ impl Engine {
     fn remember(&mut self, path: &str, text: &str) -> Result<Print, SyncError> {
         let p = Print::of(text);
         if !is_attachment(path) {
-            self.bases.put(p, text).map_err(|error| SyncError::Local { path: path.to_string(), error })?;
+            self.bases.put(p, text).map_err(SyncError::Bases)?;
         }
         Ok(p)
     }
@@ -512,7 +516,7 @@ impl Engine {
     /// A base store that can't be read now fails the pass (it is tried
     /// again); one that lost the text answers `None`.
     fn base_text(&self, p: &Print) -> Result<Option<String>, SyncError> {
-        self.bases.get(p).map_err(|error| SyncError::Local { path: format!("merge base {}", p.to_hex()), error })
+        self.bases.get(p).map_err(SyncError::Bases)
     }
 
     /// Use these keys from now on (the vault's key changed: 0.13).
@@ -784,21 +788,41 @@ impl Engine {
         today: &str,
         report: &mut Report,
     ) -> Result<(), SyncError> {
-        if !c.deleted && local.in_scope(&c.path) {
-            let own = self.state.files.get(&r.file).filter(|t| !t.deleted && t.held()).map(|t| t.path.clone());
-            if let Some(why) = local.unstorable(&c.path, own.as_deref()) {
-                let told = self.state.skipped.get(&r.file).is_some_and(|s| s.path == c.path && s.why == why);
-                if !told {
-                    report.skipped.push((c.path.clone(), why.clone()));
-                }
-                self.state.skipped.insert(r.file.clone(), Skipped { path: c.path.clone(), rev: r.rev.clone(), why });
+        let own = self.state.files.get(&r.file).filter(|t| !t.deleted && t.held()).map(|t| t.path.clone());
+        if !c.deleted
+            && local.in_scope(&c.path)
+            && let Some(why) = local.unstorable(&c.path, own.as_deref())
+        {
+            self.skip(r, c, why, report);
+            return Ok(());
+        }
+        match self.apply(local, server, r, c, today, report) {
+            Ok(()) => {}
+            // The write failed because the file here can't be used now (it
+            // turned out unreadable while applying): skipped like a name
+            // this computer can't store, so the rest of the pass goes on.
+            Err(e @ SyncError::Local { .. }) => {
+                let why = local
+                    .unstorable(&c.path, own.as_deref())
+                    .or_else(|| own.as_deref().filter(|o| *o != c.path).and_then(|o| local.unstorable(o, Some(o))));
+                let Some(why) = why else { return Err(e) };
+                self.skip(r, c, why, report);
                 return Ok(());
             }
+            Err(e) => return Err(e),
         }
-        self.apply(local, server, r, c, today, report)?;
         self.state.skipped.remove(&r.file);
         report.pulled += 1;
         Ok(())
+    }
+
+    /// Note revision `r` as skipped here, telling the person once.
+    fn skip(&mut self, r: &Revision, c: &Content, why: String, report: &mut Report) {
+        let told = self.state.skipped.get(&r.file).is_some_and(|s| s.path == c.path && s.why == why);
+        if !told {
+            report.skipped.push((c.path.clone(), why.clone()));
+        }
+        self.state.skipped.insert(r.file.clone(), Skipped { path: c.path.clone(), rev: r.rev.clone(), why });
     }
 
     /// Skipped notes whose names can be stored here now (the file in the
