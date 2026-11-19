@@ -867,3 +867,87 @@ fn budget(n: usize) {
         size as f64 / n as f64
     );
 }
+
+/// A reader of `len` seeded bytes that are never all in memory: it makes
+/// each piece when asked, hashes what it gave, and remembers the biggest
+/// piece it was asked for.
+struct Endless {
+    left: u64,
+    rng: Rng,
+    given: Sha256,
+    biggest: usize,
+}
+
+impl std::io::Read for Endless {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.biggest = self.biggest.max(buf.len());
+        let n = buf.len().min(usize::try_from(self.left).unwrap_or(usize::MAX));
+        // Uneven pieces, as a disk gives them.
+        let n = n.min(1 + self.rng.below(HASH_BUFFER as u64 + 7) as usize);
+        for b in &mut buf[..n] {
+            *b = self.rng.next() as u8;
+        }
+        self.given.update(&buf[..n]);
+        self.left -= n as u64;
+        Ok(n)
+    }
+}
+
+#[test]
+fn hashing_100_mb_never_holds_it_all() {
+    let len = 100 * 1024 * 1024;
+    let mut r = Endless { left: len, rng: Rng(0x5eed), given: Sha256::new(), biggest: 0 };
+    let (hash, n) = FileHash::of_reader(&mut r).unwrap();
+    assert_eq!(n, len);
+    assert_eq!(hash.0, <[u8; 32]>::from(r.given.finalize()));
+    assert!(r.biggest <= HASH_BUFFER, "asked for {} bytes at once", r.biggest);
+}
+
+#[test]
+fn a_streamed_hash_equals_the_one_shot_hash_across_buffer_boundaries() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = LocalFs::new(dir.path()).unwrap();
+    let mem = MemFs::new();
+    let b = HASH_BUFFER;
+    let mut sizes = vec![0, 1, b - 1, b, b + 1, 2 * b - 1, 2 * b, 2 * b + 1, 3 * b + 17];
+    let mut rng = Rng(0xb0b);
+    sizes.extend((0..12).map(|_| rng.below(5 * b as u64) as usize));
+    for (i, size) in sizes.into_iter().enumerate() {
+        let bytes: Vec<u8> = (0..size).map(|_| rng.next() as u8).collect();
+        let p = np(&format!("f{i}.bin"));
+        local.write_bytes_atomic(&p, &bytes).unwrap();
+        mem.write_bytes_atomic(&p, &bytes).unwrap();
+        let want = (FileHash::of(&bytes), size as u64);
+        assert_eq!(local.hash_file(&p).unwrap(), want, "LocalFs, {size} bytes");
+        assert_eq!(mem.hash_file(&p).unwrap(), want, "the default, {size} bytes");
+        assert_eq!(FileHash::of_reader(&bytes[..]).unwrap(), want, "{size} bytes");
+    }
+    assert!(matches!(local.hash_file(&np("missing.bin")), Err(VaultError::NotFound(_))));
+}
+
+#[test]
+fn verify_where_reads_only_the_files_it_is_given() {
+    let fs = Fake::new();
+    let probe = Probe::new(Arc::clone(&fs) as Arc<dyn Storage>);
+    let m = Manifest::open_with_clock(&vault_of(&probe), fs.clock());
+    fs.put("a.md", b"aaaa");
+    fs.put("video.mp4", b"vvvv");
+    fs.tick(10 * SEC);
+    m.scan().unwrap();
+    probe.reads();
+    // Both change, keeping size and time: only verify can see it.
+    fs.put_keeping_time("a.md", b"bbbb");
+    fs.put_keeping_time("video.mp4", b"wwww");
+    let notes = |p: &NotePath| p.as_str() == "a.md";
+    let d = m.verify_where(&notes).unwrap();
+    assert!(d.verified);
+    assert_eq!(probe.reads(), 1, "the video is not read");
+    assert_eq!(d.changed.iter().map(|r| (r.path.as_str(), r.hash)).collect::<Vec<_>>(), [("a.md", FileHash::of(b"bbbb"))]);
+    // A file the predicate turns down still follows the scan rules: a
+    // changed size is read.
+    fs.put("video.mp4", b"a longer video");
+    fs.tick(10 * SEC);
+    let d = m.verify_where(&notes).unwrap();
+    assert_eq!(probe.reads(), 2);
+    assert_eq!(d.changed.iter().map(|r| r.path.as_str()).collect::<Vec<_>>(), ["video.mp4"]);
+}

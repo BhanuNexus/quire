@@ -40,7 +40,9 @@ About 87 bytes a row with typical paths (`Folder 12/Sub 3/A note with a title 12
   and times. A row whose size and time equal the listing's, whose time is not 0
   and that is not racy is kept without reading the file. Any other file is read
   and hashed; its row changes, and gets a new `gen`, only when the hash
-  changed. A verify pass reads every file.
+  changed. A verify pass reads every file, or, from `verify_where`, every
+  file a consumer tracks (sync: its notes, not every video). A file is hashed
+  in 64 KiB pieces where the storage can, never read into memory whole.
 * **Racy.** A row whose time is less than 2 s before its scan, or after it, is
   hashed again by the next scan (coarse clocks, an edit in the same tick as the
   scan). A row Quire recorded for its own write has time 0 and is racy.

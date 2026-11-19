@@ -15,7 +15,10 @@
 //! trusted; any other file is read and hashed, and its row changes only if
 //! the hash did. A row whose time is within [`RACY_WINDOW`] of the scan
 //! (a coarse clock, or an edit in the same tick as the scan) is never
-//! trusted on the next scan. [`Manifest::verify`] trusts no row. A listing
+//! trusted on the next scan. [`Manifest::verify`] trusts no row, and
+//! [`Manifest::verify_where`] none of the files it is given. Files are
+//! hashed through [`Storage::hash_file`], in pieces where the storage can
+//! (a video is never read into memory whole). A listing
 //! error is an error, never "all gone", and changes no row.
 //!
 //! **Our own writes.** [`Manifest::note_written`] and [`Manifest::note_removed`]
@@ -50,6 +53,9 @@ pub const BUILDER: u32 = 1;
 /// A row whose time is this close to its scan (or later) is hashed again
 /// by the next scan.
 pub const RACY_WINDOW: Duration = Duration::from_secs(2);
+/// The buffer [`FileHash::of_reader`] (and so [`Storage::hash_file`] on
+/// [`crate::LocalFs`]) reads a file through.
+pub const HASH_BUFFER: usize = 64 * 1024;
 /// Tombstones kept at least; above this and a quarter of the live rows,
 /// the oldest go (see [`Manifest::since`]).
 const MIN_TOMBSTONES: usize = 1024;
@@ -66,6 +72,26 @@ impl FileHash {
     /// The hash of `bytes`.
     pub fn of(bytes: &[u8]) -> Self {
         Self(Sha256::digest(bytes).into())
+    }
+
+    /// The hash of everything `reader` gives, and how many bytes that was,
+    /// read in pieces of [`HASH_BUFFER`] bytes: the whole is never in
+    /// memory at once.
+    pub fn of_reader(mut reader: impl std::io::Read) -> std::io::Result<(Self, u64)> {
+        let mut hasher = Sha256::new();
+        let mut buf = vec![0u8; HASH_BUFFER];
+        let mut len = 0u64;
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => return Ok((Self(hasher.finalize().into()), len)),
+                Ok(n) => {
+                    hasher.update(&buf[..n]);
+                    len += n as u64;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     /// Lower-case hex, 64 characters.
@@ -126,7 +152,8 @@ pub struct Delta {
     pub changed: Vec<Row>,
     /// Files no longer listed, sorted.
     pub removed: Vec<NotePath>,
-    /// From [`Manifest::verify`] (no row was trusted).
+    /// From [`Manifest::verify`] (no row was trusted) or
+    /// [`Manifest::verify_where`] (no row of the files it was given).
     pub verified: bool,
 }
 
@@ -393,17 +420,30 @@ impl Manifest {
     /// Subscribers get the [`Delta`] when it isn't empty. Another scan in
     /// progress is waited for; own writes never are.
     pub fn scan(&self) -> Result<Delta> {
-        self.run_scan(true)
+        self.run_scan(&|_| true, false)
     }
 
     /// [`Self::scan`] trusting no row: every file is read and hashed. For a
     /// change that kept a file's size and time (sync runs it when idle, at
-    /// most once a day, and on `quire-cli sync once --verify`).
+    /// most once a day, and on `quire-cli sync once --verify`). Reads the
+    /// whole vault, videos included: a consumer that tracks only some files
+    /// uses [`Self::verify_where`].
     pub fn verify(&self) -> Result<Delta> {
-        self.run_scan(false)
+        self.run_scan(&|_| false, true)
     }
 
-    fn run_scan(&self, trust_stat: bool) -> Result<Delta> {
+    /// [`Self::verify`] for the files `which` accepts: those are read and
+    /// hashed whatever their size and time say; every other file is
+    /// scanned as by [`Self::scan`]. Sync passes the notes it tracks, so a
+    /// daily verify does not read every attachment. The [`Delta`] says
+    /// `verified`.
+    pub fn verify_where(&self, which: &dyn Fn(&NotePath) -> bool) -> Result<Delta> {
+        self.run_scan(&|p| !which(p), true)
+    }
+
+    /// One scan: a listed file is kept without reading only when `trust`
+    /// accepts its path and its row trusts the listing's stat.
+    fn run_scan(&self, trust: &dyn Fn(&NotePath) -> bool, verified: bool) -> Result<Delta> {
         let sh = &*self.shared;
         let _one = lock(&sh.scanning);
         let start_ns = FileStat::nanos((sh.clock)());
@@ -420,17 +460,16 @@ impl Manifest {
         let listing = sh.storage.list_stat()?;
         let to_read: Vec<(NotePath, Option<FileStat>)> = {
             let t = self.read();
-            listing.iter().filter(|(p, st)| !(trust_stat && t.rows.get(p).is_some_and(|r| r.trusts(*st)))).cloned().collect()
+            listing.iter().filter(|(p, st)| !(trust(p) && t.rows.get(p).is_some_and(|r| r.trusts(*st)))).cloned().collect()
         };
         let mut read = Vec::with_capacity(to_read.len());
         let mut vanished = HashSet::new();
         for (path, stat) in to_read {
-            match sh.storage.read_bytes(&path) {
-                Ok(bytes) => {
+            match sh.storage.hash_file(&path) {
+                Ok((hash, size)) => {
                     let mtime_ns = stat.map_or(0, |s| s.mtime_ns);
                     let racy = mtime_ns == 0 || mtime_ns.saturating_add(RACY_NS) > start_ns;
-                    let hash = FileHash::of(&bytes);
-                    read.push(Row { path, size: bytes.len() as u64, mtime_ns, hash, generation: 0, gone: false, racy });
+                    read.push(Row { path, size, mtime_ns, hash, generation: 0, gone: false, racy });
                 }
                 Err(VaultError::NotFound(_)) => {
                     vanished.insert(path);
@@ -441,7 +480,7 @@ impl Manifest {
         let listed: HashSet<NotePath> = listing.into_iter().map(|(p, _)| p).filter(|p| !vanished.contains(p)).collect();
         let delta = {
             let mut t = self.write();
-            let delta = t.apply_scan(&listed, read, !trust_stat);
+            let delta = t.apply_scan(&listed, read, verified);
             t.drain(&sh.pending);
             delta
         };
