@@ -461,7 +461,7 @@ impl VaultStore {
 
 impl LocalStore for VaultStore {
     /// This pass's scan, with the engine's own writes and removals since
-    /// ([`begin_pass`] failed if the vault couldn't be listed).
+    /// (`begin_pass` failed if the vault couldn't be listed).
     fn list(&self) -> Result<Vec<String>, String> {
         if !self.began {
             return Err("the vault wasn't listed for this pass".into());

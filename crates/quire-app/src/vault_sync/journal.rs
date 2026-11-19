@@ -993,6 +993,12 @@ impl Journal {
         let path = self.dir.join(checkpoint_name(next));
         std::fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
         write_atomic(&path, &bytes).map_err(|e| format!("Couldn't save what sync did in {}: {e}", path.display()))?;
+        if self.generation == 0
+            && let Some(parent) = self.dir.parent()
+        {
+            // A new record folder: its entry in `.quire/sync/` is flushed too.
+            sync_folder(parent).map_err(|e| format!("Couldn't save what sync did in {}: {e}", parent.display()))?;
+        }
         let old = self.generation;
         self.generation = next;
         self.committed = body;
