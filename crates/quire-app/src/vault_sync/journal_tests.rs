@@ -426,13 +426,31 @@ fn a_purged_text_leaves_every_pack_in_the_same_commit() {
     // And a damaged 0.13 record kept aside, which holds note texts.
     let legacy_aside = sync_dir(dir.path()).join("state.json.unreadable");
     std::fs::write(&legacy_aside, b"{\"files\":{\"s\":{\"base\":\"secret day, version 1\n\"").unwrap();
+    // Leftovers under the other two records' names go too.
+    let partial_aside = sync_dir(dir.path()).join("state-partial.json.unreadable-2");
+    std::fs::write(&partial_aside, b"secret day, an older copy").unwrap();
+    let shared_aside = state_dir(dir.path(), "state-shared.json").with_file_name("state-shared.d.unreadable");
+    std::fs::create_dir_all(&shared_aside).unwrap();
+    std::fs::copy(aside.join("bases-000001.pack"), shared_aside.join("bases-000001.pack")).unwrap();
     // No purge yet: it stays (an ordinary commit never deletes it).
     state.cursor += 1;
     o.journal.commit(&state, 0, &none).unwrap();
     assert!(legacy_aside.exists());
     // The folder is locked: the scrub clears the base and names it.
+    let secret = state.files[&FileId("s".into())].base;
+    let generation = o.journal.generation;
     state.files.get_mut(&FileId("s".into())).unwrap().base = Print::of("");
     assert!(o.journal.commit(&state, 0, &|p: &str| p.starts_with("Journal/")).unwrap());
+    // A purge commit is a checkpoint: no journal line older than it keeps
+    // the locked note's print.
+    assert_eq!(o.journal.generation, generation + 1);
+    let record: String = dir_files(dir.path())
+        .into_iter()
+        .filter(|(n, _)| n.starts_with("journal-") || n.starts_with("checkpoint-"))
+        .map(|(_, b)| String::from_utf8_lossy(&b).into_owned())
+        .collect();
+    assert!(!record.contains(&secret.to_hex()), "the locked note's print is in no checkpoint or journal");
+    assert!(!partial_aside.exists() && !shared_aside.join("bases-000001.pack").exists(), "every record's leftovers");
     assert!(!raw_has(dir.path(), "secret day"), "no version of the locked note's text in any pack");
     assert!(
         !state_dir(dir.path(), NAME).with_file_name("state.d.unreadable").join("bases-000001.pack").exists(),

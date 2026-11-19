@@ -49,7 +49,7 @@ fn cant_read(path: &Path, e: &std::io::Error) -> String {
 /// What sync says when it started afresh over a damaged record.
 fn started_afresh(aside: &Path) -> String {
     format!(
-        "Sync's record of what it last did on this device was damaged, so it started afresh (the old record is kept as “{}”). Nothing is deleted; a note that differs from the synced version is kept next to it as a copy, like “Plan (2).md”.",
+        "Sync's record of what it last did on this device was damaged, so it started afresh (the old record is kept as “{}” until a folder is next locked). Nothing is deleted; a note that differs from the synced version is kept next to it as a copy, like “Plan (2).md”.",
         aside.display()
     )
 }
@@ -1035,7 +1035,7 @@ impl Journal {
     pub(super) fn commit(&mut self, state: &SyncState, verified_at: i64, locked: &dyn Fn(&str) -> bool) -> Result<bool, String> {
         self.retry_removals();
         let live = live_prints(state);
-        let purging = self.locked_prints_dropped(&live, locked);
+        let purging = self.locked_prints_dropped(&live, locked) || self.moved_into_a_locked_folder(state, &live);
         let mut packs = self.bases.lock();
         packs.places.retain(|p, _| live.contains(p));
         // Nothing new: nothing written, and nothing copied to find that out.
@@ -1083,7 +1083,9 @@ impl Journal {
         if delta.is_empty() && gone.is_empty() {
             return Ok(false);
         }
-        if self.generation == 0 || self.broken || self.log_len > JOURNAL_MIN.max(self.checkpoint_len / 4) {
+        // A purge is a checkpoint: older journal lines would otherwise keep
+        // the locked note's print and stamp until the next fold.
+        if purging || self.generation == 0 || self.broken || self.log_len > JOURNAL_MIN.max(self.checkpoint_len / 4) {
             self.checkpoint(body)?;
         } else {
             self.append(&delta)?;
@@ -1114,6 +1116,21 @@ impl Journal {
             .any(|(path, b)| b != empty && !is_attachment(path) && !live.contains(&b) && locked(path))
     }
 
+    /// Whether this commit drops a note's text and starts tracking an
+    /// encrypted file the last record didn't have: a plain note moved into
+    /// a folder that was already locked (the move writes `….md.qenc` there
+    /// and removes the plain file, whose path is not a locked one). Not
+    /// every dropped text: that would rewrite the active pack on each edit.
+    fn moved_into_a_locked_folder(&self, state: &SyncState, live: &BTreeSet<Print>) -> bool {
+        let empty = Print::of("");
+        let old = &self.committed.state;
+        let new_qenc = state
+            .files
+            .values()
+            .any(|t| !t.deleted && t.path.ends_with(".qenc") && !old.files.values().any(|o| !o.deleted && o.path == t.path));
+        new_qenc && old.files.values().any(|t| t.base != empty && !is_attachment(&t.path) && !live.contains(&t.base))
+    }
+
     /// Delete the packs the record no longer names; a failure is tried
     /// again at the next commit (and the next open deletes them too).
     fn retry_removals(&mut self) {
@@ -1122,24 +1139,24 @@ impl Journal {
         self.unremoved.retain(|n| !named.contains_key(n) && remove_file(&dir.join(pack_name(*n))).is_err());
     }
 
-    /// The packs of records kept aside as damaged (`state.d.unreadable…`)
-    /// hold old merge bases nothing reads any more: a purge deletes them,
-    /// so they never keep a locked note's text. Their checkpoints and
-    /// journals (prints only) stay for a look. So does a damaged 0.13
-    /// record kept aside (`state.json.unreadable`): it holds note texts
-    /// and nothing reads it, so a purge deletes it too.
+    /// What sync kept aside as damaged holds texts nothing reads any more:
+    /// a purge deletes it, so it never keeps a locked note's text. For each
+    /// of the three records (`state`, `state-partial`, `state-shared`),
+    /// whichever this one is: a 0.13 file kept aside
+    /// (`state.json.unreadable`, `-2`…) is deleted, and so are the packs of a
+    /// folder kept aside (`state.d.unreadable…`); its checkpoints and
+    /// journals hold prints only and stay for a look.
     fn purge_aside(&self) {
-        let (Some(parent), Some(name)) = (self.dir.parent(), self.dir.file_name()) else { return };
-        let name = name.to_string_lossy();
-        let legacy = format!("{}.json.unreadable", name.trim_end_matches(".d"));
-        let prefix = format!("{name}.unreadable");
+        let Some(parent) = self.dir.parent() else { return };
+        let names = ["state", "state-partial", "state-shared"];
         for e in std::fs::read_dir(parent).into_iter().flatten().flatten() {
-            if e.file_name().to_string_lossy().starts_with(&legacy) && e.path().is_file() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if names.iter().any(|n| name.starts_with(&format!("{n}.json.unreadable"))) && e.path().is_file() {
                 #[expect(clippy::let_underscore_must_use, reason = "tried again at the next purge")]
                 let _ = remove_file(&e.path());
                 continue;
             }
-            if !e.file_name().to_string_lossy().starts_with(&prefix) || !e.path().is_dir() {
+            if !names.iter().any(|n| name.starts_with(&format!("{n}.d.unreadable"))) || !e.path().is_dir() {
                 continue;
             }
             for f in std::fs::read_dir(e.path()).into_iter().flatten().flatten() {

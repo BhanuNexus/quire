@@ -426,3 +426,31 @@ fn a_verify_reads_only_the_files_it_is_given() {
     assert_eq!(a.probe.reads(), 1, "only A.md is read again");
     assert_eq!(a.store.list().unwrap(), ["A.md", "B.md", "film.mov"]);
 }
+
+/// A synced note moved into a folder that is already locked: the move
+/// writes its encrypted file there and removes the plain one. The pass that
+/// sends that delete leaves none of its text in any pack.
+#[test]
+fn a_note_moved_into_a_locked_folder_leaves_no_plain_text_in_the_packs() {
+    let dir = tempfile::tempdir().unwrap();
+    let (va, shared) = (dir.path().join("A"), dir.path().join("Shared"));
+    std::fs::create_dir_all(va.join("Journal")).unwrap();
+    std::fs::create_dir_all(&shared).unwrap();
+    std::fs::write(va.join("Journal/Day.md"), "a locked day\n").unwrap();
+    std::fs::write(va.join("Diary.md"), "secret diary\n").unwrap();
+    for i in 0..3 {
+        std::fs::write(va.join(format!("Note {i}.md")), format!("plain note {i}\n")).unwrap();
+    }
+    let v = Vault::open_local(&va).unwrap();
+    quire_vault::lock::lock_folder(&v, "Journal", Some("a passphrase for the test"), quire_vault::lock::Kdf::TEST, 1).unwrap();
+    sync_create_at(&va, &SyncTarget::Folder(shared), "correct horse battery", "laptop", &Selection::default()).unwrap();
+    sync_once_at(&va).unwrap();
+    assert!(packs_hold(&va, "secret diary"));
+    // What moving it into the locked folder does on disk: the encrypted
+    // file appears there, the plain one goes.
+    std::fs::write(va.join("Journal/Diary.md.qenc"), b"QENC encrypted bytes of the diary").unwrap();
+    std::fs::remove_file(va.join("Diary.md")).unwrap();
+    sync_once_at(&va).unwrap();
+    assert!(!packs_hold(&va, "secret diary"), "the moved note's text leaves the packs in that pass");
+    assert!(packs_hold(&va, "plain note 2"));
+}

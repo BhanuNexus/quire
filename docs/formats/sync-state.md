@@ -88,7 +88,14 @@ passes 16 MiB.
   that text, nor the text of a note deleted earlier, stays in a pack; the
   packs of records kept aside as damaged (`state.d.unreadable…`) and a
   damaged 0.13 file kept aside (`state.json.unreadable`, which holds note
-  texts) are deleted then too (`docs/design/0.11-secure.md`). A pack whose delete fails is
+  texts) are deleted then too, for all three records
+  (`docs/design/0.11-secure.md`). A purge is also when the last committed
+  record named a note's text that the new one doesn't, and the new one
+  tracks an encrypted file the old one didn't (a note moved into a folder
+  that was already locked). A purge commit writes a checkpoint, not a
+  journal line, so no older line keeps the locked note's print or stamp.
+* The copy kept aside when a record is damaged (below) stays until the next
+  time a folder is locked: that purge deletes the kept copy's texts. A pack whose delete fails is
   tried again at the next commit.
 * A write that wrote nothing (a full disk) keeps appending to the same
   pack; one that left part of a record behind moves on to a new pack.
@@ -110,7 +117,7 @@ passes 16 MiB.
   pass doesn't run and nothing is changed.
 * **No checkpoint parses**: the folder is renamed whole to
   `state.d.unreadable` (`-2`, `-3`… if taken), sync starts afresh and says
-  so once.
+  so once. Its packs are deleted the next time a folder is locked.
 * **The highest checkpoint is damaged, a lower one parses**: the lower one
   is used (it is complete: a checkpoint is written before the older pair is
   deleted), the damaged file is renamed to `….unreadable`, and a notice says so.
@@ -133,7 +140,8 @@ At the first 0.14 session over a vault with `state.json` (likewise the
 other two):
 
 1. It is read as 0.13 did (a damaged file is copied to `state.json.unreadable`
-   and sync starts afresh, saying so).
+   and sync starts afresh, saying so; that copy is deleted the next time a
+   folder is locked).
 2. Each note's text goes into a pack and each base becomes a print. No
    `disk` is known yet, so the first pass reads each note once.
 3. The packs are flushed and `checkpoint-000001.json` is written with
