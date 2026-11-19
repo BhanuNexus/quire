@@ -32,7 +32,7 @@ use crate::mrtr::Sealer;
 use crate::protocol::{self, Era, LEGACY, META_CLIENT_CAPS, META_CLIENT_INFO, MODERN, SUPPORTED, code};
 use crate::resources::{self, PromptDef, ReadCx, ReadError};
 use crate::served::ServedCache;
-use crate::subs::{Filter, Sink, Subscriptions, Visibility};
+use crate::subs::{Filter, Sink, Subscriptions, UriVisibility};
 use crate::tokens::TokenGrant;
 use crate::tools::{CallExt, Grant, ToolCx, ToolOutput, ToolRegistry};
 
@@ -139,9 +139,9 @@ pub enum Reply {
     Initialized { response: Value, version: String, client: Option<ClientInfo>, caps: Value },
     /// `subscriptions/listen`: the transport registers it with a sink and keeps
     /// the request open. `sees` is what the subscriber may hear about.
-    Listen { id: Value, filter: Filter, sees: Visibility },
+    Listen { id: Value, filter: Filter, sees: UriVisibility },
     /// Legacy `resources/subscribe` (`subscribe = true`) or `unsubscribe`.
-    Subscribe { response: Value, uri: String, subscribe: bool, sees: Visibility },
+    Subscribe { response: Value, uri: String, subscribe: bool, sees: UriVisibility },
 }
 
 pub(crate) struct Core {
@@ -306,11 +306,11 @@ impl Server {
     }
 
     /// Register a subscription the transport will keep open.
-    pub fn listen(&self, conn: u64, id: Value, filter: &Filter, sink: Sink, sees: Visibility) -> u64 {
+    pub fn listen(&self, conn: u64, id: Value, filter: &Filter, sink: Sink, sees: UriVisibility) -> u64 {
         self.core.subs.listen(conn, id, filter, sink, sees)
     }
 
-    pub fn subscribe_legacy(&self, conn: u64, uri: &str, subscribe: bool, sink: Sink, sees: Visibility) {
+    pub fn subscribe_legacy(&self, conn: u64, uri: &str, subscribe: bool, sink: Sink, sees: UriVisibility) {
         if subscribe {
             self.core.subs.subscribe_legacy(conn, uri, sink, sees);
         } else {
@@ -533,10 +533,10 @@ impl Core {
     }
 
     /// What the caller of a subscription request may hear about.
-    fn visibility(&self, conn: &Conn, params: &Value) -> Visibility {
+    fn visibility(&self, conn: &Conn, params: &Value) -> UriVisibility {
         let actor = self.actor(conn, params);
         let store = self.store(&actor, self.cap(conn));
-        Visibility(Arc::new(move |uri: &str| resources::uri_visible(&store, &actor, uri)))
+        UriVisibility(Arc::new(move |uri: &str| resources::uri_visible(&store, &actor, uri)))
     }
 
     fn store(&self, actor: &Actor, cap: Option<Mode>) -> AgentStore {

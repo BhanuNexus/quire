@@ -725,7 +725,7 @@ fn subscriptions_end_with_a_result_and_notify_on_changes() {
         json!("s"),
         &Filter::from_params(&json!({"notifications": {"resourcesListChanged": true, "resourceSubscriptions": ["quire://note/Ideas.md"]}})),
         sink,
-        Visibility::all(),
+        UriVisibility::all(),
     );
     assert_eq!(rx.recv().unwrap()["method"], "notifications/subscriptions/acknowledged");
     std::fs::write(dir.path().join("Ideas.md"), "# Ideas\nchanged\n").unwrap();

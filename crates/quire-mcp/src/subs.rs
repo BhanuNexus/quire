@@ -23,9 +23,9 @@ pub type Sink = Arc<dyn Fn(Value) + Send + Sync>;
 /// What a subscriber may hear about: whether a resource URI is visible to
 /// it (asked again for every notification, so a policy change applies).
 #[derive(Clone)]
-pub struct Visibility(pub Arc<dyn Fn(&str) -> bool + Send + Sync>);
+pub struct UriVisibility(pub Arc<dyn Fn(&str) -> bool + Send + Sync>);
 
-impl Visibility {
+impl UriVisibility {
     /// Every URI (tests, and nothing to hide).
     pub fn all() -> Self {
         Self(Arc::new(|_| true))
@@ -36,9 +36,9 @@ impl Visibility {
     }
 }
 
-impl std::fmt::Debug for Visibility {
+impl std::fmt::Debug for UriVisibility {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Visibility")
+        f.write_str("UriVisibility")
     }
 }
 
@@ -100,7 +100,7 @@ struct Sub {
     resources_list: bool,
     uris: HashSet<String>,
     sink: Sink,
-    sees: Visibility,
+    sees: UriVisibility,
 }
 
 impl Sub {
@@ -137,7 +137,7 @@ impl Subscriptions {
     /// Start a `subscriptions/listen` subscription: sends the acknowledgement
     /// first, then notifications. URIs the subscriber can't see are dropped
     /// (the acknowledgement lists what was agreed). Returns its handle.
-    pub fn listen(&self, conn: u64, id: Value, filter: &Filter, sink: Sink, sees: Visibility) -> u64 {
+    pub fn listen(&self, conn: u64, id: Value, filter: &Filter, sink: Sink, sees: UriVisibility) -> u64 {
         let handle = self.conn();
         let mut filter = filter.clone();
         filter.uris.retain(|u| sees.sees(u));
@@ -158,7 +158,7 @@ impl Subscriptions {
 
     /// Legacy `resources/subscribe`: one subscription per connection, URIs
     /// added to it. A URI the subscriber can't see is refused (`false`).
-    pub fn subscribe_legacy(&self, conn: u64, uri: &str, sink: Sink, sees: Visibility) -> bool {
+    pub fn subscribe_legacy(&self, conn: u64, uri: &str, sink: Sink, sees: UriVisibility) -> bool {
         if !sees.sees(uri) {
             return false;
         }
@@ -280,7 +280,7 @@ mod tests {
             &json!({"notifications": {"toolsListChanged": true, "promptsListChanged": true, "resourceSubscriptions": ["quire://note/A.md"]}}),
         );
         let conn = subs.conn();
-        subs.listen(conn, json!(7), &f, s, Visibility::all());
+        subs.listen(conn, json!(7), &f, s, UriVisibility::all());
         let ack = got.lock().unwrap()[0].clone();
         assert_eq!(ack["method"], "notifications/subscriptions/acknowledged");
         assert_eq!(ack["params"]["_meta"][META_SUBSCRIPTION], 7);
@@ -315,7 +315,7 @@ mod tests {
         let (s, got) = sink();
         let hidden = Arc::new(Mutex::new(vec!["quire://note/Private/".to_string()]));
         let h = Arc::clone(&hidden);
-        let sees = Visibility(Arc::new(move |u: &str| !h.lock().unwrap().iter().any(|x| u.starts_with(x.as_str()))));
+        let sees = UriVisibility(Arc::new(move |u: &str| !h.lock().unwrap().iter().any(|x| u.starts_with(x.as_str()))));
         let conn = subs.conn();
         assert!(!subs.subscribe_legacy(conn, "quire://note/Private/diary.md", Arc::clone(&s), sees.clone()), "refused");
         let f = Filter::from_params(&json!({"notifications": {"resourcesListChanged": true,
@@ -342,13 +342,13 @@ mod tests {
         let subs = Subscriptions::default();
         let (s, got) = sink();
         let conn = subs.conn();
-        assert!(subs.subscribe_legacy(conn, "quire://note/A.md?section=Undo", Arc::clone(&s), Visibility::all()));
+        assert!(subs.subscribe_legacy(conn, "quire://note/A.md?section=Undo", Arc::clone(&s), UriVisibility::all()));
         subs.changed("quire://note/A.md", Instant::now());
         subs.flush(Instant::now() + DEBOUNCE);
         let n = got.lock().unwrap()[0].clone();
         assert_eq!(n["params"], json!({"uri": "quire://note/A.md?section=Undo"}), "no subscription id for legacy clients");
         subs.unsubscribe_legacy(conn, "quire://note/A.md?section=Undo");
-        subs.listen(conn, json!("s1"), &Filter { tools: true, ..Filter::default() }, s, Visibility::all());
+        subs.listen(conn, json!("s1"), &Filter { tools: true, ..Filter::default() }, s, UriVisibility::all());
         assert!(subs.cancel(conn, &json!("s1")));
         assert!(!subs.cancel(conn, &json!("s1")));
         let many = Filter::from_params(
