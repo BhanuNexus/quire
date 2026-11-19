@@ -1124,10 +1124,11 @@ impl Journal {
     fn moved_into_a_locked_folder(&self, state: &SyncState, live: &BTreeSet<Print>) -> bool {
         let empty = Print::of("");
         let old = &self.committed.state;
-        let new_qenc = state
-            .files
-            .values()
-            .any(|t| !t.deleted && t.path.ends_with(".qenc") && !old.files.values().any(|o| !o.deleted && o.path == t.path));
+        let new_qenc = state.files.values().any(|t| {
+            !t.deleted
+                && Path::new(&t.path).extension().is_some_and(|e| e.eq_ignore_ascii_case("qenc"))
+                && !old.files.values().any(|o| !o.deleted && o.path == t.path)
+        });
         new_qenc && old.files.values().any(|t| t.base != empty && !is_attachment(&t.path) && !live.contains(&t.base))
     }
 
