@@ -318,11 +318,12 @@ pub(super) fn analyze(text: &str) -> Analysis {
         }
     }
     // Wikilink targets are names, not prose: no rule may edit inside `[[...]]`.
+    // The cursor finds each line end and each `]]` once however many `[[` ask (docs/design/0.14-index-startup.md §3.7).
+    let mut cursor = crate::scan::Cursor::new(text);
     for (start, _) in text.match_indices("[[") {
-        let rest = &text[start + 2..];
-        let line_end = rest.find('\n').unwrap_or(rest.len());
-        if let Some(close) = rest[..line_end].find("]]") {
-            a.wikilinks.push(start..start + 2 + close + 2);
+        let line_end = cursor.line_end(start + 2);
+        if let Some(close) = cursor.close_at(start + 2).filter(|c| c + 2 <= line_end) {
+            a.wikilinks.push(start..close + 2);
         }
     }
     a.inline_protected.sort_by_key(|r| r.start);
@@ -382,4 +383,38 @@ pub(super) fn signature(text: &str, levels: bool) -> Vec<String> {
     }
     flush(&mut run, &mut out);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::analyze;
+    use std::ops::Range;
+
+    /// The wikilink spans as they were found before the cursor: a search for the line
+    /// end and the `]]` from every `[[`. The oracle for the new one.
+    fn old_wikilinks(text: &str) -> Vec<Range<usize>> {
+        let mut out = Vec::new();
+        for (start, _) in text.match_indices("[[") {
+            let rest = &text[start + 2..];
+            let line_end = rest.find('\n').unwrap_or(rest.len());
+            if let Some(close) = rest[..line_end].find("]]") {
+                out.push(start..start + 2 + close + 2);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn wikilink_spans_are_the_old_ones() {
+        use proptest::prelude::*;
+        let piece = prop::sample::select(vec!["[", "[[", "]", "]]", "\n", "\r\n", "a", " ", "|", "`", "![[", "\u{e9}"]);
+        let text = prop::collection::vec(piece, 0..60).prop_map(|v| v.concat());
+        let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(2000));
+        runner
+            .run(&text, |t| {
+                prop_assert_eq!(analyze(&t).wikilinks, old_wikilinks(&t), "{:?}", t);
+                Ok(())
+            })
+            .unwrap();
+    }
 }
