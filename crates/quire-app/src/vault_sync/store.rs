@@ -265,7 +265,7 @@ impl VaultStore {
                 if !path.starts_with(SHARED_PREFIX) && self.listed.borrow().get(path) != Some(&hash) {
                     self.manifest.note_written(&p, &b);
                 }
-                if self.listed.borrow().contains_key(path) || path.starts_with(SHARED_PREFIX) {
+                if self.listed.borrow().contains_key(path) {
                     self.listed.borrow_mut().insert(path.to_string(), hash);
                 }
                 self.first_read.borrow_mut().entry(path.to_string()).or_insert(Some(hash));

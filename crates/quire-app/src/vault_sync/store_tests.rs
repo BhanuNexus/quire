@@ -1,6 +1,7 @@
-//! `VaultStore` on the vault manifest (`docs/design/0.14-sync-speed.md` §3.1,
-//! §3.6): what a pass opens, the compare-and-swap by hash, a listing error
-//! with a warm manifest, an unreadable note, and the verify pass.
+//! `VaultStore` on the vault manifest: what a pass opens, the
+//! compare-and-swap by hash, a listing error with a warm manifest, an
+//! unreadable note, and the verify pass.
+//! See `docs/design/0.14-sync-speed.md` §3.1 and §3.6.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
