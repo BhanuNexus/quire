@@ -294,3 +294,117 @@ fn a_verify_pass_finds_a_change_that_kept_its_time_and_size() {
     assert_eq!(sync_verify_at(&va).unwrap().pushed, 1, "a verify pass reads every note");
     assert!(journal::Journal::open(&va, "state.json").unwrap().journal.verified_at() > 0);
 }
+
+/// Every record of every pack under `.quire/sync/` (aside folders
+/// included), raw and decoded, holds `needle`.
+fn packs_hold(root: &Path, needle: &str) -> bool {
+    let mut found = false;
+    let mut todo = vec![root.join(".quire/sync")];
+    while let Some(d) = todo.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                todo.push(p);
+            } else if p.extension().is_some_and(|x| x == "pack") {
+                let raw = std::fs::read(&p).unwrap();
+                found |= String::from_utf8_lossy(&raw).contains(needle);
+            }
+        }
+    }
+    let names: Vec<String> = std::fs::read_dir(root.join(".quire/sync"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().to_string_lossy().trim_end_matches(".d").to_string() + ".json")
+        .collect();
+    found || names.iter().any(|n| journal::pack_texts(root, n).iter().any(|t| t.contains(needle)))
+}
+
+/// A folder locked between two real passes: the pass that sends the plain
+/// notes' deletes leaves none of their text in any pack
+/// (`docs/design/0.11-secure.md`, the promise kept by `docs/design/0.14-sync-speed.md` §3.2).
+#[test]
+fn locking_a_folder_leaves_no_plain_text_in_the_packs_after_a_real_pass() {
+    let dir = tempfile::tempdir().unwrap();
+    let (va, shared) = (dir.path().join("A"), dir.path().join("Shared"));
+    std::fs::create_dir_all(va.join("Journal")).unwrap();
+    std::fs::create_dir_all(&shared).unwrap();
+    for i in 0..5 {
+        std::fs::write(va.join(format!("Journal/{i}.md")), format!("secret day {i}, first\n")).unwrap();
+        std::fs::write(va.join(format!("Note {i}.md")), format!("plain note {i}\n")).unwrap();
+    }
+    sync_create_at(&va, &SyncTarget::Folder(shared), "correct horse battery", "laptop", &Selection::default()).unwrap();
+    sync_once_at(&va).unwrap();
+    // A second version of each: the first is now dead bytes in a pack.
+    for i in 0..5 {
+        std::fs::write(va.join(format!("Journal/{i}.md")), format!("secret day {i}, second\n")).unwrap();
+    }
+    sync_once_at(&va).unwrap();
+    assert!(packs_hold(&va, "secret day"));
+    let v = Vault::open_local(&va).unwrap();
+    quire_vault::lock::lock_folder(&v, "Journal", Some("a passphrase for the test"), quire_vault::lock::Kdf::TEST, 1).unwrap();
+    sync_once_at(&va).unwrap();
+    assert!(!packs_hold(&va, "secret day"), "no version of a locked note's text stays in a pack");
+    assert!(packs_hold(&va, "plain note 3"));
+}
+
+/// A file that became unreadable without changing its size or time (a
+/// permission taken away): the scan trusts its row, so only applying an
+/// incoming revision finds out. That note is skipped and named; the pass
+/// finishes and later revisions arrive.
+#[test]
+fn an_unreadable_file_with_a_trusted_row_is_skipped_not_retried_forever() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut a, mut b) = pair(dir.path());
+    a.put("Locked away.md", "one\n");
+    a.put("Other.md", "other\n");
+    a.pass().unwrap();
+    b.pass().unwrap();
+    b.pass().unwrap();
+    *b.probe.fail_read.lock().unwrap() = Some(NotePath::new("Locked away.md"));
+    a.put("Locked away.md", "one, edited on A\n");
+    a.pass().unwrap();
+    a.put("Other.md", "other, edited after\n");
+    a.pass().unwrap();
+    let r = b.pass().unwrap();
+    assert_eq!(b.get("Other.md").as_deref(), Some("other, edited after\n"), "later revisions apply");
+    assert!(r.skipped.iter().any(|(p, why)| p == "Locked away.md" && why.starts_with(UNREADABLE)), "{r:?}");
+    assert_eq!(b.store.unreadable().len(), 1, "named in the status");
+    assert_eq!(std::fs::read_to_string(b.root.join("Locked away.md")).unwrap(), "one\n", "never written over");
+    // Readable again: it arrives.
+    *b.probe.fail_read.lock().unwrap() = None;
+    b.pass().unwrap();
+    assert_eq!(b.get("Locked away.md").as_deref(), Some("one, edited on A\n"));
+}
+
+#[test]
+fn an_overdue_verify_runs_whatever_the_last_pass_did() {
+    let day = 24 * 3_600_000;
+    assert!(!verify_due(false, day, 0), "a day: only after a quiet pass");
+    assert!(verify_due(true, day, 0));
+    assert!(verify_due(false, 2 * day, 0), "two days: in any pass");
+    assert!(!verify_due(true, day - 1, 0));
+}
+
+/// A device whose sync can't reach the other devices (a `sync once` cron
+/// offline): its verify counts once the vault was rehashed, so the next
+/// run doesn't read the whole vault again.
+#[test]
+fn a_verify_counts_even_when_the_pass_fails_after_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (va, shared) = (dir.path().join("A"), dir.path().join("Shared"));
+    std::fs::create_dir_all(&va).unwrap();
+    std::fs::create_dir_all(&shared).unwrap();
+    std::fs::write(va.join("Plan.md"), "one\n").unwrap();
+    sync_create_at(&va, &SyncTarget::Folder(shared.clone()), "correct horse battery", "laptop", &Selection::default()).unwrap();
+    sync_once_at(&va).unwrap();
+    // The sync folder goes away: passes fail after their scan.
+    std::fs::rename(&shared, dir.path().join("Shared, unplugged")).unwrap();
+    assert!(sync_verify_at(&va).is_err());
+    let verified = journal::Journal::open(&va, "state.json").unwrap().journal.verified_at();
+    assert!(verified > 0);
+    std::thread::sleep(Duration::from_millis(5));
+    assert!(sync_once_at(&va).is_err());
+    assert_eq!(journal::Journal::open(&va, "state.json").unwrap().journal.verified_at(), verified, "not verified again");
+}

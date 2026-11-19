@@ -56,6 +56,11 @@ fn text(rng: &mut Rng, n: usize) -> String {
     out
 }
 
+/// No folder is locked.
+fn none(_: &str) -> bool {
+    false
+}
+
 fn is_pack(name: &str) -> bool {
     Path::new(name).extension().is_some_and(|e| e.eq_ignore_ascii_case("pack"))
 }
@@ -129,9 +134,11 @@ fn random_commits_reopen_to_what_was_committed() {
             for _ in 0..=rng.below(4) {
                 change(&mut rng, &mut state, &mut o.bases, &mut texts);
             }
-            o.journal.commit(&state, i64::from(round), &[]).unwrap();
+            o.journal.commit(&state, i64::from(round), &none).unwrap();
             if rng.below(4) == 0 {
                 drop(o);
+                // A power cut after a commit returned loses nothing.
+                power_cut();
                 o = open(root);
                 assert_eq!(o.state, state, "seed {seed} round {round}");
                 assert_eq!(o.journal.verified_at(), i64::from(round));
@@ -150,20 +157,20 @@ fn random_commits_reopen_to_what_was_committed() {
 fn a_commit_with_nothing_new_writes_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let mut o = open(dir.path());
-    assert!(!o.journal.commit(&SyncState::default(), 0, &[]).unwrap(), "nothing yet: no folder");
+    assert!(!o.journal.commit(&SyncState::default(), 0, &none).unwrap(), "nothing yet: no folder");
     assert!(!state_dir(dir.path(), NAME).exists());
     let mut state = SyncState::default();
     state.files.insert(FileId("a".into()), tracked("A.md", "a\n", &mut o.bases));
-    assert!(o.journal.commit(&state, 0, &[]).unwrap());
+    assert!(o.journal.commit(&state, 0, &none).unwrap());
     let before = dir_files(dir.path());
-    assert!(!o.journal.commit(&state, 0, &[]).unwrap());
+    assert!(!o.journal.commit(&state, 0, &none).unwrap());
     // A base put again (the same text pulled again) changes nothing either.
     o.bases.put(Print::of("a\n"), "a\n").unwrap();
-    assert!(!o.journal.commit(&state, 0, &[]).unwrap());
+    assert!(!o.journal.commit(&state, 0, &none).unwrap());
     assert_eq!(dir_files(dir.path()), before);
     drop(o);
     let mut o = open(dir.path());
-    assert!(!o.journal.commit(&state, 0, &[]).unwrap());
+    assert!(!o.journal.commit(&state, 0, &none).unwrap());
     assert_eq!(dir_files(dir.path()), before, "opening a good record changes nothing");
 }
 
@@ -234,7 +241,7 @@ fn an_older_quire_syncing_the_same_vault_is_named() {
     assert!(o.notices.is_empty());
     let mut s = o.state.clone();
     s.cursor = 50;
-    o.journal.commit(&s, 0, &[]).unwrap();
+    o.journal.commit(&s, 0, &none).unwrap();
     drop(o);
     // A downgrade and back: the older Quire started afresh and saved its own.
     put_013(dir.path(), &fixture_013(2).1);
@@ -267,6 +274,8 @@ fn every_crash_or_error_during_a_migration_leaves_one_valid_state() {
                 break;
             }
             drop(r);
+            // The power goes too: only what was flushed stays.
+            power_cut();
             let o = open(dir.path());
             assert_eq!(o.state, want, "step {n} crash {crash}");
             assert!(State13::from_state(&o.state, &o.bases).is_some(), "every text is there");
@@ -293,10 +302,10 @@ fn every_crash_or_error_during_a_commit_leaves_the_old_or_the_new_state() {
                 texts.insert(Print::of(&t), t.clone());
                 old.files.insert(FileId(format!("f{i:02}")), tracked(&format!("{i}.md"), &t, &mut o.bases));
                 if i % 8 == 7 {
-                    o.journal.commit(&old, 0, &[]).unwrap();
+                    o.journal.commit(&old, 0, &none).unwrap();
                 }
             }
-            o.journal.commit(&old, 0, &[]).unwrap();
+            o.journal.commit(&old, 0, &none).unwrap();
             let mut new = old.clone();
             new.files.retain(|id, _| id.0.ends_with('3') || id.0.ends_with('7'));
             for i in 40..60 {
@@ -306,7 +315,7 @@ fn every_crash_or_error_during_a_commit_leaves_the_old_or_the_new_state() {
             }
             new.cursor = 9;
             inject(Some(n), crash);
-            let r = o.journal.commit(&new, 0, &[]);
+            let r = o.journal.commit(&new, 0, &none);
             let fired = fault_fired();
             inject(None, false);
             if !fired {
@@ -316,15 +325,17 @@ fn every_crash_or_error_during_a_commit_leaves_the_old_or_the_new_state() {
             if !crash {
                 // Not a crash: the session goes on, and its next commit holds.
                 if r.is_err() {
-                    o.journal.commit(&new, 0, &[]).unwrap();
+                    o.journal.commit(&new, 0, &none).unwrap();
                 }
                 drop(o);
+                power_cut();
                 let o = open(root);
                 assert_eq!(o.state, new, "step {n}: the retried commit");
                 assert_texts(&o.state, &o.bases, &texts);
                 continue;
             }
             drop(o);
+            power_cut();
             let o = open(root);
             assert!(o.state == old || o.state == new, "step {n}: neither the old nor the new state");
             assert!(o.notices.is_empty(), "a crash is no damage: {:?}", o.notices);
@@ -350,7 +361,7 @@ fn every_crash_during_a_checkpoint_leaves_the_old_or_the_new_state() {
             state.files.insert(FileId(format!("f{i:03}")), tracked(&format!("{i}.md"), &t, &mut o.bases));
             i += 1;
             let before = o.journal.generation;
-            o.journal.commit(&state, 0, &[]).unwrap();
+            o.journal.commit(&state, 0, &none).unwrap();
             if o.journal.generation == before && o.journal.log_len > JOURNAL_MIN * 3 / 4 {
                 break;
             }
@@ -372,11 +383,11 @@ fn every_crash_during_a_checkpoint_leaves_the_old_or_the_new_state() {
                 break;
             }
             state.files.insert(id, t);
-            res = o.journal.commit(&state, 0, &[]);
+            res = o.journal.commit(&state, 0, &none);
         }
         let fired = fault_fired();
-        inject(None, false);
         drop(o);
+        power_cut();
         let o = open(root);
         assert_texts(&o.state, &o.bases, &texts);
         assert!(o.notices.is_empty(), "{:?}", o.notices);
@@ -401,17 +412,25 @@ fn a_purged_text_leaves_every_pack_in_the_same_commit() {
         for i in 0..5 {
             state.files.insert(FileId(format!("p{i}")), tracked(&format!("{i}.md"), &format!("plain {i} {v}\n"), &mut o.bases));
         }
-        o.journal.commit(&state, 0, &[]).unwrap();
+        o.journal.commit(&state, 0, &none).unwrap();
     }
     let raw_has = |root: &Path, needle: &str| {
         let raw: Vec<u8> = dir_files(root).into_iter().filter(|(n, _)| is_pack(n)).flat_map(|(_, b)| b).collect();
         String::from_utf8_lossy(&raw).contains(needle) || pack_texts(root, NAME).iter().any(|t| t.contains(needle))
     };
     assert!(raw_has(dir.path(), "secret day"));
+    // A record kept aside as damaged earlier, with its packs.
+    let aside = state_dir(dir.path(), NAME).with_file_name("state.d.unreadable");
+    std::fs::create_dir_all(&aside).unwrap();
+    std::fs::copy(state_dir(dir.path(), NAME).join("bases-000001.pack"), aside.join("bases-000001.pack")).unwrap();
     // The folder is locked: the scrub clears the base and names it.
-    let cleared = std::mem::replace(&mut state.files.get_mut(&FileId("s".into())).unwrap().base, Print::of(""));
-    assert!(o.journal.commit(&state, 0, &[cleared]).unwrap());
+    state.files.get_mut(&FileId("s".into())).unwrap().base = Print::of("");
+    assert!(o.journal.commit(&state, 0, &|p: &str| p.starts_with("Journal/")).unwrap());
     assert!(!raw_has(dir.path(), "secret day"), "no version of the locked note's text in any pack");
+    assert!(
+        !state_dir(dir.path(), NAME).with_file_name("state.d.unreadable").join("bases-000001.pack").exists(),
+        "nor in a record kept aside"
+    );
     for i in 0..5 {
         assert_eq!(o.bases.get(&Print::of(&format!("plain {i} 3\n"))).unwrap().as_deref(), Some(format!("plain {i} 3\n").as_str()));
     }
@@ -431,7 +450,7 @@ fn committed_record(root: &Path) -> (SyncState, BTreeMap<Print, String>) {
         let t = format!("note {i}\n");
         texts.insert(Print::of(&t), t.clone());
         state.files.insert(FileId(format!("f{i}")), tracked(&format!("{i}.md"), &t, &mut o.bases));
-        o.journal.commit(&state, 0, &[]).unwrap();
+        o.journal.commit(&state, 0, &none).unwrap();
     }
     (state, texts)
 }
@@ -565,6 +584,16 @@ fn a_damaged_pack_record_is_a_missing_base_and_said_once() {
     assert_eq!(got.iter().filter(|g| g.is_none()).count(), 1, "one base is missing, the others are there");
     assert!(o.bases.take_notice().is_some());
     assert!(o.bases.take_notice().is_none(), "said once");
+    // The damaged record names nothing now: the same text, put again, is
+    // written again and found.
+    let missing = live_prints(&state).into_iter().find(|p| o.bases.get(p).unwrap().is_none()).unwrap();
+    let text = (0..6).map(|i| format!("note {i}\n")).find(|t| Print::of(t) == missing).unwrap();
+    let mut o = o;
+    o.bases.put(missing, &text).unwrap();
+    o.journal.commit(&state, 0, &none).unwrap();
+    drop(o);
+    let o = open(dir.path());
+    assert_eq!(o.bases.get(&missing).unwrap().as_deref(), Some(text.as_str()));
     // A short pack: its records past the end are missing, not an error.
     std::fs::write(&pack, &bytes[..10]).unwrap();
     let o = open(dir.path());
@@ -609,4 +638,57 @@ fn records_move_with_the_selection_and_go_with_sync() {
     assert!(exists(dir.path(), "state-partial.json"));
     remove(dir.path(), "state-partial.json");
     assert!(!exists(dir.path(), "state-partial.json"));
+}
+
+#[test]
+fn a_pack_whose_delete_failed_is_deleted_at_the_next_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut state, _) = committed_record(dir.path());
+    let mut o = open(dir.path());
+    let left = state_dir(dir.path(), NAME).join(pack_name(90));
+    std::fs::write(&left, b"compacted, then its delete failed").unwrap();
+    o.journal.unremoved.insert(90);
+    state.cursor += 1;
+    o.journal.commit(&state, 0, &none).unwrap();
+    assert!(!left.exists(), "deleted by the next commit, not only the next open");
+}
+
+#[test]
+fn a_write_that_wrote_nothing_keeps_its_pack() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut o = open(dir.path());
+    let mut state = SyncState::default();
+    state.files.insert(FileId("a".into()), tracked("A.md", "a\n", &mut o.bases));
+    o.journal.commit(&state, 0, &none).unwrap();
+    // A full disk: three writes refused outright, nothing landed.
+    for _ in 0..3 {
+        inject(Some(0), false);
+        assert!(o.bases.put(Print::of("b\n"), "b\n").is_err());
+        inject(None, false);
+    }
+    state.files.insert(FileId("b".into()), tracked("B.md", "b\n", &mut o.bases));
+    o.journal.commit(&state, 0, &none).unwrap();
+    let packs: Vec<String> = dir_files(dir.path()).into_keys().filter(|n| is_pack(n)).collect();
+    assert_eq!(packs, ["bases-000001.pack"], "no empty pack per failed try");
+    drop(o);
+    let o = open(dir.path());
+    assert_eq!(o.bases.get(&Print::of("b\n")).unwrap().as_deref(), Some("b\n"));
+}
+
+#[test]
+fn a_record_is_renamed_over_one_left_under_the_new_name() {
+    let dir = tempfile::tempdir().unwrap();
+    committed_record(dir.path());
+    // 0.14 with a selection, then 0.13 (its own file), then 0.14 again.
+    let stale = state_dir(dir.path(), "state-partial.json");
+    std::fs::create_dir_all(&stale).unwrap();
+    std::fs::write(stale.join(checkpoint_name(4)), b"an old record").unwrap();
+    std::fs::write(sync_dir(dir.path()).join("state-partial.json"), b"{}").unwrap();
+    rename_record(dir.path(), NAME, "state-partial.json").unwrap();
+    assert!(!state_dir(dir.path(), NAME).exists());
+    assert!(!sync_dir(dir.path()).join("state-partial.json").exists(), "the stale 0.13 file under the new name went");
+    assert_eq!(peek(dir.path(), "state-partial.json").files.len(), 6);
+    // Nothing to rename: nothing removed.
+    rename_record(dir.path(), NAME, "state-partial.json").unwrap();
+    assert_eq!(peek(dir.path(), "state-partial.json").files.len(), 6);
 }

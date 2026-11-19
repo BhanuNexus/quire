@@ -6,7 +6,7 @@ use super::{
     Arc, BTreeMap, Deserialize, DeviceSecret, Duration, Engine, FolderTransport, HELD_DELETES, Hardening, HeldDeletes, HttpTransport,
     Instant, KeySet, LanePos, ObjectStore, Path, PathBuf, Pins, RemoteProfile, RemoteSecret, RemoteTransport, Report, SHARED_STATE_FILE,
     Serialize, SpaceAdmin, SyncConfig, SyncLock, SyncStatus, Transport, Vault, VaultKey, VaultStore, begin_pass, folder, harden,
-    runs_shared_lane, scrub_locked_text, secrets, state_file, sync_dir, today, token_name,
+    in_locked_folder, runs_shared_lane, scrub_locked_text, secrets, state_file, sync_dir, today, token_name,
 };
 
 pub(super) enum Msg {
@@ -403,17 +403,26 @@ impl Session {
             export_review(&self.agent);
         }
         let (root, cfg) = (&self.root, &self.cfg);
-        // Once a day, in a pass after one with nothing to do, every note is
-        // read again: a change that kept its file's size and time
-        // (`docs/design/0.14-sync-speed.md` §3.1).
+        // Once a day every note is read again: a change that kept its
+        // file's size and time (`docs/design/0.14-sync-speed.md` §3.1).
         let now = crate::history_ops::now_ms();
-        let verifying = self.verify || (self.quiet && now.saturating_sub(self.verified_at) >= VERIFY_EVERY_MS);
+        let verifying = self.verify || verify_due(self.quiet, now, self.verified_at);
         self.store.verify_next = verifying;
         if let Err(e) = begin_pass(&mut self.store) {
             // Never read as "every note was deleted here" (0.13.2).
             let status = SyncStatus::Error(quire_sync::SyncError::List(e).to_string());
             let _ = LastPass::record(&self.root, &status, None);
             return Pass { status, report: None, again: poll.min(Duration::from_secs(30)) };
+        }
+        if verifying {
+            // Done once the scan rehashed every file, whatever the rest of
+            // the pass does (offline, a stopped pass): the manifest keeps
+            // what it found, so it isn't read again tomorrow for nothing.
+            #[expect(clippy::let_underscore_must_use, reason = "a cache that can't be written costs a slower next start, nothing else")]
+            let _ = self.store.manifest().flush();
+            self.manifest_saved = Instant::now();
+            self.verified_at = now;
+            self.verify = false;
         }
         // The deletes the last pass held back, if the person said (within
         // the last 15 minutes) they are meant.
@@ -429,12 +438,10 @@ impl Session {
                 res = Err(quire_sync::SyncError::Transport(e));
             }
         }
-        let cleared = scrub_locked_text(&self.store.vault, &mut self.engine.state);
-        if verifying && res.is_ok() {
-            self.verified_at = now;
-            self.verify = false;
-        }
-        let mut saved = self.journal.commit(&self.engine.state, self.verified_at, &cleared).map(|_| ());
+        scrub_locked_text(&self.store.vault, &mut self.engine.state);
+        let vault = self.store.vault.clone();
+        let locked = move |p: &str| in_locked_folder(&vault, p);
+        let mut saved = self.journal.commit(&self.engine.state, self.verified_at, &locked).map(|_| ());
         self.notices.extend(self.bases.take_notice());
         if res.is_ok() {
             self.store.remember_unselected();
@@ -451,7 +458,9 @@ impl Session {
                     self.notices.extend(opened.notices);
                     let e = Engine::new(cfg.space.clone(), cfg.device.clone(), cfg.device_name.clone(), self.keys.clone(), opened.state)
                         .with_bases(Box::new(opened.bases.clone()));
-                    self.lane = Some((t, e, VaultStore::new(self.vault.clone()).shared_only()));
+                    // The settings lane never scans: it shares the notes' manifest.
+                    let st = VaultStore::with_manifest(self.vault.clone(), self.store.manifest().clone()).shared_only();
+                    self.lane = Some((t, e, st));
                     self.lane_journal = Some((opened.journal, opened.bases));
                 }
                 Err(e) => saved = saved.and(Err(e)),
@@ -466,7 +475,7 @@ impl Session {
             let r = begin_pass(st).map_err(quire_sync::SyncError::List).and_then(|()| e.sync(st, &*t, &today()));
             e.allowed_deletes.clear();
             if let Some((j, b)) = self.lane_journal.as_mut() {
-                let lane_saved = j.commit(&e.state, j.verified_at(), &[]).map(|_| ());
+                let lane_saved = j.commit(&e.state, j.verified_at(), &|_: &str| false).map(|_| ());
                 saved = saved.and(lane_saved);
                 self.notices.extend(b.take_notice());
             }
@@ -541,6 +550,11 @@ impl Session {
             }
             // A note changed mid-pass, or other devices are busy: try again soon.
             Err(quire_sync::SyncError::Local { .. } | quire_sync::SyncError::Busy) => (SyncStatus::Syncing, None, Duration::from_secs(2)),
+            // Sync's own record of synced texts (a full disk, a pack that
+            // can't be read): said, and tried again slowly.
+            Err(e @ quire_sync::SyncError::Bases(_)) => {
+                (SyncStatus::Error(e.to_string()), None, Duration::from_mins(5).min(poll.max(Duration::from_mins(1))))
+            }
             Err(e @ (quire_sync::SyncError::ManyDeletes { .. } | quire_sync::SyncError::SettingsDeletes { .. })) => (
                 SyncStatus::Error(format!(
                     "{e}. If you deleted them on purpose, choose Send these deletes in Settings → Sync (or run `quire-cli sync allow-deletes \"{}\"`). If not, check that the vault's folder is all there (a drive or cloud folder that went missing); sync goes on by itself once the notes are back.",
@@ -574,6 +588,15 @@ impl Session {
 
 /// How often every note is read again in an idle pass: a day.
 const VERIFY_EVERY_MS: i64 = 24 * 3_600_000;
+
+/// Whether this pass reads every note again: a day after the last time, in
+/// a pass after one with nothing to do (or the first of a session); two
+/// days after, in any pass (a device that is always offline, or whose
+/// status stays an error, still verifies).
+pub(super) const fn verify_due(quiet: bool, now: i64, verified_at: i64) -> bool {
+    let age = now.saturating_sub(verified_at);
+    (quiet && age >= VERIFY_EVERY_MS) || age >= 2 * VERIFY_EVERY_MS
+}
 
 /// The sync status while files can't be read.
 pub(super) fn unreadable_status(files: &[(String, String)]) -> String {

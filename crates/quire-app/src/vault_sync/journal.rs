@@ -132,6 +132,75 @@ pub(super) fn fault_fired() -> bool {
     FAULT.with(|f| f.get().0.is_none())
 }
 
+/// Tests: what a power cut keeps. Each file this module appended to has the
+/// length last flushed (`sync_data`), and a file made since its folder was
+/// last flushed has no entry in it yet.
+#[cfg(test)]
+#[derive(Default)]
+struct Disk {
+    /// path → (bytes flushed, folder entry flushed)
+    files: BTreeMap<PathBuf, (u64, bool)>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static DISK: std::cell::RefCell<Disk> = std::cell::RefCell::default();
+}
+
+/// Open `path` to append to it (made if missing).
+fn open_append(path: &Path) -> std::io::Result<File> {
+    #[cfg(test)]
+    {
+        let len = std::fs::metadata(path).ok().map(|m| m.len());
+        DISK.with(|d| {
+            d.borrow_mut().files.entry(path.to_path_buf()).or_insert_with(|| (len.unwrap_or(0), len.is_some()));
+        });
+    }
+    OpenOptions::new().create(true).append(true).open(path)
+}
+
+/// Tests: a power cut now. Every file is cut back to what was flushed, and
+/// a file whose folder entry wasn't flushed is gone; the fault is cleared.
+#[cfg(test)]
+pub(super) fn power_cut() {
+    inject(None, false);
+    for (path, (len, entry)) in DISK.with(|d| std::mem::take(&mut d.borrow_mut().files)) {
+        if !entry {
+            let _ = std::fs::remove_file(&path);
+        } else if std::fs::metadata(&path).is_ok_and(|m| m.len() > len) {
+            let _ = OpenOptions::new().write(true).open(&path).and_then(|f| f.set_len(len));
+        }
+    }
+}
+
+#[cfg(test)]
+fn flushed(path: &Path, len: Option<u64>, entry: bool) {
+    DISK.with(|d| {
+        let mut d = d.borrow_mut();
+        match len {
+            Some(len) => {
+                let e = d.files.entry(path.to_path_buf()).or_insert((0, false));
+                e.0 = len;
+                e.1 |= entry;
+            }
+            None => {
+                d.files.remove(path);
+            }
+        }
+    });
+}
+
+#[cfg(test)]
+fn folder_flushed(dir: &Path) {
+    DISK.with(|d| {
+        for (p, (_, entry)) in &mut d.borrow_mut().files {
+            if p.parent() == Some(dir) {
+                *entry = true;
+            }
+        }
+    });
+}
+
 fn write_all(f: &mut File, bytes: &[u8]) -> std::io::Result<()> {
     if let Err(e) = step() {
         if crashed() {
@@ -143,18 +212,29 @@ fn write_all(f: &mut File, bytes: &[u8]) -> std::io::Result<()> {
     f.write_all(bytes)
 }
 
-fn sync_data(f: &File) -> std::io::Result<()> {
+fn sync_data(f: &File, path: &Path) -> std::io::Result<()> {
     step()?;
-    f.sync_data()
+    f.sync_data()?;
+    #[cfg(test)]
+    flushed(path, Some(f.metadata()?.len()), false);
+    #[cfg(not(test))]
+    let _ = path;
+    Ok(())
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     step()?;
-    quire_base::fs::write_atomic(path, bytes, quire_base::fs::Options::STATE)
+    quire_base::fs::write_atomic(path, bytes, quire_base::fs::Options::STATE)?;
+    // Flushed, renamed and its folder flushed (Options::STATE).
+    #[cfg(test)]
+    flushed(path, Some(bytes.len() as u64), true);
+    Ok(())
 }
 
 fn remove_file(path: &Path) -> std::io::Result<()> {
     step()?;
+    #[cfg(test)]
+    flushed(path, None, false);
     match std::fs::remove_file(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         r => r,
@@ -182,12 +262,16 @@ fn sync_folder(dir: &Path) -> std::io::Result<()> {
     File::open(dir)?.sync_all()?;
     #[cfg(not(unix))]
     let _ = dir;
+    #[cfg(test)]
+    folder_flushed(dir);
     Ok(())
 }
 
 #[expect(clippy::disallowed_methods, reason = "a damaged record is renamed aside whole, packs included, so nothing is copied")]
 fn rename(from: &Path, to: &Path) -> std::io::Result<()> {
     step()?;
+    #[cfg(test)]
+    flushed(from, None, false);
     std::fs::rename(from, to)
 }
 
@@ -449,7 +533,7 @@ impl Packs {
         let mut f = match File::open(&path) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                self.damaged = true;
+                self.lost(p);
                 return Ok(None);
             }
             Err(e) => return Err(cant_read(&path, &e)),
@@ -459,14 +543,23 @@ impl Packs {
         match f.read_exact(&mut rec) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                self.damaged = true;
+                self.lost(p);
                 return Ok(None);
             }
             Err(e) => return Err(cant_read(&path, &e)),
         }
         let text = decode_record(&rec, p);
-        self.damaged |= text.is_none();
+        if text.is_none() {
+            self.lost(p);
+        }
         Ok(text)
+    }
+
+    /// `p`'s record is damaged: it names nothing now, so the text is
+    /// written again if it comes back.
+    fn lost(&mut self, p: &Print) {
+        self.damaged = true;
+        self.places.remove(p);
     }
 
     fn append(&mut self, p: Print, text: &str) -> Result<(), String> {
@@ -480,7 +573,7 @@ impl Packs {
         let fresh = at == 0;
         let res = (|| -> std::io::Result<()> {
             std::fs::create_dir_all(&self.dir)?;
-            let mut f = OpenOptions::new().create(true).append(true).open(&path)?;
+            let mut f = open_append(&path)?;
             if f.metadata()?.len() != at {
                 // Bytes this process didn't name (a failed append): start a new pack.
                 return Err(std::io::Error::other("pack length changed"));
@@ -488,10 +581,13 @@ impl Packs {
             write_all(&mut f, &rec)
         })();
         if let Err(e) = res {
-            // Whatever part landed is past what any record names; later
-            // records go to a new pack.
-            self.lens.entry(self.active).or_insert(0);
-            self.active = self.lens.keys().next_back().map_or(1, |n| n + 1);
+            // When part of it landed, that part is past what any record
+            // names: later records go to a new pack. When nothing did (a
+            // full disk refusing the write), the same pack is tried again.
+            if std::fs::metadata(&path).is_ok_and(|m| m.len() != at) {
+                self.lens.entry(self.active).or_insert(0);
+                self.active = self.lens.keys().next_back().map_or(1, |n| n + 1);
+            }
             return Err(format!("Couldn't save a note's synced text in {}: {e}", path.display()));
         }
         self.made |= fresh;
@@ -503,13 +599,15 @@ impl Packs {
 
     /// Flush what was appended since the last commit.
     fn flush(&mut self) -> Result<(), String> {
-        for n in std::mem::take(&mut self.touched) {
+        // Each pack leaves the list only once flushed: a failure keeps it,
+        // and every one after it, for the next try.
+        for n in self.touched.clone() {
             let path = self.path(n);
             let f = OpenOptions::new().append(true).open(&path).map_err(|e| e.to_string());
-            if let Err(e) = f.and_then(|f| sync_data(&f).map_err(|e| e.to_string())) {
-                self.touched.insert(n);
+            if let Err(e) = f.and_then(|f| sync_data(&f, &path).map_err(|e| e.to_string())) {
                 return Err(format!("Couldn't save sync's record in {}: {e}", path.display()));
             }
+            self.touched.remove(&n);
         }
         if self.made {
             sync_folder(&self.dir).map_err(|e| e.to_string())?;
@@ -611,6 +709,9 @@ pub(super) struct Journal {
     /// The journal may end in a partly written line: fold it into a
     /// checkpoint at the next commit rather than append after it.
     broken: bool,
+    /// Packs the record no longer names whose delete failed: tried again
+    /// at each commit.
+    unremoved: BTreeSet<u32>,
     bases: PackBases,
 }
 
@@ -668,6 +769,22 @@ struct Found {
 /// Read the state folder `dir` without changing anything. `Ok(None)`: no
 /// folder.
 fn read_dir(dir: &Path) -> Result<Option<Found>, String> {
+    // A file gone between the listing and its read: a checkpoint being
+    // rotated by the process that syncs (a look from `sync status` while it
+    // runs). Read again; never answer with an empty record for it.
+    for _ in 0..10 {
+        match read_dir_once(dir) {
+            Err(e) if e == VANISHED => {}
+            r => return r,
+        }
+    }
+    read_dir_once(dir)
+}
+
+/// [`read_dir_once`] found a file gone that it had just listed.
+const VANISHED: &str = "a file of the record went away while it was read";
+
+fn read_dir_once(dir: &Path) -> Result<Option<Found>, String> {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -692,7 +809,11 @@ fn read_dir(dir: &Path) -> Result<Option<Found>, String> {
     let mut chosen = None;
     for &n in checkpoints.iter().rev() {
         let path = dir.join(checkpoint_name(n));
-        let bytes = std::fs::read(&path).map_err(|e| cant_read(&path, &e))?;
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(VANISHED.into()),
+            Err(e) => return Err(cant_read(&path, &e)),
+        };
         match parse_checkpoint(&bytes) {
             Checkpoint::Good(b) => {
                 found.checkpoint_len = bytes.len() as u64;
@@ -718,6 +839,8 @@ fn read_dir(dir: &Path) -> Result<Option<Found>, String> {
     let jpath = dir.join(journal_name(g));
     let bytes = match std::fs::read(&jpath) {
         Ok(b) => b,
+        // Rotated meanwhile (its checkpoint is gone too): read again.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && !dir.join(checkpoint_name(g)).exists() => return Err(VANISHED.into()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(e) => return Err(cant_read(&jpath, &e)),
     };
@@ -831,6 +954,7 @@ impl Journal {
             log_len: found.log_len,
             checkpoint_len: found.checkpoint_len,
             broken: false,
+            unremoved: BTreeSet::new(),
             bases: bases.clone(),
         };
         if found.refold {
@@ -850,6 +974,7 @@ impl Journal {
             log_len: 0,
             checkpoint_len: 0,
             broken: false,
+            unremoved: BTreeSet::new(),
             bases: bases.clone(),
         };
         Opened { journal, state: SyncState::default(), bases, notices }
@@ -901,19 +1026,32 @@ impl Journal {
         self.committed.verified_at
     }
 
-    /// Commit `state` (see the module docs), with `verified_at`. `purge`:
-    /// base prints cleared because their notes are locked now, whose text
-    /// must leave every pack in this commit if nothing else refers to it.
+    /// Commit `state` (see the module docs), with `verified_at`. `locked`
+    /// says whether a note path is in a locked folder now: when the last
+    /// committed record kept the text of a note there and `state` no
+    /// longer does (its delete was sent, or the scrub cleared it), the
+    /// text leaves every pack in this commit (`docs/design/0.11-secure.md`).
     /// Returns whether anything was written.
-    pub(super) fn commit(&mut self, state: &SyncState, verified_at: i64, purge: &[Print]) -> Result<bool, String> {
+    pub(super) fn commit(&mut self, state: &SyncState, verified_at: i64, locked: &dyn Fn(&str) -> bool) -> Result<bool, String> {
+        self.retry_removals();
         let live = live_prints(state);
+        let purging = self.locked_prints_dropped(&live, locked);
         let mut packs = self.bases.lock();
         packs.places.retain(|p, _| live.contains(p));
-        // Compaction: a pack mostly dead (not the one appended to). When
-        // a locked note's text is purged, every pack with any dead bytes,
-        // the one appended to included: none may keep that text, nor an
-        // older version of it (docs/design/0.14-sync-speed.md §3.2).
-        let purging = purge.iter().any(|p| !live.contains(p));
+        // Nothing new: nothing written, and nothing copied to find that out.
+        if !purging
+            && packs.touched.is_empty()
+            && verified_at == self.committed.verified_at
+            && packs.places == self.committed.places
+            && *state == self.committed.state
+        {
+            return Ok(false);
+        }
+        // Compaction: a pack mostly dead (not the one appended to). On a
+        // purge, every pack with any dead bytes, the one appended to
+        // included: none may keep that text, nor an older version of it,
+        // nor the text of a note deleted earlier
+        // (docs/design/0.14-sync-speed.md §3.2).
         let live_bytes = packs.live_bytes();
         let due: BTreeSet<u32> = packs
             .lens
@@ -942,7 +1080,7 @@ impl Journal {
         };
         drop(packs);
         let delta = Delta::between(&self.committed, &body);
-        if delta.is_empty() {
+        if delta.is_empty() && gone.is_empty() {
             return Ok(false);
         }
         if self.generation == 0 || self.broken || self.log_len > JOURNAL_MIN.max(self.checkpoint_len / 4) {
@@ -955,12 +1093,53 @@ impl Journal {
                 self.checkpoint(body)?;
             }
         }
-        // Packs the record no longer names: gone now (or at the next open).
-        for n in gone {
-            #[expect(clippy::let_underscore_must_use, reason = "a pack left behind is deleted when the record is next opened")]
-            let _ = remove_file(&self.dir.join(pack_name(n)));
+        // Packs the record no longer names: gone now, or at the next commit.
+        self.unremoved.extend(gone);
+        self.retry_removals();
+        if purging {
+            self.purge_aside();
         }
         Ok(true)
+    }
+
+    /// Whether the last committed record kept the text of a note in a
+    /// locked folder that `live` no longer has.
+    fn locked_prints_dropped(&self, live: &BTreeSet<Print>, locked: &dyn Fn(&str) -> bool) -> bool {
+        let empty = Print::of("");
+        let st = &self.committed.state;
+        st.files
+            .values()
+            .flat_map(|t| std::iter::once((t.path.as_str(), t.base)).chain(t.kept.iter().map(|k| (k.path.as_str(), k.base))))
+            .chain(st.left.iter().filter_map(|(p, l)| l.base.map(|b| (p.as_str(), b))))
+            .any(|(path, b)| b != empty && !is_attachment(path) && !live.contains(&b) && locked(path))
+    }
+
+    /// Delete the packs the record no longer names; a failure is tried
+    /// again at the next commit (and the next open deletes them too).
+    fn retry_removals(&mut self) {
+        let named = &self.committed.packs;
+        let dir = &self.dir;
+        self.unremoved.retain(|n| !named.contains_key(n) && remove_file(&dir.join(pack_name(*n))).is_err());
+    }
+
+    /// The packs of records kept aside as damaged (`state.d.unreadable…`)
+    /// hold old merge bases nothing reads any more: a purge deletes them,
+    /// so they never keep a locked note's text. Their checkpoints and
+    /// journals (prints only) stay for a look.
+    fn purge_aside(&self) {
+        let (Some(parent), Some(name)) = (self.dir.parent(), self.dir.file_name()) else { return };
+        let prefix = format!("{}.unreadable", name.to_string_lossy());
+        for e in std::fs::read_dir(parent).into_iter().flatten().flatten() {
+            if !e.file_name().to_string_lossy().starts_with(&prefix) || !e.path().is_dir() {
+                continue;
+            }
+            for f in std::fs::read_dir(e.path()).into_iter().flatten().flatten() {
+                if f.file_name().to_string_lossy().ends_with(".pack") {
+                    #[expect(clippy::let_underscore_must_use, reason = "tried again at the next purge")]
+                    let _ = remove_file(&f.path());
+                }
+            }
+        }
     }
 
     fn append(&mut self, delta: &Delta) -> Result<(), String> {
@@ -968,9 +1147,9 @@ impl Journal {
         let path = self.dir.join(journal_name(self.generation));
         let fresh = self.log_len == 0;
         let res = (|| -> std::io::Result<()> {
-            let mut f = OpenOptions::new().create(true).append(true).open(&path)?;
+            let mut f = open_append(&path)?;
             write_all(&mut f, line.as_bytes())?;
-            sync_data(&f)?;
+            sync_data(&f, &path)?;
             if fresh {
                 sync_folder(&self.dir)?;
             }
@@ -1056,6 +1235,13 @@ pub(super) fn remove(root: &Path, name: &str) {
 /// whichever form it is.
 pub(super) fn rename_record(root: &Path, from: &str, to: &str) -> Result<(), String> {
     let dir = sync_dir(root);
+    if !exists(root, from) {
+        return Ok(());
+    }
+    // A record left under the new name (an older Quire's, or one from
+    // before a selection was set and cleared) is not this one's: it goes.
+    remove_file(&dir.join(to)).map_err(|e| e.to_string())?;
+    remove_dir_all(&state_dir(root, to)).map_err(|e| e.to_string())?;
     if dir.join(from).exists() {
         rename(&dir.join(from), &dir.join(to)).map_err(|e| e.to_string())?;
     }

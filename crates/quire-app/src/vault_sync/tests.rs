@@ -708,7 +708,7 @@ fn locking_most_of_a_vault_syncs_and_leaves_no_plain_text() {
         let text = p.ea.bases().get(&pr).unwrap().unwrap();
         quire_sync::Bases::put(&mut opened.bases, pr, &text).unwrap();
     }
-    opened.journal.commit(&p.ea.state, 0, &[]).unwrap();
+    opened.journal.commit(&p.ea.state, 0, &|_: &str| false).unwrap();
     let in_packs = |p: &Pair| journal::pack_texts(&p.va, "state.json").iter().any(|t| t.contains("secret day"));
     assert!(in_packs(&p));
     let va = Vault::open_local(&p.va).unwrap();
@@ -719,9 +719,9 @@ fn locking_most_of_a_vault_syncs_and_leaves_no_plain_text() {
     let as_saved =
         |s: &SyncState, e: &Engine| serde_json::to_string(&quire_sync::bases::State13::from_state(s, e.bases()).unwrap()).unwrap();
     assert!(as_saved(&waiting, &p.ea).contains("secret day"));
-    let cleared = scrub_locked_text(&va, &mut waiting);
+    scrub_locked_text(&va, &mut waiting);
     assert!(!as_saved(&waiting, &p.ea).contains("secret day"));
-    opened.journal.commit(&waiting, 0, &cleared).unwrap();
+    opened.journal.commit(&waiting, 0, &|p: &str| in_locked_folder(&va, p)).unwrap();
     assert!(!in_packs(&p), "no pack holds the plain text of a locked note, in the same commit");
     p.a().unwrap();
     p.b().unwrap();
@@ -732,9 +732,9 @@ fn locking_most_of_a_vault_syncs_and_leaves_no_plain_text() {
     );
     assert_eq!(b.iter().filter(|f| f.ends_with(".md.qenc")).count(), 25, "{b:?}");
     let mut after = p.ea.state.clone();
-    let cleared = scrub_locked_text(&va, &mut after);
+    scrub_locked_text(&va, &mut after);
     assert!(!as_saved(&after, &p.ea).contains("secret day"), "no plain text of a locked note in the sync state");
-    opened.journal.commit(&after, 0, &cleared).unwrap();
+    opened.journal.commit(&after, 0, &|p: &str| in_locked_folder(&va, p)).unwrap();
     assert!(!in_packs(&p));
     // Unlocking for good the other way round: the encrypted files go.
 }
@@ -975,7 +975,7 @@ fn a_damaged_sync_state_is_kept_and_reported() {
     assert!(!path.exists(), "moved to the new record");
     // Saved, with no temporary file left.
     let s = SyncState { cursor: 7, ..SyncState::default() };
-    assert!(o.journal.commit(&s, 0, &[]).unwrap());
+    assert!(o.journal.commit(&s, 0, &|_: &str| false).unwrap());
     assert_eq!(Journal::open(dir.path(), "state.json").unwrap().state.cursor, 7);
     let d = sync_dir(dir.path()).join("state.d");
     assert!(!std::fs::read_dir(&d).unwrap().flatten().any(|e| e.file_name().to_string_lossy().ends_with(".tmp")));

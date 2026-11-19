@@ -263,7 +263,7 @@ impl VaultStore {
             Ok(b) => {
                 let hash = FileHash::of(&b);
                 if !path.starts_with(SHARED_PREFIX) && self.listed.borrow().get(path) != Some(&hash) {
-                    self.manifest.note_written(&p, &b);
+                    self.learned(&p, &b);
                 }
                 if self.listed.borrow().contains_key(path) {
                     self.listed.borrow_mut().insert(path.to_string(), hash);
@@ -389,7 +389,9 @@ impl VaultStore {
 
     fn as_read(&self, path: &str) -> impl Fn(Option<&[u8]>) -> bool + use<> {
         let expected = self.expected(path);
-        move |now: Option<&[u8]>| now.map(FileHash::of) == expected
+        // A file found unreadable in this pass is never replaced or removed.
+        let unreadable = self.unreadable.borrow().contains_key(path);
+        move |now: Option<&[u8]>| !unreadable && now.map(FileHash::of) == expected
     }
 
     /// A write or removal was refused because the file changed: the
@@ -404,9 +406,13 @@ impl VaultStore {
         if !path.starts_with(SHARED_PREFIX) {
             match self.vault.storage().read_bytes(&p) {
                 Ok(b) => {
-                    self.manifest.note_written(&p, &b);
+                    self.learned(&p, &b);
                 }
-                Err(_) => self.manifest.note_removed(&p),
+                Err(quire_vault::VaultError::NotFound(_)) => self.manifest.note_removed(&p),
+                // There but unreadable: named, and its row left as it is.
+                Err(e) => {
+                    self.unreadable.borrow_mut().insert(path.to_string(), e.to_string());
+                }
             }
         }
         "it changed while syncing".into()
@@ -430,6 +436,13 @@ impl VaultStore {
     fn root_is_there(&self) -> bool {
         let Some(quire) = self.vault.storage().absolute(&NotePath::new(".quire")) else { return true };
         quire.parent().is_none_or(|root| std::fs::read_dir(root).is_ok())
+    }
+
+    /// A read found bytes the manifest's row doesn't have (written by
+    /// another program): the row learns them. The one place to switch to
+    /// the manifest's call for bytes Quire didn't write.
+    fn learned(&self, p: &NotePath, bytes: &[u8]) -> FileHash {
+        self.manifest.note_written(p, bytes)
     }
 
     /// Record a write of `bytes` at `path` by the engine.
@@ -749,7 +762,7 @@ fn scan(store: &VaultStore, verify: bool) -> Result<Vec<(String, u64, FileHash)>
         }
         match storage.read_bytes(&path) {
             Ok(b) => {
-                let h = store.manifest.note_written(&path, &b);
+                let h = store.learned(&path, &b);
                 out.push((path.as_str().to_string(), b.len() as u64, h));
             }
             Err(quire_vault::VaultError::NotFound(_)) => {}

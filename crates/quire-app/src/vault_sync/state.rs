@@ -115,30 +115,32 @@ pub(super) fn load_state(root: &Path, cfg: &SyncConfig) -> SyncState {
 /// was moved in) is gone from its path once the delete is sent, and its
 /// text with it; what can stay longer is cleared here: the last synced text
 /// of deleted notes and of copies kept outside the selection, at paths in
-/// a locked folder. Returns the base prints it cleared: their text leaves
-/// the packs at the next commit unless another note still has it
-/// (`docs/design/0.14-sync-speed.md` §3.2).
-pub(super) fn scrub_locked_text(vault: &Vault, state: &mut SyncState) -> Vec<quire_sync::Print> {
-    let locked = |p: &str| !quire_sync::engine::is_attachment(p) && vault.locked_folder(&NotePath::new(p)).is_some();
+/// a locked folder. Their texts then leave the packs at the next commit
+/// (`journal::Journal::commit`).
+pub(super) fn scrub_locked_text(vault: &Vault, state: &mut SyncState) {
+    let locked = |p: &str| in_locked_folder(vault, p);
     let empty = quire_sync::Print::of("");
-    let mut cleared = Vec::new();
     for t in state.files.values_mut() {
         // Deleted, or gone from its path while its delete waits (0.13.2):
         // either way its plain text is no longer on this disk.
         if locked(&t.path) && t.base != empty && (t.deleted || !vault.storage().exists(&NotePath::new(&t.path))) {
-            cleared.push(std::mem::replace(&mut t.base, empty));
+            t.base = empty;
             t.disk = None;
         }
-        if let Some(k) = t.kept.as_mut().filter(|k| locked(&k.path) && k.base != empty) {
-            cleared.push(std::mem::replace(&mut k.base, empty));
+        if let Some(k) = t.kept.as_mut().filter(|k| locked(&k.path)) {
+            k.base = empty;
         }
     }
     for (p, left) in &mut state.left {
         if locked(p) {
-            cleared.extend(left.base.take());
+            left.base = None;
         }
     }
-    cleared
+}
+
+/// Whether `path` is a note in a locked folder of `vault` now.
+pub(super) fn in_locked_folder(vault: &Vault, path: &str) -> bool {
+    !quire_sync::engine::is_attachment(path) && vault.locked_folder(&NotePath::new(path)).is_some()
 }
 
 /// The engine state of a sync folder's settings lane.

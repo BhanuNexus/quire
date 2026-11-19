@@ -81,10 +81,16 @@ passes 16 MiB.
   records are under half its bytes has them copied to the active pack; the
   commit names their new places and drops the pack from `packs`, then it
   is deleted. On disk the packs stay under twice the live bytes plus one pack.
-* **Locked folders**: when a base is cleared because its note is locked
-  now, every pack with any unnamed bytes, the active one included, is
-  compacted in that same commit, so no version of that text stays in a pack
-  (`docs/design/0.11-secure.md`).
+* **Locked folders**: when the last committed record named the text of a
+  note in a folder that is locked now and the new one doesn't (its delete
+  was sent, or the scrub cleared it), every pack with any unnamed bytes, the
+  active one included, is compacted in that same commit, so no version of
+  that text, nor the text of a note deleted earlier, stays in a pack; the
+  packs of records kept aside as damaged (`state.d.unreadable…`) are deleted
+  then too (`docs/design/0.11-secure.md`). A pack whose delete fails is
+  tried again at the next commit.
+* A write that wrote nothing (a full disk) keeps appending to the same
+  pack; one that left part of a record behind moves on to a new pack.
 * **A checkpoint** is written whole with `quire_base::fs::write_atomic`
   (flushed, then renamed); then the older checkpoint and journal are
   deleted.
