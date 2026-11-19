@@ -18,6 +18,8 @@ ket = "ket"
 braket = "braket"
 # Candle's `Tensor::arange` (apps/quire-ai-engine).
 arange = "arange"
+# The `flate2` crate (deflate), named in the 0.14 design notes.
+flate = "flate"
 
 [type.rust]
 # Whisper's language codes (`"fo"`, `"ba"`…) in apps/quire-ai-engine/src/whisper.rs.
