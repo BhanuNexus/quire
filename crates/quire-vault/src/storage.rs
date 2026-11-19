@@ -21,10 +21,36 @@ pub(crate) fn is_hidden(path: &str) -> bool {
     path.split('/').any(|seg| seg.starts_with('.') || seg == "node_modules")
 }
 
+/// A file's size and modification time, as a listing gives them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileStat {
+    /// Bytes on disk.
+    pub size: u64,
+    /// Nanoseconds since the Unix epoch; 0 if the platform gives none (or a
+    /// time before 1970).
+    pub mtime_ns: u64,
+}
+
+impl FileStat {
+    /// Nanoseconds since the Unix epoch of `t`, 0 before 1970.
+    pub fn nanos(t: SystemTime) -> u64 {
+        t.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
+    }
+}
+
 /// Storage port. Paths are vault-relative.
 pub trait Storage: Send + Sync {
     /// Every visible file (not just Markdown), sorted.
     fn list(&self) -> Result<Vec<NotePath>>;
+    /// [`Self::list`] with each file's size and time, taken from the
+    /// listing itself where the adapter can (no read, at most one `stat`
+    /// per file; `docs/design/0.14-architecture.md` §2). `None` when it
+    /// can't: the vault manifest then reads and hashes that file on every
+    /// scan, which is correct and only slower. Fails exactly when
+    /// [`Self::list`] would.
+    fn list_stat(&self) -> Result<Vec<(NotePath, Option<FileStat>)>> {
+        Ok(self.list()?.into_iter().map(|p| (p, None)).collect())
+    }
     fn read_bytes(&self, path: &NotePath) -> Result<Vec<u8>>;
     /// Crash-safe write: readers see the old or the new content, never half.
     fn write_bytes_atomic(&self, path: &NotePath, bytes: &[u8]) -> Result<()>;
@@ -162,6 +188,15 @@ impl LocalFs {
     /// vault (a renamed folder would look like deleted notes), and
     /// [`Storage::list`] lists again. The root itself must be readable.
     fn walk(&self, dir: &Path, out: &mut Vec<NotePath>, vanished: &mut Vec<String>) -> Result<()> {
+        let mut found = Vec::new();
+        self.walk_stat(dir, false, &mut found, vanished)?;
+        out.extend(found.into_iter().map(|(p, _)| p));
+        Ok(())
+    }
+
+    /// [`Self::walk`], with each file's size and time when `stat` is set
+    /// (on Unix one `lstat` per file; on Windows the folder listing has them).
+    fn walk_stat(&self, dir: &Path, stat: bool, out: &mut Vec<(NotePath, Option<FileStat>)>, vanished: &mut Vec<String>) -> Result<()> {
         let rel_of = |p: &Path| p.strip_prefix(&self.root).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
@@ -193,9 +228,22 @@ impl LocalFs {
                 reason = "a symlinked note or folder is skipped, as the watcher and sync skip it: it could point outside the vault"
             )]
             if ft.is_dir() {
-                self.walk(&path, out, vanished)?;
+                self.walk_stat(&path, stat, out, vanished)?;
             } else if ft.is_file() {
-                out.push(NotePath::new(rel));
+                let st = if stat {
+                    match entry.metadata() {
+                        Ok(m) => Some(FileStat { size: m.len(), mtime_ns: m.modified().map_or(0, FileStat::nanos) }),
+                        // Gone since the folder was read: as a vanished entry above.
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                            vanished.push(rel.clone());
+                            continue;
+                        }
+                        Err(e) => return Err(io_err(rel)(e)),
+                    }
+                } else {
+                    None
+                };
+                out.push((NotePath::new(rel), st));
             }
         }
         Ok(())
@@ -253,6 +301,21 @@ impl LocalFs {
                 Err(e) => Err(io_err(path.to_string())(e)),
             }
         })
+    }
+
+    /// Keep a notice about folders a listing could never open, naming each
+    /// folder once ([`Storage::take_listing_notice`]).
+    fn tell_unopenable(&self, folders: &[String]) {
+        let mut st = self.unopenable.lock().unwrap_or_else(PoisonError::into_inner);
+        let new: Vec<&String> = folders.iter().filter(|f| !st.0.contains(*f)).collect();
+        if !new.is_empty() {
+            let names = new.iter().map(|f| format!("{f}/")).collect::<Vec<_>>().join(", ");
+            st.1 = Some(format!(
+                "Quire can't open {names} in this vault (a name this system can't use, such as one ending in a space or a dot, \
+                 or a drive that isn't there), so the notes in it are left out. Rename it with another program, or move it out of the vault."
+            ));
+            st.0.extend(new.into_iter().cloned());
+        }
     }
 
     /// Refuse a plain file in a locked folder (0.11): whoever writes, the
@@ -335,11 +398,11 @@ const LIST_TRIES: usize = 3;
 /// same result on the next walk, with nothing else changed: that listing
 /// is used without it (as before 0.13.2), and `unopenable` gets each such
 /// folder once, to be told.
-fn stable_listing(
-    mut walk: impl FnMut(&mut Vec<String>) -> Result<Vec<NotePath>>,
+fn stable_listing<T: Listed>(
+    mut walk: impl FnMut(&mut Vec<String>) -> Result<Vec<T>>,
     mut unopenable: impl FnMut(&[String]),
-) -> Result<Vec<NotePath>> {
-    let mut last: Option<(Vec<NotePath>, Vec<String>)> = None;
+) -> Result<Vec<T>> {
+    let mut last: Option<(Vec<T>, Vec<String>)> = None;
     for _ in 0..LIST_TRIES {
         let mut vanished = Vec::new();
         let out = walk(&mut vanished)?;
@@ -347,7 +410,7 @@ fn stable_listing(
             return Ok(out);
         }
         vanished.sort();
-        if last.as_ref().is_some_and(|(o, v)| *o == out && *v == vanished) {
+        if last.as_ref().is_some_and(|(o, v)| same_paths(o, &out) && *v == vanished) {
             unopenable(&vanished);
             return Ok(out);
         }
@@ -360,6 +423,29 @@ fn stable_listing(
             "folders kept being moved or deleted while the vault was listed ({names}); try again in a moment"
         )),
     })
+}
+
+/// An entry of a listing: a path, with or without its [`FileStat`].
+trait Listed {
+    fn path(&self) -> &NotePath;
+}
+
+impl Listed for NotePath {
+    fn path(&self) -> &NotePath {
+        self
+    }
+}
+
+impl Listed for (NotePath, Option<FileStat>) {
+    fn path(&self) -> &NotePath {
+        &self.0
+    }
+}
+
+/// Whether two listings name the same files (a file's time may differ:
+/// it was being written, which is no reason to list again).
+fn same_paths<T: Listed>(a: &[T], b: &[T]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.path() == y.path())
 }
 
 /// The name of the `n`th file trashed as `name` at `stamp`.
@@ -433,18 +519,19 @@ impl Storage for LocalFs {
                 out.sort();
                 Ok(out)
             },
-            |folders| {
-                let mut st = self.unopenable.lock().unwrap_or_else(PoisonError::into_inner);
-                let new: Vec<&String> = folders.iter().filter(|f| !st.0.contains(*f)).collect();
-                if !new.is_empty() {
-                    let names = new.iter().map(|f| format!("{f}/")).collect::<Vec<_>>().join(", ");
-                    st.1 = Some(format!(
-                        "Quire can't open {names} in this vault (a name this system can't use, such as one ending in a space or a dot, \
-                         or a drive that isn't there), so the notes in it are left out. Rename it with another program, or move it out of the vault."
-                    ));
-                    st.0.extend(new.into_iter().cloned());
-                }
+            |folders| self.tell_unopenable(folders),
+        )
+    }
+
+    fn list_stat(&self) -> Result<Vec<(NotePath, Option<FileStat>)>> {
+        stable_listing(
+            |vanished| {
+                let mut out = Vec::new();
+                self.walk_stat(&self.root, true, &mut out, vanished)?;
+                out.sort_by(|a, b| a.0.cmp(&b.0));
+                Ok(out)
             },
+            |folders| self.tell_unopenable(folders),
         )
     }
 
@@ -639,6 +726,15 @@ impl Storage for SingleFile {
         Ok(if self.local.exists(&self.name) { vec![self.name.clone()] } else { Vec::new() })
     }
 
+    fn list_stat(&self) -> Result<Vec<(NotePath, Option<FileStat>)>> {
+        let abs = self.local.abs(&self.name)?;
+        match std::fs::metadata(&abs) {
+            Ok(m) => Ok(vec![(self.name.clone(), Some(FileStat { size: m.len(), mtime_ns: m.modified().map_or(0, FileStat::nanos) }))]),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(e) => Err(io_err(self.name.to_string())(e)),
+        }
+    }
+
     fn read_bytes(&self, path: &NotePath) -> Result<Vec<u8>> {
         if self.is_main(path) {
             return self.local.read_bytes(path);
@@ -756,6 +852,15 @@ impl Storage for MemFs {
 
     fn list(&self) -> Result<Vec<NotePath>> {
         Ok(self.files.read().expect("lock").keys().filter(|p| !is_hidden(p.as_str())).cloned().collect())
+    }
+
+    fn list_stat(&self) -> Result<Vec<(NotePath, Option<FileStat>)>> {
+        let files = self.files.read().expect("lock");
+        Ok(files
+            .iter()
+            .filter(|(p, _)| !is_hidden(p.as_str()))
+            .map(|(p, (bytes, t))| (p.clone(), Some(FileStat { size: bytes.len() as u64, mtime_ns: FileStat::nanos(*t) })))
+            .collect())
     }
 
     fn read_bytes(&self, path: &NotePath) -> Result<Vec<u8>> {
@@ -1171,6 +1276,66 @@ mod tests {
     /// (the same result on every walk) is left out with a notice, once.
     /// An unreadable vault root is an error too.
     #[test]
+    fn list_stat_lists_what_list_lists_with_sizes_and_times() {
+        /// An adapter that keeps `list_stat`'s default.
+        struct Plain(MemFs);
+        impl Storage for Plain {
+            fn list(&self) -> Result<Vec<NotePath>> {
+                self.0.list()
+            }
+            fn read_bytes(&self, path: &NotePath) -> Result<Vec<u8>> {
+                self.0.read_bytes(path)
+            }
+            fn write_bytes_atomic(&self, path: &NotePath, bytes: &[u8]) -> Result<()> {
+                self.0.write_bytes_atomic(path, bytes)
+            }
+            fn rename(&self, from: &NotePath, to: &NotePath) -> Result<()> {
+                self.0.rename(from, to)
+            }
+            fn trash(&self, path: &NotePath) -> Result<()> {
+                self.0.trash(path)
+            }
+            fn exists(&self, path: &NotePath) -> bool {
+                self.0.exists(path)
+            }
+            fn modified(&self, path: &NotePath) -> Result<SystemTime> {
+                self.0.modified(path)
+            }
+            fn absolute(&self, _: &NotePath) -> Option<PathBuf> {
+                None
+            }
+            fn list_under(&self, folder: &str) -> Result<Vec<NotePath>> {
+                self.0.list_under(folder)
+            }
+            fn remove(&self, path: &NotePath) -> Result<()> {
+                self.0.remove(path)
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let fs = LocalFs::new(dir.path()).unwrap();
+        for (p, c) in [("a.md", "one"), ("Projects/b.md", "three"), (".quire/x.json", "{}"), ("Projects/.git/y", "z")] {
+            fs.write_atomic(&NotePath::new(p), c).unwrap();
+        }
+        let listed = fs.list_stat().unwrap();
+        assert_eq!(listed.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>(), fs.list().unwrap());
+        for (p, st) in &listed {
+            let m = std::fs::metadata(dir.path().join(p.as_str())).unwrap();
+            assert_eq!(*st, Some(FileStat { size: m.len(), mtime_ns: FileStat::nanos(m.modified().unwrap()) }), "{p}");
+        }
+        let mem = MemFs::with_files([("a.md", "one"), (".quire/x.json", "{}")]);
+        let got = mem.list_stat().unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].1.map(|s| s.size), Some(3));
+        // An adapter without its own: the listing, with no sizes or times.
+        assert_eq!(Plain(mem).list_stat().unwrap(), [(NotePath::new("a.md"), None)]);
+        // A single file: just that one.
+        let single = SingleFile::open(&dir.path().join("a.md")).unwrap();
+        let got = single.list_stat().unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].1.map(|s| s.size), Some(3));
+    }
+
+    #[test]
     fn a_listing_that_lost_a_folder_is_retried_then_refused() {
         let dir = tempfile::tempdir().unwrap();
         let fs = LocalFs::new(dir.path().join("v")).unwrap();
@@ -1198,7 +1363,7 @@ mod tests {
             |v| {
                 tries += 1;
                 v.push(format!("Work {tries}"));
-                Ok(vec![])
+                Ok(Vec::<NotePath>::new())
             },
             none,
         );

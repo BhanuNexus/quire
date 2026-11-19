@@ -44,6 +44,8 @@ quire-pdf, quire-spell. Edition: both (P5).
 - A new storage operation: a `Storage` method with a default, then `LocalFs`, `MemFs` and `SingleFile` in `storage.rs`, then
   the test doubles that implement the trait: `lock/tests.rs` (`Crash`, `Hook`, `HeldFile`) and `Gate` in
   `crates/quire-app/src/secure_state/tests.rs`.
+- The vault manifest (what is on disk, by hash): `changes.rs`, format `docs/formats/manifest.md`. It lists with
+  `Storage::list_stat` and never turns a listing error into removed rows. [test] `changes/tests.rs`
 - Locked-folder format or conversion: `lock/` (`format.rs`, `convert.rs`, `ring.rs`, `known.rs`); update
   `docs/formats/locked-folders.md` and keep old key files readable (P3).
 

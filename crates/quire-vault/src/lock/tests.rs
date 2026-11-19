@@ -250,6 +250,9 @@ impl Storage for Crash {
     fn list(&self) -> Result<Vec<NotePath>> {
         self.inner.list()
     }
+    fn list_stat(&self) -> Result<Vec<(NotePath, Option<crate::FileStat>)>> {
+        self.inner.list_stat()
+    }
     fn read_bytes(&self, path: &NotePath) -> Result<Vec<u8>> {
         self.inner.read_bytes(path)
     }
@@ -882,6 +885,9 @@ impl Storage for Hook {
     fn list(&self) -> Result<Vec<NotePath>> {
         self.inner.list()
     }
+    fn list_stat(&self) -> Result<Vec<(NotePath, Option<crate::FileStat>)>> {
+        self.inner.list_stat()
+    }
     fn read_bytes(&self, path: &NotePath) -> Result<Vec<u8>> {
         self.inner.read_bytes(path)
     }
@@ -1056,6 +1062,9 @@ struct HeldFile {
 impl Storage for HeldFile {
     fn list(&self) -> Result<Vec<NotePath>> {
         self.inner.list()
+    }
+    fn list_stat(&self) -> Result<Vec<(NotePath, Option<crate::FileStat>)>> {
+        self.inner.list_stat()
     }
     fn read_bytes(&self, path: &NotePath) -> Result<Vec<u8>> {
         if *path == self.path && self.reads.fetch_add(1, Ordering::SeqCst) > 0 {

@@ -8,6 +8,7 @@
 #![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
 #![warn(clippy::let_underscore_must_use, clippy::map_err_ignore)]
 
+pub mod changes;
 mod hash;
 mod history;
 pub mod lock;
@@ -28,7 +29,7 @@ pub use prefs::{PrefsError, VaultPrefs};
 /// Moved to `quire_base::fs` (0.14); this path stays for existing callers.
 pub use quire_base::fs::replace_file;
 pub use refactor::{LinkRewrite, rewrite_links};
-pub use storage::{LocalFs, MemFs, SingleFile, Storage};
+pub use storage::{FileStat, LocalFs, MemFs, SingleFile, Storage};
 pub use templates::{TemplateVars, expand_template};
 pub use vault::{RenameReport, Vault, VaultConfig};
 pub use watch::{VaultEvent, VaultWatcher};

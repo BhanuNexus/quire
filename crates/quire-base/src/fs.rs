@@ -11,12 +11,13 @@
 //! anything fails.
 //!
 //! - [`write_atomic`] with [`Options`]: app state, config, caches, files in
-//!   a shared sync folder.
+//!   a shared sync folder; [`write_atomic_parts`] for bytes in several pieces.
 //! - [`write`](fn@write) and [`write_new_private`]: the old `quire_app::atomic` API.
 //! - [`Prepared`] and [`replace_file`]: for a caller that makes its own
 //!   temporary file (`Storage` for vault files, which keeps `tempfile`'s
 //!   `.tmp…` names that history skips) and only needs the rename.
 //! - [`sweep_leftovers`]: temporary files a crash left behind.
+//! - [`failing`]: for tests, a write whose rename fails.
 //!
 //! Vault notes are written through `quire_vault::Storage`, which builds on
 //! this module and adds the locked-folder check and one write at a time.
@@ -71,6 +72,12 @@ impl Options {
 /// the 255-byte limit.
 pub fn write_atomic(path: &Path, bytes: &[u8], opts: Options) -> std::io::Result<()> {
     Prepared::new(path, bytes, opts)?.place(path)
+}
+
+/// [`write_atomic`] of `parts` one after another, without joining them in
+/// memory first: for a header in front of a large body (`crate::cache`).
+pub fn write_atomic_parts(path: &Path, parts: &[&[u8]], opts: Options) -> std::io::Result<()> {
+    Prepared::from_parts(path, parts, opts)?.place(path)
 }
 
 /// [`write_atomic`] for app state ([`Options::STATE`]), or a secret with
@@ -129,6 +136,11 @@ impl Prepared {
     /// Write `bytes` to a new temporary file beside `dest` (see
     /// [`write_atomic`] for its name), flushed when `opts.durable`.
     pub fn new(dest: &Path, bytes: &[u8], opts: Options) -> std::io::Result<Self> {
+        Self::from_parts(dest, &[bytes], opts)
+    }
+
+    /// [`Self::new`] with the bytes given in `parts`, written in order.
+    pub fn from_parts(dest: &Path, parts: &[&[u8]], opts: Options) -> std::io::Result<Self> {
         let dir = folder_of(dest);
         if opts.create_dirs {
             fs::create_dir_all(dir)?;
@@ -155,7 +167,9 @@ impl Prepared {
         };
         // From here on, dropping `me` removes the file.
         let me = Self { path, sync_folder: opts.durable, placed: false };
-        file.write_all(bytes)?;
+        for part in parts {
+            file.write_all(part)?;
+        }
         if opts.durable {
             file.sync_all()?;
         }
@@ -179,6 +193,9 @@ impl Prepared {
     /// caller that runs its own retry loop ([`is_busy`] tells which errors
     /// are worth one).
     pub fn try_place(&mut self, dest: &Path) -> std::io::Result<()> {
+        if FAILING.get() {
+            return Err(std::io::Error::other("a test made this write fail (quire_base::fs::failing)"));
+        }
         fs::rename(&self.path, dest)?;
         self.placed = true;
         Ok(())
@@ -206,6 +223,27 @@ impl Drop for Prepared {
             let _ = fs::remove_file(&self.path);
         }
     }
+}
+
+thread_local! {
+    static FAILING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` as if every rename into place failed, on this thread only.
+///
+/// The temporary file is written, then the rename fails and it is removed, as
+/// when the disk fills or another program holds the destination. For tests
+/// that show a failed write leaves the old file (other crates' tests can't
+/// make the disk fail). Nothing else sets it.
+pub fn failing<T>(f: impl FnOnce() -> T) -> T {
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            FAILING.set(self.0);
+        }
+    }
+    let _reset = Reset(FAILING.replace(true));
+    f()
 }
 
 /// The longest base name in a temporary name: `.` + base + `.` + 16 hex
@@ -487,6 +525,19 @@ mod tests {
         // Reads retry only on sharing or lock violations, never on access denied.
         assert!(!is_read_busy(&std::io::Error::from_raw_os_error(5)));
         assert_eq!(is_read_busy(&std::io::Error::from_raw_os_error(32)), cfg!(windows));
+    }
+
+    #[test]
+    fn a_failing_write_leaves_the_old_file_and_no_temporary_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("state.bin");
+        write_atomic_parts(&p, &[b"he", b"ad", b"body"], Options::STATE.lazy()).unwrap();
+        assert_eq!(fs::read(&p).unwrap(), b"headbody");
+        assert!(failing(|| write_atomic(&p, b"new", Options::STATE)).is_err());
+        assert_eq!(fs::read(&p).unwrap(), b"headbody");
+        assert_eq!(names(dir.path()), ["state.bin"]);
+        write_atomic(&p, b"new", Options::STATE).unwrap();
+        assert_eq!(fs::read(&p).unwrap(), b"new", "only inside the closure");
     }
 
     /// Reliability scan item 4: files are replaced on Windows while
