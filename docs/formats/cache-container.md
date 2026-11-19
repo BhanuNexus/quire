@@ -7,25 +7,33 @@ Owner: architecture (`quire_base::cache`). Caches written before 0.14
 
 ```
 offset  size  field      value
-0       8     magic      "QUIRECA1"
+0       8     magic      "QUIRECA2"
 8       2     kind       u16, which cache (table below)
 10      4     format     u32, the layout of this cache's body
 14      4     builder    u32, the version of the code that derived the body
-18      4     flags      u32, none defined: written 0, ignored when read
+18      4     flags      u32, none defined: written 0, value ignored when read
 22      8     body_len   u64, bytes after the header
-30      32    body_hash  SHA-256 of the body
+30      32    hash       SHA-256 of bytes 0..30 of the header, then the body
 62      …     body       private to the cache (its own format page)
 ```
 
 All integers are little-endian. The bytes are the same from the full and the
 Lite build.
 
+The hash covers every header field but itself (magic through `body_len`,
+flags included) and then the body, so a flipped bit in `kind`, `format`,
+`builder` or `body_len` is caught as damage to the body is. One hash instead
+of a separate header checksum: one field, one check. `QUIRECA1`, an
+unreleased layout whose hash covered the body only, is a wrong magic: never
+trusted, always replaced.
+
 ## Reading
 
 `cache::read(path, kind, format, builder)` returns the body, or nothing for:
 a missing or unreadable file, a wrong magic, another `kind`, another `format`
 (older or newer), another `builder`, a file whose length is not exactly
-62 + `body_len`, or a body whose SHA-256 is not `body_hash`. **Any doubt is
+62 + `body_len`, or a `hash` that is not the SHA-256 of the header's first
+30 bytes and the body. **Any doubt is
 "no cache"**: the caller builds the cache again from the notes. A cache is never
 migrated; a change of layout or meaning bumps `format`, a change in the code
 that derives the content bumps `builder`, and either discards the old file.
@@ -41,13 +49,12 @@ written in place or appended, so several processes on one vault (the app,
 work is redone later.
 
 If the file there holds the same `kind` in a **newer** `format`, and its
-length is 62 + `body_len` and its body's SHA-256 is `body_hash`, it is left
+length is 62 + `body_len` and its `hash` is right, it is left
 alone and the cache lives in memory only: a newer Quire on this device may
 still be using it (P3). Anything else (an older format, another builder,
 another kind, a newer format whose length or hash is wrong, junk) is
-replaced, so a damaged file whose header only looks newer does not stay
-forever. Known limit: the hash covers the body, not the header, so a flip
-in `format` alone, with the body intact, looks like a real newer file.
+replaced, so a damaged file whose header only looks newer (a flipped bit in
+`format`) does not stay forever: the hash covers `format`.
 
 A cache that cannot be written (a read-only disk) is a notice once, then
 in-memory operation; never an error that stops the app.
