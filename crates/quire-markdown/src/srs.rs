@@ -131,7 +131,7 @@ struct LineInfo<'a> {
 /// Every card in a note, in order.
 pub fn cards(src: &str) -> Vec<Card> {
     let verbatim = verbatim_ranges(src);
-    let in_verbatim = |a: usize, b: usize| verbatim.iter().any(|r| r.start < b.max(a + 1) && a < r.end);
+    let mut overlap = crate::scan::Overlap::new(&verbatim);
     let mut lines = Vec::new();
     let mut pos = 0;
     for raw in src.split_inclusive('\n') {
@@ -149,7 +149,7 @@ pub fn cards(src: &str) -> Vec<Card> {
     let mut i = 0;
     while i < lines.len() {
         // A paragraph: consecutive non-blank lines outside code and front matter.
-        let usable = |l: &LineInfo<'_>| !l.text.trim().is_empty() && !in_verbatim(l.start, l.start + l.text.len());
+        let mut usable = |l: &LineInfo<'_>| !l.text.trim().is_empty() && !overlap.hits(l.start, (l.start + l.text.len()).max(l.start + 1));
         if !usable(&lines[i]) {
             i += 1;
             continue;
@@ -349,6 +349,174 @@ pub fn similarity(a: &str, b: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `cards` as it was before the range cursor, the oracle for the new one.
+    mod old {
+        use super::super::*;
+
+        pub(super) fn cards(src: &str) -> Vec<Card> {
+            let verbatim = verbatim_ranges(src);
+            let in_verbatim = |a: usize, b: usize| verbatim.iter().any(|r| r.start < b.max(a + 1) && a < r.end);
+            let mut lines = Vec::new();
+            let mut pos = 0;
+            for raw in src.split_inclusive('\n') {
+                lines.push(LineInfo { start: pos, text: raw.trim_end_matches(['\n', '\r']) });
+                pos += raw.len();
+            }
+            let highlights: Vec<Range<usize>> = scan_with(src, &verbatim)
+                .into_iter()
+                .filter_map(|i| match i {
+                    Inline::Highlight { range } => Some(range),
+                    _ => None,
+                })
+                .collect();
+            let mut out: Vec<Card> = Vec::new();
+            let mut i = 0;
+            while i < lines.len() {
+                // A paragraph: consecutive non-blank lines outside code and front matter.
+                let usable = |l: &LineInfo<'_>| !l.text.trim().is_empty() && !in_verbatim(l.start, l.start + l.text.len());
+                if !usable(&lines[i]) {
+                    i += 1;
+                    continue;
+                }
+                let start = i;
+                while i < lines.len() && usable(&lines[i]) {
+                    i += 1;
+                }
+                let para = &lines[start..i];
+                if let Some(q) = para.iter().position(|l| l.text.trim() == "?").filter(|q| *q > 0 && *q + 1 < para.len()) {
+                    let last = &para[para.len() - 1];
+                    let (id_at, block) = match trailing_block_id(last.text) {
+                        Some((at, id)) => (last.start + at, Some(id.to_string())),
+                        None => (last.start + last.text.trim_end().len(), None),
+                    };
+                    let question = para[..q].iter().map(|l| l.text.trim()).collect::<Vec<_>>().join("\n");
+                    let mut answer: Vec<&str> = para[q + 1..].iter().map(|l| l.text.trim()).collect();
+                    if let (Some(b), Some(a)) = (&block, answer.last_mut()) {
+                        *a = a.strip_suffix(&format!("^{b}")).unwrap_or(a).trim_end();
+                    }
+                    out.push(Card {
+                        id: block.as_deref().map_or_else(|| format!("k_{}", hash12(&question)), id_from_block),
+                        kind: CardKind::MultiLine,
+                        question,
+                        answer: answer.join("\n"),
+                        context: String::new(),
+                        lines: start..i,
+                        block_id: block,
+                        id_at,
+                    });
+                    continue;
+                }
+                let mut cloze_lines = Vec::new();
+                for (k, l) in para.iter().enumerate() {
+                    let t = l.text.trim_start();
+                    if t.starts_with('#') && t.trim_start_matches('#').starts_with(' ') {
+                        continue; // headings aren't cards
+                    }
+                    let is_task = crate::tasks::marker_in_line(l.text).is_some();
+                    if !is_task && let Some(split) = basic_split(l.text) {
+                        let q = strip_bullet(&l.text[..split]).trim();
+                        let rest = &l.text[split + 2..];
+                        let (id_at, block) = match trailing_block_id(l.text) {
+                            Some((at, id)) if at > split => (l.start + at, Some(id.to_string())),
+                            _ => (l.start + l.text.trim_end().len(), None),
+                        };
+                        let a = match &block {
+                            Some(b) => rest.trim().strip_suffix(&format!("^{b}")).unwrap_or(rest).trim(),
+                            None => rest.trim(),
+                        };
+                        if !q.is_empty() && !a.is_empty() {
+                            out.push(Card {
+                                id: block.as_deref().map_or_else(|| format!("k_{}", hash12(q)), id_from_block),
+                                kind: CardKind::Basic,
+                                question: q.to_string(),
+                                answer: a.to_string(),
+                                context: String::new(),
+                                lines: start + k..start + k + 1,
+                                block_id: block,
+                                id_at,
+                            });
+                            continue;
+                        }
+                    }
+                    cloze_lines.push(k);
+                }
+                // Clozes in the rest of the paragraph.
+                let (pa, pb) = (para[0].start, para[para.len() - 1].start + para[para.len() - 1].text.len());
+                let hl: Vec<&Range<usize>> = highlights
+                    .iter()
+                    .filter(|r| r.start >= pa && r.end <= pb)
+                    .filter(|r| cloze_lines.iter().any(|k| r.start >= para[*k].start && r.start < para[*k].start + para[*k].text.len()))
+                    .collect();
+                if hl.is_empty() {
+                    continue;
+                }
+                let last = &para[para.len() - 1];
+                let (id_at, block) = match trailing_block_id(last.text) {
+                    Some((at, id)) => (last.start + at, Some(id.to_string())),
+                    None => (last.start + last.text.trim_end().len(), None),
+                };
+                let body_end = if block.is_some() { id_at } else { pb };
+                let render = |hide: Option<&Range<usize>>| {
+                    let mut s = String::new();
+                    let mut at = pa;
+                    for r in &hl {
+                        s.push_str(&src[at..r.start]);
+                        let inner = &src[r.start + 2..r.end - 2];
+                        if hide == Some(*r) {
+                            s.push_str("[…]");
+                        } else {
+                            s.push_str(inner);
+                        }
+                        at = r.end;
+                    }
+                    s.push_str(&src[at..body_end]);
+                    s.lines().map(|l| strip_bullet(l).trim_end()).collect::<Vec<_>>().join("\n")
+                };
+                let context = render(None);
+                for (n, r) in hl.iter().enumerate() {
+                    let question = render(Some(r));
+                    out.push(Card {
+                        id: block
+                            .as_deref()
+                            .map_or_else(|| format!("k_{}", hash12(&question)), |b| format!("{}:{}", id_from_block(b), n + 1)),
+                        kind: CardKind::Cloze,
+                        answer: src[r.start + 2..r.end - 2].to_string(),
+                        question,
+                        context: context.clone(),
+                        lines: start..i,
+                        block_id: block.clone(),
+                        id_at,
+                    });
+                }
+            }
+            // The same question twice in a note: later copies get `-2`, `-3`…
+            let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+            for c in &mut out {
+                let n = seen.entry(c.id.clone()).or_insert(0);
+                *n += 1;
+                if *n > 1 {
+                    c.id = format!("{}-{n}", c.id);
+                }
+            }
+            out
+        }
+    }
+
+    #[test]
+    fn cards_are_the_old_ones_on_fixture_and_generated_notes() {
+        use proptest::prelude::*;
+        for note in crate::test_notes::fixture_notes() {
+            assert_eq!(cards(&note), old::cards(&note));
+        }
+        let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(1000));
+        runner
+            .run(&crate::test_notes::note_lines(), |t| {
+                prop_assert_eq!(cards(&t), old::cards(&t), "{:?}", t);
+                Ok(())
+            })
+            .unwrap();
+    }
 
     const NOTE: &str = "---\nsrs: true\nq: a :: b\n---\n# Biology :: notes\n\nWhat is ATP? :: The cell's energy currency\n- Mitosis :: Cell division ^mito\n\nName the powerhouse\nof the cell\n?\nThe mitochondrion\n\nThe ==nucleus== holds the ==DNA==.\n\n```\ncode :: not a card\n```\n\n- [ ] task [due:: 2026-12-01]\nkey:: value with (a::b)\nA ::: reversed\n";
 

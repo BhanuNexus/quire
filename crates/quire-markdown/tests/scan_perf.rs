@@ -17,6 +17,7 @@
 )]
 
 use std::fmt::Write as _;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use quire_markdown::linter::{Cx, Options, lint};
@@ -58,6 +59,23 @@ fn big_note(bytes: usize) -> String {
     s
 }
 
+static ALONE: Mutex<()> = Mutex::new(());
+
+/// A note of about `bytes` bytes that is nearly all verbatim ranges and the lines
+/// between them (fences, display math, inline code, highlights, callouts, ids), so
+/// a walk that tests every line against every range shows at a size the parser
+/// itself still reads in linear time.
+fn dense_note(bytes: usize) -> String {
+    let mut s = String::from("---\ntitle: Dense\n---\n");
+    let mut i = 0;
+    while s.len() < bytes {
+        write!(s, "`c{i}` ==m{i}== @k{i} [[n{i}]] ^b{i}\n\n```\nx\n```\n$$\ny ^2\n$$\n> [!note] T{i}\ntext ^i{i}\n\nQ{i}\n?\nA{i}\n\n")
+            .unwrap();
+        i += 1;
+    }
+    s
+}
+
 fn time<T>(f: impl FnOnce() -> T) -> Duration {
     let t = Instant::now();
     std::hint::black_box(f());
@@ -70,16 +88,27 @@ fn best(runs: usize, mut f: impl FnMut()) -> Duration {
 }
 
 /// `f` over `make(n)` and `make(2n)`: the larger takes under 2.5x the smaller.
+/// A slow moment on the runner can spoil one measurement, so a failed attempt is
+/// measured again; quadratic work fails every attempt (about 4x).
 fn doubles(what: &str, n: usize, make: impl Fn(usize) -> String, f: impl Fn(&str)) {
+    // One at a time: tests that share the cores would time each other.
+    let _alone = ALONE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let (small, large) = (make(n), make(2 * n));
-    let a = best(5, || f(&small));
-    let b = best(5, || f(&large));
-    // Too quick to measure: far from quadratic whatever the ratio is.
-    if b < Duration::from_millis(2) {
-        return;
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        let a = best(7, || f(&small));
+        let b = best(7, || f(&large));
+        // Too quick to measure: far from quadratic whatever the ratio is.
+        if b < Duration::from_millis(2) {
+            return;
+        }
+        let ratio = b.as_secs_f64() / a.as_secs_f64().max(1e-6);
+        if ratio < 2.5 {
+            return;
+        }
+        seen.push(format!("{a:?} -> {b:?} ({ratio:.1}x)"));
     }
-    let ratio = b.as_secs_f64() / a.as_secs_f64().max(1e-6);
-    assert!(ratio < 2.5, "{what}: {n} -> {} took {a:?} -> {b:?} ({ratio:.1}x)", 2 * n);
+    panic!("{what}: {n} -> {} bytes of work took {}", 2 * n, seen.join(", then "));
 }
 
 /// Uses a result so the work is not optimised away.
@@ -100,22 +129,31 @@ fn resolve(_: &quire_markdown::WikiLink) -> Option<String> {
 
 #[test]
 fn inline_scan_is_linear_on_open_brackets() {
-    doubles("scan_inlines", 40_000, open_brackets, |s| sink(scan_inlines(s)));
-    doubles("extract", 40_000, open_brackets, |s| sink(extract(s)));
-    doubles("lint", 40_000, open_brackets, lint_all);
+    doubles("scan_inlines", 50_000, open_brackets, |s| sink(scan_inlines(s)));
+    doubles("extract", 50_000, open_brackets, |s| sink(extract(s)));
+    doubles("lint", 50_000, open_brackets, lint_all);
 }
 
 #[test]
 fn inline_scan_is_linear_on_many_open_links() {
-    doubles("scan_inlines", 20_000, open_links, |s| sink(scan_inlines(s)));
-    doubles("extract", 20_000, open_links, |s| sink(extract(s)));
-    doubles("lint", 20_000, open_links, lint_all);
+    doubles("scan_inlines", 25_000, open_links, |s| sink(scan_inlines(s)));
+    doubles("extract", 25_000, open_links, |s| sink(extract(s)));
+    doubles("lint", 25_000, open_links, lint_all);
 }
 
 #[test]
 fn highlight_scan_is_linear_on_open_marks() {
     doubles("scan_inlines", 100_000, open_marks, |s| sink(scan_inlines(s)));
     doubles("extract", 100_000, open_marks, |s| sink(extract(s)));
+}
+
+#[test]
+fn verbatim_range_walks_are_linear_on_a_big_note() {
+    doubles("srs::cards", 200_000, dense_note, |s| sink(srs::cards(s)));
+    doubles("to_html", 200_000, dense_note, |s| sink(render::to_html(s, &resolve)));
+    doubles("for_preview", 200_000, dense_note, |s| sink(render::for_preview(s, &|_| None)));
+    doubles("cite::scan", 200_000, dense_note, |s| sink(cite::scan(s)));
+    doubles("find_block", 200_000, dense_note, |s| sink(quire_markdown::callout::find_block(s, "nope")));
 }
 
 /// The budgets of the build plan, for a person to read; run with

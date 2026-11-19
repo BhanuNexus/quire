@@ -91,7 +91,7 @@ impl Verbatim {
     }
 }
 
-fn merge(mut v: Vec<Range<usize>>) -> Vec<Range<usize>> {
+pub(crate) fn merge(mut v: Vec<Range<usize>>) -> Vec<Range<usize>> {
     v.sort_by_key(|r| r.start);
     let mut out: Vec<Range<usize>> = Vec::with_capacity(v.len());
     for r in v {
@@ -103,10 +103,39 @@ fn merge(mut v: Vec<Range<usize>>) -> Vec<Range<usize>> {
     out
 }
 
-/// Index of the first verbatim range that ends after `pos`, if `pos` is inside it.
-fn covering(ranges: &[Range<usize>], pos: usize) -> Option<&Range<usize>> {
+/// The range of `ranges` (sorted and merged, as [`merge`] leaves them) that holds `pos`, if any.
+pub(crate) fn covering(ranges: &[Range<usize>], pos: usize) -> Option<&Range<usize>> {
     let i = ranges.partition_point(|r| r.end <= pos);
     ranges.get(i).filter(|r| r.start <= pos)
+}
+
+/// Asks whether a line overlaps a sorted, merged list of ranges (code, math, front
+/// matter), for a caller that walks the lines of a note in order: the index only
+/// moves forward, so all the lines together cost O(lines + ranges) and not
+/// O(lines x ranges) (`docs/design/0.14-index-startup.md` §3.7).
+#[derive(Debug)]
+pub(crate) struct Overlap<'a> {
+    ranges: &'a [Range<usize>],
+    /// Every range before this one ends at or before the last `from` asked.
+    next: usize,
+}
+
+impl<'a> Overlap<'a> {
+    pub(crate) const fn new(ranges: &'a [Range<usize>]) -> Self {
+        Self { ranges, next: 0 }
+    }
+
+    /// Does `from..to` (not empty) overlap a range? A `from` before the last one
+    /// asked is answered too, by looking the index up again.
+    pub(crate) fn hits(&mut self, from: usize, to: usize) -> bool {
+        if self.next > 0 && self.ranges[self.next - 1].end > from {
+            self.next = self.ranges.partition_point(|r| r.end <= from);
+        }
+        while self.ranges.get(self.next).is_some_and(|r| r.end <= from) {
+            self.next += 1;
+        }
+        self.ranges.get(self.next).is_some_and(|r| r.start < to)
+    }
 }
 
 fn is_tag_char(c: char) -> bool {
@@ -443,26 +472,7 @@ mod tests {
         prop::collection::vec(piece, 0..60).prop_map(|v| v.concat())
     }
 
-    /// The notes of the sample vault and a design note: real text with the old answer.
-    fn fixture_notes() -> Vec<String> {
-        fn walk(dir: &std::path::Path, out: &mut Vec<String>) {
-            let mut entries: Vec<_> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).collect();
-            entries.sort();
-            for p in entries {
-                if p.is_dir() {
-                    walk(&p, out);
-                } else if p.extension().is_some_and(|e| e == "md") {
-                    out.push(std::fs::read_to_string(&p).unwrap());
-                }
-            }
-        }
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let mut out = Vec::new();
-        walk(&root.join("sample-vault"), &mut out);
-        out.push(std::fs::read_to_string(root.join("docs/design/0.14-index-startup.md")).unwrap());
-        assert!(out.len() > 5, "the fixture notes were not found");
-        out
-    }
+    use crate::test_notes::fixture_notes;
 
     fn same_as_old(src: &str) {
         let verbatim = verbatim_ranges(src);
@@ -509,5 +519,21 @@ mod tests {
         for start in at {
             assert_eq!(cursor.wikilink_at(start), old::wikilink_at(src, start), "start {start}");
         }
+    }
+
+    #[test]
+    fn the_overlap_cursor_answers_like_a_scan_of_every_range_in_any_order() {
+        let ranges = vec![2..4, 6..7, 9..15, 20..21];
+        let any = |a: usize, b: usize| ranges.iter().any(|r| r.start < b && a < r.end);
+        let mut overlap = Overlap::new(&ranges);
+        let queries: Vec<(usize, usize)> = (0..24).flat_map(|a| (a + 1..26).map(move |b| (a, b))).collect();
+        // Forward, then backward, then a scrambled order: the cursor may only be faster, never different.
+        let forward = queries.iter().copied();
+        let backward = queries.iter().rev().copied();
+        let scrambled = (0..queries.len()).map(|i| queries[(i * 37) % queries.len()]);
+        for (a, b) in forward.chain(backward).chain(scrambled) {
+            assert_eq!(overlap.hits(a, b), any(a, b), "{a}..{b}");
+        }
+        assert!(!Overlap::new(&[]).hits(0, 1));
     }
 }
