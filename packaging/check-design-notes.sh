@@ -4,9 +4,11 @@
 #   check-design-notes.sh [REPO_ROOT]
 #
 # Every note (docs/design/*.md and docs/design/handoff/*.md, except README.md):
-#   - has `Status: current`, `Status: record` or `Status: superseded by <file>`,
+#   - has `Status: current`, `Status: proposed …`, `Status: record` or
+#     `Status: superseded by <file>`,
 #     and an `Area:` line, in its first 12 lines;
-#   - a `current` note also has a `Code:` line; a `record` note says
+#   - a `current` or `proposed` note also has a `Code:` line (a proposed
+#     note is a design awaiting the owner's approval); a `record` note says
 #     "A record of a pass; not a description of today's code.";
 #   - a `superseded` note names a file that exists;
 #   - is listed in docs/design/README.md by its path;
@@ -75,8 +77,8 @@ for f in "$design"/*.md "$design"/handoff/*.md; do
 
   status="$(printf '%s\n' "$head" | grep -E '^Status: ' | head -1)"
   case "$status" in
-    'Status: current')
-      printf '%s\n' "$head" | grep -qE '^Code: .+' || fail "$rel: a current note needs a 'Code:' line in its first 12 lines"
+    'Status: current' | 'Status: proposed'*)
+      printf '%s\n' "$head" | grep -qE '^Code: .+' || fail "$rel: a current or proposed note needs a 'Code:' line in its first 12 lines"
       ;;
     'Status: record')
       printf '%s\n' "$head" | grep -qF "A record of a pass; not a description of today's code." \
@@ -88,8 +90,8 @@ for f in "$design"/*.md "$design"/handoff/*.md; do
         fail "$rel: superseded by '$target', which is not a file in docs/design/"
       fi
       ;;
-    '') fail "$rel: no 'Status:' line in the first 12 lines (current | record | superseded by <note>)" ;;
-    *) fail "$rel: '$status' is not 'Status: current', 'Status: record' or 'Status: superseded by <note>'" ;;
+    '') fail "$rel: no 'Status:' line in the first 12 lines (current | proposed | record | superseded by <note>)" ;;
+    *) fail "$rel: '$status' is not 'Status: current', 'Status: proposed …', 'Status: record' or 'Status: superseded by <note>'" ;;
   esac
   printf '%s\n' "$head" | grep -qE '^Area: .+' || fail "$rel: no 'Area:' line in the first 12 lines"
 
