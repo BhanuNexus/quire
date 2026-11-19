@@ -509,8 +509,10 @@ impl Engine {
     }
 
     /// The text behind a note's base print, if it is kept.
-    fn base_text(&self, p: &Print) -> Option<String> {
-        self.bases.get(p)
+    /// A base store that can't be read now fails the pass (it is tried
+    /// again); one that lost the text answers `None`.
+    fn base_text(&self, p: &Print) -> Result<Option<String>, SyncError> {
+        self.bases.get(p).map_err(|error| SyncError::Local { path: format!("merge base {}", p.to_hex()), error })
     }
 
     /// Use these keys from now on (the vault's key changed: 0.13).
@@ -648,7 +650,7 @@ impl Engine {
         c: &Content,
         report: &mut Report,
     ) -> Result<String, SyncError> {
-        if let Some(m) = self.merge_left(&*local, path, file, &c.text) {
+        if let Some(m) = self.merge_left(&*local, path, file, &c.text)? {
             report.merged.push(path.to_string());
             return Ok(m);
         }
@@ -662,16 +664,18 @@ impl Engine {
     /// of it that was changed while the note was out of reach (see
     /// [`SyncState::left`]): the copy's changes merged into `incoming`,
     /// when they merge cleanly.
-    fn merge_left(&mut self, local: &dyn LocalStore, path: &str, file: &FileId, incoming: &str) -> Option<String> {
-        let left = self.state.left.get(path).filter(|l| l.file == *file && !is_attachment(path))?;
+    fn merge_left(&mut self, local: &dyn LocalStore, path: &str, file: &FileId, incoming: &str) -> Result<Option<String>, SyncError> {
+        let Some(base) = self.state.left.get(path).filter(|l| l.file == *file && !is_attachment(path)).and_then(|l| l.base) else {
+            return Ok(None);
+        };
         // A base that isn't kept any more: not merged, the copy stays.
-        let base = self.base_text(&left.base?)?;
-        let mine = local.read(path)?;
+        let Some(base) = self.base_text(&base)? else { return Ok(None) };
+        let Some(mine) = local.read(path) else { return Ok(None) };
         let m = merge::merge3(&base, &mine, incoming);
-        m.is_clean().then(|| {
+        Ok(m.is_clean().then(|| {
             self.state.left.remove(path);
             m.text
-        })
+        }))
     }
 
     /// Whether the file at `path` here is exactly one of the versions of
@@ -899,11 +903,14 @@ impl Engine {
         // unknown, or its text isn't kept here any more (a damaged pack):
         // both versions are kept then, this device's in place
         // (`docs/design/0.14-sync-speed.md` §3.2).
-        let merge_base = |eng: &Self| -> Option<String> {
+        let merge_base = |eng: &Self| -> Result<Option<String>, SyncError> {
             if unknown_base || base_deleted || is_attachment(&t.path) {
-                return None;
+                return Ok(None);
             }
-            shared_text.clone().or_else(|| eng.base_text(&base_print))
+            match &shared_text {
+                Some(s) => Ok(Some(s.clone())),
+                None => eng.base_text(&base_print),
+            }
         };
         if !local.in_scope(&t.path) {
             // Outside the selection here: nothing local to protect. It is
@@ -954,7 +961,7 @@ impl Engine {
             // its next version); otherwise this device's text stays where it
             // is and is sent as a note of its own, so nothing is lost.
             if let Some(mine) = here.as_ref().filter(|_| changed_here) {
-                let merged = merge_base(self).map(|base| merge::merge3(&base, mine, &c.text)).filter(merge::MergeResult::is_clean);
+                let merged = merge_base(self)?.map(|base| merge::merge3(&base, mine, &c.text)).filter(merge::MergeResult::is_clean);
                 if let Some(m) = merged {
                     let content = Content {
                         actor: local.actor(&t.path),
@@ -1024,7 +1031,7 @@ impl Engine {
                     self.protect_unsynced(local, &to, &mine)?;
                 }
                 // Attachments can't be merged: both versions are kept.
-                let merged = merge_base(self)
+                let merged = merge_base(self)?
                     .filter(|_| !is_attachment(&to))
                     .map(|base| merge::merge3(&base, &mine, &c.text))
                     .filter(merge::MergeResult::is_clean);

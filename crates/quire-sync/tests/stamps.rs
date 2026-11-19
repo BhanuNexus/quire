@@ -313,3 +313,44 @@ fn random_edits_whose_stamps_stay_put_converge_after_a_verify() {
         simulate(seed, true);
     }
 }
+
+/// Bases that can be made unreadable for a while (a disk error).
+struct Flaky {
+    inner: Box<dyn quire_sync::Bases>,
+    down: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl quire_sync::Bases for Flaky {
+    fn get(&self, p: &quire_sync::Print) -> Result<Option<String>, String> {
+        if self.down.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err("disk error".into());
+        }
+        self.inner.get(p)
+    }
+    fn put(&mut self, p: quire_sync::Print, text: &str) -> Result<(), String> {
+        self.inner.put(p, text)
+    }
+}
+
+#[test]
+fn bases_that_cant_be_read_now_fail_the_pass_and_lose_nothing() {
+    let (server, mut devs) = devices(2, false);
+    devs[0].store.edit("Plan.md", "a\nb\nc\n");
+    settle(&mut devs, &server);
+    let down = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let inner = devs[1].engine.take_bases();
+    let e = &devs[1].engine;
+    devs[1].engine = Engine::new(e.space.clone(), e.device.clone(), "device 1", e.keys().clone(), e.state.clone())
+        .with_bases(Box::new(Flaky { inner, down: std::sync::Arc::clone(&down) }));
+    devs[0].store.edit("Plan.md", "A\nb\nc\n");
+    devs[1].store.edit("Plan.md", "a\nb\nC\n");
+    sync(&mut devs[0], &server);
+    let d = &mut devs[1];
+    assert!(d.engine.sync(&mut d.store, &server, TODAY).is_err(), "no merge without its base, and no guess");
+    assert_eq!(d.store.files["Plan.md"], "a\nb\nC\n");
+    assert_eq!(d.store.files.len(), 1);
+    down.store(false, std::sync::atomic::Ordering::Relaxed);
+    settle(&mut devs, &server);
+    assert_eq!(devs[1].store.files["Plan.md"], "A\nb\nC\n", "merged once the bases can be read");
+    assert_eq!(devs[0].store.files, devs[1].store.files);
+}

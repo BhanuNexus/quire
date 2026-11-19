@@ -84,11 +84,12 @@ impl std::fmt::Debug for Stamp {
 ///
 /// Only notes are put: attachments, settings files and encrypted files are
 /// never merged, so their print is all the engine keeps. A base that
-/// [`Self::get`] can't give (a damaged pack) costs a merge: both versions
-/// are kept, never one lost.
+/// [`Self::get`] doesn't have (a damaged pack) costs a merge: both versions
+/// are kept, never one lost. One that can't be read now is an error, and
+/// the pass is tried again.
 pub trait Bases: Send {
     /// The text whose print is `p`, if it is kept.
-    fn get(&self, p: &Print) -> Option<String>;
+    fn get(&self, p: &Print) -> Result<Option<String>, String>;
     /// Keep `text` (whose print is `p`).
     fn put(&mut self, p: Print, text: &str) -> Result<(), String>;
 }
@@ -98,8 +99,8 @@ pub trait Bases: Send {
 pub struct MemoryBases(pub BTreeMap<Print, String>);
 
 impl Bases for MemoryBases {
-    fn get(&self, p: &Print) -> Option<String> {
-        self.0.get(p).cloned()
+    fn get(&self, p: &Print) -> Result<Option<String>, String> {
+        Ok(self.0.get(p).cloned())
     }
 
     fn put(&mut self, p: Print, text: &str) -> Result<(), String> {
@@ -213,8 +214,8 @@ impl State13 {
     }
 
     /// `state` as 0.13 saves it, with note texts from `bases`. `None` when a
-    /// note's text isn't there: 0.13 would take an empty base for "nothing
-    /// synced yet" and copy the note aside.
+    /// note's text isn't there (or can't be read): 0.13 would take an empty
+    /// base for "nothing synced yet" and copy the note aside.
     pub fn from_state(state: &SyncState, bases: &dyn Bases) -> Option<Self> {
         let text = |path: &str, p: &Print| -> Option<String> {
             if is_attachment(path) {
@@ -222,7 +223,7 @@ impl State13 {
             } else if *p == Print::of("") {
                 Some(String::new())
             } else {
-                bases.get(p)
+                bases.get(p).ok().flatten()
             }
         };
         let mut files = BTreeMap::new();
@@ -290,12 +291,12 @@ mod tests {
         assert_eq!(state.cursor, 7);
         let f1 = &state.files[&FileId("f1".into())];
         assert_eq!((f1.base, f1.disk), (Print::of("one\n"), None));
-        assert_eq!(bases.get(&f1.base).as_deref(), Some("one\n"));
-        assert_eq!(bases.get(&f1.kept.as_ref().unwrap().base).as_deref(), Some("zero\n"));
+        assert_eq!(bases.get(&f1.base).unwrap().as_deref(), Some("one\n"));
+        assert_eq!(bases.get(&f1.kept.as_ref().unwrap().base).unwrap().as_deref(), Some("zero\n"));
         let png = &state.files[&FileId("f2".into())];
         assert_eq!(png.base, Print::of("hello"), "the fingerprint's hash is the print");
-        assert!(bases.get(&png.base).is_none(), "attachments keep no text");
-        assert_eq!(bases.get(&state.left["Away.md"].base.unwrap()).as_deref(), Some("away\n"));
+        assert!(bases.get(&png.base).unwrap().is_none(), "attachments keep no text");
+        assert_eq!(bases.get(&state.left["Away.md"].base.unwrap()).unwrap().as_deref(), Some("away\n"));
         assert_eq!(State13::from_state(&state, &bases), Some(old));
         assert_eq!(State13::from_state(&state, &MemoryBases::default()), None, "a missing text is never saved as empty");
     }
