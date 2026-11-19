@@ -434,6 +434,13 @@ impl Workspace {
         self.vault_attached(vault);
     }
 
+    /// The vault's manifest (`quire_vault::changes`), once the deferred
+    /// start opened it: the one table of what is on disk for everything in
+    /// this workspace that asks what changed (the index, and sync).
+    pub fn manifest(&self) -> Option<&quire_vault::changes::Manifest> {
+        self.manifest.as_ref()
+    }
+
     /// Re-read every note (after a bulk change such as an import).
     pub fn reload_index(&self) {
         if let Some(v) = self.vault.clone() {
