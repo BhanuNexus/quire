@@ -218,9 +218,12 @@ pub fn cards(src: &str) -> Vec<Card> {
         }
         // Clozes in the rest of the paragraph.
         let (pa, pb) = (para[0].start, para[para.len() - 1].start + para[para.len() - 1].text.len());
-        let hl: Vec<&Range<usize>> = highlights
+        // The highlights are in order: those inside the paragraph start at or after `pa` and before `pb`.
+        let first = highlights.partition_point(|r| r.start < pa);
+        let hl: Vec<&Range<usize>> = highlights[first..]
             .iter()
-            .filter(|r| r.start >= pa && r.end <= pb)
+            .take_while(|r| r.start < pb)
+            .filter(|r| r.end <= pb)
             .filter(|r| cloze_lines.iter().any(|k| r.start >= para[*k].start && r.start < para[*k].start + para[*k].text.len()))
             .collect();
         if hl.is_empty() {

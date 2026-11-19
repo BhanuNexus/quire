@@ -108,7 +108,7 @@ fn doubles(what: &str, n: usize, make: impl Fn(usize) -> String, f: impl Fn(&str
         }
         seen.push(format!("{a:?} -> {b:?} ({ratio:.1}x)"));
     }
-    panic!("{what}: {n} -> {} bytes of work took {}", 2 * n, seen.join(", then "));
+    panic!("{what}: size {n} -> {} took {}", 2 * n, seen.join(", then "));
 }
 
 /// Uses a result so the work is not optimised away.
@@ -154,6 +154,13 @@ fn verbatim_range_walks_are_linear_on_a_big_note() {
     doubles("for_preview", 200_000, dense_note, |s| sink(render::for_preview(s, &|_| None)));
     doubles("cite::scan", 200_000, dense_note, |s| sink(cite::scan(s)));
     doubles("find_block", 200_000, dense_note, |s| sink(quire_markdown::callout::find_block(s, "nope")));
+}
+
+/// Many paragraphs with a highlight each (the cloze cards of `srs::cards`): the highlights
+/// of a paragraph are found by position, not by a pass over all of them.
+#[test]
+fn cards_are_linear_on_many_highlighted_paragraphs() {
+    doubles("srs::cards", 200_000, |n| "a ==m== b\n\n".repeat(n / 12), |s| sink(srs::cards(s)));
 }
 
 /// The budgets of the build plan, for a person to read; run with
