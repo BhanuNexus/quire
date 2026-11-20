@@ -116,22 +116,24 @@ pub(crate) fn covering(ranges: &[Range<usize>], pos: usize) -> Option<&Range<usi
 #[derive(Debug)]
 pub(crate) struct Overlap<'a> {
     ranges: &'a [Range<usize>],
-    /// Every range before this one ends at or before the last `from` asked.
+    /// Every range before this one ends at or before `from`.
     next: usize,
+    /// The `from` asked last.
+    from: usize,
 }
 
 impl<'a> Overlap<'a> {
     pub(crate) const fn new(ranges: &'a [Range<usize>]) -> Self {
-        Self { ranges, next: 0 }
+        Self { ranges, next: 0, from: 0 }
     }
 
     /// Does `from..to` (not empty) overlap a range? A `from` before the last one
-    /// asked is answered too, by looking the index up again.
+    /// asked is answered too, by walking from the first range again.
     pub(crate) fn hits(&mut self, from: usize, to: usize) -> bool {
-        // cargo-mutants: equivalent: with `end == from`, `>=` only looks the index up again and gets the one the loop below reaches.
-        if self.next > 0 && self.ranges[self.next - 1].end > from {
-            self.next = self.ranges.partition_point(|r| r.end <= from);
+        if from.cmp(&self.from).is_lt() {
+            self.next = 0;
         }
+        self.from = from;
         while self.ranges.get(self.next).is_some_and(|r| r.end <= from) {
             self.next += 1;
         }
@@ -489,7 +491,7 @@ mod tests {
     }
 
     proptest::proptest! {
-        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(2000))]
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(crate::test_notes::cases(2000)))]
 
         #[test]
         fn the_cursor_scan_gives_the_old_inlines_on_generated_text(src in pieces()) {

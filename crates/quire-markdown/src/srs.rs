@@ -149,8 +149,8 @@ pub fn cards(src: &str) -> Vec<Card> {
     let mut i = 0;
     while i < lines.len() {
         // A paragraph: consecutive non-blank lines outside code and front matter.
-        // cargo-mutants: equivalent: a line that gets as far as `hits` is not blank, so `l.text.len() >= 1` and the `.max(..)` is `start + len` whatever the second operand's `+`.
-        let mut usable = |l: &LineInfo<'_>| !l.text.trim().is_empty() && !overlap.hits(l.start, (l.start + l.text.len()).max(l.start + 1));
+        // A line that gets as far as `hits` is not blank, so `from..to` is not empty.
+        let mut usable = |l: &LineInfo<'_>| !l.text.trim().is_empty() && !overlap.hits(l.start, l.start + l.text.len());
         if !usable(&lines[i]) {
             i += 1;
             continue;
@@ -223,9 +223,8 @@ pub fn cards(src: &str) -> Vec<Card> {
         let first = highlights.partition_point(|r| r.start < pa);
         let hl: Vec<&Range<usize>> = highlights[first..]
             .iter()
-            // cargo-mutants: equivalent: a highlight starting at `pb` ends after it and the next filter drops it, so `<=` keeps the same set.
-            .take_while(|r| r.start < pb)
-            .filter(|r| r.end <= pb)
+            // Highlights do not overlap, so those that end by `pb` come first.
+            .take_while(|r| r.end <= pb)
             .filter(|r| cloze_lines.iter().any(|k| r.start >= para[*k].start && r.start < para[*k].start + para[*k].text.len()))
             .collect();
         if hl.is_empty() {
@@ -514,7 +513,7 @@ mod tests {
         for note in crate::test_notes::fixture_notes() {
             assert_eq!(cards(&note), old::cards(&note));
         }
-        let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(1000));
+        let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(crate::test_notes::cases(1000)));
         runner
             .run(&crate::test_notes::note_lines(), |t| {
                 prop_assert_eq!(cards(&t), old::cards(&t), "{:?}", t);

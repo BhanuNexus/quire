@@ -1,0 +1,633 @@
+# Quire 0.14: per-note index updates and a startup cache
+
+Status: current
+Area: index
+Code: `crates/quire-index/src/{actor,index,fulltext,record,graph,semantic,chunk,hybrid,sections}.rs`, new `crates/quire-index/src/{store,codec,terms}.rs`, `crates/quire-markdown/src/{scan,srs,render,callout,cite}.rs`, `crates/quire-markdown/src/linter/analysis.rs`, `crates/quire-app/src/{workspace,ai,secure_state}.rs`, `crates/quire-intel/src/{tags,related,ask}.rs`, `apps/quire-cli/src/commands/{mod,bench}.rs`, `packaging/perf-check.py`
+
+Approved by the owner on 2026-11-19 (§9 lists what was decided), after the architect's
+review (`0.14-review-index-startup.md`), whose blocking issues are resolved here: removed
+text leaves the cache at the next flush (§3.6), flushes are rarer and the write row matches
+them (§2, §3.6), stable document ids are in step I1a (§8), the record keeps no BM25 list
+(§3.2), one process writes the cache (§3.6), and I1b measures a derived codec (§3.6, §8).
+
+This note fits the frame in `docs/design/0.14-architecture.md` (the "architect's frame"
+below). It uses its manifest (§2), its cache container (§3) and its budgets (§5), and gives
+the agent-index design (`0.14-agent-index.md`) the hooks §4 asks for. Numbers marked
+*(scan)* come from the 0.14 performance scan (main 6cbfbcd, v0.13.1, 2-core VM, warm page
+cache, `--profile perf` Lite builds, `quire-cli bench vault` vaults of 10k notes / 78 MB and
+50k notes / 391 MB; the scan is not kept in the repository). Numbers marked *(guess)* are
+mine and are checked by build step I1b before anything depends on them.
+
+## 1. The problem, as measured
+
+1. **Every save refits the meaning model** *(scan item 3)*. After any batch that changed a
+   note, `run_semantic` (`actor.rs`) waits `SEMANTIC_DEBOUNCE` (700 ms), cuts passages from
+   every note again (`chunk_note`, one `extract` per passage) and fits a new LSA model
+   (`build_lsa_index`, `semantic.rs`). With an embedder set it also clones every passage
+   (`chunks.clone()`). Cost: **3.4 s CPU at 10k notes; 19.6 s wall and 2.1 GB peak at 50k**
+   (1.4 GB without semantic). A background core is busy almost all the time someone types,
+   and agents writing through MCP or `serve` cause the same.
+2. **Every start re-reads and re-parses the whole vault** *(scan item 4)*. `IndexMsg::Load`
+   runs `parse_parallel` over every note, then item 1.
+
+   | | 10k notes | 50k notes |
+   |---|---:|---:|
+   | `quire-cli index` time | 2.0 s | 9.4 s |
+   | `quire-cli index` peak memory | 308 MB | 1.42 GB |
+   | plus semantic | 445 MB | 2.1 GB |
+   | MCP stdio: full note count after | not measured | about 32 s |
+
+   1.42 GB is about 7× the note text. `docs/design/0.13.1-perf.md` §3: the text is held
+   three times (source, `NoteRecord::plain`, passage text) and `NoteRecord::terms` keeps
+   every content word as a `String` per note.
+3. **New and removed notes rebuild the link graph** *(scan item 15)*: 332 ms at 10k notes
+   with 16 links each (about 1.7 s at 50k if linear, extrapolated); an edit patches it in
+   3.3 ms (`Index::graph_patchable`, `LinkGraph::patch`).
+4. **Two scanners are quadratic** and indexing pays both on every parse:
+   - *The wikilink and `==` scanner on hostile input* *(scan item 6)*. `scan::wikilink_at`
+     (`quire-markdown/src/scan.rs`) runs `rest.find("]]")` to the end of the note for every
+     `[[`, and then `inner.contains("[[")` over what it found. One line of 100,000 `[`: 1.3 s
+     in `extract`, 1.3 s in `highlight`, 1.4 s in `to_html`; 80,000 lines of `[[x` (400 KB):
+     3.8 s per scan. The linter's `analyze` (`linter/analysis.rs`, the `match_indices("[[")`
+     loop) runs `rest.find('\n')` per `[[` and `lint` calls `analyze` six or more times:
+     8.0 s. The `==` arm of `scan_with` finds the line end per `=` (13 ms at 20k, smaller).
+   - *Per-line lookups in verbatim ranges on large notes* *(scan item 7)*. Each line asks
+     `verbatim.iter().any(..)`, O(lines × code/math/HTML ranges): `srs.rs` (`cards`),
+     `render.rs` (`anchor_block_ids`, `for_preview`), `callout.rs` (`find_block`), `cite.rs`
+     (per `@`); `format.rs` has the same shape (not timed). A 5 MB note: `srs::cards` 7.2 s,
+     `to_html` 2.2 s; 20 MB: 172 s and 33 s.
+5. **The web app takes 102 s to show a 5 MB note** *(scan item 1)*. The cause is
+   `relative_links`/`next_attr` in `crates/quire-web/src/render.rs`: two `find` calls over
+   the rest of the HTML per attribute. That is not shared with the index or the scanners, so
+   it is **out of scope here** (an hours-long fix for whoever owns `serve`; the scan's
+   proposal stands). The 2.2 s of `to_html` inside that request is item 7, fixed in §3.7.
+
+## 2. Goals and non-goals
+
+Goals, with the architect's budgets (§5 of the frame) and a few rows of my own. Times are
+medians of the CI `perf` job and fail above budget × 1.25; counts are exact.
+
+| Measure | Today *(scan)* 10k / 50k | Budget 10k | Budget 50k |
+|---|---|---|---|
+| Warm start to keyword search complete (nothing changed) | 2.0 s / 9.4 s | 0.5 s | 2.0 s |
+| Warm start: note files opened | all | 0 | 0 |
+| Warm start to backlinks complete (mine, report only at first) | same as above | 1.0 s | 4.0 s |
+| Cold start (no cache) to keyword search complete | 2.0 s / 9.4 s | 2.3 s | 10.5 s |
+| Writing the cache after a cold start, CPU (mine; off the measured path) | none | ≤ 1.0 s | ≤ 5.0 s |
+| Index peak memory, keyword | 308 MB / 1.42 GB | 200 MB | 800 MB |
+| Index peak memory, with LSA semantic (refit included) | 445 MB / 2.1 GB | 280 MB | 1.2 GB |
+| Save to keyword-searchable (p95) | 3.3 ms patch | 50 ms | 50 ms |
+| Save to semantic updated: CPU after the debounce | 3.4 s / 19.6 s | 100 ms | 250 ms |
+| Meaning-model refit | every save | never on the save path; one at a time | same |
+| New note to backlinks updated, no name clash (mine) | 332 ms / ≈1.7 s | 20 ms | 60 ms |
+| Index caches on disk (records + passages; the manifest is the frame's) | 0 | ≤ 1.2× the vault (94 MB) | ≤ 1.2× the vault (470 MB) |
+| Bytes written by one flush after editing one note (mine) | 0 | ≤ 2 MB | ≤ 10 MB |
+| Flushes while someone keeps typing (mine; exact) | 0 | ≤ 1 per 5 minutes | same |
+| MCP stdio start to full note count | – / 32 s | 1 s | 3 s |
+| Hostile `[` line, 100k chars: `extract` / `lint` (mine) | 1.3 s / 8.0 s | 20 ms / 100 ms | – |
+| 5 MB realistic note: `srs::cards` / `to_html` (mine) | 7.2 s / 2.2 s | 300 ms / 400 ms | – |
+
+The hostile and large-note rows are checked by a doubling test as well as a time: the time
+for 2n must stay under 2.5× the time for n, which does not depend on the runner.
+
+Non-goals:
+- Persisting the link graph or agent views (views are memory-only in 0.14, frame §4).
+- Removing note text from memory (`Index::source` has about 40 callers outside the crate);
+  §3.5 says what it would take.
+- Neural embedding models and their download. The local-AI pack is the writing model plus
+  OCR, with the neural embedder left unticked, so the built-in LSA is what meaning search
+  uses. This note changes how any embedder is fed (one note at a time) and nothing in it
+  needs a neural embedder to be present.
+- The web app's `next_attr` (§1 item 5), Bases sort allocations *(scan item 11)* and
+  rename via the graph *(scan item 12)*: other owners.
+
+## 3. The design
+
+### 3.1 What is per note today, and what is not
+
+| Structure | Today | 0.14 |
+|---|---|---|
+| Keyword index (`FullText`) | per note: `insert`/`remove`; IDF, N and average length are computed at query time | stays per note; terms interned (§3.5) |
+| Records, tasks, properties | per note (`insert_record`) | same; loaded from the cache at start |
+| Views (Bases, boards, tasks, properties panel) | queries over records (`views::run_in`); nothing stored | unchanged: replacing a record is the whole update |
+| Link graph | patch for edits; rebuild for adds, removes, alias changes | patch also for adds and removes in the common case (§3.4) |
+| Semantic index (LSA) | refit from all passages per batch | per-note fold-in with the current model; refit in the background (§3.3) |
+| Semantic index (embedder) | re-chunk everything, embed what the vector cache lacks | per note: re-chunk and embed that note's passages only |
+
+### 3.2 Keyword index: per-note, made smaller
+
+`FullText` is already exact per note: `rank` reads document frequency from the posting
+lists, N from `ids` and the average length from `total_len` when it runs. Changes:
+
+- **Term interning.** A `Terms` table (new `terms.rs`): `TermId(u32)` ↔ term, owned by the
+  `Index`, sorted view kept in a `BTreeMap<Box<str>, TermId>` for prefix search. Postings
+  become `Vec<Postings>` indexed by `TermId` (each a `HashMap<DocId, f32>` as today).
+  `doc_terms` becomes `Vec<Vec<TermId>>` and `doc_len` a `Vec<f32>`, both indexed by a dense
+  `DocId`. Parser threads still produce strings (`note_terms`); the worker interns them
+  while it holds the write lock (a hash lookup per distinct term of the note).
+- **Stable document ids.** A note keeps its `DocId` across updates (today `insert` gives a
+  new id on every upsert). A removed note's id is reused only after the batch that removed
+  it has been applied, so every consumer of that batch saw the removal first. The agent
+  views key their member bitsets by it (§3.8).
+- **`NoteRecord::terms`** (content words for tag suggestions and related notes) becomes a
+  sorted `Vec<(TermId, u32)>`; `quire-intel` (`tags.rs`, `related.rs`) reads terms through
+  `Index::term(TermId)`.
+- **No BM25 list on the record.** The record's `search_terms` stays emptied after insert,
+  as today. The term ids of a document are in `doc_terms`, its length in `doc_len` and each
+  weight in its posting, which is all a view needs to add or subtract a note (§3.8). Keeping
+  the list would cost about 100–200 MB at 50k *(review's guess)* for nothing.
+- `total_len` is recomputed exactly when the cache is loaded, so float drift from
+  add/subtract never outlives a session.
+
+A term that no document uses any more stays in `Terms` until the next full load (a few MB
+at most *(guess)*); the posting list is removed as today.
+
+### 3.3 Semantic index: per-note updates and a background refit
+
+**Store.** `SemanticIndex` keeps no passage text. A passage is
+`{ doc: DocId, range, heading: Option<Arc<str>>, text_key: u64 }` plus its vector. Rows
+live in blocks of 4,096 (`Vec<Arc<RowBlock>>`); a reader clones the block list (cheap) and
+searches without a lock, as it holds an `Arc<SemanticIndex>` today. An update copies only
+the blocks it touches (`Arc::make_mut`, about 2–4 MB each *(guess)*). Dead rows are
+compacted when over 25 %. `chunks[i].text` callers (`hybrid.rs`, `sections.rs`,
+`quire-intel/src/ask.rs`) get `passage_text(i, &Index)`, which cuts the text again from the
+note's source for the few passages shown (at most 80 per query).
+
+**Vectors.** LSA vectors are `[latent: dims × f32 | lexical: 512 hashed buckets]`
+(`Lsa::embed`), 2,432 bytes, and the lexical part is mostly zeros. The main index uses the
+compact layout of `0.14-agent-index.md` §3.4, so views can reuse the main model bit for bit:
+the latent part as `dims` f16, the lexical part as sorted `(u16 bucket, f16 weight)` pairs,
+one f32 norm; about 700 bytes a passage. The f16 conversion is a few lines of safe code in
+`quire-index` (no new crate). f16 rounding can swap near-ties in the "by meaning" order;
+the quality test in §6 bounds it. The agent-index step 1 makes `Lsa::fit` and `Lsa::embed`
+deterministic (sum in term-index order, not `HashMap` order); this note relies on that.
+
+Passages refer to their note by the stable `DocId` of §3.2.
+
+**Per-note update.** The index worker sends `SemMsg::Changed(Vec<(DocId, NotePath)>)` and
+`SemMsg::Removed(..)` instead of `Rebuild`. After the 700 ms debounce the semantic worker:
+1. for each changed note, takes its source under a short read lock and runs `chunk_note`;
+2. embeds the passages with the current model: for LSA that is
+   `Lsa::project(&model, text) -> CompactVec` (folding in: the fitted vocabulary, IDF and
+   term loadings stay fixed; the function takes a model handle so views use it with their
+   own model); for an embedder it is `embed_batch` on the passages whose `text_key` the
+   vector cache lacks;
+3. replaces the note's rows, publishes the new block list, and sends the passage changes
+   (rows removed, rows added, with their `DocId`) to whoever listens: the agent views.
+
+Cost: one `extract` per passage of the changed notes plus a few microseconds per passage,
+far under the 100 / 250 ms budget *(guess, measured in I2a)*. `chunks.clone()` disappears.
+
+**Refit (LSA only).** A refit fits a new `Lsa` from every passage, taken in (path, offset)
+order whatever the row order (so two devices with the same notes fit the same model),
+re-embeds all rows and swaps the whole index. It counts terms by `TermId`, not by `String`
+as `Lsa::fit` does today, which is most of today's transient memory *(guess)*. It runs on the semantic worker at the lowest priority, one at a time, never on the
+save path, when:
+- passages added or changed since the last fit reach max(256, 10 % of all passages); or
+- the app has been idle 10 minutes, something changed since the fit, and the fit is older
+  than 6 hours; or
+- there is no model (first start, or the cached model is missing or of another version);
+- a folder was locked, or a note moved into one (§3.6). The model's vocabulary, IDF and
+  loadings were fitted on that text, so the model is marked *tainted*: it keeps serving the
+  person's own search in memory until the refit replaces it, but it is never written to
+  disk, and views never reuse it.
+
+Until a refit finishes, the old model keeps serving. A refit cuts passages from sources 256
+notes per read lock as today; its peak memory is inside the 1.2 GB row.
+
+**The bound** (frame §7 rule 4). Between refits every row equals what the current model
+gives its current text: folding in is exact. What drifts is the model against a fresh fit:
+new words outside its vocabulary add nothing to meaning search (keyword search still finds
+them), and IDF ages. The refit rule bounds the drift to 10 % of passages. A refit restores
+exact equality with a fresh build. Two devices may answer differently between refits; after
+an idle refit on the same notes they answer the same.
+
+**Embedders.** `SemanticBuilder` (`Fn(Vec<Chunk>) -> SemanticIndex`) becomes
+`set_embedder(Option<Arc<dyn Embedder>>, VectorCache)`. `None` is the built-in LSA, which
+is the default and needs nothing installed; every budget, test and step of this note is
+met with it. An embedder, when someone sets one (an endpoint today, a local model only if a
+later release ticks one), is fed per note through the same path; its own vector caches
+(`embeddings.bin`, `vectors-<model>.f16`) stay its store, and switching re-embeds in the
+background while the previous index keeps serving. Its dense vectors are held as f16 in
+memory (decided, §9).
+
+### 3.4 Link graph: adds and removes without a rebuild
+
+`graph_patchable` today accepts an edit that keeps a note's name and aliases. It gains:
+- **An added note** is patchable when none of its keys (its name and each alias, lowercased
+  and folded) is a name or alias of another note, nor the last segment of an unresolved
+  link target. Then no existing link can change where it points: a link finds a note by
+  path, then name, then alias, and every one of those lookups ends in the new note's keys.
+  The patch adds the note to the `Resolver` tables and runs `add_note` for it. Keeping that
+  test cheap needs one more table: the folded last segment of each unresolved target, with
+  a count.
+- **A removed note** is patchable when nothing links to it (`backlinks` empty): no link
+  resolved to it, so none changes. The patch removes it from the tables and its own links.
+- Everything else (a name clash, a removed note with backlinks, an alias change) rebuilds
+  as today, under a read lock.
+
+`patched_graph_equals_a_rebuild` (`index.rs`) gains adds, removes and name clashes. The
+common cases (a new daily note, a capture, an agent's new note) stop costing a rebuild.
+
+### 3.5 Memory at 50k notes
+
+Estimates *(guess)*, from the scan's "about 200 MB of note text" and the 0.13.1 note's
+breakdown; no heap profiler was available. Step I1b measures RSS before and after each
+part.
+
+| Part | 0.13.3 (est.) | 0.14 (est.) |
+|---|---:|---:|
+| Sources (`Index::sources`) | 200 MB | 200 MB |
+| `NoteRecord::plain` | 170 MB | 170 MB |
+| Content terms (`NoteRecord::terms`, a `String` per word per note) | 400 MB | 80 MB |
+| Postings and per-document term lists | 300 MB | 150 MB |
+| Graph (backlink context lines, tables) | 100 MB | 100 MB |
+| Other record fields, line starts | 100 MB | 80 MB |
+| **Keyword total** | **1.42 GB (measured)** | **≈ 780 MB** (budget 800) |
+| Passage text | 170 MB | 0 |
+| Vectors: 100k–200k passages (2–4 a note; the bench note averages 7.8 KB) | 240–490 MB dense f32 | 70–140 MB compact |
+| Passage table (ranges, headings, ids) and model | small | ≈ 15 MB |
+| Refit, transient | the rest of the measured peak | ≤ 300 MB |
+| **With semantic, peak** | **2.1 GB (measured)** | **≈ 1.1–1.2 GB** |
+
+The semantic row is the tightest. If I1b counts 4 passages a note, the refit's transient
+must shrink further (fit on a sample of passages, then project every passage) before I2a
+merges.
+
+If the keyword row misses after interning, the next lever is `plain`: build snippets from
+the source for the hits shown, and phrase-match on folded source. That changes snippet text
+for notes with markup and is not in this design.
+
+### 3.6 The startup cache
+
+**What is stored, where.** Under `<vault>/.quire/cache/index/` (frame §3: device-local, not
+synced, not seen by the watcher, `is_hidden`):
+
+| File | Container `kind` | Content | Written |
+|---|---|---|---|
+| `writer.lock` | – (empty) | held with `File::try_lock` by the one process that writes | – |
+| `records.idx` | records-index | one row per note: path, manifest hash (32 bytes), segment id, offsets, `modified` ms | whole file, at each flush |
+| `r-<16 hex>.seg` | records-segment | up to 512 notes: record blobs and source text | once; replaced by a rewritten copy, never changed in place |
+| `passages.idx` | passages-index | per note: manifest hash, embedder id, segment id, offset | as `records.idx` |
+| `p-<16 hex>.seg` | passages-segment | per note: ranges, headings, `text_key`s and (LSA only) vectors | once |
+| `lsa-<16 hex>.model` | lsa-model | vocabulary, IDF, term loadings, dims (≈ 3 MB at 8,000 terms × 96) | after each refit |
+
+Each file is one `quire_base::cache` container (magic, kind, `format`, `builder`, body
+length, SHA-256 of the body). Segments make a flush cost a small new segment, the segments
+that held removed or replaced notes, and an index rewrite (about 5 MB at 50k *(guess)*),
+not a 300 MB rewrite (frame §3, shape rules).
+
+**Segment body.** A segment-local term table (sorted strings), then section A, then section
+B. Section A holds each note's record: name, title, aliases, headings, links (with ranges,
+fields and the backlink context line), tags, tasks, stats, properties (`Value` tree),
+`plain`, content terms and BM25 terms as segment-local term ids, and its section-B offset.
+Section B holds the sources. Both are deflate level 1 (flate2, already in `quire-vault` one
+layer down), each segment on its own so loading runs on every core; I1b checks that
+inflating section A fits the warm-start row, and stores it raw if not. Loading interns a segment's term table once and maps ids.
+Line starts are recomputed from the source (one `memchr` pass).
+
+**The codec** is chosen by measurement in I1b, which times three candidates on both bench
+vaults (encode, decode, size, with the deflate of each section):
+- a hand-written codec (`codec.rs`); each encoder destructures its type without `..`, so a
+  new field in `quire_markdown::{Link, Task, Heading, Stats}` or `NoteRecord` does not
+  compile until it is encoded;
+- serde derives on those types plus `serde_json` (both already in the workspace;
+  `quire-markdown` gains the `serde` dependency);
+- the same derives with a small binary serde format (a new crate: needs the `deny.toml`
+  review the frame allows).
+
+A derived codec is taken if it meets the warm-start row (0.5 s / 2.0 s): every new field is
+then encoded without anyone remembering to, and a stale-cache bug costs more than some load
+time. The hand codec is taken only if no derived one meets the row. Either way a property
+test round-trips records of generated notes.
+
+**Versioning.** `format` is the layout. `builder` is `DERIVE_VERSION`, a constant in
+`quire-index` for what derives the content: `extract`, the tokenizer and stemmer, `parts`,
+`Lsa`. A golden test hashes `NoteRecord::from_source` and `chunk_note` over a fixed corpus
+of about 100 notes checked in beside it (new, under `crates/quire-index/tests/`) and fails with "bump `DERIVE_VERSION` and
+this hash" when the derivation changes. Any mismatch discards the file (frame: never
+migrated). A newer `format` is left alone, not overwritten (P3). Edition (P5): records do
+not depend on the edition (`quire-markdown` has no features); the test runs in both.
+
+**Validation against the files.** The index never trusts the cache by itself; it trusts the
+frame's manifest (`quire_vault::changes`), which applies "stat is a hint, hash is the fact"
+and the 2-second racy-timestamp rule:
+1. The manifest's rows after a scan (one listing with sizes and times; a file whose size or
+   mtime changed, or whose mtime was racy, is read and hashed). The index subscribes to the
+   manifest's `Delta`s (frame §2): it takes the rows of the scan that is current or in
+   progress, and starts one only if no scan ran in this process yet. Every later scan's
+   `Delta` reaches it as upserts and removals, so it never rescans and never misses what
+   sync found.
+2. `Vault::notes()` gives the notes to index (no locked folders, no templates).
+3. For each note: the `records.idx` row whose hash equals the manifest row's hash is used;
+   any other note goes to the parse list. Rows for paths not in the list are dropped.
+
+**Edits made while Quire was closed** change size or mtime in practice (editors, git,
+file-sync tools), so step 1 catches them and only those notes are read and parsed. An edit
+that keeps both size and mtime is caught by the manifest's verify pass (frame §2), whose
+changed rows reach the index through `Manifest::since(gen)` as ordinary upserts. A lost or
+foreign manifest means every note is read and hashed but still not parsed. A foreign
+`records.idx` (another device's copy carried by Dropbox or iCloud) only costs parses: its
+hashes do not match.
+
+**Hashes for the index's own updates.** The manifest hashes stored bytes without stripping
+a BOM; `IndexMsg::Upsert` carries decoded text. `Upsert` gains `hash: Option<FileHash>`,
+filled by callers that read the file (watcher events, sync, manifest deltas) and by saves
+(`Manifest::note_written` returns it, frame §2).
+
+**Only regular files the manifest lists are indexed.** This note owns that rule from step
+I1c, where the index actor first gets a manifest handle: `run` (`actor.rs`) refuses an
+upsert whose path the manifest does not list (a symlink, a path through a symlinked
+folder, a device file, anything the listing left out), as it refuses a path in a locked
+folder today. The ordering rule that makes this safe: a save calls `note_written` first,
+then sends the upsert, so a new note is always listed before the index sees it. Until I1c
+lands, `0.14-agent-tools.md` filters its listing tools with `allows(p) && manifest.has(p)`.
+Test: an upsert for a symlinked note, and for a note inside a symlinked folder, leaves the
+index unchanged; a save of a new note is indexed (it was listed first). Without one, the index hashes the text's bytes; a note with a
+BOM or invalid UTF-8 then misses the cache at the next start and is parsed again, which is
+correct and only slower.
+
+**Startup, while the app is usable.** `IndexMsg::Load` becomes three phases on the index
+worker (the UI never waits, P9; the status bar counts as today with `indexed`/`total`):
+1. *Install.* Read `records.idx`; check it against locked folders (§3.6, last part); decode
+   the needed segments' section A on up to `available_parallelism` threads at low priority;
+   build an `Index` off the lock and swap it in. Keyword search, quick open, tags, tasks and
+   views are complete for every unchanged note.
+2. *Fill.* Decode section B (sources); build the graph under a read lock and install it;
+   load passage rows whose hash and embedder id match, and the LSA model.
+3. *Catch up.* Parse the notes on the parse list in batches of 256 through the normal
+   per-note path (records, keyword index, graph patch, semantic fold-in). A later `Upsert`
+   for a queued path wins over the queued parse. If the parse list holds more than 10 % of
+   notes (a cold start), the graph is built once at the end instead of patched per batch,
+   and the semantic model is fitted once at the end.
+
+**Between phases 1 and 2** `Index::source` is `None` for cached notes (about 0.5 s at 50k
+*(guess)*). What a caller shows then: search hits keep their snippets (they come from
+`plain`, in section A); section search, Ask's keyword passages and the claims and
+citations jobs skip those notes, as they already skip a note without source; `line_of`
+answers line 1; backlinks are empty until the graph is installed. The index reports `busy`
+throughout, which MCP tools already pass on. A test runs section search between the phases
+and checks it returns a subset of the final hits, never a wrong range.
+
+After phase 3, the changed notes are written (in the background, at the lowest priority).
+A cold start is phase 3 alone, then a full write; the write is not in the "cold start" time
+(§2 has its own row). `quire-cli` one-shot commands write only when the cache is missing or
+more than 5 % of its rows are stale, and only if they get the writer lock; `--no-cache`
+skips reading and writing.
+
+**One writer.** The process that holds `writer.lock` (`File::try_lock`, non-blocking, as
+`lock_sync` in `vault_sync/state.rs`) writes; every other process on the vault (the app,
+`quire-cli mcp`, `serve`, one-shot commands) reads the cache at load and never writes it.
+Nothing ever waits: a process that does not get the lock tries again at its next flush, so
+when the app quits, a running `quire-cli mcp` takes over. The lock is released when its
+process exits, crashes included. Readers tolerate the writer: a row that points at a
+segment that is missing, unreadable or fails its hash is a cache miss for that note, never
+an error. A file-sync tool can still carry another device's files in; they are validated
+like any other (§3.6, validation).
+
+**Steady state: flushes.** Each applied batch marks its notes dirty and the notes it
+removed or replaced *dead*. The writer flushes when the index has been quiet for 30 s, at
+most every 5 minutes while it stays busy, on clean exit (`Drop` of `IndexService`, bounded
+to 2 s, then given up), and within 60 s of a batch that removed a note (the 5-minute cap
+does not hold that one back). A flush, in this order:
+1. writes the dirty notes into one new segment;
+2. for every segment holding a dead note, writes a copy without it (live notes only; a
+   segment holds at most 512 notes, a few MB *(guess)*);
+3. replaces `records.idx` (and `passages.idx` the same way);
+4. deletes every segment the new index files no longer reference, at once (only the writer
+   deletes, so no other process can still be about to reference it).
+
+**The cache holds text only of notes that are in the vault now, within one flush.** A
+removed note, a note moved away (including into a locked folder, by sync from another
+device), and the previous version of an edited note leave every segment at the next flush,
+without waiting for any threshold. At load the writer treats rows for paths that are no
+longer notes as dead too, so the first flush after start removes them. Besides that, a
+compaction merges small segments when there are more than 256. This rule goes into
+`docs/formats/index-cache.md` in the same words.
+
+**Crash safety.** The cache is disposable: deleting `.quire/cache/index/` changes speed,
+never results (frame §7 rule 3). Writes go through `quire_base::cache::write`
+(`write_atomic`, `Options::STATE.lazy()`). At each step:
+
+| Stops after | On next start |
+|---|---|
+| a segment's temporary file | `sweep_leftovers` removes it |
+| a new or rewritten segment, before the index file | the old index is consistent; the writer sees the dead rows again and redoes the flush; the unreferenced new segment is deleted by that flush |
+| the index file, before old segments are deleted | consistent; the next writer deletes the unreferenced segments at its first flush |
+| a torn or reordered write | body hash fails; that file is "no cache" (its notes are parsed) |
+| a refit, before the model file | old model and its vectors still match each other; the refit runs again |
+
+**Locked folders** (`docs/design/0.11-secure.md`). No text of a locked note may reach these
+files. Today `Vault::notes()` never lists one and `run` drops an upsert for one; the cache
+writes only what the index holds, so it inherits both. On top of that:
+- *Locking a folder* (and moving a note into one, and a key file arriving from another
+  device) already calls `secure_state::forget_derived` → `clear_caches`. `clear_caches` adds
+  `index/` (the whole folder). To stop a write in flight from putting text back, the app
+  also sends `IndexMsg::PurgeCache` through the index actor: the worker drops its dirty set,
+  deletes the files and bumps a cache epoch, and a writer whose epoch is stale discards its
+  output.
+- *Every write is checked twice*: each path is checked with `Vault::locked_folder` just
+  before the atomic write and again after it; if any path is now in a locked folder, the
+  file just written is deleted. The conversion writes the key file before touching any
+  note, so a writer in another process (`serve` holding the lock) that wrote between the key
+  file and the clear sees it on the second check.
+- *A note moved into a locked folder elsewhere* reaches this device as a removal of the
+  plain path; it is dead and leaves the cache at the next flush (within 60 s), as above.
+- *Every load checks first*: if any `records.idx` or `passages.idx` path is in a locked
+  folder, all index cache files are deleted before any segment is read. This covers a folder
+  locked by 0.13 (whose `clear_caches` does not know `index/`) or by another process while
+  this one was closed.
+- The desktop's separate search over unlocked locked notes (`secure_state.rs`,
+  `locked_index`) is a plain `Index`, which has no I/O. Only `IndexService` writes caches,
+  and only for the vault it was given in `Load`.
+
+The marker test: notes carrying a marker word, with a second `IndexService` on the same
+vault. (a) Lock their folder here; (b) on "another device", move one of them into a locked
+folder and let sync remove the plain file here; (c) delete one. After the next flush no
+byte under `.quire/cache/` (sections inflated) holds the marker.
+
+### 3.7 The scanner fixes (`quire-markdown`)
+
+- **`wikilink_at`.** Give `scan_with` a small forward-only cursor with three positions: the
+  next `\n`, the next `]]` and the next `[[`, each found with `memchr`-style `find` from the
+  current position only when the current one is behind. A wikilink at `start` exists only if
+  the next `]]` is before the next `\n` and no `[[` lies between `start + 2` and it. Every
+  position only moves forward, so a note is scanned O(length) times in total. `fields.rs`
+  (the other caller) builds its own cursor per line.
+- **`==`.** Use the same cursor's line end.
+- **Linter `analyze`.** Compute line ends once; for each `[[`, look for `]]` only up to its
+  line's end with the same cursor.
+- **Verbatim ranges** (`srs.rs`, `render.rs` twice, `callout.rs`, `cite.rs`, `format.rs`):
+  the ranges are sorted; walk them with an index that advances as lines advance, as
+  `scan::covering` does with `partition_point`.
+- **Tests**: the hostile cases of `docs/design/0.13.1-parse.md` gain these inputs with a time
+  bound and the doubling check (§2), and a property test compares the new `scan_inlines`
+  with the old one (kept under `#[cfg(test)]`) on generated text.
+
+Block-quote nesting in `highlight` (54 ms at 20,000 `> `) is the editor's and not indexing;
+it stays as it is.
+
+### 3.8 Agent views (for `0.14-agent-index.md`)
+
+Frame §4: a view owns statistics and a meaning model and borrows the rest. The agent-index
+design (its `Scope`, `DocStats`, `ScopeMeaning`; its §3.9 lists what it needs from here)
+builds them. What this design gives it, all in `quire-index`:
+- **Stable `DocId`s** per path and **`TermId`s** from the interner (§3.2, both in step I1a),
+  so a view's `DocStats` is a member bitset by `DocId` and a `df: Vec<u32>` by `TermId` (or
+  document frequency counted per query, the frame's other option).
+- **Each document's term ids and length** (`FullText::doc_terms(DocId)`, `doc_len(DocId)`),
+  so the actor can add or subtract a changed note in each live view under the same write
+  lock as the record; for the old version it reads them before replacing them.
+  `FullText::rank_in(&Query, &DocStats)` is the agent-index's; `rank` calls it with the
+  index's own statistics. These keyword hooks need only I1a, so the agent-index keyword half
+  (the part that closes the leak) starts when I1a merges.
+- **A passage store in (path, offset) order on demand**, a per-passage change stream (§3.3
+  step 3) and `Lsa::project(&model, text)`, so a view fits on visible passages only and
+  folds in with its own model. The compact layout is the same for main and views.
+- **No tainted model is ever reused by a view** (§3.3), and the main model fitted on any
+  passage a view could not see when it was fitted is not reused either (agent-index rule).
+- Views are never written to `.quire/cache/` in 0.14.
+
+### 3.9 Fit with the frame
+
+- Frame §9: wave 0 has the scanner fixes (I0); wave 1 has I1a (interning, stable ids),
+  I1b (measure) and I1c (record cache, on A1 and A2); wave 2 has I2a (per-note semantic,
+  refit) beside the agent-index keyword half; wave 3 has I2b (passage cache); the
+  agent-index meaning models follow in 0.14.x. Agent-index builds on §3.8.
+- No new crate and no new dependency edge (`quire-index` gains `flate2`, which `quire-vault`
+  below it already uses, and `sha2` through `quire_base::cache`).
+- **The manifest** is the workspace's shared one, as `0.14-sync-speed.md` §3.1 uses it. The
+  index is a subscriber to its `Delta`s (frame §2) and scans only if no scan ran in this
+  process yet; `note_written` returns the row's hash, which a save passes on (§3.6).
+- **Cache writes** follow frame §3 as revised: flush when quiet for 30 s, at most every 5
+  minutes while busy, on clean exit; one writer through a non-blocking lock; removed text
+  leaves at the next write.
+- **`Index::modified`** keeps its meaning (the file's time at load, the update's time
+  after); at load it comes from the manifest row's `mtime_ns` and is stored in
+  `records.idx`, so `0.14-agent-tools.md` can sort by it with no `stat` (its review's
+  suggestion; no new `NoteRecord` field).
+- **`docs/design/0.11-secure.md`** (current) lists the caches cleared on lock; its table
+  gains `index/` when I1c merges.
+- **Disk.** "Warm start: note files opened = 0" means the cache holds the source text,
+  because 40 callers read `Index::source` and the graph needs context lines. My estimate at
+  50k *(guess)*: records about 150 MB and sources about 70 MB after deflate, passages 70–140
+  MB, so 290–360 MB. The owner accepted up to 1.2× the vault if compression is weaker (§9);
+  reading notes at start is not the fallback.
+
+## 4. Alternatives considered
+
+- **Read the notes again at start, cache only derived data.** Smaller cache, no copy of the
+  text. But opening 50k files is slow on cold disks, network shares and Windows with on-access
+  scanning (each open is scanned), and it breaks the frame's "0 files opened".
+- **SQLite or an embedded key-value store.** A new dependency and a second persistence model
+  beside `.quire/`. Segments plus an index file give the same crash behaviour with
+  `write_atomic`.
+- **One whole cache file.** 300 MB rewritten at every flush. Rejected by the frame.
+- **A hand codec chosen up front.** Fast, but several hundred lines that every new field
+  must touch. Now one of three candidates measured in I1b, and the fallback (§3.6).
+- **No lock, several writers.** The first draft let every process write segments and kept
+  unreferenced ones for 10 minutes. With the app and `quire-cli mcp` on one vault (the usual
+  agent setup) both wrote the same notes and replaced each other's index. One writer with a
+  non-blocking lock is simpler and never waits.
+- **Compaction at 50 % dead bytes only.** Left deleted and moved-away text on disk for a
+  long time, including notes moved into a locked folder by another device (review B1).
+- **Persist only the LSA model, not passage vectors.** Removes `p-*.seg`, costs projecting
+  every passage in the background at start. I1b measures it before I2b is built.
+- **mmap and zero-copy records.** Needs `unsafe` (forbidden) or a new crate.
+- **Refit LSA on a timer only, never per save.** That is what §3.3 does, plus fold-in so a
+  saved note is findable by meaning within a second.
+- **Keep the vector of each passage dense f32.** Simpler, but 240–490 MB at 50k, mostly
+  zeros, and the agent views could not reuse the main model within their memory row.
+- **Persist the link graph.** Saves about 1.7 s at 50k after search is ready, but adds a
+  second large format and a second invalidation story (link settings, resolution order).
+  Revisit if "backlinks complete" misses its row.
+
+## 5. Compatibility
+
+- **Sync, 0.13.x with 0.14.** No change: `.quire/cache/` is device-local and never synced
+  (`docs/formats/README.md`). No wire format, revision or state file changes here.
+- **Existing vaults.** The first 0.14 start is a cold start (no cache) and writes the cache
+  afterwards. No note is rewritten. A 0.13 build ignores `.quire/cache/index/`. Going back to
+  0.13 and forward again: notes edited meanwhile have other hashes and are parsed; a folder
+  locked by 0.13 meanwhile triggers the load-time purge (§3.6).
+- **Other caches.** `embeddings.bin` and `vectors-*.f16` keep their formats. Their keys use
+  `DefaultHasher`, which Rust does not promise to keep stable between releases; a change
+  costs one re-embedding, not wrong results. Not changed here.
+- **Agent setups and the CLI.** MCP and `serve` start fast from the same cache. `quire-cli
+  index` gains `--timings` (load phases, for the perf job) and `--no-cache`; `quire-cli cache
+  clear` is the frame's. Search answers do not change except for the LSA drift of §3.3.
+- **Settings.** None.
+- **Real-time collaboration later.** Every update is keyed by (path, content hash) and is
+  idempotent: applying the same text twice changes nothing, and text arriving as many small
+  edits is many upserts. The writer lock serialises only the cache files of one device, not
+  edits: any number of writers may change notes, and the cache is rebuilt from the files
+  alone. The index never infers order from
+  manifest generations.
+
+## 6. Risks, and how each is tested
+
+| Risk | Test |
+|---|---|
+| A stale cache entry shows wrong search hits, tasks or backlinks | Equivalence: random vault, random edits while "closed" (including edits that keep size and mtime, fixed by the verify pass), warm load = cold load for search, sections, tasks, views, backlinks, unresolved links. Randomised, in `proptest` weekly at 50,000 cases |
+| Locked, deleted or moved-away text in a cache file | The marker test of §3.6 (lock here, move into a locked folder through sync, delete), with a second service on the vault and with a lock made while closed |
+| Codec misses a new field or a derivation change | Derived codec where it meets the row, else exhaustive destructuring (compile error); round-trip property test; golden `DERIVE_VERSION` hash |
+| Flushes write more than the row | The perf job counts flushes and bytes written while a scripted session types into one note for 10 minutes |
+| Crash or torn write | Fault injection at each row of the crash table (a storage hook that stops after N writes); corrupt one byte, truncate, swap in another vault's files, a newer `format`: each equals a cold build |
+| Two processes on one vault | Two services editing in a loop: only the lock holder writes; kill it, the other takes over at its next flush; no load ever fails; a dangling row only costs a parse |
+| Patched graph differs from a rebuild | `patched_graph_equals_a_rebuild` with adds, removes, name clashes (case-only clashes excluded, as today) |
+| Fold-in differs from the model it claims to use | Property test: after random edits every row equals `Lsa::embed` of its text with the current model; after a refit, the index equals a fresh build exactly |
+| Meaning search quality drifts between refits | Fixed corpus with known related pairs: recall@10 after 10 % of passages changed stays within 5 points of a fresh fit *(guess at the bound; I2a measures it)* |
+| Compact f16 vectors change rankings | On the quality corpus, top-10 "by meaning" overlap with dense f32 ≥ 9 of 10 per query *(guess at the bound)*; ties broken by path as today |
+| Decode is slower than guessed | I1b measures before I1c starts; fallback is section A deflate off or section B uncompressed (disk row) |
+| Scanner rewrite changes results | Old-vs-new property test; the hostile and fixture tests; `mutants` covers `quire-markdown` |
+| Budgets | The perf job gains the rows of §2 (report first, enforce in wave 4) |
+
+## 7. What the user sees
+
+- **Changed:** Quire opens large vaults much faster: search, tasks and views are ready about
+  as soon as the window is, and only notes changed since the last start are read again.
+- **Changed:** Saving a note in a large vault no longer keeps a processor busy rebuilding
+  meaning search; the saved note is found by meaning within a second or so.
+- **Changed:** Quire uses about half the memory it did for a large vault.
+- **Fixed:** A note with thousands of `[` or `[[` characters, or a very long note with much
+  code, no longer freezes typing, preview, flashcards or tidying.
+- **Added:** `quire-cli cache clear` removes Quire's caches; nothing in your notes changes.
+
+## 8. Build plan
+
+Each step merges on its own and passes the gate. Sizes: S hours to a day, M days, L a week
+or more.
+
+| Step | Size | Crates | Needs | Can run beside |
+|---|---|---|---|---|
+| I0a Scanner cursor: `wikilink_at`, `==`, linter `analyze`; hostile tests | S | quire-markdown | – | anything |
+| I0b Verbatim-range cursor in `srs`, `render`, `callout`, `cite`, `format` | S | quire-markdown | – | anything |
+| I1a Term interning, dense and stable `DocId`s, compact `FullText` (`doc_terms`, `doc_len` by id), `NoteRecord::terms` as ids; the keyword view hooks of §3.8 | M | quire-index, quire-intel | – | sync-speed S1 |
+| I1b Measure: the three codec candidates (§3.6), deflate of each section, decode speed on both bench vaults; RSS per part; projecting all passages at start with a cached model; settle the guesses of §2 and §3.5 | S | quire-index (bench only), quire-cli `bench` | I1a | anything |
+| I1c Record cache: the chosen codec, `store.rs` (segments, index files, writer lock, flush with purge of dead notes, compaction, sweep), three-phase `Load`, manifest subscription, refusing paths the manifest does not list, `Upsert` hash, `PurgeCache`, `clear_caches`, `docs/formats/index-cache.md` | L | quire-index, quire-app, quire-cli (quire-markdown if serde derives are chosen) | A1, A2, I1b | sync-speed S1 (not another `quire-index` builder) |
+| I1d Graph patch for adds and removes | M | quire-index | – | I0* |
+| I2a Per-note semantic: row blocks, no passage text, f16 compact vectors, fold-in, `Embedder` interface (LSA as default), refit policy and tainted models; the passage hooks of §3.8 | L | quire-index, quire-app (`ai.rs`), quire-intel (`ask.rs`) | I1a | local-ai L2 |
+| I2b Passage cache and LSA model file (only the model if I1b says so); first to cut if time runs short: without it a start refits once in the background | M | quire-index | I1c, I2a | sync-speed S2 |
+| I3 Perf rows of §2 (`--timings`, flush count and bytes, 50k weekly run), report only | S | quire-cli, packaging | I1c | anything |
+
+Order: I0a and I0b first (small, independent, user-visible). Then I1a (which unblocks the
+agent-index keyword half) → I1b → I1c, with I1d alongside; then I2a; I2b last. Per the
+frame, at most one `quire-index` builder at a time.
+
+## 9. Decided
+
+By the owner, 2026-11-19; all four as recommended.
+
+1. **The cache holds compressed text of plain notes** (never locked ones), up to 1.2× the
+   vault, and a removed note's text leaves it at the next flush (§3.6).
+2. **Re-index only when indexing code changes**: `DERIVE_VERSION` and its golden test, not
+   the release version.
+3. **16-bit meaning vectors**, for the person's own search as well as agent views: the
+   compact LSA layout (§3.3), and f16 for any embedder's dense vectors.
+4. **The refit rule** as stated in §3.3 (10 % of passages changed, or 10 idle minutes and
+   over 6 hours since the last fit, or a lock); revisited with I2a's quality numbers.
+
+Also settled with the review and the other designs: one cache writer per vault; flushes as
+in frame §3; stable ids in I1a; no BM25 list on the record; the codec chosen by I1b's
+measurement; the local-AI pack has no neural embedder, so LSA is the meaning model every
+budget is met with.

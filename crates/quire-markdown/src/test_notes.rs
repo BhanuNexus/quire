@@ -5,7 +5,14 @@
 
 use proptest::prelude::*;
 
-/// The notes of the sample vault and a design note.
+/// How many cases a property test runs: `default`, or more when `PROPTEST_CASES` asks
+/// for more (the weekly job sets 50000), so the environment can only raise it.
+pub(crate) fn cases(default: u32) -> u32 {
+    std::env::var("PROPTEST_CASES").ok().and_then(|v| v.parse::<u32>().ok()).map_or(default, |n| n.max(default))
+}
+
+/// The notes of the sample vault and a design note (a copy, in `tests/fixtures/`, so
+/// moving the note in `docs/` breaks nothing).
 pub(crate) fn fixture_notes() -> Vec<String> {
     fn walk(dir: &std::path::Path, out: &mut Vec<String>) {
         let mut entries: Vec<_> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).collect();
@@ -21,7 +28,7 @@ pub(crate) fn fixture_notes() -> Vec<String> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut out = Vec::new();
     walk(&root.join("sample-vault"), &mut out);
-    out.push(std::fs::read_to_string(root.join("docs/design/0.14-index-startup.md")).unwrap());
+    out.push(std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/design-note.md")).unwrap());
     assert!(out.len() > 5, "the fixture notes were not found");
     out
 }
