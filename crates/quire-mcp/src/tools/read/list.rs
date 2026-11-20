@@ -67,7 +67,10 @@ fn list_tool(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
             "title" => r.title.to_lowercase(),
             _ => r.path.as_str().to_lowercase(),
         };
-        format!("{lead}\u{0}{}", r.path)
+        let mut key = lead;
+        key.push('\u{0}');
+        key.push_str(r.path.as_str());
+        key
     };
     let mut keyed: Vec<(String, &quire_app::index::NoteRecord)> = notes.map(|r| (sort_key(&r), r)).collect();
     keyed.sort_unstable_by(|x, y| x.0.cmp(&y.0));

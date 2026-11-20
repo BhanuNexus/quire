@@ -51,16 +51,23 @@ fn properties(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
             if only.as_ref().is_some_and(|o| *o != k.to_lowercase()) {
                 continue;
             }
-            let e = keys.entry(k.clone()).or_default();
+            // A key seen before is found without copying it.
+            let e = match keys.get_mut(k.as_str()) {
+                Some(e) => e,
+                None => keys.entry(k.clone()).or_default(),
+            };
             e.0 += 1;
             e.1.insert(value_type(v));
-            let ex = match v {
-                FmValue::Str(s) => s.clone(),
-                FmValue::List(l) => format!("[{}]", l.join(", ")),
-                FmValue::Map(_) => "{…}".into(),
-            };
-            if e.2.len() < 5 && !e.2.contains(&ex) && ex.len() <= 80 {
-                e.2.push(ex);
+            // Only while there is room for another example.
+            if e.2.len() < 5 {
+                let ex = match v {
+                    FmValue::Str(s) => s.clone(),
+                    FmValue::List(l) => format!("[{}]", l.join(", ")),
+                    FmValue::Map(_) => "{…}".into(),
+                };
+                if !e.2.contains(&ex) && ex.len() <= 80 {
+                    e.2.push(ex);
+                }
             }
         }
     }

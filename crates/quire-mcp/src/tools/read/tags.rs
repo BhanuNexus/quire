@@ -33,8 +33,15 @@ fn tags(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         mine.sort();
         mine.dedup();
         for t in mine {
-            if t.to_lowercase().starts_with(&prefix) {
-                *counts.entry(t.clone()).or_default() += 1;
+            if !prefix.is_empty() && !t.to_lowercase().starts_with(&prefix) {
+                continue;
+            }
+            // A tag seen before is counted without copying it.
+            match counts.get_mut(t.as_str()) {
+                Some(n) => *n += 1,
+                None => {
+                    counts.insert(t.clone(), 1);
+                }
             }
         }
     }
