@@ -20,7 +20,7 @@
 use std::ops::Range;
 
 use crate::extract::{Link, LinkKind};
-use crate::scan::{Cursor, Inline};
+use crate::scan::{Cursor, Inline, Overlap};
 
 /// How a field is written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -275,61 +275,111 @@ fn scan_value(value: &str) -> ValueScan {
 
 /// [`scan_value`]; with `lines`, a comment ends at its line and the read goes on.
 fn scan(value: &str, lines: bool) -> ValueScan {
-    let mut close = None;
-    let chars: Vec<(usize, char)> = value.char_indices().collect();
-    let ws_after = |k: usize| chars.get(k + 1).is_none_or(|(_, c)| c.is_whitespace());
-    let (mut open, mut at_start, mut depth, mut prev): (Option<char>, bool, usize, Option<char>) = (None, true, 0, None);
-    let mut k = 0;
-    while k < chars.len() {
-        let (i, c) = chars[k];
-        if let Some(q) = open {
-            if q == '\'' && c == '\'' {
-                if chars.get(k + 1).is_some_and(|(_, n)| *n == '\'') {
-                    k += 1;
-                } else {
-                    open = None;
-                    at_start = false;
-                }
-            } else if q == '"' && c == '\\' {
-                k += 1;
-            } else if q == '"' && c == '"' {
-                open = None;
-                at_start = false;
-            }
-            k += 1;
-            continue;
+    let mut reader = Reader::new(value, lines);
+    reader.read_to(usize::MAX);
+    reader.finish()
+}
+
+/// A left-to-right read of a value that can stop and go on, so the quote open at
+/// several places along one line costs one pass over the line and not one pass for each
+/// place (`docs/design/0.14-index-startup.md` §3.7).
+struct Reader {
+    chars: Vec<(usize, char)>,
+    /// The character to read next.
+    k: usize,
+    open: Option<char>,
+    at_start: bool,
+    depth: usize,
+    prev: Option<char>,
+    close: Option<usize>,
+    comment: Option<usize>,
+    lines: bool,
+}
+
+impl Reader {
+    fn new(value: &str, lines: bool) -> Self {
+        Self {
+            chars: value.char_indices().collect(),
+            k: 0,
+            open: None,
+            at_start: true,
+            depth: 0,
+            prev: None,
+            close: None,
+            comment: None,
+            lines,
         }
-        match c {
-            ' ' | '\t' | '\n' | '\r' => {}
-            '#' if prev.is_none_or(char::is_whitespace) => {
-                if !lines {
-                    return ValueScan { quote: None, comment: Some(i), close };
-                }
-                while chars.get(k + 1).is_some_and(|(_, n)| *n != '\n') {
-                    k += 1;
-                }
-            }
-            '\'' | '"' if at_start => open = Some(c),
-            '[' | '{' if at_start => {
-                depth += 1;
-                at_start = true;
-            }
-            ',' if depth > 0 => at_start = true,
-            ']' | '}' if depth > 0 => {
-                depth -= 1;
-                at_start = false;
-                if depth == 0 && close.is_none() {
-                    close = Some(i);
-                }
-            }
-            ':' if depth > 0 && ws_after(k) => at_start = true,
-            '-' | '?' if at_start && depth == 0 && ws_after(k) => {}
-            _ => at_start = false,
-        }
-        prev = Some(c);
-        k += 1;
     }
-    ValueScan { quote: open, comment: None, close }
+
+    fn ws_after(&self, k: usize) -> bool {
+        self.chars.get(k + 1).is_none_or(|(_, c)| c.is_whitespace())
+    }
+
+    /// Reads the characters that start before byte `end` (what a read of `value[..end]`
+    /// reads, but for the look ahead at the one that comes next).
+    fn read_to(&mut self, end: usize) {
+        while self.comment.is_none() && self.k < self.chars.len() && self.chars[self.k].0 < end {
+            #[cfg(test)]
+            crate::scan::work::add(|w| w.scanned += 1);
+            let (i, c) = self.chars[self.k];
+            if let Some(q) = self.open {
+                if q == '\'' && c == '\'' {
+                    if self.chars.get(self.k + 1).is_some_and(|(_, n)| *n == '\'') {
+                        self.k += 1;
+                    } else {
+                        self.open = None;
+                        self.at_start = false;
+                    }
+                } else if q == '"' && c == '\\' {
+                    self.k += 1;
+                } else if q == '"' && c == '"' {
+                    self.open = None;
+                    self.at_start = false;
+                }
+                self.k += 1;
+                continue;
+            }
+            match c {
+                ' ' | '\t' | '\n' | '\r' => {}
+                '#' if self.prev.is_none_or(char::is_whitespace) => {
+                    if !self.lines {
+                        self.comment = Some(i);
+                        return;
+                    }
+                    while self.chars.get(self.k + 1).is_some_and(|(_, n)| *n != '\n') {
+                        self.k += 1;
+                    }
+                }
+                '\'' | '"' if self.at_start => self.open = Some(c),
+                '[' | '{' if self.at_start => {
+                    self.depth += 1;
+                    self.at_start = true;
+                }
+                ',' if self.depth > 0 => self.at_start = true,
+                ']' | '}' if self.depth > 0 => {
+                    self.depth -= 1;
+                    self.at_start = false;
+                    if self.depth == 0 && self.close.is_none() {
+                        self.close = Some(i);
+                    }
+                }
+                ':' if self.depth > 0 && self.ws_after(self.k) => self.at_start = true,
+                '-' | '?' if self.at_start && self.depth == 0 && self.ws_after(self.k) => {}
+                _ => self.at_start = false,
+            }
+            self.prev = Some(c);
+            self.k += 1;
+        }
+    }
+
+    /// The quote open where the read has got to (none once a comment began).
+    const fn quote(&self) -> Option<char> {
+        if self.comment.is_some() { None } else { self.open }
+    }
+
+    fn finish(self) -> ValueScan {
+        ValueScan { quote: self.quote(), comment: self.comment, close: self.close }
+    }
 }
 
 /// The YAML quote (`'` or `"`) still open at the end of `value`, if any.
@@ -498,20 +548,26 @@ pub(crate) fn front_matter_links(src: &str, end: usize) -> Vec<Link> {
             scan_value(&l.text[value_from..]).comment.map_or(l.text.len(), |c| value_from + c)
         };
         let spans = code_spans(&l.text[..limit]);
+        // The links come in order, so the spans and the quote are read forward once for the line
+        // (`docs/design/0.14-index-startup.md` §3.7).
+        let mut in_span = Overlap::new(&spans);
+        let mut quotes: Option<Reader> = None;
         // One cursor for the line: its `]]` is searched for within the line only.
         let mut cursor = Cursor::at(&l.text[..limit], l.start);
         let mut i = value_from;
         while let Some(off) = l.text[i.min(limit)..limit].find("[[") {
             let open = i + off;
             let embed = open > 0 && l.text.as_bytes()[open - 1] == b'!';
-            if spans.iter().any(|r| r.contains(&open)) {
+            if in_span.hits(open, open + 1) {
                 i = open + 2;
                 continue;
             }
             match cursor.wikilink_at(l.start + open) {
                 Some((Inline::WikiLink { range, link }, end)) if end - l.start <= limit => {
                     let range = if embed { range.start - 1..range.end } else { range };
-                    let q = scan_value(&l.text[value_from..open]).quote;
+                    let reader = quotes.get_or_insert_with(|| Reader::new(&l.text[value_from..limit], false));
+                    reader.read_to(open - value_from);
+                    let q = reader.quote();
                     let unq = |s: &str| match q {
                         // In a single-quoted YAML value, `''` is one `'`.
                         Some('\'') => s.replace("''", "'"),
@@ -955,5 +1011,230 @@ mod tests {
         assert!(inline_fields("see http://x.y::z\n").is_empty());
         assert_eq!(typed("**Up**:: [[X]]\n"), vec![t("up", "X")]);
         assert_eq!(typed("🎅:: [[Gift]]\n"), vec![t("🎅", "Gift")]);
+    }
+
+    /// The readers and the link finder as they were before the quote was carried along a
+    /// line (a read from the value's start for every link, a look at every code span),
+    /// kept as the oracle: the new ones must give the same answers on every text.
+    mod old {
+        use super::super::{Cursor, Inline, LineKind, Link, LinkKind, ValueScan, code_spans, fm_lines, normalize_key, unescape_dq};
+
+        pub(super) fn scan(value: &str, lines: bool) -> ValueScan {
+            let mut close = None;
+            let chars: Vec<(usize, char)> = value.char_indices().collect();
+            let ws_after = |k: usize| chars.get(k + 1).is_none_or(|(_, c)| c.is_whitespace());
+            let (mut open, mut at_start, mut depth, mut prev): (Option<char>, bool, usize, Option<char>) = (None, true, 0, None);
+            let mut k = 0;
+            while k < chars.len() {
+                let (i, c) = chars[k];
+                if let Some(q) = open {
+                    if q == '\'' && c == '\'' {
+                        if chars.get(k + 1).is_some_and(|(_, n)| *n == '\'') {
+                            k += 1;
+                        } else {
+                            open = None;
+                            at_start = false;
+                        }
+                    } else if q == '"' && c == '\\' {
+                        k += 1;
+                    } else if q == '"' && c == '"' {
+                        open = None;
+                        at_start = false;
+                    }
+                    k += 1;
+                    continue;
+                }
+                match c {
+                    ' ' | '\t' | '\n' | '\r' => {}
+                    '#' if prev.is_none_or(char::is_whitespace) => {
+                        if !lines {
+                            return ValueScan { quote: None, comment: Some(i), close };
+                        }
+                        while chars.get(k + 1).is_some_and(|(_, n)| *n != '\n') {
+                            k += 1;
+                        }
+                    }
+                    '\'' | '"' if at_start => open = Some(c),
+                    '[' | '{' if at_start => {
+                        depth += 1;
+                        at_start = true;
+                    }
+                    ',' if depth > 0 => at_start = true,
+                    ']' | '}' if depth > 0 => {
+                        depth -= 1;
+                        at_start = false;
+                        if depth == 0 && close.is_none() {
+                            close = Some(i);
+                        }
+                    }
+                    ':' if depth > 0 && ws_after(k) => at_start = true,
+                    '-' | '?' if at_start && depth == 0 && ws_after(k) => {}
+                    _ => at_start = false,
+                }
+                prev = Some(c);
+                k += 1;
+            }
+            ValueScan { quote: open, comment: None, close }
+        }
+
+        pub(super) fn front_matter_links(src: &str, end: usize, scan_value: fn(&str) -> ValueScan) -> Vec<Link> {
+            let mut out = Vec::new();
+            if !src[..end.min(src.len())].contains("[[") {
+                return out;
+            }
+            let mut key: Option<String> = None;
+            for l in fm_lines(src, end) {
+                let value_from = match &l.kind {
+                    LineKind::Skip => continue,
+                    LineKind::Key(k, v) => {
+                        key = Some(normalize_key(&l.text[k.clone()]));
+                        *v
+                    }
+                    LineKind::Item(v) => *v,
+                    LineKind::Literal | LineKind::Cont => 0,
+                };
+                let Some(name) = key.as_ref().filter(|k| !k.is_empty()) else { continue };
+                let value_from = value_from.min(l.text.len());
+                let limit = if matches!(l.kind, LineKind::Literal) {
+                    l.text.len()
+                } else {
+                    scan_value(&l.text[value_from..]).comment.map_or(l.text.len(), |c| value_from + c)
+                };
+                let spans = code_spans(&l.text[..limit]);
+                let mut cursor = Cursor::at(&l.text[..limit], l.start);
+                let mut i = value_from;
+                while let Some(off) = l.text[i.min(limit)..limit].find("[[") {
+                    let open = i + off;
+                    let embed = open > 0 && l.text.as_bytes()[open - 1] == b'!';
+                    if spans.iter().any(|r| r.contains(&open)) {
+                        i = open + 2;
+                        continue;
+                    }
+                    match cursor.wikilink_at(l.start + open) {
+                        Some((Inline::WikiLink { range, link }, end)) if end - l.start <= limit => {
+                            let range = if embed { range.start - 1..range.end } else { range };
+                            let q = scan_value(&l.text[value_from..open]).quote;
+                            let unq = |s: &str| match q {
+                                Some('\'') => s.replace("''", "'"),
+                                Some(_) => unescape_dq(s),
+                                None => s.to_string(),
+                            };
+                            out.push(Link {
+                                kind: if embed { LinkKind::Embed } else { LinkKind::Wiki },
+                                display: unq(link.display()),
+                                target: unq(&link.target),
+                                heading: link.heading.as_deref().map(unq),
+                                range,
+                                field: Some(name.clone()),
+                            });
+                            i = end - l.start;
+                        }
+                        _ => i = open + 2,
+                    }
+                }
+            }
+            out
+        }
+    }
+
+    fn fresh_scan(value: &str) -> ValueScan {
+        old::scan(value, false)
+    }
+
+    /// Front matter made of the pieces YAML quoting, comments and links meet in.
+    fn fm_pieces() -> impl proptest::strategy::Strategy<Value = String> {
+        use proptest::prelude::*;
+        let piece = prop::sample::select(vec![
+            "[[a]]",
+            "![[e]]",
+            "[[b|c]]",
+            "[[d#h]]",
+            "[[",
+            "]]",
+            "[",
+            "]",
+            "{",
+            "}",
+            ",",
+            ": ",
+            ":",
+            "- ",
+            "-",
+            "?",
+            "'",
+            "''",
+            "\"",
+            "\\\"",
+            "\\",
+            "#",
+            " # note ",
+            " ",
+            "  ",
+            "\t",
+            "`",
+            "``",
+            "key: ",
+            "up: ",
+            "  - ",
+            "|",
+            ">",
+            "\n",
+            "\r\n",
+            "\u{e9}",
+            "\u{65e5}\u{672c}",
+            "\u{1f385}",
+            "x",
+            "a b",
+        ]);
+        prop::collection::vec(piece, 0..50).prop_map(|v| format!("---\n{}\n---\nbody [[z]]\n", v.concat()))
+    }
+
+    fn same_links_as_old(src: &str) {
+        let end = src.find("\n---\nbody").map_or(src.len(), |n| n + 5);
+        assert_eq!(front_matter_links(src, end), old::front_matter_links(src, end, fresh_scan), "{src:?}");
+    }
+
+    #[test]
+    fn front_matter_links_are_the_old_ones_on_written_cases() {
+        for fm in [
+            "up: [[a]] '[[b]]' \"[[c]]\" [[d]]",
+            "up: \"a\\\" [[b]] \\\\\" [[c]] 'it''s [[d]]' [[e]]",
+            "up: ['[[a]]', \"[[b]]\", [[c]]]  # [[no]]\nk:\n  - '[[d]]''s'\n  - \"[[e\\\\]]\"",
+            "up: `[[no]]` [[yes]] ``[[no]] `` [[yes]] ` [[yes]]",
+            "up: \u{e9}\u{65e5}\"[[a]]\" \u{1f385}'[[b]]'\r\nz: ![[c]] [[ [[d]] [[e",
+            "up: |\n  [[a]] # \"[[b]] 'c' [[d]]\n  \"[[e]] #x [[f]]\nk: 1",
+            "up: \"a\\\n [[b]] \"x\" [[c]]\"\nk: [[d]]",
+        ] {
+            same_links_as_old(&format!("---\n{fm}\n---\nbody\n"));
+        }
+    }
+
+    #[test]
+    fn the_resumable_reader_reads_like_the_old_one() {
+        for v in ["a: 'x' \"y\" [z] {w: 1} # c", "'it''s' \"\\\"\" - ? : # x", "[a, 'b', \"c\"] d"] {
+            let new = scan_value(v);
+            let old = old::scan(v, false);
+            assert_eq!((new.quote, new.comment, new.close), (old.quote, old.comment, old.close), "{v:?}");
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(crate::test_notes::cases(2000)))]
+
+        #[test]
+        fn front_matter_links_are_the_old_ones_on_generated_front_matter(src in fm_pieces()) {
+            same_links_as_old(&src);
+        }
+
+        #[test]
+        fn the_reader_gives_the_old_quote_at_every_place(v in fm_pieces()) {
+            // Read on through the text, stopping at each `[[`: the quote open there is what
+            // a fresh read of the text before it finds.
+            let mut reader = Reader::new(&v, false);
+            for (at, _) in v.match_indices("[[") {
+                reader.read_to(at);
+                proptest::prop_assert_eq!(reader.quote(), old::scan(&v[..at], false).quote, "{:?} at {}", v, at);
+            }
+        }
     }
 }
