@@ -150,6 +150,17 @@ impl Visibility {
         strictest(decide(rules, &self.actor, p, hidden, &|| tags.to_vec()), OpKind::Read).0 != Mode::Deny
     }
 
+    /// What the caller may do to `path` for `op` by the same rules, for a
+    /// path that need not exist (`vault_info` asks about each zone): the
+    /// folder checks of this value, no link followed, no tags.
+    pub fn mode(&self, path: &NotePath, op: OpKind) -> Mode {
+        let Some(rules) = &self.rules else { return Mode::Direct };
+        let Ok(path) = canonical_path(path) else { return Mode::Deny };
+        let p = path.as_str();
+        let hidden = p.rsplit_once('/').is_some_and(|(f, _)| self.folder(f) != Folder::Plain);
+        strictest(decide(rules, &self.actor, p, hidden, &Vec::new), op).0
+    }
+
     /// 32 bytes that are equal for two callers only if every answer of
     /// [`Self::allows_with_tags`] is equal: the read rules (which zones deny
     /// reading, not their other modes), "AI off", a revoked client, the

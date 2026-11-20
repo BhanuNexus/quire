@@ -505,6 +505,11 @@ impl AgentStore {
             return (Mode::Direct, String::new());
         }
         let Ok(r) = self.resolve(path) else { return (Mode::Deny, path.to_string()) };
+        self.effective_resolved(actor, &r, op)
+    }
+
+    /// [`Self::effective`] for a path already resolved (the guard resolves once).
+    fn effective_resolved(&self, actor: &Actor, r: &Resolved, op: OpKind) -> (Mode, String) {
         let mut candidates = self.candidates(actor, &r.path);
         if r.real != r.path {
             candidates.extend(self.candidates(actor, &r.real));
@@ -566,7 +571,7 @@ impl AgentStore {
     /// the file it reaches. Returns the canonical path.
     pub fn guard(&self, actor: &Actor, path: &NotePath, op: OpKind) -> Result<NotePath, WriteError> {
         let r = self.resolve(path)?;
-        let (mode, zone) = self.effective(actor, &r.path, op);
+        let (mode, zone) = if actor.is_human() { (Mode::Direct, String::new()) } else { self.effective_resolved(actor, &r, op) };
         if mode.route(op) == Route::Deny {
             return Err(WriteError::PermissionDenied { path: r.path, zone, mode });
         }
