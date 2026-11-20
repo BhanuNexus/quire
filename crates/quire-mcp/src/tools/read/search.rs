@@ -97,7 +97,7 @@ fn search(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         };
         let st = json!({
             "uri": note_uri(&h.path), "path": h.path, "title": title, "heading": h.heading, "lines": [h.lines.0, h.lines.1],
-            "snippet": h.snippet, "score": h.score, "by_meaning": h.by_meaning, "modified": modified(cx, &h.path),
+            "snippet": h.snippet, "score": h.score, "by_meaning": h.by_meaning, "modified": modified_ms(cx, &ix, &h.path).map(iso),
             "version": ContentHash::of(&src), "last_actor": last_actor(cx, &h.path),
             "trust": if untrusted { "untrusted" } else { "trusted" },
         });
