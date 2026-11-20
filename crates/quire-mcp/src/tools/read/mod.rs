@@ -11,10 +11,10 @@
 //! labels. Notes in `deny` zones don't exist for agents: they are never
 //! listed, counted or read.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
 
-use quire_agent::{LedgerQuery, Mode, Op, OpKind, ProposalFilter, ProposalStatus};
+use quire_agent::{LedgerQuery, Mode, Op, OpKind, ProposalFilter, ProposalStatus, ProposalSummary};
 use quire_app::index::{SearchFilters, SearchKind, views};
 use quire_app::intel::chat::{ChatRequest, chat_text};
 use quire_app::intel::{extractive_answer, retrieve_where};
@@ -50,7 +50,8 @@ mod vault_info;
 mod view;
 
 pub use shared::own_pending;
-use shared::{stale, window};
+pub(crate) use shared::stale as stale_cursor;
+use shared::{more_line, stale, window};
 
 /// The read tools, in the design's order (before the canvas tools).
 pub fn tools_before_canvas() -> Vec<Box<dyn Tool>> {

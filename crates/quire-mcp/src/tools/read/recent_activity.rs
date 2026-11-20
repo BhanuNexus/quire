@@ -16,11 +16,13 @@ pub(super) fn register() -> Box<dyn Tool> {
                 "since": {"type": "string", "description": "\"24h\", \"7d\", YYYY-MM-DD or RFC 3339."},
                 "actor": {"type": "string"},
                 "kinds": {"type": "array", "items": {"type": "string", "enum": ["edit", "create", "rename", "delete", "proposal", "decision"]}},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}}, "required": ["since"]}),
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
+                "max_tokens": {"type": "integer"}, "cursor": {"type": "string"}}, "required": ["since"]}),
         schema!({"type": "object", "properties": {
                 "events": {"type": "array", "items": {"type": "object", "properties": {
                     "at": {"type": "string"}, "actor": {"type": "string"}, "op": {"type": "string"}, "path": {"type": "string"},
-                    "to": {"type": "string"}, "proposal": {"type": "string"}}}}}, "required": ["events"]}),
+                    "to": {"type": "string"}, "proposal": {"type": "string"}}}},
+                "total": {"type": "integer"}, "truncated": {"type": "boolean"}, "next_cursor": {"type": ["string", "null"]}}, "required": ["events"]}),
         r,
         Access::Read,
         recent_activity,
@@ -56,27 +58,44 @@ fn recent_activity(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput
         .filter(|e| !matches!(e.op, Op::Read | Op::Batch))
         .filter(|e| e.path.as_ref().is_none_or(|p| visible(cx, p)))
         .map(|e| {
-            let v = json!({"at": iso(e.at), "actor": e.actor.id, "op": op_kind(e.op), "path": e.path, "to": e.to, "proposal": e.proposal});
+            let v = json!({"at": iso(e.at), "actor": e.actor.id, "op": op_kind(e.op), "path": e.path, "to": e.to, "proposal": e.proposal, "after": e.after});
             (e.at, v)
         })
         .collect();
     if actor.as_deref().is_none_or(|x| x == "human") {
         let ix = cx.index.read();
-        for p in ix.paths() {
-            let Some(ms) = cx.vault.storage().modified(&p).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()) else {
-                continue;
-            };
-            let ms = i64::try_from(ms.as_millis()).unwrap_or(i64::MAX);
-            if ms >= since && visible(cx, &p) && last_actor(cx, &p) == "human" {
-                events.push((ms, json!({"at": iso(ms), "actor": "human", "op": "edit", "path": p})));
+        let vis = cx.visibility_in(&ix);
+        // The index knows each note's time: no file is read for a note older than `since`.
+        for r in ix.records() {
+            let Some(ms) = modified_ms(cx, &ix, &r.path) else { continue };
+            if ms >= since && vis.allows_with_tags(&r.path, &r.tags) && last_actor(cx, &r.path) == "human" {
+                events.push((ms, json!({"at": iso(ms), "actor": "human", "op": "edit", "path": r.path})));
             }
         }
     }
     events.retain(|(_, v)| kinds.is_empty() || kinds.iter().any(|k| v["op"] == k.as_str()));
-    events.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
-    events.truncate(limit);
-    let mut text = format!("{} change{} since {}:\n", events.len(), if events.len() == 1 { "" } else { "s" }, iso(since));
-    for (_, e) in &events {
+    // Newest first, then by who, what and where (the cursor's key), so an event logged between
+    // pages makes none repeat.
+    let key = |(at, v): &(i64, Value)| {
+        let part = |k: &str| v[k].as_str().unwrap_or_default().to_string();
+        let newest_first = bounds::num_key(u64::MAX - u64::try_from(*at).unwrap_or(0));
+        [newest_first, part("actor"), part("op"), part("path"), part("to"), part("proposal"), part("after")].join("\u{0}")
+    };
+    events.sort_by_cached_key(key);
+    events.dedup_by(|x, y| key(x) == key(y));
+    let render = |(_, v): &(i64, Value)| {
+        let mut v = v.clone();
+        if let Some(o) = v.as_object_mut() {
+            o.remove("after");
+        }
+        v
+    };
+    let fingerprint = bounds::fingerprint("r", a);
+    let budget = bounds::max_tokens(a, bounds::DEFAULT_MAX_TOKENS);
+    let Some(page) = bounds::keyset(&events, key, render, a, &fingerprint, limit, budget) else { return stale(&fingerprint) };
+    let n = page.items.len();
+    let mut text = format!("{n} change{} since {}:\n", if n == 1 { "" } else { "s" }, iso(since));
+    for e in &page.items {
         writeln!(
             text,
             "- {} {} {} {}",
@@ -87,5 +106,7 @@ fn recent_activity(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput
         )
         .expect("a String takes any text");
     }
-    ToolOutput::ok(text.trim_end().to_string(), json!({"events": events.into_iter().map(|(_, v)| v).collect::<Vec<_>>()}))
+    more_line(&mut text, "recent_activity", &page);
+    let st = json!({"events": page.items, "total": page.total, "truncated": page.truncated, "next_cursor": page.next_cursor});
+    ToolOutput::ok(text.trim_end().to_string(), st)
 }

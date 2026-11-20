@@ -7,6 +7,12 @@
 //! result that doesn't fit is cut and carries `next_cursor`: base64 of
 //! `{"o": offset, "v": version}`. A cursor for a version that has changed
 //! since is refused with `cursor_stale` and the new version.
+//!
+//! Lists with a total order page by key (`docs/design/0.14-agent-tools.md`
+//! §3.3): the cursor also carries the last row's key (`"k"`), and the next
+//! page starts after it, so a row added or removed between two pages makes
+//! none repeat or go missing. `v` is then a fingerprint of the arguments.
+//! A cursor without `k` (made before keys) still reads as an offset.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -37,18 +43,104 @@ pub struct Cursor {
     pub offset: usize,
     /// What the offset refers to: a note version or a query fingerprint.
     pub version: String,
+    /// For a list paged by key: the last row's key; the next page starts after it.
+    pub key: Option<String>,
 }
 
 impl Cursor {
+    /// An offset cursor.
+    pub fn at(offset: usize, version: impl Into<String>) -> Self {
+        Self { offset, version: version.into(), key: None }
+    }
+
     pub fn encode(&self) -> String {
-        URL_SAFE_NO_PAD.encode(json!({ "o": self.offset, "v": self.version }).to_string())
+        let v = match &self.key {
+            None => json!({ "o": self.offset, "v": self.version }),
+            Some(k) => json!({ "o": self.offset, "v": self.version, "k": k }),
+        };
+        URL_SAFE_NO_PAD.encode(v.to_string())
     }
 
     pub fn decode(s: &str) -> Option<Self> {
         let bytes = URL_SAFE_NO_PAD.decode(s.trim()).ok()?;
         let v: Value = serde_json::from_slice(&bytes).ok()?;
-        Some(Self { offset: usize::try_from(v.get("o")?.as_u64()?).ok()?, version: v.get("v")?.as_str()?.to_string() })
+        let key = match v.get("k") {
+            None => None,
+            Some(k) => Some(k.as_str()?.to_string()),
+        };
+        Some(Self { offset: usize::try_from(v.get("o")?.as_u64()?).ok()?, version: v.get("v")?.as_str()?.to_string(), key })
     }
+}
+
+/// The fingerprint of a list call: its tool and its arguments without
+/// `cursor`, so a cursor made for other arguments is stale.
+pub fn fingerprint(tool: &str, args: &Value) -> String {
+    let mut key = args.clone();
+    if let Some(o) = key.as_object_mut() {
+        o.remove("cursor");
+    }
+    format!("{tool}:{}", quire_app::vault::ContentHash::of(&key.to_string()).hex())
+}
+
+/// One page of a list sorted by a key ([`keyset`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Page {
+    /// The rows shown: `rows[range]`.
+    pub range: std::ops::Range<usize>,
+    /// Each shown row as `render` made it.
+    pub items: Vec<Value>,
+    /// Rows in the whole list (after filtering).
+    pub total: usize,
+    /// More rows follow the page.
+    pub truncated: bool,
+    pub next_cursor: Option<String>,
+}
+
+impl Page {
+    /// How many rows follow the page.
+    pub const fn more(&self) -> usize {
+        self.total - self.range.end
+    }
+}
+
+/// The page of `rows` that `args.cursor` asks for.
+///
+/// The rows after the cursor's key, at most `limit` of them and as many as
+/// fit in `budget` tokens (at least one), each rendered by `render`. `rows`
+/// must be sorted by `key`, ascending, with no two equal keys. `None`: the
+/// cursor is stale.
+pub fn keyset<T>(
+    rows: &[T],
+    key: impl Fn(&T) -> String,
+    render: impl Fn(&T) -> Value,
+    args: &Value,
+    version: &str,
+    limit: usize,
+    budget: usize,
+) -> Option<Page> {
+    let start = match args.get("cursor").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+        None => 0,
+        Some(c) => match Cursor::decode(c) {
+            Some(Cursor { version: v, key: Some(k), .. }) if v == version => rows.partition_point(|r| key(r) <= k),
+            // A cursor from before keys: an offset into the same list.
+            Some(Cursor { version: v, key: None, offset }) if v == version => offset.min(rows.len()),
+            _ => return None,
+        },
+    };
+    let candidates: Vec<Value> = rows[start..].iter().take(limit).map(&render).collect();
+    let texts: Vec<String> = candidates.iter().map(Value::to_string).collect();
+    let n = fit(texts.iter().map(String::as_str), budget);
+    let end = start + n;
+    let truncated = end < rows.len();
+    let next_cursor =
+        truncated.then(|| Cursor { offset: end, version: version.to_string(), key: rows.get(end.wrapping_sub(1)).map(&key) }.encode());
+    Some(Page { range: start..end, items: candidates.into_iter().take(n).collect(), total: rows.len(), truncated, next_cursor })
+}
+
+/// The order-keeping key of a number for [`keyset`]: fixed width, so text
+/// order is number order.
+pub fn num_key(n: u64) -> String {
+    format!("{n:020}")
 }
 
 /// What a cursor argument says about where to start.
@@ -101,13 +193,45 @@ mod tests {
 
     #[test]
     fn cursors_round_trip_and_go_stale() {
-        let c = Cursor { offset: 40, version: "sha256:abc".into() };
+        let c = Cursor::at(40, "sha256:abc");
         let enc = c.encode();
         assert_eq!(Cursor::decode(&enc), Some(c));
         assert_eq!(start(&json!({"cursor": enc}), "sha256:abc"), Start::At(40));
         assert_eq!(start(&json!({"cursor": enc}), "sha256:def"), Start::Stale);
         assert_eq!(start(&json!({"cursor": "%%%"}), "x"), Start::Stale);
         assert_eq!(start(&json!({}), "x"), Start::Beginning);
+    }
+
+    #[test]
+    fn keyed_cursors_round_trip_and_old_ones_still_read() {
+        let c = Cursor { offset: 2, version: "l:ab".into(), key: Some("b\u{0}x".into()) };
+        assert_eq!(Cursor::decode(&c.encode()), Some(c));
+        let old = URL_SAFE_NO_PAD.encode(r#"{"o":3,"v":"l:ab"}"#);
+        assert_eq!(Cursor::decode(&old), Some(Cursor::at(3, "l:ab")));
+    }
+
+    /// A row added or removed between two pages makes none repeat or go missing.
+    #[test]
+    fn keyset_pages_survive_inserts_and_deletes() {
+        let page = |rows: &[&str], cursor: Option<&str>, limit: usize| {
+            let args = cursor.map_or_else(|| json!({}), |c| json!({ "cursor": c }));
+            keyset(rows, |r| (*r).to_string(), |r| json!(r), &args, "v", limit, 10_000).unwrap()
+        };
+        let rows = ["a", "b", "c", "d", "e"];
+        let first = page(&rows, None, 2);
+        assert_eq!((first.items.clone(), first.total, first.truncated), (vec![json!("a"), json!("b")], 5, true));
+        // "b" is deleted and "bb" added before the second page.
+        let changed = ["a", "bb", "c", "d", "e"];
+        let second = page(&changed, first.next_cursor.as_deref(), 2);
+        assert_eq!(second.items, vec![json!("bb"), json!("c")]);
+        let third = page(&changed, second.next_cursor.as_deref(), 2);
+        assert_eq!((third.items.clone(), third.truncated, third.next_cursor), (vec![json!("d"), json!("e")], false, None));
+        assert!(keyset(&rows, |r| (*r).to_string(), |r| json!(r), &json!({"cursor": first.next_cursor}), "w", 2, 100).is_none(), "stale");
+        // A huge row still makes a page of one.
+        let x = "x".repeat(900);
+        let big = keyset(&[x.as_str(), "y"], |r| (*r).to_string(), |r| json!(r), &json!({}), "v", 10, 100).unwrap();
+        assert_eq!((big.items.len(), big.truncated), (1, true));
+        assert!(page(&[], None, 3).items.is_empty());
     }
 
     #[test]

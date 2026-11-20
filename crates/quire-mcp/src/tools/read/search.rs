@@ -109,7 +109,7 @@ fn search(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     }
     let n = bounds::fit(rows.iter().map(|r| r.0.as_str()), budget);
     let truncated = n < rows.len();
-    let next = truncated.then(|| Cursor { offset: skip + n, version: fingerprint.clone() }.encode());
+    let next = truncated.then(|| Cursor::at(skip + n, fingerprint.clone()).encode());
     let shown = &rows[..n];
     let mut text =
         if shown.is_empty() { "No matching notes.".to_string() } else { shown.iter().map(|r| r.0.as_str()).collect::<Vec<_>>().join("\n") };

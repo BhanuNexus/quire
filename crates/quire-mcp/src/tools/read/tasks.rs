@@ -16,7 +16,8 @@ pub(super) fn register() -> Box<dyn Tool> {
                 "status": {"type": "string", "enum": ["open", "done", "all"], "default": "open"},
                 "due_before": {"type": "string", "description": "YYYY-MM-DD"}, "due_after": {"type": "string"},
                 "path": {"type": "string"}, "tag": {"type": "string"},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 200}}}),
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 200},
+                "max_tokens": {"type": "integer"}, "cursor": {"type": "string"}}}),
         schema!({"type": "object", "properties": {"tasks": {"type": "array", "items": {"type": "object", "properties": {
                 "path": {"type": "string"}, "line": {"type": "integer"}, "text": {"type": "string"}, "due": {"type": ["string", "null"]},
                 "scheduled": {"type": ["string", "null"]}, "start": {"type": ["string", "null"]},
@@ -24,7 +25,8 @@ pub(super) fn register() -> Box<dyn Tool> {
                 "time": {"type": ["string", "null"], "description": "a day-planner block, 14:00-15:30"},
                 "priority": {"type": ["integer", "null"], "description": "0 highest, 1 high, 2 medium, 3 low, 4 lowest; null is normal"},
                 "recurrence": {"type": ["string", "null"]},
-                "done": {"type": "boolean"}}}}}, "required": ["tasks"]}),
+                "done": {"type": "boolean"}}}}, "total": {"type": "integer"}, "truncated": {"type": "boolean"},
+                "next_cursor": {"type": ["string", "null"]}}, "required": ["tasks"]}),
         r,
         Access::Read,
         tasks,
@@ -42,14 +44,13 @@ fn tasks(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let after = opt(a, "due_after");
     let only_path = opt(a, "path");
     let tag = opt(a, "tag");
-    let limit = int(a, "limit", 200, 1, 1000);
+    let limit = int(a, "limit", 200, 1, 500);
     let ix = cx.index.read();
     let vis = cx.visibility_in(&ix);
-    let mut rows = Vec::new();
-    let mut text = String::new();
-    // In path order, so `limit` and the examples are the same on every call.
+    // In path order, then the order in the note: what the cursor's key follows.
     let mut notes: Vec<_> = ix.records().filter(|r| vis.allows_with_tags(&r.path, &r.tags)).collect();
     notes.sort_unstable_by(|x, y| x.path.cmp(&y.path));
+    let mut rows = Vec::new();
     for r in notes {
         if only_path.as_ref().is_some_and(|p| !r.path.as_str().eq_ignore_ascii_case(p) && !r.path.without_ext().eq_ignore_ascii_case(p)) {
             continue;
@@ -57,6 +58,7 @@ fn tasks(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         if tag.as_ref().is_some_and(|t| !r.has_tag(t)) {
             continue;
         }
+        let first = rows.len();
         for t in &r.tasks {
             if (t.done && !want_done) || (!t.done && !want_open) {
                 continue;
@@ -67,27 +69,42 @@ fn tasks(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
             if after.as_ref().is_some_and(|b| t.due.as_ref().is_none_or(|d| d.as_str() <= b.as_str())) {
                 continue;
             }
-            if rows.len() >= limit {
-                break;
-            }
-            // Only for the rows returned: the index keeps each note's line starts.
-            let line = ix.line_of(&r.path, t.offset);
-            writeln!(
-                text,
-                "- [{}] {} ({}:{line}{})",
-                if t.done { "x" } else { " " },
-                t.text,
-                r.path,
-                t.due.as_deref().map(|d| format!(", due {d}")).unwrap_or_default()
-            )
-            .expect("a String takes any text");
-            rows.push(json!({"path": r.path, "line": line, "text": t.text, "due": t.due, "scheduled": t.scheduled, "start": t.start,
-                "completed": t.done_on, "reminder": t.reminder, "time": t.time_block.as_ref().map(|(a, b)| format!("{a}-{b}")),
-                "priority": t.priority, "recurrence": t.recurrence, "done": t.done}));
+            rows.push((r, t));
         }
+        rows[first..].sort_by_key(|(_, t)| t.offset);
     }
-    if rows.is_empty() {
+    // Only for the rows returned: the line (from the index's line starts) and the row itself.
+    let render = |(r, t): &(&quire_app::index::NoteRecord, &quire_app::markdown::extract::Task)| {
+        let line = ix.line_of(&r.path, t.offset);
+        json!({"path": r.path, "line": line, "text": t.text, "due": t.due, "scheduled": t.scheduled, "start": t.start,
+            "completed": t.done_on, "reminder": t.reminder, "time": t.time_block.as_ref().map(|(a, b)| format!("{a}-{b}")),
+            "priority": t.priority, "recurrence": t.recurrence, "done": t.done})
+    };
+    let key = |(r, t): &(&quire_app::index::NoteRecord, &quire_app::markdown::extract::Task)| {
+        format!("{}\u{0}{}", r.path, bounds::num_key(t.offset as u64))
+    };
+    let fingerprint = bounds::fingerprint("t", a);
+    let budget = bounds::max_tokens(a, bounds::DEFAULT_MAX_TOKENS);
+    let Some(page) = bounds::keyset(&rows, key, render, a, &fingerprint, limit, budget) else { return stale(&fingerprint) };
+    let mut text = String::new();
+    for row in &page.items {
+        writeln!(
+            text,
+            "- [{}] {} ({}:{}{})",
+            if row["done"] == true { "x" } else { " " },
+            row["text"].as_str().unwrap_or_default(),
+            row["path"].as_str().unwrap_or_default(),
+            row["line"],
+            row["due"].as_str().map(|d| format!(", due {d}")).unwrap_or_default()
+        )
+        .expect("a String takes any text");
+    }
+    if page.items.is_empty() {
         text.push_str("No tasks.");
     }
-    ToolOutput::ok(text.trim_end().to_string(), json!({"tasks": rows}))
+    more_line(&mut text, "tasks", &page);
+    ToolOutput::ok(
+        text.trim_end().to_string(),
+        json!({"tasks": page.items, "total": page.total, "truncated": page.truncated, "next_cursor": page.next_cursor}),
+    )
 }

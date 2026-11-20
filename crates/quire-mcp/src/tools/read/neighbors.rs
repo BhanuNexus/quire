@@ -17,10 +17,12 @@ pub(super) fn register() -> Box<dyn Tool> {
                 "depth": {"type": "integer", "minimum": 1, "maximum": 3, "default": 1},
                 "direction": {"type": "string", "enum": ["in", "out", "both"], "default": "both"},
                 "type": {"type": "array", "items": {"type": "string"}, "description": "Follow only links of these types (\"untyped\" for plain links)."},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}}, "required": ["path"]}),
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+                "max_tokens": {"type": "integer"}}, "required": ["path"]}),
         schema!({"type": "object", "properties": {
                 "nodes": {"type": "array", "items": {"type": "object", "properties": {"path": {"type": "string"}, "title": {"type": "string"}, "depth": {"type": "integer"}}}},
-                "edges": {"type": "array", "items": {"type": "object", "properties": {"from": {"type": "string"}, "to": {"type": "string"}, "context": {"type": "string"}, "type": {"type": ["string", "null"]}}}}},
+                "edges": {"type": "array", "items": {"type": "object", "properties": {"from": {"type": "string"}, "to": {"type": "string"}, "context": {"type": "string"}, "type": {"type": ["string", "null"]}}}},
+                "total": {"type": "integer"}, "truncated": {"type": "boolean"}},
                 "required": ["nodes", "edges"]}),
         r,
         Access::Read,
@@ -53,9 +55,10 @@ fn neighbors(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let mut queue = VecDeque::from([start.clone()]);
     let mut edges: Vec<Value> = Vec::new();
     let mut nodes: Vec<Value> = Vec::new();
+    // Every note within `depth`, for `total`; the first `limit` of them are shown.
     while let Some(p) = queue.pop_front() {
         let d = seen[&p];
-        if d >= depth || nodes.len() >= limit {
+        if d >= depth {
             continue;
         }
         let mut next: Vec<(NotePath, Value)> = Vec::new();
@@ -75,7 +78,7 @@ fn neighbors(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
                 continue;
             }
             edges.push(edge);
-            if !seen.contains_key(&n) && nodes.len() < limit {
+            if !seen.contains_key(&n) {
                 seen.insert(n.clone(), d + 1);
                 let title = ix.get(&n).map_or_else(|| n.stem().to_string(), |r| r.title.clone());
                 nodes.push(json!({"path": n, "title": title, "depth": d + 1}));
@@ -83,11 +86,34 @@ fn neighbors(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
             }
         }
     }
+    let total = nodes.len();
+    nodes.truncate(limit);
+    // Within `max_tokens`: the nodes first, then the edges between notes still shown.
+    let budget = bounds::max_tokens(a, bounds::DEFAULT_MAX_TOKENS);
+    let node_texts: Vec<String> = nodes.iter().map(Value::to_string).collect();
+    let kept = bounds::fit(node_texts.iter().map(String::as_str), budget);
+    nodes.truncate(kept);
+    let used: usize = node_texts.iter().take(kept).map(|t| bounds::est_tokens(t) + 1).sum();
+    let shown: HashSet<&str> = nodes.iter().filter_map(|n| n["path"].as_str()).chain([start.as_str()]).collect();
+    edges.retain(|e| shown.contains(e["from"].as_str().unwrap_or_default()) && shown.contains(e["to"].as_str().unwrap_or_default()));
+    let between = edges.len();
+    let mut left = budget.saturating_sub(used);
+    edges.retain(|e| {
+        let t = bounds::est_tokens(&e.to_string()) + 1;
+        let fits = t <= left;
+        left = left.saturating_sub(t);
+        fits
+    });
+    let truncated = total > nodes.len() || edges.len() < between;
     let mut text = format!("Notes linked with {start} ({} found):\n", nodes.len());
     for n in &nodes {
         writeln!(text, "- {} ({} link{} away)", n["path"].as_str().unwrap_or(""), n["depth"], if n["depth"] == 1 { "" } else { "s" })
             .expect("a String takes any text");
     }
     let links = nodes.iter().filter_map(|n| n["path"].as_str()).map(|p| note_link(&NotePath::new(p))).collect();
-    ToolOutput::ok(text.trim_end().to_string(), json!({"nodes": nodes, "edges": edges})).with_links(links)
+    if truncated {
+        write!(text, "\n… cut at limit or max_tokens: {total} notes found").expect("a String takes any text");
+    }
+    ToolOutput::ok(text.trim_end().to_string(), json!({"nodes": nodes, "edges": edges, "total": total, "truncated": truncated}))
+        .with_links(links)
 }

@@ -28,8 +28,10 @@ Edition: both (P5). HTTP servers (`axum`, `tokio`) are allowed here by `deny.tom
   80 characters containing `Example`, and an output schema. [test] `every_0_9_tool_is_there_in_the_designs_order` (`tools/mod.rs`)
 - The wire output of recorded sessions does not change by accident. [test] `recorded_sessions_per_era` (`server/tests.rs`;
   `QUIRE_BLESS=1` re-records `tests/fixtures/mcp-0.9-*.jsonl`: read the diff before you bless it)
-- Results are bounded: a list takes `limit` with its default and maximum in the schema; a result that can pass
-  `DEFAULT_MAX_TOKENS` (`bounds.rs`) takes `max_tokens` and a cursor. [review only]
+- Results are bounded: a list takes `limit` with its default and maximum in the schema, and `max_tokens`; it says `total`
+  and `truncated`, and a list with an order pages by key (`bounds::keyset`: the cursor carries the last row's key). A long
+  read takes `max_tokens` and a cursor. [test] `every_list_tool_is_bounded_or_a_known_gap`,
+  `lists_page_to_the_end_without_repeats_or_gaps` (`tests/tool_contract.rs`)
 - Write tools are not listed to clients without a write grant (`ToolRegistry::offered`). [test] `order_is_fixed_and_names_unique`
 
 ## Do not

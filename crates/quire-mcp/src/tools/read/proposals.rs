@@ -14,10 +14,13 @@ pub(super) fn register() -> Box<dyn Tool> {
         "Your suggestions (proposals) and whether the person accepted them. Example: {} for your pending ones, {\"status\": \"applied\"}, or {\"mine\": false} for everyone's.",
         schema!({"type": "object", "properties": {
                 "status": {"type": "string", "enum": ["pending", "applied", "partially_applied", "rejected", "expired", "superseded", "all"], "default": "pending"},
-                "mine": {"type": "boolean", "default": true}}}),
+                "mine": {"type": "boolean", "default": true},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+                "max_tokens": {"type": "integer"}, "cursor": {"type": "string"}}}),
         schema!({"type": "object", "properties": {"proposals": {"type": "array", "items": {"type": "object", "properties": {
                 "id": {"type": "string"}, "status": {"type": "string"}, "title": {"type": "string"}, "files": {"type": "array", "items": {"type": "string"}},
-                "created": {"type": "string"}, "decided_hunks": {"type": "integer"}}}}}, "required": ["proposals"]}),
+                "created": {"type": "string"}, "decided_hunks": {"type": "integer"}}}},
+                "total": {"type": "integer"}, "truncated": {"type": "boolean"}, "next_cursor": {"type": ["string", "null"]}}, "required": ["proposals"]}),
         r,
         Access::Read,
         proposals,
@@ -37,9 +40,16 @@ fn proposals(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let filter = ProposalFilter { status, actor: mine.then(|| cx.actor.id.clone()), path: None };
     let mut list = cx.agent.proposals(&filter);
     list.retain(|p| p.files.iter().all(|f| visible(cx, f)));
-    list.sort_by_key(|p| std::cmp::Reverse(p.updated));
+    // Newest first by when each was made, then by id (the cursor's key).
+    let key = |p: &ProposalSummary| format!("{}\u{0}{}", bounds::num_key(u64::MAX - u64::try_from(p.created).unwrap_or(0)), p.id);
+    list.sort_by_cached_key(key);
+    let render = |p: &ProposalSummary| json!({"id": p.id, "status": p.status, "title": p.title, "files": p.files, "created": iso(p.created), "decided_hunks": p.decided_hunks, "uri": format!("quire://proposal/{}", p.id)});
+    let fingerprint = bounds::fingerprint("s", a);
+    let limit = int(a, "limit", 50, 1, 200);
+    let budget = bounds::max_tokens(a, bounds::DEFAULT_MAX_TOKENS);
+    let Some(page) = bounds::keyset(&list, key, render, a, &fingerprint, limit, budget) else { return stale(&fingerprint) };
     let mut text = String::new();
-    for p in &list {
+    for p in &list[page.range.clone()] {
         let st = serde_json::to_value(p.status).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
         writeln!(text, "- {} [{st}] {} ({})", p.id, p.title, p.files.iter().map(NotePath::as_str).collect::<Vec<_>>().join(", "))
             .expect("a String takes any text");
@@ -47,9 +57,7 @@ fn proposals(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     if list.is_empty() {
         text.push_str("No suggestions.");
     }
-    let rows: Vec<Value> = list
-        .iter()
-        .map(|p| json!({"id": p.id, "status": p.status, "title": p.title, "files": p.files, "created": iso(p.created), "decided_hunks": p.decided_hunks, "uri": format!("quire://proposal/{}", p.id)}))
-        .collect();
-    ToolOutput::ok(text.trim_end().to_string(), json!({"proposals": rows}))
+    more_line(&mut text, "proposals", &page);
+    let st = json!({"proposals": page.items, "total": page.total, "truncated": page.truncated, "next_cursor": page.next_cursor});
+    ToolOutput::ok(text.trim_end().to_string(), st)
 }

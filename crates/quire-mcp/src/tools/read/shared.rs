@@ -3,6 +3,8 @@
 //! Helpers several read tools share: the stale-version reply, line numbering,
 //! the view window, and the caller's own pending suggestion.
 
+use std::fmt::Write as _;
+
 use super::{
     ContentHash, Cursor, NotePath, ProposalFilter, ProposalStatus, Start, ToolCx, ToolOutput, Value, bounds, json, line_count, opt,
     section_lines,
@@ -21,7 +23,17 @@ pub fn own_pending(cx: &ToolCx<'_>, path: &NotePath) -> Option<(quire_agent::Pro
     })
 }
 
-pub(super) fn stale(version: &str) -> ToolOutput {
+/// The line that ends a cut list: how many rows follow and how to get them.
+pub(super) fn more_line(text: &mut String, tool: &str, page: &bounds::Page) {
+    if let Some(c) = &page.next_cursor {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        write!(text, "… {} more; call {tool} again with cursor=\"{c}\"", page.more()).expect("a String takes any text");
+    }
+}
+
+pub(crate) fn stale(version: &str) -> ToolOutput {
     ToolOutput::Err {
         code: "cursor_stale",
         message: format!("The cursor is for an older version (now {version}). Start again without a cursor."),
@@ -80,7 +92,7 @@ pub(super) fn window(text: &str, version: &ContentHash, a: &Value) -> Result<Win
     }
     let budget = bounds::max_tokens(a, bounds::DEFAULT_MAX_TOKENS);
     let (body, shown_to) = if total == 0 { (String::new(), 0) } else { numbered(text, first, last, budget) };
-    let next = (shown_to < last).then(|| Cursor { offset: shown_to + 1, version: version.to_string() }.encode());
+    let next = (shown_to < last).then(|| Cursor::at(shown_to + 1, version.to_string()).encode());
     Ok(Window { first, last, shown_to, total, body, next })
 }
 

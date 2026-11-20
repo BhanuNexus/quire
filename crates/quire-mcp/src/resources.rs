@@ -130,7 +130,7 @@ pub fn list(cx: &ReadCx<'_>, params: &Value) -> Result<Value, ReadError> {
     }
     let mut v = json!({ "resources": out });
     if start + NOTES_PAGE < paths.len() {
-        v["nextCursor"] = Cursor { offset: start + NOTES_PAGE, version: fingerprint }.encode().into();
+        v["nextCursor"] = Cursor::at(start + NOTES_PAGE, fingerprint).encode().into();
     }
     Ok(v)
 }

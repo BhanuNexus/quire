@@ -11,6 +11,7 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 - **`quire-cli sync once --verify`** reads every note again in that pass, to catch a change that kept a file's size and modification time.
 
 ### Changed
+- **Agents:** every list an agent can ask for (`list`, `tasks`, `tags`, `properties`, `recent_activity`, `history`, `proposals`, `links`, `outline`, `query_view`, `diff`) now takes a size cap (`max_tokens`) besides its limit, gives a cursor to continue, and says how many rows there are (`total`) and when it was cut (`truncated`); before, `tasks` stopped at its limit without saying so. `tasks` and `query_view` return at most 500 rows a page (was 1,000), and `tags` and `properties` now list by name.
 - **Sync:** a sync pass with nothing to send no longer reads every note; it reads only notes whose file changed, and once a day reads every note again to catch a change that kept a file's size and time.
 - **Sync:** each device keeps its record of what sync did in a new format, written only when something changed, instead of rewriting a copy of every note after each pass; the first sync after updating moves it over once. Going back to Quire 0.13 starts sync afresh on that device (notes changed there are kept as copies), and sync says so when an older Quire also syncs the same vault on the device.
 

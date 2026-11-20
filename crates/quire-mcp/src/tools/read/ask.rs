@@ -20,7 +20,8 @@ pub(super) fn register() -> Box<dyn Tool> {
         schema!({"type": "object", "properties": {
                 "answer": {"type": "string"}, "abstained": {"type": "boolean"},
                 "citations": {"type": "array", "items": {"type": "object"}}, "by": {"type": "string"},
-                "nearest": {"type": "array", "items": {"type": "object"}, "description": "When it abstains: up to 3 passages that came closest, with anchors (none of them answers)."}},
+                "nearest": {"type": "array", "items": {"type": "object"}, "description": "When it abstains: up to 3 passages that came closest, with anchors (none of them answers)."},
+                "truncated": {"type": "boolean"}},
                 "required": ["answer", "abstained", "citations"]}),
         r,
         Access::Read,
@@ -131,7 +132,8 @@ fn ask(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         }
     }
     // Keep the result within the token bound.
-    if bounds::est_tokens(&text) > budget {
+    let truncated = bounds::est_tokens(&text) > budget;
+    if truncated {
         let mut cut = (budget * 3).min(text.len());
         while !text.is_char_boundary(cut) {
             cut -= 1;
@@ -140,7 +142,7 @@ fn ask(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         text.push_str("\n… (cut at max_tokens)");
     }
     let links = sources.iter().map(|s| note_link(&s.path)).collect();
-    let mut out = json!({"answer": answer, "abstained": abstained, "citations": citations, "by": by});
+    let mut out = json!({"answer": answer, "abstained": abstained, "citations": citations, "by": by, "truncated": truncated});
     if abstained {
         out["nearest"] = nearest.into();
     }
