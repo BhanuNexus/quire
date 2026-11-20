@@ -26,7 +26,7 @@
 //! through [`crate::AgentStore::guard`]; a `Visibility` is for paths that came
 //! out of the index or the vault listing, which hold regular files only.
 //!
-//! The rules themselves are [`crate::store::decide`], shared with `effective`.
+//! The rules themselves are the store's `decide`, shared with `effective`.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
@@ -34,10 +34,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use quire_vault::{NotePath, Storage};
+use unicode_normalization::{IsNormalized, is_nfc_quick};
 
 use crate::actor::{Actor, ActorKind};
-use crate::policy::{Mode, OpKind, Policy, strictest};
-use crate::store::{Rules, canonical_path, decide};
+use crate::policy::{Mode, OpKind, Policy};
+use crate::store::{Rules, canonical_path, decide_mode};
 
 /// What a folder check found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,22 +144,34 @@ impl Visibility {
     /// [`Self::allows`] with the note's tags given (its index record's); a
     /// caller without a tag allow list ignores them.
     pub fn allows_with_tags(&self, path: &NotePath, tags: &[String]) -> bool {
-        let Some(rules) = &self.rules else { return true };
-        let Ok(path) = canonical_path(path) else { return false };
-        let p = path.as_str();
+        self.decide(path, tags, OpKind::Read) != Mode::Deny
+    }
+
+    /// The store's [`decide`] for `path` and `op`, with this value's folder checks.
+    fn decide(&self, path: &NotePath, tags: &[String], op: OpKind) -> Mode {
+        let Some(rules) = &self.rules else { return Mode::Direct };
+        let named = path.as_str();
+        // `canonical_path` without its copy when the path is already NFC (nearly always).
+        let canonical;
+        let p = if is_nfc_quick(named.chars()) == IsNormalized::Yes {
+            if quire_base::path::Rule::NoteFile.check(named).is_err() {
+                return Mode::Deny;
+            }
+            named
+        } else {
+            let Ok(c) = canonical_path(path) else { return Mode::Deny };
+            canonical = c;
+            canonical.as_str()
+        };
         let hidden = p.rsplit_once('/').is_some_and(|(f, _)| self.folder(f) != Folder::Plain);
-        strictest(decide(rules, &self.actor, p, hidden, &|| tags.to_vec()), OpKind::Read).0 != Mode::Deny
+        decide_mode(rules, &self.actor, p, hidden, &|| tags.to_vec(), op)
     }
 
     /// What the caller may do to `path` for `op` by the same rules, for a
     /// path that need not exist (`vault_info` asks about each zone): the
     /// folder checks of this value, no link followed, no tags.
     pub fn mode(&self, path: &NotePath, op: OpKind) -> Mode {
-        let Some(rules) = &self.rules else { return Mode::Direct };
-        let Ok(path) = canonical_path(path) else { return Mode::Deny };
-        let p = path.as_str();
-        let hidden = p.rsplit_once('/').is_some_and(|(f, _)| self.folder(f) != Folder::Plain);
-        strictest(decide(rules, &self.actor, p, hidden, &Vec::new), op).0
+        self.decide(path, &[], op)
     }
 
     /// 32 bytes that are equal for two callers only if every answer of

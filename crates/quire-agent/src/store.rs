@@ -29,7 +29,7 @@ use crate::contract::{Contract, parse_all};
 use crate::ids::{BatchId, ProposalId};
 use crate::inbox::InboxStore;
 use crate::ledger::{Ledger, LedgerEntry, LedgerQuery};
-use crate::policy::{Mode, OpKind, POLICY_PATH, Policy, Route, Widening, ZoneRole, hard_rule, stricter_limits, strictest, widenings};
+use crate::policy::{Mode, OpKind, POLICY_PATH, Policy, Route, Widening, ZoneRole, hard_rule, rank, stricter_limits, strictest, widenings};
 use crate::proposal::{Proposal, ProposalChange, ProposalFilter, ProposalStatus, ProposalStore, ProposalSummary};
 
 /// Where device approvals live: a folder, or memory (in-memory vaults, tests).
@@ -300,42 +300,69 @@ pub(crate) struct Rules {
 /// restrictive one for the operation applies ([`strictest`]).
 ///
 /// `locked`: the path's folder, or one above it, holds a key file. `tags`:
-/// the note's tags, asked for only when the client has an allow list.
-/// [`AgentStore::effective`] and [`crate::Visibility`] both call this, so the
-/// two cannot disagree about a rule.
-pub(crate) fn decide(rules: &Rules, actor: &Actor, p: &str, locked: bool, tags: &dyn Fn() -> Vec<String>) -> Vec<(Mode, String)> {
-    let mut candidates: Vec<(Mode, String)> = Vec::new();
+/// the note's tags, asked for only when the client has an allow list. `out`
+/// gets each mode and a function naming where it comes from (called only by
+/// a caller that reports it). [`AgentStore::effective`] and
+/// [`crate::Visibility`] both call this, so the two cannot disagree about a
+/// rule.
+pub(crate) fn decide(
+    rules: &Rules,
+    actor: &Actor,
+    p: &str,
+    locked: bool,
+    tags: &dyn Fn() -> Vec<String>,
+    out: &mut dyn FnMut(Mode, &dyn Fn() -> String),
+) {
     // 0.11: locked folders are invisible to everyone but the person,
     // locked or not, and so are encrypted files and key files anywhere.
     if locked || quire_vault::lock::is_encrypted_name(p) || quire_vault::lock::is_key_file(p) {
-        candidates.push((Mode::Deny, "locked folder".into()));
+        out(Mode::Deny, &|| "locked folder".into());
     }
     if actor.kind == ActorKind::Agent {
         for pol in rules.policy.active() {
-            candidates.extend(pol.modes_for(Some(actor.policy_key()), actor.unverified, p));
+            pol.modes_for_each(Some(actor.policy_key()), actor.unverified, p, out);
             // 0.11: AI off, revoked clients, allow lists.
             if pol.ai_off() {
-                candidates.push((Mode::Deny, "AI is off for this vault".into()));
+                out(Mode::Deny, &|| "AI is off for this vault".into());
             }
             if let Some(c) = pol.client(&actor.id) {
                 if c.revoked {
-                    candidates.push((Mode::Deny, format!("access revoked ({})", actor.policy_key())));
+                    out(Mode::Deny, &|| format!("access revoked ({})", actor.policy_key()));
                 }
                 if c.limited() && !c.allows(p, &tags()) {
-                    candidates.push((Mode::Deny, format!("outside the tags and folders {} may see", actor.policy_key())));
+                    out(Mode::Deny, &|| format!("outside the tags and folders {} may see", actor.policy_key()));
                 }
             }
         }
     } else {
-        candidates.push((Mode::Direct, String::new()));
+        out(Mode::Direct, &String::new);
     }
     if let Some(rule) = hard_rule(p, &rules.templates) {
-        candidates.push((rule.cap(), p.to_string()));
+        out(rule.cap(), &|| p.to_string());
     }
     if let Some(cap) = rules.cap {
-        candidates.push((cap, "grant".into()));
+        out(cap, &|| "grant".into());
     }
-    candidates
+}
+
+/// [`decide`] with every mode and where it comes from, for [`strictest`].
+pub(crate) fn decide_all(rules: &Rules, actor: &Actor, p: &str, locked: bool, tags: &dyn Fn() -> Vec<String>) -> Vec<(Mode, String)> {
+    let mut all = Vec::new();
+    decide(rules, actor, p, locked, tags, &mut |m, why| all.push((m, why())));
+    all
+}
+
+/// [`decide`]'s answer for `op` without the reasons: the mode
+/// [`strictest`] would pick, built without a string.
+pub(crate) fn decide_mode(rules: &Rules, actor: &Actor, p: &str, locked: bool, tags: &dyn Fn() -> Vec<String>, op: OpKind) -> Mode {
+    let mut best: Option<Mode> = None;
+    decide(rules, actor, p, locked, tags, &mut |m, _| {
+        if best.is_none_or(|b| (m.route(op), rank(m)) < (b.route(op), rank(b))) {
+            best = Some(m);
+        }
+    });
+    // No mode at all is a denial, as `strictest` says.
+    best.unwrap_or(Mode::Deny)
 }
 
 impl AgentStore {
@@ -522,7 +549,7 @@ impl AgentStore {
     fn candidates(&self, actor: &Actor, path: &NotePath) -> Vec<(Mode, String)> {
         let p = path.as_str();
         let locked = quire_vault::lock::folder_of(self.inner.vault.storage().as_ref(), p).is_some();
-        decide(&self.rules(actor), actor, p, locked, &|| self.tags_of(path))
+        decide_all(&self.rules(actor), actor, p, locked, &|| self.tags_of(path))
     }
 
     /// Which indexed notes `actor` may read, for one call: the cached rules,
