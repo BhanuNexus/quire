@@ -1217,8 +1217,16 @@ pub(crate) fn forget_derived(ws: &mut Workspace, folder: &str) {
 /// The caches under `.quire/cache/` that can hold text or vectors of notes.
 pub fn clear_caches(root: &std::path::Path) {
     let cache = root.join(".quire").join("cache");
-    for dir in ["served", "claims", "contradict", "pdf-text", "ocr", "index"] {
+    for dir in ["served", "claims", "contradict", "pdf-text", "ocr"] {
         let _ = std::fs::remove_dir_all(cache.join(dir));
+    }
+    // The index's startup cache: every file but `writer.lock`, which another
+    // process may hold; deleting it would let a second process become a
+    // writer beside the first (`docs/formats/index-cache.md`).
+    for e in std::fs::read_dir(cache.join("index")).into_iter().flatten().flatten() {
+        if e.file_name() != "writer.lock" {
+            let _ = std::fs::remove_file(e.path());
+        }
     }
     for e in std::fs::read_dir(&cache).into_iter().flatten().flatten() {
         let name = e.file_name().to_string_lossy().into_owned();

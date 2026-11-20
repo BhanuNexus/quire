@@ -80,16 +80,19 @@ Every field of `NoteRecord` and of `quire_markdown`'s `Heading`, `Link`,
 
 ## Rules
 
-* **The cache never decides alone.** A row is used only when its `hash`
-  equals the manifest's hash of the note now; any other note is read and
-  parsed. A copy from another vault or device only costs parses.
+* **The cache never decides alone.** Every load scans the vault first; a
+  row is used only when its `hash` equals the manifest's hash of the note
+  now; any other note is read and parsed. A load whose scan fails neither
+  reads nor writes the cache. A copy from another vault or device only costs parses.
 * **Any doubt is no cache.** A container that fails (its page), rows out of
   order, a path that is empty, absolute, hidden or has `.`/`..`, a slot of
   512 or more, a section that inflates to another length, a record that is
   not that JSON, a term index past the table, a text that is not UTF-8,
   a record whose path is not its row's, or bytes left over: the notes
   concerned (or all, for `records.idx`) are parsed, and the next flush
-  writes them again.
+  writes them again, and every segment that held one of them. A
+  `records.idx` that can't be used and is not of a newer format deletes
+  every segment at load (none can be checked against the locked folders).
 * **One writer.** Only the process holding `writer.lock` writes segments
   and `records.idx` and deletes segments; others read at load and never
   write. Nobody waits for the lock: a process that does not get it tries
@@ -113,12 +116,13 @@ Every field of `NoteRecord` and of `quire_markdown`'s `Heading`, `Link`,
   against the locked folders just before and just after; if one is locked,
   the file just written and every other cache file are deleted. A load that
   finds a path in a locked folder in `records.idx` deletes every cache file
-  before reading a segment. Locking a folder deletes `index/` (with the other
-  caches) and tells the index worker to drop its rows.
+  before reading a segment. Locking a folder deletes every file of `index/` but
+  `writer.lock` (with the other caches; the lock stays, so a second process
+  can't become a writer) and tells the index worker to drop its rows.
 * **Crashes.** Each file is written atomically and not flushed
   (`quire_base::cache::write`). A crash leaves an old `records.idx` with
   segments that are still whole (unreferenced new ones are deleted by the
   next flush) or a temporary file, which the next start sweeps.
-* **Newer format.** A `records.idx` of a newer `format` is left alone and
-  the index runs without the cache (P3).
+* **Newer format.** A `records.idx` of a newer `format` is left alone, no
+  segment is written beside it, and the index runs without the cache (P3).
 * **Edition.** Records do not depend on the edition (P5).
