@@ -35,6 +35,14 @@ BUDGETS = {
     ("semantic", "passages"): (None, "Passages scanned (count)"),
     ("mcp", "view_p50_ms"): (10, "MCP `view`, 10k notes (p50)"),
     ("mcp", "search_p95_ms"): (50, "MCP `search`, 10k notes (p95)"),
+    # 0.14: the listing tools filter with the call's Visibility (docs/design/0.14-agent-tools.md G5).
+    ("mcp", "list_p50_ms"): (30, "MCP `list`, 10k notes (p50)"),
+    ("mcp", "tags_p50_ms"): (30, "MCP `tags`, 10k notes (p50)"),
+    ("mcp", "properties_p50_ms"): (30, "MCP `properties`, 10k notes (p50)"),
+    ("mcp", "tasks_p50_ms"): (30, "MCP `tasks`, 10k notes (p50)"),
+    ("mcp", "links_p50_ms"): (30, "MCP `links`, 10k notes (p50)"),
+    ("mcp", "vault_info_p50_ms"): (30, "MCP `vault_info`, 10k notes (p50)"),
+    ("mcp", "query_view_p50_ms"): (30, "MCP `query_view`, 10k notes (p50)"),
     ("pdf", "text_per_page_p50_ms"): (50, "PDF text extraction per page (p50)"),
     ("pdf", "text_per_page_max_ms"): (None, "PDF text extraction per page (worst PDF)"),
     ("mcp-pdfs", "first_answer_200_pdfs_ms"): (500, "MCP start to first search answer, 200 new PDFs"),
@@ -49,6 +57,21 @@ BUDGETS = {
     ("typing", "p99_ms"): (16, "Keystroke to frame, 100 KB note, jobs on (p99)"),
     ("canvas", "frame_p50_ms"): (8, "Canvas, 1,000 cards: pan/zoom frame (p50)"),
     ("canvas", "frame_max_ms"): (None, "Canvas, 1,000 cards: worst frame"),
+}
+
+# Storage calls of one listing call on the `mcp` suite's 10k notes in 50 folders
+# (docs/design/0.14-agent-tools.md G4): exact, so any call over fails, with no
+# margin (counts do not depend on the runner). Each is 2 per folder (a key file
+# and an unlocking file) plus the call's own: the vault root, the policy file,
+# and for `links` the note it names, for `vault_info` the zones' folders.
+COUNTS = {
+    ("mcp", "list_storage_calls"): (103, "MCP `list`: storage calls"),
+    ("mcp", "tags_storage_calls"): (103, "MCP `tags`: storage calls"),
+    ("mcp", "properties_storage_calls"): (103, "MCP `properties`: storage calls"),
+    ("mcp", "tasks_storage_calls"): (103, "MCP `tasks`: storage calls"),
+    ("mcp", "links_storage_calls"): (108, "MCP `links`: storage calls"),
+    ("mcp", "vault_info_storage_calls"): (108, "MCP `vault_info`: storage calls"),
+    ("mcp", "query_view_storage_calls"): (103, "MCP `query_view`: storage calls"),
 }
 
 # Absolute regression guards for measures whose design budget is relative
@@ -136,7 +159,16 @@ def main():
             f"| {label} | {'' if budget is None else f'{budget} ms'} | {'' if limit is None else f'{limit:.1f} ms'} "
             f"| {v:.2f}{unit} | {'ok' if ok else '**over**'} |"
         )
+    for key, (budget, label) in COUNTS.items():
+        if key not in med:
+            continue
+        v = med[key]
+        ok = v <= budget
+        if not ok:
+            failed.append(f"{label}: {v:.0f} (budget {budget}, exact)")
+        table.append(f"| {label} | {budget} | {budget} | {v:.0f} | {'ok' if ok else '**over**'} |")
     missing = [BUDGETS[k][1] for k in BUDGETS if BUDGETS[k][0] is not None and k not in med and (a.app or k[0] not in ("startup", "typing", "canvas"))]
+    missing += [COUNTS[k][1] for k in COUNTS if k not in med]
     for m in missing:
         failed.append(f"{m}: not measured")
     report = "\n".join(table)

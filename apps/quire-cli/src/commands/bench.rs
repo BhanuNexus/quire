@@ -13,6 +13,8 @@
 #![expect(clippy::disallowed_methods, reason = "benchmarks build and open their own temporary vaults")]
 
 use std::fmt::Write as _;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use quire_agent::DeviceInfo;
@@ -23,7 +25,7 @@ use quire_app::intel::chat::CancelFlag;
 use quire_app::intel::related_notes;
 use quire_app::markdown::{blocks, extract, highlight, render};
 use quire_app::text::{Buffer, Transaction};
-use quire_app::vault::{NotePath, Vault};
+use quire_app::vault::{MemFs, NotePath, Storage, Vault};
 use quire_mcp::{Conn, Reply, Server, ServerConfig};
 use serde_json::{Value, json};
 
@@ -310,26 +312,113 @@ fn mcp_call(srv: &Server, conn: &Conn, tool: &str, args: &Value) -> Value {
     }
 }
 
+/// The listing tools the `mcp` suite times and counts (`docs/design/0.14-agent-tools.md` G4, G5),
+/// with arguments that make them work on its vault.
+fn listing_calls() -> Vec<(&'static str, Value)> {
+    vec![
+        ("list", json!({})),
+        ("tags", json!({})),
+        ("properties", json!({})),
+        ("tasks", json!({})),
+        ("links", json!({"path": "Folder 3/Note 3.md"})),
+        ("vault_info", json!({})),
+        ("query_view", json!({"spec": "group: status"})),
+    ]
+}
+
+/// A storage that counts the calls the listing budget counts: `exists`, `modified`, `read`,
+/// `read_bytes` and `absolute`.
+struct Counting {
+    inner: Arc<dyn Storage>,
+    calls: AtomicUsize,
+}
+
+impl Counting {
+    fn count(&self) {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+impl Storage for Counting {
+    fn list(&self) -> quire_app::vault::Result<Vec<NotePath>> {
+        self.inner.list()
+    }
+    fn read_bytes(&self, path: &NotePath) -> quire_app::vault::Result<Vec<u8>> {
+        self.count();
+        self.inner.read_bytes(path)
+    }
+    fn read(&self, path: &NotePath) -> quire_app::vault::Result<String> {
+        self.count();
+        self.inner.read(path)
+    }
+    fn write_bytes_atomic(&self, path: &NotePath, bytes: &[u8]) -> quire_app::vault::Result<()> {
+        self.inner.write_bytes_atomic(path, bytes)
+    }
+    fn rename(&self, from: &NotePath, to: &NotePath) -> quire_app::vault::Result<()> {
+        self.inner.rename(from, to)
+    }
+    fn trash(&self, path: &NotePath) -> quire_app::vault::Result<()> {
+        self.inner.trash(path)
+    }
+    fn exists(&self, path: &NotePath) -> bool {
+        self.count();
+        self.inner.exists(path)
+    }
+    fn modified(&self, path: &NotePath) -> quire_app::vault::Result<std::time::SystemTime> {
+        self.count();
+        self.inner.modified(path)
+    }
+    fn absolute(&self, path: &NotePath) -> Option<std::path::PathBuf> {
+        self.count();
+        self.inner.absolute(path)
+    }
+    fn list_under(&self, folder: &str) -> quire_app::vault::Result<Vec<NotePath>> {
+        self.inner.list_under(folder)
+    }
+    fn remove(&self, path: &NotePath) -> quire_app::vault::Result<()> {
+        self.inner.remove(path)
+    }
+    fn append_line(&self, path: &NotePath, line: &str) -> quire_app::vault::Result<()> {
+        self.inner.append_line(path, line)
+    }
+    fn write_bytes_if(&self, path: &NotePath, still: &dyn Fn(Option<&[u8]>) -> bool, bytes: &[u8]) -> quire_app::vault::Result<bool> {
+        self.inner.write_bytes_if(path, still, bytes)
+    }
+    fn take_listing_notice(&self) -> Option<String> {
+        self.inner.take_listing_notice()
+    }
+    fn set_locked_folders(&self, folders: &[String]) {
+        self.inner.set_locked_folders(folders);
+    }
+    fn trash_if(&self, path: &NotePath, still: &dyn Fn(Option<&[u8]>) -> bool) -> quire_app::vault::Result<bool> {
+        self.inner.trash_if(path, still)
+    }
+}
+
 /// `docs/design/0.9.md` §9: MCP read tools on 10,000 notes: `view` ≤ 10 ms, `search` p95 ≤ 50 ms
-/// (as `crates/quire-mcp/tests/bench.rs`).
+/// (as `crates/quire-mcp/tests/bench.rs`). `docs/design/0.14-agent-tools.md` G4 and G5: the
+/// listing tools' p50, and their storage calls on one call (an exact count: 50 folders, two lock
+/// files each, and a few for the call).
 fn mcp_suite(runs: usize) {
     let words = ["rope", "undo", "tree", "editor", "buffer", "cursor", "merge", "sync", "note", "index", "query", "vault"];
     let notes: Vec<(String, String)> = (0..10_000)
         .map(|i| {
-            let mut t = format!("# Note {i}\n\n## Part one\n");
+            let mut t = format!("---\ntags: [t{}, shared]\nstatus: s{}\n---\n# Note {i}\n\n## Part one\n", i % 7, i % 3);
             for j in 0..30 {
                 let _ = write!(t, "{} {} {} {i} ", words[(i + j) % words.len()], words[(i * 7 + j) % words.len()], words[j % words.len()]);
             }
-            t.push_str("\n\n## Part two\nMore text about ropes and undo.\n");
+            let _ = write!(t, "\n\n## Part two\nMore text about ropes and undo, see [[Note {}]].\n\n- [ ] task {i}\n", (i + 1) % 10_000);
             (format!("Folder {}/Note {i}.md", i % 50), t)
         })
         .collect();
     let files: Vec<(&str, &str)> = notes.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
+    let storage = Arc::new(Counting { inner: Arc::new(MemFs::with_files(files.iter().copied())), calls: AtomicUsize::new(0) });
     let srv = Server::with_config(
-        Vault::in_memory(&files),
+        Vault::new(Arc::<Counting>::clone(&storage)),
         None,
         ServerConfig { device: Some(DeviceInfo { id: "bench".into(), name: "bench".into() }), ..ServerConfig::default() },
     );
+    srv.index().flush();
     let conn = Conn::stdio(srv.new_conn());
     let (mut view, mut search) = (Vec::new(), Vec::new());
     for i in 0..(50 * runs) {
@@ -352,6 +441,20 @@ fn mcp_suite(runs: usize) {
     }
     emit("mcp", "view_p50_ms", median(view));
     emit("mcp", "search_p95_ms", percentile(search, 95));
+    for (tool, args) in listing_calls() {
+        // The first call warms what a call may cache; the counted one is the steady state.
+        let _ = mcp_call(&srv, &conn, tool, &args);
+        storage.calls.store(0, Ordering::Relaxed);
+        let _ = mcp_call(&srv, &conn, tool, &args);
+        emit("mcp", &format!("{tool}_storage_calls"), storage.calls.load(Ordering::Relaxed) as f64);
+        let mut times = Vec::new();
+        for _ in 0..runs {
+            let t = Instant::now();
+            let _ = mcp_call(&srv, &conn, tool, &args);
+            times.push(ms(t.elapsed()));
+        }
+        emit("mcp", &format!("{tool}_p50_ms"), median(times));
+    }
 }
 
 /// A PDF of `pages` pages of Helvetica text (as `make_fixtures.py` writes them).
