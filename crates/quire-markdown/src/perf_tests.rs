@@ -91,3 +91,20 @@ fn verbatim_range_walks_are_linear_on_a_big_note() {
 fn cards_are_linear_on_many_highlighted_paragraphs() {
     doubles("srs::cards", 200_000, |n| "a ==m== b\n\n".repeat(n / 12), |s| sink(srs::cards(s)));
 }
+
+/// Front matter with one property whose value is `n` bytes of `piece`: every link
+/// asks what quote is open and whether it is in a code span.
+fn one_line_of_links(piece: &'static str) -> impl Fn(usize) -> String {
+    move |n| format!("---\nrelated: {}\n---\nbody\n", piece.repeat(n / piece.len()))
+}
+
+/// Many links on one front-matter line: the quote open at each link is read on from the
+/// last one, not from the start of the value, and the code spans are walked once.
+#[test]
+fn front_matter_links_are_linear_on_one_line_of_many_links() {
+    let links = |s: &str| sink(crate::fields::front_matter_links(s, s.len()));
+    doubles("front_matter_links", 40_000, one_line_of_links("[[x]] "), links);
+    doubles("front_matter_links, quoted", 40_000, one_line_of_links("'[[x]]' "), links);
+    doubles("front_matter_links, in code spans", 40_000, one_line_of_links("`c` [[x]] "), links);
+    doubles("extract", 40_000, one_line_of_links("[[x]] "), |s| sink(extract(s)));
+}
