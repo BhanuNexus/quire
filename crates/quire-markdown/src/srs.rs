@@ -221,10 +221,11 @@ pub fn cards(src: &str) -> Vec<Card> {
         let (pa, pb) = (para[0].start, para[para.len() - 1].start + para[para.len() - 1].text.len());
         // The highlights are in order: those inside the paragraph start at or after `pa` and before `pb`.
         let first = highlights.partition_point(|r| r.start < pa);
-        let hl: Vec<&Range<usize>> = highlights[first..]
-            .iter()
-            // Highlights do not overlap, so those that end by `pb` come first.
-            .take_while(|r| r.end <= pb)
+        // Highlights do not overlap, so those that end by `pb` come first.
+        let window = highlights[first..].iter().take_while(|r| r.end <= pb);
+        #[cfg(test)]
+        let window = window.inspect(|_| crate::scan::work::add(|w| w.steps += 1));
+        let hl: Vec<&Range<usize>> = window
             .filter(|r| cloze_lines.iter().any(|k| r.start >= para[*k].start && r.start < para[*k].start + para[*k].text.len()))
             .collect();
         if hl.is_empty() {

@@ -33,6 +33,37 @@ pub(crate) fn fixture_notes() -> Vec<String> {
     out
 }
 
+/// One line of `n` `[`.
+pub(crate) fn open_brackets(n: usize) -> String {
+    "[".repeat(n)
+}
+
+/// `n` lines of `[[x`.
+pub(crate) fn open_links(n: usize) -> String {
+    "[[x\n".repeat(n)
+}
+
+/// One line of about `n` bytes of `== a ==`-less marks: each `==` opens a body that starts with a space.
+pub(crate) fn open_marks(n: usize) -> String {
+    "== a ".repeat(n / 5)
+}
+
+/// A note of about `bytes` bytes that is nearly all verbatim ranges and the lines
+/// between them (fences, display math, inline code, highlights, callouts, ids), so
+/// a walk that tests every line against every range shows at a size the parser
+/// itself still reads in linear time.
+pub(crate) fn dense_note(bytes: usize) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::from("---\ntitle: Dense\n---\n");
+    let mut i = 0;
+    while s.len() < bytes {
+        write!(s, "`c{i}` ==m{i}== @k{i} [[n{i}]] ^b{i}\n\n```\nx\n```\n$$\ny ^2\n$$\n> [!note] T{i}\ntext ^i{i}\n\nQ{i}\n?\nA{i}\n\n")
+            .unwrap();
+        i += 1;
+    }
+    s
+}
+
 /// A note made of lines with code fences, front matter, math, indented code,
 /// callouts, block ids, flash cards, highlights, citations and links, in any order.
 pub(crate) fn note_lines() -> impl Strategy<Value = String> {

@@ -29,6 +29,8 @@ pub mod frontmatter;
 // 0.12: the Markdown linter and formatter.
 pub mod linter;
 pub mod outline;
+#[cfg(test)]
+mod perf_tests;
 pub mod render;
 mod scan;
 pub mod srs;
