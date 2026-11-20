@@ -274,6 +274,10 @@ impl Workspace {
 
     /// Set up what 0.9 features need for a newly opened vault.
     fn vault_attached(&mut self, vault: Vault) {
+        // Another vault: its manifest comes with its deferred start, never
+        // the last vault's (the index and sync both take it from here).
+        self.manifest = None;
+        self.verify = crate::manifest_verify::VerifyState::default();
         let agent = quire_agent::AgentStore::open(&vault, self.device.clone(), Arc::new(quire_agent::SystemClock));
         self.jobs.set_context(Some(crate::jobs::JobCx {
             // No keys: background jobs never read a locked folder (0.11).
@@ -433,8 +437,6 @@ impl Workspace {
 
     /// Use an existing vault (tests, demos, in-memory scratch vaults).
     pub fn attach_vault(&mut self, vault: Vault) {
-        self.manifest = None;
-        self.verify = crate::manifest_verify::VerifyState::default();
         self.index.load(vault.clone());
         self.vault_attached(vault);
     }

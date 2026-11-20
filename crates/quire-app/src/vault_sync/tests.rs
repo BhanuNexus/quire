@@ -1614,3 +1614,50 @@ fn a_stored_selection_with_an_unusable_folder_keeps_the_rest_and_says_so() {
     // A good selection has no warnings.
     assert!(Selection::lenient(&s(&["Work"]), &[]).1.is_empty());
 }
+
+/// One manifest per vault in the app (`docs/design/0.14-architecture.md` §2):
+/// the session the workspace starts scans with the workspace's manifest. A
+/// change its pass finds reaches the index through the manifest, with no
+/// watcher event taken in; a note sync writes from another device is
+/// indexed once, with the text on disk, and a later scan changes nothing.
+#[test]
+fn the_app_and_its_sync_share_one_manifest() {
+    let dir = tempfile::tempdir().unwrap();
+    let (va, vb, shared) = (dir.path().join("A"), dir.path().join("B"), dir.path().join("Shared"));
+    for d in [&va, &vb, &shared] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    std::fs::write(va.join("Plan.md"), "# Plan\none\n").unwrap();
+    let target = SyncTarget::Folder(shared);
+    let mut a = Workspace::new(crate::Settings::default());
+    a.open_vault(&va).unwrap();
+    a.sync_create(&target, "correct horse battery", "laptop").unwrap();
+    let start = Instant::now();
+    while !matches!(a.sync.status, SyncStatus::Synced(_)) {
+        assert!(start.elapsed() < Duration::from_secs(30), "the first pass never ended: {:?}", a.sync.status);
+        a.poll_sync();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // Changed outside Quire; no tick, so the watcher's event is never taken in.
+    std::fs::write(va.join("Plan.md"), "# Plan\nsharedword\n").unwrap();
+    a.sync_nudge();
+    let start = Instant::now();
+    while a.index().read().search("sharedword", 5).is_empty() {
+        assert!(start.elapsed() < Duration::from_secs(30), "sync's scan never reached the index");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // A note from another device, written here by the app's session.
+    let space = sync_list(&target).unwrap().remove(0).space;
+    sync_join_at(&vb, &target, &space, "correct horse battery", "phone", &Selection::default()).unwrap();
+    std::fs::write(vb.join("From B.md"), "# From B\nincomingword\n").unwrap();
+    sync_once_at(&vb).unwrap();
+    a.sync_nudge();
+    wait_for(&mut [&mut a], "the incoming note in the index", |w| w[0].index().read().search("incomingword", 5).len() == 1);
+    let p = NotePath::new("From B.md");
+    let on_disk = std::fs::read_to_string(va.join("From B.md")).unwrap();
+    assert_eq!(a.index().read().source(&p), Some(on_disk.as_str()));
+    a.manifest().unwrap().scan().unwrap();
+    a.index().flush();
+    assert_eq!(a.index().read().source(&p), Some(on_disk.as_str()));
+    assert_eq!(a.index().read().search("incomingword", 5).len(), 1);
+}

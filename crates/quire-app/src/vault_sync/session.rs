@@ -125,6 +125,9 @@ pub(super) struct Session {
     /// pass must do it now (`quire-cli sync once --verify`).
     verified_at: i64,
     pub(super) verify: bool,
+    /// The store scans with the app workspace's manifest, shared with the
+    /// index: the workspace's own daily verify reads the Markdown notes.
+    shares_manifest: bool,
     /// The last pass had nothing to do (none ran yet: true).
     quiet: bool,
     /// When the vault manifest was last written.
@@ -142,6 +145,21 @@ pub(super) struct Pass {
 
 impl Session {
     pub(super) fn new(root: PathBuf, vault: Vault, cfg: SyncConfig, token: &str, key: VaultKey, lock: SyncLock) -> Result<Self, String> {
+        Self::open(root, vault, cfg, token, key, lock, None)
+    }
+
+    /// [`Self::new`] scanning with `manifest`, the app workspace's (one
+    /// manifest per vault in the app, shared with the index:
+    /// `docs/design/0.14-architecture.md` §2); `None` opens its own.
+    pub(super) fn open(
+        root: PathBuf,
+        vault: Vault,
+        cfg: SyncConfig,
+        token: &str,
+        key: VaultKey,
+        lock: SyncLock,
+        manifest: Option<quire_vault::changes::Manifest>,
+    ) -> Result<Self, String> {
         let keys = harden::keyset(&cfg.space, &key);
         // Every revision fetched (S3, WebDAV) or read (a folder) is decrypted
         // before it's used, so a damaged one is skipped rather than stopping sync.
@@ -153,12 +171,13 @@ impl Session {
         // In a sync folder, vault settings travel in a lane of their own,
         // which 0.8 never reads; the notes lane never touches them.
         let (selection, selection_warnings) = cfg.selection_with_warnings();
-        let store = if cfg.folder.is_some() {
-            VaultStore::new(vault.clone()).notes_only()
-        } else {
-            VaultStore::new(vault.clone()).with_shared_state(cfg.shared_state)
-        }
-        .with_selection(selection);
+        let shares_manifest = manifest.is_some();
+        let store = match manifest {
+            Some(m) => VaultStore::with_manifest(vault.clone(), m),
+            None => VaultStore::new(vault.clone()),
+        };
+        let store =
+            if cfg.folder.is_some() { store.notes_only() } else { store.with_shared_state(cfg.shared_state) }.with_selection(selection);
         // Other devices see this one under its sync name ("home server").
         let mut device = crate::device::this_device();
         if !cfg.device_name.trim().is_empty() {
@@ -190,6 +209,7 @@ impl Session {
             notices: opened.notices.into_iter().chain(selection_warnings).collect(),
             verified_at,
             verify: false,
+            shares_manifest,
             quiet: true,
             manifest_saved: Instant::now(),
             _lock: lock,
@@ -409,8 +429,12 @@ impl Session {
         let verifying = self.verify || verify_due(self.quiet, now, self.verified_at);
         self.store.verify_next = verifying;
         // A verify rehashes the notes sync tracks here, not every video.
-        self.store.verify_only =
-            verifying.then(|| self.engine.state.files.values().filter(|t| !t.deleted && !t.outside).map(|t| t.path.clone()).collect());
+        self.store.verify_only = verifying.then(|| {
+            verify_scope(
+                self.engine.state.files.values().filter(|t| !t.deleted && !t.outside).map(|t| t.path.as_str()),
+                self.shares_manifest,
+            )
+        });
         if let Err(e) = begin_pass(&mut self.store) {
             // Never read as "every note was deleted here" (0.13.2).
             let status = SyncStatus::Error(quire_sync::SyncError::List(e).to_string());
@@ -599,6 +623,15 @@ const VERIFY_EVERY_MS: i64 = 24 * 3_600_000;
 pub(super) const fn verify_due(quiet: bool, now: i64, verified_at: i64) -> bool {
     let age = now.saturating_sub(verified_at);
     (quiet && age >= VERIFY_EVERY_MS) || age >= 2 * VERIFY_EVERY_MS
+}
+
+/// The files a verify pass rehashes: the ones sync tracks here. With the app
+/// workspace's manifest, not the Markdown notes: the workspace's own daily
+/// verify reads every note (`crate::manifest_verify`), so none is read twice
+/// a day for nothing. Without a workspace (`quire-cli sync once`, `serve`)
+/// sync reads them all itself.
+pub(super) fn verify_scope<'a>(tracked: impl Iterator<Item = &'a str>, shares_manifest: bool) -> std::collections::HashSet<String> {
+    tracked.filter(|p| !(shares_manifest && quire_vault::NotePath::new(*p).is_markdown())).map(str::to_string).collect()
 }
 
 /// The sync status while files can't be read.

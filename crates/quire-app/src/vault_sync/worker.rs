@@ -39,7 +39,17 @@ pub const APP_POLL: Duration = Duration::from_mins(2);
 pub const REMOTE_POLL: Duration = Duration::from_mins(1);
 
 impl SyncWorker {
-    pub(super) fn start(root: PathBuf, vault: Vault, cfg: SyncConfig, token: String, key: VaultKey, poll: Duration) -> Self {
+    /// `manifest`: the app workspace's, which the session then shares; `None`
+    /// opens its own.
+    pub(super) fn start(
+        root: PathBuf,
+        vault: Vault,
+        cfg: SyncConfig,
+        token: String,
+        key: VaultKey,
+        poll: Duration,
+        manifest: Option<quire_vault::changes::Manifest>,
+    ) -> Self {
         let (tx, msgs) = crossbeam_channel::unbounded();
         let (events, rx) = crossbeam_channel::unbounded();
         let stop = Arc::new(AtomicBool::new(false));
@@ -162,7 +172,7 @@ impl SyncWorker {
                         }
                     }
                 };
-                let mut session = match Session::new(root, vault, cfg, &token, key, lock) {
+                let mut session = match Session::open(root, vault, cfg, &token, key, lock, manifest) {
                     Ok(s) => s,
                     Err(e) => {
                         let _ = events.send(SyncEvent::Status(SyncStatus::Error(e)));
@@ -225,7 +235,7 @@ impl SyncWorker {
     /// every `poll` otherwise.
     pub fn start_headless(root: &Path, poll: Duration) -> Result<Self, String> {
         let (vault, cfg, token, key) = open_parts(root)?;
-        Ok(Self::start(root.to_path_buf(), vault, cfg, token, key, poll))
+        Ok(Self::start(root.to_path_buf(), vault, cfg, token, key, poll, None))
     }
 
     /// Sync soon (local files changed).

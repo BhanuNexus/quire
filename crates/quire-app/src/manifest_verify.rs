@@ -18,7 +18,8 @@ use crate::workspace::Workspace;
 
 /// At most one verify a day.
 pub(crate) const EVERY_MS: i64 = 86_400_000;
-/// Only after this long without input or typing.
+/// Only after this long without input or typing, until it is two days
+/// late: then whatever the person does (as sync's own rule).
 pub(crate) const IDLE: Duration = Duration::from_mins(5);
 /// The file in the vault's state folder holding the last run, Unix ms.
 const FILE: &str = "manifest-verify";
@@ -37,16 +38,19 @@ pub(crate) struct VerifyState {
 }
 
 /// Whether a verify is due: none recorded, or the last a day ago or more
-/// (or in the future: a clock set back), and idle long enough.
+/// (or in the future: a clock set back), and idle long enough; or the last
+/// two days ago or more, idle or not.
 pub(crate) fn due(last_ms: Option<i64>, now_ms: i64, idle_for: Duration) -> bool {
-    idle_for >= IDLE && last_ms.is_none_or(|l| now_ms < l || now_ms - l >= EVERY_MS)
+    let age = last_ms.filter(|l| *l <= now_ms).map_or(EVERY_MS, |l| now_ms - l);
+    (idle_for >= IDLE && age >= EVERY_MS) || age >= 2 * EVERY_MS
 }
 
 /// When the next verify is due, given the last run and the last activity.
 pub(crate) fn due_at(last_ms: Option<i64>, now_ms: i64, now: Instant, active: Instant) -> Instant {
-    let by_day =
-        last_ms.filter(|l| *l <= now_ms).map_or(now, |l| now + Duration::from_millis(u64::try_from(l + EVERY_MS - now_ms).unwrap_or(0)));
-    by_day.max(active + IDLE)
+    let last = last_ms.filter(|l| *l <= now_ms);
+    let after = |ms: i64| last.map(|l| now + Duration::from_millis(u64::try_from(l + ms - now_ms).unwrap_or(0)));
+    let idle = after(EVERY_MS).unwrap_or(now).max(active + IDLE);
+    after(2 * EVERY_MS).map_or(idle, |overdue| idle.min(overdue))
 }
 
 /// The last run recorded in `dir`.
@@ -121,6 +125,9 @@ mod tests {
         assert!(!due(Some(NOW - EVERY_MS + 1), NOW, idle), "ran less than a day ago");
         assert!(due(Some(NOW - EVERY_MS), NOW, idle), "a day ago");
         assert!(due(Some(NOW + 60_000), NOW, idle), "a clock set back");
+        assert!(!due(Some(NOW - EVERY_MS), NOW, Duration::ZERO), "a day late waits for idle");
+        assert!(due(Some(NOW - 2 * EVERY_MS), NOW, Duration::ZERO), "two days late: whatever the person does");
+        assert!(!due(None, NOW, Duration::ZERO), "never ran: when idle");
     }
 
     #[test]
@@ -131,6 +138,9 @@ mod tests {
         assert_eq!(due_at(None, NOW, later, active), later, "due now");
         let hour = Duration::from_hours(1);
         assert_eq!(due_at(Some(NOW - EVERY_MS + 3_600_000), NOW, later, active), later + hour);
+        // Two days late comes even while the person is busy.
+        let busy = active + IDLE * 100;
+        assert_eq!(due_at(Some(NOW - 2 * EVERY_MS + 60_000), NOW, busy, busy), busy + Duration::from_mins(1));
     }
 
     #[test]

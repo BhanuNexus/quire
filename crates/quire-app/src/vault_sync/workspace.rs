@@ -214,7 +214,8 @@ impl Workspace {
             self.sync.status = SyncStatus::Error("This device is missing the sync key. Join the vault again in Settings → Sync.".into());
             return;
         };
-        self.sync.worker = Some(SyncWorker::start(root, vault, cfg.clone(), token, key, APP_POLL));
+        // One manifest per vault: the one the index loads through.
+        self.sync.worker = Some(SyncWorker::start(root, vault, cfg.clone(), token, key, APP_POLL, self.manifest().cloned()));
         self.sync.config = Some(cfg);
         self.sync.status = SyncStatus::Syncing;
     }
