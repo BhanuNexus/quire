@@ -194,7 +194,7 @@ fn attachments_travel_rename_and_are_remembered_by_hash() {
     assert_eq!(devs[1].store.read("attachments/pixel.png").unwrap(), png);
     // The engine keeps a hash, not the file.
     let state = serde_json::to_string(&devs[1].engine.state).unwrap();
-    assert!(!state.contains(png) && state.contains("sha256:"));
+    assert!(!state.contains(png) && state.contains(&quire_sync::Print::of(png).to_hex()));
     // A rename is a rename, not a delete and a new file.
     let before = server.len();
     let t = devs[1].store.0.remove("attachments/pixel.png").unwrap();

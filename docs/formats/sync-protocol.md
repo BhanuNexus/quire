@@ -90,7 +90,8 @@ of `device`: Quire 0.9 requires `device`, so it doesn't load the file and
 shows sync as off for that vault, rather than sync it from an empty engine
 state over the notes already there. 0.10 reads either key; clearing the
 selection (`sync scope --all`) writes `device` again. The engine state
-moves to `state-partial.json` while a selection is set (0.9 never reads it).
+moves to `state-partial.json` while a selection is set (0.9 never reads it);
+from 0.14 the folder `state-partial.d` ([sync-state.md](sync-state.md)).
 
 ## `.quire/sync/lock` (vault, device-local, 0.10)
 

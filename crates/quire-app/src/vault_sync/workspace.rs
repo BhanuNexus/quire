@@ -5,7 +5,7 @@ use super::{
     APP_POLL, DeviceRemoved, Engine, FolderTransport, HeldDeletes, HeldId, HttpTransport, Link, NotePath, NoticeLevel, Path, PathBuf, Pins,
     Receiver, RecoveryKey, RemoteSecret, RemoteTransport, Selection, SetupDone, SetupKind, SetupResult, SpaceId, SpaceInfo, SyncConfig,
     SyncDevices, SyncEvent, SyncHandle, SyncStatus, SyncTarget, SyncVaultInfo, SyncVersion, SyncWorker, UpgradeInfo, Vault, Workspace,
-    folder, harden, in_background, key_name, load_state, raise_min_reader, read_key, remote, remote_dir, secrets, skipped_notice,
+    folder, harden, in_background, journal, key_name, load_state, raise_min_reader, read_key, remote, remote_dir, secrets, skipped_notice,
     sync_allow_deletes_at, sync_create_at, sync_devices_at, sync_dir, sync_join_at, sync_remove_device_at, sync_set_remote_secret_at,
     sync_test, sync_upgrade_at, sync_upgrade_info_at, token_name,
 };
@@ -279,8 +279,8 @@ impl Workspace {
         self.reset_sync();
         let dir = sync_dir(&root);
         let _ = std::fs::remove_file(dir.join("config.json"));
-        let _ = std::fs::remove_file(dir.join("state.json"));
-        let _ = std::fs::remove_file(dir.join("state-partial.json"));
+        journal::remove(&root, "state.json");
+        journal::remove(&root, "state-partial.json");
         let _ = std::fs::remove_file(dir.join("last.json"));
         let _ = std::fs::remove_file(dir.join("folder-seq"));
         let _ = std::fs::remove_dir_all(remote_dir(&root));

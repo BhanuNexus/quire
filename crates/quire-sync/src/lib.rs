@@ -6,6 +6,7 @@
 //! * [`protocol`]: revisions and what's inside them
 //! * [`transport`]: how the engine reaches a server, and an in-memory one
 //! * [`engine`]: pull, merge three-way, push; never drops text
+//! * [`bases`]: base prints, stamps, and where merge bases live (0.14)
 //! * [`keyring`]: key epochs and device keys, for removing a device (0.13)
 //! * [`compact`]: snapshots that fold old revisions away (0.13)
 //! * [`folder`]: sync through a folder Dropbox, iCloud Drive or similar already syncs
@@ -21,6 +22,7 @@
 #![warn(clippy::let_underscore_must_use, clippy::map_err_ignore)]
 
 pub mod admin;
+pub mod bases;
 pub mod compact;
 pub mod crypto;
 pub mod engine;
@@ -34,6 +36,7 @@ pub mod protocol;
 pub mod remote;
 pub mod transport;
 
+pub use bases::{Bases, MemoryBases, Print, Stamp};
 pub use crypto::{CryptoError, KdfParams, Keys, RecoveryKey, VaultKey, WrappedKey};
 pub use engine::{
     DELETE_WINDOW_MS, DeleteMark, Engine, LocalStore, MANY_DELETES, MANY_SETTINGS_DELETES, MAX_DELETE_MARKS, MemoryStore, Report, Skipped,

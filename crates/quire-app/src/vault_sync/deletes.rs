@@ -122,6 +122,11 @@ pub fn sync_share_at(root: &Path, on: bool) -> Result<(), String> {
 
 /// What to tell the person about a note this device can't store (0.13.2).
 pub fn skipped_notice(path: &str, why: &str) -> String {
+    if let Some(detail) = why.strip_prefix(super::UNREADABLE) {
+        return format!(
+            "“{path}” can't be read on this computer{detail}, so it doesn't sync until it can be read. Nothing of it is sent or deleted, and the rest keeps syncing."
+        );
+    }
     format!(
         "“{path}” from another device can't be stored on this computer: {why}. It stays on your other devices and the rest keeps syncing; rename it there to get it here."
     )

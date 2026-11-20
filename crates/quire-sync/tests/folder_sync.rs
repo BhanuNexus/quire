@@ -37,6 +37,41 @@ struct Cloud {
     space: SpaceId,
     key: VaultKey,
     devs: Vec<Device>,
+    /// The stores give honest stamps (`docs/design/0.14-sync-speed.md` §3.1),
+    /// so the engine skips notes it knows unchanged.
+    stamped: bool,
+}
+
+/// A [`MemoryStore`] whose stamp is the hash of each file's text.
+struct Stamped<'a>(&'a mut MemoryStore);
+
+fn stamp_of(text: &str) -> quire_sync::Stamp {
+    use sha2::Digest as _;
+    quire_sync::Stamp(sha2::Sha256::digest(text.as_bytes()).into())
+}
+
+impl LocalStore for Stamped<'_> {
+    fn list(&self) -> Result<Vec<String>, String> {
+        self.0.list()
+    }
+    fn read(&self, path: &str) -> Option<String> {
+        self.0.read(path)
+    }
+    fn write(&mut self, path: &str, text: &str) -> Result<(), String> {
+        self.0.write(path, text)
+    }
+    fn remove(&mut self, path: &str) -> Result<(), String> {
+        self.0.remove(path)
+    }
+    fn stamp(&self, path: &str) -> Option<quire_sync::Stamp> {
+        self.0.read(path).map(|t| stamp_of(&t))
+    }
+    fn read_stamped(&self, path: &str) -> Option<(String, Option<quire_sync::Stamp>)> {
+        self.0.read(path).map(|t| {
+            let s = stamp_of(&t);
+            (t, Some(s))
+        })
+    }
 }
 
 fn copy_prefix(from: &Path, to: &Path, len: u64) {
@@ -80,7 +115,7 @@ impl Cloud {
                 }
             })
             .collect();
-        Self { _dir: dir, space, key, devs }
+        Self { _dir: dir, space, key, devs, stamped: false }
     }
 
     fn log_dir(&self, replica: usize, owner: usize) -> PathBuf {
@@ -129,6 +164,9 @@ impl Cloud {
 
     fn sync(&mut self, i: usize) -> Report {
         let d = &mut self.devs[i];
+        if self.stamped {
+            return d.engine.sync(&mut Stamped(&mut d.store), &d.transport, TODAY).unwrap();
+        }
         d.engine.sync(&mut d.store, &d.transport, TODAY).unwrap()
     }
 
@@ -348,7 +386,7 @@ fn random_edit(store: &mut MemoryStore, rng: &mut Rng, token: &mut u64, additive
 }
 
 fn simulate(seed: u64, n: usize, steps: usize, additive: bool) {
-    simulate_at(seed, n, steps, additive, 1);
+    simulate_at(seed, n, steps, additive, 1, false);
 }
 
 fn simulate_hardened(steps: usize, additive: bool) {
@@ -356,15 +394,16 @@ fn simulate_hardened(steps: usize, additive: bool) {
     let mut runs = 0;
     for seed in seeds() {
         runs += 1;
-        compacted += usize::from(simulate_at(seed, 3, steps, additive, folder::LEVEL_HARDENED));
+        compacted += usize::from(simulate_at(seed, 3, steps, additive, folder::LEVEL_HARDENED, false));
     }
     assert!(runs < 5 || compacted * 2 > runs, "compaction happened in {compacted} of {runs} runs");
 }
 
 /// At [`folder::LEVEL_HARDENED`], devices also compact now and then, often
 /// two at once, and their snapshots reach the others late.
-fn simulate_at(seed: u64, n: usize, steps: usize, additive: bool, level: u32) -> bool {
+fn simulate_at(seed: u64, n: usize, steps: usize, additive: bool, level: u32, stamped: bool) -> bool {
     let mut c = Cloud::new_at(n, level);
+    c.stamped = stamped;
     let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
     let (mut token, mut written) = (0, Vec::new());
     for _ in 0..steps {
@@ -421,6 +460,22 @@ fn random_edits_through_a_slow_folder_never_lose_text() {
 fn random_edits_renames_and_deletes_through_a_slow_folder_converge() {
     for seed in seeds() {
         simulate(seed, 3, 70, false);
+    }
+}
+
+/// The two runs above again, with stores whose stamps let the engine skip
+/// the notes it knows unchanged (`docs/design/0.14-sync-speed.md` §6, risk 1).
+#[test]
+fn random_edits_through_a_slow_folder_with_stamps_never_lose_text() {
+    for seed in seeds() {
+        simulate_at(seed, 3, 60, true, 1, true);
+    }
+}
+
+#[test]
+fn random_edits_renames_and_deletes_through_a_slow_folder_with_stamps_converge() {
+    for seed in seeds() {
+        simulate_at(seed, 3, 70, false, 1, true);
     }
 }
 
