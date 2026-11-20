@@ -13,11 +13,14 @@
 //!
 //! What the generator covers: hidden folders; encrypted files and key files; a locked folder
 //! (a key file in the folder or above it); `deny`, `read` and `direct` zones as folder prefixes
-//! and one glob, most specific wins (a file with no zones keeps the default `wiki/` and `raw/`); the policy default (including `deny`); `ai = "off"`; a revoked
-//! client; a client's folder and tag allow list (front matter tags, with `work/q4` counting as
-//! `work`). What it does not cover: links (they need a real folder), a client's own `zones` and
-//! `default`, an unverified client, a grant cap (it narrows writes, never reads), and notes whose tags
-//! changed on disk but are not indexed yet.
+//! and one glob, most specific wins (a file with no zones keeps the default `wiki/` and `raw/`);
+//! the policy default (including `deny`); `ai = "off"`; a revoked client; a client's folder and
+//! tag allow list (front matter tags, with `work/q4` counting as `work`); a client's own zones and
+//! `default`; the client verified (`--client`) or unverified (a reported name: its own zones can
+//! narrow but never widen); and a policy file the person has not approved on top of the one they
+//! did (both apply, the stricter wins). What it does not cover: links (they need a real folder;
+//! `a_note_below_a_symlinked_folder_is_hidden` checks `Visibility` on one), a grant cap (it
+//! narrows writes, never reads), and notes whose tags changed on disk but are not indexed yet.
 //!
 //! [`equal_fingerprints_give_equal_answers`]: over random policies, two callers whose
 //! `Visibility::fingerprint` is equal get the same answer for every path.
@@ -87,20 +90,33 @@ struct Case {
     paths: Vec<(String, Vec<String>)>,
     /// The vault's files, with their text.
     files: Vec<(String, String)>,
-    policy: String,
+    /// The policy files: the first is approved on this device, a second (if any) is written after
+    /// it without approval.
+    policies: Vec<String>,
     rules: Rules,
 }
 
 /// The reference: every way a read can be denied, written out once.
 struct Rules {
+    /// The policies in force: an unapproved file and the approved one both apply.
+    policies: Vec<PolicyRules>,
+    /// Folders that hold a key file, as the vault's files say.
+    key_folders: Vec<String>,
+}
+
+/// A client's own `default` and zones.
+type Entry = (Option<Mode>, Vec<(String, Mode)>);
+
+/// What one policy file says about reads.
+struct PolicyRules {
     ai_off: bool,
     revoked: bool,
     default: Mode,
     zones: Vec<(String, Mode)>,
     allow_folders: Option<Vec<String>>,
     allow_tags: Option<Vec<String>>,
-    /// Folders that hold a key file, as the vault's files say.
-    key_folders: Vec<String>,
+    /// The client's own entry: its `default` and its zones (sorted by pattern, as TOML keeps them).
+    entry: Option<Entry>,
 }
 
 /// What a set of rules says about a path: the reference ([`Rules`]) and `Visibility`.
@@ -164,8 +180,51 @@ fn has_tag(tags: &[String], want: &str) -> bool {
     })
 }
 
-impl ReadRules for Rules {
-    fn allows(&self, path: &str, tags: &[String]) -> bool {
+/// The zone among `zones` that governs `path`: the longest literal prefix, a literal before a glob,
+/// the later one at a tie (`max_by_key`).
+fn governing<'a>(zones: &'a [(String, Mode)], path: &str) -> Option<&'a (String, Mode)> {
+    zones.iter().filter(|(p, _)| zone_matches(p, path)).max_by_key(|(p, _)| specificity(&p.to_lowercase()))
+}
+
+impl PolicyRules {
+    /// Whether this policy lets the client read `path`; `unverified`: the client only reported its
+    /// name, so its own zones can narrow but never widen.
+    fn allows(&self, path: &str, tags: &[String], unverified: bool) -> bool {
+        if self.ai_off || self.revoked {
+            return false;
+        }
+        if self.allow_folders.is_some() || self.allow_tags.is_some() {
+            let in_folder = self.allow_folders.iter().flatten().any(|f| zone_matches(&format!("{}/", f.trim_end_matches('/')), path));
+            let tagged = self.allow_tags.iter().flatten().any(|w| has_tag(tags, w));
+            if !in_folder && !tagged {
+                return false;
+            }
+        }
+        let vault = governing(&self.zones, path);
+        let vault_mode = vault.map_or(self.default, |(_, m)| *m);
+        let modes: Vec<Mode> = match &self.entry {
+            None => vec![vault_mode],
+            Some((default, own)) => match governing(own, path) {
+                // A verified client's own zone wins when it is at least as specific.
+                Some((p, m))
+                    if !unverified && vault.is_none_or(|(v, _)| specificity(&p.to_lowercase()) >= specificity(&v.to_lowercase())) =>
+                {
+                    vec![*m]
+                }
+                other => {
+                    let mut v = vec![vault_mode];
+                    v.extend(*default);
+                    v.extend(other.filter(|_| unverified).map(|(_, m)| *m));
+                    v
+                }
+            },
+        };
+        !modes.contains(&Mode::Deny)
+    }
+}
+
+impl Rules {
+    fn allows_as(&self, path: &str, tags: &[String], unverified: bool) -> bool {
         let segs: Vec<&str> = path.split('/').collect();
         let (name, folders) = segs.split_last().map(|(n, f)| (*n, f)).unwrap();
         // Hidden folders, and `.quire` with them.
@@ -185,19 +244,80 @@ impl ReadRules for Rules {
             }
             prefix.push('/');
         }
-        if self.ai_off || self.revoked {
-            return false;
+        self.policies.iter().all(|p| p.allows(path, tags, unverified))
+    }
+}
+
+/// The reference for one client: verified or not.
+struct As<'a>(&'a Rules, bool);
+
+impl ReadRules for As<'_> {
+    fn allows(&self, path: &str, tags: &[String]) -> bool {
+        self.0.allows_as(path, tags, self.1)
+    }
+}
+
+/// One generated policy file and what it says.
+fn generate_policy(rng: &mut Rng) -> (String, PolicyRules) {
+    let default = *rng.pick(&["read", "read", "propose", "direct", "deny"]);
+    let mut zones: Vec<(String, Mode)> = Vec::new();
+    let mut policy = format!("format = 1\ndefault = \"{default}\"\n");
+    let ai_off = rng.chance(5);
+    if ai_off {
+        policy.push_str("ai = \"off\"\n");
+    }
+    let mut globs = 0;
+    for _ in 0..rng.below(4) {
+        let pattern = *rng.pick(PATTERNS);
+        if zones.iter().any(|(p, _)| p == pattern) || (pattern.contains('*') && globs > 0) {
+            continue;
         }
-        if self.allow_folders.is_some() || self.allow_tags.is_some() {
-            let in_folder = self.allow_folders.iter().flatten().any(|f| zone_matches(&format!("{}/", f.trim_end_matches('/')), path));
-            let tagged = self.allow_tags.iter().flatten().any(|w| has_tag(tags, w));
-            if !in_folder && !tagged {
-                return false;
+        globs += usize::from(pattern.contains('*'));
+        let m = *rng.pick(MODES);
+        write!(policy, "[[zone]]\npath = \"{pattern}\"\nrole = \"agent\"\nmode = \"{m}\"\n").expect("a String takes any text");
+        zones.push((pattern.to_string(), mode(m)));
+    }
+    // A policy file without `[[zone]]` tables keeps the default zones (`Policy::default`).
+    if zones.is_empty() {
+        zones = vec![("wiki/".into(), Mode::Direct), ("raw/".into(), Mode::CreateOnly)];
+    }
+    let revoked = rng.chance(5);
+    let allow_folders: Option<Vec<String>> =
+        rng.chance(35).then(|| (0..=rng.below(2)).map(|_| (*rng.pick(ALLOW_FOLDERS)).to_string()).collect());
+    let allow_tags: Option<Vec<String>> = rng.chance(35).then(|| vec![(*rng.pick(&["work", "plan", "#home"])).to_string()]);
+    // The client's own default and zones.
+    let own_default = rng.chance(20).then(|| *rng.pick(MODES));
+    let mut own_zones: BTreeMap<String, &str> = BTreeMap::new();
+    if rng.chance(40) {
+        for _ in 0..=rng.below(2) {
+            own_zones.insert((*rng.pick(PATTERNS)).to_string(), *rng.pick(MODES));
+        }
+    }
+    let has_entry = revoked || allow_folders.is_some() || allow_tags.is_some() || own_default.is_some() || !own_zones.is_empty();
+    if has_entry {
+        policy.push_str("[clients.\"mcp:probe\"]\n");
+        if revoked {
+            policy.push_str("revoked = true\n");
+        }
+        let list = |v: &[String]| v.iter().map(|s| format!("\"{s}\"")).collect::<Vec<_>>().join(", ");
+        if let Some(f) = &allow_folders {
+            writeln!(policy, "allow_folders = [{}]", list(f)).expect("a String takes any text");
+        }
+        if let Some(t) = &allow_tags {
+            writeln!(policy, "allow_tags = [{}]", list(t)).expect("a String takes any text");
+        }
+        if let Some(d) = own_default {
+            writeln!(policy, "default = \"{d}\"").expect("a String takes any text");
+        }
+        if !own_zones.is_empty() {
+            policy.push_str("[clients.\"mcp:probe\".zones]\n");
+            for (p, m) in &own_zones {
+                writeln!(policy, "\"{p}\" = \"{m}\"").expect("a String takes any text");
             }
         }
-        let zone = self.zones.iter().filter(|(p, _)| zone_matches(p, path)).max_by_key(|(p, _)| specificity(&p.to_lowercase()));
-        zone.map_or(self.default, |(_, m)| *m) != Mode::Deny
     }
+    let entry = has_entry.then(|| (own_default.map(mode), own_zones.iter().map(|(p, m)| (p.clone(), mode(m))).collect()));
+    (policy, PolicyRules { ai_off, revoked, default: mode(default), zones, allow_folders, allow_tags, entry })
 }
 
 fn generate(rng: &mut Rng) -> Case {
@@ -233,55 +353,25 @@ fn generate(rng: &mut Rng) -> Case {
     paths.push(("Work/missing.md".into(), Vec::new()));
     paths.extend(files.iter().filter(|(p, _)| p.contains("quire-lock")).map(|(p, _)| (p.clone(), Vec::new())));
 
-    let default = *rng.pick(&["read", "read", "propose", "direct", "deny"]);
-    let mut zones: Vec<(String, Mode)> = Vec::new();
-    let mut policy = format!("format = 1\ndefault = \"{default}\"\n");
-    let ai_off = rng.chance(5);
-    if ai_off {
-        policy.push_str("ai = \"off\"\n");
+    let (first, first_rules) = generate_policy(rng);
+    let (mut policies, mut rules) = (vec![first], vec![first_rules]);
+    // A policy file changed outside Quire and not approved here: it and the approved one both apply.
+    if rng.chance(25) {
+        let (second, second_rules) = generate_policy(rng);
+        policies.push(second);
+        rules.insert(0, second_rules);
     }
-    let mut globs = 0;
-    for _ in 0..rng.below(4) {
-        let pattern = *rng.pick(PATTERNS);
-        if zones.iter().any(|(p, _)| p == pattern) || (pattern.contains('*') && globs > 0) {
-            continue;
-        }
-        globs += usize::from(pattern.contains('*'));
-        let m = *rng.pick(MODES);
-        write!(policy, "[[zone]]\npath = \"{pattern}\"\nrole = \"agent\"\nmode = \"{m}\"\n").expect("a String takes any text");
-        zones.push((pattern.to_string(), mode(m)));
-    }
-    // A policy file without `[[zone]]` tables keeps the default zones (`Policy::default`).
-    if zones.is_empty() {
-        zones = vec![("wiki/".into(), Mode::Direct), ("raw/".into(), Mode::CreateOnly)];
-    }
-    let revoked = rng.chance(5);
-    let allow_folders: Option<Vec<String>> =
-        rng.chance(35).then(|| (0..=rng.below(2)).map(|_| (*rng.pick(ALLOW_FOLDERS)).to_string()).collect());
-    let allow_tags: Option<Vec<String>> = rng.chance(35).then(|| vec![(*rng.pick(&["work", "plan", "#home"])).to_string()]);
-    if revoked || allow_folders.is_some() || allow_tags.is_some() {
-        policy.push_str("[clients.\"mcp:probe\"]\n");
-        if revoked {
-            policy.push_str("revoked = true\n");
-        }
-        let list = |v: &[String]| v.iter().map(|s| format!("\"{s}\"")).collect::<Vec<_>>().join(", ");
-        if let Some(f) = &allow_folders {
-            writeln!(policy, "allow_folders = [{}]", list(f)).expect("a String takes any text");
-        }
-        if let Some(t) = &allow_tags {
-            writeln!(policy, "allow_tags = [{}]", list(t)).expect("a String takes any text");
-        }
-    }
-    Case { paths, files, policy, rules: Rules { ai_off, revoked, default: mode(default), zones, allow_folders, allow_tags, key_folders } }
+    Case { paths, files, policies, rules: Rules { policies: rules, key_folders } }
 }
 
-/// The policy as the person approved it, on a store over the generated vault.
+/// The policies as the case has them (the first approved, a second written after it without
+/// approval), on a store over the generated vault.
 fn store(case: &Case, state: &std::path::Path) -> AgentStore {
-    store_with(case, &case.policy, state)
+    store_with(case, &case.policies, state)
 }
 
-/// [`store`] with another policy.
-fn store_with(case: &Case, policy: &str, state: &std::path::Path) -> AgentStore {
+/// [`store`] with other policy files.
+fn store_with(case: &Case, policies: &[String], state: &std::path::Path) -> AgentStore {
     // Key files last, the deepest first: the in-memory storage refuses plain writes into a folder
     // once it is locked.
     let mut files: Vec<(&str, &str)> = case.files.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
@@ -292,7 +382,10 @@ fn store_with(case: &Case, policy: &str, state: &std::path::Path) -> AgentStore 
     let vault = Vault::in_memory(&files);
     let store = AgentStore::open(&vault, DeviceInfo { id: "d_rules".into(), name: "t".into() }, FixedClock::new(1_793_577_600_000));
     store.set_state_dir(Some(state.to_path_buf()));
-    store.write_policy(policy).unwrap_or_else(|e| panic!("{e}\n{policy}"));
+    store.write_policy(&policies[0]).unwrap_or_else(|e| panic!("{e}\n{}", policies[0]));
+    for unapproved in &policies[1..] {
+        vault.storage().write_atomic(&NotePath::new(".quire/shared/agent-policy.toml"), unapproved).unwrap();
+    }
     store
 }
 
@@ -305,16 +398,26 @@ fn all_folders() -> impl Iterator<Item = &'static str> {
 fn the_read_rules_are_what_effective_mode_does() {
     let state = tempfile::tempdir().unwrap();
     let mut rng = Rng(0x5EED_CAFE_F00D_0001);
-    let actor = Actor::agent("mcp:probe", "probe", Via::McpStdio, "d_rules");
-    let (mut checked, mut shown, mut hidden) = (0, 0, 0);
-    for case_no in 0..150 {
+    let (mut checked, mut shown, mut hidden, mut unapproved, mut unverified_cases) = (0, 0, 0, 0, 0);
+    for case_no in 0..200 {
         let case = generate(&mut rng);
         let store = store(&case, state.path());
+        // Verified (`--client probe`) or unverified (it reported the name "probe").
+        let unverified = rng.chance(50);
+        let actor = if unverified {
+            Actor::unverified_agent("mcp:probe", "probe", Via::McpStdio, "d_rules")
+        } else {
+            Actor::agent("mcp:probe", "probe", Via::McpStdio, "d_rules")
+        };
+        unapproved += usize::from(case.policies.len() > 1);
+        unverified_cases += usize::from(unverified);
+        let reference = As(&case.rules, unverified);
+        let policy = case.policies.join("--- (not approved above, approved below)\n");
         // The locked folders checked up front, and found as paths are asked about.
         let eager = store.visibility(&actor, all_folders());
         let lazy = store.visibility(&actor, []);
         for (path, tags) in &case.paths {
-            let want = case.rules.allows(path, tags);
+            let want = reference.allows(path, tags);
             let got = store.effective_mode(&actor, &NotePath::new(path.as_str()), OpKind::Read) != Mode::Deny;
             for (how, vis) in [("given the folders", &eager), ("finding the folders", &lazy)] {
                 let seen = ReadRules::allows(vis, path, tags);
@@ -324,17 +427,18 @@ fn the_read_rules_are_what_effective_mode_does() {
                     "case {case_no}: Visibility ({how}) says {path} ({tags:?}) is {}, effective_mode says {}\npolicy:\n{}key folders: {:?}",
                     if seen { "readable" } else { "hidden" },
                     if got { "readable" } else { "hidden" },
-                    case.policy,
+                    policy,
                     case.rules.key_folders
                 );
             }
             assert_eq!(
                 want,
                 got,
-                "case {case_no}: the rules say {path} ({tags:?}) is {}, effective_mode says {}\npolicy:\n{}key folders: {:?}",
+                "case {case_no} ({}): the rules say {path} ({tags:?}) is {}, effective_mode says {}\npolicy:\n{}key folders: {:?}",
+                actor.id,
                 if want { "readable" } else { "hidden" },
                 if got { "readable" } else { "hidden" },
-                case.policy,
+                policy,
                 case.rules.key_folders
             );
             checked += 1;
@@ -342,8 +446,9 @@ fn the_read_rules_are_what_effective_mode_does() {
             hidden += usize::from(!got);
         }
     }
-    // The generator must reach both answers often, or the test proves nothing.
-    assert!(shown > checked / 5 && hidden > checked / 5, "{checked} paths: {shown} readable, {hidden} hidden");
+    // The generator must reach both answers often, and each kind of case, or the test proves nothing.
+    assert!(shown > checked / 10 && hidden > checked / 10, "{checked} paths: {shown} readable, {hidden} hidden");
+    assert!(unapproved > 20 && unverified_cases > 50, "{unapproved} cases with an unapproved policy, {unverified_cases} unverified");
 }
 
 /// The same policy with every mode that does not hide a note changed for another one that does
@@ -369,13 +474,17 @@ fn other_writes(policy: &str) -> String {
 
 /// `docs/design/0.14-agent-tools.md` §6, the first risk: two callers with equal fingerprints get
 /// equal answers for every path. Over random policies, variants that change only write modes, two
-/// clients (one with an entry in the policy, one without) and the vaults' locked folders.
+/// clients (one with an entry in the policy, verified and unverified, one without), policies not
+/// approved on top of approved ones, and the vaults' locked folders.
 #[test]
 fn equal_fingerprints_give_equal_answers() {
     let state = tempfile::tempdir().unwrap();
     let mut rng = Rng(0x5EED_CAFE_F00D_0002);
-    let actors =
-        [Actor::agent("mcp:probe", "probe", Via::McpStdio, "d_rules"), Actor::agent("mcp:other", "other", Via::McpStdio, "d_rules")];
+    let actors = [
+        Actor::agent("mcp:probe", "probe", Via::McpStdio, "d_rules"),
+        Actor::unverified_agent("mcp:probe", "probe", Via::McpStdio, "d_rules"),
+        Actor::agent("mcp:other", "other", Via::McpStdio, "d_rules"),
+    ];
     let cases: Vec<Case> = (0..80).map(|_| generate(&mut rng)).collect();
     // Every path any case asks about, with its tags: each fingerprint group answers all of them.
     let mut probes: Vec<(String, Vec<String>)> = cases.iter().flat_map(|c| c.paths.iter().cloned()).collect();
@@ -383,8 +492,9 @@ fn equal_fingerprints_give_equal_answers() {
     probes.dedup();
     let mut groups: BTreeMap<[u8; 32], Vec<(String, Visibility)>> = BTreeMap::new();
     for (i, case) in cases.iter().enumerate() {
-        for policy in [case.policy.clone(), other_writes(&case.policy)] {
-            let store = store_with(case, &policy, state.path());
+        for policies in [case.policies.clone(), case.policies.iter().map(|p| other_writes(p)).collect()] {
+            let store = store_with(case, &policies, state.path());
+            let policy = policies.join("--- (not approved above, approved below)\n");
             for actor in &actors {
                 let vis = store.visibility(actor, all_folders());
                 groups.entry(vis.fingerprint()).or_default().push((format!("case {i}, {}, policy:\n{policy}", actor.id), vis));
@@ -411,25 +521,38 @@ fn equal_fingerprints_give_equal_answers() {
     assert!(groups.len() > 60, "only {} fingerprints", groups.len());
 }
 
-/// A key file written after the value was made is not seen by it (one call keeps one answer), and is
-/// seen by the next one at once: the locked set is never cached across calls.
+/// Review B1 (`docs/design/0.14-agent-tools.md` §3.5): a folder another handle on the vault locks
+/// (another process: only its key file appears) is hidden from this store's next `Visibility` at
+/// once, the folders inside it too, with no event and nothing rebuilt; the value made before keeps
+/// its answers for the rest of its call; unlocking shows the notes again.
 #[test]
-fn a_folder_locked_meanwhile_hides_from_the_next_visibility() {
-    let vault = Vault::in_memory(&[("Work/a.md", "# a\n"), ("Work/Deep/b.md", "# b\n"), ("Notes/c.md", "# c\n")]);
-    let store = AgentStore::open(&vault, DeviceInfo { id: "d_rules".into(), name: "t".into() }, FixedClock::new(1_793_577_600_000));
+fn a_folder_locked_by_another_handle_hides_from_the_next_visibility() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("vault");
+    for p in ["Work/a.md", "Work/Deep/b.md", "Notes/c.md"] {
+        std::fs::create_dir_all(root.join(p).parent().unwrap()).unwrap();
+        std::fs::write(root.join(p), "# n\n").unwrap();
+    }
+    let ours = Vault::open_local(&root).unwrap();
+    let theirs = Vault::open_local(&root).unwrap();
+    let store = AgentStore::open(&ours, DeviceInfo { id: "d_rules".into(), name: "t".into() }, FixedClock::new(1_793_577_600_000));
+    store.set_state_dir(Some(dir.path().join("state")));
     let actor = Actor::agent("mcp:probe", "probe", Via::McpStdio, "d_rules");
     let shown = |v: &Visibility| ["Work/a.md", "Work/Deep/b.md", "Notes/c.md"].into_iter().filter(|p| v.allows(&NotePath::new(*p))).count();
     let before = store.visibility(&actor, ["Work", "Work/Deep", "Notes"]);
     assert_eq!(shown(&before), 3);
-    // Another process locks the folder: only its key file appears.
-    vault.storage().write_atomic(&NotePath::new("Work/quire-lock.json"), "{}").unwrap();
+    theirs.storage().write_atomic(&NotePath::new("Work/quire-lock.json"), "{}").unwrap();
+    assert_eq!(shown(&before), 3, "one call keeps the answers it started with");
     let after = store.visibility(&actor, ["Work", "Work/Deep", "Notes"]);
     assert_eq!(shown(&after), 1, "a locked folder and the folders inside it hide at once");
     assert_ne!(before.fingerprint(), after.fingerprint(), "a lock changes the fingerprint");
     let lazy = store.visibility(&actor, []);
     assert_eq!(shown(&lazy), 1, "a folder not named up front is checked when a path in it is asked about");
-    vault.storage().remove(&NotePath::new("Work/quire-lock.json")).unwrap();
-    assert_eq!(shown(&store.visibility(&actor, ["Work"])), 3, "and unlocking shows them again");
+    // Being unlocked for good (the unlocking file) still hides it; gone, it shows again.
+    std::fs::rename(root.join("Work/quire-lock.json"), root.join("Work/quire-lock.unlocking.json")).unwrap();
+    assert_eq!(shown(&store.visibility(&actor, ["Work"])), 1);
+    std::fs::remove_file(root.join("Work/quire-lock.unlocking.json")).unwrap();
+    assert_eq!(shown(&store.visibility(&actor, ["Work"])), 3, "unlocked, they show again");
 }
 
 /// A note below a folder that is a symlink is hidden, wherever the link leads: the vault listing
