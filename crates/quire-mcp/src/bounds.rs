@@ -8,9 +8,9 @@
 //! `{"o": offset, "v": version}`. A cursor for a version that has changed
 //! since is refused with `cursor_stale` and the new version.
 //!
-//! Lists with a total order page by key (`docs/design/0.14-agent-tools.md`
-//! §3.3): the cursor also carries the last row's key (`"k"`), and the next
-//! page starts after it, so a row added or removed between two pages makes
+//! Lists with a total order page by key (`docs/design/0.14-agent-tools.md` §3.3):
+//! the cursor also carries the last row's key (`"k"`), and the next page starts
+//! after it, so a row added or removed between two pages makes
 //! none repeat or go missing. `v` is then a fingerprint of the arguments.
 //! A cursor without `k` (made before keys) still reads as an offset.
 

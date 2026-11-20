@@ -180,8 +180,8 @@ impl Storage for Counting {
 ///
 /// The notes a call names or returns are its own, not notes of the listing: what it does for each
 /// of them (`existing` for the named note, the second guard and the trust label of a `search`
-/// hit, a version of the named note) is bounded by the page, not by the vault (the design's §3.5,
-/// "bounded by the page or by the folder count"). Their calls, and up to [`PER_FOLDER`] lock-file
+/// hit, a version of the named note) is bounded by the page, not by the vault
+/// (`docs/design/0.14-agent-tools.md` §3.5, "bounded by the page or by the folder count"). Their calls, and up to [`PER_FOLDER`] lock-file
 /// calls each on their folders beyond the folder's own two, count with the others, which may grow
 /// by [`PER_ROW`] for each such note.
 struct Cost {

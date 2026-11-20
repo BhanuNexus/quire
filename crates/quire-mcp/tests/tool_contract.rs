@@ -232,8 +232,8 @@ fn list_bytes() -> usize {
     Value::Array(listed("2026-07-28", true)).to_string().len()
 }
 
-/// G2: `tools/list` for a write-grant client, measured when the bounds and cursors of §3.3 landed
-/// (step 3): 43,327 bytes, of which the nine 0.8 tools take 3,054 (before: 41,315 by the design,
+/// G2: `tools/list` for a write-grant client, measured when the bounds and cursors landed
+/// (`docs/design/0.14-agent-tools.md` §3.3, step 3): 43,327 bytes, of which the nine 0.8 tools take 3,054 (before: 41,315 by the design,
 /// 41,264 measured on main at the start of 0.14). It may not grow by more than 5%.
 const BYTES_MEASURED: usize = 43_327;
 /// The nine 0.8 tools' entries in that list, with their commas.
