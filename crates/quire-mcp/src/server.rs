@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
-use quire_agent::{Actor, AgentStore, ClientInfo, Clock, DeviceInfo, Mode, OpKind, SystemClock, Via};
+use quire_agent::{Actor, AgentStore, ClientInfo, Clock, DeviceInfo, Mode, SystemClock, Via};
 use quire_app::index::IndexService;
 use quire_app::intel::chat::{CancelFlag, ChatModel};
 use quire_app::pdf_state::PdfIndexing;
@@ -342,12 +342,6 @@ impl Server {
         self.core.handle(msg, conn, cancel)
     }
 
-    /// The instructions `conn` sees (0.8's sentence, then approved AGENTS.md). The note count is
-    /// of the notes that connection may see.
-    pub fn instructions(&self, conn: &Conn) -> String {
-        self.core.instructions(conn, &Value::Null)
-    }
-
     /// Serve newline-delimited JSON-RPC on stdio-like streams until the input
     /// closes (see [`crate::stdio`]).
     pub fn serve(&self, input: impl std::io::BufRead, output: impl std::io::Write + Send) -> std::io::Result<()> {
@@ -571,7 +565,7 @@ impl Core {
         // Not pinned: a handshake must not fix the client's name before its first request.
         let actor = self.actor_as(conn, params, false);
         let store = self.store(&actor, self.cap(conn));
-        let n = self.index.read().paths().iter().filter(|p| store.effective_mode(&actor, p, OpKind::Read) != Mode::Deny).count();
+        let n = self.visible_notes(&store, &actor);
         let mode = if grant.write {
             "; you may write: directly in agent zones (wiki/), and elsewhere as suggestions the person reviews in Quire; every change is kept in version history"
         } else {
@@ -582,6 +576,22 @@ impl Core {
             write!(s, "\n\nVault instructions ({path}):\n{text}").expect("a String takes any text");
         }
         s
+    }
+
+    /// How many indexed notes `actor` may see, by its `Visibility`: no disk read per note, and the
+    /// index is read only to copy its paths (the folder checks and the count run without its lock).
+    fn visible_notes(&self, store: &AgentStore, actor: &Actor) -> usize {
+        let (notes, folders) = {
+            let ix = self.index.read();
+            let notes: Vec<(NotePath, Vec<String>)> = ix.records().map(|r| (r.path.clone(), r.tags.clone())).collect();
+            let mut folders: Vec<String> =
+                notes.iter().filter_map(|(p, _)| p.as_str().rsplit_once('/').map(|(f, _)| f.to_string())).collect();
+            folders.sort_unstable();
+            folders.dedup();
+            (notes, folders)
+        };
+        let vis = store.visibility(actor, folders.iter().map(String::as_str));
+        notes.iter().filter(|(p, tags)| vis.allows_with_tags(p, tags)).count()
     }
 
     fn capabilities() -> Value {

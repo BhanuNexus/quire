@@ -34,9 +34,10 @@ const FOLDERS: usize = 40;
 const PER_FOLDER: usize = 2;
 const OTHER: usize = 8;
 
-/// The tools that note names, with arguments that make them work on this vault.
+/// The tools that list notes, with arguments that make them work on this vault, and the
+/// handshakes ([`HANDSHAKES`]).
 fn calls() -> Vec<(&'static str, Value)> {
-    vec![
+    let tools = vec![
         ("list", json!({})),
         ("tags", json!({})),
         ("properties", json!({})),
@@ -44,8 +45,13 @@ fn calls() -> Vec<(&'static str, Value)> {
         ("links", json!({"path": "Folder 3/Note 3.md"})),
         ("vault_info", json!({})),
         ("query_view", json!({"spec": "group: status"})),
-    ]
+    ];
+    tools.into_iter().chain(HANDSHAKES.iter().map(|h| (*h, json!({})))).collect()
 }
+
+/// What a client sends before it calls a tool; the connection text counts the notes it may see
+/// (`docs/design/0.14-agent-index.md` §1).
+const HANDSHAKES: &[&str] = &["initialize", "server/discover"];
 
 /// The tools that read the disk per note today, by name, and the step that stops it. Empty since
 /// the listing tools moved to `Visibility`; a tool that reads per note again fails the test.
@@ -187,9 +193,16 @@ fn note_text(i: usize) -> String {
     )
 }
 
+/// A tool call, or with a name in [`HANDSHAKES`] that handshake.
 fn call(srv: &Server, name: &str, args: &Value) -> Value {
     let meta = json!({"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientInfo": {"name": "probe", "version": "1"}});
-    let line = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": args, "_meta": meta}});
+    let line = match name {
+        "initialize" => {
+            json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "probe", "version": "1"}}})
+        }
+        "server/discover" => json!({"jsonrpc": "2.0", "id": 1, "method": "server/discover", "params": {}}),
+        _ => json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": args, "_meta": meta}}),
+    };
     let mut out = Vec::new();
     srv.serve(std::io::Cursor::new(line.to_string()), &mut out).unwrap();
     serde_json::from_str(String::from_utf8(out).unwrap().lines().next().unwrap()).unwrap()
