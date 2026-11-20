@@ -25,7 +25,8 @@ use std::time::SystemTime;
 
 use quire_agent::FixedClock;
 use quire_app::vault::{LocalFs, NotePath, Storage, Vault};
-use quire_mcp::{Server, ServerConfig};
+use quire_mcp::tools::Access;
+use quire_mcp::{Server, ServerConfig, ToolRegistry};
 use serde_json::{Value, json};
 
 const NOTES: usize = 2_000;
@@ -34,19 +35,46 @@ const FOLDERS: usize = 40;
 const PER_FOLDER: usize = 2;
 const OTHER: usize = 8;
 
-/// The tools that list notes, with arguments that make them work on this vault, and the
-/// handshakes ([`HANDSHAKES`]).
+/// The note the tools that take one are given.
+const NAMED: &str = "Folder 3/Note 3.md";
+
+/// Arguments that make a tool work on this vault; any other tool is called with `{}`, or with
+/// [`NAMED`] as its `path`.
+fn overrides(tool: &str) -> Option<Value> {
+    Some(match tool {
+        "search" => json!({"query": "topic 3"}),
+        "ask" => json!({"question": "What are the words about topic 3?"}),
+        "query_view" => json!({"spec": "group: status"}),
+        "recent_activity" => json!({"since": "3650d"}),
+        "canvas_read" => json!({"path": "Board.canvas"}),
+        _ => return None,
+    })
+}
+
+/// Every read tool of the registry that returns a list (an array at the top of its output), with
+/// [`overrides`], then the [`HANDSHAKES`]: a tool added to the registry is checked here without
+/// editing this file (`docs/design/0.14-agent-tools.md` §6).
 fn calls() -> Vec<(&'static str, Value)> {
-    let tools = vec![
-        ("list", json!({})),
-        ("tags", json!({})),
-        ("properties", json!({})),
-        ("tasks", json!({})),
-        ("links", json!({"path": "Folder 3/Note 3.md"})),
-        ("vault_info", json!({})),
-        ("query_view", json!({"spec": "group: status"})),
-    ];
-    tools.into_iter().chain(HANDSHAKES.iter().map(|h| (*h, json!({})))).collect()
+    let registry = ToolRegistry::standard();
+    let mut out = Vec::new();
+    for t in registry.all() {
+        let spec = t.spec();
+        let lists =
+            spec.output_schema.as_ref().and_then(|o| o["properties"].as_object()).is_some_and(|p| p.values().any(|v| v["type"] == "array"));
+        if !matches!(spec.access, Access::Read | Access::Ask) || !lists {
+            continue;
+        }
+        // A tool that takes a note gets [`NAMED`].
+        let takes_note = spec.input_schema["required"].as_array().is_some_and(|r| r.iter().any(|k| k == "path"));
+        let args = overrides(spec.name).unwrap_or_else(|| if takes_note { json!({ "path": NAMED }) } else { json!({}) });
+        for key in spec.input_schema["required"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+            assert!(args.get(key).is_some(), "{} needs `{key}`: add its arguments to overrides()", spec.name);
+        }
+        out.push((spec.name, args));
+    }
+    assert!(out.len() >= 14, "the registry's list tools: {:?}", out.iter().map(|(t, _)| *t).collect::<Vec<_>>());
+    out.extend(HANDSHAKES.iter().map(|h| (*h, json!({}))));
+    out
 }
 
 /// What a client sends before it calls a tool; the connection text counts the notes it may see
@@ -150,21 +178,30 @@ impl Storage for Counting {
 /// What a call's storage traffic comes to: calls per note, the most calls on one folder's lock
 /// files, and every other call.
 ///
-/// The note a call names (`links`' `path`) is the call's own, not a note of the listing: the
-/// guard's calls on it (its `exists`, and the lock check of its folders, up to [`PER_FOLDER`] each)
-/// count with the others.
+/// The notes a call names or returns are its own, not notes of the listing: what it does for each
+/// of them (`existing` for the named note, the second guard and the trust label of a `search`
+/// hit, a version of the named note) is bounded by the page, not by the vault (the design's §3.5,
+/// "bounded by the page or by the folder count"). Their calls, and up to [`PER_FOLDER`] lock-file
+/// calls each on their folders beyond the folder's own two, count with the others, which may grow
+/// by [`PER_ROW`] for each such note.
 struct Cost {
     per_note: usize,
     per_folder: usize,
     other: usize,
+    /// The notes the call named or returned.
+    own: usize,
 }
 
-fn cost(log: &[(&'static str, String)], named: Option<&str>) -> Cost {
+/// Calls allowed for each note a call names or returns: its guard (the vault root, the policy file
+/// and its folder's two lock files) and its trust label (the vault root, the policy file).
+const PER_ROW: usize = 6;
+
+fn cost(log: &[(&'static str, String)], own: &BTreeSet<String>) -> Cost {
     let (mut per_note, mut other) = (0, 0);
     let mut folders: BTreeMap<&str, usize> = BTreeMap::new();
     for (_, path) in log {
         let name = path.rsplit('/').next().unwrap_or(path);
-        if path.is_empty() || path.starts_with(".quire/") || name == "AGENTS.md" || name == "CLAUDE.md" || Some(path.as_str()) == named {
+        if path.is_empty() || path.starts_with(".quire/") || name == "AGENTS.md" || name == "CLAUDE.md" || own.contains(path) {
             other += 1;
         } else if name.starts_with("quire-lock") {
             *folders.entry(path.rsplit_once('/').map_or("", |(f, _)| f)).or_default() += 1;
@@ -172,15 +209,28 @@ fn cost(log: &[(&'static str, String)], named: Option<&str>) -> Cost {
             per_note += 1;
         }
     }
-    let named_folder = named.and_then(|n| n.rsplit_once('/')).map(|(f, _)| f);
+    // A folder's own two checks stay its own; checks beyond them on the folder of a note the call
+    // names or returns (that note's guard) count with the others.
     for (folder, n) in &mut folders {
-        if named_folder.is_some_and(|nf| nf == *folder || nf.starts_with(&format!("{folder}/"))) {
-            let own = (*n).min(PER_FOLDER);
-            *n -= own;
-            other += own;
-        }
+        let mine =
+            own.iter().filter_map(|p| p.rsplit_once('/')).filter(|(f, _)| *f == *folder || f.starts_with(&format!("{folder}/"))).count();
+        let theirs = n.saturating_sub(PER_FOLDER).min(PER_FOLDER * mine);
+        *n -= theirs;
+        other += theirs;
     }
-    Cost { per_note, per_folder: folders.values().copied().max().unwrap_or(0), other }
+    Cost { per_note, per_folder: folders.values().copied().max().unwrap_or(0), other, own: own.len() }
+}
+
+/// Every string in a reply: the notes it names are among them.
+fn strings(v: &Value, out: &mut BTreeSet<String>) {
+    match v {
+        Value::String(s) => {
+            out.insert(s.clone());
+        }
+        Value::Array(a) => a.iter().for_each(|x| strings(x, out)),
+        Value::Object(m) => m.values().for_each(|x| strings(x, out)),
+        _ => {}
+    }
 }
 
 fn note_text(i: usize) -> String {
@@ -217,6 +267,11 @@ fn listings_make_no_storage_call_per_note_or_are_known_gaps() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, note_text(i)).unwrap();
     }
+    std::fs::write(
+        root.join("Board.canvas"),
+        r#"{"nodes":[{"id":"a","type":"text","text":"a card","x":0,"y":0,"width":200,"height":80}],"edges":[]}"#,
+    )
+    .unwrap();
     let storage = Arc::new(Counting { inner: LocalFs::new(&root).unwrap(), log: Mutex::default() });
     let vault = Vault::new(Arc::<Counting>::clone(&storage));
     let cfg = ServerConfig { clock: FixedClock::new(1_793_577_600_000), ..ServerConfig::default() };
@@ -225,7 +280,7 @@ fn listings_make_no_storage_call_per_note_or_are_known_gaps() {
     let mut over = BTreeSet::new();
     for (tool, args) in calls() {
         // Twice: the second call is the steady state, after whatever a first call caches.
-        let mut worst = Cost { per_note: 0, per_folder: 0, other: 0 };
+        let mut worst = Cost { per_note: 0, per_folder: 0, other: 0, own: 0 };
         for _ in 0..2 {
             storage.take();
             let reply = call(&srv, tool, &args);
@@ -239,18 +294,24 @@ fn listings_make_no_storage_call_per_note_or_are_known_gaps() {
                 }
                 eprintln!("{tool}: {kinds:?}");
             }
-            let c = cost(&log, args["path"].as_str());
+            // The notes of this vault the reply names, and the one the call named.
+            let mut own = BTreeSet::new();
+            strings(&reply["result"]["structuredContent"], &mut own);
+            own.retain(|s| s.starts_with("Folder ") && std::path::Path::new(s).extension().is_some_and(|e| e.eq_ignore_ascii_case("md")));
+            own.extend(args["path"].as_str().map(str::to_string));
+            let c = cost(&log, &own);
             worst = Cost {
                 per_note: worst.per_note.max(c.per_note),
                 per_folder: worst.per_folder.max(c.per_folder),
                 other: worst.other.max(c.other),
+                own: worst.own.max(c.own),
             };
         }
         eprintln!(
-            "{tool}: {} calls on note paths, at most {} on one folder's lock files, {} others",
-            worst.per_note, worst.per_folder, worst.other
+            "{tool}: {} calls on note paths, at most {} on one folder's lock files, {} others ({} notes named or returned)",
+            worst.per_note, worst.per_folder, worst.other, worst.own
         );
-        if worst.per_note > 0 || worst.per_folder > PER_FOLDER || worst.other > OTHER {
+        if worst.per_note > 0 || worst.per_folder > PER_FOLDER || worst.other > OTHER + PER_ROW * worst.own {
             over.insert(tool.to_string());
         }
     }
