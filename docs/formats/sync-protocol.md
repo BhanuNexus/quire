@@ -19,6 +19,50 @@ rest of the sync design is in `docs/design/sync.md`.
   `426` with `{"error": "…", "min": 2}`. Servers keep it in the
   `space_settings` table.
 
+## Batch push (0.14)
+
+A server that takes many revisions in one request says so in `GET /v1/info`;
+the protocol stays 3 and no space minimum is raised
+(`docs/design/0.14-sync-speed.md` §3.4).
+
+* `GET /v1/info` gains `"features": ["batch-push"]`. A 0.13 server sends no
+  `features` (read as empty); a 0.13 client ignores the field.
+* `POST /v1/spaces/{space}/revisions/batch`, behind the same token and
+  protocol checks as `POST …/revisions` (`401`, `403` for a device token
+  writing as another device or a removed device, `426` below the space's
+  minimum). Body, at most 1,000 revisions and 8 MiB:
+
+  ```json
+  {"revisions": [{"file": "…", "rev": "…", "parents": ["…"], "seq": 0, "device": "…", "sealed": "…", "chain": []}]}
+  ```
+
+  Each revision has the shape of a single push. They are taken in order in
+  one transaction: a later revision of the same file can build on an earlier
+  one. The reply (`200`) has one outcome per revision, in order, and the
+  log's latest position:
+
+  ```json
+  {"outcomes": [{"accepted": {"seq": 41}}, {"conflict": {}}, {"lost_parent": {}}], "latest": 42}
+  ```
+
+  `accepted` is stored as its file's head; `conflict`: its first parent is no
+  longer the head (no head is sent back, unlike a single push's `409`);
+  `lost_parent`: its first parent is not stored. A revision already stored
+  for its file (the batch sent again after its reply was lost) is
+  `accepted` at the position it has, and nothing is stored twice.
+* Refused whole, nothing stored: `400` (a malformed id, more than two
+  parents, a chain longer than 3, more than 1,000 revisions), `403`, `426`,
+  `422` (any revision sealed under an older key epoch than the space's
+  newest; the client takes the new key and seals again).
+* Clients (0.14): read `features` once a session; send at most 1,000
+  revisions and 4 MiB of body a request. On `413` (a proxy's smaller
+  limit) they halve the byte cap and send the same revisions again, down to
+  one a request, then use `POST …/revisions` for the rest of the session. A
+  connection cut while sending a batch over 1 MiB is taken once a session
+  for a `413`, and the cap drops to at most 1 MiB. Without the feature, or
+  on a `404`/`405` from the route, they push one revision a request as 0.13
+  does.
+
 ## `actor` in a revision's content
 
 Inside the encrypted content of a revision (so the server never sees it),

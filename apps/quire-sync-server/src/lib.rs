@@ -15,6 +15,7 @@
 //! | `PUT /v1/spaces/{space}/key` | Replace it (passphrase change) |
 //! | `GET /v1/spaces/{space}/changes?after=N&limit=M` | Revisions after `N` |
 //! | `POST /v1/spaces/{space}/revisions` | Push one revision: 200 accepted, 409 with the current head |
+//! | `POST /v1/spaces/{space}/revisions/batch` | Push up to 1,000 revisions in one transaction (0.14; `features: ["batch-push"]` in `info`) |
 //! | `GET /v1/spaces/{space}/wait?after=N&timeout=S` | Long-poll until the log passes `N` |
 //! | `PUT /v1/spaces/{space}/min_protocol` | `{"min": 2}`: refuse older clients for this space (never lowered) |
 //! | `GET /v1/spaces/{space}/min_protocol` | `{"min": N}` (0.13) |
@@ -47,7 +48,9 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
-use quire_sync::protocol::{MIN_PROTOCOL, PROTOCOL, PROTOCOL_HEADER, ProtocolRange, ServerInfo};
+use quire_sync::protocol::{
+    BATCH_FEATURE, BatchRequest, BatchResponse, MIN_PROTOCOL, PROTOCOL, PROTOCOL_HEADER, ProtocolRange, ServerInfo,
+};
 use quire_sync::{FileId, PushOutcome, Revision, SpaceId, WrappedKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -58,6 +61,12 @@ pub use store::{Store, StoreError};
 
 /// Largest request body: one revision of a big note.
 pub const MAX_BODY: usize = 32 * 1024 * 1024;
+/// Largest batch push body: twice what a client sends (4 MiB), so a
+/// client never meets it; a proxy in front may refuse less (`413`), and
+/// the client halves its batches then.
+pub const MAX_BATCH_BODY: usize = 8 * 1024 * 1024;
+/// Most revisions in one batch push.
+pub const MAX_BATCH: usize = 1000;
 /// Most revisions returned by one `changes` call.
 pub const MAX_PAGE: u32 = 1000;
 /// Longest a `wait` call is held open.
@@ -94,7 +103,22 @@ impl AppState {
 
 /// The HTTP application, ready to serve.
 pub fn app(state: Arc<AppState>) -> Router {
-    let api = routes_0_8()
+    app_with(state, true)
+}
+
+/// The application as Quire 0.13 served it (no batch push): for tests of
+/// mixed fleets.
+#[doc(hidden)]
+pub fn app_0_13(state: Arc<AppState>) -> Router {
+    app_with(state, false)
+}
+
+fn app_with(state: Arc<AppState>, batches: bool) -> Router {
+    let mut api = routes_0_8();
+    if batches {
+        api = api.route("/spaces/{space}/revisions/batch", post(push_batch).layer(DefaultBodyLimit::max(MAX_BATCH_BODY)));
+    }
+    let api = api
         .route("/spaces/{space}/min_protocol", put(set_min_protocol).get(get_min_protocol))
         .route("/spaces/{space}/devices", post(enroll).get(list_devices))
         .route("/spaces/{space}/devices/{device}", delete(remove_device))
@@ -103,7 +127,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/spaces/{space}/keys/{epoch}", put(put_key_record))
         .route_layer(middleware::from_fn_with_state(Arc::clone(&state), require_protocol))
         .route_layer(middleware::from_fn_with_state(Arc::clone(&state), require_token))
-        .route("/info", get(info));
+        .route("/info", if batches { get(info) } else { get(info_0_13) });
     Router::new().route("/health", get(|| async { "ok" })).nest("/v1", api).layer(DefaultBodyLimit::max(MAX_BODY)).with_state(state)
 }
 
@@ -126,7 +150,15 @@ pub fn app_0_8(state: Arc<AppState>) -> Router {
 }
 
 async fn info() -> Json<ServerInfo> {
-    Json(ServerInfo { protocol: ProtocolRange { min: MIN_PROTOCOL, max: PROTOCOL }, server: env!("CARGO_PKG_VERSION").to_string() })
+    Json(ServerInfo {
+        protocol: ProtocolRange { min: MIN_PROTOCOL, max: PROTOCOL },
+        server: env!("CARGO_PKG_VERSION").to_string(),
+        features: vec![BATCH_FEATURE.to_string()],
+    })
+}
+
+async fn info_0_13() -> Json<ServerInfo> {
+    Json(ServerInfo { protocol: ProtocolRange { min: MIN_PROTOCOL, max: PROTOCOL }, server: "0.13.3".into(), features: Vec::new() })
 }
 
 /// The client's protocol: the header, or 1 (Quire 0.8 sends none).
@@ -362,20 +394,8 @@ async fn push(
     Json(rev): Json<Revision>,
 ) -> Result<Response, ApiError> {
     valid_id(&space)?;
-    for id in
-        [&rev.file.0, &rev.rev.0, &rev.device.0].into_iter().chain(rev.parents.iter().map(|p| &p.0)).chain(rev.chain.iter().map(|p| &p.0))
-    {
-        valid_id(id)?;
-    }
-    if rev.parents.len() > 2 || rev.chain.len() > quire_sync::protocol::CHAIN {
-        return Err(ApiError(StatusCode::BAD_REQUEST, "too many parents".into()));
-    }
     // A device token writes as that device only.
-    if let Some(axum::Extension(Caller::Device(d))) = &caller
-        && *d != rev.device.0
-    {
-        return Err(ApiError(StatusCode::FORBIDDEN, "a device token writes as its own device only".into()));
-    }
+    check_revision(caller.as_ref().map(|axum::Extension(c)| c), &rev)?;
     let sp = SpaceId(space);
     let sp2 = sp.clone();
     let outcome = db(&st, move |s| s.push(&sp2, &rev)).await?;
@@ -386,6 +406,53 @@ async fn push(
         }
         c @ PushOutcome::Conflict { .. } => (StatusCode::CONFLICT, Json(c)).into_response(),
     })
+}
+
+/// Check a pushed revision's ids and parents, and that a device token
+/// writes as its own device.
+fn check_revision(caller: Option<&Caller>, rev: &Revision) -> Result<(), ApiError> {
+    for id in
+        [&rev.file.0, &rev.rev.0, &rev.device.0].into_iter().chain(rev.parents.iter().map(|p| &p.0)).chain(rev.chain.iter().map(|p| &p.0))
+    {
+        valid_id(id)?;
+    }
+    if rev.parents.len() > 2 || rev.chain.len() > quire_sync::protocol::CHAIN {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "too many parents".into()));
+    }
+    if let Some(Caller::Device(d)) = caller
+        && *d != rev.device.0
+    {
+        return Err(ApiError(StatusCode::FORBIDDEN, "a device token writes as its own device only".into()));
+    }
+    Ok(())
+}
+
+/// Push up to [`MAX_BATCH`] revisions in one transaction (0.14). Refused
+/// whole, nothing stored, when any revision is malformed (`400`), written
+/// as another device (`403`) or sealed under an older key epoch (`422`).
+/// A revision stored already (the same batch sent again after its reply was
+/// lost) is accepted at the position it has.
+async fn push_batch(
+    State(st): State<Arc<AppState>>,
+    caller: Option<axum::Extension<Caller>>,
+    Path(space): Path<String>,
+    Json(body): Json<BatchRequest>,
+) -> Result<Json<BatchResponse>, ApiError> {
+    valid_id(&space)?;
+    if body.revisions.len() > MAX_BATCH {
+        return Err(ApiError(StatusCode::BAD_REQUEST, format!("at most {MAX_BATCH} revisions a batch")));
+    }
+    let caller = caller.map(|axum::Extension(c)| c);
+    for rev in &body.revisions {
+        check_revision(caller.as_ref(), rev)?;
+    }
+    let sp = SpaceId(space);
+    let sp2 = sp.clone();
+    let (outcomes, latest) = db(&st, move |s| s.push_many(&sp2, &body.revisions)).await?;
+    if outcomes.iter().any(|o| matches!(o, quire_sync::protocol::WireOutcome::Accepted { .. })) {
+        st.bell(&sp).send_replace(latest);
+    }
+    Ok(Json(BatchResponse { outcomes, latest }))
 }
 
 async fn wait(State(st): State<Arc<AppState>>, Path(space): Path<String>, Query(q): Query<WaitQuery>) -> Result<Json<Latest>, ApiError> {

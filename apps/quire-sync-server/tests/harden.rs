@@ -184,6 +184,51 @@ fn removing_a_device_refuses_its_token_and_its_old_key() {
 }
 
 #[test]
+fn a_key_change_during_a_chunked_first_sync_seals_the_rest_anew() {
+    let (base, st) = serve();
+    let (space, key) = space(&base);
+    let (mut a, mut b, r) = (Dev::new(&base, &space, &key, "a"), Dev::new(&base, &space, &key, "b"), Dev::new(&base, &space, &key, "r"));
+    b.engine = Engine::new(space.clone(), b.id.clone(), "b", b.keys.clone(), SyncState::default()).with_chunk(10);
+    admin::upgrade(&a.t).unwrap();
+    for d in [&mut a, &mut b] {
+        assert!(d.refresh(&space).is_none());
+    }
+    for i in 0..30 {
+        b.local.write(&format!("N{i:02}.md"), &format!("{i}\n")).unwrap();
+    }
+    // The first of three passes goes, in one batch.
+    assert!(b.sync().unwrap().more_to_send());
+    assert_eq!(st.store().latest(&space).unwrap(), 10);
+    let ends = a.t.lane_ends().unwrap();
+    let removal = Removal {
+        space: &space,
+        me: &a.id,
+        secret: &a.secret,
+        keys: &a.keys,
+        target: &r.id,
+        passphrase: "new pass",
+        kdf: KdfParams::TEST,
+        lanes: BTreeMap::from([(String::new(), ends.get(&r.id).copied().unwrap_or_default())]),
+        removed: &BTreeSet::new(),
+        seen: BTreeMap::new(),
+        snapshots: Vec::new(),
+    };
+    admin::remove_device(&a.t, &removal, &mut a.pins).unwrap();
+    // The next batch, sealed under the old key: refused whole.
+    let e = b.sync().unwrap_err().to_string();
+    assert!(e.contains("old key"), "{e}");
+    assert_eq!(st.store().latest(&space).unwrap(), 10, "nothing of it stored");
+    // The next pass takes the new key, and the rest goes sealed under it.
+    assert!(b.refresh(&space).is_none());
+    while b.sync().unwrap().more_to_send() {}
+    assert_eq!(st.store().latest(&space).unwrap(), 30, "each note once");
+    assert!(a.refresh(&space).is_none());
+    a.sync().unwrap();
+    assert_eq!(a.local, b.local);
+    assert_eq!(a.local.0.len(), 30);
+}
+
+#[test]
 fn two_key_changes_at_once_one_wins() {
     let (base, _st) = serve();
     let (space, key) = space(&base);

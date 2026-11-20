@@ -84,7 +84,7 @@ F0 is the foundation step, after which its files are frozen).
 | `wiki/index.md` (between `quire:index` markers), `wiki/log.md` | Markdown | [wiki-index-log.md](wiki-index-log.md) | WS-D | written |
 | `<config>/mcp/tokens.json`, `<config>/mcp/consent/<id>.json` | JSON, format 1 | [mcp.md](mcp.md) | WS-B | written |
 | `<config>/vaults/<key>/mrtr.key` | 32 random bytes | [mcp.md](mcp.md#configvaultsvault-keymrtrkey) | WS-B | written |
-| Quire Sync: `/v1/info`, `actor`, `space.json` `min_reader`, `config.json` `shared_state` | protocol 2 | [sync-protocol.md](sync-protocol.md) | WS-B | in use |
+| Quire Sync: `/v1/info` (0.14: `features`), batch push (0.14), `actor`, `space.json` `min_reader`, `config.json` `shared_state` | protocol 2 (batch push: protocol 3 with the `batch-push` feature) | [sync-protocol.md](sync-protocol.md) | WS-B | in use |
 | `.quire/cache/**` | rebuildable; formats are private to their job | — | the job's owner | — |
 | `.quire/cache/**` from 0.14: the header of every cache file | binary, `QUIRECA2` | [cache-container.md](cache-container.md) | 0.14 architecture | written by each 0.14 cache |
 | `.quire/cache/manifest` | cache container, kind 1, format 2 | [manifest.md](manifest.md) | 0.14 architecture | `quire_vault::changes`; one per vault in the app, shared by sync (each pass's listing) and the index (its startup cache); written by both |

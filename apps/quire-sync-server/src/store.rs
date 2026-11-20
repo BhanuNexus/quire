@@ -7,6 +7,7 @@
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 
+use quire_sync::protocol::WireOutcome;
 use quire_sync::{FileId, PushOutcome, RevId, Revision, SpaceId, WrappedKey};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
@@ -346,6 +347,58 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(PushOutcome::Accepted { seq: seq.cast_unsigned() })
+    }
+
+    /// Push `revs` in order, in one transaction (0.14): each is checked
+    /// against its file's head as [`Self::push`] does (a later one of the
+    /// same file builds on an earlier one), and the whole batch commits
+    /// once. Any revision sealed under an older key epoch refuses the whole
+    /// batch, with nothing stored ([`StoreError::OldKey`]). A revision
+    /// already stored for its file (the batch sent again after its reply was
+    /// lost) is accepted at its position, so a resend stores no duplicate.
+    /// Returns the outcomes and the log's latest position.
+    pub fn push_many(&self, space: &SpaceId, revs: &[Revision]) -> Result<(Vec<WireOutcome>, u64), StoreError> {
+        let mut db = self.db();
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        Self::require_space(&tx, space)?;
+        let epoch: i64 =
+            tx.query_row("SELECT COALESCE(MAX(epoch), 0) FROM key_records WHERE space = ?1", params![space.0], |r| r.get(0))?;
+        if revs.iter().any(|r| i64::from(quire_sync::crypto::sealed_epoch(&r.sealed).unwrap_or(0)) < epoch) {
+            return Err(StoreError::OldKey);
+        }
+        let mut seq: i64 = tx.query_row("SELECT COALESCE(MAX(seq), 0) FROM revisions WHERE space = ?1", params![space.0], |r| r.get(0))?;
+        let mut outcomes = Vec::with_capacity(revs.len());
+        {
+            let mut stored = tx.prepare_cached("SELECT seq FROM revisions WHERE space = ?1 AND file = ?2 AND rev = ?3")?;
+            let mut head = tx.prepare_cached(
+                "SELECT r.rev FROM heads h JOIN revisions r ON r.space = h.space AND r.seq = h.seq WHERE h.space = ?1 AND h.file = ?2",
+            )?;
+            let mut insert = tx.prepare_cached(
+                "INSERT INTO revisions (space, seq, file, rev, parents, device, sealed, chain) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )?;
+            let mut set_head = tx.prepare_cached(
+                "INSERT INTO heads (space, file, seq) VALUES (?1, ?2, ?3) ON CONFLICT (space, file) DO UPDATE SET seq = excluded.seq",
+            )?;
+            for rev in revs {
+                if let Some(at) = stored.query_row(params![space.0, rev.file.0, rev.rev.0], |r| r.get::<_, i64>(0)).optional()? {
+                    outcomes.push(WireOutcome::Accepted { seq: at.cast_unsigned() });
+                    continue;
+                }
+                let now: Option<String> = head.query_row(params![space.0, rev.file.0], |r| r.get(0)).optional()?;
+                if now.as_deref() != rev.parents.first().map(|p| p.0.as_str()) {
+                    outcomes.push(if now.is_some() { WireOutcome::Conflict {} } else { WireOutcome::LostParent {} });
+                    continue;
+                }
+                seq += 1;
+                let parents = serde_json::to_string(&rev.parents).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+                let chain = serde_json::to_string(&rev.chain).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+                insert.execute(params![space.0, seq, rev.file.0, rev.rev.0, parents, rev.device.0, rev.sealed, chain])?;
+                set_head.execute(params![space.0, rev.file.0, seq])?;
+                outcomes.push(WireOutcome::Accepted { seq: seq.cast_unsigned() });
+            }
+        }
+        tx.commit()?;
+        Ok((outcomes, seq.cast_unsigned()))
     }
 
     /// Give `device` a token for `space` (0.13), once: a device that has

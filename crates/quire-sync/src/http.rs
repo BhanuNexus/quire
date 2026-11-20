@@ -3,7 +3,7 @@
 //! Talk to `quire-sync-server` over HTTP(S).
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -12,9 +12,10 @@ use serde::{Deserialize, Serialize};
 use crate::crypto::WrappedKey;
 use crate::keyring::{DeviceRecord, EpochRecord};
 use crate::protocol::{
-    DeviceId, HARDENED_PROTOCOL, LanePos, MIN_PROTOCOL, PROTOCOL, PROTOCOL_HEADER, PushOutcome, Revision, Sealing, ServerInfo, SpaceId,
+    BATCH_FEATURE, BatchRequest, BatchResponse, DeviceId, HARDENED_PROTOCOL, LanePos, MIN_PROTOCOL, PROTOCOL, PROTOCOL_HEADER, PushOutcome,
+    Revision, Sealing, ServerInfo, SpaceId, WireOutcome,
 };
-use crate::transport::{Transport, TransportError};
+use crate::transport::{BATCH_BYTES, BATCH_REVISIONS, BatchOutcome, BatchReply, Transport, TransportError, request_len};
 
 /// A space on a sync server.
 #[derive(Clone)]
@@ -30,6 +31,51 @@ pub struct HttpTransport {
     /// Devices removed from the vault, and the last log position still
     /// taken from each (0.13): their later revisions are ignored.
     removed: Arc<Mutex<BTreeMap<DeviceId, LanePos>>>,
+    /// Whether the server takes batch pushes (0.14), once known for this
+    /// session: 0 not asked yet, 1 yes, 2 no (or no longer: see
+    /// [`Self::push_batch`]).
+    batches: Arc<AtomicU8>,
+    /// The most request body a batch sends in this session: halved on each
+    /// `413` (a proxy with a smaller limit).
+    batch_cap: Arc<AtomicUsize>,
+    /// A cut connection was already taken for a body too large, once.
+    reset_seen: Arc<AtomicBool>,
+}
+
+/// The batch-push states of [`HttpTransport::batches`].
+const BATCH_UNKNOWN: u8 = 0;
+const BATCH_ON: u8 = 1;
+const BATCH_OFF: u8 = 2;
+
+/// A batch over this many bytes whose connection was cut is taken once for
+/// one a proxy refused (`docs/design/0.14-sync-speed.md` §3.4), and the cap
+/// drops to at most this.
+const RESET_AS_TOO_LARGE: usize = 1024 * 1024;
+
+/// Whether `e` is a connection cut while sending.
+fn is_cut(e: &ureq::Error) -> bool {
+    use std::io::ErrorKind;
+    match e {
+        ureq::Error::Io(io) => {
+            matches!(
+                io.kind(),
+                ErrorKind::ConnectionReset | ErrorKind::BrokenPipe | ErrorKind::ConnectionAborted | ErrorKind::UnexpectedEof
+            )
+        }
+        _ => false,
+    }
+}
+
+/// How one batch request went.
+enum Sent {
+    Done(BatchResponse),
+    /// Refused as too large (`413`).
+    TooLarge,
+    /// The connection was cut while sending a large batch, taken once for a
+    /// proxy refusing it.
+    Cut,
+    /// The server has no batch route.
+    NoRoute,
 }
 
 /// Without the token.
@@ -142,6 +188,76 @@ impl HttpTransport {
             protocol: PROTOCOL,
             min: Arc::new(AtomicU32::new(0)),
             removed: Arc::new(Mutex::new(BTreeMap::new())),
+            batches: Arc::new(AtomicU8::new(BATCH_UNKNOWN)),
+            batch_cap: Arc::new(AtomicUsize::new(BATCH_BYTES)),
+            reset_seen: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Never send batches (tests acting as a client before 0.14).
+    #[must_use]
+    pub fn without_batches(self) -> Self {
+        self.batches.store(BATCH_OFF, Ordering::Relaxed);
+        self
+    }
+
+    /// Whether this session sends batches: the server says so in
+    /// `GET /v1/info` (asked once a session).
+    pub fn sends_batches(&self) -> bool {
+        match self.batches.load(Ordering::Relaxed) {
+            BATCH_ON => true,
+            BATCH_OFF => false,
+            _ => {
+                let Ok(info) = self.info() else { return false };
+                let on = info.features.iter().any(|f| f == BATCH_FEATURE);
+                self.batches.store(if on { BATCH_ON } else { BATCH_OFF }, Ordering::Relaxed);
+                on
+            }
+        }
+    }
+
+    /// The most request body a batch sends now (it shrinks on `413`).
+    pub fn batch_cap(&self) -> usize {
+        self.batch_cap.load(Ordering::Relaxed)
+    }
+
+    /// `GET /v1/info` of this server.
+    fn info(&self) -> Result<ServerInfo, TransportError> {
+        let mut res = self.agent.get(format!("{}/v1/info", self.base)).call().map_err(|e| TransportError::Offline(e.to_string()))?;
+        let status = res.status().as_u16();
+        let body = res.body_mut().with_config().limit(64 * 1024).read_to_string().map_err(|e| TransportError::Offline(e.to_string()))?;
+        if status != 200 {
+            return Err(Self::fail(status, &body));
+        }
+        serde_json::from_str(&body).map_err(|e| TransportError::Refused(format!("unexpected reply: {e}")))
+    }
+
+    /// One batch request.
+    fn post_batch(&self, revs: &[Revision], bytes: usize) -> Result<Sent, TransportError> {
+        let body = serde_json::to_string(&BatchRequest { revisions: revs.to_vec() }).map_err(|e| TransportError::Refused(e.to_string()))?;
+        let res = self
+            .agent
+            .post(self.url("/revisions/batch"))
+            .header("Authorization", &self.auth())
+            .header(PROTOCOL_HEADER, &self.protocol.to_string())
+            .header("Content-Type", "application/json")
+            .send(body.as_str());
+        let mut res = match res {
+            Ok(r) => r,
+            // A proxy that cuts a body it won't take instead of answering
+            // 413: taken as one once a session, for a large batch.
+            Err(e) if is_cut(&e) && bytes > RESET_AS_TOO_LARGE && !self.reset_seen.swap(true, Ordering::Relaxed) => {
+                return Ok(Sent::Cut);
+            }
+            Err(e) => return Err(TransportError::Offline(e.to_string())),
+        };
+        let status = res.status().as_u16();
+        let text = res.body_mut().with_config().limit(MAX_REPLY).read_to_string().map_err(|e| TransportError::Offline(e.to_string()))?;
+        match status {
+            200 => serde_json::from_str(&text).map(Sent::Done).map_err(|e| TransportError::Refused(format!("unexpected reply: {e}"))),
+            413 => Ok(Sent::TooLarge),
+            404 | 405 if !text.contains("vault") => Ok(Sent::NoRoute),
+            _ => Err(Self::fail(status, &text)),
         }
     }
 
@@ -412,6 +528,81 @@ impl Transport for HttpTransport {
                 return Ok(out);
             }
         }
+    }
+
+    /// One request for many revisions where the server takes batches
+    /// (`GET /v1/info` says `batch-push`), split to the session's byte cap.
+    /// A `413` (a proxy's smaller limit) halves the cap and sends the same
+    /// revisions again, down to one a request; refused even then, the rest
+    /// of the session pushes one at a time, as does a server without the
+    /// route. A connection cut while sending a batch over 1 MiB is taken
+    /// once, a session, for a `413` (the cap then at most 1 MiB). A batch is
+    /// stored whole or not at all, and one sent again after its reply was
+    /// lost is taken at the positions it has.
+    fn push_batch(&self, revs: &[Revision]) -> BatchReply {
+        if !self.sends_batches() {
+            return BatchReply::one_by_one(self, revs);
+        }
+        let mut out = BatchReply::default();
+        let mut at = 0;
+        while at < revs.len() {
+            if self.batches.load(Ordering::Relaxed) == BATCH_OFF {
+                let rest = BatchReply::one_by_one(self, &revs[at..]);
+                out.outcomes.extend(rest.outcomes);
+                out.error = rest.error;
+                return out;
+            }
+            // As many as fit the cap (at least one).
+            let cap = self.batch_cap();
+            let mut end = at;
+            let mut bytes = 0;
+            while end < revs.len() && end - at < BATCH_REVISIONS {
+                let n = request_len(&revs[end]);
+                if end > at && bytes + n > cap {
+                    break;
+                }
+                bytes += n;
+                end += 1;
+            }
+            match self.post_batch(&revs[at..end], bytes) {
+                Ok(Sent::Done(reply)) => {
+                    let handled = reply.outcomes.len().min(end - at);
+                    out.outcomes.extend(reply.outcomes.into_iter().take(handled).map(|o| match o {
+                        WireOutcome::Accepted { seq } => BatchOutcome::Accepted { seq },
+                        WireOutcome::Conflict {} => BatchOutcome::Conflict,
+                        WireOutcome::LostParent {} => BatchOutcome::LostParent,
+                    }));
+                    if handled < end - at {
+                        out.error = Some(TransportError::Refused("the server answered fewer revisions than it was sent".into()));
+                        return out;
+                    }
+                    at = end;
+                }
+                Ok(Sent::TooLarge) if end - at > 1 => {
+                    self.batch_cap.store((bytes / 2).max(1), Ordering::Relaxed);
+                }
+                // A cut says nothing of the proxy's limit: halved, and no
+                // more than the size below which a cut is an ordinary
+                // offline error, so a second cut is one.
+                Ok(Sent::Cut) if end - at > 1 => {
+                    self.batch_cap.store((bytes / 2).clamp(1, RESET_AS_TOO_LARGE), Ordering::Relaxed);
+                }
+                // One revision is too large for a batch here: one at a time
+                // from now on, as before 0.14.
+                Ok(Sent::TooLarge | Sent::Cut | Sent::NoRoute) => self.batches.store(BATCH_OFF, Ordering::Relaxed),
+                Err(e) => {
+                    out.error = Some(e);
+                    return out;
+                }
+            }
+        }
+        out
+    }
+
+    /// The server alone numbers revisions, one counter per space in commit
+    /// order: a position given to this device's revision holds nothing else.
+    fn own_seqs_skippable(&self) -> bool {
+        true
     }
 
     fn push(&self, rev: &Revision) -> Result<PushOutcome, TransportError> {

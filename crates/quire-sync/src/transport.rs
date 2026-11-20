@@ -93,8 +93,9 @@ pub trait Transport {
     /// Whether the positions of this device's accepted pushes can be
     /// skipped by its cursor: true only where one server hands out every
     /// position in commit order, so a position given to this device's
-    /// revision can't hold another device's (`docs/design/0.14-sync-speed.md`
-    /// §3.4). A synced folder numbers what it reads per process: false.
+    /// revision can't hold another device's
+    /// (`docs/design/0.14-sync-speed.md` §3.4). A synced folder numbers what
+    /// it reads per process: false.
     fn own_seqs_skippable(&self) -> bool {
         false
     }
