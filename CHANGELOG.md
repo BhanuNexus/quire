@@ -11,6 +11,7 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 - **`quire-cli sync once --verify`** reads every note again in that pass, to catch a change that kept a file's size and modification time.
 
 ### Changed
+- **Faster start:** Quire opens a large vault much faster: only notes changed since the last start are read again, and search, tasks and views are ready almost at once.
 - **Sync:** a sync pass with nothing to send no longer reads every note; it reads only notes whose file changed, and once a day reads every note again to catch a change that kept a file's size and time.
 - **Sync:** each device keeps its record of what sync did in a new format, written only when something changed, instead of rewriting a copy of every note after each pass; the first sync after updating moves it over once. Going back to Quire 0.13 starts sync afresh on that device (notes changed there are kept as copies), and sync says so when an older Quire also syncs the same vault on the device.
 

@@ -87,7 +87,8 @@ F0 is the foundation step, after which its files are frozen).
 | Quire Sync: `/v1/info`, `actor`, `space.json` `min_reader`, `config.json` `shared_state` | protocol 2 | [sync-protocol.md](sync-protocol.md) | WS-B | in use |
 | `.quire/cache/**` | rebuildable; formats are private to their job | — | the job's owner | — |
 | `.quire/cache/**` from 0.14: the header of every cache file | binary, `QUIRECA2` | [cache-container.md](cache-container.md) | 0.14 architecture | written by each 0.14 cache |
-| `.quire/cache/manifest` | cache container, kind 1, format 2 | [manifest.md](manifest.md) | 0.14 architecture | `quire_vault::changes`; used by sync (each pass's listing, 0.14), not yet by the index |
+| `.quire/cache/manifest` | cache container, kind 1, format 2 | [manifest.md](manifest.md) | 0.14 architecture | `quire_vault::changes`; one per vault in the app, shared by sync (each pass's listing) and the index (its startup cache); written by both |
+| `.quire/cache/index/` (`records.idx`, `r-*.seg`, `writer.lock`) | cache container, kinds 2 and 3, format 2 | [index-cache.md](index-cache.md) | 0.14 index | written by the index worker of the one process holding `writer.lock` |
 | `.quire/sync/state.d/` (`state-partial.d/`, `state-shared.d/`): checkpoint, journal, base packs | JSON format 1, JSONL, binary | [sync-state.md](sync-state.md) | 0.14 sync | written and read (replaces 0.13's `state.json`, migrated once) |
 | `<folder>/quire-lock.json`, `*.qenc`, `.quire/history/<fnv>/<ms>.md.gz.qenc` | JSON format 1; binary, version 1 | [locked-folders.md](locked-folders.md) | 0.11 security | written (locked folders) |
 | `.quire/shared/locked-folders.json`, `<config>/vaults/<key>/locked-folders.json` | JSON, format 1 | [locked-folders.md](locked-folders.md#remembered-locked-folders) | 0.11 security | written and read |

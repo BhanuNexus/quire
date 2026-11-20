@@ -2,14 +2,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Inverted index with BM25 ranking, prefix search-as-you-type and snippets.
 
-use std::collections::{BTreeMap, HashMap};
-use std::ops::Bound;
-use std::sync::Arc;
+use std::collections::HashMap;
 
 use quire_vault::NotePath;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::record::NoteRecord;
+use crate::terms::{TermId, Terms};
 use crate::tokenize::{FastHash, Folded, fold_into, fold_str, is_content, stem_in_place, stem_owned, tokens};
 
 const K1: f32 = 1.2;
@@ -178,17 +177,44 @@ pub(crate) fn note_terms(
     (tf.into_iter().collect(), len)
 }
 
+/// A document of a keyword index (a note, or an attachment page).
+///
+/// Stable: a note keeps its id across updates. A removed note's id is given
+/// again only after [`FullText::end_batch`], so everyone who saw the batch
+/// that removed it saw the removal first (`docs/design/0.14-index-startup.md` §3.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct DocId(pub u32);
+
+impl DocId {
+    /// The id as an index into a table by document.
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// One term's documents and their weighted term frequency.
+type Postings = HashMap<DocId, f32, FastHash>;
+
+/// Inverted index with BM25 ranking over interned terms and dense, stable
+/// document ids. IDF, N and the average length are computed when a query
+/// runs, so inserting and removing a document is exact.
 #[derive(Debug, Default)]
-pub(crate) struct FullText {
-    postings: BTreeMap<Arc<str>, HashMap<u32, f32>>,
-    /// Each document's terms, for `remove`: the postings' own keys, shared
-    /// (0.13.1: a `String` per document and term was most of the index's
-    /// memory in a big vault).
-    doc_terms: HashMap<u32, Vec<Arc<str>>>,
-    doc_len: HashMap<u32, f32>,
-    ids: HashMap<NotePath, u32>,
-    paths: HashMap<u32, NotePath>,
-    next_id: u32,
+pub struct FullText {
+    terms: Terms,
+    /// By [`TermId`]; empty for a term no document uses any more.
+    postings: Vec<Postings>,
+    /// By [`DocId`]: each document's terms (to remove it, and for the agent
+    /// views to add or subtract it); empty for a free id.
+    doc_terms: Vec<Vec<TermId>>,
+    /// By [`DocId`]: each document's length; 0 for a free id.
+    doc_len: Vec<f32>,
+    ids: HashMap<NotePath, DocId>,
+    /// By [`DocId`]; `None` for a free id.
+    paths: Vec<Option<NotePath>>,
+    /// Ids that may be given again.
+    free: Vec<DocId>,
+    /// Ids removed in the batch being applied: free after [`Self::end_batch`].
+    released: Vec<DocId>,
     total_len: f64,
 }
 
@@ -204,49 +230,152 @@ impl FullText {
 
     /// Inverse document frequency of a term (0 when no document has it).
     pub(crate) fn term_idf(&self, term: &str) -> f32 {
-        self.postings.get(term).map_or(0.0, |p| self.idf(p.len()))
+        self.live(term).map_or(0.0, |p| self.idf(p.len()))
     }
 
     pub(crate) fn has_term(&self, term: &str) -> bool {
-        self.postings.contains_key(term)
+        self.live(term).is_some()
+    }
+
+    /// The posting list of `term` when some document uses it.
+    fn live(&self, term: &str) -> Option<&Postings> {
+        self.terms.get(term).map(|id| &self.postings[id.index()]).filter(|p| !p.is_empty())
+    }
+
+    /// The id of a term any document ever used in this index.
+    pub fn term_id(&self, term: &str) -> Option<TermId> {
+        self.terms.get(term)
+    }
+
+    /// The text of a term id this index gave.
+    pub fn term(&self, id: TermId) -> &str {
+        self.terms.name(id)
+    }
+
+    /// Intern `term` (for a record's content terms, which are always among
+    /// its own search terms).
+    pub(crate) fn intern(&mut self, term: &str) -> TermId {
+        let id = self.terms.intern(term);
+        if self.postings.len() < self.terms.len() {
+            self.postings.resize_with(self.terms.len(), Postings::default);
+        }
+        id
+    }
+
+    /// The document id of `path`.
+    pub fn doc_id(&self, path: &NotePath) -> Option<DocId> {
+        self.ids.get(path).copied()
+    }
+
+    /// The path of a document id in use.
+    pub fn path_of(&self, id: DocId) -> Option<&NotePath> {
+        self.paths.get(id.index()).and_then(Option::as_ref)
+    }
+
+    /// A document's terms (empty for an id not in use), in the order its
+    /// terms were given.
+    pub fn doc_terms(&self, id: DocId) -> &[TermId] {
+        self.doc_terms.get(id.index()).map_or(&[], Vec::as_slice)
+    }
+
+    /// A document's length for BM25 (`None` for an id not in use).
+    pub fn doc_len(&self, id: DocId) -> Option<f32> {
+        self.path_of(id).and_then(|_| self.doc_len.get(id.index()).copied())
+    }
+
+    /// The weighted frequency of a term in a document, if it has the term.
+    pub fn weight(&self, term: TermId, doc: DocId) -> Option<f32> {
+        self.postings.get(term.index()).and_then(|p| p.get(&doc).copied())
+    }
+
+    /// How many documents use `term`.
+    pub fn doc_freq(&self, term: TermId) -> usize {
+        self.postings.get(term.index()).map_or(0, HashMap::len)
+    }
+
+    /// How many documents are indexed.
+    pub fn doc_count(&self) -> usize {
+        self.ids.len()
+    }
+
+    /// One past the largest document id given: tables by [`DocId`] have
+    /// this many slots.
+    pub fn doc_slots(&self) -> usize {
+        self.paths.len()
+    }
+
+    /// The sum of every document's length.
+    pub const fn total_len(&self) -> f64 {
+        self.total_len
+    }
+
+    /// The batch being applied is done: ids it removed may be given again.
+    pub fn end_batch(&mut self) {
+        self.free.append(&mut self.released);
+    }
+
+    /// Recompute the total length exactly (float drift from adding and
+    /// subtracting never outlives a load).
+    pub(crate) fn recount_len(&mut self) {
+        // In id order, so the sum is the same on every run.
+        self.total_len = self.paths.iter().zip(&self.doc_len).filter(|(p, _)| p.is_some()).map(|(_, l)| f64::from(*l)).sum();
     }
 
     fn insert(&mut self, path: &NotePath, tf: &[(String, f32)], len: f32) {
-        self.remove(path);
-        let id = self.next_id;
-        self.next_id += 1;
+        let ids: Vec<(TermId, f32)> = tf.iter().map(|(t, f)| (self.intern(t), *f)).collect();
+        self.upsert_ids(path, &ids, len);
+    }
+
+    /// Index a document whose terms are already interned here (a record
+    /// from the startup cache).
+    pub(crate) fn upsert_ids(&mut self, path: &NotePath, tf: &[(TermId, f32)], len: f32) {
+        let id = if let Some(&id) = self.ids.get(path) {
+            self.unlink(id);
+            id
+        } else {
+            let id = self.free.pop().unwrap_or_else(|| {
+                let id = DocId(u32::try_from(self.paths.len()).expect("fewer than 2^32 documents"));
+                self.paths.push(None);
+                self.doc_terms.push(Vec::new());
+                self.doc_len.push(0.0);
+                id
+            });
+            self.ids.insert(path.clone(), id);
+            self.paths[id.index()] = Some(path.clone());
+            id
+        };
         let mut terms = Vec::with_capacity(tf.len());
-        for (t, f) in tf {
-            let key = match self.postings.get_key_value(t.as_str()) {
-                Some((k, _)) => Arc::clone(k),
-                None => Arc::from(t.as_str()),
-            };
-            self.postings.entry(Arc::clone(&key)).or_default().insert(id, *f);
-            terms.push(key);
+        for &(tid, f) in tf {
+            self.postings[tid.index()].insert(id, f);
+            terms.push(tid);
         }
-        self.doc_terms.insert(id, terms);
-        self.doc_len.insert(id, len.max(1.0));
+        self.doc_terms[id.index()] = terms;
+        self.doc_len[id.index()] = len.max(1.0);
         self.total_len += f64::from(len.max(1.0));
-        self.ids.insert(path.clone(), id);
-        self.paths.insert(id, path.clone());
+    }
+
+    /// Take a document's terms out of the postings and its length out of the
+    /// total; its id stays its own.
+    fn unlink(&mut self, id: DocId) {
+        let i = id.index();
+        self.total_len -= f64::from(std::mem::take(&mut self.doc_len[i]));
+        for t in std::mem::take(&mut self.doc_terms[i]) {
+            let p = &mut self.postings[t.index()];
+            p.remove(&id);
+            if p.is_empty() {
+                // Give the memory back; the id stays until the next load.
+                *p = Postings::default();
+            }
+        }
     }
 
     pub(crate) fn remove(&mut self, path: &NotePath) {
         let Some(id) = self.ids.remove(path) else {
             return;
         };
-        self.paths.remove(&id);
-        if let Some(len) = self.doc_len.remove(&id) {
-            self.total_len -= f64::from(len);
-        }
-        for t in self.doc_terms.remove(&id).unwrap_or_default() {
-            if let Some(p) = self.postings.get_mut(&*t) {
-                p.remove(&id);
-                if p.is_empty() {
-                    self.postings.remove(&*t);
-                }
-            }
-        }
+        self.unlink(id);
+        self.paths[id.index()] = None;
+        self.released.push(id);
     }
 
     fn idf(&self, df: usize) -> f32 {
@@ -254,11 +383,11 @@ impl FullText {
         ((n - df as f32 + 0.5) / (df as f32 + 0.5)).ln_1p()
     }
 
-    fn score_term(&self, postings: &HashMap<u32, f32>, scores: &mut HashMap<u32, f32>, avg: f32) {
+    fn score_term(&self, postings: &Postings, scores: &mut HashMap<DocId, f32>, avg: f32) {
         let idf = self.idf(postings.len());
         #[expect(clippy::iter_over_hash_type, reason = "each id gets one addition per term, so the order between ids changes no sum")]
         for (&id, &tf) in postings {
-            let dl = self.doc_len.get(&id).copied().unwrap_or(1.0);
+            let dl = self.doc_len.get(id.index()).copied().unwrap_or(1.0);
             let s = idf * (tf * (K1 + 1.0)) / (tf + K1 * (1.0 - B + B * dl / avg));
             *scores.entry(id).or_default() += s;
         }
@@ -270,16 +399,16 @@ impl FullText {
             return Vec::new();
         }
         let avg = (self.total_len / self.ids.len() as f64) as f32;
-        let mut scores: HashMap<u32, f32> = HashMap::new();
-        let mut required: Option<std::collections::HashSet<u32>> = None;
-        let mut intersect = |ids: std::collections::HashSet<u32>| {
+        let mut scores: HashMap<DocId, f32> = HashMap::new();
+        let mut required: Option<std::collections::HashSet<DocId>> = None;
+        let mut intersect = |ids: std::collections::HashSet<DocId>| {
             required = Some(match required.take() {
                 None => ids,
                 Some(r) => r.intersection(&ids).copied().collect(),
             });
         };
         for term in &q.terms {
-            match self.postings.get(term.as_str()) {
+            match self.live(term) {
                 Some(p) => {
                     self.score_term(p, &mut scores, avg);
                     intersect(p.keys().copied().collect());
@@ -289,12 +418,12 @@ impl FullText {
         }
         if let Some(prefix) = &q.prefix {
             let mut any = std::collections::HashSet::new();
-            let from = (Bound::Included(prefix.as_str()), Bound::Unbounded);
-            for (term, p) in self.postings.range::<str, _>(from).take_while(|(t, _)| t.starts_with(prefix.as_str())).take(64) {
+            let live = self.terms.with_prefix(prefix).map(|(t, id)| (t, &self.postings[id.index()])).filter(|(_, p)| !p.is_empty());
+            for (term, p) in live.take(64) {
                 // Exact matches score fully, longer completions a little less.
                 let mut partial = HashMap::new();
                 self.score_term(p, &mut partial, avg);
-                let factor = if **term == **prefix { 1.0 } else { 0.8 };
+                let factor = if term == prefix.as_str() { 1.0 } else { 0.8 };
                 #[expect(
                     clippy::iter_over_hash_type,
                     reason = "each id gets one addition per term, so the order between ids changes no sum"
@@ -308,13 +437,13 @@ impl FullText {
         }
         let mut out: Vec<(NotePath, f32)> = match required {
             Some(ids) => {
-                ids.into_iter().filter_map(|id| Some((self.paths.get(&id)?.clone(), scores.get(&id).copied().unwrap_or(0.0)))).collect()
+                ids.into_iter().filter_map(|id| Some((self.path_of(id)?.clone(), scores.get(&id).copied().unwrap_or(0.0)))).collect()
             }
             // Tag-only queries: every doc is a candidate; filters narrow it down.
-            None => self.paths.values().map(|p| (p.clone(), 0.0)).collect(),
+            None => self.paths.iter().flatten().map(|p| (p.clone(), 0.0)).collect(),
         };
         for term in &q.exclude {
-            if let Some(p) = self.postings.get(term.as_str()) {
+            if let Some(p) = self.live(term) {
                 out.retain(|(path, _)| self.ids.get(path).is_none_or(|id| !p.contains_key(id)));
             }
         }

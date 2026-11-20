@@ -1,24 +1,33 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, OnceLock};
 
 use quire_markdown::Task;
 use quire_vault::NotePath;
 
 use crate::attach::AttachmentText;
-use crate::fulltext::{FullText, Query, SearchHit, snippet};
+use crate::fulltext::{DocId, FullText, Query, SearchHit, snippet};
 use crate::fuzzy::{QuickOpenHit, quick_open};
 use crate::graph::{Backlink, LinkGraph};
 use crate::record::NoteRecord;
+use crate::terms::TermId;
 
 /// The whole derived model of a vault. Synchronous and self-contained.
 #[derive(Debug, Default)]
 pub struct Index {
     records: HashMap<NotePath, NoteRecord>,
-    sources: HashMap<NotePath, String>,
+    /// Each note's text. A note installed from the startup cache before its
+    /// text was decoded has an empty cell until then; [`Index::source`]
+    /// fills it on demand through `pending` (`docs/design/0.14-index-startup.md` §3.6).
+    sources: HashMap<NotePath, OnceLock<String>>,
+    /// Gives the text of a note whose cell is still empty, while the
+    /// startup cache's texts are being decoded.
+    pending: Option<SourceLoader>,
     pub(crate) fulltext: FullText,
     graph: LinkGraph,
-    /// Byte offset of each line's start, per note (line numbers for hits).
+    /// Byte offset of each line's start, per note (line numbers for hits);
+    /// missing for a note whose text isn't decoded yet (computed on demand).
     line_starts: HashMap<NotePath, Vec<u32>>,
     /// Last change, Unix ms: the file's time at load, the time of an update after.
     modified: HashMap<NotePath, i64>,
@@ -28,6 +37,44 @@ pub struct Index {
     pub(crate) attachment_text: FullText,
     /// 0.12: which typed links are hierarchy edges (vault.toml `[links]`).
     link_config: crate::relations::LinkConfig,
+    build: Build,
+}
+
+/// The number of an index build, unique in this process.
+#[derive(Debug)]
+struct Build(u64);
+
+impl Default for Build {
+    fn default() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
+/// The text of a note installed before its text was decoded: the same
+/// text the record was made from, decoded on demand (`None` if it can't
+/// be: the caller then sees a note without text).
+#[derive(Clone)]
+pub(crate) struct SourceLoader(pub(crate) Arc<LoadText>);
+
+/// Decodes one note's text.
+pub(crate) type LoadText = dyn Fn(&NotePath) -> Option<String> + Send + Sync;
+
+impl std::fmt::Debug for SourceLoader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SourceLoader")
+    }
+}
+
+/// A note's text from its cell, decoded on demand if the cell is empty.
+fn source_in<'a>(sources: &'a HashMap<NotePath, OnceLock<String>>, pending: Option<&SourceLoader>, p: &NotePath) -> Option<&'a str> {
+    let cell = sources.get(p)?;
+    if let Some(s) = cell.get() {
+        return Some(s);
+    }
+    let text = (pending?.0)(p)?;
+    // Another caller (or the fill) may have set it meanwhile: the same text.
+    Some(cell.get_or_init(|| text))
 }
 
 /// Byte offsets where each line starts.
@@ -43,6 +90,15 @@ pub(crate) fn page_key(path: &NotePath, page: usize) -> NotePath {
 impl Index {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Which build of the index this is: a new number for every
+    /// [`Index::new`], so every load (`IndexMsg::Load`, `IndexMsg::LoadCached`)
+    /// gives a new one, and never an update. Every [`DocId`] and
+    /// [`TermId`] belongs to one build: a holder of ids (an agent view) that
+    /// sees another build drops them and starts again.
+    pub fn build(&self) -> u64 {
+        self.build.0
     }
 
     /// Insert or replace a note and update the link graph (in place when
@@ -72,9 +128,9 @@ impl Index {
     /// which was [`Index::graph_patchable`] when stored. Costs the changed
     /// notes' links and one pass for derived edges, not a rebuild.
     pub fn patch_graph(&mut self, changed: &[NotePath]) {
-        let sources = &self.sources;
+        let (sources, pending) = (&self.sources, self.pending.as_ref());
         let recs: Vec<&NoteRecord> = changed.iter().filter_map(|p| self.records.get(p)).collect();
-        self.graph.patch(&recs, self.records.values(), &|p| sources.get(p).map(String::as_str), &self.link_config);
+        self.graph.patch(&recs, self.records.values(), &|p| source_in(sources, pending, p), &self.link_config);
     }
 
     /// Whether a note is indexed.
@@ -88,14 +144,112 @@ impl Index {
         // 0.13.1: the search terms live in the keyword index now; the record's
         // copy was a second set of every note's words, kept for nothing.
         rec.search_terms = (Vec::new(), 0.0);
+        // Content terms as ids of the same interner (they are among the
+        // note's search terms, so this adds no term).
+        let content = std::mem::take(&mut rec.content);
+        rec.terms = content.into_iter().map(|(t, n)| (self.fulltext.intern(&t), n)).collect();
+        rec.terms.sort_unstable();
         self.line_starts.insert(rec.path.clone(), line_starts(&src));
-        self.sources.insert(rec.path.clone(), src);
+        self.sources.insert(rec.path.clone(), OnceLock::from(src));
         self.records.insert(rec.path.clone(), rec);
+    }
+
+    /// Insert a record from the startup cache: `map` turns the segment's
+    /// term ids into this index's ([`Self::intern_all`]). No graph refresh.
+    /// `src` `None`: its text comes later ([`Self::fill_sources`]), or on
+    /// demand through the loader ([`Self::set_source_loader`]).
+    pub(crate) fn insert_stored(&mut self, stored: crate::codec::Stored, map: &[TermId], src: Option<String>) {
+        let crate::codec::Stored { mut rec, bm25, len } = stored;
+        let tf: Vec<(TermId, f32)> = bm25.into_iter().map(|(t, f)| (map[t as usize], f)).collect();
+        self.fulltext.upsert_ids(&rec.path, &tf, len);
+        for (t, _) in &mut rec.terms {
+            *t = map[t.index()];
+        }
+        rec.terms.sort_unstable();
+        if let Some(src) = src {
+            self.line_starts.insert(rec.path.clone(), line_starts(&src));
+            self.sources.insert(rec.path.clone(), OnceLock::from(src));
+        } else {
+            self.line_starts.remove(&rec.path);
+            self.sources.insert(rec.path.clone(), OnceLock::new());
+        }
+        self.records.insert(rec.path.clone(), rec);
+    }
+
+    /// While the cache's texts are decoded: how to get one on demand.
+    pub(crate) fn set_source_loader(&mut self, loader: Option<SourceLoader>) {
+        self.pending = loader;
+    }
+
+    /// The decoded texts (with their line starts) of notes inserted
+    /// without one. A note removed or replaced meanwhile is left alone.
+    pub(crate) fn fill_sources(&mut self, texts: Vec<(NotePath, String, Vec<u32>)>) {
+        for (p, text, starts) in texts {
+            let Some(cell) = self.sources.get(&p) else { continue };
+            if cell.get().is_none() {
+                // Set unless a caller decoded it first: the same text.
+                drop(cell.set(text));
+            }
+            if cell.get().is_some() && !self.line_starts.contains_key(&p) {
+                self.line_starts.insert(p, starts);
+            }
+        }
+    }
+
+    /// Intern a segment's term table at once; the result maps its ids.
+    pub(crate) fn intern_all(&mut self, table: &[&str]) -> Vec<TermId> {
+        table.iter().map(|t| self.fulltext.intern(t)).collect()
     }
 
     pub fn remove(&mut self, path: &NotePath) {
         self.remove_no_refresh(path);
         self.refresh();
+        self.end_batch();
+    }
+
+    /// A batch of updates is applied: ids of notes it removed may be given
+    /// again (`docs/design/0.14-index-startup.md` §3.2, §3.8).
+    ///
+    /// The worker calls it at the end of each batch, under the same write
+    /// lock that applied the batch. Anything keyed by [`DocId`] (an agent
+    /// view's member set) must be patched for the batch within that lock,
+    /// before this call: after it, a removed note's id may name another note.
+    pub fn end_batch(&mut self) {
+        self.fulltext.end_batch();
+        self.attachment_text.end_batch();
+    }
+
+    /// After a bulk load: the keyword statistics summed again exactly.
+    pub(crate) fn recount(&mut self) {
+        self.fulltext.recount_len();
+        self.attachment_text.recount_len();
+    }
+
+    /// The keyword index of the notes: stable document ids, interned terms,
+    /// each document's terms and length (for per-view statistics).
+    pub const fn fulltext(&self) -> &FullText {
+        &self.fulltext
+    }
+
+    /// The keyword index of attachment pages (`path#page=N`).
+    pub const fn attachment_fulltext(&self) -> &FullText {
+        &self.attachment_text
+    }
+
+    /// The text of a term id of the notes' keyword index (a record's
+    /// [`NoteRecord::terms`]).
+    pub fn term(&self, id: TermId) -> &str {
+        self.fulltext.term(id)
+    }
+
+    /// The id of a (folded, stemmed) term in the notes' keyword index.
+    pub fn term_id(&self, term: &str) -> Option<TermId> {
+        self.fulltext.term_id(term)
+    }
+
+    /// The document id of a note.
+    pub fn doc_id(&self, path: &NotePath) -> Option<DocId> {
+        self.fulltext.doc_id(path)
     }
 
     pub fn remove_no_refresh(&mut self, path: &NotePath) {
@@ -117,7 +271,15 @@ impl Index {
 
     /// The 1-based line holding byte `byte` of a note.
     pub fn line_of(&self, p: &NotePath, byte: usize) -> u32 {
-        let Some(starts) = self.line_starts.get(p) else { return 1 };
+        let owned;
+        let starts = if let Some(s) = self.line_starts.get(p) {
+            s
+        } else {
+            // Text not decoded yet: from the text, decoded on demand.
+            let Some(src) = self.source(p) else { return 1 };
+            owned = line_starts(src);
+            &owned
+        };
         let b = u32::try_from(byte).unwrap_or(u32::MAX);
         u32::try_from(starts.partition_point(|s| *s <= b)).unwrap_or(u32::MAX).max(1)
     }
@@ -140,8 +302,8 @@ impl Index {
     /// Build the link graph for the current records without touching the index, so a
     /// caller can do it under a read lock and `install_graph` it under a brief write.
     pub fn build_graph(&self) -> LinkGraph {
-        let sources = &self.sources;
-        LinkGraph::build(self.records.values(), &|p| sources.get(p).map(String::as_str), &self.link_config)
+        let (sources, pending) = (&self.sources, self.pending.as_ref());
+        LinkGraph::build(self.records.values(), &|p| source_in(sources, pending, p), &self.link_config)
     }
 
     /// Replace the link graph with one from `build_graph` on the same records.
@@ -184,8 +346,11 @@ impl Index {
         self.records.get(p)
     }
 
+    /// A note's text. Right after a start from the cache, before its text
+    /// is decoded in the background, the text is decoded here on demand
+    /// from the cache: always the text the note's record was made from.
     pub fn source(&self, p: &NotePath) -> Option<&str> {
-        self.sources.get(p).map(String::as_str)
+        source_in(&self.sources, self.pending.as_ref(), p)
     }
 
     /// Store the text of an attachment (replaces older text for that path)
@@ -511,6 +676,99 @@ mod tests {
         for _ in 0..5 {
             assert_eq!(raw(&mut notes.iter().rev()), first);
             assert_eq!(raw(&mut notes.iter()), first);
+        }
+    }
+
+    /// A note keeps its document id across edits; a removed note's id is
+    /// given again only after the batch that removed it
+    /// (`docs/design/0.14-index-startup.md` §3.2).
+    #[test]
+    fn document_ids_are_stable_and_reused_only_after_the_batch() {
+        let mut ix = Index::new();
+        let (a, b, c, d) = (NotePath::new("Alpha.md"), NotePath::new("Beta.md"), NotePath::new("Gamma.md"), NotePath::new("Delta.md"));
+        ix.upsert(a.clone(), "rope tree");
+        ix.upsert(b, "rope bread");
+        let id_a = ix.doc_id(&a).expect("indexed");
+        let names = |ix: &Index, id: DocId| {
+            let mut v: Vec<String> = ix.fulltext().doc_terms(id).iter().map(|t| ix.term(*t).to_string()).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(names(&ix, id_a), ["alpha", "rope", "tree"]);
+        assert_eq!(ix.fulltext().doc_len(id_a), Some(4.0), "two words, the name and the title");
+        ix.upsert(a.clone(), "rope cable");
+        assert_eq!(ix.doc_id(&a), Some(id_a), "an edit keeps the id");
+        assert_eq!(names(&ix, id_a), ["alpha", "cable", "rope"]);
+        // The record's content terms are ids of the same interner.
+        let rec = ix.get(&a).expect("indexed");
+        let content: Vec<&str> = rec.terms.iter().map(|(t, _)| ix.term(*t)).collect();
+        assert!(content.contains(&"cable") && content.contains(&"rope"), "{content:?}");
+        ix.remove_no_refresh(&a);
+        assert_eq!(ix.fulltext().doc_len(id_a), None);
+        assert!(ix.fulltext().doc_terms(id_a).is_empty());
+        ix.upsert(c.clone(), "rope");
+        assert_ne!(ix.doc_id(&c), Some(id_a), "not reused in the batch that removed it");
+        ix.end_batch();
+        ix.upsert(d.clone(), "rope");
+        assert_eq!(ix.doc_id(&d), Some(id_a), "reused after it");
+        assert_eq!(ix.fulltext().doc_count(), 3);
+        // A term no note uses any more is gone from search but keeps its id.
+        assert!(ix.idf("tree").is_none() && ix.term_id("tree").is_some());
+        assert!(ix.search("tree", 5).is_empty());
+    }
+
+    /// Frame rule 4 (`docs/design/0.14-architecture.md` §7): the keyword index
+    /// after random edits and removals answers exactly as one built from the
+    /// same notes.
+    #[test]
+    fn keyword_index_after_edits_equals_a_rebuild() {
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            usize::try_from(seed % n as u64).expect("small")
+        };
+        let words = ["rope", "ropes", "tree", "bread", "editor", "edit", "café", "cafe", "zebra", "undo", "#tag", "#tag/sub"];
+        let mut ix = Index::new();
+        let mut live: BTreeMap<NotePath, String> = BTreeMap::new();
+        for round in 0..300 {
+            let path = NotePath::new(format!("N{}.md", next(12)));
+            if next(4) == 0 {
+                ix.remove_no_refresh(&path);
+                live.remove(&path);
+            } else {
+                let text: Vec<&str> = (0..next(12)).map(|_| words[next(words.len())]).collect();
+                let text = text.join(" ");
+                ix.upsert(path.clone(), &text);
+                live.insert(path, text);
+            }
+            if next(3) == 0 {
+                ix.end_batch();
+            }
+            let mut fresh = Index::new();
+            for (p, t) in &live {
+                fresh.insert_record(NoteRecord::from_source(p.clone(), t), t.clone());
+            }
+            fresh.refresh();
+            for q in ["rope", "ro", "e", "cafe tree", "edit", "#tag", "zebra -undo", "\"rope tree\"", "undo ed"] {
+                let got: Vec<(String, u32, String)> =
+                    ix.search(q, 50).into_iter().map(|h| (h.path.to_string(), h.score.to_bits(), h.snippet)).collect();
+                let want: Vec<(String, u32, String)> =
+                    fresh.search(q, 50).into_iter().map(|h| (h.path.to_string(), h.score.to_bits(), h.snippet)).collect();
+                assert_eq!(got, want, "round {round}, query {q:?}");
+            }
+            for p in live.keys() {
+                let terms = |ix: &Index| {
+                    let rec = ix.get(p).expect("indexed");
+                    let mut v: Vec<(String, u32)> = rec.terms.iter().map(|(t, n)| (ix.term(*t).to_string(), *n)).collect();
+                    v.sort();
+                    v
+                };
+                assert_eq!(terms(&ix), terms(&fresh));
+            }
+            assert_eq!(ix.fulltext().doc_count(), live.len());
+            assert_eq!(ix.fulltext().total_len().to_bits(), fresh.fulltext().total_len().to_bits());
         }
     }
 

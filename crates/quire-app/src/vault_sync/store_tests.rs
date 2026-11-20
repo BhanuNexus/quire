@@ -387,6 +387,20 @@ fn an_overdue_verify_runs_whatever_the_last_pass_did() {
     assert!(!verify_due(true, day - 1, 0));
 }
 
+/// With the app workspace's manifest, sync's daily verify leaves the
+/// Markdown notes to the workspace's own (each note read once a day); a
+/// session of its own (`sync once`) reads every file it tracks.
+#[test]
+fn a_shared_manifest_leaves_the_notes_to_the_workspace_verify() {
+    let tracked = ["Plan.md", "Notes/Day.MD", "logo.png", "Journal/Day.md.qenc", ".quire/shared/vault.toml"];
+    let mut own: Vec<String> = verify_scope(tracked.iter().copied(), false).into_iter().collect();
+    own.sort();
+    assert_eq!(own, [".quire/shared/vault.toml", "Journal/Day.md.qenc", "Notes/Day.MD", "Plan.md", "logo.png"]);
+    let mut shared: Vec<String> = verify_scope(tracked.iter().copied(), true).into_iter().collect();
+    shared.sort();
+    assert_eq!(shared, [".quire/shared/vault.toml", "Journal/Day.md.qenc", "logo.png"]);
+}
+
 /// A device whose sync can't reach the other devices (a `sync once` cron
 /// offline): its verify counts once the vault was rehashed, so the next
 /// run doesn't read the whole vault again.

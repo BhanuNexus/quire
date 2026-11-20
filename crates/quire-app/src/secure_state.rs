@@ -1057,6 +1057,12 @@ fn folders_words(f: &[String]) -> String {
     f.iter().map(|f| format!("{f}/")).collect::<Vec<_>>().join(", ")
 }
 
+/// The person's last input (keys, mouse) or typing, if any yet.
+pub(crate) fn last_activity(ws: &Workspace) -> Option<Instant> {
+    let typed = ws.docs.iter().filter_map(Document::last_edit).max();
+    ws.features.secure.last_input.into_iter().chain(typed).max()
+}
+
 /// When unlocked folders lock for idleness: the later of the last input and
 /// the last typing, plus the setting.
 fn idle_deadline(ws: &Workspace) -> Option<Instant> {
@@ -1206,6 +1212,9 @@ pub(crate) fn forget_derived(ws: &mut Workspace, folder: &str) {
             ws.notify(NoticeLevel::Info, format!("Removed {n} agent suggestion{} about notes in {folder}/", if n == 1 { "" } else { "s" }));
         }
     }
+    // The index's startup cache: deleted now by its worker, which also
+    // keeps a write already scheduled from putting the text back.
+    ws.index.purge_cache();
     if let Some(root) = ws.vault_root() {
         clear_caches(root);
     }
@@ -1216,6 +1225,14 @@ pub fn clear_caches(root: &std::path::Path) {
     let cache = root.join(".quire").join("cache");
     for dir in ["served", "claims", "contradict", "pdf-text", "ocr"] {
         let _ = std::fs::remove_dir_all(cache.join(dir));
+    }
+    // The index's startup cache: every file but `writer.lock`, which another
+    // process may hold; deleting it would let a second process become a
+    // writer beside the first (`docs/formats/index-cache.md`).
+    for e in std::fs::read_dir(cache.join("index")).into_iter().flatten().flatten() {
+        if e.file_name() != "writer.lock" {
+            let _ = std::fs::remove_file(e.path());
+        }
     }
     for e in std::fs::read_dir(&cache).into_iter().flatten().flatten() {
         let name = e.file_name().to_string_lossy().into_owned();

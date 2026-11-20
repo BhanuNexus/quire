@@ -26,6 +26,8 @@ thread-priority.workspace = true
 serde.workspace = true
 # 0.13: `toml::Table` keeps `[links]` keys this version doesn't know.
 toml.workspace = true
+# 0.14: the startup cache deflates its segments (`docs/design/0.14-index-startup.md` §3.6).
+flate2.workspace = true
 
 [lints]
 workspace = true

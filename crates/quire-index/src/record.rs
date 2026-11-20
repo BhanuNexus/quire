@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use quire_markdown::{Extracted, Heading, Link, Stats, Task, Value, extract};
 use quire_vault::NotePath;
 
+use crate::terms::TermId;
 use crate::tokenize::FastHash;
 
 /// Everything derived from one note's source. Rebuildable at any time.
@@ -25,8 +26,13 @@ pub struct NoteRecord {
     pub properties: BTreeMap<String, Value>,
     /// Prose without markup, for snippets and summaries.
     pub plain: String,
-    /// Content term frequencies (stopwords removed) for intelligence features.
-    pub terms: HashMap<String, u32, FastHash>,
+    /// Content term frequencies (stopwords removed) for intelligence
+    /// features, sorted by id. The ids are the keyword index's
+    /// ([`crate::Index::term`] gives a term's text); empty until the record is
+    /// in an index (`docs/design/0.14-index-startup.md` §3.2).
+    pub terms: Vec<(TermId, u32)>,
+    /// The content terms as text, from parsing until the index interns them.
+    pub(crate) content: Vec<(String, u32)>,
     /// BM25 term weights and document length, precomputed off the index
     /// lock; emptied once the keyword index has them (`Index::insert_record`).
     pub(crate) search_terms: (Vec<(String, f32)>, f32),
@@ -42,6 +48,12 @@ impl NoteRecord {
         let mut terms: HashMap<String, u32, FastHash> = HashMap::default();
         let search_terms = crate::fulltext::note_terms(&ex.plain, &name, &title, &aliases, &ex.tags, Some(&mut terms));
         let properties = ex.front_matter.as_ref().map(|f| f.fields.clone()).unwrap_or_default();
+        let mut content: Vec<(String, u32)> = terms.into_iter().collect();
+        content.sort_unstable();
+        // In term order, not hash order: the same note gives the same record
+        // on every build (the cache's golden test hashes it).
+        let mut search_terms = search_terms;
+        search_terms.0.sort_unstable_by(|a, b| a.0.cmp(&b.0));
         Self {
             properties,
             search_terms,
@@ -55,7 +67,8 @@ impl NoteRecord {
             tasks: ex.tasks,
             stats: ex.stats,
             plain: ex.plain,
-            terms,
+            terms: Vec::new(),
+            content,
         }
     }
 

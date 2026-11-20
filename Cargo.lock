@@ -5999,6 +5999,7 @@ version = "0.13.3"
 dependencies = [
  "chrono",
  "crossbeam-channel",
+ "flate2",
  "nucleo-matcher",
  "quire-base",
  "quire-markdown",

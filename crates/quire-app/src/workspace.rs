@@ -152,6 +152,11 @@ pub struct Workspace {
     /// 0.12: a file opened on its own, outside any vault (`open_single_file`).
     single_file: Option<PathBuf>,
     pub(crate) index: IndexService,
+    /// The vault's manifest, which the index loads through (with its
+    /// startup cache) once the deferred start runs.
+    manifest: Option<quire_vault::changes::Manifest>,
+    /// The manifest's daily verify when idle (`crate::manifest_verify`).
+    pub(crate) verify: crate::manifest_verify::VerifyState,
     pub(crate) watcher: Option<VaultWatcher>,
     /// The watcher and the index load wait for `start_deferred`.
     pub(crate) deferred_start: bool,
@@ -204,6 +209,8 @@ impl Workspace {
             vault_root: None,
             single_file: None,
             index: IndexService::spawn(),
+            manifest: None,
+            verify: crate::manifest_verify::VerifyState::default(),
             watcher: None,
             deferred_start: false,
             docs: Vec::new(),
@@ -267,6 +274,10 @@ impl Workspace {
 
     /// Set up what 0.9 features need for a newly opened vault.
     fn vault_attached(&mut self, vault: Vault) {
+        // Another vault: its manifest comes with its deferred start, never
+        // the last vault's (the index and sync both take it from here).
+        self.manifest = None;
+        self.verify = crate::manifest_verify::VerifyState::default();
         let agent = quire_agent::AgentStore::open(&vault, self.device.clone(), Arc::new(quire_agent::SystemClock));
         self.jobs.set_context(Some(crate::jobs::JobCx {
             // No keys: background jobs never read a locked folder (0.11).
@@ -398,7 +409,13 @@ impl Workspace {
         // Notes opened before the watcher ran (the restored session) may have
         // changed on disk since they were read: take those changes in now.
         self.recheck_open_notes();
-        self.index.load(vault);
+        // 0.14: notes unchanged since the last start come from the index's
+        // startup cache; only changed ones are read
+        // (`docs/design/0.14-index-startup.md` §3.6).
+        let manifest = quire_vault::changes::Manifest::open(&vault);
+        self.manifest = Some(manifest.clone());
+        self.index.load_cached(vault, manifest);
+        crate::manifest_verify::opened(self, &root);
         // Only now: what sync writes from here on reaches the open notes.
         self.start_sync();
     }
@@ -424,10 +441,20 @@ impl Workspace {
         self.vault_attached(vault);
     }
 
+    /// The vault's manifest (`quire_vault::changes`), once the deferred
+    /// start opened it: the one table of what is on disk for everything in
+    /// this workspace that asks what changed (the index, and sync).
+    pub fn manifest(&self) -> Option<&quire_vault::changes::Manifest> {
+        self.manifest.as_ref()
+    }
+
     /// Re-read every note (after a bulk change such as an import).
     pub fn reload_index(&self) {
         if let Some(v) = self.vault.clone() {
-            self.index.load(v);
+            match self.manifest.clone() {
+                Some(m) => self.index.load_cached(v, m),
+                None => self.index.load(v),
+            }
         }
     }
 
@@ -796,7 +823,17 @@ impl Workspace {
                 // Templates stay out of the index (and the Files tab), as at
                 // start; so do files shown as text (a canvas under review).
                 if path.is_markdown() && !vault.is_template(&path) {
-                    self.index.upsert(path, text.to_string());
+                    match &self.manifest {
+                        // The manifest first, then the index with that hash
+                        // (`docs/design/0.14-index-startup.md` §3.6): the new
+                        // file is listed before the index sees it. A plain
+                        // note's bytes as stored are its text.
+                        Some(m) if vault.locked_folder(&path).is_none() => {
+                            let hash = m.note_written(&path, text.as_bytes());
+                            self.index.upsert_hashed(path, text.to_string(), hash);
+                        }
+                        _ => self.index.upsert(path, text.to_string()),
+                    }
                 }
                 self.sync_nudge();
                 true
@@ -914,6 +951,7 @@ impl Workspace {
         let pause = Duration::from_millis(self.settings.jobs.pause_on_typing_ms);
         self.jobs.set_user_active(self.docs.iter().filter_map(Document::last_edit).any(|t| now.saturating_duration_since(t) < pause));
         changed |= crate::features::tick(self, now);
+        crate::manifest_verify::tick(self, now);
         changed
     }
 
@@ -928,7 +966,8 @@ impl Workspace {
             .min();
         let listing = self.file_list_pending().then(|| Instant::now() + Duration::from_millis(50));
         let setup = self.sync_setup_running().map(|_| Instant::now() + Duration::from_millis(100));
-        autosave.into_iter().chain(listing).chain(setup).chain(crate::features::next_deadline(self)).min()
+        let verify = crate::manifest_verify::next_deadline(self);
+        autosave.into_iter().chain(listing).chain(setup).chain(verify).chain(crate::features::next_deadline(self)).min()
     }
 
     fn process_vault_events(&mut self) -> bool {
@@ -2135,6 +2174,27 @@ mod tests {
         w.open_link("Brand New", None).unwrap();
         assert_eq!(w.active_doc().unwrap().path.as_ref().unwrap().as_str(), "Brand New.md");
         assert!(w.active_doc().unwrap().text().starts_with("# Brand New"));
+    }
+
+    /// A save tells the vault manifest first, then the index with that hash
+    /// (`docs/design/0.14-index-startup.md` §3.6): the row is the saved bytes
+    /// at once, with no scan.
+    #[test]
+    fn a_save_tells_the_manifest_then_the_index() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Ideas.md"), "# Ideas\nfirst\n").unwrap();
+        let mut w = Workspace::new(Settings::default());
+        w.open_vault(dir.path()).unwrap();
+        w.index().flush();
+        w.open_note(&NotePath::new("Ideas.md")).unwrap();
+        type_at_end(&mut w, "savedword");
+        let id = w.active_doc().unwrap().id;
+        assert!(w.save(id));
+        let bytes = std::fs::read(dir.path().join("Ideas.md")).unwrap();
+        let row = w.manifest().expect("opened").get(&NotePath::new("Ideas.md")).expect("listed");
+        assert_eq!(row.hash, quire_vault::changes::FileHash::of(&bytes));
+        w.index().flush();
+        assert_eq!(w.index().read().search("savedword", 5).len(), 1);
     }
 
     #[test]
