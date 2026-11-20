@@ -205,7 +205,7 @@ impl ToolHost {
             return ToolOutput::error("denied_by_policy", "this tool isn't available in the agent panel");
         }
         self.refresh();
-        let cx = ToolCx { vault: &self.vault, index: &self.index, agent: &self.agent, actor, cancel, allow_write: true };
+        let cx = ToolCx::new(&self.vault, &self.index, &self.agent, actor, cancel, true);
         let ext = CallExt::basic(&self.served, true);
         tool.call_with(&cx, &ext, args)
     }

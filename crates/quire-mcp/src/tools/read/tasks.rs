@@ -44,11 +44,12 @@ fn tasks(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let tag = opt(a, "tag");
     let limit = int(a, "limit", 200, 1, 1000);
     let ix = cx.index.read();
+    let vis = cx.visibility_in(&ix);
     let mut rows = Vec::new();
     let mut text = String::new();
     // In path order, so `limit` and the examples are the same on every call.
-    let mut notes: Vec<_> = ix.records().filter(|r| visible(cx, &r.path)).collect();
-    notes.sort_by(|x, y| x.path.cmp(&y.path));
+    let mut notes: Vec<_> = ix.records().filter(|r| vis.allows_with_tags(&r.path, &r.tags)).collect();
+    notes.sort_unstable_by(|x, y| x.path.cmp(&y.path));
     for r in notes {
         if only_path.as_ref().is_some_and(|p| !r.path.as_str().eq_ignore_ascii_case(p) && !r.path.without_ext().eq_ignore_ascii_case(p)) {
             continue;
@@ -56,7 +57,6 @@ fn tasks(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         if tag.as_ref().is_some_and(|t| !r.has_tag(t)) {
             continue;
         }
-        let src = ix.source(&r.path).unwrap_or_default();
         for t in &r.tasks {
             if (t.done && !want_done) || (!t.done && !want_open) {
                 continue;
@@ -70,7 +70,8 @@ fn tasks(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
             if rows.len() >= limit {
                 break;
             }
-            let line = src[..t.offset.min(src.len())].matches('\n').count() + 1;
+            // Only for the rows returned: the index keeps each note's line starts.
+            let line = ix.line_of(&r.path, t.offset);
             writeln!(
                 text,
                 "- [{}] {} ({}:{line}{})",

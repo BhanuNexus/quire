@@ -6,13 +6,16 @@ Depends on: quire-agent, quire-app, quire-base, quire-import. Used by: quire-cli
 Edition: both (P5). HTTP servers (`axum`, `tokio`) are allowed here by `deny.toml`.
 
 ## Invariants
-- A tool that returns a path, title, count, snippet or link filters with `common::visible` (it calls
-  `AgentStore::effective_mode`, so deny zones, hidden folders, links out of the vault and locked folders are all invisible).
-  A count or a title from a denied note is a leak. A tool that takes a note by name resolves it with `common::existing`.
+- A tool that returns a path, title, count, snippet or link filters what it takes from the index with `ToolCx::visibility`
+  (`quire_agent::Visibility`: the store's rules, locked folders checked once per call, no disk read per note) and any other
+  path (one an agent named, the ledger's, a proposal's) with `common::visible` (`AgentStore::effective_mode`, links followed),
+  so deny zones, hidden folders, links out of the vault and locked folders are all invisible. A count or a title from a denied
+  note is a leak. A tool that takes a note by name resolves it with `common::existing`. Inside a closure that runs under the
+  index's read lock, use a `Visibility` taken before (`ToolCx::visibility_in`).
   A ranked list ranks only visible notes (`retrieve_where`, the `*_where` searches of quire-index), never filters the top k;
   a `where` argument is parsed with `views::parse_where` (one line) and run with `views::run_over` and `visible`.
   [test] `tests/visibility.rs` calls every read tool of `ToolRegistry::standard()` against a vault with hidden notes;
-  also `tests/security.rs`, `tests/connections.rs`. Write tools and resources are [review only]. Known gap: IDF and LSA
+  also `tests/security.rs`, `tests/connections.rs`; `tests/listing_cost.rs` (no storage call per note). Write tools and resources are [review only]. Known gap: IDF and LSA
   statistics are built from every note, hidden ones too (`docs/design/0.14-health-gates.md`).
 - A write goes through `AgentStore::submit` as the caller's `Actor`, so policy decides between writing and proposing.
   Capture saves images through `AgentStore::add_attachment` for the same reason (`capture.rs` header). [review only]

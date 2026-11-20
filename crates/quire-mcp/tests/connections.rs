@@ -440,3 +440,117 @@ fn siblings_under_a_hidden_parent_are_not_reported() {
     assert_eq!(cherry["next"], "Date.md");
     assert!(!replies.iter().map(Value::to_string).collect::<String>().contains("zqx"));
 }
+
+/// A server with no watcher: nothing tells it about changes on the disk, as for a lock made by
+/// another process before the watcher's event arrives.
+fn server_without_watcher(root: &std::path::Path) -> Server {
+    let state = root.parent().unwrap().join("state");
+    let vault = Vault::open_local(root).unwrap();
+    let store = AgentStore::open(&vault, device(), FixedClock::new(1_793_577_600_000));
+    store.set_state_dir(Some(state.clone()));
+    let shown = store.policy_state().file_hash();
+    store.approve_policy(shown.as_ref()).unwrap();
+    let cfg = ServerConfig { client_key: Some("probe".into()), device: Some(device()), state_dir: Some(state), ..ServerConfig::default() };
+    let srv = Server::with_config(vault, None, cfg);
+    srv.index().flush();
+    srv
+}
+
+/// A note whose tag, property, task and words all carry `marker`.
+fn marked(marker: &str) -> String {
+    format!("---\ntags: [{marker}tag]\n{marker}prop: x\n---\n# {marker} title\n\n{marker} words. #shared\n\n- [ ] {marker}task\n")
+}
+
+/// The listing tools, as `docs/design/0.14-agent-tools.md` §6 names them for the lock test.
+fn listings() -> Vec<(String, Value)> {
+    vec![
+        call("list", &json!({})),
+        call("tags", &json!({})),
+        call("tasks", &json!({})),
+        call("properties", &json!({})),
+        call("query_view", &json!({"spec": "group: status"})),
+        call("vault_info", &json!({})),
+    ]
+}
+
+/// Review B1 (`docs/design/0.14-agent-tools.md` §3.5): a folder another process locks is hidden
+/// from a running server's next call, with no rebuild of its index and no watcher event; a folder
+/// unlocked for good shows again; a nested folder hides alone.
+#[test]
+fn a_folder_locked_by_another_handle_hides_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("vault");
+    std::fs::create_dir_all(root.join(".quire/shared")).unwrap();
+    std::fs::write(root.join(".quire/shared/agent-policy.toml"), "format = 1\ndefault = \"read\"\n").unwrap();
+    for (path, marker) in [("Work/Plan.md", "workzq"), ("Work/Deep/Inner.md", "innerzq"), ("Projects/Deep/Secret.md", "deepzq")] {
+        std::fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+        std::fs::write(root.join(path), marked(marker)).unwrap();
+    }
+    std::fs::write(root.join("Projects/Open.md"), marked("openmark")).unwrap();
+    std::fs::write(root.join("Top.md"), marked("topmark")).unwrap();
+    let srv = server_without_watcher(&root);
+    let notes = |replies: &[Value]| replies.iter().find(|r| r["id"] == 6).unwrap()["result"]["structuredContent"]["notes"].clone();
+    let before = run(&srv, &listings());
+    let all: String = before.iter().map(Value::to_string).collect();
+    for m in ["workzq", "innerzq", "deepzq", "openmark", "topmark"] {
+        assert!(all.contains(m), "{m} is listed before the lock: {all}");
+    }
+    assert_eq!(notes(&before), 5);
+
+    // Another handle on the same folder, as another process would hold.
+    let other = Vault::open_local(&root).unwrap();
+    lock_folder(&other, "Work", Some("pass phrase"), Kdf::TEST, 1).unwrap();
+    let locked = run(&srv, &listings());
+    let all: String = locked.iter().map(Value::to_string).collect();
+    assert!(!all.contains("workzq") && !all.contains("innerzq") && !all.contains("Work/"), "the locked folder leaks: {all}");
+    assert!(all.contains("deepzq") && all.contains("openmark") && all.contains("topmark"), "{all}");
+    assert_eq!(notes(&locked), 3);
+
+    quire_app::vault::lock::unlock_folder_permanently(&other, "Work", Some("pass phrase")).unwrap();
+    let unlocked = run(&srv, &listings());
+    let all: String = unlocked.iter().map(Value::to_string).collect();
+    assert!(all.contains("workzq") && all.contains("innerzq"), "unlocked for good, it shows again: {all}");
+    assert_eq!(notes(&unlocked), 5);
+
+    lock_folder(&other, "Projects/Deep", Some("pass phrase"), Kdf::TEST, 1).unwrap();
+    let nested = run(&srv, &listings());
+    let all: String = nested.iter().map(Value::to_string).collect();
+    assert!(!all.contains("deepzq") && !all.contains("Projects/Deep"), "the nested locked folder leaks: {all}");
+    assert!(all.contains("openmark") && all.contains("workzq"), "the folder around it stays: {all}");
+    assert_eq!(notes(&nested), 4);
+}
+
+/// Review B2 (`docs/design/0.14-agent-tools.md` §3.5): a note reachable only through a symlinked
+/// folder never reaches a listing, even when its path got into the index (the vault walk skips it;
+/// this upserts it directly). Wherever the link leads, into a deny zone or to visible notes.
+#[cfg(unix)]
+#[test]
+fn a_note_below_a_symlinked_folder_is_never_listed() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("vault");
+    std::fs::create_dir_all(root.join(".quire/shared")).unwrap();
+    std::fs::write(
+        root.join(".quire/shared/agent-policy.toml"),
+        "format = 1\ndefault = \"read\"\n[[zone]]\npath = \"Private/\"\nrole = \"private\"\nmode = \"deny\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("Private")).unwrap();
+    std::fs::create_dir_all(root.join("Notes")).unwrap();
+    std::fs::write(root.join("Private/diary.md"), marked("privatezq")).unwrap();
+    std::fs::write(root.join("Notes/a.md"), marked("notesmark")).unwrap();
+    std::os::unix::fs::symlink(root.join("Private"), root.join("Shared")).unwrap();
+    std::os::unix::fs::symlink(root.join("Notes"), root.join("Alias")).unwrap();
+    let srv = server_without_watcher(&root);
+    srv.index().upsert("Shared/diary.md".into(), marked("linkedzq"));
+    srv.index().upsert("Alias/a.md".into(), marked("aliaszq"));
+    srv.index().flush();
+    let mut calls = listings();
+    calls.push(call("search", &json!({"query": "words"})));
+    calls.push(call("links", &json!({"path": "Notes/a.md"})));
+    let replies = run(&srv, &calls);
+    let all: String = replies.iter().map(Value::to_string).collect();
+    assert!(all.contains("notesmark"), "{all}");
+    for leak in ["privatezq", "linkedzq", "aliaszq", "Shared/", "Alias/"] {
+        assert!(!all.contains(leak), "a note below a symlinked folder is listed ({leak}): {all}");
+    }
+}

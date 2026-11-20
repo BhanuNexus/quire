@@ -7,9 +7,10 @@
 //! typed link through the normal write path: applied in agent zones, a
 //! suggestion the person reviews elsewhere).
 //!
-//! Every note these tools name passes the policy guard (`visible`): a note
-//! the client may not see is never listed, and walks never pass through it,
-//! so a hidden note can't show up as a gap in a chain either.
+//! The note an agent names passes the policy guard (`existing`); every note
+//! these tools reach from it passes the caller's `Visibility` (`shown`): a
+//! note the client may not see is never listed, and walks never pass through
+//! it, so a hidden note can't show up as a gap in a chain either.
 
 use std::collections::{HashSet, VecDeque};
 use std::fmt::Write as _;
@@ -18,7 +19,7 @@ use quire_app::index::{Hier, Index, Relations};
 use quire_app::vault::NotePath;
 use serde_json::{Value, json};
 
-use super::common::{existing, int, list, note_link, outcome_schema, req, s, tool, visible};
+use super::common::{existing, int, list, note_link, outcome_schema, req, s, tool};
 use super::{Access, Annotations, CallExt, Tool, ToolCx, ToolOutput};
 use crate::edit::EditOp;
 
@@ -112,11 +113,13 @@ fn links(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let types = wanted(a);
     let keep = |t: Option<&str>| types.as_ref().is_none_or(|w| w.contains(t.unwrap_or("untyped")));
     let ix = cx.index.read();
+    // Made now: `shown` runs under the index's read lock below.
+    cx.visibility_in(&ix);
     let rel = ix.relations();
     let mut rows: Vec<Value> = Vec::new();
     let mut seen: HashSet<(bool, Option<String>, NotePath)> = HashSet::new();
     let mut push = |rows: &mut Vec<Value>, incoming: bool, field: Option<&str>, hier: Option<Hier>, implied: bool, other: &NotePath| {
-        if !keep(field) || !visible(cx, other) || !seen.insert((incoming, field.map(str::to_string), other.clone())) {
+        if !keep(field) || !shown(cx, other) || !seen.insert((incoming, field.map(str::to_string), other.clone())) {
             return;
         }
         rows.push(json!({
@@ -124,7 +127,7 @@ fn links(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
             "implied": implied, "path": other, "title": title(&ix, other)}));
     };
     if want_out {
-        for e in rel.of(&p).iter().filter(|e| e.visible(&|q| visible(cx, q))) {
+        for e in rel.of(&p).iter().filter(|e| e.visible(&|q| shown(cx, q))) {
             push(&mut rows, false, Some(&e.field), e.hier, e.implied, &e.to);
         }
         // Plain links out.
@@ -145,7 +148,7 @@ fn links(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     rows.truncate(limit);
     // Types in notes the caller may see (a hidden note's field names stay hidden too).
     let mut all_types: Vec<String> = Vec::new();
-    for r in ix.records().filter(|r| visible(cx, &r.path)) {
+    for r in ix.records().filter(|r| cx.visibility_in(&ix).allows_with_tags(&r.path, &r.tags)) {
         for f in r.links.iter().filter_map(|l| l.field.as_ref()) {
             if !all_types.contains(f) {
                 all_types.push(f.clone());
@@ -165,6 +168,12 @@ fn links(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         .with_links(notes)
 }
 
+/// Whether the caller may see `q`, a note the index's links reached: the
+/// call's [`ToolCx::visibility`], made before the index was read for the walk.
+fn shown(cx: &ToolCx<'_>, q: &NotePath) -> bool {
+    cx.visibility().allows(q)
+}
+
 /// Notes reached from `start` along `h`, through visible notes only.
 fn walk(cx: &ToolCx<'_>, ix: &Index, start: &NotePath, h: Hier, depth: usize, limit: usize) -> (Vec<Value>, bool) {
     let rel = ix.relations();
@@ -176,8 +185,8 @@ fn walk(cx: &ToolCx<'_>, ix: &Index, start: &NotePath, h: Hier, depth: usize, li
         if d >= depth {
             continue;
         }
-        for n in rel.related_where(&p, h, &|q| visible(cx, q)) {
-            if !visible(cx, n) || !seen.insert(n.clone()) {
+        for n in rel.related_where(&p, h, &|q| shown(cx, q)) {
+            if !shown(cx, n) || !seen.insert(n.clone()) {
                 continue;
             }
             if out.len() >= limit {
@@ -195,12 +204,12 @@ fn walk(cx: &ToolCx<'_>, ix: &Index, start: &NotePath, h: Hier, depth: usize, li
 /// other children of its *visible* parents. Two notes that share only a parent the
 /// caller can't see aren't reported as siblings (that would reveal the parent).
 fn visible_siblings(cx: &ToolCx<'_>, rel: &Relations, p: &NotePath) -> Vec<NotePath> {
-    let mut v: Vec<NotePath> = rel.related_where(p, Hier::Same, &|q| visible(cx, q)).into_iter().cloned().collect();
-    for parent in rel.related_where(p, Hier::Up, &|q| visible(cx, q)) {
-        let mut kids: Vec<&NotePath> = rel.related_where(parent, Hier::Down, &|q| visible(cx, q));
+    let mut v: Vec<NotePath> = rel.related_where(p, Hier::Same, &|q| shown(cx, q)).into_iter().cloned().collect();
+    for parent in rel.related_where(p, Hier::Up, &|q| shown(cx, q)) {
+        let mut kids: Vec<&NotePath> = rel.related_where(parent, Hier::Down, &|q| shown(cx, q));
         kids.sort();
         for k in kids {
-            if k != p && visible(cx, k) && !v.contains(k) {
+            if k != p && shown(cx, k) && !v.contains(k) {
                 v.push(k.clone());
             }
         }
@@ -212,11 +221,11 @@ fn visible_siblings(cx: &ToolCx<'_>, rel: &Relations, p: &NotePath) -> Vec<NoteP
 /// by name under its first visible parent (hidden notes aren't counted).
 fn visible_step(cx: &ToolCx<'_>, rel: &Relations, p: &NotePath, forward: bool) -> Option<NotePath> {
     let h = if forward { Hier::Next } else { Hier::Prev };
-    if let Some(n) = rel.related_where(p, h, &|q| visible(cx, q)).first() {
-        return Some((*n).clone()).filter(|q| visible(cx, q));
+    if let Some(n) = rel.related_where(p, h, &|q| shown(cx, q)).first() {
+        return Some((*n).clone()).filter(|q| shown(cx, q));
     }
-    let parent = *rel.related_where(p, Hier::Up, &|q| visible(cx, q)).first()?;
-    let mut kids: Vec<&NotePath> = rel.related_where(parent, Hier::Down, &|q| visible(cx, q));
+    let parent = *rel.related_where(p, Hier::Up, &|q| shown(cx, q)).first()?;
+    let mut kids: Vec<&NotePath> = rel.related_where(parent, Hier::Down, &|q| shown(cx, q));
     kids.sort_by_key(|k| k.stem().to_lowercase());
     let i = kids.iter().position(|k| *k == p)?;
     let j = if forward { i + 1 } else { i.checked_sub(1)? };
@@ -233,6 +242,8 @@ fn hierarchy(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let include = list(a, "include");
     let want = |k: &str| include.is_empty() || include.iter().any(|i| i == k);
     let ix = cx.index.read();
+    // Made now: `shown` runs under the index's read lock below.
+    cx.visibility_in(&ix);
     let rel = ix.relations();
     let mut st = json!({"path": p, "title": title(&ix, &p)});
     let mut truncated = false;
@@ -260,7 +271,7 @@ fn hierarchy(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     }
     if want("trails") {
         // Only paths every note of which the caller may see.
-        let trails: Vec<Vec<NotePath>> = rel.trails_where(&p, 8, 32, &|q| visible(cx, q));
+        let trails: Vec<Vec<NotePath>> = rel.trails_where(&p, 8, 32, &|q| shown(cx, q));
         for t in &trails {
             writeln!(text, "trail: {}", t.iter().map(NotePath::stem).collect::<Vec<_>>().join(" › ")).expect("a String takes any text");
         }

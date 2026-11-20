@@ -4,7 +4,7 @@
 //!
 //! Its definition (name, schema, description) and its handler sit together.
 
-use super::{Access, Annotations, BTreeMap, CallExt, Tool, ToolCx, ToolOutput, Value, json, s, tool, visible};
+use super::{Access, Annotations, BTreeMap, CallExt, Tool, ToolCx, ToolOutput, Value, json, s, tool};
 
 pub(super) fn register() -> Box<dyn Tool> {
     let r = Annotations::READ;
@@ -23,8 +23,9 @@ pub(super) fn register() -> Box<dyn Tool> {
 fn tags(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let prefix = s(a, "prefix").trim_start_matches('#').to_lowercase();
     let ix = cx.index.read();
+    let vis = cx.visibility_in(&ix);
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-    for r in ix.records().filter(|r| visible(cx, &r.path)) {
+    for r in ix.records().filter(|r| vis.allows_with_tags(&r.path, &r.tags)) {
         let mut mine: Vec<&String> = r.tags.iter().collect();
         mine.sort();
         mine.dedup();

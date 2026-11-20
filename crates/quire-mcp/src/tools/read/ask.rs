@@ -39,8 +39,9 @@ fn ask(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let budget = bounds::max_tokens(a, bounds::DEFAULT_MAX_TOKENS);
     let sem = cx.index.semantic();
     let ix = cx.index.read();
+    let vis = cx.visibility_in(&ix);
     // Only notes the caller may see compete for places and numbers.
-    let sources = retrieve_where(&ix, sem.as_deref(), &q, k, &|p| visible(cx, p));
+    let sources = retrieve_where(&ix, sem.as_deref(), &q, k, &|p| vis.allows(p));
     let mut citations = Vec::new();
     let mut passages = String::new();
     let mut any_untrusted = false;

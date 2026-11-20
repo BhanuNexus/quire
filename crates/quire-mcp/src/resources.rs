@@ -213,14 +213,8 @@ pub fn read(cx: &ReadCx<'_>, uri: &str) -> Result<Value, ReadError> {
             })
         },
     );
-    let tool_cx = crate::tools::ToolCx {
-        vault: cx.vault,
-        index: cx.index,
-        agent: cx.agent,
-        actor: cx.actor,
-        cancel: &quire_app::intel::chat::CancelFlag::new(),
-        allow_write: false,
-    };
+    let cancel = quire_app::intel::chat::CancelFlag::new();
+    let tool_cx = crate::tools::ToolCx::new(cx.vault, cx.index, cx.agent, cx.actor, &cancel, false);
     let (untrusted, origin) = crate::tools::common::trust(&tool_cx, &path, &full);
     let text = if untrusted { fence_untrusted(&path, origin.as_deref(), &body) } else { body };
     let mut meta =

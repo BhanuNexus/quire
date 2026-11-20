@@ -8,8 +8,8 @@
 //! call that precedes a `canonicalize`) for a vault of 2,000 notes in 40 folders. A call may make
 //! none per note, at most two per distinct folder (the locked-folder check: its key file and its
 //! unlocking file) and at most eight more in all (policy file, ledger). Tools over that budget
-//! today are listed in [`OVER_BUDGET`] with the step that fixes them; the test fails if the list
-//! is wrong in either direction.
+//! are listed in [`OVER_BUDGET`] with the step that fixes them (none now); the test fails if the
+//! list is wrong in either direction.
 #![allow(
     clippy::unwrap_used,
     clippy::panic,
@@ -47,16 +47,9 @@ fn calls() -> Vec<(&'static str, Value)> {
     ]
 }
 
-/// The tools that read the disk per note today, by name, and the step that stops it.
-const OVER_BUDGET: &[(&str, &str)] = &[
-    ("list", "step 2: the listing tools move to Visibility, one lock check per folder"),
-    ("tags", "step 2: the listing tools move to Visibility, one lock check per folder"),
-    ("properties", "step 2: the listing tools move to Visibility, one lock check per folder"),
-    ("tasks", "step 2: the listing tools move to Visibility, one lock check per folder"),
-    ("links", "step 2: the listing tools move to Visibility, one lock check per folder"),
-    ("vault_info", "step 2: the listing tools move to Visibility, one lock check per folder"),
-    ("query_view", "step 2: the listing tools move to Visibility, one lock check per folder"),
-];
+/// The tools that read the disk per note today, by name, and the step that stops it. Empty since
+/// the listing tools moved to `Visibility`; a tool that reads per note again fails the test.
+const OVER_BUDGET: &[(&str, &str)] = &[];
 
 /// One storage call: which, and on what.
 type Log = Mutex<Vec<(&'static str, String)>>;
@@ -150,23 +143,35 @@ impl Storage for Counting {
 
 /// What a call's storage traffic comes to: calls per note, the most calls on one folder's lock
 /// files, and every other call.
+///
+/// The note a call names (`links`' `path`) is the call's own, not a note of the listing: the
+/// guard's calls on it (its `exists`, and the lock check of its folders, up to [`PER_FOLDER`] each)
+/// count with the others.
 struct Cost {
     per_note: usize,
     per_folder: usize,
     other: usize,
 }
 
-fn cost(log: &[(&'static str, String)]) -> Cost {
+fn cost(log: &[(&'static str, String)], named: Option<&str>) -> Cost {
     let (mut per_note, mut other) = (0, 0);
     let mut folders: BTreeMap<&str, usize> = BTreeMap::new();
     for (_, path) in log {
         let name = path.rsplit('/').next().unwrap_or(path);
-        if path.is_empty() || path.starts_with(".quire/") || name == "AGENTS.md" || name == "CLAUDE.md" {
+        if path.is_empty() || path.starts_with(".quire/") || name == "AGENTS.md" || name == "CLAUDE.md" || Some(path.as_str()) == named {
             other += 1;
         } else if name.starts_with("quire-lock") {
             *folders.entry(path.rsplit_once('/').map_or("", |(f, _)| f)).or_default() += 1;
         } else {
             per_note += 1;
+        }
+    }
+    let named_folder = named.and_then(|n| n.rsplit_once('/')).map(|(f, _)| f);
+    for (folder, n) in &mut folders {
+        if named_folder.is_some_and(|nf| nf == *folder || nf.starts_with(&format!("{folder}/"))) {
+            let own = (*n).min(PER_FOLDER);
+            *n -= own;
+            other += own;
         }
     }
     Cost { per_note, per_folder: folders.values().copied().max().unwrap_or(0), other }
@@ -221,7 +226,7 @@ fn listings_make_no_storage_call_per_note_or_are_known_gaps() {
                 }
                 eprintln!("{tool}: {kinds:?}");
             }
-            let c = cost(&log);
+            let c = cost(&log, args["path"].as_str());
             worst = Cost {
                 per_note: worst.per_note.max(c.per_note),
                 per_folder: worst.per_folder.max(c.per_folder),

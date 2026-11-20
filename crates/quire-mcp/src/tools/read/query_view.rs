@@ -29,8 +29,9 @@ fn query_view(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     };
     let max = int(a, "max_rows", 100, 1, 1000);
     let ix = cx.index.read();
+    let vis = cx.visibility_in(&ix);
     // Only notes this client may see count: rows, groups and the total alike.
-    let res = views::run_over(&spec, &ix, &chrono::Local::now().format("%Y-%m-%d").to_string(), None, &|p| visible(cx, p));
+    let res = views::run_over(&spec, &ix, &chrono::Local::now().format("%Y-%m-%d").to_string(), None, &|p| vis.allows(p));
     let mut columns = vec!["path".to_string()];
     columns.extend(spec.fields.iter().cloned());
     let rows: Vec<_> = res.rows.iter().take(max).collect();

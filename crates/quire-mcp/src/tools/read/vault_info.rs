@@ -4,6 +4,8 @@
 //!
 //! Its definition (name, schema, description) and its handler sit together.
 
+use std::sync::Arc;
+
 use super::*;
 
 pub(super) fn register() -> Box<dyn Tool> {
@@ -26,14 +28,17 @@ pub(super) fn register() -> Box<dyn Tool> {
 
 fn vault_info(cx: &ToolCx<'_>, ext: &CallExt<'_>, _a: &Value) -> ToolOutput {
     let ix = cx.index.read();
-    let notes = ix.paths().iter().filter(|p| visible(cx, p)).count();
+    let vis = Arc::clone(cx.visibility_in(&ix));
+    let notes = ix.records().filter(|r| vis.allows_with_tags(&r.path, &r.tags)).count();
     drop(ix);
-    let attachments = cx.vault.storage().list().map_or(0, |all| all.iter().filter(|p| !p.is_markdown() && visible(cx, p)).count());
+    // One walk of the vault per call (`vault_info` is called once a session); the listing holds
+    // regular files only, so the rules decide without a disk read per file.
+    let attachments = cx.vault.storage().list().map_or(0, |all| all.iter().filter(|p| !p.is_markdown() && vis.allows(p)).count());
     let policy = cx.agent.policy();
+    // The same rules as the store's, with this call's folder checks: no disk read per zone.
     let probe = |prefix: &str| {
         let p = NotePath::new(format!("{}quire-probe.md", prefix.trim_start_matches("./")));
-        let m = cx.agent.effective_mode(cx.actor, &p, OpKind::Edit);
-        mode_name(m, cx.agent.effective_mode(cx.actor, &p, OpKind::Create))
+        mode_name(vis.mode(&p, OpKind::Edit), vis.mode(&p, OpKind::Create))
     };
     let mut zones: Vec<Value> = policy
         .zones

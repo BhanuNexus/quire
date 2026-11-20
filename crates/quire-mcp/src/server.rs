@@ -818,7 +818,7 @@ impl Core {
         let cap = self.cap(conn);
         let store = self.store(&actor, cap);
         let grant = self.grant(conn);
-        let cx = ToolCx { vault: &self.vault, index: &self.index, agent: &store, actor: &actor, cancel, allow_write: grant.write };
+        let cx = ToolCx::new(&self.vault, &self.index, &store, &actor, cancel, grant.write);
         let ext = CallExt {
             served: &self.served,
             grant,

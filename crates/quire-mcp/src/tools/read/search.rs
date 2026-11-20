@@ -74,8 +74,10 @@ fn search(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         Start::At(n) => n,
         Start::Stale => return stale(&fingerprint),
     };
-    // Only notes the caller may see compete for the `limit` places.
-    let mut hits = cx.index.search_sections_where(&query, &filters, limit, &|p| visible(cx, p));
+    // Only notes the caller may see compete for the `limit` places. (Made before the
+    // search: the closure runs under the index's read lock.)
+    let vis = std::sync::Arc::clone(cx.visibility());
+    let mut hits = cx.index.search_sections_where(&query, &filters, limit, &|p| vis.allows(p));
     // A second guard: whatever the index returns, nothing hidden leaves.
     hits.retain(|h| visible(cx, &h.path));
     let ix = cx.index.read();

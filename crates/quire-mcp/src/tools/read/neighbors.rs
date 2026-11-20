@@ -48,6 +48,7 @@ fn neighbors(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     };
     let keep = |field: Option<&String>| types.as_ref().is_none_or(|t| t.contains(field.map_or("untyped", String::as_str)));
     let ix = cx.index.read();
+    let vis = cx.visibility_in(&ix);
     let mut seen: HashMap<NotePath, usize> = HashMap::from([(start.clone(), 0)]);
     let mut queue = VecDeque::from([start.clone()]);
     let mut edges: Vec<Value> = Vec::new();
@@ -70,7 +71,7 @@ fn neighbors(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
             }
         }
         for (n, edge) in next {
-            if !visible(cx, &n) {
+            if !vis.allows(&n) {
                 continue;
             }
             edges.push(edge);
