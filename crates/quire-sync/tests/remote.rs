@@ -523,3 +523,25 @@ print(k['AccessKeyId']); print(k['SecretAccessKey'])\n"
     let outside = S3Store::new(S3Config { prefix: "elsewhere".into(), ..cfg.clone() }, creds.clone()).unwrap();
     (Arc::new(S3Store::new(cfg, creds).unwrap()), outside)
 }
+
+/// A first sync of N notes to S3 or WebDAV: the mirror takes them as
+/// batches (one log write), the storage one object per revision, so at
+/// most N + 10 `PUT`s; and the cursor never moves past what a pull
+/// handed out (`docs/design/0.14-sync-speed.md` §3.4).
+#[test]
+fn a_first_sync_puts_one_object_per_note_and_keeps_its_cursor() {
+    for (srv, webdav) in [(s3_server(), false), (dav_server(), true)] {
+        let store = if webdav { dav(&srv) } else { s3(&srv) };
+        let (_, mut devs) = devices(&store, 2);
+        for i in 0..60 {
+            devs[0].local.0.insert(format!("Note {i}.md"), format!("note {i}\n"));
+        }
+        let puts = srv.count("PUT");
+        devs[0].pass().unwrap();
+        let cursor = devs[0].engine.state.cursor;
+        assert!(srv.count("PUT") - puts <= 60 + 10, "{} PUTs", srv.count("PUT") - puts);
+        assert!(!quire_sync::Transport::pull(&devs[0].t, cursor).unwrap().is_empty(), "its own revisions come back once, past the cursor");
+        devs[1].pass().unwrap();
+        assert_eq!(devs[1].local, devs[0].local);
+    }
+}
