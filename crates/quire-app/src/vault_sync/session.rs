@@ -561,9 +561,13 @@ impl Session {
                 };
                 // A pass stops at its download budget: the next one soon.
                 let again = match &self.link {
+                    // A first sync sent in chunks: the next one at once
+                    // (`docs/design/0.14-sync-speed.md` §3.4).
+                    _ if report.more_to_send() => Duration::from_millis(100),
                     Link::Remote(t) if t.more_to_fetch() => Duration::from_secs(1),
                     _ => poll,
                 };
+                let status = if report.more_to_send() && matches!(status, SyncStatus::Synced(_)) { SyncStatus::Syncing } else { status };
                 report.notices.append(&mut self.notices);
                 (status, (report.changed_anything() || report.has_news()).then_some(report), again)
             }

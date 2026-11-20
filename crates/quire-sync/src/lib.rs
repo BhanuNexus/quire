@@ -47,4 +47,4 @@ pub use folder::{FolderSpaceInfo, FolderTransport, min_reader, raise_min_reader}
 pub use http::{HttpTransport, Negotiated, SpaceInfo};
 pub use keyring::{DeviceRecord, DeviceSecret, EpochRecord, KeySet, Pins};
 pub use protocol::{ActorRef, Content, DeviceId, FileId, LanePos, PROTOCOL, PushOutcome, RevId, Revision, Sealing, ServerInfo, SpaceId};
-pub use transport::{MemoryServer, Transport, TransportError};
+pub use transport::{BatchOutcome, BatchReply, MemoryServer, Transport, TransportError};

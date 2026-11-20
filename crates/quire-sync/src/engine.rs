@@ -44,7 +44,7 @@ use crate::bases::{Bases, MemoryBases, Print, Stamp};
 use crate::crypto::CryptoError;
 use crate::keyring::KeySet;
 use crate::protocol::{CHAIN, Content, DeviceId, FileId, PushOutcome, RevId, Revision, Sealing, SpaceId};
-use crate::transport::{Fork, Transport, TransportError};
+use crate::transport::{BATCH_BYTES, BATCH_REVISIONS, BatchOutcome, Fork, Transport, TransportError, request_len};
 
 /// A folder of notes, as the engine sees it. Paths are vault-relative with `/`.
 ///
@@ -240,6 +240,13 @@ pub const DELETE_WINDOW_MS: i64 = 3_600_000;
 /// and deleting a few notes of a small vault never asks.
 pub const MANY_DELETES: usize = 10;
 
+/// The most revisions other than deletes one pass sends.
+///
+/// A first sync of a large vault goes in passes of this size, each saved,
+/// so a crash redoes one chunk at most. A pass sends all of its deletes,
+/// however many.
+pub const CHUNK: usize = 5000;
+
 /// What the engine remembers about one synced note.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tracked {
@@ -405,11 +412,20 @@ pub struct Report {
     pub skipped: Vec<(String, String)>,
     /// Anything else to tell the person once (filled by the caller).
     pub notices: Vec<String>,
+    /// Revisions held for the next pass: a pass sends at most
+    /// [`CHUNK`] besides its deletes (`docs/design/0.14-sync-speed.md` §3.4).
+    pub left: usize,
 }
 
 impl Report {
     pub const fn changed_anything(&self) -> bool {
         self.pulled > 0 || self.pushed > 0
+    }
+
+    /// Whether the next pass should start at once: this one left
+    /// revisions for it.
+    pub const fn more_to_send(&self) -> bool {
+        self.left > 0
     }
 
     /// Whether there is something to tell the person (besides counts).
@@ -446,6 +462,13 @@ pub struct Engine {
     pub allowed_deletes: BTreeSet<FileId>,
     /// The texts behind the notes' base prints (see [`Bases`]).
     bases: Box<dyn Bases>,
+    /// The most revisions other than deletes a pass sends ([`CHUNK`]).
+    chunk: usize,
+    /// Revisions other than deletes this pass sent so far.
+    sent_in_pass: usize,
+    /// Positions of this device's revisions accepted in this pass, not
+    /// passed by the cursor yet (see [`Transport::own_seqs_skippable`]).
+    own_seqs: BTreeSet<u64>,
 }
 
 impl std::fmt::Debug for Engine {
@@ -474,7 +497,18 @@ impl Engine {
             state,
             allowed_deletes: BTreeSet::new(),
             bases: Box::new(MemoryBases::default()),
+            chunk: CHUNK,
+            sent_in_pass: 0,
+            own_seqs: BTreeSet::new(),
         }
+    }
+
+    /// Send at most `n` revisions besides deletes per pass (tests; the
+    /// default is [`CHUNK`]).
+    #[must_use]
+    pub const fn with_chunk(mut self, n: usize) -> Self {
+        self.chunk = if n == 0 { 1 } else { n };
+        self
     }
 
     /// Keep merge bases in `bases` (the default keeps them in memory). They
@@ -539,6 +573,8 @@ impl Engine {
         // A folder that can't be read (gone, unplugged) is neither written
         // into nor read as empty.
         local.list().map_err(SyncError::List)?;
+        self.sent_in_pass = 0;
+        self.own_seqs.clear();
         self.rescope(&*local);
         let res = self.clear_left(local, server).and_then(|()| self.rounds(local, server, today));
         // Whatever happened, notes now tracked outside the selection are
@@ -1409,35 +1445,248 @@ impl Engine {
                 mark = Some(self.state.deletes_sent.len() - 1);
             }
         }
-        for (id, head, content, stamp) in plan {
-            if !self.push_one(server, &id, Some(&head), &content, stamp, report)? {
-                return Ok(false);
-            }
-            if counting.contains(&id)
-                && let Some(m) = mark.and_then(|i| self.state.deletes_sent.get_mut(i))
-            {
-                m.sent += 1;
-            }
-            if !content.deleted
-                && !local.in_scope(&content.path)
-                && !is_attachment(&content.path)
-                && let Some(t) = self.state.files.get_mut(&id)
-            {
-                // Moved here into a folder this device doesn't sync: the file
-                // stays, so a wider selection later merges what's typed in it.
-                t.kept = Some(KeptCopy { path: content.path.clone(), base: Print::of(&content.text) });
-            }
+        // Deletes first, all of them (never split across passes: the
+        // checks above saw the whole plan); then changes and new files, at
+        // most what is left of this pass's chunk. The rest waits for the
+        // next pass (`docs/design/0.14-sync-speed.md` §3.4, §3.6).
+        let mut jobs: Vec<Job> = Vec::new();
+        let (deletes, changes): (Vec<_>, Vec<_>) = plan.into_iter().partition(|(_, _, c, _)| c.deleted);
+        for (id, head, content, stamp) in deletes.into_iter().chain(changes) {
+            let counted = counting.contains(&id);
+            jobs.push(Job::Planned(Box::new(Planned { id, parent: Some(head), content, stamp, counted })));
         }
+        jobs.extend(untracked.into_iter().map(Job::New));
+        let room = self.chunk.saturating_sub(self.sent_in_pass);
+        let others = jobs.iter().filter(|j| !j.is_delete()).count();
+        report.left = others.saturating_sub(room);
+        if report.left > 0 {
+            let mut kept = 0;
+            jobs.retain(|j| {
+                if j.is_delete() {
+                    return true;
+                }
+                kept += 1;
+                kept <= room
+            });
+        }
+        self.send(local, server, jobs, mark, report)
+    }
 
-        for path in untracked {
-            let Some((text, stamp)) = local.read_stamped(&path) else { continue };
-            let id = FileId::random()?;
-            let content = Content { actor: local.actor(&path), path, deleted: false, text, from: String::new(), at: 0 };
-            if !self.push_one(server, &id, None, &content, stamp, report)? {
-                return Ok(false);
+    /// Send `jobs` in batches. Returns false when another device got to a
+    /// note first (pull again, then send again).
+    fn send(
+        &mut self,
+        local: &dyn LocalStore,
+        server: &dyn Transport,
+        jobs: Vec<Job>,
+        mark: Option<usize>,
+        report: &mut Report,
+    ) -> Result<bool, SyncError> {
+        let mut jobs = jobs.into_iter();
+        // A revision built but not sent yet (it didn't fit the last batch,
+        // or it is sent again as a first revision).
+        let mut waiting: std::collections::VecDeque<Item> = std::collections::VecDeque::new();
+        let mut conflict = false;
+        loop {
+            // One key epoch and one sealing for the whole batch.
+            let how = server.sealing();
+            let mut batch: Vec<Item> = Vec::new();
+            let mut bytes = 0;
+            while batch.len() < BATCH_REVISIONS {
+                let item = match waiting.pop_front() {
+                    Some(i) => i,
+                    None => match jobs.next() {
+                        Some(job) => match self.build(local, how, job)? {
+                            Some(i) => i,
+                            None => continue,
+                        },
+                        None => break,
+                    },
+                };
+                let size = request_len(&item.r);
+                if size > BATCH_BYTES {
+                    // Too big for any batch (a large attachment): on its own.
+                    conflict |= !self.send_alone(local, server, how, item, mark, report)?;
+                    continue;
+                }
+                if !batch.is_empty() && bytes + size > BATCH_BYTES {
+                    waiting.push_front(item);
+                    break;
+                }
+                bytes += size;
+                batch.push(item);
+            }
+            if batch.is_empty() {
+                return Ok(!conflict);
+            }
+            let revs: Vec<Revision> = batch.iter().map(|i| i.r.clone()).collect();
+            let reply = server.push_batch(&revs);
+            for (item, outcome) in batch.into_iter().zip(reply.outcomes) {
+                match outcome {
+                    BatchOutcome::Accepted { seq } => self.accepted(local, server, &item, seq, mark, report)?,
+                    BatchOutcome::Conflict => conflict = true,
+                    BatchOutcome::LostParent if !item.r.parents.is_empty() => {
+                        // The revision it builds on is gone for good (lost,
+                        // or a snapshot left it out): sent again as a new
+                        // first revision, so this note still syncs.
+                        waiting.push_back(self.as_first(how, item)?);
+                    }
+                    BatchOutcome::LostParent => {
+                        return Err(SyncError::Transport(TransportError::Refused(crate::transport::LOST_PARENT.into())));
+                    }
+                }
+            }
+            if let Some(e) = reply.error {
+                return Err(e.into());
             }
         }
-        Ok(true)
+    }
+
+    /// The revision for `job`, sealed `how`, its text read now; `None` for
+    /// a new file that is gone meanwhile.
+    fn build(&self, local: &dyn LocalStore, how: Sealing, job: Job) -> Result<Option<Item>, SyncError> {
+        let (id, parent, content, stamp, counted) = match job {
+            Job::Planned(p) => {
+                let Planned { id, parent, content, stamp, counted } = *p;
+                (id, parent, content, stamp, counted)
+            }
+            Job::New(path) => {
+                let Some((text, stamp)) = local.read_stamped(&path) else { return Ok(None) };
+                let content = Content { actor: local.actor(&path), path, deleted: false, text, from: String::new(), at: 0 };
+                (FileId::random()?, None, content, stamp, false)
+            }
+        };
+        self.seal(how, &id, parent.as_ref(), &content).map(|(r, content)| Some(Item { r, content, stamp, counted }))
+    }
+
+    /// `content` as a revision of `file` built on `parent`, sealed `how`,
+    /// with this device's name and the time.
+    fn seal(&self, how: Sealing, file: &FileId, parent: Option<&RevId>, content: &Content) -> Result<(Revision, Content), SyncError> {
+        let at =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(0));
+        let content = Content { from: self.device_name.clone(), at, ..content.clone() };
+        // A revision built on the note's head names the head's ancestors
+        // too (0.13): the head rule then holds across a revision lost for good.
+        let chain = match (how, parent) {
+            (Sealing::Epoch, Some(_)) => self.state.files.get(file).map(|t| t.up.iter().take(CHAIN).cloned().collect()).unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        let mut r = Revision {
+            file: file.clone(),
+            rev: RevId::random()?,
+            parents: parent.into_iter().cloned().collect(),
+            seq: 0,
+            device: self.device.clone(),
+            sealed: Vec::new(),
+            chain,
+        };
+        r.sealed = content.seal_as(how, &self.keys, &self.space, &r)?;
+        Ok((r, content))
+    }
+
+    /// `item` again as its note's first revision.
+    fn as_first(&self, how: Sealing, mut item: Item) -> Result<Item, SyncError> {
+        item.r.parents.clear();
+        item.r.chain.clear();
+        item.r.sealed = item.content.seal_as(how, &self.keys, &self.space, &item.r)?;
+        Ok(item)
+    }
+
+    /// Send `item` on its own ([`Transport::push`]). Returns false on a
+    /// conflict.
+    fn send_alone(
+        &mut self,
+        local: &dyn LocalStore,
+        server: &dyn Transport,
+        how: Sealing,
+        item: Item,
+        mark: Option<usize>,
+        report: &mut Report,
+    ) -> Result<bool, SyncError> {
+        let (pushed, item) = match server.push(&item.r) {
+            Err(TransportError::Refused(why)) if why.contains(crate::transport::LOST_PARENT) && !item.r.parents.is_empty() => {
+                let item = self.as_first(how, item)?;
+                (server.push(&item.r)?, item)
+            }
+            other => (other?, item),
+        };
+        match pushed {
+            PushOutcome::Accepted { seq } => {
+                self.accepted(local, server, &item, seq, mark, report)?;
+                Ok(true)
+            }
+            PushOutcome::Conflict { .. } => Ok(false),
+        }
+    }
+
+    /// The transport stored `item` at `seq`: the note is synced at that
+    /// revision.
+    fn accepted(
+        &mut self,
+        local: &dyn LocalStore,
+        server: &dyn Transport,
+        item: &Item,
+        seq: u64,
+        mark: Option<usize>,
+        report: &mut Report,
+    ) -> Result<(), SyncError> {
+        let content = &item.content;
+        self.track_pushed(&item.r, content, seq, item.stamp)?;
+        report.pushed += 1;
+        if !content.deleted {
+            self.sent_in_pass += 1;
+        }
+        if item.counted
+            && let Some(m) = mark.and_then(|i| self.state.deletes_sent.get_mut(i))
+        {
+            m.sent += 1;
+        }
+        if !content.deleted
+            && !local.in_scope(&content.path)
+            && !is_attachment(&content.path)
+            && let Some(t) = self.state.files.get_mut(&item.r.file)
+        {
+            // Moved here into a folder this device doesn't sync: the file
+            // stays, so a wider selection later merges what's typed in it.
+            t.kept = Some(KeptCopy { path: content.path.clone(), base: Print::of(&content.text) });
+        }
+        if server.own_seqs_skippable() {
+            // This position holds this device's own revision, which it
+            // already has: the cursor may pass it, up to the first
+            // position it hasn't seen (`docs/design/0.14-sync-speed.md` §3.4).
+            self.own_seqs.insert(seq);
+            let cursor = self.state.cursor;
+            self.own_seqs.retain(|s| *s > cursor);
+            while self.own_seqs.remove(&(self.state.cursor + 1)) {
+                self.state.cursor += 1;
+            }
+        }
+        Ok(())
+    }
+
+    /// Track `r` (with `content`) as the note's synced revision, at `seq`.
+    fn track_pushed(&mut self, r: &Revision, content: &Content, seq: u64, disk: Option<Stamp>) -> Result<(), SyncError> {
+        let base = self.remember(&content.path, &content.text)?;
+        // The text sent was read from bytes with this stamp: the file is
+        // known equal to the new base while it keeps it.
+        let disk = disk.filter(|_| !content.deleted);
+        self.state.files.insert(
+            r.file.clone(),
+            Tracked {
+                path: content.path.clone(),
+                synced_path: content.path.clone(),
+                head: r.rev.clone(),
+                head_seq: seq,
+                base,
+                deleted: content.deleted,
+                outside: false,
+                absorbed: false,
+                kept: None,
+                up: ancestors_of(r),
+                disk,
+            },
+        );
+        Ok(())
     }
 
     fn push_one(
@@ -1449,27 +1698,8 @@ impl Engine {
         disk: Option<Stamp>,
         report: &mut Report,
     ) -> Result<bool, SyncError> {
-        let rev = RevId::random()?;
-        let at =
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(0));
-        let content = &Content { from: self.device_name.clone(), at, ..content.clone() };
         let how = server.sealing();
-        // A revision built on the note's head names the head's ancestors
-        // too (0.13): the head rule then holds across a revision lost for good.
-        let chain = match (how, parent) {
-            (Sealing::Epoch, Some(_)) => self.state.files.get(file).map(|t| t.up.iter().take(CHAIN).cloned().collect()).unwrap_or_default(),
-            _ => Vec::new(),
-        };
-        let mut r = Revision {
-            file: file.clone(),
-            rev,
-            parents: parent.into_iter().cloned().collect(),
-            seq: 0,
-            device: self.device.clone(),
-            sealed: Vec::new(),
-            chain,
-        };
-        r.sealed = content.seal_as(how, &self.keys, &self.space, &r)?;
+        let (mut r, content) = self.seal(how, file, parent, content)?;
         let pushed = match server.push(&r) {
             // The revision it builds on is gone for good (lost, or a
             // snapshot left it out): send the note as a new first revision,
@@ -1484,32 +1714,44 @@ impl Engine {
         };
         match pushed {
             PushOutcome::Accepted { seq } => {
-                let base = self.remember(&content.path, &content.text)?;
-                // The text sent was read from bytes with this stamp: the
-                // file is known equal to the new base while it keeps it.
-                let disk = disk.filter(|_| !content.deleted);
-                self.state.files.insert(
-                    file.clone(),
-                    Tracked {
-                        path: content.path.clone(),
-                        synced_path: content.path.clone(),
-                        head: r.rev.clone(),
-                        head_seq: seq,
-                        base,
-                        deleted: content.deleted,
-                        outside: false,
-                        absorbed: false,
-                        kept: None,
-                        up: ancestors_of(&r),
-                        disk,
-                    },
-                );
+                self.track_pushed(&r, &content, seq, disk)?;
                 report.pushed += 1;
                 Ok(true)
             }
             PushOutcome::Conflict { .. } => Ok(false),
         }
     }
+}
+
+/// Something [`Engine::push`] sends: a planned revision of a tracked note,
+/// or a new file (read when its batch is built).
+enum Job {
+    Planned(Box<Planned>),
+    New(String),
+}
+
+/// See [`Job::Planned`].
+struct Planned {
+    id: FileId,
+    parent: Option<RevId>,
+    content: Content,
+    stamp: Option<Stamp>,
+    counted: bool,
+}
+
+impl Job {
+    fn is_delete(&self) -> bool {
+        matches!(self, Self::Planned(p) if p.content.deleted)
+    }
+}
+
+/// A revision ready to send, with what it holds.
+struct Item {
+    r: Revision,
+    content: Content,
+    stamp: Option<Stamp>,
+    /// Counted by the deletion stop (see [`MANY_DELETES`]).
+    counted: bool,
 }
 
 /// `("Notes/Plan", ".md")`; `("README", "")` when there's no extension.
