@@ -95,7 +95,11 @@ Every field of `NoteRecord` and of `quire_markdown`'s `Heading`, `Link`,
   every segment at load (none can be checked against the locked folders).
 * **One writer.** Only the process holding `writer.lock` writes segments
   and `records.idx` and deletes segments; others read at load and never
-  write. Nobody waits for the lock: a process that does not get it tries
+  write. A load that finds no usable `records.idx` deletes the segments
+  only if it can take the lock; otherwise the live writer deletes what its
+  `records.idx` doesn't reference at its next flush. The one exception is
+  locked text: a load that finds a path in a locked folder in `records.idx`
+  deletes every cache file whoever holds the lock (below). Nobody waits for the lock: a process that does not get it tries
   again at its next flush, so when the app quits a running `quire-cli mcp`
   can take over.
 * **Flushes.** When the index has been quiet for 30 s, at most every 5

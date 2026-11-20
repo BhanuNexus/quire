@@ -389,8 +389,12 @@ impl Store {
         let Some(rows) = cache::read(&index_file, Kind::RECORDS_INDEX, FORMAT, DERIVE_VERSION).and_then(|b| decode_index(&b)) else {
             // Without a usable `records.idx` no segment can be checked
             // against the locked folders: they all go, unless a newer
-            // build's cache is there (P3).
-            if !newer_format(&index_file) {
+            // build's cache is there (P3). Only the writer deletes: if
+            // another process holds the lock (its first flush, another
+            // derive version), its files are its own, and it deletes what
+            // its `records.idx` doesn't reference at its next flush. This
+            // process reads none of them.
+            if !newer_format(&index_file) && self.writer() {
                 self.purge();
             }
             return Found { segments: Vec::new(), parse: notes.iter().map(|(p, _)| p.clone()).collect() };

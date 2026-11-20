@@ -793,3 +793,28 @@ fn every_load_is_a_new_build() {
     svc.flush();
     assert_eq!(svc.read().build(), third, "an update is the same build");
 }
+
+/// Only the lock holder deletes segments: a process that finds no usable
+/// `records.idx` while another one writes (its first flush, or another
+/// derive version) leaves the files to that writer.
+#[test]
+fn a_reader_never_purges_the_writers_files_at_load() {
+    let dir = tempfile::tempdir().expect("temp");
+    let v = vault_of(dir.path(), 4);
+    let a = service(&v);
+    a.flush_cache();
+    let idx = cache_dir(&v).join("records.idx");
+    let mut b = std::fs::read(&idx).expect("written");
+    let n = b.len() - 1;
+    b[n] ^= 1;
+    std::fs::write(&idx, b).expect("write");
+    let (before, _) = segments(&v);
+    assert!(!before.is_empty());
+    let found = Store::open(&v).expect("on disk").load(&[], 1);
+    assert!(found.segments.is_empty(), "nothing read from an unusable index");
+    assert_eq!(segments(&v).0, before, "the reader deleted none of the writer's segments");
+    drop(a);
+    // With no writer left, the next load takes the lock and purges.
+    let _ = Store::open(&v).expect("on disk").load(&[], 1);
+    assert!(segments(&v).0.is_empty());
+}
