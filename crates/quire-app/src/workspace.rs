@@ -816,7 +816,17 @@ impl Workspace {
                 // Templates stay out of the index (and the Files tab), as at
                 // start; so do files shown as text (a canvas under review).
                 if path.is_markdown() && !vault.is_template(&path) {
-                    self.index.upsert(path, text.to_string());
+                    match &self.manifest {
+                        // The manifest first, then the index with that hash
+                        // (`docs/design/0.14-index-startup.md` §3.6): the new
+                        // file is listed before the index sees it. A plain
+                        // note's bytes as stored are its text.
+                        Some(m) if vault.locked_folder(&path).is_none() => {
+                            let hash = m.note_written(&path, text.as_bytes());
+                            self.index.upsert_hashed(path, text.to_string(), hash);
+                        }
+                        _ => self.index.upsert(path, text.to_string()),
+                    }
                 }
                 self.sync_nudge();
                 true
@@ -2155,6 +2165,27 @@ mod tests {
         w.open_link("Brand New", None).unwrap();
         assert_eq!(w.active_doc().unwrap().path.as_ref().unwrap().as_str(), "Brand New.md");
         assert!(w.active_doc().unwrap().text().starts_with("# Brand New"));
+    }
+
+    /// A save tells the vault manifest first, then the index with that hash
+    /// (`docs/design/0.14-index-startup.md` §3.6): the row is the saved bytes
+    /// at once, with no scan.
+    #[test]
+    fn a_save_tells_the_manifest_then_the_index() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Ideas.md"), "# Ideas\nfirst\n").unwrap();
+        let mut w = Workspace::new(Settings::default());
+        w.open_vault(dir.path()).unwrap();
+        w.index().flush();
+        w.open_note(&NotePath::new("Ideas.md")).unwrap();
+        type_at_end(&mut w, "savedword");
+        let id = w.active_doc().unwrap().id;
+        assert!(w.save(id));
+        let bytes = std::fs::read(dir.path().join("Ideas.md")).unwrap();
+        let row = w.manifest().expect("opened").get(&NotePath::new("Ideas.md")).expect("listed");
+        assert_eq!(row.hash, quire_vault::changes::FileHash::of(&bytes));
+        w.index().flush();
+        assert_eq!(w.index().read().search("savedword", 5).len(), 1);
     }
 
     #[test]
