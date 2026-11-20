@@ -1057,6 +1057,12 @@ fn folders_words(f: &[String]) -> String {
     f.iter().map(|f| format!("{f}/")).collect::<Vec<_>>().join(", ")
 }
 
+/// The person's last input (keys, mouse) or typing, if any yet.
+pub(crate) fn last_activity(ws: &Workspace) -> Option<Instant> {
+    let typed = ws.docs.iter().filter_map(Document::last_edit).max();
+    ws.features.secure.last_input.into_iter().chain(typed).max()
+}
+
 /// When unlocked folders lock for idleness: the later of the last input and
 /// the last typing, plus the setting.
 fn idle_deadline(ws: &Workspace) -> Option<Instant> {

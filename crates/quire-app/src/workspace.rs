@@ -155,6 +155,8 @@ pub struct Workspace {
     /// The vault's manifest, which the index loads through (with its
     /// startup cache) once the deferred start runs.
     manifest: Option<quire_vault::changes::Manifest>,
+    /// The manifest's daily verify when idle (`crate::manifest_verify`).
+    pub(crate) verify: crate::manifest_verify::VerifyState,
     pub(crate) watcher: Option<VaultWatcher>,
     /// The watcher and the index load wait for `start_deferred`.
     pub(crate) deferred_start: bool,
@@ -208,6 +210,7 @@ impl Workspace {
             single_file: None,
             index: IndexService::spawn(),
             manifest: None,
+            verify: crate::manifest_verify::VerifyState::default(),
             watcher: None,
             deferred_start: false,
             docs: Vec::new(),
@@ -408,6 +411,7 @@ impl Workspace {
         let manifest = quire_vault::changes::Manifest::open(&vault);
         self.manifest = Some(manifest.clone());
         self.index.load_cached(vault, manifest);
+        crate::manifest_verify::opened(self, &root);
         // Only now: what sync writes from here on reaches the open notes.
         self.start_sync();
     }
@@ -430,6 +434,7 @@ impl Workspace {
     /// Use an existing vault (tests, demos, in-memory scratch vaults).
     pub fn attach_vault(&mut self, vault: Vault) {
         self.manifest = None;
+        self.verify = crate::manifest_verify::VerifyState::default();
         self.index.load(vault.clone());
         self.vault_attached(vault);
     }
@@ -944,6 +949,7 @@ impl Workspace {
         let pause = Duration::from_millis(self.settings.jobs.pause_on_typing_ms);
         self.jobs.set_user_active(self.docs.iter().filter_map(Document::last_edit).any(|t| now.saturating_duration_since(t) < pause));
         changed |= crate::features::tick(self, now);
+        crate::manifest_verify::tick(self, now);
         changed
     }
 
@@ -958,7 +964,8 @@ impl Workspace {
             .min();
         let listing = self.file_list_pending().then(|| Instant::now() + Duration::from_millis(50));
         let setup = self.sync_setup_running().map(|_| Instant::now() + Duration::from_millis(100));
-        autosave.into_iter().chain(listing).chain(setup).chain(crate::features::next_deadline(self)).min()
+        let verify = crate::manifest_verify::next_deadline(self);
+        autosave.into_iter().chain(listing).chain(setup).chain(verify).chain(crate::features::next_deadline(self)).min()
     }
 
     fn process_vault_events(&mut self) -> bool {
