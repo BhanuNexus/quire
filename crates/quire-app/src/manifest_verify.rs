@@ -21,6 +21,9 @@ pub(crate) const EVERY_MS: i64 = 86_400_000;
 /// Only after this long without input or typing, until it is two days
 /// late: then whatever the person does (as sync's own rule).
 pub(crate) const IDLE: Duration = Duration::from_mins(5);
+/// After a verify that failed (a listing error, a disk gone), wait this
+/// long before trying again.
+pub(crate) const RETRY: Duration = Duration::from_hours(1);
 /// The file in the vault's state folder holding the last run, Unix ms.
 const FILE: &str = "manifest-verify";
 
@@ -32,9 +35,27 @@ pub(crate) struct VerifyState {
     pub(crate) opened: Option<Instant>,
     /// The vault's state folder on this device.
     pub(crate) dir: Option<PathBuf>,
-    /// The last run, Unix ms, as read from `dir` or set here.
+    /// The last run that finished, Unix ms, as read from `dir` or set here.
     pub(crate) last_ms: Option<i64>,
-    running: Option<JoinHandle<()>>,
+    /// The verify in progress, with when it started.
+    running: Option<(JoinHandle<bool>, i64)>,
+    /// No new try before this (the last one failed).
+    retry_at: Option<Instant>,
+}
+
+impl VerifyState {
+    /// A verify that started at `started` ended: done for a day only if it
+    /// read the notes (`ok`); otherwise tried again after [`RETRY`]. Gives
+    /// whether to record the run.
+    pub(crate) fn finished(&mut self, ok: bool, started: i64, now: Instant) -> bool {
+        if ok {
+            self.last_ms = Some(started);
+            self.retry_at = None;
+        } else {
+            self.retry_at = Some(now + RETRY);
+        }
+        ok
+    }
 }
 
 /// Whether a verify is due: none recorded, or the last a day ago or more
@@ -67,7 +88,7 @@ pub(crate) fn record(dir: &Path, now_ms: i64) -> std::io::Result<()> {
 pub(crate) fn opened(ws: &mut Workspace, root: &Path) {
     let dir = quire_agent::approval::default_state_dir(root);
     let last_ms = dir.as_deref().and_then(last_run);
-    ws.verify = VerifyState { opened: Some(Instant::now()), dir, last_ms, running: None };
+    ws.verify = VerifyState { opened: Some(Instant::now()), dir, last_ms, running: None, retry_at: None };
 }
 
 /// The latest input or typing, or the vault's start.
@@ -78,16 +99,35 @@ fn last_active(ws: &Workspace) -> Option<Instant> {
 /// When [`tick`] should run next for the verify.
 pub(crate) fn next_deadline(ws: &Workspace) -> Option<Instant> {
     ws.manifest()?;
-    if ws.verify.running.as_ref().is_some_and(|h| !h.is_finished()) {
-        return None;
+    let now = Instant::now();
+    if ws.verify.running.is_some() {
+        // To see it finish.
+        return Some(now + Duration::from_secs(1));
     }
     let active = last_active(ws)?;
-    Some(due_at(ws.verify.last_ms, crate::history_ops::now_ms(), Instant::now(), active))
+    let at = due_at(ws.verify.last_ms, crate::history_ops::now_ms(), now, active);
+    Some(ws.verify.retry_at.map_or(at, |r| at.max(r)))
 }
 
-/// Start the verify on a thread of its own if it is due.
+/// Start the verify on a thread of its own if it is due, and take in the
+/// one that ended. A run is recorded only once it read the notes: a quit
+/// in the middle, or a listing error, doesn't count as done for a day.
 pub(crate) fn tick(ws: &mut Workspace, now: Instant) {
-    if ws.verify.running.as_ref().is_some_and(|h| !h.is_finished()) {
+    if let Some((handle, started)) = ws.verify.running.take() {
+        if !handle.is_finished() {
+            ws.verify.running = Some((handle, started));
+            return;
+        }
+        let ok = handle.join().unwrap_or(false);
+        if ws.verify.finished(ok, started, now)
+            && let Some(dir) = &ws.verify.dir
+        {
+            // Not recorded (a read-only state folder): it runs again at the
+            // next start once idle, which costs reading the notes, never a result.
+            let _ = record(dir, started);
+        }
+    }
+    if ws.verify.retry_at.is_some_and(|r| now < r) {
         return;
     }
     let (Some(manifest), Some(active)) = (ws.manifest().cloned(), last_active(ws)) else { return };
@@ -95,20 +135,15 @@ pub(crate) fn tick(ws: &mut Workspace, now: Instant) {
     if !due(ws.verify.last_ms, now_ms, now.saturating_duration_since(active)) {
         return;
     }
-    ws.verify.last_ms = Some(now_ms);
-    if let Some(dir) = &ws.verify.dir {
-        // Not recorded (a read-only state folder): it runs again at the next
-        // start once idle, which costs reading the notes, never a result.
-        let _ = record(dir, now_ms);
+    let handle = std::thread::Builder::new().name("quire-verify".into()).spawn(move || {
+        quire_index::background::lower_priority();
+        // A listing error leaves every row as it was.
+        manifest.verify_where(&|p| p.is_markdown()).is_ok()
+    });
+    match handle {
+        Ok(h) => ws.verify.running = Some((h, now_ms)),
+        Err(_) => ws.verify.retry_at = Some(now + RETRY),
     }
-    ws.verify.running = std::thread::Builder::new()
-        .name("quire-verify".into())
-        .spawn(move || {
-            quire_index::background::lower_priority();
-            // A listing error leaves every row as it was; the next day tries again.
-            let _ = manifest.verify_where(&|p| p.is_markdown());
-        })
-        .ok();
 }
 
 #[cfg(test)]
@@ -128,6 +163,18 @@ mod tests {
         assert!(!due(Some(NOW - EVERY_MS), NOW, Duration::ZERO), "a day late waits for idle");
         assert!(due(Some(NOW - 2 * EVERY_MS), NOW, Duration::ZERO), "two days late: whatever the person does");
         assert!(!due(None, NOW, Duration::ZERO), "never ran: when idle");
+    }
+
+    /// Recorded only when it read the notes; a failed run is tried again
+    /// after an hour, not a day.
+    #[test]
+    fn only_a_verify_that_read_the_notes_counts() {
+        let now = Instant::now();
+        let mut v = VerifyState::default();
+        assert!(!v.finished(false, NOW, now));
+        assert_eq!((v.last_ms, v.retry_at), (None, Some(now + RETRY)));
+        assert!(v.finished(true, NOW, now + RETRY));
+        assert_eq!((v.last_ms, v.retry_at), (Some(NOW), None));
     }
 
     #[test]
