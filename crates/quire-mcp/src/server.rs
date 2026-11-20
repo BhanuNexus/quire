@@ -490,6 +490,14 @@ impl Core {
     /// The actor for a request: the key Quire assigned (`--client`, a token)
     /// or, unverified, the name the client reported in its first request.
     fn actor(&self, conn: &Conn, params: &Value) -> Actor {
+        self.actor_as(conn, params, true)
+    }
+
+    /// [`Self::actor`]; with `pin` false (the handshake: `initialize`,
+    /// `server/discover`) an unverified stdio client's name is not fixed yet,
+    /// so a bare discover can't make every later request `mcp:unknown?` and
+    /// escape the `[clients]` entry of the name the client reports.
+    fn actor_as(&self, conn: &Conn, params: &Value, pin: bool) -> Actor {
         let meta = params.get("_meta");
         let mut client =
             client_info(meta.and_then(|m| m.get(META_CLIENT_INFO).or_else(|| m.get("clientInfo")))).or_else(|| conn.client.clone());
@@ -502,14 +510,13 @@ impl Core {
                 } else {
                     // Fixed at the first request, so a client can't get a fresh
                     // rate limit or another client's ledger by renaming itself.
-                    let first = self
-                        .stdio_clients
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .entry(conn.id)
-                        .or_insert_with(|| client.take())
-                        .clone();
-                    client = first;
+                    let mut pinned = self.stdio_clients.lock().unwrap_or_else(PoisonError::into_inner);
+                    client = match pinned.get(&conn.id) {
+                        Some(first) => first.clone(),
+                        None if pin => pinned.entry(conn.id).or_insert_with(|| client.take()).clone(),
+                        None => client.take(),
+                    };
+                    drop(pinned);
                     let name = client.as_ref().map_or_else(|| "unknown".to_string(), |c| c.name.clone());
                     let key: String = name
                         .to_lowercase()
@@ -561,7 +568,8 @@ impl Core {
     /// a count of every note would tell it how many are hidden (`docs/design/0.14-agent-index.md` §1).
     fn instructions(&self, conn: &Conn, params: &Value) -> String {
         let grant = self.grant(conn);
-        let actor = self.actor(conn, params);
+        // Not pinned: a handshake must not fix the client's name before its first request.
+        let actor = self.actor_as(conn, params, false);
         let store = self.store(&actor, self.cap(conn));
         let n = self.index.read().paths().iter().filter(|p| store.effective_mode(&actor, p, OpKind::Read) != Mode::Deny).count();
         let mode = if grant.write {
