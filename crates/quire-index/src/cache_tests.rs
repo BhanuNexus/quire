@@ -622,3 +622,174 @@ fn only_the_lock_holder_writes_and_another_takes_over() {
     assert_eq!(c.notes_read(), 0);
     assert_eq!(view(&c.read()), cold(&v));
 }
+
+/// A reload (after an import, an unlock for good, a vault switch) scans:
+/// an edit saved in the app without telling the manifest, and a file the
+/// manifest never saw, are what the index holds after it, never an older
+/// cached record or nothing.
+#[test]
+fn a_reload_scans_so_it_never_installs_an_older_record_or_drops_a_new_note() {
+    let dir = tempfile::tempdir().expect("temp");
+    let v = vault_of(dir.path(), 8);
+    let m = Manifest::open(&v);
+    let svc = IndexService::spawn();
+    svc.load_cached(v.clone(), m.clone());
+    svc.flush();
+    svc.flush_cache();
+    put(dir.path(), "F1/N1.md", &note(1, 77));
+    svc.upsert(np("F1/N1.md"), note(1, 77));
+    svc.flush();
+    put(dir.path(), "Fresh.md", "# Fresh\nfreshword\n");
+    svc.load_cached(v.clone(), m);
+    svc.flush();
+    assert_eq!(view(&svc.read()), cold(&v));
+}
+
+/// Storage whose scan listing fails, as a disk that went away would.
+struct NoListing(Arc<dyn quire_vault::Storage>);
+
+impl quire_vault::Storage for NoListing {
+    fn list(&self) -> quire_vault::Result<Vec<NotePath>> {
+        self.0.list()
+    }
+    fn list_stat(&self) -> quire_vault::Result<Vec<(NotePath, Option<quire_vault::FileStat>)>> {
+        Err(quire_vault::VaultError::Watch("the listing failed".into()))
+    }
+    fn read_bytes(&self, path: &NotePath) -> quire_vault::Result<Vec<u8>> {
+        self.0.read_bytes(path)
+    }
+    fn write_bytes_atomic(&self, path: &NotePath, bytes: &[u8]) -> quire_vault::Result<()> {
+        self.0.write_bytes_atomic(path, bytes)
+    }
+    fn rename(&self, from: &NotePath, to: &NotePath) -> quire_vault::Result<()> {
+        self.0.rename(from, to)
+    }
+    fn trash(&self, path: &NotePath) -> quire_vault::Result<()> {
+        self.0.trash(path)
+    }
+    fn exists(&self, path: &NotePath) -> bool {
+        self.0.exists(path)
+    }
+    fn modified(&self, path: &NotePath) -> quire_vault::Result<SystemTime> {
+        self.0.modified(path)
+    }
+    fn absolute(&self, path: &NotePath) -> Option<std::path::PathBuf> {
+        self.0.absolute(path)
+    }
+    fn list_under(&self, folder: &str) -> quire_vault::Result<Vec<NotePath>> {
+        self.0.list_under(folder)
+    }
+    fn remove(&self, path: &NotePath) -> quire_vault::Result<()> {
+        self.0.remove(path)
+    }
+}
+
+/// When the scan at load fails, the index still holds every note, and the
+/// cache is neither read nor written: its rows aren't taken for dead.
+#[test]
+fn a_failed_scan_at_load_leaves_the_cache_alone() {
+    let dir = tempfile::tempdir().expect("temp");
+    let v = vault_of(dir.path(), 8);
+    drop(service(&v));
+    let idx = cache_dir(&v).join("records.idx");
+    let before = std::fs::read(&idx).expect("written");
+    let broken = Vault::new(Arc::new(NoListing(Arc::clone(v.storage()))));
+    let svc = service(&broken);
+    assert_eq!(view(&svc.read()), cold(&v), "every note, from the files");
+    svc.flush_cache();
+    drop(svc);
+    assert_eq!(std::fs::read(&idx).expect("still there"), before, "not rewritten without the notes");
+}
+
+/// A folder locked while Quire was closed, with a `records.idx` that can't
+/// be used (damaged here): the old segments are deleted at load too.
+#[test]
+fn an_unusable_index_file_purges_the_segments_at_load() {
+    let dir = tempfile::tempdir().expect("temp");
+    let v = vault_of(dir.path(), 4);
+    put(dir.path(), "Later/L.md", &format!("# L\n{MARKER}\n"));
+    drop(service(&v));
+    assert!(holds(&cache_bytes(&v), MARKER));
+    let idx = cache_dir(&v).join("records.idx");
+    let mut b = std::fs::read(&idx).expect("written");
+    let n = b.len() - 1;
+    b[n] ^= 1;
+    std::fs::write(&idx, b).expect("write");
+    quire_vault::lock::lock_folder(&v, "Later", Some("correct horse"), quire_vault::lock::Kdf::TEST, 1).expect("lock");
+    let found = Store::open(&v).expect("on disk").load(&[], 1);
+    assert!(found.segments.is_empty());
+    assert!(!holds(&cache_bytes(&v), MARKER), "no segment left from before");
+}
+
+/// Every note copy in a segment is one a row points to: a row dropped for
+/// damage gets its segment written again, not left holding the old copy.
+#[test]
+fn a_dropped_row_gets_its_segment_rewritten() {
+    let dir = tempfile::tempdir().expect("temp");
+    let v = vault_of(dir.path(), 6);
+    drop(service(&v));
+    let idx = cache_dir(&v).join("records.idx");
+    let mut rows = cache::read(&idx, Kind::RECORDS_INDEX, st::FORMAT, st::DERIVE_VERSION).and_then(|b| st::decode_index(&b)).expect("rows");
+    // One row now names another note's slot: its own copy is unreferenced.
+    let (a, b) = (np("F0/N0.md"), np("F1/N1.md"));
+    let other = rows[&b].slot;
+    rows.get_mut(&a).expect("row").slot = other;
+    assert_eq!(
+        cache::write(&idx, Kind::RECORDS_INDEX, st::FORMAT, st::DERIVE_VERSION, &st::encode_index(&rows)).expect("write"),
+        cache::Written::Written
+    );
+    drop(service(&v));
+    let rows = cache::read(&idx, Kind::RECORDS_INDEX, st::FORMAT, st::DERIVE_VERSION).and_then(|b| st::decode_index(&b)).expect("rows");
+    let mut copies = 0;
+    for e in std::fs::read_dir(cache_dir(&v)).expect("cache").flatten() {
+        let Some(id) = e.file_name().to_str().and_then(|n| u64::from_str_radix(n.strip_prefix("r-")?.strip_suffix(".seg")?, 16).ok())
+        else {
+            continue;
+        };
+        let seg = cache::read(&e.path(), Kind::RECORDS_SEGMENT, st::FORMAT, st::DERIVE_VERSION)
+            .and_then(|b| st::decode_segment(&b))
+            .expect("segment");
+        for (slot, (s, _)) in seg.notes.iter().enumerate() {
+            copies += 1;
+            let row = rows.get(&s.rec.path).expect("a row for every copy");
+            assert_eq!((row.segment, row.slot as usize), (id, slot), "{}: the copy its row points to", s.rec.path);
+        }
+    }
+    assert_eq!(copies, rows.len());
+}
+
+/// A newer build's `records.idx`: this build writes no segment either.
+#[test]
+fn a_newer_index_file_means_no_segment_is_written() {
+    let dir = tempfile::tempdir().expect("temp");
+    let v = vault_of(dir.path(), 4);
+    let idx = cache_dir(&v).join("records.idx");
+    assert_eq!(
+        cache::write(&idx, Kind::RECORDS_INDEX, st::FORMAT + 1, st::DERIVE_VERSION, b"newer").expect("write"),
+        cache::Written::Written
+    );
+    drop(service(&v));
+    let names: Vec<String> =
+        std::fs::read_dir(cache_dir(&v)).expect("cache").flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    assert!(names.iter().all(|n| !n.starts_with("r-")), "{names:?}");
+}
+
+/// Every load is a new build of the index: document and term ids of the
+/// last one mean nothing in it.
+#[test]
+fn every_load_is_a_new_build() {
+    let dir = tempfile::tempdir().expect("temp");
+    let v = vault_of(dir.path(), 3);
+    let svc = service(&v);
+    let first = svc.read().build();
+    svc.load_cached(v.clone(), Manifest::open(&v));
+    svc.flush();
+    let second = svc.read().build();
+    svc.load(v);
+    svc.flush();
+    let third = svc.read().build();
+    assert!(first != second && second != third);
+    svc.upsert(np("F0/N0.md"), "# edited".into());
+    svc.flush();
+    assert_eq!(svc.read().build(), third, "an update is the same build");
+}

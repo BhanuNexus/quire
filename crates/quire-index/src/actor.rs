@@ -513,19 +513,24 @@ fn load_cached(
     // row, below): a change made in between arrives both ways, and the
     // worker compares by hash. Nothing is kept by generation or epoch.
     let deltas = manifest.subscribe();
-    // The index scans only if no scan ran in this process yet.
-    let listed = manifest.scanned() || manifest.scan().is_ok();
+    // Every load scans: the rows must be as new as the files, whatever was
+    // saved since the last scan without telling the manifest (a reload
+    // after an import or a vault switch runs long after the first scan).
+    let scanned = manifest.scan().is_ok();
     let paths = vault.notes().unwrap_or_default();
     // Only regular files the manifest lists are indexed.
-    let notes: Vec<(NotePath, FileHash)> =
-        if listed { paths.iter().filter_map(|p| Some((p.clone(), manifest.get(p)?.hash))).collect() } else { Vec::new() };
-    shared.total.store(notes.len(), Ordering::Relaxed);
+    let notes: Vec<(NotePath, FileHash)> = paths.iter().filter_map(|p| Some((p.clone(), manifest.get(p)?.hash))).collect();
+    // A failed scan: no row can be trusted, so the cache is neither read nor
+    // written in this load (its rows would all look dead), and every note
+    // is read from its file.
+    let mut store = if scanned { Store::open(vault) } else { None };
+    shared.total.store(if scanned { notes.len() } else { paths.len() }, Ordering::Relaxed);
     shared.indexed.store(0, Ordering::Relaxed);
-    let mut store = Store::open(vault);
     let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get).max(1);
     let found = match store.as_mut() {
         Some(s) => s.load(&notes, threads),
-        None => Found { segments: Vec::new(), parse: notes.iter().map(|(p, _)| p.clone()).collect() },
+        None if scanned => Found { segments: Vec::new(), parse: notes.iter().map(|(p, _)| p.clone()).collect() },
+        None => Found { segments: Vec::new(), parse: paths },
     };
     let hashes: std::collections::HashMap<&NotePath, FileHash> = notes.iter().map(|(p, h)| (p, *h)).collect();
     let mut ix = Index::new();

@@ -37,6 +37,18 @@ pub struct Index {
     pub(crate) attachment_text: FullText,
     /// 0.12: which typed links are hierarchy edges (vault.toml `[links]`).
     link_config: crate::relations::LinkConfig,
+    build: Build,
+}
+
+/// The number of an index build, unique in this process.
+#[derive(Debug)]
+struct Build(u64);
+
+impl Default for Build {
+    fn default() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
 }
 
 /// The text of a note installed before its text was decoded: the same
@@ -78,6 +90,15 @@ pub(crate) fn page_key(path: &NotePath, page: usize) -> NotePath {
 impl Index {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Which build of the index this is: a new number for every
+    /// [`Index::new`], so every load (`IndexMsg::Load`, `IndexMsg::LoadCached`)
+    /// gives a new one, and never an update. Every [`DocId`] and
+    /// [`TermId`] belongs to one build: a holder of ids (an agent view) that
+    /// sees another build drops them and starts again.
+    pub fn build(&self) -> u64 {
+        self.build.0
     }
 
     /// Insert or replace a note and update the link graph (in place when
@@ -186,9 +207,13 @@ impl Index {
         self.end_batch();
     }
 
-    /// A batch of updates is applied and everyone who reads by document id
-    /// has seen it: ids of notes it removed may be given again
-    /// (`docs/design/0.14-index-startup.md` §3.2).
+    /// A batch of updates is applied: ids of notes it removed may be given
+    /// again (`docs/design/0.14-index-startup.md` §3.2, §3.8).
+    ///
+    /// The worker calls it at the end of each batch, under the same write
+    /// lock that applied the batch. Anything keyed by [`DocId`] (an agent
+    /// view's member set) must be patched for the batch within that lock,
+    /// before this call: after it, a removed note's id may name another note.
     pub fn end_batch(&mut self) {
         self.fulltext.end_batch();
         self.attachment_text.end_batch();

@@ -273,6 +273,17 @@ pub(crate) fn pool<T: Sync, R: Send>(jobs: &[T], threads: usize, f: impl Fn(&T) 
     slots
 }
 
+/// Whether `path` holds a cache container of the records index in a newer
+/// `format` than this build's (judged by its header alone).
+fn newer_format(path: &Path) -> bool {
+    let mut h = [0u8; 14];
+    let Ok(mut f) = File::open(path) else { return false };
+    f.read_exact(&mut h).is_ok()
+        && h[..8] == cache::MAGIC
+        && u16::from_le_bytes([h[8], h[9]]) == Kind::RECORDS_INDEX.0
+        && u32::from_le_bytes([h[10], h[11], h[12], h[13]]) > FORMAT
+}
+
 /// Whether any of `paths` is in a locked folder now. Asks once per folder.
 fn any_locked<'a>(vault: &Vault, paths: impl IntoIterator<Item = &'a NotePath>) -> bool {
     let mut seen: BTreeSet<&str> = BTreeSet::new();
@@ -329,6 +340,9 @@ pub(crate) struct Store {
     removal: Option<Instant>,
     /// A newer build's file was found: the cache is left to it (P3).
     kept_newer: bool,
+    /// Segments holding a copy of a note whose row was dropped (damage):
+    /// written again at the next flush, without that copy.
+    rewrite: BTreeSet<u64>,
 }
 
 impl Store {
@@ -348,6 +362,7 @@ impl Store {
             last_change: None,
             removal: None,
             kept_newer: false,
+            rewrite: BTreeSet::new(),
         })
     }
 
@@ -370,9 +385,14 @@ impl Store {
     /// Read the cache for `notes` (with the manifest's hash of each now).
     /// Uses `threads` threads for the segments.
     pub(crate) fn load(&mut self, notes: &[(NotePath, FileHash)], threads: usize) -> Found {
-        let Some(rows) =
-            cache::read(&self.dir.join(INDEX_FILE), Kind::RECORDS_INDEX, FORMAT, DERIVE_VERSION).and_then(|b| decode_index(&b))
-        else {
+        let index_file = self.dir.join(INDEX_FILE);
+        let Some(rows) = cache::read(&index_file, Kind::RECORDS_INDEX, FORMAT, DERIVE_VERSION).and_then(|b| decode_index(&b)) else {
+            // Without a usable `records.idx` no segment can be checked
+            // against the locked folders: they all go, unless a newer
+            // build's cache is there (P3).
+            if !newer_format(&index_file) {
+                self.purge();
+            }
             return Found { segments: Vec::new(), parse: notes.iter().map(|(p, _)| p.clone()).collect() };
         };
         if any_locked(&self.vault, rows.keys()) {
@@ -398,14 +418,21 @@ impl Store {
         let mut rows = rows;
         for (slot, (_, want)) in slots.into_iter().zip(&jobs) {
             let (seg, missed) = slot.unwrap_or_else(|| (None, want.iter().map(|(_, p)| p.clone()).collect()));
-            // A row whose segment failed is no row: the note is written again.
+            // A row whose segment failed is no row: the note is written
+            // again, and its segment without the old copy.
             for p in &missed {
-                rows.remove(p);
+                if let Some(r) = rows.remove(p) {
+                    self.rewrite.insert(r.segment);
+                }
             }
             parse.extend(missed);
             segments.extend(seg);
         }
         self.rows = rows;
+        if !self.rewrite.is_empty() {
+            self.removal.get_or_insert_with(Instant::now);
+            self.touch();
+        }
         Found { segments, parse }
     }
 
@@ -449,7 +476,10 @@ impl Store {
     /// parsed and written again.
     pub(crate) fn forget_rows(&mut self, paths: &[NotePath]) {
         for p in paths {
-            self.rows.remove(p);
+            if let Some(r) = self.rows.remove(p) {
+                self.rewrite.insert(r.segment);
+                self.removal.get_or_insert_with(Instant::now);
+            }
         }
     }
 
@@ -518,10 +548,17 @@ impl Store {
         if self.kept_newer || !self.writer() {
             return Ok(false);
         }
+        // A newer build's `records.idx` is left alone (P3), so no segment is
+        // written either: nothing would ever reference it.
+        if newer_format(&self.dir.join(INDEX_FILE)) {
+            self.kept_newer = true;
+            return Ok(false);
+        }
         // Rows still true: the note is indexed with that text and isn't
         // about to be written again.
         let keep = |p: &NotePath, r: &Row, s: &Self| !s.dirty.contains(p) && s.current.get(p).is_some_and(|(h, _)| *h == r.hash);
-        let dead: BTreeSet<u64> = self.rows.iter().filter(|(p, r)| !keep(p, r, self)).map(|(_, r)| r.segment).collect();
+        let dead: BTreeSet<u64> =
+            self.rows.iter().filter(|(p, r)| !keep(p, r, self)).map(|(_, r)| r.segment).chain(self.rewrite.iter().copied()).collect();
         let mut kept: BTreeMap<NotePath, Row> = self.rows.iter().filter(|(p, r)| keep(p, r, self)).map(|(p, r)| (p.clone(), *r)).collect();
         let segments: BTreeSet<u64> = kept.values().map(|r| r.segment).collect();
         let rewrite_all = segments.len() > MAX_SEGMENTS;
@@ -535,7 +572,7 @@ impl Store {
             !again
         });
         let write: Vec<NotePath> = write.into_iter().filter(|p| ix.get(p).is_some() && ix.source(p).is_some()).collect();
-        if write.is_empty() && kept.len() == self.rows.len() && self.dir.join(INDEX_FILE).exists() {
+        if write.is_empty() && self.rewrite.is_empty() && kept.len() == self.rows.len() && self.dir.join(INDEX_FILE).exists() {
             // Nothing changed since the last write.
             (self.first_change, self.last_change, self.removal) = (None, None, None);
             return Ok(true);
@@ -575,6 +612,7 @@ impl Store {
         let live: BTreeSet<u64> = rows.values().map(|r| r.segment).collect();
         self.rows = rows;
         self.dirty.clear();
+        self.rewrite.clear();
         (self.first_change, self.last_change, self.removal) = (None, None, None);
         self.delete_unreferenced(&live);
         Ok(true)
