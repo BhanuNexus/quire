@@ -37,14 +37,20 @@ fn put(dir: &Path, p: &str, text: &str) {
 }
 
 /// Notes that link to each other, with tags, tasks, aliases and properties.
-fn note(i: usize, salt: usize) -> String {
+/// `variant` makes one version of note `i`'s text differ from another.
+fn note(i: usize, variant: usize) -> String {
     let mut s = String::new();
     if i.is_multiple_of(3) {
         let _ = writeln!(s, "---\naliases: [Alias {i}]\nstatus: draft\ntags: [proj/{}]\n---", i % 4);
     }
-    let _ =
-        writeln!(s, "# Note {i}\n\nrope tree editor word{salt} and [[N{}]] and [[Alias {}]] #topic/{}", (i + 1) % 12, (i + 3) % 12, i % 2);
-    let _ = writeln!(s, "- [ ] task {i} 📅 2026-12-0{}\n- [x] done {salt}", 1 + i % 9);
+    let _ = writeln!(
+        s,
+        "# Note {i}\n\nrope tree editor word{variant} and [[N{}]] and [[Alias {}]] #topic/{}",
+        (i + 1) % 12,
+        (i + 3) % 12,
+        i % 2
+    );
+    let _ = writeln!(s, "- [ ] task {i} 📅 2026-12-0{}\n- [x] done {variant}", 1 + i % 9);
     let _ = writeln!(s, "\n## Part\n\nsee [[Missing {}]] and [[N{}#Part]]", i % 5, (i + 7) % 12);
     s
 }
