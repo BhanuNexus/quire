@@ -339,3 +339,22 @@ fn lists_page_to_the_end_without_repeats_or_gaps() {
         assert!(!unique.contains(&expect(599)), "{tool}: a row removed before its page is not listed");
     }
 }
+
+/// `neighbors` counts every note within its depth for `total` but shows and links only the first
+/// `limit`: no edge names a note it does not show.
+#[test]
+fn neighbors_counts_all_and_shows_the_first() {
+    let notes: Vec<(String, String)> = (0..50).map(|i| (format!("Spoke {i:02}.md"), format!("# Spoke {i}\n\nsee [[Hub]]\n"))).collect();
+    let mut files: Vec<(&str, &str)> = notes.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
+    files.push(("Hub.md", "# Hub\n"));
+    let srv = Server::with_config(Vault::in_memory(&files), None, ServerConfig::default());
+    srv.index().flush();
+    let r = call(&srv, "neighbors", &json!({"path": "Hub.md", "limit": 3}));
+    assert_eq!(r["total"], 50, "{r}");
+    assert_eq!(r["truncated"], true);
+    let shown: BTreeSet<&str> = r["nodes"].as_array().unwrap().iter().filter_map(|n| n["path"].as_str()).chain(["Hub.md"]).collect();
+    assert_eq!(shown.len(), 4, "{r}");
+    let edges = r["edges"].as_array().unwrap();
+    assert_eq!(edges.len(), 3, "{r}");
+    assert!(edges.iter().all(|e| shown.contains(e["from"].as_str().unwrap()) && shown.contains(e["to"].as_str().unwrap())), "{r}");
+}
