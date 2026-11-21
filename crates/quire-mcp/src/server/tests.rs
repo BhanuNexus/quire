@@ -196,6 +196,40 @@ fn allow_write_writes_per_policy() {
     assert_eq!(r[6]["result"]["isError"], true, "never under .quire/");
 }
 
+/// Edits to a note with the agent's own pending suggestion are made on that
+/// text, and the suggestion becomes what they made: no change is in it twice.
+#[test]
+fn edits_on_a_pending_suggestion_are_not_doubled() {
+    let vault = vault();
+    let srv = Server::with_config(vault.clone(), None, config(true));
+    let store = AgentStore::open(&vault, DeviceInfo { id: "d_test".into(), name: "t".into() }, Arc::new(SystemClock));
+    let init = json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "clientInfo": {"name": "claude-code", "version": "1"}}});
+    for (i, (tool, args, want)) in [
+        ("append", json!({"path": "Ideas.md", "text": "- one"}), "# Ideas\nWrite about [[Rope Notes]].\n- one\n"),
+        ("append", json!({"path": "Ideas.md", "text": "- two"}), "# Ideas\nWrite about [[Rope Notes]].\n- one\n- two\n"),
+        (
+            "str_replace",
+            json!({"path": "Ideas.md", "old_str": "Write", "new_str": "Draft"}),
+            "# Ideas\nDraft about [[Rope Notes]].\n- one\n- two\n",
+        ),
+        (
+            "str_replace",
+            json!({"path": "Ideas.md", "old_str": "- two", "new_str": "- 2", "all": true}),
+            "# Ideas\nDraft about [[Rope Notes]].\n- one\n- 2\n",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let r = run(&srv, &[init.clone(), call(i as u64 + 1, tool, &args)]).pop().unwrap();
+        assert_eq!(sc(&r)["outcome"], "proposed", "{r}");
+        let pending = store.proposals(&ProposalFilter::pending());
+        assert_eq!(pending.len(), 1, "one suggestion, amended");
+        let p = store.proposal(&pending[0].id).unwrap();
+        assert_eq!(p.changes[0].new_text.as_deref(), Some(want), "after {tool} {args}");
+    }
+}
+
 /// What 0.8.0 answered, recorded from its implementation: every field is
 /// still there with the same value (a 2025-06-18 client also sees the new
 /// tools after the 0.8 ones, with titles and annotations).
