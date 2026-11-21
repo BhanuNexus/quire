@@ -423,9 +423,10 @@ impl Report {
     }
 
     /// Whether the next pass should start at once: this one left
-    /// revisions for it.
+    /// revisions for it and sent some (one that sent nothing would only do
+    /// the same again: the usual poll comes then).
     pub const fn more_to_send(&self) -> bool {
-        self.left > 0
+        self.left > 0 && self.pushed > 0
     }
 
     /// Whether there is something to tell the person (besides counts).
@@ -1458,32 +1459,24 @@ impl Engine {
         }
         jobs.extend(untracked.into_iter().map(Job::New));
         let room = self.chunk.saturating_sub(self.sent_in_pass);
-        let others = jobs.iter().filter(|j| !j.is_delete()).count();
-        report.left = others.saturating_sub(room);
-        if report.left > 0 {
-            let mut kept = 0;
-            jobs.retain(|j| {
-                if j.is_delete() {
-                    return true;
-                }
-                kept += 1;
-                kept <= room
-            });
-        }
-        self.send(local, server, jobs, mark, report)
+        self.send(local, server, jobs, room, mark, report)
     }
 
-    /// Send `jobs` in batches. Returns false when another device got to a
-    /// note first (pull again, then send again).
+    /// Send `jobs` in batches: every delete, and at most `room` other
+    /// revisions (a new file that can't be read takes no room); the rest
+    /// is [`Report::left`] for the next pass. Returns false when another
+    /// device got to a note first (pull again, then send again).
     fn send(
         &mut self,
         local: &dyn LocalStore,
         server: &dyn Transport,
         jobs: Vec<Job>,
+        mut room: usize,
         mark: Option<usize>,
         report: &mut Report,
     ) -> Result<bool, SyncError> {
-        let mut jobs = jobs.into_iter();
+        let mut jobs = jobs.into_iter().peekable();
+        report.left = 0;
         // A revision built but not sent yet (it didn't fit the last batch,
         // or it is sent again as a first revision).
         let mut waiting: std::collections::VecDeque<Item> = std::collections::VecDeque::new();
@@ -1496,13 +1489,19 @@ impl Engine {
             while batch.len() < BATCH_REVISIONS {
                 let item = match waiting.pop_front() {
                     Some(i) => i,
-                    None => match jobs.next() {
-                        Some(job) => match self.build(local, how, job)? {
-                            Some(i) => i,
-                            None => continue,
-                        },
-                        None => break,
-                    },
+                    None => {
+                        // Deletes come first; past them, only while there is room.
+                        if room == 0 && jobs.peek().is_some_and(|j| !j.is_delete()) {
+                            break;
+                        }
+                        let Some(job) = jobs.next() else { break };
+                        let delete = job.is_delete();
+                        let Some(i) = self.build(local, how, job)? else { continue };
+                        if !delete {
+                            room -= 1;
+                        }
+                        i
+                    }
                 };
                 let size = request_len(&item.r);
                 if size > BATCH_BYTES {
@@ -1518,6 +1517,7 @@ impl Engine {
                 batch.push(item);
             }
             if batch.is_empty() {
+                report.left = jobs.filter(|j| !j.is_delete()).count();
                 return Ok(!conflict);
             }
             let revs: Vec<Revision> = batch.iter().map(|i| i.r.clone()).collect();

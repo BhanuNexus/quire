@@ -302,3 +302,44 @@ fn three_devices_pushing_in_chunks_and_batches_converge() {
         assert_eq!(devs[0].engine.state.cursor, server.len() as u64, "seed {seed}: every revision applied");
     }
 }
+
+/// A vault whose files under `Broken/` are listed but can't be read.
+struct Unreadable(MemoryStore);
+
+impl LocalStore for Unreadable {
+    fn list(&self) -> Result<Vec<String>, String> {
+        self.0.list()
+    }
+    fn read(&self, path: &str) -> Option<String> {
+        if path.starts_with("Broken/") { None } else { self.0.read(path) }
+    }
+    fn write(&mut self, path: &str, text: &str) -> Result<(), String> {
+        self.0.write(path, text)
+    }
+    fn remove(&mut self, path: &str) -> Result<(), String> {
+        self.0.remove(path)
+    }
+}
+
+#[test]
+fn new_files_that_cant_be_read_take_no_room_and_start_no_pass() {
+    let (server, mut devs) = devices(1, quire_sync::engine::CHUNK);
+    let mut store = Unreadable(MemoryStore::default());
+    for i in 0..5001 {
+        store.0.write(&format!("Broken/{i:04}.md"), "x\n").unwrap();
+    }
+    for i in 0..3 {
+        store.0.write(&format!("Readable/{i}.md"), "y\n").unwrap();
+    }
+    let d = &mut devs[0];
+    let r = d.engine.sync(&mut store, &server, TODAY).unwrap();
+    assert_eq!(r.pushed, 3, "the readable ones go, behind 5,001 that can't be read");
+    assert!(!r.more_to_send(), "{r:?}");
+    let r = d.engine.sync(&mut store, &server, TODAY).unwrap();
+    assert_eq!(r.pushed, 0);
+    assert!(!r.more_to_send(), "a pass that sent nothing starts no other at once");
+    assert_eq!(server.len(), 3);
+    // Left work but sent nothing: the app and `sync once` wait for the poll.
+    let stuck = quire_sync::Report { left: 5000, ..quire_sync::Report::default() };
+    assert!(!stuck.more_to_send());
+}
