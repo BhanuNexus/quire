@@ -19,7 +19,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use quire_agent::{AgentStore, DeviceInfo, FixedClock};
-use quire_app::vault::{NotePath, Vault};
+use quire_app::vault::{NotePath, Vault, VaultEvent};
 use quire_mcp::tools::Access;
 use quire_mcp::{Server, ServerConfig, ToolRegistry};
 use serde_json::{Value, json};
@@ -126,10 +126,10 @@ fn leaks(srv: &Server) -> Vec<String> {
     found
 }
 
-#[test]
-fn a_symlinked_note_made_while_the_server_runs_is_never_shown() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap().join("vault");
+/// The vault of these tests: visible notes, a deny zone, a hidden folder and a folder the client
+/// may not see, and a note outside the vault.
+fn make_vault(dir: &Path) -> std::path::PathBuf {
+    let root = dir.canonicalize().unwrap().join("vault");
     for (path, text) in [
         (".quire/shared/agent-policy.toml", POLICY.to_string()),
         ("Private/diary.md", marked("privatezq")),
@@ -142,13 +142,12 @@ fn a_symlinked_note_made_while_the_server_runs_is_never_shown() {
         std::fs::write(root.join(path), text).unwrap();
     }
     std::fs::write(root.parent().unwrap().join("outside.md"), marked("outsidezq")).unwrap();
-    let srv = server(&root);
-    let before = handshake_count(&srv);
-    assert_eq!(before, 2, "Notes/a.md and Notes/swap.md");
-    assert!(call(&srv, "list", &json!({})).to_string().contains("Notes/swap.md"));
+    root
+}
 
-    // While the server runs: links into a deny zone, out of the vault, into a hidden folder, to
-    // nothing, into a folder this client may not see; and a listed note swapped for a link.
+/// The links of these tests: into a deny zone, out of the vault, into a hidden folder, to nothing,
+/// into a folder this client may not see; and a listed note swapped for a link.
+fn make_links(root: &Path) -> Vec<NotePath> {
     let link = |target: &Path, name: &str| std::os::unix::fs::symlink(target, root.join(name)).unwrap();
     link(&root.join("Private/diary.md"), "Notes/to-deny.md");
     link(&root.parent().unwrap().join("outside.md"), "Notes/to-outside.md");
@@ -157,29 +156,67 @@ fn a_symlinked_note_made_while_the_server_runs_is_never_shown() {
     link(&root.join("Other/x.md"), "Notes/to-other.md");
     std::fs::remove_file(root.join("Notes/swap.md")).unwrap();
     link(&root.join("Private/diary.md"), "Notes/swap.md");
-    // Then a plain note: once it is indexed, the watcher has reported what came before it.
-    std::fs::write(root.join("Notes/flag.md"), "# flag\n").unwrap();
-    let flag = NotePath::new("Notes/flag.md");
-    let mut seen = false;
-    for _ in 0..150 {
-        std::thread::sleep(Duration::from_millis(100));
+    ["to-deny", "to-outside", "to-hidden", "dangling", "to-other", "swap"].iter().map(|n| NotePath::new(format!("Notes/{n}.md"))).collect()
+}
+
+fn assert_nothing_shown(srv: &Server, links: &[NotePath], count: usize) {
+    let found = leaks(srv);
+    assert!(found.is_empty(), "a symlinked note reached an agent: {found:?}");
+    assert_eq!(handshake_count(srv), count, "the links count for nothing");
+    let ix = srv.index().read();
+    for p in links {
+        assert!(ix.get(p).is_none(), "{p} is in the index");
+    }
+}
+
+/// Driven without a watcher, in a known order: each link reported as a changed note (the worst a
+/// watcher could say, as for an event about a file that was swapped for a link before it was read).
+#[test]
+fn a_symlinked_note_is_never_shown_whatever_the_events_say() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = make_vault(dir.path());
+    let state = root.parent().unwrap().join("state");
+    let v = Vault::open_local(&root).unwrap();
+    let store = AgentStore::open(&v, device(), FixedClock::new(NOW_MS));
+    store.set_state_dir(Some(state.clone()));
+    store.approve_policy(store.policy_state().file_hash().as_ref()).unwrap();
+    let cfg = ServerConfig {
+        client_key: Some("probe".into()),
+        device: Some(device()),
+        state_dir: Some(state),
+        clock: FixedClock::new(NOW_MS),
+        ..ServerConfig::default()
+    };
+    let srv = Server::with_config(v, None, cfg);
+    srv.index().flush();
+    assert_eq!(handshake_count(&srv), 2, "Notes/a.md and Notes/swap.md");
+    let links = make_links(&root);
+    srv.vault_events(links.iter().map(|p| VaultEvent::Changed(p.clone())).collect());
+    // The swapped note left; nothing came.
+    assert_nothing_shown(&srv, &links, 1);
+}
+
+/// The same with the real watcher, as a smoke test: it waits only for the swapped note to leave
+/// the index (with no assumption about the order of events), then checks nothing is shown.
+#[test]
+fn a_symlinked_note_made_while_the_server_runs_is_never_shown() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = make_vault(dir.path());
+    let srv = server(&root);
+    assert_eq!(handshake_count(&srv), 2);
+    let links = make_links(&root);
+    let swap = NotePath::new("Notes/swap.md");
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
         // Each request takes in the watcher's events first.
         let _ = call(&srv, "vault_info", &json!({}));
-        if srv.index().read().get(&flag).is_some() {
-            seen = true;
+        if srv.index().read().get(&swap).is_none() {
             break;
         }
+        assert!(std::time::Instant::now() < deadline, "the watcher never reported the note swapped for a link");
+        std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(seen, "the watcher reported the new note");
-    // A little longer for a rescan of anything the system merged.
-    std::thread::sleep(Duration::from_millis(1_500));
-    let found = leaks(&srv);
-    assert!(found.is_empty(), "a symlinked note reached an agent: {found:?}");
-    assert_eq!(handshake_count(&srv), before - 1 + 1, "the swapped note left, the flag came: the links count for nothing");
-    let ix = srv.index().read();
-    for p in ["Notes/to-deny.md", "Notes/to-outside.md", "Notes/to-hidden.md", "Notes/dangling.md", "Notes/to-other.md", "Notes/swap.md"] {
-        assert!(ix.get(&NotePath::new(p)).is_none(), "{p} is in the index");
-    }
+    assert_nothing_shown(&srv, &links, 1);
 }
 
 /// `ask`'s second guard (as `search` has): a source the call's `Visibility` lets through but the

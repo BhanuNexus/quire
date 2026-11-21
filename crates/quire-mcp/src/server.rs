@@ -337,6 +337,13 @@ impl Server {
         self.core.subs.remove(handle);
     }
 
+    /// Take in changes to the vault as the watcher reports them, without a
+    /// watcher: an embedder that watches the folder itself, and tests that
+    /// need the events in a known order.
+    pub fn vault_events(&self, events: Vec<VaultEvent>) {
+        self.core.take_events(events);
+    }
+
     /// Handle one JSON-RPC message from `conn`.
     pub fn handle(&self, msg: &Value, conn: &Conn, cancel: &CancelFlag) -> Reply {
         self.core.handle(msg, conn, cancel)
@@ -396,11 +403,16 @@ impl Core {
     fn refresh(&self) {
         let guard = self.watcher.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(w) = guard.as_ref() else { return };
+        let events: Vec<VaultEvent> = w.events.try_iter().collect();
+        drop(guard);
+        self.take_events(events);
+    }
+
+    /// Bring the index up to date with `events`, as they came from the watcher.
+    fn take_events(&self, events: Vec<VaultEvent>) {
         let mut changed = false;
         let mut list_changed: Vec<String> = Vec::new();
         let now = Instant::now();
-        let events: Vec<VaultEvent> = w.events.try_iter().collect();
-        drop(guard);
         for ev in events {
             changed = true;
             // A change to a link (or below a linked folder) is a removal: never read through it.
