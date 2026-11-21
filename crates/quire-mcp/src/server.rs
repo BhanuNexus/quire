@@ -403,7 +403,8 @@ impl Core {
         drop(guard);
         for ev in events {
             changed = true;
-            match ev {
+            // A change to a link (or below a linked folder) is a removal: never read through it.
+            match ev.regular(&self.vault) {
                 VaultEvent::Changed(p) => {
                     if let Ok(src) = self.vault.read(&p) {
                         if self.index.read().get(&p).is_none() {

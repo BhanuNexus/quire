@@ -87,6 +87,30 @@ impl Vault {
         &self.storage
     }
 
+    /// Whether `path` is a regular file below regular folders, links not
+    /// followed: what the vault listing yields. A vault with no folder on
+    /// disk (in memory) has no links, so every path passes. One
+    /// `symlink_metadata` per path segment; for an event, not for a listing.
+    pub fn is_regular_file(&self, path: &NotePath) -> bool {
+        let Some(root) = self.storage.absolute(&NotePath::new("")) else { return true };
+        let mut at = root;
+        let segs: Vec<&str> = path.as_str().split('/').collect();
+        for (i, seg) in segs.iter().enumerate() {
+            if seg.is_empty() || *seg == "." || *seg == ".." {
+                return false;
+            }
+            at.push(seg);
+            let Ok(meta) = std::fs::symlink_metadata(&at) else { return false };
+            let last = i + 1 == segs.len();
+            // Only a regular file is a note: not a link, not a device, not a folder.
+            #[expect(clippy::filetype_is_file, reason = "a regular file is exactly what is wanted; a symlink is refused")]
+            if (last && !meta.file_type().is_file()) || (!last && !meta.file_type().is_dir()) {
+                return false;
+            }
+        }
+        true
+    }
+
     /// All Markdown notes, excluding templates and every note in a locked
     /// folder (0.11), locked or not: the index and everything built on it
     /// never sees one ([`Self::locked_notes`] lists them).

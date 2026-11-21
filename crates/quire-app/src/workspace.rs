@@ -975,7 +975,15 @@ impl Workspace {
 
     fn process_vault_events(&mut self) -> bool {
         let Some(w) = &self.watcher else { return false };
-        let events: Vec<VaultEvent> = w.events.try_iter().collect();
+        // A change to a link (or below a linked folder) is a removal: never read through it.
+        let events: Vec<VaultEvent> = w
+            .events
+            .try_iter()
+            .map(|ev| match &self.vault {
+                Some(v) => ev.regular(v),
+                None => ev,
+            })
+            .collect();
         if events.is_empty() {
             return false;
         }
