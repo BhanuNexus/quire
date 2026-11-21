@@ -131,9 +131,14 @@ pub(super) fn submit(
         Ok(out) => {
             if let SubmitOutcome::Applied { versions } = &out {
                 for (p, _) in versions {
-                    if let Ok(t) = cx.vault.read(p) {
-                        ext.served.store(&t);
-                        cx.index.upsert(p.clone(), t);
+                    match cx.vault.read_regular(p) {
+                        Ok(Some(t)) => {
+                            ext.served.store(&t);
+                            cx.index.upsert(p.clone(), t);
+                        }
+                        // A link is not a note: never read through it.
+                        Ok(None) => cx.index.remove(p.clone()),
+                        Err(_) => {}
                     }
                 }
                 cx.index.flush();
@@ -155,8 +160,11 @@ pub(super) fn apply_approved(cx: &ToolCx<'_>, path: &NotePath, mut cs: ChangeSet
         Ok(out) => {
             if let SubmitOutcome::Applied { versions } = &out {
                 for (p, _) in versions {
-                    if let Ok(t) = cx.vault.read(p) {
-                        cx.index.upsert(p.clone(), t);
+                    match cx.vault.read_regular(p) {
+                        Ok(Some(t)) => cx.index.upsert(p.clone(), t),
+                        // A link is not a note: never read through it.
+                        Ok(None) => cx.index.remove(p.clone()),
+                        Err(_) => {}
                     }
                 }
                 cx.index.flush();

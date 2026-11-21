@@ -207,3 +207,44 @@ fn ask_drops_a_source_the_full_check_refuses() {
     assert!(text.contains("Notes/a.md"), "{text}");
     assert!(!text.contains("[2]"), "the one source left is [1]: {text}");
 }
+
+/// An agent's write to a note path that is a link: Quire's index never takes the text through the
+/// link. Whether the write replaced the link with a file or left it (no change to make), the index
+/// holds the path only as a regular file.
+#[test]
+fn a_write_to_a_link_never_indexes_through_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap().join("vault");
+    for (path, text) in [
+        (".quire/shared/agent-policy.toml", "format = 1\ndefault = \"direct\"\n".to_string()),
+        ("Notes/real.md", "---\nstatus: open\n---\n# real\n\nrealbody\n".to_string()),
+    ] {
+        std::fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+        std::fs::write(root.join(path), text).unwrap();
+    }
+    std::os::unix::fs::symlink(root.join("Notes/real.md"), root.join("Notes/link.md")).unwrap();
+    let state = root.parent().unwrap().join("state");
+    let v = Vault::open_local(&root).unwrap();
+    let store = AgentStore::open(&v, device(), FixedClock::new(NOW_MS));
+    store.set_state_dir(Some(state.clone()));
+    store.approve_policy(store.policy_state().file_hash().as_ref()).unwrap();
+    let cfg = ServerConfig {
+        allow_write: true,
+        device: Some(device()),
+        state_dir: Some(state),
+        clock: FixedClock::new(NOW_MS),
+        ..ServerConfig::default()
+    };
+    let srv = Server::with_config(v, None, cfg);
+    srv.index().flush();
+    for (tool, args) in [
+        // No change to make: the same value again.
+        ("set_properties", json!({"path": "Notes/link.md", "set": {"status": "open"}})),
+        ("append", json!({"path": "Notes/link.md", "text": "more"})),
+    ] {
+        let reply = call(&srv, tool, &args);
+        let link_left = std::fs::symlink_metadata(root.join("Notes/link.md")).unwrap().file_type().is_symlink();
+        let indexed = srv.index().read().get(&NotePath::new("Notes/link.md")).is_some();
+        assert!(!(link_left && indexed), "{tool}: the index took a link's text: {reply}");
+    }
+}

@@ -39,10 +39,13 @@ fn capture_url(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
             if !done.warnings.is_empty() {
                 extra["warnings"] = json!(done.warnings);
             }
-            if let SubmitOutcome::Applied { .. } = &done.outcome
-                && let Ok(t) = cx.vault.read(&done.path)
-            {
-                cx.index.upsert(done.path.clone(), t);
+            if let SubmitOutcome::Applied { .. } = &done.outcome {
+                match cx.vault.read_regular(&done.path) {
+                    Ok(Some(t)) => cx.index.upsert(done.path.clone(), t),
+                    // A link is not a note: never read through it.
+                    Ok(None) => cx.index.remove(done.path.clone()),
+                    Err(_) => {}
+                }
                 cx.index.flush();
             }
             let mut out = outcome(&done.path, &done.outcome, extra);
