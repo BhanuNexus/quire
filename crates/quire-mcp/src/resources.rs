@@ -152,7 +152,9 @@ fn parse_note_uri(uri: &str) -> Option<NoteUri> {
         match k {
             "section" => section = Some(v),
             "lines" => {
-                let (a, b) = v.split_once(['-', ',']).unwrap_or((&v, &v));
+                // `10-40`, `10,40` or `[10,40]`, as the tool takes it.
+                let v = v.trim().trim_matches(['[', ']']);
+                let (a, b) = v.split_once(['-', ',']).unwrap_or((v, v));
                 lines = Some((a.trim().parse().ok()?, b.trim().parse().ok()?));
             }
             _ => {}

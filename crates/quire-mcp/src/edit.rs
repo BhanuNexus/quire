@@ -14,6 +14,8 @@ use quire_app::markdown::{Value, frontmatter, outline};
 pub enum EditOp {
     /// `str_replace`: `old` must occur exactly once.
     Replace { old: String, new: String },
+    /// Every occurrence of `old` (`str_replace` with `all: true`).
+    ReplaceAll { old: String, new: String },
     /// `insert`: new lines after line `line` (0 = top).
     Insert { line: usize, text: String },
     /// `edit_section`: the section under a heading (`## Undo`, `Undo`) or a
@@ -97,6 +99,15 @@ impl EditOp {
                     1 => Ok(text.replacen(old.as_str(), new, 1)),
                     n => Err(EditError::NotUnique { matches: n }),
                 }
+            }
+            Self::ReplaceAll { old, new } => {
+                if old.is_empty() {
+                    return Err(EditError::Invalid("old_str is empty; use insert or append to add text.".into()));
+                }
+                if !text.contains(old.as_str()) {
+                    return Err(EditError::NoMatch);
+                }
+                Ok(text.replace(old.as_str(), new))
             }
             Self::Insert { line, text: add } => {
                 let starts = line_starts(text);
@@ -336,6 +347,10 @@ mod tests {
 
     #[test]
     fn replace_needs_exactly_one_match() {
+        let all = |o: &str, n: &str| EditOp::ReplaceAll { old: o.into(), new: n.into() };
+        assert_eq!(all("a", "b").apply("a a a").unwrap(), "b b b", "every occurrence, no not_unique");
+        assert!(matches!(all("z", "b").apply("a a"), Err(EditError::NoMatch)));
+        assert!(matches!(all("", "b").apply("a a"), Err(EditError::Invalid(_))));
         let r = |o: &str, n: &str| EditOp::Replace { old: o.into(), new: n.into() };
         assert_eq!(ok(r("old undo", "new undo"), NOTE).lines().nth(4), Some("new undo"));
         assert_eq!(r("nope", "x").apply(NOTE), Err(EditError::NoMatch));

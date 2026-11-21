@@ -82,6 +82,23 @@ pub fn fingerprint(tool: &str, args: &Value) -> String {
     format!("{tool}:{}", quire_app::vault::ContentHash::of(&key.to_string()).hex())
 }
 
+/// [`fingerprint`] with old argument names folded into the canonical ones.
+///
+/// `drop` names the old keys, `set` gives the canonical keys their parsed values. A cursor made with
+/// `max_rows: 3` is then good for `limit: 3`.
+pub fn fingerprint_canonical(tool: &str, args: &Value, drop: &[&str], set: &[(&str, Value)]) -> String {
+    let mut key = args.clone();
+    if let Some(o) = key.as_object_mut() {
+        for d in drop {
+            o.remove(*d);
+        }
+        for (k, v) in set {
+            o.insert((*k).to_string(), v.clone());
+        }
+    }
+    fingerprint(tool, &key)
+}
+
 /// One page of a list sorted by a key ([`keyset`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Page {

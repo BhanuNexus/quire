@@ -41,6 +41,20 @@ pub(crate) fn stale(version: &str) -> ToolOutput {
     }
 }
 
+/// A line range as an agent sends it: `[10, 40]` or `"10-40"` (the resource template's form, which
+/// it also takes as `"10,40"`).
+pub(super) fn line_range(v: &Value) -> Option<(usize, usize)> {
+    let n = |x: &Value| x.as_u64().and_then(|x| usize::try_from(x).ok());
+    match v {
+        Value::Array(r) if r.len() == 2 => Some((n(&r[0])?, n(&r[1])?)),
+        Value::String(t) => {
+            let (a, b) = t.trim().trim_matches(['[', ']']).split_once(['-', ','])?;
+            Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+        }
+        _ => None,
+    }
+}
+
 /// Lines `first..=last` of `text` numbered, cut to fit `budget` tokens.
 /// Returns the rendered text and the last line shown.
 pub(super) fn numbered(text: &str, first: usize, last: usize, budget: usize) -> (String, usize) {
@@ -74,9 +88,11 @@ pub(super) fn window(text: &str, version: &ContentHash, a: &Value) -> Result<Win
     let total = line_count(text);
     let (mut first, last) = if let Some(sec) = opt(a, "section") {
         section_lines(text, &sec).map_err(|e| ToolOutput::error(e.code(), e.message("the note")))?
-    } else if let Some(Value::Array(r)) = a.get("lines") {
-        let n = |i: usize| r.get(i).and_then(Value::as_u64).map_or(1, |x| usize::try_from(x).unwrap_or(usize::MAX));
-        let (s, e) = (n(0).max(1), n(1));
+    } else if let Some(range) = a.get("lines").filter(|v| !v.is_null()) {
+        let Some((s, e)) = line_range(range) else {
+            return Err(ToolOutput::error("invalid_args", "`lines` is [first, last] or \"first-last\", e.g. [10, 40] or \"10-40\"."));
+        };
+        let s = s.max(1);
         if s > total.max(1) || e < s {
             return Err(ToolOutput::error("invalid_args", format!("lines [{s}, {e}] are outside the note (1–{total}).")));
         }

@@ -195,6 +195,9 @@ pub(crate) fn edit(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value, tool: &str, op
     let working = own_pending(cx, &path).map_or_else(|| current.clone(), |(_, t)| t);
     let working_v = ContentHash::of(&working);
     let mut extra = json!({});
+    if let EditOp::ReplaceAll { old, .. } = op {
+        extra["replacements"] = working.matches(old.as_str()).count().into();
+    }
     let new_text = match &expected {
         Some(v) if *v != working_v && *v != current_v => {
             let base = ext.served.get(&path, v);

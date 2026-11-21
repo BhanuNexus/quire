@@ -55,7 +55,7 @@ fn pdf_pages_are_found_with_their_page_number() {
     // A `where` that doesn't parse is refused with the reason.
     let r = call(3, json!({"query": "ropes", "filters": {"where": "status is done"}}));
     assert_eq!(r["result"]["structuredContent"]["error"], "invalid_args", "{r}");
-    assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("`filters.where`"), "{r}");
+    assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("`where`"), "{r}");
 }
 
 /// A one-page PDF with `text` in Helvetica (as `make_fixtures.py` writes

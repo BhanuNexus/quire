@@ -64,10 +64,7 @@ const TABLE: &[Row] = &[
 ];
 
 /// Today's gaps against [`TABLE`], each with the step that closes it (`docs/design/0.14-agent-tools.md` §8).
-const BOUNDS_GAPS: &[(&str, &str)] = &[
-    ("ask: no `limit`", "step 4: `limit` is the one row cap, `k` and `max_rows` stay as aliases"),
-    ("query_view: no `limit`", "step 4: `limit` is the one row cap, `k` and `max_rows` stay as aliases"),
-];
+const BOUNDS_GAPS: &[(&str, &str)] = &[];
 
 fn props(schema: &Value) -> &serde_json::Map<String, Value> {
     static EMPTY: std::sync::OnceLock<serde_json::Map<String, Value>> = std::sync::OnceLock::new();

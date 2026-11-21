@@ -14,7 +14,7 @@ pub(super) fn register() -> Box<dyn Tool> {
         "Answer a question from the notes with citations to exact passages (each citation names the note, lines and quoted text). It abstains when the notes don't answer it, listing the nearest passages. mode \"extractive\" (default) quotes the best passages; mode \"model\" writes an answer with the person's own AI provider, if they allowed it. Example: {\"question\": \"Why is undo cheap with ropes?\"}.",
         schema!({"type": "object", "properties": {
                 "question": {"type": "string"},
-                "k": {"type": "integer", "minimum": 1, "maximum": 20, "default": 6},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 6, "description": "How many passages to answer from."},
                 "mode": {"type": "string", "enum": ["extractive", "model"], "default": "extractive"},
                 "max_tokens": {"type": "integer", "default": 4000}}, "required": ["question"]}),
         schema!({"type": "object", "properties": {
@@ -35,7 +35,8 @@ fn ask(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         Ok(_) => return ToolOutput::error("invalid_args", "`question` is empty."),
         Err(e) => return e,
     };
-    let k = int(a, "k", 6, 1, 20);
+    // `k` is the 0.9 spelling of `limit`.
+    let k = int_any(a, &["limit", "k"], 6, 1, 20);
     let model = s(a, "mode") == "model";
     let budget = bounds::max_tokens(a, bounds::DEFAULT_MAX_TOKENS);
     let sem = cx.index.semantic();

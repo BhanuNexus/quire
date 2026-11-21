@@ -12,10 +12,10 @@
 //! [`NOT_YET`] with the step that fixes it; the test fails if that list is wrong in either
 //! direction.
 //!
-//! Not in the table yet, because they need a note with history or a write grant: `diff`
-//! (`from`/`to` and `from_version`/`to_version`), `edit_section` (`heading` and `section`),
-//! `append` (`under_heading` and `section`), `proposals` (`mine` and `actor: "me"`) and `revert`
-//! (`actor`). The step that adds those names adds their rows.
+//! The names that need a note with history or a write grant are checked by
+//! [`write_and_history_aliases_agree`]: `diff` (`from`/`to` and `from_version`/`to_version`),
+//! `edit_section` (`heading` and `section`), `append` (`under_heading` and `section`) and
+//! `proposals` (`mine` and `actor`). `revert` takes `actor` as before (no old spelling).
 #![allow(
     clippy::unwrap_used,
     clippy::panic,
@@ -106,26 +106,7 @@ fn pairs() -> Vec<Pair> {
 }
 
 /// The rows that do not hold yet, as `tool old->canonical (check)`, and the step that makes them.
-const NOT_YET: &[(&str, &str)] = &[
-    ("ask k->limit (canonical wins)", "step 4: aliases and the one convention (§3.2)"),
-    ("ask k->limit (same value)", "step 4: aliases and the one convention (§3.2)"),
-    ("list tag->tags (canonical wins)", "step 4: aliases and the one convention (§3.2)"),
-    ("list tag->tags (same value)", "step 4: aliases and the one convention (§3.2)"),
-    ("query_view max_rows->limit (canonical wins)", "step 4: aliases and the one convention (§3.2)"),
-    ("query_view max_rows->limit (same value)", "step 4: aliases and the one convention (§3.2)"),
-    ("search filters.folder->folder (canonical wins)", "step 4: aliases and the one convention (§3.2)"),
-    ("search filters.folder->folder (same value)", "step 4: aliases and the one convention (§3.2)"),
-    ("search filters.modified_after->since (canonical wins)", "step 4: aliases and the one convention (§3.2)"),
-    ("search filters.modified_after->since (same value)", "step 4: aliases and the one convention (§3.2)"),
-    ("search filters.modified_before->until (canonical wins)", "step 4: aliases and the one convention (§3.2)"),
-    ("search filters.modified_before->until (same value)", "step 4: aliases and the one convention (§3.2)"),
-    ("search filters.tags->tags (canonical wins)", "step 4: aliases and the one convention (§3.2)"),
-    ("search filters.tags->tags (same value)", "step 4: aliases and the one convention (§3.2)"),
-    ("search filters.where->where (canonical wins)", "step 4: aliases and the one convention (§3.2)"),
-    ("search filters.where->where (same value)", "step 4: aliases and the one convention (§3.2)"),
-    ("tasks tag->tags (canonical wins)", "step 4: aliases and the one convention (§3.2)"),
-    ("tasks tag->tags (same value)", "step 4: aliases and the one convention (§3.2)"),
-];
+const NOT_YET: &[(&str, &str)] = &[];
 
 fn with(base: &Value, path: &str, value: &Value) -> Value {
     let mut args = base.clone();
@@ -195,4 +176,93 @@ fn aliases_agree_with_their_canonical_names_or_are_known_gaps() {
             eprintln!("    (\"{g}\", \"step 4\"),");
         }
     }
+}
+
+/// A server that may write, over a fresh copy of [`NOTES`] (with a `wiki/` note it writes directly).
+fn writer() -> Server {
+    let mut notes: Vec<(&str, &str)> = NOTES.to_vec();
+    notes.push(("wiki/Log.md", "# Log\n\n## Done\n\n- one\n\n## Next\n\n- two\n"));
+    let srv = Server::with_vault(Vault::in_memory(&notes), None, true);
+    srv.index().flush();
+    srv
+}
+
+fn text_of(srv: &Server, path: &str) -> String {
+    call(srv, "view", &json!({"path": path}))["content"][0]["text"].as_str().unwrap_or_default().to_string()
+}
+
+/// The aliases of write tools, of `diff` and of `proposals`, each on fresh servers: the old and the
+/// canonical spelling give the same note and the same result, and with both the canonical one wins.
+#[test]
+fn write_and_history_aliases_agree() {
+    // edit_section: `heading` → `section`; append: `under_heading` → `section`.
+    for (tool, base, canon, old) in [
+        ("edit_section", json!({"path": "wiki/Log.md", "content": "- new", "mode": "append"}), "section", "heading"),
+        ("append", json!({"path": "wiki/Log.md", "text": "- new"}), "section", "under_heading"),
+    ] {
+        let run = |args: &Value| {
+            let srv = writer();
+            let _ = call(&srv, tool, args);
+            text_of(&srv, "wiki/Log.md")
+        };
+        let (old_done, old_next) = (run(&with(&base, old, &json!("Done"))), run(&with(&base, old, &json!("Next"))));
+        assert_ne!(old_done, old_next, "{tool}: the fixture tells the sections apart");
+        assert_eq!(run(&with(&base, canon, &json!("Done"))), old_done, "{tool} {old}->{canon}: same value");
+        assert_eq!(run(&with_both(&base, (canon, &json!("Done")), (old, &json!("Next")))), old_done, "{tool}: {canon} wins");
+    }
+
+    // diff: `from`/`to` → `from_version`/`to_version`.
+    let srv = writer();
+    let v0 = call(&srv, "view", &json!({"path": "wiki/Log.md"}))["structuredContent"]["version"].clone();
+    let _ = call(&srv, "append", &json!({"path": "wiki/Log.md", "text": "- three"}));
+    let v1 = call(&srv, "view", &json!({"path": "wiki/Log.md"}))["structuredContent"]["version"].clone();
+    let base = json!({"path": "wiki/Log.md"});
+    let old = call(&srv, "diff", &with(&with(&base, "from", &v0), "to", &v1));
+    assert_ne!(old["structuredContent"]["unified"], "", "the fixture has a change: {old}");
+    assert_eq!(call(&srv, "diff", &with(&with(&base, "from_version", &v0), "to_version", &v1)), old, "diff: same value");
+    let both = call(&srv, "diff", &with(&with(&with(&base, "from_version", &v0), "to_version", &v1), "from", &v1));
+    assert_eq!(both, old, "diff: from_version wins");
+
+    // proposals: `mine: false` → `actor: "all"`, `mine: true` → `actor: "me"`.
+    let srv = writer();
+    let _ = call(&srv, "append", &json!({"path": "Ideas.md", "text": "a suggestion"}));
+    let mine = call(&srv, "proposals", &json!({"mine": true}));
+    let all = call(&srv, "proposals", &json!({"mine": false, "status": "all"}));
+    assert_eq!(call(&srv, "proposals", &json!({"actor": "me"})), mine, "proposals: actor me");
+    assert_eq!(call(&srv, "proposals", &json!({"actor": "all", "status": "all"})), all, "proposals: actor all");
+    let nobody = call(&srv, "proposals", &json!({"actor": "mcp:nobody", "mine": true}));
+    assert_eq!(nobody["structuredContent"]["total"], 0, "proposals: actor wins over mine: {nobody}");
+    assert_eq!(mine["structuredContent"]["total"], 1, "the fixture has one suggestion: {mine}");
+}
+
+/// `lines` as text (`"2-3"`) is the same range as `[2, 3]`, in the tool.
+#[test]
+fn lines_as_text_or_array() {
+    let srv = Server::with_vault(Vault::in_memory(NOTES), None, false);
+    srv.index().flush();
+    let array = call(&srv, "view", &json!({"path": "Ideas.md", "lines": [2, 3]}));
+    assert_eq!(call(&srv, "view", &json!({"path": "Ideas.md", "lines": "2-3"})), array);
+    assert_eq!(array["structuredContent"]["lines"], json!([2, 3]));
+}
+
+/// `str_replace` with `all: true` replaces every occurrence and says how many (the successor of the
+/// 0.8 `replace_in_note`); without it, two occurrences are `not_unique` as before.
+#[test]
+fn str_replace_all_replaces_every_occurrence() {
+    let srv = writer();
+    let meta = json!({"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientInfo": {"name": "probe", "version": "1"}});
+    let raw = |args: Value| {
+        let line =
+            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "str_replace", "arguments": args, "_meta": meta}});
+        let mut out = Vec::new();
+        srv.serve(std::io::Cursor::new(line.to_string()), &mut out).unwrap();
+        serde_json::from_str::<Value>(String::from_utf8(out).unwrap().lines().next().unwrap()).unwrap()["result"].clone()
+    };
+    let one = raw(json!({"path": "wiki/Log.md", "old_str": "- ", "new_str": "* "}));
+    assert_eq!(one["structuredContent"]["error"], "not_unique", "{one}");
+    let all = raw(json!({"path": "wiki/Log.md", "old_str": "- ", "new_str": "* ", "all": true}));
+    assert_eq!(all["structuredContent"]["outcome"], "applied", "{all}");
+    assert_eq!(all["structuredContent"]["replacements"], 2, "{all}");
+    let text = call(&srv, "view", &json!({"path": "wiki/Log.md"}))["content"][0]["text"].as_str().unwrap().to_string();
+    assert!(text.contains("* one") && text.contains("* two") && !text.contains("- "), "{text}");
 }

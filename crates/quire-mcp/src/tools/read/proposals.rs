@@ -11,10 +11,10 @@ pub(super) fn register() -> Box<dyn Tool> {
     tool(
         "proposals",
         "Suggestions",
-        "Your suggestions (proposals) and whether the person accepted them. Example: {} for your pending ones, {\"status\": \"applied\"}, or {\"mine\": false} for everyone's.",
+        "Your suggestions (proposals) and whether the person accepted them. Example: {} for your pending ones, {\"status\": \"applied\"}, or {\"actor\": \"all\"} for everyone's.",
         schema!({"type": "object", "properties": {
                 "status": {"type": "string", "enum": ["pending", "applied", "partially_applied", "rejected", "expired", "superseded", "all"], "default": "pending"},
-                "mine": {"type": "boolean", "default": true},
+                "actor": {"type": "string", "default": "me", "description": "Whose: an actor id, \"me\" (you) or \"all\"."},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
                 "max_tokens": {"type": "integer"}, "cursor": {"type": "string"}}}),
         schema!({"type": "object", "properties": {"proposals": {"type": "array", "items": {"type": "object", "properties": {
@@ -36,15 +36,22 @@ fn proposals(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
             Err(_) => return ToolOutput::error("invalid_args", format!("Unknown status {other}.")),
         },
     };
-    let mine = flag(a, "mine", true);
-    let filter = ProposalFilter { status, actor: mine.then(|| cx.actor.id.clone()), path: None };
+    // `mine: true/false` is the 0.9 spelling of `actor: "me"/"all"`; `actor` wins.
+    let actor = match (opt(a, "actor"), a.get("mine").and_then(Value::as_bool)) {
+        (Some(x), _) if x == "me" => Some(cx.actor.id.clone()),
+        (Some(x), _) if x == "all" => None,
+        (Some(x), _) => Some(x),
+        (None, Some(false)) => None,
+        (None, _) => Some(cx.actor.id.clone()),
+    };
+    let fingerprint = bounds::fingerprint_canonical("s", a, &["mine"], &[("actor", json!(actor))]);
+    let filter = ProposalFilter { status, actor, path: None };
     let mut list = cx.agent.proposals(&filter);
     list.retain(|p| p.files.iter().all(|f| visible(cx, f)));
     // Newest first by when each was made, then by id (the cursor's key).
     let key = |p: &ProposalSummary| format!("{}\u{0}{}", bounds::num_key(u64::MAX - u64::try_from(p.created).unwrap_or(0)), p.id);
     list.sort_by_cached_key(key);
     let render = |p: &ProposalSummary| json!({"id": p.id, "status": p.status, "title": p.title, "files": p.files, "created": iso(p.created), "decided_hunks": p.decided_hunks, "uri": format!("quire://proposal/{}", p.id)});
-    let fingerprint = bounds::fingerprint("s", a);
     let limit = int(a, "limit", 50, 1, 200);
     let budget = bounds::max_tokens(a, bounds::DEFAULT_MAX_TOKENS);
     let Some(page) = bounds::keyset(&list, key, render, a, &fingerprint, limit, budget) else { return stale(&fingerprint) };

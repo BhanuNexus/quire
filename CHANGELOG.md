@@ -8,11 +8,14 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 - **Agents:** the note count in an agent's connection information (the `initialize` and `server/discover` replies) no longer includes notes the agent may not see.
 
 ### Added
+- **Agents:** `str_replace` takes `all: true` to replace every occurrence of a text in a note, and says how many it replaced. `list` takes `since` and `until` (notes changed in a time range), and `tasks` takes `folder`.
 - **`quire-cli sync once --verify`** reads every note again in that pass, to catch a change that kept a file's size and modification time.
 
 ### Changed
 - **Agents:** `list`, `tags`, `properties`, `tasks`, `links` and `vault_info` no longer read every note's file to decide what an agent may see, and neither does an agent's connection; at 50,000 notes they answer in under a tenth of a second where they took close to one.
 - **Agents:** every list an agent can ask for (`list`, `tasks`, `tags`, `properties`, `recent_activity`, `history`, `proposals`, `links`, `outline`, `query_view`, `diff`) now takes a size cap (`max_tokens`) besides its limit, gives a cursor to continue, and says how many rows there are (`total`) and when it was cut (`truncated`); before, `tasks` stopped at its limit without saying so. `tasks` and `query_view` return at most 500 rows a page (was 1,000); `tags` and `properties` now list by name, and `proposals` by when each was made (was: last changed).
+- **Agents:** the same idea has the same parameter name in every tool: `section` (was `heading` in `edit_section`, `under_heading` in `append`), `limit` (was `k` in `ask`, `max_rows` in `query_view`), `tags`, `folder`, `where`, `since` and `until` (flat in `search`, no longer under `filters`), `from_version` and `to_version` in `diff`, `actor` in `proposals` (was `mine`). The old spellings still work.
+- **Agents:** a time such as `since: "7"` with no unit is now refused with a message (it meant 1970); ten digits are refused as Unix seconds. Times are RFC 3339, YYYY-MM-DD, `30m`, `24h`, `7d`, `2w`, or Unix milliseconds; `view` also takes `lines` as `"10-40"`.
 - **Faster start:** Quire opens a large vault much faster: only notes changed since the last start are read again, and search, tasks and views are ready almost at once.
 - **Sync:** a sync pass with nothing to send no longer reads every note; it reads only notes whose file changed, and once a day reads every note again to catch a change that kept a file's size and time.
 - **Sync:** each device keeps its record of what sync did in a new format, written only when something changed, instead of rewriting a copy of every note after each pass; the first sync after updating moves it over once. Going back to Quire 0.13 starts sync afresh on that device (notes changed there are kept as copies), and sync says so when an older Quire also syncs the same vault on the device.

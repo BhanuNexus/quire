@@ -11,17 +11,16 @@ pub(super) fn register() -> Box<dyn Tool> {
     tool(
         "search",
         "Search notes",
-        "Find the sections of notes that match a query, by keywords and meaning. Each hit names the note, the heading and the line range, so you can `view` just that part: view {path, lines}. Supports \"phrases\", #tags and -exclusions in the query. Example: {\"query\": \"rope undo\", \"filters\": {\"folder\": \"Projects/\", \"tags\": [\"cs\"]}}. Results are bounded by max_tokens; pass next_cursor back as cursor for more.",
+        "Find the sections of notes that match a query, by keywords and meaning. Each hit names the note, the heading and the line range, so you can `view` just that part: view {path, lines}. Supports \"phrases\", #tags and -exclusions in the query. Example: {\"query\": \"rope undo\", \"folder\": \"Projects/\", \"tags\": [\"cs\"]}. Results are bounded by max_tokens; pass next_cursor back as cursor for more.",
         schema!({"type": "object", "properties": {
                 "query": {"type": "string", "description": "What to look for."},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
-                "filters": {"type": "object", "properties": {
-                    "folder": {"type": "string", "description": "Folder prefix, e.g. \"Projects/\"."},
-                    "tags": {"type": "array", "items": {"type": "string"}, "description": "Every tag must be on the note."},
-                    "where": {"type": "string", "description": "A property filter, e.g. \"status != done\"."},
-                    "modified_after": {"type": "string", "description": "RFC 3339, YYYY-MM-DD or 7d."},
-                    "modified_before": {"type": "string"},
-                    "kind": {"type": "string", "enum": ["notes", "attachments", "all"], "default": "notes"}}},
+                "folder": {"type": "string", "description": "Folder prefix, e.g. \"Projects/\"."},
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "Every tag must be on the note."},
+                "where": {"type": "string", "description": "A property filter, e.g. \"status != done\"."},
+                "since": {"type": "string", "description": "RFC 3339, YYYY-MM-DD, or a time back from now: 30m, 24h, 7d, 2w"},
+                "until": {"type": "string"},
+                "kind": {"type": "string", "enum": ["notes", "attachments", "all"], "default": "notes"},
                 "max_tokens": {"type": "integer", "default": 2000},
                 "cursor": {"type": "string"}}, "required": ["query"]}),
         schema!({"type": "object", "properties": {
@@ -39,21 +38,22 @@ pub(super) fn register() -> Box<dyn Tool> {
     )
 }
 
-fn search_filters(cx: &ToolCx<'_>, a: &Value) -> SearchFilters {
-    let f = a.get("filters").cloned().unwrap_or_default();
+/// The filters, flat (`folder`, `tags`, `where`, `since`, `until`, `kind`), or as 0.9 sent them inside
+/// `filters` (`modified_after` and `modified_before` for the times); the flat name wins.
+fn search_filters(cx: &ToolCx<'_>, a: &Value) -> Result<SearchFilters, ToolOutput> {
     let now = cx.agent.now_ms();
-    SearchFilters {
-        folder: opt(&f, "folder"),
-        tags: list(&f, "tags").into_iter().map(|t| t.trim_start_matches('#').to_string()).collect(),
-        where_: opt(&f, "where"),
-        modified_after: opt(&f, "modified_after").and_then(|t| parse_time(&t, now)),
-        modified_before: opt(&f, "modified_before").and_then(|t| parse_time(&t, now)),
-        kind: match s(&f, "kind").as_str() {
-            "attachments" => SearchKind::Attachments,
-            "all" => SearchKind::All,
+    Ok(SearchFilters {
+        folder: opt_any(a, &["folder", "filters.folder"]),
+        tags: list_any(a, &["tags", "filters.tags"]).into_iter().map(|t| t.trim_start_matches('#').to_string()).collect(),
+        where_: opt_any(a, &["where", "filters.where"]),
+        modified_after: time_any(a, &["since", "filters.since", "filters.modified_after"], now)?,
+        modified_before: time_any(a, &["until", "filters.until", "filters.modified_before"], now)?,
+        kind: match opt_any(a, &["kind", "filters.kind"]).as_deref() {
+            Some("attachments") => SearchKind::Attachments,
+            Some("all") => SearchKind::All,
             _ => SearchKind::Notes,
         },
-    }
+    })
 }
 
 fn search(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
@@ -64,9 +64,12 @@ fn search(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     };
     let limit = int(a, "limit", 10, 1, 50);
     let budget = bounds::max_tokens(a, 2_000);
-    let filters = search_filters(cx, a);
+    let filters = match search_filters(cx, a) {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
     if let Err(e) = filters.validate() {
-        return ToolOutput::error("invalid_args", format!("`filters.where` isn't valid: {e}"));
+        return ToolOutput::error("invalid_args", format!("`where` isn't valid: {e}"));
     }
     let fingerprint = format!("q:{}", ContentHash::of(&format!("{query}\u{1}{filters:?}\u{1}{limit}")).hex());
     let skip = match bounds::start(a, &fingerprint) {

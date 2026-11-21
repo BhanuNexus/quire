@@ -86,12 +86,23 @@ pub fn iso(ms: i64) -> String {
     chrono::DateTime::from_timestamp_millis(ms).map(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string()).unwrap_or_default()
 }
 
-/// Parse a time: RFC 3339, `YYYY-MM-DD`, Unix ms, or a duration back from
-/// `now` (`24h`, `7d`, `30m`).
-pub fn parse_time(s: &str, now_ms: i64) -> Option<i64> {
+/// How every tool describes a time it takes (`docs/design/0.14-agent-tools.md` §3.2).
+pub const TIME_FORMATS: &str = "RFC 3339, YYYY-MM-DD, or a time back from now: 30m, 24h, 7d, 2w";
+
+/// Parse a time an agent sent ([`TIME_FORMATS`], or Unix milliseconds).
+///
+/// RFC 3339, `YYYY-MM-DD`, a duration back from `now` (`30m`, `24h`, `7d`,
+/// `2w`), or Unix milliseconds (13 digits or more). A bare
+/// shorter integer is refused, with a message that says what to send: `7`
+/// has no unit, and ten digits look like Unix seconds.
+pub fn parse_time(s: &str, now_ms: i64) -> Result<i64, String> {
     let s = s.trim();
-    if let Ok(ms) = s.parse::<i64>() {
-        return Some(ms);
+    if !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) {
+        return match s.len() {
+            13.. => s.parse::<i64>().map_err(|e| format!("`{s}` is not a time: {e}")),
+            10 => Err(format!("`{s}` looks like Unix seconds; send milliseconds, a date, or 7d")),
+            _ => Err(format!("`{s}` has no unit; write {s}d or a date")),
+        };
     }
     if let Some(n) = s.strip_suffix(['m', 'h', 'd', 'w']).and_then(|n| n.parse::<i64>().ok()) {
         let unit = match s.chars().last() {
@@ -100,12 +111,62 @@ pub fn parse_time(s: &str, now_ms: i64) -> Option<i64> {
             Some('d') => 86_400_000,
             _ => 7 * 86_400_000,
         };
-        return Some(now_ms - n * unit);
+        return Ok(now_ms - n * unit);
     }
     if let Ok(d) = chrono::DateTime::parse_from_rfc3339(s) {
-        return Some(d.timestamp_millis());
+        return Ok(d.timestamp_millis());
     }
-    quire_base::time::parse_ymd(s).and_then(|d| d.and_hms_opt(0, 0, 0)).map(|d| d.and_utc().timestamp_millis())
+    quire_base::time::parse_ymd(s)
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+        .map(|d| d.and_utc().timestamp_millis())
+        .ok_or_else(|| format!("`{s}` is not a time ({TIME_FORMATS})"))
+}
+
+/// The first of `keys` the arguments hold.
+///
+/// The canonical name first, then the old spellings it still accepts (`docs/design/0.14-agent-tools.md` §3.2).
+/// A dotted key (`filters.folder`) looks inside an object.
+pub fn pick<'a>(a: &'a Value, keys: &[&str]) -> Option<&'a Value> {
+    keys.iter().find_map(|k| {
+        let v = k.split('.').try_fold(a, |v, part| v.get(part))?;
+        (!v.is_null()).then_some(v)
+    })
+}
+
+/// [`opt`] over the first of `keys` present.
+pub fn opt_any(a: &Value, keys: &[&str]) -> Option<String> {
+    pick(a, keys).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string)
+}
+
+/// [`req`] over the first of `keys` present; the error names the canonical one.
+pub fn req_any(a: &Value, keys: &[&str]) -> Result<String, ToolOutput> {
+    pick(a, keys)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| ToolOutput::error("invalid_args", format!("`{}` is required and must be a string.", keys[0])))
+}
+
+/// [`int`] over the first of `keys` present.
+pub fn int_any(a: &Value, keys: &[&str], default: u64, lo: u64, hi: u64) -> usize {
+    usize::try_from(pick(a, keys).and_then(Value::as_u64).unwrap_or(default).clamp(lo, hi)).unwrap_or(usize::MAX)
+}
+
+/// [`list`] over the first of `keys` present: tags as an array, or one tag as a string.
+pub fn list_any(a: &Value, keys: &[&str]) -> Vec<String> {
+    match pick(a, keys) {
+        Some(Value::Array(v)) => v.iter().filter_map(Value::as_str).map(str::to_string).collect(),
+        Some(Value::String(s)) if !s.is_empty() => vec![s.clone()],
+        _ => Vec::new(),
+    }
+}
+
+/// A time argument by the first of `keys` present: `None` without one, an
+/// `invalid_args` error naming the argument when it can't be read.
+pub fn time_any(a: &Value, keys: &[&str], now_ms: i64) -> Result<Option<i64>, ToolOutput> {
+    match pick(a, keys).and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()) {
+        None => Ok(None),
+        Some(t) => parse_time(t, now_ms).map(Some).map_err(|why| ToolOutput::error("invalid_args", format!("`{}`: {why}", keys[0]))),
+    }
 }
 
 /// The path an agent named, checked (NFC, relative, no hidden folders).
@@ -300,11 +361,16 @@ pub fn tool(
 
 /// A version argument, checked.
 pub fn version_arg(a: &Value, k: &str) -> Result<Option<ContentHash>, ToolOutput> {
-    match opt(a, k) {
+    version_any(a, &[k])
+}
+
+/// [`version_arg`] over the first of `keys` present; the error names the canonical one.
+pub fn version_any(a: &Value, keys: &[&str]) -> Result<Option<ContentHash>, ToolOutput> {
+    match opt_any(a, keys) {
         None => Ok(None),
         Some(v) => ContentHash::parse(&v)
             .map(Some)
-            .ok_or_else(|| ToolOutput::error("invalid_args", format!("`{k}` must be a version from `view` (sha256:…), got {v}"))),
+            .ok_or_else(|| ToolOutput::error("invalid_args", format!("`{}` must be a version from `view` (sha256:…), got {v}", keys[0]))),
     }
 }
 
@@ -327,14 +393,40 @@ mod tests {
         assert_eq!(decode_path("cut%2"), None);
     }
 
+    /// The schemas spell [`TIME_FORMATS`] out (`schema!` takes JSON text, not a constant).
+    #[test]
+    fn every_time_argument_describes_the_formats_alike() {
+        let registry = super::super::ToolRegistry::standard();
+        let mut seen = 0;
+        for t in registry.all() {
+            let props = &t.spec().input_schema["properties"];
+            for key in ["since", "as_of"] {
+                if let Some(d) = props[key]["description"].as_str() {
+                    assert_eq!(d, TIME_FORMATS, "{}.{key}", t.spec().name);
+                    seen += 1;
+                }
+            }
+        }
+        assert!(seen >= 4, "{seen}");
+    }
+
     #[test]
     fn times() {
         let now = 1_000_000_000;
-        assert_eq!(parse_time("24h", now), Some(now - 86_400_000));
-        assert_eq!(parse_time("2026-11-02", now), Some(1_793_577_600_000));
-        assert_eq!(parse_time("2026-11-02T00:00:00Z", now), Some(1_793_577_600_000));
-        assert_eq!(parse_time("17", now), Some(17));
-        assert_eq!(parse_time("soon", now), None);
+        assert_eq!(parse_time("24h", now), Ok(now - 86_400_000));
+        assert_eq!(parse_time("30m", now), Ok(now - 1_800_000));
+        assert_eq!(parse_time("2w", now), Ok(now - 14 * 86_400_000));
+        assert_eq!(parse_time("2026-11-02", now), Ok(1_793_577_600_000));
+        assert_eq!(parse_time("2026-11-02T00:00:00Z", now), Ok(1_793_577_600_000));
+        assert_eq!(parse_time("1793577600000", now), Ok(1_793_577_600_000), "13 digits: Unix ms, as before");
+        assert!(parse_time("soon", now).is_err());
+        assert!(parse_time("2026-13-40", now).is_err());
+        // A bare integer shorter than 13 digits meant 1970; now it says what to send.
+        for short in ["7", "17", "123456789012"] {
+            let why = parse_time(short, now).unwrap_err();
+            assert!(why.contains("no unit") && why.contains(&format!("{short}d")), "{why}");
+        }
+        assert!(parse_time("1793577600", now).unwrap_err().contains("Unix seconds"));
         assert_eq!(iso(1_793_577_600_000), "2026-11-02T00:00:00Z");
     }
 

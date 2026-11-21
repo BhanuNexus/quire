@@ -15,7 +15,7 @@ pub(super) fn register() -> Box<dyn Tool> {
         schema!({"type": "object", "properties": {
                 "path": {"type": "string", "description": "Vault path, e.g. \"Projects/Plan.md\" (\".md\" may be left out)."},
                 "section": {"type": "string", "description": "A heading (\"## Undo\" or \"Undo\") or a block id (\"^abc\")."},
-                "lines": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "[first, last], 1-based, inclusive."},
+                "lines": {"type": ["array", "string"], "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "[first, last] or \"first-last\", 1-based, inclusive."},
                 "include_pending": {"type": "boolean", "default": false},
                 "max_tokens": {"type": "integer", "default": 4000},
                 "cursor": {"type": "string"}}, "required": ["path"]}),
