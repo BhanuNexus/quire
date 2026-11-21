@@ -26,6 +26,7 @@ mod measure;
 mod record;
 // 0.12: typed links and the hierarchy.
 pub mod relations;
+pub mod scope;
 mod sections;
 pub mod semantic;
 pub mod store;
@@ -33,7 +34,7 @@ mod terms;
 pub mod tokenize;
 pub mod views;
 
-pub use actor::{IndexMsg, IndexService, IndexStatus, SemanticBuilder};
+pub use actor::{IndexMsg, IndexService, IndexStatus, Scoped, SemanticBuilder};
 pub use attach::{AttachmentKind, AttachmentText, TextSource};
 pub use fulltext::{DocId, FullText, Query, SearchHit};
 pub use fuzzy::QuickOpenHit;
@@ -48,5 +49,6 @@ pub type Keep<'a> = &'a dyn Fn(&quire_vault::NotePath) -> bool;
 pub use joined::{CrossLinks, Joined};
 pub use record::NoteRecord;
 pub use relations::{Dendron, Hier, LinkConfig, Relation, Relations, TrailMode, TypeStyle};
+pub use scope::{DocStats, MAX_SCOPES, Scope, ScopeKey, ScopeRead, Visible};
 pub use sections::{SearchFilters, SearchKind, SectionHit};
 pub use terms::TermId;

@@ -413,7 +413,21 @@ impl Index {
 
     /// [`Self::search`] over the notes `keep` accepts: the `limit` best of
     /// those, so other notes take no places.
+    ///
+    /// Not for agents: the ranking's statistics count every note. An agent
+    /// searches through its view ([`Self::search_in`]).
     pub fn search_where(&self, query: &str, limit: usize, keep: crate::Keep<'_>) -> Vec<SearchHit> {
+        self.search_ranked(query, limit, None, keep)
+    }
+
+    /// Search ranked with `stats` (the index's own without), over the notes `keep` accepts.
+    pub(crate) fn search_ranked(
+        &self,
+        query: &str,
+        limit: usize,
+        stats: Option<&crate::scope::DocStats>,
+        keep: crate::Keep<'_>,
+    ) -> Vec<SearchHit> {
         let q = Query::parse(query);
         if q.is_empty() {
             return Vec::new();
@@ -421,7 +435,7 @@ impl Index {
         let terms = q.highlight_terms();
         let mut ranked: Vec<(NotePath, f32)> = self
             .fulltext
-            .rank(&q)
+            .rank_in(&q, stats)
             .into_iter()
             .filter(|(path, _)| {
                 let Some(rec) = self.records.get(path) else { return false };

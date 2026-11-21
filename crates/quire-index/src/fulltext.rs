@@ -8,6 +8,7 @@ use quire_vault::NotePath;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::record::NoteRecord;
+use crate::scope::DocStats;
 use crate::terms::{TermId, Terms};
 use crate::tokenize::{FastHash, Folded, fold_into, fold_str, is_content, stem_in_place, stem_owned, tokens};
 
@@ -379,26 +380,57 @@ impl FullText {
     }
 
     fn idf(&self, df: usize) -> f32 {
-        let n = self.ids.len() as f32;
-        ((n - df as f32 + 0.5) / (df as f32 + 0.5)).ln_1p()
+        idf_n(self.ids.len(), df)
     }
 
-    fn score_term(&self, postings: &Postings, scores: &mut HashMap<DocId, f32>, avg: f32) {
-        let idf = self.idf(postings.len());
+    /// The statistics a ranking uses: a view's, unless it holds every
+    /// document (then the index's own, which are the same numbers).
+    fn stats<'a>(&self, stats: Option<&'a DocStats>) -> Option<&'a DocStats> {
+        stats.filter(|s| s.n() != self.ids.len())
+    }
+
+    /// How many documents of `stats` (all without one) use the posting list's term.
+    fn doc_freq_in(postings: &Postings, stats: Option<&DocStats>) -> usize {
+        stats.map_or(postings.len(), |s| postings.keys().filter(|id| s.contains(**id)).count())
+    }
+
+    /// The inverse document frequency of `term` among the documents of
+    /// `stats` (all without one); `None` when none of them uses it.
+    pub(crate) fn term_idf_in(&self, term: &str, stats: Option<&DocStats>) -> Option<f32> {
+        let stats = self.stats(stats);
+        let n = stats.map_or(self.ids.len(), DocStats::n);
+        let df = Self::doc_freq_in(self.live(term)?, stats);
+        (df > 0).then(|| idf_n(n, df))
+    }
+
+    fn score_term(&self, postings: &Postings, scores: &mut HashMap<DocId, f32>, avg: f32, idf: f32, stats: Option<&DocStats>) {
         #[expect(clippy::iter_over_hash_type, reason = "each id gets one addition per term, so the order between ids changes no sum")]
         for (&id, &tf) in postings {
+            if stats.is_some_and(|s| !s.contains(id)) {
+                continue;
+            }
             let dl = self.doc_len.get(id.index()).copied().unwrap_or(1.0);
             let s = idf * (tf * (K1 + 1.0)) / (tf + K1 * (1.0 - B + B * dl / avg));
             *scores.entry(id).or_default() += s;
         }
     }
 
-    /// Ranked (path, score) for every term matching (AND semantics).
-    pub(crate) fn rank(&self, q: &Query) -> Vec<(NotePath, f32)> {
-        if self.ids.is_empty() {
+    /// Ranked (path, score) for every term matching (AND semantics), over
+    /// every document (`stats` `None`) or over the documents of `stats` only, with their own
+    /// statistics: document count, average length and each term's
+    /// document frequency counted among them
+    /// (`docs/design/0.14-agent-index.md` §3.3, plan A). A term none of them
+    /// uses counts as absent, and prefix completions are the terms some of
+    /// them use. The result is what an index holding only those documents
+    /// gives, bit for bit.
+    pub(crate) fn rank_in(&self, q: &Query, stats: Option<&DocStats>) -> Vec<(NotePath, f32)> {
+        let stats = self.stats(stats);
+        let (n, total) = stats.map_or((self.ids.len(), self.total_len), |s| (s.n(), s.total_len()));
+        if n == 0 {
             return Vec::new();
         }
-        let avg = (self.total_len / self.ids.len() as f64) as f32;
+        let member = |id: &DocId| stats.is_none_or(|s| s.contains(*id));
+        let avg = (total / n as f64) as f32;
         let mut scores: HashMap<DocId, f32> = HashMap::new();
         let mut required: Option<std::collections::HashSet<DocId>> = None;
         let mut intersect = |ids: std::collections::HashSet<DocId>| {
@@ -408,21 +440,21 @@ impl FullText {
             });
         };
         for term in &q.terms {
-            match self.live(term) {
-                Some(p) => {
-                    self.score_term(p, &mut scores, avg);
-                    intersect(p.keys().copied().collect());
-                }
-                None => return Vec::new(),
+            let Some(p) = self.live(term) else { return Vec::new() };
+            let df = Self::doc_freq_in(p, stats);
+            if df == 0 {
+                return Vec::new();
             }
+            self.score_term(p, &mut scores, avg, idf_n(n, df), stats);
+            intersect(p.keys().filter(|id| member(id)).copied().collect());
         }
         if let Some(prefix) = &q.prefix {
             let mut any = std::collections::HashSet::new();
-            let live = self.terms.with_prefix(prefix).map(|(t, id)| (t, &self.postings[id.index()])).filter(|(_, p)| !p.is_empty());
+            let live = self.terms.with_prefix(prefix).map(|(t, id)| (t, &self.postings[id.index()])).filter(|(_, p)| p.keys().any(&member));
             for (term, p) in live.take(64) {
                 // Exact matches score fully, longer completions a little less.
                 let mut partial = HashMap::new();
-                self.score_term(p, &mut partial, avg);
+                self.score_term(p, &mut partial, avg, idf_n(n, Self::doc_freq_in(p, stats)), stats);
                 let factor = if term == prefix.as_str() { 1.0 } else { 0.8 };
                 #[expect(
                     clippy::iter_over_hash_type,
@@ -440,7 +472,13 @@ impl FullText {
                 ids.into_iter().filter_map(|id| Some((self.path_of(id)?.clone(), scores.get(&id).copied().unwrap_or(0.0)))).collect()
             }
             // Tag-only queries: every doc is a candidate; filters narrow it down.
-            None => self.paths.iter().flatten().map(|p| (p.clone(), 0.0)).collect(),
+            None => self
+                .paths
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| member(&DocId(u32::try_from(*i).unwrap_or(u32::MAX))))
+                .filter_map(|(_, p)| Some((p.clone()?, 0.0)))
+                .collect(),
         };
         for term in &q.exclude {
             if let Some(p) = self.live(term) {
@@ -449,6 +487,12 @@ impl FullText {
         }
         out
     }
+}
+
+/// BM25's inverse document frequency of a term `df` of `n` documents use.
+fn idf_n(n: usize, df: usize) -> f32 {
+    let n = n as f32;
+    ((n - df as f32 + 0.5) / (df as f32 + 0.5)).ln_1p()
 }
 
 /// Build a short snippet around the first matching term. Terms are folded
