@@ -108,6 +108,7 @@ struct Rules {
 type Entry = (Option<Mode>, Vec<(String, Mode)>);
 
 /// What one policy file says about reads.
+#[derive(Clone)]
 struct PolicyRules {
     ai_off: bool,
     revoked: bool,
@@ -572,5 +573,139 @@ fn a_note_below_a_symlinked_folder_is_hidden() {
     for vis in [store.visibility(&actor, ["Notes", "Alias"]), store.visibility(&actor, [])] {
         assert!(vis.allows(&NotePath::new("Notes/a.md")));
         assert!(!vis.allows(&NotePath::new("Alias/a.md")), "a path through a symlinked folder is refused");
+    }
+}
+
+/// A policy file that says exactly what `r` says (the default zones written out when it has no
+/// others).
+fn render(r: &PolicyRules) -> String {
+    let mut t = format!("format = 1\ndefault = \"{}\"\n", r.default.as_str());
+    if r.ai_off {
+        t.push_str("ai = \"off\"\n");
+    }
+    for (p, m) in &r.zones {
+        write!(t, "[[zone]]\npath = \"{p}\"\nrole = \"agent\"\nmode = \"{}\"\n", m.as_str()).expect("a String takes any text");
+    }
+    if let Some((default, zones)) = &r.entry {
+        t.push_str("[clients.\"mcp:probe\"]\n");
+        if r.revoked {
+            t.push_str("revoked = true\n");
+        }
+        let list = |v: &[String]| v.iter().map(|s| format!("\"{s}\"")).collect::<Vec<_>>().join(", ");
+        if let Some(f) = &r.allow_folders {
+            writeln!(t, "allow_folders = [{}]", list(f)).expect("a String takes any text");
+        }
+        if let Some(g) = &r.allow_tags {
+            writeln!(t, "allow_tags = [{}]", list(g)).expect("a String takes any text");
+        }
+        if let Some(d) = default {
+            writeln!(t, "default = \"{}\"", d.as_str()).expect("a String takes any text");
+        }
+        if !zones.is_empty() {
+            t.push_str("[clients.\"mcp:probe\".zones]\n");
+            for (p, m) in zones {
+                writeln!(t, "\"{p}\" = \"{}\"", m.as_str()).expect("a String takes any text");
+            }
+        }
+    }
+    t
+}
+
+/// Variants of a policy that each change one rule `Visibility` must see: the allow lists, a
+/// revoke, "AI off", whether a zone denies, and the client's own zones.
+fn one_rule_changed(r: &PolicyRules) -> Vec<(&'static str, PolicyRules)> {
+    let with = |f: &dyn Fn(&mut PolicyRules)| {
+        let mut v = r.clone();
+        f(&mut v);
+        v
+    };
+    let entry = |v: &mut PolicyRules| {
+        v.entry.get_or_insert_with(|| (None, Vec::new()));
+    };
+    vec![
+        (
+            "allow_folders",
+            with(&|v| {
+                entry(v);
+                v.allow_folders = if v.allow_folders.is_some() { None } else { Some(vec!["Notes/".into()]) };
+            }),
+        ),
+        (
+            "allow_tags",
+            with(&|v| {
+                entry(v);
+                v.allow_tags = if v.allow_tags.is_some() { None } else { Some(vec!["work".into()]) };
+            }),
+        ),
+        (
+            "revoked",
+            with(&|v| {
+                entry(v);
+                v.revoked = !v.revoked;
+            }),
+        ),
+        ("ai", with(&|v| v.ai_off = !v.ai_off)),
+        (
+            "a zone's deny",
+            with(&|v| {
+                if let Some((_, m)) = v.zones.first_mut() {
+                    *m = if *m == Mode::Deny { Mode::Read } else { Mode::Deny };
+                }
+            }),
+        ),
+        (
+            "the entry's zones",
+            with(&|v| {
+                entry(v);
+                if let Some((_, zones)) = &mut v.entry {
+                    // Add one, or flip whether the first denies (the pattern stays: only the mode differs).
+                    match zones.first_mut() {
+                        None => zones.push(("Work/".into(), Mode::Deny)),
+                        Some((_, m)) => *m = if *m == Mode::Deny { Mode::Read } else { Mode::Deny },
+                    }
+                }
+            }),
+        ),
+    ]
+}
+
+/// The converse that matters for views keyed by the fingerprint: a change to any one rule that
+/// changes an answer changes the fingerprint (a rule left out of the fingerprint would let two
+/// callers who see different notes share a view). Each generated policy, each variant of it that
+/// changes one rule, and a folder locked meanwhile.
+#[test]
+fn a_rule_that_changes_an_answer_changes_the_fingerprint() {
+    let state = tempfile::tempdir().unwrap();
+    let mut rng = Rng(0x5EED_CAFE_F00D_0003);
+    let actor = Actor::agent("mcp:probe", "probe", Via::McpStdio, "d_rules");
+    let mut changed: BTreeMap<&str, usize> = BTreeMap::new();
+    for case_no in 0..60 {
+        let case = generate(&mut rng);
+        let base_rules = &case.rules.policies[case.rules.policies.len() - 1];
+        let answers = |vis: &Visibility| case.paths.iter().map(|(p, t)| ReadRules::allows(vis, p, t)).collect::<Vec<bool>>();
+        let base = store_with(&case, &[render(base_rules)], state.path()).visibility(&actor, all_folders());
+        let mut variants: Vec<(&str, Visibility)> = one_rule_changed(base_rules)
+            .into_iter()
+            .map(|(what, r)| (what, store_with(&case, &[render(&r)], state.path()).visibility(&actor, all_folders())))
+            .collect();
+        // A folder locked after the value was made: another `Visibility` sees it.
+        let locked = store_with(&case, &[render(base_rules)], state.path());
+        locked.vault().storage().write_atomic(&NotePath::new("Work/quire-lock.json"), "{}").unwrap();
+        variants.push(("a locked folder", locked.visibility(&actor, all_folders())));
+        for (what, vis) in &variants {
+            if answers(vis) != answers(&base) {
+                *changed.entry(what).or_default() += 1;
+                assert_ne!(
+                    vis.fingerprint(),
+                    base.fingerprint(),
+                    "case {case_no}: changing {what} changes answers but not the fingerprint\n{}",
+                    render(base_rules)
+                );
+            }
+        }
+    }
+    // Every kind of change must have changed answers in some case, or it was not tested.
+    for what in ["allow_folders", "allow_tags", "revoked", "ai", "a zone's deny", "the entry's zones", "a locked folder"] {
+        assert!(changed.get(what).copied().unwrap_or(0) > 2, "{what} changed answers in only {:?} cases", changed.get(what));
     }
 }
