@@ -1246,6 +1246,7 @@ pub(super) fn peek(root: &Path, name: &str) -> SyncState {
 /// it, beside its folder, so the next pass migrates it once (the perf
 /// job's migration row, `docs/design/0.14-sync-speed.md` §2). Its size in
 /// bytes.
+#[cfg(feature = "bench-hooks")]
 pub(super) fn write_013(root: &Path, name: &str) -> Result<usize, String> {
     let o = Journal::open(root, name)?;
     let old = quire_sync::bases::State13::from_state(&o.state, &o.bases).ok_or("a synced text is missing from the base packs")?;

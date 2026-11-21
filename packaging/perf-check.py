@@ -295,9 +295,11 @@ def sync_suite(a):
                 if f is not None:
                     res["join_fsyncs"] = [f]
                 shutil.rmtree(third, ignore_errors=True)
+            # Needs a quire-cli built with `--features bench-hooks`.
             if "migration" not in a.sync_without:
-                subprocess.run([a.cli, "bench", "sync-013", first], env=env, check=True, capture_output=True)
-                res["migration_ms"] = [once(first).wall_ms]
+                made = subprocess.run([a.cli, "bench", "sync-013", first], env=env, check=False, capture_output=True)
+                if made.returncode == 0:
+                    res["migration_ms"] = [once(first).wall_ms]
         finally:
             if counter:
                 counter.close()

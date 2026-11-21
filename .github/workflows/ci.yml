@@ -372,7 +372,7 @@ jobs:
           shared-key: perf
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build quire-cli, the sync server and the desktop with its bench runs
-        run: cargo build --profile perf --locked -p quire-cli -p quire-sync-server -p quire-desktop --features quire-desktop/bench
+        run: cargo build --profile perf --locked -p quire-cli -p quire-sync-server -p quire-desktop --features quire-desktop/bench,quire-cli/bench-hooks
       - name: Speed budgets
         env:
           QUIRE_BENCH_PDFS: crates/quire-pdf/tests/fixtures

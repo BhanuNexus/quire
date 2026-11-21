@@ -9,8 +9,9 @@
 //!   (`packaging/perf-check.py`, docs/design/0.10-perf.md).
 //! * `bench vault <dir> [notes]`: write a synthetic vault for the desktop
 //!   and sync runs (`notes` notes of ~4 KB and `Big.md` of 100 KB).
-//! * `bench sync-013 <vault>`: write the vault's sync record as Quire 0.13
-//!   kept it, so the next pass migrates it (the perf job's migration row,
+//! * `bench sync-013 <vault>` (built with `--features bench-hooks`): write
+//!   the vault's sync record as Quire 0.13 kept it, so the next pass
+//!   migrates it (the perf job's migration row,
 //!   `docs/design/0.14-sync-speed.md` §2).
 
 #![expect(clippy::disallowed_methods, reason = "benchmarks build and open their own temporary vaults")]
@@ -52,9 +53,7 @@ fn run(args: &[String]) -> Result<(), String> {
     }
     if args.get(1).map(String::as_str) == Some("sync-013") {
         let vault = args.get(2).ok_or("bench sync-013 <vault>")?;
-        let n = quire_app::vault_sync::bench_write_013_state(std::path::Path::new(vault))?;
-        println!("Wrote the sync record as Quire 0.13 kept it ({n} bytes); the next pass migrates it.");
-        return Ok(());
+        return sync_013(std::path::Path::new(vault));
     }
     if let Some(list) = flag("--suite") {
         let runs: usize = flag("--runs").and_then(|n| n.parse().ok()).unwrap_or(5).max(1);
@@ -187,6 +186,18 @@ fn percentile(mut v: Vec<f64>, p: usize) -> f64 {
         return f64::NAN;
     }
     v[(v.len() * p / 100).min(v.len() - 1)]
+}
+
+#[cfg(feature = "bench-hooks")]
+fn sync_013(vault: &std::path::Path) -> Result<(), String> {
+    let n = quire_app::vault_sync::bench_write_013_state(vault)?;
+    println!("Wrote the sync record as Quire 0.13 kept it ({n} bytes); the next pass migrates it.");
+    Ok(())
+}
+
+#[cfg(not(feature = "bench-hooks"))]
+fn sync_013(_vault: &std::path::Path) -> Result<(), String> {
+    Err("this quire-cli was built without the bench-hooks feature".into())
 }
 
 fn emit(suite: &str, metric: &str, value: f64) {

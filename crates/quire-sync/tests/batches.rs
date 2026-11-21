@@ -360,3 +360,61 @@ fn a_resend_is_the_same_revision_only() {
     assert!(matches!(reply.outcomes[..], [quire_sync::BatchOutcome::Conflict, quire_sync::BatchOutcome::Conflict]), "{:?}", reply.outcomes);
     assert_eq!(server.len(), 1);
 }
+
+/// A transport whose sealing changes once the first batch went (the vault
+/// upgraded meanwhile), and that can answer short.
+struct Switching<'a> {
+    inner: &'a MemoryServer,
+    sent: AtomicBool,
+    short: bool,
+}
+
+impl Transport for Switching<'_> {
+    fn pull(&self, after: u64) -> Result<Vec<Revision>, TransportError> {
+        self.inner.pull(after)
+    }
+    fn push(&self, rev: &Revision) -> Result<PushOutcome, TransportError> {
+        self.inner.push(rev)
+    }
+    fn push_batch(&self, revs: &[Revision]) -> BatchReply {
+        self.sent.store(true, Ordering::Relaxed);
+        let mut reply = self.inner.push_batch(revs);
+        if self.short {
+            reply.outcomes.pop();
+        }
+        reply
+    }
+    fn sealing(&self) -> quire_sync::Sealing {
+        if self.sent.load(Ordering::Relaxed) { quire_sync::Sealing::Epoch } else { quire_sync::Sealing::Plain }
+    }
+}
+
+#[test]
+fn a_revision_left_for_the_next_batch_is_sealed_as_that_batch() {
+    let (server, mut devs) = devices(1, 50);
+    let t = Switching { inner: &server, sent: AtomicBool::new(false), short: false };
+    // About 3 MiB of request each: one a batch, the next one built and
+    // left waiting.
+    for i in 0..3 {
+        devs[0].store.write(&format!("Big {i}.md"), &format!("{i}{}", "x".repeat(1536 * 1024))).unwrap();
+    }
+    let d = &mut devs[0];
+    d.engine.sync(&mut d.store, &t, TODAY).unwrap();
+    let revs = server.pull(0).unwrap();
+    assert_eq!(revs.len(), 3);
+    assert_eq!(revs[0].sealed[0], quire_sync::crypto::SEALED_V1);
+    for r in &revs[1..] {
+        assert_eq!(r.sealed[0], quire_sync::crypto::SEALED_V2, "sealed as the batch it went in");
+    }
+}
+
+#[test]
+fn a_reply_shorter_than_its_batch_is_an_error() {
+    let (server, mut devs) = devices(1, 50);
+    let t = Switching { inner: &server, sent: AtomicBool::new(false), short: true };
+    for i in 0..5 {
+        devs[0].store.write(&format!("N{i}.md"), "n\n").unwrap();
+    }
+    let d = &mut devs[0];
+    assert!(d.engine.sync(&mut d.store, &t, TODAY).is_err());
+}

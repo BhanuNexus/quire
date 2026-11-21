@@ -222,6 +222,10 @@ fn a_key_change_during_a_chunked_first_sync_seals_the_rest_anew() {
     assert!(b.refresh(&space).is_none());
     while b.sync().unwrap().more_to_send() {}
     assert_eq!(st.store().latest(&space).unwrap(), 30, "each note once");
+    // The first chunk under the old key, the rest under the new one.
+    let epochs: Vec<u32> =
+        st.store().changes(&space, 0, 100).unwrap().iter().map(|r| quire_sync::crypto::sealed_epoch(&r.sealed).unwrap()).collect();
+    assert_eq!(epochs, [[0; 10].as_slice(), [1; 20].as_slice()].concat());
     assert!(a.refresh(&space).is_none());
     a.sync().unwrap();
     assert_eq!(a.local, b.local);

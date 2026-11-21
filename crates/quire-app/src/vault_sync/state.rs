@@ -88,7 +88,7 @@ pub fn lock_sync(root: &Path) -> Result<SyncLock, LockError> {
 /// For `quire-cli bench sync-013`: write this vault's sync record as
 /// Quire 0.13 kept it (`state.json`), so the next pass migrates it once.
 /// Its size in bytes. Not for anything but measuring the migration.
-#[doc(hidden)]
+#[cfg(feature = "bench-hooks")]
 pub fn bench_write_013_state(root: &Path) -> Result<usize, String> {
     let cfg = SyncConfig::load(root).ok_or("Sync isn't set up for this vault.")?;
     let _lock = lock_sync(root).map_err(|e| e.to_string())?;

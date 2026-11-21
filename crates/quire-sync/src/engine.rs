@@ -1488,6 +1488,8 @@ impl Engine {
             let mut bytes = 0;
             while batch.len() < BATCH_REVISIONS {
                 let item = match waiting.pop_front() {
+                    // Built for an earlier batch: sealed as this one.
+                    Some(i) if i.how != how => self.reseal(how, &i)?,
                     Some(i) => i,
                     None => {
                         // Deletes come first; past them, only while there is room.
@@ -1522,6 +1524,8 @@ impl Engine {
             }
             let revs: Vec<Revision> = batch.iter().map(|i| i.r.clone()).collect();
             let reply = server.push_batch(&revs);
+            // A transport answers every revision, or says why it stopped.
+            let short = reply.outcomes.len() < batch.len() && reply.error.is_none();
             for (item, outcome) in batch.into_iter().zip(reply.outcomes) {
                 match outcome {
                     BatchOutcome::Accepted { seq } => self.accepted(local, server, &item, seq, mark, report)?,
@@ -1540,6 +1544,9 @@ impl Engine {
             if let Some(e) = reply.error {
                 return Err(e.into());
             }
+            if short {
+                return Err(SyncError::Transport(TransportError::Refused("the server answered fewer revisions than it was sent".into())));
+            }
         }
     }
 
@@ -1557,7 +1564,7 @@ impl Engine {
                 (FileId::random()?, None, content, stamp, false)
             }
         };
-        self.seal(how, &id, parent.as_ref(), &content).map(|(r, content)| Some(Item { r, content, stamp, counted }))
+        self.seal(how, &id, parent.as_ref(), &content).map(|(r, content)| Some(Item { r, content, stamp, counted, how }))
     }
 
     /// `content` as a revision of `file` built on `parent`, sealed `how`,
@@ -1590,7 +1597,14 @@ impl Engine {
         item.r.parents.clear();
         item.r.chain.clear();
         item.r.sealed = item.content.seal_as(how, &self.keys, &self.space, &item.r)?;
+        item.how = how;
         Ok(item)
+    }
+
+    /// `item`, never sent, sealed `how` instead.
+    fn reseal(&self, how: Sealing, item: &Item) -> Result<Item, SyncError> {
+        let (r, content) = self.seal(how, &item.r.file, item.r.parents.first(), &item.content)?;
+        Ok(Item { r, content, how, stamp: item.stamp, counted: item.counted })
     }
 
     /// Send `item` on its own ([`Transport::push`]). Returns false on a
@@ -1753,6 +1767,8 @@ struct Item {
     stamp: Option<Stamp>,
     /// Counted by the deletion stop (see [`MANY_DELETES`]).
     counted: bool,
+    /// How `r` is sealed.
+    how: Sealing,
 }
 
 /// `("Notes/Plan", ".md")`; `("README", "")` when there's no extension.
