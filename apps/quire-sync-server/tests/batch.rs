@@ -403,6 +403,15 @@ fn a_batch_is_one_transaction_with_an_outcome_per_revision() {
     assert_eq!(again, out);
     assert_eq!(latest, 3);
     assert_eq!(store.changes(&space, 0, 100).unwrap().len(), 3);
+    // The same ids with other bytes, or from another device, are not a
+    // resend: a conflict, and nothing stored.
+    let mut forged = batch[0].clone();
+    forged.sealed = vec![0xCD; 64];
+    let mut other = batch[3].clone();
+    other.device = DeviceId::random().unwrap();
+    let (out, _) = store.push_many(&space, &[forged, other]).unwrap();
+    assert_eq!(out, [WireOutcome::Conflict {}, WireOutcome::Conflict {}]);
+    assert_eq!(store.changes(&space, 0, 100).unwrap().len(), 3);
     // An empty batch stores nothing and says where the log is.
     assert_eq!(store.push_many(&space, &[]).unwrap(), (Vec::new(), 3));
 }

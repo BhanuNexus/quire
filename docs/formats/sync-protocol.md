@@ -48,8 +48,10 @@ the protocol stays 3 and no space minimum is raised
   `accepted` is stored as its file's head; `conflict`: its first parent is no
   longer the head (no head is sent back, unlike a single push's `409`);
   `lost_parent`: its first parent is not stored. A revision already stored
-  for its file (the batch sent again after its reply was lost) is
-  `accepted` at the position it has, and nothing is stored twice.
+  for its file, from the same device with the same sealed bytes (the batch
+  sent again after its reply was lost), is `accepted` at the position it
+  has, and nothing is stored twice; the same ids with anything else are a
+  `conflict`.
 * Refused whole, nothing stored: `400` (a malformed id, more than two
   parents, a chain longer than 3, more than 1,000 revisions), `403`, `426`,
   `422` (any revision sealed under an older key epoch than the space's

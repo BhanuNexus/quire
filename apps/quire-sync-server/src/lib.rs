@@ -430,8 +430,9 @@ fn check_revision(caller: Option<&Caller>, rev: &Revision) -> Result<(), ApiErro
 /// Push up to [`MAX_BATCH`] revisions in one transaction (0.14). Refused
 /// whole, nothing stored, when any revision is malformed (`400`), written
 /// as another device (`403`) or sealed under an older key epoch (`422`).
-/// A revision stored already (the same batch sent again after its reply was
-/// lost) is accepted at the position it has.
+/// A revision stored already, the same bytes from the same device (the
+/// batch sent again after its reply was lost), is accepted at the position
+/// it has.
 async fn push_batch(
     State(st): State<Arc<AppState>>,
     caller: Option<axum::Extension<Caller>>,

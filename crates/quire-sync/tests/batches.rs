@@ -343,3 +343,20 @@ fn new_files_that_cant_be_read_take_no_room_and_start_no_pass() {
     let stuck = quire_sync::Report { left: 5000, ..quire_sync::Report::default() };
     assert!(!stuck.more_to_send());
 }
+
+#[test]
+fn a_resend_is_the_same_revision_only() {
+    let (server, mut devs) = devices(1, 50);
+    devs[0].store.write("A.md", "a\n").unwrap();
+    sync(&mut devs[0], &server);
+    let stored = server.pull(0).unwrap().remove(0);
+    let reply = server.push_batch(std::slice::from_ref(&stored));
+    assert!(matches!(reply.outcomes[..], [quire_sync::BatchOutcome::Accepted { seq: 1 }]), "a resend: {:?}", reply.outcomes);
+    let mut forged = stored.clone();
+    forged.sealed[1] ^= 1;
+    let mut other = stored;
+    other.device = DeviceId::random().unwrap();
+    let reply = server.push_batch(&[forged, other]);
+    assert!(matches!(reply.outcomes[..], [quire_sync::BatchOutcome::Conflict, quire_sync::BatchOutcome::Conflict]), "{:?}", reply.outcomes);
+    assert_eq!(server.len(), 1);
+}

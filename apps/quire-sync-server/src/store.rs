@@ -354,8 +354,10 @@ impl Store {
     /// same file builds on an earlier one), and the whole batch commits
     /// once. Any revision sealed under an older key epoch refuses the whole
     /// batch, with nothing stored ([`StoreError::OldKey`]). A revision
-    /// already stored for its file (the batch sent again after its reply was
-    /// lost) is accepted at its position, so a resend stores no duplicate.
+    /// already stored for its file, from the same device with the same
+    /// bytes (the batch sent again after its reply was lost), is accepted at
+    /// its position, so a resend stores no duplicate; the same ids with
+    /// anything else are a conflict.
     /// Returns the outcomes and the log's latest position.
     pub fn push_many(&self, space: &SpaceId, revs: &[Revision]) -> Result<(Vec<WireOutcome>, u64), StoreError> {
         let mut db = self.db();
@@ -369,7 +371,7 @@ impl Store {
         let mut seq: i64 = tx.query_row("SELECT COALESCE(MAX(seq), 0) FROM revisions WHERE space = ?1", params![space.0], |r| r.get(0))?;
         let mut outcomes = Vec::with_capacity(revs.len());
         {
-            let mut stored = tx.prepare_cached("SELECT seq FROM revisions WHERE space = ?1 AND file = ?2 AND rev = ?3")?;
+            let mut stored = tx.prepare_cached("SELECT seq, device, sealed FROM revisions WHERE space = ?1 AND file = ?2 AND rev = ?3")?;
             let mut head = tx.prepare_cached(
                 "SELECT r.rev FROM heads h JOIN revisions r ON r.space = h.space AND r.seq = h.seq WHERE h.space = ?1 AND h.file = ?2",
             )?;
@@ -380,8 +382,16 @@ impl Store {
                 "INSERT INTO heads (space, file, seq) VALUES (?1, ?2, ?3) ON CONFLICT (space, file) DO UPDATE SET seq = excluded.seq",
             )?;
             for rev in revs {
-                if let Some(at) = stored.query_row(params![space.0, rev.file.0, rev.rev.0], |r| r.get::<_, i64>(0)).optional()? {
-                    outcomes.push(WireOutcome::Accepted { seq: at.cast_unsigned() });
+                let found = stored
+                    .query_row(params![space.0, rev.file.0, rev.rev.0], |r| {
+                        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, Vec<u8>>(2)?))
+                    })
+                    .optional()?;
+                if let Some((at, device, sealed)) = found {
+                    // Sent again (its reply was lost): the same revision only;
+                    // the same ids with other bytes or another device are not.
+                    let same = device == rev.device.0 && sealed == rev.sealed;
+                    outcomes.push(if same { WireOutcome::Accepted { seq: at.cast_unsigned() } } else { WireOutcome::Conflict {} });
                     continue;
                 }
                 let now: Option<String> = head.query_row(params![space.0, rev.file.0], |r| r.get(0)).optional()?;

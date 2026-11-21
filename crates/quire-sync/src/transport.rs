@@ -244,8 +244,10 @@ impl Transport for MemoryServer {
         let mut log = self.log.lock().unwrap_or_else(PoisonError::into_inner);
         let mut outcomes = Vec::with_capacity(revs.len());
         for r in revs {
-            if let Some(i) = log.revs.iter().position(|x| x.rev == r.rev && x.file == r.file) {
-                outcomes.push(BatchOutcome::Accepted { seq: log.revs[i].seq });
+            if let Some(x) = log.revs.iter().find(|x| x.rev == r.rev && x.file == r.file) {
+                // Sent again (its reply was lost): the same revision only.
+                let same = x.device == r.device && x.sealed == r.sealed;
+                outcomes.push(if same { BatchOutcome::Accepted { seq: x.seq } } else { BatchOutcome::Conflict });
                 continue;
             }
             outcomes.push(match Self::push_to(&mut log, r) {
