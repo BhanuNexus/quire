@@ -573,6 +573,7 @@ impl Engine {
         // A folder that can't be read (gone, unplugged) is neither written
         // into nor read as empty.
         local.list().map_err(SyncError::List)?;
+        server.begin_pass();
         self.sent_in_pass = 0;
         self.own_seqs.clear();
         self.rescope(&*local);

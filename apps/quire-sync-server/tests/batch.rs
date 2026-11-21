@@ -166,14 +166,18 @@ fn devices_of_0_13_and_0_14_share_a_0_14_server() {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Proxy {
-    /// Answers `413` to a body over 1 MiB.
-    Refuses,
-    /// Cuts the connection on a body over 1 MiB.
-    Cuts,
+    /// Answers `413` to a body over this many bytes.
+    Refuses(usize),
+    /// Cuts the connection on a body over this many bytes.
+    Cuts(usize),
+    /// Cuts the connection on the first batch only (a flaky network).
+    CutsTheFirstBatch,
     /// Passes the first batch on, then cuts the connection instead of
     /// passing its reply back.
     LosesAReply,
 }
+
+const MIB: usize = 1024 * 1024;
 
 /// A proxy in front of `base`, one request a connection.
 fn proxy(base: &str, kind: Proxy) -> String {
@@ -217,16 +221,24 @@ fn relay(client: TcpStream, upstream: &str, kind: Proxy, lost: &AtomicBool) {
         head.extend_from_slice(line.as_bytes());
     }
     let mut client = client;
-    if len > 1024 * 1024 && kind != Proxy::LosesAReply {
-        if kind == Proxy::Cuts {
-            // Closed with the body unread: the client sees a reset.
-            drop(reader);
-            #[expect(clippy::let_underscore_must_use, reason = "the client may have gone already")]
-            let _ = client.shutdown(Shutdown::Both);
-        } else {
-            #[expect(clippy::let_underscore_must_use, reason = "the client may have gone already")]
-            let _ = client.write_all(b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-        }
+    let batch = first.contains("/revisions/batch");
+    let cut = match kind {
+        Proxy::Cuts(limit) => len > limit,
+        Proxy::CutsTheFirstBatch => batch && !lost.swap(true, Ordering::Relaxed),
+        _ => false,
+    };
+    if cut {
+        // Closed with the body unread: the client sees a reset.
+        drop(reader);
+        #[expect(clippy::let_underscore_must_use, reason = "the client may have gone already")]
+        let _ = client.shutdown(Shutdown::Both);
+        return;
+    }
+    if let Proxy::Refuses(limit) = kind
+        && len > limit
+    {
+        #[expect(clippy::let_underscore_must_use, reason = "the client may have gone already")]
+        let _ = client.write_all(b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         return;
     }
     let mut body = vec![0u8; len];
@@ -239,7 +251,7 @@ fn relay(client: TcpStream, upstream: &str, kind: Proxy, lost: &AtomicBool) {
     let mut answer = Vec::new();
     #[expect(clippy::let_underscore_must_use, reason = "the answer read so far is passed on")]
     let _ = up.read_to_end(&mut answer);
-    if kind == Proxy::LosesAReply && first.contains("/revisions/batch") && !lost.swap(true, Ordering::Relaxed) {
+    if kind == Proxy::LosesAReply && batch && !lost.swap(true, Ordering::Relaxed) {
         #[expect(clippy::let_underscore_must_use, reason = "the client may have gone already")]
         let _ = client.shutdown(Shutdown::Both);
         return;
@@ -248,7 +260,7 @@ fn relay(client: TcpStream, upstream: &str, kind: Proxy, lost: &AtomicBool) {
     let _ = client.write_all(&answer);
 }
 
-fn behind_a_proxy(kind: Proxy) {
+fn behind_a_proxy(kind: Proxy, most: usize) -> Dev {
     let (base, pushes, _) = serve(true);
     let front = proxy(&base, kind);
     let (space, key) = space(&front);
@@ -257,35 +269,66 @@ fn behind_a_proxy(kind: Proxy) {
     notes(&mut a, 300, 5000);
     a.sync_all();
     assert!(a.t.sends_batches(), "batches go on, smaller");
-    assert!(a.t.batch_cap() <= 1024 * 1024, "{}", a.t.batch_cap());
     let n = pushes.load(Ordering::Relaxed);
-    assert!(n < 30, "{n} requests: batches, not one a note");
+    assert!(n < most, "{n} requests: batches, not one a note");
+    let mut b = Dev::new(&base, &space, &key, "b", false);
+    b.sync_all();
+    assert_eq!(b.local, a.local);
+    a
+}
+
+#[test]
+fn a_proxy_refusing_large_bodies_halves_the_batches_for_the_session() {
+    let mut a = behind_a_proxy(Proxy::Refuses(MIB), 30);
+    assert!(a.t.batch_cap() <= MIB, "{}", a.t.batch_cap());
+    a.sync();
+    assert!(a.t.batch_cap() <= MIB, "a 413 holds for the session");
+}
+
+#[test]
+fn a_proxy_cutting_large_bodies_halves_the_batches_for_the_pass() {
+    let mut a = behind_a_proxy(Proxy::Cuts(MIB), 30);
+    // The next pass without a cut sends 4 MiB batches again.
+    a.sync();
+    a.sync();
+    assert_eq!(a.t.batch_cap(), quire_sync::transport::BATCH_BYTES);
+}
+
+#[test]
+fn a_proxy_cutting_small_bodies_still_syncs() {
+    // Below a note's size times a few: batches shrink to a revision or two.
+    behind_a_proxy(Proxy::Cuts(64 * 1024), 400);
+}
+
+#[test]
+fn a_flaky_cut_on_one_revision_leaves_batches_on() {
+    let (base, _, _) = serve(true);
+    let front = proxy(&base, Proxy::CutsTheFirstBatch);
+    let (space, key) = space(&base);
+    let mut a = Dev::new(&front, &space, &key, "a", false);
+    // About 2 MiB of request: a batch of one.
+    a.local.write("Attachment.md", &"y".repeat(MIB)).unwrap();
+    assert!(a.engine.sync(&mut a.local, &a.t, TODAY).is_err(), "an ordinary offline error");
+    assert!(a.t.sends_batches(), "batches stay on");
+    a.sync_all();
+    assert!(a.t.sends_batches());
     let mut b = Dev::new(&base, &space, &key, "b", false);
     b.sync_all();
     assert_eq!(b.local, a.local);
 }
 
 #[test]
-fn a_proxy_refusing_large_bodies_halves_the_batches() {
-    behind_a_proxy(Proxy::Refuses);
-}
-
-#[test]
-fn a_proxy_cutting_large_bodies_is_taken_once_for_one_refusing_them() {
-    behind_a_proxy(Proxy::Cuts);
-}
-
-#[test]
 fn a_note_too_big_for_the_proxy_fails_as_it_did_in_0_13() {
     let (base, _, _) = serve(true);
-    let front = proxy(&base, Proxy::Cuts);
+    let front = proxy(&base, Proxy::Cuts(MIB));
     let (space, key) = space(&base);
     let mut a = Dev::new(&front, &space, &key, "a", false);
-    // One note over the proxy's limit: one at a time, as in 0.13, and that
-    // fails as it did then, an ordinary offline error.
+    // One note over the proxy's limit fails as it did in 0.13, an ordinary
+    // offline error, and batches go on.
     a.local.write("Big.md", &"y".repeat(1536 * 1024)).unwrap();
     assert!(a.engine.sync(&mut a.local, &a.t, TODAY).is_err());
-    assert!(!a.t.sends_batches(), "one at a time for the rest of the session");
+    assert!(a.engine.sync(&mut a.local, &a.t, TODAY).is_err(), "every pass");
+    assert!(a.t.sends_batches());
     // Small notes still go.
     a.local.0.clear();
     a.local.write("Small.md", "small\n").unwrap();
@@ -297,22 +340,27 @@ fn a_note_too_big_for_the_proxy_fails_as_it_did_in_0_13() {
 
 #[test]
 fn a_batch_whose_reply_was_lost_is_sent_again_without_duplicates() {
-    let (base, _, st) = serve(true);
-    let front = proxy(&base, Proxy::LosesAReply);
-    let (space, key) = space(&base);
-    let mut a = Dev::new(&front, &space, &key, "a", false);
-    notes(&mut a, 50, 10);
-    // The batch was stored, but its reply never came: the pass fails.
-    assert!(a.engine.sync(&mut a.local, &a.t, TODAY).is_err());
-    assert_eq!(st.store().latest(&space).unwrap(), 50, "stored whole");
-    let r = a.sync();
-    assert!(r.conflict_copies.is_empty(), "{r:?}");
-    a.sync_all();
-    assert_eq!(st.store().latest(&space).unwrap(), 50, "nothing stored twice");
-    let mut b = Dev::new(&base, &space, &key, "b", false);
-    b.sync_all();
-    assert_eq!(b.local, a.local);
-    assert_eq!(b.local.0.len(), 50, "no note twice");
+    for n in [50, 1] {
+        let (base, _, st) = serve(true);
+        let front = proxy(&base, Proxy::LosesAReply);
+        let (space, key) = space(&base);
+        let mut a = Dev::new(&front, &space, &key, "a", false);
+        notes(&mut a, n, 10);
+        // The batch was stored, but its reply never came: sent again in
+        // halves within the pass, or (one revision) the pass fails and the
+        // next one sends it again.
+        let first = a.engine.sync(&mut a.local, &a.t, TODAY);
+        assert_eq!(first.is_err(), n == 1, "{first:?}");
+        assert_eq!(st.store().latest(&space).unwrap(), n as u64, "stored whole");
+        let r = a.sync();
+        assert!(r.conflict_copies.is_empty(), "{r:?}");
+        a.sync_all();
+        assert_eq!(st.store().latest(&space).unwrap(), n as u64, "nothing stored twice");
+        let mut b = Dev::new(&base, &space, &key, "b", false);
+        b.sync_all();
+        assert_eq!(b.local, a.local);
+        assert_eq!(b.local.0.len(), n, "no note twice");
+    }
 }
 
 // ------------------------------------------------------------------ the store

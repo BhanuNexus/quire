@@ -35,22 +35,20 @@ pub struct HttpTransport {
     /// session: 0 not asked yet, 1 yes, 2 no (or no longer: see
     /// [`Self::push_batch`]).
     batches: Arc<AtomicU8>,
-    /// The most request body a batch sends in this session: halved on each
-    /// `413` (a proxy with a smaller limit).
+    /// The most request body a batch sends now: halved on each `413` or
+    /// connection cut.
     batch_cap: Arc<AtomicUsize>,
-    /// A cut connection was already taken for a body too large, once.
-    reset_seen: Arc<AtomicBool>,
+    /// The cap as `413`s left it, for the session (a proxy's limit); a cap
+    /// lowered by cuts goes back to it at the next pass without a cut.
+    refused_cap: Arc<AtomicUsize>,
+    /// A batch's connection was cut in this pass.
+    cut_in_pass: Arc<AtomicBool>,
 }
 
 /// The batch-push states of [`HttpTransport::batches`].
 const BATCH_UNKNOWN: u8 = 0;
 const BATCH_ON: u8 = 1;
 const BATCH_OFF: u8 = 2;
-
-/// A batch over this many bytes whose connection was cut is taken once for
-/// one a proxy refused (`docs/design/0.14-sync-speed.md` §3.4), and the cap
-/// drops to at most this.
-const RESET_AS_TOO_LARGE: usize = 1024 * 1024;
 
 /// Whether `e` is a connection cut while sending.
 fn is_cut(e: &ureq::Error) -> bool {
@@ -190,7 +188,8 @@ impl HttpTransport {
             removed: Arc::new(Mutex::new(BTreeMap::new())),
             batches: Arc::new(AtomicU8::new(BATCH_UNKNOWN)),
             batch_cap: Arc::new(AtomicUsize::new(BATCH_BYTES)),
-            reset_seen: Arc::new(AtomicBool::new(false)),
+            refused_cap: Arc::new(AtomicUsize::new(BATCH_BYTES)),
+            cut_in_pass: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -233,7 +232,7 @@ impl HttpTransport {
     }
 
     /// One batch request.
-    fn post_batch(&self, revs: &[Revision], bytes: usize) -> Result<Sent, TransportError> {
+    fn post_batch(&self, revs: &[Revision]) -> Result<Sent, TransportError> {
         let body = serde_json::to_string(&BatchRequest { revisions: revs.to_vec() }).map_err(|e| TransportError::Refused(e.to_string()))?;
         let res = self
             .agent
@@ -244,11 +243,9 @@ impl HttpTransport {
             .send(body.as_str());
         let mut res = match res {
             Ok(r) => r,
-            // A proxy that cuts a body it won't take instead of answering
-            // 413: taken as one once a session, for a large batch.
-            Err(e) if is_cut(&e) && bytes > RESET_AS_TOO_LARGE && !self.reset_seen.swap(true, Ordering::Relaxed) => {
-                return Ok(Sent::Cut);
-            }
+            // Perhaps a proxy that cuts a body it won't take instead of
+            // answering 413, perhaps the network.
+            Err(e) if is_cut(&e) => return Ok(Sent::Cut),
             Err(e) => return Err(TransportError::Offline(e.to_string())),
         };
         let status = res.status().as_u16();
@@ -535,10 +532,13 @@ impl Transport for HttpTransport {
     /// A `413` (a proxy's smaller limit) halves the cap and sends the same
     /// revisions again, down to one a request; refused even then, the rest
     /// of the session pushes one at a time, as does a server without the
-    /// route. A connection cut while sending a batch over 1 MiB is taken
-    /// once, a session, for a `413` (the cap then at most 1 MiB). A batch is
+    /// route. A connection cut while sending more than one revision halves
+    /// the cap too, down to one revision, for this pass (the next pass
+    /// without a cut goes back to the cap `413`s left); a cut on one
+    /// revision is an ordinary offline error, and batches go on. A batch is
     /// stored whole or not at all, and one sent again after its reply was
-    /// lost is taken at the positions it has.
+    /// lost (a cut after the server took it) is taken at the positions it
+    /// has.
     fn push_batch(&self, revs: &[Revision]) -> BatchReply {
         if !self.sends_batches() {
             return BatchReply::one_by_one(self, revs);
@@ -564,7 +564,7 @@ impl Transport for HttpTransport {
                 bytes += n;
                 end += 1;
             }
-            match self.post_batch(&revs[at..end], bytes) {
+            match self.post_batch(&revs[at..end]) {
                 Ok(Sent::Done(reply)) => {
                     let handled = reply.outcomes.len().min(end - at);
                     out.outcomes.extend(reply.outcomes.into_iter().take(handled).map(|o| match o {
@@ -579,17 +579,23 @@ impl Transport for HttpTransport {
                     at = end;
                 }
                 Ok(Sent::TooLarge) if end - at > 1 => {
-                    self.batch_cap.store((bytes / 2).max(1), Ordering::Relaxed);
+                    let half = (bytes / 2).max(1);
+                    self.batch_cap.store(half, Ordering::Relaxed);
+                    self.refused_cap.fetch_min(half, Ordering::Relaxed);
                 }
-                // A cut says nothing of the proxy's limit: halved, and no
-                // more than the size below which a cut is an ordinary
-                // offline error, so a second cut is one.
+                // A cut says nothing sure of a limit: halved for this pass.
                 Ok(Sent::Cut) if end - at > 1 => {
-                    self.batch_cap.store((bytes / 2).clamp(1, RESET_AS_TOO_LARGE), Ordering::Relaxed);
+                    self.batch_cap.store((bytes / 2).max(1), Ordering::Relaxed);
+                    self.cut_in_pass.store(true, Ordering::Relaxed);
+                }
+                Ok(Sent::Cut) => {
+                    self.cut_in_pass.store(true, Ordering::Relaxed);
+                    out.error = Some(TransportError::Offline("the connection was cut while sending".into()));
+                    return out;
                 }
                 // One revision is too large for a batch here: one at a time
                 // from now on, as before 0.14.
-                Ok(Sent::TooLarge | Sent::Cut | Sent::NoRoute) => self.batches.store(BATCH_OFF, Ordering::Relaxed),
+                Ok(Sent::TooLarge | Sent::NoRoute) => self.batches.store(BATCH_OFF, Ordering::Relaxed),
                 Err(e) => {
                     out.error = Some(e);
                     return out;
@@ -603,6 +609,13 @@ impl Transport for HttpTransport {
     /// order: a position given to this device's revision holds nothing else.
     fn own_seqs_skippable(&self) -> bool {
         true
+    }
+
+    /// A cap that cuts lowered goes back up after a pass without one.
+    fn begin_pass(&self) {
+        if !self.cut_in_pass.swap(false, Ordering::Relaxed) {
+            self.batch_cap.store(self.refused_cap.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
     }
 
     fn push(&self, rev: &Revision) -> Result<PushOutcome, TransportError> {

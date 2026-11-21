@@ -58,8 +58,9 @@ the protocol stays 3 and no space minimum is raised
   revisions and 4 MiB of body a request. On `413` (a proxy's smaller
   limit) they halve the byte cap and send the same revisions again, down to
   one a request, then use `POST …/revisions` for the rest of the session. A
-  connection cut while sending a batch over 1 MiB is taken once a session
-  for a `413`, and the cap drops to at most 1 MiB. Without the feature, or
+  connection cut while sending more than one revision halves the cap too,
+  down to one revision, until a pass goes without a cut; a cut on one
+  revision is an ordinary offline error. Without the feature, or
   on a `404`/`405` from the route, they push one revision a request as 0.13
   does.
 

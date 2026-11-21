@@ -100,6 +100,10 @@ pub trait Transport {
         false
     }
 
+    /// A pass starts ([`crate::Engine::sync`]): a transport may reset what
+    /// it learned for one pass only.
+    fn begin_pass(&self) {}
+
     /// For a pulled `theirs` that doesn't build on `ours` (this device's
     /// last synced revision of `file`): the revision both share, if some
     /// revision only `ours` has was written on this device. Those changes
