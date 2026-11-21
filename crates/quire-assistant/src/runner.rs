@@ -166,11 +166,12 @@ impl ToolHost {
         for ev in events {
             // A change to a link (or below a linked folder) is a removal: never read through it.
             match ev.regular(&self.vault) {
-                VaultEvent::Changed(p) => {
-                    if let Ok(src) = self.vault.read(&p) {
-                        self.index.upsert(p, src);
-                    }
-                }
+                VaultEvent::Changed(p) => match self.vault.read_regular(&p) {
+                    Ok(Some(src)) => self.index.upsert(p, src),
+                    // Swapped for a link between the event and the read: gone.
+                    Ok(None) => self.index.remove(p),
+                    Err(_) => {}
+                },
                 VaultEvent::Removed(p) => self.index.remove(p),
                 VaultEvent::AttachmentChanged(_) | VaultEvent::AttachmentRemoved(_) => {}
             }

@@ -406,11 +406,19 @@ impl Core {
             // A change to a link (or below a linked folder) is a removal: never read through it.
             match ev.regular(&self.vault) {
                 VaultEvent::Changed(p) => {
-                    if let Ok(src) = self.vault.read(&p) {
-                        if self.index.read().get(&p).is_none() {
+                    match self.vault.read_regular(&p) {
+                        Ok(Some(src)) => {
+                            if self.index.read().get(&p).is_none() {
+                                list_changed.push(resources::uri_for_path(&p));
+                            }
+                            self.index.upsert(p.clone(), src);
+                        }
+                        // Swapped for a link between the event and the read: gone.
+                        Ok(None) => {
+                            self.index.remove(p.clone());
                             list_changed.push(resources::uri_for_path(&p));
                         }
-                        self.index.upsert(p.clone(), src);
+                        Err(_) => {}
                     }
                     self.note_changed(&p, now);
                 }

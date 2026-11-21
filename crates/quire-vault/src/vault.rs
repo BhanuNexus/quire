@@ -87,6 +87,19 @@ impl Vault {
         &self.storage
     }
 
+    /// The text of `path` if it is a regular file below regular folders
+    /// ([`Self::is_regular_file`]), checked before and after the read, so a
+    /// file swapped for a link meanwhile is never taken: `Ok(None)` then, and
+    /// the caller drops the path from its index. The one way a consumer of
+    /// watcher events or of an agent's write reads a note into an index.
+    pub fn read_regular(&self, path: &NotePath) -> Result<Option<String>> {
+        if !self.is_regular_file(path) {
+            return Ok(None);
+        }
+        let text = self.read(path)?;
+        Ok(self.is_regular_file(path).then_some(text))
+    }
+
     /// Whether `path` is a regular file below regular folders, links not
     /// followed: what the vault listing yields. A vault with no folder on
     /// disk (in memory) has no links, so every path passes. One

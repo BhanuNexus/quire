@@ -389,6 +389,10 @@ mod tests {
             assert_eq!(changed(p), VaultEvent::Removed(p.into()), "{p}");
         }
         assert_eq!(VaultEvent::Removed("Notes/a.md".into()).regular(&vault), VaultEvent::Removed("Notes/a.md".into()));
+        // Reading: only a regular file's text, never a link's target.
+        assert_eq!(vault.read_regular(&"Notes/a.md".into()).unwrap().as_deref(), Some("a"));
+        assert_eq!(vault.read_regular(&"Notes/to-deny.md".into()).unwrap(), None);
+        assert_eq!(vault.read_regular(&"Alias/diary.md".into()).unwrap(), None);
         // A vault in memory has no links.
         let mem = crate::Vault::in_memory(&[("A.md", "a")]);
         assert_eq!(VaultEvent::Changed("A.md".into()).regular(&mem), VaultEvent::Changed("A.md".into()));

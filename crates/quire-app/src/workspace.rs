@@ -994,8 +994,14 @@ impl Workspace {
                     if !seen.insert(p.clone()) {
                         continue;
                     }
-                    let Some(content) = self.vault.as_ref().and_then(|v| v.read(&p).ok()) else {
-                        continue;
+                    let content = match self.vault.as_ref().map(|v| v.read_regular(&p)) {
+                        Some(Ok(Some(c))) => c,
+                        // Swapped for a link between the event and the read: gone.
+                        Some(Ok(None)) => {
+                            self.index.remove(p);
+                            continue;
+                        }
+                        _ => continue,
                     };
                     if !self.docs.iter().any(|d| d.path.as_ref() == Some(&p) && d.matches_disk(&content))
                         && let Some(v) = &self.vault
