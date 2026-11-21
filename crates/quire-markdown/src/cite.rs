@@ -341,7 +341,7 @@ mod tests {
         for note in crate::test_notes::fixture_notes() {
             assert_eq!(scan(&note), old::scan(&note));
         }
-        let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(1000));
+        let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(crate::test_notes::cases(1000)));
         runner
             .run(&crate::test_notes::note_lines(), |t| {
                 prop_assert_eq!(scan(&t), old::scan(&t), "{:?}", t);

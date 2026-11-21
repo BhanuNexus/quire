@@ -109,6 +109,44 @@ pub(crate) fn covering(ranges: &[Range<usize>], pos: usize) -> Option<&Range<usi
     ranges.get(i).filter(|r| r.start <= pos)
 }
 
+/// Counts of the work the scanners do, for tests that check the work grows in
+/// proportion to the text: unlike a timing, a count does not depend on the machine
+/// (`docs/design/0.14-index-startup.md` §3.7). Per thread, and not built in release.
+#[cfg(test)]
+pub(crate) mod work {
+    use std::cell::Cell;
+
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub(crate) struct Work {
+        /// Bytes a needle search started (one for the start, one for each byte read).
+        pub(crate) searched: u64,
+        /// Ranges an overlap question looked at, and the questions.
+        pub(crate) steps: u64,
+        /// Characters the front-matter value reader stepped over.
+        pub(crate) scanned: u64,
+    }
+
+    thread_local! {
+        static NOW: Cell<Work> = const { Cell::new(Work { searched: 0, steps: 0, scanned: 0 }) };
+    }
+
+    pub(crate) fn add(f: impl FnOnce(&mut Work)) {
+        NOW.with(|c| {
+            let mut w = c.get();
+            f(&mut w);
+            c.set(w);
+        });
+    }
+
+    /// The work `f` does on this thread.
+    pub(crate) fn measure<T>(f: impl FnOnce() -> T) -> Work {
+        let before = NOW.with(Cell::get);
+        std::hint::black_box(f());
+        let after = NOW.with(Cell::get);
+        Work { searched: after.searched - before.searched, steps: after.steps - before.steps, scanned: after.scanned - before.scanned }
+    }
+}
+
 /// Asks whether a line overlaps a sorted, merged list of ranges (code, math, front
 /// matter), for a caller that walks the lines of a note in order: the index only
 /// moves forward, so all the lines together cost O(lines + ranges) and not
@@ -116,24 +154,30 @@ pub(crate) fn covering(ranges: &[Range<usize>], pos: usize) -> Option<&Range<usi
 #[derive(Debug)]
 pub(crate) struct Overlap<'a> {
     ranges: &'a [Range<usize>],
-    /// Every range before this one ends at or before the last `from` asked.
+    /// Every range before this one ends at or before `from`.
     next: usize,
+    /// The `from` asked last.
+    from: usize,
 }
 
 impl<'a> Overlap<'a> {
     pub(crate) const fn new(ranges: &'a [Range<usize>]) -> Self {
-        Self { ranges, next: 0 }
+        Self { ranges, next: 0, from: 0 }
     }
 
     /// Does `from..to` (not empty) overlap a range? A `from` before the last one
-    /// asked is answered too, by looking the index up again.
+    /// asked is answered too, by walking from the first range again.
     pub(crate) fn hits(&mut self, from: usize, to: usize) -> bool {
-        // cargo-mutants: equivalent: with `end == from`, `>=` only looks the index up again and gets the one the loop below reaches.
-        if self.next > 0 && self.ranges[self.next - 1].end > from {
-            self.next = self.ranges.partition_point(|r| r.end <= from);
+        if from.cmp(&self.from).is_lt() {
+            self.next = 0;
         }
+        self.from = from;
+        #[cfg(test)]
+        work::add(|w| w.steps += 1);
         while self.ranges.get(self.next).is_some_and(|r| r.end <= from) {
             self.next += 1;
+            #[cfg(test)]
+            work::add(|w| w.steps += 1);
         }
         self.ranges.get(self.next).is_some_and(|r| r.start < to)
     }
@@ -229,6 +273,8 @@ impl Next {
         let behind = self.hit.is_some_and(|h| h < from);
         if !self.searched || from < self.from || behind {
             self.hit = find(&hay[from..]).map(|n| from + n);
+            #[cfg(test)]
+            work::add(|w| w.searched += 1 + self.hit.unwrap_or(hay.len()) as u64 - from as u64);
             self.searched = true;
         }
         self.from = from;
@@ -489,7 +535,7 @@ mod tests {
     }
 
     proptest::proptest! {
-        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(2000))]
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(crate::test_notes::cases(2000)))]
 
         #[test]
         fn the_cursor_scan_gives_the_old_inlines_on_generated_text(src in pieces()) {

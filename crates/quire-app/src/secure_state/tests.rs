@@ -1018,3 +1018,30 @@ fn a_key_changed_twice_elsewhere_never_seals_with_the_old_key() {
     assert!(fresh.read(&np("Journal/Day.md")).unwrap().contains("edited here"));
     assert!(leaks(&root, MARK).is_empty());
 }
+
+/// Clearing the caches (a folder locked) keeps the index cache's
+/// `writer.lock`: a second process on the vault never becomes a writer
+/// beside the first (`docs/formats/index-cache.md`).
+#[test]
+fn clearing_the_caches_keeps_the_index_writer_lock() {
+    let (_d, root) = vault_dir(&[("A.md", "# A\nalpha\n"), ("B.md", "# B\nbeta\n")]);
+    let v = super::open_vault(&root).unwrap();
+    let a = quire_index::IndexService::spawn();
+    a.load_cached(v.clone(), quire_vault::changes::Manifest::open(&v));
+    a.flush();
+    a.flush_cache();
+    let idx = root.join(".quire/cache/index/records.idx");
+    assert!(idx.exists(), "the first process writes");
+    super::clear_caches(&root);
+    assert!(!idx.exists(), "the cache is gone");
+    let b = quire_index::IndexService::spawn();
+    b.load_cached(v.clone(), quire_vault::changes::Manifest::open(&v));
+    b.flush();
+    b.flush_cache();
+    assert!(!idx.exists(), "the second process did not become a writer");
+    drop(b);
+    a.upsert(np("A.md"), "# A\nalpha again\n".into());
+    a.flush();
+    a.flush_cache();
+    assert!(idx.exists(), "the first is still the writer");
+}

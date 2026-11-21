@@ -13,6 +13,7 @@ mod actor;
 pub mod attach;
 pub mod background;
 pub mod chunk;
+mod codec;
 mod derived;
 mod fulltext;
 mod fuzzy;
@@ -20,17 +21,21 @@ mod graph;
 mod hybrid;
 mod index;
 pub mod joined;
+#[cfg(test)]
+mod measure;
 mod record;
 // 0.12: typed links and the hierarchy.
 pub mod relations;
 mod sections;
 pub mod semantic;
+pub mod store;
+mod terms;
 pub mod tokenize;
 pub mod views;
 
 pub use actor::{IndexMsg, IndexService, IndexStatus, SemanticBuilder};
 pub use attach::{AttachmentKind, AttachmentText, TextSource};
-pub use fulltext::{Query, SearchHit};
+pub use fulltext::{DocId, FullText, Query, SearchHit};
 pub use fuzzy::QuickOpenHit;
 pub use graph::{Backlink, Direction, LinkGraph};
 pub use hybrid::HybridHit;
@@ -44,3 +49,4 @@ pub use joined::{CrossLinks, Joined};
 pub use record::NoteRecord;
 pub use relations::{Dendron, Hier, LinkConfig, Relation, Relations, TrailMode, TypeStyle};
 pub use sections::{SearchFilters, SearchKind, SectionHit};
+pub use terms::TermId;

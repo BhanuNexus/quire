@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use quire_index::semantic::SemanticIndex;
-use quire_index::{Index, NoteRecord};
+use quire_index::{Index, NoteRecord, TermId};
 use quire_vault::NotePath;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -19,34 +19,52 @@ pub struct RelatedNote {
     pub because: Vec<String>,
 }
 
-fn doc_freq(index: &Index) -> HashMap<&str, u32> {
-    let mut df: HashMap<&str, u32> = HashMap::new();
+/// How many notes use each content term, by term id.
+fn doc_freq(index: &Index) -> HashMap<TermId, u32> {
+    let mut df: HashMap<TermId, u32> = HashMap::new();
     for r in index.records() {
-        #[expect(clippy::iter_over_hash_type, reason = "counts")]
-        for t in r.terms.keys() {
-            *df.entry(t.as_str()).or_default() += 1;
+        for (t, _) in &r.terms {
+            *df.entry(*t).or_default() += 1;
         }
     }
     df
 }
 
-pub(crate) fn tfidf<'a>(rec: &'a NoteRecord, df: &HashMap<&str, u32>, n: f32) -> HashMap<&'a str, f32> {
-    let mut v: HashMap<&str, f32> = rec
+/// A note's TF-IDF vector over its content terms, normalised, sorted by
+/// term id (so sums over it add in one order on every run).
+pub(crate) fn tfidf(rec: &NoteRecord, df: &HashMap<TermId, u32>, n: f32) -> Vec<(TermId, f32)> {
+    let mut v: Vec<(TermId, f32)> = rec
         .terms
         .iter()
-        .map(|(t, &tf)| {
-            let d = df.get(t.as_str()).copied().unwrap_or(1) as f32;
-            (t.as_str(), (1.0 + (tf as f32).ln()) * ((n + 1.0) / (d + 0.5)).ln())
+        .map(|&(t, tf)| {
+            let d = df.get(&t).copied().unwrap_or(1) as f32;
+            (t, (1.0 + (tf as f32).ln()) * ((n + 1.0) / (d + 0.5)).ln())
         })
         .collect();
-    let norm = v.values().map(|x| x * x).sum::<f32>().sqrt();
+    let norm = v.iter().map(|(_, x)| x * x).sum::<f32>().sqrt();
     if norm > 0.0 {
-        #[expect(clippy::iter_over_hash_type, reason = "scales each value on its own")]
-        for x in v.values_mut() {
+        for (_, x) in &mut v {
             *x /= norm;
         }
     }
     v
+}
+
+/// The terms two sorted vectors share, with the product of their weights.
+fn shared_terms(a: &[(TermId, f32)], b: &[(TermId, f32)]) -> Vec<(TermId, f32)> {
+    let (mut i, mut j, mut out) = (0, 0, Vec::new());
+    while i < a.len() && j < b.len() {
+        match a[i].0.cmp(&b[j].0) {
+            std::cmp::Ordering::Less => i += 1,
+            std::cmp::Ordering::Greater => j += 1,
+            std::cmp::Ordering::Equal => {
+                out.push((a[i].0, a[i].1 * b[j].1));
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+    out
 }
 
 pub fn related_notes(index: &Index, path: &NotePath, limit: usize) -> Vec<RelatedNote> {
@@ -75,7 +93,7 @@ pub fn related_notes_with(index: &Index, semantic: Option<&SemanticIndex>, path:
         .filter(|r| &r.path != path)
         .filter_map(|r| {
             let theirs = tfidf(r, &df, n);
-            let mut shared: Vec<(&str, f32)> = mine.iter().filter_map(|(t, a)| theirs.get(t).map(|b| (*t, a * b))).collect();
+            let mut shared = shared_terms(&mine, &theirs);
             let lexical: f32 = shared.iter().map(|(_, s)| s).sum();
             let score = match sem.get(&r.path) {
                 Some(m) => 0.5 * lexical + 0.5 * m,
@@ -85,13 +103,13 @@ pub fn related_notes_with(index: &Index, semantic: Option<&SemanticIndex>, path:
             if score < 0.05 {
                 return None;
             }
-            shared.sort_by(|a, b| b.1.total_cmp(&a.1));
+            shared.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| index.term(a.0).cmp(index.term(b.0))));
             Some(RelatedNote {
                 path: r.path.clone(),
                 title: r.title.clone(),
                 score,
                 linked: linked.contains(&r.path),
-                because: shared.into_iter().take(3).map(|(t, _)| t.to_string()).collect(),
+                because: shared.into_iter().take(3).map(|(t, _)| index.term(t).to_string()).collect(),
             })
         })
         .collect();

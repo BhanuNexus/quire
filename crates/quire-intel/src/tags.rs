@@ -16,7 +16,10 @@ pub fn suggest_tags(index: &Index, path: &NotePath, limit: usize) -> Vec<(String
         return Vec::new();
     };
     let have: std::collections::HashSet<String> = rec.tags.iter().map(|t| t.to_lowercase()).collect();
-    let total_terms: f32 = rec.terms.values().sum::<u32>().max(1) as f32;
+    let total_terms: f32 = rec.terms.iter().map(|(_, n)| n).sum::<u32>().max(1) as f32;
+    // The note's count of a term, from its sorted content terms.
+    let count_of =
+        |t: &str| index.term_id(t).and_then(|id| rec.terms.binary_search_by_key(&id, |(i, _)| *i).ok()).map_or(0, |k| rec.terms[k].1);
     let mut score: HashMap<String, f32> = HashMap::new();
 
     // 1. The tag's words appear in the note.
@@ -25,7 +28,7 @@ pub fn suggest_tags(index: &Index, path: &NotePath, limit: usize) -> Vec<(String
             continue;
         }
         let leaf = tag.rsplit('/').next().unwrap_or(&tag);
-        let hits: u32 = tokens(leaf).map(|t| rec.terms.get(&t).copied().unwrap_or(0)).sum();
+        let hits: u32 = tokens(leaf).map(|t| count_of(&t)).sum();
         if hits > 0 {
             *score.entry(tag).or_default() += (hits as f32 / total_terms * 20.0).min(0.6);
         }

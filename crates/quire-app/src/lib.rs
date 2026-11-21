@@ -42,6 +42,7 @@ pub mod keymap;
 // 0.12: typed links and hierarchy.
 pub mod links_state;
 pub mod links_web;
+mod manifest_verify;
 pub mod mcp_state;
 pub mod meta_refactor;
 pub mod nav;
