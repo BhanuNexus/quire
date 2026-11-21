@@ -42,7 +42,13 @@ fn ask(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let ix = cx.index.read();
     let vis = cx.visibility_in(&ix);
     // Only notes the caller may see compete for places and numbers.
-    let sources = retrieve_where(&ix, sem.as_deref(), &q, k, &|p| vis.allows(p));
+    let mut sources = retrieve_where(&ix, sem.as_deref(), &q, k, &|p| vis.allows(p));
+    // A second guard, as `search` has: whatever the index returns, nothing the full check (links
+    // followed) hides is quoted. At most `k` (20) sources; numbered again from 1 after it.
+    sources.retain(|src| visible(cx, &src.path));
+    for (i, src) in sources.iter_mut().enumerate() {
+        src.n = i + 1;
+    }
     let mut citations = Vec::new();
     let mut passages = String::new();
     let mut any_untrusted = false;

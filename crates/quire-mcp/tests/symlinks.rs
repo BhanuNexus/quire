@@ -181,3 +181,29 @@ fn a_symlinked_note_made_while_the_server_runs_is_never_shown() {
         assert!(ix.get(&NotePath::new(p)).is_none(), "{p} is in the index");
     }
 }
+
+/// `ask`'s second guard (as `search` has): a source the call's `Visibility` lets through but the
+/// full check refuses is dropped before the sources are numbered. Here a note path in the index
+/// that is a link into the deny zone on disk (put there directly, as nothing in Quire does now).
+#[test]
+fn ask_drops_a_source_the_full_check_refuses() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap().join("vault");
+    for (path, text) in [
+        (".quire/shared/agent-policy.toml", POLICY.to_string()),
+        ("Private/diary.md", marked("privatezq")),
+        ("Notes/a.md", "# a\n\nThe budget words of a visible note.\n".to_string()),
+    ] {
+        std::fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+        std::fs::write(root.join(path), text).unwrap();
+    }
+    std::os::unix::fs::symlink(root.join("Private/diary.md"), root.join("Notes/link.md")).unwrap();
+    let srv = server(&root);
+    srv.index().upsert("Notes/link.md".into(), marked("privatezq"));
+    srv.index().flush();
+    let reply = call(&srv, "ask", &json!({"question": "What are the budget words?"}));
+    let text = reply.to_string();
+    assert!(!text.contains("privatezq") && !text.contains("Notes/link.md"), "{text}");
+    assert!(text.contains("Notes/a.md"), "{text}");
+    assert!(!text.contains("[2]"), "the one source left is [1]: {text}");
+}
