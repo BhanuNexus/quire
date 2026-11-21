@@ -390,6 +390,27 @@ fn store_with(case: &Case, policies: &[String], state: &std::path::Path) -> Agen
     store
 }
 
+#[cfg(unix)]
+/// [`store_with`] for a vault on disk in `dir`, with `linked` (a folder of the case) made a
+/// symlink to a copy of itself: its notes are reached only through the link.
+fn store_on_disk(case: &Case, policy: &str, dir: &std::path::Path, linked: Option<&str>) -> AgentStore {
+    let root = dir.join("vault");
+    for (p, t) in &case.files {
+        std::fs::create_dir_all(root.join(p).parent().unwrap()).unwrap();
+        std::fs::write(root.join(p), t).unwrap();
+    }
+    if let Some(folder) = linked {
+        std::fs::create_dir_all(root.join(folder)).unwrap();
+        std::fs::rename(root.join(folder), root.join(format!("{folder}-real"))).unwrap();
+        std::os::unix::fs::symlink(root.join(format!("{folder}-real")), root.join(folder)).unwrap();
+    }
+    let vault = Vault::open_local(&root).unwrap();
+    let store = AgentStore::open(&vault, DeviceInfo { id: "d_rules".into(), name: "t".into() }, FixedClock::new(1_793_577_600_000));
+    store.set_state_dir(Some(dir.join("state")));
+    store.write_policy(policy).unwrap_or_else(|e| panic!("{e}\n{policy}"));
+    store
+}
+
 /// Every folder the generator can use: what a listing would hand `AgentStore::visibility`.
 fn all_folders() -> impl Iterator<Item = &'static str> {
     FOLDERS.iter().copied()
@@ -612,7 +633,8 @@ fn render(r: &PolicyRules) -> String {
 }
 
 /// Variants of a policy that each change one rule `Visibility` must see: the allow lists, a
-/// revoke, "AI off", whether a zone denies, and the client's own zones.
+/// revoke, "AI off", whether the default or the entry's default denies, whether a zone denies,
+/// which folder a zone covers, and the client's own zones.
 fn one_rule_changed(r: &PolicyRules) -> Vec<(&'static str, PolicyRules)> {
     let with = |f: &dyn Fn(&mut PolicyRules)| {
         let mut v = r.clone();
@@ -645,6 +667,25 @@ fn one_rule_changed(r: &PolicyRules) -> Vec<(&'static str, PolicyRules)> {
             }),
         ),
         ("ai", with(&|v| v.ai_off = !v.ai_off)),
+        ("the default's deny", with(&|v| v.default = if v.default == Mode::Deny { Mode::Read } else { Mode::Deny })),
+        (
+            "the entry's default",
+            with(&|v| {
+                entry(v);
+                if let Some((default, _)) = &mut v.entry {
+                    *default = if *default == Some(Mode::Deny) { None } else { Some(Mode::Deny) };
+                }
+            }),
+        ),
+        (
+            "a zone's path",
+            with(&|v| {
+                // The same mode on another folder.
+                if let Some((p, _)) = v.zones.first_mut() {
+                    *p = if p.as_str() == "Projects/" { "Journal/".into() } else { "Projects/".into() };
+                }
+            }),
+        ),
         (
             "a zone's deny",
             with(&|v| {
@@ -673,6 +714,7 @@ fn one_rule_changed(r: &PolicyRules) -> Vec<(&'static str, PolicyRules)> {
 /// changes an answer changes the fingerprint (a rule left out of the fingerprint would let two
 /// callers who see different notes share a view). Each generated policy, each variant of it that
 /// changes one rule, and a folder locked meanwhile.
+#[cfg(unix)]
 #[test]
 fn a_rule_that_changes_an_answer_changes_the_fingerprint() {
     let state = tempfile::tempdir().unwrap();
@@ -692,6 +734,18 @@ fn a_rule_that_changes_an_answer_changes_the_fingerprint() {
         let locked = store_with(&case, &[render(base_rules)], state.path());
         locked.vault().storage().write_atomic(&NotePath::new("Work/quire-lock.json"), "{}").unwrap();
         variants.push(("a locked folder", locked.visibility(&actor, all_folders())));
+        // A folder that is a symlink, against the same vault on disk without it.
+        let (plain_dir, linked_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let on_disk = store_on_disk(&case, &render(base_rules), plain_dir.path(), None).visibility(&actor, all_folders());
+        let linked = store_on_disk(&case, &render(base_rules), linked_dir.path(), Some("Projects")).visibility(&actor, all_folders());
+        if answers(&linked) != answers(&on_disk) {
+            *changed.entry("a symlinked folder").or_default() += 1;
+            assert_ne!(
+                linked.fingerprint(),
+                on_disk.fingerprint(),
+                "case {case_no}: a symlinked folder changes answers but not the fingerprint"
+            );
+        }
         for (what, vis) in &variants {
             if answers(vis) != answers(&base) {
                 *changed.entry(what).or_default() += 1;
@@ -705,7 +759,19 @@ fn a_rule_that_changes_an_answer_changes_the_fingerprint() {
         }
     }
     // Every kind of change must have changed answers in some case, or it was not tested.
-    for what in ["allow_folders", "allow_tags", "revoked", "ai", "a zone's deny", "the entry's zones", "a locked folder"] {
+    for what in [
+        "allow_folders",
+        "allow_tags",
+        "revoked",
+        "ai",
+        "the default's deny",
+        "the entry's default",
+        "a zone's deny",
+        "a zone's path",
+        "the entry's zones",
+        "a locked folder",
+        "a symlinked folder",
+    ] {
         assert!(changed.get(what).copied().unwrap_or(0) > 2, "{what} changed answers in only {:?} cases", changed.get(what));
     }
 }
