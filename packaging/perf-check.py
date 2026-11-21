@@ -231,6 +231,12 @@ def sync_suite(a):
         def vault(name):
             path = os.path.join(tmp, name)
             subprocess.run([a.cli, "bench", "vault", path, str(n)], check=True, capture_output=True)
+            # An hour old, as a vault being set up is: files written within
+            # 2 s of a scan are hashed again by the next one.
+            old = time.time() - 3600
+            for d, _, files in os.walk(path):
+                for f in files:
+                    os.utime(os.path.join(d, f), (old, old))
             return path
 
         def once(path):
