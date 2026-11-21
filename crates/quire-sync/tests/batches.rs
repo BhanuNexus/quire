@@ -418,3 +418,23 @@ fn a_reply_shorter_than_its_batch_is_an_error() {
     let d = &mut devs[0];
     assert!(d.engine.sync(&mut d.store, &t, TODAY).is_err());
 }
+
+#[test]
+fn edits_to_more_notes_than_a_chunk_go_a_chunk_a_pass() {
+    let (server, mut devs) = devices(2, 3);
+    for i in 0..10 {
+        devs[0].store.write(&format!("N{i}.md"), "one\n").unwrap();
+    }
+    sync_all(&mut devs[0], &server);
+    for i in 0..10 {
+        devs[0].store.write(&format!("N{i}.md"), &format!("two {i}\n")).unwrap();
+    }
+    let r = sync(&mut devs[0], &server);
+    assert_eq!((r.pushed, r.left), (3, 7));
+    // Edited again before its pass: the text read then is the one sent.
+    devs[0].store.write("N9.md", "three\n").unwrap();
+    assert_eq!(sync_all(&mut devs[0], &server), 3);
+    sync_all(&mut devs[1], &server);
+    assert_eq!(devs[1].store, devs[0].store);
+    assert_eq!(devs[1].store.read("N9.md").as_deref(), Some("three\n"));
+}

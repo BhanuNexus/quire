@@ -1307,6 +1307,10 @@ impl Engine {
         // too much sends nothing at all.
         // Each with the stamp of the bytes its text was read from.
         let mut plan: Vec<(FileId, RevId, Content, Option<Stamp>)> = Vec::new();
+        // Changes past this pass's room aren't kept (nor their texts): the
+        // next pass reads them again.
+        let room = self.chunk.saturating_sub(self.sent_in_pass);
+        let (mut changes_kept, mut deferred) = (0usize, 0usize);
         let mut held = 0usize;
         let mut counted: Vec<(FileId, String)> = Vec::new();
         let mut settings: Vec<(FileId, String)> = Vec::new();
@@ -1412,6 +1416,13 @@ impl Engine {
                     }
                 }
             };
+            if !content.deleted {
+                if changes_kept >= room {
+                    deferred += 1;
+                    continue;
+                }
+                changes_kept += 1;
+            }
             plan.push((id, t.head.clone(), content, stamp));
         }
         // Several vault settings files at once: asked first too.
@@ -1458,8 +1469,9 @@ impl Engine {
             jobs.push(Job::Planned(Box::new(Planned { id, parent: Some(head), content, stamp, counted })));
         }
         jobs.extend(untracked.into_iter().map(Job::New));
-        let room = self.chunk.saturating_sub(self.sent_in_pass);
-        self.send(local, server, jobs, room, mark, report)
+        let done = self.send(local, server, jobs, room, mark, report)?;
+        report.left += deferred;
+        Ok(done)
     }
 
     /// Send `jobs` in batches: every delete, and at most `room` other
