@@ -147,7 +147,7 @@ impl Visibility {
         self.decide(path, tags, OpKind::Read) != Mode::Deny
     }
 
-    /// The store's [`decide`] for `path` and `op`, with this value's folder checks.
+    /// The store's [`decide`](crate::store::decide) for `path` and `op`, with this value's folder checks.
     fn decide(&self, path: &NotePath, tags: &[String], op: OpKind) -> Mode {
         let Some(rules) = &self.rules else { return Mode::Direct };
         let named = path.as_str();
@@ -258,7 +258,7 @@ const fn hides(m: Mode) -> &'static str {
     if matches!(m, Mode::Deny) { "deny" } else { "read" }
 }
 
-/// The parts of one active policy that [`decide`] reads for `actor`'s reads.
+/// The parts of one active policy that [`decide`](crate::store::decide) reads for `actor`'s reads.
 fn policy_lines(text: &mut String, pol: &Policy, actor: &Actor) {
     let mut line = |args: std::fmt::Arguments<'_>| {
         text.write_fmt(args).expect("a String takes any text");
