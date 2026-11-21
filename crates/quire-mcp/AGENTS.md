@@ -11,7 +11,9 @@ Edition: both (P5). HTTP servers (`axum`, `tokio`) are allowed here by `deny.tom
   path (one an agent named, the ledger's, a proposal's) with `common::visible` (`AgentStore::effective_mode`, links followed),
   so deny zones, hidden folders, links out of the vault and locked folders are all invisible. A count or a title from a denied
   note is a leak. A tool that takes a note by name resolves it with `common::existing`. Inside a closure that runs under the
-  index's read lock, use a `Visibility` taken before (`ToolCx::visibility_in`).
+  index's read lock, use a `Visibility` taken before (`ToolCx::visibility_in`). `Visibility` checks folders, not files: the
+  index holds no symlinked note only because every watcher event goes through `VaultEvent::regular` before it is read
+  (`Core::refresh`; keep it there), and `search` and `ask` keep `common::visible` on what they quote.
   A ranked list ranks only visible notes (`retrieve_where`, the `*_where` searches of quire-index), never filters the top k;
   a `where` argument is parsed with `views::parse_where` (one line) and run with `views::run_over` and `visible`.
   [test] `tests/visibility.rs` calls every read tool of `ToolRegistry::standard()` against a vault with hidden notes;
