@@ -56,7 +56,8 @@ fn recent_activity(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput
         .log(&LedgerQuery { since: Some(since), actor: actor.clone(), run: None })
         .into_iter()
         .filter(|e| !matches!(e.op, Op::Read | Op::Batch))
-        .filter(|e| e.path.as_ref().is_none_or(|p| visible(cx, p)))
+        // Both paths of an event: a rename into a hidden place names it in `to`.
+        .filter(|e| e.path.as_ref().is_none_or(|p| visible(cx, p)) && e.to.as_ref().is_none_or(|p| visible(cx, p)))
         .map(|e| {
             let v = json!({"at": iso(e.at), "actor": e.actor.id, "op": op_kind(e.op), "path": e.path, "to": e.to, "proposal": e.proposal, "after": e.after});
             (e.at, v)

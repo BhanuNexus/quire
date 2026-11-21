@@ -554,3 +554,33 @@ fn a_note_below_a_symlinked_folder_is_never_listed() {
         assert!(!all.contains(leak), "a note below a symlinked folder is listed ({leak}): {all}");
     }
 }
+
+/// `recent_activity` hides an event whose `to` (a rename's new path) the caller may not see, as it
+/// hides one whose `path` it may not see.
+#[test]
+fn recent_activity_hides_a_rename_into_a_hidden_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("vault");
+    std::fs::create_dir_all(root.join(".quire/shared")).unwrap();
+    std::fs::create_dir_all(root.join("Private")).unwrap();
+    std::fs::write(
+        root.join(".quire/shared/agent-policy.toml"),
+        "format = 1\ndefault = \"read\"\n[[zone]]\npath = \"Private/\"\nrole = \"private\"\nmode = \"deny\"\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("Open.md"), "# Open\n").unwrap();
+    let store = AgentStore::open(&Vault::open_local(&root).unwrap(), device(), FixedClock::new(1_793_577_600_000));
+    let person = quire_agent::Actor::agent("mcp:other", "other", quire_agent::Via::McpStdio, "d_conn");
+    let mut moved = quire_agent::LedgerEntry::new(person.clone(), quire_agent::Op::Rename, 1_793_577_000_000);
+    moved.path = Some("Open.md".into());
+    moved.to = Some("Private/movedzq.md".into());
+    store.record(&moved);
+    let mut edit = quire_agent::LedgerEntry::new(person, quire_agent::Op::Write, 1_793_577_100_000);
+    edit.path = Some("Open.md".into());
+    store.record(&edit);
+    let srv = server(&root, Some("probe"));
+    let replies = run(&srv, &[call("recent_activity", &json!({"since": "36500d", "actor": "mcp:other"}))]);
+    let all = replies[0].to_string();
+    assert!(all.contains("Open.md"), "the visible edit is listed: {all}");
+    assert!(!all.contains("movedzq") && !all.contains("Private/"), "a rename into the deny zone leaks: {all}");
+}
