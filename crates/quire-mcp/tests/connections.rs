@@ -584,3 +584,23 @@ fn recent_activity_hides_a_rename_into_a_hidden_place() {
     assert!(all.contains("Open.md"), "the visible edit is listed: {all}");
     assert!(!all.contains("movedzq") && !all.contains("Private/"), "a rename into the deny zone leaks: {all}");
 }
+
+/// The connection text counts, for a client with a tag allow list, only the notes with its tags.
+#[test]
+fn a_tag_limited_clients_handshake_counts_its_notes() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("vault");
+    std::fs::create_dir_all(root.join(".quire/shared")).unwrap();
+    std::fs::write(root.join(".quire/shared/agent-policy.toml"), "format = 1\n[clients.\"mcp:probe\"]\nallow_tags = [\"ok\"]\n").unwrap();
+    std::fs::write(root.join("A.md"), "# A #ok\n").unwrap();
+    std::fs::write(root.join("B.md"), "# B\n").unwrap();
+    std::fs::write(root.join("C.md"), "---\ntags: [ok]\n---\n# C\n").unwrap();
+    let srv = server(&root, Some("probe"));
+    let init = (
+        "initialize".to_string(),
+        json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "probe", "version": "1"}}),
+    );
+    let r = run(&srv, &[init]);
+    let text = r[0]["result"]["instructions"].as_str().unwrap();
+    assert!(text.contains("(2 notes)"), "{text}");
+}

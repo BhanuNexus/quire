@@ -581,18 +581,22 @@ impl Core {
 
     /// How many indexed notes `actor` may see, by its `Visibility`: no disk read per note, and the
     /// index is read only to copy its paths (the folder checks and the count run without its lock).
+    /// Tags are copied only for a client with a tag allow list, in a second short read.
     fn visible_notes(&self, store: &AgentStore, actor: &Actor) -> usize {
-        let (notes, folders) = {
+        let (paths, folders) = {
             let ix = self.index.read();
-            let notes: Vec<(NotePath, Vec<String>)> = ix.records().map(|r| (r.path.clone(), r.tags.clone())).collect();
-            let mut folders: Vec<String> =
-                notes.iter().filter_map(|(p, _)| p.as_str().rsplit_once('/').map(|(f, _)| f.to_string())).collect();
+            let paths: Vec<NotePath> = ix.records().map(|r| r.path.clone()).collect();
+            let mut folders: Vec<String> = paths.iter().filter_map(|p| p.as_str().rsplit_once('/').map(|(f, _)| f.to_string())).collect();
             folders.sort_unstable();
             folders.dedup();
-            (notes, folders)
+            (paths, folders)
         };
         let vis = store.visibility(actor, folders.iter().map(String::as_str));
-        notes.iter().filter(|(p, tags)| vis.allows_with_tags(p, tags)).count()
+        if !vis.needs_tags() {
+            return paths.iter().filter(|p| vis.allows_with_tags(p, &[])).count();
+        }
+        let tagged: Vec<(NotePath, Vec<String>)> = self.index.read().records().map(|r| (r.path.clone(), r.tags.clone())).collect();
+        tagged.iter().filter(|(p, tags)| vis.allows_with_tags(p, tags)).count()
     }
 
     fn capabilities() -> Value {
