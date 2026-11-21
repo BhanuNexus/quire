@@ -6,8 +6,8 @@
 //!
 //! A `Storage` wrapper counts `exists`, `modified`, `read` (and `read_bytes`) and `absolute` (the
 //! call that precedes a `canonicalize`) for a vault of 2,000 notes in 40 folders. A call may make
-//! none per note, at most two per distinct folder (the locked-folder check: its key file and its
-//! unlocking file) and at most eight more in all (policy file, ledger). Tools over that budget
+//! none per note, at most three per distinct folder (the locked-folder check: its key file and its
+//! unlocking file; and whether the folder is a symlink) and at most eight more in all (policy file, ledger). Tools over that budget
 //! are listed in [`OVER_BUDGET`] with the step that fixes them (none now); the test fails if the
 //! list is wrong in either direction.
 #![allow(
@@ -31,8 +31,9 @@ use serde_json::{Value, json};
 
 const NOTES: usize = 2_000;
 const FOLDERS: usize = 40;
-/// Folder checks allowed per distinct folder, and calls allowed besides them and the notes.
-const PER_FOLDER: usize = 2;
+/// Folder checks allowed per distinct folder (its key file, its unlocking file, and whether it is
+/// a symlink), and calls allowed besides them and the notes.
+const PER_FOLDER: usize = 3;
 const OTHER: usize = 8;
 
 /// The note the tools that take one are given.
@@ -146,6 +147,12 @@ impl Storage for Counting {
         self.inner.absolute(path)
     }
 
+    /// Logged as the folder with a trailing `/`: a folder check, as the lock files are.
+    fn is_symlink(&self, path: &NotePath) -> bool {
+        self.note("symlink", &NotePath::new(format!("{path}/")));
+        self.inner.is_symlink(path)
+    }
+
     fn list_under(&self, folder: &str) -> quire_app::vault::Result<Vec<NotePath>> {
         self.inner.list_under(folder)
     }
@@ -203,7 +210,8 @@ fn cost(log: &[(&'static str, String)], own: &BTreeSet<String>) -> Cost {
         let name = path.rsplit('/').next().unwrap_or(path);
         if path.is_empty() || path.starts_with(".quire/") || name == "AGENTS.md" || name == "CLAUDE.md" || own.contains(path) {
             other += 1;
-        } else if name.starts_with("quire-lock") {
+        } else if name.starts_with("quire-lock") || name.is_empty() {
+            // A lock file, or a folder's own check (`folder/`): per folder.
             *folders.entry(path.rsplit_once('/').map_or("", |(f, _)| f)).or_default() += 1;
         } else {
             per_note += 1;

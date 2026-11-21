@@ -10,27 +10,31 @@
 //!
 //! - The policy, the approvals and the caller's grant: the cached part
 //!   ([`crate::AgentStore`] keeps it until the policy state or a grant changes).
-//! - Locked folders: checked on the disk when the value is made, for each
-//!   folder it is given, and for any other folder the first time a path in it
-//!   is asked about; never cached across calls, so a folder another process
-//!   locks is hidden from the next call. At most two `exists` per folder.
+//! - Locked folders: checked when the value is made, for each folder it is
+//!   given, and for any other folder the first time a path in it is asked
+//!   about; never cached across calls, so a folder another process locks is
+//!   hidden from the next call. Two `exists` per folder.
 //! - Symlinked folders: a path below a folder that is a symlink is hidden
-//!   (one `symlink_metadata` per folder, on a vault on disk). The vault
-//!   listing never yields such a path; this refuses one that reached the
-//!   index some other way.
+//!   (`Storage::is_symlink`, one per folder, false for a vault in memory).
+//!   Three storage calls per folder in all.
 //! - Tags, for a client with a tag allow list: the index record's tags, not
 //!   the file's (the one place this is looser than `effective`, by the
 //!   watcher's lag; `view` still checks the file).
 //!
-//! What it does not do: follow a symlinked *file*. Paths an agent names go
-//! through [`crate::AgentStore::guard`]; a `Visibility` is for paths that came
-//! out of the index or the vault listing, which hold regular files only.
+//! What it does not check: whether the note *file* is a symlink (that would
+//! be a call per note). That holds by another rule: the vault listing skips
+//! links, and every change read from the watcher goes through
+//! `quire_vault::VaultEvent::regular`, which turns a change to a link (or to
+//! anything below a linked folder) into a removal before the MCP server, the
+//! agent panel or the workspace reads it into the index. A path put into the
+//! index by any other way is not covered; `search` and `ask` keep the full
+//! check on what they quote. Paths an agent names go through
+//! [`crate::AgentStore::guard`].
 //!
 //! The rules themselves are the store's `decide`, shared with `effective`.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use quire_vault::{NotePath, Storage};
@@ -57,8 +61,6 @@ pub struct Visibility {
     /// `None` for the person, who sees everything.
     rules: Option<Arc<Rules>>,
     storage: Arc<dyn Storage>,
-    /// The vault folder on disk, for the symlink check (`None` in memory).
-    root: Option<PathBuf>,
     /// Folder (no trailing `/`) to what its check found, for this value's life.
     folders: Mutex<HashMap<String, Folder>>,
     /// The record tags of a tag-limited client's notes, by path.
@@ -90,9 +92,7 @@ impl Visibility {
         storage: Arc<dyn Storage>,
         folders: impl IntoIterator<Item = &'a str>,
     ) -> Self {
-        let root = storage.absolute(&NotePath::new(""));
-        let mut v =
-            Self { actor: actor.clone(), rules, storage, root, folders: Mutex::new(HashMap::new()), tags: None, fingerprint: [0; 32] };
+        let mut v = Self { actor: actor.clone(), rules, storage, folders: Mutex::new(HashMap::new()), tags: None, fingerprint: [0; 32] };
         let mut found: BTreeSet<String> = BTreeSet::new();
         if v.rules.is_some() {
             for f in folders {
@@ -211,9 +211,8 @@ impl Visibility {
     /// One folder on the disk: a symlink, a key file, an unlocking file.
     fn check(&self, folder: &str) -> Folder {
         use quire_vault::lock::{KEY_FILE, UNLOCKING_FILE};
-        if let Some(root) = &self.root
-            && std::fs::symlink_metadata(root.join(folder)).is_ok_and(|m| m.file_type().is_symlink())
-        {
+        // Through the storage, so a counting wrapper sees it (`listing_cost.rs`).
+        if self.storage.is_symlink(&NotePath::new(folder)) {
             return Folder::Linked;
         }
         let exists = |name: &str| self.storage.exists(&NotePath::new(format!("{folder}/{name}")));

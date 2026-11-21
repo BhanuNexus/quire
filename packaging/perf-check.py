@@ -61,17 +61,18 @@ BUDGETS = {
 
 # Storage calls of one listing call on the `mcp` suite's 10k notes in 50 folders
 # (docs/design/0.14-agent-tools.md G4): exact, so any call over fails, with no
-# margin (counts do not depend on the runner). Each is 2 per folder (a key file
-# and an unlocking file) plus the call's own: the vault root, the policy file,
-# and for `links` the note it names, for `vault_info` the zones' folders.
+# margin (counts do not depend on the runner). Each is 3 per folder (a key file,
+# an unlocking file, whether the folder is a symlink) plus the call's own: the
+# policy file read twice, and for `links` the note it names, for `vault_info`
+# the zones' folders.
 COUNTS = {
-    ("mcp", "list_storage_calls"): (103, "MCP `list`: storage calls"),
-    ("mcp", "tags_storage_calls"): (103, "MCP `tags`: storage calls"),
-    ("mcp", "properties_storage_calls"): (103, "MCP `properties`: storage calls"),
-    ("mcp", "tasks_storage_calls"): (103, "MCP `tasks`: storage calls"),
-    ("mcp", "links_storage_calls"): (108, "MCP `links`: storage calls"),
-    ("mcp", "vault_info_storage_calls"): (108, "MCP `vault_info`: storage calls"),
-    ("mcp", "query_view_storage_calls"): (103, "MCP `query_view`: storage calls"),
+    ("mcp", "list_storage_calls"): (152, "MCP `list`: storage calls"),
+    ("mcp", "tags_storage_calls"): (152, "MCP `tags`: storage calls"),
+    ("mcp", "properties_storage_calls"): (152, "MCP `properties`: storage calls"),
+    ("mcp", "tasks_storage_calls"): (152, "MCP `tasks`: storage calls"),
+    ("mcp", "links_storage_calls"): (157, "MCP `links`: storage calls"),
+    ("mcp", "vault_info_storage_calls"): (159, "MCP `vault_info`: storage calls"),
+    ("mcp", "query_view_storage_calls"): (152, "MCP `query_view`: storage calls"),
 }
 
 # Absolute regression guards for measures whose design budget is relative
