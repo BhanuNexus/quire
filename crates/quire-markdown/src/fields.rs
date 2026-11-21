@@ -320,7 +320,7 @@ impl Reader {
     fn read_to(&mut self, end: usize) {
         while self.comment.is_none() && self.k < self.chars.len() && self.chars[self.k].0 < end {
             #[cfg(test)]
-            crate::scan::work::add(|w| w.scanned += 1);
+            crate::scan::work::scanned();
             let (i, c) = self.chars[self.k];
             if let Some(q) = self.open {
                 if q == '\'' && c == '\'' {
@@ -558,7 +558,7 @@ pub(crate) fn front_matter_links(src: &str, end: usize) -> Vec<Link> {
         while let Some(off) = l.text[i.min(limit)..limit].find("[[") {
             let open = i + off;
             let embed = open > 0 && l.text.as_bytes()[open - 1] == b'!';
-            if in_span.hits(open, open + 1) {
+            if in_span.contains(open) {
                 i = open + 2;
                 continue;
             }
@@ -1141,52 +1141,90 @@ mod tests {
         old::scan(value, false)
     }
 
-    /// Front matter made of the pieces YAML quoting, comments and links meet in.
+    /// Text a value is made of: the characters YAML quoting, comments and flow lists turn on.
+    const PIECES: &[&str] = &[
+        "[[a]]",
+        "![[e]]",
+        "[[b|c]]",
+        "[[d#h]]",
+        "[[",
+        "]]",
+        "[",
+        "]",
+        "{",
+        "}",
+        ",",
+        ": ",
+        ":",
+        "- ",
+        "-",
+        "?",
+        "? ",
+        "'",
+        "''",
+        "\"",
+        "\\\"",
+        "\\",
+        "#",
+        " # note ",
+        " ",
+        "  ",
+        "\t",
+        "`",
+        "``",
+        "|",
+        ">",
+        "\u{e9}",
+        "\u{65e5}\u{672c}",
+        "\u{1f385}",
+        "x",
+        "a b",
+    ];
+
+    /// Short runs with a link after a comment marker, a quote or a flow bracket, in the
+    /// shapes the value reader tells apart; `fm_pieces` draws these often.
+    const SHAPES: &[&str] = &[
+        " # [[c]]",
+        " # 'q [[c]]",
+        "#[[c]]",
+        "a#b [[c]]",
+        "'[[a]]'",
+        "'[[it''s]]'",
+        "'x' [[a]]",
+        "'x''[[a]]",
+        "\"[[a]]\"",
+        "\"\\\" [[a]]\"",
+        "\"\\\\\" [[a]]",
+        "\"\\'[[a]]",
+        "[ [[a]] ]",
+        "[[[a]], [[b]]]",
+        "[ # [[c]]\n [[a]] ]",
+        "[ 'x', '[[it''s]]' ]",
+        "{k: [[a]]}",
+        "{k: '[[it''s]]'}",
+        "{k:'[[it''s]]'}",
+        "{k: x, j: \"[[a]]\"}",
+        "- '[[it''s]]'",
+        "? '[[it''s]]'",
+        "[- '[[it''s]]']",
+        "[? '[[it''s]]']",
+        "-'[[it''s]]'",
+        "'a' # 'b [[c]]",
+        "'\u{e9}' \"\u{65e5}\" '[[a]]'",
+    ];
+
+    /// Front matter whose lines are shapes and pieces YAML quoting, comments and links meet in.
     fn fm_pieces() -> impl proptest::strategy::Strategy<Value = String> {
         use proptest::prelude::*;
-        let piece = prop::sample::select(vec![
-            "[[a]]",
-            "![[e]]",
-            "[[b|c]]",
-            "[[d#h]]",
-            "[[",
-            "]]",
-            "[",
-            "]",
-            "{",
-            "}",
-            ",",
-            ": ",
-            ":",
-            "- ",
-            "-",
-            "?",
-            "'",
-            "''",
-            "\"",
-            "\\\"",
-            "\\",
-            "#",
-            " # note ",
-            " ",
-            "  ",
-            "\t",
-            "`",
-            "``",
-            "key: ",
-            "up: ",
-            "  - ",
-            "|",
-            ">",
-            "\n",
-            "\r\n",
-            "\u{e9}",
-            "\u{65e5}\u{672c}",
-            "\u{1f385}",
-            "x",
-            "a b",
-        ]);
-        prop::collection::vec(piece, 0..50).prop_map(|v| format!("---\n{}\n---\nbody [[z]]\n", v.concat()))
+        let token = prop_oneof![
+            5 => prop::sample::select(SHAPES),
+            3 => prop::sample::select(PIECES),
+        ];
+        let prefix =
+            prop::sample::select(vec!["up: ", "key: ", "up: [", "up: {k: ", "  - ", "up: - ", "up: # c ", "up: '", "up: \"", "", "up: "]);
+        let line = (prefix, prop::collection::vec(token, 1..7), prop::sample::select(vec!["\n", "\n", "\r\n", "\n  "]))
+            .prop_map(|(p, t, nl)| format!("{p}{}{nl}", t.concat()));
+        prop::collection::vec(line, 1..5).prop_map(|v| format!("---\n{}---\nbody [[z]]\n", v.concat()))
     }
 
     fn same_links_as_old(src: &str) {
@@ -1218,12 +1256,164 @@ mod tests {
         }
     }
 
+    fn read(v: &str, lines: bool) -> (Option<char>, Option<usize>, Option<usize>) {
+        let s = scan(v, lines);
+        (s.quote, s.comment, s.close)
+    }
+
+    fn read_old(v: &str, lines: bool) -> (Option<char>, Option<usize>, Option<usize>) {
+        let s = old::scan(v, lines);
+        (s.quote, s.comment, s.close)
+    }
+
+    /// Each row is a value text, how it is read (`lines`: a comment ends at its line), and
+    /// what the read finds, as a literal and as the old reader finds it; the first word of
+    /// the name is the mutant of the reader that the row tells apart from the real one.
+    #[test]
+    fn the_reader_finds_what_the_old_one_finds_where_each_mutant_goes_wrong() {
+        type Row = (&'static str, &'static str, bool, (Option<char>, Option<usize>, Option<usize>));
+        let rows: &[Row] = &[
+            // `+ 1` as `- 1` or `* 1` when a comment skips to the end of its line: the next line is read from its first character, and the line end is read.
+            ("comment-skip: the line after a comment is read from its start", "[ # c\n]", true, (None, None, Some(6))),
+            ("comment-skip: the line end after a comment is read", "[ # c\n# ]\n]", true, (None, None, Some(10))),
+            ("comment-skip: a quote opens on the line after a comment", "[ # c\n'a", true, (Some('\''), None, None)),
+            // `&&` as `||` when the list closes: only the `]` that closes the outer list is the close.
+            ("close: a list that is not closed has no close", "[[a], b", false, (None, None, None)),
+            ("close: a map in a list that is not closed has no close", "[{a: 1}, b", false, (None, None, None)),
+            ("close: an inner list's `]` is not the close", "[[a], b]", false, (None, None, Some(7))),
+            ("close: an inner map's `}` is not the close", "[{a: 1}, b]", false, (None, None, Some(10))),
+            // The look ahead: `:`, `-` and `?` act only before white space.
+            ("ws_after: a quote opens after `: ` in a map", "{k: 'a", false, (Some('\''), None, None)),
+            ("ws_after: no quote opens after `:` and a letter", "{k:'a", false, (None, None, None)),
+            ("ws_after: a quote opens after a dash and a space", "- 'a", false, (Some('\''), None, None)),
+            ("ws_after: a quote opens after `?` and a space", "? \"a", false, (Some('"'), None, None)),
+            ("ws_after: no quote opens after a dash and a letter", "-'a", false, (None, None, None)),
+            ("depth: a dash in a list does not let a quote open", "[- 'a", false, (None, None, None)),
+            ("depth: a `?` in a list does not let a quote open", "[? 'a", false, (None, None, None)),
+            ("depth: a colon outside a list does not let a quote open", "a: 'b", false, (None, None, None)),
+            ("depth: a dash at the end of a value is read", "[a, -", false, (None, None, None)),
+        ];
+        for (name, v, lines, want) in rows {
+            assert_eq!(read(v, *lines), *want, "{name}: {v:?}");
+            assert_eq!(read_old(v, *lines), *want, "the old reader, {name}: {v:?}");
+        }
+    }
+
+    /// `read_to(end)` reads the characters before byte `end` and not the one at it.
+    #[test]
+    fn the_reader_stops_before_the_byte_it_is_given() {
+        let mut r = Reader::new("'ab'", false);
+        r.read_to(0);
+        assert_eq!(r.quote(), None, "the quote at byte 0 is not read yet");
+        r.read_to(1);
+        assert_eq!(r.quote(), Some('\''), "it is read once the end is past it");
+        r.read_to(3);
+        assert_eq!(r.quote(), Some('\''), "the closing quote at byte 3 is not read yet");
+        r.read_to(4);
+        assert_eq!(r.quote(), None);
+        // Going on after a stop gives what one read gives.
+        let mut r = Reader::new("a: 'x' [[l]] \"y\\\" [[m]]\"", false);
+        let at: Vec<usize> = r.chars.iter().map(|(i, _)| *i).collect();
+        for e in at {
+            r.read_to(e);
+            let mut fresh = Reader::new("a: 'x' [[l]] \"y\\\" [[m]]\"", false);
+            fresh.read_to(e);
+            assert_eq!(r.quote(), fresh.quote(), "at {e}");
+        }
+    }
+
+    /// Links whose text is told apart by the quote open at them, with what each reads as:
+    /// the first word of the name is the mutant of the reader that gets it wrong.
+    #[test]
+    fn the_links_after_a_quote_or_a_comment_are_read_as_the_old_code_reads_them() {
+        let rows: &[(&str, &str, &[&str])] = &[
+            ("ws_after, depth: a quote opens after `: ` in a map", "up: {k: '[[it''s]]'}", &["it's"]),
+            ("ws_after: no quote opens after `:` and a letter", "up: {k:'[[it''s]]'}", &["it''s"]),
+            ("ws_after: a quote opens after a dash and a space", "up: - '[[it''s]]'", &["it's"]),
+            ("ws_after: a quote opens after `?` and a space", "up: ? '[[it''s]]'", &["it's"]),
+            ("ws_after: no quote opens after a dash and a letter", "up: -'[[it''s]]'", &["it''s"]),
+            ("depth: a dash in a list does not let a quote open", "up: [- '[[it''s]]']", &["it''s"]),
+            ("depth: a `?` in a list does not let a quote open", "up: [? '[[it''s]]']", &["it''s"]),
+            ("depth: a quote opens after a comma in a list", "up: [x, '[[it''s]]']", &["it's"]),
+            ("comment: a link after a comment is not read", "up: [[a]] # [[b]]", &["a"]),
+            ("comment: a `#` without white space before it is no comment", "up: a#[[b]]", &["b"]),
+            ("comment: a `#` at the start of a value is a comment", "up: #[[b]]", &[]),
+            ("comment: a `#` inside a quote is no comment", "up: '# [[it''s]]'", &["it's"]),
+            ("comment: a quote in a comment opens nothing", "up: 'a' # 'b\nk: '[[it''s]]'", &["it's"]),
+            ("comment: a quote closed just before a link", "up: 'x'[[a]] \"y\"[[b\\\"]]", &["a", "b\\\""]),
+            ("escape: an escaped quote does not close the string", "up: \"\\\" [[a\\\\]]\"", &["a\\"]),
+            ("escape: a backslash before the closing quote", "up: \"a\\\\\" [[b\\\"]]", &["b\\\""]),
+            ("quote: a quote that closes right at a link", "up: 'x' [[it''s]]", &["it''s"]),
+            ("quote: a doubled quote stays inside the string", "up: 'a''[[it''s]]'", &["it's"]),
+        ];
+        for (name, fm, want) in rows {
+            let src = format!("---\n{fm}\n---\nbody\n");
+            let end = src.len() - 5;
+            let got: Vec<String> = front_matter_links(&src, end).into_iter().map(|l| l.target).collect();
+            assert_eq!(got, *want, "{name}: {fm:?}");
+            let old: Vec<String> = old::front_matter_links(&src, end, fresh_scan).into_iter().map(|l| l.target).collect();
+            assert_eq!(old, *want, "the old function, {name}: {fm:?}");
+        }
+    }
+
+    /// The links of one line, with the code spans between them, as a list of targets.
+    #[test]
+    fn a_link_inside_a_code_span_is_skipped_and_one_right_after_it_is_not() {
+        let src = "---\nup: `[[a]]` [[b]] `x` `[[c]]` [[d]]``[[e]]``[[f]]\n---\nbody\n";
+        let end = src.len() - 5;
+        let got: Vec<String> = front_matter_links(src, end).into_iter().map(|l| l.target).collect();
+        assert_eq!(got, ["b", "d", "f"]);
+        let old: Vec<String> = old::front_matter_links(src, end, fresh_scan).into_iter().map(|l| l.target).collect();
+        assert_eq!(old, ["b", "d", "f"]);
+    }
+
+    /// The generator must keep drawing the shapes the reader's mutants hide in; if it
+    /// went blind to them the oracle tests would pass on anything.
+    #[test]
+    fn the_generated_front_matter_is_mostly_made_of_the_shapes_the_reader_tells_apart() {
+        use proptest::strategy::{Strategy, ValueTree};
+        let mut runner = proptest::test_runner::TestRunner::deterministic();
+        let strategy = fm_pieces();
+        let n = 1000;
+        let (mut quote, mut comment, mut flow, mut nonempty, mut escaped, mut doubled) = (0, 0, 0, 0, 0, 0);
+        for _ in 0..n {
+            let src = strategy.new_tree(&mut runner).unwrap().current();
+            let end = src.find("\n---\nbody").map_or(src.len(), |x| x + 5);
+            let links = front_matter_links(&src, end);
+            nonempty += usize::from(!links.is_empty());
+            // A line with a `[[` after a quote, a comment marker, a flow bracket.
+            let before: Vec<&str> = src.lines().filter_map(|l| l.find("[[").map(|at| &l[..at])).collect();
+            quote += usize::from(before.iter().any(|b| b.contains(['\'', '"'])));
+            comment += usize::from(before.iter().any(|b| b.contains('#')));
+            flow += usize::from(before.iter().any(|b| b.contains(['[', '{'])));
+            escaped += usize::from(before.iter().any(|b| b.contains("\\\"") || b.contains("\\\\")));
+            doubled += usize::from(links.iter().any(|l| l.target.contains('\'')));
+        }
+        let at_least =
+            |what: &str, got: usize, per_cent: usize| assert!(got * 100 >= per_cent * n, "{what}: {got} of {n}, want {per_cent}%");
+        at_least("a link after a quote", quote, 70);
+        at_least("a link after a comment marker", comment, 50);
+        at_least("a link after a flow bracket", flow, 60);
+        at_least("a link after an escape", escaped, 15);
+        at_least("a link read in single quotes", doubled, 15);
+        at_least("front matter with a link", nonempty, 80);
+    }
+
     proptest::proptest! {
         #![proptest_config(proptest::prelude::ProptestConfig::with_cases(crate::test_notes::cases(2000)))]
 
         #[test]
         fn front_matter_links_are_the_old_ones_on_generated_front_matter(src in fm_pieces()) {
             same_links_as_old(&src);
+        }
+
+        #[test]
+        fn the_reader_reads_the_values_of_generated_front_matter_as_the_old_one_does(v in fm_pieces()) {
+            // The whole text, and each line of it as a value, in both modes.
+            for text in std::iter::once(v.as_str()).chain(v.lines()) {
+                proptest::prop_assert_eq!(read(text, false), read_old(text, false), "{:?}", text);
+                proptest::prop_assert_eq!(read(text, true), read_old(text, true), "{:?}", text);
+            }
         }
 
         #[test]

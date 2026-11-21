@@ -224,7 +224,7 @@ pub fn cards(src: &str) -> Vec<Card> {
         // Highlights do not overlap, so those that end by `pb` come first.
         let window = highlights[first..].iter().take_while(|r| r.end <= pb);
         #[cfg(test)]
-        let window = window.inspect(|_| crate::scan::work::add(|w| w.steps += 1));
+        let window = window.inspect(|_| crate::scan::work::step());
         let hl: Vec<&Range<usize>> = window
             .filter(|r| cloze_lines.iter().any(|k| r.start >= para[*k].start && r.start < para[*k].start + para[*k].text.len()))
             .collect();

@@ -130,12 +130,29 @@ pub(crate) mod work {
         static NOW: Cell<Work> = const { Cell::new(Work { searched: 0, steps: 0, scanned: 0 }) };
     }
 
-    pub(crate) fn add(f: impl FnOnce(&mut Work)) {
+    fn add(f: impl FnOnce(&mut Work)) {
         NOW.with(|c| {
             let mut w = c.get();
             f(&mut w);
             c.set(w);
         });
+    }
+
+    // The only places a count changes: `counters_count_exactly` checks them.
+
+    /// A search that read `n` bytes.
+    pub(crate) fn searched(n: u64) {
+        add(|w| w.searched += n);
+    }
+
+    /// An overlap question, or a range it looked at.
+    pub(crate) fn step() {
+        add(|w| w.steps += 1);
+    }
+
+    /// A character the front-matter value reader read.
+    pub(crate) fn scanned() {
+        add(|w| w.scanned += 1);
     }
 
     /// The work `f` does on this thread.
@@ -165,6 +182,11 @@ impl<'a> Overlap<'a> {
         Self { ranges, next: 0, from: 0 }
     }
 
+    /// Is `at` inside a range?
+    pub(crate) fn contains(&mut self, at: usize) -> bool {
+        self.hits(at, at + 1)
+    }
+
     /// Does `from..to` (not empty) overlap a range? A `from` before the last one
     /// asked is answered too, by walking from the first range again.
     pub(crate) fn hits(&mut self, from: usize, to: usize) -> bool {
@@ -173,11 +195,11 @@ impl<'a> Overlap<'a> {
         }
         self.from = from;
         #[cfg(test)]
-        work::add(|w| w.steps += 1);
+        work::step();
         while self.ranges.get(self.next).is_some_and(|r| r.end <= from) {
             self.next += 1;
             #[cfg(test)]
-            work::add(|w| w.steps += 1);
+            work::step();
         }
         self.ranges.get(self.next).is_some_and(|r| r.start < to)
     }
@@ -274,7 +296,7 @@ impl Next {
         if !self.searched || from < self.from || behind {
             self.hit = find(&hay[from..]).map(|n| from + n);
             #[cfg(test)]
-            work::add(|w| w.searched += 1 + self.hit.unwrap_or(hay.len()) as u64 - from as u64);
+            work::searched(1 + self.hit.unwrap_or(hay.len()) as u64 - from as u64);
             self.searched = true;
         }
         self.from = from;
@@ -566,6 +588,52 @@ mod tests {
         let at = [10, 0, 6, 14, 0, 14];
         for start in at {
             assert_eq!(cursor.wikilink_at(start), old::wikilink_at(src, start), "start {start}");
+        }
+    }
+
+    #[test]
+    fn counters_count_exactly() {
+        use super::work::{Work, measure, scanned, searched, step};
+        assert_eq!(
+            measure(|| {
+                searched(3);
+                searched(4);
+                step();
+                step();
+                step();
+                scanned();
+            }),
+            Work { searched: 7, steps: 3, scanned: 1 }
+        );
+        // `Next` counts a byte for the start of a search and one for each byte read.
+        let mut next = Next::default();
+        let calls = std::cell::Cell::new(0);
+        assert_eq!(measure(|| next.find("ab\ncd", 0, counted(&calls, "\n"))).searched, 3);
+        assert_eq!(
+            measure(|| next.find("ab\ncd", 2, counted(&calls, "\n"))).searched,
+            0,
+            "a hit at the position is not searched for again"
+        );
+        assert_eq!(measure(|| next.find("ab\ncd", 3, counted(&calls, "\n"))).searched, 3, "no hit: the rest of the text is read");
+        // `Overlap` counts each question and each range it steps over.
+        let ranges = vec![2..4, 6..7];
+        let mut overlap = Overlap::new(&ranges);
+        let steps = |o: &mut Overlap<'_>, a, b| measure(|| o.hits(a, b)).steps;
+        assert_eq!(steps(&mut overlap, 0, 1), 1);
+        assert_eq!(steps(&mut overlap, 5, 6), 2);
+        assert_eq!(steps(&mut overlap, 8, 9), 2);
+        assert_eq!(steps(&mut overlap, 0, 1), 1, "asked from before, it starts at the first range and steps over none");
+        assert_eq!(steps(&mut overlap, 8, 9), 3, "and over both again");
+    }
+
+    #[test]
+    fn an_overlap_cursor_says_whether_a_position_is_inside_a_range() {
+        let ranges = vec![5..8, 8..9, 12..13];
+        let inside = |at: usize| ranges.iter().any(|r| r.contains(&at));
+        let mut overlap = Overlap::new(&ranges);
+        // A range that starts exactly at the position holds it; one that ends there does not.
+        for at in (0..16).chain((0..16).rev()) {
+            assert_eq!(overlap.contains(at), inside(at), "{at}");
         }
     }
 

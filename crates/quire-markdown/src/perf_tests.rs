@@ -108,3 +108,22 @@ fn front_matter_links_are_linear_on_one_line_of_many_links() {
     doubles("front_matter_links, in code spans", 40_000, one_line_of_links("`c` [[x]] "), links);
     doubles("extract", 40_000, one_line_of_links("[[x]] "), |s| sink(extract(s)));
 }
+
+/// Exact counts on small fixed inputs: a counter that runs backwards, stands still or
+/// explodes changes them, and so fails here and in the doubling tests.
+#[test]
+fn the_work_on_small_inputs_is_counted_exactly() {
+    use crate::scan::work::Work;
+    let work = |f: &dyn Fn()| measure(f);
+    // The value reader counts each character it reads, and stops at a comment.
+    let read = |v: &'static str| work(&|| sink(crate::fields::yaml_quote_at(v)));
+    assert_eq!(read("ab c").scanned, 4);
+    assert_eq!(read("a #b").scanned, 3);
+    // Two paragraphs with a highlight each: the cards walk the highlights of a paragraph.
+    let cards = work(&|| sink(srs::cards("a ==m== b\n\nc ==n== d")));
+    assert_eq!(cards, Work { searched: 12, steps: 6, scanned: 0 }, "searches and steps of two highlighted paragraphs");
+    // A front-matter line of five links and three code spans: each link asks the cursor once.
+    let src = "---\nup: `[[a]]` [[b]] `x` `[[c]]` [[d]] [[e]]\n---\nbody\n";
+    let fm = work(&|| sink(crate::fields::front_matter_links(src, src.len() - 5)));
+    assert_eq!(fm, Work { searched: 53, steps: 8, scanned: 71 }, "five links ask once each, and three spans are stepped over");
+}

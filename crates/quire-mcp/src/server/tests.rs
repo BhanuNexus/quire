@@ -896,3 +896,32 @@ fn tasks_carry_the_planning_fields() {
     assert_eq!((call["done"].as_bool(), call["completed"].as_str()), (Some(true), Some("2026-11-02")));
     assert_eq!(call["time"], "09:00-09:30");
 }
+
+/// A bare `server/discover` (no client info yet) must not fix an unverified stdio client's name:
+/// the name its first request reports is the one its `[clients]` entry is found by.
+#[test]
+fn a_bare_discover_does_not_fix_the_client_as_unknown() {
+    let call = |srv: &Server, conn: &Conn, msg: &Value| match srv.handle(msg, conn, &CancelFlag::new()) {
+        Reply::Response(v) => v,
+        _ => panic!("no response to {msg}"),
+    };
+    let discover = json!({"jsonrpc": "2.0", "id": 1, "method": "server/discover", "params": {}});
+    let meta = json!({protocol::META_VERSION: MODERN, META_CLIENT_INFO: {"name": "modern-client", "version": "1"}});
+    let info = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "vault_info", "arguments": {}, "_meta": meta}});
+
+    let srv = Server::with_config(vault(), None, config(false));
+    let conn = Conn::stdio(srv.new_conn());
+    assert!(call(&srv, &conn, &discover).get("error").is_none());
+    let r = call(&srv, &conn, &info);
+    assert_eq!(r["result"]["structuredContent"]["you"]["id"], "mcp:modern-client?", "{r}");
+
+    // The client the person revoked is refused after a bare discover too.
+    let v = vault();
+    let store = AgentStore::open(&v, DeviceInfo { id: "d_test".into(), name: "test".into() }, FixedClock::new(1_793_577_600_000));
+    store.write_policy("format = 1\n[clients.\"mcp:modern-client\"]\nrevoked = true\n").unwrap();
+    let srv = Server::with_config(v, None, config(false));
+    let conn = Conn::stdio(srv.new_conn());
+    assert!(call(&srv, &conn, &discover).get("error").is_none());
+    let r = call(&srv, &conn, &info);
+    assert!(r.get("error").is_some(), "a revoked client is refused: {r}");
+}
