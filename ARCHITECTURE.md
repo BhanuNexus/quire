@@ -428,8 +428,8 @@ Scope comes from ROADMAP.md §5 (v3). Working assumption until the product decis
 ### 12.3 MCP server (`quire-cli mcp`)
 
 * JSON-RPC 2.0 over stdio implementing MCP `initialize`, `tools/list`, `tools/call`, `ping`.
-* Read tools: `search_notes` (hybrid), `read_note`, `list_notes` (folder/tag filter), `backlinks`, `ask_notes` (retrieval + cited sources), `list_tags`.
-* Write tools, only registered with `--allow-write`: `create_note`, `append_to_note`, `replace_in_note`. Every write snapshots history first, so an AI edit is always reversible.
+* Read tools: `search` (sections, hybrid), `view`, `list` (folder, tags, `where`, time), `neighbors`, `ask` (retrieval + cited sources), `tags`, and the rest of the table in `docs/agents.md`. The 0.8 names (`search_notes`, `read_note`, …) were removed in 0.14; a call to one answers `not_found` with the tool to use instead (`REMOVED_TOOLS` in `server.rs`).
+* Write tools, only offered with `--allow-write`: `create`, `str_replace`, `append`, `edit_section` and the rest. Every write snapshots history first, so an AI edit is always reversible.
 * Scope is one vault per process. There's nothing to turn off because nothing runs unless the user adds `quire-cli mcp <vault>` to their MCP client, unlike Bear's default-on CLI.
 
 ### 12.4 Importers (`crates/quire-import`)

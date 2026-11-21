@@ -217,7 +217,30 @@ fn requests_are_authenticated_and_validated() {
         &base_h(&[("MCP-Protocol-Version", "2025-06-18")]),
         &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).to_string(),
     );
-    assert!(r.json()["result"].get("resultType").is_none() && r.json()["result"]["tools"][0]["title"] == "Search notes");
+    assert!(r.json()["result"].get("resultType").is_none() && r.json()["result"]["tools"][1]["title"] == "Search notes");
+    // A removed 0.8 name says what to call instead, in a legacy era and a modern one, read-only or not.
+    let r = post(
+        &url,
+        &base_h(&[("MCP-Protocol-Version", "2025-06-18")]),
+        &json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "replace_in_note", "arguments": {}}}).to_string(),
+    );
+    let res = &r.json()["result"];
+    assert_eq!(res["isError"], true, "{res}");
+    assert_eq!(res["structuredContent"], json!({"error": "not_found", "removed": "replace_in_note", "use": "str_replace"}));
+    assert!(
+        res["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("No tool called “replace_in_note”: it was removed in Quire 0.14. Use `str_replace` instead")
+    );
+    for name in ["search_notes", "create_note"] {
+        let r = mcp(&env, &token, "tools/call", Some(name), &json!({"name": name, "arguments": {"query": "undo"}}));
+        assert_eq!(r.status, 200, "{}", r.body);
+        let res = &r.json()["result"];
+        assert_eq!(res["isError"], true, "{res}");
+        assert_eq!(res["structuredContent"]["removed"], name);
+        assert_eq!(res["structuredContent"]["use"], if name == "create_note" { "create" } else { "search" });
+    }
     let r = post(&url, &base_h(&[]), &json!({"jsonrpc": "2.0", "id": 3, "method": "ping"}).to_string());
     assert_eq!(r.json()["result"], json!({}), "no header: 2025-03-26");
 }

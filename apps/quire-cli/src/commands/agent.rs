@@ -468,7 +468,7 @@ mod tests {
         assert_eq!(fm.get("trust").and_then(|v| v.as_str()), Some("untrusted"));
         // Every tool the skill names exists.
         let reg = quire_mcp::ToolRegistry::standard();
-        for t in reg.all().map(|t| t.spec().name).filter(|n| !quire_mcp::tools::legacy::NAMES.contains(n)) {
+        for t in reg.all().map(|t| t.spec().name) {
             assert!(SKILL.contains(&format!("`{t}`")), "the skill mentions {t}");
         }
     }

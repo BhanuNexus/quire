@@ -834,7 +834,7 @@ impl Core {
         use crate::tools::Access;
         let writes = matches!(access, Access::Write | Access::Network);
         match &conn.principal {
-            Principal::Stdio if writes && !grant.write => crate::tools::legacy::READ_ONLY.to_string(),
+            Principal::Stdio if writes && !grant.write => READ_ONLY.to_string(),
             Principal::Token(_) if writes && self.config.read_only => {
                 "This server was started with --read-only, so nothing can be changed through it. The person must restart `quire-cli serve` without --read-only to allow edits or suggestions."
                     .to_string()
@@ -887,9 +887,42 @@ impl Core {
                 out
             }
             Some(t) => ToolOutput::error("denied_by_policy", self.denied_message(conn, name, t.spec().access, grant)),
-            None => ToolOutput::error("not_found", format!("Unknown tool {name}")),
+            None => unknown_tool(name),
         };
         tool_result(era, out)
+    }
+}
+
+/// Why a stdio server refuses a write tool.
+const READ_ONLY: &str = "This vault is read-only for AI tools. Start the server with --allow-write to permit edits.";
+
+/// The 0.8 tool names removed in 0.14 (`docs/design/0.14-agent-tools.md` §3.4): the
+/// old name, the tool to use instead, and what differs. Nothing lists these;
+/// a call to one gets [`unknown_tool`]'s answer naming the replacement.
+pub(crate) const REMOVED_TOOLS: &[(&str, &str, &str)] = &[
+    ("search_notes", "search", "ranks sections, not notes; each hit has a line range for `view`"),
+    ("read_note", "view", "takes `path`; long notes come in pages (`max_tokens`, `cursor`)"),
+    ("list_notes", "list", "`folder`, `tags`, `where`, `sort`, `limit`, `cursor`"),
+    ("backlinks", "neighbors", "with `direction: \"in\"`; each edge has the linking line as `context` (or use `links`)"),
+    ("ask_notes", "ask", ""),
+    ("list_tags", "tags", ""),
+    ("create_note", "create", "`path` is `folder/title.md`; it refuses to overwrite"),
+    ("append_to_note", "append", ""),
+    ("replace_in_note", "str_replace", "with `all: true` to replace every occurrence; there is no regex form"),
+];
+
+/// The answer to a call for a tool that doesn't exist: a removed 0.8 name
+/// says what to use instead.
+fn unknown_tool(name: &str) -> ToolOutput {
+    match REMOVED_TOOLS.iter().find(|(old, ..)| *old == name) {
+        Some((old, new, _)) => ToolOutput::Err {
+            code: "not_found",
+            message: format!(
+                "No tool called “{old}”: it was removed in Quire 0.14. Use `{new}` instead (see \"Removed tool names\" in docs/agents.md). Call tools/list for the names."
+            ),
+            structured: json!({ "removed": old, "use": new }),
+        },
+        None => ToolOutput::error("not_found", format!("No tool called “{name}”. Call tools/list for the names.")),
     }
 }
 

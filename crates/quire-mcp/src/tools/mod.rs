@@ -9,7 +9,7 @@
 //! runtime; write tools are left out for clients without a write grant.
 //!
 //! Each module registers its tools in `standard()`, in its own line:
-//! `legacy` (the 0.8 tools), the 0.9 read and write tools, `canvas`.
+//! the 0.9 read tools, `canvas`, the 0.9 write tools, the 0.12 links.
 //!
 //! The MCP server calls [`Tool::call_with`], which also passes what only a
 //! protocol session knows ([`CallExt`]: the served-version cache, whether
@@ -18,7 +18,6 @@
 
 pub mod canvas;
 pub mod common;
-pub mod legacy;
 // 0.12: typed links and hierarchy.
 pub mod links;
 pub mod read;
@@ -345,8 +344,6 @@ impl ToolRegistry {
     /// The tools Quire offers, in their fixed order.
     pub fn standard() -> Self {
         let mut tools: Vec<Box<dyn Tool>> = Vec::new();
-        // ---- the 0.8 tools, unchanged.
-        tools.extend(legacy::tools());
         // ---- the 0.9 read tools, in the table's order.
         tools.extend(read::tools_before_canvas());
         // ---- canvas
@@ -386,7 +383,7 @@ mod tests {
     fn order_is_fixed_and_names_unique() {
         let r = ToolRegistry::standard();
         let names: Vec<&str> = r.all().map(|t| t.spec().name).collect();
-        assert_eq!(&names[..3], ["search_notes", "read_note", "list_notes"]);
+        assert_eq!(&names[..3], ["vault_info", "search", "view"]);
         let mut sorted = names.clone();
         sorted.sort_unstable();
         sorted.dedup();
@@ -399,7 +396,7 @@ mod tests {
     #[test]
     fn every_0_9_tool_is_there_in_the_designs_order() {
         let r = ToolRegistry::standard();
-        let names: Vec<&str> = r.all().map(|t| t.spec().name).filter(|n| !legacy::NAMES.contains(n)).collect();
+        let names: Vec<&str> = r.all().map(|t| t.spec().name).collect();
         let canvas: Vec<&str> = canvas::tools().iter().map(|t| t.spec().name).collect();
         let ours: Vec<&str> = names.iter().copied().filter(|n| !canvas.contains(n)).collect();
         assert_eq!(
@@ -441,10 +438,8 @@ mod tests {
         for t in r.all() {
             let s = t.spec();
             assert_eq!(s.input_schema["type"], "object", "{}", s.name);
-            if !legacy::NAMES.contains(&s.name) {
-                assert!(s.description.len() > 80 && s.description.contains("Example"), "{} needs a description agents can use", s.name);
-                assert!(s.output_schema.is_some(), "{} has an output schema", s.name);
-            }
+            assert!(s.description.len() > 80 && s.description.contains("Example"), "{} needs a description agents can use", s.name);
+            assert!(s.output_schema.is_some(), "{} has an output schema", s.name);
         }
     }
 }

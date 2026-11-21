@@ -74,9 +74,27 @@ fn calls() -> Vec<(&'static str, Value)> {
         out.push((spec.name, args));
     }
     assert!(out.len() >= 14, "the registry's list tools: {:?}", out.iter().map(|(t, _)| *t).collect::<Vec<_>>());
+    out.extend(FILTERED.iter().map(|(t, a)| (*t, serde_json::from_str(a).unwrap())));
     out.extend(HANDSHAKES.iter().map(|h| (*h, json!({}))));
     out
 }
+
+/// The listing filters, each of which must also be answered from the index: a time range, every
+/// tag, a folder, a property filter, in their canonical names and their old spellings.
+const FILTERED: &[(&str, &str)] = &[
+    ("list", r#"{"since": "3650d", "until": "2099-01-01", "tags": ["t3", "shared"], "folder": "Folder 3", "where": "status = s0"}"#),
+    ("list", r#"{"tag": "t3", "limit": 5}"#),
+    ("tasks", r#"{"folder": "Folder 3", "tags": ["t3"]}"#),
+    (
+        "search",
+        r#"{"query": "topic 3", "since": "3650d", "until": "2099-01-01", "tags": ["shared"], "folder": "Folder 3", "where": "status = s0"}"#,
+    ),
+    ("search", r#"{"query": "topic 3", "filters": {"modified_after": "3650d", "tags": ["shared"]}}"#),
+    ("ask", r#"{"question": "What are the words about topic 3?", "limit": 3}"#),
+    ("query_view", r#"{"spec": "group: status", "limit": 2}"#),
+    ("proposals", r#"{"actor": "all"}"#),
+    ("recent_activity", r#"{"since": "3650d", "until": "2099-01-01", "actor": "me"}"#),
+];
 
 /// What a client sends before it calls a tool; the connection text counts the notes it may see
 /// (`docs/design/0.14-agent-index.md` §1).

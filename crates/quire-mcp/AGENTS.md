@@ -26,8 +26,8 @@ Edition: both (P5). HTTP servers (`axum`, `tokio`) are allowed here by `deny.tom
 - No random bytes means no state, token or code, never zeros: `Sealer::seal` returns the error, write tools answer
   `no_randomness`. [test] `no_state_is_sealed_without_random_numbers` (`mrtr.rs`), `no_token_without_random_numbers`
   (`tokens.rs`), the consent tests (`consent.rs`)
-- Tool order and names are fixed, and the 0.8 names in `legacy::NAMES` are frozen. A new tool needs a description of more than
-  80 characters containing `Example`, and an output schema. [test] `every_0_9_tool_is_there_in_the_designs_order` (`tools/mod.rs`)
+- Tool order and names are fixed; a removed 0.8 name answers with its replacement (`REMOVED_TOOLS` in `server.rs`). A new tool needs a description of more than
+  80 characters containing `Example`, and an output schema. [test] `every_0_9_tool_is_there_in_the_designs_order` (`tools/mod.rs`), `removed_names_answer_with_their_replacement` (`server/tests.rs`)
 - The wire output of recorded sessions does not change by accident. [test] `recorded_sessions_per_era` (`server/tests.rs`;
   `QUIRE_BLESS=1` re-records `tests/fixtures/mcp-0.9-*.jsonl`: read the diff before you bless it)
 - Results are bounded: a list takes `limit` with its default and maximum in the schema, and `max_tokens`; it says `total`
