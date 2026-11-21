@@ -448,10 +448,15 @@ impl VaultStore {
         self.manifest.observed(p, bytes);
     }
 
-    /// Record a write of `bytes` at `path` by the engine.
+    /// Record a write of `bytes` at `path` by the engine. The manifest's
+    /// subscribers (the index) hear of it from here, not only through the
+    /// file watcher, so a lost watcher event can't leave them stale; the
+    /// index compares by hash, so hearing it both ways takes it once.
+    /// (A removal has no published form in the manifest: it still reaches
+    /// them through the watcher or the next scan.)
     fn wrote(&self, path: &str, bytes: &[u8]) {
         let p = NotePath::new(path);
-        let h = if path.starts_with(SHARED_PREFIX) { FileHash::of(bytes) } else { self.manifest.note_written(&p, bytes) };
+        let h = if path.starts_with(SHARED_PREFIX) { FileHash::of(bytes) } else { self.manifest.observed(&p, bytes) };
         self.listed.borrow_mut().insert(path.to_string(), h);
         self.first_read.borrow_mut().insert(path.to_string(), Some(h));
     }
