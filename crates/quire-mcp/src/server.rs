@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
-use quire_agent::{Actor, AgentStore, ClientInfo, Clock, DeviceInfo, Mode, OpKind, SystemClock, Via};
+use quire_agent::{Actor, AgentStore, ClientInfo, Clock, DeviceInfo, Mode, SystemClock, Via};
 use quire_app::index::IndexService;
 use quire_app::intel::chat::{CancelFlag, ChatModel};
 use quire_app::pdf_state::PdfIndexing;
@@ -32,7 +32,7 @@ use crate::mrtr::Sealer;
 use crate::protocol::{self, Era, LEGACY, META_CLIENT_CAPS, META_CLIENT_INFO, MODERN, SUPPORTED, code};
 use crate::resources::{self, PromptDef, ReadCx, ReadError};
 use crate::served::ServedCache;
-use crate::subs::{Filter, Sink, Subscriptions, Visibility};
+use crate::subs::{Filter, Sink, Subscriptions, UriVisibility};
 use crate::tokens::TokenGrant;
 use crate::tools::{CallExt, Grant, ToolCx, ToolOutput, ToolRegistry};
 
@@ -139,9 +139,9 @@ pub enum Reply {
     Initialized { response: Value, version: String, client: Option<ClientInfo>, caps: Value },
     /// `subscriptions/listen`: the transport registers it with a sink and keeps
     /// the request open. `sees` is what the subscriber may hear about.
-    Listen { id: Value, filter: Filter, sees: Visibility },
+    Listen { id: Value, filter: Filter, sees: UriVisibility },
     /// Legacy `resources/subscribe` (`subscribe = true`) or `unsubscribe`.
-    Subscribe { response: Value, uri: String, subscribe: bool, sees: Visibility },
+    Subscribe { response: Value, uri: String, subscribe: bool, sees: UriVisibility },
 }
 
 pub(crate) struct Core {
@@ -306,11 +306,11 @@ impl Server {
     }
 
     /// Register a subscription the transport will keep open.
-    pub fn listen(&self, conn: u64, id: Value, filter: &Filter, sink: Sink, sees: Visibility) -> u64 {
+    pub fn listen(&self, conn: u64, id: Value, filter: &Filter, sink: Sink, sees: UriVisibility) -> u64 {
         self.core.subs.listen(conn, id, filter, sink, sees)
     }
 
-    pub fn subscribe_legacy(&self, conn: u64, uri: &str, subscribe: bool, sink: Sink, sees: Visibility) {
+    pub fn subscribe_legacy(&self, conn: u64, uri: &str, subscribe: bool, sink: Sink, sees: UriVisibility) {
         if subscribe {
             self.core.subs.subscribe_legacy(conn, uri, sink, sees);
         } else {
@@ -337,15 +337,16 @@ impl Server {
         self.core.subs.remove(handle);
     }
 
+    /// Take in changes to the vault as the watcher reports them, without a
+    /// watcher: an embedder that watches the folder itself, and tests that
+    /// need the events in a known order.
+    pub fn vault_events(&self, events: Vec<VaultEvent>) {
+        self.core.take_events(events);
+    }
+
     /// Handle one JSON-RPC message from `conn`.
     pub fn handle(&self, msg: &Value, conn: &Conn, cancel: &CancelFlag) -> Reply {
         self.core.handle(msg, conn, cancel)
-    }
-
-    /// The instructions `conn` sees (0.8's sentence, then approved AGENTS.md). The note count is
-    /// of the notes that connection may see.
-    pub fn instructions(&self, conn: &Conn) -> String {
-        self.core.instructions(conn, &Value::Null)
     }
 
     /// Serve newline-delimited JSON-RPC on stdio-like streams until the input
@@ -402,20 +403,34 @@ impl Core {
     fn refresh(&self) {
         let guard = self.watcher.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(w) = guard.as_ref() else { return };
+        let events: Vec<VaultEvent> = w.events.try_iter().collect();
+        drop(guard);
+        self.take_events(events);
+    }
+
+    /// Bring the index up to date with `events`, as they came from the watcher.
+    fn take_events(&self, events: Vec<VaultEvent>) {
         let mut changed = false;
         let mut list_changed: Vec<String> = Vec::new();
         let now = Instant::now();
-        let events: Vec<VaultEvent> = w.events.try_iter().collect();
-        drop(guard);
         for ev in events {
             changed = true;
-            match ev {
+            // A change to a link (or below a linked folder) is a removal: never read through it.
+            match ev.regular(&self.vault) {
                 VaultEvent::Changed(p) => {
-                    if let Ok(src) = self.vault.read(&p) {
-                        if self.index.read().get(&p).is_none() {
+                    match self.vault.read_regular(&p) {
+                        Ok(Some(src)) => {
+                            if self.index.read().get(&p).is_none() {
+                                list_changed.push(resources::uri_for_path(&p));
+                            }
+                            self.index.upsert(p.clone(), src);
+                        }
+                        // Swapped for a link between the event and the read: gone.
+                        Ok(None) => {
+                            self.index.remove(p.clone());
                             list_changed.push(resources::uri_for_path(&p));
                         }
-                        self.index.upsert(p.clone(), src);
+                        Err(_) => {}
                     }
                     self.note_changed(&p, now);
                 }
@@ -540,10 +555,10 @@ impl Core {
     }
 
     /// What the caller of a subscription request may hear about.
-    fn visibility(&self, conn: &Conn, params: &Value) -> Visibility {
+    fn visibility(&self, conn: &Conn, params: &Value) -> UriVisibility {
         let actor = self.actor(conn, params);
         let store = self.store(&actor, self.cap(conn));
-        Visibility(Arc::new(move |uri: &str| resources::uri_visible(&store, &actor, uri)))
+        UriVisibility(Arc::new(move |uri: &str| resources::uri_visible(&store, &actor, uri)))
     }
 
     fn store(&self, actor: &Actor, cap: Option<Mode>) -> AgentStore {
@@ -571,7 +586,7 @@ impl Core {
         // Not pinned: a handshake must not fix the client's name before its first request.
         let actor = self.actor_as(conn, params, false);
         let store = self.store(&actor, self.cap(conn));
-        let n = self.index.read().paths().iter().filter(|p| store.effective_mode(&actor, p, OpKind::Read) != Mode::Deny).count();
+        let n = self.visible_notes(&store, &actor);
         let mode = if grant.write {
             "; you may write: directly in agent zones (wiki/), and elsewhere as suggestions the person reviews in Quire; every change is kept in version history"
         } else {
@@ -582,6 +597,26 @@ impl Core {
             write!(s, "\n\nVault instructions ({path}):\n{text}").expect("a String takes any text");
         }
         s
+    }
+
+    /// How many indexed notes `actor` may see, by its `Visibility`: no disk read per note, and the
+    /// index is read only to copy its paths (the folder checks and the count run without its lock).
+    /// Tags are copied only for a client with a tag allow list, in a second short read.
+    fn visible_notes(&self, store: &AgentStore, actor: &Actor) -> usize {
+        let (paths, folders) = {
+            let ix = self.index.read();
+            let paths: Vec<NotePath> = ix.records().map(|r| r.path.clone()).collect();
+            let mut folders: Vec<String> = paths.iter().filter_map(|p| p.as_str().rsplit_once('/').map(|(f, _)| f.to_string())).collect();
+            folders.sort_unstable();
+            folders.dedup();
+            (paths, folders)
+        };
+        let vis = store.visibility(actor, folders.iter().map(String::as_str));
+        if !vis.needs_tags() {
+            return paths.iter().filter(|p| vis.allows_with_tags(p, &[])).count();
+        }
+        let tagged: Vec<(NotePath, Vec<String>)> = self.index.read().records().map(|r| (r.path.clone(), r.tags.clone())).collect();
+        tagged.iter().filter(|(p, tags)| vis.allows_with_tags(p, tags)).count()
     }
 
     fn capabilities() -> Value {
@@ -826,7 +861,7 @@ impl Core {
         let cap = self.cap(conn);
         let store = self.store(&actor, cap);
         let grant = self.grant(conn);
-        let cx = ToolCx { vault: &self.vault, index: &self.index, agent: &store, actor: &actor, cancel, allow_write: grant.write };
+        let cx = ToolCx::new(&self.vault, &self.index, &store, &actor, cancel, grant.write);
         let ext = CallExt {
             served: &self.served,
             grant,

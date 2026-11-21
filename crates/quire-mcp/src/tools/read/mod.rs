@@ -11,10 +11,10 @@
 //! labels. Notes in `deny` zones don't exist for agents: they are never
 //! listed, counted or read.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
 
-use quire_agent::{LedgerQuery, Mode, Op, OpKind, ProposalFilter, ProposalStatus};
+use quire_agent::{LedgerQuery, Mode, Op, OpKind, ProposalFilter, ProposalStatus, ProposalSummary};
 use quire_app::index::{SearchFilters, SearchKind, views};
 use quire_app::intel::chat::{ChatRequest, chat_text};
 use quire_app::intel::{extractive_answer, retrieve_where};
@@ -23,8 +23,8 @@ use quire_app::vault::{ContentHash, NotePath};
 use serde_json::{Value, json};
 
 use super::common::{
-    existing, fence_untrusted, flag, int, iso, last_actor, list, modified, note_link, note_uri, opt, parse_time, req, s, tool, trust,
-    unified, version_arg, visible,
+    existing, fence_untrusted, flag, int, iso, last_actor, list, modified, modified_ms, note_link, note_uri, opt, parse_time, req, s, tool,
+    trust, unified, version_arg, visible,
 };
 use super::{Access, Annotations, CallExt, Tool, ToolCx, ToolOutput};
 use crate::bounds::{self, Cursor, Start};
@@ -50,7 +50,8 @@ mod vault_info;
 mod view;
 
 pub use shared::own_pending;
-use shared::{stale, window};
+pub(crate) use shared::stale as stale_cursor;
+use shared::{more_line, stale, window};
 
 /// The read tools, in the design's order (before the canvas tools).
 pub fn tools_before_canvas() -> Vec<Box<dyn Tool>> {

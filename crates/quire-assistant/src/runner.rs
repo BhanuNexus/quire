@@ -164,12 +164,14 @@ impl ToolHost {
             return;
         }
         for ev in events {
-            match ev {
-                VaultEvent::Changed(p) => {
-                    if let Ok(src) = self.vault.read(&p) {
-                        self.index.upsert(p, src);
-                    }
-                }
+            // A change to a link (or below a linked folder) is a removal: never read through it.
+            match ev.regular(&self.vault) {
+                VaultEvent::Changed(p) => match self.vault.read_regular(&p) {
+                    Ok(Some(src)) => self.index.upsert(p, src),
+                    // Swapped for a link between the event and the read: gone.
+                    Ok(None) => self.index.remove(p),
+                    Err(_) => {}
+                },
                 VaultEvent::Removed(p) => self.index.remove(p),
                 VaultEvent::AttachmentChanged(_) | VaultEvent::AttachmentRemoved(_) => {}
             }
@@ -205,7 +207,7 @@ impl ToolHost {
             return ToolOutput::error("denied_by_policy", "this tool isn't available in the agent panel");
         }
         self.refresh();
-        let cx = ToolCx { vault: &self.vault, index: &self.index, agent: &self.agent, actor, cancel, allow_write: true };
+        let cx = ToolCx::new(&self.vault, &self.index, &self.agent, actor, cancel, true);
         let ext = CallExt::basic(&self.served, true);
         tool.call_with(&cx, &ext, args)
     }

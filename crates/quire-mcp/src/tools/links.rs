@@ -7,9 +7,10 @@
 //! typed link through the normal write path: applied in agent zones, a
 //! suggestion the person reviews elsewhere).
 //!
-//! Every note these tools name passes the policy guard (`visible`): a note
-//! the client may not see is never listed, and walks never pass through it,
-//! so a hidden note can't show up as a gap in a chain either.
+//! The note an agent names passes the policy guard (`existing`); every note
+//! these tools reach from it passes the caller's `Visibility` (`shown`): a
+//! note the client may not see is never listed, and walks never pass through
+//! it, so a hidden note can't show up as a gap in a chain either.
 
 use std::collections::{HashSet, VecDeque};
 use std::fmt::Write as _;
@@ -18,7 +19,7 @@ use quire_app::index::{Hier, Index, Relations};
 use quire_app::vault::NotePath;
 use serde_json::{Value, json};
 
-use super::common::{existing, int, list, note_link, outcome_schema, req, s, tool, visible};
+use super::common::{existing, int, list, note_link, outcome_schema, req, s, tool};
 use super::{Access, Annotations, CallExt, Tool, ToolCx, ToolOutput};
 use crate::edit::EditOp;
 
@@ -33,7 +34,8 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
                 "path": {"type": "string"},
                 "type": {"type": "array", "items": {"type": "string"}, "description": "Only these types (a string is one type); \"untyped\" for plain links."},
                 "direction": {"type": "string", "enum": ["in", "out", "both"], "default": "both"},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}}, "required": ["path"]}),
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
+                "max_tokens": {"type": "integer"}, "cursor": {"type": "string"}}, "required": ["path"]}),
             schema!({"type": "object", "properties": {
                 "path": {"type": "string"},
                 "links": {"type": "array", "items": {"type": "object", "properties": {
@@ -41,7 +43,7 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
                     "hierarchy": {"type": ["string", "null"], "enum": ["up", "down", "same", "next", "prev", null]},
                     "implied": {"type": "boolean"}, "path": {"type": "string"}, "title": {"type": "string"}}}},
                 "types": {"type": "array", "items": {"type": "string"}, "description": "Every link type used in the vault (that you can see)."},
-                "truncated": {"type": "boolean"}}, "required": ["path", "links"]}),
+                "total": {"type": "integer"}, "truncated": {"type": "boolean"}, "next_cursor": {"type": ["string", "null"]}}, "required": ["path", "links"]}),
             r,
             Access::Read,
             links,
@@ -55,7 +57,8 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
                 "depth": {"type": "integer", "minimum": 1, "maximum": 10, "default": 3},
                 "include": {"type": "array", "items": {"type": "string", "enum": ["ancestors", "descendants", "siblings", "trails"]},
                     "description": "Default: all four."},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 200}}, "required": ["path"]}),
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 200},
+                "max_tokens": {"type": "integer"}}, "required": ["path"]}),
             schema!({"type": "object", "properties": {
                 "path": {"type": "string"}, "title": {"type": "string"},
                 "ancestors": {"type": "array", "items": {"type": "object", "properties": {"path": {"type": "string"}, "title": {"type": "string"}, "depth": {"type": "integer"}, "via": {"type": "string"}}}},
@@ -63,6 +66,7 @@ pub fn tools() -> Vec<Box<dyn Tool>> {
                 "siblings": {"type": "array", "items": {"type": "object", "properties": {"path": {"type": "string"}, "title": {"type": "string"}}}},
                 "previous": {"type": ["string", "null"]}, "next": {"type": ["string", "null"]},
                 "trails": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}},
+                "total": {"type": "integer"},
                 "truncated": {"type": "boolean"}}, "required": ["path"]}),
             r,
             Access::Read,
@@ -112,11 +116,13 @@ fn links(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let types = wanted(a);
     let keep = |t: Option<&str>| types.as_ref().is_none_or(|w| w.contains(t.unwrap_or("untyped")));
     let ix = cx.index.read();
+    // Made now: `shown` runs under the index's read lock below.
+    cx.visibility_in(&ix);
     let rel = ix.relations();
     let mut rows: Vec<Value> = Vec::new();
     let mut seen: HashSet<(bool, Option<String>, NotePath)> = HashSet::new();
     let mut push = |rows: &mut Vec<Value>, incoming: bool, field: Option<&str>, hier: Option<Hier>, implied: bool, other: &NotePath| {
-        if !keep(field) || !visible(cx, other) || !seen.insert((incoming, field.map(str::to_string), other.clone())) {
+        if !keep(field) || !shown(cx, other) || !seen.insert((incoming, field.map(str::to_string), other.clone())) {
             return;
         }
         rows.push(json!({
@@ -124,7 +130,7 @@ fn links(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
             "implied": implied, "path": other, "title": title(&ix, other)}));
     };
     if want_out {
-        for e in rel.of(&p).iter().filter(|e| e.visible(&|q| visible(cx, q))) {
+        for e in rel.of(&p).iter().filter(|e| e.visible(&|q| shown(cx, q))) {
             push(&mut rows, false, Some(&e.field), e.hier, e.implied, &e.to);
         }
         // Plain links out.
@@ -141,11 +147,24 @@ fn links(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
             push(&mut rows, true, b.link.field.as_deref(), hier, false, &b.from);
         }
     }
-    let total = rows.len();
-    rows.truncate(limit);
+    // By direction, path and type: the cursor's key.
+    let key = |r: &Value| {
+        format!(
+            "{}\u{0}{}\u{0}{}",
+            r["direction"].as_str().unwrap_or(""),
+            r["path"].as_str().unwrap_or(""),
+            r["type"].as_str().unwrap_or("")
+        )
+    };
+    rows.sort_by_cached_key(key);
+    let fingerprint = crate::bounds::fingerprint("k", a);
+    let budget = crate::bounds::max_tokens(a, crate::bounds::DEFAULT_MAX_TOKENS);
+    let Some(page) = crate::bounds::keyset(&rows, key, Value::clone, a, &fingerprint, limit, budget) else {
+        return super::read::stale_cursor(&fingerprint);
+    };
     // Types in notes the caller may see (a hidden note's field names stay hidden too).
     let mut all_types: Vec<String> = Vec::new();
-    for r in ix.records().filter(|r| visible(cx, &r.path)) {
+    for r in ix.records().filter(|r| cx.visibility_in(&ix).allows_with_tags(&r.path, &r.tags)) {
         for f in r.links.iter().filter_map(|l| l.field.as_ref()) {
             if !all_types.contains(f) {
                 all_types.push(f.clone());
@@ -153,54 +172,71 @@ fn links(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         }
     }
     all_types.sort();
-    let mut text = format!("Links of {p} ({total}):\n");
-    for r in &rows {
+    let mut text = format!("Links of {p} ({}):\n", page.total);
+    for r in &page.items {
         let arrow = if r["direction"] == "in" { "←" } else { "→" };
         let t = r["type"].as_str().unwrap_or("link");
         let implied = if r["implied"] == true { " (implied)" } else { "" };
         writeln!(text, "- {arrow} {t}{implied}: {}", r["path"].as_str().unwrap_or_default()).expect("a String takes any text");
     }
-    let notes = rows.iter().filter_map(|r| r["path"].as_str()).map(|q| note_link(&NotePath::new(q))).collect();
-    ToolOutput::ok(text.trim_end().to_string(), json!({"path": p, "links": rows, "types": all_types, "truncated": total > limit}))
-        .with_links(notes)
+    if let Some(c) = &page.next_cursor {
+        write!(text, "… {} more; call links again with cursor=\"{c}\"", page.more()).expect("a String takes any text");
+    }
+    let notes = page.items.iter().filter_map(|r| r["path"].as_str()).map(|q| note_link(&NotePath::new(q))).collect();
+    let st = json!({"path": p, "links": page.items, "types": all_types, "total": page.total, "truncated": page.truncated, "next_cursor": page.next_cursor});
+    ToolOutput::ok(text.trim_end().to_string(), st).with_links(notes)
 }
 
-/// Notes reached from `start` along `h`, through visible notes only.
-fn walk(cx: &ToolCx<'_>, ix: &Index, start: &NotePath, h: Hier, depth: usize, limit: usize) -> (Vec<Value>, bool) {
+/// Whether the caller may see `q`, a note the index's links reached: the
+/// call's [`ToolCx::visibility`], made before the index was read for the walk.
+fn shown(cx: &ToolCx<'_>, q: &NotePath) -> bool {
+    cx.visibility().allows(q)
+}
+
+/// Notes reached from `start` along `h`, through visible notes only: the first `limit` of them,
+/// and how many there are.
+fn walk(cx: &ToolCx<'_>, ix: &Index, start: &NotePath, h: Hier, depth: usize, limit: usize) -> (Vec<Value>, usize) {
     let rel = ix.relations();
     let mut seen: HashSet<NotePath> = HashSet::from([start.clone()]);
     let mut queue = VecDeque::from([(start.clone(), 0usize)]);
     let mut out = Vec::new();
-    let mut cut = false;
+    let mut total = 0;
     while let Some((p, d)) = queue.pop_front() {
         if d >= depth {
             continue;
         }
-        for n in rel.related_where(&p, h, &|q| visible(cx, q)) {
-            if !visible(cx, n) || !seen.insert(n.clone()) {
+        for n in rel.related_where(&p, h, &|q| shown(cx, q)) {
+            if !shown(cx, n) || !seen.insert(n.clone()) {
                 continue;
             }
-            if out.len() >= limit {
-                cut = true;
-                break;
+            total += 1;
+            if out.len() < limit {
+                out.push(json!({"path": n, "title": title(ix, n), "depth": d + 1, "via": p}));
             }
-            out.push(json!({"path": n, "title": title(ix, n), "depth": d + 1, "via": p}));
             queue.push_back((n.clone(), d + 1));
         }
     }
-    (out, cut)
+    (out, total)
+}
+
+/// The first rows of `rows` that fit in `budget` tokens (at least one), and the tokens they take.
+fn fit_rows(rows: &mut Vec<Value>, budget: usize) -> usize {
+    let texts: Vec<String> = rows.iter().map(Value::to_string).collect();
+    let n = crate::bounds::fit(texts.iter().map(String::as_str), budget);
+    rows.truncate(n);
+    texts.iter().take(n).map(|t| crate::bounds::est_tokens(t) + 1).sum()
 }
 
 /// Siblings of `p` the caller may know about: its explicit `same` links, then the
 /// other children of its *visible* parents. Two notes that share only a parent the
 /// caller can't see aren't reported as siblings (that would reveal the parent).
 fn visible_siblings(cx: &ToolCx<'_>, rel: &Relations, p: &NotePath) -> Vec<NotePath> {
-    let mut v: Vec<NotePath> = rel.related_where(p, Hier::Same, &|q| visible(cx, q)).into_iter().cloned().collect();
-    for parent in rel.related_where(p, Hier::Up, &|q| visible(cx, q)) {
-        let mut kids: Vec<&NotePath> = rel.related_where(parent, Hier::Down, &|q| visible(cx, q));
+    let mut v: Vec<NotePath> = rel.related_where(p, Hier::Same, &|q| shown(cx, q)).into_iter().cloned().collect();
+    for parent in rel.related_where(p, Hier::Up, &|q| shown(cx, q)) {
+        let mut kids: Vec<&NotePath> = rel.related_where(parent, Hier::Down, &|q| shown(cx, q));
         kids.sort();
         for k in kids {
-            if k != p && visible(cx, k) && !v.contains(k) {
+            if k != p && shown(cx, k) && !v.contains(k) {
                 v.push(k.clone());
             }
         }
@@ -212,11 +248,11 @@ fn visible_siblings(cx: &ToolCx<'_>, rel: &Relations, p: &NotePath) -> Vec<NoteP
 /// by name under its first visible parent (hidden notes aren't counted).
 fn visible_step(cx: &ToolCx<'_>, rel: &Relations, p: &NotePath, forward: bool) -> Option<NotePath> {
     let h = if forward { Hier::Next } else { Hier::Prev };
-    if let Some(n) = rel.related_where(p, h, &|q| visible(cx, q)).first() {
-        return Some((*n).clone()).filter(|q| visible(cx, q));
+    if let Some(n) = rel.related_where(p, h, &|q| shown(cx, q)).first() {
+        return Some((*n).clone()).filter(|q| shown(cx, q));
     }
-    let parent = *rel.related_where(p, Hier::Up, &|q| visible(cx, q)).first()?;
-    let mut kids: Vec<&NotePath> = rel.related_where(parent, Hier::Down, &|q| visible(cx, q));
+    let parent = *rel.related_where(p, Hier::Up, &|q| shown(cx, q)).first()?;
+    let mut kids: Vec<&NotePath> = rel.related_where(parent, Hier::Down, &|q| shown(cx, q));
     kids.sort_by_key(|k| k.stem().to_lowercase());
     let i = kids.iter().position(|k| *k == p)?;
     let j = if forward { i + 1 } else { i.checked_sub(1)? };
@@ -233,14 +269,20 @@ fn hierarchy(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let include = list(a, "include");
     let want = |k: &str| include.is_empty() || include.iter().any(|i| i == k);
     let ix = cx.index.read();
+    // Made now: `shown` runs under the index's read lock below.
+    cx.visibility_in(&ix);
     let rel = ix.relations();
     let mut st = json!({"path": p, "title": title(&ix, &p)});
     let mut truncated = false;
+    let mut total = 0;
+    let mut budget = crate::bounds::max_tokens(a, crate::bounds::DEFAULT_MAX_TOKENS);
     let mut text = format!("{p} in the hierarchy:\n");
     for (key, h) in [("ancestors", Hier::Up), ("descendants", Hier::Down)] {
         if want(key) {
-            let (rows, cut) = walk(cx, &ix, &p, h, depth, limit);
-            truncated |= cut;
+            let (mut rows, found) = walk(cx, &ix, &p, h, depth, limit);
+            budget = budget.saturating_sub(fit_rows(&mut rows, budget));
+            total += found;
+            truncated |= found > rows.len();
             let names: Vec<&str> = rows.iter().filter_map(|r| r["path"].as_str()).collect();
             writeln!(text, "{key}: {}", if names.is_empty() { "none".to_string() } else { names.join(", ") })
                 .expect("a String takes any text");
@@ -248,8 +290,11 @@ fn hierarchy(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         }
     }
     if want("siblings") {
-        let sibs: Vec<Value> =
-            visible_siblings(cx, rel, &p).iter().take(limit).map(|q| json!({"path": q, "title": title(&ix, q)})).collect();
+        let all = visible_siblings(cx, rel, &p);
+        let mut sibs: Vec<Value> = all.iter().take(limit).map(|q| json!({"path": q, "title": title(&ix, q)})).collect();
+        fit_rows(&mut sibs, budget);
+        total += all.len();
+        truncated |= all.len() > sibs.len();
         let names: Vec<&str> = sibs.iter().filter_map(|r| r["path"].as_str()).collect();
         writeln!(text, "siblings: {}", if names.is_empty() { "none".to_string() } else { names.join(", ") })
             .expect("a String takes any text");
@@ -260,12 +305,13 @@ fn hierarchy(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     }
     if want("trails") {
         // Only paths every note of which the caller may see.
-        let trails: Vec<Vec<NotePath>> = rel.trails_where(&p, 8, 32, &|q| visible(cx, q));
+        let trails: Vec<Vec<NotePath>> = rel.trails_where(&p, 8, 32, &|q| shown(cx, q));
         for t in &trails {
             writeln!(text, "trail: {}", t.iter().map(NotePath::stem).collect::<Vec<_>>().join(" › ")).expect("a String takes any text");
         }
         st["trails"] = json!(trails);
     }
+    st["total"] = total.into();
     st["truncated"] = truncated.into();
     ToolOutput::ok(text.trim_end().to_string(), st)
 }

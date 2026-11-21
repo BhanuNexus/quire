@@ -20,7 +20,8 @@ pub(super) fn register() -> Box<dyn Tool> {
         schema!({"type": "object", "properties": {
                 "answer": {"type": "string"}, "abstained": {"type": "boolean"},
                 "citations": {"type": "array", "items": {"type": "object"}}, "by": {"type": "string"},
-                "nearest": {"type": "array", "items": {"type": "object"}, "description": "When it abstains: up to 3 passages that came closest, with anchors (none of them answers)."}},
+                "nearest": {"type": "array", "items": {"type": "object"}, "description": "When it abstains: up to 3 passages that came closest, with anchors (none of them answers)."},
+                "truncated": {"type": "boolean"}},
                 "required": ["answer", "abstained", "citations"]}),
         r,
         Access::Read,
@@ -39,8 +40,15 @@ fn ask(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let budget = bounds::max_tokens(a, bounds::DEFAULT_MAX_TOKENS);
     let sem = cx.index.semantic();
     let ix = cx.index.read();
+    let vis = cx.visibility_in(&ix);
     // Only notes the caller may see compete for places and numbers.
-    let sources = retrieve_where(&ix, sem.as_deref(), &q, k, &|p| visible(cx, p));
+    let mut sources = retrieve_where(&ix, sem.as_deref(), &q, k, &|p| vis.allows(p));
+    // A second guard, as `search` has: whatever the index returns, nothing the full check (links
+    // followed) hides is quoted. At most `k` (20) sources; numbered again from 1 after it.
+    sources.retain(|src| visible(cx, &src.path));
+    for (i, src) in sources.iter_mut().enumerate() {
+        src.n = i + 1;
+    }
     let mut citations = Vec::new();
     let mut passages = String::new();
     let mut any_untrusted = false;
@@ -130,7 +138,8 @@ fn ask(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         }
     }
     // Keep the result within the token bound.
-    if bounds::est_tokens(&text) > budget {
+    let truncated = bounds::est_tokens(&text) > budget;
+    if truncated {
         let mut cut = (budget * 3).min(text.len());
         while !text.is_char_boundary(cut) {
             cut -= 1;
@@ -139,7 +148,7 @@ fn ask(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         text.push_str("\n… (cut at max_tokens)");
     }
     let links = sources.iter().map(|s| note_link(&s.path)).collect();
-    let mut out = json!({"answer": answer, "abstained": abstained, "citations": citations, "by": by});
+    let mut out = json!({"answer": answer, "abstained": abstained, "citations": citations, "by": by, "truncated": truncated});
     if abstained {
         out["nearest"] = nearest.into();
     }

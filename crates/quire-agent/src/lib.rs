@@ -12,6 +12,7 @@
 //! * [`fence`] — untrusted text in data blocks
 //! * [`instructions`] — `AGENTS.md`; [`watch`] — noticing other processes
 //! * [`shared`] — review history shared between devices (0.10)
+//! * [`Visibility`] — which indexed notes an agent may read, with no disk read per note (0.14)
 //!
 //! File formats are described in `docs/formats/`.
 
@@ -36,6 +37,7 @@ pub mod revert;
 pub mod review;
 pub mod shared;
 mod store;
+mod visibility;
 pub mod watch;
 
 pub use actor::{Actor, ActorKind, ClientInfo, Clock, DeviceInfo, FixedClock, Op, Provenance, SourceRef, SystemClock, Trust, Via};
@@ -52,6 +54,7 @@ pub use quire_vault::ContentHash;
 pub use revert::{RevertAction, RevertPlan, RevertReport, RevertSelector, RevertStep};
 pub use shared::{ImportReport, device_label};
 pub use store::{AgentStore, PolicyState, Resolved, canonical_path, resolve_at, resolve_in, vault_file, vault_file_at};
+pub use visibility::{Predicate, Visibility};
 
 #[cfg(test)]
 mod shared_tests;

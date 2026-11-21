@@ -249,10 +249,13 @@ fn submit(cx: &ToolCx<'_>, path: &NotePath, change: Change, expected: Option<Con
     .titled(format!("Changes to {}", path.stem()));
     match cx.agent.submit(cx.actor, cs) {
         Ok(SubmitOutcome::Applied { .. }) => {
-            if let Ok(t) = cx.vault.read(path) {
-                cx.index.upsert(path.clone(), t);
-                cx.index.flush();
+            match cx.vault.read_regular(path) {
+                Ok(Some(t)) => cx.index.upsert(path.clone(), t),
+                // A link is not a note: never read through it.
+                Ok(None) => cx.index.remove(path.clone()),
+                Err(_) => {}
             }
+            cx.index.flush();
             ToolOutput::text(done)
         }
         Ok(SubmitOutcome::Proposed { id, .. }) => ToolOutput::text(format!(

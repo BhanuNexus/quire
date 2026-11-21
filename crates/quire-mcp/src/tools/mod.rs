@@ -24,10 +24,10 @@ pub mod links;
 pub mod read;
 pub mod write;
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
-use quire_agent::{Actor, AgentStore};
-use quire_app::index::IndexService;
+use quire_agent::{Actor, AgentStore, Visibility};
+use quire_app::index::{Index, IndexService};
 use quire_app::intel::chat::{CancelFlag, ChatModel};
 use quire_app::vault::Vault;
 use serde_json::{Value, json};
@@ -163,6 +163,52 @@ pub struct ToolCx<'a> {
     pub cancel: &'a CancelFlag,
     /// The caller may write (subject to policy).
     pub allow_write: bool,
+    /// Which indexed notes the caller may read, made on first use and kept
+    /// for the rest of the call ([`Self::visibility`]).
+    visibility: OnceLock<Arc<Visibility>>,
+}
+
+impl<'a> ToolCx<'a> {
+    pub fn new(
+        vault: &'a Vault,
+        index: &'a IndexService,
+        agent: &'a AgentStore,
+        actor: &'a Actor,
+        cancel: &'a CancelFlag,
+        allow_write: bool,
+    ) -> Self {
+        Self { vault, index, agent, actor, cancel, allow_write, visibility: OnceLock::new() }
+    }
+
+    /// Which indexed notes the caller may read, for this call: the rules of
+    /// its policy and grant, and the locked folders as they are now (checked
+    /// once per folder, so a lock made by another process applies to the next
+    /// call). For paths that came out of the index or the vault listing only:
+    /// a path an agent named goes through [`common::existing`] or the store's
+    /// guard.
+    ///
+    /// Takes the index's read lock the first time; inside a closure that runs
+    /// under that lock, use [`Self::visibility_in`] taken before.
+    pub fn visibility(&self) -> &Arc<Visibility> {
+        if let Some(v) = self.visibility.get() {
+            return v;
+        }
+        let ix = self.index.read();
+        self.visibility_in(&ix)
+    }
+
+    /// [`Self::visibility`] with the index already read.
+    pub fn visibility_in(&self, ix: &Index) -> &Arc<Visibility> {
+        self.visibility.get_or_init(|| {
+            let mut folders: Vec<&str> = ix.records().filter_map(|r| r.path.as_str().rsplit_once('/').map(|(f, _)| f)).collect();
+            folders.sort_unstable();
+            folders.dedup();
+            let vis = self.agent.visibility(self.actor, folders);
+            // A client with a tag allow list is judged by the index's tags (`docs/design/0.14-agent-tools.md` §3.5).
+            let vis = if vis.needs_tags() { vis.with_tags(ix.records().map(|r| (r.path.clone(), r.tags.clone())).collect()) } else { vis };
+            Arc::new(vis)
+        })
+    }
 }
 
 /// What a caller was granted, beyond the vault's policy.

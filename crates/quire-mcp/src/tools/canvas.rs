@@ -311,7 +311,7 @@ mod tests {
         let actor = Actor::agent("mcp:test", "Test agent", Via::McpStdio, "d");
         agent.set_cap(&actor.id, Mode::Direct);
         let cancel = CancelFlag::default();
-        let cx = ToolCx { vault, index: &index, agent: &agent, actor: &actor, cancel: &cancel, allow_write: true };
+        let cx = ToolCx::new(vault, &index, &agent, &actor, &cancel, true);
         let t = tools().into_iter().find(|t| t.spec().name == name).unwrap();
         t.call(&cx, args)
     }

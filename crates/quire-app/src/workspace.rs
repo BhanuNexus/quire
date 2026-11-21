@@ -975,7 +975,15 @@ impl Workspace {
 
     fn process_vault_events(&mut self) -> bool {
         let Some(w) = &self.watcher else { return false };
-        let events: Vec<VaultEvent> = w.events.try_iter().collect();
+        // A change to a link (or below a linked folder) is a removal: never read through it.
+        let events: Vec<VaultEvent> = w
+            .events
+            .try_iter()
+            .map(|ev| match &self.vault {
+                Some(v) => ev.regular(v),
+                None => ev,
+            })
+            .collect();
         if events.is_empty() {
             return false;
         }
@@ -986,8 +994,14 @@ impl Workspace {
                     if !seen.insert(p.clone()) {
                         continue;
                     }
-                    let Some(content) = self.vault.as_ref().and_then(|v| v.read(&p).ok()) else {
-                        continue;
+                    let content = match self.vault.as_ref().map(|v| v.read_regular(&p)) {
+                        Some(Ok(Some(c))) => c,
+                        // Swapped for a link between the event and the read: gone.
+                        Some(Ok(None)) => {
+                            self.index.remove(p);
+                            continue;
+                        }
+                        _ => continue,
                     };
                     if !self.docs.iter().any(|d| d.path.as_ref() == Some(&p) && d.matches_disk(&content))
                         && let Some(v) = &self.vault

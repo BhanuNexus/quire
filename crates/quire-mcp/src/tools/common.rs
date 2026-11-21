@@ -6,6 +6,7 @@
 use std::fmt::Write as _;
 
 use quire_agent::{Mode, OpKind, SubmitOutcome, Trust, WriteError, canonical_path};
+use quire_app::index::Index;
 use quire_app::vault::{ContentHash, NotePath};
 use serde_json::{Value, json};
 
@@ -122,6 +123,11 @@ pub fn path_arg(a: &Value, k: &str) -> Result<NotePath, ToolOutput> {
 /// Whether the caller may see `path` at all: the store's path guard
 /// (hidden folders, links out of the vault or into a `deny` zone, and `deny`
 /// zones themselves are invisible).
+///
+/// The full check, with links followed and the locked folders looked up on
+/// the disk: for a path an agent named, or one from the ledger or a
+/// proposal. A listing over the index asks [`ToolCx::visibility`] instead,
+/// which makes no disk read per note.
 pub fn visible(cx: &ToolCx<'_>, path: &NotePath) -> bool {
     cx.agent.effective_mode(cx.actor, path, OpKind::Read) != Mode::Deny
 }
@@ -186,6 +192,16 @@ pub fn modified(cx: &ToolCx<'_>, path: &NotePath) -> Option<String> {
     let t = cx.vault.storage().modified(path).ok()?;
     let ms = t.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis();
     Some(iso(i64::try_from(ms).ok()?))
+}
+
+/// When an indexed note last changed (Unix ms): what the index knows (the
+/// file's time when it was read, the time of an update since), and only
+/// without that the file's time.
+pub fn modified_ms(cx: &ToolCx<'_>, ix: &Index, path: &NotePath) -> Option<i64> {
+    ix.modified(path).or_else(|| {
+        let t = cx.vault.storage().modified(path).ok()?;
+        i64::try_from(t.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis()).ok()
+    })
 }
 
 /// A refused write, with its stable code and details.

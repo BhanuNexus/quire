@@ -49,6 +49,22 @@ impl VaultEvent {
         })
     }
 
+    /// The one rule for a change read through the watcher: a `Changed` (or
+    /// `AttachmentChanged`) path that is not a regular file below regular
+    /// folders ([`crate::Vault::is_regular_file`]: a symlink, a file below a
+    /// symlinked folder, a missing file) becomes a removal, so a consumer
+    /// never reads through a link and a note swapped for one leaves the
+    /// index. Every consumer that upserts from events calls this first (the
+    /// MCP server, the agent panel's tool host, the workspace).
+    #[must_use]
+    pub fn regular(self, vault: &crate::Vault) -> Self {
+        match self {
+            Self::Changed(p) if !vault.is_regular_file(&p) => Self::Removed(p),
+            Self::AttachmentChanged(p) if !vault.is_regular_file(&p) => Self::AttachmentRemoved(p),
+            other => other,
+        }
+    }
+
     /// The path the event is about.
     pub fn path(&self) -> &NotePath {
         match self {
@@ -151,8 +167,9 @@ impl Rescanner {
     fn saw(&self, rel: &NotePath, path: &Path) {
         let mut seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
         let seen = seen.get_or_insert_with(Seen::new);
-        match std::fs::metadata(path) {
-            Ok(m) if m.is_file() => {
+        match std::fs::symlink_metadata(path) {
+            #[expect(clippy::filetype_is_file, reason = "a symlinked note is skipped, as the vault listing skips it")]
+            Ok(m) if m.file_type().is_file() => {
                 seen.insert(rel.clone(), (m.modified().ok(), m.len()));
             }
             _ => {
@@ -191,6 +208,21 @@ impl Rescanner {
     }
 }
 
+/// The event for one path a notify event names. Links are not followed (one
+/// `symlink_metadata`, as [`scan`] does): a folder is no event, and a
+/// symlinked file counts as gone, so it is never read and a note replaced by
+/// a link is removed.
+fn event_for(root: &Path, p: &Path, kind: EventKind) -> Option<VaultEvent> {
+    let rel = NotePath::new(p.strip_prefix(root).ok()?.to_string_lossy());
+    let meta = std::fs::symlink_metadata(p);
+    if meta.as_ref().is_ok_and(std::fs::Metadata::is_dir) {
+        return None;
+    }
+    #[expect(clippy::filetype_is_file, reason = "a symlinked note is not a note, as the vault listing skips it")]
+    let regular = meta.is_ok_and(|m| m.file_type().is_file());
+    VaultEvent::from_fs(rel, kind, regular)
+}
+
 /// Observer over the vault folder. Drop it to stop watching.
 ///
 /// When the system says events were lost (an overflowing event queue, the
@@ -218,11 +250,7 @@ impl VaultWatcher {
                     continue;
                 };
                 let rel = NotePath::new(rel.to_string_lossy());
-                // Folders change too (a file added inside); only files are events.
-                if p.is_dir() {
-                    continue;
-                }
-                if let Some(msg) = VaultEvent::from_fs(rel.clone(), ev.kind, p.exists()) {
+                if let Some(msg) = event_for(&root_for_cb, p, ev.kind) {
                     on_event.saw(&rel, p);
                     #[expect(clippy::let_underscore_must_use, reason = "the receiver is gone only when the watcher was dropped")]
                     let _ = tx.send(msg);
@@ -312,5 +340,61 @@ mod tests {
         assert_eq!(first, VaultEvent::Changed("Kept.md".into()));
         std::thread::sleep(RESCAN_SETTLE * 2);
         assert_eq!(rx.try_iter().count(), 0);
+    }
+
+    /// A symlinked note is not a note: the notify callback reports it as gone (so a note swapped
+    /// for a link leaves the index), whatever it points at; a regular one is a change.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_file_is_reported_as_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vault");
+        std::fs::create_dir_all(root.join("Notes")).unwrap();
+        std::fs::create_dir_all(root.join("Private")).unwrap();
+        std::fs::write(root.join("Private/diary.md"), "secret").unwrap();
+        std::fs::write(root.join("Notes/a.md"), "a").unwrap();
+        std::os::unix::fs::symlink(root.join("Private/diary.md"), root.join("Notes/link.md")).unwrap();
+        std::os::unix::fs::symlink(root.join("nowhere.md"), root.join("Notes/dangling.md")).unwrap();
+        let create = EventKind::Create(CreateKind::File);
+        let ev = |rel: &str| event_for(&root, &root.join(rel), create);
+        assert_eq!(ev("Notes/a.md"), Some(VaultEvent::Changed("Notes/a.md".into())));
+        assert_eq!(ev("Notes/link.md"), Some(VaultEvent::Removed("Notes/link.md".into())));
+        assert_eq!(ev("Notes/dangling.md"), Some(VaultEvent::Removed("Notes/dangling.md".into())));
+        assert_eq!(ev("Notes"), None, "a folder is not an event");
+        // A regular note replaced by a link: gone.
+        std::fs::remove_file(root.join("Notes/a.md")).unwrap();
+        std::os::unix::fs::symlink(root.join("Private/diary.md"), root.join("Notes/a.md")).unwrap();
+        assert_eq!(ev("Notes/a.md"), Some(VaultEvent::Removed("Notes/a.md".into())));
+    }
+
+    /// [`VaultEvent::regular`]: a change to a path that is not a regular file below regular
+    /// folders becomes a removal, at every consumer.
+    #[cfg(unix)]
+    #[test]
+    fn changes_to_links_become_removals() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vault");
+        std::fs::create_dir_all(root.join("Notes")).unwrap();
+        std::fs::create_dir_all(root.join("Private")).unwrap();
+        std::fs::write(root.join("Notes/a.md"), "a").unwrap();
+        std::fs::write(root.join("Private/diary.md"), "secret").unwrap();
+        std::fs::write(dir.path().join("outside.md"), "out").unwrap();
+        std::os::unix::fs::symlink(root.join("Private/diary.md"), root.join("Notes/to-deny.md")).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("outside.md"), root.join("Notes/to-outside.md")).unwrap();
+        std::os::unix::fs::symlink(root.join("Private"), root.join("Alias")).unwrap();
+        let vault = crate::Vault::open_local(&root).unwrap();
+        let changed = |p: &str| VaultEvent::Changed(p.into()).regular(&vault);
+        assert_eq!(changed("Notes/a.md"), VaultEvent::Changed("Notes/a.md".into()));
+        for p in ["Notes/to-deny.md", "Notes/to-outside.md", "Alias/diary.md", "Notes/missing.md"] {
+            assert_eq!(changed(p), VaultEvent::Removed(p.into()), "{p}");
+        }
+        assert_eq!(VaultEvent::Removed("Notes/a.md".into()).regular(&vault), VaultEvent::Removed("Notes/a.md".into()));
+        // Reading: only a regular file's text, never a link's target.
+        assert_eq!(vault.read_regular(&"Notes/a.md".into()).unwrap().as_deref(), Some("a"));
+        assert_eq!(vault.read_regular(&"Notes/to-deny.md".into()).unwrap(), None);
+        assert_eq!(vault.read_regular(&"Alias/diary.md".into()).unwrap(), None);
+        // A vault in memory has no links.
+        let mem = crate::Vault::in_memory(&[("A.md", "a")]);
+        assert_eq!(VaultEvent::Changed("A.md".into()).regular(&mem), VaultEvent::Changed("A.md".into()));
     }
 }

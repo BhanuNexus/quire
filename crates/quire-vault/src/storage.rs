@@ -81,6 +81,13 @@ pub trait Storage: Send + Sync {
     fn modified(&self, path: &NotePath) -> Result<SystemTime>;
     /// Absolute location on disk, for adapters that have one.
     fn absolute(&self, path: &NotePath) -> Option<PathBuf>;
+    /// Whether `path` itself (a file or a folder) is a symbolic link, the
+    /// link not followed: one `symlink_metadata`. False for an adapter with
+    /// no folder on disk, which has no links. A wrapper that counts storage
+    /// calls sees it as a call to `absolute`.
+    fn is_symlink(&self, path: &NotePath) -> bool {
+        self.absolute(path).is_some_and(|abs| std::fs::symlink_metadata(abs).is_ok_and(|m| m.file_type().is_symlink()))
+    }
     /// Files under a folder, including hidden app folders like `.quire/`.
     fn list_under(&self, folder: &str) -> Result<Vec<NotePath>>;
     /// Permanently delete (used for app data such as pruned history, never notes).

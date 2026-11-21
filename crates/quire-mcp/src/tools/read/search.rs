@@ -74,8 +74,10 @@ fn search(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         Start::At(n) => n,
         Start::Stale => return stale(&fingerprint),
     };
-    // Only notes the caller may see compete for the `limit` places.
-    let mut hits = cx.index.search_sections_where(&query, &filters, limit, &|p| visible(cx, p));
+    // Only notes the caller may see compete for the `limit` places. (Made before the
+    // search: the closure runs under the index's read lock.)
+    let vis = std::sync::Arc::clone(cx.visibility());
+    let mut hits = cx.index.search_sections_where(&query, &filters, limit, &|p| vis.allows(p));
     // A second guard: whatever the index returns, nothing hidden leaves.
     hits.retain(|h| visible(cx, &h.path));
     let ix = cx.index.read();
@@ -95,7 +97,7 @@ fn search(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         };
         let st = json!({
             "uri": note_uri(&h.path), "path": h.path, "title": title, "heading": h.heading, "lines": [h.lines.0, h.lines.1],
-            "snippet": h.snippet, "score": h.score, "by_meaning": h.by_meaning, "modified": modified(cx, &h.path),
+            "snippet": h.snippet, "score": h.score, "by_meaning": h.by_meaning, "modified": modified_ms(cx, &ix, &h.path).map(iso),
             "version": ContentHash::of(&src), "last_actor": last_actor(cx, &h.path),
             "trust": if untrusted { "untrusted" } else { "trusted" },
         });
@@ -107,7 +109,7 @@ fn search(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     }
     let n = bounds::fit(rows.iter().map(|r| r.0.as_str()), budget);
     let truncated = n < rows.len();
-    let next = truncated.then(|| Cursor { offset: skip + n, version: fingerprint.clone() }.encode());
+    let next = truncated.then(|| Cursor::at(skip + n, fingerprint.clone()).encode());
     let shown = &rows[..n];
     let mut text =
         if shown.is_empty() { "No matching notes.".to_string() } else { shown.iter().map(|r| r.0.as_str()).collect::<Vec<_>>().join("\n") };

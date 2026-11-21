@@ -4,6 +4,8 @@
 //!
 //! Its definition (name, schema, description) and its handler sit together.
 
+use std::sync::Arc;
+
 use super::*;
 
 pub(super) fn register() -> Box<dyn Tool> {
@@ -17,6 +19,7 @@ pub(super) fn register() -> Box<dyn Tool> {
                 "notes": {"type": "integer"}, "attachments": {"type": "integer"},
                 "instructions": {"type": ["object", "null"], "properties": {"path": {"type": "string"}, "approved": {"type": "boolean"}}},
                 "zones": {"type": "array", "items": {"type": "object", "properties": {"path": {"type": "string"}, "role": {"type": "string"}, "mode_for_you": {"type": "string"}}}},
+                "truncated": {"type": "boolean"},
                 "limits": {"type": "object"}, "server_time": {"type": "string"}, "pending_proposals_mine": {"type": "integer"}}}),
         r,
         Access::Read,
@@ -24,16 +27,22 @@ pub(super) fn register() -> Box<dyn Tool> {
     )
 }
 
+/// The most zones `vault_info` lists (`docs/design/0.14-agent-tools.md` §3.3).
+const MAX_ZONES: usize = 50;
+
 fn vault_info(cx: &ToolCx<'_>, ext: &CallExt<'_>, _a: &Value) -> ToolOutput {
     let ix = cx.index.read();
-    let notes = ix.paths().iter().filter(|p| visible(cx, p)).count();
+    let vis = Arc::clone(cx.visibility_in(&ix));
+    let notes = ix.records().filter(|r| vis.allows_with_tags(&r.path, &r.tags)).count();
     drop(ix);
-    let attachments = cx.vault.storage().list().map_or(0, |all| all.iter().filter(|p| !p.is_markdown() && visible(cx, p)).count());
+    // One walk of the vault per call (`vault_info` is called once a session); the listing holds
+    // regular files only, so the rules decide without a disk read per file.
+    let attachments = cx.vault.storage().list().map_or(0, |all| all.iter().filter(|p| !p.is_markdown() && vis.allows(p)).count());
     let policy = cx.agent.policy();
+    // The same rules as the store's, with this call's folder checks: no disk read per zone.
     let probe = |prefix: &str| {
         let p = NotePath::new(format!("{}quire-probe.md", prefix.trim_start_matches("./")));
-        let m = cx.agent.effective_mode(cx.actor, &p, OpKind::Edit);
-        mode_name(m, cx.agent.effective_mode(cx.actor, &p, OpKind::Create))
+        mode_name(vis.mode(&p, OpKind::Edit), vis.mode(&p, OpKind::Create))
     };
     let mut zones: Vec<Value> = policy
         .zones
@@ -44,6 +53,9 @@ fn vault_info(cx: &ToolCx<'_>, ext: &CallExt<'_>, _a: &Value) -> ToolOutput {
             json!({"path": z.path, "role": role, "mode_for_you": probe(&z.path)})
         })
         .collect();
+    // At most 50 zones, then what applies everywhere else.
+    let truncated = zones.len() > MAX_ZONES;
+    zones.truncate(MAX_ZONES);
     zones.push(json!({"path": "(everything else)", "role": "human", "mode_for_you": probe("")}));
     let instr = instructions::find(cx.vault).map(|(p, text)| {
         json!({"path": p, "approved": instructions::approved(ext.state_dir, &ContentHash::of(&text)), "uri": "quire://vault/instructions"})
@@ -58,7 +70,7 @@ fn vault_info(cx: &ToolCx<'_>, ext: &CallExt<'_>, _a: &Value) -> ToolOutput {
     });
     let st = json!({
         "notes": notes, "attachments": attachments, "instructions": instr, "zones": zones, "limits": limits,
-        "server_time": iso(cx.agent.now_ms()), "pending_proposals_mine": mine,
+        "truncated": truncated, "server_time": iso(cx.agent.now_ms()), "pending_proposals_mine": mine,
         "you": {"id": cx.actor.id, "label": cx.actor.label},
     });
     let mut text = format!("Vault: {notes} notes, {attachments} attachments.\nYou are {} ({}).\nZones:\n", cx.actor.label, cx.actor.id);
@@ -80,6 +92,9 @@ fn vault_info(cx: &ToolCx<'_>, ext: &CallExt<'_>, _a: &Value) -> ToolOutput {
             if i["approved"] == true { "approved" } else { "awaiting the person's review; don't rely on them" }
         )
         .expect("a String takes any text");
+    }
+    if truncated {
+        writeln!(text, "(More zones than {MAX_ZONES}: the rest are left out.)").expect("a String takes any text");
     }
     write!(text, "Your pending suggestions: {mine}. Cite notes as [[Note#Heading]].").expect("a String takes any text");
     ToolOutput::ok(text, st)

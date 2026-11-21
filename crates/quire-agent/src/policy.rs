@@ -322,6 +322,23 @@ impl HardRule {
 /// The hard rule for a (canonical) vault path, if any. `templates` is the
 /// vault's templates folder.
 pub fn hard_rule(path: &str, templates: &str) -> Option<HardRule> {
+    // ASCII text lower-cases the same either way, without a copy: the common case, asked about every note.
+    if path.is_ascii() && templates.is_ascii() {
+        let starts =
+            |s: &str, prefix: &str| s.len() >= prefix.len() && s.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes());
+        if path.eq_ignore_ascii_case(".quire") || starts(path, ".quire/") {
+            return Some(HardRule::AppData);
+        }
+        let name = path.rsplit('/').next().unwrap_or(path);
+        let tpl = templates.trim_matches('/');
+        let in_templates = starts(path, tpl) && path.as_bytes().get(tpl.len()) == Some(&b'/');
+        return (path.eq_ignore_ascii_case("agents.md")
+            || path.eq_ignore_ascii_case("claude.md")
+            || name.eq_ignore_ascii_case("skill.md")
+            || in_templates
+            || starts(path, "templates/"))
+        .then_some(HardRule::Instructions);
+    }
     let lower = path.to_lowercase();
     if lower == ".quire" || lower.starts_with(".quire/") {
         return Some(HardRule::AppData);
@@ -389,27 +406,37 @@ impl Policy {
     /// entry's `default`. For an `unverified` client (it only reported its
     /// name) the entry can narrow but never widen.
     pub fn modes_for(&self, client: Option<&str>, unverified: bool, path: &str) -> Vec<(Mode, String)> {
+        let mut out = Vec::new();
+        self.modes_for_each(client, unverified, path, &mut |m, why| out.push((m, why())));
+        out
+    }
+
+    /// [`Self::modes_for`] without building the labels: `out` gets each mode
+    /// and a function that names where it comes from, called only by a
+    /// caller that reports it (a listing asks about every note and never does).
+    pub fn modes_for_each(&self, client: Option<&str>, unverified: bool, path: &str, out: &mut dyn FnMut(Mode, &dyn Fn() -> String)) {
         let vault_zone = self.zone_for(path);
-        let vault = vault_zone.map_or_else(|| (self.default, "default".to_string()), |z| (z.mode, z.path.clone()));
-        let Some((key, c)) = client.and_then(|k| self.clients.get_key_value(k)) else { return vec![vault] };
+        let vault = |out: &mut dyn FnMut(Mode, &dyn Fn() -> String)| match vault_zone {
+            Some(z) => out(z.mode, &|| z.path.clone()),
+            None => out(self.default, &|| "default".to_string()),
+        };
+        let Some((key, c)) = client.and_then(|k| self.clients.get_key_value(k)) else { return vault(out) };
         let client_zone = c.zones.iter().filter(|(p, _)| zone_matches(p, path)).max_by_key(|(p, _)| specificity(p));
         let label = |what: &str| format!("{what} ({key})");
-        let mut out = Vec::new();
         match client_zone {
             Some((p, m)) if !unverified && vault_zone.is_none_or(|z| specificity(p) >= specificity(&z.path)) => {
-                out.push((*m, label(p)));
+                out(*m, &|| label(p));
             }
             other => {
-                out.push(vault);
+                vault(out);
                 if let Some(d) = c.default {
-                    out.push((d, label("default")));
+                    out(d, &|| label("default"));
                 }
                 if let Some((p, m)) = other.filter(|_| unverified) {
-                    out.push((*m, label(p)));
+                    out(*m, &|| label(p));
                 }
             }
         }
-        out
     }
 
     /// One sentence for Settings → Agents: "Agents can write directly in
@@ -630,6 +657,14 @@ fn specificity(pattern: &str) -> (usize, bool) {
 /// Case-insensitive: a zone written `Wiki/` also covers `wiki/` on
 /// case-insensitive file systems, the safe direction for deny zones.
 fn zone_matches(pattern: &str, path: &str) -> bool {
+    // ASCII text is already NFC and lower-cases the same either way: compare without a copy (a
+    // listing asks about every note).
+    let pattern_lit = pattern.trim_start_matches("./");
+    if pattern_lit.is_ascii() && path.is_ascii() && !pattern_lit.contains(is_glob) {
+        let (p, path) = (pattern_lit.as_bytes(), path.as_bytes());
+        let starts = path.len() >= p.len() && path[..p.len()].eq_ignore_ascii_case(p);
+        return if p.ends_with(b"/") { starts } else { starts && (path.len() == p.len() || path[p.len()] == b'/') };
+    }
     // NFC as well: a zone written in one Unicode form covers paths in the other.
     let fold = |s: &str| s.nfc().collect::<String>().to_lowercase();
     let (p, path) = (fold(pattern.trim_start_matches("./")), fold(path));
@@ -827,6 +862,59 @@ zones = { "wiki/" = "direct", "notes/" = "direct" }
     }
 
     /// TOML nested 100,000 deep: arrays, inline tables, and a mix.
+    /// The ASCII shortcuts of `hard_rule` and `zone_matches` answer as the Unicode path does.
+    #[test]
+    fn ascii_shortcuts_agree_with_the_unicode_path() {
+        let slow_rule = |path: &str, templates: &str| {
+            let lower = path.to_lowercase();
+            if lower == ".quire" || lower.starts_with(".quire/") {
+                return Some(HardRule::AppData);
+            }
+            let name = lower.rsplit('/').next().unwrap_or(&lower);
+            let tpl = format!("{}/", templates.trim_matches('/').to_lowercase());
+            (matches!(lower.as_str(), "agents.md" | "claude.md")
+                || name == "skill.md"
+                || lower.starts_with(&tpl)
+                || lower.starts_with("templates/"))
+            .then_some(HardRule::Instructions)
+        };
+        let slow_zone = |pattern: &str, path: &str| {
+            let fold = |s: &str| s.nfc().collect::<String>().to_lowercase();
+            let (p, path) = (fold(pattern.trim_start_matches("./")), fold(path));
+            if p.ends_with('/') { path.starts_with(&p) } else { path == p || path.starts_with(&format!("{p}/")) }
+        };
+        let paths = [
+            ".quire",
+            ".QUIRE/x.md",
+            ".quirex/a.md",
+            "AGENTS.md",
+            "Claude.MD",
+            "a/SKILL.md",
+            "Templates/Daily.md",
+            "templates",
+            "tpl/x.md",
+            "TPL/x.md",
+            "tplx/a.md",
+            "/x.md",
+            "Work",
+            "work/a.md",
+            "Workshop/a.md",
+            "WORK/Public/b.md",
+            "wiki",
+            "x.md",
+        ];
+        for templates in ["Templates", "tpl", "/tpl/", ""] {
+            for p in paths {
+                assert_eq!(hard_rule(p, templates), slow_rule(p, templates), "{p} with templates {templates:?}");
+            }
+        }
+        for pattern in ["Work/", "work", "./Work/Public/", "wiki", "WIKI/", "x.md"] {
+            for p in paths {
+                assert_eq!(zone_matches(pattern, p), slow_zone(pattern, p), "{pattern} on {p}");
+            }
+        }
+    }
+
     fn deep_toml_inputs() -> Vec<String> {
         let n = 100_000;
         vec![

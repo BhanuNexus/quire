@@ -66,69 +66,7 @@ const TABLE: &[Row] = &[
 /// Today's gaps against [`TABLE`], each with the step that closes it (`docs/design/0.14-agent-tools.md` §8).
 const BOUNDS_GAPS: &[(&str, &str)] = &[
     ("ask: no `limit`", "step 4: `limit` is the one row cap, `k` and `max_rows` stay as aliases"),
-    ("ask: no `truncated` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("diff: no `cursor`", "step 3: bounds and cursors (§3.3)"),
-    ("diff: no `max_tokens`", "step 3: bounds and cursors (§3.3)"),
-    ("diff: no `next_cursor` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("diff: no `truncated` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("hierarchy: no `max_tokens`", "step 3: bounds and cursors (§3.3)"),
-    ("hierarchy: no `total` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("history: no `cursor`", "step 3: bounds and cursors (§3.3)"),
-    ("history: no `max_tokens`", "step 3: bounds and cursors (§3.3)"),
-    ("history: no `next_cursor` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("history: no `total` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("history: no `truncated` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("links: no `cursor`", "step 3: bounds and cursors (§3.3)"),
-    ("links: no `max_tokens`", "step 3: bounds and cursors (§3.3)"),
-    ("links: no `next_cursor` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("links: no `total` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("list: no `max_tokens`", "step 3: bounds and cursors (§3.3)"),
-    ("list: no `total` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("list: no `truncated` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("neighbors: no `max_tokens`", "step 3: bounds and cursors (§3.3)"),
-    ("neighbors: no `total` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("neighbors: no `truncated` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("outline: no `cursor`", "step 3: bounds and cursors (§3.3)"),
-    ("outline: no `limit`", "step 3: bounds and cursors (§3.3)"),
-    ("outline: no `max_tokens`", "step 3: bounds and cursors (§3.3)"),
-    ("outline: no `next_cursor` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("outline: no `total` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("outline: no `truncated` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("properties: no `cursor`", "step 3: bounds and cursors (§3.3)"),
-    ("properties: no `limit`", "step 3: bounds and cursors (§3.3)"),
-    ("properties: no `max_tokens`", "step 3: bounds and cursors (§3.3)"),
-    ("properties: no `next_cursor` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("properties: no `total` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("properties: no `truncated` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("proposals: no `cursor`", "step 3: bounds and cursors (§3.3)"),
-    ("proposals: no `limit`", "step 3: bounds and cursors (§3.3)"),
-    ("proposals: no `max_tokens`", "step 3: bounds and cursors (§3.3)"),
-    ("proposals: no `next_cursor` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("proposals: no `total` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("proposals: no `truncated` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("query_view: no `cursor`", "step 3: bounds and cursors (§3.3)"),
     ("query_view: no `limit`", "step 4: `limit` is the one row cap, `k` and `max_rows` stay as aliases"),
-    ("query_view: no `max_tokens`", "step 3: bounds and cursors (§3.3)"),
-    ("query_view: no `next_cursor` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("query_view: no `truncated` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("recent_activity: no `cursor`", "step 3: bounds and cursors (§3.3)"),
-    ("recent_activity: no `max_tokens`", "step 3: bounds and cursors (§3.3)"),
-    ("recent_activity: no `next_cursor` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("recent_activity: no `total` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("recent_activity: no `truncated` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("tags: no `cursor`", "step 3: bounds and cursors (§3.3)"),
-    ("tags: no `limit`", "step 3: bounds and cursors (§3.3)"),
-    ("tags: no `max_tokens`", "step 3: bounds and cursors (§3.3)"),
-    ("tags: no `next_cursor` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("tags: no `total` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("tags: no `truncated` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("tasks: `limit` maximum is 1000, not 500", "step 3: bounds and cursors (§3.3)"),
-    ("tasks: no `cursor`", "step 3: bounds and cursors (§3.3)"),
-    ("tasks: no `max_tokens`", "step 3: bounds and cursors (§3.3)"),
-    ("tasks: no `next_cursor` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("tasks: no `total` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("tasks: no `truncated` in the output", "step 3: bounds and cursors (§3.3)"),
-    ("vault_info: no `truncated` in the output", "step 3: bounds and cursors (§3.3)"),
 ];
 
 fn props(schema: &Value) -> &serde_json::Map<String, Value> {
@@ -200,9 +138,12 @@ fn every_list_tool_is_bounded_or_a_known_gap() {
         if !matches!(spec.access, Access::Read | Access::Ask) {
             continue;
         }
+        // A list (an array at the top), or anything bounded or paged like one: a long read too.
         let lists = props(out).values().any(|p| p["type"] == "array");
-        let paged = props(&spec.input_schema).contains_key("cursor") || props(out).contains_key("next_cursor");
-        if lists || paged {
+        let input = props(&spec.input_schema);
+        let bounded = ["cursor", "limit", "max_tokens", "max_rows", "k"].iter().any(|k| input.contains_key(*k))
+            || ["next_cursor", "truncated", "total"].iter().any(|k| props(out).contains_key(*k));
+        if lists || bounded {
             assert!(TABLE.iter().any(|r| r.tool == spec.name), "{} returns a list or pages: add its row to TABLE (§3.3)", spec.name);
         }
     }
@@ -291,22 +232,129 @@ fn list_bytes() -> usize {
     Value::Array(listed("2026-07-28", true)).to_string().len()
 }
 
-/// G2 today: `tools/list` for a write-grant client is 41,315 bytes by the design (41,264 measured on main at the start of
-/// 0.14); it may not grow by more than 5% before step 5 removes nine tools.
-const BYTES_TODAY: usize = 41_315;
+/// G2: `tools/list` for a write-grant client, measured when the bounds and cursors landed
+/// (`docs/design/0.14-agent-tools.md` §3.3, step 3): 43,327 bytes, of which the nine 0.8 tools take 3,054 (before: 41,315 by the design,
+/// 41,264 measured on main at the start of 0.14). It may not grow by more than 5%.
+const BYTES_MEASURED: usize = 43_327;
+/// The nine 0.8 tools' entries in that list, with their commas.
+const BYTES_LEGACY_NINE: usize = 3_054;
 
 #[test]
 fn tools_list_does_not_grow() {
     let now = list_bytes();
-    assert!(now * 100 <= BYTES_TODAY * 105, "tools/list is {now} bytes, over today's {BYTES_TODAY} plus 5%");
+    assert!(now * 100 <= BYTES_MEASURED * 105, "tools/list is {now} bytes, over the {BYTES_MEASURED} measured at step 3 plus 5%");
 }
 
-/// G2 target: step 3 measures the size after the new properties and writes it here; the orientation
-/// figure of the design is 41,315 - 3,045 = 38,270 bytes plus about 30 for the new properties.
+/// G2 target: once step 5 removes the nine 0.8 tools, the list measured at step 3 without them,
+/// plus 5%.
 #[test]
-#[ignore = "removed by step 5: the nine 0.8 tools leave tools/list (step 3 then sets the measured budget)"]
+#[ignore = "removed by step 5: the nine 0.8 tools leave tools/list"]
 fn target_tools_list_size() {
-    let budget = (38_270 + 30) * 105 / 100;
+    let budget = (BYTES_MEASURED - BYTES_LEGACY_NINE) * 105 / 100;
     let now = list_bytes();
     assert!(now <= budget, "tools/list is {now} bytes, over {budget}");
+}
+
+// ------------------------------------------------------------------ paging
+
+/// A tools/call on a stdio connection in the newest era.
+fn call(srv: &Server, name: &str, args: &Value) -> Value {
+    let meta = json!({"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientInfo": {"name": "probe", "version": "1"}});
+    let line = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": args, "_meta": meta}});
+    let mut out = Vec::new();
+    srv.serve(std::io::Cursor::new(line.to_string()), &mut out).unwrap();
+    let reply: Value = serde_json::from_str(String::from_utf8(out).unwrap().lines().next().unwrap()).unwrap();
+    assert!(reply["result"]["isError"] != true, "{name} {args}: {reply}");
+    reply["result"]["structuredContent"].clone()
+}
+
+/// A note with its own tag, property and task, so each list has a row per note.
+fn row_note(i: usize) -> String {
+    format!("---\ntags: [t{i:03}]\np{i:03}: x\n---\n# Note {i}\n\n- [ ] task {i}\n")
+}
+
+/// Every row of a list, following `next_cursor`; `between` runs after the first page.
+fn all_pages(srv: &Server, tool: &str, array: &str, id: &dyn Fn(&Value) -> String, between: &dyn Fn()) -> (Vec<String>, usize) {
+    let (mut ids, mut pages, mut cursor) = (Vec::new(), 0, None::<String>);
+    loop {
+        let args = cursor.as_ref().map_or_else(|| json!({}), |c| json!({ "cursor": c }));
+        let r = call(srv, tool, &args);
+        pages += 1;
+        ids.extend(r[array].as_array().unwrap().iter().map(id));
+        if pages == 1 {
+            assert_eq!(r["truncated"], true, "{tool}: 600 rows do not fit one page: {}", r["total"]);
+            assert!(r["total"].as_u64().unwrap() >= 600, "{tool}: total {}", r["total"]);
+            between();
+        }
+        let Some(c) = r["next_cursor"].as_str() else {
+            assert_eq!(r["truncated"], false, "{tool}: the last page says it is the last");
+            return (ids, pages);
+        };
+        cursor = Some(c.to_string());
+    }
+}
+
+/// A list tool, its array, a row's id, and the id note `i` gives.
+type ListCase<'a> = (&'a str, &'a str, &'a dyn Fn(&Value) -> String, &'a dyn Fn(usize) -> String);
+
+/// The risk "A tool is unbounded again" (`docs/design/0.14-agent-tools.md` §6): 600 rows, a call
+/// with no arguments, then `next_cursor` to the end: no row repeats or is missing. Again with a
+/// note added before the cursor and one removed after it between pages (keyset: still no repeat
+/// and no gap, and the removed one is gone).
+#[test]
+fn lists_page_to_the_end_without_repeats_or_gaps() {
+    let notes: Vec<(String, String)> = (0..600).map(|i| (format!("N/Note {i:03}.md"), row_note(i))).collect();
+    let files: Vec<(&str, &str)> = notes.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
+    let lists: [ListCase<'_>; 4] = [
+        ("list", "notes", &|r| r["path"].as_str().unwrap().to_string(), &|i| format!("N/Note {i:03}.md")),
+        ("tasks", "tasks", &|r| r["path"].as_str().unwrap().to_string(), &|i| format!("N/Note {i:03}.md")),
+        ("tags", "tags", &|r| r["tag"].as_str().unwrap().to_string(), &|i| format!("t{i:03}")),
+        ("properties", "keys", &|r| r["key"].as_str().unwrap().to_string(), &|i| format!("p{i:03}")),
+    ];
+    for (tool, array, id, expect) in lists {
+        let srv = Server::with_config(Vault::in_memory(&files), None, ServerConfig::default());
+        srv.index().flush();
+        let (ids, pages) = all_pages(&srv, tool, array, id, &|| {});
+        assert!(pages > 1, "{tool}");
+        let unique: BTreeSet<&String> = ids.iter().collect();
+        assert_eq!(unique.len(), ids.len(), "{tool}: a row repeats");
+        for i in 0..600 {
+            assert!(unique.contains(&expect(i)), "{tool}: {} is missing", expect(i));
+        }
+
+        // Between the first and second page: a note that sorts first is added, the last one removed.
+        let srv = Server::with_config(Vault::in_memory(&files), None, ServerConfig::default());
+        srv.index().flush();
+        let change = || {
+            srv.index().upsert("A/First.md".into(), "---\ntags: [a000]\na000: x\n---\n# First\n\n- [ ] first\n".into());
+            srv.index().remove("N/Note 599.md".into());
+            srv.index().flush();
+        };
+        let (ids, _) = all_pages(&srv, tool, array, id, &change);
+        let unique: BTreeSet<&String> = ids.iter().collect();
+        assert_eq!(unique.len(), ids.len(), "{tool}: a row repeats after a change between pages");
+        for i in 0..599 {
+            assert!(unique.contains(&expect(i)), "{tool}: {} is missing after a change between pages", expect(i));
+        }
+        assert!(!unique.contains(&expect(599)), "{tool}: a row removed before its page is not listed");
+    }
+}
+
+/// `neighbors` counts every note within its depth for `total` but shows and links only the first
+/// `limit`: no edge names a note it does not show.
+#[test]
+fn neighbors_counts_all_and_shows_the_first() {
+    let notes: Vec<(String, String)> = (0..50).map(|i| (format!("Spoke {i:02}.md"), format!("# Spoke {i}\n\nsee [[Hub]]\n"))).collect();
+    let mut files: Vec<(&str, &str)> = notes.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
+    files.push(("Hub.md", "# Hub\n"));
+    let srv = Server::with_config(Vault::in_memory(&files), None, ServerConfig::default());
+    srv.index().flush();
+    let r = call(&srv, "neighbors", &json!({"path": "Hub.md", "limit": 3}));
+    assert_eq!(r["total"], 50, "{r}");
+    assert_eq!(r["truncated"], true);
+    let shown: BTreeSet<&str> = r["nodes"].as_array().unwrap().iter().filter_map(|n| n["path"].as_str()).chain(["Hub.md"]).collect();
+    assert_eq!(shown.len(), 4, "{r}");
+    let edges = r["edges"].as_array().unwrap();
+    assert_eq!(edges.len(), 3, "{r}");
+    assert!(edges.iter().all(|e| shown.contains(e["from"].as_str().unwrap()) && shown.contains(e["to"].as_str().unwrap())), "{r}");
 }

@@ -29,7 +29,7 @@ use crate::contract::{Contract, parse_all};
 use crate::ids::{BatchId, ProposalId};
 use crate::inbox::InboxStore;
 use crate::ledger::{Ledger, LedgerEntry, LedgerQuery};
-use crate::policy::{Mode, OpKind, POLICY_PATH, Policy, Route, Widening, ZoneRole, hard_rule, stricter_limits, strictest, widenings};
+use crate::policy::{Mode, OpKind, POLICY_PATH, Policy, Route, Widening, ZoneRole, hard_rule, rank, stricter_limits, strictest, widenings};
 use crate::proposal::{Proposal, ProposalChange, ProposalFilter, ProposalStatus, ProposalStore, ProposalSummary};
 
 /// Where device approvals live: a folder, or memory (in-memory vaults, tests).
@@ -171,6 +171,8 @@ struct Inner {
     last: RwLock<LastActors>,
     /// Tags per note for allow lists, by modification time (0.11).
     tags: Mutex<TagCache>,
+    /// The cached part of each actor's visibility, by actor id.
+    rules: Mutex<HashMap<String, Arc<Rules>>>,
 }
 
 /// Agent state of one vault on this device. Cheap to clone.
@@ -283,6 +285,86 @@ fn not_hidden(r: Resolved) -> Result<Resolved, WriteError> {
     Ok(r)
 }
 
+/// Everything a read or write answer depends on besides the actor and the
+/// path, taken once ([`AgentStore::rules`]).
+pub(crate) struct Rules {
+    pub(crate) policy: Arc<PolicyState>,
+    /// The vault's templates folder (a hard rule: suggestions only).
+    pub(crate) templates: String,
+    /// The actor's grant, if it has one.
+    pub(crate) cap: Option<Mode>,
+}
+
+/// The one rule set: the modes that limit `actor` on `path` (canonical, and
+/// already resolved through links when it came from an agent). The most
+/// restrictive one for the operation applies ([`strictest`]).
+///
+/// `locked`: the path's folder, or one above it, holds a key file. `tags`:
+/// the note's tags, asked for only when the client has an allow list. `out`
+/// gets each mode and a function naming where it comes from (called only by
+/// a caller that reports it). [`AgentStore::effective`] and
+/// [`crate::Visibility`] both call this, so the two cannot disagree about a
+/// rule.
+pub(crate) fn decide(
+    rules: &Rules,
+    actor: &Actor,
+    p: &str,
+    locked: bool,
+    tags: &dyn Fn() -> Vec<String>,
+    out: &mut dyn FnMut(Mode, &dyn Fn() -> String),
+) {
+    // 0.11: locked folders are invisible to everyone but the person,
+    // locked or not, and so are encrypted files and key files anywhere.
+    if locked || quire_vault::lock::is_encrypted_name(p) || quire_vault::lock::is_key_file(p) {
+        out(Mode::Deny, &|| "locked folder".into());
+    }
+    if actor.kind == ActorKind::Agent {
+        for pol in rules.policy.active() {
+            pol.modes_for_each(Some(actor.policy_key()), actor.unverified, p, out);
+            // 0.11: AI off, revoked clients, allow lists.
+            if pol.ai_off() {
+                out(Mode::Deny, &|| "AI is off for this vault".into());
+            }
+            if let Some(c) = pol.client(&actor.id) {
+                if c.revoked {
+                    out(Mode::Deny, &|| format!("access revoked ({})", actor.policy_key()));
+                }
+                if c.limited() && !c.allows(p, &tags()) {
+                    out(Mode::Deny, &|| format!("outside the tags and folders {} may see", actor.policy_key()));
+                }
+            }
+        }
+    } else {
+        out(Mode::Direct, &String::new);
+    }
+    if let Some(rule) = hard_rule(p, &rules.templates) {
+        out(rule.cap(), &|| p.to_string());
+    }
+    if let Some(cap) = rules.cap {
+        out(cap, &|| "grant".into());
+    }
+}
+
+/// [`decide`] with every mode and where it comes from, for [`strictest`].
+pub(crate) fn decide_all(rules: &Rules, actor: &Actor, p: &str, locked: bool, tags: &dyn Fn() -> Vec<String>) -> Vec<(Mode, String)> {
+    let mut all = Vec::new();
+    decide(rules, actor, p, locked, tags, &mut |m, why| all.push((m, why())));
+    all
+}
+
+/// [`decide`]'s answer for `op` without the reasons: the mode
+/// [`strictest`] would pick, built without a string.
+pub(crate) fn decide_mode(rules: &Rules, actor: &Actor, p: &str, locked: bool, tags: &dyn Fn() -> Vec<String>, op: OpKind) -> Mode {
+    let mut best: Option<Mode> = None;
+    decide(rules, actor, p, locked, tags, &mut |m, _| {
+        if best.is_none_or(|b| (m.route(op), rank(m)) < (b.route(op), rank(b))) {
+            best = Some(m);
+        }
+    });
+    // No mode at all is a denial, as `strictest` says.
+    best.unwrap_or(Mode::Deny)
+}
+
 impl AgentStore {
     pub fn open(vault: &Vault, device: DeviceInfo, clock: Arc<dyn Clock>) -> Self {
         let dir = if cfg!(test) {
@@ -304,6 +386,7 @@ impl AgentStore {
                 rate: Mutex::new(()),
                 last: RwLock::new(LastActors::default()),
                 tags: Mutex::new(HashMap::new()),
+                rules: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -449,6 +532,11 @@ impl AgentStore {
             return (Mode::Direct, String::new());
         }
         let Ok(r) = self.resolve(path) else { return (Mode::Deny, path.to_string()) };
+        self.effective_resolved(actor, &r, op)
+    }
+
+    /// [`Self::effective`] for a path already resolved (the guard resolves once).
+    fn effective_resolved(&self, actor: &Actor, r: &Resolved, op: OpKind) -> (Mode, String) {
         let mut candidates = self.candidates(actor, &r.path);
         if r.real != r.path {
             candidates.extend(self.candidates(actor, &r.real));
@@ -456,44 +544,43 @@ impl AgentStore {
         strictest(candidates, op)
     }
 
-    /// The modes that limit `actor` on one (resolved) path.
+    /// The modes that limit `actor` on one (resolved) path: [`decide`], with
+    /// the locked-folder check and the note's tags read from the disk.
     fn candidates(&self, actor: &Actor, path: &NotePath) -> Vec<(Mode, String)> {
         let p = path.as_str();
-        let mut candidates: Vec<(Mode, String)> = Vec::new();
-        // 0.11: locked folders are invisible to everyone but the person,
-        // locked or not, and so are encrypted files and key files anywhere.
-        if quire_vault::lock::is_encrypted_name(p)
-            || quire_vault::lock::is_key_file(p)
-            || quire_vault::lock::folder_of(self.inner.vault.storage().as_ref(), p).is_some()
+        let locked = quire_vault::lock::folder_of(self.inner.vault.storage().as_ref(), p).is_some();
+        decide_all(&self.rules(actor), actor, p, locked, &|| self.tags_of(path))
+    }
+
+    /// Which indexed notes `actor` may read, for one call: the cached rules,
+    /// and the locked and symlinked folders checked now for each of
+    /// `folders` (the folders that hold indexed notes; any other folder is
+    /// checked when first asked about). See [`crate::Visibility`].
+    pub fn visibility<'a>(&self, actor: &Actor, folders: impl IntoIterator<Item = &'a str>) -> crate::Visibility {
+        let rules = (!actor.is_human()).then(|| self.rules(actor));
+        crate::Visibility::new(actor, rules, Arc::clone(self.inner.vault.storage()), folders)
+    }
+
+    /// What a visibility answer for `actor` depends on besides the path (the
+    /// cached part of [`crate::Visibility`]): the policy state, the templates
+    /// folder and the actor's grant. Rebuilt only when the policy state or a
+    /// grant changes.
+    pub(crate) fn rules(&self, actor: &Actor) -> Arc<Rules> {
+        let policy = self.policy_state();
+        let cap = self.inner.caps.read().unwrap_or_else(std::sync::PoisonError::into_inner).get(&actor.id).copied();
+        let mut cache = self.inner.rules.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(r) = cache.get(&actor.id)
+            && Arc::ptr_eq(&r.policy, &policy)
+            && r.cap == cap
         {
-            candidates.push((Mode::Deny, "locked folder".into()));
+            return Arc::clone(r);
         }
-        if actor.kind == ActorKind::Agent {
-            for pol in self.policy_state().active() {
-                candidates.extend(pol.modes_for(Some(actor.policy_key()), actor.unverified, p));
-                // 0.11: AI off, revoked clients, allow lists.
-                if pol.ai_off() {
-                    candidates.push((Mode::Deny, "AI is off for this vault".into()));
-                }
-                if let Some(c) = pol.client(&actor.id) {
-                    if c.revoked {
-                        candidates.push((Mode::Deny, format!("access revoked ({})", actor.policy_key())));
-                    }
-                    if c.limited() && !c.allows(p, &self.tags_of(path)) {
-                        candidates.push((Mode::Deny, format!("outside the tags and folders {} may see", actor.policy_key())));
-                    }
-                }
-            }
-        } else {
-            candidates.push((Mode::Direct, String::new()));
+        let r = Arc::new(Rules { policy, templates: self.inner.vault.config.templates_folder.clone(), cap });
+        if cache.len() > 64 {
+            cache.clear();
         }
-        if let Some(rule) = hard_rule(p, &self.inner.vault.config.templates_folder) {
-            candidates.push((rule.cap(), p.to_string()));
-        }
-        if let Some(cap) = self.inner.caps.read().unwrap_or_else(std::sync::PoisonError::into_inner).get(&actor.id) {
-            candidates.push((*cap, "grant".into()));
-        }
-        candidates
+        cache.insert(actor.id.clone(), Arc::clone(&r));
+        r
     }
 
     /// Where `path` really leads. The path must be
@@ -511,7 +598,7 @@ impl AgentStore {
     /// the file it reaches. Returns the canonical path.
     pub fn guard(&self, actor: &Actor, path: &NotePath, op: OpKind) -> Result<NotePath, WriteError> {
         let r = self.resolve(path)?;
-        let (mode, zone) = self.effective(actor, &r.path, op);
+        let (mode, zone) = if actor.is_human() { (Mode::Direct, String::new()) } else { self.effective_resolved(actor, &r, op) };
         if mode.route(op) == Route::Deny {
             return Err(WriteError::PermissionDenied { path: r.path, zone, mode });
         }

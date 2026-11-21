@@ -13,7 +13,10 @@ quire-assistant, quire-cli. Edition: both (P5).
   no hidden folder except `.quire`, which policy denies), links followed, and the target must be inside the vault.
   [test] `hard_rules_grants_and_bad_paths`, `links_are_checked_where_they_lead`, `paths_that_differ_only_in_case_are_refused`
 - A deny zone, a hidden folder, a locked folder, an encrypted file and a key file are invisible to every actor but the person
-  (`AgentStore::candidates` in `store.rs`). [test] `locked_folders_are_invisible_to_agents` (`quire-mcp/tests/connections.rs`)
+  (`decide` in `store.rs`, the one rule set: `AgentStore::effective` and `Visibility` both call it). `Visibility` answers for
+  paths from the index or the vault listing with no disk read per note; the locked folders are checked once per call, never
+  cached across calls. [test] `locked_folders_are_invisible_to_agents` (`quire-mcp/tests/connections.rs`),
+  `the_read_rules_are_what_effective_mode_does`, `equal_fingerprints_give_equal_answers` (`tests/visibility_rules.rs`)
 - A policy or instruction file changed outside Quire narrows what was approved and widens nothing until the person approves it on
   this device. Approvals live in the device's config folder (`approval::default_state_dir`), not in the vault (P7).
   [test] `a_policy_file_narrows_but_cannot_widen_without_approval`, `a_policy_widened_on_one_device_waits_for_approval_on_another`,
