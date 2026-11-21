@@ -19,6 +19,8 @@ default = ["typeset"]
 typeset = ["quire-app/typeset", "quire-web/typeset"]
 # `quire-cli eval` (design §B.6): development only, never in releases.
 eval = []
+# `quire-cli bench sync-013` for the perf job's migration row: never in releases.
+bench-hooks = ["quire-app/bench-hooks"]
 
 [dependencies]
 quire-base.workspace = true

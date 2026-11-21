@@ -51,7 +51,7 @@ use crate::compact::{Manifest, Node, Part, Policy, Stats};
 use crate::crypto::WrappedKey;
 use crate::keyring::{DeviceRecord, EpochRecord, KeySet, LaneRules};
 use crate::protocol::{Content, DeviceId, FileId, LanePos, PushOutcome, RevId, Revision, Sealing, SpaceId};
-use crate::transport::{Fork, Transport, TransportError};
+use crate::transport::{BatchOutcome, BatchReply, Fork, Transport, TransportError};
 
 /// The folder Quire keeps inside the one the user picks.
 pub const FOLDER_NAME: &str = "Quire Sync";
@@ -996,8 +996,17 @@ impl FolderTransport {
             .map_err(|e| TransportError::Refused(format!("a log file in the sync folder changed unexpectedly ({e})")))
     }
 
-    fn next_seq(&self, ix: &mut Index) -> u64 {
+    /// The next order number (kept by [`Self::save_seq`]).
+    const fn next_seq(ix: &mut Index) -> u64 {
         ix.seq += 1;
+        ix.seq
+    }
+
+    /// Keep the counter in `folder-seq`: once per pull or batch, not per
+    /// revision (`docs/design/0.14-sync-speed.md` §3.4).
+    fn save_seq(&self, ix: &Index) {
+        #[cfg(test)]
+        COUNTS.with(|c| c.set((c.get().0, c.get().1 + 1)));
         if let Some(f) = &self.seq_file {
             // Not kept: after a restart the counter starts lower, and `pull`
             // (which the engine runs before every push) raises it past the
@@ -1005,7 +1014,6 @@ impl FolderTransport {
             #[expect(clippy::let_underscore_must_use, reason = "the next pull makes up for it, see above")]
             let _ = write_atomic(f, ix.seq.to_string().as_bytes(), Options::EXISTING_FOLDER.lazy());
         }
-        ix.seq
     }
 
     /// The revisions `r` builds on directly: parents, snapshot links, or
@@ -1048,36 +1056,69 @@ impl FolderTransport {
         })
     }
 
-    fn append(&self, ix: &mut Index, r: &Revision, n: u64) -> Result<(), TransportError> {
-        let path = self.current_segment()?;
+    /// Append the lines of `items` (each revision with its number) to this
+    /// device's log, per segment: one note of the length and one flush for
+    /// all the lines that go into a segment. Returns how many were written
+    /// (a prefix of `items`), and the error that stopped it, if one did.
+    fn append_many(&self, ix: &mut Index, items: &[(&Revision, u64)]) -> (usize, Option<TransportError>) {
         let werr = |e: std::io::Error| io_err("can't write to the sync folder", &e);
-        let mut f = OpenOptions::new().create(true).read(true).append(true).open(&path).map_err(werr)?;
-        let mut offset = f.metadata().map_err(werr)?.len();
-        let before = offset;
-        let mut line = Vec::new();
-        if offset > 0 {
-            // A crash can leave half a line; start on a fresh one.
-            let mut last = [0u8];
-            f.seek(SeekFrom::Start(offset - 1)).map_err(werr)?;
-            f.read_exact(&mut last).map_err(werr)?;
-            if last[0] != b'\n' {
-                line.push(b'\n');
-                offset += 1;
+        let mut done = 0;
+        while done < items.len() {
+            let res = (|| -> Result<usize, TransportError> {
+                let path = self.current_segment()?;
+                let mut f = OpenOptions::new().create(true).read(true).append(true).open(&path).map_err(werr)?;
+                let before = f.metadata().map_err(werr)?.len();
+                let mut buf = Vec::new();
+                if before > 0 {
+                    // A crash can leave half a line; start on a fresh one.
+                    let mut last = [0u8];
+                    f.seek(SeekFrom::Start(before - 1)).map_err(werr)?;
+                    f.read_exact(&mut last).map_err(werr)?;
+                    if last[0] != b'\n' {
+                        buf.push(b'\n');
+                    }
+                }
+                // Lines go into this segment until it reaches its limit, as
+                // one line at a time would.
+                let mut locs = Vec::new();
+                let mut i = done;
+                while i < items.len() && (i == done || before + (buf.len() as u64) < SEGMENT_LIMIT) {
+                    let (r, n) = items[i];
+                    let json = serde_json::to_vec(&Revision { seq: n, ..r.clone() }).map_err(|e| TransportError::Refused(e.to_string()))?;
+                    locs.push((before + buf.len() as u64, json.len()));
+                    buf.extend_from_slice(&json);
+                    buf.push(b'\n');
+                    i += 1;
+                }
+                // Noted before writing: a crash in between leaves the file
+                // shorter than noted, never longer. Not noted, not written:
+                // a line this device wrote but didn't note would read as
+                // another computer writing as this one.
+                self.note_own(&path, before + buf.len() as u64).map_err(werr)?;
+                f.write_all(&buf).map_err(werr)?;
+                f.sync_data().map_err(werr)?;
+                #[cfg(test)]
+                COUNTS.with(|c| c.set((c.get().0 + 1, c.get().1)));
+                let path = Arc::new(path);
+                for ((r, _), (offset, len)) in items[done..i].iter().zip(locs) {
+                    ix.mine.insert(r.rev.clone());
+                    Self::insert(ix, r, Loc { path: Arc::clone(&path), offset, len });
+                }
+                Ok(i)
+            })();
+            match res {
+                Ok(i) => done = i,
+                Err(e) => return (done, Some(e)),
             }
         }
-        let json = serde_json::to_vec(&Revision { seq: n, ..r.clone() }).map_err(|e| TransportError::Refused(e.to_string()))?;
-        line.extend_from_slice(&json);
-        line.push(b'\n');
-        // Noted before writing: a crash in between leaves the file shorter
-        // than noted, never longer. Not noted, not written: a line this
-        // device wrote but didn't note would read as another computer
-        // writing as this one.
-        self.note_own(&path, before + line.len() as u64).map_err(werr)?;
-        f.write_all(&line).map_err(werr)?;
-        f.sync_data().map_err(werr)?;
-        ix.mine.insert(r.rev.clone());
-        Self::insert(ix, r, Loc { path: Arc::new(path), offset, len: json.len() });
-        Ok(())
+        (done, None)
+    }
+
+    fn append(&self, ix: &mut Index, r: &Revision, n: u64) -> Result<(), TransportError> {
+        match self.append_many(ix, &[(r, n)]) {
+            (_, Some(e)) => Err(e),
+            (_, None) => Ok(()),
+        }
     }
 
     /// Note that this device's log file `path` is `len` bytes long.
@@ -1123,9 +1164,67 @@ impl FolderTransport {
             (None, Some(_)) => return Err(TransportError::Refused(crate::transport::LOST_PARENT.into())),
         }
         self.append(&mut ix, rev, n)?;
-        let seq = self.next_seq(&mut ix);
+        let seq = Self::next_seq(&mut ix);
+        self.save_seq(&ix);
         ix.delivered.insert(rev.file.clone(), (rev.rev.clone(), seq));
         Ok(PushOutcome::Accepted { seq })
+    }
+
+    /// [`Transport::push_batch`]: every head checked under one lock, then
+    /// the lines written per log segment (one note of its length, one
+    /// flush). The accepted lines are numbered from `first` in order (the
+    /// object numbers of an S3 or WebDAV mirror); in a synced folder
+    /// (`first` 0) every line is 0. The lines are the ones a single push
+    /// writes: readers since 0.8 see no difference.
+    pub fn push_batch_numbered(&self, revs: &[Revision], first: u64) -> BatchReply {
+        let fail = |e: TransportError| BatchReply { outcomes: Vec::new(), error: Some(e) };
+        let mut ix = self.lock();
+        if let Err(e) = self.check_folder() {
+            return fail(e);
+        }
+        if let Some(p) = &ix.problem {
+            return fail(TransportError::Refused(p.clone()));
+        }
+        // Every outcome first; a later revision of the same note in the
+        // batch builds on the earlier one.
+        let mut heads: HashMap<FileId, RevId> = HashMap::new();
+        let mut outcomes = Vec::with_capacity(revs.len());
+        let mut take: Vec<(&Revision, u64)> = Vec::new();
+        let mut at: Vec<usize> = Vec::new();
+        for (i, r) in revs.iter().enumerate() {
+            let head = heads.get(&r.file).cloned().or_else(|| Self::head(&ix, &r.file));
+            match (head, r.parents.first()) {
+                (None, None) => {}
+                (Some(h), Some(p)) if h == *p => {}
+                (Some(_), _) => {
+                    outcomes.push(BatchOutcome::Conflict);
+                    continue;
+                }
+                (None, Some(_)) => {
+                    outcomes.push(BatchOutcome::LostParent);
+                    continue;
+                }
+            }
+            heads.insert(r.file.clone(), r.rev.clone());
+            let n = if first == 0 { 0 } else { first + take.len() as u64 };
+            take.push((r, n));
+            at.push(i);
+            outcomes.push(BatchOutcome::Accepted { seq: 0 });
+        }
+        let (written, error) = self.append_many(&mut ix, &take);
+        for (k, (r, _)) in take.iter().enumerate().take(written) {
+            let seq = Self::next_seq(&mut ix);
+            ix.delivered.insert(r.file.clone(), (r.rev.clone(), seq));
+            outcomes[at[k]] = BatchOutcome::Accepted { seq };
+        }
+        if written > 0 {
+            self.save_seq(&ix);
+        }
+        if error.is_some() {
+            // Handled: everything before the first line that wasn't written.
+            outcomes.truncate(at.get(written).copied().unwrap_or(outcomes.len()));
+        }
+        BatchReply { outcomes, error }
     }
 
     /// The furthest line read in each device's lane (after a scan).
@@ -1449,12 +1548,16 @@ impl Transport for FolderTransport {
         let mut ix = self.lock();
         self.scan(&mut ix)?;
         ix.seq = ix.seq.max(after);
+        let before = ix.seq;
         for f in Self::files(&ix) {
             let Some(h) = Self::head(&ix, &f) else { continue };
             if ix.delivered.get(&f).is_none_or(|(d, _)| *d != h) {
-                let seq = self.next_seq(&mut ix);
+                let seq = Self::next_seq(&mut ix);
                 ix.delivered.insert(f, (h, seq));
             }
+        }
+        if ix.seq != before {
+            self.save_seq(&ix);
         }
         let mut due: Vec<(u64, RevId)> = ix.delivered.values().filter(|(_, s)| *s > after).map(|(r, s)| (*s, r.clone())).collect();
         due.sort();
@@ -1470,6 +1573,10 @@ impl Transport for FolderTransport {
 
     fn push(&self, rev: &Revision) -> Result<PushOutcome, TransportError> {
         self.push_numbered(rev, 0)
+    }
+
+    fn push_batch(&self, revs: &[Revision]) -> BatchReply {
+        self.push_batch_numbered(revs, 0)
     }
 
     fn history(&self, file: &FileId) -> Result<Vec<Revision>, TransportError> {
@@ -1531,9 +1638,81 @@ impl Transport for FolderTransport {
 }
 
 #[cfg(test)]
+thread_local! {
+    /// Tests: log flushes (`sync_data`) and `folder-seq` writes on this thread.
+    static COUNTS: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::crypto::{KdfParams, VaultKey};
+
+    /// Log flushes and `folder-seq` writes since the last call.
+    fn counts() -> (usize, usize) {
+        COUNTS.with(|c| c.replace((0, 0)))
+    }
+
+    #[test]
+    fn a_batch_writes_each_segment_once_and_the_counter_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = sync_root(dir.path());
+        let space = SpaceId::random().unwrap();
+        let key = WrappedKey::wrap(&VaultKey::generate().unwrap(), "pw", KdfParams::TEST).unwrap();
+        create_space(&root, &space, &key).unwrap();
+        let state = dir.path().join("state");
+        fs::create_dir_all(&state).unwrap();
+        let d = DeviceId::random().unwrap();
+        let t = FolderTransport::new(&root, &space, d.clone(), Some(&state));
+        // 300 small revisions: one segment.
+        let small: Vec<Revision> = (0..300).map(|_| rev(&FileId::random().unwrap(), &[], &d)).collect();
+        counts();
+        let reply = t.push_batch(&small);
+        assert!(reply.error.is_none() && reply.outcomes.iter().all(|o| matches!(o, BatchOutcome::Accepted { .. })));
+        assert_eq!(counts(), (1, 1), "one flush, one counter write");
+        // 3 MB of revisions: one flush per segment written.
+        let big: Vec<Revision> = (0..300).map(|_| Revision { sealed: vec![7; 5000], ..rev(&FileId::random().unwrap(), &[], &d) }).collect();
+        t.push_batch(&big);
+        let segments = fs::read_dir(t.own_dir()).unwrap().flatten().filter(|e| is_segment_name(&e.file_name().to_string_lossy())).count();
+        let (flushes, seqs) = counts();
+        assert!(segments >= 3 && flushes <= segments, "{flushes} flushes for {segments} segments");
+        assert_eq!(seqs, 1);
+        // Another device reads every line, in order, as single pushes leave them.
+        let other = FolderTransport::new(&root, &space, DeviceId::random().unwrap(), None);
+        let got = other.pull(0).unwrap();
+        assert_eq!(got.len(), 600);
+        // Heads in a batch: a conflict, a lost parent and a revision built
+        // on one earlier in the same batch.
+        let f = FileId::random().unwrap();
+        let a = rev(&f, &[], &d);
+        let b = rev(&f, &[&a.rev], &d);
+        let stale = rev(&small[0].file, &[&RevId::random().unwrap()], &d);
+        let lost = rev(&FileId::random().unwrap(), &[&RevId::random().unwrap()], &d);
+        let reply = t.push_batch(&[a, stale, lost, b]);
+        assert!(matches!(reply.outcomes[0], BatchOutcome::Accepted { .. }));
+        assert_eq!(reply.outcomes[1], BatchOutcome::Conflict);
+        assert_eq!(reply.outcomes[2], BatchOutcome::LostParent);
+        assert!(matches!(reply.outcomes[3], BatchOutcome::Accepted { .. }));
+    }
+
+    #[test]
+    fn a_pull_writes_the_counter_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = sync_root(dir.path());
+        let space = SpaceId::random().unwrap();
+        let key = WrappedKey::wrap(&VaultKey::generate().unwrap(), "pw", KdfParams::TEST).unwrap();
+        create_space(&root, &space, &key).unwrap();
+        let d = DeviceId::random().unwrap();
+        let t = FolderTransport::new(&root, &space, d.clone(), None);
+        let revs: Vec<Revision> = (0..50).map(|_| rev(&FileId::random().unwrap(), &[], &d)).collect();
+        t.push_batch(&revs);
+        let state = dir.path().join("state");
+        fs::create_dir_all(&state).unwrap();
+        let reader = FolderTransport::new(&root, &space, DeviceId::random().unwrap(), Some(&state));
+        counts();
+        assert_eq!(reader.pull(0).unwrap().len(), 50);
+        assert_eq!(counts().1, 1, "one counter write for 50 revisions handed out");
+    }
 
     fn rev(file: &FileId, parents: &[&RevId], device: &DeviceId) -> Revision {
         Revision {
