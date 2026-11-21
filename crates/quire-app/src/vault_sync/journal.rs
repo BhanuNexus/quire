@@ -517,6 +517,8 @@ struct Packs {
     /// A damaged record was found (told once).
     damaged: bool,
     told: bool,
+    /// The active pack, open for appending (kept across puts).
+    open: Option<(u32, File)>,
 }
 
 impl Packs {
@@ -571,16 +573,25 @@ impl Packs {
         }
         let path = self.path(self.active);
         let fresh = at == 0;
-        let res = (|| -> std::io::Result<()> {
-            std::fs::create_dir_all(&self.dir)?;
-            let mut f = open_append(&path)?;
-            if f.metadata()?.len() != at {
-                // Bytes this process didn't name (a failed append): start a new pack.
-                return Err(std::io::Error::other("pack length changed"));
+        if self.open.as_ref().is_none_or(|(n, _)| *n != self.active) {
+            self.open = None;
+            let opened = std::fs::create_dir_all(&self.dir).and_then(|()| open_append(&path));
+            match opened {
+                Ok(f) => self.open = Some((self.active, f)),
+                Err(e) => return Err(format!("Couldn't save a note's synced text in {}: {e}", path.display())),
             }
-            write_all(&mut f, &rec)
-        })();
+        }
+        let res = match self.open.as_mut() {
+            Some((_, f)) => match f.metadata() {
+                // Bytes this process didn't name (a failed append): start a new pack.
+                Ok(m) if m.len() != at => Err(std::io::Error::other("pack length changed")),
+                Ok(_) => write_all(f, &rec),
+                Err(e) => Err(e),
+            },
+            None => Err(std::io::Error::other("the pack isn't open")),
+        };
         if let Err(e) = res {
+            self.open = None;
             // When part of it landed, that part is past what any record
             // names: later records go to a new pack. When nothing did (a
             // full disk refusing the write), the same pack is tried again.
@@ -667,6 +678,7 @@ impl PackBases {
             made: false,
             damaged: false,
             told: false,
+            open: None,
         })))
     }
 

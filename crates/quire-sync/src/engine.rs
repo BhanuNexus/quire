@@ -1297,11 +1297,16 @@ impl Engine {
     /// revisions (pull again first).
     fn push(&mut self, local: &dyn LocalStore, server: &dyn Transport, report: &mut Report) -> Result<bool, SyncError> {
         let present: BTreeSet<String> = local.list().map_err(SyncError::List)?.into_iter().collect();
-        let live: BTreeSet<String> = self.state.files.values().filter(|t| !t.deleted).map(|t| t.path.clone()).collect();
+        let mut untracked: Vec<String> = {
+            let tracked: std::collections::HashSet<&str> = self.state.files.values().map(|t| t.path.as_str()).collect();
+            present.iter().filter(|p| !tracked.contains(p.as_str())).cloned().collect()
+        };
+        // Built only when needed (a deleted note's file back, a note moved
+        // out): a pass with nothing changed builds neither.
         // A file at a deleted note's path brings that note back rather than
         // starting a new one, unless another live note has the path now.
-        let mut known: BTreeSet<String> = self.state.files.values().map(|t| t.path.clone()).collect();
-        let mut untracked: Vec<String> = present.iter().filter(|p| !known.contains(*p)).cloned().collect();
+        let mut live: Option<BTreeSet<String>> = None;
+        let mut known: Option<BTreeSet<String>> = None;
 
         // What to send, worked out whole first, so a pass that would delete
         // too much sends nothing at all.
@@ -1316,6 +1321,24 @@ impl Engine {
         let mut settings: Vec<(FileId, String)> = Vec::new();
         let ids: Vec<FileId> = self.state.files.keys().cloned().collect();
         for id in ids {
+            {
+                // The usual case, a note unchanged since it was last read:
+                // passed over without a copy of what is tracked.
+                let t = &self.state.files[&id];
+                if t.outside || !local.in_scope(&t.path) || Self::rejoining(t) || self.state.skipped.contains_key(&id) {
+                    continue;
+                }
+                if !t.absorbed
+                    && !t.deleted
+                    && t.disk.is_some()
+                    && t.path == t.synced_path
+                    && present.contains(&t.path)
+                    && local.stamp(&t.path) == t.disk
+                {
+                    held += 1;
+                    continue;
+                }
+            }
             let t = self.state.files[&id].clone();
             if t.outside || !local.in_scope(&t.path) || Self::rejoining(&t) {
                 // Not held here (selective sync): never pushed, so never
@@ -1353,8 +1376,13 @@ impl Engine {
                 local.read_stamped(&t.path).map(|(x, s)| (Print::of(&x), s, Some(x)))
             };
             let full = |p: &str, x: Option<String>, s: Option<Stamp>| x.map(|x| (x, s)).or_else(|| local.read_stamped(p));
+            let taken = t.deleted
+                && here.is_some()
+                && live
+                    .get_or_insert_with(|| self.state.files.values().filter(|t| !t.deleted).map(|t| t.path.clone()).collect())
+                    .contains(&t.path);
             let (content, stamp) = match (here, t.deleted) {
-                (Some(_), true) if live.contains(&t.path) => continue,
+                (Some(_), true) if taken => continue,
                 (Some((_, s, x)), true) => {
                     let Some((x, s)) = full(&t.path, x, s) else { continue };
                     (Content { actor: local.actor(&t.path), path: t.path.clone(), deleted: false, text: x, from: String::new(), at: 0 }, s)
@@ -1384,12 +1412,14 @@ impl Engine {
                         let Some((text, s)) = local.read_stamped(&to) else { continue };
                         (Content { actor: local.actor(&to), path: to, deleted: false, text, from: String::new(), at: 0 }, s)
                     } else if let Some((to, text)) = (t.base != Print::of(""))
-                        .then(|| local.moved_out(&t.base, &known))
+                        .then(|| {
+                            let known = known.get_or_insert_with(|| self.state.files.values().map(|t| t.path.clone()).collect());
+                            local.moved_out(&t.base, known).filter(|(to, text)| !known.contains(to) && !text.trim().is_empty())
+                        })
                         .flatten()
-                        .filter(|(to, text)| !known.contains(to) && !text.trim().is_empty())
                     {
                         // Each file is where one note went, at most.
-                        known.insert(to.clone());
+                        known.get_or_insert_with(BTreeSet::new).insert(to.clone());
                         // Moved into a folder this device doesn't sync: a rename, not a delete.
                         (Content { actor: None, path: to, deleted: false, text, from: String::new(), at: 0 }, None)
                     } else if let Some(why) = local.unstorable(&t.path, Some(&t.path)) {
@@ -1534,11 +1564,13 @@ impl Engine {
                 report.left = jobs.filter(|j| !j.is_delete()).count();
                 return Ok(!conflict);
             }
-            let revs: Vec<Revision> = batch.iter().map(|i| i.r.clone()).collect();
+            let sent = batch.len();
+            let (revs, rest): (Vec<Revision>, Vec<Built>) = batch.into_iter().map(Item::lend).unzip();
             let reply = server.push_batch(&revs);
             // A transport answers every revision, or says why it stopped.
-            let short = reply.outcomes.len() < batch.len() && reply.error.is_none();
-            for (item, outcome) in batch.into_iter().zip(reply.outcomes) {
+            let short = reply.outcomes.len() < sent && reply.error.is_none();
+            for ((r, rest), outcome) in revs.into_iter().zip(rest).zip(reply.outcomes) {
+                let item = rest.with(r);
                 match outcome {
                     BatchOutcome::Accepted { seq } => self.accepted(local, server, &item, seq, mark, report)?,
                     BatchOutcome::Conflict => conflict = true,
@@ -1769,6 +1801,28 @@ struct Planned {
 impl Job {
     fn is_delete(&self) -> bool {
         matches!(self, Self::Planned(p) if p.content.deleted)
+    }
+}
+
+/// What an [`Item`] holds besides its revision (while the revision is
+/// lent to the transport).
+struct Built {
+    content: Content,
+    stamp: Option<Stamp>,
+    counted: bool,
+    how: Sealing,
+}
+
+impl Built {
+    fn with(self, r: Revision) -> Item {
+        Item { r, content: self.content, stamp: self.stamp, counted: self.counted, how: self.how }
+    }
+}
+
+impl Item {
+    /// The revision, for the transport, and the rest.
+    fn lend(self) -> (Revision, Built) {
+        (self.r, Built { content: self.content, stamp: self.stamp, counted: self.counted, how: self.how })
     }
 }
 

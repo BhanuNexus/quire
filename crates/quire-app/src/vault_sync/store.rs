@@ -89,6 +89,9 @@ pub struct VaultStore {
     /// Whether the vault's disk ignores capital letters in names (found
     /// out once).
     pub(super) case_blind: std::cell::Cell<Option<bool>>,
+    /// Whether the vault keeps any version history (where an agent's
+    /// provenance is), found out once a pass.
+    has_history: std::cell::Cell<Option<bool>>,
 }
 
 pub(super) fn b64() -> base64::engine::GeneralPurpose {
@@ -123,6 +126,7 @@ impl VaultStore {
             outside_before: None,
             folded: HashMap::new(),
             case_blind: std::cell::Cell::new(None),
+            has_history: std::cell::Cell::new(None),
         }
     }
 
@@ -558,6 +562,16 @@ impl LocalStore for VaultStore {
         if !p.is_markdown() {
             return None;
         }
+        // Without any history there is no provenance: no folder to look in
+        // per note.
+        let any = self.has_history.get().unwrap_or_else(|| {
+            let any = self.vault.storage().absolute(&NotePath::new(".quire/history")).is_none_or(|d| d.is_dir());
+            self.has_history.set(Some(any));
+            any
+        });
+        if !any {
+            return None;
+        }
         let snap = self.vault.history(&p).into_iter().next()?;
         let prov = quire_agent::Provenance::from_json(&self.vault.read_provenance(&snap)?)?;
         // Only when the file is still exactly what that actor wrote.
@@ -713,6 +727,7 @@ impl LocalStore for VaultStore {
 /// syncs.
 pub(super) fn begin_pass(store: &mut VaultStore) -> Result<(), String> {
     store.began = false;
+    store.has_history.set(None);
     store.listed.borrow_mut().clear();
     store.first_read.borrow_mut().clear();
     store.unreadable.borrow_mut().clear();

@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use crate::crypto::WrappedKey;
 use crate::keyring::{DeviceRecord, EpochRecord};
 use crate::protocol::{
-    BATCH_FEATURE, BatchRequest, BatchResponse, DeviceId, HARDENED_PROTOCOL, LanePos, MIN_PROTOCOL, PROTOCOL, PROTOCOL_HEADER, PushOutcome,
-    Revision, Sealing, ServerInfo, SpaceId, WireOutcome,
+    BATCH_FEATURE, BatchResponse, DeviceId, HARDENED_PROTOCOL, LanePos, MIN_PROTOCOL, PROTOCOL, PROTOCOL_HEADER, PushOutcome, Revision,
+    Sealing, ServerInfo, SpaceId, WireOutcome,
 };
 use crate::transport::{BATCH_BYTES, BATCH_REVISIONS, BatchOutcome, BatchReply, Transport, TransportError, request_len};
 
@@ -233,7 +233,12 @@ impl HttpTransport {
 
     /// One batch request.
     fn post_batch(&self, revs: &[Revision]) -> Result<Sent, TransportError> {
-        let body = serde_json::to_string(&BatchRequest { revisions: revs.to_vec() }).map_err(|e| TransportError::Refused(e.to_string()))?;
+        // `BatchRequest`'s shape, from the revisions as they are.
+        #[derive(Serialize)]
+        struct Borrowed<'a> {
+            revisions: &'a [Revision],
+        }
+        let body = serde_json::to_string(&Borrowed { revisions: revs }).map_err(|e| TransportError::Refused(e.to_string()))?;
         let res = self
             .agent
             .post(self.url("/revisions/batch"))
