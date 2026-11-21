@@ -372,6 +372,9 @@ impl Workspace {
         // 0.11: the vault's locked folders are remembered on this device, apart from their key files.
         let vault = crate::secure_state::open_vault_now(root)?;
         self.save_all();
+        // The index worker lets go of the last vault now: until this one's
+        // deferred start, a save must not reach its index or its cache.
+        self.index.detach();
         self.docs.retain(|d| d.path.is_none());
         self.active = if self.docs.is_empty() { None } else { Some(0) };
         self.vault_root = Some(root.canonicalize().unwrap_or_else(|_| root.to_path_buf()));
@@ -2195,6 +2198,58 @@ mod tests {
         assert_eq!(row.hash, quire_vault::changes::FileHash::of(&bytes));
         w.index().flush();
         assert_eq!(w.index().read().search("savedword", 5).len(), 1);
+    }
+
+    /// Every file under a vault's index cache, with its bytes.
+    fn index_cache(root: &Path) -> Vec<(String, Vec<u8>)> {
+        let mut v: Vec<(String, Vec<u8>)> = std::fs::read_dir(root.join(".quire/cache/index"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| (e.file_name().to_string_lossy().into_owned(), std::fs::read(e.path()).unwrap_or_default()))
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// A vault switch cuts the index worker loose from the last vault at
+    /// once: with a record of it still waiting to be written and a save in
+    /// the new vault before its deferred start, nothing is written under
+    /// the last vault's index cache, and its index doesn't take the new
+    /// vault's note.
+    #[test]
+    fn a_vault_switch_writes_nothing_more_of_the_last_vault() {
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        std::fs::write(a.path().join("Shared.md"), "# Shared\nfrom a\n").unwrap();
+        std::fs::write(b.path().join("Shared.md"), "# Shared\nfrom b\n").unwrap();
+        let mut w = Workspace::new(Settings::default());
+        w.open_vault(a.path()).unwrap();
+        w.index().flush();
+        w.index().flush_cache();
+        // An edit in the first vault: its record waits for the next flush.
+        w.open_note(&NotePath::new("Shared.md")).unwrap();
+        type_at_end(&mut w, "pendingword");
+        let id = w.active_doc().unwrap().id;
+        assert!(w.save(id));
+        w.index().flush();
+        let before = index_cache(a.path());
+        assert!(!before.is_empty());
+        // The switch, then a save in the new vault before its deferred start.
+        w.open_vault_deferred(b.path()).unwrap();
+        w.open_note(&NotePath::new("Shared.md")).unwrap();
+        type_at_end(&mut w, "bnewword");
+        let id = w.active_doc().unwrap().id;
+        assert!(w.save(id));
+        w.index().flush();
+        assert!(w.index().read().search("bnewword", 5).is_empty(), "not into the last vault's index");
+        w.index().flush_cache();
+        assert_eq!(index_cache(a.path()), before, "nothing more written under the last vault");
+        // The new vault's start indexes it.
+        w.start_deferred();
+        w.index().flush();
+        assert_eq!(w.index().read().search("bnewword", 5).len(), 1);
+        drop(w);
+        assert_eq!(index_cache(a.path()), before);
     }
 
     #[test]

@@ -65,6 +65,11 @@ pub enum IndexMsg {
     /// A folder was locked: delete the startup cache now; the next flush
     /// writes it again from what the index holds.
     PurgeCache,
+    /// The workspace is switching to another vault: let go of this one at
+    /// once. Its manifest and cache store are dropped without a flush, so
+    /// nothing of it is written after the switch, and the index is emptied.
+    /// Updates are ignored until the next `Load` or `LoadCached`.
+    Detach,
     /// Write the startup cache now (if this process is its writer), then reply.
     FlushCache(Sender<()>),
     Shutdown,
@@ -218,6 +223,12 @@ impl IndexService {
     /// read from (`Manifest::note_written` gives it for a save).
     pub fn upsert_hashed(&self, path: NotePath, source: String, hash: FileHash) {
         self.send(IndexMsg::Upsert { path, source, hash: Some(hash) });
+    }
+
+    /// Let go of the vault loaded last, before another one is loaded
+    /// ([`IndexMsg::Detach`]).
+    pub fn detach(&self) {
+        self.send(IndexMsg::Detach);
     }
 
     /// Delete the startup cache now (a folder was locked).
@@ -638,6 +649,8 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
     // never indexed, whoever sends it (a save, a watcher event, a job).
     let mut loaded: Option<Vault> = None;
     let mut cached: Option<Cached> = None;
+    // Between a `Detach` and the next load: updates belong to no vault here.
+    let mut detached = false;
     loop {
         let (first, from_scan) = match next(rx, cached.as_ref()) {
             Next::Msg(m) => (vec![*m], Vec::new()),
@@ -677,6 +690,7 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
             match msg {
                 IndexMsg::Load(vault) => {
                     changed = true;
+                    detached = false;
                     cached = None;
                     loaded = Some(vault.clone());
                     // 0.12: read here, off the UI thread, with the notes.
@@ -690,6 +704,7 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                 }
                 IndexMsg::LoadCached { vault, manifest } => {
                     changed = true;
+                    detached = false;
                     reload = None;
                     prepared.clear();
                     loaded = Some(vault.clone());
@@ -708,6 +723,21 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                     prepared.extend(parse_hashed(&vault, &c.manifest, &parse, shared));
                     cached = Some(c);
                     rebuild = true;
+                }
+                IndexMsg::Upsert { .. } | IndexMsg::Remove(_) | IndexMsg::UpsertAttachment(_) | IndexMsg::RemoveAttachment(_)
+                    if detached => {}
+                IndexMsg::Detach => {
+                    changed = true;
+                    detached = true;
+                    // Dropped, not flushed: the store lets go of the lock and
+                    // writes nothing more under the last vault.
+                    cached = None;
+                    loaded = None;
+                    prepared.clear();
+                    shared.total.store(0, Ordering::Relaxed);
+                    shared.indexed.store(0, Ordering::Relaxed);
+                    // An empty index in place of the last vault's.
+                    reload = Some(Vec::new());
                 }
                 IndexMsg::Upsert { path, source, hash } => {
                     changed = true;
