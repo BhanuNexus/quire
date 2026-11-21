@@ -409,7 +409,7 @@ mod tests {
         use proptest::prelude::*;
         let piece = prop::sample::select(vec!["[", "[[", "]", "]]", "\n", "\r\n", "a", " ", "|", "`", "![[", "\u{e9}"]);
         let text = prop::collection::vec(piece, 0..60).prop_map(|v| v.concat());
-        let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(2000));
+        let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(crate::test_notes::cases(2000)));
         runner
             .run(&text, |t| {
                 prop_assert_eq!(analyze(&t).wikilinks, old_wikilinks(&t), "{:?}", t);

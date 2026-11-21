@@ -276,7 +276,8 @@ impl SemanticIndex {
             }
         }
         let mut out: Vec<(NotePath, f32)> = best.into_iter().map(|(p, s)| (p.clone(), s)).filter(|(_, s)| *s > 0.1).collect();
-        out.sort_by(|a, b| b.1.total_cmp(&a.1));
+        // Ties by path: the same notes are kept whatever the map's order.
+        out.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         out.truncate(k);
         out
     }
@@ -546,6 +547,37 @@ pub fn build_lsa_index(chunks: Vec<Chunk>) -> SemanticIndex {
 mod tests {
     use super::*;
     use crate::chunk::chunk_note;
+
+    /// Every text the same vector: every pair of notes ties.
+    struct Same;
+    impl Embedder for Same {
+        fn name(&self) -> &'static str {
+            "same"
+        }
+        fn embed(&self, _: &str) -> Vec<f32> {
+            vec![1.0, 1.0]
+        }
+    }
+
+    /// Ties in `related` are broken by path: the same answer whatever the
+    /// order passages came in or the hash order of a run.
+    #[test]
+    fn related_breaks_ties_by_path() {
+        let chunk = |p: &str| Chunk { path: NotePath::new(p), heading: None, range: 0..1, text: p.to_string() };
+        let names: Vec<String> = (0..40).map(|i| format!("N{i:02}.md")).collect();
+        let want: Vec<NotePath> = names.iter().filter(|n| *n != "N07.md").take(5).map(|n| NotePath::new(n.as_str())).collect();
+        for reversed in [false, true] {
+            let mut chunks: Vec<Chunk> = names.iter().map(|n| chunk(n)).collect();
+            if reversed {
+                chunks.reverse();
+            }
+            let ix = SemanticIndex::new(chunks, Box::new(Same));
+            for _ in 0..5 {
+                let got: Vec<NotePath> = ix.related(&NotePath::new("N07.md"), 5).into_iter().map(|(p, _)| p).collect();
+                assert_eq!(got, want, "reversed: {reversed}");
+            }
+        }
+    }
 
     struct CountingEmbedder(std::sync::Arc<std::sync::atomic::AtomicUsize>);
     impl Embedder for CountingEmbedder {

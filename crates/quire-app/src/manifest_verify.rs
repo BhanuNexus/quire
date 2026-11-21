@@ -26,6 +26,9 @@ pub(crate) const IDLE: Duration = Duration::from_mins(5);
 pub(crate) const RETRY: Duration = Duration::from_hours(1);
 /// The file in the vault's state folder holding the last run, Unix ms.
 const FILE: &str = "manifest-verify";
+/// The file holding when this device first saw the vault with no verify
+/// recorded, Unix ms.
+const FIRST_FILE: &str = "manifest-verify-first-seen";
 
 /// The workspace's part.
 #[derive(Default)]
@@ -37,6 +40,10 @@ pub(crate) struct VerifyState {
     pub(crate) dir: Option<PathBuf>,
     /// The last run that finished, Unix ms, as read from `dir` or set here.
     pub(crate) last_ms: Option<i64>,
+    /// When this device first saw the vault with no verify recorded, Unix
+    /// ms (kept in `dir`): the two-days-late rule counts from it until the
+    /// first verify.
+    pub(crate) first_ms: Option<i64>,
     /// The verify in progress, with when it started.
     running: Option<(JoinHandle<bool>, i64)>,
     /// No new try before this (the last one failed).
@@ -58,25 +65,43 @@ impl VerifyState {
     }
 }
 
-/// Whether a verify is due: none recorded, or the last a day ago or more
-/// (or in the future: a clock set back), and idle long enough; or the last
-/// two days ago or more, idle or not.
-pub(crate) fn due(last_ms: Option<i64>, now_ms: i64, idle_for: Duration) -> bool {
-    let age = last_ms.filter(|l| *l <= now_ms).map_or(EVERY_MS, |l| now_ms - l);
-    (idle_for >= IDLE && age >= EVERY_MS) || age >= 2 * EVERY_MS
+/// Whether a verify is due: the last a day ago or more (or in the future: a
+/// clock set back) and idle long enough, or two days ago or more, idle or
+/// not. Never run here: due when idle, or two days after `first_ms` (when
+/// this device first saw the vault) whatever the person does.
+pub(crate) fn due(last_ms: Option<i64>, first_ms: Option<i64>, now_ms: i64, idle_for: Duration) -> bool {
+    let idle = idle_for >= IDLE;
+    match last_ms.filter(|l| *l <= now_ms) {
+        Some(l) => (idle && now_ms - l >= EVERY_MS) || now_ms - l >= 2 * EVERY_MS,
+        None => idle || first_ms.filter(|f| *f <= now_ms).is_some_and(|f| now_ms - f >= 2 * EVERY_MS),
+    }
 }
 
-/// When the next verify is due, given the last run and the last activity.
-pub(crate) fn due_at(last_ms: Option<i64>, now_ms: i64, now: Instant, active: Instant) -> Instant {
-    let last = last_ms.filter(|l| *l <= now_ms);
-    let after = |ms: i64| last.map(|l| now + Duration::from_millis(u64::try_from(l + ms - now_ms).unwrap_or(0)));
-    let idle = after(EVERY_MS).unwrap_or(now).max(active + IDLE);
-    after(2 * EVERY_MS).map_or(idle, |overdue| idle.min(overdue))
+/// When the next verify is due, given the last run (or the first sight of
+/// the vault) and the last activity.
+pub(crate) fn due_at(last_ms: Option<i64>, first_ms: Option<i64>, now_ms: i64, now: Instant, active: Instant) -> Instant {
+    let at = |t: i64, ms: i64| now + Duration::from_millis(u64::try_from(t + ms - now_ms).unwrap_or(0));
+    let idle = (active + IDLE).max(now);
+    match last_ms.filter(|l| *l <= now_ms) {
+        Some(l) => at(l, EVERY_MS).max(active + IDLE).min(at(l, 2 * EVERY_MS)),
+        None => first_ms.filter(|f| *f <= now_ms).map_or(idle, |f| idle.min(at(f, 2 * EVERY_MS))),
+    }
 }
 
 /// The last run recorded in `dir`.
 pub(crate) fn last_run(dir: &Path) -> Option<i64> {
     std::fs::read_to_string(dir.join(FILE)).ok()?.trim().parse().ok()
+}
+
+/// When this device first saw the vault without a verify, from `dir`;
+/// `now_ms` (recorded there) if never.
+pub(crate) fn first_seen(dir: &Path, now_ms: i64) -> i64 {
+    if let Some(t) = std::fs::read_to_string(dir.join(FIRST_FILE)).ok().and_then(|s| s.trim().parse().ok()) {
+        return t;
+    }
+    // Not recorded (a read-only state folder): counted from this start.
+    let _ = quire_base::fs::write_atomic(&dir.join(FIRST_FILE), now_ms.to_string().as_bytes(), quire_base::fs::Options::STATE);
+    now_ms
 }
 
 /// Record a run in `dir`.
@@ -88,7 +113,10 @@ pub(crate) fn record(dir: &Path, now_ms: i64) -> std::io::Result<()> {
 pub(crate) fn opened(ws: &mut Workspace, root: &Path) {
     let dir = quire_agent::approval::default_state_dir(root);
     let last_ms = dir.as_deref().and_then(last_run);
-    ws.verify = VerifyState { opened: Some(Instant::now()), dir, last_ms, running: None, retry_at: None };
+    // Never verified here: the two-days-late rule counts from the first sight.
+    let now_ms = crate::history_ops::now_ms();
+    let first_ms = last_ms.is_none().then(|| dir.as_deref().map_or(now_ms, |d| first_seen(d, now_ms)));
+    ws.verify = VerifyState { opened: Some(Instant::now()), dir, last_ms, first_ms, running: None, retry_at: None };
 }
 
 /// The latest input or typing, or the vault's start.
@@ -105,7 +133,7 @@ pub(crate) fn next_deadline(ws: &Workspace) -> Option<Instant> {
         return Some(now + Duration::from_secs(1));
     }
     let active = last_active(ws)?;
-    let at = due_at(ws.verify.last_ms, crate::history_ops::now_ms(), now, active);
+    let at = due_at(ws.verify.last_ms, ws.verify.first_ms, crate::history_ops::now_ms(), now, active);
     Some(ws.verify.retry_at.map_or(at, |r| at.max(r)))
 }
 
@@ -132,7 +160,7 @@ pub(crate) fn tick(ws: &mut Workspace, now: Instant) {
     }
     let (Some(manifest), Some(active)) = (ws.manifest().cloned(), last_active(ws)) else { return };
     let now_ms = crate::history_ops::now_ms();
-    if !due(ws.verify.last_ms, now_ms, now.saturating_duration_since(active)) {
+    if !due(ws.verify.last_ms, ws.verify.first_ms, now_ms, now.saturating_duration_since(active)) {
         return;
     }
     let handle = std::thread::Builder::new().name("quire-verify".into()).spawn(move || {
@@ -155,14 +183,31 @@ mod tests {
     #[test]
     fn a_verify_is_due_once_a_day_when_idle() {
         let idle = IDLE;
-        assert!(due(None, NOW, idle), "never ran");
-        assert!(!due(None, NOW, idle.saturating_sub(Duration::from_secs(1))), "not idle long enough");
-        assert!(!due(Some(NOW - EVERY_MS + 1), NOW, idle), "ran less than a day ago");
-        assert!(due(Some(NOW - EVERY_MS), NOW, idle), "a day ago");
-        assert!(due(Some(NOW + 60_000), NOW, idle), "a clock set back");
-        assert!(!due(Some(NOW - EVERY_MS), NOW, Duration::ZERO), "a day late waits for idle");
-        assert!(due(Some(NOW - 2 * EVERY_MS), NOW, Duration::ZERO), "two days late: whatever the person does");
-        assert!(!due(None, NOW, Duration::ZERO), "never ran: when idle");
+        assert!(due(None, None, NOW, idle), "never ran");
+        assert!(!due(None, None, NOW, idle.saturating_sub(Duration::from_secs(1))), "not idle long enough");
+        assert!(!due(Some(NOW - EVERY_MS + 1), None, NOW, idle), "ran less than a day ago");
+        assert!(due(Some(NOW - EVERY_MS), None, NOW, idle), "a day ago");
+        assert!(due(Some(NOW + 60_000), None, NOW, idle), "a clock set back");
+        assert!(!due(Some(NOW - EVERY_MS), None, NOW, Duration::ZERO), "a day late waits for idle");
+        assert!(due(Some(NOW - 2 * EVERY_MS), None, NOW, Duration::ZERO), "two days late: whatever the person does");
+        assert!(!due(None, Some(NOW), NOW, Duration::ZERO), "never ran, just seen: when idle");
+    }
+
+    /// A vault never verified here: due when idle, and two days after this
+    /// device first saw it, whatever the person does (a person who is never
+    /// idle for 5 minutes still gets a first verify).
+    #[test]
+    fn a_vault_never_verified_counts_two_days_from_when_it_was_first_seen() {
+        assert!(!due(None, Some(NOW), NOW, Duration::ZERO), "just seen: waits for idle");
+        assert!(due(None, Some(NOW), NOW, IDLE), "idle: at once");
+        assert!(!due(None, Some(NOW - 2 * EVERY_MS + 1), NOW, Duration::ZERO));
+        assert!(due(None, Some(NOW - 2 * EVERY_MS), NOW, Duration::ZERO), "two days after first seen");
+        let busy = Instant::now() + IDLE * 100;
+        assert_eq!(due_at(None, Some(NOW - 2 * EVERY_MS + 60_000), NOW, busy, busy), busy + Duration::from_mins(1));
+        // First seen is kept in the state folder, once.
+        let dir = tempfile::tempdir().expect("temp");
+        assert_eq!(first_seen(dir.path(), NOW), NOW);
+        assert_eq!(first_seen(dir.path(), NOW + EVERY_MS), NOW, "the first time stays");
     }
 
     /// Recorded only when it read the notes; a failed run is tried again
@@ -180,14 +225,14 @@ mod tests {
     #[test]
     fn the_wake_up_is_the_later_of_a_day_and_idle() {
         let active = Instant::now();
-        assert_eq!(due_at(None, NOW, active, active), active + IDLE);
+        assert_eq!(due_at(None, None, NOW, active, active), active + IDLE);
         let later = active + IDLE * 2;
-        assert_eq!(due_at(None, NOW, later, active), later, "due now");
+        assert_eq!(due_at(None, None, NOW, later, active), later, "due now");
         let hour = Duration::from_hours(1);
-        assert_eq!(due_at(Some(NOW - EVERY_MS + 3_600_000), NOW, later, active), later + hour);
+        assert_eq!(due_at(Some(NOW - EVERY_MS + 3_600_000), None, NOW, later, active), later + hour);
         // Two days late comes even while the person is busy.
         let busy = active + IDLE * 100;
-        assert_eq!(due_at(Some(NOW - 2 * EVERY_MS + 60_000), NOW, busy, busy), busy + Duration::from_mins(1));
+        assert_eq!(due_at(Some(NOW - 2 * EVERY_MS + 60_000), None, NOW, busy, busy), busy + Duration::from_mins(1));
     }
 
     #[test]

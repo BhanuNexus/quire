@@ -5,7 +5,14 @@
 
 use proptest::prelude::*;
 
-/// The notes of the sample vault and a design note.
+/// How many cases a property test runs: `default`, or more when `PROPTEST_CASES` asks
+/// for more (the weekly job sets 50000), so the environment can only raise it.
+pub(crate) fn cases(default: u32) -> u32 {
+    std::env::var("PROPTEST_CASES").ok().and_then(|v| v.parse::<u32>().ok()).map_or(default, |n| n.max(default))
+}
+
+/// The notes of the sample vault and a design note (a copy, in `tests/fixtures/`, so
+/// moving the note in `docs/` breaks nothing).
 pub(crate) fn fixture_notes() -> Vec<String> {
     fn walk(dir: &std::path::Path, out: &mut Vec<String>) {
         let mut entries: Vec<_> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).collect();
@@ -21,9 +28,40 @@ pub(crate) fn fixture_notes() -> Vec<String> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut out = Vec::new();
     walk(&root.join("sample-vault"), &mut out);
-    out.push(std::fs::read_to_string(root.join("docs/design/0.14-index-startup.md")).unwrap());
+    out.push(std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/design-note.md")).unwrap());
     assert!(out.len() > 5, "the fixture notes were not found");
     out
+}
+
+/// One line of `n` `[`.
+pub(crate) fn open_brackets(n: usize) -> String {
+    "[".repeat(n)
+}
+
+/// `n` lines of `[[x`.
+pub(crate) fn open_links(n: usize) -> String {
+    "[[x\n".repeat(n)
+}
+
+/// One line of about `n` bytes of `== a ==`-less marks: each `==` opens a body that starts with a space.
+pub(crate) fn open_marks(n: usize) -> String {
+    "== a ".repeat(n / 5)
+}
+
+/// A note of about `bytes` bytes that is nearly all verbatim ranges and the lines
+/// between them (fences, display math, inline code, highlights, callouts, ids), so
+/// a walk that tests every line against every range shows at a size the parser
+/// itself still reads in linear time.
+pub(crate) fn dense_note(bytes: usize) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::from("---\ntitle: Dense\n---\n");
+    let mut i = 0;
+    while s.len() < bytes {
+        write!(s, "`c{i}` ==m{i}== @k{i} [[n{i}]] ^b{i}\n\n```\nx\n```\n$$\ny ^2\n$$\n> [!note] T{i}\ntext ^i{i}\n\nQ{i}\n?\nA{i}\n\n")
+            .unwrap();
+        i += 1;
+    }
+    s
 }
 
 /// A note made of lines with code fences, front matter, math, indented code,
