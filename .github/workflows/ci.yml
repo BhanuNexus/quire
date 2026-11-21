@@ -371,15 +371,15 @@ jobs:
         with:
           shared-key: perf
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Build quire-cli and the desktop with its bench runs
-        run: cargo build --profile perf --locked -p quire-cli -p quire-desktop --features quire-desktop/bench
+      - name: Build quire-cli, the sync server and the desktop with its bench runs
+        run: cargo build --profile perf --locked -p quire-cli -p quire-sync-server -p quire-desktop --features quire-desktop/bench
       - name: Speed budgets
         env:
           QUIRE_BENCH_PDFS: crates/quire-pdf/tests/fixtures
         run: >-
           xvfb-run -a -s "-screen 0 1600x1000x24"
           python3 packaging/perf-check.py --cli target/perf/quire-cli --app target/perf/quire
-          --runs 5 --app-runs 5 --json perf.json
+          --server target/perf/quire-sync-server --runs 5 --app-runs 5 --json perf.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:

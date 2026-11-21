@@ -8,7 +8,10 @@
 //!   the median of `N` runs, for the CI `perf` job
 //!   (`packaging/perf-check.py`, docs/design/0.10-perf.md).
 //! * `bench vault <dir> [notes]`: write a synthetic vault for the desktop
-//!   runs (`notes` notes of ~4 KB and `Big.md` of 100 KB).
+//!   and sync runs (`notes` notes of ~4 KB and `Big.md` of 100 KB).
+//! * `bench sync-013 <vault>`: write the vault's sync record as Quire 0.13
+//!   kept it, so the next pass migrates it (the perf job's migration row,
+//!   `docs/design/0.14-sync-speed.md` §2).
 
 #![expect(clippy::disallowed_methods, reason = "benchmarks build and open their own temporary vaults")]
 
@@ -46,6 +49,12 @@ fn run(args: &[String]) -> Result<(), String> {
         let dir = args.get(2).ok_or("bench vault <dir> [notes]")?;
         let notes = args.get(3).and_then(|n| n.parse().ok()).unwrap_or(10_000);
         return write_vault(std::path::Path::new(dir), notes);
+    }
+    if args.get(1).map(String::as_str) == Some("sync-013") {
+        let vault = args.get(2).ok_or("bench sync-013 <vault>")?;
+        let n = quire_app::vault_sync::bench_write_013_state(std::path::Path::new(vault))?;
+        println!("Wrote the sync record as Quire 0.13 kept it ({n} bytes); the next pass migrates it.");
+        return Ok(());
     }
     if let Some(list) = flag("--suite") {
         let runs: usize = flag("--runs").and_then(|n| n.parse().ok()).unwrap_or(5).max(1);

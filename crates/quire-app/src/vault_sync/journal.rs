@@ -1242,6 +1242,19 @@ pub(super) fn peek(root: &Path, name: &str) -> SyncState {
     read_dir(&state_dir(root, name)).ok().flatten().filter(|f| f.any_checkpoint && !f.all_damaged).map(|f| f.body.state).unwrap_or_default()
 }
 
+/// Write the record of the 0.13 state file `name` back as Quire 0.13 kept
+/// it, beside its folder, so the next pass migrates it once (the perf
+/// job's migration row, `docs/design/0.14-sync-speed.md` §2). Its size in
+/// bytes.
+pub(super) fn write_013(root: &Path, name: &str) -> Result<usize, String> {
+    let o = Journal::open(root, name)?;
+    let old = quire_sync::bases::State13::from_state(&o.state, &o.bases).ok_or("a synced text is missing from the base packs")?;
+    let bytes = serde_json::to_vec(&old).map_err(|e| e.to_string())?;
+    let path = sync_dir(root).join(name);
+    write_atomic(&path, &bytes).map_err(|e| format!("Couldn't write {}: {e}", path.display()))?;
+    Ok(bytes.len())
+}
+
 /// Whether the record for the 0.13 state file `name` exists (in either form).
 pub(super) fn exists(root: &Path, name: &str) -> bool {
     sync_dir(root).join(name).exists() || state_dir(root, name).exists()
