@@ -105,13 +105,13 @@ pub struct Answer {
 
 /// Word weights for coverage: rarer words matter more; words the vault
 /// never uses weigh most (an answer can't be about them).
-fn weights(ix: &Index, terms: &[String]) -> Vec<(String, f32)> {
-    let n = ix.len().max(1) as f32;
+fn weights(ix: &Index, terms: &[String], scope: quire_index::ScopeRead<'_>) -> Vec<(String, f32)> {
+    let n = ix.len_in(scope).max(1) as f32;
     let unseen = ((n + 0.5) / 0.5).ln_1p();
     terms
         .iter()
         .map(|t| {
-            let w = ix.idf(t).unwrap_or(unseen);
+            let w = ix.idf_in(t, scope).unwrap_or(unseen);
             (t.clone(), w.max(0.05))
         })
         .collect()
@@ -146,14 +146,50 @@ pub fn retrieve(ix: &Index, semantic: Option<&SemanticIndex>, question: &str, k:
     retrieve_where(ix, semantic, question, k, &|_| true)
 }
 
+/// [`retrieve`] through an agent's view.
+///
+/// Word weights and keyword scores come from the view's notes only
+/// (`docs/design/0.14-agent-index.md` §3.7), so the sources are what an
+/// index of only those notes gives. A view that hides a note gets no
+/// meaning passages (the model is fitted on every note).
+pub fn retrieve_in(
+    ix: &Index,
+    semantic: Option<&SemanticIndex>,
+    question: &str,
+    k: usize,
+    scope: quire_index::ScopeRead<'_>,
+) -> Vec<Source> {
+    let semantic = semantic.filter(|_| scope.meaning(ix));
+    let keep = |p: &NotePath| scope.has_note(ix, p);
+    retrieve_with(ix, semantic, question, k, scope, &keep, &|q| ix.search_in(q, 30, scope))
+}
+
 /// [`retrieve`] from the notes `keep` accepts (what an agent may see):
 /// other notes take no places and no numbers.
+///
+/// Not for agents: word weights and scores count every note. An agent
+/// retrieves through its view ([`retrieve_in`]).
 pub fn retrieve_where(ix: &Index, semantic: Option<&SemanticIndex>, question: &str, k: usize, keep: quire_index::Keep<'_>) -> Vec<Source> {
+    retrieve_with(ix, semantic, question, k, quire_index::ScopeRead::Full, keep, &|q| ix.search_where(q, 30, keep))
+}
+
+/// Keyword hits of one word (`"t "`), as the caller ranks them.
+type Search<'a> = &'a dyn Fn(&str) -> Vec<quire_index::SearchHit>;
+
+fn retrieve_with(
+    ix: &Index,
+    semantic: Option<&SemanticIndex>,
+    question: &str,
+    k: usize,
+    scope: quire_index::ScopeRead<'_>,
+    keep: quire_index::Keep<'_>,
+    search: Search<'_>,
+) -> Vec<Source> {
     let q_terms: Vec<String> = {
         let mut seen = HashSet::new();
         content_tokens(question).filter(|t| seen.insert(t.clone())).take(10).collect()
     };
-    let w = weights(ix, &q_terms);
+    let w = weights(ix, &q_terms, scope);
     // (path, offset) → (end, heading, text, score, sim)
     let mut cand: HashMap<(NotePath, usize), Candidate> = HashMap::new();
 
@@ -169,7 +205,7 @@ pub fn retrieve_where(ix: &Index, semantic: Option<&SemanticIndex>, question: &s
     // counts for little).
     let mut note_hits: HashMap<NotePath, f32> = HashMap::new();
     for t in &q_terms {
-        for h in ix.search_where(&format!("{t} "), 30, keep) {
+        for h in search(&format!("{t} ")) {
             *note_hits.entry(h.path).or_default() += h.score;
         }
     }
@@ -650,6 +686,31 @@ mod tests {
         let kept = retrieve_where(&ix, Some(&sem), q, 4, &|p| *p != top);
         assert!(!kept.is_empty() && kept.iter().all(|s| s.path != top), "{kept:?}");
         assert_eq!(kept.iter().map(|s| s.n).collect::<Vec<_>>(), (1..=kept.len()).collect::<Vec<_>>());
+    }
+
+    /// An agent's view (`docs/design/0.14-agent-index.md` §3.7): the
+    /// sources, their order, scores and coverage are what an index holding
+    /// only the view's notes gives, and the view has no meaning hits.
+    #[test]
+    fn retrieve_in_a_view_is_retrieve_over_its_notes() {
+        let mut full = ix();
+        for i in 0..6 {
+            full.upsert(NotePath::new(format!("Private/p{i}.md")), "# Secret\nropes ropes undo undo cheap cheap secretzq\n");
+        }
+        let visible: quire_index::Visible = std::sync::Arc::new(|p: &NotePath, _: &[String]| !p.as_str().starts_with("Private/"));
+        let view = quire_index::Scope::build(&full, visible);
+        let mine = ix();
+        let sem = sem(&full);
+        for q in ["why is undo cheap with ropes?", "secretzq ropes", "bread oven", "line counts"] {
+            let got = retrieve_in(&full, Some(&sem), q, 4, quire_index::ScopeRead::View(&view));
+            let want = retrieve(&mine, None, q, 4);
+            let text = |v: &[Source]| -> Vec<String> {
+                v.iter()
+                    .map(|s| format!("{} {} {} {} {}", s.n, s.citation(), s.score.to_bits(), s.coverage.to_bits(), s.sim.to_bits()))
+                    .collect()
+            };
+            assert_eq!(text(&got), text(&want), "{q}");
+        }
     }
 
     #[test]

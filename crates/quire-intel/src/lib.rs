@@ -28,7 +28,7 @@ pub mod summary;
 pub mod tags;
 pub mod timeline;
 
-pub use ask::{Answer, Source, build_ask_request, extractive_answer, retrieve, retrieve_where};
+pub use ask::{Answer, Source, build_ask_request, extractive_answer, retrieve, retrieve_in, retrieve_where};
 pub use calc::{Calculator, format_number};
 pub use chat::{CancelFlag, ChatEvent, ChatMessage, ChatModel, ChatRequest, Locality, ScriptedChat};
 pub use dates::{DateMatch, parse_natural_date, trailing_date_phrase};
