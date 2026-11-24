@@ -3,7 +3,8 @@
 //! Reading tool calls the way small models write them.
 //!
 //! Qwen3 is asked for `{"name": …, "arguments": {…}}` inside
-//! `<tool_call>` tags. Small models get close but not always exact: single
+//! `<tool_call>` tags; Qwen 3.5 for the XML form [`read_xml_calls`] reads.
+//! Small models get the JSON form close but not always exact: single
 //! quotes, a code fence around the JSON, a trailing comma, `True`/`None`,
 //! words after the object, two calls in one block, `arguments` as a JSON
 //! string, or the arguments spread beside `name`. [`read_calls`] repairs
@@ -101,6 +102,83 @@ fn call(v: Value) -> Result<ToolCall, BadCall> {
         Some(_) => return Err(BadCall::new(format!("the arguments of {name} must be a JSON object"))),
     };
     Ok(ToolCall { name, arguments })
+}
+
+/// The calls in one `<tool_call>` block of Qwen 3.5's XML form
+/// (`docs/design/0.14-local-ai.md` §3.4):
+///
+/// ```text
+/// <function=NAME>
+/// <parameter=P>
+/// VALUE
+/// </parameter>
+/// </function>
+/// ```
+///
+/// Each value loses the one newline the template puts on each side. Its
+/// type comes from the offered tool's JSON schema (`tools`: the request's
+/// tool definitions with `name` and `input_schema`): `integer`, `number`,
+/// `boolean`, `object`, `array` and `null` values are read as JSON (left a
+/// string when they aren't JSON, as vLLM's `qwen3_coder` parser does, so the
+/// tool's own check reports it); anything else stays a string. A missing
+/// `</function>` is accepted only when the model closed the block
+/// (`closed`); a missing `</parameter>`, text outside the tags or a repeated
+/// parameter is an error.
+pub fn read_xml_calls(body: &str, closed: bool, tools: &[Value]) -> Result<Vec<ToolCall>, BadCall> {
+    let mut rest = body.trim();
+    let mut calls = Vec::new();
+    while !rest.is_empty() {
+        let Some(after) = rest.strip_prefix("<function=") else {
+            return Err(BadCall::new("a tool call must start with <function=NAME>"));
+        };
+        let Some(end) = after.find('>') else { return Err(BadCall::new("the <function=…> tag isn't closed")) };
+        let name = after[..end].trim().to_string();
+        if name.is_empty() || name.contains(['<', '\n']) {
+            return Err(BadCall::new("the tool call has no function name"));
+        }
+        let schema = tools.iter().find(|t| t["name"] == name.as_str()).map(|t| &t["input_schema"]["properties"]);
+        let mut args = Map::new();
+        rest = after[end + 1..].trim_start();
+        loop {
+            if let Some(r) = rest.strip_prefix("</function>") {
+                rest = r.trim_start();
+                break;
+            }
+            if rest.is_empty() {
+                if closed {
+                    break;
+                }
+                return Err(BadCall::new(format!("the call of {name} has no </function>")));
+            }
+            let Some(after) = rest.strip_prefix("<parameter=") else {
+                return Err(BadCall::new(format!("unexpected text in the call of {name}")));
+            };
+            let Some(end) = after.find('>') else { return Err(BadCall::new("a <parameter=…> tag isn't closed")) };
+            let key = after[..end].trim().to_string();
+            let body = &after[end + 1..];
+            let Some(close) = body.find("</parameter>") else {
+                return Err(BadCall::new(format!("the parameter {key} of {name} has no </parameter>")));
+            };
+            let raw = body[..close].strip_prefix('\n').unwrap_or(&body[..close]);
+            let raw = raw.strip_suffix('\n').unwrap_or(raw);
+            let kind = schema.and_then(|s| s[key.as_str()]["type"].as_str()).unwrap_or("string");
+            let value = match kind {
+                "integer" | "number" | "boolean" | "object" | "array" | "null" => {
+                    serde_json::from_str(raw.trim()).unwrap_or_else(|_| Value::String(raw.to_string()))
+                }
+                _ => Value::String(raw.to_string()),
+            };
+            if key.is_empty() || args.insert(key.clone(), value).is_some() {
+                return Err(BadCall::new(format!("the parameter {key:?} of {name} is given twice or has no name")));
+            }
+            rest = body[close + "</parameter>".len()..].trim_start();
+        }
+        calls.push(ToolCall { name, arguments: Value::Object(args) });
+    }
+    if calls.is_empty() {
+        return Err(BadCall::new("the tool call was empty"));
+    }
+    Ok(calls)
 }
 
 /// A Markdown code fence around the text, if any.
@@ -287,6 +365,56 @@ fn repair(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    fn xml_tools() -> Vec<Value> {
+        vec![json!({"name": "edit_note", "input_schema": {"type": "object", "properties": {
+            "path": {"type": "string"}, "lines": {"type": "array"}, "count": {"type": "integer"},
+            "force": {"type": "boolean"}, "opts": {"type": "object"}, "text": {"type": "string"}}}})]
+    }
+
+    #[test]
+    fn xml_calls_are_typed_by_the_offered_schema() {
+        let body = "\n<function=edit_note>\n<parameter=path>\nPlan.md\n</parameter>\n<parameter=lines>\n[3, 4]\n</parameter>\n<parameter=count>\n2\n</parameter>\n<parameter=force>\ntrue\n</parameter>\n<parameter=opts>\n{\"a\": 1}\n</parameter>\n<parameter=text>\nline one\n\nline two\n</parameter>\n</function>\n";
+        let calls = read_xml_calls(body, true, &xml_tools()).unwrap();
+        assert_eq!(
+            calls,
+            [ToolCall {
+                name: "edit_note".into(),
+                arguments: json!({"path": "Plan.md", "lines": [3, 4], "count": 2, "force": true, "opts": {"a": 1}, "text": "line one\n\nline two"}),
+            }]
+        );
+        // A string that looks like a number stays a string; an unknown tool's values are strings.
+        let c = read_xml_calls("<function=edit_note>\n<parameter=path>\n42\n</parameter>\n</function>", true, &xml_tools()).unwrap();
+        assert_eq!(c[0].arguments, json!({"path": "42"}));
+        let c = read_xml_calls("<function=other>\n<parameter=n>\n42\n</parameter>\n</function>", true, &xml_tools()).unwrap();
+        assert_eq!(c[0].arguments, json!({"n": "42"}));
+        // A typed value that isn't JSON is left as text for the tool to refuse.
+        let c = read_xml_calls("<function=edit_note>\n<parameter=count>\ntwo\n</parameter>\n</function>", true, &xml_tools()).unwrap();
+        assert_eq!(c[0].arguments, json!({"count": "two"}));
+        // No parameters.
+        let c = read_xml_calls("<function=edit_note>\n</function>", true, &[]).unwrap();
+        assert_eq!(c[0].arguments, json!({}));
+    }
+
+    #[test]
+    fn broken_xml_calls_are_errors() {
+        let t = xml_tools();
+        for (body, closed) in [
+            ("", true),
+            ("{\"name\": \"x\"}", true),
+            ("<function=>\n</function>", true),
+            ("<function=edit_note\n<parameter=path>\nA\n</parameter>", true),
+            ("<function=edit_note>\n<parameter=path>\nA.md\n", true),
+            ("<function=edit_note>\n<parameter=path>\nA\n</parameter>\n", false),
+            ("<function=edit_note>\nhello\n</function>", true),
+            ("<function=edit_note>\n<parameter=path>\nA\n</parameter>\n<parameter=path>\nB\n</parameter>\n</function>", true),
+        ] {
+            assert!(read_xml_calls(body, closed, &t).is_err(), "{body:?} closed {closed}");
+        }
+        // Closed by the model, missing only </function>: complete as it stands.
+        assert!(read_xml_calls("<function=edit_note>\n<parameter=path>\nA\n</parameter>\n", true, &t).is_ok());
+    }
+
     use super::*;
     use serde_json::json;
 

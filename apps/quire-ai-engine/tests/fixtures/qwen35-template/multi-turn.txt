@@ -1,0 +1,17 @@
+<|im_start|>system
+Be brief.<|im_end|>
+<|im_start|>user
+Hi<|im_end|>
+<|im_start|>assistant
+Hello! How can I help?<|im_end|>
+<|im_start|>user
+Name a knot.<|im_end|>
+<|im_start|>assistant
+A bowline.<|im_end|>
+<|im_start|>user
+Another?<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+

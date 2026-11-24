@@ -24,7 +24,7 @@ use tokenizers::Tokenizer;
 
 use crate::qwen3::{Options as QwenOptions, Qwen3, Repack};
 use crate::qwen35::Qwen35;
-use crate::template::{Piece, ReplyParser, STOP_TOKENS, render};
+use crate::template::{Piece, ReplyParser, STOP_TOKENS, render, render_qwen35};
 use crate::{Backend, Failure};
 
 fn load_failed(e: impl std::fmt::Display) -> Failure {
@@ -68,6 +68,10 @@ struct Llm {
     device: Device,
     stop_ids: Vec<u32>,
     ctx: usize,
+    /// Qwen 3.5's prompt-reuse snapshot: the ids of the last prompt and the
+    /// state after reading it (`docs/design/0.14-local-ai.md` §3.2). In
+    /// memory only; unloading drops it.
+    reuse: Option<(Vec<u32>, crate::qwen35::State)>,
 }
 
 struct Embedder {
@@ -154,7 +158,7 @@ impl Backend for RealBackend {
                 let stop_ids = STOP_TOKENS.iter().filter_map(|t| tok.token_to_id(t)).collect();
                 // The quantized weights as they are in the file (the KV cache comes on top).
                 let mem = file_size(&path);
-                (Model::Llm(Box::new(Llm { model, tok, device, stop_ids, ctx })), mem)
+                (Model::Llm(Box::new(Llm { model, tok, device, stop_ids, ctx, reuse: None })), mem)
             }
             ModelKind::Embed => {
                 let device = device(&p.gpu);
@@ -230,7 +234,10 @@ impl Backend for RealBackend {
         let mut messages = p.messages.clone();
         let mut prompt_ids;
         loop {
-            let prompt = render(&p.system, &messages, &tools, p.json);
+            let prompt = match m.model {
+                LlmModel::Qwen3(_) => render(&p.system, &messages, &tools, p.json),
+                LlmModel::Qwen35(_) => render_qwen35(&p.system, &messages, &tools, p.json),
+            };
             prompt_ids = m.tok.encode(prompt, false).map_err(failed)?.get_ids().to_vec();
             if prompt_ids.len() + max_new <= m.ctx || messages.len() <= 1 {
                 break;
@@ -240,20 +247,41 @@ impl Backend for RealBackend {
         if prompt_ids.len() + max_new > m.ctx {
             return Err((code::BAD_PARAMS, format!("the request is too long for this model ({} tokens)", prompt_ids.len())));
         }
+        // Qwen 3.5: start from the last prompt's state when this prompt
+        // begins with it, else afresh.
+        let mut pos = 0;
         match &mut m.model {
+            LlmModel::Qwen35(q) => {
+                let saved = m.reuse.take();
+                if let Some((ids, state)) = &saved
+                    && prompt_ids.len() > ids.len()
+                    && prompt_ids.starts_with(ids)
+                    && q.restore(state).is_ok()
+                {
+                    pos = ids.len();
+                } else {
+                    q.clear();
+                }
+                q.reserve((prompt_ids.len() + max_new).min(m.ctx));
+            }
             LlmModel::Qwen3(q) => q.clear_kv_cache(),
-            LlmModel::Qwen35(q) => q.clear(),
         }
+        let qwen35 = matches!(m.model, LlmModel::Qwen35(_));
+        // Qwen 3.5's card's non-thinking values (top-k 20, top-p 0.8); the
+        // caller's temperature either way.
+        let (top_k, top_p) = if qwen35 { (20, 0.8) } else { (40, 0.9) };
         let sampling = if p.temperature <= 0.0 {
             Sampling::ArgMax
         } else {
-            Sampling::TopKThenTopP { k: 40, p: 0.9, temperature: f64::from(p.temperature) }
+            Sampling::TopKThenTopP { k: top_k, p: top_p, temperature: f64::from(p.temperature) }
         };
+        // The card's presence penalty, for plain chat only: repeating a key
+        // is right in JSON and tool calls.
+        let presence = qwen35 && !p.json && tools.is_empty();
         let mut sampler = LogitsProcessor::from_sampling(42, sampling);
         // Prefill in chunks so a long prompt doesn't need one huge attention matrix.
         let mut logits = None;
-        let mut pos = 0;
-        for chunk in prompt_ids.chunks(256) {
+        for chunk in prompt_ids[pos..].chunks(256) {
             if cancel.load(Ordering::Acquire) {
                 return Err((code::CANCELLED, "cancelled".into()));
             }
@@ -262,7 +290,10 @@ impl Backend for RealBackend {
             pos += chunk.len();
         }
         let mut logits = logits.ok_or_else(|| failed("empty prompt"))?;
-        let mut parser = ReplyParser::with_tools(tools.iter().filter_map(|t| t["name"].as_str().map(str::to_string)).collect());
+        if let LlmModel::Qwen35(q) = &m.model {
+            m.reuse = Some((prompt_ids.clone(), q.snapshot()));
+        }
+        let mut parser = ReplyParser::with_tool_defs(&tools);
         let mut out_ids: Vec<u32> = Vec::new();
         let mut shown = 0usize;
         let mut text = String::new();
@@ -287,6 +318,8 @@ impl Backend for RealBackend {
             let l = logits.squeeze(0).and_then(|x| x.to_dtype(DType::F32)).map_err(failed)?;
             let l = if out_ids.is_empty() {
                 l
+            } else if qwen35 {
+                if presence { presence_penalty(&l, 1.5, &out_ids).map_err(failed)? } else { l }
             } else {
                 candle_transformers::utils::apply_repeat_penalty(&l, 1.1, &out_ids[out_ids.len().saturating_sub(64)..]).map_err(failed)?
             };
@@ -376,6 +409,21 @@ impl RealBackend {
         let pcm = quire_ai::wav::resample(&audio.samples, audio.rate, quire_ai::wav::VOICE_RATE);
         m.run(&pcm, &p.language, cancel)
     }
+}
+
+/// Subtracts `penalty` once from the logit of every token already in the
+/// reply (the presence penalty of OpenAI-style samplers).
+fn presence_penalty(logits: &Tensor, penalty: f32, seen: &[u32]) -> candle_core::Result<Tensor> {
+    let mut v = logits.to_vec1::<f32>()?;
+    let mut done = std::collections::HashSet::new();
+    for &t in seen {
+        if done.insert(t)
+            && let Some(x) = v.get_mut(t as usize)
+        {
+            *x -= penalty;
+        }
+    }
+    Tensor::from_vec(v, logits.shape(), logits.device())
 }
 
 /// Embeddings of one sub-batch: (dims, rows).

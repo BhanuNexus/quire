@@ -1,0 +1,11 @@
+<|im_start|>system
+Be brief.
+
+Answer in English.<|im_end|>
+<|im_start|>user
+Hello there<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+

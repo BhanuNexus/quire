@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Qwen3's chat template and its Hermes-style tool calls (`docs/design/0.9.md` §D.3: one
-//! model family, so both are written out here instead of interpreting the
-//! Jinja template that ships with the model).
+//! The chat templates of Qwen3 and Qwen 3.5 and their tool calls.
+//!
+//! See `docs/design/0.9.md` §D.3 and `docs/design/0.14-local-ai.md` §3.4: two
+//! model families, so both are written out here instead of interpreting the
+//! Jinja template that ships with the model.
 //!
 //! * [`render`] turns a system prompt, messages (in `quire_intel::chat`
 //!   JSON form) and tools into the prompt text, in non-thinking mode.
@@ -129,6 +131,199 @@ pub fn render(system: &str, messages: &[Value], tools: &[Value], json_mode: bool
     out
 }
 
+/// The prompt for Qwen 3.5, in non-thinking mode.
+///
+/// The published `chat_template.jinja` of Qwen 3.5 4B and 9B written out
+/// (`docs/design/0.14-local-ai.md` §3.4), for the conversation as
+/// transformers' `apply_chat_template` would get it (tools as
+/// `{"type": "function", "function": {…}}`, each tool result its own `tool`
+/// message, `enable_thinking=False`).
+///
+/// Differences from Qwen3's: the tool list and the XML call format, values
+/// trimmed, and assistant turns after the last user message keeping an
+/// empty think block (so the rendered history only grows during an agent
+/// run, which the prompt-reuse snapshot relies on).
+pub fn render_qwen35(system: &str, messages: &[Value], tools: &[Value], json_mode: bool) -> String {
+    let sys = system_text(system, messages, json_mode);
+    let mut out = String::new();
+    if !tools.is_empty() {
+        out.push_str(IM_START);
+        out.push_str("system\n# Tools\n\nYou have access to the following functions:\n\n<tools>");
+        for t in tools {
+            out.push('\n');
+            // Key order as the dict is built: type, function; name,
+            // description, parameters.
+            out.push_str("{\"type\": \"function\", \"function\": {\"name\": ");
+            py_json(&t["name"], &mut out);
+            out.push_str(", \"description\": ");
+            py_json(&t["description"], &mut out);
+            out.push_str(", \"parameters\": ");
+            py_json(&t["input_schema"], &mut out);
+            out.push_str("}}");
+        }
+        out.push_str("\n</tools>");
+        out.push_str(QWEN35_TOOL_RULES);
+        let sys = sys.trim();
+        if !sys.is_empty() {
+            out.push_str("\n\n");
+            out.push_str(sys);
+        }
+        out.push_str(IM_END);
+        out.push('\n');
+    } else if !sys.is_empty() {
+        let _ = write!(out, "{IM_START}system\n{}{IM_END}\n", sys.trim());
+    }
+    // As the template sees them: one `tool` message per tool result.
+    let turns: Vec<(&str, &Value)> = messages
+        .iter()
+        .filter(|m| m["role"] != "system")
+        .flat_map(|m| {
+            let role = match m["role"].as_str() {
+                Some("assistant") => "assistant",
+                Some("tool") => "tool",
+                _ => "user",
+            };
+            if role == "tool" {
+                parts(m).filter(|p| p["type"] == "tool_result" || p["type"] == "text").map(|p| ("tool", p)).collect::<Vec<_>>()
+            } else {
+                vec![(role, m)]
+            }
+        })
+        .collect();
+    let last_query = turns.iter().rposition(|(role, _)| *role == "user");
+    for (i, (role, m)) in turns.iter().enumerate() {
+        match *role {
+            "tool" => {
+                if i == 0 || turns[i - 1].0 != "tool" {
+                    out.push_str(IM_START);
+                    out.push_str("user");
+                }
+                let content = match m["type"].as_str() {
+                    Some("tool_result") => {
+                        let c = m["content"].as_str().unwrap_or_default();
+                        if m["is_error"] == true { format!("Error: {c}") } else { c.to_string() }
+                    }
+                    _ => m["text"].as_str().unwrap_or_default().to_string(),
+                };
+                out.push_str("\n<tool_response>\n");
+                out.push_str(content.trim());
+                out.push_str("\n</tool_response>");
+                if turns.get(i + 1).is_none_or(|(r, _)| *r != "tool") {
+                    out.push_str(IM_END);
+                    out.push('\n');
+                }
+            }
+            "assistant" => {
+                let text = text_of(m);
+                let mut content = text.trim();
+                let mut reasoning = "";
+                if let Some(end) = content.find("</think>") {
+                    let before = &content[..end];
+                    reasoning = before.rsplit("<think>").next().unwrap_or(before).trim_start_matches('\n');
+                    content = content[content.rfind("</think>").map_or(0, |e| e + "</think>".len())..].trim_start_matches('\n');
+                }
+                let reasoning = reasoning.trim_end_matches('\n').trim();
+                out.push_str(IM_START);
+                out.push_str("assistant\n");
+                if last_query.is_some_and(|q| i > q) {
+                    let _ = write!(out, "<think>\n{reasoning}\n</think>\n\n");
+                }
+                out.push_str(content);
+                for (n, call) in parts(m).filter(|p| p["type"] == "tool_use").enumerate() {
+                    let name = call["name"].as_str().unwrap_or_default();
+                    if n > 0 {
+                        out.push('\n');
+                    } else if !content.trim().is_empty() {
+                        out.push_str("\n\n");
+                    }
+                    let _ = write!(out, "<tool_call>\n<function={name}>\n");
+                    for (k, v) in call["input"].as_object().into_iter().flatten() {
+                        let _ = writeln!(out, "<parameter={k}>");
+                        py_str(v, &mut out);
+                        out.push_str("\n</parameter>\n");
+                    }
+                    out.push_str("</function>\n</tool_call>");
+                }
+                out.push_str(IM_END);
+                out.push('\n');
+            }
+            _ => {
+                let _ = write!(out, "{IM_START}user\n{}{IM_END}\n", text_of(m).trim());
+            }
+        }
+    }
+    out.push_str(IM_START);
+    out.push_str("assistant\n<think>\n\n</think>\n\n");
+    out
+}
+
+/// The system prompt, the text of any system messages and, in JSON mode,
+/// the instruction to reply with JSON alone.
+fn system_text(system: &str, messages: &[Value], json_mode: bool) -> String {
+    let mut sys = system.trim().to_string();
+    for m in messages.iter().filter(|m| m["role"] == "system") {
+        let t = text_of(m);
+        if !t.is_empty() {
+            if !sys.is_empty() {
+                sys.push_str("\n\n");
+            }
+            sys.push_str(&t);
+        }
+    }
+    if json_mode {
+        if !sys.is_empty() {
+            sys.push_str("\n\n");
+        }
+        sys.push_str("Reply with one JSON value only: no prose, no code fence.");
+    }
+    sys
+}
+
+/// The instructions Qwen 3.5's template puts after the tool list.
+const QWEN35_TOOL_RULES: &str = "\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT>";
+
+/// JSON as Python's `json.dumps` writes it with its default separators
+/// (`", "` and `": "`) and `ensure_ascii=False`: the template's `tojson`.
+fn py_json(v: &Value, out: &mut String) {
+    match v {
+        Value::Array(items) => {
+            out.push('[');
+            for (i, x) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                py_json(x, out);
+            }
+            out.push(']');
+        }
+        Value::Object(map) => {
+            out.push('{');
+            for (i, (k, x)) in map.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&Value::String(k.clone()).to_string());
+                out.push_str(": ");
+                py_json(x, out);
+            }
+            out.push('}');
+        }
+        other => out.push_str(&other.to_string()),
+    }
+}
+
+/// A tool-call argument as the template writes it: objects and lists as
+/// JSON, anything else through Jinja's `string` filter (Python's `str`).
+fn py_str(v: &Value, out: &mut String) {
+    match v {
+        Value::Object(_) | Value::Array(_) => py_json(v, out),
+        Value::String(s) => out.push_str(s),
+        Value::Bool(b) => out.push_str(if *b { "True" } else { "False" }),
+        Value::Null => out.push_str("None"),
+        Value::Number(n) => out.push_str(&n.to_string()),
+    }
+}
+
 /// What the parser found in the reply so far.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Piece {
@@ -165,6 +360,9 @@ pub struct ReplyParser {
     started: bool,
     /// The names of the tools offered.
     tools: Vec<String>,
+    /// Their definitions (`name`, `input_schema`), which type the values
+    /// of Qwen 3.5's XML calls.
+    tool_defs: Vec<Value>,
     /// The reply so far looks like bare JSON: hold it until the end.
     holding: bool,
     /// The model began imagining a tool's answer: ignore the rest.
@@ -190,6 +388,14 @@ impl ReplyParser {
     /// A parser for a reply to a request that offered `tools` (by name).
     pub fn with_tools(tools: Vec<String>) -> Self {
         Self { tools, ..Self::default() }
+    }
+
+    /// A parser for a reply to a request that offered these tool
+    /// definitions; it also reads Qwen 3.5's XML calls, typing their values
+    /// by each tool's schema.
+    pub fn with_tool_defs(defs: &[Value]) -> Self {
+        let tools = defs.iter().filter_map(|t| t["name"].as_str().map(str::to_string)).collect();
+        Self { tools, tool_defs: defs.to_vec(), ..Self::default() }
     }
 
     /// How many tool calls were found (read or not).
@@ -337,7 +543,13 @@ impl ReplyParser {
     }
 
     fn read_block(&mut self, body: &str, closed: bool, out: &mut Vec<Piece>) {
-        match quire_ai::toolcall::read_calls(body, closed) {
+        // Qwen 3.5's XML form first, then the JSON form with its repairs.
+        let read = if body.trim_start().starts_with("<function=") {
+            quire_ai::toolcall::read_xml_calls(body, closed, &self.tool_defs)
+        } else {
+            quire_ai::toolcall::read_calls(body, closed)
+        };
+        match read {
             Ok(calls) => {
                 for c in calls {
                     self.calls += 1;
@@ -422,6 +634,38 @@ mod tests {
         assert_eq!(longest_prefix_suffix("é", "<think>"), 0);
     }
 
+    /// Qwen 3.5's XML calls, streamed three characters at a time, with the
+    /// same cut-off rules as the JSON form.
+    #[test]
+    fn parses_streamed_xml_tool_calls() {
+        let defs =
+            vec![json!({"name": "delete_lines", "input_schema": {"properties": {"path": {"type": "string"}, "lines": {"type": "array"}}}})];
+        let run = |reply: &str, ended: bool| {
+            let mut p = ReplyParser::with_tool_defs(&defs);
+            let chars: Vec<char> = reply.chars().collect();
+            let mut got = Vec::new();
+            for c in chars.chunks(3) {
+                got.extend(p.push(&c.iter().collect::<String>()));
+            }
+            got.extend(p.finish(ended));
+            got
+        };
+        let call = "<tool_call>\n<function=delete_lines>\n<parameter=path>\nPlan.md\n</parameter>\n<parameter=lines>\n[3, 4]\n</parameter>\n</function>\n</tool_call>";
+        let got = run(&format!("I'll remove them.\n\n{call}"), true);
+        assert_eq!(
+            got.iter().filter(|p| !matches!(p, Piece::Text(_))).collect::<Vec<_>>(),
+            [&Piece::ToolCall { id: "call_1".into(), name: "delete_lines".into(), input: json!({"path": "Plan.md", "lines": [3, 4]}) }]
+        );
+        // Complete but unclosed when the reply stopped at its token limit: never run.
+        let unclosed = call.trim_end_matches("</tool_call>");
+        assert!(matches!(&run(unclosed, false)[..], [Piece::BadCall { .. }]));
+        // Cut off inside a parameter, even if the model "ended": never run.
+        assert!(matches!(&run("<tool_call>\n<function=delete_lines>\n<parameter=path>\nPla", true)[..], [Piece::BadCall { .. }]));
+        // Closed by the model without </function>: read as it stands.
+        let got = run("<tool_call>\n<function=delete_lines>\n<parameter=path>\nA.md\n</parameter>\n</tool_call>", true);
+        assert!(matches!(&got[..], [Piece::ToolCall { .. }]), "{got:?}");
+    }
+
     /// 0.10.1 security review #3: a call is never repaired into running when
     /// the model didn't close it, nor run when the reply hit its limit.
     #[test]
@@ -463,6 +707,28 @@ mod tests {
 mod fixtures {
     use super::*;
     use serde_json::json;
+
+    /// `tests/fixtures/qwen35-template/`: seven conversations (with and
+    /// without tools, tool calls with typed arguments, tool results and
+    /// errors, several turns, JSON mode) and the bytes Qwen 3.5's
+    /// `chat_template.jinja` renders for them
+    /// (`packaging/qwen35-template-fixtures.py`; `template.sha256` names the
+    /// template text used).
+    #[test]
+    fn renders_qwen35_like_the_published_template() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/qwen35-template");
+        let convs: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("conversations.json")).unwrap()).unwrap();
+        let mut n = 0;
+        for c in convs.as_array().unwrap() {
+            let name = c["name"].as_str().unwrap();
+            let want = std::fs::read_to_string(dir.join(format!("{name}.txt"))).unwrap();
+            let tools = c["tools"].as_array().cloned().unwrap_or_default();
+            let got = render_qwen35(c["system"].as_str().unwrap_or_default(), c["messages"].as_array().unwrap(), &tools, c["json"] == true);
+            assert_eq!(got, want, "conversation {name}");
+            n += 1;
+        }
+        assert_eq!(n, 7);
+    }
 
     /// `tests/fixtures/qwen3-tool-calls.jsonl`: replies in Qwen3's published
     /// tool-call format with the mistakes small models make, streamed in

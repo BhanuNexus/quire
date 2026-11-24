@@ -12,6 +12,12 @@ For every file of every model:
 * Other URLs: the file is downloaded and hashed.
 
 The model's `revision` becomes the commit of its first file's repository.
+A language model (`purpose = "llm"`) from a repository that isn't Qwen's
+own is pinned only with a passing reference check of the same file:
+packaging/model-checks/<id>.toml with its `gguf_sha256` and `passed = true`,
+written by packaging/check-model-reference.py (docs/design/0.14-local-ai.md
+section 3.3); `--check` fails without one.
+
 Comments and layout are kept. Run it where huggingface.co is reachable,
 review the diff, and commit it. The release workflow checks for unpinned
 entries (`--check`); while on-device AI ships disabled behind its
@@ -34,6 +40,7 @@ import urllib.request
 from pathlib import Path
 
 CATALOG = Path(__file__).resolve().parent.parent / "crates" / "quire-ai" / "src" / "catalog.toml"
+CHECKS = Path(__file__).resolve().parent / "model-checks"
 HF = re.compile(r"^https://huggingface\.co/(?P<repo>[^/]+/[^/]+)/resolve/(?P<rev>[^/]+)/(?P<file>.+)$")
 UA = {"User-Agent": "quire-pin-models"}
 
@@ -86,6 +93,28 @@ def pinned(f):
     return len(f.get("sha256", "")) == 64 and f.get("size", 0) > 0
 
 
+def needs_reference(m):
+    """A third-party language model: its file must pass the reference check."""
+    return m.get("purpose") == "llm" and not m.get("repo", "").startswith("Qwen/")
+
+
+def reference_problem(m, sha):
+    """Why the model's GGUF (sha256 `sha`) can't be pinned, or None."""
+    record = CHECKS / f"{m['id']}.toml"
+    if not record.exists():
+        return f"{m['id']}: no reference check ({record.relative_to(CATALOG.parents[3])}); run packaging/check-model-reference.py"
+    r = tomllib.loads(record.read_text(encoding="utf-8"))
+    if r.get("gguf_sha256") != sha:
+        return f"{m['id']}: the reference check is of another file ({r.get('gguf_sha256')}, not {sha})"
+    if r.get("passed") is not True:
+        return f"{m['id']}: the file failed its reference check (mean KL {r.get('mean_kl_nats')}, top-1 {r.get('top1_agreement')})"
+    return None
+
+
+def gguf(m):
+    return next((f for f in m.get("files", []) if f["name"].endswith(".gguf")), None)
+
+
 def main():
     args = set(sys.argv[1:])
     text = CATALOG.read_text(encoding="utf-8")
@@ -95,6 +124,11 @@ def main():
         for m, f in todo:
             print(f"unpinned: {m['id']} / {f['name']}")
         warn = "--warn" in args
+        unchecked = [p for m in catalog.get("model", []) if needs_reference(m) and (g := gguf(m)) and pinned(g) and (p := reference_problem(m, g["sha256"]))]
+        for p in unchecked:
+            print(f"::error::{p}" if os.environ.get("GITHUB_ACTIONS") else f"error: {p}", file=sys.stderr)
+        if unchecked:
+            sys.exit(1)
         if todo and warn:
             msg = (
                 "On-device AI ships disabled (behind its experimental switch) until the models are pinned: "
@@ -118,6 +152,8 @@ def main():
     for m, f in todo:
         print(f"pinning {m['id']} / {f['name']} …", file=sys.stderr)
         new_url, sha, size, commit = pin(f["url"])
+        if needs_reference(m) and f["name"].endswith(".gguf") and (problem := reference_problem(m, sha)):
+            raise SystemExit(f"not pinned: {problem}")
         results[f["url"]] = (new_url, sha, size)
         if commit and f is m["files"][0]:
             revisions[m["id"]] = commit

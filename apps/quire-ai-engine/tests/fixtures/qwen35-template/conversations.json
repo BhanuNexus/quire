@@ -1,0 +1,388 @@
+[
+ {
+  "name": "plain",
+  "messages": [
+   {
+    "role": "user",
+    "parts": [
+     {
+      "type": "text",
+      "text": "What is a wikilink?"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "system",
+  "system": "Be brief.",
+  "messages": [
+   {
+    "role": "system",
+    "parts": [
+     {
+      "type": "text",
+      "text": "Answer in English."
+     }
+    ]
+   },
+   {
+    "role": "user",
+    "parts": [
+     {
+      "type": "text",
+      "text": "  Hello there  "
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "tools",
+  "system": "You help with notes.",
+  "tools": [
+   {
+    "name": "search",
+    "description": "Search the notes",
+    "input_schema": {
+     "properties": {
+      "limit": {
+       "type": "integer"
+      },
+      "query": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "query"
+     ],
+     "type": "object"
+    }
+   },
+   {
+    "name": "edit_note",
+    "description": "Replace lines in a note",
+    "input_schema": {
+     "properties": {
+      "lines": {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      "path": {
+       "type": "string"
+      },
+      "text": {
+       "type": "string"
+      }
+     },
+     "type": "object"
+    }
+   }
+  ],
+  "messages": [
+   {
+    "role": "user",
+    "parts": [
+     {
+      "type": "text",
+      "text": "Find notes about ropes."
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "tool-call",
+  "system": "You help with notes.",
+  "tools": [
+   {
+    "name": "search",
+    "description": "Search the notes",
+    "input_schema": {
+     "properties": {
+      "limit": {
+       "type": "integer"
+      },
+      "query": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "query"
+     ],
+     "type": "object"
+    }
+   },
+   {
+    "name": "edit_note",
+    "description": "Replace lines in a note",
+    "input_schema": {
+     "properties": {
+      "lines": {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      "path": {
+       "type": "string"
+      },
+      "text": {
+       "type": "string"
+      }
+     },
+     "type": "object"
+    }
+   }
+  ],
+  "messages": [
+   {
+    "role": "user",
+    "parts": [
+     {
+      "type": "text",
+      "text": "Find notes about ropes."
+     }
+    ]
+   },
+   {
+    "role": "assistant",
+    "parts": [
+     {
+      "type": "text",
+      "text": "Let me look."
+     },
+     {
+      "type": "tool_use",
+      "id": "call_1",
+      "name": "search",
+      "input": {
+       "limit": 5,
+       "query": "ropes"
+      }
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "parts": [
+     {
+      "type": "tool_result",
+      "id": "call_1",
+      "content": "Rope Notes.md\nKnots.md",
+      "is_error": false
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "multi-turn",
+  "system": "Be brief.",
+  "messages": [
+   {
+    "role": "user",
+    "parts": [
+     {
+      "type": "text",
+      "text": "Hi"
+     }
+    ]
+   },
+   {
+    "role": "assistant",
+    "parts": [
+     {
+      "type": "text",
+      "text": "Hello! How can I help?"
+     }
+    ]
+   },
+   {
+    "role": "user",
+    "parts": [
+     {
+      "type": "text",
+      "text": "Name a knot."
+     }
+    ]
+   },
+   {
+    "role": "assistant",
+    "parts": [
+     {
+      "type": "text",
+      "text": "A bowline."
+     }
+    ]
+   },
+   {
+    "role": "user",
+    "parts": [
+     {
+      "type": "text",
+      "text": "Another?"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "agent-run",
+  "tools": [
+   {
+    "name": "search",
+    "description": "Search the notes",
+    "input_schema": {
+     "properties": {
+      "limit": {
+       "type": "integer"
+      },
+      "query": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "query"
+     ],
+     "type": "object"
+    }
+   },
+   {
+    "name": "edit_note",
+    "description": "Replace lines in a note",
+    "input_schema": {
+     "properties": {
+      "lines": {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      "path": {
+       "type": "string"
+      },
+      "text": {
+       "type": "string"
+      }
+     },
+     "type": "object"
+    }
+   }
+  ],
+  "messages": [
+   {
+    "role": "user",
+    "parts": [
+     {
+      "type": "text",
+      "text": "Fix the typo in Plan.md"
+     }
+    ]
+   },
+   {
+    "role": "assistant",
+    "parts": [
+     {
+      "type": "tool_use",
+      "id": "call_1",
+      "name": "search",
+      "input": {
+       "query": "Plan.md"
+      }
+     },
+     {
+      "type": "tool_use",
+      "id": "call_2",
+      "name": "edit_note",
+      "input": {
+       "lines": [
+        3,
+        4
+       ],
+       "path": "Plan.md",
+       "text": "line one\nline two"
+      }
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "parts": [
+     {
+      "type": "tool_result",
+      "id": "call_1",
+      "content": "Plan.md",
+      "is_error": false
+     },
+     {
+      "type": "tool_result",
+      "id": "call_2",
+      "content": "no such line",
+      "is_error": true
+     }
+    ]
+   },
+   {
+    "role": "assistant",
+    "parts": [
+     {
+      "type": "text",
+      "text": "I fixed one line; line 4 does not exist."
+     }
+    ]
+   },
+   {
+    "role": "user",
+    "parts": [
+     {
+      "type": "text",
+      "text": "Thanks. Now check Ideas.md"
+     }
+    ]
+   },
+   {
+    "role": "assistant",
+    "parts": [
+     {
+      "type": "tool_use",
+      "id": "call_1",
+      "name": "search",
+      "input": {
+       "limit": 1,
+       "query": "Ideas.md"
+      }
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "parts": [
+     {
+      "type": "tool_result",
+      "id": "call_1",
+      "content": "Ideas.md",
+      "is_error": false
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "json",
+  "messages": [
+   {
+    "role": "user",
+    "parts": [
+     {
+      "type": "text",
+      "text": "List three colours as a JSON array."
+     }
+    ]
+   }
+  ],
+  "json": true
+ }
+]
