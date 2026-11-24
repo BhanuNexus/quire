@@ -9,7 +9,9 @@ use super::{
 };
 
 pub(super) fn register() -> Box<dyn Tool> {
-    let o = outcome_schema;
+    // With `all`, the result says how many occurrences were replaced.
+    let mut out = outcome_schema();
+    out["properties"]["replacements"] = json!({"type": "integer"});
     tool(
         "str_replace",
         "Replace text",
@@ -18,7 +20,7 @@ pub(super) fn register() -> Box<dyn Tool> {
                 "path": {"type": "string"}, "old_str": {"type": "string"}, "new_str": {"type": "string"},
                 "all": {"type": "boolean", "default": false, "description": "Replace every occurrence."},
                 "expected_version": {"type": "string", "description": EXPECTED}})), "required": ["path", "old_str", "new_str"]}),
-        o(),
+        out,
         Annotations::WRITE,
         Access::Write,
         str_replace,

@@ -263,6 +263,13 @@ fn str_replace_all_replaces_every_occurrence() {
     let all = raw(json!({"path": "wiki/Log.md", "old_str": "- ", "new_str": "* ", "all": true}));
     assert_eq!(all["structuredContent"]["outcome"], "applied", "{all}");
     assert_eq!(all["structuredContent"]["replacements"], 2, "{all}");
+    // Every field of the result is in the tool's output schema.
+    let registry = quire_mcp::ToolRegistry::standard();
+    let schema = registry.get("str_replace").unwrap().spec().output_schema.clone().unwrap();
+    for k in all["structuredContent"].as_object().unwrap().keys() {
+        assert!(schema["properties"].get(k).is_some(), "str_replace's output schema lacks `{k}`");
+    }
+    assert_eq!(schema["properties"]["replacements"]["type"], "integer");
     let text = call(&srv, "view", &json!({"path": "wiki/Log.md"}))["content"][0]["text"].as_str().unwrap().to_string();
     assert!(text.contains("* one") && text.contains("* two") && !text.contains("- "), "{text}");
 }
