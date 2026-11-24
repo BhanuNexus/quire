@@ -439,7 +439,7 @@ impl Index {
         let shown = crate::fulltext::best(
             ft.rank_in(&q, stats),
             limit,
-            |a, b| ft.by_rank(a, b),
+            |a, b| ft.by_rank(*a, *b),
             |(id, _)| {
                 let Some(path) = ft.path_of(*id) else { return false };
                 let Some(rec) = self.records.get(path) else { return false };

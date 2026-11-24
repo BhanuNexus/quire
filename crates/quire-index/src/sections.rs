@@ -166,7 +166,7 @@ impl Index {
         let notes: Vec<(NotePath, f32)> = crate::fulltext::best(
             ft.rank_in(q, scope.notes()),
             (limit * KEYWORD_NOTES_PER_HIT).max(20),
-            |a, b| ft.by_rank(a, b),
+            |a, b| ft.by_rank(*a, *b),
             |(id, _)| {
                 let Some(p) = ft.path_of(*id) else { return false };
                 let Some(rec) = self.get(p) else { return false };
@@ -383,7 +383,7 @@ impl Index {
             })
             .collect();
         // The best pages; `keep` on those only.
-        let pages: Vec<(NotePath, usize, f32)> = crate::fulltext::best(
+        let pages = crate::fulltext::best(
             ranked,
             limit,
             |a, b| b.2.total_cmp(&a.2).then_with(|| a.0.cmp(b.0)).then(a.1.cmp(&b.1)),
@@ -393,8 +393,7 @@ impl Index {
             },
         )
         .into_iter()
-        .map(|(path, page, score)| (NotePath::new(path), page, score))
-        .collect();
+        .map(|(path, page, score)| (NotePath::new(path), page, score));
         let terms = q.highlight_terms();
         let page_hits = pages.into_iter().filter_map(|(path, page, _)| {
             let text = self.attachment(&path)?.pages.get(page - 1)?;

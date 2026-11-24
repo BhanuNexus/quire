@@ -492,7 +492,7 @@ impl FullText {
     }
 
     /// The order of ranked documents: score, best first, then path.
-    pub(crate) fn by_rank(&self, a: &(DocId, f32), b: &(DocId, f32)) -> std::cmp::Ordering {
+    pub(crate) fn by_rank(&self, a: (DocId, f32), b: (DocId, f32)) -> std::cmp::Ordering {
         b.1.total_cmp(&a.1).then_with(|| self.path_of(a.0).cmp(&self.path_of(b.0)))
     }
 }
@@ -649,7 +649,7 @@ mod tests {
             let len = usize::try_from(next(300)).unwrap_or(0);
             let v: Vec<(u32, f32)> = (0..len).map(|i| (u32::try_from(i).unwrap_or(0), next(20) as f32)).collect();
             let order = |a: &(u32, f32), b: &(u32, f32)| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0));
-            let keep = |e: &(u32, f32)| (e.0 + round) % 3 != 0;
+            let keep = |e: &(u32, f32)| !(e.0 + round).is_multiple_of(3);
             for k in [0, 1, 5, 20, 64, 400] {
                 let mut all = v.clone();
                 all.sort_by(order);

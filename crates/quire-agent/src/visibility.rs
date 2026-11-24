@@ -78,8 +78,9 @@ impl std::fmt::Debug for Visibility {
 }
 
 /// A note's path and its record's tags to "may this caller read it" (what
-/// [`Visibility::predicate`] gives `quire-index`). The third argument says
-/// whether it may read the vault: with `false` (the index's worker, under
+/// [`Visibility::predicate`] gives `quire-index`).
+///
+/// The third argument says whether it may read the vault: with `false` (the index's worker, under
 /// its write lock) a folder not checked yet gives `None` rather than a
 /// storage call; with `true` it always answers.
 pub type Predicate = Arc<dyn Fn(&NotePath, &[String], bool) -> Option<bool> + Send + Sync>;
