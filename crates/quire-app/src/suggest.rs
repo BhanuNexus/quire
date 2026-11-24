@@ -319,7 +319,7 @@ impl Workspace {
         for t in self.templates() {
             let Some(text) = self.vault().and_then(|v| v.read(&t).ok()) else { continue };
             let title = self.active_doc().map(crate::document::Document::title).unwrap_or_default();
-            let (body, cursor) = expand_template(&text, &TemplateVars { title, now });
+            let (body, cursor) = expand_template(&text, &TemplateVars { title, now: quire_base::dates::bridge::local(now) });
             let insert = match cursor {
                 Some(c) => {
                     let at = body.char_indices().nth(c).map_or(body.len(), |(b, _)| b);

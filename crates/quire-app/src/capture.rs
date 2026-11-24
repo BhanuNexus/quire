@@ -82,7 +82,7 @@ pub fn capture_to_vault(vault: &Vault, text: &str, at: DateTime<Local>) -> Resul
     if text.trim().is_empty() {
         return Err("nothing to capture".into());
     }
-    let (path, _) = vault.daily_note(at.date_naive()).map_err(|e| e.to_string())?;
+    let (path, _) = vault.daily_note(quire_base::dates::bridge::date(at.date_naive())).map_err(|e| e.to_string())?;
     let current = vault.read(&path).map_err(|e| e.to_string())?;
     vault.write(&path, &append_entry(&current, &capture_entry(text, at))).map_err(|e| e.to_string())?;
     Ok(path)
@@ -103,7 +103,7 @@ impl Workspace {
         }
         let now = Local::now();
         let vault = self.vault()?.clone();
-        let (path, _) = match vault.daily_note(now.date_naive()) {
+        let (path, _) = match vault.daily_note(quire_base::dates::bridge::date(now.date_naive())) {
             Ok(r) => r,
             Err(e) => {
                 self.notify(NoticeLevel::Error, format!("Couldn't capture: {e}"));

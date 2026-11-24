@@ -817,7 +817,7 @@ impl Workspace {
         if cfg.shows("daily")
             && let Some(v) = vault
         {
-            let p = v.daily_path(today);
+            let p = v.daily_path(quire_base::dates::bridge::date(today));
             data.daily_exists = v.exists(&p);
             data.daily = Some(p);
         }

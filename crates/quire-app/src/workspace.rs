@@ -589,7 +589,7 @@ impl Workspace {
 
     pub fn open_daily(&mut self) -> Option<DocId> {
         let today = chrono::Local::now().date_naive();
-        let (path, created) = match self.vault.as_ref()?.daily_note(today) {
+        let (path, created) = match self.vault.as_ref()?.daily_note(quire_base::dates::bridge::date(today)) {
             Ok(r) => r,
             Err(e) => {
                 self.notify(NoticeLevel::Error, e.to_string());

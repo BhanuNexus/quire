@@ -434,7 +434,7 @@ mod tests {
             assert!(!t.spec.contains("function") && t.unsupported.len() == 1, "{line}: {t:?}");
         }
         // Templater tags and Dataview inline queries are text in a new note.
-        let vars = quire_vault::TemplateVars { title: "T".into(), now: chrono::Local::now() };
+        let vars = quire_vault::TemplateVars { title: "T".into(), now: quire_base::dates::now_local() };
         let tpl = "<% tp.date.now() %> <%* tR += 1 %> `$= 1+1` {{title}} {{eval:1+1}}";
         let (text, _) = quire_vault::expand_template(tpl, &vars);
         assert_eq!(text, "<% tp.date.now() %> <%* tR += 1 %> `$= 1+1` T {{eval:1+1}}");

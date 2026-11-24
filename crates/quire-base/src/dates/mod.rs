@@ -9,6 +9,7 @@
 //! templates, periodic-note settings and the date format setting:
 //! [`format()`] writes, [`parse_date`] and its siblings read.
 
+pub mod bridge;
 mod strftime;
 mod strptime;
 

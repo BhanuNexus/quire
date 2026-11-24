@@ -108,7 +108,7 @@ impl Workspace {
         let now = Local::now();
         let meta = templates::template_meta(&text);
         let folder = folder.map(str::to_string).or_else(|| meta.folder.clone()).unwrap_or_default();
-        let vars0 = TemplateVars { title: String::new(), now };
+        let vars0 = TemplateVars { title: String::new(), now: quire_base::dates::bridge::local(now) };
         let typed = title.map(quire_vault::sanitize_title).filter(|t| !t.trim().is_empty());
         let name = typed
             .or_else(|| {
@@ -116,7 +116,7 @@ impl Workspace {
             })
             .unwrap_or_else(|| template.stem().to_string());
         let path = self.vault()?.unique_path(&folder, &name).ok()?;
-        let vars = TemplateVars { title: path.stem().to_string(), now };
+        let vars = TemplateVars { title: path.stem().to_string(), now: quire_base::dates::bridge::local(now) };
         let mut e = templates::expand(&text, &vars, &folder, answers);
         if !preset.is_empty() {
             for (k, v) in preset {
@@ -136,7 +136,7 @@ impl Workspace {
     pub fn new_note_at_from_template(&mut self, path: &NotePath, template: &NotePath, date: NaiveDate) -> Option<DocId> {
         let text = self.vault()?.read(template).ok()?;
         let when = date.and_hms_opt(9, 0, 0).and_then(|d| d.and_local_timezone(Local).single()).unwrap_or_else(Local::now);
-        let vars = TemplateVars { title: path.stem().to_string(), now: when };
+        let vars = TemplateVars { title: path.stem().to_string(), now: quire_base::dates::bridge::local(when) };
         let e = templates::expand_deferred(&text, &vars, path.folder());
         self.create_note_at(path, &e.text, e.cursor)
     }
@@ -201,7 +201,7 @@ pub(crate) fn apply_default_template(ws: &mut Workspace, id: DocId) -> bool {
     let Some(path) = ws.doc(id).and_then(|d| d.path.clone()) else { return false };
     let Some(tpl) = ws.folder_template(&path) else { return false };
     let Some(text) = ws.vault().and_then(|v| v.read(&tpl).ok()) else { return false };
-    let vars = TemplateVars { title: path.stem().to_string(), now: Local::now() };
+    let vars = TemplateVars { title: path.stem().to_string(), now: quire_base::dates::now_local() };
     let e = templates::expand_deferred(&text, &vars, path.folder());
     let Some(i) = ws.docs.iter().position(|d| d.id == id) else { return false };
     ws.docs[i].replace_minimally(&e.text);
