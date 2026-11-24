@@ -154,6 +154,70 @@ fn types_with_alt(key: &str) -> bool {
         )
 }
 
+/// Defaults that differ on one platform, because the old key can't fire there
+/// (the system keeps it) and the new one can. `old` is what every other
+/// platform still has. Quire 0.14.
+struct Moved {
+    command: Command,
+    platform: Platform,
+    old: KeyCombo,
+    new: KeyCombo,
+}
+
+const fn combo(cmd: bool, shift: bool, alt: bool, key: &'static str) -> KeyCombo {
+    KeyCombo { cmd, shift, alt, key }
+}
+
+const MOVED: &[Moved] = &[
+    // ⌘Tab and ⌘` switch apps and windows. ⌘⌥PageDown/PageUp: next and
+    // previous, the system has no use for them, and ⌘⇧[ is taken by folding.
+    Moved {
+        command: Command::NextTab,
+        platform: Platform::Mac,
+        old: combo(true, false, false, "Tab"),
+        new: combo(true, false, true, "PageDown"),
+    },
+    Moved {
+        command: Command::PrevTab,
+        platform: Platform::Mac,
+        old: combo(true, true, false, "Tab"),
+        new: combo(true, false, true, "PageUp"),
+    },
+    // ⇧⌘C: C for code (⌘⇧` also switches windows).
+    Moved {
+        command: Command::InlineCode,
+        platform: Platform::Mac,
+        old: combo(true, false, false, "Backtick"),
+        new: combo(true, true, false, "C"),
+    },
+    // ⌘H hides the app. ⌘R pairs with ⌘⇧R, replace in all notes, as ⌘F does with ⌘⇧F.
+    Moved {
+        command: Command::FindReplace,
+        platform: Platform::Mac,
+        old: combo(true, false, false, "H"),
+        new: combo(true, false, false, "R"),
+    },
+    // Ctrl+Alt+arrows switch workspaces on GNOME, KDE and others.
+    Moved {
+        command: Command::AddCursorAbove,
+        platform: Platform::Linux,
+        old: combo(true, false, true, "ArrowUp"),
+        new: combo(false, true, true, "ArrowUp"),
+    },
+    Moved {
+        command: Command::AddCursorBelow,
+        platform: Platform::Linux,
+        old: combo(true, false, true, "ArrowDown"),
+        new: combo(false, true, true, "ArrowDown"),
+    },
+];
+
+/// `k` as `command` has it on `platform`: the platform's own default where
+/// `k` is the old one that can't fire there.
+fn on_platform(command: Command, k: KeyCombo, platform: Platform) -> KeyCombo {
+    MOVED.iter().find(|m| m.command == command && m.platform == platform && same_keys(&m.old, &k)).map_or(k, |m| m.new)
+}
+
 /// Every shortcut in effect.
 #[derive(Debug, Clone, Default)]
 pub struct Keymap {
@@ -162,12 +226,30 @@ pub struct Keymap {
 
 impl Keymap {
     pub fn new(settings: &CommandSettings) -> Self {
+        Self::for_platform(settings, Platform::current())
+    }
+
+    /// The shortcuts in effect on `platform`. A stored list (settings.toml
+    /// keeps only what a person changed, but Settings also writes a command's
+    /// own defaults into it when they add a key beside them or another
+    /// command takes one) that has the old default of a `MOVED` row gets the
+    /// platform's default in its place: that key never fired there. Keys a
+    /// person chose themselves are used as they are.
+    pub fn for_platform(settings: &CommandSettings, platform: Platform) -> Self {
         let mut bindings = Vec::new();
         for info in COMMANDS {
-            match settings.keys.get(info.id) {
-                Some(specs) => bindings.extend(specs.iter().filter_map(|s| KeyCombo::parse(s)).map(|k| (k, Action::Command(info.command)))),
-                None => bindings.extend(info.keys.iter().map(|k| (*k, Action::Command(info.command)))),
+            let keys: Vec<KeyCombo> = match settings.keys.get(info.id) {
+                Some(specs) => specs.iter().filter_map(|s| KeyCombo::parse(s)).collect(),
+                None => info.keys.to_vec(),
+            };
+            let mut mine: Vec<KeyCombo> = Vec::new();
+            for k in keys {
+                let k = on_platform(info.command, k, platform);
+                if !mine.contains(&k) {
+                    mine.push(k);
+                }
             }
+            bindings.extend(mine.into_iter().map(|k| (k, Action::Command(info.command))));
         }
         for m in &settings.macros {
             if let Some(specs) = settings.keys.get(&macro_id(&m.name)) {
@@ -303,26 +385,18 @@ mod tests {
     /// Every built-in default shortcut, checked by the same checker Settings
     /// uses for a person's own keys, for all three platforms at once.
     ///
-    /// The defaults below were already flagged when this test was written
-    /// (0.14): each is listed with what the checker says. Any other default
-    /// must have no conflict at all, so a new command's default key fails
-    /// here unless it works everywhere. A listed default that no longer has
-    /// that conflict fails too: take its row out.
+    /// No default may be blocked on the platform that has it (taken by another
+    /// command or kept by the system): where a key can't fire on one platform,
+    /// that platform gets its own default (`MOVED`). The warnings below were
+    /// already flagged when this test was written (0.14): each is listed with
+    /// what the checker says. Any other default must have no conflict at all,
+    /// so a new command's default key fails here unless it works everywhere.
+    /// A listed default that no longer has that conflict fails too: take its
+    /// row out.
     #[test]
     fn every_default_shortcut_passes_the_conflict_checker() {
         use Command as C;
         // (command, keys, what the checker says).
-        // Reserved on one platform: the shortcut can't fire there. Kept as they
-        // were before the checker existed (0.11 review L2); changing a default
-        // is a decision for its own release.
-        let blocked: &[(Command, &str, &str)] = &[
-            (C::NextTab, "Ctrl+Tab", "macOS: switching apps and windows"),
-            (C::PrevTab, "Ctrl+Shift+Tab", "macOS: switching apps and windows"),
-            (C::InlineCode, "Ctrl+Backtick", "macOS: switching apps and windows"),
-            (C::FindReplace, "Ctrl+H", "macOS: ⌘H hides the app"),
-            (C::AddCursorAbove, "Ctrl+Alt+ArrowUp", "Linux: switches workspaces on many desktops"),
-            (C::AddCursorBelow, "Ctrl+Alt+ArrowDown", "Linux: switches workspaces on many desktops"),
-        ];
         // Warnings: the shortcut works, but where AltGr (Windows) or Option
         // (macOS) with the key types a character, the app lets typing win
         // (`altgr_typed`) or drops the character.
@@ -352,30 +426,79 @@ mod tests {
             Conflict::AltGr => "AltGr".into(),
             Conflict::MacOption => "Option".into(),
         };
-        let km = Keymap::new(&CommandSettings::default());
-        assert!(km.bindings().len() >= 80, "every default of COMMANDS is bound: {}", km.bindings().len());
         let mut wrong = Vec::new();
         let mut seen = Vec::new();
-        for (combo, action) in km.bindings() {
-            let Action::Command(cmd) = action else { panic!("the defaults bind no macro") };
-            let got: Vec<String> = km.conflicts(combo, action).iter().map(said).collect();
-            let listed = blocked.iter().chain(warned).find(|(c, k, _)| c == cmd && *k == combo.spec());
-            let want: Vec<String> = listed.map(|(_, _, w)| vec![(*w).to_string()]).unwrap_or_default();
-            if got != want {
-                wrong.push(format!("{cmd:?} {}: the checker says {got:?}, the table {want:?}", combo.spec()));
+        for platform in Platform::ALL {
+            let km = Keymap::for_platform(&CommandSettings::default(), platform);
+            let at = platform.name();
+            assert!(km.bindings().len() >= 80, "every default of COMMANDS is bound on {at}: {}", km.bindings().len());
+            for (combo, action) in km.bindings() {
+                let Action::Command(cmd) = action else { panic!("the defaults bind no macro") };
+                // The checker also reports the keys other platforms keep, for
+                // settings copied between computers; a default only has to work
+                // on the platform that has it.
+                let mut conflicts = km.conflicts(combo, action);
+                conflicts.retain(|c| !matches!(c, Conflict::Reserved { platform: p, .. } if *p != platform));
+                let got: Vec<String> = conflicts.iter().map(said).collect();
+                let listed = warned.iter().find(|(c, k, _)| c == cmd && *k == combo.spec());
+                let want: Vec<String> = listed.map(|(_, _, w)| vec![(*w).to_string()]).unwrap_or_default();
+                if got != want {
+                    wrong.push(format!("{at}: {cmd:?} {}: the checker says {got:?}, the table {want:?}", combo.spec()));
+                }
+                if conflicts.iter().any(Conflict::blocks) {
+                    wrong.push(format!("{at}: {cmd:?} {}: blocked, so it can't fire", combo.spec()));
+                }
+                seen.push((*cmd, combo.spec()));
             }
-            let blocks = km.conflicts(combo, action).iter().any(Conflict::blocks);
-            if blocks != blocked.iter().any(|(c, k, _)| c == cmd && *k == combo.spec()) {
-                wrong.push(format!("{cmd:?} {}: blocks={blocks}, listed in the wrong table", combo.spec()));
-            }
-            seen.push((*cmd, combo.spec()));
         }
-        for (c, k, _) in blocked.iter().chain(warned) {
+        for (c, k, _) in warned {
             if !seen.iter().any(|(sc, sk)| sc == c && sk == k) {
                 wrong.push(format!("{c:?} {k}: no longer a default; take its row out"));
             }
         }
         assert!(wrong.is_empty(), "a default shortcut must pass `Keymap::conflicts` on every platform:\n{}", wrong.join("\n"));
+    }
+
+    fn on(settings: &CommandSettings, p: Platform, cmd: Command) -> Vec<String> {
+        Keymap::for_platform(settings, p).keys_of(cmd).iter().map(KeyCombo::spec).collect()
+    }
+
+    #[test]
+    fn six_defaults_differ_on_the_platform_where_the_old_key_cannot_fire() {
+        let none = CommandSettings::default();
+        for (cmd, p, old, new) in [
+            (Command::NextTab, Platform::Mac, "Ctrl+Tab", "Ctrl+Alt+PageDown"),
+            (Command::PrevTab, Platform::Mac, "Ctrl+Shift+Tab", "Ctrl+Alt+PageUp"),
+            (Command::InlineCode, Platform::Mac, "Ctrl+Backtick", "Ctrl+Shift+C"),
+            (Command::FindReplace, Platform::Mac, "Ctrl+H", "Ctrl+R"),
+            (Command::AddCursorAbove, Platform::Linux, "Ctrl+Alt+ArrowUp", "Alt+Shift+ArrowUp"),
+            (Command::AddCursorBelow, Platform::Linux, "Ctrl+Alt+ArrowDown", "Alt+Shift+ArrowDown"),
+        ] {
+            assert_eq!(on(&none, p, cmd), vec![new], "{cmd:?} on {}", p.name());
+            for other in Platform::ALL.into_iter().filter(|o| *o != p) {
+                assert_eq!(on(&none, other, cmd), vec![old], "{cmd:?} keeps its default on {}", other.name());
+            }
+        }
+    }
+
+    #[test]
+    fn a_stored_old_default_moves_but_a_persons_own_keys_stay() {
+        let mut s = CommandSettings::default();
+        // Settings wrote the default beside a key the person added.
+        s.keys.insert("FindReplace".into(), vec!["Ctrl+H".into(), "F6".into()]);
+        assert_eq!(on(&s, Platform::Mac, Command::FindReplace), vec!["Ctrl+R", "F6"]);
+        assert_eq!(on(&s, Platform::Windows, Command::FindReplace), vec!["Ctrl+H", "F6"], "other platforms are untouched");
+        // Rebound, unbound, or bound to something else: as chosen.
+        s.keys.insert("FindReplace".into(), vec!["Ctrl+Alt+F".into()]);
+        assert_eq!(on(&s, Platform::Mac, Command::FindReplace), vec!["Ctrl+Alt+F"]);
+        s.keys.insert("FindReplace".into(), vec![]);
+        assert!(on(&s, Platform::Mac, Command::FindReplace).is_empty(), "unbound stays unbound");
+        s.keys.insert("AddCursorAbove".into(), vec!["Ctrl+Alt+ArrowUp".into(), "Alt+Shift+ArrowUp".into()]);
+        assert_eq!(on(&s, Platform::Linux, Command::AddCursorAbove), vec!["Alt+Shift+ArrowUp"], "no key twice");
+        // A key the person gave another command is theirs.
+        let mut t = CommandSettings::default();
+        t.keys.insert("Bold".into(), vec!["Ctrl+H".into()]);
+        assert_eq!(on(&t, Platform::Mac, Command::Bold), vec!["Ctrl+H"]);
     }
 
     #[test]

@@ -1791,7 +1791,15 @@ pub(crate) fn find_bar(ui: &mut egui::Ui, ws: &mut Workspace, focus: &mut bool, 
             if ui.small_button("All").on_hover_text("Replace all in this note (one undo step)").clicked() {
                 ws.replace_all_in_note();
             }
-        } else if ui.small_button("Replace…").on_hover_text("Ctrl+H").clicked() {
+        } else if ui
+            .small_button("Replace…")
+            .on_hover_ui(|ui| {
+                // The key differs by platform and may have been changed.
+                let keys = quire_app::keymap::Keymap::new(&ws.settings.commands).label(Command::FindReplace, cfg!(target_os = "macos"));
+                ui.label(keys);
+            })
+            .clicked()
+        {
             ws.find.replace_mode = true;
         }
         if ui.small_button("In all notes…").on_hover_text("Ctrl+Shift+R").clicked() {
