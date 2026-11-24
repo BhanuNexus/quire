@@ -268,7 +268,7 @@ pub(crate) fn tab_bar(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> P
                     if r.middle_clicked() {
                         close = Some(d.id);
                     }
-                    if active && ui.small_button("×").on_hover_text("Close tab (Ctrl+W)").clicked() {
+                    if active && ui.small_button("×").on_hover_text(format!("Close tab{}", crate::commands_ui::keys_paren(ws, Command::CloseTab))).clicked() {
                         close = Some(d.id);
                     }
                 }
@@ -289,19 +289,20 @@ pub(crate) fn tab_bar(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> P
             apply_note_action(ui.ctx(), ws, &p, a, &mut out);
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.selectable_label(ws.settings.show_insights, "Insights").on_hover_text("Ctrl+Shift+I").clicked() {
+            if ui.selectable_label(ws.settings.show_insights, "Insights").on_hover_text(crate::commands_ui::keys_of(ws, Command::ToggleInsights)).clicked() {
                 out.run = Some(Command::ToggleInsights);
             }
-            if ui.selectable_label(ws.settings.show_preview, "Preview").on_hover_text("Ctrl+E").clicked() {
+            if ui.selectable_label(ws.settings.show_preview, "Preview").on_hover_text(crate::commands_ui::keys_of(ws, Command::TogglePreview)).clicked() {
                 out.run = Some(Command::TogglePreview);
             }
-            let (palette_keys, help_keys) = if cfg!(target_os = "macos") { ("⌘K", "⌘/") } else { ("Ctrl+K", "Ctrl+/") };
+            let (palette_keys, help_keys) =
+                (crate::commands_ui::keys_of(ws, Command::CommandPalette), crate::commands_ui::keys_of(ws, Command::ShowShortcuts));
             let search = egui::Button::new(RichText::new(format!("Search or run a command   {palette_keys}")).color(pal.muted).size(12.5))
                 .min_size(egui::vec2(220.0, 24.0));
             if ui.add(search).clicked() {
                 out.run = Some(Command::CommandPalette);
             }
-            if ui.button("?").on_hover_text(format!("Keyboard shortcuts ({help_keys})")).clicked() {
+            if ui.button("?").on_hover_text(format!("Keyboard shortcuts{}", if help_keys.is_empty() { String::new() } else { format!(" ({help_keys})") })).clicked() {
                 out.run = Some(Command::ShowShortcuts);
             }
         });
@@ -711,22 +712,23 @@ pub(crate) fn sidebar(
         SidebarTab::Files => {
             ui.horizontal(|ui| {
                 ui.menu_button("+ New", |ui| {
-                    for (label, keys, cmd) in [
-                        ("Note", "Ctrl+N", Command::NewNote),
-                        ("Project…", "Ctrl+Alt+N", Command::NewProject),
-                        ("Note in folder…", "", Command::NewInFolder),
-                        ("From template…", "Ctrl+Shift+N", Command::NewFromTemplate),
+                    for (label, cmd) in [
+                        ("Note", Command::NewNote),
+                        ("Project…", Command::NewProject),
+                        ("Note in folder…", Command::NewInFolder),
+                        ("From template…", Command::NewFromTemplate),
                     ] {
+                        let keys = crate::commands_ui::keys_of(ws, cmd);
                         if ui.add(egui::Button::new(label).shortcut_text(keys)).clicked() {
                             out.run = Some(cmd);
                             ui.close();
                         }
                     }
                 });
-                if ui.button("Today").on_hover_text("Alt+D").clicked() {
+                if ui.button("Today").on_hover_text(crate::commands_ui::keys_of(ws, Command::DailyNote)).clicked() {
                     out.run = Some(Command::DailyNote);
                 }
-                if ui.button("Scratch").on_hover_text("Alt+S — never saved to the vault").clicked() {
+                if ui.button("Scratch").on_hover_text(format!("Scratchpad, never saved to the vault{}", crate::commands_ui::keys_paren(ws, Command::Scratchpad))).clicked() {
                     out.run = Some(Command::Scratchpad);
                 }
             });
@@ -763,7 +765,7 @@ pub(crate) fn sidebar(
             let empty = files.count == 0;
             st.files = Some(files);
             if empty {
-                ui.label(RichText::new("No notes yet. Press Ctrl+N.").color(pal.muted));
+                ui.label(RichText::new(format!("No notes yet. Press {}.", crate::commands_ui::keys_of(ws, Command::NewNote))).color(pal.muted));
             }
             open = ev.open.map(|(p, pinned)| {
                 ws.features.nav.open_pinned |= pinned;
@@ -1775,10 +1777,10 @@ pub(crate) fn find_bar(ui: &mut egui::Ui, ws: &mut Workspace, focus: &mut bool, 
             (None, n, None) => RichText::new(format!("{n} found")).color(pal.muted),
         };
         ui.label(label.size(12.5));
-        if ui.small_button("↑").on_hover_text("Previous (Shift+Enter, Shift+F3)").clicked() {
+        if ui.small_button("↑").on_hover_text(format!("Previous (Shift+Enter, {})", crate::commands_ui::keys_of(ws, Command::FindPrev))).clicked() {
             step = Some(true);
         }
-        if ui.small_button("↓").on_hover_text("Next (Enter, F3)").clicked() {
+        if ui.small_button("↓").on_hover_text(format!("Next (Enter, {})", crate::commands_ui::keys_of(ws, Command::FindNext))).clicked() {
             step = Some(false);
         }
         ui.separator();
@@ -1802,7 +1804,7 @@ pub(crate) fn find_bar(ui: &mut egui::Ui, ws: &mut Workspace, focus: &mut bool, 
         {
             ws.find.replace_mode = true;
         }
-        if ui.small_button("In all notes…").on_hover_text("Ctrl+Shift+R").clicked() {
+        if ui.small_button("In all notes…").on_hover_text(crate::commands_ui::keys_of(ws, Command::VaultReplace)).clicked() {
             out.run = Some(Command::VaultReplace);
         }
         if ui.small_button("×").on_hover_text("Close (Esc)").clicked() {

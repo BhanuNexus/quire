@@ -169,19 +169,21 @@ const fn combo(cmd: bool, shift: bool, alt: bool, key: &'static str) -> KeyCombo
 }
 
 const MOVED: &[Moved] = &[
-    // ⌘Tab and ⌘` switch apps and windows. ⌘⌥PageDown/PageUp: next and
-    // previous, the system has no use for them, and ⌘⇧[ is taken by folding.
+    // ⌘Tab and ⌘` switch apps and windows. ⌘⌥→ and ⌘⌥← are next and previous
+    // tab in Safari and Chrome. The real Control key (Ctrl+Tab, as browsers
+    // use it on macOS) can't be written: a `KeyCombo` has one modifier for
+    // Ctrl and ⌘, and ⌘⇧[ is taken by folding.
     Moved {
         command: Command::NextTab,
         platform: Platform::Mac,
         old: combo(true, false, false, "Tab"),
-        new: combo(true, false, true, "PageDown"),
+        new: combo(true, false, true, "ArrowRight"),
     },
     Moved {
         command: Command::PrevTab,
         platform: Platform::Mac,
         old: combo(true, true, false, "Tab"),
-        new: combo(true, false, true, "PageUp"),
+        new: combo(true, false, true, "ArrowLeft"),
     },
     // ⇧⌘C: C for code (⌘⇧` also switches windows).
     Moved {
@@ -467,8 +469,8 @@ mod tests {
     fn six_defaults_differ_on_the_platform_where_the_old_key_cannot_fire() {
         let none = CommandSettings::default();
         for (cmd, p, old, new) in [
-            (Command::NextTab, Platform::Mac, "Ctrl+Tab", "Ctrl+Alt+PageDown"),
-            (Command::PrevTab, Platform::Mac, "Ctrl+Shift+Tab", "Ctrl+Alt+PageUp"),
+            (Command::NextTab, Platform::Mac, "Ctrl+Tab", "Ctrl+Alt+ArrowRight"),
+            (Command::PrevTab, Platform::Mac, "Ctrl+Shift+Tab", "Ctrl+Alt+ArrowLeft"),
             (Command::InlineCode, Platform::Mac, "Ctrl+Backtick", "Ctrl+Shift+C"),
             (Command::FindReplace, Platform::Mac, "Ctrl+H", "Ctrl+R"),
             (Command::AddCursorAbove, Platform::Linux, "Ctrl+Alt+ArrowUp", "Alt+Shift+ArrowUp"),

@@ -226,7 +226,7 @@ On macOS, Ctrl is ⌘ and Alt is ⌥. This is the common set, except where the s
 | Ctrl+Shift+K | New task | Ctrl+Shift+M | Start / stop the timer on this task |
 | F10 | Formatting toolbar (← → Enter, Esc back) | Ctrl+/ | All shortcuts (change them in Settings → Commands) |
 
-On macOS the system keeps a few of these, so there Next / previous tab are ⌘⌥PageDown / ⌘⌥PageUp, Inline code is ⌘⇧C and Find / replace is ⌘R; on Linux Add cursor above / below is Alt+Shift+↑/↓.
+On macOS the system keeps a few of these, so there Next / previous tab are ⌘⌥→ / ⌘⌥←, Inline code is ⌘⇧C and Find / replace is ⌘R; on Linux Add cursor above / below is Alt+Shift+↑/↓.
 
 ## Views
 

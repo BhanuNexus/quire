@@ -12,8 +12,8 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ### Changed
 - **Shortcuts:** six default shortcuts that the system keeps for itself, so they never worked on that platform, now have another key there; other platforms and any shortcut you changed stay as they were.
-  - Next tab: Ctrl+Tab → ⌘⌥PageDown (macOS)
-  - Previous tab: Ctrl+Shift+Tab → ⌘⌥PageUp (macOS)
+  - Next tab: Ctrl+Tab → ⌘⌥→ (macOS)
+  - Previous tab: Ctrl+Shift+Tab → ⌘⌥← (macOS)
   - Inline code: Ctrl+` → ⌘⇧C (macOS)
   - Find and replace in note: Ctrl+H → ⌘R (macOS)
   - Add cursor above: Ctrl+Alt+↑ → Alt+Shift+↑ (Linux)

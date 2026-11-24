@@ -546,7 +546,7 @@ fn features(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette, out: &mut Pane
     let has_provider = ws.trust_chat().is_some_and(|c| c.locality() != quire_app::intel::chat::Locality::Device);
     let has_device = ai::device_chat(&ws.settings).is_some();
     field(ui, pal, "Agent panel", |ui| {
-        ui.checkbox(&mut ws.settings.agent_panel.enabled, "Show the Agent tab (Ctrl+Shift+J)");
+        ui.checkbox(&mut ws.settings.agent_panel.enabled, format!("Show the Agent tab{}", crate::commands_ui::keys_paren(ws, quire_app::Command::ToggleAgentPanel)));
         if has_provider && has_device {
             ui.horizontal_wrapped(|ui| {
                 ui.label("Use");
