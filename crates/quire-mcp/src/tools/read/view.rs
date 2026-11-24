@@ -37,7 +37,7 @@ fn view(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     };
     let Ok(file) = cx.vault.read(&path) else { return ToolOutput::error("not_found", format!("Couldn't read {path}.")) };
     let pending = cx.agent.proposals(&ProposalFilter { status: Some(ProposalStatus::Pending), actor: None, path: Some(path.clone()) });
-    let text = if flag(a, "include_pending", false) { own_pending(cx, &path).map_or(file, |(_, t)| t) } else { file };
+    let text = if flag(a, "include_pending", false) { own_pending(cx, &path).unwrap_or(file) } else { file };
     let version = ext.served.store(&text);
     let w = match window(&text, &version, a) {
         Ok(w) => w,

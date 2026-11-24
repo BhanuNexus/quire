@@ -5,22 +5,14 @@
 
 use std::fmt::Write as _;
 
-use super::{
-    ContentHash, Cursor, NotePath, ProposalFilter, ProposalStatus, Start, ToolCx, ToolOutput, Value, bounds, json, line_count, opt,
-    section_lines,
-};
+use super::{ContentHash, Cursor, NotePath, Start, ToolCx, ToolOutput, Value, bounds, json, line_count, opt, section_lines};
 
-/// The text of the caller's own pending proposal for `path`, if any.
-pub fn own_pending(cx: &ToolCx<'_>, path: &NotePath) -> Option<(quire_agent::ProposalId, String)> {
-    let filter = ProposalFilter { status: Some(ProposalStatus::Pending), actor: Some(cx.actor.id.clone()), path: Some(path.clone()) };
-    let mut list = cx.agent.proposals(&filter);
-    list.sort_by_key(|p| std::cmp::Reverse(p.updated));
-    list.into_iter().find_map(|sum| {
-        let p = cx.agent.proposal(&sum.id)?;
-        let ch = p.changes.iter().find(|c| c.path.as_ref() == Some(path))?;
-        let text = ch.new_text.clone().or_else(|| ch.text.clone())?;
-        Some((sum.id, text))
-    })
+/// The caller's own pending change to `path` that nobody has decided yet.
+///
+/// It is the store's own lookup ([`quire_agent::AgentStore::pending_text`]),
+/// so the version an edit declares for it is one the store accepts.
+pub fn own_pending(cx: &ToolCx<'_>, path: &NotePath) -> Option<String> {
+    cx.agent.pending_text(cx.actor, path).map(|(text, _)| text)
 }
 
 /// The line that ends a cut list: how many rows follow and how to get them.

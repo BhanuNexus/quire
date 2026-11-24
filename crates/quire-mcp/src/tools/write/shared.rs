@@ -192,7 +192,7 @@ pub(crate) fn edit(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value, tool: &str, op
     let Ok(current) = cx.vault.read(&path) else { return ToolOutput::error("not_found", format!("Couldn't read {path}.")) };
     let current_v = ContentHash::of(&current);
     // With a pending suggestion of its own, an agent edits that (it is amended).
-    let pending = own_pending(cx, &path).map(|(_, t)| t);
+    let pending = own_pending(cx, &path);
     let on_pending = pending.is_some();
     let working = pending.unwrap_or_else(|| current.clone());
     let working_v = ContentHash::of(&working);

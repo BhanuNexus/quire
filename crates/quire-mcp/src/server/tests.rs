@@ -206,6 +206,52 @@ fn edits_on_a_pending_suggestion_are_not_doubled() {
     }
 }
 
+/// A change the person already decided, inside a suggestion still pending
+/// for its other notes, is not the agent's working text: an edit of that
+/// note starts from the file, and the store takes its version.
+#[test]
+fn a_decided_change_in_a_pending_suggestion_is_not_edited_on() {
+    use quire_agent::{HunkAction, HunkDecision};
+    let vault = vault();
+    let srv = Server::with_config(vault.clone(), None, config(true));
+    let store = AgentStore::open(&vault, DeviceInfo { id: "d_test".into(), name: "t".into() }, Arc::new(SystemClock));
+    let init = json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "clientInfo": {"name": "claude-code", "version": "1"}}});
+    let ask = |id: u64, tool: &str, args: Value| run(&srv, &[init.clone(), call(id, tool, &args)]).pop().unwrap();
+    // One suggestion for two notes: undoing what the agent wrote to both.
+    let run_id = sc(&ask(10, "begin_run", json!({"title": "two notes"})))["run_id"].as_str().unwrap().to_string();
+    for (i, n) in ["A", "B"].into_iter().enumerate() {
+        let r = ask(1 + i as u64, "create", json!({"path": format!("wiki/{n}.md"), "content": "# N\nzero\n"}));
+        assert_eq!(sc(&r)["outcome"], "applied", "{r}");
+        let r =
+            ask(20 + i as u64, "str_replace", json!({"path": format!("wiki/{n}.md"), "old_str": "zero", "new_str": "one", "run": run_id}));
+        assert_eq!(sc(&r)["outcome"], "applied", "{r}");
+    }
+    let r = ask(3, "revert", json!({"run": run_id}));
+    assert_eq!(sc(&r)["outcome"], "proposed", "{r}");
+    let id = store.proposals(&ProposalFilter::pending())[0].id.clone();
+    let ideas = NotePath::new("wiki/A.md");
+    let current = text_of(&vault, "wiki/A.md");
+    let hunks = store.review(&id, &ideas, &current).hunks;
+    assert!(!hunks.is_empty(), "the change to A can be reviewed: {:?}", store.proposal(&id).unwrap().changes);
+    let reject: Vec<HunkDecision> = hunks
+        .iter()
+        .map(|h| HunkDecision { hunk: h.id.clone(), action: HunkAction::Rejected, at: 0, text: None, other: serde_json::Map::new() })
+        .collect();
+    let _ = store.decide(&id, &ideas, &reject, &current);
+    let p = store.proposal(&id).unwrap();
+    assert_eq!(p.status, quire_agent::ProposalStatus::Pending, "the change to B still waits");
+    assert!(p.changes.iter().any(|c| c.path.as_ref() == Some(&ideas) && c.state.is_some()), "the change to A is decided");
+    // The agent sees the file, and its edits go through.
+    let r = ask(5, "append", json!({"path": "wiki/A.md", "text": "two"}));
+    assert_eq!(sc(&r)["outcome"], "applied", "{r}");
+    let v = ask(4, "view", json!({"path": "wiki/A.md", "include_pending": true}));
+    assert!(body(&v).contains("one") && !body(&v).contains("zero"), "{v}");
+    let v = ask(6, "view", json!({"path": "wiki/A.md", "include_pending": true}));
+    let r = ask(7, "append", json!({"path": "wiki/A.md", "text": "three", "expected_version": sc(&v)["version"]}));
+    assert_eq!(sc(&r)["outcome"], "applied", "{r}");
+    assert_eq!(text_of(&vault, "wiki/A.md"), "# N\none\ntwo\nthree\n");
+}
+
 /// The 0.8 names were removed in 0.14 (`docs/design/0.14-agent-tools.md` §3.4.1):
 /// a call to one, in every protocol era, says which tool to use instead.
 #[test]
