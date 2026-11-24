@@ -5,7 +5,7 @@
 //! Its definition (name, schema, description) and its handler sit together.
 
 use super::{
-    Access, Annotations, CallExt, EXPECTED, EditOp, Tool, ToolCx, ToolOutput, Value, edit, json, opt, outcome_schema, props, req, tool,
+    Access, Annotations, CallExt, EXPECTED, EditOp, Tool, ToolCx, ToolOutput, Value, edit, json, opt_any, outcome_schema, props, req, tool,
 };
 
 pub(super) fn register() -> Box<dyn Tool> {
@@ -13,9 +13,9 @@ pub(super) fn register() -> Box<dyn Tool> {
     tool(
         "append",
         "Append",
-        "Add text at the end of a note, or at the end of a section with under_heading. Example: {\"path\": \"wiki/log.md\", \"text\": \"- 2026-11-02: ingested paper X\"}.",
+        "Add text at the end of a note, or at the end of a section. Example: {\"path\": \"wiki/log.md\", \"text\": \"- 2026-11-02: ingested paper X\"}.",
         json!({"type": "object", "properties": props(json!({
-                "path": {"type": "string"}, "text": {"type": "string"}, "under_heading": {"type": "string"},
+                "path": {"type": "string"}, "text": {"type": "string"}, "section": {"type": "string", "description": "Append at the end of this section instead."},
                 "expected_version": {"type": "string", "description": EXPECTED}})), "required": ["path", "text"]}),
         o(),
         Annotations::WRITE,
@@ -26,7 +26,7 @@ pub(super) fn register() -> Box<dyn Tool> {
 
 fn append(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     match req(a, "text") {
-        Ok(text) => edit(cx, ext, a, "append", &EditOp::Append { text, under: opt(a, "under_heading") }),
+        Ok(text) => edit(cx, ext, a, "append", &EditOp::Append { text, under: opt_any(a, &["section", "under_heading"]) }),
         Err(e) => e,
     }
 }

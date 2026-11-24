@@ -12,7 +12,7 @@ pub(super) fn register() -> Box<dyn Tool> {
         "query_view",
         "Run a view",
         "Run a quire-view query over note properties and get a table. The spec is the text of a quire-view block. Example: \"from: #project\\nwhere: status != done\\nsort: due asc\\nfields: [title, status, due]\".",
-        schema!({"type": "object", "properties": {"spec": {"type": "string"}, "max_rows": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
+        schema!({"type": "object", "properties": {"spec": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
                 "max_tokens": {"type": "integer"}, "cursor": {"type": "string"}}, "required": ["spec"]}),
         schema!({"type": "object", "properties": {"columns": {"type": "array", "items": {"type": "string"}},
                 "rows": {"type": "array", "items": {"type": "object"}}, "groups": {"type": "array", "items": {"type": "string"}}, "total": {"type": "integer"},
@@ -29,7 +29,8 @@ fn query_view(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         Ok(Err(e)) => return ToolOutput::error("invalid_args", format!("The view spec is invalid: {e}")),
         Err(e) => return e,
     };
-    let max = int(a, "max_rows", 100, 1, 500);
+    // `max_rows` is the 0.9 spelling of `limit`.
+    let max = int_any(a, &["limit", "max_rows"], 100, 1, 500);
     let ix = cx.index.read();
     let vis = cx.visibility_in(&ix);
     // Only notes this client may see count: rows, groups and the total alike.
@@ -53,7 +54,7 @@ fn query_view(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     // position. A grouped view (a board) is one answer, cut by size, with no cursor.
     let rows: Vec<(usize, &views::ViewRow)> = res.rows.iter().enumerate().collect();
     let grouped = spec.group.is_some();
-    let fingerprint = bounds::fingerprint("v", a);
+    let fingerprint = bounds::fingerprint_canonical("v", a, &["max_rows"], &[("limit", json!(max))]);
     let budget = bounds::max_tokens(a, bounds::DEFAULT_MAX_TOKENS);
     let args = if grouped { json!({}) } else { a.clone() };
     let Some(mut page) = bounds::keyset(&rows, |(i, _)| bounds::num_key(*i as u64), render, &args, &fingerprint, max, budget) else {

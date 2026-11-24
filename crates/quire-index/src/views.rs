@@ -495,9 +495,25 @@ fn list_values(r: &NoteRecord, name: &str) -> Vec<String> {
 
 /// Compare as numbers, then dates/strings (ISO dates sort as strings).
 pub fn compare(a: &str, b: &str) -> Ordering {
-    match (a.trim().parse::<f64>(), b.trim().parse::<f64>()) {
-        (Ok(x), Ok(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
-        _ => a.to_lowercase().cmp(&b.to_lowercase()),
+    SortValue::of(a).cmp_to(&SortValue::of(b))
+}
+
+/// A value as [`compare`] sees it, worked out once for a sort.
+struct SortValue {
+    number: Option<f64>,
+    lower: String,
+}
+
+impl SortValue {
+    fn of(v: &str) -> Self {
+        Self { number: v.trim().parse::<f64>().ok(), lower: v.to_lowercase() }
+    }
+
+    fn cmp_to(&self, other: &Self) -> Ordering {
+        match (self.number, other.number) {
+            (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
+            _ => self.lower.cmp(&other.lower),
+        }
     }
 }
 
@@ -796,27 +812,40 @@ pub fn agenda_group(date: Option<&str>, today: &str) -> &'static str {
     }
 }
 
-fn sort_rows<T>(rows: &mut [(T, ViewRow)], spec: &ViewSpec, get: impl Fn(&T, &str) -> Option<String>) {
+/// Sort rows by the spec. Each row's keys are computed once, not in every
+/// comparison: they allocate, and a view can have 50,000 rows.
+fn sort_rows<T>(rows: &mut Vec<(T, ViewRow)>, spec: &ViewSpec, get: impl Fn(&T, &str) -> Option<String>) {
     match &spec.sort {
-        Some((f, desc)) => rows.sort_by(|(a, ra), (b, rb)| {
-            // Missing values sort last either way.
-            let o = match (get(a, f), get(b, f)) {
-                (Some(x), Some(y)) => {
-                    let o = compare(&x, &y);
-                    if *desc { o.reverse() } else { o }
-                }
-                (Some(_), None) => Ordering::Less,
-                (None, Some(_)) => Ordering::Greater,
-                (None, None) => Ordering::Equal,
-            };
-            o.then_with(|| ra.title.to_lowercase().cmp(&rb.title.to_lowercase()))
+        Some((f, desc)) => {
+            let mut keyed: Vec<_> =
+                rows.drain(..).map(|(t, r)| ((get(&t, f).map(|v| SortValue::of(&v)), r.title.to_lowercase()), (t, r))).collect();
+            keyed.sort_by(|((a, ta), _), ((b, tb), _)| {
+                // Missing values sort last either way.
+                let o = match (a, b) {
+                    (Some(x), Some(y)) => {
+                        let o = x.cmp_to(y);
+                        if *desc { o.reverse() } else { o }
+                    }
+                    (Some(_), None) => Ordering::Less,
+                    (None, Some(_)) => Ordering::Greater,
+                    (None, None) => Ordering::Equal,
+                };
+                o.then_with(|| ta.cmp(tb))
+            });
+            rows.extend(keyed.into_iter().map(|(_, row)| row));
+        }
+        None if spec.tasks => rows.sort_by_cached_key(|(t, r)| {
+            let date = get(t, "date");
+            (r.task.as_ref().is_some_and(|t| t.task.done), date.is_none(), date, r.path.clone())
         }),
-        None if spec.tasks => rows.sort_by(|(a, ra), (b, rb)| {
-            let key = |t: &T, r: &ViewRow| (r.task.as_ref().is_some_and(|t| t.task.done), get(t, "date").is_none(), get(t, "date"));
-            key(a, ra).cmp(&key(b, rb)).then_with(|| ra.path.cmp(&rb.path))
-        }),
-        None => rows.sort_by_key(|(_, a)| a.title.to_lowercase()),
+        None => rows.sort_by_cached_key(|(_, a)| a.title.to_lowercase()),
     }
+}
+
+/// `values` without exact repeats, each kept where it first appears.
+fn first_of_each(values: impl Iterator<Item = String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    values.filter(|v| seen.insert(v.clone())).collect()
 }
 
 /// Evaluate a spec. `today` is `YYYY-MM-DD`, used by `where: due < today`.
@@ -923,11 +952,13 @@ pub fn run_in<'a>(
         groups.extend(AGENDA_GROUPS.iter().filter(|g| rows.iter().any(|r| r.group == **g)).map(|g| (*g).to_string()));
     } else if spec.group.is_some() {
         groups.extend(spec.columns.iter().cloned());
+        // Exact repeats go first (most rows share a group); the sort is
+        // stable, so the same spelling of each group is kept below.
         let mut seen: Vec<String> =
-            rows.iter().map(|r| r.group.clone()).filter(|g| !groups.iter().any(|c| c.eq_ignore_ascii_case(g))).collect();
+            first_of_each(rows.iter().map(|r| &r.group).filter(|g| !groups.iter().any(|c| c.eq_ignore_ascii_case(g))).cloned());
         // Priorities by rank (highest first), else by name; no value last.
         let by_rank = spec.group.as_deref() == Some("priority");
-        seen.sort_by_key(|g| {
+        seen.sort_by_cached_key(|g| {
             let rank = if by_rank { quire_markdown::tasks::priority_rank(quire_markdown::tasks::parse_priority(g)) } else { 0 };
             (g.is_empty(), rank, g.to_lowercase())
         });
@@ -936,8 +967,8 @@ pub fn run_in<'a>(
     }
     let mut lanes = Vec::new();
     if spec.lanes.is_some() {
-        lanes = rows.iter().map(|r| r.lane.clone()).collect();
-        lanes.sort_by_key(|g| {
+        lanes = first_of_each(rows.iter().map(|r| r.lane.clone()));
+        lanes.sort_by_cached_key(|g| {
             (g.is_empty(), quire_markdown::tasks::priority_rank(quire_markdown::tasks::parse_priority(g)), g.to_lowercase())
         });
         lanes.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
@@ -1656,6 +1687,25 @@ mod tests {
         assert!(parse("layout: pie").is_err());
         assert!(parse("where: ???").is_err());
         assert!(parse("nonsense").is_err());
+    }
+
+    /// The sort keys are worked out once per row: the order is what comparing
+    /// in every step gave (numbers as numbers, then text without case, missing
+    /// values last, ties by title), and a group keeps the spelling of its first row.
+    #[test]
+    fn sorting_with_keys_worked_out_once_keeps_the_order() {
+        let mut ix = Index::new();
+        for (name, v) in [("e", "10"), ("b", "9"), ("a", "Zed"), ("d", "apple"), ("c", ""), ("f", "9"), ("g", "Doing"), ("h", "doing")] {
+            let prop = if v.is_empty() { String::new() } else { format!("v: {v}\nstatus: {v}\n") };
+            ix.upsert(NotePath::new(format!("{name}.md")), &format!("---\n{prop}---\n# {}\n", name.to_uppercase()));
+        }
+        ix.refresh();
+        let r = run(&parse("sort: v asc").unwrap(), &ix, "2026-11-01", None);
+        assert_eq!(titles(&r), vec!["B", "F", "E", "D", "G", "H", "A", "C"]);
+        let r = run(&parse("sort: v desc").unwrap(), &ix, "2026-11-01", None);
+        assert_eq!(titles(&r), vec!["A", "G", "H", "D", "E", "B", "F", "C"]);
+        let r = run(&parse("group: status").unwrap(), &ix, "2026-11-01", None);
+        assert_eq!(r.groups, vec!["10", "9", "apple", "Doing", "Zed", ""]);
     }
 
     #[test]

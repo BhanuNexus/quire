@@ -202,7 +202,11 @@ impl ToolHost {
 
     /// Call a tool as `actor` (writes per the vault's policy).
     pub fn call(&self, actor: &Actor, name: &str, args: &Value, cancel: &CancelFlag) -> ToolOutput {
-        let Some(tool) = self.registry.get(name) else { return ToolOutput::error("not_found", format!("there is no tool called {name}")) };
+        let Some(tool) = self.registry.get(name) else {
+            // A removed 0.8 name says what to use instead, as over MCP.
+            return quire_mcp::tools::removed_tool(name)
+                .unwrap_or_else(|| ToolOutput::error("not_found", format!("there is no tool called {name}")));
+        };
         if matches!(tool.spec().access, Access::Network | Access::Ask) {
             return ToolOutput::error("denied_by_policy", "this tool isn't available in the agent panel");
         }

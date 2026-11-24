@@ -13,8 +13,8 @@ pub(super) fn register() -> Box<dyn Tool> {
         "Recent changes",
         "What changed in the vault since a time: agent writes, suggestions and decisions from Quire's ledger, and notes the person edited. Example: {\"since\": \"24h\"} or {\"since\": \"2026-11-01\", \"actor\": \"mcp:claude-code\"}.",
         schema!({"type": "object", "properties": {
-                "since": {"type": "string", "description": "\"24h\", \"7d\", YYYY-MM-DD or RFC 3339."},
-                "actor": {"type": "string"},
+                "since": {"type": "string", "description": "RFC 3339, YYYY-MM-DD (a UTC day), or a time back from now: 30m, 24h, 7d, 2w"}, "until": {"type": "string", "description": "As since; a date takes in that whole UTC day"},
+                "actor": {"type": "string", "description": "An actor id, or \"me\" (you)."},
                 "kinds": {"type": "array", "items": {"type": "string", "enum": ["edit", "create", "rename", "delete", "proposal", "decision"]}},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
                 "max_tokens": {"type": "integer"}, "cursor": {"type": "string"}}, "required": ["since"]}),
@@ -45,10 +45,12 @@ fn op_kind(op: Op) -> &'static str {
 
 fn recent_activity(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let now = cx.agent.now_ms();
-    let Some(since) = opt(a, "since").and_then(|t| parse_time(&t, now)) else {
-        return ToolOutput::error("invalid_args", "`since` must be like \"24h\", \"7d\", \"2026-11-01\" or an RFC 3339 time.");
+    let (since, until) = match (time_any(a, &["since"], now), until_any(a, &["until"], now)) {
+        (Ok(Some(s)), Ok(u)) => (s, u.unwrap_or(i64::MAX)),
+        (Ok(None), _) => return ToolOutput::error("invalid_args", format!("`since` is required: {TIME_FORMATS}.")),
+        (Err(e), _) | (_, Err(e)) => return e,
     };
-    let actor = opt(a, "actor");
+    let actor = opt(a, "actor").map(|x| if x == "me" { cx.actor.id.clone() } else { x });
     let kinds = list(a, "kinds");
     let limit = int(a, "limit", 100, 1, 500);
     let mut events: Vec<(i64, Value)> = cx
@@ -74,6 +76,7 @@ fn recent_activity(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput
             }
         }
     }
+    events.retain(|(at, _)| *at <= until);
     events.retain(|(_, v)| kinds.is_empty() || kinds.iter().any(|k| v["op"] == k.as_str()));
     // Newest first, then by who, what and where (the cursor's key), so an event logged between
     // pages makes none repeat.

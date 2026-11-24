@@ -101,19 +101,19 @@ fn deny_zone_and_hidden_bypass() {
 }
 
 #[test]
-fn the_0_8_tools_respect_deny_zones() {
+fn what_replaced_the_0_8_tools_respects_deny_zones() {
     let (_dir, root) = setup();
     let srv = server(&root, false);
     let call = |name: &str, args: Value| run(&srv, &[req(1, "tools/call", &json!({"name": name, "arguments": args}))]).remove(0);
     for (name, args) in [
-        ("read_note", json!({"note": "Private/diary.md"})),
-        ("read_note", json!({"note": "diary"})),
-        ("search_notes", json!({"query": "SECRET-DIARY"})),
-        ("list_notes", json!({})),
-        ("list_notes", json!({"folder": "Private"})),
-        ("list_tags", json!({})),
-        ("backlinks", json!({"note": "Ideas"})),
-        ("ask_notes", json!({"question": "What is SECRET-DIARY about?"})),
+        ("view", json!({"path": "Private/diary.md"})),
+        ("view", json!({"path": "diary"})),
+        ("search", json!({"query": "SECRET-DIARY"})),
+        ("list", json!({})),
+        ("list", json!({"folder": "Private"})),
+        ("tags", json!({})),
+        ("neighbors", json!({"path": "Ideas", "direction": "in"})),
+        ("ask", json!({"question": "What is SECRET-DIARY about?"})),
     ] {
         let r = call(name, args.clone());
         let t = r.to_string();
@@ -121,7 +121,7 @@ fn the_0_8_tools_respect_deny_zones() {
         // Only an error may echo the path the agent asked for.
         assert!(r["result"]["isError"] == true || !t.contains("Private/"), "{name} {args}: {t}");
     }
-    let raw = call("read_note", json!({"note": "raw/page.md"})).to_string();
+    let raw = call("view", json!({"path": "raw/page.md"})).to_string();
     assert!(raw.contains("<untrusted-source path=\\\"raw/page.md\\\">"), "untrusted notes are fenced: {raw}");
 }
 

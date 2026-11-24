@@ -23,8 +23,8 @@ use quire_app::vault::{ContentHash, NotePath};
 use serde_json::{Value, json};
 
 use super::common::{
-    existing, fence_untrusted, flag, int, iso, last_actor, list, modified, modified_ms, note_link, note_uri, opt, parse_time, req, s, tool,
-    trust, unified, version_arg, visible,
+    TIME_FORMATS, existing, fence_untrusted, flag, int, int_any, iso, last_actor, list, list_any, modified, modified_ms, note_link,
+    note_uri, opt, opt_any, parse_time, req, s, time_any, tool, trust, unified, until_any, version_any, version_arg, visible,
 };
 use super::{Access, Annotations, CallExt, Tool, ToolCx, ToolOutput};
 use crate::bounds::{self, Cursor, Start};

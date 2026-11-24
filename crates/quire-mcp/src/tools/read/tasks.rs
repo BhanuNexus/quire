@@ -11,11 +11,12 @@ pub(super) fn register() -> Box<dyn Tool> {
     tool(
         "tasks",
         "Tasks",
-        "Checklist tasks (- [ ] …) across the vault with their dates, priority and recurrence. Example: {\"status\": \"open\", \"due_before\": \"2026-11-10\"}.",
+        "Checklist tasks (- [ ] …) across the vault with their dates, priority and recurrence; in one note (path), a folder, or notes with tags. Example: {\"status\": \"open\", \"due_before\": \"2026-11-10\", \"folder\": \"Projects/\"}.",
         schema!({"type": "object", "properties": {
                 "status": {"type": "string", "enum": ["open", "done", "all"], "default": "open"},
                 "due_before": {"type": "string", "description": "YYYY-MM-DD"}, "due_after": {"type": "string"},
-                "path": {"type": "string"}, "tag": {"type": "string"},
+                "path": {"type": "string", "description": "One note."}, "folder": {"type": "string"},
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "Every tag must be on the note."},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 200},
                 "max_tokens": {"type": "integer"}, "cursor": {"type": "string"}}}),
         schema!({"type": "object", "properties": {"tasks": {"type": "array", "items": {"type": "object", "properties": {
@@ -43,7 +44,9 @@ fn tasks(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let before = opt(a, "due_before");
     let after = opt(a, "due_after");
     let only_path = opt(a, "path");
-    let tag = opt(a, "tag");
+    let folder = opt(a, "folder").map(|f| format!("{}/", f.trim_matches('/').to_lowercase()));
+    // `tag` (one) is the 0.9 spelling of `tags`.
+    let tags: Vec<String> = list_any(a, &["tags", "tag"]).into_iter().map(|t| t.trim_start_matches('#').to_string()).collect();
     let limit = int(a, "limit", 200, 1, 500);
     let ix = cx.index.read();
     let vis = cx.visibility_in(&ix);
@@ -55,7 +58,7 @@ fn tasks(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         if only_path.as_ref().is_some_and(|p| !r.path.as_str().eq_ignore_ascii_case(p) && !r.path.without_ext().eq_ignore_ascii_case(p)) {
             continue;
         }
-        if tag.as_ref().is_some_and(|t| !r.has_tag(t)) {
+        if !tags.iter().all(|t| r.has_tag(t)) || folder.as_ref().is_some_and(|f| !r.path.as_str().to_lowercase().starts_with(f.as_str())) {
             continue;
         }
         let first = rows.len();
@@ -83,7 +86,7 @@ fn tasks(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let key = |(r, t): &(&quire_app::index::NoteRecord, &quire_app::markdown::extract::Task)| {
         format!("{}\u{0}{}", r.path, bounds::num_key(t.offset as u64))
     };
-    let fingerprint = bounds::fingerprint("t", a);
+    let fingerprint = bounds::fingerprint_canonical("t", a, &["tag"], &[("tags", json!(tags))]);
     let budget = bounds::max_tokens(a, bounds::DEFAULT_MAX_TOKENS);
     let Some(page) = bounds::keyset(&rows, key, render, a, &fingerprint, limit, budget) else { return stale(&fingerprint) };
     let mut text = String::new();

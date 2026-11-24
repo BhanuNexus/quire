@@ -834,7 +834,7 @@ impl Core {
         use crate::tools::Access;
         let writes = matches!(access, Access::Write | Access::Network);
         match &conn.principal {
-            Principal::Stdio if writes && !grant.write => crate::tools::legacy::READ_ONLY.to_string(),
+            Principal::Stdio if writes && !grant.write => READ_ONLY.to_string(),
             Principal::Token(_) if writes && self.config.read_only => {
                 "This server was started with --read-only, so nothing can be changed through it. The person must restart `quire-cli serve` without --read-only to allow edits or suggestions."
                     .to_string()
@@ -887,10 +887,20 @@ impl Core {
                 out
             }
             Some(t) => ToolOutput::error("denied_by_policy", self.denied_message(conn, name, t.spec().access, grant)),
-            None => ToolOutput::error("not_found", format!("Unknown tool {name}")),
+            None => unknown_tool(name),
         };
         tool_result(era, out)
     }
+}
+
+/// Why a stdio server refuses a write tool.
+const READ_ONLY: &str = "This vault is read-only for AI tools. Start the server with --allow-write to permit edits.";
+
+/// The answer to a call for a tool that doesn't exist: a removed 0.8 name
+/// says what to use instead ([`crate::tools::removed_tool`]).
+fn unknown_tool(name: &str) -> ToolOutput {
+    crate::tools::removed_tool(name)
+        .unwrap_or_else(|| ToolOutput::error("not_found", format!("No tool called “{name}”. Call tools/list for the names.")))
 }
 
 /// A tool's output as an MCP result. Legacy clients get 0.8's shape (text

@@ -69,7 +69,7 @@ const MARKERS: &[&str] = &["zq", "Private/diary", ".obsidian/", ".trash/", "Jour
 /// `docs/design/0.14-health-gates.md` §2. Their replies may differ from the
 /// plain vault's in which visible notes they show, but must name nothing
 /// hidden and number their sources from 1 without gaps.
-const RANKED: &[&str] = &["search", "search_notes", "ask", "ask_notes"];
+const RANKED: &[&str] = &["search", "ask"];
 
 /// Hidden notes and names an agent may ask for.
 const HIDDEN_ARGS: &[&str] = &[
@@ -305,7 +305,7 @@ fn source_numbers(reply: &Value) -> Vec<u64> {
 /// meaning alone are not counted: whether a passage is close enough by
 /// meaning depends on the meaning model, which hidden notes shift (the
 /// known gap in [`RANKED`]). Keyword hits and PDF pages are.
-const COUNTED: &[&str] = &["search", "search_notes"];
+const COUNTED: &[&str] = &["search"];
 
 /// All hits, and those not found by meaning alone, in a reply of a
 /// [`COUNTED`] tool (one `- ` line each).
@@ -401,7 +401,7 @@ fn read_tools_never_tell_a_vault_with_hidden_notes_apart() {
     let registry = ToolRegistry::standard();
     let read: Vec<_> = registry.all().map(|t| t.spec().clone()).filter(|s| matches!(s.access, Access::Read | Access::Ask)).collect();
     let names: Vec<&str> = read.iter().map(|s| s.name).collect();
-    assert!(read.len() >= 25, "the registry's read tools: {names:?}");
+    assert!(read.len() >= 19, "the registry's read tools: {names:?}");
     let mut leaks = Vec::new();
     let (mut calls, mut answered, mut tolerated) = (0, 0, 0);
     for spec in &read {

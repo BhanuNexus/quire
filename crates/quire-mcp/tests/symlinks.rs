@@ -94,7 +94,8 @@ fn every_read_call() -> Vec<(&'static str, Value)> {
                 "question" | "name" => json!("What are the budget words?"),
                 "spec" => json!("fields: status"),
                 "since" => json!("36500d"),
-                "from" => json!("sha256:00000000000000000000000000000000"),
+                "from" | "from_version" => json!("sha256:00000000000000000000000000000000"),
+                "section" => json!("a"),
                 other => panic!("{} needs `{other}`: add a value here", spec.name),
             };
         }

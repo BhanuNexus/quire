@@ -84,8 +84,18 @@ for typed links (0.12) `links` and `hierarchy`.
 
 Write: `begin_run`, `create`, `str_replace`, `insert`, `edit_section`,
 `append`, `set_properties`, `rename`, `delete`, `save_answer`,
-`capture_url`, `revert` (and `canvas_apply`), and `add_link`. The 0.8 tools (`search_notes`,
-`read_note`, …) remain for older clients.
+`capture_url`, `revert` (and `canvas_apply`), and `add_link`.
+
+One name per idea: `path` for a note, `section` for a heading or block,
+`lines` (`[10, 40]` or `"10-40"`), `limit`, `max_tokens`, `cursor`,
+`folder`, `tags` (every one must be on the note), `where`, `since` and
+`until` (RFC 3339, YYYY-MM-DD, or a time back from now: `30m`, `24h`, `7d`,
+`2w`; a date is a UTC day, and in `until` it takes in that whole day, so
+`since: "2026-11-02", until: "2026-11-02"` is the 2nd), `actor` (`"me"` is the caller), `expected_version`, `run`. Older
+spellings still work: `heading` and `under_heading` (for `section`), `k` and
+`max_rows` (for `limit`), `tag`, `from` and `to` in `diff`, `mine` in
+`proposals`, and `search`'s `filters{…}` with `modified_after` and
+`modified_before`.
 
 **Typed links** ([format](formats/links.md)): `neighbors` edges carry a
 `type` (the field the link is in, or null) and can follow chosen types;
@@ -136,11 +146,35 @@ the client; reads link the note as a `resource_link`.
 
 ### Search hits in PDFs
 
-`search` with `filters.kind` `attachments` or `all` also finds pages of PDFs
+`search` with `kind` `attachments` or `all` also finds pages of PDFs
 in the vault (and text read from images and scanned pages when on-device
 OCR is on). Such a hit carries `page` (1-based) and reads
-`paper.pdf p. 3` in the text. A bad `filters.where` is answered with
+`paper.pdf p. 3` in the text. A bad `where` is answered with
 `invalid_args` and what's wrong with it.
+
+### Removed tool names
+
+The nine tool names of Quire 0.8 were removed in 0.14. A client that lists
+tools first (most do) needs no change; an agent, prompt or script that calls
+an old name gets an error result (`isError`, `structuredContent.error`
+`not_found`, with `removed` and `use`) that says what to call instead:
+
+```
+No tool called “search_notes”: it was removed in Quire 0.14. Use `search` instead
+(see "Removed tool names" in docs/agents.md). Call tools/list for the names.
+```
+
+| 0.8 name | Use instead | What differs |
+|---|---|---|
+| `search_notes` | `search` | Ranks sections, not notes; each hit has a line range for `view`. |
+| `read_note` | `view` | Takes `path`; long notes come in pages (`max_tokens`, `cursor`). |
+| `list_notes` | `list` | `folder`, `tags`, `where`, `since`, `sort`, `limit`, `cursor`. |
+| `backlinks` | `neighbors` | With `direction: "in"`; each edge has the linking line as `context`. `links` lists them by type. |
+| `ask_notes` | `ask` | |
+| `list_tags` | `tags` | |
+| `create_note` | `create` | `path` is `folder/title.md`; it refuses to overwrite. |
+| `append_to_note` | `append` | `path`, `text`, and `section` to add under a heading. |
+| `replace_in_note` | `str_replace` | `all: true` replaces every occurrence; there is no regex form. |
 
 ### Canvases
 

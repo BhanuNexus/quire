@@ -17,7 +17,7 @@ pub(super) fn register() -> Box<dyn Tool> {
         "Suggest undoing changes made by an agent (you, by default): those of one run, since a time, or to some notes. The undo is always a suggestion the person reviews; it keeps edits they made since. Example: {\"run\": \"r_…\"} or {\"since\": \"2h\"}.",
         schema!({"type": "object", "properties": {
                 "actor": {"type": "string", "description": "Whose changes; defaults to yours."},
-                "run": {"type": "string"}, "since": {"type": "string", "description": "\"2h\", YYYY-MM-DD or RFC 3339."},
+                "run": {"type": "string"}, "since": {"type": "string", "description": "RFC 3339, YYYY-MM-DD (a UTC day), or a time back from now: 30m, 24h, 7d, 2w"},
                 "paths": {"type": "array", "items": {"type": "string"}}}}),
         o(),
         Annotations::WRITE,
@@ -28,10 +28,9 @@ pub(super) fn register() -> Box<dyn Tool> {
 
 fn revert(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let now = cx.agent.now_ms();
-    let since = match opt(a, "since").map(|t| super::super::common::parse_time(&t, now)) {
-        Some(None) => return ToolOutput::error("invalid_args", "`since` must be like \"2h\", \"2026-11-01\" or RFC 3339."),
-        Some(t) => t,
-        None => None,
+    let since = match super::super::common::time_any(a, &["since"], now) {
+        Ok(t) => t,
+        Err(e) => return e,
     };
     let run = match opt(a, "run") {
         Some(r) => match RunId::parse(&r) {

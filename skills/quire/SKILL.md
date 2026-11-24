@@ -44,8 +44,9 @@ new ones. Don't retry a proposed write as if it failed.
   and, when a clean merge exists, `merged_preview`. Re-read and retry.
 * `str_replace` needs `old_str` to occur exactly once (`not_unique`,
   `no_match` otherwise). Copy it from `view` without the line-number prefix.
-* Prefer `edit_section` (`"heading": "## Undo"` or `"^block-id"`) and `append`
-  (`"under_heading"`) to rewriting whole notes. `insert` takes a line number.
+* Prefer `edit_section` (`"section": "## Undo"` or `"^block-id"`) and `append`
+  (`"section"`) to rewriting whole notes. `insert` takes a line number.
+  `str_replace` with `"all": true` replaces every occurrence.
 * Long results are cut at `max_tokens`; pass `next_cursor` back as `cursor`.
 
 ## Conventions
@@ -72,6 +73,7 @@ Read: `vault_info`, `search`, `view`, `outline`, `list`, `neighbors`,
 Write: `begin_run`, `create`, `str_replace`, `insert`, `edit_section`,
 `append`, `set_properties`, `rename`, `delete`, `canvas_apply`,
 `save_answer`, `capture_url`, `revert` (always a suggestion), `add_link`.
+The 0.8 names (`search_notes`, `read_note`, …) were removed in 0.14; use the tools above.
 Typed links (`parent:: [[X]]`, `[supports:: [[Y]]]`, `up: "[[X]]"`) are
 links with a type: `links` lists a note's links by type, `hierarchy` walks
 up/down/sibling relations, and `add_link` writes one in the note's own

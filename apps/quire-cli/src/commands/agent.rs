@@ -53,14 +53,10 @@ fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
     super::flag_value(args, name)
 }
 
-/// `--since`: Unix ms, `2h`, `7d`, `YYYY-MM-DD` or RFC 3339.
+/// `--since`: as the agent tools take a time (`TIME_FORMATS`), or Unix ms. A bare short number
+/// (`--since 7`) is refused with what to write instead.
 fn since(args: &[String], now: i64) -> Result<Option<i64>, String> {
-    flag(args, "--since")
-        .map(|s| {
-            quire_mcp::tools::common::parse_time(s, now)
-                .ok_or_else(|| format!("--since takes a time like 2h, 2026-11-01 or Unix ms, not “{s}”"))
-        })
-        .transpose()
+    flag(args, "--since").map(|s| quire_mcp::tools::common::parse_time(s, now).map_err(|why| format!("--since: {why}"))).transpose()
 }
 
 fn run(args: &[String]) -> Result<(), String> {
@@ -472,7 +468,7 @@ mod tests {
         assert_eq!(fm.get("trust").and_then(|v| v.as_str()), Some("untrusted"));
         // Every tool the skill names exists.
         let reg = quire_mcp::ToolRegistry::standard();
-        for t in reg.all().map(|t| t.spec().name).filter(|n| !quire_mcp::tools::legacy::NAMES.contains(n)) {
+        for t in reg.all().map(|t| t.spec().name) {
             assert!(SKILL.contains(&format!("`{t}`")), "the skill mentions {t}");
         }
     }

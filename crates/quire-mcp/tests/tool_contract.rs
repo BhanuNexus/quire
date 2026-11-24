@@ -64,10 +64,7 @@ const TABLE: &[Row] = &[
 ];
 
 /// Today's gaps against [`TABLE`], each with the step that closes it (`docs/design/0.14-agent-tools.md` §8).
-const BOUNDS_GAPS: &[(&str, &str)] = &[
-    ("ask: no `limit`", "step 4: `limit` is the one row cap, `k` and `max_rows` stay as aliases"),
-    ("query_view: no `limit`", "step 4: `limit` is the one row cap, `k` and `max_rows` stay as aliases"),
-];
+const BOUNDS_GAPS: &[(&str, &str)] = &[];
 
 fn props(schema: &Value) -> &serde_json::Map<String, Value> {
     static EMPTY: std::sync::OnceLock<serde_json::Map<String, Value>> = std::sync::OnceLock::new();
@@ -188,30 +185,17 @@ fn listed(era: &str, write: bool) -> Vec<Value> {
     reply["result"]["tools"].as_array().unwrap_or_else(|| panic!("{era}: {reply}")).clone()
 }
 
-/// The tools of the 0.8 set, which step 5 removes.
-const LEGACY_NINE: usize = 9;
-
-/// G1 today: 42 tools with a write grant, 25 without, in every era. The target (33 and 19) is in
-/// [`target_tool_counts`].
+/// G1: 33 tools to a client with a write grant and 19 to a read-only one, in every era (42 and 25
+/// before 0.14 removed the nine 0.8 tools).
 #[test]
-fn tool_counts_today() {
-    for era in ERAS {
-        assert_eq!(listed(era, true).len(), 42, "{era}, write grant");
-        assert_eq!(listed(era, false).len(), 25, "{era}, read-only");
-    }
-    let registry = ToolRegistry::standard();
-    assert_eq!(registry.offered_for(Grant::stdio(true)).count(), 42);
-    assert_eq!(registry.offered_for(Grant::READ).count(), 25);
-}
-
-/// G1: 33 tools to a client with a write grant and 19 to a read-only one, in every era.
-#[test]
-#[ignore = "removed by step 5: the nine 0.8 tools are removed from the registry"]
 fn target_tool_counts() {
     for era in ERAS {
-        assert_eq!(listed(era, true).len(), 42 - LEGACY_NINE, "{era}, write grant");
-        assert_eq!(listed(era, false).len(), 25 - 6, "{era}, read-only");
+        assert_eq!(listed(era, true).len(), 33, "{era}, write grant");
+        assert_eq!(listed(era, false).len(), 19, "{era}, read-only");
     }
+    let registry = ToolRegistry::standard();
+    assert_eq!(registry.offered_for(Grant::stdio(true)).count(), 33);
+    assert_eq!(registry.offered_for(Grant::READ).count(), 19);
 }
 
 /// Names that clients accept everywhere: `^[a-z][a-z0-9_]{0,63}$` (G2).
@@ -233,26 +217,19 @@ fn list_bytes() -> usize {
 }
 
 /// G2: `tools/list` for a write-grant client, measured when the bounds and cursors landed
-/// (`docs/design/0.14-agent-tools.md` §3.3, step 3): 43,327 bytes, of which the nine 0.8 tools take 3,054 (before: 41,315 by the design,
-/// 41,264 measured on main at the start of 0.14). It may not grow by more than 5%.
+/// (`docs/design/0.14-agent-tools.md` §3.3, step 3): 43,327 bytes, of which the nine 0.8 tools took 3,054
+/// (before: 41,315 by the design, 41,264 measured on main at the start of 0.14).
 const BYTES_MEASURED: usize = 43_327;
 /// The nine 0.8 tools' entries in that list, with their commas.
 const BYTES_LEGACY_NINE: usize = 3_054;
 
+/// G2 target: the list measured at step 3 without the nine 0.8 tools, plus 5%.
 #[test]
-fn tools_list_does_not_grow() {
-    let now = list_bytes();
-    assert!(now * 100 <= BYTES_MEASURED * 105, "tools/list is {now} bytes, over the {BYTES_MEASURED} measured at step 3 plus 5%");
-}
-
-/// G2 target: once step 5 removes the nine 0.8 tools, the list measured at step 3 without them,
-/// plus 5%.
-#[test]
-#[ignore = "removed by step 5: the nine 0.8 tools leave tools/list"]
 fn target_tools_list_size() {
     let budget = (BYTES_MEASURED - BYTES_LEGACY_NINE) * 105 / 100;
     let now = list_bytes();
     assert!(now <= budget, "tools/list is {now} bytes, over {budget}");
+    eprintln!("tools/list: {now} bytes (budget {budget})");
 }
 
 // ------------------------------------------------------------------ paging
