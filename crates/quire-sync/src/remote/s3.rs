@@ -146,7 +146,7 @@ impl S3Store {
         let qs = canonical_query(query);
         let url = if qs.is_empty() { format!("{}{path}", self.origin) } else { format!("{}{path}?{qs}", self.origin) };
         let build = || {
-            let amz_date = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+            let amz_date = quire_base::dates::fmt_utc_ms(quire_base::time::now_ms(), "%Y%m%dT%H%M%SZ").unwrap_or_default();
             let mut headers = vec![
                 ("host".to_string(), self.host.clone()),
                 ("x-amz-content-sha256".to_string(), payload_hash.clone()),

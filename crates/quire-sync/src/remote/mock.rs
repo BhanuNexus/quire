@@ -224,7 +224,7 @@ fn read_req(conn: &TcpStream) -> Option<Req> {
 }
 
 fn http_date(skew: i64) -> String {
-    (chrono::Utc::now() + chrono::Duration::seconds(skew)).format("%a, %d %b %Y %H:%M:%S GMT").to_string()
+    quire_base::dates::fmt_utc_ms(quire_base::time::now_ms() + skew * 1000, "%a, %d %b %Y %H:%M:%S GMT").unwrap_or_default()
 }
 
 fn serve(mut conn: TcpStream, st: &State, kind: &Kind, port: u16) {
@@ -293,8 +293,11 @@ fn s3_auth(st: &State, req: &Req, access: &str, secret: &str, region: &str, port
         return Err(s3_error(400, "AuthorizationHeaderMalformed", &format!("the region '{reg}' is wrong; expecting '{region}'")));
     }
     let amz_date = req.header("x-amz-date").unwrap_or_default();
-    let when = chrono::NaiveDateTime::parse_from_str(amz_date, "%Y%m%dT%H%M%SZ").map_or(0, |d| d.and_utc().timestamp());
-    let now = chrono::Utc::now().timestamp() + st.skew_secs.load(Ordering::Relaxed);
+    let when = quire_base::dates::parse_datetime(amz_date, "%Y%m%dT%H%M%SZ")
+        .ok()
+        .and_then(|d| quire_base::dates::ms_at_offset(d, 0))
+        .map_or(0, |ms| ms.div_euclid(1000));
+    let now = quire_base::time::now_ms().div_euclid(1000) + st.skew_secs.load(Ordering::Relaxed);
     if (now - when).abs() > 15 * 60 || !amz_date.starts_with(date) {
         return Err(s3_error(403, "RequestTimeTooSkewed", "The difference between the request time and the current time is too large."));
     }

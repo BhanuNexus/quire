@@ -6165,7 +6165,6 @@ dependencies = [
  "argon2",
  "base64 0.23.1",
  "chacha20poly1305",
- "chrono",
  "hkdf",
  "hmac",
  "quire-base",
