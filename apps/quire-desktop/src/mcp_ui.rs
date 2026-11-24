@@ -328,7 +328,7 @@ fn tokens(ui: &mut egui::Ui, pal: &Palette, me: &mut McpUi, store: &TokenStore) 
             let who = if r.kind == Kind::Personal { format!("Token “{}”", r.name) } else { format!("{} ({})", r.name, r.client) };
             ui.label(who);
             ui.label(RichText::new(r.scopes.join(", ")).color(pal.muted));
-            let used = r.last_used.map_or_else(|| "never used".to_string(), |t| format!("used {}", quire_app::chrono_fmt(t)));
+            let used = r.last_used.map_or_else(|| "never used".to_string(), |t| format!("used {}", quire_app::local_time_fmt(t)));
             ui.label(RichText::new(used).color(pal.faint));
             if ui.small_button("Revoke").clicked() {
                 let key = if r.kind == Kind::Personal { r.name.clone() } else { r.client.clone() };

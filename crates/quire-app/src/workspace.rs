@@ -4,6 +4,7 @@
 //! and render what they read back; [`Workspace::tick`] drives time-based work
 //! (autosave, watcher events, background results).
 
+use quire_base::dates;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -588,8 +589,8 @@ impl Workspace {
     }
 
     pub fn open_daily(&mut self) -> Option<DocId> {
-        let today = chrono::Local::now().date_naive();
-        let (path, created) = match self.vault.as_ref()?.daily_note(quire_base::dates::bridge::date(today)) {
+        let today = dates::today();
+        let (path, created) = match self.vault.as_ref()?.daily_note(today) {
             Ok(r) => r,
             Err(e) => {
                 self.notify(NoticeLevel::Error, e.to_string());
@@ -1349,8 +1350,8 @@ impl Workspace {
             }
         }
 
-        let handled = if let Some(m) = trailing_date_phrase(&before, chrono::Local::now().date_naive()) {
-            let iso = m.date.format("%Y-%m-%d").to_string();
+        let handled = if let Some(m) = trailing_date_phrase(&before, dates::today()) {
+            let iso = dates::ymd(m.date);
             let rep = if as_link { format!("[[{iso}]]") } else { iso };
             let start = line_range.start + m.start_char;
             let caret = start + rep.chars().count();
@@ -1382,10 +1383,10 @@ impl Workspace {
         let buf = doc.buffer();
         let line_start = buf.line_to_char(buf.char_to_line(sel.head));
         let before = buf.slice(line_start..sel.head);
-        let Some(m) = trailing_date_phrase(&before, chrono::Local::now().date_naive()) else {
+        let Some(m) = trailing_date_phrase(&before, dates::today()) else {
             return false;
         };
-        let iso = m.date.format("%Y-%m-%d").to_string();
+        let iso = dates::ymd(m.date);
         let rep = if as_link { format!("[[{iso}]] ") } else { format!("{iso} ") };
         let start = line_start + m.start_char;
         let caret = start + rep.chars().count();
@@ -1627,7 +1628,7 @@ impl Workspace {
             C::PublishSite => return self.vault.is_some().then_some(UiRequest::Publish),
             C::OpenSettings => return Some(UiRequest::Settings),
             C::InsertDate => {
-                let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+                let today = dates::today_ymd();
                 self.insert_text(&today);
             }
             C::Undo => {
@@ -2169,7 +2170,7 @@ mod tests {
         w.open_note(&NotePath::new("Ideas.md")).unwrap();
         type_at_end(&mut w, "Due @tomorrow");
         assert!(w.smart_space());
-        let tomorrow = (chrono::Local::now().date_naive() + chrono::Duration::days(1)).format("%Y-%m-%d").to_string();
+        let tomorrow = dates::ymd(dates::plus_days(dates::today(), 1));
         assert!(w.active_doc().unwrap().text().ends_with(&format!("Due [[{tomorrow}]] ")));
 
         let ins = w.insights();

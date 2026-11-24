@@ -5903,7 +5903,6 @@ dependencies = [
  "ammonia",
  "base64 0.23.1",
  "biblatex",
- "chrono",
  "crossbeam-channel",
  "directories",
  "flate2",
@@ -5973,7 +5972,6 @@ name = "quire-cli"
 version = "0.13.3"
 dependencies = [
  "axum",
- "chrono",
  "quire-agent",
  "quire-ai",
  "quire-app",
@@ -5998,7 +5996,6 @@ version = "0.13.3"
 dependencies = [
  "arboard",
  "base64 0.23.1",
- "chrono",
  "cpal",
  "crossbeam-channel",
  "directories",
@@ -6030,7 +6027,6 @@ name = "quire-import"
 version = "0.13.3"
 dependencies = [
  "base64 0.23.1",
- "chrono",
  "dom_smoothie",
  "encoding_rs 0.8.44",
  "htmd",
@@ -6050,7 +6046,6 @@ dependencies = [
 name = "quire-index"
 version = "0.13.3"
 dependencies = [
- "chrono",
  "crossbeam-channel",
  "flate2",
  "nucleo-matcher",
@@ -6070,7 +6065,6 @@ dependencies = [
 name = "quire-intel"
 version = "0.13.3"
 dependencies = [
- "chrono",
  "crossbeam-channel",
  "quire-base",
  "quire-index",
@@ -6107,7 +6101,6 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "chacha20poly1305",
- "chrono",
  "flate2",
  "futures-core",
  "quire-agent",
@@ -6261,7 +6254,6 @@ dependencies = [
  "argon2",
  "axum",
  "base64 0.23.1",
- "chrono",
  "quire-agent",
  "quire-app",
  "quire-base",

@@ -49,7 +49,7 @@ fn list_tool(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         // Only notes the caller may see are run through the condition.
         Some(w) => match views::parse_where(&w) {
             Ok(spec) => Some(
-                views::run_over(&spec, &ix, &chrono::Local::now().format("%Y-%m-%d").to_string(), None, &|p| vis.allows(p))
+                views::run_over(&spec, &ix, &quire_base::dates::today_ymd(), None, &|p| vis.allows(p))
                     .rows
                     .into_iter()
                     .map(|r| r.path)

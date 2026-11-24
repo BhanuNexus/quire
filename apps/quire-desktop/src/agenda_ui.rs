@@ -7,7 +7,6 @@
 //!
 //! Registered in `registry.rs`.
 
-use chrono::{Local, NaiveDate, NaiveTime, Timelike};
 use egui::{Color32, Id, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 use quire_app::Workspace;
 use quire_app::decor::{ActionId, WidgetId};
@@ -15,6 +14,7 @@ use quire_app::index::views::{Layout, ViewResult, ViewRow, ViewSpec};
 use quire_app::markdown::Task;
 use quire_app::tasks_state::{Action, PlanWidget};
 use quire_app::vault::NotePath;
+use quire_base::dates::{self, Date, Strftime, Time};
 
 use crate::panels::PanelOut;
 use crate::registry::FeatureUi;
@@ -30,7 +30,7 @@ pub(crate) struct AgendaUi {
     /// The calendar's month (year, month); `None` is this month.
     month: Option<(i32, u32)>,
     /// The time report's week (a day in it); `None` is this week.
-    week: Option<NaiveDate>,
+    week: Option<Date>,
 }
 
 /// Whether the tab is offered.
@@ -54,14 +54,14 @@ fn priority_mark(ui: &mut Ui, pal: &Palette, p: Option<u8>) {
 }
 
 /// "today", "tomorrow", "in 3 days", "2 days ago", "Mon 9".
-pub(crate) fn relative(date: NaiveDate, today: NaiveDate) -> String {
-    match (date - today).num_days() {
+pub(crate) fn relative(date: Date, today: Date) -> String {
+    match dates::days_between(today, date) {
         0 => "today".into(),
         1 => "tomorrow".into(),
         -1 => "yesterday".into(),
         n if n < 0 => format!("{} days ago", -n),
-        n if n < 7 => date.format("%A").to_string(),
-        _ => date.format("%a %-d %b").to_string(),
+        n if n < 7 => date.render("%A"),
+        _ => date.render("%a %-d %b"),
     }
 }
 
@@ -179,15 +179,15 @@ fn fold_header(
 pub(crate) fn show(ui: &mut Ui, ws: &mut Workspace, st: &mut FeatureUi, pal: &Palette) -> PanelOut {
     let mut out = PanelOut::default();
     let st = &mut st.agenda;
-    let today = Local::now().date_naive();
+    let today = dates::today();
     let agenda = ws.agenda();
     let mut toggle: Option<(NotePath, Task)> = None;
     let mut open: Option<(NotePath, usize)> = None;
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
-            ui.label(RichText::new(today.format("%A").to_string()).size(15.0).color(pal.strong).strong());
-            ui.label(RichText::new(today.format("%-d %B %Y").to_string()).size(12.0).color(pal.muted));
+            ui.label(RichText::new(today.render("%A")).size(15.0).color(pal.strong).strong());
+            ui.label(RichText::new(today.render("%-d %B %Y")).size(12.0).color(pal.muted));
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.small_button("Week").on_hover_text("Open this week's note").clicked() {
@@ -218,8 +218,7 @@ pub(crate) fn show(ui: &mut Ui, ws: &mut Workspace, st: &mut FeatureUi, pal: &Pa
             return finish(ws, out, None, open);
         }
         crate::task_ui::AgendaMode::Calendar => {
-            use chrono::Datelike;
-            let mut month = st.month.unwrap_or_else(|| (today.year(), today.month()));
+            let mut month = st.month.unwrap_or_else(|| (i32::from(today.year()), today.month() as u32));
             egui::ScrollArea::vertical().id_salt("quire-agenda-cal").auto_shrink([false, false]).show(ui, |ui| {
                 open = crate::task_ui::calendar(ui, ws, pal, &mut month);
             });
@@ -247,14 +246,14 @@ pub(crate) fn show(ui: &mut Ui, ws: &mut Workspace, st: &mut FeatureUi, pal: &Pa
             for r in &reminders {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
-                    ui.label(RichText::new(r.at.format("%H:%M").to_string()).size(12.0).color(pal.warn).monospace());
+                    ui.label(RichText::new(r.at.render("%H:%M")).size(12.0).color(pal.warn).monospace());
                     let label = ui.add(egui::Label::new(RichText::new(&r.text).color(pal.text)).sense(Sense::click()));
                     if label.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Open the note at this task").clicked() {
                         open = Some((NotePath::new(&r.path), r.offset));
                     }
                 });
                 ui.horizontal(|ui| {
-                    let when = if r.at.date() == today { String::new() } else { format!("{} · ", r.at.format("%a %-d %b")) };
+                    let when = if r.at.date() == today { String::new() } else { format!("{} · ", r.at.render("%a %-d %b")) };
                     ui.label(RichText::new(format!("{when}{}", note_name(&r.path))).size(11.0).color(pal.muted));
                     if ui.small_button("Snooze").on_hover_text("Remind me again in 10 minutes").clicked() {
                         snooze = Some(r.clone());
@@ -303,7 +302,7 @@ pub(crate) fn show(ui: &mut Ui, ws: &mut Workspace, st: &mut FeatureUi, pal: &Pa
         }
         if !agenda.blocks.is_empty()
             && fold_header(ui, st, pal, "timeline", "Timeline", agenda.blocks.len(), None)
-            && let Some((path, offset)) = timeline(ui, pal, &agenda.blocks, Local::now().time())
+            && let Some((path, offset)) = timeline(ui, pal, &agenda.blocks, dates::now_local().time())
         {
             open = Some((path, offset));
         }
@@ -311,11 +310,11 @@ pub(crate) fn show(ui: &mut Ui, ws: &mut Workspace, st: &mut FeatureUi, pal: &Pa
             if agenda.upcoming.is_empty() {
                 ui.label(RichText::new("Nothing due this week.").size(12.0).color(pal.muted));
             }
-            let mut last: Option<NaiveDate> = None;
+            let mut last: Option<Date> = None;
             for i in &agenda.upcoming {
                 if last != Some(i.date) {
                     ui.add_space(4.0);
-                    ui.label(RichText::new(i.date.format("%A %-d").to_string()).size(12.0).color(pal.strong));
+                    ui.label(RichText::new(i.date.render("%A %-d")).size(12.0).color(pal.strong));
                     last = Some(i.date);
                 }
                 let next = i.next.map(|n| format!(" · then {}", relative(n, today))).unwrap_or_default();
@@ -367,10 +366,10 @@ fn finish(ws: &mut Workspace, mut out: PanelOut, toggle: Option<(NotePath, Task)
 }
 
 /// A day's time blocks on a vertical hour scale. Returns a clicked block's task.
-fn timeline(ui: &mut Ui, pal: &Palette, blocks: &[quire_app::plan::agenda::Block], now: NaiveTime) -> Option<(NotePath, usize)> {
+fn timeline(ui: &mut Ui, pal: &Palette, blocks: &[quire_app::plan::agenda::Block], now: Time) -> Option<(NotePath, usize)> {
     // From the first block's hour to the last one's end.
-    let first = blocks.iter().map(|b| b.start.hour()).min().unwrap_or(8);
-    let last = blocks.iter().map(|b| b.end.hour() + u32::from(b.end.minute() > 0)).max().unwrap_or(18).clamp(first + 1, 24);
+    let first = blocks.iter().map(|b| b.start.hour() as u32).min().unwrap_or(8);
+    let last = blocks.iter().map(|b| b.end.hour() as u32 + u32::from(b.end.minute() > 0)).max().unwrap_or(18).clamp(first + 1, 24);
     let hour_h = 34.0;
     let pad = 8.0;
     let w = ui.available_width();
@@ -378,7 +377,7 @@ fn timeline(ui: &mut Ui, pal: &Palette, blocks: &[quire_app::plan::agenda::Block
     let (rect, _) = ui.allocate_exact_size(Vec2::new(w, h), Sense::hover());
     let painter = ui.painter_at(rect);
     let label_w = 34.0;
-    let y_of = |t: NaiveTime| rect.top() + pad + ((t.hour() as f32 + t.minute() as f32 / 60.0) - first as f32) * hour_h;
+    let y_of = |t: Time| rect.top() + pad + ((f32::from(t.hour()) + f32::from(t.minute()) / 60.0) - first as f32) * hour_h;
     for hr in first..=last {
         let y = rect.top() + pad + (hr - first) as f32 * hour_h;
         painter.text(Pos2::new(rect.left(), y), egui::Align2::LEFT_CENTER, format!("{hr:02}"), egui::FontId::monospace(10.5), pal.faint);
@@ -386,7 +385,7 @@ fn timeline(ui: &mut Ui, pal: &Palette, blocks: &[quire_app::plan::agenda::Block
     }
     let mut clicked = None;
     // Overlapping blocks share the width.
-    let mut lanes: Vec<NaiveTime> = Vec::new();
+    let mut lanes: Vec<Time> = Vec::new();
     let lane_of: Vec<usize> = blocks
         .iter()
         .map(|b| {
@@ -409,21 +408,21 @@ fn timeline(ui: &mut Ui, pal: &Palette, blocks: &[quire_app::plan::agenda::Block
         let fill = if b.task.done { pal.code_bg } else { pal.accent.gamma_multiply(if pal.dark { 0.35 } else { 0.18 }) };
         painter.rect_filled(r, 4.0, fill);
         painter.rect_stroke(r, 4.0, Stroke::new(1.0, pal.accent.gamma_multiply(0.5)), egui::StrokeKind::Inside);
-        let label = format!("{} {}", b.start.format("%H:%M"), b.task.text);
+        let label = format!("{} {}", b.start.render("%H:%M"), b.task.text);
         let galley =
             painter.layout(label, egui::FontId::proportional(11.5), if b.task.done { pal.muted } else { pal.text }, r.width() - 8.0);
         painter.with_clip_rect(r).galley(Pos2::new(r.left() + 4.0, r.top() + 2.0), galley, pal.text);
         let resp = ui.interact(r, ui.scope_id().with(("quire-block", &b.path, b.task.offset)), Sense::click());
         if resp
             .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .on_hover_text(format!("{}–{} · {}", b.start.format("%H:%M"), b.end.format("%H:%M"), note_name(&b.path)))
+            .on_hover_text(format!("{}–{} · {}", b.start.render("%H:%M"), b.end.render("%H:%M"), note_name(&b.path)))
             .clicked()
         {
             clicked = Some((NotePath::new(&b.path), b.task.offset));
         }
     }
     // Now.
-    if (first..last).contains(&now.hour()) {
+    if (first..last).contains(&(now.hour() as u32)) {
         let y = y_of(now);
         painter.line_segment([Pos2::new(rect.left() + label_w - 4.0, y), Pos2::new(rect.right(), y)], Stroke::new(1.5, pal.danger));
         painter.circle_filled(Pos2::new(rect.left() + label_w - 4.0, y), 3.0, pal.danger);
@@ -455,7 +454,7 @@ pub(crate) fn view(ui: &mut Ui, ws: &Workspace, pal: &Palette, spec: &ViewSpec, 
         ui.label(RichText::new(if spec.tasks { "No tasks match." } else { "No notes match." }).color(pal.muted).size(12.5));
         return;
     }
-    let today = Local::now().date_naive();
+    let today = dates::today();
     let heading = |ui: &mut Ui, h: &str, first: bool| {
         ui.add_space(if first { 2.0 } else { 6.0 });
         let color = match h {
@@ -480,11 +479,7 @@ pub(crate) fn view(ui: &mut Ui, ws: &Workspace, pal: &Palette, spec: &ViewSpec, 
     let mut last: Option<String> = None;
     for row in rows {
         if spec.layout == Layout::Timeline {
-            let h = row
-                .date
-                .as_deref()
-                .and_then(quire_base::time::parse_ymd)
-                .map_or_else(|| "No date".into(), |d| d.format("%A %-d %B %Y").to_string());
+            let h = row.date.as_deref().and_then(dates::parse_ymd).map_or_else(|| "No date".into(), |d| d.render("%A %-d %B %Y"));
             if last.as_ref() != Some(&h) {
                 heading(ui, &h, last.is_none());
                 last = Some(h);
@@ -494,7 +489,7 @@ pub(crate) fn view(ui: &mut Ui, ws: &Workspace, pal: &Palette, spec: &ViewSpec, 
     }
 }
 
-fn view_row(ui: &mut Ui, ws: &Workspace, pal: &Palette, spec: &ViewSpec, row: &ViewRow, key: Id, today: NaiveDate) {
+fn view_row(ui: &mut Ui, ws: &Workspace, pal: &Palette, spec: &ViewSpec, row: &ViewRow, key: Id, today: Date) {
     let extra: Vec<&str> = spec
         .fields
         .iter()
@@ -533,7 +528,7 @@ fn view_row(ui: &mut Ui, ws: &Workspace, pal: &Palette, spec: &ViewSpec, row: &V
                     ws.plan_request(Action::OpenAt { path: row.path.clone(), offset: 0 });
                 }
                 let mut bits: Vec<String> = Vec::new();
-                if let Some(d) = row.date.as_deref().and_then(quire_base::time::parse_ymd).filter(|_| spec.layout != Layout::Timeline) {
+                if let Some(d) = row.date.as_deref().and_then(dates::parse_ymd).filter(|_| spec.layout != Layout::Timeline) {
                     bits.push(relative(d, today));
                 }
                 bits.extend(extra.iter().map(|s| (*s).to_string()));
@@ -620,18 +615,16 @@ pub(crate) fn settings_tab(ui: &mut Ui, ws: &mut Workspace, st: &mut FeatureUi, 
 
 #[cfg(test)]
 mod tests {
-    use chrono::Datelike;
-
     use super::*;
 
     #[test]
     fn relative_dates() {
-        let d = NaiveDate::from_ymd_opt(2026, 11, 3).unwrap();
+        let d = dates::ymd_opt(2026, 11, 3).unwrap();
         assert_eq!(relative(d, d), "today");
-        assert_eq!(relative(d.succ_opt().unwrap(), d), "tomorrow");
-        assert_eq!(relative(d - chrono::Duration::days(3), d), "3 days ago");
-        assert_eq!(relative(d + chrono::Duration::days(3), d), "Friday");
-        assert_eq!(relative(d + chrono::Duration::days(20), d), "Mon 23 Nov");
-        assert_eq!(d.weekday(), chrono::Weekday::Tue);
+        assert_eq!(relative(d.tomorrow().unwrap(), d), "tomorrow");
+        assert_eq!(relative(dates::plus_days(d, -(3)), d), "3 days ago");
+        assert_eq!(relative(dates::plus_days(d, 3), d), "Friday");
+        assert_eq!(relative(dates::plus_days(d, 20), d), "Mon 23 Nov");
+        assert_eq!(d.weekday(), dates::Weekday::Tuesday);
     }
 }

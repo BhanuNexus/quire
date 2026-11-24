@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Quick capture: a thought, appended to today's daily note with the time.
 
-use chrono::{DateTime, Local};
+use quire_base::dates::{self, Zoned};
 use quire_text::{EditKind, Transaction};
 use quire_vault::{NotePath, Vault};
 
@@ -11,10 +11,10 @@ use crate::workspace::NoticeLevel;
 
 /// `text` as a list item stamped with the time: `- 14:05 text`, with any
 /// further lines indented under it.
-pub fn capture_entry(text: &str, at: DateTime<Local>) -> String {
+pub fn capture_entry(text: &str, at: &Zoned) -> String {
     let mut lines = text.trim().lines();
     let first = lines.next().unwrap_or_default();
-    let mut out = format!("- {} {first}", at.format("%H:%M"));
+    let mut out = format!("- {} {first}", dates::fmt_zoned(at, "%H:%M"));
     for l in lines {
         out.push_str("\n  ");
         out.push_str(l);
@@ -78,11 +78,11 @@ pub fn append_entry(existing: &str, entry: &str) -> String {
 
 /// Append to today's daily note on disk (creating it from the daily
 /// template if needed). For the command line, where no note is open.
-pub fn capture_to_vault(vault: &Vault, text: &str, at: DateTime<Local>) -> Result<NotePath, String> {
+pub fn capture_to_vault(vault: &Vault, text: &str, at: &Zoned) -> Result<NotePath, String> {
     if text.trim().is_empty() {
         return Err("nothing to capture".into());
     }
-    let (path, _) = vault.daily_note(quire_base::dates::bridge::date(at.date_naive())).map_err(|e| e.to_string())?;
+    let (path, _) = vault.daily_note(at.date()).map_err(|e| e.to_string())?;
     let current = vault.read(&path).map_err(|e| e.to_string())?;
     vault.write(&path, &append_entry(&current, &capture_entry(text, at))).map_err(|e| e.to_string())?;
     Ok(path)
@@ -90,7 +90,7 @@ pub fn capture_to_vault(vault: &Vault, text: &str, at: DateTime<Local>) -> Resul
 
 /// [`capture_to_vault`] at the current local time.
 pub fn capture_now(vault: &Vault, text: &str) -> Result<NotePath, String> {
-    capture_to_vault(vault, text, Local::now())
+    capture_to_vault(vault, text, &dates::now_local())
 }
 
 impl Workspace {
@@ -101,16 +101,16 @@ impl Workspace {
         if text.trim().is_empty() {
             return None;
         }
-        let now = Local::now();
+        let now = dates::now_local();
         let vault = self.vault()?.clone();
-        let (path, _) = match vault.daily_note(quire_base::dates::bridge::date(now.date_naive())) {
+        let (path, _) = match vault.daily_note(now.date()) {
             Ok(r) => r,
             Err(e) => {
                 self.notify(NoticeLevel::Error, format!("Couldn't capture: {e}"));
                 return None;
             }
         };
-        let entry = capture_entry(text, now);
+        let entry = capture_entry(text, &now);
         if let Some(doc) = self.docs.iter_mut().find(|d| d.path.as_ref() == Some(&path)) {
             let (range, insert) = placement(&doc.text(), &entry);
             let (a, b) = (doc.byte_to_char(range.start), doc.byte_to_char(range.end));
@@ -140,12 +140,11 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
 
     #[test]
     fn entries_are_stamped_and_indented() {
-        let at = Local.with_ymd_and_hms(2026, 11, 2, 9, 5, 0).unwrap();
-        assert_eq!(capture_entry("  Call Asha\nabout the budget \n", at), "- 09:05 Call Asha\n  about the budget");
+        let at = dates::at_offset(dates::ymd_opt(2026, 11, 2).unwrap().at(9, 5, 0, 0), 3600).unwrap();
+        assert_eq!(capture_entry("  Call Asha\nabout the budget \n", &at), "- 09:05 Call Asha\n  about the budget");
         assert_eq!(append_entry("# Day", "- x"), "# Day\n- x\n");
         assert_eq!(append_entry("# Day\n", "- x"), "# Day\n- x\n");
         assert_eq!(append_entry("", "- x"), "- x\n");
@@ -186,7 +185,7 @@ mod tests {
         assert_eq!(&doc.text()[caret_byte..caret_byte + 5], "typed");
         assert!(ws.capture("   ").is_none());
         // Command line path.
-        let p2 = capture_to_vault(ws.vault().unwrap(), "from the terminal", Local::now()).unwrap();
+        let p2 = capture_to_vault(ws.vault().unwrap(), "from the terminal", &dates::now_local()).unwrap();
         assert_eq!(p, p2);
     }
 }

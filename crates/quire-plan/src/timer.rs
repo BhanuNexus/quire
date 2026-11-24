@@ -8,7 +8,7 @@
 //! it. Nothing reaches the vault until the timer stops (or a pomodoro's work
 //! session ends): then one time entry is written to the task.
 
-use chrono::{DateTime, Duration, FixedOffset};
+use quire_base::dates::{self, Zoned};
 use serde::{Deserialize, Serialize};
 
 use crate::task_note::PomodoroPrefs;
@@ -214,7 +214,7 @@ pub struct Transition {
 }
 
 impl Running {
-    pub fn new(vault: String, task: TaskRef, now: DateTime<FixedOffset>, pomodoro: bool) -> Self {
+    pub fn new(vault: String, task: TaskRef, now: &Zoned, pomodoro: bool) -> Self {
         let now_s = time::format_instant(now);
         Self {
             format: 1,
@@ -227,8 +227,8 @@ impl Running {
         }
     }
 
-    pub fn started_at(&self) -> Option<DateTime<FixedOffset>> {
-        DateTime::parse_from_rfc3339(&self.started).ok()
+    pub fn started_at(&self) -> Option<Zoned> {
+        dates::zoned_rfc3339(&self.started)
     }
 
     /// Whether time is being counted now (not a pomodoro break, nor a
@@ -238,27 +238,27 @@ impl Running {
     }
 
     /// When an unlogged session ended.
-    pub fn unlogged_at(&self) -> Option<DateTime<FixedOffset>> {
-        DateTime::parse_from_rfc3339(self.unlogged.as_deref()?).ok()
+    pub fn unlogged_at(&self) -> Option<Zoned> {
+        dates::zoned_rfc3339(self.unlogged.as_deref()?)
     }
 
     /// Stop: the session to record (nothing during a pomodoro break). An
     /// unlogged session ends when it stopped, not `now`.
-    pub fn stop(&self, now: DateTime<FixedOffset>) -> Option<TimeEntry> {
+    pub fn stop(&self, now: &Zoned) -> Option<TimeEntry> {
         let start = self.started_at()?;
         if let Some(end) = self.unlogged_at() {
-            return Some(time::session(time::trunc_seconds(start), time::trunc_seconds(end)));
+            return Some(time::session(time::trunc_seconds(&start), time::trunc_seconds(&end)));
         }
         if !self.working() {
             return None;
         }
-        Some(time::session(time::trunc_seconds(start), time::trunc_seconds(now)))
+        Some(time::session(time::trunc_seconds(&start), time::trunc_seconds(now)))
     }
 
     /// Keep `entry` as an unlogged session: no pomodoro, not counting.
     pub fn keep_unlogged(&mut self, entry: &TimeEntry) {
-        self.started = time::format_instant(entry.start);
-        self.unlogged = Some(time::format_instant(entry.end.unwrap_or(entry.start)));
+        self.started = time::format_instant(&entry.start);
+        self.unlogged = Some(time::format_instant(entry.end.as_ref().unwrap_or(&entry.start)));
         self.pomodoro = None;
     }
 
@@ -269,20 +269,20 @@ impl Running {
     }
 
     /// The current phase and when it ends, for a pomodoro.
-    pub fn phase_end(&self, prefs: &PomodoroPrefs) -> Option<(Phase, DateTime<FixedOffset>)> {
+    pub fn phase_end(&self, prefs: &PomodoroPrefs) -> Option<(Phase, Zoned)> {
         let p = self.pomodoro.as_ref()?;
-        let start = DateTime::parse_from_rfc3339(&p.phase_started).ok()?;
-        Some((p.phase, start + Duration::minutes(i64::from(p.phase.minutes(prefs)))))
+        let start = dates::zoned_rfc3339(&p.phase_started)?;
+        Some((p.phase, dates::plus_seconds(&start, 60 * i64::from(p.phase.minutes(prefs)))?))
     }
 
     /// Seconds shown on the clock: counting up, or down to the end of a pomodoro phase.
-    pub fn clock_seconds(&self, now: DateTime<FixedOffset>, prefs: &PomodoroPrefs) -> i64 {
+    pub fn clock_seconds(&self, now: &Zoned, prefs: &PomodoroPrefs) -> i64 {
         if let (Some(s), Some(e)) = (self.started_at(), self.unlogged_at()) {
-            return (e - s).num_seconds().max(0);
+            return dates::seconds_between(&s, &e).max(0);
         }
         match self.phase_end(prefs) {
-            Some((_, end)) => (end - now).num_seconds().max(0),
-            None => self.started_at().map_or(0, |s| (now - s).num_seconds().max(0)),
+            Some((_, end)) => dates::seconds_between(now, &end).max(0),
+            None => self.started_at().map_or(0, |s| dates::seconds_between(&s, now).max(0)),
         }
     }
 
@@ -290,19 +290,19 @@ impl Running {
     /// call: a timer left overnight records only the work session that
     /// ended, and the break after it, already over, starts work again from
     /// `now` (the app calls this every second).
-    pub fn advance(&mut self, now: DateTime<FixedOffset>, prefs: &PomodoroPrefs) -> Option<Transition> {
+    pub fn advance(&mut self, now: &Zoned, prefs: &PomodoroPrefs) -> Option<Transition> {
         if self.unlogged.is_some() {
             return None;
         }
         let (phase, end) = self.phase_end(prefs)?;
-        if now < end {
+        if *now < end {
             return None;
         }
         let p = self.pomodoro.as_mut()?;
-        let end_s = time::format_instant(end);
+        let end_s = time::format_instant(&end);
         match phase {
             Phase::Work => {
-                let start = DateTime::parse_from_rfc3339(&self.started).ok().unwrap_or(end);
+                let start = dates::zoned_rfc3339(&self.started).unwrap_or_else(|| end.clone());
                 p.done += 1;
                 let next =
                     if prefs.long_every > 0 && p.done.is_multiple_of(prefs.long_every) { Phase::LongBreak } else { Phase::ShortBreak };
@@ -313,7 +313,8 @@ impl Running {
             Phase::ShortBreak | Phase::LongBreak => {
                 // A break that ended long ago (Quire was closed): work starts
                 // now, not when nobody was there to do it.
-                let start = if now - end > Duration::minutes(1) { time::format_instant(now) } else { end_s };
+                let late = now.timestamp().as_nanosecond() - end.timestamp().as_nanosecond();
+                let start = if late > 60_000_000_000 { time::format_instant(now) } else { end_s };
                 p.phase = Phase::Work;
                 p.phase_started.clone_from(&start);
                 self.started = start;
@@ -351,7 +352,7 @@ pub fn record_entry(src: &str, task: &TaskRef, entry: &TimeEntry, style: time::S
     let (start, line) = find_task_line(src, task)?;
     let marker = quire_markdown::tasks::marker_in_line(line)?;
     let old = quire_markdown::tasks::inline_field(line, marker, "time");
-    let now = entry.end.unwrap_or(entry.start);
+    let now = entry.end.as_ref().unwrap_or(&entry.start);
     let total = time::add_to_total(old.as_deref(), entry.minutes(now));
     let new_line = quire_markdown::tasks::set_inline_field(line, marker, "time", Some(&total));
     Some(format!("{}{new_line}{}", &src[..start], &src[start + line.len()..]))
@@ -400,8 +401,8 @@ pub fn find_task_line<'a>(src: &'a str, task: &TaskRef) -> Option<(usize, &'a st
 mod tests {
     use super::*;
 
-    fn at(s: &str) -> DateTime<FixedOffset> {
-        DateTime::parse_from_rfc3339(s).unwrap()
+    fn at(s: &str) -> Zoned {
+        dates::zoned_rfc3339(s).unwrap()
     }
 
     fn task() -> TaskRef {
@@ -410,40 +411,40 @@ mod tests {
 
     #[test]
     fn plain_timer_records_one_session() {
-        let r = Running::new("/v".into(), task(), at("2026-11-06T10:00:00.250+01:00"), false);
+        let r = Running::new("/v".into(), task(), &at("2026-11-06T10:00:00.250+01:00"), false);
         let json = serde_json::to_string(&r).unwrap();
         let back: Running = serde_json::from_str(&json).unwrap();
         assert_eq!(back, r, "survives a restart");
-        let e = back.stop(at("2026-11-06T10:25:09.900+01:00")).unwrap();
-        assert_eq!(time::format_instant(e.start), "2026-11-06T10:00:00+01:00");
-        assert_eq!(e.minutes(at("2027-01-01T00:00:00Z")), 25);
-        assert_eq!(back.clock_seconds(at("2026-11-06T10:01:05+01:00"), &PomodoroPrefs::default()), 65, "whole seconds are kept");
+        let e = back.stop(&at("2026-11-06T10:25:09.900+01:00")).unwrap();
+        assert_eq!(time::format_instant(&e.start), "2026-11-06T10:00:00+01:00");
+        assert_eq!(e.minutes(&at("2027-01-01T00:00:00Z")), 25);
+        assert_eq!(back.clock_seconds(&at("2026-11-06T10:01:05+01:00"), &PomodoroPrefs::default()), 65, "whole seconds are kept");
     }
 
     #[test]
     fn pomodoro_cycles() {
         let prefs = PomodoroPrefs { long_every: 2, ..PomodoroPrefs::default() };
-        let mut r = Running::new("/v".into(), task(), at("2026-11-06T10:00:00+01:00"), true);
-        assert!(r.advance(at("2026-11-06T10:24:59+01:00"), &prefs).is_none());
-        assert_eq!(r.clock_seconds(at("2026-11-06T10:24:00+01:00"), &prefs), 60);
-        let t = r.advance(at("2026-11-06T10:25:01+01:00"), &prefs).unwrap();
+        let mut r = Running::new("/v".into(), task(), &at("2026-11-06T10:00:00+01:00"), true);
+        assert!(r.advance(&at("2026-11-06T10:24:59+01:00"), &prefs).is_none());
+        assert_eq!(r.clock_seconds(&at("2026-11-06T10:24:00+01:00"), &prefs), 60);
+        let t = r.advance(&at("2026-11-06T10:25:01+01:00"), &prefs).unwrap();
         assert_eq!((t.finished, t.next, t.stopped), (Phase::Work, Phase::ShortBreak, false));
-        assert_eq!(t.record.unwrap().minutes(at("2027-01-01T00:00:00Z")), 25);
-        assert!(!r.working() && r.stop(at("2026-11-06T10:26:00+01:00")).is_none(), "breaks aren't recorded");
-        let t = r.advance(at("2026-11-06T10:30:00+01:00"), &prefs).unwrap();
+        assert_eq!(t.record.unwrap().minutes(&at("2027-01-01T00:00:00Z")), 25);
+        assert!(!r.working() && r.stop(&at("2026-11-06T10:26:00+01:00")).is_none(), "breaks aren't recorded");
+        let t = r.advance(&at("2026-11-06T10:30:00+01:00"), &prefs).unwrap();
         assert_eq!((t.finished, t.next, t.record), (Phase::ShortBreak, Phase::Work, None));
         assert_eq!(r.started, "2026-11-06T10:30:00+01:00");
-        let t = r.advance(at("2026-11-06T10:55:00+01:00"), &prefs).unwrap();
+        let t = r.advance(&at("2026-11-06T10:55:00+01:00"), &prefs).unwrap();
         assert_eq!(t.next, Phase::LongBreak, "every second session with long_every = 2");
         // After a restart long past the break: one phase per call.
-        let t = r.advance(at("2026-11-06T18:00:00+01:00"), &prefs).unwrap();
+        let t = r.advance(&at("2026-11-06T18:00:00+01:00"), &prefs).unwrap();
         assert_eq!(t.next, Phase::Work);
         assert_eq!(r.started, "2026-11-06T18:00:00+01:00", "work resumes now, not at 11:10");
-        assert!(r.advance(at("2026-11-06T18:00:01+01:00"), &prefs).is_none());
+        assert!(r.advance(&at("2026-11-06T18:00:01+01:00"), &prefs).is_none());
         let off = PomodoroPrefs { auto_continue: false, ..prefs };
-        let mut r = Running::new("/v".into(), task(), at("2026-11-06T10:00:00+01:00"), true);
-        r.advance(at("2026-11-06T10:25:00+01:00"), &off);
-        assert!(r.advance(at("2026-11-06T10:30:00+01:00"), &off).unwrap().stopped);
+        let mut r = Running::new("/v".into(), task(), &at("2026-11-06T10:00:00+01:00"), true);
+        r.advance(&at("2026-11-06T10:25:00+01:00"), &off);
+        assert!(r.advance(&at("2026-11-06T10:30:00+01:00"), &off).unwrap().stopped);
     }
 
     #[test]
@@ -460,9 +461,8 @@ mod tests {
         let out = record_entry(tn, &task(), &e, time::Style::Quire).unwrap();
         assert!(out.ends_with("    endTime: \"2026-11-05T09:30:00.000Z\"\n  - startTime: 2026-11-06T10:00:00+01:00\n    endTime: 2026-11-06T10:25:00+01:00\n---\n"), "{out}");
         let props = quire_markdown::frontmatter::parse(&out).unwrap().fields;
-        let n =
-            crate::task_note::read(&props, "x", &crate::task_note::TaskPrefs::default(), at("2026-01-01T00:00:00Z").timezone()).unwrap();
-        assert_eq!(n.spent(at("2027-01-01T00:00:00Z")), 55);
+        let n = crate::task_note::read(&props, "x", &crate::task_note::TaskPrefs::default(), 0).unwrap();
+        assert_eq!(n.spent(&at("2027-01-01T00:00:00Z")), 55);
         // Inline: the total grows; other lines and fields stay.
         let src = "# Day\n- [x] Call Bo [time:: 5m]\n- [ ] Call Bo 📅 2026-11-07 [time:: 1h]\n- [ ] Other\n";
         let inline = TaskRef { path: "Day.md".into(), line: Some("Call Bo".into()), title: "Call Bo".into(), at: None };
@@ -504,7 +504,7 @@ mod tests {
     #[test]
     fn a_locked_task_keeps_no_words() {
         let t = TaskRef::inline("Journal/Day.md", 2, "- [ ] Tell Sam about the diagnosis", true).unwrap();
-        let json = serde_json::to_string(&Running::new("/v".into(), t.clone(), at("2026-11-06T10:00:00+01:00"), false)).unwrap();
+        let json = serde_json::to_string(&Running::new("/v".into(), t.clone(), &at("2026-11-06T10:00:00+01:00"), false)).unwrap();
         assert!(!json.contains("Sam") && !json.contains("diagnosis"), "{json}");
         assert_eq!(t.title, "a task in Day");
         assert!(t.is_inline() && t.matches_text("Tell Sam about the diagnosis"));
@@ -518,14 +518,14 @@ mod tests {
     /// own end, and doesn't count on.
     #[test]
     fn an_unlogged_session_keeps_its_end() {
-        let mut r = Running::new("/v".into(), task(), at("2026-11-06T10:00:00+01:00"), true);
+        let mut r = Running::new("/v".into(), task(), &at("2026-11-06T10:00:00+01:00"), true);
         let e = time::session(at("2026-11-06T10:00:00+01:00"), at("2026-11-06T10:25:00+01:00"));
         r.keep_unlogged(&e);
         assert!(!r.working() && r.pomodoro.is_none());
         let later = at("2026-11-06T18:00:00+01:00");
-        assert_eq!(r.stop(later).unwrap(), e);
-        assert_eq!(r.clock_seconds(later, &PomodoroPrefs::default()), 25 * 60);
-        assert!(r.advance(later, &PomodoroPrefs::default()).is_none());
+        assert_eq!(r.stop(&later).unwrap(), e);
+        assert_eq!(r.clock_seconds(&later, &PomodoroPrefs::default()), 25 * 60);
+        assert!(r.advance(&later, &PomodoroPrefs::default()).is_none());
         let back: Running = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
         assert!(back.same_timer(&r));
     }

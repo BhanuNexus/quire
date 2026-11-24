@@ -37,7 +37,6 @@ quire-typeset = { workspace = true, optional = true }
 egui = { workspace = true, features = ["monochrome_emoji_fonts"] }
 egui_commonmark.workspace = true
 rfd.workspace = true
-chrono.workspace = true
 directories.workspace = true
 egui_extras.workspace = true
 image.workspace = true

@@ -18,28 +18,27 @@
 
 use std::fmt::Write as _;
 
-use chrono::{DateTime, Duration, FixedOffset, NaiveDate, NaiveDateTime, TimeZone};
+use quire_base::dates::{self, Date, TimeZone, Zoned};
 
 /// One work session. `end` is `None` while it runs (TaskNotes writes an
 /// entry without `endTime` for a running timer).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimeEntry {
-    pub start: DateTime<FixedOffset>,
-    pub end: Option<DateTime<FixedOffset>>,
+    pub start: Zoned,
+    pub end: Option<Zoned>,
     pub description: Option<String>,
 }
 
 impl TimeEntry {
     /// Whole minutes in the session (an open one counts up to `now`, a
     /// backwards one counts nothing).
-    pub fn minutes(&self, now: DateTime<FixedOffset>) -> u32 {
-        let end = self.end.unwrap_or(now);
-        u32::try_from((end - self.start).num_seconds().max(0) / 60).unwrap_or(u32::MAX)
+    pub fn minutes(&self, now: &Zoned) -> u32 {
+        u32::try_from(self.seconds(now) / 60).unwrap_or(u32::MAX)
     }
 
     /// Seconds in the session, as [`Self::minutes`].
-    pub fn seconds(&self, now: DateTime<FixedOffset>) -> i64 {
-        (self.end.unwrap_or(now) - self.start).num_seconds().max(0)
+    pub fn seconds(&self, now: &Zoned) -> i64 {
+        dates::seconds_between(&self.start, self.end.as_ref().unwrap_or(now)).max(0)
     }
 }
 
@@ -70,24 +69,25 @@ impl Style {
 }
 
 /// `2026-11-06T10:00:00+01:00`.
-pub fn format_instant(t: DateTime<FixedOffset>) -> String {
-    t.format("%Y-%m-%dT%H:%M:%S%:z").to_string()
+pub fn format_instant(t: &Zoned) -> String {
+    dates::fmt_zoned(t, "%Y-%m-%dT%H:%M:%S%:z")
 }
 
 /// An instant: RFC 3339 (`2026-11-06T10:00:00+01:00`, `…Z`), or a local
-/// date and time without an offset (`2026-11-06 10:00`), read in `offset`.
-pub fn parse_instant(s: &str, offset: FixedOffset) -> Option<DateTime<FixedOffset>> {
+/// date and time without an offset (`2026-11-06 10:00`), read at
+/// `offset_seconds` east of UTC.
+pub fn parse_instant(s: &str, offset_seconds: i32) -> Option<Zoned> {
     let s = s.trim().trim_matches(['"', '\'']);
-    if let Ok(t) = DateTime::parse_from_rfc3339(s) {
-        return Some(t);
+    if let Ok((dt, off)) = dates::parse_rfc3339(s) {
+        return dates::at_offset(dt, off);
     }
     // Minutes only: `2026-11-06T10:00+01:00`.
-    if let Ok(t) = DateTime::parse_from_str(s, "%Y-%m-%dT%H:%M%:z") {
-        return Some(t);
+    if let Ok((dt, off)) = dates::parse_with_offset(s, "%Y-%m-%dT%H:%M%:z") {
+        return dates::at_offset(dt, off);
     }
     for f in ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"] {
-        if let Ok(n) = NaiveDateTime::parse_from_str(s, f) {
-            return offset.from_local_datetime(&n).single();
+        if let Ok(n) = dates::parse_datetime(s, f) {
+            return dates::at_offset(n, offset_seconds);
         }
     }
     None
@@ -96,8 +96,8 @@ pub fn parse_instant(s: &str, offset: FixedOffset) -> Option<DateTime<FixedOffse
 /// The YAML of one entry, without the list dash: `start: …` / `end: …`.
 pub fn entry_yaml(e: &TimeEntry, style: Style) -> String {
     let (sk, ek) = style.keys();
-    let mut s = format!("{sk}: {}", format_instant(e.start));
-    if let Some(end) = e.end {
+    let mut s = format!("{sk}: {}", format_instant(&e.start));
+    if let Some(end) = &e.end {
         let _ = write!(s, "\n{ek}: {}", format_instant(end));
     }
     if let Some(d) = e.description.as_deref().filter(|d| !d.trim().is_empty()) {
@@ -143,7 +143,7 @@ fn item_pairs(lines: &[&str]) -> Vec<(String, String)> {
 /// [`field_text`](quire_markdown::frontmatter::field_text) gives it. Items
 /// without a readable start are skipped. `offset` is used for instants
 /// written without one.
-pub fn parse_entries(raw: &str, offset: FixedOffset) -> Vec<TimeEntry> {
+pub fn parse_entries(raw: &str, offset_seconds: i32) -> Vec<TimeEntry> {
     let lines: Vec<&str> = raw.lines().filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#')).collect();
     // The dash column of the items: the least-indented `- ` line.
     let Some(dash) = lines.iter().filter(|l| l.trim_start().starts_with('-')).map(|l| l.len() - l.trim_start().len()).min() else {
@@ -165,8 +165,8 @@ pub fn parse_entries(raw: &str, offset: FixedOffset) -> Vec<TimeEntry> {
         .filter_map(|it| {
             let pairs = item_pairs(it);
             let get = |keys: &[&str]| pairs.iter().find(|(k, _)| keys.iter().any(|w| k.eq_ignore_ascii_case(w))).map(|(_, v)| v.as_str());
-            let start = parse_instant(get(&["start", "startTime"])?, offset)?;
-            let end = get(&["end", "endTime"]).filter(|v| !v.is_empty() && *v != "null").and_then(|v| parse_instant(v, offset));
+            let start = parse_instant(get(&["start", "startTime"])?, offset_seconds)?;
+            let end = get(&["end", "endTime"]).filter(|v| !v.is_empty() && *v != "null").and_then(|v| parse_instant(v, offset_seconds));
             let description = get(&["description", "note"]).filter(|d| !d.is_empty()).map(str::to_string);
             Some(TimeEntry { start, end, description })
         })
@@ -246,7 +246,7 @@ pub fn format_clock(seconds: i64) -> String {
 }
 
 /// Minutes in all of `entries`, open ones counting up to `now`.
-pub fn total_minutes(entries: &[TimeEntry], now: DateTime<FixedOffset>) -> u32 {
+pub fn total_minutes(entries: &[TimeEntry], now: &Zoned) -> u32 {
     let secs: i64 = entries.iter().map(|e| e.seconds(now)).sum();
     u32::try_from(secs / 60).unwrap_or(u32::MAX)
 }
@@ -257,15 +257,15 @@ pub fn total_minutes(entries: &[TimeEntry], now: DateTime<FixedOffset>) -> u32 {
 /// does, counts on the day it was there (0.11 review L6), and a session
 /// past midnight counts on both days. Midnights are found in `tz`, so a DST
 /// change is followed.
-pub fn split_by_day<Tz: TimeZone>(e: &TimeEntry, now: DateTime<FixedOffset>, tz: &Tz) -> Vec<(NaiveDate, i64)> {
-    let end = e.end.unwrap_or(now).with_timezone(tz);
+pub fn split_by_day(e: &TimeEntry, now: &Zoned, tz: &TimeZone) -> Vec<(Date, i64)> {
+    let end = e.end.as_ref().unwrap_or(now).with_time_zone(tz.clone());
     let mut out = Vec::new();
-    let mut at = e.start.with_timezone(tz);
+    let mut at = e.start.with_time_zone(tz.clone());
     while at < end {
-        let day = at.date_naive();
-        let next_midnight = day.succ_opt().and_then(|d| d.and_hms_opt(0, 0, 0)).and_then(|n| tz.from_local_datetime(&n).earliest());
+        let day = at.date();
+        let next_midnight = day.tomorrow().ok().and_then(|d| dates::earliest_in(tz, d.at(0, 0, 0, 0)));
         let stop = next_midnight.map_or_else(|| end.clone(), |m| m.min(end.clone()));
-        out.push((day, (stop.clone() - at.clone()).num_seconds()));
+        out.push((day, dates::seconds_between(&at, &stop)));
         if stop <= at {
             break;
         }
@@ -287,7 +287,7 @@ pub struct ReportRow {
 /// Time spent per task and day in the week starting `monday`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WeekReport {
-    pub monday: Option<NaiveDate>,
+    pub monday: Option<Date>,
     /// Most time first.
     pub rows: Vec<ReportRow>,
     /// Minutes per day across all tasks.
@@ -296,13 +296,13 @@ pub struct WeekReport {
 }
 
 /// The weekly report over `(path, title, entries)`, days in `tz` (pass
-/// `&chrono::Local`). Seconds are summed per day before rounding down to
-/// minutes.
-pub fn week_report<'a, Tz: TimeZone>(
+/// `&TimeZone::system()`). Seconds are summed per day before rounding down
+/// to minutes.
+pub fn week_report<'a>(
     tasks: impl IntoIterator<Item = (&'a str, &'a str, &'a [TimeEntry])>,
-    monday: NaiveDate,
-    now: DateTime<FixedOffset>,
-    tz: &Tz,
+    monday: Date,
+    now: &Zoned,
+    tz: &TimeZone,
 ) -> WeekReport {
     let mut rows = Vec::new();
     let mut day_secs = [0i64; 7];
@@ -310,7 +310,7 @@ pub fn week_report<'a, Tz: TimeZone>(
         let mut secs = [0i64; 7];
         for e in entries {
             for (d, s) in split_by_day(e, now, tz) {
-                let i = (d - monday).num_days();
+                let i = dates::days_between(monday, d);
                 if (0..7).contains(&i) {
                     secs[i as usize] += s;
                 }
@@ -333,8 +333,9 @@ pub fn week_report<'a, Tz: TimeZone>(
 }
 
 /// An entry from `start` to `end`, the length of a stopped timer.
-pub fn session(start: DateTime<FixedOffset>, end: DateTime<FixedOffset>) -> TimeEntry {
-    TimeEntry { start, end: Some(end.max(start)), description: None }
+pub fn session(start: Zoned, end: Zoned) -> TimeEntry {
+    let end = if end < start { start.clone() } else { end };
+    TimeEntry { start, end: Some(end), description: None }
 }
 
 /// Add `minutes` to an inline total (`[time:: 1h25m]`); an unreadable old
@@ -344,20 +345,28 @@ pub fn add_to_total(old: Option<&str>, minutes: u32) -> String {
 }
 
 /// Round a session down to whole seconds (front matter keeps seconds).
-pub fn trunc_seconds(t: DateTime<FixedOffset>) -> DateTime<FixedOffset> {
-    t - Duration::nanoseconds(i64::from(t.timestamp_subsec_nanos()))
+pub fn trunc_seconds(t: &Zoned) -> Zoned {
+    let ts = t.timestamp();
+    // Down to the second before, also before 1970 (chrono's `timestamp_subsec_nanos` is never negative).
+    let whole = ts.as_second() - i64::from(ts.subsec_nanosecond() < 0);
+    dates::Timestamp::from_second(whole).map_or_else(|_| t.clone(), |s| s.to_zoned(t.time_zone().clone()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn off(h: i32) -> FixedOffset {
-        FixedOffset::east_opt(h * 3600).unwrap()
+    fn off(h: i32) -> i32 {
+        h * 3600
     }
 
-    fn at(s: &str) -> DateTime<FixedOffset> {
-        DateTime::parse_from_rfc3339(s).unwrap()
+    fn tz(seconds: i32) -> TimeZone {
+        TimeZone::fixed(dates::Offset::from_seconds(seconds).unwrap())
+    }
+
+    fn at(s: &str) -> Zoned {
+        let (dt, o) = dates::parse_rfc3339(s).unwrap();
+        dates::at_offset(dt, o).unwrap()
     }
 
     #[test]
@@ -365,16 +374,16 @@ mod tests {
         let raw = "  - start: 2026-11-06T10:00:00+01:00\n    end: \"2026-11-06T10:25:00+01:00\"\n  - {startTime: 2026-11-06T09:00:00Z, endTime: 2026-11-06T09:30:00Z, description: standup}\n  - startTime: \"2026-11-06T12:00:00Z\"\n  - end: 2026-11-06T13:00:00Z\n";
         let e = parse_entries(raw, off(1));
         assert_eq!(e.len(), 3, "the item without a start is skipped");
-        assert_eq!(e[0].minutes(at("2026-11-07T00:00:00Z")), 25);
+        assert_eq!(e[0].minutes(&at("2026-11-07T00:00:00Z")), 25);
         assert_eq!(e[1].description.as_deref(), Some("standup"));
-        assert_eq!(e[1].minutes(at("2026-11-07T00:00:00Z")), 30);
+        assert_eq!(e[1].minutes(&at("2026-11-07T00:00:00Z")), 30);
         assert!(e[2].end.is_none(), "a running TaskNotes entry");
-        assert_eq!(e[2].minutes(at("2026-11-06T12:10:00Z")), 10);
+        assert_eq!(e[2].minutes(&at("2026-11-06T12:10:00Z")), 10);
         // The whole field's text works too (as `field_text` gives it).
         let field = "time_entries:\n  - start: 2026-11-06 10:00\n    end: 2026-11-06 10:45 # meeting\n";
         let e = parse_entries(field, off(2));
         assert_eq!(e[0].start, at("2026-11-06T10:00:00+02:00"));
-        assert_eq!(e[0].minutes(at("2027-01-01T00:00:00Z")), 45);
+        assert_eq!(e[0].minutes(&at("2027-01-01T00:00:00Z")), 45);
     }
 
     #[test]
@@ -419,7 +428,7 @@ mod tests {
 
     #[test]
     fn weekly_report_splits_at_midnight() {
-        let monday = NaiveDate::from_ymd_opt(2026, 11, 2).unwrap();
+        let monday = dates::ymd_opt(2026, 11, 2).unwrap();
         let a = [
             session(at("2026-11-02T23:30:00+01:00"), at("2026-11-03T00:45:00+01:00")),
             session(at("2026-11-08T10:00:00+01:00"), at("2026-11-08T10:10:00+01:00")),
@@ -430,8 +439,8 @@ mod tests {
         let r = week_report(
             [("A.md", "A", &a[..]), ("B.md", "B", &b[..]), ("C.md", "C", &none[..])],
             monday,
-            at("2026-11-10T00:00:00Z"),
-            &off(1),
+            &at("2026-11-10T00:00:00Z"),
+            &tz(off(1)),
         );
         assert_eq!(r.rows.len(), 2);
         assert_eq!(r.rows[0].title, "B");
@@ -448,8 +457,8 @@ mod tests {
     #[test]
     fn weekly_report_at_the_week_boundary() {
         let a = [session(at("2026-11-08T23:47:30+01:00"), at("2026-11-09T00:12:30+01:00"))];
-        let this = week_report([("A.md", "A", &a[..])], NaiveDate::from_ymd_opt(2026, 11, 2).unwrap(), at("2026-11-10T00:00:00Z"), &off(1));
-        let next = week_report([("A.md", "A", &a[..])], NaiveDate::from_ymd_opt(2026, 11, 9).unwrap(), at("2026-11-10T00:00:00Z"), &off(1));
+        let this = week_report([("A.md", "A", &a[..])], dates::ymd_opt(2026, 11, 2).unwrap(), &at("2026-11-10T00:00:00Z"), &tz(off(1)));
+        let next = week_report([("A.md", "A", &a[..])], dates::ymd_opt(2026, 11, 9).unwrap(), &at("2026-11-10T00:00:00Z"), &tz(off(1)));
         assert_eq!((this.total, next.total), (12, 12));
         assert_eq!(this.days[6], 12);
         assert_eq!(next.days[0], 12);
@@ -459,13 +468,13 @@ mod tests {
     /// day it was where the person is, not in UTC.
     #[test]
     fn weekly_report_buckets_in_local_time() {
-        let monday = NaiveDate::from_ymd_opt(2026, 11, 2).unwrap();
+        let monday = dates::ymd_opt(2026, 11, 2).unwrap();
         // 17:00-18:00 on Monday in UTC-8 is 01:00-02:00 on Tuesday in UTC.
         let a = [session(at("2026-11-03T01:00:00Z"), at("2026-11-03T02:00:00Z"))];
-        let pacific = FixedOffset::west_opt(8 * 3600).unwrap();
-        let r = week_report([("A.md", "A", &a[..])], monday, at("2026-11-10T00:00:00Z"), &pacific);
+        let pacific = tz(-8 * 3600);
+        let r = week_report([("A.md", "A", &a[..])], monday, &at("2026-11-10T00:00:00Z"), &pacific);
         assert_eq!(r.days, [60, 0, 0, 0, 0, 0, 0]);
-        let r = week_report([("A.md", "A", &a[..])], monday, at("2026-11-10T00:00:00Z"), &off(0));
+        let r = week_report([("A.md", "A", &a[..])], monday, &at("2026-11-10T00:00:00Z"), &tz(0));
         assert_eq!(r.days, [0, 60, 0, 0, 0, 0, 0]);
     }
 
@@ -481,13 +490,13 @@ mod tests {
             seed % n
         };
         for _ in 0..5_000 {
-            let offset = FixedOffset::east_opt((rnd(27 * 4) as i32 - 12 * 4) * 900).unwrap();
+            let offset = (rnd(27 * 4) as i32 - 12 * 4) * 900;
             let n = 1 + rnd(6) as usize;
             let mut entries = Vec::new();
-            let base = at("2026-01-01T00:00:00Z").with_timezone(&offset);
+            let base = at("2026-01-01T00:00:00Z").with_time_zone(tz(offset));
             for _ in 0..n {
-                let start = base + Duration::seconds(rnd(400 * 86_400) as i64);
-                let end = start + Duration::seconds(rnd(3 * 86_400) as i64);
+                let start = dates::plus_seconds(&base, rnd(400 * 86_400) as i64).unwrap();
+                let end = dates::plus_seconds(&start, rnd(3 * 86_400) as i64).unwrap();
                 entries.push(session(start, end));
             }
             let style = if rnd(2) == 0 { Style::Quire } else { Style::TaskNotes };
@@ -496,23 +505,23 @@ mod tests {
             for e in &entries {
                 let _ = writeln!(raw, "  - {}", entry_yaml(e, style).replace('\n', "\n    "));
             }
-            let back = parse_entries(&raw, FixedOffset::east_opt(0).unwrap());
+            let back = parse_entries(&raw, 0);
             assert_eq!(back, entries, "{raw}");
             // A session's days add up to its length, and none is negative.
-            let now = base + Duration::days(500);
+            let now = dates::plus_seconds(&base, 500 * 86_400).unwrap();
             for e in &entries {
-                let parts = split_by_day(e, now, &offset);
-                assert_eq!(parts.iter().map(|p| p.1).sum::<i64>(), e.seconds(now));
+                let parts = split_by_day(e, &now, &tz(offset));
+                assert_eq!(parts.iter().map(|p| p.1).sum::<i64>(), e.seconds(&now));
                 assert!(parts.iter().all(|p| p.1 >= 0));
                 assert!(parts.windows(2).all(|w| w[0].0 < w[1].0), "days in order");
             }
             // The total is the sum of the parts (within the rounding of each).
-            let total = total_minutes(&entries, now);
-            let sum: u32 = entries.iter().map(|e| e.minutes(now)).sum();
+            let total = total_minutes(&entries, &now);
+            let sum: u32 = entries.iter().map(|e| e.minutes(&now)).sum();
             assert!(total >= sum && total <= sum + n as u32, "{total} vs {sum}");
             // A week's report never counts more than the sessions hold.
-            let monday = NaiveDate::from_ymd_opt(2026, 1, 5).unwrap() + Duration::weeks(rnd(55) as i64);
-            let r = week_report([("t.md", "t", &entries[..])], monday, now, &offset);
+            let monday = dates::plus_days(dates::ymd_opt(2026, 1, 5).unwrap(), 7 * rnd(55) as i64);
+            let r = week_report([("t.md", "t", &entries[..])], monday, &now, &tz(offset));
             assert!(r.total <= total + 7, "{} > {total}", r.total);
             // Durations round-trip.
             let m = rnd(100_000) as u32;

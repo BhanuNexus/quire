@@ -209,8 +209,8 @@ fn token_list(store: &TokenStore, now: i64) -> String {
     let mut s = String::new();
     for r in rows {
         let (kind, who) = if r.kind == Kind::Personal { ("token", r.name.clone()) } else { ("app", format!("{} ({})", r.name, r.client)) };
-        let used = r.last_used.map_or_else(|| "never used".into(), |t| format!("used {}", quire_app::chrono_fmt(t)));
-        let exp = r.expires.map_or_else(|| "no expiry".into(), |t| format!("until {}", quire_app::chrono_fmt(t)));
+        let used = r.last_used.map_or_else(|| "never used".into(), |t| format!("used {}", quire_app::local_time_fmt(t)));
+        let exp = r.expires.map_or_else(|| "no expiry".into(), |t| format!("until {}", quire_app::local_time_fmt(t)));
         let _ = writeln!(s, "{kind:<5} {who}  {}  {used}, {exp}", r.scopes.join(","));
     }
     s

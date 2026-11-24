@@ -10,6 +10,7 @@
 //! before anything is written; the undo keeps edits made since, and turns
 //! the ones it can't merge into a suggestion to review.
 
+use quire_base::dates;
 use std::collections::HashSet;
 
 use egui::{Align2, FontId, Pos2, Rect, RichText, Sense, Stroke, Vec2};
@@ -81,11 +82,7 @@ impl Since {
             Self::Hour => now - HOUR,
             Self::Day => now - DAY,
             Self::Week => now - 7 * DAY,
-            Self::Today => chrono::Local::now()
-                .date_naive()
-                .and_hms_opt(0, 0, 0)
-                .and_then(|d| d.and_local_timezone(chrono::Local).single())
-                .map_or(now - DAY, |d| d.timestamp_millis()),
+            Self::Today => dates::local_single(dates::today().at(0, 0, 0, 0)).map_or(now - DAY, |d| d.timestamp().as_millisecond()),
         }
     }
 }
@@ -229,9 +226,7 @@ fn lanes(ui: &mut egui::Ui, runs: &[&Run], now: i64, range: Range, pal: &Palette
     while t > t0 {
         let x = x_of(t);
         p.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom() - 14.0)], Stroke::new(1.0, pal.border));
-        let label = chrono::DateTime::from_timestamp_millis(t)
-            .map(|d| d.with_timezone(&chrono::Local))
-            .map_or_else(String::new, |d| if range == Range::Day { d.format("%H:%M").to_string() } else { d.format("%d %b").to_string() });
+        let label = dates::fmt_local_ms(t, if range == Range::Day { "%H:%M" } else { "%d %b" }).unwrap_or_default();
         p.text(Pos2::new(x, rect.bottom() - 2.0), Align2::CENTER_BOTTOM, label, FontId::proportional(10.0), pal.faint);
         t -= step;
     }
@@ -392,13 +387,7 @@ fn run_card(ui: &mut egui::Ui, ws: &Workspace, a: &mut ActivityUi, r: &Run, runs
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             let when = if r.end - r.start > 60_000 {
-                format!(
-                    "{}–{}",
-                    short_time(r.start),
-                    chrono::DateTime::from_timestamp_millis(r.end)
-                        .map(|d| d.with_timezone(&chrono::Local).format("%H:%M").to_string())
-                        .unwrap_or_default()
-                )
+                format!("{}–{}", short_time(r.start), dates::fmt_local_ms(r.end, "%H:%M").unwrap_or_default())
             } else {
                 short_time(r.start)
             };
@@ -473,9 +462,7 @@ fn run_card(ui: &mut egui::Ui, ws: &Workspace, a: &mut ActivityUi, r: &Run, runs
             if open {
                 for e in r.events.iter().rev().take(200) {
                     ui.horizontal_wrapped(|ui| {
-                        let t = chrono::DateTime::from_timestamp_millis(e.at)
-                            .map(|d| d.with_timezone(&chrono::Local).format("%H:%M").to_string())
-                            .unwrap_or_default();
+                        let t = dates::fmt_local_ms(e.at, "%H:%M").unwrap_or_default();
                         ui.label(RichText::new(t).size(11.5).color(pal.faint).monospace());
                         ui.label(RichText::new(event_words(e)).size(12.0).color(pal.text));
                         let target = e.to.clone().or_else(|| e.path.clone()).filter(|p| ws.vault().is_some_and(|v| v.exists(p)));

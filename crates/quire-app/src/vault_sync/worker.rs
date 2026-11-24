@@ -6,6 +6,7 @@ use super::{
     PathBuf, Receiver, Report, Sender, Session, SyncConfig, SyncEvent, SyncStatus, Vault, VaultKey, folder, lock_sync, read_key, secrets,
     sync_dir, token_name,
 };
+use quire_base::dates;
 
 /// The background sync thread for one vault.
 pub struct SyncWorker {
@@ -29,7 +30,7 @@ impl Drop for SyncWorker {
 }
 
 pub(super) fn today() -> String {
-    chrono::Local::now().format("%Y-%m-%d").to_string()
+    dates::today_ymd()
 }
 
 /// How often the app syncs without a reason to (a save, another device's change).

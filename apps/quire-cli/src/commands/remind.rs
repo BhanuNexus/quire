@@ -7,6 +7,7 @@
 //! closed" (Settings → Planning) runs this every minute; `--install` and
 //! `--uninstall` do the same from a terminal.
 
+use quire_base::dates;
 use std::path::PathBuf;
 
 use quire_app::remind_bg::{self, Env, FiredLog};
@@ -53,7 +54,7 @@ fn remind(args: &[String]) -> Result<(), String> {
     }
     let vault = quire_app::secure_state::open_vault(&root)?;
     let all = remind_bg::vault_reminders(&vault);
-    let now = chrono::Local::now().naive_local();
+    let now = dates::now_local().datetime();
     // Held from reading the list to saving it, so the app (or another run)
     // can't show the same reminders meanwhile; released before notifying,
     // which can wait on the system.
@@ -66,7 +67,7 @@ fn remind(args: &[String]) -> Result<(), String> {
     }
     drop(lock);
     for r in &due {
-        println!("{}  {}  ({})", r.at.format("%Y-%m-%d %H:%M"), r.text, r.path);
+        println!("{}  {}  ({})", dates::fmt_naive(r.at, "%Y-%m-%d %H:%M"), r.text, r.path);
         if !flag("--dry-run") {
             remind_bg::notify(r);
         }

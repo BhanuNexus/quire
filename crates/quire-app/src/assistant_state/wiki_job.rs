@@ -154,7 +154,7 @@ impl WikiJob {
             }
         }
         let mut lines = Vec::new();
-        let at = crate::chrono_fmt(now);
+        let at = crate::local_time_fmt(now);
         for (from, paths) in accepted.into_values() {
             let n = paths.len();
             lines.push(wiki::log_line(&at, "accepted", &format!("{n} suggestion{} from {from}", if n == 1 { "" } else { "s" }), "", None));

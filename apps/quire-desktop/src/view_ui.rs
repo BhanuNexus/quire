@@ -10,6 +10,7 @@ use quire_app::index::views::{Layout, ViewResult, ViewSpec};
 use quire_app::markdown::Kind;
 use quire_app::properties::parse_input;
 use quire_app::vault::NotePath;
+use quire_base::dates;
 
 use crate::theme::Palette;
 
@@ -260,7 +261,7 @@ const MONTHS: [&str; 12] =
     ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
 fn calendar(ui: &mut Ui, pal: &Palette, r: &ViewResult, key: Id, act: &mut Option<ViewAction>) {
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let today = dates::today_ymd();
     let parse = |s: &str| -> (i32, u32) { (s[..4].parse().unwrap_or(2026), s[5..7].parse().unwrap_or(1)) };
     let mem = key.with("month");
     // Default: the month of the first upcoming dated note, else today.

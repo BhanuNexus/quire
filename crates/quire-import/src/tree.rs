@@ -75,8 +75,10 @@ pub(crate) fn clean_path(raw: &str, limits: &Limits) -> Result<String, &'static 
 /// Unix seconds of a zip entry's time (the zip format has no zone: read as UTC).
 fn zip_time(t: Option<zip::DateTime>) -> Option<i64> {
     let t = t?;
-    let d = chrono::NaiveDate::from_ymd_opt(i32::from(t.year()), u32::from(t.month()), u32::from(t.day()))?;
-    Some(d.and_hms_opt(u32::from(t.hour()), u32::from(t.minute()), u32::from(t.second()))?.and_utc().timestamp())
+    let n = |v: u8| i8::try_from(v).ok();
+    let d = quire_base::dates::ymd_opt(i32::from(t.year()), u32::from(t.month()), u32::from(t.day()))?;
+    let dt = quire_base::dates::DateTime::new(d.year(), d.month(), d.day(), n(t.hour())?, n(t.minute())?, n(t.second())?, 0).ok()?;
+    quire_base::dates::ms_at_offset(dt, 0).map(|ms| ms.div_euclid(1000))
 }
 
 fn system_time(t: std::io::Result<std::time::SystemTime>) -> Option<i64> {

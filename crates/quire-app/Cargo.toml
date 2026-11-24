@@ -29,7 +29,6 @@ quire-index.workspace = true
 # unless the person configures a provider.
 quire-intel = { workspace = true, features = ["remote-llm"] }
 quire-typeset = { workspace = true, optional = true }
-chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true

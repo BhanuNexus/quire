@@ -6,7 +6,7 @@ Two places tell a tool to leave a dependency alone: the advisory ignores in `den
 
 To see what holds a crate: `cargo tree -i <crate>`. When a crate has left the tree, delete its ignore.
 
-## `deny.toml` advisory ignores (13)
+## `deny.toml` advisory ignores (15)
 
 | Advisory | Crate | Why it is ignored | Lift it when |
 |---|---|---|---|
@@ -20,6 +20,7 @@ To see what holds a crate: `cargo tree -i <crate>`. When a crate has left the tr
 | RUSTSEC-2026-0192 | `ttf-parser` | Unmaintained. Via typst, fontdb and mermaid-rs-renderer. | The parents move off it. |
 | RUSTSEC-2024-0449 | `unsafe-libyaml` | Unmaintained. Via typst, hayagriva and serde_yaml; hayagriva YAML bibliographies are not offered. | hayagriva moves off serde_yaml. |
 | RUSTSEC-2024-0320 | `yaml-rust` | Unmaintained. Via typst, syntect and two-face; the syntax definitions are embedded at build time, no user YAML. | syntect or two-face moves off it. |
+| RUSTSEC-2026-0543, -0555 | `chrono`, `chrono-tz` | Unmaintained, no vulnerability. Since 0.14 only dev-dependencies: the oracle of the date format tests (`quire-base`) and the `rrule` recurrence oracle (`quire-plan`); no shipped binary links them (`docs/design/0.14-jiff.md`). | The oracles go, or `rrule` moves off chrono. `packaging/check-layering.py` fails a normal dependency on chrono. |
 
 The ten rows after the zbus family come from the Typst and mitex stack and lift the same way: a release of the parent (Typst, mitex or the crate named) drops the dependency, and the Dependabot "rendering" group raises it. Typst 0.15.1 is the newest release `docs/design/0.13.1-deps.md` checked (2026-11-15). Nothing here is a vulnerability Quire reaches with user input: each row's argument is in `deny.toml`.
 

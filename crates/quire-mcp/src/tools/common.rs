@@ -83,7 +83,7 @@ pub fn note_link(p: &NotePath) -> ResourceLink {
 
 /// Unix ms as RFC 3339 UTC.
 pub fn iso(ms: i64) -> String {
-    chrono::DateTime::from_timestamp_millis(ms).map(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string()).unwrap_or_default()
+    quire_base::dates::fmt_utc_ms(ms, "%Y-%m-%dT%H:%M:%SZ").unwrap_or_default()
 }
 
 /// How every tool describes a time it takes (`docs/design/0.14-agent-tools.md` §3.2).
@@ -115,12 +115,11 @@ pub fn parse_time(s: &str, now_ms: i64) -> Result<i64, String> {
         };
         return n.checked_mul(unit).and_then(|back| now_ms.checked_sub(back)).ok_or_else(|| format!("`{s}` is too far back"));
     }
-    if let Ok(d) = chrono::DateTime::parse_from_rfc3339(s) {
-        return Ok(d.timestamp_millis());
+    if let Some(d) = quire_base::dates::zoned_rfc3339(s) {
+        return Ok(d.timestamp().as_millisecond());
     }
-    quire_base::time::parse_ymd(s)
-        .and_then(|d| d.and_hms_opt(0, 0, 0))
-        .map(|d| d.and_utc().timestamp_millis())
+    quire_base::dates::parse_ymd(s)
+        .and_then(|d| quire_base::dates::ms_at_offset(d.at(0, 0, 0, 0), 0))
         .ok_or_else(|| format!("`{s}` is not a time ({TIME_FORMATS})"))
 }
 
@@ -174,9 +173,9 @@ pub fn time_any(a: &Value, keys: &[&str], now_ms: i64) -> Result<Option<i64>, To
 /// [`time_any`] for the end of a range: a bare date (`YYYY-MM-DD`) takes in
 /// that whole UTC day, so `until: "2026-11-02"` includes the 2nd.
 pub fn until_any(a: &Value, keys: &[&str], now_ms: i64) -> Result<Option<i64>, ToolOutput> {
-    let day = pick(a, keys).and_then(Value::as_str).map(str::trim).and_then(quire_base::time::parse_ymd);
-    match day.and_then(|d| d.succ_opt()).and_then(|d| d.and_hms_opt(0, 0, 0)) {
-        Some(next) => Ok(Some(next.and_utc().timestamp_millis() - 1)),
+    let day = pick(a, keys).and_then(Value::as_str).map(str::trim).and_then(quire_base::dates::parse_ymd);
+    match day.and_then(|d| d.tomorrow().ok()).and_then(|d| quire_base::dates::ms_at_offset(d.at(0, 0, 0, 0), 0)) {
+        Some(next) => Ok(Some(next - 1)),
         None => time_any(a, keys, now_ms),
     }
 }

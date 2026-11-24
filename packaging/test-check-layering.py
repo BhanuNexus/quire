@@ -134,6 +134,13 @@ class Layering(unittest.TestCase):
         packages[1]["dependencies"].append(dep("quire-sync", kind="dev", features=["http"]))
         self.assertEqual(self.run_check(packages, rows, same), [])
 
+    def test_chrono_only_as_a_dev_dependency(self):
+        packages, rows, same = base_world()
+        packages[1]["dependencies"].append(dep("chrono", kind="dev"))  # an oracle test
+        self.assertEqual(self.run_check(packages, rows, same), [])
+        packages[2]["dependencies"].append(dep("chrono"))
+        self.assertOneError(self.run_check(packages, rows, same), "quire-sync depends on chrono", "quire_base::dates")
+
     def test_build_dependencies_count(self):
         packages, rows, same = base_world()
         packages[0]["dependencies"].append(dep("quire-cli", kind="build"))

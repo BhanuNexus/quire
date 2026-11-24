@@ -3,7 +3,7 @@
 //! The agenda: overdue tasks, today's, the next seven days, and today's
 //! time blocks (`docs/design/0.9.md` §E.2).
 
-use chrono::{Duration, NaiveDate, NaiveTime};
+use quire_base::dates::{self, Date, Span, Time};
 use quire_markdown::Task;
 use quire_markdown::tasks::priority_rank;
 
@@ -34,10 +34,10 @@ pub struct AgendaItem {
     pub path: String,
     pub task: Task,
     /// The date that put it on the agenda (due, scheduled or start).
-    pub date: NaiveDate,
+    pub date: Date,
     pub when: When,
     /// For a recurring task: the occurrence after this one.
-    pub next: Option<NaiveDate>,
+    pub next: Option<Date>,
 }
 
 /// A time block (`14:00 - 15:30 Write report`) on today's timeline.
@@ -45,8 +45,8 @@ pub struct AgendaItem {
 pub struct Block {
     pub path: String,
     pub task: Task,
-    pub start: NaiveTime,
-    pub end: NaiveTime,
+    pub start: Time,
+    pub end: Time,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -68,17 +68,17 @@ impl Agenda {
 }
 
 /// `YYYY-MM-DD` (a time after it is ignored).
-pub fn parse_date(s: Option<&str>) -> Option<NaiveDate> {
-    quire_base::time::parse_ymd_prefix(s?)
+pub fn parse_date(s: Option<&str>) -> Option<Date> {
+    dates::parse_ymd_prefix(s?)
 }
 
 /// `H:MM` or `HH:MM`.
-pub fn parse_time(s: &str) -> Option<NaiveTime> {
-    NaiveTime::parse_from_str(s.trim(), "%H:%M").ok()
+pub fn parse_time(s: &str) -> Option<Time> {
+    dates::parse_time_of_day(s.trim(), "%H:%M").ok()
 }
 
 /// The date a task is planned for, and which field it came from.
-pub fn task_date(t: &Task) -> Option<(NaiveDate, When)> {
+pub fn task_date(t: &Task) -> Option<(Date, When)> {
     parse_date(t.due.as_deref())
         .map(|d| (d, When::Due))
         .or_else(|| parse_date(t.scheduled.as_deref()).map(|d| (d, When::Scheduled)))
@@ -86,16 +86,16 @@ pub fn task_date(t: &Task) -> Option<(NaiveDate, When)> {
 }
 
 /// A task's time block as times; a block without an end lasts 30 minutes.
-pub fn block_times(t: &Task) -> Option<(NaiveTime, NaiveTime)> {
+pub fn block_times(t: &Task) -> Option<(Time, Time)> {
     let (a, b) = t.time_block.as_ref()?;
     let start = parse_time(a)?;
-    let end = parse_time(b).filter(|e| *e > start).unwrap_or_else(|| start + Duration::minutes(30));
+    let end = parse_time(b).filter(|e| *e > start).unwrap_or_else(|| start.wrapping_add(Span::new().minutes(30)));
     Some((start, end))
 }
 
 /// Build the agenda for `today` from tasks. `daily_note` is today's daily
 /// note: its time blocks go on the timeline, done or not.
-pub fn build<'a>(tasks: impl IntoIterator<Item = (&'a str, &'a Task)>, today: NaiveDate, daily_note: Option<&str>) -> Agenda {
+pub fn build<'a>(tasks: impl IntoIterator<Item = (&'a str, &'a Task)>, today: Date, daily_note: Option<&str>) -> Agenda {
     let mut agenda = Agenda::default();
     for (path, task) in tasks {
         if let Some((start, end)) = block_times(task)
@@ -109,7 +109,7 @@ pub fn build<'a>(tasks: impl IntoIterator<Item = (&'a str, &'a Task)>, today: Na
         let Some((date, when)) = task_date(task) else { continue };
         let next = task.recurrence.as_deref().and_then(|r| recur::parse(r).ok()).and_then(|r| recur::next_occurrence(&r, date));
         let item = AgendaItem { path: path.to_string(), task: task.clone(), date, when, next };
-        let days = (date - today).num_days();
+        let days = dates::days_between(today, date);
         match (days, when) {
             (..0, When::Due) => agenda.overdue.push(item),
             (..0, When::Scheduled) | (0, _) => agenda.today.push(item),
@@ -140,8 +140,8 @@ pub fn build<'a>(tasks: impl IntoIterator<Item = (&'a str, &'a Task)>, today: Na
 mod tests {
     use super::*;
 
-    fn d(s: &str) -> NaiveDate {
-        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    fn d(s: &str) -> Date {
+        dates::parse_ymd(s).unwrap()
     }
 
     #[test]

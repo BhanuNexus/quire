@@ -13,9 +13,11 @@ This script reads that table and compares it with the real dependency graph from
      a named same-layer edge or a TEMPORARY_EDGES entry;
   3. a crate other than the apps (`apps/*`) and `quire-app` turns on another
      workspace crate's optional features (except FEATURE_ALLOW);
-  4. the table's "Depends on" column differs from the real graph.
+  4. the table's "Depends on" column differs from the real graph;
+  5. a workspace crate depends on a crate in BANNED_DEPS (dates are
+     quire_base::dates since 0.14: docs/design/0.14-jiff.md).
 
-Dev-dependencies are exempt from 2, 3 and 4.
+Dev-dependencies are exempt from 2, 3, 4 and 5 (chrono stays as a test oracle).
 
 Usage: check-layering.py [--architecture ARCHITECTURE.md] [--metadata FILE]
 Without --metadata it runs cargo metadata in the current directory.
@@ -34,6 +36,10 @@ import sys
 # passes before and after the crate lands. Remove the entry when it has landed
 # and the table lists its edges.
 PLANNED: set[str] = set()
+
+# Outside crates no workspace crate may use in its code (normal and build
+# dependencies), with what to use instead.
+BANNED_DEPS: dict[str, str] = {"chrono": "quire_base::dates (jiff)"}
 
 # Edges that break the layer rule today and are on their way out. The edge is
 # optional in the "Depends on" comparison, so the check passes with or without it.
@@ -193,6 +199,13 @@ def check(meta, architecture_text):
             if extra:
                 parts.append("in the table but not in Cargo.toml: " + ", ".join(extra))
             errors.append(f"{crate}: ARCHITECTURE.md's 'Depends on' differs from cargo metadata ({'; '.join(parts)})")
+
+    for pkg in meta.get("packages", []):
+        if pkg.get("name") not in members:
+            continue
+        for dep in pkg.get("dependencies", []):
+            if dep.get("name") in BANNED_DEPS and dep.get("kind") != "dev":
+                errors.append(f"{pkg['name']} depends on {dep['name']}: use {BANNED_DEPS[dep['name']]} (a dev-dependency may stay, for an oracle test)")
     return errors
 
 

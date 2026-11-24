@@ -3,21 +3,21 @@
 //! Small conversions the importers share: times, tag and page names, and
 //! rewriting text outside code.
 
-use chrono::{DateTime, TimeZone, Utc};
+use quire_base::dates;
 use quire_vault::sanitize_title;
 
 /// `2026-11-01T12:00:00Z` for unix seconds.
 pub(crate) fn iso(secs: i64) -> String {
-    Utc.timestamp_opt(secs, 0).single().map_or_else(String::new, |d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+    secs.checked_mul(1000).and_then(|ms| dates::fmt_utc_ms(ms, "%Y-%m-%dT%H:%M:%SZ")).unwrap_or_default()
 }
 
 /// Unix seconds of an ISO 8601 / RFC 3339 time (`2020-01-02T03:04:05.678Z`) or a plain date.
 pub(crate) fn parse_time(s: &str) -> Option<i64> {
     let s = s.trim();
-    if let Ok(d) = DateTime::parse_from_rfc3339(s) {
-        return Some(d.timestamp());
+    if let Some(d) = dates::zoned_rfc3339(s) {
+        return Some(d.timestamp().as_second());
     }
-    quire_base::time::parse_ymd_prefix(s)?.and_hms_opt(0, 0, 0).map(|d| d.and_utc().timestamp())
+    dates::ms_at_offset(dates::parse_ymd_prefix(s)?.at(0, 0, 0, 0), 0).map(|ms| ms.div_euclid(1000))
 }
 
 /// A tag Quire can use: no `#`, no spaces.

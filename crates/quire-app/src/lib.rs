@@ -93,8 +93,6 @@ pub use quire_text as text;
 pub use quire_vault as vault;
 
 /// Local, human-readable time for a Unix-millisecond timestamp.
-pub fn chrono_fmt(ms: i64) -> String {
-    chrono::DateTime::from_timestamp_millis(ms)
-        .map(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
-        .unwrap_or_default()
+pub fn local_time_fmt(ms: i64) -> String {
+    quire_base::dates::fmt_local_ms(ms, "%Y-%m-%d %H:%M").unwrap_or_default()
 }

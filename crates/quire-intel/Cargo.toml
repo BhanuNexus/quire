@@ -23,7 +23,6 @@ quire-base.workspace = true
 quire-markdown.workspace = true
 quire-vault.workspace = true
 quire-index.workspace = true
-chrono.workspace = true
 unicode-segmentation.workspace = true
 thiserror.workspace = true
 crossbeam-channel.workspace = true

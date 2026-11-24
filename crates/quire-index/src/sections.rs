@@ -129,7 +129,7 @@ impl Index {
             None => None,
             Some(w) => {
                 let Ok(spec) = crate::views::parse_where(w) else { return Some(HashSet::new()) };
-                let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+                let today = quire_base::dates::today_ymd();
                 Some(crate::views::run_over(&spec, self, &today, None, keep).rows.into_iter().map(|r| r.path).collect())
             }
         };

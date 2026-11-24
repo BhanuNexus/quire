@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{Duration, FixedOffset, NaiveDate};
+use quire_base::dates::{self, Date, Zoned};
 use quire_markdown::{Task, Value};
 use serde::{Deserialize, Serialize};
 
@@ -188,7 +188,7 @@ pub struct TaskNote {
 
 impl TaskNote {
     /// Minutes spent: the sessions (open ones up to `now`) and any extra.
-    pub fn spent(&self, now: chrono::DateTime<FixedOffset>) -> u32 {
+    pub fn spent(&self, now: &Zoned) -> u32 {
         time::total_minutes(&self.entries, now).saturating_add(self.spent_extra)
     }
 }
@@ -230,13 +230,13 @@ fn list(props: &BTreeMap<String, Value>, p: Prop) -> Vec<String> {
 
 /// Read a task note. `offset` is the local offset for instants written
 /// without one. `None` when the note isn't a task.
-pub fn read(props: &BTreeMap<String, Value>, title: &str, prefs: &TaskPrefs, offset: FixedOffset) -> Option<TaskNote> {
+pub fn read(props: &BTreeMap<String, Value>, title: &str, prefs: &TaskPrefs, offset_seconds: i32) -> Option<TaskNote> {
     if !is_task_note(props, &prefs.tag) {
         return None;
     }
     let status = get_str(props, Prop::Status).unwrap_or_default();
     let entries = match get(props, Prop::Entries) {
-        Some((_, Value::Str(raw))) => time::parse_entries(raw, offset),
+        Some((_, Value::Str(raw))) => time::parse_entries(raw, offset_seconds),
         _ => Vec::new(),
     };
     let task = Task {
@@ -266,20 +266,20 @@ pub fn read(props: &BTreeMap<String, Value>, title: &str, prefs: &TaskPrefs, off
 
 /// A note as a [`Task`] for the agenda and views, with the default prefs.
 pub fn note_task(props: &BTreeMap<String, Value>, title: &str) -> Option<Task> {
-    read(props, title, &TaskPrefs::default(), FixedOffset::east_opt(0)?).map(|n| n.task)
+    read(props, title, &TaskPrefs::default(), 0).map(|n| n.task)
 }
 
 /// Property changes, in order: `(key, Some(value))` sets, `None` removes.
 pub type Changes = Vec<(String, Option<Value>)>;
 
-fn date(s: Option<&str>) -> Option<NaiveDate> {
-    quire_base::time::parse_ymd_prefix(s?)
+fn date(s: Option<&str>) -> Option<Date> {
+    dates::parse_ymd_prefix(s?)
 }
 
 /// Shift a date (keeping a time after it) by `days`.
 fn shift(s: &str, days: i64) -> Option<String> {
-    let d = date(Some(s))? + Duration::days(days);
-    Some(format!("{}{}", d.format("%Y-%m-%d"), s.get(10..).unwrap_or("")))
+    let d = dates::plus_days(date(Some(s))?, days);
+    Some(format!("{}{}", dates::ymd(d), s.get(10..).unwrap_or("")))
 }
 
 /// What ticking (or unticking) a task note changes.
@@ -289,11 +289,11 @@ fn shift(s: &str, days: i64) -> Option<String> {
 ///   next occurrence (by the same number of days) and today is added to
 ///   `complete_instances`, as TaskNotes does.
 /// * Done → open: the open status, and the completion date goes.
-pub fn toggle_changes(props: &BTreeMap<String, Value>, prefs: &TaskPrefs, today: NaiveDate) -> Changes {
+pub fn toggle_changes(props: &BTreeMap<String, Value>, prefs: &TaskPrefs, today: Date) -> Changes {
     let style = prefs.style();
     let key = |p: Prop| key_for(props, p, style);
     let status = get_str(props, Prop::Status).unwrap_or_default();
-    let today_s = today.format("%Y-%m-%d").to_string();
+    let today_s = dates::ymd(today);
     if prefs.is_done(&status) {
         let mut c = vec![(key(Prop::Status), Some(Value::Str(prefs.open_status())))];
         if get(props, Prop::Completed).is_some() {
@@ -307,7 +307,7 @@ pub fn toggle_changes(props: &BTreeMap<String, Value>, prefs: &TaskPrefs, today:
     let anchor = [date(due.as_deref()), date(sched.as_deref()), date(start.as_deref())].into_iter().flatten().next();
     let base = if rule.when_done { today } else { anchor.unwrap_or(today) };
     let Some(next) = recur::next_occurrence(&rule, base) else { return done };
-    let delta = (next - anchor.unwrap_or(base)).num_days();
+    let delta = dates::days_between(anchor.unwrap_or(base), next);
     let mut c = Changes::new();
     for (p, v) in [(Prop::Due, &due), (Prop::Scheduled, &sched), (Prop::Start, &start)] {
         if let Some(s) = v.as_deref().and_then(|s| shift(s, delta)) {
@@ -316,7 +316,7 @@ pub fn toggle_changes(props: &BTreeMap<String, Value>, prefs: &TaskPrefs, today:
     }
     if anchor.is_none() {
         // Nothing to move: the next one is due on its date.
-        c.push((key(Prop::Due), Some(Value::Str(next.format("%Y-%m-%d").to_string()))));
+        c.push((key(Prop::Due), Some(Value::Str(dates::ymd(next)))));
     }
     let mut done_on = list(props, Prop::CompleteInstances);
     done_on.push(today_s);
@@ -430,7 +430,7 @@ fn is_tag(w: &str) -> bool {
 /// It follows `prefix` (the indentation and bullet, `- `). Fields are
 /// written in `format`; time spent and the estimate as `[time:: …]` and
 /// `[estimate:: …]`.
-pub fn to_inline(prefix: &str, n: &TaskNote, now: chrono::DateTime<FixedOffset>, format: quire_markdown::tasks::Format) -> String {
+pub fn to_inline(prefix: &str, n: &TaskNote, now: &Zoned, format: quire_markdown::tasks::Format) -> String {
     use quire_markdown::tasks::{self as t, Field};
     let mut text = n.task.text.clone();
     for tag in &n.tags {
@@ -655,12 +655,12 @@ mod tests {
         quire_markdown::frontmatter::parse(src).unwrap().fields
     }
 
-    fn d(s: &str) -> NaiveDate {
-        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    fn d(s: &str) -> Date {
+        dates::parse_ymd(s).unwrap()
     }
 
-    fn utc() -> FixedOffset {
-        FixedOffset::east_opt(0).unwrap()
+    fn utc() -> i32 {
+        0
     }
 
     #[test]
@@ -677,7 +677,7 @@ mod tests {
             (vec!["@home".into()], vec!["[[Website]]".into()], vec!["work".into()])
         );
         assert_eq!(n.estimate, Some(90));
-        assert_eq!(n.spent(chrono::DateTime::parse_from_rfc3339("2027-01-01T00:00:00Z").unwrap()), 40);
+        assert_eq!(n.spent(&dates::zoned_rfc3339("2027-01-01T00:00:00Z").unwrap()), 40);
         // TaskNotes' defaults: the `task` tag, camelCase names, minutes as numbers.
         let tn = props(
             "---\ntitle: Call Bo\nstatus: in-progress\npriority: normal\ntags:\n  - task\n  - calls\ntimeEstimate: 45\ncompletedDate: 2026-11-01\ndateCreated: 2026-10-30T09:00:00.000+01:00\ntimeEntries:\n  - startTime: \"2026-11-06T09:00:00.000Z\"\n    endTime: \"2026-11-06T09:30:00.000Z\"\n    description: dialled\nrecurrence: FREQ=WEEKLY;BYDAY=MO\n---\n",
@@ -753,15 +753,15 @@ mod tests {
         let p = TaskPrefs::default();
         for _ in 0..3_000 {
             let rule = rules[rnd(rules.len() as u64) as usize];
-            let due = d("2020-01-01") + Duration::days(rnd(3_000) as i64);
+            let due = dates::plus_days(d("2020-01-01"), rnd(3_000) as i64);
             let lead = rnd(10) as i64;
-            let sched = due - Duration::days(lead);
+            let sched = dates::plus_days(due, -lead);
             let src = format!("---\ntype: task\nstatus: todo\nrecurrence: {rule}\ndue: {due}\nscheduled: {sched}\n---\n");
-            let c = toggle_changes(&props(&src), &p, due + Duration::days(rnd(5) as i64));
+            let c = toggle_changes(&props(&src), &p, dates::plus_days(due, rnd(5) as i64));
             let get = |k: &str| c.iter().find(|(key, _)| key == k).and_then(|(_, v)| v.as_ref()).and_then(Value::as_str).map(d);
             let (Some(new_due), Some(new_sched)) = (get("due"), get("scheduled")) else { panic!("{rule} from {due}: {c:?}") };
             assert!(new_due > due, "{rule}: {new_due} after {due}");
-            assert_eq!(new_due - new_sched, due - sched, "{rule}: dates move together");
+            assert_eq!(dates::days_between(new_sched, new_due), dates::days_between(sched, due), "{rule}: dates move together");
             assert_eq!(Some(new_due), recur::next_occurrence(&recur::parse(rule).unwrap(), due), "{rule}");
             assert!(!c.iter().any(|(k, _)| k == "status"), "a recurring note stays open");
         }
@@ -814,7 +814,7 @@ mod tests {
                 line.push_str(" #work");
             }
             let format = if rnd(2) == 0 { Format::Emoji } else { Format::Dataview };
-            let date = |r: u64| (d("2026-01-01") + Duration::days(r as i64)).format("%Y-%m-%d").to_string();
+            let date = |r: u64| dates::ymd(dates::plus_days(d("2026-01-01"), r as i64));
             let mut fields: Vec<(quire_markdown::tasks::Field, String)> = Vec::new();
             for f in [F::Due, F::Scheduled, F::Start, F::Created] {
                 if rnd(2) == 0 {
@@ -844,7 +844,7 @@ mod tests {
             let text = new_note(&new, &TaskPrefs::default(), "");
             let props = quire_markdown::frontmatter::parse(&text).unwrap().fields;
             let note = read(&props, &new.title, &TaskPrefs::default(), utc()).unwrap();
-            let back = to_inline("- ", &note, chrono::DateTime::parse_from_rfc3339("2027-01-01T00:00:00Z").unwrap(), format);
+            let back = to_inline("- ", &note, &dates::zoned_rfc3339("2027-01-01T00:00:00Z").unwrap(), format);
             let (_, again) = crate::tasks::parse_line(&back).unwrap();
             assert_eq!(again, task, "{line}\n{text}\n{back}");
         }

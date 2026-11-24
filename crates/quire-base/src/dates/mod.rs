@@ -9,15 +9,50 @@
 //! templates, periodic-note settings and the date format setting:
 //! [`format()`] writes, [`parse_date`] and its siblings read.
 
-pub mod bridge;
 mod strftime;
 mod strptime;
 
 pub use jiff::civil::{Date, DateTime, Time, Weekday};
-pub use jiff::tz::TimeZone;
+pub use jiff::tz::{Offset, TimeZone};
 pub use jiff::{Span, Timestamp, Zoned};
 pub use strftime::{FormatError, Moment, fmt, format, is_valid, offset_name, rfc2822, short_month, short_weekday};
 pub use strptime::{ParseError, parse_date, parse_datetime, parse_rfc2822, parse_rfc3339, parse_time_of_day, parse_with_offset};
+
+/// 1970-01-01 00:00, what chrono's `DateTime::default()` was.
+pub const EPOCH: DateTime = DateTime::constant(1970, 1, 1, 0, 0, 0, 0);
+
+/// `.render(pattern)` on the values Quire formats with its own patterns.
+///
+/// It is what chrono's `.format(pattern).to_string()` was. A date has no
+/// time and a date or date-time no zone; asking for one gives empty text.
+pub trait Strftime {
+    /// `self` written with `pattern`.
+    fn render(&self, pattern: &str) -> String;
+}
+
+impl Strftime for Date {
+    fn render(&self, pattern: &str) -> String {
+        fmt(pattern, &Moment::date(*self))
+    }
+}
+
+impl Strftime for Time {
+    fn render(&self, pattern: &str) -> String {
+        fmt(pattern, &Moment::time(*self))
+    }
+}
+
+impl Strftime for DateTime {
+    fn render(&self, pattern: &str) -> String {
+        fmt(pattern, &Moment::naive(*self))
+    }
+}
+
+impl Strftime for Zoned {
+    fn render(&self, pattern: &str) -> String {
+        fmt(pattern, &local_moment(self))
+    }
+}
 
 /// The current date and time in the system's time zone.
 pub fn now_local() -> Zoned {
@@ -75,6 +110,37 @@ pub fn ms_at_offset(dt: DateTime, offset_seconds: i32) -> Option<i64> {
     utc.checked_sub(i64::from(offset_seconds) * 1000)
 }
 
+/// `dt` at the fixed offset `offset_seconds` east of UTC (chrono's
+/// `DateTime<FixedOffset>`): `%Z` and `%:z` both write the offset.
+pub fn at_offset(dt: DateTime, offset_seconds: i32) -> Option<Zoned> {
+    let off = Offset::from_seconds(offset_seconds).ok()?;
+    dt.to_zoned(TimeZone::fixed(off)).ok()
+}
+
+/// RFC 3339 text as an instant at its own offset (chrono's `DateTime::parse_from_rfc3339`).
+pub fn zoned_rfc3339(s: &str) -> Option<Zoned> {
+    let (dt, off) = parse_rfc3339(s).ok()?;
+    at_offset(dt, off)
+}
+
+/// `z` written with `pattern`, its offset as the zone (chrono's
+/// `DateTime<FixedOffset>` and `DateTime<Local>`).
+pub fn fmt_zoned(z: &Zoned, pattern: &str) -> String {
+    fmt(pattern, &local_moment(z))
+}
+
+/// Whole seconds from `a` to `b`, toward zero (chrono's `(b - a).num_seconds()`).
+pub fn seconds_between(a: &Zoned, b: &Zoned) -> i64 {
+    let ns = b.timestamp().as_nanosecond() - a.timestamp().as_nanosecond();
+    i64::try_from(ns / 1_000_000_000).unwrap_or(if ns < 0 { i64::MIN } else { i64::MAX })
+}
+
+/// `z` moved by `seconds` (an exact duration, as chrono's `+ Duration`), in its own zone.
+pub fn plus_seconds(z: &Zoned, seconds: i64) -> Option<Zoned> {
+    let t = z.timestamp().checked_add(Span::new().try_seconds(seconds).ok()?).ok()?;
+    Some(t.to_zoned(z.time_zone().clone()))
+}
+
 /// A wall-clock time in the system zone, or none when the clocks skip it
 /// (a DST gap) or show it twice (a fold): chrono's `LocalResult::single`.
 pub fn local_single(dt: DateTime) -> Option<Zoned> {
@@ -116,9 +182,55 @@ pub fn add_days(d: Date, days: i64) -> Option<Date> {
     d.checked_add(Span::new().try_days(days).ok()?).ok()
 }
 
+/// `d` moved by `days`, or `d` itself past the calendar's ends (years
+/// -9999 and 9999; chrono panicked there).
+pub fn plus_days(d: Date, days: i64) -> Date {
+    add_days(d, days).unwrap_or(d)
+}
+
+/// `dt` moved by `days` days of 24 hours, or `dt` itself past the calendar's ends.
+pub fn plus_days_dt(dt: DateTime, days: i64) -> DateTime {
+    Span::new().try_days(days).ok().and_then(|s| dt.checked_add(s).ok()).unwrap_or(dt)
+}
+
+/// `dt` moved by `seconds`, or `dt` itself past the calendar's ends.
+pub fn plus_seconds_dt(dt: DateTime, seconds: i64) -> DateTime {
+    Span::new().try_seconds(seconds).ok().and_then(|s| dt.checked_add(s).ok()).unwrap_or(dt)
+}
+
+/// `d` written with `pattern` (a pattern from Quire's own code).
+pub fn fmt_date(d: Date, pattern: &str) -> String {
+    fmt(pattern, &Moment::date(d))
+}
+
+/// `t` written with `pattern` (a pattern from Quire's own code).
+pub fn fmt_time(t: Time, pattern: &str) -> String {
+    fmt(pattern, &Moment::time(t))
+}
+
+/// `dt` written with `pattern` (a pattern from Quire's own code).
+pub fn fmt_naive(dt: DateTime, pattern: &str) -> String {
+    fmt(pattern, &Moment::naive(dt))
+}
+
+/// The date `y-m-d`, if there is one (chrono's `from_ymd_opt`, with its types).
+pub fn ymd_opt(y: i32, m: u32, d: u32) -> Option<Date> {
+    Date::new(i16::try_from(y).ok()?, i8::try_from(m).ok()?, i8::try_from(d).ok()?).ok()
+}
+
+/// `d`'s year and month as chrono gave them (`i32`, `u32`).
+pub fn year_month(d: Date) -> (i32, u32) {
+    (i32::from(d.year()), u32::try_from(d.month()).unwrap_or(1))
+}
+
+/// Days of `w` since Monday: Monday 0 .. Sunday 6.
+pub fn from_monday(w: Weekday) -> i64 {
+    i64::from(w.to_monday_zero_offset())
+}
+
 /// Whole days from `a` to `b` (negative when `b` is earlier).
 pub fn days_between(a: Date, b: Date) -> i64 {
-    i64::from((b - a).get_days())
+    strftime::days_from_civil(b) - strftime::days_from_civil(a)
 }
 
 #[cfg(test)]
@@ -146,6 +258,36 @@ mod tests {
         assert_eq!(add_days(d, 1), Date::new(2027, 1, 1).ok());
         assert_eq!(days_between(d, Date::new(2026, 12, 1).unwrap_or_default()), -30);
         assert_eq!(ymd(d), "2026-12-31");
+    }
+
+    /// What Quire writes to files that persist or sync reads back the same
+    /// and is written the same (strings as 0.13 wrote them).
+    #[test]
+    fn persisted_formats_round_trip() {
+        let dt = Date::new(2026, 11, 6).unwrap_or_default().at(10, 0, 0, 0);
+        for (pattern, text) in [
+            ("%Y-%m-%dT%H:%M:%S%:z", "2026-11-06T10:00:00+01:00"),
+            ("%Y-%m-%d %H:%M", "2026-11-06 10:00"),
+            ("%Y%m%d-%H%M%S", "20261106-100000"),
+            ("%Y-%m", "2026-11"),
+            ("%Y%m%d", "20261106"),
+            ("%Y-%m-%dT%H:%M:%SZ", "2026-11-06T10:00:00Z"),
+            ("%Y%m%dT%H%M%SZ", "20261106T100000Z"),
+            ("%a, %d %b %Y %H:%M:%S GMT", "Fri, 06 Nov 2026 10:00:00 GMT"),
+        ] {
+            assert_eq!(fmt(pattern, &Moment::at_offset(dt, 3600)), text, "{pattern}");
+            if pattern != "%Y-%m" {
+                let back = parse_with_offset(text, pattern).map(|(d, _)| d).or_else(|_| parse_datetime(text, pattern));
+                let back = back.or_else(|_| parse_date(text, pattern).map(|d| d.to_datetime(Time::midnight())));
+                assert_eq!(back.map(DateTime::date), Ok(dt.date()), "{pattern}");
+            }
+        }
+        assert_eq!(
+            zoned_rfc3339("2026-11-06T10:00:00+01:00").map(|z| fmt_zoned(&z, "%Y-%m-%dT%H:%M:%S%:z")).as_deref(),
+            Some("2026-11-06T10:00:00+01:00")
+        );
+        assert_eq!(fmt_utc_ms(1_793_577_600_000, "%Y-%m").as_deref(), Some("2026-11"));
+        assert_eq!(rfc2822(dt, 7200).as_deref(), Some("Fri, 6 Nov 2026 10:00:00 +0200"));
     }
 
     /// A DST gap and fold in a fixed zone, resolved as chrono's

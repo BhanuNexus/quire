@@ -24,7 +24,6 @@ test-hooks = []
 tempfile.workspace = true
 getrandom.workspace = true
 sha2.workspace = true
-chrono.workspace = true
 jiff.workspace = true
 ureq = { workspace = true, optional = true }
 

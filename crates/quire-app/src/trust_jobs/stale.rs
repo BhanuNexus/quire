@@ -10,12 +10,12 @@
 //! job remembers which version of each note it last raised
 //! (`.quire/cache/stale.json`, device-local).
 
+use quire_base::dates::{self, Date};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use chrono::NaiveDate;
 use quire_agent::inbox::{InboxItem, StaleReason};
 use quire_intel::stale::{self, LinkChange, Reason};
 use quire_markdown::Value;
@@ -123,8 +123,8 @@ fn prop_str(props: &BTreeMap<String, Value>, key: &str) -> Option<String> {
     })
 }
 
-fn date_of_ms(ms: i64) -> Option<NaiveDate> {
-    chrono::DateTime::from_timestamp_millis(ms).map(|t| t.with_timezone(&chrono::Local).date_naive())
+fn date_of_ms(ms: i64) -> Option<Date> {
+    dates::local_from_ms(ms).map(|z| z.date())
 }
 
 /// When a person last edited `path`, from its history (agents' versions
@@ -156,7 +156,7 @@ fn assess(
     vault: &Vault,
     prefs: &StalePrefs,
     n: &NoteFacts,
-    today: NaiveDate,
+    today: Date,
     now_ms: i64,
     source: &dyn Fn(&NotePath) -> Option<String>,
 ) -> Option<InboxItem> {
@@ -318,8 +318,8 @@ impl Job for StaleJob {
                                 .collect()
                         })
                         .unwrap_or_default();
-                    let today = chrono::Local::now().date_naive();
-                    let now = chrono::Utc::now().timestamp_millis();
+                    let today = dates::today();
+                    let now = quire_base::time::now_ms();
                     let source = |t: &NotePath| cx.index.read().ok().and_then(|ix| ix.source(t).map(str::to_string));
                     for f in &facts {
                         if let Some(item) = assess(&cx.vault, prefs, f, today, now, &source) {
@@ -400,9 +400,9 @@ mod tests {
         let mut ix = quire_index::Index::new();
         for p in v.notes().unwrap() {
             ix.upsert(p.clone(), &v.read(&p).unwrap());
-            ix.set_modified(&p, chrono::Utc::now().timestamp_millis() - 400 * 86_400_000);
+            ix.set_modified(&p, quire_base::time::now_ms() - 400 * 86_400_000);
         }
-        ix.set_modified(&NotePath::new("Fresh.md"), chrono::Utc::now().timestamp_millis());
+        ix.set_modified(&NotePath::new("Fresh.md"), quire_base::time::now_ms());
         let agent = quire_agent::AgentStore::open(
             &v,
             quire_agent::DeviceInfo { id: "d".into(), name: "D".into() },
@@ -449,7 +449,7 @@ mod tests {
         // Reviewed today: fixed, so resolved.
         if let Ok(mut ix) = cx.index.write() {
             ix.upsert("Gone.md".into(), "# Gone\nA note.\n");
-            ix.set_modified(&NotePath::new("Gone.md"), chrono::Utc::now().timestamp_millis());
+            ix.set_modified(&NotePath::new("Gone.md"), quire_base::time::now_ms());
         }
         shared.stale_now.store(true, Ordering::Release);
         while matches!(job.step(&cx), Step::Continue) {}

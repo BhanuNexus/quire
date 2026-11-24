@@ -632,7 +632,7 @@ impl TaskFields<'_> {
     /// Minutes spent: a note's sessions, or an inline task's `[time:: …]`.
     fn spent(&self) -> Option<u32> {
         match &self.info {
-            Some(n) => Some(n.spent(chrono::Local::now().fixed_offset())).filter(|m| *m > 0),
+            Some(n) => Some(n.spent(&quire_base::dates::now_local())).filter(|m| *m > 0),
             None => self.task.time_spent.as_deref().and_then(quire_plan::time::parse_duration),
         }
     }
@@ -717,7 +717,7 @@ fn task_tags(text: &str) -> Vec<String> {
 /// A task note (`type: task`, or the `task` tag) as a task row (title is the text).
 fn note_as_task(r: &NoteRecord) -> Option<quire_plan::task_note::TaskNote> {
     let prefs = quire_plan::task_note::TaskPrefs::default();
-    quire_plan::task_note::read(&r.properties, &r.title, &prefs, *chrono::Local::now().offset())
+    quire_plan::task_note::read(&r.properties, &r.title, &prefs, quire_base::dates::now_local().offset().seconds())
 }
 
 /// A note's place on a map: `lat` and `lng` (or `lon`, `latitude`,

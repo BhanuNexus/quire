@@ -4,7 +4,6 @@
 //! button on task rows and cards, "New task…", "Time this week", and the
 //! agenda's task-note cards, board and calendar.
 
-use chrono::{Datelike, Duration, Local, NaiveDate};
 use egui::{Id, RichText, Sense, Stroke, Ui};
 use quire_app::Workspace;
 use quire_app::index::views;
@@ -12,6 +11,7 @@ use quire_app::plan::task_note::{NewTask, TaskNote};
 use quire_app::plan::time::{format_clock, format_duration, parse_duration};
 use quire_app::tasks_state::Action;
 use quire_app::vault::NotePath;
+use quire_base::dates::{self, Date, Strftime};
 
 use crate::overlays::{OverlayResult, OverlayView};
 use crate::theme::Palette;
@@ -144,13 +144,13 @@ impl NewTaskDialog {
             if s.is_empty() {
                 return Ok(None);
             }
-            let today = Local::now().date_naive();
+            let today = dates::today();
             let d = match s.to_ascii_lowercase().as_str() {
                 "today" => today,
-                "tomorrow" => today + Duration::days(1),
-                _ => quire_base::time::parse_ymd(s).ok_or_else(|| format!("The {what} date should look like 2026-11-20"))?,
+                "tomorrow" => dates::plus_days(today, 1),
+                _ => dates::parse_ymd(s).ok_or_else(|| format!("The {what} date should look like 2026-11-20"))?,
             };
-            Ok(Some(d.format("%Y-%m-%d").to_string()))
+            Ok(Some(d.render("%Y-%m-%d")))
         };
         let estimate = match self.estimate.trim() {
             "" => None,
@@ -262,12 +262,12 @@ impl OverlayView for NewTaskDialog {
 
 /// The weekly time report: task notes by day.
 pub(crate) struct TimeReportOverlay {
-    day: NaiveDate,
+    day: Date,
 }
 
 impl TimeReportOverlay {
     pub(crate) fn make(_ws: &mut Workspace) -> Box<dyn OverlayView> {
-        Box::new(Self { day: Local::now().date_naive() })
+        Box::new(Self { day: dates::today() })
     }
 }
 
@@ -297,20 +297,20 @@ impl OverlayView for TimeReportOverlay {
 }
 
 /// The report's table; returns a task to open.
-pub(crate) fn report(ui: &mut Ui, ws: &Workspace, pal: &Palette, day: &mut NaiveDate) -> Option<NotePath> {
+pub(crate) fn report(ui: &mut Ui, ws: &Workspace, pal: &Palette, day: &mut Date) -> Option<NotePath> {
     let r = ws.week_report(*day);
     let monday = r.monday.unwrap_or(*day);
     let mut open = None;
     ui.horizontal_wrapped(|ui| {
         if ui.small_button("‹").on_hover_text("Previous week").clicked() {
-            *day -= Duration::days(7);
+            *day = dates::plus_days(*day, -(7));
         }
-        ui.label(RichText::new(format!("Week of {}", monday.format("%-d %b %Y"))).size(14.0).color(pal.strong).strong());
+        ui.label(RichText::new(format!("Week of {}", monday.render("%-d %b %Y"))).size(14.0).color(pal.strong).strong());
         if ui.small_button("›").on_hover_text("Next week").clicked() {
-            *day += Duration::days(7);
+            *day = dates::plus_days(*day, 7);
         }
         if ui.small_button("This week").clicked() {
-            *day = Local::now().date_naive();
+            *day = dates::today();
         }
     });
     ui.add_space(4.0);
@@ -322,7 +322,7 @@ pub(crate) fn report(ui: &mut Ui, ws: &Workspace, pal: &Palette, day: &mut Naive
         );
         return None;
     }
-    let today = Local::now().date_naive();
+    let today = dates::today();
     // A narrow panel: each task with its week's total; the days are the bars below.
     if ui.available_width() < 520.0 {
         for row in &r.rows {
@@ -354,20 +354,13 @@ pub(crate) fn report(ui: &mut Ui, ws: &Workspace, pal: &Palette, day: &mut Naive
 }
 
 /// The report as a table: tasks by day.
-fn grid(
-    ui: &mut Ui,
-    pal: &Palette,
-    r: &quire_app::plan::time::WeekReport,
-    monday: NaiveDate,
-    today: NaiveDate,
-    open: &mut Option<NotePath>,
-) {
+fn grid(ui: &mut Ui, pal: &Palette, r: &quire_app::plan::time::WeekReport, monday: Date, today: Date, open: &mut Option<NotePath>) {
     egui::Grid::new("quire-time-grid").striped(true).num_columns(9).spacing([10.0, 4.0]).show(ui, |ui| {
         ui.label(RichText::new("Task").size(11.5).color(pal.muted).strong());
         for i in 0..7 {
-            let d = monday + Duration::days(i);
+            let d = dates::plus_days(monday, i);
             let c = if d == today { pal.accent } else { pal.muted };
-            ui.label(RichText::new(d.format("%a %-d").to_string()).size(11.5).color(c).strong());
+            ui.label(RichText::new(d.render("%a %-d")).size(11.5).color(c).strong());
         }
         ui.label(RichText::new("Total").size(11.5).color(pal.muted).strong());
         ui.end_row();
@@ -400,7 +393,7 @@ fn grid(
 }
 
 /// Bars: minutes per day of the week, with the day under each.
-fn bars(ui: &mut Ui, pal: &Palette, r: &quire_app::plan::time::WeekReport, monday: NaiveDate) {
+fn bars(ui: &mut Ui, pal: &Palette, r: &quire_app::plan::time::WeekReport, monday: Date) {
     ui.add_space(6.0);
     let max = r.days.iter().copied().max().unwrap_or(1).max(1);
     let (rect, _) = ui.allocate_exact_size(egui::vec2((ui.available_width() - 8.0).max(140.0), 56.0), Sense::hover());
@@ -411,11 +404,11 @@ fn bars(ui: &mut Ui, pal: &Palette, r: &quire_app::plan::time::WeekReport, monda
         let bar =
             egui::Rect::from_min_max(egui::pos2(x + bw * 0.25, rect.bottom() - 12.0 - h), egui::pos2(x + bw * 0.75, rect.bottom() - 12.0));
         ui.painter().rect_filled(bar, 2.0, pal.accent.gamma_multiply(0.8));
-        let d = monday + Duration::days(i as i64);
+        let d = dates::plus_days(monday, i as i64);
         ui.painter().text(
             egui::pos2(x + bw / 2.0, rect.bottom()),
             egui::Align2::CENTER_BOTTOM,
-            d.format("%a").to_string(),
+            d.render("%a"),
             egui::FontId::proportional(10.0),
             pal.muted,
         );
@@ -479,28 +472,28 @@ pub(crate) fn board(ui: &mut Ui, ws: &Workspace, pal: &Palette) -> Option<NotePa
 pub(crate) fn calendar(ui: &mut Ui, ws: &Workspace, pal: &Palette, month: &mut (i32, u32)) -> Option<(NotePath, usize)> {
     let result = ws.run_view("from: tasks\nwhere: status != done\nfields: [text, due, scheduled]\n", None);
     let Ok(r) = result.as_ref() else { return None };
-    let today = Local::now().date_naive();
+    let today = dates::today();
     let (y, m) = *month;
     let mut open = None;
     ui.horizontal(|ui| {
         if ui.small_button("‹").clicked() {
             *month = if m == 1 { (y - 1, 12) } else { (y, m - 1) };
         }
-        let first = NaiveDate::from_ymd_opt(y, m, 1).unwrap_or(today);
-        ui.label(RichText::new(first.format("%B %Y").to_string()).strong().color(pal.text));
+        let first = dates::ymd_opt(y, m, 1).unwrap_or(today);
+        ui.label(RichText::new(first.render("%B %Y")).strong().color(pal.text));
         if ui.small_button("›").clicked() {
             *month = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
         }
         if ui.small_button("Today").clicked() {
-            *month = (today.year(), today.month());
+            *month = dates::year_month(today);
         }
     });
-    let first = NaiveDate::from_ymd_opt(y, m, 1)?;
-    let lead = i64::from(first.weekday().num_days_from_monday());
-    let start = first - Duration::days(lead);
+    let first = dates::ymd_opt(y, m, 1)?;
+    let lead = dates::from_monday(first.weekday());
+    let start = dates::plus_days(first, -(lead));
     let cell_w = ((ui.available_width() - 6.0 * 2.0) / 7.0).max(30.0);
-    let on = |d: NaiveDate, which: fn(&quire_app::markdown::Task) -> Option<&String>| {
-        let key = d.format("%Y-%m-%d").to_string();
+    let on = |d: Date, which: fn(&quire_app::markdown::Task) -> Option<&String>| {
+        let key = d.render("%Y-%m-%d");
         r.rows.iter().filter(move |row| row.task.as_ref().and_then(|t| which(&t.task)).and_then(|s| s.get(..10)) == Some(key.as_str()))
     };
     egui::Grid::new("quire-agenda-cal").num_columns(7).spacing([2.0, 2.0]).min_col_width(cell_w).max_col_width(cell_w).show(ui, |ui| {
@@ -510,13 +503,13 @@ pub(crate) fn calendar(ui: &mut Ui, ws: &Workspace, pal: &Palette, month: &mut (
         ui.end_row();
         for week in 0..6 {
             for i in 0..7 {
-                let d = start + Duration::days(week * 7 + i);
+                let d = dates::plus_days(start, week * 7 + i);
                 ui.vertical(|ui| {
                     ui.set_width(cell_w);
                     ui.set_min_height(46.0);
                     let c = if d == today {
                         pal.accent
-                    } else if d.month() == m {
+                    } else if d.month() as u32 == m {
                         pal.text
                     } else {
                         pal.faint
@@ -548,7 +541,7 @@ pub(crate) fn calendar(ui: &mut Ui, ws: &Workspace, pal: &Palette, month: &mut (
 /// Task notes as cards in the agenda list: status, priority, due, contexts,
 /// time spent against the estimate, and the timer.
 pub(crate) fn note_cards(ui: &mut Ui, ws: &Workspace, pal: &Palette, notes: &[(NotePath, TaskNote)]) -> Option<NotePath> {
-    let today = Local::now().date_naive();
+    let today = dates::today();
     let now = quire_app::task_timer::now();
     let mut open = None;
     for (path, n) in notes {
@@ -578,7 +571,7 @@ pub(crate) fn note_cards(ui: &mut Ui, ws: &Workspace, pal: &Palette, notes: &[(N
                     let c = if n.task.priority.is_some_and(|p| p <= 1) { pal.danger } else { pal.muted };
                     ui.label(RichText::new(p).size(11.0).color(c));
                 }
-                if let Some(d) = n.task.due.as_deref().and_then(quire_base::time::parse_ymd_prefix) {
+                if let Some(d) = n.task.due.as_deref().and_then(dates::parse_ymd_prefix) {
                     let c = if d < today { pal.danger } else { pal.text };
                     ui.label(RichText::new(format!("due {}", crate::agenda_ui::relative(d, today))).size(11.0).color(c));
                 }
@@ -589,7 +582,7 @@ pub(crate) fn note_cards(ui: &mut Ui, ws: &Workspace, pal: &Palette, notes: &[(N
                     ui.label(RichText::new(p.trim_start_matches("[[").trim_end_matches("]]")).size(11.0).color(pal.link));
                 }
             });
-            let spent = n.spent(now);
+            let spent = n.spent(&now);
             if spent > 0 || n.estimate.is_some() {
                 let est = n.estimate.unwrap_or(0);
                 let text = if est > 0 { format!("{} of {}", format_duration(spent), format_duration(est)) } else { format_duration(spent) };
@@ -710,10 +703,10 @@ mod tests {
         let mut d = NewTaskDialog::sample(false);
         d.due = "tomorrow".into();
         // The clock is read inside `task()`; bracket it so midnight between the reads can't fail this.
-        let before = Local::now().date_naive();
+        let before = dates::today();
         let got = d.task().unwrap().due;
-        let after = Local::now().date_naive();
-        let tomorrow = |d: NaiveDate| Some((d + Duration::days(1)).format("%Y-%m-%d").to_string());
+        let after = dates::today();
+        let tomorrow = |d: Date| Some((dates::plus_days(d, 1)).render("%Y-%m-%d"));
         assert!(got == tomorrow(before) || got == tomorrow(after), "{got:?}");
         d.due = "next blue moon".into();
         assert!(d.task().is_err());

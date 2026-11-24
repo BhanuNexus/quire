@@ -12,6 +12,7 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 - **`quire-cli sync once --verify`** reads every note again in that pass, to catch a change that kept a file's size and modification time.
 
 ### Changed
+- **Dates and times** use a maintained library (jiff) instead of chrono, which was marked unmaintained. Date patterns in templates (`{{date:%A %-d %B}}`), periodic-note names and the date display setting give exactly the text they gave before, and dates already in notes, history and sync read the same.
 - **Agents:** `list`, `tags`, `properties`, `tasks`, `links` and `vault_info` no longer read every note's file to decide what an agent may see, and neither does an agent's connection; at 50,000 notes they answer in under a tenth of a second where they took close to one.
 - **Agents:** every list an agent can ask for (`list`, `tasks`, `tags`, `properties`, `recent_activity`, `history`, `proposals`, `links`, `outline`, `query_view`, `diff`) now takes a size cap (`max_tokens`) besides its limit, gives a cursor to continue, and says how many rows there are (`total`) and when it was cut (`truncated`); before, `tasks` stopped at its limit without saying so. `tasks` and `query_view` return at most 500 rows a page (was 1,000); `tags` and `properties` now list by name, and `proposals` by when each was made (was: last changed).
 - **Views:** a view over many notes is faster (`query_view` at 50,000 notes grouped by a property: about half the time), and a sorted one about twice as fast again: each row's sort value is worked out once instead of in every comparison.
@@ -41,6 +42,7 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
   What differs between each pair is in [docs/agents.md](docs/agents.md#removed-tool-names).
 
 ### Fixed
+- **Daily and periodic notes:** a note-name format that can't name a date (one with `%H`, say) no longer crashes Quire; the note is named `YYYY-MM-DD` instead.
 - **Agents:** a second edit to a note on which the agent already has a pending suggestion (two `append` calls, say) no longer puts the first edit in the suggestion twice.
 - **Agents:** after the person rejects one note's change in an agent's suggestion that still waits for its other notes, the agent can edit that note again (it got "changed since you read it" every time), and `view` with `include_pending` shows the note instead of the rejected text.
 - **Sync:** a note that can't be read (no permission, a disk error) is now named in the sync status on every pass instead of being passed over without a word; it is never sent as deleted or written over, and the rest of the vault keeps syncing.

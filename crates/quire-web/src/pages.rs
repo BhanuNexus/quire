@@ -395,7 +395,7 @@ impl Cx<'_> {
         if !recent.is_empty() {
             main.push_str("<section class=\"recent\"><h2>Recently changed</h2><ul class=\"listing\">");
             for (p, m, title) in recent.into_iter().take(12) {
-                let when = if m > 0 { format!("<time>{}</time>", esc(&quire_app::chrono_fmt(m))) } else { String::new() };
+                let when = if m > 0 { format!("<time>{}</time>", esc(&quire_app::local_time_fmt(m))) } else { String::new() };
                 let _ = write!(
                     main,
                     "<li class=\"file k-note\"><a href=\"{}\">{}</a> <span class=\"muted path\">{}</span> {when}</li>",
@@ -818,7 +818,7 @@ impl Cx<'_> {
                 return self.page(&title, path.folder(), Some(&path), &main);
             }
             "copy" => {
-                let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+                let today = quire_base::dates::today_ymd();
                 return match edit::save_copy(self.web, &path, &today, &text) {
                     Ok(copy) => Res::redirect(&note_href(&copy)),
                     Err(e) => self.failed(&e),

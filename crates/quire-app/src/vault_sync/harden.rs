@@ -358,7 +358,7 @@ pub(super) fn describe(c: &Compacted, what: &str) -> String {
         ),
         Compacted::NotWorthIt(s) => format!("{what}: nothing worth compacting yet ({} old revision(s)).", s.dropped),
         Compacted::Settling { until } => {
-            let when = chrono::DateTime::from_timestamp(*until, 0).map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default();
+            let when = until.checked_mul(1000).and_then(|ms| quire_base::dates::fmt_utc_ms(ms, "%Y-%m-%d")).unwrap_or_default();
             format!("{what}: the last compaction is still settling (until {when}).")
         }
         Compacted::NotUpgraded => format!("{what}: upgrade the vault's sync format first."),

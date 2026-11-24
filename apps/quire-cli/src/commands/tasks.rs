@@ -11,11 +11,11 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use chrono::{DateTime, FixedOffset};
 use quire_app::meta_refactor::{FileEdit, MetaOp, plan};
 use quire_app::plan::task_note::TaskPrefs;
 use quire_app::plan::timer::{Running, TaskRef};
 use quire_app::vault::{ContentHash, NotePath, Vault};
+use quire_base::dates::{self, Date, Zoned};
 
 use super::{CliCommand, load};
 
@@ -44,15 +44,8 @@ fn tasks(args: &[String]) -> Result<(), String> {
     let arg = |i: usize| super::arg(args, i);
     if let Some(sub @ ("start" | "stop" | "status" | "log" | "report")) = args.get(2).map(String::as_str) {
         let file = quire_app::task_timer::default_timer_path().ok_or("no config folder for the timer")?;
-        return timer_cmd(
-            arg(1)?,
-            sub,
-            &args[3..],
-            super::options(args).len().saturating_sub(3),
-            &file,
-            chrono::Local::now().fixed_offset(),
-        )
-        .map(|out| print!("{out}"));
+        return timer_cmd(arg(1)?, sub, &args[3..], super::options(args).len().saturating_sub(3), &file, &dates::now_local())
+            .map(|out| print!("{out}"));
     }
     let (_, svc, _) = load(arg(1)?)?;
     if super::has_flag(args, "--agenda") {
@@ -64,7 +57,7 @@ fn tasks(args: &[String]) -> Result<(), String> {
                 r.tasks.iter().cloned().chain(note).map(|t| (r.path.as_str().to_string(), t))
             })
             .collect();
-        let today = chrono::Local::now().date_naive();
+        let today = dates::today();
         let a = quire_app::plan::agenda::build(all.iter().map(|(p, t)| (p.as_str(), t)), today, None);
         print!("{}", agenda_text(&a, today));
         return Ok(());
@@ -112,7 +105,7 @@ fn find_task(vault: &Vault, ix: &quire_app::index::Index, query: &str, prefs: &T
                 hits.push(inline_ref(vault, &r.path, t, locked));
             }
         }
-        if let Some(n) = quire_app::plan::task_note::read(&r.properties, &r.title, prefs, *chrono::Local::now().offset()) {
+        if let Some(n) = quire_app::plan::task_note::read(&r.properties, &r.title, prefs, dates::now_local().offset().seconds()) {
             let low = n.task.text.to_lowercase();
             if !n.task.done && words.iter().all(|w| low.contains(w)) {
                 let title = if locked { quire_app::plan::timer::locked_title(r.path.as_str()) } else { n.task.text };
@@ -169,7 +162,7 @@ fn record(vault: &Vault, task: &TaskRef, entry: &quire_app::plan::time::TimeEntr
 }
 
 /// `tasks <vault> start|stop|status|log|report`, with the timer in `file`. Returns what to print.
-fn timer_cmd(root: &str, sub: &str, rest: &[String], literal: usize, file: &Path, now: DateTime<FixedOffset>) -> Result<String, String> {
+fn timer_cmd(root: &str, sub: &str, rest: &[String], literal: usize, file: &Path, now: &Zoned) -> Result<String, String> {
     use quire_app::plan::time::{self, format_clock, format_duration};
     use quire_app::task_timer::{load_running, save_running};
     let (vault, svc, _) = load(root)?;
@@ -287,25 +280,31 @@ fn timer_cmd(root: &str, sub: &str, rest: &[String], literal: usize, file: &Path
             let (dur, words) = rest.split_last().ok_or("log needs a task and a duration (25m, 1h30m)")?;
             let mins = time::parse_duration(dur).filter(|m| *m > 0).ok_or_else(|| format!("“{dur}” isn't a duration (25m, 1h30m)"))?;
             let task = find_task(&vault, &svc.read(), &words.join(" "), &prefs)?;
-            let e = time::session(time::trunc_seconds(now) - chrono::Duration::minutes(i64::from(mins)), time::trunc_seconds(now));
+            let end = time::trunc_seconds(now);
+            let e = time::session(dates::plus_seconds(&end, -60 * i64::from(mins)).unwrap_or_else(|| end.clone()), end);
             record(&vault, &task, &e, &prefs)?;
             let _ = writeln!(out, "Logged {} on “{}”", format_duration(mins), task.title);
         }
         _ => {
             let day = match rest.first() {
-                Some(d) => quire_base::time::parse_ymd(d).ok_or_else(|| format!("“{d}” isn't a date (YYYY-MM-DD)"))?,
-                None => now.date_naive(),
+                Some(d) => dates::parse_ymd(d).ok_or_else(|| format!("“{d}” isn't a date (YYYY-MM-DD)"))?,
+                None => now.date(),
             };
             let ix = svc.read();
             let notes: Vec<(String, String, Vec<time::TimeEntry>)> = ix
                 .records()
                 .filter_map(|r| {
-                    quire_app::plan::task_note::read(&r.properties, &r.title, &prefs, *now.offset())
+                    quire_app::plan::task_note::read(&r.properties, &r.title, &prefs, now.offset().seconds())
                         .map(|n| (r.path.as_str().to_string(), r.title.clone(), n.entries))
                 })
                 .collect();
             let monday = quire_app::task_timer::monday_of(day);
-            let rep = time::week_report(notes.iter().map(|(p, t, e)| (p.as_str(), t.as_str(), e.as_slice())), monday, now, &chrono::Local);
+            let rep = time::week_report(
+                notes.iter().map(|(p, t, e)| (p.as_str(), t.as_str(), e.as_slice())),
+                monday,
+                now,
+                &dates::TimeZone::system(),
+            );
             out.push_str(&report_text(&rep));
         }
     }
@@ -316,7 +315,7 @@ fn timer_cmd(root: &str, sub: &str, rest: &[String], literal: usize, file: &Path
 fn report_text(r: &quire_app::plan::time::WeekReport) -> String {
     use quire_app::plan::time::format_duration;
     let Some(monday) = r.monday else { return String::new() };
-    let mut s = format!("Week of {}\n", monday.format("%a %-d %b %Y"));
+    let mut s = format!("Week of {}\n", dates::fmt_date(monday, "%a %-d %b %Y"));
     if r.rows.is_empty() {
         s.push_str("No time logged on task notes this week.\n");
         return s;
@@ -337,7 +336,7 @@ fn report_text(r: &quire_app::plan::time::WeekReport) -> String {
     s
 }
 
-fn agenda_text(a: &quire_app::plan::agenda::Agenda, today: chrono::NaiveDate) -> String {
+fn agenda_text(a: &quire_app::plan::agenda::Agenda, today: Date) -> String {
     let mut s = String::new();
     let mut section = |title: &str, items: &[quire_app::plan::agenda::AgendaItem]| {
         if items.is_empty() {
@@ -345,7 +344,7 @@ fn agenda_text(a: &quire_app::plan::agenda::Agenda, today: chrono::NaiveDate) ->
         }
         let _ = writeln!(s, "{title}");
         for i in items {
-            let when = if i.date == today { String::new() } else { format!("{} ", i.date.format("%a %Y-%m-%d")) };
+            let when = if i.date == today { String::new() } else { format!("{} ", dates::fmt_date(i.date, "%a %Y-%m-%d")) };
             let _ = writeln!(s, "  [ ] {when}{}  ({})", i.task.text, i.path.trim_end_matches(".md"));
         }
     };
@@ -514,7 +513,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.path().join("A.md")).unwrap(), "# A #new\n");
         assert_eq!(std::fs::read_to_string(dir.path().join("B.md")).unwrap(), "---\ntags: [new, x]\n---\nB\n");
         assert_eq!(vault.history(&"B.md".into()).len(), 2, "before and after");
-        let agenda = agenda_text(&quire_app::plan::agenda::Agenda::default(), chrono::NaiveDate::from_ymd_opt(2026, 11, 3).unwrap());
+        let agenda = agenda_text(&quire_app::plan::agenda::Agenda::default(), dates::ymd_opt(2026, 11, 3).unwrap());
         assert_eq!(agenda, "Nothing due in the next 7 days.\n");
     }
 
@@ -529,38 +528,38 @@ mod tests {
         std::fs::write(v.join("Day.md"), "# Day\n- [ ] Call Bo about the venue\n- [ ] Call Al\n").unwrap();
         let root = v.to_str().unwrap();
         let file = dir.path().join("task-timer.json");
-        let at = |s: &str| DateTime::parse_from_rfc3339(s).unwrap();
-        let out = timer_cmd(root, "start", &["Write report".into()], usize::MAX, &file, at("2026-11-06T10:00:00+01:00")).unwrap();
+        let at = |s: &str| dates::zoned_rfc3339(s).unwrap();
+        let out = timer_cmd(root, "start", &["Write report".into()], usize::MAX, &file, &at("2026-11-06T10:00:00+01:00")).unwrap();
         assert_eq!(out, "Timing “Write report”\n");
-        let out = timer_cmd(root, "status", &[], usize::MAX, &file, at("2026-11-06T10:01:05+01:00")).unwrap();
+        let out = timer_cmd(root, "status", &[], usize::MAX, &file, &at("2026-11-06T10:01:05+01:00")).unwrap();
         assert_eq!(out, "01:05 running: “Write report” (Tasks/Write report)\n");
         // Starting another task stops and logs the first.
-        let out = timer_cmd(root, "start", &["call".into(), "venue".into()], usize::MAX, &file, at("2026-11-06T10:25:00+01:00")).unwrap();
+        let out = timer_cmd(root, "start", &["call".into(), "venue".into()], usize::MAX, &file, &at("2026-11-06T10:25:00+01:00")).unwrap();
         assert_eq!(out, "Logged 25m on “Write report”\nTiming “Call Bo about the venue”\n");
         let note = std::fs::read_to_string(v.join("Tasks/Write report.md")).unwrap();
         assert_eq!(
             note,
             "---\ntype: task\nstatus: doing\ntime_entries:\n  - start: 2026-11-06T10:00:00+01:00\n    end: 2026-11-06T10:25:00+01:00\n---\n# Write report\n"
         );
-        let out = timer_cmd(root, "stop", &[], usize::MAX, &file, at("2026-11-06T10:40:00+01:00")).unwrap();
+        let out = timer_cmd(root, "stop", &[], usize::MAX, &file, &at("2026-11-06T10:40:00+01:00")).unwrap();
         assert_eq!(out, "Logged 15m on “Call Bo about the venue”\n");
         assert_eq!(
             std::fs::read_to_string(v.join("Day.md")).unwrap(),
             "# Day\n- [ ] Call Bo about the venue [time:: 15m]\n- [ ] Call Al\n"
         );
         assert!(
-            timer_cmd(root, "start", &["call".into()], usize::MAX, &file, at("2026-11-06T11:00:00+01:00"))
+            timer_cmd(root, "start", &["call".into()], usize::MAX, &file, &at("2026-11-06T11:00:00+01:00"))
                 .unwrap_err()
                 .contains("2 tasks match")
         );
         let out =
-            timer_cmd(root, "log", &["Write".into(), "report".into(), "1h5m".into()], usize::MAX, &file, at("2026-11-07T09:00:00+01:00"))
+            timer_cmd(root, "log", &["Write".into(), "report".into(), "1h5m".into()], usize::MAX, &file, &at("2026-11-07T09:00:00+01:00"))
                 .unwrap();
         assert_eq!(out, "Logged 1h5m on “Write report”\n");
-        let out = timer_cmd(root, "report", &["2026-11-04".into()], usize::MAX, &file, at("2026-11-08T09:00:00+01:00")).unwrap();
+        let out = timer_cmd(root, "report", &["2026-11-04".into()], usize::MAX, &file, &at("2026-11-08T09:00:00+01:00")).unwrap();
         assert!(out.starts_with("Week of Mon 2 Nov 2026\nTask"), "{out}");
         assert!(out.contains("\nWrite report                          ·      ·      ·      ·    25m   1h5m      ·   1h30m\n"), "{out}");
-        assert_eq!(timer_cmd(root, "stop", &[], usize::MAX, &file, at("2026-11-08T09:00:00+01:00")).unwrap(), "No timer is running.\n");
+        assert_eq!(timer_cmd(root, "stop", &[], usize::MAX, &file, &at("2026-11-08T09:00:00+01:00")).unwrap(), "No timer is running.\n");
         assert!(Vault::open_local(root).unwrap().history(&"Day.md".into()).len() >= 2, "before and after kept");
     }
 }

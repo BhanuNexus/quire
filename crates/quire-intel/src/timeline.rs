@@ -147,9 +147,7 @@ pub fn merge(mut items: Vec<Item>) -> Vec<Item> {
 pub fn by_day(items: &[Item]) -> BTreeMap<String, Vec<&Item>> {
     let mut out: BTreeMap<String, Vec<&Item>> = BTreeMap::new();
     for i in items {
-        let day = chrono::DateTime::from_timestamp_millis(i.at)
-            .map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string())
-            .unwrap_or_default();
+        let day = quire_base::dates::fmt_local_ms(i.at, "%Y-%m-%d").unwrap_or_default();
         out.entry(day).or_default().push(i);
     }
     out
