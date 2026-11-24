@@ -23,8 +23,9 @@ Used by: quire-desktop, quire-cli, quire-mcp, quire-web, quire-assistant. Editio
 - The UI thread never waits on new work (P9): read the index with `try_*` (`Workspace::try_agenda`), keep what you showed while
   the index worker writes, and read counters from atomics (`IndexService::note_count`). No vault listing before the first frame
   (it ran on the UI thread before: see the 0.13.1 perf note). [test] CI `perf` job (startup only); per frame [review only]
-- Default keys must pass `Keymap::conflicts` on all three platforms (AltGr, Option, reserved keys). [test] only duplicates:
-  `shortcuts_are_unique` (`commands.rs`); `conflicts_on_every_platform` (`keymap.rs`) tests the checker, not the defaults. Else [review only]
+- Default keys must pass `Keymap::conflicts` on the platform that has them (AltGr, Option, reserved keys). A key the system keeps on
+  one platform gets that platform's own default in `MOVED` (`keymap.rs`), never a second `COMMANDS` row. [test]
+  `every_default_shortcut_passes_the_conflict_checker`, `shortcuts_are_unique` (`commands.rs`)
 
 ## Do not
 - Write app state with `fs::write` or your own temporary file: `quire_base::fs::write_atomic` with `Options::STATE`, or

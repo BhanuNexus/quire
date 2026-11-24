@@ -145,9 +145,9 @@ cargo build --release -p quire-desktop --no-default-features   # ~45 MiB; the fu
 | Copy as HTML | "Copy as HTML" (command palette, or right-click a note or tab) puts the note, or the selected part, on the clipboard as formatted HTML with the Markdown as plain text, so a paste into mail or a document keeps headings, callouts, tables, drawings, and (full edition) math and diagrams as pictures. Images point at the files on this computer (`file://`); links to other notes become their text. `quire-cli html <vault> <note>` prints the same HTML |
 | Graph view | Your notes and links as a map, around the open note or the whole vault (Ctrl+G) |
 | Split & fold | Two notes side by side (Ctrl+Alt+\\, or right-click → Open to the side), and fold any section under its heading |
-| Editor | Fast virtualized editor: draws only visible lines, stays smooth on 10 MB / 100k-line files. Multiple cursors (Ctrl+D, Ctrl+Shift+L, Ctrl+Alt+↑/↓, Alt+click), word/line selection by double/triple click, IME input. Classic egui editor kept as a fallback |
+| Editor | Fast virtualized editor: draws only visible lines, stays smooth on 10 MB / 100k-line files. Multiple cursors (Ctrl+D, Ctrl+Shift+L, Ctrl+Alt+↑/↓ (Alt+Shift+↑/↓ on Linux), Alt+click), word/line selection by double/triple click, IME input. Classic egui editor kept as a fallback |
 | Writing | Live Markdown styling (heading sizes, bold, code, quotes, dimmed syntax), focus mode, preview pane, autosave with no save dialogs, scratchpad. A `goal: 1500` property shows your progress in the status bar (`640 / 1,500 words · 43%`) |
-| Find & replace | In-note bar (Ctrl+F / Ctrl+H) with match case, whole word, regex and `$1` captures; vault-wide replace (Ctrl+Shift+R) with a per-note preview you can untick |
+| Find & replace | In-note bar (Ctrl+F / Ctrl+H, ⌘F / ⌘R on macOS) with match case, whole word, regex and `$1` captures; vault-wide replace (Ctrl+Shift+R) with a per-note preview you can untick |
 | Images & files | Paste a screenshot (Ctrl+V) or drop files: they're saved to `attachments/` and embedded; images show inline under the line and in the preview. Pasting a URL over selected text makes a link |
 | Formatting toolbar | Off by default (View: Formatting toolbar): bold, italic, strikethrough, highlight, code, links, headings, lists, task, quote, callout, table, math, footnote, rule, attachments, on every cursor, one undo step each, and bolding bold text unbolds it. Add any command or macro as a button with your own icon; a small toolbar next to selected text if you like, with its own buttons; F10 for the keyboard |
 | Your commands | Settings → Commands: change any shortcut (conflicts checked for Windows, macOS and Linux, AltGr included), pin commands to the top of the palette, and macros: a list of commands under one name, with a shortcut or a toolbar button |
@@ -194,7 +194,7 @@ Quire reads what these plugins write, in place, so a vault works in both.
 
 ## Keyboard
 
-On macOS, Ctrl is ⌘ and Alt is ⌥. This is the common set. The complete list, with any shortcuts you changed, is in the app (Ctrl+/); it is generated from the command registry (`crates/quire-app/src/commands.rs`), so it cannot drift. Ctrl+O also opens Quick open, and Ctrl+Shift+P the command palette.
+On macOS, Ctrl is ⌘ and Alt is ⌥. This is the common set, except where the system keeps a key (below). The complete list, with any shortcuts you changed, is in the app (Ctrl+/); it is generated from the command registry (`crates/quire-app/src/commands.rs`), so it cannot drift. Ctrl+O also opens Quick open, and Ctrl+Shift+P the command palette.
 
 | Keys | Action | Keys | Action |
 |---|---|---|---|
@@ -206,9 +206,9 @@ On macOS, Ctrl is ⌘ and Alt is ⌥. This is the common set. The complete list,
 | Ctrl+1–3 / 0 | Heading / paragraph | Ctrl+Shift+T | Format table |
 | Ctrl+\\ | Insert `[[link]]` | Alt+Enter | Follow link |
 | Ctrl+Enter | Evaluate math on line | Ctrl+Shift+E | Export HTML |
-| Ctrl+F / Ctrl+H | Find / replace | Ctrl+Shift+R | Replace in all notes |
+| Ctrl+F / Ctrl+H (⌘R) | Find / replace | Ctrl+Shift+R | Replace in all notes |
 | Ctrl+D | Add next occurrence | Ctrl+Shift+L | Select all occurrences |
-| Ctrl+Alt+↑/↓ | Add cursor above/below | Ctrl+Shift+A | Ask your notes |
+| Ctrl+Alt+↑/↓ (Linux: Alt+Shift+↑/↓) | Add cursor above/below | Ctrl+Shift+A | Ask your notes |
 | Ctrl+Alt+H | Version history | Ctrl+, | Settings |
 | Ctrl+Alt+N | New project | Alt+S | Scratchpad |
 | Ctrl+Alt+\\ | Split editor | Ctrl+Shift+[ | Fold/unfold section |
@@ -225,6 +225,8 @@ On macOS, Ctrl is ⌘ and Alt is ⌥. This is the common set. The complete list,
 | Ctrl+Shift+S | Summarize note | Ctrl+Shift+D | Insert today's date |
 | Ctrl+Shift+K | New task | Ctrl+Shift+M | Start / stop the timer on this task |
 | F10 | Formatting toolbar (← → Enter, Esc back) | Ctrl+/ | All shortcuts (change them in Settings → Commands) |
+
+On macOS the system keeps a few of these, so there Next / previous tab are ⌘⌥→ / ⌘⌥←, Inline code is ⌘⇧C and Find / replace is ⌘R; on Linux Add cursor above / below is Alt+Shift+↑/↓.
 
 ## Views
 

@@ -352,7 +352,7 @@ Replaces egui's `TextEdit`, which re-lays out the whole string on every change.
 ### 11.2 Find & replace (`quire-app::find`)
 
 * `FindOptions {case, whole_word, regex}` compiled to one `regex::Regex`; matches are char ranges in the document.
-* In-note bar (Ctrl+F / Ctrl+H): live match count, next/prev, replace one, replace all (one undoable transaction), matches painted in the editor.
+* In-note bar (Ctrl+F / Ctrl+H; ⌘F / ⌘R on macOS): live match count, next/prev, replace one, replace all (one undoable transaction), matches painted in the editor.
 * Vault-wide (Ctrl+Shift+H): preview every match with context, choose files, then apply. Open notes get an undoable transaction; closed notes are rewritten atomically and re-indexed.
 
 ### 11.3 Attachments (`quire-vault`, `Vault::save_attachment`)
