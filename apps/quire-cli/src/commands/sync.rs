@@ -561,7 +561,7 @@ fn report_line(r: &vault_sync::SyncReport) -> String {
 }
 
 fn once(vault: &Path, verify: bool) -> Result<(), String> {
-    let r = if verify { vault_sync::sync_verify_at(vault)? } else { vault_sync::sync_once_at(vault)? };
+    let r = vault_sync::sync_once_with(vault, verify, &mut |sent, of| eprintln!("Sending {sent} of {of} notes…"))?;
     println!("Synced: {}.", report_line(&r));
     for p in &r.conflict_copies {
         println!("Conflict: two devices changed the same lines; the other version was saved as “{p}”.");

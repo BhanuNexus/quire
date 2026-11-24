@@ -77,6 +77,41 @@ pub struct ServerInfo {
     /// The server's version (`0.9.0`).
     #[serde(default)]
     pub server: String,
+    /// What it can do beyond its protocol (0.14: [`BATCH_FEATURE`]). Older
+    /// clients ignore the field; an older server has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
+}
+
+/// A server that takes batches of revisions
+/// (`POST /v1/spaces/{space}/revisions/batch`, 0.14).
+pub const BATCH_FEATURE: &str = "batch-push";
+
+/// The body of a batch push (0.14): at most 1,000 revisions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BatchRequest {
+    pub revisions: Vec<Revision>,
+}
+
+/// How the server took one revision of a batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WireOutcome {
+    /// Stored as its file's head at this position (or stored already, by
+    /// an earlier send of the same batch).
+    Accepted { seq: u64 },
+    /// Its first parent isn't its file's head any more.
+    Conflict {},
+    /// Its first parent was never stored, or is gone for good.
+    LostParent {},
+}
+
+/// The reply to a batch push: an outcome per revision, in order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BatchResponse {
+    pub outcomes: Vec<WireOutcome>,
+    /// The log's latest position.
+    pub latest: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

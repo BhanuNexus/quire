@@ -89,6 +89,9 @@ pub struct VaultStore {
     /// Whether the vault's disk ignores capital letters in names (found
     /// out once).
     pub(super) case_blind: std::cell::Cell<Option<bool>>,
+    /// Whether the vault keeps any version history (where an agent's
+    /// provenance is), found out once a pass.
+    has_history: std::cell::Cell<Option<bool>>,
 }
 
 pub(super) fn b64() -> base64::engine::GeneralPurpose {
@@ -123,6 +126,7 @@ impl VaultStore {
             outside_before: None,
             folded: HashMap::new(),
             case_blind: std::cell::Cell::new(None),
+            has_history: std::cell::Cell::new(None),
         }
     }
 
@@ -448,10 +452,15 @@ impl VaultStore {
         self.manifest.observed(p, bytes);
     }
 
-    /// Record a write of `bytes` at `path` by the engine.
+    /// Record a write of `bytes` at `path` by the engine. The manifest's
+    /// subscribers (the index) hear of it from here, not only through the
+    /// file watcher, so a lost watcher event can't leave them stale; the
+    /// index compares by hash, so hearing it both ways takes it once.
+    /// (A removal has no published form in the manifest: it still reaches
+    /// them through the watcher or the next scan.)
     fn wrote(&self, path: &str, bytes: &[u8]) {
         let p = NotePath::new(path);
-        let h = if path.starts_with(SHARED_PREFIX) { FileHash::of(bytes) } else { self.manifest.note_written(&p, bytes) };
+        let h = if path.starts_with(SHARED_PREFIX) { FileHash::of(bytes) } else { self.manifest.observed(&p, bytes) };
         self.listed.borrow_mut().insert(path.to_string(), h);
         self.first_read.borrow_mut().insert(path.to_string(), Some(h));
     }
@@ -551,6 +560,16 @@ impl LocalStore for VaultStore {
     fn actor(&self, path: &str) -> Option<quire_sync::ActorRef> {
         let p = NotePath::new(path);
         if !p.is_markdown() {
+            return None;
+        }
+        // Without any history there is no provenance: no folder to look in
+        // per note.
+        let any = self.has_history.get().unwrap_or_else(|| {
+            let any = self.vault.storage().absolute(&NotePath::new(".quire/history")).is_none_or(|d| d.is_dir());
+            self.has_history.set(Some(any));
+            any
+        });
+        if !any {
             return None;
         }
         let snap = self.vault.history(&p).into_iter().next()?;
@@ -708,6 +727,7 @@ impl LocalStore for VaultStore {
 /// syncs.
 pub(super) fn begin_pass(store: &mut VaultStore) -> Result<(), String> {
     store.began = false;
+    store.has_history.set(None);
     store.listed.borrow_mut().clear();
     store.first_read.borrow_mut().clear();
     store.unreadable.borrow_mut().clear();
