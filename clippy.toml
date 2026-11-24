@@ -9,7 +9,7 @@ avoid-breaking-exported-api = false
 too-many-arguments-threshold = 8
 # 0.11: the TaskNotes plugin's name in docs ("..": keep clippy's defaults).
 # 0.12 sync: storage names in docs.
-doc-valid-idents = ["TaskNotes", "WebDAV", "SigV4", "MinIO", "ownCloud", ".."]
+doc-valid-idents = ["TaskNotes", "WebDAV", "SigV4", "MinIO", "ownCloud", "DeltaNet", "SiLU", ".."]
 
 # The project's rules, as lints (0.14, docs/design/0.14-health-base.md).
 # Clippy prints `reason` under the error, so each says what to use instead;

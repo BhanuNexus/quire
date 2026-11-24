@@ -32,6 +32,12 @@ pub mod models;
 pub mod qwen3;
 
 #[cfg(feature = "models")]
+pub mod deltanet;
+
+#[cfg(feature = "models")]
+pub mod qwen35;
+
+#[cfg(feature = "models")]
 pub mod whisper;
 
 pub mod fake;

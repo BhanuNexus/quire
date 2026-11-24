@@ -1,0 +1,122 @@
+# By hand: Qwen 3.5's speed and memory record and the reference check of a
+# Qwen 3.5 GGUF (docs/design/0.14-local-ai.md sections 3.3 and 3.6).
+#
+# check = speed: the engine's `spike` example makes random weights in the
+#   released 4B or 9B shapes and measures loading, reading 256, 1,024 and
+#   2,000-token prompts, writing, and peak memory. The numbers (with the
+#   runner's CPU, cores and memory) go to the job summary and an artifact;
+#   copy them into docs/formats/model-catalog.md. A record, not a gate. The
+#   owner's reference machine is GitHub's hosted 4-core Linux runner, which is
+#   what `ubuntu-latest` gives a public repository (a private one gets 2 cores:
+#   pass a larger runner's label).
+# check = reference: downloads the GGUF (a `resolve/<commit>/` URL) and Qwen's
+#   own repository at a commit, then runs packaging/check-model-reference.py.
+#   The record (packaging/model-checks/<id>.toml) is the artifact; review it
+#   and commit it with the pin. The bf16 reference needs about 10 GB of memory
+#   for 4B; 9B needs about 24 GB, more than ubuntu-latest has.
+name: Qwen 3.5 record
+
+on:
+  workflow_dispatch:
+    inputs:
+      check:
+        description: speed or reference
+        type: choice
+        options: [speed, reference]
+        default: speed
+      size:
+        description: Model size
+        type: choice
+        options: ["4b", "9b"]
+        default: "4b"
+      runner:
+        description: Runner label
+        default: ubuntu-latest
+      gguf_url:
+        description: "reference: the GGUF, https://huggingface.co/<repo>/resolve/<commit>/<file>"
+        default: ""
+      reference_commit:
+        description: "reference: the commit of Qwen/Qwen3.5-4B or -9B"
+        default: ""
+
+permissions: {}
+
+concurrency:
+  group: qwen35-record-${{ inputs.check }}-${{ inputs.size }}
+  cancel-in-progress: false
+
+jobs:
+  speed:
+    if: inputs.check == 'speed'
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 120
+    permissions:
+      contents: read # check out the code
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Build the spike example
+        run: cargo build --release --locked -p quire-ai-engine --example spike
+      - name: Measure
+        env:
+          SIZE: ${{ inputs.size }}
+        run: |
+          target/release/examples/spike "$RUNNER_TEMP" qwen35 "$SIZE" | tee qwen35-speed.txt
+          { echo '```'; cat qwen35-speed.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: qwen35-speed-${{ inputs.size }}
+          path: qwen35-speed.txt
+
+  reference:
+    if: inputs.check == 'reference'
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 240
+    permissions:
+      contents: read # check out the code
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Build the spike example
+        run: cargo build --release --locked -p quire-ai-engine --example spike
+      - name: Fetch the GGUF and Qwen's repository
+        env:
+          SIZE: ${{ inputs.size }}
+          GGUF_URL: ${{ inputs.gguf_url }}
+          REF_COMMIT: ${{ inputs.reference_commit }}
+        run: |
+          case "$GGUF_URL" in
+            https://huggingface.co/*/resolve/[0-9a-f]*/*.gguf) ;;
+            *) echo "gguf_url must be a huggingface.co resolve/<commit>/ URL"; exit 1 ;;
+          esac
+          case "$REF_COMMIT" in
+            *[!0-9a-f]* | "") echo "reference_commit must be a commit hash"; exit 1 ;;
+          esac
+          mkdir -p "$RUNNER_TEMP/gguf"
+          curl -fL --retry 3 -o "$RUNNER_TEMP/gguf/model.gguf" "$GGUF_URL"
+          python3 -m pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu
+          python3 -m pip install --quiet transformers safetensors huggingface_hub
+          REPO="Qwen/Qwen3.5-$(echo "$SIZE" | tr b B)"
+          echo "REF_REPO=$REPO" >> "$GITHUB_ENV"
+          python3 -c 'import sys; from huggingface_hub import snapshot_download as s; s(sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[3])' \
+            "$REPO" "$REF_COMMIT" "$RUNNER_TEMP/reference"
+      - name: Compare
+        env:
+          SIZE: ${{ inputs.size }}
+          REF_COMMIT: ${{ inputs.reference_commit }}
+        run: |
+          python3 packaging/check-model-reference.py --id "qwen3.5-$SIZE-q4km" \
+            --gguf-dir "$RUNNER_TEMP/gguf" --reference "$RUNNER_TEMP/reference" \
+            --reference-repo "$REF_REPO" --reference-commit "$REF_COMMIT" \
+            --spike target/release/examples/spike --out model-checks
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: qwen35-reference-${{ inputs.size }}
+          path: model-checks/

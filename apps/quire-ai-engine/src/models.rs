@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The real models (`docs/design/0.9.md` §D.3).
 //!
-//! Candle's quantized Qwen3 for writing and the agent, candle's BERT for embeddings (BGE, E5), and ocrs for OCR, with
-//! hayro rendering PDF pages to read scans. Tokenizers use the pure-Rust
-//! regex backend (fancy-regex), which handles Qwen3's look-ahead.
+//! Qwen3 (adapted from candle's quantized model) or Qwen 3.5 (written here)
+//! for writing and the agent, chosen by the GGUF's `general.architecture`;
+//! candle's BERT for embeddings (BGE, E5); and ocrs for OCR, with hayro
+//! rendering PDF pages to read scans. Tokenizers use the pure-Rust regex
+//! backend (fancy-regex), which handles the Qwen pre-tokenizers' look-ahead.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -21,6 +23,7 @@ use serde_json::{Value, json};
 use tokenizers::Tokenizer;
 
 use crate::qwen3::{Options as QwenOptions, Qwen3, Repack};
+use crate::qwen35::Qwen35;
 use crate::template::{Piece, ReplyParser, STOP_TOKENS, render};
 use crate::{Backend, Failure};
 
@@ -32,8 +35,35 @@ fn failed(e: impl std::fmt::Display) -> Failure {
     (code::FAILED, e.to_string())
 }
 
+/// A language model of one of the architectures the engine runs.
+enum LlmModel {
+    Qwen3(Qwen3),
+    Qwen35(Box<Qwen35>),
+}
+
+impl LlmModel {
+    /// Loads the model `general.architecture` names: `qwen3` or `qwen35`
+    /// (`docs/design/0.14-local-ai.md` §3.1). Qwen 3.5 runs on the CPU
+    /// whatever `device` is.
+    fn load(ct: gguf_file::Content, f: &mut std::fs::File, device: &Device, opts: QwenOptions) -> Result<(Self, Device), Failure> {
+        let arch = ct.metadata.get("general.architecture").and_then(|v| v.to_string().ok()).cloned().unwrap_or_default();
+        match arch.as_str() {
+            "qwen3" => Ok((Self::Qwen3(Qwen3::from_gguf(ct, f, device, opts).map_err(load_failed)?), device.clone())),
+            crate::qwen35::ARCH => Ok((Self::Qwen35(Box::new(Qwen35::from_gguf(ct, f, opts).map_err(load_failed)?)), Device::Cpu)),
+            other => Err(load_failed(format!("unsupported model: general.architecture is {other:?}"))),
+        }
+    }
+
+    fn forward(&mut self, input: &Tensor, offset: usize) -> candle_core::Result<Tensor> {
+        match self {
+            Self::Qwen3(m) => m.forward(input, offset),
+            Self::Qwen35(m) => m.forward(input, offset),
+        }
+    }
+}
+
 struct Llm {
-    model: Qwen3,
+    model: LlmModel,
     tok: Tokenizer,
     device: Device,
     stop_ids: Vec<u32>,
@@ -119,7 +149,7 @@ impl Backend for RealBackend {
                     _ => Repack::Q8,
                 };
                 let opts = QwenOptions { repack, max_ctx: ctx };
-                let model = Qwen3::from_gguf(ct, &mut f, &device, opts).map_err(load_failed)?;
+                let (model, device) = LlmModel::load(ct, &mut f, &device, opts)?;
                 let tok = tokenizer(dir)?;
                 let stop_ids = STOP_TOKENS.iter().filter_map(|t| tok.token_to_id(t)).collect();
                 // The quantized weights as they are in the file (the KV cache comes on top).
@@ -210,7 +240,10 @@ impl Backend for RealBackend {
         if prompt_ids.len() + max_new > m.ctx {
             return Err((code::BAD_PARAMS, format!("the request is too long for this model ({} tokens)", prompt_ids.len())));
         }
-        m.model.clear_kv_cache();
+        match &mut m.model {
+            LlmModel::Qwen3(q) => q.clear_kv_cache(),
+            LlmModel::Qwen35(q) => q.clear(),
+        }
         let sampling = if p.temperature <= 0.0 {
             Sampling::ArgMax
         } else {
@@ -512,5 +545,52 @@ mod tests {
         assert_eq!(split("x = f(1);\n  return"), ["x", " =", " f", "(", "1", ");\n", " ", " return"]);
         assert_eq!(split("中文 测试"), ["中文", " 测试"]);
         assert_eq!(split("<|im_start|>user"), ["<|", "im", "_start", "|>", "user"]);
+    }
+
+    /// Qwen 3.5's pattern (`tokenizer.json`, as llama.cpp quotes it for its
+    /// `qwen35` pre-tokenizer in `src/llama-vocab.cpp`): Qwen3's with
+    /// combining marks (`\p{M}`) kept inside a word. The expected splits are
+    /// Python `regex`'s on the same pattern.
+    const QWEN35: &str =
+        r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
+
+    fn split35(text: &str) -> Vec<String> {
+        let pre = Split::new(SplitPattern::Regex(QWEN35.into()), SplitDelimiterBehavior::Isolated, false).unwrap();
+        let mut s = PreTokenizedString::from(text);
+        pre.pre_tokenize(&mut s).unwrap();
+        s.get_splits(OffsetReferential::Original, OffsetType::Byte).into_iter().map(|(t, _, _)| t.to_string()).collect()
+    }
+
+    #[test]
+    fn the_pure_rust_regex_backend_splits_like_qwen35_expects() {
+        // Where Qwen3's pattern and this one agree.
+        for text in ["Hello  world's 123 ünïcödé\n\n  x", "I'LL go!!\tnow   ", "x = f(1);\n  return", "中文 测试", "<|im_start|>user"]
+        {
+            assert_eq!(split35(text), split(text), "{text:?}");
+        }
+        // Combining marks stay with their letters.
+        assert_eq!(split35("cafe\u{301} nai\u{308}ve"), ["cafe\u{301}", " nai\u{308}ve"]);
+        assert_eq!(split("cafe\u{301} nai\u{308}ve"), ["cafe", "\u{301}", " nai", "\u{308}ve"]);
+        assert_eq!(split35("हिन्दी भाषा"), ["हिन्दी", " भाषा"]);
+        assert_eq!(split35("e\u{301}\u{301}!"), ["e\u{301}\u{301}", "!"]);
+    }
+
+    /// Only `qwen3` and `qwen35` files load as language models.
+    #[test]
+    fn an_unknown_architecture_is_refused_by_name() {
+        use candle_core::quantized::gguf_file::{self, Value};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("model.gguf");
+        let mut out = std::io::Cursor::new(Vec::new());
+        let arch = Value::String("llama".into());
+        gguf_file::write(&mut out, &[("general.architecture", &arch)], &[]).unwrap();
+        std::fs::write(&path, out.into_inner()).unwrap();
+        let mut f = std::fs::File::open(&path).unwrap();
+        let ct = gguf_file::Content::read(&mut f).unwrap();
+        let Err((code, msg)) = super::LlmModel::load(ct, &mut f, &candle_core::Device::Cpu, super::QwenOptions::default()) else {
+            panic!("a llama file loaded");
+        };
+        assert_eq!(code, quire_ai::protocol::code::LOAD_FAILED);
+        assert!(msg.contains("unsupported model") && msg.contains("llama"), "{msg}");
     }
 }

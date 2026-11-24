@@ -67,13 +67,13 @@ impl Default for Options {
 /// A quantized weight `(n, k)`: candle's `QMatMul` (with its repacking), or
 /// the GGUF blocks multiplied by candle's block kernels.
 #[derive(Clone)]
-enum MatMul {
+pub(crate) enum MatMul {
     Candle(QMatMul),
     Compact { w: Arc<dyn QuantizedType>, n: usize, k: usize },
 }
 
 impl MatMul {
-    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+    pub(crate) fn forward(&self, x: &Tensor) -> Result<Tensor> {
         match self {
             Self::Candle(m) => m.forward(x),
             Self::Compact { w, n, k } => {
@@ -96,13 +96,13 @@ impl MatMul {
 
 /// The token table: quantized blocks, looked up a row at a time.
 #[derive(Clone)]
-enum Embed {
+pub(crate) enum Embed {
     Candle(Arc<QTensor>),
     Compact { w: Arc<dyn QuantizedType>, rows: usize, hidden: usize },
 }
 
 impl Embed {
-    fn forward(&self, ids: &Tensor) -> Result<Tensor> {
+    pub(crate) fn forward(&self, ids: &Tensor) -> Result<Tensor> {
         match self {
             Self::Candle(t) => t.embedding(ids),
             Self::Compact { w, rows, hidden } => {
@@ -119,33 +119,33 @@ impl Embed {
 }
 
 /// Reads tensors from the GGUF file.
-struct Gguf<'a, R: Read + Seek> {
-    ct: gguf_file::Content,
-    reader: &'a mut R,
-    device: Device,
-    opts: Options,
+pub(crate) struct Gguf<'a, R: Read + Seek> {
+    pub(crate) ct: gguf_file::Content,
+    pub(crate) reader: &'a mut R,
+    pub(crate) device: Device,
+    pub(crate) opts: Options,
 }
 
 impl<R: Read + Seek> Gguf<'_, R> {
-    fn md_u32(&self, key: &str) -> Result<usize> {
+    pub(crate) fn md_u32(&self, key: &str) -> Result<usize> {
         match self.ct.metadata.get(key) {
             Some(v) => Ok(v.to_u32()? as usize),
             None => bail!("cannot find {key} in metadata"),
         }
     }
 
-    fn md_f32(&self, key: &str) -> Result<f64> {
+    pub(crate) fn md_f32(&self, key: &str) -> Result<f64> {
         match self.ct.metadata.get(key) {
             Some(v) => Ok(f64::from(v.to_f32()?)),
             None => bail!("cannot find {key} in metadata"),
         }
     }
 
-    fn has(&self, name: &str) -> bool {
+    pub(crate) fn has(&self, name: &str) -> bool {
         self.ct.tensor_infos.contains_key(name)
     }
 
-    fn qtensor(&mut self, name: &str) -> Result<QTensor> {
+    pub(crate) fn qtensor(&mut self, name: &str) -> Result<QTensor> {
         self.ct.tensor(self.reader, name, &self.device)
     }
 
@@ -175,7 +175,7 @@ impl<R: Read + Seek> Gguf<'_, R> {
         self.device.is_cpu() && !repacked && !matches!(dtype, GgmlDType::F32 | GgmlDType::F16 | GgmlDType::BF16)
     }
 
-    fn matmul(&mut self, name: &str) -> Result<MatMul> {
+    pub(crate) fn matmul(&mut self, name: &str) -> Result<MatMul> {
         if self.compact(name) {
             let (w, n, k) = self.blocks(name)?;
             return Ok(MatMul::Compact { w, n, k });
@@ -189,7 +189,7 @@ impl<R: Read + Seek> Gguf<'_, R> {
 
     /// The token table and, when the model ties them, the output projection
     /// sharing its blocks.
-    fn embed_and_head(&mut self) -> Result<(Embed, MatMul)> {
+    pub(crate) fn embed_and_head(&mut self) -> Result<(Embed, MatMul)> {
         let tied = !self.has("output.weight");
         if self.compact("token_embd.weight") {
             let (w, rows, hidden) = self.blocks("token_embd.weight")?;

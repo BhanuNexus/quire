@@ -119,6 +119,22 @@ read. On Windows Quire reads it through PowerShell
 (`Get-CimInstance Win32_ComputerSystem`), then `wmic`, without unsafe code.
 The catalog's `min_ram_gb`: Small 6, Balanced 8, Better 16.
 
+## Qwen 3.5 (0.14): memory and speed
+
+Not measured yet. The record is taken on GitHub's hosted 4-core Linux runner
+(`docs/design/0.14-local-ai.md` §3.6): run the **Qwen 3.5 record** workflow
+(`.github/workflows/qwen35-record.yml`) with `check = speed` for `4b` and for
+`9b`, and copy its table here with the CPU, cores and memory line it prints.
+It runs `spike <dir> qwen35 4b|9b`: random weights in the released shapes,
+`Q4_K` with `Q6_K` for `attn_v`, `ssm_out`, `ffn_down` (and 9B's `output`);
+prompts of 256, 1,024 and 2,000 tokens read in chunks of 256, then 16
+written tokens; RSS and peak RSS after each. The memory the caches add, from
+the shapes (`Hparams::cache_bytes`, tested): 64 KiB of attention cache per
+token of context (512 MiB at 8,192), 48 MiB of DeltaNet state and 2.25 MiB
+of convolution inputs whatever the length, and as much again for the
+prompt-reuse snapshot. The same table is repeated with the pinned files once
+they pass their reference check (`packaging/model-checks/`).
+
 ## Downloads: `<data_dir>/models/`
 
 * `<id>/<name>.part` while downloading (resumed with `Range: bytes=<len>-`;
