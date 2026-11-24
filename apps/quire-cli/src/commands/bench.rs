@@ -572,7 +572,7 @@ fn mcp_pdfs_suite(runs: usize) {
             ServerConfig { device: Some(DeviceInfo { id: "bench".into(), name: "bench".into() }), ..ServerConfig::default() },
         );
         let conn = Conn::stdio(srv.new_conn());
-        let _ = mcp_call(&srv, &conn, "search", &json!({"query": "rope", "filters": {"kind": "all"}}));
+        let _ = mcp_call(&srv, &conn, "search", &json!({"query": "rope", "kind": "all"}));
         first.push(ms(t.elapsed()));
         let _ = srv.wait_for_pdfs(Duration::from_mins(5));
         all.push(ms(t.elapsed()));

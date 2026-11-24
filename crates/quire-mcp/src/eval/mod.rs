@@ -384,7 +384,7 @@ pub fn run_with(suite: &Suite, k: usize, semantic: Option<quire_app::index::Sema
         let id = u64::try_from(i).unwrap_or(0) * 3;
         let started = Instant::now();
         let hits = call(&srv, &conn, id, "search", &json!({"query": q.text, "limit": k, "max_tokens": 20_000}));
-        let ask = call(&srv, &conn, id + 1, "ask", &json!({"question": q.text, "k": k}));
+        let ask = call(&srv, &conn, id + 1, "ask", &json!({"question": q.text, "limit": k}));
         let s = &ask["structuredContent"];
         let did_abstain = s["abstained"] == true;
         {
@@ -463,7 +463,7 @@ pub fn run_with(suite: &Suite, k: usize, semantic: Option<quire_app::index::Sema
     let json = json!({
         "suite": suite.name,
         "params": suite.params,
-        "k": k,
+        "limit": k,
         "quire": env!("CARGO_PKG_VERSION"),
         "questions": suite.questions.len(),
         "index_ms": index_ms,
