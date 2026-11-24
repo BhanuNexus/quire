@@ -5837,7 +5837,6 @@ name = "quire-agent"
 version = "0.13.3"
 dependencies = [
  "base64 0.23.1",
- "chrono",
  "directories",
  "flate2",
  "notify",

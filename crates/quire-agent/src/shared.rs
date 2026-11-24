@@ -114,13 +114,13 @@ pub fn valid_device(id: &str) -> bool {
 }
 
 pub(crate) fn month_of(at_ms: i64) -> String {
-    chrono::DateTime::from_timestamp_millis(at_ms).map_or_else(|| "1970-01".into(), |d| d.format("%Y-%m").to_string())
+    quire_base::dates::fmt_utc_ms(at_ms, "%Y-%m").unwrap_or_else(|| "1970-01".into())
 }
 
 /// `now`'s month and the `n - 1` before it, newest first.
 fn recent_months(now_ms: i64, n: usize) -> Vec<String> {
-    let now = chrono::DateTime::from_timestamp_millis(now_ms).unwrap_or_default();
-    let (mut y, mut m) = (chrono::Datelike::year(&now), chrono::Datelike::month(&now));
+    let now = quire_base::dates::utc_from_ms(now_ms).unwrap_or(quire_base::dates::EPOCH);
+    let (mut y, mut m) = (i32::from(now.year()), i32::from(now.month()));
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
         out.push(format!("{y:04}-{m:02}"));
