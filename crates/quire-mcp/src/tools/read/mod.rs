@@ -17,7 +17,7 @@ use std::fmt::Write as _;
 use quire_agent::{LedgerQuery, Mode, Op, OpKind, ProposalFilter, ProposalStatus, ProposalSummary};
 use quire_app::index::{SearchFilters, SearchKind, views};
 use quire_app::intel::chat::{ChatRequest, chat_text};
-use quire_app::intel::{extractive_answer, retrieve_where};
+use quire_app::intel::{extractive_answer, retrieve_in};
 use quire_app::markdown::{Value as FmValue, frontmatter, outline};
 use quire_app::vault::{ContentHash, NotePath};
 use serde_json::{Value, json};

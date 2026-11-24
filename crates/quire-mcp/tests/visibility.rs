@@ -61,15 +61,13 @@ fn secret(name: &str) -> String {
 /// policy names `Private/`: those may appear.)
 const MARKERS: &[&str] = &["zq", "Private/diary", ".obsidian/", ".trash/", "Journal/", ".qenc", "quire-lock"];
 
-/// Tools that rank notes by the index's word statistics and meaning model,
-/// which are built from every note of the vault, hidden ones included: what
-/// a hidden note says shifts which visible notes rank high enough to be
-/// shown ("by meaning"), and a word found only in hidden notes can bring up
-/// a visible one. Known and not fixed: see
-/// `docs/design/0.14-health-gates.md` §2. Their replies may differ from the
-/// plain vault's in which visible notes they show, but must name nothing
-/// hidden and number their sources from 1 without gaps.
-const RANKED: &[&str] = &["search", "search_notes", "ask", "ask_notes"];
+/// The legacy tools, which still rank by the index's word statistics over
+/// every note, hidden ones included (`docs/design/0.14-agent-index.md` §6:
+/// they go with agent tools T2). Their replies may differ from the plain
+/// vault's in which visible notes they show, but must name nothing hidden and
+/// number their sources from 1 without gaps. `search` and `ask` rank through
+/// the caller's view: their replies, scores included, are the plain vault's.
+const RANKED: &[&str] = &["search_notes", "ask_notes"];
 
 /// Hidden notes and names an agent may ask for.
 const HIDDEN_ARGS: &[&str] = &[
@@ -204,6 +202,9 @@ fn server(root: &Path, unlock: bool) -> Server {
     } else {
         Server::open_with(root.to_str().unwrap(), cfg).unwrap()
     };
+    // A view hides notes, so it has no meaning search (`docs/design/0.14-agent-index.md` §4); the
+    // plain vault, whose view hides nothing, would still have one. Off for both, so they compare.
+    srv.index().set_meaning(false);
     attachments(&srv, root.join("Private").exists());
     srv
 }
@@ -241,20 +242,20 @@ fn arg_strings(v: &Value, out: &mut Vec<String>) {
 /// The reply as text, with the call's own strings and the vault's folder
 /// taken out. Order is not compared: notes of equal rank come out of hash
 /// maps in any order, so lists are sorted, and so are the lines of a text
-/// and the characters of a line. Search scores are dropped (see [`RANKED`]).
+/// and the characters of a line. Scores are dropped for [`RANKED`] tools only.
 ///
 /// With a small limit (`shape`), which of several equal notes makes the cut
 /// varies from run to run: only the shape of the reply is compared then,
 /// how many items and lines, which still shows a hidden note taking a place.
-fn normalized(reply: &Value, args: &Value, root: &Path, shape: bool) -> String {
+fn normalized(reply: &Value, args: &Value, root: &Path, shape: bool, ranked: bool) -> String {
     let mut own = Vec::new();
     arg_strings(args, &mut own);
     own.push(root.parent().unwrap().to_str().unwrap().to_string());
     own.sort_by_key(|s| std::cmp::Reverse(s.len()));
-    canonical(reply, &own, shape).to_string()
+    canonical(reply, &own, shape, ranked).to_string()
 }
 
-fn canonical(v: &Value, own: &[String], shape: bool) -> Value {
+fn canonical(v: &Value, own: &[String], shape: bool, ranked: bool) -> Value {
     match v {
         Value::String(s) => {
             let mut text = s.clone();
@@ -276,13 +277,13 @@ fn canonical(v: &Value, own: &[String], shape: bool) -> Value {
             Value::String(lines.join("\n"))
         }
         Value::Array(a) => {
-            let mut items: Vec<Value> = a.iter().map(|x| canonical(x, own, shape)).collect();
+            let mut items: Vec<Value> = a.iter().map(|x| canonical(x, own, shape, ranked)).collect();
             items.sort_by_cached_key(Value::to_string);
             Value::Array(items)
         }
-        Value::Object(m) => {
-            Value::Object(m.iter().filter(|(k, _)| *k != "score").map(|(k, x)| (k.clone(), canonical(x, own, shape))).collect())
-        }
+        Value::Object(m) => Value::Object(
+            m.iter().filter(|(k, _)| !ranked || *k != "score").map(|(k, x)| (k.clone(), canonical(x, own, shape, ranked))).collect(),
+        ),
         Value::Number(_) if shape => json!("n"),
         other => other.clone(),
     }
@@ -303,9 +304,9 @@ fn source_numbers(reply: &Value) -> Vec<u64> {
 /// had room for more (fewer hits than `limit`): even where ranking differs
 /// (see [`RANKED`]), a hidden note must never take a place. Hits found by
 /// meaning alone are not counted: whether a passage is close enough by
-/// meaning depends on the meaning model, which hidden notes shift (the
-/// known gap in [`RANKED`]). Keyword hits and PDF pages are.
-const COUNTED: &[&str] = &["search", "search_notes"];
+/// meaning depends on the meaning model, which hidden notes shift. Keyword
+/// hits and PDF pages are.
+const COUNTED: &[&str] = &["search_notes"];
 
 /// All hits, and those not found by meaning alone, in a reply of a
 /// [`COUNTED`] tool (one `- ` line each).
@@ -408,17 +409,17 @@ fn read_tools_never_tell_a_vault_with_hidden_notes_apart() {
         let base = base_args(&plain, spec.name, &spec.input_schema);
         for args in probes(&base, &spec.input_schema) {
             let shape = small_limit(&args);
+            let ranked = RANKED.contains(&spec.name);
             let want = call(&plain, spec.name, &args);
-            let want_text = normalized(&want, &args, &plain_root, shape);
+            let want_text = normalized(&want, &args, &plain_root, shape, ranked);
             calls += 1;
             answered += usize::from(!failed(&want));
             for (how, srv) in &servers {
                 let got = call(srv, spec.name, &args);
-                let got_text = normalized(&got, &args, &hidden_root, shape);
-                let marker = MARKERS.iter().find(|m| normalized(&got, &args, &hidden_root, false).contains(*m));
+                let got_text = normalized(&got, &args, &hidden_root, shape, ranked);
+                let marker = MARKERS.iter().find(|m| normalized(&got, &args, &hidden_root, false, ranked).contains(*m));
                 let numbers = source_numbers(&got);
                 let numbered = numbers.iter().enumerate().all(|(i, n)| *n == i as u64 + 1);
-                let ranked = RANKED.contains(&spec.name);
                 let limit = args["limit"].as_u64().map_or(10, |n| n as usize);
                 let (want_n, got_n) = (hit_count(&want), hit_count(&got));
                 let places = !COUNTED.contains(&spec.name) || want_n.0 >= limit || got_n.0 >= limit || want_n.1 == got_n.1;
@@ -441,6 +442,10 @@ fn read_tools_never_tell_a_vault_with_hidden_notes_apart() {
         }
     }
     assert!(leaks.is_empty(), "{} of {calls} calls tell the vaults apart:\n{}", leaks.len(), leaks.join("\n"));
+    // Every call came from one client under one rule: one view each, built once and kept.
+    for (how, srv) in [("plain", &plain), ("locked", &servers[0].1), ("unlocked", &servers[1].1)] {
+        assert_eq!(srv.index().scope_count(), 1, "{how}: one rule, one view");
+    }
     // Calls that name a hidden note fail as "not found" in both vaults; the rest must mostly work.
     assert!(answered * 3 > calls, "enough calls must succeed to prove anything: {answered} of {calls}");
     eprintln!(
@@ -480,5 +485,53 @@ fn connection_info_does_not_count_hidden_notes() {
     }
     for (how, srv) in [("locked", server(&hidden_root, false)), ("unlocked", server(&hidden_root, true))] {
         assert_eq!(handshakes(&srv), want, "{how}: the handshake of the vault with hidden notes differs from the plain vault's");
+    }
+}
+
+/// The text of a tool's reply, with the vault's folder taken out.
+fn reply_text(reply: &Value, root: &Path) -> String {
+    let text = reply["result"]["content"][0]["text"].as_str().unwrap_or_default();
+    text.replace(root.parent().unwrap().to_str().unwrap(), "<root>")
+}
+
+/// The leak itself (`docs/design/0.14-agent-index.md` §1): a word that hidden
+/// notes use often is worth less in the whole vault, which would put the
+/// visible note that uses it below one that doesn't. `search` and `ask` rank
+/// as the plain vault does, in the same order.
+#[test]
+fn a_word_only_hidden_notes_use_often_does_not_reorder_search_or_ask() {
+    let notes = |dir: &Path, hidden: bool| {
+        let root = dir.join("vault");
+        write(&root, ".quire/shared/agent-policy.toml", POLICY);
+        write(&root, "Ropes.md", "# Ropes\n\nropewords ropewords ropewords treewords.\n");
+        write(&root, "Trees.md", "# Trees\n\ntreewords treewords ropewords.\n");
+        for (i, filler) in ["apples", "pears", "plums", "figs"].iter().enumerate() {
+            write(&root, &format!("Other {i}.md"), &format!("# Other\n\n{filler} only.\n"));
+        }
+        if hidden {
+            for i in 0..12 {
+                write(&root, &format!("Private/note {i}.md"), &format!("# Note {i}\n\nropewords secretzq{i}.\n"));
+            }
+        }
+        settle_times(&root);
+        root
+    };
+    let plain_dir = tempfile::tempdir().unwrap();
+    let plain_root = notes(plain_dir.path(), false);
+    let plain = server(&plain_root, false);
+    let hidden_dir = tempfile::tempdir().unwrap();
+    let hidden_root = notes(hidden_dir.path(), true);
+    let hidden = server(&hidden_root, false);
+    for (tool, args) in [
+        ("search", json!({"query": "ropewords treewords"})),
+        ("search", json!({"query": "ropewords treewords", "limit": 1})),
+        ("ask", json!({"question": "ropewords treewords"})),
+        ("ask", json!({"question": "ropewords treewords", "k": 1})),
+    ] {
+        let want = reply_text(&call(&plain, tool, &args), &plain_root);
+        let got = reply_text(&call(&hidden, tool, &args), &hidden_root);
+        assert!(want.contains("Ropes.md"), "{tool} {args}: the plain vault ranks Ropes.md first: {want}");
+        assert!(want.find("Ropes.md") < want.find("Trees.md").or(Some(usize::MAX)), "{tool} {args}: {want}");
+        assert_eq!(got, want, "{tool} {args}: the hidden notes reorder the visible ones");
     }
 }

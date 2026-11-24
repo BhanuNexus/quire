@@ -39,10 +39,11 @@ fn ask(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let model = s(a, "mode") == "model";
     let budget = bounds::max_tokens(a, bounds::DEFAULT_MAX_TOKENS);
     let sem = cx.index.semantic();
-    let ix = cx.index.read();
-    let vis = cx.visibility_in(&ix);
-    // Only notes the caller may see compete for places and numbers.
-    let mut sources = retrieve_where(&ix, sem.as_deref(), &q, k, &|p| vis.allows(p));
+    let vis = cx.visibility();
+    // Only notes the caller may see compete for places and numbers, ranked by statistics of those
+    // notes alone: the caller's view (`docs/design/0.14-agent-index.md`).
+    let ix = cx.index.scoped(vis.fingerprint(), vis.predicate());
+    let mut sources = retrieve_in(&ix, sem.as_deref(), &q, k, ix.scope());
     // A second guard, as `search` has: whatever the index returns, nothing the full check (links
     // followed) hides is quoted. At most `k` (20) sources; numbered again from 1 after it.
     sources.retain(|src| visible(cx, &src.path));

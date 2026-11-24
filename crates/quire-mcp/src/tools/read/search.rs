@@ -74,13 +74,15 @@ fn search(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         Start::At(n) => n,
         Start::Stale => return stale(&fingerprint),
     };
-    // Only notes the caller may see compete for the `limit` places. (Made before the
-    // search: the closure runs under the index's read lock.)
-    let vis = std::sync::Arc::clone(cx.visibility());
-    let mut hits = cx.index.search_sections_where(&query, &filters, limit, &|p| vis.allows(p));
+    // Only notes the caller may see compete for the `limit` places, ranked by statistics of those
+    // notes alone: the caller's view (`docs/design/0.14-agent-index.md`). A view that hides a note
+    // has no meaning search.
+    let vis = cx.visibility();
+    let sem = cx.index.semantic();
+    let ix = cx.index.scoped(vis.fingerprint(), vis.predicate());
+    let mut hits = ix.search_sections(sem.as_deref(), &query, &filters, limit);
     // A second guard: whatever the index returns, nothing hidden leaves.
     hits.retain(|h| visible(cx, &h.path));
-    let ix = cx.index.read();
     let mut rows = Vec::new();
     for h in hits.iter().skip(skip) {
         let src = ix.source(&h.path).unwrap_or_default().to_string();
