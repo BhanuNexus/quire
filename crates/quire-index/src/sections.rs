@@ -654,4 +654,28 @@ mod tests {
         assert!(hits.iter().any(|h| h.by_meaning), "{hits:#?}");
         assert!(hits.iter().all(|h| h.path.as_str() != "Bread.md"));
     }
+
+    /// `docs/design/0.14-agent-index.md` §4: in 0.14.0 a view that hides a note
+    /// searches by keyword only, and says nothing about it; one that hides
+    /// nothing keeps meaning search.
+    #[test]
+    fn a_view_that_hides_a_note_finds_nothing_by_meaning() {
+        let s = svc(&[
+            ("Cars.md", "# Cars\nThe car engine needs oil. A vehicle with a strong engine drives fast on the road."),
+            ("Autos.md", "# Autos\nMy automobile is a vehicle with a loud engine; the road trip was long."),
+            ("Bread.md", "# Bread\nSourdough bread needs flour, water and a slow rise in a warm oven."),
+            ("Baking.md", "# Baking\nBaking cakes needs flour, sugar and an oven at the right heat."),
+            ("Trucks.md", "# Trucks\nA truck is a heavy vehicle; its diesel engine hauls loads by road."),
+        ]);
+        let sem = s.semantic();
+        let f = SearchFilters::default();
+        let everything = s.scoped([1; 32], std::sync::Arc::new(|_: &NotePath, _: &[String]| true));
+        assert!(everything.search_sections(sem.as_deref(), "automobile", &f, 5).iter().any(|h| h.by_meaning));
+        drop(everything);
+        let no_bread = s.scoped([2; 32], std::sync::Arc::new(|p: &NotePath, _: &[String]| p.as_str() != "Bread.md"));
+        let hits = no_bread.search_sections(sem.as_deref(), "automobile", &f, 5);
+        assert_eq!(hits[0].path.as_str(), "Autos.md");
+        assert!(hits.iter().all(|h| !h.by_meaning), "{hits:#?}");
+        assert_eq!(hits, no_bread.search_sections(None, "automobile", &f, 5));
+    }
 }
