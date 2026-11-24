@@ -429,7 +429,7 @@ impl crate::actor::Scoped<'_> {
     /// [`Index::search_sections_in`] through this view, with the meaning
     /// model only when the view may use it ([`Self::semantic`]).
     pub fn search_sections(&self, query: &str, filters: &SearchFilters, limit: usize) -> Vec<SectionHit> {
-        self.search_sections_in(self.semantic(), query, filters, limit, self.scope())
+        self.index().search_sections_in(self.semantic(), query, filters, limit, self.scope())
     }
 }
 
@@ -687,6 +687,6 @@ mod tests {
         let hits = no_bread.search_sections("automobile", &f, 5);
         assert_eq!(hits[0].path.as_str(), "Autos.md");
         assert!(hits.iter().all(|h| !h.by_meaning), "{hits:#?}");
-        assert_eq!(hits, no_bread.search_sections_in(None, "automobile", &f, 5, no_bread.scope()));
+        assert_eq!(hits, no_bread.index().search_sections_in(None, "automobile", &f, 5, no_bread.scope()));
     }
 }

@@ -131,6 +131,17 @@ pub struct IndexService {
 
 /// The index read through one caller's view: hold it for the length of one
 /// search, as the index's read lock (which it holds).
+///
+/// It gives only what the view may give: ranked through the view's
+/// statistics, members' records and text, and the meaning model only when
+/// the view may use it. It does not dereference to the [`Index`], so a tool
+/// can't make an unscoped search by mistake (Fable's review):
+///
+/// ```compile_fail
+/// fn unscoped(sc: &quire_index::Scoped<'_>) {
+///     let _ = sc.search_where("rope", 5, &|_| true);
+/// }
+/// ```
 pub struct Scoped<'a> {
     ix: RwLockReadGuard<'a, Index>,
     scope: Arc<Scope>,
@@ -147,20 +158,59 @@ impl Scoped<'_> {
     }
 
     /// How searches count through this view.
-    pub fn scope(&self) -> ScopeRead<'_> {
+    pub(crate) fn scope(&self) -> ScopeRead<'_> {
         ScopeRead::View(&self.scope)
     }
 
-    /// The view itself.
+    /// The whole index (this crate only: its scoped searches and tests).
+    pub(crate) fn index(&self) -> &Index {
+        &self.ix
+    }
+
+    /// The view itself (its statistics, no notes).
     pub fn view(&self) -> &Scope {
         &self.scope
     }
-}
 
-impl std::ops::Deref for Scoped<'_> {
-    type Target = Index;
-    fn deref(&self) -> &Index {
-        &self.ix
+    /// Keyword search through the view ([`Index::search_in`]).
+    pub fn search(&self, query: &str, limit: usize) -> Vec<crate::SearchHit> {
+        self.ix.search_in(query, limit, self.scope())
+    }
+
+    /// How rare a (folded, stemmed) word is among the view's notes; `None`
+    /// when none of them uses it.
+    pub fn idf(&self, term: &str) -> Option<f32> {
+        self.ix.idf_in(term, self.scope())
+    }
+
+    /// How many notes the view holds.
+    pub fn len(&self) -> usize {
+        self.ix.len_in(self.scope())
+    }
+
+    /// Whether the view holds no note.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Whether `p` is one of the view's notes.
+    pub fn has_note(&self, p: &NotePath) -> bool {
+        self.scope().has_note(&self.ix, p)
+    }
+
+    /// The text of one of the view's notes.
+    pub fn source(&self, p: &NotePath) -> Option<&str> {
+        self.has_note(p).then(|| self.ix.source(p)).flatten()
+    }
+
+    /// The record of one of the view's notes.
+    pub fn get(&self, p: &NotePath) -> Option<&NoteRecord> {
+        self.has_note(p).then(|| self.ix.get(p)).flatten()
+    }
+
+    /// When one of the view's notes last changed (ms), as the index knows it.
+    pub fn modified(&self, p: &NotePath) -> Option<i64> {
+        self.has_note(p).then(|| self.ix.modified(p)).flatten()
     }
 }
 

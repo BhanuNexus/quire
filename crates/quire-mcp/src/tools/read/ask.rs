@@ -45,7 +45,7 @@ fn ask(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     // view's (none when it hides a note), for retrieval, the answer and abstaining alike.
     let ix = cx.index.scoped(vis.fingerprint(), vis.predicate());
     let sem = ix.semantic();
-    let mut sources = retrieve_in(&ix, sem, &q, k, ix.scope());
+    let mut sources = retrieve_in(&ix, &q, k);
     // A second guard, as `search` has: whatever the index returns, nothing the full check (links
     // followed) hides is quoted. At most `k` (20) sources; numbered again from 1 after it.
     sources.retain(|src| visible(cx, &src.path));

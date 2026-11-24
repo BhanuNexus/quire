@@ -239,9 +239,9 @@ fn scope_stats_patched_equal_a_rebuild() {
         if rng.next(3) == 0 {
             svc.flush();
             let sc = svc.scoped(key, Arc::clone(&visible));
-            let fresh = Scope::build(&sc, Arc::clone(&visible));
-            assert_eq!(stats_text(&sc, sc.view()), stats_text(&sc, &fresh), "round {round}");
-            assert_eq!(sc.view().build_of(), sc.build());
+            let fresh = Scope::build(sc.index(), Arc::clone(&visible));
+            assert_eq!(stats_text(sc.index(), sc.view()), stats_text(sc.index(), &fresh), "round {round}");
+            assert_eq!(sc.view().build_of(), sc.index().build());
         }
     }
 }
@@ -259,9 +259,9 @@ fn at_most_32_views_and_a_dropped_one_comes_back_the_same() {
     for round in 0..3 {
         for i in 0..40u8 {
             let sc = svc.scoped([i; 32], rule(i));
-            let got = hits(&sc, sc.scope(), &["rope".to_string(), "tree".to_string()]);
-            let fresh = Scope::build(&sc, rule(i));
-            assert_eq!(got, hits(&sc, ScopeRead::View(&fresh), &["rope".to_string(), "tree".to_string()]));
+            let got = hits(sc.index(), sc.scope(), &["rope".to_string(), "tree".to_string()]);
+            let fresh = Scope::build(sc.index(), rule(i));
+            assert_eq!(got, hits(sc.index(), ScopeRead::View(&fresh), &["rope".to_string(), "tree".to_string()]));
             if round == 0 {
                 first.insert(i, got);
             } else {
@@ -301,7 +301,7 @@ fn views_built_during_writes_are_consistent() {
     svc.flush();
     for t in 0..4u8 {
         let sc = svc.scoped([t; 32], Arc::clone(&visible));
-        assert_eq!(stats_text(&sc, sc.view()), stats_text(&sc, &Scope::build(&sc, Arc::clone(&visible))));
+        assert_eq!(stats_text(sc.index(), sc.view()), stats_text(sc.index(), &Scope::build(sc.index(), Arc::clone(&visible))));
     }
 }
 
@@ -415,7 +415,7 @@ fn the_worker_never_asks_for_a_storage_call() {
     let sc = svc.scoped(key, caller(false));
     assert!(!sc.view().undecided(), "the caller decided it");
     assert_eq!(sc.view().notes().n(), 2);
-    assert_eq!(sc.search_in("tree", 5, sc.scope()).len(), 1);
+    assert_eq!(sc.search("tree", 5).len(), 1);
     drop(sc);
     assert!(!off_thread.load(Ordering::Relaxed), "a storage call was asked for off the caller's thread");
 }
