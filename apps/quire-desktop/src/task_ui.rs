@@ -316,9 +316,12 @@ pub(crate) fn report(ui: &mut Ui, ws: &Workspace, pal: &Palette, day: &mut Naive
     ui.add_space(4.0);
     if r.rows.is_empty() {
         ui.label(
-            RichText::new("No time logged on task notes this week. Start a timer on a task (▶ in the agenda, Ctrl+Alt+T in a note).")
-                .size(12.0)
-                .color(pal.muted),
+            RichText::new(format!(
+                "No time logged on task notes this week. Start a timer on a task (▶ in the agenda, {} in a note).",
+                crate::commands_ui::keys_of(ws, quire_app::Command::StartStopTimer)
+            ))
+            .size(12.0)
+            .color(pal.muted),
         );
         return None;
     }
@@ -461,9 +464,12 @@ pub(crate) fn board(ui: &mut Ui, ws: &Workspace, pal: &Palette) -> Option<NotePa
     r.total = r.rows.len();
     if r.rows.is_empty() {
         ui.label(
-            RichText::new("No task notes yet. “New task…” (Alt+N) makes one; “Convert task to note” turns a task line into one.")
-                .size(12.0)
-                .color(pal.muted),
+            RichText::new(format!(
+                "No task notes yet. “New task…” ({}) makes one; “Convert task to note” turns a task line into one.",
+                crate::commands_ui::keys_of(ws, quire_app::Command::NewTask)
+            ))
+            .size(12.0)
+            .color(pal.muted),
         );
         return None;
     }

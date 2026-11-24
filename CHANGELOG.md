@@ -14,6 +14,13 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 
 ### Changed
 - **Agents:** an agent that may not see every note searches by keyword only for now; search by meaning for such agents returns in a later 0.14 update.
+- **Shortcuts:** six default shortcuts that the system keeps for itself, so they never worked on that platform, now have another key there; other platforms and any shortcut you changed stay as they were.
+  - Next tab: Ctrl+Tab → ⌘⌥→ (macOS)
+  - Previous tab: Ctrl+Shift+Tab → ⌘⌥← (macOS)
+  - Inline code: Ctrl+` → ⌘⇧C (macOS)
+  - Find and replace in note: Ctrl+H → ⌘R (macOS)
+  - Add cursor above: Ctrl+Alt+↑ → Alt+Shift+↑ (Linux)
+  - Add cursor below: Ctrl+Alt+↓ → Alt+Shift+↓ (Linux)
 - **Agents:** `list`, `tags`, `properties`, `tasks`, `links` and `vault_info` no longer read every note's file to decide what an agent may see, and neither does an agent's connection; at 50,000 notes they answer in under a tenth of a second where they took close to one.
 - **Agents:** every list an agent can ask for (`list`, `tasks`, `tags`, `properties`, `recent_activity`, `history`, `proposals`, `links`, `outline`, `query_view`, `diff`) now takes a size cap (`max_tokens`) besides its limit, gives a cursor to continue, and says how many rows there are (`total`) and when it was cut (`truncated`); before, `tasks` stopped at its limit without saying so. `tasks` and `query_view` return at most 500 rows a page (was 1,000); `tags` and `properties` now list by name, and `proposals` by when each was made (was: last changed).
 - **Views:** a view over many notes is faster (`query_view` at 50,000 notes grouped by a property: about half the time), and a sorted one about twice as fast again: each row's sort value is worked out once instead of in every comparison.

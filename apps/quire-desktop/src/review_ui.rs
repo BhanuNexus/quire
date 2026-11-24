@@ -10,12 +10,12 @@
 //! conflict warning, and the inline editor.
 
 use egui::{Align, Color32, Key, KeyboardShortcut, Layout, Modifiers, RichText, Stroke};
-use quire_app::Owner;
 use quire_app::Workspace;
 use quire_app::agent::{ChangeOp, Proposal};
 use quire_app::agent_state::review::{HunkAct, ReviewSession, decode, display_lines, encode};
 use quire_app::agent_state::{TITLE_WIDGET, inbox};
 use quire_app::decor::{ActionId, WidgetId};
+use quire_app::{Command, Owner};
 
 use crate::panels::PanelOut;
 use crate::theme::Palette;
@@ -131,15 +131,21 @@ fn hunk_widget(ui: &mut egui::Ui, ws: &Workspace, r: &ReviewSession, gen_: u64, 
                 if tool_button(ui, "Edit", pal.text, "Change the suggested text before accepting it") {
                     clicked = Some(act(gen_, k, HunkAct::Edit));
                 }
-                if tool_button(ui, "× Reject", pal.danger, "Keep the note as it is (Ctrl+Alt+Backspace)") {
+                if tool_button(
+                    ui,
+                    "× Reject",
+                    pal.danger,
+                    &format!("Keep the note as it is{}", crate::commands_ui::keys_paren(ws, Command::RejectHunk)),
+                ) {
                     clicked = Some(act(gen_, k, HunkAct::Reject));
                 }
+                let keys = crate::commands_ui::keys_paren(ws, Command::AcceptHunk);
                 let hint = if h.conflict {
-                    "Use the agent's version; your edits to these lines are replaced (Ctrl+Alt+Y). Undo brings them back."
+                    format!("Use the agent's version; your edits to these lines are replaced{keys}. Undo brings them back.")
                 } else {
-                    "Put this change into the note (Ctrl+Alt+Y). Undo takes it out again."
+                    format!("Put this change into the note{keys}. Undo takes it out again.")
                 };
-                if tool_button(ui, "✓ Accept", added(pal), hint) {
+                if tool_button(ui, "✓ Accept", added(pal), &hint) {
                     clicked = Some(act(gen_, k, HunkAct::Accept));
                 }
             });
@@ -270,14 +276,26 @@ pub(crate) fn banner(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut crate::regi
         untrusted_chip(ui, &p, pal);
         ui.add_space(8.0);
         if n > 0 {
-            if ui.button("◀ Prev").on_hover_text("Previous change (Alt+[)").clicked() {
+            if ui
+                .button("◀ Prev")
+                .on_hover_text(format!("Previous change{}", crate::commands_ui::keys_paren(ws, Command::PrevHunk)))
+                .clicked()
+            {
                 action = Some(Box::new(|ws: &mut Workspace| ws.review_step(-1)));
             }
             ui.label(RichText::new(format!("{} of {n}", current + 1)).color(pal.muted));
-            if ui.button("Next ▶").on_hover_text("Next change (Alt+])").clicked() {
+            if ui.button("Next ▶").on_hover_text(format!("Next change{}", crate::commands_ui::keys_paren(ws, Command::NextHunk))).clicked()
+            {
                 action = Some(Box::new(|ws: &mut Workspace| ws.review_step(1)));
             }
-            if ui.button("Accept all").on_hover_text("Every change in this note except conflicts (Ctrl+Alt+Shift+Y)").clicked() {
+            if ui
+                .button("Accept all")
+                .on_hover_text(format!(
+                    "Every change in this note except conflicts{}",
+                    crate::commands_ui::keys_paren(ws, Command::AcceptAllInFile)
+                ))
+                .clicked()
+            {
                 action = Some(Box::new(|ws: &mut Workspace| ws.review_all_in_file(true)));
             }
             if ui.button("Reject all").on_hover_text("Keep this note as it is").clicked() {
