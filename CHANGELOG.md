@@ -9,19 +9,42 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 - **Agents:** an agent's `search` and `ask` now rank notes by word statistics from only the notes that agent may see: a word found only in a private zone can no longer bring up one of its visible notes, and search scores no longer shift with hidden notes.
 
 ### Added
+- **Agents:** `str_replace` takes `all: true` to replace every occurrence of a text in a note, and says how many it replaced. `list` takes `since` and `until` (notes changed in a time range), and `tasks` takes `folder`.
 - **`quire-cli sync once --verify`** reads every note again in that pass, to catch a change that kept a file's size and modification time.
 
 ### Changed
 - **Agents:** an agent that may not see every note searches by keyword only for now; search by meaning for such agents returns in a later 0.14 update.
 - **Agents:** `list`, `tags`, `properties`, `tasks`, `links` and `vault_info` no longer read every note's file to decide what an agent may see, and neither does an agent's connection; at 50,000 notes they answer in under a tenth of a second where they took close to one.
 - **Agents:** every list an agent can ask for (`list`, `tasks`, `tags`, `properties`, `recent_activity`, `history`, `proposals`, `links`, `outline`, `query_view`, `diff`) now takes a size cap (`max_tokens`) besides its limit, gives a cursor to continue, and says how many rows there are (`total`) and when it was cut (`truncated`); before, `tasks` stopped at its limit without saying so. `tasks` and `query_view` return at most 500 rows a page (was 1,000); `tags` and `properties` now list by name, and `proposals` by when each was made (was: last changed).
+- **Views:** a view over many notes is faster (`query_view` at 50,000 notes grouped by a property: about half the time), and a sorted one about twice as fast again: each row's sort value is worked out once instead of in every comparison.
+- **Agents:** the same idea has the same parameter name in every tool: `section` (was `heading` in `edit_section`, `under_heading` in `append`), `limit` (was `k` in `ask`, `max_rows` in `query_view`), `tags`, `folder`, `where`, `since` and `until` (flat in `search`, no longer under `filters`), `from_version` and `to_version` in `diff`, `actor` in `proposals` (was `mine`). The old spellings still work.
+- **Agents:** a time such as `since: "7"` with no unit is now refused with a message (it meant 1970), as are ten digits (Unix seconds) and a time too far back to count. Times are RFC 3339, YYYY-MM-DD (a UTC day; in `until`, the whole day), `30m`, `24h`, `7d`, `2w`, or Unix milliseconds; `view` also takes `lines` as `"10-40"`.
 - **Faster start:** Quire opens a large vault much faster: only notes changed since the last start are read again, and search, tasks and views are ready almost at once.
 - **Sync:** a sync pass with nothing to send no longer reads every note; it reads only notes whose file changed, and once a day reads every note again to catch a change that kept a file's size and time.
 - **Sync:** the first sync of a large vault is much faster: notes go to a Quire 0.14 sync server many at a time, a sync folder or S3/WebDAV writes its log once per batch instead of once per note, and a vault of many thousand notes goes up in parts of 5,000, each kept if the next is cut off. `quire-cli sync once` shows how many notes it has sent.
 - **Sync server:** takes up to 1,000 changes in one request; Quire 0.13 devices and servers keep syncing with 0.14 ones one change at a time, and behind a proxy with a smaller request limit Quire sends smaller batches.
 - **Sync:** each device keeps its record of what sync did in a new format, written only when something changed, instead of rewriting a copy of every note after each pass; the first sync after updating moves it over once. Going back to Quire 0.13 starts sync afresh on that device (notes changed there are kept as copies), and sync says so when an older Quire also syncs the same vault on the device.
 
+### Removed
+- **Agents:** the nine tool names from Quire 0.8 (`search_notes`, `read_note`, `list_notes`, `backlinks`, `ask_notes`, `list_tags`, `create_note`, `append_to_note`, `replace_in_note`) no longer exist. An agent setup, prompt or script that calls them must move to the tools below: a call to an old name now gets an error that names the tool to use instead (over MCP and in the agent panel) (an agent that lists tools first, as most do, needs no change).
+
+  | 0.8 name | Use instead |
+  |---|---|
+  | `search_notes` | `search` |
+  | `read_note` | `view` |
+  | `list_notes` | `list` |
+  | `backlinks` | `neighbors` with `direction: "in"`, or `links` |
+  | `ask_notes` | `ask` |
+  | `list_tags` | `tags` |
+  | `create_note` | `create` |
+  | `append_to_note` | `append` |
+  | `replace_in_note` | `str_replace` with `all: true` |
+
+  What differs between each pair is in [docs/agents.md](docs/agents.md#removed-tool-names).
+
 ### Fixed
+- **Agents:** a second edit to a note on which the agent already has a pending suggestion (two `append` calls, say) no longer puts the first edit in the suggestion twice.
+- **Agents:** after the person rejects one note's change in an agent's suggestion that still waits for its other notes, the agent can edit that note again (it got "changed since you read it" every time), and `view` with `include_pending` shows the note instead of the rejected text.
 - **Sync:** a note that can't be read (no permission, a disk error) is now named in the sync status on every pass instead of being passed over without a word; it is never sent as deleted or written over, and the rest of the vault keeps syncing.
 - **Large notes:** a note with a very long line of `[`, thousands of lines starting `[[`, or several megabytes of text with a lot of code and highlights no longer takes seconds to save, index or preview. The text that comes out is unchanged.
 

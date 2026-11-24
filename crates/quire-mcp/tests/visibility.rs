@@ -61,14 +61,6 @@ fn secret(name: &str) -> String {
 /// policy names `Private/`: those may appear.)
 const MARKERS: &[&str] = &["zq", "Private/diary", ".obsidian/", ".trash/", "Journal/", ".qenc", "quire-lock"];
 
-/// The legacy tools, which still rank by the index's word statistics over
-/// every note, hidden ones included (`docs/design/0.14-agent-index.md` §6:
-/// they go with agent tools T2). Their replies may differ from the plain
-/// vault's in which visible notes they show, but must name nothing hidden and
-/// number their sources from 1 without gaps. `search` and `ask` rank through
-/// the caller's view: their replies, scores included, are the plain vault's.
-const RANKED: &[&str] = &["search_notes", "ask_notes"];
-
 /// Hidden notes and names an agent may ask for.
 const HIDDEN_ARGS: &[&str] = &[
     "Private/diary.md",
@@ -242,20 +234,21 @@ fn arg_strings(v: &Value, out: &mut Vec<String>) {
 /// The reply as text, with the call's own strings and the vault's folder
 /// taken out. Order is not compared: notes of equal rank come out of hash
 /// maps in any order, so lists are sorted, and so are the lines of a text
-/// and the characters of a line. Scores are dropped for [`RANKED`] tools only.
+/// and the characters of a line. Scores are compared: `search` and `ask`
+/// rank through the caller's view (`docs/design/0.14-agent-index.md`).
 ///
 /// With a small limit (`shape`), which of several equal notes makes the cut
 /// varies from run to run: only the shape of the reply is compared then,
 /// how many items and lines, which still shows a hidden note taking a place.
-fn normalized(reply: &Value, args: &Value, root: &Path, shape: bool, ranked: bool) -> String {
+fn normalized(reply: &Value, args: &Value, root: &Path, shape: bool) -> String {
     let mut own = Vec::new();
     arg_strings(args, &mut own);
     own.push(root.parent().unwrap().to_str().unwrap().to_string());
     own.sort_by_key(|s| std::cmp::Reverse(s.len()));
-    canonical(reply, &own, shape, ranked).to_string()
+    canonical(reply, &own, shape).to_string()
 }
 
-fn canonical(v: &Value, own: &[String], shape: bool, ranked: bool) -> Value {
+fn canonical(v: &Value, own: &[String], shape: bool) -> Value {
     match v {
         Value::String(s) => {
             let mut text = s.clone();
@@ -277,13 +270,11 @@ fn canonical(v: &Value, own: &[String], shape: bool, ranked: bool) -> Value {
             Value::String(lines.join("\n"))
         }
         Value::Array(a) => {
-            let mut items: Vec<Value> = a.iter().map(|x| canonical(x, own, shape, ranked)).collect();
+            let mut items: Vec<Value> = a.iter().map(|x| canonical(x, own, shape)).collect();
             items.sort_by_cached_key(Value::to_string);
             Value::Array(items)
         }
-        Value::Object(m) => Value::Object(
-            m.iter().filter(|(k, _)| !ranked || *k != "score").map(|(k, x)| (k.clone(), canonical(x, own, shape, ranked))).collect(),
-        ),
+        Value::Object(m) => Value::Object(m.iter().map(|(k, x)| (k.clone(), canonical(x, own, shape))).collect()),
         Value::Number(_) if shape => json!("n"),
         other => other.clone(),
     }
@@ -298,22 +289,6 @@ fn small_limit(args: &Value) -> bool {
 fn source_numbers(reply: &Value) -> Vec<u64> {
     let text = reply.to_string();
     text.split('[').skip(1).filter_map(|part| part.split_once("] ").and_then(|(n, _)| n.parse().ok())).collect()
-}
-
-/// Tools whose number of hits must match the plain vault's whenever both
-/// had room for more (fewer hits than `limit`): even where ranking differs
-/// (see [`RANKED`]), a hidden note must never take a place. Hits found by
-/// meaning alone are not counted: whether a passage is close enough by
-/// meaning depends on the meaning model, which hidden notes shift. Keyword
-/// hits and PDF pages are.
-const COUNTED: &[&str] = &["search_notes"];
-
-/// All hits, and those not found by meaning alone, in a reply of a
-/// [`COUNTED`] tool (one `- ` line each).
-fn hit_count(reply: &Value) -> (usize, usize) {
-    let text = reply["result"]["content"][0]["text"].as_str().unwrap_or_default();
-    let hits: Vec<&str> = text.lines().filter(|l| l.starts_with("- ")).collect();
-    (hits.len(), hits.iter().filter(|l| !l.ends_with("(by meaning)")).count())
 }
 
 /// A value for a property of `schema`, from `s` where it takes a string.
@@ -402,35 +377,24 @@ fn read_tools_never_tell_a_vault_with_hidden_notes_apart() {
     let registry = ToolRegistry::standard();
     let read: Vec<_> = registry.all().map(|t| t.spec().clone()).filter(|s| matches!(s.access, Access::Read | Access::Ask)).collect();
     let names: Vec<&str> = read.iter().map(|s| s.name).collect();
-    assert!(read.len() >= 25, "the registry's read tools: {names:?}");
+    assert!(read.len() >= 19, "the registry's read tools: {names:?}");
     let mut leaks = Vec::new();
-    let (mut calls, mut answered, mut tolerated) = (0, 0, 0);
+    let (mut calls, mut answered) = (0, 0);
     for spec in &read {
         let base = base_args(&plain, spec.name, &spec.input_schema);
         for args in probes(&base, &spec.input_schema) {
             let shape = small_limit(&args);
-            let ranked = RANKED.contains(&spec.name);
             let want = call(&plain, spec.name, &args);
-            let want_text = normalized(&want, &args, &plain_root, shape, ranked);
+            let want_text = normalized(&want, &args, &plain_root, shape);
             calls += 1;
             answered += usize::from(!failed(&want));
             for (how, srv) in &servers {
                 let got = call(srv, spec.name, &args);
-                let got_text = normalized(&got, &args, &hidden_root, shape, ranked);
-                let marker = MARKERS.iter().find(|m| normalized(&got, &args, &hidden_root, false, ranked).contains(*m));
+                let got_text = normalized(&got, &args, &hidden_root, shape);
+                let marker = MARKERS.iter().find(|m| normalized(&got, &args, &hidden_root, false).contains(*m));
                 let numbers = source_numbers(&got);
                 let numbered = numbers.iter().enumerate().all(|(i, n)| *n == i as u64 + 1);
-                let limit = args["limit"].as_u64().map_or(10, |n| n as usize);
-                let (want_n, got_n) = (hit_count(&want), hit_count(&got));
-                let places = !COUNTED.contains(&spec.name) || want_n.0 >= limit || got_n.0 >= limit || want_n.1 == got_n.1;
-                if !places {
-                    leaks.push(format!(
-                        "{} {args} ({how}): {} hits not by meaning, the plain vault {}:\n  plain:  {want}\n  hidden: {got}",
-                        spec.name, got_n.1, want_n.1
-                    ));
-                } else if ranked && got_text != want_text && marker.is_none() && numbered {
-                    tolerated += 1;
-                } else if got_text != want_text || marker.is_some() || !numbered {
+                if got_text != want_text || marker.is_some() || !numbered {
                     leaks.push(format!(
                         "{} {args} ({how}){}{}:\n  plain:  {want}\n  hidden: {got}",
                         spec.name,
@@ -448,10 +412,7 @@ fn read_tools_never_tell_a_vault_with_hidden_notes_apart() {
     }
     // Calls that name a hidden note fail as "not found" in both vaults; the rest must mostly work.
     assert!(answered * 3 > calls, "enough calls must succeed to prove anything: {answered} of {calls}");
-    eprintln!(
-        "{} read tools, {calls} calls, {answered} answered; {tolerated} ranked replies differ only in which visible notes they show",
-        read.len()
-    );
+    eprintln!("{} read tools, {calls} calls, {answered} answered", read.len());
 }
 
 /// What a client is told when it connects: the legacy `initialize` and the modern `server/discover`.

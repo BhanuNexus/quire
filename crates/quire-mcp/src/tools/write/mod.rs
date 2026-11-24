@@ -32,7 +32,8 @@ use quire_app::vault::{ContentHash, NotePath, sanitize_title};
 use serde_json::{Value, json};
 
 use super::common::{
-    existing, flag, list, note_uri, opt, outcome, outcome_schema, path_arg, req, s, tool, unified, version_arg, visible, write_error,
+    existing, flag, list, note_uri, opt, opt_any, outcome, outcome_schema, path_arg, req, req_any, s, tool, unified, version_arg, visible,
+    write_error,
 };
 use super::read::own_pending;
 use super::{Access, Annotations, CallExt, Tool, ToolCx, ToolOutput};

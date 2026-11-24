@@ -155,3 +155,18 @@ fn the_step_cap_ends_a_run_that_keeps_calling_tools() {
     assert_eq!(model.requests().len(), 3);
     assert!(events.iter().any(|e| matches!(e, RunEvent::Text(t) if t.contains("Stopped after 3 steps"))));
 }
+
+/// A removed 0.8 tool name gets the same answer in the panel as over MCP:
+/// what to call instead.
+#[test]
+fn a_removed_tool_name_says_what_to_use_instead() {
+    let (_vault, _agent, host) = setup();
+    let actor = panel_actor("device", "Agent panel", None, "d_test");
+    let out = host.call(&actor, "append_to_note", &json!({"note": "Bread", "text": "x"}), &CancelFlag::new());
+    let quire_mcp::ToolOutput::Err { code, message, structured } = out else { panic!("an error") };
+    assert_eq!(code, "not_found");
+    assert!(message.starts_with("No tool called “append_to_note”: it was removed in Quire 0.14. Use `append` instead"), "{message}");
+    assert_eq!(structured, json!({"removed": "append_to_note", "use": "append"}));
+    let quire_mcp::ToolOutput::Err { code, .. } = host.call(&actor, "nope", &json!({}), &CancelFlag::new()) else { panic!("an error") };
+    assert_eq!(code, "not_found");
+}

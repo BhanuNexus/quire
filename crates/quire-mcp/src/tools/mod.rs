@@ -9,7 +9,7 @@
 //! runtime; write tools are left out for clients without a write grant.
 //!
 //! Each module registers its tools in `standard()`, in its own line:
-//! `legacy` (the 0.8 tools), the 0.9 read and write tools, `canvas`.
+//! the 0.9 read tools, `canvas`, the 0.9 write tools, the 0.12 links.
 //!
 //! The MCP server calls [`Tool::call_with`], which also passes what only a
 //! protocol session knows ([`CallExt`]: the served-version cache, whether
@@ -18,7 +18,6 @@
 
 pub mod canvas;
 pub mod common;
-pub mod legacy;
 // 0.12: typed links and hierarchy.
 pub mod links;
 pub mod read;
@@ -336,6 +335,34 @@ pub fn schema(props: &Value, required: &[&str]) -> Value {
     json!({ "type": "object", "properties": props, "required": required })
 }
 
+/// The 0.8 tool names removed in 0.14 (`docs/design/0.14-agent-tools.md` §3.4).
+///
+/// Each is the old name, the tool to use instead, and what differs. Nothing lists these;
+/// a call to one gets [`removed_tool`]'s answer, over MCP and in the agent panel.
+pub const REMOVED_TOOLS: &[(&str, &str, &str)] = &[
+    ("search_notes", "search", "ranks sections, not notes; each hit has a line range for `view`"),
+    ("read_note", "view", "takes `path`; long notes come in pages (`max_tokens`, `cursor`)"),
+    ("list_notes", "list", "`folder`, `tags`, `where`, `sort`, `limit`, `cursor`"),
+    ("backlinks", "neighbors", "with `direction: \"in\"`; each edge has the linking line as `context` (or use `links`)"),
+    ("ask_notes", "ask", ""),
+    ("list_tags", "tags", ""),
+    ("create_note", "create", "`path` is `folder/title.md`; it refuses to overwrite"),
+    ("append_to_note", "append", ""),
+    ("replace_in_note", "str_replace", "with `all: true` to replace every occurrence; there is no regex form"),
+];
+
+/// The answer to a call for a removed 0.8 name: `not_found`, naming the tool to use instead.
+pub fn removed_tool(name: &str) -> Option<ToolOutput> {
+    let (old, new, _) = REMOVED_TOOLS.iter().find(|(old, ..)| *old == name)?;
+    Some(ToolOutput::Err {
+        code: "not_found",
+        message: format!(
+            "No tool called “{old}”: it was removed in Quire 0.14. Use `{new}` instead (see \"Removed tool names\" in docs/agents.md). Call tools/list for the names."
+        ),
+        structured: json!({ "removed": old, "use": new }),
+    })
+}
+
 /// Every tool, in the order clients see them.
 pub struct ToolRegistry {
     tools: Vec<Box<dyn Tool>>,
@@ -345,8 +372,6 @@ impl ToolRegistry {
     /// The tools Quire offers, in their fixed order.
     pub fn standard() -> Self {
         let mut tools: Vec<Box<dyn Tool>> = Vec::new();
-        // ---- the 0.8 tools, unchanged.
-        tools.extend(legacy::tools());
         // ---- the 0.9 read tools, in the table's order.
         tools.extend(read::tools_before_canvas());
         // ---- canvas
@@ -386,7 +411,7 @@ mod tests {
     fn order_is_fixed_and_names_unique() {
         let r = ToolRegistry::standard();
         let names: Vec<&str> = r.all().map(|t| t.spec().name).collect();
-        assert_eq!(&names[..3], ["search_notes", "read_note", "list_notes"]);
+        assert_eq!(&names[..3], ["vault_info", "search", "view"]);
         let mut sorted = names.clone();
         sorted.sort_unstable();
         sorted.dedup();
@@ -399,7 +424,7 @@ mod tests {
     #[test]
     fn every_0_9_tool_is_there_in_the_designs_order() {
         let r = ToolRegistry::standard();
-        let names: Vec<&str> = r.all().map(|t| t.spec().name).filter(|n| !legacy::NAMES.contains(n)).collect();
+        let names: Vec<&str> = r.all().map(|t| t.spec().name).collect();
         let canvas: Vec<&str> = canvas::tools().iter().map(|t| t.spec().name).collect();
         let ours: Vec<&str> = names.iter().copied().filter(|n| !canvas.contains(n)).collect();
         assert_eq!(
@@ -441,10 +466,8 @@ mod tests {
         for t in r.all() {
             let s = t.spec();
             assert_eq!(s.input_schema["type"], "object", "{}", s.name);
-            if !legacy::NAMES.contains(&s.name) {
-                assert!(s.description.len() > 80 && s.description.contains("Example"), "{} needs a description agents can use", s.name);
-                assert!(s.output_schema.is_some(), "{} has an output schema", s.name);
-            }
+            assert!(s.description.len() > 80 && s.description.contains("Example"), "{} needs a description agents can use", s.name);
+            assert!(s.output_schema.is_some(), "{} has an output schema", s.name);
         }
     }
 }

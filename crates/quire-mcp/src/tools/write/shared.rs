@@ -192,9 +192,14 @@ pub(crate) fn edit(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value, tool: &str, op
     let Ok(current) = cx.vault.read(&path) else { return ToolOutput::error("not_found", format!("Couldn't read {path}.")) };
     let current_v = ContentHash::of(&current);
     // With a pending suggestion of its own, an agent edits that (it is amended).
-    let working = own_pending(cx, &path).map_or_else(|| current.clone(), |(_, t)| t);
+    let pending = own_pending(cx, &path);
+    let on_pending = pending.is_some();
+    let working = pending.unwrap_or_else(|| current.clone());
     let working_v = ContentHash::of(&working);
     let mut extra = json!({});
+    if let EditOp::ReplaceAll { old, .. } = op {
+        extra["replacements"] = working.matches(old.as_str()).count().into();
+    }
     let new_text = match &expected {
         Some(v) if *v != working_v && *v != current_v => {
             let base = ext.served.get(&path, v);
@@ -243,7 +248,9 @@ pub(crate) fn edit(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value, tool: &str, op
         changes: vec![Change::Edit { path: path.clone(), new_text }],
         run,
         title: title_for(tool, &path),
-        expected: vec![(path.clone(), current_v.clone())],
+        // Written on top of its pending text: the store replaces that text
+        // instead of merging the edit into it a second time.
+        expected: vec![(path.clone(), if on_pending { working_v } else { current_v.clone() })],
         ..ChangeSet::default()
     };
     submit(cx, ext, a, tool, &path, cs, &diff, &current_v, extra)

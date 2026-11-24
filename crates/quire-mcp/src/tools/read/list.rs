@@ -11,9 +11,10 @@ pub(super) fn register() -> Box<dyn Tool> {
     tool(
         "list",
         "List notes",
-        "List notes, optionally in a folder, with a tag, or matching a property filter. Example: {\"folder\": \"Projects/\", \"where\": \"status != done\", \"sort\": \"modified\"}. Pass next_cursor back as cursor for more.",
+        "List notes, optionally in a folder, with tags, changed in a time range, or matching a property filter. Example: {\"folder\": \"Projects/\", \"where\": \"status != done\", \"since\": \"7d\", \"sort\": \"modified\"}. Pass next_cursor back as cursor for more.",
         schema!({"type": "object", "properties": {
-                "folder": {"type": "string"}, "tag": {"type": "string"},
+                "folder": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}, "description": "Every tag must be on the note."},
+                "since": {"type": "string", "description": "RFC 3339, YYYY-MM-DD (a UTC day), or a time back from now: 30m, 24h, 7d, 2w"}, "until": {"type": "string", "description": "As since; a date takes in that whole UTC day"},
                 "where": {"type": "string", "description": "e.g. \"status = active and due < 2026-12-01\""},
                 "sort": {"type": "string", "enum": ["path", "modified", "title"], "default": "path"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
@@ -35,7 +36,13 @@ fn list_tool(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let vis = cx.visibility_in(&ix);
     let folder = s(a, "folder").trim_matches('/').to_lowercase();
     let under = format!("{folder}/");
-    let tag = s(a, "tag");
+    // `tag` (one) is the 0.9 spelling of `tags`.
+    let tags: Vec<String> = list_any(a, &["tags", "tag"]).into_iter().map(|t| t.trim_start_matches('#').to_string()).collect();
+    let now = cx.agent.now_ms();
+    let (since, until) = match (time_any(a, &["since"], now), until_any(a, &["until"], now)) {
+        (Ok(s), Ok(u)) => (s, u),
+        (Err(e), _) | (_, Err(e)) => return e,
+    };
     let limit = int(a, "limit", 100, 1, 500);
     let allowed: Option<BTreeSet<NotePath>> = match opt(a, "where") {
         None => None,
@@ -54,7 +61,12 @@ fn list_tool(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let notes = ix
         .records()
         .filter(|r| folder.is_empty() || r.path.as_str().to_lowercase().starts_with(&under))
-        .filter(|r| tag.is_empty() || r.has_tag(&tag))
+        .filter(|r| tags.iter().all(|t| r.has_tag(t)))
+        // The index knows each note's time: a range reads no file.
+        .filter(|r| {
+            (since.is_none() && until.is_none())
+                || modified_ms(cx, &ix, &r.path).is_some_and(|ms| since.is_none_or(|s| ms >= s) && until.is_none_or(|u| ms <= u))
+        })
         .filter(|r| allowed.as_ref().is_none_or(|set| set.contains(&r.path)))
         .filter(|r| vis.allows_with_tags(&r.path, &r.tags));
     // Each note's place in the order, as text that sorts the same way: the cursor carries the
@@ -74,7 +86,7 @@ fn list_tool(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     };
     let mut keyed: Vec<(String, &quire_app::index::NoteRecord)> = notes.map(|r| (sort_key(&r), r)).collect();
     keyed.sort_unstable_by(|x, y| x.0.cmp(&y.0));
-    let fingerprint = bounds::fingerprint("l", a);
+    let fingerprint = bounds::fingerprint_canonical("l", a, &["tag"], &[("tags", json!(tags))]);
     let render = |(_, r): &(String, &quire_app::index::NoteRecord)| {
         let modified = modified_ms(cx, &ix, &r.path).map(iso);
         json!({"uri": note_uri(&r.path), "path": r.path, "title": r.title, "modified": modified, "tags": r.tags, "words": r.stats.words})
