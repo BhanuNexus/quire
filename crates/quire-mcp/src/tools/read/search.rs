@@ -81,9 +81,8 @@ fn search(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     // notes alone: the caller's view (`docs/design/0.14-agent-index.md`). A view that hides a note
     // has no meaning search.
     let vis = cx.visibility();
-    let sem = cx.index.semantic();
     let ix = cx.index.scoped(vis.fingerprint(), vis.predicate());
-    let mut hits = ix.search_sections(sem.as_deref(), &query, &filters, limit);
+    let mut hits = ix.search_sections(&query, &filters, limit);
     // A second guard: whatever the index returns, nothing hidden leaves.
     hits.retain(|h| visible(cx, &h.path));
     let mut rows = Vec::new();

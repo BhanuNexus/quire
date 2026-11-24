@@ -39,12 +39,13 @@ fn ask(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let k = int_any(a, &["limit", "k"], 6, 1, 20);
     let model = s(a, "mode") == "model";
     let budget = bounds::max_tokens(a, bounds::DEFAULT_MAX_TOKENS);
-    let sem = cx.index.semantic();
     let vis = cx.visibility();
     // Only notes the caller may see compete for places and numbers, ranked by statistics of those
-    // notes alone: the caller's view (`docs/design/0.14-agent-index.md`).
+    // notes alone: the caller's view (`docs/design/0.14-agent-index.md`). The meaning model is the
+    // view's (none when it hides a note), for retrieval, the answer and abstaining alike.
     let ix = cx.index.scoped(vis.fingerprint(), vis.predicate());
-    let mut sources = retrieve_in(&ix, sem.as_deref(), &q, k, ix.scope());
+    let sem = ix.semantic();
+    let mut sources = retrieve_in(&ix, sem, &q, k, ix.scope());
     // A second guard, as `search` has: whatever the index returns, nothing the full check (links
     // followed) hides is quoted. At most `k` (20) sources; numbered again from 1 after it.
     sources.retain(|src| visible(cx, &src.path));
@@ -73,11 +74,11 @@ fn ask(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         let shown = if untrusted { fence_untrusted(&src.path, origin.as_deref(), &shown) } else { shown };
         write!(passages, "\n[{}] {} ({})\n{shown}\n", src.n, src.citation(), src.path).expect("a String takes any text");
     }
-    let extractive = extractive_answer(&q, &sources, sem.as_deref());
-    drop(ix);
+    let extractive = extractive_answer(&q, &sources, sem);
     // Calibrated with `quire-cli eval synthetic-edits`.
     // A model decides itself (NOT_FOUND) whenever something was found.
-    let mut abstained = if model { sources.is_empty() } else { quire_app::intel::ask::should_abstain(&sources, sem.as_deref()) };
+    let mut abstained = if model { sources.is_empty() } else { quire_app::intel::ask::should_abstain(&sources, sem) };
+    drop(ix);
     if model && !ext.grant.ask {
         return ToolOutput::error(
             "denied_by_policy",

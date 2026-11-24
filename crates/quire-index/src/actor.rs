@@ -129,9 +129,18 @@ pub struct IndexService {
 pub struct Scoped<'a> {
     ix: RwLockReadGuard<'a, Index>,
     scope: Arc<Scope>,
+    /// The meaning model, only if the view may use it.
+    semantic: Option<Arc<SemanticIndex>>,
 }
 
 impl Scoped<'_> {
+    /// The meaning model if this view may use it, else `None`: the only
+    /// one a caller with a view gets. It is fitted on every note, so a view
+    /// that hides one gets none (`docs/design/0.14-agent-index.md` §4).
+    pub fn semantic(&self) -> Option<&SemanticIndex> {
+        self.semantic.as_deref()
+    }
+
     /// How searches count through this view.
     pub fn scope(&self) -> ScopeRead<'_> {
         ScopeRead::View(&self.scope)
@@ -246,6 +255,7 @@ impl IndexService {
     /// records; the worker patches it from then on). `key` must stand for
     /// `visible`: two callers with one key see the same notes.
     pub fn scoped(&self, key: ScopeKey, visible: Visible) -> Scoped<'_> {
+        let semantic = self.semantic();
         let ix = self.read();
         let lock = || self.scopes.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let found = lock().get(&key, ix.build());
@@ -255,7 +265,8 @@ impl IndexService {
             let built = Arc::new(Scope::build(&ix, visible));
             lock().insert(key, built)
         };
-        Scoped { ix, scope }
+        let semantic = semantic.filter(|_| ScopeRead::View(&scope).meaning(&ix));
+        Scoped { ix, scope, semantic }
     }
 
     /// How many views are kept (at most [`crate::MAX_SCOPES`]).

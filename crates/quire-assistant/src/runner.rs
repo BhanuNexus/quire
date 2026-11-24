@@ -156,6 +156,11 @@ impl ToolHost {
         &self.agent
     }
 
+    /// The index the tools search (tests turn its meaning search off).
+    pub const fn index(&self) -> &IndexService {
+        &self.index
+    }
+
     /// Take in edits made since the last call (the editor, other agents).
     pub fn refresh(&self) {
         let Some(w) = &self.watcher else { return };

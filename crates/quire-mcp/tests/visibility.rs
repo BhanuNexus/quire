@@ -496,3 +496,75 @@ fn a_word_only_hidden_notes_use_often_does_not_reorder_search_or_ask() {
         assert_eq!(got, want, "{tool} {args}: the hidden notes reorder the visible ones");
     }
 }
+
+/// A vault where the meaning model learns from hidden notes: they put
+/// "zucchini" next to "tomatoes", which no visible note does.
+fn garden(dir: &Path, hidden: bool) -> PathBuf {
+    let root = dir.join("vault");
+    write(&root, ".quire/shared/agent-policy.toml", POLICY);
+    write(
+        &root,
+        "Garden.md",
+        "# Garden\n\nTomatoes grow best in the sunny corner of the garden by the fence.\n\nThe zucchini plants need water every morning before the heat of the day.\n",
+    );
+    let others = [
+        ("Bread", "Sourdough bread needs flour, water and a slow rise in a warm oven overnight."),
+        ("Cars", "The car engine needs oil and the tyres need air before a long road trip."),
+        ("Music", "The piano sounds best after tuning, and the violin needs new strings soon."),
+        ("Books", "The novel on the shelf has a long chapter about a sailor and his ship."),
+        ("Work", "The project meeting moved to Thursday and the report is due next week."),
+        ("Travel", "The train to the coast leaves at nine and the hotel is near the harbour."),
+    ];
+    for (name, text) in others {
+        write(&root, &format!("{name}.md"), &format!("# {name}\n\n{text}\n"));
+    }
+    if hidden {
+        for i in 0..16 {
+            write(
+                &root,
+                &format!("Private/harvest {i}.md"),
+                &format!("# Harvest {i}\n\nTomatoes and zucchini together, zucchini beside tomatoes, tomatoes zucchini harvest {i}.\n"),
+            );
+        }
+    }
+    settle_times(&root);
+    root
+}
+
+/// Fable's review, B1: the meaning model is fitted on every note, hidden ones included, so a caller
+/// whose view hides a note must get nothing from it: not meaning hits, and not the sentences `ask`
+/// picks for its answer or whether it abstains. With meaning on, the vault with hidden notes
+/// answers `search` and `ask` exactly as the plain vault with meaning off.
+#[test]
+fn meaning_on_with_hidden_notes_answers_as_the_plain_vault_without_meaning() {
+    let mut asked = 0;
+    for fixture in [vault as fn(&Path, bool) -> PathBuf, garden] {
+        let plain_dir = tempfile::tempdir().unwrap();
+        let plain_root = fixture(plain_dir.path(), false);
+        let plain = server(&plain_root, false);
+        let hidden_dir = tempfile::tempdir().unwrap();
+        let hidden_root = fixture(hidden_dir.path(), true);
+        let srv = server(&hidden_root, false);
+        srv.index().set_meaning(true);
+        srv.index().flush_semantic();
+        assert!(srv.index().semantic().is_some(), "the meaning model is built");
+        let questions = VISIBLE_ARGS.iter().chain(HIDDEN_ARGS).copied().chain([
+            "What are the shared words about?",
+            "secret words in the diary",
+            "tomatoes",
+            "Where do the tomatoes grow?",
+            "what about zucchini",
+        ]);
+        for q in questions {
+            for (tool, args) in
+                [("search", json!({"query": q})), ("ask", json!({"question": q})), ("ask", json!({"question": q, "limit": 2}))]
+            {
+                let want = normalized(&call(&plain, tool, &args), &args, &plain_root, false);
+                let got = normalized(&call(&srv, tool, &args), &args, &hidden_root, false);
+                assert_eq!(got, want, "{tool} {args}");
+                asked += 1;
+            }
+        }
+    }
+    assert!(asked > 50);
+}

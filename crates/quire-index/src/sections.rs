@@ -416,9 +416,10 @@ impl Index {
 }
 
 impl crate::actor::Scoped<'_> {
-    /// [`Index::search_sections_in`] through this view.
-    pub fn search_sections(&self, semantic: Option<&SemanticIndex>, query: &str, filters: &SearchFilters, limit: usize) -> Vec<SectionHit> {
-        self.search_sections_in(semantic, query, filters, limit, self.scope())
+    /// [`Index::search_sections_in`] through this view, with the meaning
+    /// model only when the view may use it ([`Self::semantic`]).
+    pub fn search_sections(&self, query: &str, filters: &SearchFilters, limit: usize) -> Vec<SectionHit> {
+        self.search_sections_in(self.semantic(), query, filters, limit, self.scope())
     }
 }
 
@@ -667,15 +668,15 @@ mod tests {
             ("Baking.md", "# Baking\nBaking cakes needs flour, sugar and an oven at the right heat."),
             ("Trucks.md", "# Trucks\nA truck is a heavy vehicle; its diesel engine hauls loads by road."),
         ]);
-        let sem = s.semantic();
+        assert!(s.semantic().is_some());
         let f = SearchFilters::default();
         let everything = s.scoped([1; 32], std::sync::Arc::new(|_: &NotePath, _: &[String]| true));
-        assert!(everything.search_sections(sem.as_deref(), "automobile", &f, 5).iter().any(|h| h.by_meaning));
+        assert!(everything.search_sections("automobile", &f, 5).iter().any(|h| h.by_meaning));
         drop(everything);
         let no_bread = s.scoped([2; 32], std::sync::Arc::new(|p: &NotePath, _: &[String]| p.as_str() != "Bread.md"));
-        let hits = no_bread.search_sections(sem.as_deref(), "automobile", &f, 5);
+        let hits = no_bread.search_sections("automobile", &f, 5);
         assert_eq!(hits[0].path.as_str(), "Autos.md");
         assert!(hits.iter().all(|h| !h.by_meaning), "{hits:#?}");
-        assert_eq!(hits, no_bread.search_sections(None, "automobile", &f, 5));
+        assert_eq!(hits, no_bread.search_sections_in(None, "automobile", &f, 5, no_bread.scope()));
     }
 }
