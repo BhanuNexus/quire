@@ -433,30 +433,28 @@ impl Index {
             return Vec::new();
         }
         let terms = q.highlight_terms();
-        let mut ranked: Vec<(NotePath, f32)> = self
-            .fulltext
-            .rank_in(&q, stats)
-            .into_iter()
-            .filter(|(path, _)| {
+        let ft = &self.fulltext;
+        // The best `limit` in rank order; the filters, `keep` last (it can be costly: an agent's
+        // policy), run on the best hits only, not on every match. Snippets only for what is shown.
+        let shown = crate::fulltext::best(
+            ft.rank_in(&q, stats),
+            limit,
+            |a, b| ft.by_rank(a, b),
+            |(id, _)| {
+                let Some(path) = ft.path_of(*id) else { return false };
                 let Some(rec) = self.records.get(path) else { return false };
-                if !q.tags.iter().all(|t| rec.has_tag(t)) {
-                    return false;
-                }
-                q.phrases.is_empty() || {
-                    let folded = crate::tokenize::fold_str(&rec.plain);
-                    q.phrases.iter().all(|ph| folded.contains(ph.as_str()))
-                }
-            })
-            .collect();
-        ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        // `keep` after sorting, until `limit` are kept: it can be costly (an
-        // agent's policy), so it runs on the best hits only, not on every match.
-        // Snippets only for what is shown.
-        ranked
+                q.tags.iter().all(|t| rec.has_tag(t))
+                    && (q.phrases.is_empty() || {
+                        let folded = crate::tokenize::fold_str(&rec.plain);
+                        q.phrases.iter().all(|ph| folded.contains(ph.as_str()))
+                    })
+                    && keep(path)
+            },
+        );
+        shown
             .into_iter()
-            .filter(|(path, _)| keep(path))
-            .take(limit)
-            .filter_map(|(path, score)| {
+            .filter_map(|(id, score)| {
+                let path = ft.path_of(id)?.clone();
                 let rec = self.records.get(&path)?;
                 let (snippet, highlights) = snippet(&rec.plain, &terms, 140);
                 Some(SearchHit { path, title: rec.title.clone(), score, snippet, highlights })

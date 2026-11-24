@@ -58,9 +58,7 @@ BUDGETS = {
     ("mcp", "ask_keyword_p95_ms"): (None, "MCP `ask`, 10k notes, keywords only (p95)"),
     # 0.14: an agent ranks through its view, here with 10% of notes denied (docs/design/0.14-agent-index.md G5-G7).
     ("mcp", "search_restricted_p95_ms"): (60, "MCP `search`, 10k notes, 10% denied (p95)"),
-    # Report only: `ask` on this vault (every note has every word) takes 70-160 ms with keywords
-    # only and no view at all, so G5's 60 ms is not the view's to meet; the view adds about 1.25x.
-    ("mcp", "ask_restricted_p95_ms"): (None, "MCP `ask`, 10k notes, 10% denied (p95)"),
+    ("mcp", "ask_restricted_p95_ms"): (60, "MCP `ask`, 10k notes, 10% denied (p95)"),
     ("mcp", "search_prefix_restricted_p95_ms"): (None, "MCP `search` for a one-character prefix, 10% denied (p95)"),
     ("mcp", "view_build_p50_ms"): (50, "An agent view's build, 10k notes (p50)"),
     ("mcp", "view_heap_bytes"): (None, "An agent view's memory, 10k notes (bytes)"),

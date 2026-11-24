@@ -160,27 +160,28 @@ impl Index {
         limit: usize,
         scope: ScopeRead<'_>,
     ) -> Vec<Cand> {
-        let mut notes: Vec<(NotePath, f32)> = self
-            .fulltext
-            .rank_in(q, scope.notes())
-            .into_iter()
-            .filter(|(p, _)| allowed.is_none_or(|a| a.contains(p)))
-            .filter(|(p, _)| {
+        let ft = &self.fulltext;
+        // The best notes in rank order; the filters, `keep` last (it can be costly: an agent's
+        // policy), run on the best only; the others take no places all the same.
+        let notes: Vec<(NotePath, f32)> = crate::fulltext::best(
+            ft.rank_in(q, scope.notes()),
+            (limit * KEYWORD_NOTES_PER_HIT).max(20),
+            |a, b| ft.by_rank(a, b),
+            |(id, _)| {
+                let Some(p) = ft.path_of(*id) else { return false };
                 let Some(rec) = self.get(p) else { return false };
-                if !q.tags.iter().all(|t| rec.has_tag(t)) {
-                    return false;
-                }
-                q.phrases.is_empty() || {
-                    let folded = fold_str(&rec.plain);
-                    q.phrases.iter().all(|ph| folded.contains(ph.as_str()))
-                }
-            })
-            .collect();
-        notes.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        // `keep` after sorting, on the best notes only (it can be costly: an
-        // agent's policy); the others take no places all the same.
-        let notes: Vec<(NotePath, f32)> =
-            notes.into_iter().filter(|(p, _)| keep(p)).take((limit * KEYWORD_NOTES_PER_HIT).max(20)).collect();
+                allowed.is_none_or(|a| a.contains(p))
+                    && q.tags.iter().all(|t| rec.has_tag(t))
+                    && (q.phrases.is_empty() || {
+                        let folded = fold_str(&rec.plain);
+                        q.phrases.iter().all(|ph| folded.contains(ph.as_str()))
+                    })
+                    && keep(p)
+            },
+        )
+        .into_iter()
+        .filter_map(|(id, score)| Some((ft.path_of(id)?.clone(), score)))
+        .collect();
         let top = notes.first().map_or(1.0, |n| n.1.max(1e-6));
         let idf = |t: &str| self.fulltext.term_idf_in(t, scope.notes()).unwrap_or(0.0);
         let weights: Vec<(&str, f32)> = q.terms.iter().map(|t| (t.as_str(), idf(t).max(0.1))).collect();
@@ -371,20 +372,29 @@ impl Index {
         scope: ScopeRead<'_>,
     ) -> Vec<SectionHit> {
         let folder = filters.folder.as_deref().map(|x| x.trim_matches('/').to_lowercase()).filter(|x| !x.is_empty());
-        let mut pages: Vec<(NotePath, usize, f32)> = self
-            .attachment_text
+        let at = &self.attachment_text;
+        // (file, page, score), the file borrowed from the index.
+        let ranked: Vec<(&str, usize, f32)> = at
             .rank_in(q, scope.pages())
             .into_iter()
-            .filter_map(|(key, score)| {
-                let (path, page) = key.as_str().rsplit_once("#page=")?;
-                let page: usize = page.parse().ok()?;
-                let path = NotePath::new(path);
-                (score > 0.0 && folder_ok(&path, folder.as_deref())).then_some((path, page, score))
+            .filter_map(|(id, score)| {
+                let (path, page) = at.path_of(id)?.as_str().rsplit_once("#page=")?;
+                Some((path, page.parse().ok()?, score))
             })
             .collect();
-        pages.sort_by(|a, b| b.2.total_cmp(&a.2).then_with(|| a.0.cmp(&b.0)).then(a.1.cmp(&b.1)));
-        // `keep` after sorting, on the best pages only.
-        let pages: Vec<(NotePath, usize, f32)> = pages.into_iter().filter(|(p, _, _)| keep(p)).take(limit).collect();
+        // The best pages; `keep` on those only.
+        let pages: Vec<(NotePath, usize, f32)> = crate::fulltext::best(
+            ranked,
+            limit,
+            |a, b| b.2.total_cmp(&a.2).then_with(|| a.0.cmp(b.0)).then(a.1.cmp(&b.1)),
+            |(path, _, score)| {
+                let path = NotePath::new(*path);
+                *score > 0.0 && folder_ok(&path, folder.as_deref()) && keep(&path)
+            },
+        )
+        .into_iter()
+        .map(|(path, page, score)| (NotePath::new(path), page, score))
+        .collect();
         let terms = q.highlight_terms();
         let page_hits = pages.into_iter().filter_map(|(path, page, _)| {
             let text = self.attachment(&path)?.pages.get(page - 1)?;

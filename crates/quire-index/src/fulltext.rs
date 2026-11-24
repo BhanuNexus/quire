@@ -403,90 +403,157 @@ impl FullText {
         (df > 0).then(|| idf_n(n, df))
     }
 
-    fn score_term(&self, postings: &Postings, scores: &mut HashMap<DocId, f32>, avg: f32, idf: f32, stats: Option<&DocStats>) {
+    /// One scan of a posting list: the members' (id, weighted tf) into
+    /// `buf`. Their count is the term's document frequency among them.
+    fn members_of(postings: &Postings, stats: Option<&DocStats>, buf: &mut Vec<(DocId, f32)>) {
+        buf.clear();
         #[expect(clippy::iter_over_hash_type, reason = "each id gets one addition per term, so the order between ids changes no sum")]
         for (&id, &tf) in postings {
-            if stats.is_some_and(|s| !s.contains(id)) {
-                continue;
+            if stats.is_none_or(|s| s.contains(id)) {
+                buf.push((id, tf));
             }
-            let dl = self.doc_len.get(id.index()).copied().unwrap_or(1.0);
-            let s = idf * (tf * (K1 + 1.0)) / (tf + K1 * (1.0 - B + B * dl / avg));
-            *scores.entry(id).or_default() += s;
         }
     }
 
-    /// Ranked (path, score) for every term matching (AND semantics), over
-    /// every document (`stats` `None`) or over the documents of `stats` only, with their own
-    /// statistics: document count, average length and each term's
-    /// document frequency counted among them
+    /// BM25 of one term for the documents of `buf`, added to `acc` (times
+    /// `factor` for a prefix completion) in `group`.
+    fn add_term(&self, buf: &[(DocId, f32)], acc: &mut Acc, avg: f32, idf: f32, factor: Option<f32>, group: u32) {
+        for &(id, tf) in buf {
+            let dl = self.doc_len.get(id.index()).copied().unwrap_or(1.0);
+            let s = idf * (tf * (K1 + 1.0)) / (tf + K1 * (1.0 - B + B * dl / avg));
+            acc.add(id, factor.map_or(s, |f| s * f), group);
+        }
+    }
+
+    /// Ranked (document, score) for every term matching (AND semantics), in
+    /// no particular order, over every document (`stats` `None`) or over the
+    /// documents of `stats` only, with their own statistics: document count,
+    /// average length and each term's document frequency counted among them
     /// (`docs/design/0.14-agent-index.md` §3.3, plan A). A term none of them
     /// uses counts as absent, and prefix completions are the terms some of
     /// them use. The result is what an index holding only those documents
-    /// gives, bit for bit.
-    pub(crate) fn rank_in(&self, q: &Query, stats: Option<&DocStats>) -> Vec<(NotePath, f32)> {
+    /// gives, bit for bit. Pick the best with [`best`] and [`Self::by_rank`].
+    ///
+    /// One scan of each posting list, scores in a table by [`DocId`]
+    /// (Fable's review, S5).
+    pub(crate) fn rank_in(&self, q: &Query, stats: Option<&DocStats>) -> Vec<(DocId, f32)> {
         let stats = self.stats(stats);
         let (n, total) = stats.map_or((self.ids.len(), self.total_len), |s| (s.n(), s.total_len()));
         if n == 0 {
             return Vec::new();
         }
-        let member = |id: &DocId| stats.is_none_or(|s| s.contains(*id));
+        let member = |id: DocId| stats.is_none_or(|s| s.contains(id));
         let avg = (total / n as f64) as f32;
-        let mut scores: HashMap<DocId, f32> = HashMap::new();
-        let mut required: Option<std::collections::HashSet<DocId>> = None;
-        let mut intersect = |ids: std::collections::HashSet<DocId>| {
-            required = Some(match required.take() {
-                None => ids,
-                Some(r) => r.intersection(&ids).copied().collect(),
-            });
-        };
+        let mut acc = Acc::new(self.paths.len());
+        let mut buf = Vec::new();
+        let mut groups = 0u32;
         for term in &q.terms {
             let Some(p) = self.live(term) else { return Vec::new() };
-            let df = Self::doc_freq_in(p, stats);
-            if df == 0 {
+            Self::members_of(p, stats, &mut buf);
+            if buf.is_empty() {
                 return Vec::new();
             }
-            self.score_term(p, &mut scores, avg, idf_n(n, df), stats);
-            intersect(p.keys().filter(|id| member(id)).copied().collect());
+            groups += 1;
+            self.add_term(&buf, &mut acc, avg, idf_n(n, buf.len()), None, groups);
         }
         if let Some(prefix) = &q.prefix {
-            let mut any = std::collections::HashSet::new();
-            let live = self.terms.with_prefix(prefix).map(|(t, id)| (t, &self.postings[id.index()])).filter(|(_, p)| p.keys().any(&member));
-            for (term, p) in live.take(64) {
-                // Exact matches score fully, longer completions a little less.
-                let mut partial = HashMap::new();
-                self.score_term(p, &mut partial, avg, idf_n(n, Self::doc_freq_in(p, stats)), stats);
-                let factor = if term == prefix.as_str() { 1.0 } else { 0.8 };
-                #[expect(
-                    clippy::iter_over_hash_type,
-                    reason = "each id gets one addition per term, so the order between ids changes no sum"
-                )]
-                for (id, s) in partial {
-                    *scores.entry(id).or_default() += s * factor;
-                    any.insert(id);
+            groups += 1;
+            let mut taken = 0;
+            for (term, id) in self.terms.with_prefix(prefix) {
+                if taken == 64 {
+                    break;
                 }
+                Self::members_of(&self.postings[id.index()], stats, &mut buf);
+                if buf.is_empty() {
+                    continue;
+                }
+                taken += 1;
+                // Exact matches score fully, longer completions a little less.
+                let factor = if term == prefix.as_str() { 1.0 } else { 0.8 };
+                self.add_term(&buf, &mut acc, avg, idf_n(n, buf.len()), Some(factor), groups);
             }
-            intersect(any);
         }
-        let mut out: Vec<(NotePath, f32)> = match required {
-            Some(ids) => {
-                ids.into_iter().filter_map(|id| Some((self.path_of(id)?.clone(), scores.get(&id).copied().unwrap_or(0.0)))).collect()
-            }
+        let mut out: Vec<(DocId, f32)> = if groups > 0 {
+            acc.touched.iter().filter(|id| acc.count[id.index()] == groups).map(|id| (*id, acc.score[id.index()])).collect()
+        } else {
             // Tag-only queries: every doc is a candidate; filters narrow it down.
-            None => self
-                .paths
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| member(&DocId(u32::try_from(*i).unwrap_or(u32::MAX))))
-                .filter_map(|(_, p)| Some((p.clone()?, 0.0)))
-                .collect(),
+            (0..self.paths.len())
+                .filter_map(|i| u32::try_from(i).ok().map(DocId))
+                .filter(|id| self.paths[id.index()].is_some() && member(*id))
+                .map(|id| (id, 0.0))
+                .collect()
         };
         for term in &q.exclude {
             if let Some(p) = self.live(term) {
-                out.retain(|(path, _)| self.ids.get(path).is_none_or(|id| !p.contains_key(id)));
+                out.retain(|(id, _)| !p.contains_key(id));
             }
         }
         out
     }
+
+    /// The order of ranked documents: score, best first, then path.
+    pub(crate) fn by_rank(&self, a: &(DocId, f32), b: &(DocId, f32)) -> std::cmp::Ordering {
+        b.1.total_cmp(&a.1).then_with(|| self.path_of(a.0).cmp(&self.path_of(b.0)))
+    }
+}
+
+/// Scores of one ranking, by [`DocId`], and in how many of the query's
+/// groups (its words, and its prefix) each document was found.
+struct Acc {
+    score: Vec<f32>,
+    count: Vec<u32>,
+    /// The last group a document was counted in.
+    mark: Vec<u32>,
+    touched: Vec<DocId>,
+}
+
+impl Acc {
+    fn new(slots: usize) -> Self {
+        Self { score: vec![0.0; slots], count: vec![0; slots], mark: vec![0; slots], touched: Vec::new() }
+    }
+
+    fn add(&mut self, id: DocId, s: f32, group: u32) {
+        let i = id.index();
+        self.score[i] += s;
+        if self.mark[i] != group {
+            if self.mark[i] == 0 {
+                self.touched.push(id);
+            }
+            self.mark[i] = group;
+            self.count[i] += 1;
+        }
+    }
+}
+
+/// The first `k` items of `v` in `order` that `keep` accepts: what sorting
+/// all of them, filtering and taking `k` gives, without sorting all of them
+/// (a partial selection, then more only while `keep` turns some down).
+pub(crate) fn best<T: Copy>(
+    mut v: Vec<T>,
+    k: usize,
+    order: impl Fn(&T, &T) -> std::cmp::Ordering,
+    mut keep: impl FnMut(&T) -> bool,
+) -> Vec<T> {
+    let mut out = Vec::with_capacity(k.min(v.len()));
+    let mut rest = v.as_mut_slice();
+    while out.len() < k && !rest.is_empty() {
+        let m = ((k - out.len()) * 2).max(16).min(rest.len());
+        if m < rest.len() {
+            rest.select_nth_unstable_by(m - 1, &order);
+        }
+        let (head, tail) = rest.split_at_mut(m);
+        head.sort_by(&order);
+        for x in head.iter() {
+            if out.len() == k {
+                break;
+            }
+            if keep(x) {
+                out.push(*x);
+            }
+        }
+        rest = tail;
+    }
+    out
 }
 
 /// BM25's inverse document frequency of a term `df` of `n` documents use.
@@ -564,6 +631,31 @@ mod tests {
         assert!(s.contains("rope"));
         for r in &hl {
             assert_eq!(&s[r.clone()], "rope");
+        }
+    }
+
+    /// `best` (Fable's review, S5) gives what a full sort, a filter and
+    /// `take(k)` give, for every `k` and many ties.
+    #[test]
+    fn best_is_sort_filter_take() {
+        let mut x = 0x9e37_79b9_u64;
+        let mut next = |n: u64| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x % n
+        };
+        for round in 0..200 {
+            let len = usize::try_from(next(300)).unwrap_or(0);
+            let v: Vec<(u32, f32)> = (0..len).map(|i| (u32::try_from(i).unwrap_or(0), next(20) as f32)).collect();
+            let order = |a: &(u32, f32), b: &(u32, f32)| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0));
+            let keep = |e: &(u32, f32)| (e.0 + round) % 3 != 0;
+            for k in [0, 1, 5, 20, 64, 400] {
+                let mut all = v.clone();
+                all.sort_by(order);
+                let want: Vec<_> = all.into_iter().filter(|e| keep(e)).take(k).collect();
+                assert_eq!(best(v.clone(), k, order, keep), want, "round {round} k {k}");
+            }
         }
     }
 }
