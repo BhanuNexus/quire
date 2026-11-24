@@ -108,7 +108,7 @@ fn random_query(rng: &mut Rng) -> String {
 
 /// A view keeps the notes `visible` accepts (by path and tags).
 fn view(ix: &Index, visible: impl Fn(&NotePath, &[String]) -> bool + Send + Sync + 'static) -> Scope {
-    Scope::build(ix, Arc::new(visible))
+    Scope::build(ix, crate::scope::visible(visible))
 }
 
 /// The leak (`docs/design/0.14-agent-index.md` §1): a word found only in
@@ -224,7 +224,7 @@ fn scope_stats_patched_equal_a_rebuild() {
     let svc = IndexService::spawn();
     svc.load(vault.clone());
     svc.flush();
-    let visible: Visible = Arc::new(|p: &NotePath, tags: &[String]| !p.as_str().starts_with("B/") && !tags.iter().any(|t| t == "home"));
+    let visible: Visible = visible(|p: &NotePath, tags: &[String]| !p.as_str().starts_with("B/") && !tags.iter().any(|t| t == "home"));
     let key = [7u8; 32];
     drop(svc.scoped(key, Arc::clone(&visible)));
     for round in 0..300 {
@@ -254,7 +254,7 @@ fn at_most_32_views_and_a_dropped_one_comes_back_the_same() {
     svc.load(quire_vault::Vault::in_memory(&[("A/x.md", "# x\nrope tree\n"), ("B/y.md", "# y\nrope\n"), ("C/z.md", "# z\ntree\n")]));
     svc.flush();
     let rule =
-        |i: u8| -> Visible { Arc::new(move |p: &NotePath, _: &[String]| !p.as_str().starts_with(["A/", "B/", "C/"][usize::from(i % 3)])) };
+        |i: u8| -> Visible { visible(move |p: &NotePath, _: &[String]| !p.as_str().starts_with(["A/", "B/", "C/"][usize::from(i % 3)])) };
     let mut first: BTreeMap<u8, String> = BTreeMap::new();
     for round in 0..3 {
         for i in 0..40u8 {
@@ -281,7 +281,7 @@ fn views_built_during_writes_are_consistent() {
     let svc = Arc::new(IndexService::spawn());
     svc.load(quire_vault::Vault::in_memory(&[("A/x.md", "# x\nrope\n")]));
     svc.flush();
-    let visible: Visible = Arc::new(|p: &NotePath, _: &[String]| !p.as_str().starts_with("B/"));
+    let visible: Visible = visible(|p: &NotePath, _: &[String]| !p.as_str().starts_with("B/"));
     std::thread::scope(|s| {
         for t in 0..4u8 {
             let (svc, visible) = (Arc::clone(&svc), Arc::clone(&visible));
@@ -355,7 +355,7 @@ fn meaning_comes_back_only_after_a_refit() {
     ]));
     svc.flush_semantic();
     let fitted = svc.semantic_version();
-    let visible: Visible = Arc::new(|p: &NotePath, _: &[String]| !p.as_str().starts_with("Private/"));
+    let visible: Visible = visible(|p: &NotePath, _: &[String]| !p.as_str().starts_with("Private/"));
     let key = [3u8; 32];
     assert!(svc.semantic().is_some());
     assert!(svc.scoped(key, Arc::clone(&visible)).semantic().is_none(), "a view that hides a note has no meaning");
@@ -370,11 +370,52 @@ fn meaning_comes_back_only_after_a_refit() {
         assert!(sc.search_sections("automobile", &SearchFilters::default(), 5).iter().all(|h| !h.by_meaning));
     }
     // A caller who never hid anything keeps meaning search meanwhile.
-    assert!(svc.scoped([4u8; 32], Arc::new(|_: &NotePath, _: &[String]| true)).semantic().is_some());
+    assert!(svc.scoped([4u8; 32], crate::scope::visible(|_: &NotePath, _: &[String]| true)).semantic().is_some());
     go.send(()).unwrap();
     svc.flush_semantic();
     assert!(svc.semantic_version() > fitted);
     let sc = svc.scoped(key, Arc::clone(&visible));
     assert!(sc.semantic().is_some(), "refitted without the note: meaning is back");
     assert!(sc.search_sections("automobile", &SearchFilters::default(), 5).iter().any(|h| h.by_meaning));
+}
+
+/// Fable's review, S3: the worker never asks a view's predicate to read the
+/// vault (it patches under its write lock). What it can't decide stays
+/// hidden until the next caller with the same key decides it, with that
+/// caller's own predicate, on that caller's thread. A predicate made while
+/// a folder was locked (the first caller's, here) is not the one that
+/// decides once it is unlocked.
+#[test]
+fn the_worker_never_asks_for_a_storage_call() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let svc = IndexService::spawn();
+    svc.load(quire_vault::Vault::in_memory(&[("A/x.md", "# X\nrope\n")]));
+    svc.flush();
+    let me = std::thread::current().id();
+    let off_thread = Arc::new(AtomicBool::new(false));
+    // A caller's predicate: `A/` known when it was made; `New/` locked (`locked`) or not when asked.
+    let caller = |locked: bool| -> Visible {
+        let seen = Arc::clone(&off_thread);
+        Arc::new(move |p: &NotePath, _: &[String], storage: bool| {
+            let in_a = p.as_str().starts_with("A/");
+            if storage {
+                seen.fetch_or(std::thread::current().id() != me, Ordering::Relaxed);
+                Some(in_a || !locked)
+            } else {
+                in_a.then_some(true)
+            }
+        })
+    };
+    let key = [9u8; 32];
+    drop(svc.scoped(key, caller(true)));
+    // A note in a folder the first caller's predicate never checked.
+    svc.upsert(np("New/y.md"), "# Y\nrope tree\n".into());
+    svc.flush();
+    // The folder was unlocked since: the next caller, with the same key, finds it plain.
+    let sc = svc.scoped(key, caller(false));
+    assert!(!sc.view().undecided(), "the caller decided it");
+    assert_eq!(sc.view().notes().n(), 2);
+    assert_eq!(sc.search_in("tree", 5, sc.scope()).len(), 1);
+    drop(sc);
+    assert!(!off_thread.load(Ordering::Relaxed), "a storage call was asked for off the caller's thread");
 }

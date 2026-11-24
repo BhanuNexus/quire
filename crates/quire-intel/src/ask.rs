@@ -697,7 +697,7 @@ mod tests {
         for i in 0..6 {
             full.upsert(NotePath::new(format!("Private/p{i}.md")), "# Secret\nropes ropes undo undo cheap cheap secretzq\n");
         }
-        let visible: quire_index::Visible = std::sync::Arc::new(|p: &NotePath, _: &[String]| !p.as_str().starts_with("Private/"));
+        let visible = quire_index::visible(|p: &NotePath, _: &[String]| !p.as_str().starts_with("Private/"));
         let view = quire_index::Scope::build(&full, visible);
         let mine = ix();
         let sem = sem(&full);

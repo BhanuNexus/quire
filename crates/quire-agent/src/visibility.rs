@@ -78,8 +78,11 @@ impl std::fmt::Debug for Visibility {
 }
 
 /// A note's path and its record's tags to "may this caller read it" (what
-/// [`Visibility::predicate`] gives `quire-index`).
-pub type Predicate = Arc<dyn Fn(&NotePath, &[String]) -> bool + Send + Sync>;
+/// [`Visibility::predicate`] gives `quire-index`). The third argument says
+/// whether it may read the vault: with `false` (the index's worker, under
+/// its write lock) a folder not checked yet gives `None` rather than a
+/// storage call; with `true` it always answers.
+pub type Predicate = Arc<dyn Fn(&NotePath, &[String], bool) -> Option<bool> + Send + Sync>;
 
 /// Bumped when the meaning of a fingerprint changes (a new rule).
 const RULES_VERSION: &str = "quire-visibility 1";
@@ -147,24 +150,39 @@ impl Visibility {
         self.decide(path, tags, OpKind::Read) != Mode::Deny
     }
 
+    /// [`Self::allows_with_tags`] without a storage call: `None` when the
+    /// answer needs a folder this value has not checked yet.
+    pub fn allows_known(&self, path: &NotePath, tags: &[String]) -> Option<bool> {
+        self.decide_with(path, tags, OpKind::Read, false).map(|m| m != Mode::Deny)
+    }
+
     /// The store's [`decide`](crate::store::decide) for `path` and `op`, with this value's folder checks.
     fn decide(&self, path: &NotePath, tags: &[String], op: OpKind) -> Mode {
-        let Some(rules) = &self.rules else { return Mode::Direct };
+        self.decide_with(path, tags, op, true).unwrap_or(Mode::Deny)
+    }
+
+    /// [`Self::decide`]; with `storage` false, `None` where a folder would need a check.
+    fn decide_with(&self, path: &NotePath, tags: &[String], op: OpKind, storage: bool) -> Option<Mode> {
+        let Some(rules) = &self.rules else { return Some(Mode::Direct) };
         let named = path.as_str();
         // `canonical_path` without its copy when the path is already NFC (nearly always).
         let canonical;
         let p = if is_nfc_quick(named.chars()) == IsNormalized::Yes {
             if quire_base::path::Rule::NoteFile.check(named).is_err() {
-                return Mode::Deny;
+                return Some(Mode::Deny);
             }
             named
         } else {
-            let Ok(c) = canonical_path(path) else { return Mode::Deny };
+            let Ok(c) = canonical_path(path) else { return Some(Mode::Deny) };
             canonical = c;
             canonical.as_str()
         };
-        let hidden = p.rsplit_once('/').is_some_and(|(f, _)| self.folder(f) != Folder::Plain);
-        decide_mode(rules, &self.actor, p, hidden, &|| tags.to_vec(), op)
+        let hidden = match p.rsplit_once('/') {
+            None => false,
+            Some((f, _)) if storage => self.folder(f) != Folder::Plain,
+            Some((f, _)) => self.known_folder(f)? != Folder::Plain,
+        };
+        Some(decide_mode(rules, &self.actor, p, hidden, &|| tags.to_vec(), op))
     }
 
     /// What the caller may do to `path` for `op` by the same rules, for a
@@ -187,7 +205,26 @@ impl Visibility {
     /// (what `quire-index` takes for a view).
     pub fn predicate(self: &Arc<Self>) -> Predicate {
         let me = Arc::clone(self);
-        Arc::new(move |p: &NotePath, tags: &[String]| me.allows_with_tags(p, tags))
+        Arc::new(
+            move |p: &NotePath, tags: &[String], storage: bool| {
+                if storage { Some(me.allows_with_tags(p, tags)) } else { me.allows_known(p, tags) }
+            },
+        )
+    }
+
+    /// What [`Self::folder`] would find, without a storage call: `None` for a
+    /// folder neither checked yet nor inside a checked locked or linked one.
+    fn known_folder(&self, folder: &str) -> Option<Folder> {
+        if let Some(s) = self.folders.lock().unwrap_or_else(PoisonError::into_inner).get(folder) {
+            return Some(*s);
+        }
+        let name = folder.rsplit('/').next().unwrap_or(folder);
+        match folder.rsplit_once('/').map(|(p, _)| self.known_folder(p)) {
+            Some(Some(above)) if above != Folder::Plain => Some(above),
+            Some(None) => None,
+            _ if name.is_empty() || name.starts_with('.') => Some(Folder::Plain),
+            _ => None,
+        }
     }
 
     /// What the check of `folder` (no trailing `/`) finds, the folders above

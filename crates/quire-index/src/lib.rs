@@ -49,6 +49,6 @@ pub type Keep<'a> = &'a dyn Fn(&quire_vault::NotePath) -> bool;
 pub use joined::{CrossLinks, Joined};
 pub use record::NoteRecord;
 pub use relations::{Dendron, Hier, LinkConfig, Relation, Relations, TrailMode, TypeStyle};
-pub use scope::{DocStats, MAX_SCOPES, Scope, ScopeKey, ScopeRead, Visible};
+pub use scope::{DocStats, MAX_SCOPES, Scope, ScopeKey, ScopeRead, Visible, visible};
 pub use sections::{SearchFilters, SearchKind, SectionHit};
 pub use terms::TermId;

@@ -670,10 +670,10 @@ mod tests {
         ]);
         assert!(s.semantic().is_some());
         let f = SearchFilters::default();
-        let everything = s.scoped([1; 32], std::sync::Arc::new(|_: &NotePath, _: &[String]| true));
+        let everything = s.scoped([1; 32], crate::scope::visible(|_: &NotePath, _: &[String]| true));
         assert!(everything.search_sections("automobile", &f, 5).iter().any(|h| h.by_meaning));
         drop(everything);
-        let no_bread = s.scoped([2; 32], std::sync::Arc::new(|p: &NotePath, _: &[String]| p.as_str() != "Bread.md"));
+        let no_bread = s.scoped([2; 32], crate::scope::visible(|p: &NotePath, _: &[String]| p.as_str() != "Bread.md"));
         let hits = no_bread.search_sections("automobile", &f, 5);
         assert_eq!(hits[0].path.as_str(), "Autos.md");
         assert!(hits.iter().all(|h| !h.by_meaning), "{hits:#?}");

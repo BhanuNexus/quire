@@ -36,7 +36,18 @@ use crate::fulltext::{DocId, SearchHit};
 use crate::index::Index;
 
 /// A note's path and its record's tags to "may this caller read it".
-pub type Visible = Arc<dyn Fn(&NotePath, &[String]) -> bool + Send + Sync>;
+///
+/// The third argument says whether it may read the vault (Fable's review,
+/// S3). A view asks with `true` on the caller's thread, where it must
+/// answer; the index's worker asks with `false` under its write lock, where
+/// `None` ("that needs a storage call") leaves the document hidden until the
+/// next caller's own predicate decides it.
+pub type Visible = Arc<dyn Fn(&NotePath, &[String], bool) -> Option<bool> + Send + Sync>;
+
+/// A [`Visible`] that never needs the vault.
+pub fn visible(f: impl Fn(&NotePath, &[String]) -> bool + Send + Sync + 'static) -> Visible {
+    Arc::new(move |p: &NotePath, tags: &[String], _: bool| Some(f(p, tags)))
+}
 
 /// What a view is known by: the caller's visibility fingerprint.
 pub type ScopeKey = [u8; 32];
@@ -142,6 +153,10 @@ pub struct Scope {
     /// document: only a model whose fit started later can be free of it
     /// (Fable's review, S1). `None`: it never hid one.
     hid_at: Option<u64>,
+    /// Note documents the worker could not decide without the vault (hidden
+    /// until then), and whether an attachment page was one.
+    unsure: Vec<DocId>,
+    unsure_pages: bool,
 }
 
 impl std::fmt::Debug for Scope {
@@ -168,12 +183,41 @@ impl Scope {
 
     /// [`Self::build`], with `fits` meaning-model fits started so far.
     pub(crate) fn build_at(ix: &Index, visible: Visible, fits: u64) -> Self {
-        let mut s = Self { visible, build: ix.build(), notes: DocStats::default(), pages: DocStats::default(), hid_at: None };
+        let mut s = Self {
+            visible,
+            build: ix.build(),
+            notes: DocStats::default(),
+            pages: DocStats::default(),
+            hid_at: None,
+            unsure: Vec::new(),
+            unsure_pages: false,
+        };
         let ids: Vec<DocId> = (0..ix.fulltext().doc_slots()).filter_map(|i| u32::try_from(i).ok().map(DocId)).collect();
-        s.patch_notes(ix, &ids);
-        s.rebuild_pages(ix);
+        s.patch_notes(ix, &ids, true);
+        s.rebuild_pages(ix, true);
         s.saw(false, fits);
         s
+    }
+
+    /// Take `visible`, a newer caller's predicate for the same key, and
+    /// decide with it what the worker left undecided. On the caller's thread.
+    fn refresh(&mut self, ix: &Index, visible: Visible, fits: u64) {
+        self.visible = visible;
+        if self.unsure.is_empty() && !self.unsure_pages {
+            return;
+        }
+        let hid = !self.hides_nothing();
+        let ids = std::mem::take(&mut self.unsure);
+        self.patch_notes(ix, &ids, true);
+        if self.unsure_pages {
+            self.rebuild_pages(ix, true);
+        }
+        self.saw(hid, fits);
+    }
+
+    /// Whether anything waits for a caller's predicate.
+    pub const fn undecided(&self) -> bool {
+        !self.unsure.is_empty() || self.unsure_pages
     }
 
     /// Note when the view hides a document, before (`hid`) or after a change,
@@ -191,34 +235,45 @@ impl Scope {
         self.hides_nothing() && self.hid_at.is_none_or(|h| fit > h)
     }
 
-    /// What note document `id` is to this view, and its length.
-    fn note_slot(&self, ix: &Index, id: DocId) -> (Slot, f32) {
+    /// What note document `id` is to this view and its length; `None` when
+    /// that needs the vault and `storage` is false.
+    fn note_slot(&self, ix: &Index, id: DocId, storage: bool) -> Option<(Slot, f32)> {
         let ft = ix.fulltext();
-        let (Some(path), Some(len)) = (ft.path_of(id), ft.doc_len(id)) else { return (Slot::Free, 0.0) };
+        let (Some(path), Some(len)) = (ft.path_of(id), ft.doc_len(id)) else { return Some((Slot::Free, 0.0)) };
         let tags = ix.get(path).map_or(&[][..], |r| r.tags.as_slice());
-        if (self.visible)(path, tags) { (Slot::Member, len) } else { (Slot::Hidden, 0.0) }
+        Some(if (self.visible)(path, tags, storage)? { (Slot::Member, len) } else { (Slot::Hidden, 0.0) })
     }
 
     /// Bring the note documents `ids` up to date (each changed, added or
-    /// removed since the view last saw it).
-    pub(crate) fn patch_notes(&mut self, ix: &Index, ids: &[DocId]) {
+    /// removed since the view last saw it). `storage`: the predicate may
+    /// read the vault (not under the index's write lock).
+    pub(crate) fn patch_notes(&mut self, ix: &Index, ids: &[DocId], storage: bool) {
         for id in ids {
-            let (slot, len) = self.note_slot(ix, *id);
-            self.notes.set(*id, slot, len);
+            self.unsure.retain(|u| u != id);
+            if let Some((slot, len)) = self.note_slot(ix, *id, storage) {
+                self.notes.set(*id, slot, len);
+            } else {
+                self.notes.set(*id, Slot::Hidden, 0.0);
+                self.unsure.push(*id);
+            }
         }
     }
 
     /// Count the attachment pages again (attachment text changes rarely).
-    pub(crate) fn rebuild_pages(&mut self, ix: &Index) {
+    pub(crate) fn rebuild_pages(&mut self, ix: &Index, storage: bool) {
         let at = ix.attachment_fulltext();
         let mut pages = DocStats::default();
+        self.unsure_pages = false;
         for i in 0..at.doc_slots() {
             let id = DocId(u32::try_from(i).unwrap_or(u32::MAX));
             let (Some(file), Some(len)) = (at.path_of(id).and_then(page_file), at.doc_len(id)) else { continue };
-            if (self.visible)(&file, &[]) {
-                pages.set(id, Slot::Member, len);
-            } else {
-                pages.set(id, Slot::Hidden, 0.0);
+            match (self.visible)(&file, &[], storage) {
+                Some(true) => pages.set(id, Slot::Member, len),
+                Some(false) => pages.set(id, Slot::Hidden, 0.0),
+                None => {
+                    pages.set(id, Slot::Hidden, 0.0);
+                    self.unsure_pages = true;
+                }
             }
         }
         self.pages = pages;
@@ -285,7 +340,7 @@ impl<'a> ScopeRead<'a> {
     pub fn has_file(self, p: &NotePath) -> bool {
         match self {
             Self::Full => true,
-            Self::View(s) => (s.visible)(p, &[]),
+            Self::View(s) => (s.visible)(p, &[], true).unwrap_or(false),
         }
     }
 
@@ -335,12 +390,17 @@ pub(crate) struct Scopes {
 }
 
 impl Scopes {
-    /// The view for `key` if it belongs to `build`, marked used.
-    pub(crate) fn get(&mut self, key: &ScopeKey, build: u64) -> Option<Arc<Scope>> {
+    /// The view for `key` if it belongs to `ix`'s build, marked used, with
+    /// `visible` (this caller's predicate) in place of the one it had, and
+    /// what the worker left undecided decided by it (Fable's review, S3).
+    /// `fits`: meaning-model fits started so far.
+    pub(crate) fn get(&mut self, key: &ScopeKey, ix: &Index, visible: &Visible, fits: u64) -> Option<Arc<Scope>> {
         self.clock += 1;
         let clock = self.clock;
-        let e = self.list.iter_mut().find(|e| e.key == *key && e.scope.build == build)?;
+        let e = self.list.iter_mut().find(|e| e.key == *key && e.scope.build == ix.build())?;
         e.used = clock;
+        // A copy only while a reader holds the view: two tables of a few bytes a note.
+        Arc::make_mut(&mut e.scope).refresh(ix, Arc::clone(visible), fits);
         Some(Arc::clone(&e.scope))
     }
 
@@ -381,9 +441,10 @@ impl Scopes {
             }
             let s = Arc::make_mut(&mut e.scope);
             let hid = !s.hides_nothing();
-            s.patch_notes(ix, ids);
+            // No storage call under the write lock: what needs one waits for the next caller.
+            s.patch_notes(ix, ids, false);
             if pages {
-                s.rebuild_pages(ix);
+                s.rebuild_pages(ix, false);
             }
             s.saw(hid, fits);
         }

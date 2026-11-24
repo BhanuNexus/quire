@@ -267,11 +267,12 @@ impl IndexService {
         };
         let ix = self.read();
         let lock = || self.scopes.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let found = lock().get(&key, ix.build());
+        let fits = self.shared.semantic_started.load(Ordering::SeqCst);
+        let found = lock().get(&key, &ix, &visible, fits);
         let scope = if let Some(s) = found {
             s
         } else {
-            let built = Arc::new(Scope::build_at(&ix, visible, self.shared.semantic_started.load(Ordering::SeqCst)));
+            let built = Arc::new(Scope::build_at(&ix, visible, fits));
             lock().insert(key, built)
         };
         let semantic = semantic.filter(|_| scope.meaning_from(fit));

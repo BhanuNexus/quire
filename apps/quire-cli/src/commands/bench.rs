@@ -477,9 +477,10 @@ fn mcp_restricted(files: &[(&str, &str)], runs: usize) {
     let mut heap = 0;
     for k in 0..runs {
         let t = Instant::now();
-        let sc = srv
-            .index()
-            .scoped([u8::try_from(k % 200).unwrap_or(0).wrapping_add(17); 32], Arc::new(move |p: &NotePath, t: &[String]| !denied(p, t)));
+        let sc = srv.index().scoped(
+            [u8::try_from(k % 200).unwrap_or(0).wrapping_add(17); 32],
+            quire_app::index::visible(move |p: &NotePath, t: &[String]| !denied(p, t)),
+        );
         build.push(ms(t.elapsed()));
         heap = sc.view().heap_bytes();
     }
