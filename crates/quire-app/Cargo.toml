@@ -16,6 +16,8 @@ default = ["typeset"]
 typeset = ["dep:quire-typeset", "quire-pdf/render"]
 # Tests only: locked folders with fast Argon2id settings (quire-vault/weak-kdf).
 weak-kdf = ["quire-vault/weak-kdf"]
+# The perf job only: `vault_sync::bench_write_013_state` (`quire-cli bench sync-013`).
+bench-hooks = []
 
 [dependencies]
 quire-base = { workspace = true, features = ["net"] }

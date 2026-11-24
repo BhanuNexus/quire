@@ -517,6 +517,8 @@ struct Packs {
     /// A damaged record was found (told once).
     damaged: bool,
     told: bool,
+    /// The active pack, open for appending (kept across puts).
+    open: Option<(u32, File)>,
 }
 
 impl Packs {
@@ -571,16 +573,25 @@ impl Packs {
         }
         let path = self.path(self.active);
         let fresh = at == 0;
-        let res = (|| -> std::io::Result<()> {
-            std::fs::create_dir_all(&self.dir)?;
-            let mut f = open_append(&path)?;
-            if f.metadata()?.len() != at {
-                // Bytes this process didn't name (a failed append): start a new pack.
-                return Err(std::io::Error::other("pack length changed"));
+        if self.open.as_ref().is_none_or(|(n, _)| *n != self.active) {
+            self.open = None;
+            let opened = std::fs::create_dir_all(&self.dir).and_then(|()| open_append(&path));
+            match opened {
+                Ok(f) => self.open = Some((self.active, f)),
+                Err(e) => return Err(format!("Couldn't save a note's synced text in {}: {e}", path.display())),
             }
-            write_all(&mut f, &rec)
-        })();
+        }
+        let res = match self.open.as_mut() {
+            Some((_, f)) => match f.metadata() {
+                // Bytes this process didn't name (a failed append): start a new pack.
+                Ok(m) if m.len() != at => Err(std::io::Error::other("pack length changed")),
+                Ok(_) => write_all(f, &rec),
+                Err(e) => Err(e),
+            },
+            None => Err(std::io::Error::other("the pack isn't open")),
+        };
         if let Err(e) = res {
+            self.open = None;
             // When part of it landed, that part is past what any record
             // names: later records go to a new pack. When nothing did (a
             // full disk refusing the write), the same pack is tried again.
@@ -667,6 +678,7 @@ impl PackBases {
             made: false,
             damaged: false,
             told: false,
+            open: None,
         })))
     }
 
@@ -1240,6 +1252,20 @@ pub(super) fn peek(root: &Path, name: &str) -> SyncState {
             .unwrap_or_default();
     }
     read_dir(&state_dir(root, name)).ok().flatten().filter(|f| f.any_checkpoint && !f.all_damaged).map(|f| f.body.state).unwrap_or_default()
+}
+
+/// Write the record of the 0.13 state file `name` back as Quire 0.13 kept
+/// it, beside its folder, so the next pass migrates it once (the perf
+/// job's migration row, `docs/design/0.14-sync-speed.md` §2). Its size in
+/// bytes.
+#[cfg(feature = "bench-hooks")]
+pub(super) fn write_013(root: &Path, name: &str) -> Result<usize, String> {
+    let o = Journal::open(root, name)?;
+    let old = quire_sync::bases::State13::from_state(&o.state, &o.bases).ok_or("a synced text is missing from the base packs")?;
+    let bytes = serde_json::to_vec(&old).map_err(|e| e.to_string())?;
+    let path = sync_dir(root).join(name);
+    write_atomic(&path, &bytes).map_err(|e| format!("Couldn't write {}: {e}", path.display()))?;
+    Ok(bytes.len())
 }
 
 /// Whether the record for the 0.13 state file `name` exists (in either form).

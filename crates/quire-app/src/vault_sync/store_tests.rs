@@ -468,3 +468,28 @@ fn a_note_moved_into_a_locked_folder_leaves_no_plain_text_in_the_packs() {
     assert!(!packs_hold(&va, "secret diary"), "the moved note's text leaves the packs in that pass");
     assert!(packs_hold(&va, "plain note 2"));
 }
+
+/// A note sync receives reaches the index through the shared manifest,
+/// without a scan or the file watcher; the watcher's report of the same
+/// bytes, or a scan finding them, changes nothing more.
+#[test]
+fn a_note_sync_writes_reaches_the_index_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut a, mut b) = pair(dir.path());
+    b.pass().unwrap();
+    let index = quire_index::IndexService::spawn();
+    index.load_cached(b.store.vault.clone(), b.store.manifest().clone());
+    index.flush();
+    a.put("Notes/Received.md", "# Received\nsyncedword here\n");
+    a.pass().unwrap();
+    assert_eq!(b.pass().unwrap().pulled, 1);
+    index.flush();
+    assert_eq!(index.read().search("syncedword", 5).len(), 1, "taken in without the watcher");
+    let version = index.version();
+    // The watcher's event for the same write, then a scan.
+    let p = NotePath::new("Notes/Received.md");
+    b.store.manifest().observed(&p, b"# Received\nsyncedword here\n");
+    b.store.manifest().scan().unwrap();
+    index.flush();
+    assert_eq!(index.version(), version + 1, "only the flush's batch: no second update");
+}

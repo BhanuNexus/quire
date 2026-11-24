@@ -289,19 +289,27 @@ pub(super) fn open_parts(root: &Path) -> Result<(Vault, SyncConfig, String, Vaul
     }
 }
 
-/// One sync pass of the vault at `root`, in this thread (`quire-cli sync once`).
+/// One sync of the vault at `root`, in this thread (`quire-cli sync once`):
+/// a pass, and more while a first sync of a large vault has notes left to
+/// send.
 pub fn sync_once_at(root: &Path) -> Result<Report, String> {
-    sync_pass_at(root, false)
+    sync_pass_at(root, false, &mut |_, _| {})
+}
+
+/// [`sync_once_at`], telling `progress` (sent, of) after each pass that
+/// left notes to send.
+pub fn sync_once_with(root: &Path, verify: bool, progress: &mut dyn FnMut(usize, usize)) -> Result<Report, String> {
+    sync_pass_at(root, verify, progress)
 }
 
 /// [`sync_once_at`], reading every note again first: a change that kept its
 /// file's size and time is found too (`docs/design/0.14-sync-speed.md` §3.1;
 /// a running sync does this by itself once a day).
 pub fn sync_verify_at(root: &Path) -> Result<Report, String> {
-    sync_pass_at(root, true)
+    sync_pass_at(root, true, &mut |_, _| {})
 }
 
-fn sync_pass_at(root: &Path, verify: bool) -> Result<Report, String> {
+fn sync_pass_at(root: &Path, verify: bool, progress: &mut dyn FnMut(usize, usize)) -> Result<Report, String> {
     let (vault, cfg, token, key) = open_parts(root)?;
     let lock = lock_sync(root).map_err(|e| match e {
         LockError::Busy { .. } => format!("{ALREADY_SYNCING}; it keeps this vault in sync, nothing to do here."),
@@ -312,11 +320,34 @@ fn sync_pass_at(root: &Path, verify: bool) -> Result<Report, String> {
     if let Some(notice) = session.too_old() {
         return Err(notice);
     }
-    let pass = session.pass(APP_POLL);
-    match pass.status {
-        SyncStatus::Synced(_) | SyncStatus::Waiting(_) => Ok(pass.report.unwrap_or_default()),
-        SyncStatus::Syncing => Err("a note changed while syncing, or other devices were busy; run it again".into()),
-        SyncStatus::Offline(e) | SyncStatus::Error(e) | SyncStatus::Elsewhere(e) => Err(e),
-        SyncStatus::Off => Err("sync is off".into()),
+    let mut all = Report::default();
+    let mut sent = 0;
+    loop {
+        let pass = session.pass(APP_POLL);
+        let report = pass.report.unwrap_or_default();
+        let more = report.more_to_send();
+        sent += report.pushed;
+        if more {
+            progress(sent, sent + report.left);
+        }
+        let status = if more && matches!(pass.status, SyncStatus::Syncing) { SyncStatus::Synced(Instant::now()) } else { pass.status };
+        match status {
+            SyncStatus::Synced(_) | SyncStatus::Waiting(_) => {}
+            SyncStatus::Syncing => return Err("a note changed while syncing, or other devices were busy; run it again".into()),
+            SyncStatus::Offline(e) | SyncStatus::Error(e) | SyncStatus::Elsewhere(e) => return Err(e),
+            SyncStatus::Off => return Err("sync is off".into()),
+        }
+        all.pulled += report.pulled;
+        all.pushed += report.pushed;
+        all.merged.extend(report.merged);
+        all.conflict_copies.extend(report.conflict_copies);
+        all.kept_over_delete.extend(report.kept_over_delete);
+        all.held_back.extend(report.held_back);
+        all.skipped.extend(report.skipped);
+        all.notices.extend(report.notices);
+        if !more {
+            return Ok(all);
+        }
+        session.verify = false;
     }
 }

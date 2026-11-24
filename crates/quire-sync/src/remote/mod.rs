@@ -1732,6 +1732,27 @@ impl Transport for RemoteTransport {
         Ok(out)
     }
 
+    /// Appended to the mirror as one log write (the same lines); uploaded
+    /// by [`Self::flush`], one object per revision as before.
+    fn push_batch(&self, revs: &[Revision]) -> crate::transport::BatchReply {
+        let mut m = self.lock();
+        if let Err(e) = self.start(&mut m) {
+            return crate::transport::BatchReply { outcomes: Vec::new(), error: Some(e) };
+        }
+        if let Some(p) = &m.problem {
+            return crate::transport::BatchReply { outcomes: Vec::new(), error: Some(TransportError::Refused(p.clone())) };
+        }
+        let reply = self.folder.push_batch_numbered(revs, m.own + 1);
+        for (r, o) in revs.iter().zip(&reply.outcomes) {
+            if matches!(o, crate::transport::BatchOutcome::Accepted { .. }) {
+                m.own += 1;
+                let n = m.own;
+                m.outbox.push((n, Revision { seq: 0, ..r.clone() }));
+            }
+        }
+        reply
+    }
+
     fn fork_base(&self, file: &FileId, ours: &RevId, theirs: &Revision) -> Option<Revision> {
         self.folder.fork_base(file, ours, theirs)
     }
