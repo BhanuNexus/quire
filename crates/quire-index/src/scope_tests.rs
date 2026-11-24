@@ -178,7 +178,7 @@ fn keyword_scope_ranks_like_an_index_of_its_notes() {
         let mine = index_of(&kept, &kept_pdfs);
         let queries: Vec<String> = (0..6).map(|_| random_query(&mut rng)).collect();
         assert_eq!(hits(&full, ScopeRead::View(&v), &queries), hits(&mine, ScopeRead::Full, &queries), "case {case}, rule {rule}");
-        assert_eq!(v.hides_nothing(&full), kept.len() == notes.len() && kept_pdfs.len() == pdfs.len());
+        assert_eq!(v.hides_nothing(), kept.len() == notes.len() && kept_pdfs.len() == pdfs.len());
     }
 }
 
@@ -303,4 +303,32 @@ fn views_built_during_writes_are_consistent() {
         let sc = svc.scoped([t; 32], Arc::clone(&visible));
         assert_eq!(stats_text(&sc, sc.view()), stats_text(&sc, &Scope::build(&sc, Arc::clone(&visible))));
     }
+}
+
+/// Fable's review, S2: an empty note is a document of length 0, and still
+/// a member: a view that may see it counts it, and one that may see every
+/// note hides nothing (so it keeps meaning search).
+#[test]
+fn an_empty_note_is_a_member() {
+    let mut notes: BTreeMap<NotePath, String> = BTreeMap::new();
+    notes.insert(np("🙂.md"), String::new());
+    notes.insert(np("Ideas.md"), "# Ideas\n\nropes and trees\n".into());
+    notes.insert(np("Private/p.md"), "# P\n\nropes\n".into());
+    let ix = index_of(&notes, &[]);
+    assert!(ix.doc_id(&np("🙂.md")).is_some(), "the empty note is indexed");
+    let all = view(&ix, |_: &NotePath, _: &[String]| true);
+    assert_eq!(all.notes().n(), ix.fulltext().doc_count());
+    assert_eq!(ix.len_in(ScopeRead::View(&all)), ix.len_in(ScopeRead::Full));
+    assert!(ScopeRead::View(&all).meaning(&ix), "a view that hides nothing keeps meaning search");
+    assert!(ScopeRead::View(&all).has_note(&ix, &np("🙂.md")));
+    let q: Vec<String> = ["ropes", "ro", "trees"].map(String::from).to_vec();
+    assert_eq!(hits(&ix, ScopeRead::View(&all), &q), hits(&ix, ScopeRead::Full, &q));
+    // A view without `Private/` counts the empty note too, as an index of its notes does.
+    let mine: BTreeMap<NotePath, String> =
+        notes.iter().filter(|(p, _)| !p.as_str().starts_with("Private/")).map(|(p, t)| (p.clone(), t.clone())).collect();
+    let fresh = index_of(&mine, &[]);
+    let part = view(&ix, |p: &NotePath, _: &[String]| !p.as_str().starts_with("Private/"));
+    assert_eq!(part.notes().n(), fresh.fulltext().doc_count());
+    assert_eq!(hits(&ix, ScopeRead::View(&part), &q), hits(&fresh, ScopeRead::Full, &q));
+    assert!(!ScopeRead::View(&part).meaning(&ix));
 }

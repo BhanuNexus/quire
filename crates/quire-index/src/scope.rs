@@ -44,13 +44,31 @@ pub type ScopeKey = [u8; 32];
 /// Views with keyword statistics kept at most (`docs/design/0.14-agent-index.md` §3.6).
 pub const MAX_SCOPES: usize = 32;
 
+/// What a view knows of one document id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Slot {
+    /// No document has this id.
+    #[default]
+    Free,
+    /// A document the caller may not read.
+    Hidden,
+    /// A document the caller may read.
+    Member,
+}
+
 /// Which documents of one keyword index a view holds, and their totals.
+///
+/// Membership is kept apart from length (Fable's review, S2): whatever a
+/// document's length, a member counts.
 #[derive(Debug, Clone, Default)]
 pub struct DocStats {
-    /// By [`DocId`]: a member's length, 0 for any other document (every
-    /// indexed document is at least 1 long).
+    /// By [`DocId`].
+    slots: Vec<Slot>,
+    /// By [`DocId`]: a member's length, 0 for any other document.
     lens: Vec<f32>,
     n: usize,
+    /// Documents the caller may not read.
+    hidden: usize,
     /// Sums of whole numbers: exact in `f64`, whatever the order.
     total_len: f64,
 }
@@ -61,6 +79,11 @@ impl DocStats {
         self.n
     }
 
+    /// How many documents are not members.
+    pub const fn hidden(&self) -> usize {
+        self.hidden
+    }
+
     /// The members' total length.
     pub const fn total_len(&self) -> f64 {
         self.total_len
@@ -68,33 +91,41 @@ impl DocStats {
 
     /// Whether `id` is a member.
     pub fn contains(&self, id: DocId) -> bool {
-        self.lens.get(id.index()).is_some_and(|l| *l > 0.0)
+        self.slots.get(id.index()) == Some(&Slot::Member)
     }
 
     /// Bytes this holds on the heap.
     pub const fn heap_bytes(&self) -> usize {
-        self.lens.capacity() * size_of::<f32>()
+        self.lens.capacity() * size_of::<f32>() + self.slots.capacity() * size_of::<Slot>()
     }
 
-    /// Make `id` a member of length `len`, or no member (`None`).
-    fn set(&mut self, id: DocId, len: Option<f32>) {
+    /// Set what `id` is: no document, a hidden one, or a member of length `len`.
+    fn set(&mut self, id: DocId, slot: Slot, len: f32) {
         let i = id.index();
-        if i >= self.lens.len() {
-            if len.is_none() {
+        if i >= self.slots.len() {
+            if slot == Slot::Free {
                 return;
             }
+            self.slots.resize(i + 1, Slot::Free);
             self.lens.resize(i + 1, 0.0);
         }
-        let old = self.lens[i];
-        if old > 0.0 {
-            self.n -= 1;
-            self.total_len -= f64::from(old);
+        match self.slots[i] {
+            Slot::Member => {
+                self.n -= 1;
+                self.total_len -= f64::from(self.lens[i]);
+            }
+            Slot::Hidden => self.hidden -= 1,
+            Slot::Free => {}
         }
-        let new = len.unwrap_or(0.0);
-        self.lens[i] = new;
-        if new > 0.0 {
-            self.n += 1;
-            self.total_len += f64::from(new);
+        self.slots[i] = slot;
+        self.lens[i] = if slot == Slot::Member { len } else { 0.0 };
+        match slot {
+            Slot::Member => {
+                self.n += 1;
+                self.total_len += f64::from(len);
+            }
+            Slot::Hidden => self.hidden += 1,
+            Slot::Free => {}
         }
     }
 }
@@ -135,20 +166,20 @@ impl Scope {
         s
     }
 
-    /// The length of note document `id` if it is a member.
-    fn note_len(&self, ix: &Index, id: DocId) -> Option<f32> {
+    /// What note document `id` is to this view, and its length.
+    fn note_slot(&self, ix: &Index, id: DocId) -> (Slot, f32) {
         let ft = ix.fulltext();
-        let path = ft.path_of(id)?;
-        let rec = ix.get(path)?;
-        (self.visible)(path, &rec.tags).then(|| ft.doc_len(id)).flatten()
+        let (Some(path), Some(len)) = (ft.path_of(id), ft.doc_len(id)) else { return (Slot::Free, 0.0) };
+        let tags = ix.get(path).map_or(&[][..], |r| r.tags.as_slice());
+        if (self.visible)(path, tags) { (Slot::Member, len) } else { (Slot::Hidden, 0.0) }
     }
 
     /// Bring the note documents `ids` up to date (each changed, added or
     /// removed since the view last saw it).
     pub(crate) fn patch_notes(&mut self, ix: &Index, ids: &[DocId]) {
         for id in ids {
-            let len = self.note_len(ix, *id);
-            self.notes.set(*id, len);
+            let (slot, len) = self.note_slot(ix, *id);
+            self.notes.set(*id, slot, len);
         }
     }
 
@@ -158,8 +189,12 @@ impl Scope {
         let mut pages = DocStats::default();
         for i in 0..at.doc_slots() {
             let id = DocId(u32::try_from(i).unwrap_or(u32::MAX));
-            let member = at.path_of(id).and_then(page_file).is_some_and(|f| (self.visible)(&f, &[]));
-            pages.set(id, at.doc_len(id).filter(|_| member));
+            let (Some(file), Some(len)) = (at.path_of(id).and_then(page_file), at.doc_len(id)) else { continue };
+            if (self.visible)(&file, &[]) {
+                pages.set(id, Slot::Member, len);
+            } else {
+                pages.set(id, Slot::Hidden, 0.0);
+            }
         }
         self.pages = pages;
     }
@@ -180,8 +215,8 @@ impl Scope {
     }
 
     /// Whether the view holds every note and page of `ix`.
-    pub fn hides_nothing(&self, ix: &Index) -> bool {
-        self.notes.n == ix.fulltext().doc_count() && self.pages.n == ix.attachment_fulltext().doc_count()
+    pub const fn hides_nothing(&self) -> bool {
+        self.notes.hidden == 0 && self.pages.hidden == 0
     }
 
     /// Bytes this view holds on the heap (`docs/design/0.14-agent-index.md` G6).
@@ -231,10 +266,10 @@ impl<'a> ScopeRead<'a> {
 
     /// Whether meaning search may be used: the model is fitted on every
     /// note, so only a view that hides nothing may use it (0.14.0).
-    pub fn meaning(self, ix: &Index) -> bool {
+    pub const fn meaning(self, _ix: &Index) -> bool {
         match self {
             Self::Full => true,
-            Self::View(s) => s.hides_nothing(ix),
+            Self::View(s) => s.hides_nothing(),
         }
     }
 }
