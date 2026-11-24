@@ -94,6 +94,11 @@ struct Shared {
     notes: AtomicUsize,
     semantic_version: AtomicU64,
     semantic_busy: AtomicBool,
+    /// Meaning-model fits started: each fit takes the next number before it
+    /// reads a note (views compare it, Fable's review S1).
+    semantic_started: AtomicU64,
+    /// The number of the fit that made the model in use; written with the model, under its lock.
+    semantic_fit: AtomicU64,
     /// Notes read from disk and parsed by the last load.
     read: AtomicUsize,
 }
@@ -255,17 +260,21 @@ impl IndexService {
     /// records; the worker patches it from then on). `key` must stand for
     /// `visible`: two callers with one key see the same notes.
     pub fn scoped(&self, key: ScopeKey, visible: Visible) -> Scoped<'_> {
-        let semantic = self.semantic();
+        // The model and the number of its fit, together (both written under the model's lock).
+        let (semantic, fit) = {
+            let m = self.semantic.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+            (m.clone().filter(|_| !self.meaning_off.load(Ordering::Relaxed)), self.shared.semantic_fit.load(Ordering::SeqCst))
+        };
         let ix = self.read();
         let lock = || self.scopes.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let found = lock().get(&key, ix.build());
         let scope = if let Some(s) = found {
             s
         } else {
-            let built = Arc::new(Scope::build(&ix, visible));
+            let built = Arc::new(Scope::build_at(&ix, visible, self.shared.semantic_started.load(Ordering::SeqCst)));
             lock().insert(key, built)
         };
-        let semantic = semantic.filter(|_| ScopeRead::View(&scope).meaning(&ix));
+        let semantic = semantic.filter(|_| scope.meaning_from(fit));
         Scoped { ix, scope, semantic }
     }
 
@@ -949,7 +958,12 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
             if !touched.is_empty() || pages_changed {
                 touched.sort_unstable();
                 touched.dedup();
-                scopes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).patch(&ix, &touched, pages_changed);
+                scopes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).patch(
+                    &ix,
+                    &touched,
+                    pages_changed,
+                    shared.semantic_started.load(Ordering::SeqCst),
+                );
             }
             ix.end_batch();
             if let Some(s) = store {
@@ -1010,6 +1024,9 @@ fn run_semantic(rx: &Receiver<SemMsg>, index: &RwLock<Index>, shared: &Shared, o
             }
         }
         shared.semantic_busy.store(true, Ordering::Relaxed);
+        // Numbered before any note is read: a view that hid a note when fewer fits had started
+        // knows this model holds none of it (`Scope::meaning_from`).
+        let fit = shared.semantic_started.fetch_add(1, Ordering::SeqCst) + 1;
         // 0.13.1: passages are cut from the index's own text, a few hundred notes per
         // short read lock, instead of from a copy of every note made first (the copy,
         // as big as the vault, was freed after but stayed in the process's memory).
@@ -1038,7 +1055,11 @@ fn run_semantic(rx: &Receiver<SemMsg>, index: &RwLock<Index>, shared: &Shared, o
             None => build_lsa_index(chunks),
         };
         let built = Arc::new(built);
-        *out.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(built);
+        {
+            let mut m = out.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+            *m = Some(built);
+            shared.semantic_fit.store(fit, Ordering::SeqCst);
+        }
         shared.semantic_busy.store(false, Ordering::Relaxed);
         shared.semantic_version.fetch_add(1, Ordering::Release);
         for w in std::mem::take(&mut waiters) {

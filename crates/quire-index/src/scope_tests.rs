@@ -332,3 +332,49 @@ fn an_empty_note_is_a_member() {
     assert_eq!(hits(&ix, ScopeRead::View(&part), &q), hits(&fresh, ScopeRead::Full, &q));
     assert!(!ScopeRead::View(&part).meaning(&ix));
 }
+
+/// Fable's review, S1: the meaning model is fitted on every note. A view
+/// that hid a note gets meaning search back only from a model fitted after
+/// that: not the moment it hides nothing (its hidden note deleted) while the
+/// model still holds the note's words.
+#[test]
+fn meaning_comes_back_only_after_a_refit() {
+    let (go, wait) = crossbeam_channel::unbounded::<()>();
+    let svc = IndexService::spawn();
+    // Each fit waits for a go.
+    svc.set_semantic_builder(Some(Arc::new(move |chunks| {
+        wait.recv().map_err(|e| e.to_string())?;
+        Ok(crate::semantic::build_lsa_index(chunks))
+    })));
+    go.send(()).unwrap();
+    svc.load(quire_vault::Vault::in_memory(&[
+        ("Cars.md", "# Cars\nThe car engine needs oil. A vehicle with a strong engine drives fast on the road."),
+        ("Autos.md", "# Autos\nMy automobile is a vehicle with a loud engine; the road trip was long."),
+        ("Bread.md", "# Bread\nSourdough bread needs flour, water and a slow rise in a warm oven."),
+        ("Private/s.md", "# S\nThe automobile secret is a vehicle engine road."),
+    ]));
+    svc.flush_semantic();
+    let fitted = svc.semantic_version();
+    let visible: Visible = Arc::new(|p: &NotePath, _: &[String]| !p.as_str().starts_with("Private/"));
+    let key = [3u8; 32];
+    assert!(svc.semantic().is_some());
+    assert!(svc.scoped(key, Arc::clone(&visible)).semantic().is_none(), "a view that hides a note has no meaning");
+    // The hidden note goes: the view hides nothing, but the model still holds it.
+    svc.remove(np("Private/s.md"));
+    svc.flush();
+    {
+        let sc = svc.scoped(key, Arc::clone(&visible));
+        assert!(sc.view().hides_nothing());
+        assert_eq!(svc.semantic_version(), fitted, "no refit yet");
+        assert!(sc.semantic().is_none(), "the model was fitted with the hidden note");
+        assert!(sc.search_sections("automobile", &SearchFilters::default(), 5).iter().all(|h| !h.by_meaning));
+    }
+    // A caller who never hid anything keeps meaning search meanwhile.
+    assert!(svc.scoped([4u8; 32], Arc::new(|_: &NotePath, _: &[String]| true)).semantic().is_some());
+    go.send(()).unwrap();
+    svc.flush_semantic();
+    assert!(svc.semantic_version() > fitted);
+    let sc = svc.scoped(key, Arc::clone(&visible));
+    assert!(sc.semantic().is_some(), "refitted without the note: meaning is back");
+    assert!(sc.search_sections("automobile", &SearchFilters::default(), 5).iter().any(|h| h.by_meaning));
+}

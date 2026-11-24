@@ -138,6 +138,10 @@ pub struct Scope {
     build: u64,
     notes: DocStats,
     pages: DocStats,
+    /// The number of meaning-model fits started when this view last hid a
+    /// document: only a model whose fit started later can be free of it
+    /// (Fable's review, S1). `None`: it never hid one.
+    hid_at: Option<u64>,
 }
 
 impl std::fmt::Debug for Scope {
@@ -159,11 +163,32 @@ impl Scope {
     /// The view of `ix` for `visible`: one call of it per note and per
     /// attachment, pure (no file is read).
     pub fn build(ix: &Index, visible: Visible) -> Self {
-        let mut s = Self { visible, build: ix.build(), notes: DocStats::default(), pages: DocStats::default() };
+        Self::build_at(ix, visible, 0)
+    }
+
+    /// [`Self::build`], with `fits` meaning-model fits started so far.
+    pub(crate) fn build_at(ix: &Index, visible: Visible, fits: u64) -> Self {
+        let mut s = Self { visible, build: ix.build(), notes: DocStats::default(), pages: DocStats::default(), hid_at: None };
         let ids: Vec<DocId> = (0..ix.fulltext().doc_slots()).filter_map(|i| u32::try_from(i).ok().map(DocId)).collect();
         s.patch_notes(ix, &ids);
         s.rebuild_pages(ix);
+        s.saw(false, fits);
         s
+    }
+
+    /// Note when the view hides a document, before (`hid`) or after a change,
+    /// with `fits` meaning-model fits started so far.
+    fn saw(&mut self, hid: bool, fits: u64) {
+        if hid || !self.hides_nothing() {
+            self.hid_at = Some(fits);
+        }
+    }
+
+    /// Whether a meaning model whose fit was number `fit` may serve this
+    /// view: it hides nothing, and the fit started after it last hid a
+    /// document.
+    pub(crate) fn meaning_from(&self, fit: u64) -> bool {
+        self.hides_nothing() && self.hid_at.is_none_or(|h| fit > h)
     }
 
     /// What note document `id` is to this view, and its length.
@@ -265,7 +290,9 @@ impl<'a> ScopeRead<'a> {
     }
 
     /// Whether meaning search may be used: the model is fitted on every
-    /// note, so only a view that hides nothing may use it (0.14.0).
+    /// note, so only a view that hides nothing may use it (0.14.0). A
+    /// service's [`crate::Scoped`] also asks that the model was fitted after
+    /// the view last hid a note.
     pub const fn meaning(self, _ix: &Index) -> bool {
         match self {
             Self::Full => true,
@@ -325,6 +352,10 @@ impl Scopes {
         let clock = self.clock;
         if let Some(e) = self.list.iter_mut().find(|e| e.key == key) {
             if e.scope.build != scope.build {
+                // What the view hid before the load may still be in the meaning model.
+                let hid_at = e.scope.hid_at.max(scope.hid_at);
+                let mut scope = scope;
+                Arc::make_mut(&mut scope).hid_at = hid_at;
                 e.scope = scope;
             }
             e.used = clock;
@@ -342,16 +373,19 @@ impl Scopes {
     /// Patch every view of `ix`'s build for the note documents `ids` (and
     /// the attachment pages when they changed). Called by the index worker
     /// under its write lock: no reader holds a view then.
-    pub(crate) fn patch(&mut self, ix: &Index, ids: &[DocId], pages: bool) {
+    /// `fits`: meaning-model fits started so far.
+    pub(crate) fn patch(&mut self, ix: &Index, ids: &[DocId], pages: bool, fits: u64) {
         for e in &mut self.list {
             if e.scope.build != ix.build() {
                 continue;
             }
             let s = Arc::make_mut(&mut e.scope);
+            let hid = !s.hides_nothing();
             s.patch_notes(ix, ids);
             if pages {
                 s.rebuild_pages(ix);
             }
+            s.saw(hid, fits);
         }
     }
 
