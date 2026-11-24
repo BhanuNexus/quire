@@ -1110,7 +1110,7 @@ fn about(ui: &mut Ui, ws: &mut Workspace, pal: &Palette) {
 }
 
 fn editor_settings(ui: &mut Ui, ws: &mut Workspace) {
-    let eval_keys = crate::commands_ui::keys_of(ws, quire_app::Command::EvaluateLine);
+    let eval_keys = crate::commands_ui::keys_of(ws, Command::EvaluateLine);
     let s = &mut ws.settings;
     egui::Grid::new("settings-editor").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
         ui.label("Theme");

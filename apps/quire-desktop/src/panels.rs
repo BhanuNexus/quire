@@ -268,7 +268,12 @@ pub(crate) fn tab_bar(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> P
                     if r.middle_clicked() {
                         close = Some(d.id);
                     }
-                    if active && ui.small_button("×").on_hover_text(format!("Close tab{}", crate::commands_ui::keys_paren(ws, Command::CloseTab))).clicked() {
+                    if active
+                        && ui
+                            .small_button("×")
+                            .on_hover_text(format!("Close tab{}", crate::commands_ui::keys_paren(ws, Command::CloseTab)))
+                            .clicked()
+                    {
                         close = Some(d.id);
                     }
                 }
@@ -289,10 +294,18 @@ pub(crate) fn tab_bar(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> P
             apply_note_action(ui.ctx(), ws, &p, a, &mut out);
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.selectable_label(ws.settings.show_insights, "Insights").on_hover_text(crate::commands_ui::keys_of(ws, Command::ToggleInsights)).clicked() {
+            if ui
+                .selectable_label(ws.settings.show_insights, "Insights")
+                .on_hover_text(crate::commands_ui::keys_of(ws, Command::ToggleInsights))
+                .clicked()
+            {
                 out.run = Some(Command::ToggleInsights);
             }
-            if ui.selectable_label(ws.settings.show_preview, "Preview").on_hover_text(crate::commands_ui::keys_of(ws, Command::TogglePreview)).clicked() {
+            if ui
+                .selectable_label(ws.settings.show_preview, "Preview")
+                .on_hover_text(crate::commands_ui::keys_of(ws, Command::TogglePreview))
+                .clicked()
+            {
                 out.run = Some(Command::TogglePreview);
             }
             let (palette_keys, help_keys) =
@@ -302,7 +315,14 @@ pub(crate) fn tab_bar(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) -> P
             if ui.add(search).clicked() {
                 out.run = Some(Command::CommandPalette);
             }
-            if ui.button("?").on_hover_text(format!("Keyboard shortcuts{}", if help_keys.is_empty() { String::new() } else { format!(" ({help_keys})") })).clicked() {
+            if ui
+                .button("?")
+                .on_hover_text(format!(
+                    "Keyboard shortcuts{}",
+                    if help_keys.is_empty() { String::new() } else { format!(" ({help_keys})") }
+                ))
+                .clicked()
+            {
                 out.run = Some(Command::ShowShortcuts);
             }
         });
@@ -728,7 +748,14 @@ pub(crate) fn sidebar(
                 if ui.button("Today").on_hover_text(crate::commands_ui::keys_of(ws, Command::DailyNote)).clicked() {
                     out.run = Some(Command::DailyNote);
                 }
-                if ui.button("Scratch").on_hover_text(format!("Scratchpad, never saved to the vault{}", crate::commands_ui::keys_paren(ws, Command::Scratchpad))).clicked() {
+                if ui
+                    .button("Scratch")
+                    .on_hover_text(format!(
+                        "Scratchpad, never saved to the vault{}",
+                        crate::commands_ui::keys_paren(ws, Command::Scratchpad)
+                    ))
+                    .clicked()
+                {
                     out.run = Some(Command::Scratchpad);
                 }
             });
@@ -765,7 +792,9 @@ pub(crate) fn sidebar(
             let empty = files.count == 0;
             st.files = Some(files);
             if empty {
-                ui.label(RichText::new(format!("No notes yet. Press {}.", crate::commands_ui::keys_of(ws, Command::NewNote))).color(pal.muted));
+                ui.label(
+                    RichText::new(format!("No notes yet. Press {}.", crate::commands_ui::keys_of(ws, Command::NewNote))).color(pal.muted),
+                );
             }
             open = ev.open.map(|(p, pinned)| {
                 ws.features.nav.open_pinned |= pinned;
@@ -1777,7 +1806,11 @@ pub(crate) fn find_bar(ui: &mut egui::Ui, ws: &mut Workspace, focus: &mut bool, 
             (None, n, None) => RichText::new(format!("{n} found")).color(pal.muted),
         };
         ui.label(label.size(12.5));
-        if ui.small_button("↑").on_hover_text(format!("Previous (Shift+Enter, {})", crate::commands_ui::keys_of(ws, Command::FindPrev))).clicked() {
+        if ui
+            .small_button("↑")
+            .on_hover_text(format!("Previous (Shift+Enter, {})", crate::commands_ui::keys_of(ws, Command::FindPrev)))
+            .clicked()
+        {
             step = Some(true);
         }
         if ui.small_button("↓").on_hover_text(format!("Next (Enter, {})", crate::commands_ui::keys_of(ws, Command::FindNext))).clicked() {
