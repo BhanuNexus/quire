@@ -267,7 +267,7 @@ fn removed_names_answer_with_their_replacement() {
         ("append_to_note", "append"),
         ("replace_in_note", "str_replace"),
     ];
-    assert_eq!(REMOVED_TOOLS.iter().map(|(o, n, _)| (*o, *n)).collect::<Vec<_>>(), table);
+    assert_eq!(crate::tools::REMOVED_TOOLS.iter().map(|(o, n, _)| (*o, *n)).collect::<Vec<_>>(), table);
     let registry = ToolRegistry::standard();
     let docs = include_str!("../../../../docs/agents.md");
     for (old, new) in table {

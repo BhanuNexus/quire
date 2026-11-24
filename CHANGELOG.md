@@ -24,7 +24,7 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 - **Sync:** each device keeps its record of what sync did in a new format, written only when something changed, instead of rewriting a copy of every note after each pass; the first sync after updating moves it over once. Going back to Quire 0.13 starts sync afresh on that device (notes changed there are kept as copies), and sync says so when an older Quire also syncs the same vault on the device.
 
 ### Removed
-- **Agents:** the nine tool names from Quire 0.8 (`search_notes`, `read_note`, `list_notes`, `backlinks`, `ask_notes`, `list_tags`, `create_note`, `append_to_note`, `replace_in_note`) no longer exist. An agent setup, prompt or script that calls them must move to the tools below: a call to an old name now gets an error that names the tool to use instead (an agent that lists tools first, as most do, needs no change).
+- **Agents:** the nine tool names from Quire 0.8 (`search_notes`, `read_note`, `list_notes`, `backlinks`, `ask_notes`, `list_tags`, `create_note`, `append_to_note`, `replace_in_note`) no longer exist. An agent setup, prompt or script that calls them must move to the tools below: a call to an old name now gets an error that names the tool to use instead (over MCP and in the agent panel) (an agent that lists tools first, as most do, needs no change).
 
   | 0.8 name | Use instead |
   |---|---|

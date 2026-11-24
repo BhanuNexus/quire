@@ -335,6 +335,34 @@ pub fn schema(props: &Value, required: &[&str]) -> Value {
     json!({ "type": "object", "properties": props, "required": required })
 }
 
+/// The 0.8 tool names removed in 0.14 (`docs/design/0.14-agent-tools.md` §3.4).
+///
+/// Each is the old name, the tool to use instead, and what differs. Nothing lists these;
+/// a call to one gets [`removed_tool`]'s answer, over MCP and in the agent panel.
+pub const REMOVED_TOOLS: &[(&str, &str, &str)] = &[
+    ("search_notes", "search", "ranks sections, not notes; each hit has a line range for `view`"),
+    ("read_note", "view", "takes `path`; long notes come in pages (`max_tokens`, `cursor`)"),
+    ("list_notes", "list", "`folder`, `tags`, `where`, `sort`, `limit`, `cursor`"),
+    ("backlinks", "neighbors", "with `direction: \"in\"`; each edge has the linking line as `context` (or use `links`)"),
+    ("ask_notes", "ask", ""),
+    ("list_tags", "tags", ""),
+    ("create_note", "create", "`path` is `folder/title.md`; it refuses to overwrite"),
+    ("append_to_note", "append", ""),
+    ("replace_in_note", "str_replace", "with `all: true` to replace every occurrence; there is no regex form"),
+];
+
+/// The answer to a call for a removed 0.8 name: `not_found`, naming the tool to use instead.
+pub fn removed_tool(name: &str) -> Option<ToolOutput> {
+    let (old, new, _) = REMOVED_TOOLS.iter().find(|(old, ..)| *old == name)?;
+    Some(ToolOutput::Err {
+        code: "not_found",
+        message: format!(
+            "No tool called “{old}”: it was removed in Quire 0.14. Use `{new}` instead (see \"Removed tool names\" in docs/agents.md). Call tools/list for the names."
+        ),
+        structured: json!({ "removed": old, "use": new }),
+    })
+}
+
 /// Every tool, in the order clients see them.
 pub struct ToolRegistry {
     tools: Vec<Box<dyn Tool>>,
