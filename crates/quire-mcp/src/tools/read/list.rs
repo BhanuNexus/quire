@@ -14,7 +14,7 @@ pub(super) fn register() -> Box<dyn Tool> {
         "List notes, optionally in a folder, with tags, changed in a time range, or matching a property filter. Example: {\"folder\": \"Projects/\", \"where\": \"status != done\", \"since\": \"7d\", \"sort\": \"modified\"}. Pass next_cursor back as cursor for more.",
         schema!({"type": "object", "properties": {
                 "folder": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}, "description": "Every tag must be on the note."},
-                "since": {"type": "string", "description": "RFC 3339, YYYY-MM-DD, or a time back from now: 30m, 24h, 7d, 2w"}, "until": {"type": "string"},
+                "since": {"type": "string", "description": "RFC 3339, YYYY-MM-DD (a UTC day), or a time back from now: 30m, 24h, 7d, 2w"}, "until": {"type": "string", "description": "As since; a date takes in that whole UTC day"},
                 "where": {"type": "string", "description": "e.g. \"status = active and due < 2026-12-01\""},
                 "sort": {"type": "string", "enum": ["path", "modified", "title"], "default": "path"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
@@ -39,7 +39,7 @@ fn list_tool(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     // `tag` (one) is the 0.9 spelling of `tags`.
     let tags: Vec<String> = list_any(a, &["tags", "tag"]).into_iter().map(|t| t.trim_start_matches('#').to_string()).collect();
     let now = cx.agent.now_ms();
-    let (since, until) = match (time_any(a, &["since"], now), time_any(a, &["until"], now)) {
+    let (since, until) = match (time_any(a, &["since"], now), until_any(a, &["until"], now)) {
         (Ok(s), Ok(u)) => (s, u),
         (Err(e), _) | (_, Err(e)) => return e,
     };

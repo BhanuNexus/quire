@@ -13,7 +13,7 @@ pub(super) fn register() -> Box<dyn Tool> {
         "Recent changes",
         "What changed in the vault since a time: agent writes, suggestions and decisions from Quire's ledger, and notes the person edited. Example: {\"since\": \"24h\"} or {\"since\": \"2026-11-01\", \"actor\": \"mcp:claude-code\"}.",
         schema!({"type": "object", "properties": {
-                "since": {"type": "string", "description": "RFC 3339, YYYY-MM-DD, or a time back from now: 30m, 24h, 7d, 2w"}, "until": {"type": "string"},
+                "since": {"type": "string", "description": "RFC 3339, YYYY-MM-DD (a UTC day), or a time back from now: 30m, 24h, 7d, 2w"}, "until": {"type": "string", "description": "As since; a date takes in that whole UTC day"},
                 "actor": {"type": "string", "description": "An actor id, or \"me\" (you)."},
                 "kinds": {"type": "array", "items": {"type": "string", "enum": ["edit", "create", "rename", "delete", "proposal", "decision"]}},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
@@ -45,7 +45,7 @@ fn op_kind(op: Op) -> &'static str {
 
 fn recent_activity(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let now = cx.agent.now_ms();
-    let (since, until) = match (time_any(a, &["since"], now), time_any(a, &["until"], now)) {
+    let (since, until) = match (time_any(a, &["since"], now), until_any(a, &["until"], now)) {
         (Ok(Some(s)), Ok(u)) => (s, u.unwrap_or(i64::MAX)),
         (Ok(None), _) => return ToolOutput::error("invalid_args", format!("`since` is required: {TIME_FORMATS}.")),
         (Err(e), _) | (_, Err(e)) => return e,

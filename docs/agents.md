@@ -90,7 +90,8 @@ One name per idea: `path` for a note, `section` for a heading or block,
 `lines` (`[10, 40]` or `"10-40"`), `limit`, `max_tokens`, `cursor`,
 `folder`, `tags` (every one must be on the note), `where`, `since` and
 `until` (RFC 3339, YYYY-MM-DD, or a time back from now: `30m`, `24h`, `7d`,
-`2w`), `actor` (`"me"` is the caller), `expected_version`, `run`. Older
+`2w`; a date is a UTC day, and in `until` it takes in that whole day, so
+`since: "2026-11-02", until: "2026-11-02"` is the 2nd), `actor` (`"me"` is the caller), `expected_version`, `run`. Older
 spellings still work: `heading` and `under_heading` (for `section`), `k` and
 `max_rows` (for `limit`), `tag`, `from` and `to` in `diff`, `mine` in
 `proposals`, and `search`'s `filters{…}` with `modified_after` and

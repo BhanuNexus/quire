@@ -17,7 +17,7 @@ pub(super) fn register() -> Box<dyn Tool> {
         "Suggest undoing changes made by an agent (you, by default): those of one run, since a time, or to some notes. The undo is always a suggestion the person reviews; it keeps edits they made since. Example: {\"run\": \"r_…\"} or {\"since\": \"2h\"}.",
         schema!({"type": "object", "properties": {
                 "actor": {"type": "string", "description": "Whose changes; defaults to yours."},
-                "run": {"type": "string"}, "since": {"type": "string", "description": "RFC 3339, YYYY-MM-DD, or a time back from now: 30m, 24h, 7d, 2w"},
+                "run": {"type": "string"}, "since": {"type": "string", "description": "RFC 3339, YYYY-MM-DD (a UTC day), or a time back from now: 30m, 24h, 7d, 2w"},
                 "paths": {"type": "array", "items": {"type": "string"}}}}),
         o(),
         Annotations::WRITE,

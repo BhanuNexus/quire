@@ -14,7 +14,7 @@ pub(super) fn register() -> Box<dyn Tool> {
         "The text of a note as it was: at a version (sha256:… from view or history) or as of a time. Example: {\"path\": \"Rope Notes.md\", \"as_of\": \"2026-11-01\"}.",
         schema!({"type": "object", "properties": {
                 "path": {"type": "string"}, "version": {"type": "string"},
-                "as_of": {"type": "string", "description": "RFC 3339, YYYY-MM-DD, or a time back from now: 30m, 24h, 7d, 2w"},
+                "as_of": {"type": "string", "description": "RFC 3339, YYYY-MM-DD (a UTC day), or a time back from now: 30m, 24h, 7d, 2w"},
                 "max_tokens": {"type": "integer", "default": 4000}, "cursor": {"type": "string"}}, "required": ["path"]}),
         schema!({"type": "object", "properties": {"text": {"type": "string"}, "version": {"type": "string"}, "at": {"type": ["string", "null"]},
                 "actor": {"type": "string"}, "truncated": {"type": "boolean"}, "next_cursor": {"type": ["string", "null"]}}, "required": ["text", "version"]}),

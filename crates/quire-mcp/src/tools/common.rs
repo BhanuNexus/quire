@@ -87,7 +87,9 @@ pub fn iso(ms: i64) -> String {
 }
 
 /// How every tool describes a time it takes (`docs/design/0.14-agent-tools.md` §3.2).
-pub const TIME_FORMATS: &str = "RFC 3339, YYYY-MM-DD, or a time back from now: 30m, 24h, 7d, 2w";
+pub const TIME_FORMATS: &str = "RFC 3339, YYYY-MM-DD (a UTC day), or a time back from now: 30m, 24h, 7d, 2w";
+/// What `until` accepts: [`TIME_FORMATS`], with a bare date meaning the end of that day.
+pub const UNTIL_FORMATS: &str = "As since; a date takes in that whole UTC day";
 
 /// Parse a time an agent sent ([`TIME_FORMATS`], or Unix milliseconds).
 ///
@@ -111,7 +113,7 @@ pub fn parse_time(s: &str, now_ms: i64) -> Result<i64, String> {
             Some('d') => 86_400_000,
             _ => 7 * 86_400_000,
         };
-        return Ok(now_ms - n * unit);
+        return n.checked_mul(unit).and_then(|back| now_ms.checked_sub(back)).ok_or_else(|| format!("`{s}` is too far back"));
     }
     if let Ok(d) = chrono::DateTime::parse_from_rfc3339(s) {
         return Ok(d.timestamp_millis());
@@ -166,6 +168,16 @@ pub fn time_any(a: &Value, keys: &[&str], now_ms: i64) -> Result<Option<i64>, To
     match pick(a, keys).and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()) {
         None => Ok(None),
         Some(t) => parse_time(t, now_ms).map(Some).map_err(|why| ToolOutput::error("invalid_args", format!("`{}`: {why}", keys[0]))),
+    }
+}
+
+/// [`time_any`] for the end of a range: a bare date (`YYYY-MM-DD`) takes in
+/// that whole UTC day, so `until: "2026-11-02"` includes the 2nd.
+pub fn until_any(a: &Value, keys: &[&str], now_ms: i64) -> Result<Option<i64>, ToolOutput> {
+    let day = pick(a, keys).and_then(Value::as_str).map(str::trim).and_then(quire_base::time::parse_ymd);
+    match day.and_then(|d| d.succ_opt()).and_then(|d| d.and_hms_opt(0, 0, 0)) {
+        Some(next) => Ok(Some(next.and_utc().timestamp_millis() - 1)),
+        None => time_any(a, keys, now_ms),
     }
 }
 
@@ -406,8 +418,26 @@ mod tests {
                     seen += 1;
                 }
             }
+            if props.get("until").is_some() {
+                assert_eq!(props["until"]["description"].as_str(), Some(UNTIL_FORMATS), "{}.until", t.spec().name);
+                seen += 1;
+            }
         }
-        assert!(seen >= 4, "{seen}");
+        assert!(seen >= 7, "{seen}");
+    }
+
+    /// Dates are UTC days; in `until` a date takes in that whole day.
+    #[test]
+    fn until_a_date_means_the_end_of_that_day() {
+        let now = 1_000_000_000;
+        let day = 1_793_577_600_000; // 2026-11-02T00:00:00Z
+        let until = |t: &str| until_any(&json!({"until": t}), &["until"], now).unwrap();
+        assert_eq!(until("2026-11-02"), Some(day + 86_400_000 - 1));
+        assert_eq!(until("2026-11-02T00:00:00Z"), Some(day), "a full time is that time");
+        assert_eq!(until("1793577600000"), Some(day));
+        assert_eq!(until("24h"), Some(now - 86_400_000));
+        assert_eq!(time_any(&json!({"since": "2026-11-02"}), &["since"], now).unwrap(), Some(day), "since: the start of the day");
+        assert!(until_any(&json!({"until": "soon"}), &["until"], now).is_err());
     }
 
     #[test]
@@ -427,6 +457,11 @@ mod tests {
             assert!(why.contains("no unit") && why.contains(&format!("{short}d")), "{why}");
         }
         assert!(parse_time("1793577600", now).unwrap_err().contains("Unix seconds"));
+        // Too far back to count is refused, not wrapped around.
+        for huge in ["99999999999999999d", "9223372036854775807m", "999999999999999w"] {
+            assert!(parse_time(huge, now).unwrap_err().contains("too far back"), "{huge}");
+        }
+        assert!(time_any(&json!({"since": "99999999999999999d"}), &["since"], now).is_err());
         assert_eq!(iso(1_793_577_600_000), "2026-11-02T00:00:00Z");
     }
 
