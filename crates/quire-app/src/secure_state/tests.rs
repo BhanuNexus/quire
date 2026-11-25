@@ -432,7 +432,7 @@ fn ai_off_applies_before_any_embedder() {
     let (_d, root) = vault_dir(&[("Plan.md", "# Plan\n"), (".quire/shared/agent-policy.toml", "format = 1\nai = \"off\"\n")]);
     let mut ws = Workspace::new(crate::Settings { embeddings: "endpoint".into(), ..crate::Settings::default() });
     ws.open_vault_deferred(&root).unwrap();
-    assert!(!ws.index().has_semantic_builder());
+    assert!(!ws.index().has_embedder());
     assert!(ws.chat.is_none());
 }
 

@@ -346,7 +346,7 @@ impl Workspace {
     pub(crate) fn apply_embedder(&self) {
         // 0.11: with AI off for the vault, no embedder at all (nothing is sent).
         if crate::secure_state::ai_off(self) {
-            self.index.set_semantic_builder(None);
+            self.index.set_embedder(None);
             return;
         }
         let cache_dir = self.vault_root().map(|r| r.join(".quire").join("cache"));
@@ -357,36 +357,36 @@ impl Workspace {
             && engine_installed()
             && let Some(setup) = setup(&self.settings)
         {
-            use quire_index::semantic::{SemanticIndex, VectorCache};
+            use quire_index::semantic::VectorCache;
             let engine = engine(&self.settings);
             let entry = entry.clone();
             let model = entry.id.clone();
-            let builder: quire_index::SemanticBuilder = Arc::new(move |chunks| {
+            let make: quire_index::EmbedderSetup = Arc::new(move || {
                 // Vectors are cached as f16 by the embedder itself.
                 let emb = LocalEmbedder::new(engine.clone(), &entry, &setup, cache_dir.as_deref());
-                SemanticIndex::try_with_cache(chunks, Box::new(emb), &mut VectorCache::in_memory(&model))
+                (Arc::new(emb) as Arc<dyn quire_index::semantic::Embedder>, VectorCache::in_memory(&model))
             });
-            self.index.set_semantic_builder(Some(builder));
+            self.index.set_embedder(Some(make));
             return;
         }
         if self.settings.embeddings == "endpoint" {
-            use quire_index::semantic::{SemanticIndex, VectorCache};
+            use quire_index::semantic::VectorCache;
             let base = embed_base_url(&self.settings);
             let model = self.settings.embed_model.clone();
             let key = if self.settings.ai_provider == "openai" { secrets::api_key(secrets::store().as_ref(), "openai") } else { None };
             let cache_path = cache_dir.map(|c| c.join("embeddings.bin"));
-            let builder: quire_index::SemanticBuilder = Arc::new(move |chunks| {
-                let mut cache = match &cache_path {
+            let make: quire_index::EmbedderSetup = Arc::new(move || {
+                let cache = match &cache_path {
                     Some(p) => VectorCache::open(p, &model),
                     None => VectorCache::in_memory(&model),
                 };
                 let emb = quire_intel::embed::EndpointEmbedder::new(&base, &model, key.clone());
-                SemanticIndex::try_with_cache(chunks, Box::new(emb), &mut cache)
+                (Arc::new(emb) as Arc<dyn quire_index::semantic::Embedder>, cache)
             });
-            self.index.set_semantic_builder(Some(builder));
+            self.index.set_embedder(Some(make));
             return;
         }
-        self.index.set_semantic_builder(None);
+        self.index.set_embedder(None);
     }
 
     pub fn save_api_key(&mut self, provider: &str, key: &str) -> Result<(), String> {

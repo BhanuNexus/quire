@@ -91,12 +91,12 @@ fn write_report(name: &str, report: &quire_mcp::eval::Report, args: &[String]) -
 }
 
 /// An index builder that embeds through an OpenAI-compatible `/v1/embeddings`.
-fn endpoint_builder(url: &str, model: &str) -> quire_app::index::SemanticBuilder {
-    use quire_app::index::semantic::{SemanticIndex, VectorCache};
+fn endpoint_builder(url: &str, model: &str) -> quire_app::index::EmbedderSetup {
+    use quire_app::index::semantic::{Embedder, VectorCache};
     let (url, model) = (url.to_string(), model.to_string());
-    std::sync::Arc::new(move |chunks| {
+    std::sync::Arc::new(move || {
         let emb = quire_app::intel::embed::EndpointEmbedder::new(&url, &model, None);
-        SemanticIndex::try_with_cache(chunks, Box::new(emb), &mut VectorCache::in_memory(&model))
+        (std::sync::Arc::new(emb) as std::sync::Arc<dyn Embedder>, VectorCache::in_memory(&model))
     })
 }
 

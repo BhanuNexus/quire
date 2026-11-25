@@ -353,7 +353,7 @@ fn range(v: &[f32]) -> Value {
 
 /// Run a suite at `k` and report. `semantic` replaces the built-in embedder
 /// (an endpoint embedder, for neural calibration).
-pub fn run_with(suite: &Suite, k: usize, semantic: Option<quire_app::index::SemanticBuilder>) -> Report {
+pub fn run_with(suite: &Suite, k: usize, semantic: Option<quire_app::index::EmbedderSetup>) -> Report {
     let files: Vec<(&str, &str)> = suite.notes.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
     let t0 = Instant::now();
     let vault = Vault::in_memory(&files);
@@ -364,7 +364,7 @@ pub fn run_with(suite: &Suite, k: usize, semantic: Option<quire_app::index::Sema
     };
     let srv = Server::with_config(vault, None, cfg);
     if let Some(b) = semantic {
-        srv.index().set_semantic_builder(Some(b));
+        srv.index().set_embedder(Some(b));
         srv.index().flush_semantic();
     }
     let index_ms = t0.elapsed().as_millis();

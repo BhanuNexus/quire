@@ -7,6 +7,7 @@
 //! Readers share the model through an `RwLock` and use [`IndexService::version`]
 //! to know when cached query results are stale.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 use std::thread::JoinHandle;
@@ -16,23 +17,46 @@ use quire_base::time::now_ms;
 use quire_vault::changes::{Delta, FileHash, Manifest};
 use quire_vault::{NotePath, Vault};
 
-use crate::chunk::chunk_note;
 use crate::fulltext::DocId;
 use crate::index::Index;
 use crate::index::SourceLoader;
 use crate::record::NoteRecord;
 use crate::scope::{FitSet, Scope, ScopeKey, ScopeRead, Scopes, Visible};
-use crate::semantic::{SemanticIndex, build_lsa_index};
+use crate::semantic::SemanticIndex;
 use crate::store::{Found, Store, Texts};
 
-/// Wait this long after the last change before rebuilding the semantic index.
+/// Wait this long after the last change before updating the semantic index.
 const SEMANTIC_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(700);
 
 /// Notes cut into passages under one read lock while the semantic index is built.
 const SEMANTIC_NOTES_PER_LOCK: usize = 256;
 
+/// The refit rule for the built-in LSA (`docs/design/0.14-index-startup.md` §3.3): a refit
+/// when passages added or changed since the last fit reach this share of all
+/// passages (and at least [`REFIT_MIN`]),
+const REFIT_SHARE: usize = 10;
+/// A handful, so a small vault refits too (Fable's review of I2a, S1: with
+/// 256 a vault under about 1,000 notes never met the 10 % rule).
+const REFIT_MIN: usize = 8;
+/// or when nothing changed for this long, something changed since the fit,
+const REFIT_IDLE: std::time::Duration = std::time::Duration::from_mins(10);
+/// and the fit is older than this.
+const REFIT_AGE: std::time::Duration = std::time::Duration::from_hours(6);
+/// How often the semantic worker looks at the idle rule.
+const REFIT_TICK: std::time::Duration = std::time::Duration::from_secs(30);
+
 enum SemMsg {
+    /// Build the whole index again (a load, another embedder).
     Rebuild,
+    /// Notes stored or changed: their rows are made again with the current model.
+    Changed(Vec<NotePath>),
+    /// Notes gone: their rows go.
+    Removed(Vec<NotePath>),
+    /// A folder was locked, or a note went into one: the model was fitted on
+    /// text now locked. It is marked tainted and refitted.
+    Taint,
+    /// Refit now (tests, and the person's "rebuild" action).
+    Refit,
     Flush(Sender<()>),
     Shutdown,
 }
@@ -94,19 +118,23 @@ struct Shared {
     notes: AtomicUsize,
     semantic_version: AtomicU64,
     semantic_busy: AtomicBool,
+    semantic_fits: AtomicU64,
     /// Notes read from disk and parsed by the last load.
     read: AtomicUsize,
 }
 
 type SharedSemantic = Arc<RwLock<Option<Arc<SemanticIndex>>>>;
 
-/// Builds a semantic index from passages; `Err` falls back to the built-in LSA.
-pub type SemanticBuilder = Arc<dyn Fn(Vec<crate::chunk::Chunk>) -> Result<SemanticIndex, String> + Send + Sync>;
+/// Makes the embedder to use instead of the built-in LSA, and its vector
+/// cache, on the semantic worker (so files are read there, not by the caller).
+pub type EmbedderSetup = Arc<dyn Fn() -> (Arc<dyn crate::semantic::Embedder>, crate::semantic::VectorCache) + Send + Sync>;
 
 #[derive(Default)]
 struct SemanticConfig {
-    builder: Option<SemanticBuilder>,
+    setup: Option<EmbedderSetup>,
     last_error: Option<String>,
+    /// Called before each full build (tests hold a fit back with it).
+    fit_hook: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 pub struct IndexService {
@@ -260,18 +288,40 @@ impl IndexService {
     }
 
     /// Use a different embedder (e.g. a neural endpoint) for the semantic
-    /// index, or `None` for the built-in LSA. Triggers a rebuild.
-    pub fn set_semantic_builder(&self, builder: Option<SemanticBuilder>) {
+    /// index, or `None` for the built-in LSA. Builds the index again in the
+    /// background; the previous one serves meanwhile. If the embedder fails,
+    /// the built-in LSA takes over ([`Self::semantic_error`] says why).
+    pub fn set_embedder(&self, setup: Option<EmbedderSetup>) {
         let mut c = self.sem_config.write().unwrap_or_else(std::sync::PoisonError::into_inner);
-        c.builder = builder;
+        c.setup = setup;
         c.last_error = None;
         drop(c);
         let _ = self.sem_tx.send(SemMsg::Rebuild);
     }
 
     /// Whether an embedder other than the built-in LSA is set.
-    pub fn has_semantic_builder(&self) -> bool {
-        self.sem_config.read().unwrap_or_else(std::sync::PoisonError::into_inner).builder.is_some()
+    pub fn has_embedder(&self) -> bool {
+        self.sem_config.read().unwrap_or_else(std::sync::PoisonError::into_inner).setup.is_some()
+    }
+
+    /// Refit the meaning model now, and wait for it (and anything queued
+    /// before). Saves never refit: the refit rule does, in the background
+    /// (`docs/design/0.14-index-startup.md` §3.3).
+    pub fn refit_semantic(&self) {
+        self.flush();
+        let _ = self.sem_tx.send(SemMsg::Refit);
+        self.flush_semantic();
+    }
+
+    /// How many full fits (builds) of the meaning model have finished.
+    pub fn semantic_fits(&self) -> u64 {
+        self.shared.semantic_fits.load(Ordering::Acquire)
+    }
+
+    /// Run `hook` before each full build of the meaning model (tests hold a fit back with it).
+    #[cfg(test)]
+    pub(crate) fn set_fit_hook(&self, hook: Option<Arc<dyn Fn() + Send + Sync>>) {
+        self.sem_config.write().unwrap_or_else(std::sync::PoisonError::into_inner).fit_hook = hook;
     }
 
     /// Why the configured embedder couldn't be used last time, if it failed.
@@ -317,7 +367,8 @@ impl IndexService {
         };
         // The meaning model only if every note it was fitted on is one this view may read. Under
         // the index's read lock: the worker can't change the notes or the fit set meanwhile.
-        let semantic = self.semantic().filter(|m| {
+        // A tainted model (fitted while a folder now locked was open) serves no view (B2).
+        let semantic = self.semantic().filter(|m| !m.is_tainted()).filter(|m| {
             let mut reg = lock();
             if !reg.fit.as_ref().is_some_and(|f| f.is_for(m, &ix)) {
                 // A model from before a load: what it was fitted on, against this build.
@@ -333,7 +384,7 @@ impl IndexService {
         self.scopes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
     }
 
-    /// Increments after each semantic rebuild.
+    /// Increments each time the meaning index changes (a fit, or a per-note update).
     pub fn semantic_version(&self) -> u64 {
         self.shared.semantic_version.load(Ordering::Acquire)
     }
@@ -525,6 +576,50 @@ fn file_ms(vault: &Vault, p: &NotePath) -> i64 {
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
+/// Notes parsed and stored at a time on a cold load: the parsed records of the whole vault
+/// (each holding its terms as text in two lists until stored) are never all in memory at
+/// once (Fable's review of I2a: that was most of a cold load's peak).
+const LOAD_BATCH: usize = 512;
+
+/// Store a batch of notes a cached load had to parse, and patch the agent
+/// views of this build for them (as the batch loop does for any note).
+fn catch_up(index: &RwLock<Index>, scopes: &Mutex<Scopes>, mut store: Option<&mut Store>, batch: Vec<Prepared>) {
+    let mut ix = index.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut touched: Vec<DocId> = Vec::new();
+    for item in batch {
+        let Prepared::Note(note, hash) = item else { continue };
+        let (rec, src, modified) = *note;
+        let path = rec.path.clone();
+        touched.extend(ix.doc_id(&path));
+        if let Some(s) = store.as_deref_mut() {
+            s.note(&path, hash.unwrap_or_else(|| FileHash::of(src.as_bytes())), modified);
+        }
+        ix.insert_record(rec, src);
+        ix.set_modified(&path, modified);
+        touched.extend(ix.doc_id(&path));
+    }
+    ix.recount();
+    if !touched.is_empty() {
+        touched.sort_unstable();
+        touched.dedup();
+        scopes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).patch(&ix, &touched, false);
+    }
+    ix.end_batch();
+}
+
+/// A new index of `paths`, parsed in parallel and stored [`LOAD_BATCH`] notes at a time.
+fn index_in_batches(vault: &Vault, paths: &[NotePath], shared: &Shared) -> Index {
+    let mut ix = Index::new();
+    for part in paths.chunks(LOAD_BATCH) {
+        for (rec, src, modified) in parse_parallel(vault, part, shared) {
+            let path = rec.path.clone();
+            ix.insert_record(rec, src);
+            ix.set_modified(&path, modified);
+        }
+    }
+    ix
+}
+
 fn parse_parallel(vault: &Vault, paths: &[NotePath], shared: &Shared) -> Vec<Parsed> {
     let threads = std::thread::available_parallelism().map_or(2, std::num::NonZero::get).clamp(1, 8);
     let chunk = paths.len().div_ceil(threads).max(1);
@@ -692,7 +787,7 @@ fn load_cached(
         None if scanned => Found { segments: Vec::new(), parse: notes.iter().map(|(p, _)| p.clone()).collect() },
         None => Found { segments: Vec::new(), parse: paths },
     };
-    let hashes: std::collections::HashMap<&NotePath, FileHash> = notes.iter().map(|(p, h)| (p, *h)).collect();
+    let hashes: HashMap<&NotePath, FileHash> = notes.iter().map(|(p, h)| (p, *h)).collect();
     let mut ix = Index::new();
     ix.set_link_config_quiet(link_config);
     let mut texts: Pending = Vec::new();
@@ -740,7 +835,7 @@ type Pending = Vec<(Arc<Texts>, Vec<(NotePath, std::ops::Range<usize>)>)>;
 /// demand (the segment last decoded is kept, as callers tend to ask for
 /// notes of one folder together).
 fn loader(texts: &Pending) -> SourceLoader {
-    let at: std::collections::HashMap<NotePath, (usize, std::ops::Range<usize>)> =
+    let at: HashMap<NotePath, (usize, std::ops::Range<usize>)> =
         texts.iter().enumerate().flat_map(|(i, (_, notes))| notes.iter().map(move |(p, r)| (p.clone(), (i, r.clone())))).collect();
     let segments: Vec<Arc<Texts>> = texts.iter().map(|(t, _)| Arc::clone(t)).collect();
     let last: Mutex<Option<(usize, Arc<Vec<u8>>)>> = Mutex::new(None);
@@ -828,9 +923,11 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                 from_scan.extend(delta_work(&d, loaded.as_ref(), Some(c), index));
             }
         }
-        let mut changed = !from_scan.is_empty();
+        let mut sem_taint = false;
+        let mut loaded_cached = false;
         let mut prepared: Vec<Prepared> = from_scan;
-        let mut reload: Option<Vec<Parsed>> = None;
+        // A whole new index (a load or a detach), built before the write lock.
+        let mut reload: Option<Index> = None;
         let mut shutdown = false;
         let mut waiters = Vec::new();
         let mut cache_waiters = Vec::new();
@@ -841,7 +938,6 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
         for msg in batch {
             match msg {
                 IndexMsg::Load(vault) => {
-                    changed = true;
                     detached = false;
                     cached = None;
                     loaded = Some(vault.clone());
@@ -851,13 +947,14 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                     shared.total.store(paths.len(), Ordering::Relaxed);
                     shared.indexed.store(0, Ordering::Relaxed);
                     shared.read.store(paths.len(), Ordering::Relaxed);
-                    reload = Some(parse_parallel(&vault, &paths, shared));
+                    reload = Some(index_in_batches(&vault, &paths, shared));
                     prepared.clear();
                 }
                 IndexMsg::LoadCached { vault, manifest } => {
-                    changed = true;
                     detached = false;
                     reload = None;
+                    // A vault loaded: the meaning index is built again (Fable's review of I2a, B1).
+                    loaded_cached = true;
                     prepared.clear();
                     loaded = Some(vault.clone());
                     let cfg = link_config.take().unwrap_or_else(|| crate::relations::LinkConfig::load(&vault));
@@ -870,16 +967,19 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                     }
                     parse.extend(failed);
                     shared.read.store(parse.len(), Ordering::Relaxed);
-                    // Catch up: the notes the cache didn't have, through the
-                    // per-note path; then one graph build for everything.
-                    prepared.extend(parse_hashed(&vault, &c.manifest, &parse, shared));
+                    // Catch up: the notes the cache didn't have (on a cold start, every note),
+                    // [`LOAD_BATCH`] at a time, each under a short write lock; then one graph
+                    // build for everything.
+                    for part in parse.chunks(LOAD_BATCH) {
+                        let batch = parse_hashed(&vault, &c.manifest, part, shared);
+                        catch_up(index, scopes, c.store.as_mut(), batch);
+                    }
                     cached = Some(c);
                     rebuild = true;
                 }
                 IndexMsg::Upsert { .. } | IndexMsg::Remove(_) | IndexMsg::UpsertAttachment(_) | IndexMsg::RemoveAttachment(_)
                     if detached => {}
                 IndexMsg::Detach => {
-                    changed = true;
                     detached = true;
                     // Dropped, not flushed: the store lets go of the lock and
                     // writes nothing more under the last vault.
@@ -889,11 +989,12 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                     shared.total.store(0, Ordering::Relaxed);
                     shared.indexed.store(0, Ordering::Relaxed);
                     // An empty index in place of the last vault's.
-                    reload = Some(Vec::new());
+                    reload = Some(Index::new());
                 }
                 IndexMsg::Upsert { path, source, hash } => {
-                    changed = true;
                     if loaded.as_ref().is_some_and(|v| v.locked_folder(&path).is_some()) {
+                        // A note moved into a locked folder: the model may hold its text.
+                        sem_taint = true;
                         prepared.push(Prepared::Remove(path));
                         continue;
                     }
@@ -914,7 +1015,6 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                     prepared.push(Prepared::Note(Box::new((NoteRecord::from_source(path, &source), source, now_ms())), hash));
                 }
                 IndexMsg::Remove(path) => {
-                    changed = true;
                     prepared.push(Prepared::Remove(path));
                 }
                 // Attachment text isn't in the semantic index yet: no rebuild.
@@ -932,6 +1032,8 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                     if let Some(s) = cached.as_mut().and_then(|c| c.store.as_mut()) {
                         s.purge();
                     }
+                    // A folder was locked: the meaning model was fitted on its text.
+                    sem_taint = true;
                 }
                 IndexMsg::FlushCache(reply) => cache_waiters.push(reply),
                 IndexMsg::Shutdown => shutdown = true,
@@ -942,6 +1044,9 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
         // link settings). An edit to notes already indexed patches it in
         // place, and attachment text leaves it alone.
         rebuild |= reload.is_some();
+        let reloaded = reload.is_some();
+        // The notes this batch stored or removed, for the meaning index (per note, not a refit).
+        let (mut sem_changed, mut sem_removed) = (std::collections::BTreeSet::new(), std::collections::BTreeSet::new());
         let mut patched: Vec<NotePath> = Vec::new();
         // Notes this batch takes out of the graph in place (their records from before).
         let mut unlinked: Vec<NoteRecord> = Vec::new();
@@ -952,16 +1057,11 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
         let mut store = cached.as_mut().and_then(|c| c.store.as_mut());
         {
             let mut ix = write();
-            if let Some(all) = reload {
+            if let Some(new) = reload {
                 let cfg = ix.link_config().clone();
-                *ix = Index::new();
+                *ix = new;
                 // Without a refresh: the one below builds the graph.
                 ix.set_link_config_quiet(link_config.take().unwrap_or(cfg));
-                for (rec, src, modified) in all {
-                    let path = rec.path.clone();
-                    ix.insert_record(rec, src);
-                    ix.set_modified(&path, modified);
-                }
                 ix.recount();
             }
             // The documents this batch changed, for the agent views.
@@ -972,6 +1072,8 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                     Prepared::Note(note, hash) => {
                         let (rec, src, modified) = *note;
                         let path = rec.path.clone();
+                        sem_removed.remove(&path);
+                        sem_changed.insert(path.clone());
                         touched.extend(ix.doc_id(&path));
                         let new = !ix.contains(&path);
                         if !rebuild && ix.graph_patchable(&rec) && (!new || own_keys(&rec)) {
@@ -987,6 +1089,8 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                         touched.extend(ix.doc_id(&path));
                     }
                     Prepared::Remove(path) => {
+                        sem_changed.remove(&path);
+                        sem_removed.insert(path.clone());
                         // A path that isn't indexed (a locked folder's note, a file that isn't a note) changes nothing.
                         if let Some(old) = ix.get(&path) {
                             if !rebuild && ix.graph_removable(&path) && own_keys(old) {
@@ -1047,8 +1151,18 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
         }
         shared.busy.store(false, Ordering::Relaxed);
         shared.version.fetch_add(1, Ordering::Release);
-        if changed {
+        if reloaded || loaded_cached {
             let _ = sem_tx.send(SemMsg::Rebuild);
+        } else {
+            if !sem_removed.is_empty() {
+                let _ = sem_tx.send(SemMsg::Removed(sem_removed.into_iter().collect()));
+            }
+            if !sem_changed.is_empty() {
+                let _ = sem_tx.send(SemMsg::Changed(sem_changed.into_iter().collect()));
+            }
+        }
+        if sem_taint {
+            let _ = sem_tx.send(SemMsg::Taint);
         }
         for w in waiters {
             let _ = w.send(());
@@ -1067,6 +1181,126 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
     }
 }
 
+/// The semantic worker's own state beside the published index.
+struct Sem {
+    /// Passages added or changed since the last fit.
+    since_fit: usize,
+    fitted_at: std::time::Instant,
+    last_change: std::time::Instant,
+    /// The embedder in use and its cache (`None`: the built-in LSA).
+    embedder: Option<(Arc<dyn crate::semantic::Embedder>, crate::semantic::VectorCache)>,
+}
+
+impl Sem {
+    fn new() -> Self {
+        let now = std::time::Instant::now();
+        Self { since_fit: 0, fitted_at: now, last_change: now, embedder: None }
+    }
+
+    /// Whether the refit rule says to refit (`docs/design/0.14-index-startup.md` §3.3).
+    fn refit_due(&self, live: usize, now: std::time::Instant) -> bool {
+        self.since_fit > 0
+            && (self.since_fit >= (live * REFIT_SHARE / 100).max(REFIT_MIN)
+                || (now.duration_since(self.last_change) >= REFIT_IDLE && now.duration_since(self.fitted_at) >= REFIT_AGE))
+    }
+}
+
+/// The refit rule on its own, for tests.
+#[cfg(test)]
+pub(crate) struct RefitProbe(Sem);
+
+#[cfg(test)]
+pub(crate) fn refit_probe(now: std::time::Instant) -> RefitProbe {
+    let mut s = Sem::new();
+    s.fitted_at = now;
+    s.last_change = now;
+    RefitProbe(s)
+}
+
+#[cfg(test)]
+impl RefitProbe {
+    pub(crate) fn since_fit(&mut self, n: usize) {
+        self.0.since_fit = n;
+    }
+    pub(crate) fn changed_at(&mut self, t: std::time::Instant) {
+        self.0.last_change = t;
+    }
+    pub(crate) fn due(&self, live: usize, now: std::time::Instant) -> bool {
+        self.0.refit_due(live, now)
+    }
+}
+
+/// The passages of `paths`, cut from the index's text a few hundred notes per short read lock.
+fn chunks_of(index: &RwLock<Index>, paths: &[NotePath]) -> Vec<crate::chunk::Chunk> {
+    let mut chunks = Vec::new();
+    for part in paths.chunks(SEMANTIC_NOTES_PER_LOCK) {
+        let ix = index.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+        for p in part {
+            if let Some(s) = ix.source(p) {
+                chunks.extend(crate::chunk::chunk_note(p, s));
+            }
+        }
+    }
+    chunks
+}
+
+/// Build the whole meaning index: fit the LSA on every passage, or embed
+/// them with the configured embedder (the LSA if that fails).
+fn build_full(index: &RwLock<Index>, cfg: &RwLock<SemanticConfig>, sem: &mut Sem, rebuild: bool) -> SemanticIndex {
+    let hook = cfg.read().unwrap_or_else(std::sync::PoisonError::into_inner).fit_hook.clone();
+    if let Some(h) = hook {
+        h();
+    }
+    // 0.13.1: passages are cut from the index's own text, a few hundred notes per
+    // short read lock, instead of from a copy of every note made first.
+    let paths = index.read().unwrap_or_else(std::sync::PoisonError::into_inner).paths();
+    let chunks = chunks_of(index, &paths);
+    if rebuild {
+        let setup = cfg.read().unwrap_or_else(std::sync::PoisonError::into_inner).setup.clone();
+        sem.embedder = setup.map(|s| s());
+    }
+    let built = match sem.embedder.as_mut() {
+        Some((e, cache)) => match SemanticIndex::try_with_cache(chunks.clone(), Arc::clone(e), cache) {
+            Ok(ix) => {
+                cfg.write().unwrap_or_else(std::sync::PoisonError::into_inner).last_error = None;
+                ix
+            }
+            Err(e) => {
+                cfg.write().unwrap_or_else(std::sync::PoisonError::into_inner).last_error = Some(e);
+                sem.embedder = None;
+                SemanticIndex::fit_lsa(chunks)
+            }
+        },
+        None => SemanticIndex::fit_lsa(chunks),
+    };
+    sem.since_fit = 0;
+    sem.fitted_at = std::time::Instant::now();
+    built
+}
+
+/// The rows of `changed` notes made again with the current model and those
+/// of `removed` dropped: no refit, on the save path's background
+/// (`docs/design/0.14-index-startup.md` §3.3). `None` if the embedder failed.
+fn update(
+    index: &RwLock<Index>,
+    cur: &SemanticIndex,
+    sem: &mut Sem,
+    changed: &[NotePath],
+    removed: &[NotePath],
+) -> Result<SemanticIndex, String> {
+    let gone: Vec<NotePath> = changed.iter().chain(removed).cloned().collect();
+    let chunks = chunks_of(index, changed);
+    let added = chunks.len();
+    let cache = sem.embedder.as_mut().map(|(_, c)| c);
+    let (mut next, _) = cur.updated(&gone, chunks, cache)?;
+    if let Some(compact) = next.compacted() {
+        next = compact;
+    }
+    sem.since_fit += added;
+    sem.last_change = std::time::Instant::now();
+    Ok(next)
+}
+
 fn run_semantic(
     rx: &Receiver<SemMsg>,
     index: &RwLock<Index>,
@@ -1075,67 +1309,120 @@ fn run_semantic(
     cfg: &RwLock<SemanticConfig>,
     scopes: &Mutex<Scopes>,
 ) {
-    let mut waiters: Vec<Sender<()>> = Vec::new();
-    while let Ok(msg) = rx.recv() {
-        match msg {
-            SemMsg::Shutdown => return,
-            SemMsg::Flush(r) => {
-                let _ = r.send(());
-                continue;
-            }
-            SemMsg::Rebuild => {}
-        }
-        // Debounce: keep absorbing rebuild requests until things go quiet.
-        loop {
-            match rx.recv_timeout(SEMANTIC_DEBOUNCE) {
-                Ok(SemMsg::Rebuild) => {}
-                Ok(SemMsg::Flush(r)) => {
-                    waiters.push(r);
-                    break;
-                }
-                Ok(SemMsg::Shutdown) => return,
-                Err(_) => break,
-            }
-        }
-        shared.semantic_busy.store(true, Ordering::Relaxed);
-        // 0.13.1: passages are cut from the index's own text, a few hundred notes per
-        // short read lock, instead of from a copy of every note made first (the copy,
-        // as big as the vault, was freed after but stayed in the process's memory).
-        let paths = index.read().unwrap_or_else(std::sync::PoisonError::into_inner).paths();
-        let mut chunks: Vec<crate::chunk::Chunk> = Vec::new();
-        for part in paths.chunks(SEMANTIC_NOTES_PER_LOCK) {
-            let ix = index.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-            for p in part {
-                if let Some(s) = ix.source(p) {
-                    chunks.extend(chunk_note(p, s));
-                }
-            }
-        }
-        let builder = cfg.read().unwrap_or_else(std::sync::PoisonError::into_inner).builder.clone();
-        let built = match builder {
-            Some(b) => match b(chunks.clone()) {
-                Ok(ix) => {
-                    cfg.write().unwrap_or_else(std::sync::PoisonError::into_inner).last_error = None;
-                    ix
-                }
-                Err(e) => {
-                    cfg.write().unwrap_or_else(std::sync::PoisonError::into_inner).last_error = Some(e);
-                    build_lsa_index(chunks)
-                }
-            },
-            None => build_lsa_index(chunks),
-        };
-        let built = Arc::new(built);
+    let mut sem = Sem::new();
+    let current = || out.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    // Publish `next`: with its fit set when it is a fit (a per-note update shares the fit's).
+    let publish = |next: SemanticIndex, fit: bool| {
+        let next = Arc::new(next);
         {
             // The model and what it was fitted on, together, while the worker can't change the notes.
             let ix = index.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-            let fit = FitSet::of(&built, &ix);
-            *out.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(built);
-            scopes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).fit = Some(fit);
+            let set = fit.then(|| FitSet::of(&next, &ix));
+            *out.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(next);
+            if let Some(set) = set {
+                scopes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).fit = Some(set);
+            }
+        }
+        if fit {
+            shared.semantic_fits.fetch_add(1, Ordering::Release);
+        }
+        shared.semantic_version.fetch_add(1, Ordering::Release);
+    };
+    loop {
+        // Waiting: for a message, or to look at the idle rule now and then.
+        let first = match rx.recv_timeout(REFIT_TICK) {
+            Ok(m) => Some(m),
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => None,
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return,
+        };
+        let (mut rebuild, mut refit, mut taint) = (false, false, false);
+        let (mut changed, mut removed) = (std::collections::BTreeSet::new(), std::collections::BTreeSet::new());
+        let mut waiters: Vec<Sender<()>> = Vec::new();
+        let mut take = |m: SemMsg, waiters: &mut Vec<Sender<()>>| -> bool {
+            match m {
+                SemMsg::Shutdown => return false,
+                SemMsg::Flush(r) => waiters.push(r),
+                SemMsg::Rebuild => rebuild = true,
+                SemMsg::Refit => refit = true,
+                SemMsg::Taint => {
+                    taint = true;
+                    refit = true;
+                }
+                SemMsg::Changed(ps) => {
+                    for p in ps {
+                        removed.remove(&p);
+                        changed.insert(p);
+                    }
+                }
+                SemMsg::Removed(ps) => {
+                    for p in ps {
+                        changed.remove(&p);
+                        removed.insert(p);
+                    }
+                }
+            }
+            true
+        };
+        if let Some(m) = first {
+            if !take(m, &mut waiters) {
+                return;
+            }
+            // Debounce: keep absorbing until things go quiet, or someone waits.
+            while waiters.is_empty() {
+                match rx.recv_timeout(SEMANTIC_DEBOUNCE) {
+                    Ok(m) => {
+                        if !take(m, &mut waiters) {
+                            return;
+                        }
+                    }
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => break,
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return,
+                }
+            }
+            // Whatever else is queued already (a flush right behind the changes).
+            for m in rx.try_iter() {
+                if !take(m, &mut waiters) {
+                    return;
+                }
+            }
+        }
+        let (changed, removed): (Vec<NotePath>, Vec<NotePath>) = (changed.into_iter().collect(), removed.into_iter().collect());
+        shared.semantic_busy.store(true, Ordering::Relaxed);
+        let cur = current();
+        if rebuild || cur.is_none() && (refit || !changed.is_empty() || !removed.is_empty()) {
+            let built = build_full(index, cfg, &mut sem, true);
+            publish(built, true);
+        } else if let Some(cur) = cur {
+            let mut cur = cur;
+            if taint && !cur.is_tainted() {
+                let t = cur.tainted();
+                publish(t, false);
+                cur = current().unwrap_or(cur);
+            }
+            if !changed.is_empty() || !removed.is_empty() {
+                match update(index, &cur, &mut sem, &changed, &removed) {
+                    Ok(next) => {
+                        publish(next, false);
+                        cur = current().unwrap_or(cur);
+                    }
+                    Err(e) => {
+                        // The embedder failed: the built-in LSA takes over.
+                        cfg.write().unwrap_or_else(std::sync::PoisonError::into_inner).last_error = Some(e);
+                        sem.embedder = None;
+                        let built = build_full(index, cfg, &mut sem, false);
+                        publish(built, true);
+                        cur = current().unwrap_or(cur);
+                    }
+                }
+            }
+            // Asked for, or due by the rule (only the built-in LSA is fitted on the vault).
+            if refit || cur.is_lsa() && sem.refit_due(cur.len(), std::time::Instant::now()) {
+                let built = build_full(index, cfg, &mut sem, false);
+                publish(built, true);
+            }
         }
         shared.semantic_busy.store(false, Ordering::Relaxed);
-        shared.semantic_version.fetch_add(1, Ordering::Release);
-        for w in std::mem::take(&mut waiters) {
+        for w in waiters {
             let _ = w.send(());
         }
     }
@@ -1168,8 +1455,8 @@ mod tests {
         drop(ix);
         svc.flush_semantic();
         let sem = svc.semantic().expect("semantic index built");
-        assert!(sem.chunks.iter().all(|c| c.path.as_str() != "A.md"));
-        assert_eq!(svc.semantic_version(), 1);
+        assert!(sem.passages().all(|(_, p)| p.path.as_str() != "A.md"));
+        assert_eq!(svc.semantic_fits(), 1, "edits after the load update rows, they don't refit");
     }
 
     /// 0.13.1: an edit patches the graph, a new note or new aliases rebuild it,

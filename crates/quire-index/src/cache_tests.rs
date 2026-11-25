@@ -824,3 +824,53 @@ fn a_reader_never_purges_the_writers_files_at_load() {
     let _ = Store::open(&v).expect("on disk").load(&[], 1);
     assert!(segments(&v).0.is_empty());
 }
+
+/// The notes the meaning index has rows for, and those with passages.
+fn meaning_paths(svc: &IndexService) -> (std::collections::BTreeSet<NotePath>, std::collections::BTreeSet<NotePath>) {
+    let sem = svc.semantic().expect("a meaning index after a load");
+    let rows = sem.passages().map(|(_, p)| p.path.clone()).collect();
+    let ix = svc.read();
+    let want = ix.paths().into_iter().filter(|p| !crate::chunk::chunk_note(p, ix.source(p).unwrap_or_default()).is_empty()).collect();
+    (rows, want)
+}
+
+/// Fable's review of I2a, B1: a start from the cache with nothing changed
+/// builds the meaning index (it used to stay empty until a note changed).
+#[test]
+fn a_warm_start_builds_the_meaning_index() {
+    let dir = tempfile::tempdir().expect("temp");
+    let v = vault_of(dir.path(), 9);
+    let first = service(&v);
+    first.flush_cache();
+    drop(first);
+    let svc = service(&v);
+    svc.flush_semantic();
+    let (rows, want) = meaning_paths(&svc);
+    assert!(!want.is_empty());
+    assert_eq!(rows, want, "a row for every note with a passage");
+}
+
+/// B1: a cached reload drops the rows of notes that went, and a switch to
+/// another vault keeps no row of the last one.
+#[test]
+fn a_cached_reload_and_a_vault_switch_rebuild_the_meaning_index() {
+    let dir = tempfile::tempdir().expect("temp");
+    let v = vault_of(dir.path(), 9);
+    let svc = service(&v);
+    svc.flush_semantic();
+    svc.flush_cache();
+    std::fs::remove_file(dir.path().join("F1/N4.md")).expect("remove");
+    svc.load_cached(v.clone(), Manifest::open(&v));
+    svc.flush_semantic();
+    let (rows, want) = meaning_paths(&svc);
+    assert!(!rows.contains(&np("F1/N4.md")), "the removed note's rows went");
+    assert_eq!(rows, want);
+    let other = tempfile::tempdir().expect("temp");
+    put(other.path(), "Elsewhere/Only.md", "# Only\n\nThe other vault has its own words about gardens and tomatoes.\n");
+    let w = Vault::open_local(other.path()).expect("vault");
+    svc.load_cached(w.clone(), Manifest::open(&w));
+    svc.flush_semantic();
+    let (rows, want) = meaning_paths(&svc);
+    assert_eq!(rows, want, "only the new vault's notes");
+    assert!(rows.iter().all(|p| p.as_str().starts_with("Elsewhere/")), "{rows:?}");
+}

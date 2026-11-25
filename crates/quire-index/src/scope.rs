@@ -29,7 +29,7 @@
 //! on is one it may read (`FitSet`;
 //! `docs/design/0.14-agent-index.md` §3.11).
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use quire_vault::NotePath;
 
@@ -154,6 +154,36 @@ pub struct Scope {
     /// until then), and whether an attachment page was one.
     unsure: Vec<DocId>,
     unsure_pages: bool,
+    /// The last answer of [`Self::may_use`], and for which fit set: each
+    /// agent search would otherwise ask the predicate about every fitted note
+    /// that left (up to three storage calls per folder; Fable's review, F2).
+    verdict: Verdict,
+}
+
+/// A cached `may_use` answer, keyed by the fit set's identity. A copy of a
+/// view starts without one; changing the view's members clears it.
+#[derive(Default)]
+struct Verdict(Mutex<Option<(FitKey, bool)>>);
+
+impl Clone for Verdict {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl Verdict {
+    fn clear(&mut self) {
+        *self.0.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+}
+
+/// What a fit set's answer depends on: its fitted list, its build, and how
+/// many fitted notes have left (they only ever grow in number).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FitKey {
+    fitted: usize,
+    build: u64,
+    ghosts: usize,
 }
 
 impl std::fmt::Debug for Scope {
@@ -182,6 +212,7 @@ impl Scope {
             pages: DocStats::default(),
             unsure: Vec::new(),
             unsure_pages: false,
+            verdict: Verdict::default(),
         };
         let ids: Vec<DocId> = (0..ix.fulltext().doc_slots()).filter_map(|i| u32::try_from(i).ok().map(DocId)).collect();
         s.patch_notes(ix, &ids, true);
@@ -211,7 +242,17 @@ impl Scope {
     /// Whether the meaning model `fit` describes may serve this view: every
     /// document it was fitted on is one the view may read (the frame's rule).
     pub(crate) fn may_use(&self, fit: &FitSet) -> bool {
-        fit.ids.iter().all(|id| self.notes.contains(*id)) && fit.ghosts.iter().all(|p| (self.visible)(p, &[], true).unwrap_or(false))
+        let key = fit.key();
+        let mut cached = self.verdict.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((k, yes)) = *cached
+            && k == key
+        {
+            return yes;
+        }
+        let yes =
+            fit.ids.iter().all(|id| self.notes.contains(*id)) && fit.ghosts.iter().all(|p| (self.visible)(p, &[], true).unwrap_or(false));
+        *cached = Some((key, yes));
+        yes
     }
 
     /// What note document `id` is to this view and its length; `None` when
@@ -227,6 +268,7 @@ impl Scope {
     /// removed since the view last saw it). `storage`: the predicate may
     /// read the vault (not under the index's write lock).
     pub(crate) fn patch_notes(&mut self, ix: &Index, ids: &[DocId], storage: bool) {
+        self.verdict.clear();
         for id in ids {
             self.unsure.retain(|u| u != id);
             if let Some((slot, len)) = self.note_slot(ix, *id, storage) {
@@ -240,6 +282,7 @@ impl Scope {
 
     /// Count the attachment pages again (attachment text changes rarely).
     pub(crate) fn rebuild_pages(&mut self, ix: &Index, storage: bool) {
+        self.verdict.clear();
         let at = ix.attachment_fulltext();
         let mut pages = DocStats::default();
         self.unsure_pages = false;
@@ -365,8 +408,9 @@ impl Index {
 /// another build the set is made again from the model's own passages.
 #[derive(Debug)]
 pub(crate) struct FitSet {
-    /// The model this describes (compared by pointer, kept alive by nothing).
-    model: std::sync::Weak<crate::semantic::SemanticIndex>,
+    /// The fitted list this describes (compared by pointer: per-note updates
+    /// share it with the fit they came from).
+    fitted: Arc<[NotePath]>,
     build: u64,
     /// Fitted notes still in the index, by id.
     ids: Vec<DocId>,
@@ -375,25 +419,29 @@ pub(crate) struct FitSet {
 }
 
 impl FitSet {
-    /// The notes `model` was fitted on (those with a passage), against `ix`.
+    /// The notes `model` was fitted on, against `ix`, from the model's own
+    /// list of what its fit read (`SemanticIndex::fitted`): its rows alone
+    /// would miss a fitted note whose rows a per-note update dropped (Fable's
+    /// review, F1).
     pub(crate) fn of(model: &Arc<crate::semantic::SemanticIndex>, ix: &Index) -> Self {
-        let mut paths: Vec<&NotePath> = model.chunks.iter().map(|c| &c.path).collect();
-        paths.sort_unstable();
-        paths.dedup();
         let (mut ids, mut ghosts) = (Vec::new(), Vec::new());
-        for p in paths {
+        for p in model.fitted() {
             match ix.doc_id(p) {
                 Some(id) => ids.push(id),
                 None => ghosts.push(p.clone()),
             }
         }
         ids.sort_unstable();
-        Self { model: Arc::downgrade(model), build: ix.build(), ids, ghosts }
+        Self { fitted: model.fitted_arc(), build: ix.build(), ids, ghosts }
     }
 
     /// Whether this describes `model` against `ix`'s build.
     pub(crate) fn is_for(&self, model: &Arc<crate::semantic::SemanticIndex>, ix: &Index) -> bool {
-        self.build == ix.build() && std::sync::Weak::ptr_eq(&self.model, &Arc::downgrade(model))
+        self.build == ix.build() && Arc::ptr_eq(&self.fitted, &model.fitted_arc())
+    }
+
+    fn key(&self) -> FitKey {
+        FitKey { fitted: Arc::as_ptr(&self.fitted).cast::<NotePath>() as usize, build: self.build, ghosts: self.ghosts.len() }
     }
 
     /// Note document `id` (at `path`) leaving the index, under its write lock.

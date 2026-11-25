@@ -846,7 +846,7 @@ impl Workspace {
             self.assistant = crate::ai::make_assistant(&local);
             self.chat = None;
             self.chat_generation += 1;
-            self.index.set_semantic_builder(None);
+            self.index.set_embedder(None);
             self.refresh_job_chat();
             self.notify(NoticeLevel::Info, "AI is off for this vault: no agent or AI provider can use it.");
         } else {

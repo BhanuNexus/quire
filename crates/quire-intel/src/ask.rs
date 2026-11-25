@@ -201,8 +201,14 @@ fn retrieve_with(rd: &Reader<'_, '_>, semantic: Option<&SemanticIndex>, question
 
     if let Some(sem) = semantic {
         for (ci, sim) in sem.search_where(question, 24, keep) {
-            let c = &sem.chunks[ci];
-            cand.insert((c.path.clone(), c.range.start), (c.range.end, c.heading.clone(), c.text.clone(), sim, sim));
+            // The index keeps no passage text: it is cut again from the note.
+            let Some(c) = sem.passage(ci) else { continue };
+            let Some(text) =
+                (rd.source)(&c.path).and_then(|src| quire_index::chunk::passage_text(&c.path, c.heading.as_deref(), src, c.range.clone()))
+            else {
+                continue;
+            };
+            cand.insert((c.path.clone(), c.range.start), (c.range.end, c.heading.as_deref().map(str::to_string), text, sim, sim));
         }
     }
 

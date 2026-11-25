@@ -81,12 +81,14 @@ impl IndexService {
             let text_query: String = q.terms.iter().chain(q.prefix.iter()).cloned().collect::<Vec<_>>().join(" ");
             let mut seen: HashMap<NotePath, usize> = HashMap::new();
             for (ci, sim) in sem.search_where(&text_query, 80, keep) {
-                let c = &sem.chunks[ci];
+                let Some(c) = sem.passage(ci) else { continue };
                 let Some(rec) = ix.get(&c.path) else { continue };
                 if !q.tags.iter().all(|t| rec.has_tag(t)) {
                     continue;
                 }
-                let folded = crate::tokenize::fold_str(&c.text);
+                // The index may be a moment ahead of the rows: a passage no longer in its note is skipped.
+                let Some(text) = sem.passage_text(ci, &ix) else { continue };
+                let folded = crate::tokenize::fold_str(&text);
                 if q.exclude.iter().any(|x| folded.contains(x.as_str())) {
                     continue;
                 }
@@ -100,11 +102,11 @@ impl IndexService {
                 match fused.get_mut(&c.path) {
                     Some(hit) => {
                         hit.score += score;
-                        hit.heading.clone_from(&c.heading);
+                        hit.heading = c.heading.as_deref().map(str::to_string);
                         hit.offset = Some(c.range.start);
                     }
                     None if sim >= MEANING_THRESHOLD => {
-                        let (snip, hl) = snippet(&passage_snippet(&c.text, 400), &q.highlight_terms(), 140);
+                        let (snip, hl) = snippet(&passage_snippet(&text, 400), &q.highlight_terms(), 140);
                         fused.insert(
                             c.path.clone(),
                             HybridHit {
@@ -113,7 +115,7 @@ impl IndexService {
                                 score,
                                 snippet: snip,
                                 highlights: hl,
-                                heading: c.heading.clone(),
+                                heading: c.heading.as_deref().map(str::to_string),
                                 offset: Some(c.range.start),
                                 by_meaning: true,
                             },

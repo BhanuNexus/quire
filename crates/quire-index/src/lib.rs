@@ -34,7 +34,7 @@ mod terms;
 pub mod tokenize;
 pub mod views;
 
-pub use actor::{IndexMsg, IndexService, IndexStatus, Scoped, SemanticBuilder};
+pub use actor::{EmbedderSetup, IndexMsg, IndexService, IndexStatus, Scoped};
 pub use attach::{AttachmentKind, AttachmentText, TextSource};
 pub use fulltext::{DocId, FullText, Query, SearchHit};
 pub use fuzzy::QuickOpenHit;
