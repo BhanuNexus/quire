@@ -576,6 +576,50 @@ fn file_ms(vault: &Vault, p: &NotePath) -> i64 {
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
+/// Notes parsed and stored at a time on a cold load: the parsed records of the whole vault
+/// (each holding its terms as text in two lists until stored) are never all in memory at
+/// once (Fable's review of I2a: that was most of a cold load's peak).
+const LOAD_BATCH: usize = 512;
+
+/// Store a batch of notes a cached load had to parse, and patch the agent
+/// views of this build for them (as the batch loop does for any note).
+fn catch_up(index: &RwLock<Index>, scopes: &Mutex<Scopes>, mut store: Option<&mut Store>, batch: Vec<Prepared>) {
+    let mut ix = index.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut touched: Vec<DocId> = Vec::new();
+    for item in batch {
+        let Prepared::Note(note, hash) = item else { continue };
+        let (rec, src, modified) = *note;
+        let path = rec.path.clone();
+        touched.extend(ix.doc_id(&path));
+        if let Some(s) = store.as_deref_mut() {
+            s.note(&path, hash.unwrap_or_else(|| FileHash::of(src.as_bytes())), modified);
+        }
+        ix.insert_record(rec, src);
+        ix.set_modified(&path, modified);
+        touched.extend(ix.doc_id(&path));
+    }
+    ix.recount();
+    if !touched.is_empty() {
+        touched.sort_unstable();
+        touched.dedup();
+        scopes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).patch(&ix, &touched, false);
+    }
+    ix.end_batch();
+}
+
+/// A new index of `paths`, parsed in parallel and stored [`LOAD_BATCH`] notes at a time.
+fn index_in_batches(vault: &Vault, paths: &[NotePath], shared: &Shared) -> Index {
+    let mut ix = Index::new();
+    for part in paths.chunks(LOAD_BATCH) {
+        for (rec, src, modified) in parse_parallel(vault, part, shared) {
+            let path = rec.path.clone();
+            ix.insert_record(rec, src);
+            ix.set_modified(&path, modified);
+        }
+    }
+    ix
+}
+
 fn parse_parallel(vault: &Vault, paths: &[NotePath], shared: &Shared) -> Vec<Parsed> {
     let threads = std::thread::available_parallelism().map_or(2, std::num::NonZero::get).clamp(1, 8);
     let chunk = paths.len().div_ceil(threads).max(1);
@@ -882,7 +926,8 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
         let mut sem_taint = false;
         let mut loaded_cached = false;
         let mut prepared: Vec<Prepared> = from_scan;
-        let mut reload: Option<Vec<Parsed>> = None;
+        // A whole new index (a load or a detach), built before the write lock.
+        let mut reload: Option<Index> = None;
         let mut shutdown = false;
         let mut waiters = Vec::new();
         let mut cache_waiters = Vec::new();
@@ -902,7 +947,7 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                     shared.total.store(paths.len(), Ordering::Relaxed);
                     shared.indexed.store(0, Ordering::Relaxed);
                     shared.read.store(paths.len(), Ordering::Relaxed);
-                    reload = Some(parse_parallel(&vault, &paths, shared));
+                    reload = Some(index_in_batches(&vault, &paths, shared));
                     prepared.clear();
                 }
                 IndexMsg::LoadCached { vault, manifest } => {
@@ -922,9 +967,13 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                     }
                     parse.extend(failed);
                     shared.read.store(parse.len(), Ordering::Relaxed);
-                    // Catch up: the notes the cache didn't have, through the
-                    // per-note path; then one graph build for everything.
-                    prepared.extend(parse_hashed(&vault, &c.manifest, &parse, shared));
+                    // Catch up: the notes the cache didn't have (on a cold start, every note),
+                    // [`LOAD_BATCH`] at a time, each under a short write lock; then one graph
+                    // build for everything.
+                    for part in parse.chunks(LOAD_BATCH) {
+                        let batch = parse_hashed(&vault, &c.manifest, part, shared);
+                        catch_up(index, scopes, c.store.as_mut(), batch);
+                    }
                     cached = Some(c);
                     rebuild = true;
                 }
@@ -940,7 +989,7 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                     shared.total.store(0, Ordering::Relaxed);
                     shared.indexed.store(0, Ordering::Relaxed);
                     // An empty index in place of the last vault's.
-                    reload = Some(Vec::new());
+                    reload = Some(Index::new());
                 }
                 IndexMsg::Upsert { path, source, hash } => {
                     if loaded.as_ref().is_some_and(|v| v.locked_folder(&path).is_some()) {
@@ -1008,16 +1057,11 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
         let mut store = cached.as_mut().and_then(|c| c.store.as_mut());
         {
             let mut ix = write();
-            if let Some(all) = reload {
+            if let Some(new) = reload {
                 let cfg = ix.link_config().clone();
-                *ix = Index::new();
+                *ix = new;
                 // Without a refresh: the one below builds the graph.
                 ix.set_link_config_quiet(link_config.take().unwrap_or(cfg));
-                for (rec, src, modified) in all {
-                    let path = rec.path.clone();
-                    ix.insert_record(rec, src);
-                    ix.set_modified(&path, modified);
-                }
                 ix.recount();
             }
             // The documents this batch changed, for the agent views.
