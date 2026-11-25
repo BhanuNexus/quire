@@ -178,17 +178,20 @@ impl Scope {
     /// The view of `ix` for `visible`: one call of it per note and per
     /// attachment, pure (no file is read).
     pub fn build(ix: &Index, visible: Visible) -> Self {
-        Self::build_at(ix, visible, 0)
+        Self::build_at(ix, visible, 0, None)
     }
 
-    /// [`Self::build`], with `fits` meaning-model fits started so far.
-    pub(crate) fn build_at(ix: &Index, visible: Visible, fits: u64) -> Self {
+    /// [`Self::build`], with `fits` meaning-model fits started so far, and
+    /// `removed` the fits started when a document last left the index (if
+    /// one did): the view can't tell whether it would have hidden it, so it
+    /// starts marked as of then (Fable's re-check, N1).
+    pub(crate) fn build_at(ix: &Index, visible: Visible, fits: u64, removed: Option<u64>) -> Self {
         let mut s = Self {
             visible,
             build: ix.build(),
             notes: DocStats::default(),
             pages: DocStats::default(),
-            hid_at: None,
+            hid_at: removed,
             unsure: Vec::new(),
             unsure_pages: false,
         };

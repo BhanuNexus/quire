@@ -99,6 +99,10 @@ struct Shared {
     semantic_started: AtomicU64,
     /// The number of the fit that made the model in use; written with the model, under its lock.
     semantic_fit: AtomicU64,
+    /// Fits started when a document last left the index (a removal, a load,
+    /// a detach), plus one; 0 for never. A view built later starts with it
+    /// as its mark (Fable's re-check, N1).
+    removed_mark: AtomicU64,
     /// Notes read from disk and parsed by the last load.
     read: AtomicUsize,
 }
@@ -322,7 +326,10 @@ impl IndexService {
         let scope = if let Some(s) = found {
             s
         } else {
-            let built = Arc::new(Scope::build_at(&ix, visible, fits));
+            // A document removed since the model's fit may be in it, and this view can't tell
+            // whether it hid it: it starts marked as of that removal.
+            let removed = self.shared.removed_mark.load(Ordering::SeqCst).checked_sub(1);
+            let built = Arc::new(Scope::build_at(&ix, visible, fits, removed));
             lock().insert(key, built)
         };
         let semantic = semantic.filter(|_| scope.meaning_from(fit));
@@ -725,7 +732,12 @@ fn load_cached(
     ix.recount();
     ix.end_batch();
     shared.notes.store(ix.len(), Ordering::Relaxed);
-    *index.write().unwrap_or_else(std::sync::PoisonError::into_inner) = ix;
+    {
+        let mut w = index.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *w = ix;
+        // Under the write lock that put the new vault in (the last vault's documents left).
+        mark_removal(shared);
+    }
     // Keyword search, quick open, tags, tasks and views are complete now.
     shared.version.fetch_add(1, Ordering::Release);
     (Cached { manifest, deltas, store }, found.parse, texts)
@@ -940,6 +952,7 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
         // link settings). An edit to notes already indexed patches it in
         // place, and attachment text leaves it alone.
         rebuild |= reload.is_some();
+        let reloaded = reload.is_some();
         let mut patched: Vec<NotePath> = Vec::new();
         let mut store = cached.as_mut().and_then(|c| c.store.as_mut());
         {
@@ -959,6 +972,8 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
             // The documents this batch changed, for the agent views.
             let mut touched: Vec<DocId> = Vec::new();
             let mut pages_changed = false;
+            // A document left the index in this batch (or the whole last vault did).
+            let mut removed = reloaded;
             for item in prepared {
                 match item {
                     Prepared::Note(note, hash) => {
@@ -979,6 +994,7 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                     }
                     Prepared::Remove(path) => {
                         // A path that isn't indexed (a locked folder's note, a file that isn't a note) changes nothing.
+                        removed |= ix.contains(&path);
                         rebuild |= ix.contains(&path);
                         touched.extend(ix.doc_id(&path));
                         ix.remove_no_refresh(&path);
@@ -992,6 +1008,7 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                     }
                     Prepared::RemoveAttachment(path) => {
                         pages_changed = true;
+                        removed = true;
                         ix.remove_attachment(&path);
                     }
                 }
@@ -1015,6 +1032,9 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                     pages_changed,
                     shared.semantic_started.load(Ordering::SeqCst),
                 );
+            }
+            if removed {
+                mark_removal(shared);
             }
             ix.end_batch();
             if let Some(s) = store {
@@ -1049,6 +1069,13 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
             break;
         }
     }
+}
+
+/// Note, under the index's write lock, that a document has left the index:
+/// fits started from now on read the index without it.
+fn mark_removal(shared: &Shared) {
+    let fits = shared.semantic_started.load(Ordering::SeqCst);
+    shared.removed_mark.fetch_max(fits + 1, Ordering::SeqCst);
 }
 
 fn run_semantic(rx: &Receiver<SemMsg>, index: &RwLock<Index>, shared: &Shared, out: &SharedSemantic, cfg: &RwLock<SemanticConfig>) {

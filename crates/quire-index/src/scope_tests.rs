@@ -359,6 +359,8 @@ fn meaning_comes_back_only_after_a_refit() {
     let key = [3u8; 32];
     assert!(svc.semantic().is_some());
     assert!(svc.scoped(key, Arc::clone(&visible)).semantic().is_none(), "a view that hides a note has no meaning");
+    let everything = crate::scope::visible(|_: &NotePath, _: &[String]| true);
+    assert!(svc.scoped([4u8; 32], Arc::clone(&everything)).semantic().is_some());
     // The hidden note goes: the view hides nothing, but the model still holds it.
     svc.remove(np("Private/s.md"));
     svc.flush();
@@ -369,8 +371,9 @@ fn meaning_comes_back_only_after_a_refit() {
         assert!(sc.semantic().is_none(), "the model was fitted with the hidden note");
         assert!(sc.search_sections("automobile", &SearchFilters::default(), 5).iter().all(|h| !h.by_meaning));
     }
-    // A caller who never hid anything keeps meaning search meanwhile.
-    assert!(svc.scoped([4u8; 32], crate::scope::visible(|_: &NotePath, _: &[String]| true)).semantic().is_some());
+    // A caller whose view saw every note before the removal keeps meaning search meanwhile (a view
+    // built only now could not tell, and waits: `a_view_first_built_after_a_removal_waits_for_a_refit`).
+    assert!(svc.scoped([4u8; 32], everything).semantic().is_some());
     go.send(()).unwrap();
     svc.flush_semantic();
     assert!(svc.semantic_version() > fitted);
@@ -418,4 +421,92 @@ fn the_worker_never_asks_for_a_storage_call() {
     assert_eq!(sc.search("tree", 5).len(), 1);
     drop(sc);
     assert!(!off_thread.load(Ordering::Relaxed), "a storage call was asked for off the caller's thread");
+}
+
+/// Notes for the fresh-view tests: three visible, one hidden in `Private/`.
+const FRESH: &[(&str, &str)] = &[
+    ("Cars.md", "# Cars\nThe car engine needs oil. A vehicle with a strong engine drives fast on the road."),
+    ("Autos.md", "# Autos\nMy automobile is a vehicle with a loud engine; the road trip was long."),
+    ("Bread.md", "# Bread\nSourdough bread needs flour, water and a slow rise in a warm oven."),
+    ("Private/s.md", "# S\nThe automobile secret is a vehicle engine road."),
+];
+
+/// A service over [`FRESH`] whose meaning fits each wait for a go (one is
+/// given for the first), fitted once; and the go sender.
+fn held_fits() -> (IndexService, crossbeam_channel::Sender<()>) {
+    let (go, wait) = crossbeam_channel::unbounded::<()>();
+    let svc = IndexService::spawn();
+    svc.set_semantic_builder(Some(Arc::new(move |chunks| {
+        wait.recv().map_err(|e| e.to_string())?;
+        Ok(crate::semantic::build_lsa_index(chunks))
+    })));
+    go.send(()).unwrap();
+    svc.load(quire_vault::Vault::in_memory(FRESH));
+    svc.flush_semantic();
+    assert!(svc.semantic().is_some());
+    (svc, go)
+}
+
+fn no_private() -> Visible {
+    visible(|p: &NotePath, _: &[String]| !p.as_str().starts_with("Private/"))
+}
+
+/// A view built fresh after the hidden note went (`how`) hides nothing,
+/// but the model still holds the note: keyword only until a fit that
+/// started after the removal, then meaning (Fable's re-check, N1).
+fn fresh_view_waits_for_a_refit(svc: &IndexService, go: &crossbeam_channel::Sender<()>, key: ScopeKey, how: &str) {
+    let fitted = svc.semantic_version();
+    {
+        let sc = svc.scoped(key, no_private());
+        assert!(sc.view().hides_nothing(), "{how}");
+        assert_eq!(svc.semantic_version(), fitted, "{how}: no refit yet");
+        assert!(sc.semantic().is_none(), "{how}: the model was fitted with the removed note");
+        assert!(sc.search_sections("automobile", &SearchFilters::default(), 5).iter().all(|h| !h.by_meaning), "{how}");
+    }
+    go.send(()).unwrap();
+    svc.flush_semantic();
+    assert!(svc.semantic_version() > fitted, "{how}");
+    assert!(svc.scoped(key, no_private()).semantic().is_some(), "{how}: refitted without the note");
+}
+
+#[test]
+fn a_view_first_built_after_a_removal_waits_for_a_refit() {
+    let (svc, go) = held_fits();
+    svc.remove(np("Private/s.md"));
+    svc.flush();
+    fresh_view_waits_for_a_refit(&svc, &go, [40; 32], "first build");
+}
+
+#[test]
+fn a_view_built_again_after_eviction_waits_for_a_refit() {
+    let (svc, go) = held_fits();
+    let key = [41; 32];
+    assert!(svc.scoped(key, no_private()).semantic().is_none(), "it hides the note");
+    svc.remove(np("Private/s.md"));
+    svc.flush();
+    // 32 other callers push it out.
+    for i in 0..MAX_SCOPES {
+        drop(svc.scoped([u8::try_from(i).unwrap_or(0).wrapping_add(100); 32], visible(|_: &NotePath, _: &[String]| true)));
+    }
+    assert_eq!(svc.scope_count(), MAX_SCOPES);
+    fresh_view_waits_for_a_refit(&svc, &go, key, "after eviction");
+}
+
+#[test]
+fn a_view_built_after_a_reload_waits_for_a_refit() {
+    let (svc, go) = held_fits();
+    // The vault loaded again without the hidden note (deleted while nothing watched).
+    svc.load(quire_vault::Vault::in_memory(&FRESH[..3]));
+    svc.flush();
+    fresh_view_waits_for_a_refit(&svc, &go, [42; 32], "after a reload");
+}
+
+/// With no removal since the last fit, a fresh view that hides nothing
+/// keeps meaning search.
+#[test]
+fn a_fresh_view_with_no_removal_since_the_fit_has_meaning() {
+    let (svc, _go) = held_fits();
+    svc.upsert(np("More.md"), "# More\nA truck is a vehicle.".into());
+    svc.flush();
+    assert!(svc.scoped([43; 32], visible(|_: &NotePath, _: &[String]| true)).semantic().is_some());
 }
