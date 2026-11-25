@@ -13,8 +13,6 @@
 //!   calls, `<think>` blocks are dropped, and text that might be the start
 //!   of a tag is held back until it is clear.
 
-use std::fmt::Write as _;
-
 use serde_json::Value;
 
 pub const IM_START: &str = "<|im_start|>";
@@ -24,6 +22,101 @@ pub const STOP_TOKENS: &[&str] = &["<|im_end|>", "<|endoftext|>"];
 
 const TOOLS_PREAMBLE: &str = "# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>";
 const TOOLS_POSTAMBLE: &str = "</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call>";
+
+/// A rendered prompt: its text, and which `<|im_start|>`/`<|im_end|>` in it
+/// the template wrote (`docs/design/0.14-local-ai.md` §3.4, control tokens).
+///
+/// Only those become control tokens: the text between them is encoded with
+/// special-token matching off, so a note, a tool result or a message that
+/// contains `<|im_end|>` stays ordinary text and can't end a turn. The tags
+/// the reply parser and the model read as structure (`<tool_call>`,
+/// `</tool_response>`, `<think>`, `<function=`, …), which Qwen's tokenizers
+/// match as tokens even with special-token matching off, get a zero-width
+/// space after their `<` inside content, so content
+/// can't open or close a block. (transformers and vLLM do neither: they
+/// tokenize the rendered string with special tokens parsed.)
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Prompt {
+    text: String,
+    /// Byte ranges of the control tokens the template wrote, in order.
+    specials: Vec<(usize, usize)>,
+}
+
+/// Tags that open or close a block, as text: broken inside content.
+const STRUCTURE_TAGS: [&str; 12] = [
+    "<tool_call>",
+    "</tool_call>",
+    "<tool_response>",
+    "</tool_response>",
+    "<think>",
+    "</think>",
+    "<tools>",
+    "</tools>",
+    "<function=",
+    "</function>",
+    "<parameter=",
+    "</parameter>",
+];
+
+impl Prompt {
+    /// Template text (no control tokens).
+    fn push_str(&mut self, s: &str) {
+        self.text.push_str(s);
+    }
+
+    fn push(&mut self, c: char) {
+        self.text.push(c);
+    }
+
+    /// A control token the template writes.
+    fn special(&mut self, s: &str) {
+        let at = self.text.len();
+        self.text.push_str(s);
+        self.specials.push((at, self.text.len()));
+    }
+
+    /// Text that came from a person, a note, a tool or the model: structure
+    /// tags in it are broken with a zero-width space after the `<`.
+    fn content(&mut self, s: &str) {
+        let mut rest = s;
+        while let Some(at) = STRUCTURE_TAGS.iter().filter_map(|t| rest.find(t)).min() {
+            self.text.push_str(&rest[..=at]);
+            self.text.push('\u{200B}');
+            rest = &rest[at + 1..];
+        }
+        self.text.push_str(rest);
+    }
+
+    /// Plain text as a prompt of its own (no structure tags are broken: a
+    /// document, as the reference check reads it).
+    pub fn push_content(&mut self, s: &str) {
+        self.text.push_str(s);
+    }
+
+    /// The whole prompt as text (what the published template renders when
+    /// the content holds no structure tags).
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// The prompt in order: `(true, token)` for a control token the
+    /// template wrote, `(false, text)` for everything between.
+    pub fn pieces(&self) -> Vec<(bool, &str)> {
+        let mut out = Vec::new();
+        let mut at = 0;
+        for &(a, b) in &self.specials {
+            if a > at {
+                out.push((false, &self.text[at..a]));
+            }
+            out.push((true, &self.text[a..b]));
+            at = b;
+        }
+        if at < self.text.len() {
+            out.push((false, &self.text[at..]));
+        }
+        out
+    }
+}
 
 fn parts(m: &Value) -> impl Iterator<Item = &Value> {
     m["parts"].as_array().into_iter().flatten()
@@ -35,7 +128,7 @@ fn text_of(m: &Value) -> String {
 
 /// The prompt for `messages`, ending with the assistant's turn opened (and
 /// an empty think block, which is how Qwen3 is told not to think aloud).
-pub fn render(system: &str, messages: &[Value], tools: &[Value], json_mode: bool) -> String {
+pub fn render(system: &str, messages: &[Value], tools: &[Value], json_mode: bool) -> Prompt {
     let mut sys = system.trim().to_string();
     for m in messages.iter().filter(|m| m["role"] == "system") {
         let t = text_of(m);
@@ -52,36 +145,40 @@ pub fn render(system: &str, messages: &[Value], tools: &[Value], json_mode: bool
         }
         sys.push_str("Reply with one JSON value only: no prose, no code fence.");
     }
-    let mut out = String::new();
+    let mut out = Prompt::default();
     if !tools.is_empty() {
-        out.push_str(IM_START);
+        out.special(IM_START);
         out.push_str("system\n");
         if !sys.is_empty() {
-            out.push_str(&sys);
+            out.content(&sys);
             out.push_str("\n\n");
         }
         out.push_str(TOOLS_PREAMBLE);
         for t in tools {
             // Key order as in Qwen's own template: type, function{name, description, parameters}.
-            let _ = write!(
-                out,
-                "\n{{\"type\": \"function\", \"function\": {{\"name\": {}, \"description\": {}, \"parameters\": {}}}}}",
+            out.push('\n');
+            out.content(&format!(
+                "{{\"type\": \"function\", \"function\": {{\"name\": {}, \"description\": {}, \"parameters\": {}}}}}",
                 t["name"], t["description"], t["input_schema"]
-            );
+            ));
         }
         out.push('\n');
         out.push_str(TOOLS_POSTAMBLE);
-        out.push_str(IM_END);
+        out.special(IM_END);
         out.push('\n');
     } else if !sys.is_empty() {
-        let _ = write!(out, "{IM_START}system\n{sys}{IM_END}\n");
+        out.special(IM_START);
+        out.push_str("system\n");
+        out.content(&sys);
+        out.special(IM_END);
+        out.push('\n');
     }
     let mut in_tool_turn = false;
     for m in messages.iter().filter(|m| m["role"] != "system") {
         let role = m["role"].as_str().unwrap_or("user");
         if role == "tool" {
             if !in_tool_turn {
-                out.push_str(IM_START);
+                out.special(IM_START);
                 out.push_str("user");
                 in_tool_turn = true;
             }
@@ -95,20 +192,20 @@ pub fn render(system: &str, messages: &[Value], tools: &[Value], json_mode: bool
                     _ => continue,
                 };
                 out.push_str("\n<tool_response>\n");
-                out.push_str(&content);
+                out.content(&content);
                 out.push_str("\n</tool_response>");
             }
             continue;
         }
         if in_tool_turn {
-            out.push_str(IM_END);
+            out.special(IM_END);
             out.push('\n');
             in_tool_turn = false;
         }
-        out.push_str(IM_START);
+        out.special(IM_START);
         out.push_str(if role == "assistant" { "assistant" } else { "user" });
         out.push('\n');
-        out.push_str(&text_of(m));
+        out.content(&text_of(m));
         if role == "assistant" {
             let mut first = text_of(m).is_empty();
             for p in parts(m).filter(|p| p["type"] == "tool_use") {
@@ -116,17 +213,19 @@ pub fn render(system: &str, messages: &[Value], tools: &[Value], json_mode: bool
                     out.push('\n');
                 }
                 first = false;
-                let _ = write!(out, "<tool_call>\n{{\"name\": {}, \"arguments\": {}}}\n</tool_call>", p["name"], p["input"]);
+                out.push_str("<tool_call>\n");
+                out.content(&format!("{{\"name\": {}, \"arguments\": {}}}", p["name"], p["input"]));
+                out.push_str("\n</tool_call>");
             }
         }
-        out.push_str(IM_END);
+        out.special(IM_END);
         out.push('\n');
     }
     if in_tool_turn {
-        out.push_str(IM_END);
+        out.special(IM_END);
         out.push('\n');
     }
-    out.push_str(IM_START);
+    out.special(IM_START);
     out.push_str("assistant\n<think>\n\n</think>\n\n");
     out
 }
@@ -143,35 +242,40 @@ pub fn render(system: &str, messages: &[Value], tools: &[Value], json_mode: bool
 /// trimmed, and assistant turns after the last user message keeping an
 /// empty think block (so the rendered history only grows during an agent
 /// run, which the prompt-reuse snapshot relies on).
-pub fn render_qwen35(system: &str, messages: &[Value], tools: &[Value], json_mode: bool) -> String {
+pub fn render_qwen35(system: &str, messages: &[Value], tools: &[Value], json_mode: bool) -> Prompt {
     let sys = system_text(system, messages, json_mode);
-    let mut out = String::new();
+    let mut out = Prompt::default();
     if !tools.is_empty() {
-        out.push_str(IM_START);
+        out.special(IM_START);
         out.push_str("system\n# Tools\n\nYou have access to the following functions:\n\n<tools>");
         for t in tools {
             out.push('\n');
             // Key order as the dict is built: type, function; name,
             // description, parameters.
-            out.push_str("{\"type\": \"function\", \"function\": {\"name\": ");
-            py_json(&t["name"], &mut out);
-            out.push_str(", \"description\": ");
-            py_json(&t["description"], &mut out);
-            out.push_str(", \"parameters\": ");
-            py_json(&t["input_schema"], &mut out);
-            out.push_str("}}");
+            let mut line = String::from("{\"type\": \"function\", \"function\": {\"name\": ");
+            py_json(&t["name"], &mut line);
+            line.push_str(", \"description\": ");
+            py_json(&t["description"], &mut line);
+            line.push_str(", \"parameters\": ");
+            py_json(&t["input_schema"], &mut line);
+            line.push_str("}}");
+            out.content(&line);
         }
         out.push_str("\n</tools>");
         out.push_str(QWEN35_TOOL_RULES);
         let sys = sys.trim();
         if !sys.is_empty() {
             out.push_str("\n\n");
-            out.push_str(sys);
+            out.content(sys);
         }
-        out.push_str(IM_END);
+        out.special(IM_END);
         out.push('\n');
     } else if !sys.is_empty() {
-        let _ = write!(out, "{IM_START}system\n{}{IM_END}\n", sys.trim());
+        out.special(IM_START);
+        out.push_str("system\n");
+        out.content(sys.trim());
+        out.special(IM_END);
+        out.push('\n');
     }
     // As the template sees them: one `tool` message per tool result.
     let turns: Vec<(&str, &Value)> = messages
@@ -195,7 +299,7 @@ pub fn render_qwen35(system: &str, messages: &[Value], tools: &[Value], json_mod
         match *role {
             "tool" => {
                 if i == 0 || turns[i - 1].0 != "tool" {
-                    out.push_str(IM_START);
+                    out.special(IM_START);
                     out.push_str("user");
                 }
                 let content = match m["type"].as_str() {
@@ -206,10 +310,10 @@ pub fn render_qwen35(system: &str, messages: &[Value], tools: &[Value], json_mod
                     _ => m["text"].as_str().unwrap_or_default().to_string(),
                 };
                 out.push_str("\n<tool_response>\n");
-                out.push_str(content.trim());
+                out.content(content.trim());
                 out.push_str("\n</tool_response>");
                 if turns.get(i + 1).is_none_or(|(r, _)| *r != "tool") {
-                    out.push_str(IM_END);
+                    out.special(IM_END);
                     out.push('\n');
                 }
             }
@@ -223,12 +327,14 @@ pub fn render_qwen35(system: &str, messages: &[Value], tools: &[Value], json_mod
                     content = content[content.rfind("</think>").map_or(0, |e| e + "</think>".len())..].trim_start_matches('\n');
                 }
                 let reasoning = reasoning.trim_end_matches('\n').trim();
-                out.push_str(IM_START);
+                out.special(IM_START);
                 out.push_str("assistant\n");
                 if last_query.is_some_and(|q| i > q) {
-                    let _ = write!(out, "<think>\n{reasoning}\n</think>\n\n");
+                    out.push_str("<think>\n");
+                    out.content(reasoning);
+                    out.push_str("\n</think>\n\n");
                 }
-                out.push_str(content);
+                out.content(content);
                 for (n, call) in parts(m).filter(|p| p["type"] == "tool_use").enumerate() {
                     let name = call["name"].as_str().unwrap_or_default();
                     if n > 0 {
@@ -236,23 +342,33 @@ pub fn render_qwen35(system: &str, messages: &[Value], tools: &[Value], json_mod
                     } else if !content.trim().is_empty() {
                         out.push_str("\n\n");
                     }
-                    let _ = write!(out, "<tool_call>\n<function={name}>\n");
+                    out.push_str("<tool_call>\n<function=");
+                    out.content(name);
+                    out.push_str(">\n");
                     for (k, v) in call["input"].as_object().into_iter().flatten() {
-                        let _ = writeln!(out, "<parameter={k}>");
-                        py_str(v, &mut out);
+                        out.push_str("<parameter=");
+                        out.content(k);
+                        out.push_str(">\n");
+                        let mut value = String::new();
+                        py_str(v, &mut value);
+                        out.content(&value);
                         out.push_str("\n</parameter>\n");
                     }
                     out.push_str("</function>\n</tool_call>");
                 }
-                out.push_str(IM_END);
+                out.special(IM_END);
                 out.push('\n');
             }
             _ => {
-                let _ = write!(out, "{IM_START}user\n{}{IM_END}\n", text_of(m).trim());
+                out.special(IM_START);
+                out.push_str("user\n");
+                out.content(text_of(m).trim());
+                out.special(IM_END);
+                out.push('\n');
             }
         }
     }
-    out.push_str(IM_START);
+    out.special(IM_START);
     out.push_str("assistant\n<think>\n\n</think>\n\n");
     out
 }
@@ -584,12 +700,12 @@ mod tests {
             msg("tool", &json!([{"type": "tool_result", "id": "call_1", "content": "Rope Notes.md", "is_error": false}])),
             msg("tool", &json!([{"type": "tool_result", "id": "call_2", "content": "boom", "is_error": true}])),
         ];
-        let p = render("Be brief.", &messages, &tools, false);
+        let p = render("Be brief.", &messages, &tools, false).text().to_string();
         let expected = "<|im_start|>system\nBe brief.\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"search\", \"description\": \"Search notes\", \"parameters\": {\"type\":\"object\"}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call><|im_end|>\n<|im_start|>user\nFind ropes<|im_end|>\n<|im_start|>assistant\n<tool_call>\n{\"name\": \"search\", \"arguments\": {\"query\":\"ropes\"}}\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nRope Notes.md\n</tool_response>\n<tool_response>\nError: boom\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n";
         assert_eq!(p, expected);
-        let plain = render("", &[msg("user", &json!([{"type": "text", "text": "hi"}]))], &[], true);
+        let plain = render("", &[msg("user", &json!([{"type": "text", "text": "hi"}]))], &[], true).text().to_string();
         assert!(plain.starts_with("<|im_start|>system\nReply with one JSON value only"), "{plain}");
-        assert!(render("", &[], &[], false).starts_with("<|im_start|>assistant"), "no system turn without a system prompt");
+        assert!(render("", &[], &[], false).text().starts_with("<|im_start|>assistant"), "no system turn without a system prompt");
     }
 
     #[test]
@@ -723,7 +839,9 @@ mod fixtures {
             let name = c["name"].as_str().unwrap();
             let want = std::fs::read_to_string(dir.join(format!("{name}.txt"))).unwrap();
             let tools = c["tools"].as_array().cloned().unwrap_or_default();
-            let got = render_qwen35(c["system"].as_str().unwrap_or_default(), c["messages"].as_array().unwrap(), &tools, c["json"] == true);
+            let got = render_qwen35(c["system"].as_str().unwrap_or_default(), c["messages"].as_array().unwrap(), &tools, c["json"] == true)
+                .text()
+                .to_string();
             assert_eq!(got, want, "conversation {name}");
             n += 1;
         }
