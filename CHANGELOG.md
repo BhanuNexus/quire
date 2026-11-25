@@ -13,6 +13,7 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 - **`quire-cli sync once --verify`** reads every note again in that pass, to catch a change that kept a file's size and modification time.
 
 ### Changed
+- **Meaning search:** saving a note no longer rebuilds the meaning model. Only that note's passages are updated, in a few milliseconds where it took seconds on a large vault. The model is refitted in the background when a tenth of the passages have changed, or after ten idle minutes once it is six hours old. It also takes less memory.
 - **Agents:** an agent that may not see every note searches by keyword only for now; search by meaning for such agents returns in a later 0.14 update.
 - **Shortcuts:** six default shortcuts that the system keeps for itself, so they never worked on that platform, now have another key there; other platforms and any shortcut you changed stay as they were.
   - Next tab: Ctrl+Tab → ⌘⌥→ (macOS)
