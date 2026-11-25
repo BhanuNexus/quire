@@ -365,7 +365,8 @@ impl IndexService {
         };
         // The meaning model only if every note it was fitted on is one this view may read. Under
         // the index's read lock: the worker can't change the notes or the fit set meanwhile.
-        let semantic = self.semantic().filter(|m| {
+        // A tainted model (fitted while a folder now locked was open) serves no view (B2).
+        let semantic = self.semantic().filter(|m| !m.is_tainted()).filter(|m| {
             let mut reg = lock();
             if !reg.fit.as_ref().is_some_and(|f| f.is_for(m, &ix)) {
                 // A model from before a load: what it was fitted on, against this build.

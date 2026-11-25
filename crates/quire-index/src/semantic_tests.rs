@@ -322,3 +322,44 @@ fn a_second_search_makes_no_storage_call() {
     }
     assert_eq!(calls.load(Ordering::Relaxed), first, "later searches ask nothing");
 }
+
+/// Fable's review of I2a, B2: a model fitted while a folder now locked was
+/// open serves no view, though the note's old path is one the view may read
+/// (a readable note moved into a locked folder).
+#[test]
+fn a_tainted_model_serves_no_view() {
+    let svc = IndexService::spawn();
+    // Made after the service, so dropped first: a held fit is let go if the test fails.
+    let (go, wait) = crossbeam_channel::unbounded::<()>();
+    svc.set_fit_hook(Some(Arc::new(move || {
+        let _ = wait.recv();
+    })));
+    go.send(()).unwrap();
+    let vault = Vault::in_memory(&[
+        ("Cars.md", "# Cars\nThe car engine needs oil. A vehicle with a strong engine drives fast on the road."),
+        ("Autos.md", "# Autos\nMy automobile is a vehicle with a loud engine; the road trip was long."),
+        ("Plan.md", "# Plan\nThe automobile plan: a vehicle engine on the road."),
+    ]);
+    svc.load(vault.clone());
+    svc.flush_semantic();
+    let all: Visible = visible(|_: &NotePath, _: &[String]| true);
+    assert!(svc.scoped([1; 32], Arc::clone(&all)).semantic().is_some());
+    // Plan.md moves into a folder, which is then locked; the index hears of the move after.
+    vault.storage().write_bytes_atomic(&np("Locked/Plan.md"), b"# Plan\nThe automobile plan.").unwrap();
+    vault.storage().write_bytes_atomic(&np(&format!("Locked/{}", quire_vault::lock::KEY_FILE)), b"{}").unwrap();
+    svc.remove(np("Plan.md"));
+    svc.upsert(np("Locked/Plan.md"), "# Plan\nThe automobile plan.".into());
+    svc.flush();
+    // The refit waits for a go: meanwhile the model is tainted.
+    let start = std::time::Instant::now();
+    while !svc.semantic().is_some_and(|m| m.is_tainted()) {
+        assert!(start.elapsed() < std::time::Duration::from_secs(20), "the model is marked tainted");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(svc.semantic().is_some(), "it still serves the person's own search");
+    assert!(svc.scoped([2; 32], Arc::clone(&all)).semantic().is_none(), "no view uses a tainted model");
+    go.send(()).unwrap();
+    svc.flush_semantic();
+    assert!(svc.semantic().is_some_and(|m| !m.is_tainted()), "refitted");
+    assert!(svc.scoped([3; 32], all).semantic().is_some());
+}
