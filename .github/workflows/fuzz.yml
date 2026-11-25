@@ -44,7 +44,7 @@ jobs:
       - name: Install cargo-fuzz
         run: cargo +nightly install cargo-fuzz --version 0.13.2 --locked
       - name: Corpus from earlier runs
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: fuzz/corpus/${{ matrix.target }}
           key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
