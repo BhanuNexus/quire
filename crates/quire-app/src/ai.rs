@@ -492,10 +492,15 @@ impl Workspace {
             let ctl = ctl.clone();
             let id = id.clone();
             std::thread::Builder::new().name("quire-model-download".into()).spawn(move || {
-                let d = Downloader::new(&mirror);
-                let r = d.fetch(&entry, &dir, &ctl, &mut |p| {
-                    let _ = tx.send(DlMsg::Progress(id.clone(), p));
-                });
+                // The dialog's free-space rule for every download (a Settings
+                // row's Download button too), checked here, off the UI thread.
+                let have = quire_ai::download::partial_bytes(&dir, &entry);
+                let r = match pack::check_space(entry.size().saturating_sub(have), pack::free_disk_bytes(&dir)) {
+                    Err(why) => Err(DownloadError::Refused(why)),
+                    Ok(()) => Downloader::new(&mirror).fetch(&entry, &dir, &ctl, &mut |p| {
+                        let _ = tx.send(DlMsg::Progress(id.clone(), p));
+                    }),
+                };
                 let _ = tx.send(DlMsg::Finished(id, r));
             })
         };

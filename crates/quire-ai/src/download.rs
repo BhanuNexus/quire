@@ -85,6 +85,8 @@ pub enum DownloadError {
     },
     Http(String),
     Io(String),
+    /// Not done, and why: no room on the disk, or the caller refused it.
+    Refused(String),
 }
 
 impl std::fmt::Display for DownloadError {
@@ -98,6 +100,7 @@ impl std::fmt::Display for DownloadError {
             }
             Self::Http(e) => write!(f, "download failed: {e}"),
             Self::Io(e) => write!(f, "couldn't save the download: {e}"),
+            Self::Refused(why) => f.write_str(why),
         }
     }
 }
@@ -528,6 +531,20 @@ pub enum Installed1 {
 /// Copy files someone downloaded elsewhere (an offline computer): each is
 /// matched to a catalog file by its SHA-256, copied in and recorded.
 pub fn install_from_files(catalog: &Catalog, paths: &[PathBuf], models: &Path) -> Vec<Installed1> {
+    install_from_files_if(catalog, paths, models, &mut |_| Ok(()))
+}
+
+/// [`install_from_files`], asking `accept` about each matched model first.
+///
+/// `accept` runs before anything is copied: a refusal leaves nothing behind
+/// and is reported as that file's failure (the CLI refuses a voice model
+/// without the experimental switch this way).
+pub fn install_from_files_if(
+    catalog: &Catalog,
+    paths: &[PathBuf],
+    models: &Path,
+    accept: &mut dyn FnMut(&CatalogEntry) -> Result<(), String>,
+) -> Vec<Installed1> {
     let mut manifest = Manifest::load(models);
     let mut out = Vec::new();
     for p in paths {
@@ -542,6 +559,7 @@ pub fn install_from_files(catalog: &Catalog, paths: &[PathBuf], models: &Path) -
                 })
             });
             let Some((entry, f)) = found else { return Ok(None) };
+            accept(entry).map_err(DownloadError::Refused)?;
             let dir = models.join(&entry.id);
             std::fs::create_dir_all(&dir)?;
             if entry.purpose == Purpose::Engine && !hash.eq_ignore_ascii_case(&f.sha256) {

@@ -83,7 +83,47 @@ fn env_on() -> bool {
     *ON.get_or_init(|| std::env::var_os(EXPERIMENTAL_ENV).is_some_and(|v| v == "1"))
 }
 
+/// A model the person chose for the pack: what it turns on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackPick<'a> {
+    /// The writing and agent model, by catalog id.
+    Llm(&'a str),
+    Ocr,
+    /// The embedder for meaning search, by catalog id.
+    Embed(&'a str),
+}
+
 impl AiLocalSettings {
+    /// Turns the pack on with `picks` (the dialog's ticked rows, or the model
+    /// `quire-cli ai download` fetches). When the pack was off (and the
+    /// experimental switch too), capabilities ticked under 0.9–0.13 are reset
+    /// first, so only what was picked runs: `llm`, `ocr` and `embeddings` are
+    /// exactly the picks and an old `llm_model` is cleared. When it was on
+    /// already, the picks are added to what is on.
+    pub fn turn_pack_on(&mut self, picks: &[PackPick<'_>]) {
+        if !self.pack_on() {
+            self.llm = false;
+            self.ocr = false;
+            self.embeddings = false;
+            self.llm_model.clear();
+        }
+        self.pack = true;
+        self.engine = true;
+        for pick in picks {
+            match *pick {
+                PackPick::Llm(id) => {
+                    self.llm = true;
+                    self.llm_model = id.to_string();
+                }
+                PackPick::Ocr => self.ocr = true,
+                PackPick::Embed(id) => {
+                    self.embeddings = true;
+                    self.embed_model = id.to_string();
+                }
+            }
+        }
+    }
+
     /// On-device AI is offered at all: the experimental switch or
     /// [`EXPERIMENTAL_ENV`]. When false nothing on-device is shown, spawned
     /// or downloaded, whatever the other keys say.
@@ -141,5 +181,41 @@ mod tests {
         assert!(text.contains("pack = true"));
         let back: AiLocalSettings = toml::from_str(&text).unwrap();
         assert!(back.pack);
+    }
+
+    /// A 0.13 file with capabilities ticked long ago (experimental off).
+    fn old() -> AiLocalSettings {
+        toml::from_str("experimental = false\nllm = true\nocr = false\nembeddings = true\nllm_model = \"qwen3-1.7b-q4km\"\n").unwrap()
+    }
+
+    /// Turning the pack on turns on what was chosen and nothing ticked in
+    /// 0.9–0.13: the old model and embedder stay off.
+    #[test]
+    fn turning_the_pack_on_wakes_only_what_was_chosen() {
+        if std::env::var_os(EXPERIMENTAL_ENV).is_some() {
+            return;
+        }
+        let mut a = old();
+        a.turn_pack_on(&[PackPick::Ocr]);
+        assert!(a.pack && a.engine && a.ocr_on());
+        assert!(!a.llm_on() && !a.embeddings_on(), "the 0.13 choices stay asleep");
+        assert_eq!(a.llm_model, "", "the old model is not the chosen one");
+        let mut a = old();
+        a.turn_pack_on(&[PackPick::Llm("qwen3.5-4b-q4km")]);
+        assert!(a.llm_on() && !a.ocr_on() && !a.embeddings_on());
+        assert_eq!(a.llm_model, "qwen3.5-4b-q4km");
+        // Already on: a second model adds its capability and keeps the rest.
+        a.turn_pack_on(&[PackPick::Ocr]);
+        assert!(a.llm_on() && a.ocr_on() && a.llm_model == "qwen3.5-4b-q4km");
+        a.turn_pack_on(&[PackPick::Embed("bge-small-en-v1.5")]);
+        assert!(a.embeddings_on() && a.embed_model == "bge-small-en-v1.5");
+        // With the experimental switch the old keys were live already: kept.
+        let mut a = AiLocalSettings { experimental: true, ..old() };
+        a.turn_pack_on(&[PackPick::Ocr]);
+        assert!(a.llm_on() && a.embeddings_on() && a.llm_model == "qwen3-1.7b-q4km");
+        // Nothing chosen: the pack is on with nothing to run.
+        let mut a = old();
+        a.turn_pack_on(&[]);
+        assert!(a.pack && !a.llm_on() && !a.ocr_on() && !a.embeddings_on());
     }
 }

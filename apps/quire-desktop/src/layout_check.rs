@@ -520,7 +520,9 @@ fn on_device_rows_follow_the_pack() {
         onboarding.contains("No AI") && onboarding.contains("Use a provider") && onboarding.contains("On this computer"),
         "{onboarding}"
     );
-    assert!(settings.contains("Turn on on-device AI") && settings.contains("Advanced"), "{settings}");
+    // This build pins no model yet, so Settings says so instead of promising one.
+    assert!(settings.contains("can't download on-device models") && settings.contains("Advanced"), "{settings}");
+    assert!(!settings.contains("Turn on on-device AI"), "{settings}");
     for row in ["Writing and agent", "Read text in images", "Engine", "Install from file"] {
         assert!(!settings.contains(row), "{row} shown while off: {settings}");
     }
@@ -532,6 +534,62 @@ fn on_device_rows_follow_the_pack() {
     for text in [onboarding.as_str(), settings.as_str()] {
         for word in ["coming", "slow", "Slow"] {
             assert!(!text.contains(word), "{word:?} shown: {text}");
+        }
+    }
+}
+
+/// Settings → AI with the pack off says only what this build and computer
+/// offer, and offers the button only when something can be turned on.
+#[test]
+fn the_off_text_follows_what_can_be_offered() {
+    use quire_app::ai::pack::{Offered, PACK_ROWS, PackKind, PackOffer, off_text};
+    if std::env::var_os(quire_app::settings::EXPERIMENTAL_ENV).is_some() {
+        return;
+    }
+    let offer = |writing: Option<Option<&str>>, ocr: bool| {
+        let rows = PACK_ROWS
+            .iter()
+            .filter(|r| match r.kind {
+                PackKind::Writing => writing.is_some(),
+                PackKind::Ocr => ocr,
+            })
+            .map(|r| Offered {
+                row: *r,
+                size: 1,
+                blocked: writing.flatten().filter(|_| r.kind == PackKind::Writing).map(str::to_string),
+                ram_mb: 1,
+            })
+            .collect();
+        PackOffer { rows, default_llm: None, engine_size: None }
+    };
+    let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 820.0));
+    let tab = crate::registry::SETTINGS_TABS.iter().find(|t| t.id == "ai").expect("the AI tab");
+    for (name, o, words) in [
+        ("writing and OCR", offer(Some(None), true), "Qwen 3.5 for writing and the agent, and text in images"),
+        ("OCR only", offer(None, true), "Text in images and scanned PDFs, read on this computer."),
+        ("writing needs memory", offer(Some(Some("needs a computer with 8 GB of memory")), true), "needs 8 GB of memory"),
+        ("nothing offered", offer(None, false), "can't download on-device models"),
+    ] {
+        let mut ws = workspace_with(false);
+        let mut fui = crate::registry::FeatureUi::default();
+        let (text, can) = off_text(&o);
+        assert!(text.contains(words), "{name}: {text}");
+        fui.ai_settings.off = Some((text, can));
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        ctx.global_style_mut(theme::style);
+        let mut drawn = String::new();
+        for frame in 0..3 {
+            let mut out = ctx.run_ui(input(screen, frame), |ui| {
+                let _ = (tab.show)(ui, &mut ws, &mut fui, &theme::LIGHT);
+            });
+            drawn = drawn_text(&out);
+            out.textures_delta.clear();
+        }
+        assert!(drawn.contains(words), "{name}: {drawn}");
+        assert_eq!(drawn.contains("Turn on on-device AI"), name != "nothing offered", "{name}: {drawn}");
+        if name != "writing and OCR" {
+            assert!(!drawn.contains("Qwen 3.5 for writing"), "{name} promises a writing model: {drawn}");
         }
     }
 }

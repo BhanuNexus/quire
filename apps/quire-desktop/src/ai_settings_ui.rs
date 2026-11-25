@@ -32,6 +32,9 @@ pub(crate) struct AiSettingsUi {
     confirm_delete: Option<String>,
     /// Folders in the models folder no pinned row names (read once per visit).
     strays: Option<Vec<(String, u64)>>,
+    /// While the pack is off: the sentence and whether it can be turned on,
+    /// from `pack::off_text` (worked out once per visit: it stats the engine).
+    pub(crate) off: Option<(String, bool)>,
 }
 
 /// Always offered.
@@ -69,18 +72,16 @@ fn experimental_switch(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) {
     }
 }
 
-/// While the pack is off: what it does, one button, and the switch under Advanced.
-fn device_off(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette, out: &mut PanelOut) {
-    ui.add(
-        egui::Label::new(
-            RichText::new("Qwen 3.5 for writing and the agent, and text in images and scanned PDFs, all on this computer. Nothing is downloaded until you turn it on.")
-                .size(12.5)
-                .color(pal.text),
-        )
-        .wrap(),
-    );
+/// While the pack is off: what this build offers here, one button, and the
+/// switch under Advanced.
+fn device_off(ui: &mut egui::Ui, ws: &mut Workspace, s: &mut AiSettingsUi, pal: &Palette, out: &mut PanelOut) {
+    let (text, can) = s
+        .off
+        .get_or_insert_with(|| ai::pack::off_text(&ai::pack::offer(catalog(), quire_app::onboarding::memory_gb(), ai::engine_installed())))
+        .clone();
+    ui.add(egui::Label::new(RichText::new(text).size(12.5).color(pal.text)).wrap());
     ui.add_space(4.0);
-    if ui.button(RichText::new("Turn on on-device AI…").strong()).clicked() {
+    if can && ui.button(RichText::new("Turn on on-device AI…").strong()).clicked() {
         out.run = Some(Command::AiPack);
     }
     egui::CollapsingHeader::new(RichText::new("Advanced").color(pal.text)).id_salt("quire-ai-advanced").show(ui, |ui| {
@@ -116,7 +117,7 @@ pub(crate) fn show(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pa
     if ws.settings.ai_local.pack_on() {
         device(ui, ws, s, pal);
     } else {
-        device_off(ui, ws, pal, &mut out);
+        device_off(ui, ws, s, pal, &mut out);
     }
     section(ui, pal, "Features");
     features(ui, ws, pal, &mut out);

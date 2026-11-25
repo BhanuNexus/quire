@@ -34,7 +34,7 @@ mod voice;
 use std::path::{Path, PathBuf};
 
 pub use agent_panel::AgentPanelSettings;
-pub use ai_local::{AiLocalSettings, EXPERIMENTAL_ENV};
+pub use ai_local::{AiLocalSettings, EXPERIMENTAL_ENV, PackPick};
 pub use appearance::AppearanceSettings;
 // 0.11 editor
 pub use commands::{CommandSettings, Macro};

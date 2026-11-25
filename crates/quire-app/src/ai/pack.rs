@@ -14,6 +14,7 @@ use std::path::Path;
 
 use quire_ai::catalog::{Catalog, ENGINE_ID};
 
+use crate::settings::PackPick;
 use crate::workspace::{NoticeLevel, Workspace};
 
 /// What a row of the dialog turns on.
@@ -128,6 +129,26 @@ impl PackOffer {
     }
 }
 
+/// What Settings → AI says while the pack is off, from what this build and
+/// this computer offer, and whether "Turn on on-device AI…" is offered.
+pub fn off_text(offer: &PackOffer) -> (String, bool) {
+    const WAIT: &str = " Nothing is downloaded until you turn it on.";
+    let writing = offer.rows.iter().any(|o| o.row.kind == PackKind::Writing && o.blocked.is_none());
+    let writing_listed = offer.rows.iter().any(|o| o.row.kind == PackKind::Writing);
+    let ocr = offer.rows.iter().any(|o| o.row.kind == PackKind::Ocr && o.blocked.is_none());
+    match (writing, ocr) {
+        (true, true) => {
+            (format!("Qwen 3.5 for writing and the agent, and text in images and scanned PDFs, all on this computer.{WAIT}"), true)
+        }
+        (true, false) => (format!("Qwen 3.5 for writing and the agent, on this computer.{WAIT}"), true),
+        (false, true) if writing_listed => {
+            (format!("Text in images and scanned PDFs, read on this computer. Writing on this computer needs 8 GB of memory.{WAIT}"), true)
+        }
+        (false, true) => (format!("Text in images and scanned PDFs, read on this computer.{WAIT}"), true),
+        (false, false) => ("This build of Quire can't download on-device models. A release build can.".to_string(), false),
+    }
+}
+
 /// Free disk wanted for a download of `bytes`: the files, 10% and 500 MB.
 pub const fn space_needed(bytes: u64) -> u64 {
     bytes + bytes / 10 + 500 * 1_000_000
@@ -227,15 +248,14 @@ impl Workspace {
         let allowed = |id: &str| offer.rows.iter().any(|o| o.row.id == id && o.blocked.is_none());
         let llm = choice.llm.clone().filter(|id| allowed(id));
         let ocr = choice.ocr && offer.rows.iter().any(|o| o.row.kind == PackKind::Ocr);
-        let a = &mut self.settings.ai_local;
-        a.pack = true;
-        a.engine = true;
-        if let Some(id) = &llm {
-            a.llm = true;
-            a.llm_model.clone_from(id);
-        }
+        let mut picks: Vec<PackPick<'_>> = llm.iter().map(|id| PackPick::Llm(id)).collect();
         if ocr {
-            a.ocr = true;
+            picks.push(PackPick::Ocr);
+        }
+        self.settings.ai_local.turn_pack_on(&picks);
+        // Meaning search on this computer was reset with the rest: the built-in index takes over.
+        if !self.settings.ai_local.embeddings_on() && self.settings.embeddings == "local" {
+            self.settings.embeddings = "lsa".into();
         }
         if let Err(e) = self.settings.save() {
             self.notify(NoticeLevel::Error, format!("Couldn't save the settings, so nothing was downloaded: {e}"));
@@ -362,6 +382,51 @@ mod tests {
         if cfg!(unix) {
             assert!(free_disk_bytes(&std::env::temp_dir().join("no-such-folder/deeper")).is_some());
         }
+    }
+
+    /// The dialog from a 0.13 settings file (llm, embeddings and an old
+    /// model ticked, experimental off): with OCR ticked only, nothing old wakes.
+    #[test]
+    fn the_dialog_wakes_nothing_ticked_before_the_pack() {
+        if std::env::var_os(crate::settings::EXPERIMENTAL_ENV).is_some() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.toml");
+        std::fs::write(
+            &p,
+            "[ai_local]\nexperimental = false\nengine = true\nllm = true\nembeddings = true\nllm_model = \"qwen3-1.7b-q4km\"\n",
+        )
+        .unwrap();
+        let mut ws = Workspace::new(crate::Settings::load_from(&p));
+        ws.pack_turn_on(&PackChoice { llm: None, ocr: true });
+        let a = &ws.settings.ai_local;
+        assert!(a.pack);
+        assert!(!a.llm_on() && !a.embeddings_on(), "the old model and embedder stay off");
+        assert_eq!(a.llm_model, "");
+    }
+
+    /// Settings → AI promises only what can be offered (fails on the old
+    /// fixed sentence, which always promised Qwen 3.5).
+    #[test]
+    fn the_off_text_follows_the_offer() {
+        let c = pinned();
+        let (t, on) = off_text(&offer(&c, Some(16), true));
+        assert!(on && t.starts_with("Qwen 3.5 for writing and the agent, and text in images"), "{t}");
+        let (t, on) = off_text(&offer(&c, Some(4), true));
+        assert!(on && t.contains("needs 8 GB") && !t.contains("Qwen 3.5"), "{t}");
+        let mut ocr_only = pinned();
+        for m in ocr_only.models.iter_mut().filter(|m| m.id.starts_with("qwen3.5")) {
+            m.files[0].sha256.clear();
+        }
+        let (t, on) = off_text(&offer(&ocr_only, Some(16), true));
+        assert!(on && t.starts_with("Text in images") && !t.contains("Qwen") && !t.contains("8 GB"), "{t}");
+        let mut no_ocr = pinned();
+        no_ocr.models.retain(|m| m.id != "ocrs");
+        let (t, on) = off_text(&offer(&no_ocr, Some(16), true));
+        assert!(on && t.starts_with("Qwen 3.5 for writing and the agent, on this computer"), "{t}");
+        let (t, on) = off_text(&offer(&Catalog::builtin(), Some(16), true));
+        assert!(!on && t.contains("can't download"), "this build pins nothing yet: {t}");
     }
 
     #[test]

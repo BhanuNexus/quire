@@ -22,7 +22,8 @@ use std::time::Duration;
 
 use quire_ai::catalog::{Catalog, CatalogEntry, Purpose};
 use quire_ai::download::{
-    Control, DownloadError, Downloader, Installed1, Manifest, install_from_files, partial_bytes, sha256_file, verify_for_load,
+    Control, DownloadError, Downloader, Installed1, Manifest, install_from_files, install_from_files_if, partial_bytes, sha256_file,
+    verify_for_load,
 };
 
 #[derive(Clone, Copy)]
@@ -315,6 +316,11 @@ fn install_from_file_matches_by_hash() {
     assert!(installed(&models, &e));
     quire_ai::download::delete(&models, "bge").unwrap();
     assert!(!installed(&models, &e) && !models.join("bge").exists());
+    // Refused before copying: nothing is left behind and nothing recorded.
+    let good = tmp.path().join("downloaded.bin");
+    let r = install_from_files_if(&catalog, &[good], &models, &mut |e| Err(format!("{} refused", e.id)));
+    assert!(matches!(&r[0], Installed1::Failed { error, .. } if error == "bge refused"), "{r:?}");
+    assert!(!models.join("bge").exists() && !installed(&models, &e));
 }
 
 #[test]

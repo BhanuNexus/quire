@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use quire_ai::catalog::{Catalog, human_size};
-use quire_ai::download::{Control, Downloader, Installed1, Progress, install_from_files};
+use quire_ai::download::{Control, Downloader, Installed1, Progress, install_from_files_if};
 use quire_app::agent::{Actor, AgentStore, SystemClock, Via};
 use quire_app::intel::chat::{CancelFlag, Locality};
 use quire_app::vault::NotePath;
@@ -59,20 +59,35 @@ fn voice_needs_experimental() -> String {
 /// model of the pack's kinds (writing, OCR, embedder) before anything
 /// downloads; voice models still need the experimental switch.
 fn allow(entry: &quire_ai::catalog::CatalogEntry) -> Result<(), String> {
-    use quire_ai::catalog::Purpose;
     let mut settings = super::load_settings();
+    if allow_in(&mut settings.ai_local, entry)? {
+        settings.save().map_err(|e| format!("couldn't save the settings, so nothing was downloaded: {e}"))?;
+    }
+    Ok(())
+}
+
+/// [`allow`] on the settings alone: turns the pack on with only this model's
+/// capability (nothing ticked under 0.9–0.13 wakes), or refuses. `true` when
+/// the settings changed.
+fn allow_in(a: &mut quire_app::settings::AiLocalSettings, entry: &quire_ai::catalog::CatalogEntry) -> Result<bool, String> {
+    use quire_ai::catalog::Purpose;
+    use quire_app::settings::PackPick;
     if entry.purpose == Purpose::Transcribe {
-        return if settings.ai_local.on_device() { Ok(()) } else { Err(voice_needs_experimental()) };
+        return if a.on_device() { Ok(false) } else { Err(voice_needs_experimental()) };
     }
     if !entry.is_pinned() {
         return Err(format!("{} isn't available in this build of Quire", entry.display_name()));
     }
-    if !settings.ai_local.pack {
-        settings.ai_local.pack = true;
-        settings.ai_local.engine = true;
-        settings.save().map_err(|e| format!("couldn't save the settings, so nothing was downloaded: {e}"))?;
-    }
-    Ok(())
+    let pick = match entry.purpose {
+        Purpose::Llm => PackPick::Llm(&entry.id),
+        Purpose::Ocr => PackPick::Ocr,
+        Purpose::Embed => PackPick::Embed(&entry.id),
+        // The engine itself turns nothing on (voice was handled above).
+        Purpose::Engine | Purpose::Transcribe => return Ok(false),
+    };
+    let before = a.clone();
+    a.turn_pack_on(&[pick]);
+    Ok(*a != before)
 }
 
 fn run_ai(args: &[String]) -> Result<(), String> {
@@ -105,6 +120,10 @@ fn run_ai(args: &[String]) -> Result<(), String> {
         Some("download") => {
             let id = arg(args, 2)?;
             let e = catalog.get(id).ok_or_else(|| format!("no model called {id}; see `quire-cli ai models`"))?;
+            // The same free-space rule as the dialog (files + 10% + 500 MB).
+            if e.is_pinned() {
+                quire_app::ai::pack::check_space(e.size(), quire_app::ai::pack::free_disk_bytes(&dir))?;
+            }
             allow(e)?;
             let settings = super::load_settings();
             let d = Downloader::new(&settings.ai_local.mirror_url);
@@ -133,16 +152,11 @@ fn run_ai(args: &[String]) -> Result<(), String> {
             if files.is_empty() {
                 return Err("give the files to install".into());
             }
-            // Only files matching a model this build pins are installed; the
-            // first one turns the pack on for its kind.
-            for r in install_from_files(&catalog, &files, &dir) {
+            // Each matched model is allowed (and the pack turned on for it)
+            // before its file is copied: a refused one leaves nothing behind.
+            for r in install_from_files_if(&catalog, &files, &dir, &mut |e| allow(e)) {
                 match r {
-                    Installed1::Ok { id, file } => {
-                        if let Some(e) = catalog.get(&id) {
-                            allow(e)?;
-                        }
-                        println!("{file}: installed for {id}");
-                    }
+                    Installed1::Ok { id, file } => println!("{file}: installed for {id}"),
                     Installed1::Unknown { path } => {
                         println!("{}: doesn't match any model this version knows (checked by SHA-256)", path.display());
                     }
@@ -260,4 +274,48 @@ fn run_ingest(args: &[String]) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use quire_ai::catalog::Catalog;
+
+    fn entry(id: &str, purpose: &str) -> quire_ai::catalog::CatalogEntry {
+        let text = format!(
+            "format = 1\n[[model]]\nid = \"{id}\"\npurpose = \"{purpose}\"\nlabel = \"T\"\nlicence = \"MIT\"\nram_mb = 1\n[[model.files]]\nname = \"m\"\nurl = \"https://example.invalid/m\"\nsha256 = \"{}\"\nsize = 1\n",
+            "a".repeat(64)
+        );
+        Catalog::parse(&text).unwrap().models.remove(0)
+    }
+
+    /// From a 0.13 settings file (llm, embeddings and an old model ticked,
+    /// experimental off): downloading one model turns on that model alone, and
+    /// `ai download <writing model>` chooses it.
+    #[test]
+    fn a_download_turns_on_only_its_own_capability() {
+        if std::env::var_os(quire_app::settings::EXPERIMENTAL_ENV).is_some() {
+            return;
+        }
+        let old = || quire_app::settings::AiLocalSettings {
+            experimental: false,
+            engine: true,
+            llm: true,
+            embeddings: true,
+            llm_model: "qwen3-1.7b-q4km".into(),
+            ..quire_app::settings::AiLocalSettings::default()
+        };
+        let mut a = old();
+        assert_eq!(super::allow_in(&mut a, &entry("ocrs", "ocr")), Ok(true));
+        assert!(a.pack && a.ocr_on() && !a.llm_on() && !a.embeddings_on() && a.llm_model.is_empty());
+        let mut a = old();
+        assert_eq!(super::allow_in(&mut a, &entry("qwen3.5-4b-q4km", "llm")), Ok(true));
+        assert!(a.llm_on() && a.llm_model == "qwen3.5-4b-q4km" && !a.embeddings_on() && !a.ocr_on());
+        // Unpinned or voice: refused, nothing changes.
+        let mut a = old();
+        let mut unpinned = entry("x", "llm");
+        unpinned.files[0].sha256.clear();
+        assert!(super::allow_in(&mut a, &unpinned).is_err());
+        assert!(super::allow_in(&mut a, &entry("whisper-base", "transcribe")).unwrap_err().contains("experimental"));
+        assert_eq!(a, old());
+    }
 }
