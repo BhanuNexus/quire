@@ -85,6 +85,9 @@ fn rows_are_folded_in_and_a_refit_equals_a_fresh_build() {
             for (id, p) in sem.passages() {
                 let t = sem.passage_text(id, &ix).expect("the passage is in its note");
                 assert_eq!(sem.row_bits(id), sem.row_bits_for(&t), "round {round}: {} at {}", p.path, p.range.start);
+                // The note → rows map finds the same row (S3).
+                let found: Option<Vec<u32>> = sem.vector_of(&p.path, p.range.start).map(|v| v.iter().map(|x| x.to_bits()).collect());
+                assert_eq!(found, sem.row_bits(id), "round {round}: vector_of {}", p.path);
                 places.push((p.path.clone(), p.range.start));
             }
             places.sort();
@@ -195,7 +198,7 @@ fn quality_after_ten_percent_changed_is_within_five_points() {
         label.insert(p.clone(), t);
         changed.push(p);
     }
-    let gone: Vec<usize> = before.passages().filter(|(_, p)| changed.contains(&p.path)).map(|(i, _)| i).collect();
+    let gone = changed.clone();
     let added: Vec<Chunk> = changed.iter().flat_map(|p| chunk_note(p, &files[p])).collect();
     let folded = before.updated(&gone, added, None).expect("lsa").0;
     let fresh = SemanticIndex::fit_lsa(chunks(&files));

@@ -1139,8 +1139,6 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
 
 /// The semantic worker's own state beside the published index.
 struct Sem {
-    /// The rows of each note in the published index.
-    at: HashMap<NotePath, Vec<usize>>,
     /// Passages added or changed since the last fit.
     since_fit: usize,
     fitted_at: std::time::Instant,
@@ -1152,7 +1150,7 @@ struct Sem {
 impl Sem {
     fn new() -> Self {
         let now = std::time::Instant::now();
-        Self { at: HashMap::new(), since_fit: 0, fitted_at: now, last_change: now, embedder: None }
+        Self { since_fit: 0, fitted_at: now, last_change: now, embedder: None }
     }
 
     /// Whether the refit rule says to refit (`docs/design/0.14-index-startup.md` §3.3).
@@ -1231,18 +1229,9 @@ fn build_full(index: &RwLock<Index>, cfg: &RwLock<SemanticConfig>, sem: &mut Sem
         },
         None => SemanticIndex::fit_lsa(chunks),
     };
-    sem.at = rows_by_note(&built);
     sem.since_fit = 0;
     sem.fitted_at = std::time::Instant::now();
     built
-}
-
-fn rows_by_note(ix: &SemanticIndex) -> HashMap<NotePath, Vec<usize>> {
-    let mut at: HashMap<NotePath, Vec<usize>> = HashMap::new();
-    for (i, p) in ix.passages() {
-        at.entry(p.path.clone()).or_default().push(i);
-    }
-    at
 }
 
 /// The rows of `changed` notes made again with the current model and those
@@ -1255,20 +1244,13 @@ fn update(
     changed: &[NotePath],
     removed: &[NotePath],
 ) -> Result<SemanticIndex, String> {
-    let gone: Vec<usize> = changed.iter().chain(removed).filter_map(|p| sem.at.get(p)).flatten().copied().collect();
+    let gone: Vec<NotePath> = changed.iter().chain(removed).cloned().collect();
     let chunks = chunks_of(index, changed);
     let added = chunks.len();
     let cache = sem.embedder.as_mut().map(|(_, c)| c);
-    let (mut next, ids) = cur.updated(&gone, chunks.clone(), cache)?;
-    for p in changed.iter().chain(removed) {
-        sem.at.remove(p);
-    }
-    for (c, id) in chunks.iter().zip(ids) {
-        sem.at.entry(c.path.clone()).or_default().push(id);
-    }
-    if let Some((compact, _)) = next.compacted() {
+    let (mut next, _) = cur.updated(&gone, chunks, cache)?;
+    if let Some(compact) = next.compacted() {
         next = compact;
-        sem.at = rows_by_note(&next);
     }
     sem.since_fit += added;
     sem.last_change = std::time::Instant::now();

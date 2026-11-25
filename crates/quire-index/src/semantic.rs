@@ -303,10 +303,48 @@ impl Model {
     }
 }
 
+/// Shards of the note → rows map: an update copies only those it touches.
+const SHARDS: usize = 256;
+
+/// Each note's row ids, in shards by the path's hash (a fixed hasher: the same shard on every run).
+#[derive(Debug, Clone)]
+struct RowMap(Vec<std::sync::Arc<HashMap<NotePath, Vec<usize>>>>);
+
+impl RowMap {
+    fn new() -> Self {
+        Self((0..SHARDS).map(|_| std::sync::Arc::default()).collect())
+    }
+
+    fn shard(p: &NotePath) -> usize {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        p.hash(&mut h);
+        usize::try_from(h.finish() % SHARDS as u64).unwrap_or(0)
+    }
+
+    fn get(&self, p: &NotePath) -> &[usize] {
+        self.0[Self::shard(p)].get(p).map_or(&[], Vec::as_slice)
+    }
+
+    fn add(&mut self, p: &NotePath, id: usize) {
+        std::sync::Arc::make_mut(&mut self.0[Self::shard(p)]).entry(p.clone()).or_default().push(id);
+    }
+
+    fn remove(&mut self, p: &NotePath) -> Vec<usize> {
+        let shard = &mut self.0[Self::shard(p)];
+        if !shard.contains_key(p) {
+            return Vec::new();
+        }
+        std::sync::Arc::make_mut(shard).remove(p).unwrap_or_default()
+    }
+}
+
 /// A built index: passage rows (place and vector, no text) in blocks, and
 /// the model for queries (`docs/design/0.14-index-startup.md` §3.3).
 pub struct SemanticIndex {
     blocks: Vec<std::sync::Arc<Block>>,
+    /// Each note's rows (Fable's review of I2a, S3: a lookup by note scanned every row).
+    at: RowMap,
     live: usize,
     dead: usize,
     model: Model,
@@ -348,7 +386,7 @@ impl SemanticIndex {
     /// Rows for `chunks` with `vectors` (unit length, one each).
     fn from_rows(chunks: Vec<Chunk>, vectors: &[Vec<f32>], keys: &[u64], model: Model, fitted: std::sync::Arc<[NotePath]>) -> Self {
         let dims = model.lsa_dims();
-        let mut ix = Self { blocks: Vec::new(), live: 0, dead: 0, model, fitted, tainted: false, cache_problem: None };
+        let mut ix = Self { blocks: Vec::new(), at: RowMap::new(), live: 0, dead: 0, model, fitted, tainted: false, cache_problem: None };
         let rows: Vec<Row> = chunks
             .into_iter()
             .zip(vectors)
@@ -371,7 +409,9 @@ impl SemanticIndex {
             }
             let bi = self.blocks.len() - 1;
             let block = std::sync::Arc::make_mut(&mut self.blocks[bi]);
-            ids.push(bi * BLOCK + block.rows.len());
+            let id = bi * BLOCK + block.rows.len();
+            ids.push(id);
+            self.at.add(&r.passage.path, id);
             block.rows.push(Some(r));
             self.live += 1;
         }
@@ -392,6 +432,7 @@ impl SemanticIndex {
         let dims = Some(lsa.dims);
         let mut ix = Self {
             blocks: Vec::new(),
+            at: RowMap::new(),
             live: 0,
             dead: 0,
             model: Model::Lsa(std::sync::Arc::new(lsa)),
@@ -428,12 +469,19 @@ impl SemanticIndex {
         Ok(ix)
     }
 
-    /// This index with the rows `gone` dropped and `added` embedded with the
-    /// current model and appended (folded in: an LSA model stays as fitted),
-    /// and the ids of the new rows. Copies only the blocks it touches.
-    pub(crate) fn updated(&self, gone: &[usize], added: Vec<Chunk>, cache: Option<&mut VectorCache>) -> Result<(Self, Vec<usize>), String> {
+    /// This index with the rows of the notes `gone` dropped and `added`
+    /// embedded with the current model and appended (folded in: an LSA model
+    /// stays as fitted), and the ids of the new rows. Copies only the blocks
+    /// (and row-map shards) it touches.
+    pub(crate) fn updated(
+        &self,
+        gone: &[NotePath],
+        added: Vec<Chunk>,
+        cache: Option<&mut VectorCache>,
+    ) -> Result<(Self, Vec<usize>), String> {
         let mut next = Self {
             blocks: self.blocks.clone(),
+            at: self.at.clone(),
             live: self.live,
             dead: self.dead,
             model: self.model.clone(),
@@ -441,7 +489,8 @@ impl SemanticIndex {
             tainted: self.tainted,
             cache_problem: None,
         };
-        for &id in gone {
+        let ids: Vec<usize> = gone.iter().flat_map(|p| next.at.remove(p)).collect();
+        for id in ids {
             let (b, s) = (id / BLOCK, id % BLOCK);
             if let Some(block) = next.blocks.get_mut(b)
                 && block.rows.get(s).is_some_and(Option::is_some)
@@ -475,14 +524,14 @@ impl SemanticIndex {
         Ok((next, ids))
     }
 
-    /// The same rows with no dead ones, renumbered (when more than a quarter
-    /// are dead), and the new id of each old live one.
-    pub(crate) fn compacted(&self) -> Option<(Self, HashMap<usize, usize>)> {
+    /// The same rows with no dead ones, renumbered (when more than a quarter are dead).
+    pub(crate) fn compacted(&self) -> Option<Self> {
         if self.dead * 4 <= self.live + self.dead {
             return None;
         }
         let mut next = Self {
             blocks: Vec::new(),
+            at: RowMap::new(),
             live: 0,
             dead: 0,
             model: self.model.clone(),
@@ -490,15 +539,15 @@ impl SemanticIndex {
             tainted: self.tainted,
             cache_problem: None,
         };
-        let (olds, rows): (Vec<usize>, Vec<Row>) = self.rows().map(|(i, r)| (i, r.clone())).unzip();
-        let ids = next.append(rows);
-        Some((next, olds.into_iter().zip(ids).collect()))
+        next.append(self.rows().map(|(_, r)| r.clone()).collect());
+        Some(next)
     }
 
     /// Marked as fitted while a folder now locked was open.
     pub(crate) fn tainted(&self) -> Self {
         Self {
             blocks: self.blocks.clone(),
+            at: self.at.clone(),
             live: self.live,
             dead: self.dead,
             model: self.model.clone(),
@@ -617,7 +666,7 @@ impl SemanticIndex {
     /// The stored unit vector of the passage of `path` starting at byte `start`.
     pub fn vector_of(&self, path: &NotePath, start: usize) -> Option<Vec<f32>> {
         let width = self.model.lsa_dims().map_or(0, |d| d + HASH_DIMS);
-        self.rows().find(|(_, r)| &r.passage.path == path && r.passage.range.start == start).map(|(_, r)| r.vector.to_f32(width))
+        self.at.get(path).iter().filter_map(|id| self.row(*id)).find(|r| r.passage.range.start == start).map(|r| r.vector.to_f32(width))
     }
 
     /// Cosine similarity between a query vector and a passage.
@@ -629,7 +678,7 @@ impl SemanticIndex {
     fn note_vector(&self, path: &NotePath) -> Option<Vec<f32>> {
         let width = self.model.lsa_dims().map_or(0, |d| d + HASH_DIMS);
         let mut acc: Option<Vec<f32>> = None;
-        for (_, r) in self.rows().filter(|(_, r)| &r.passage.path == path) {
+        for r in self.at.get(path).iter().filter_map(|id| self.row(*id)) {
             let v = r.vector.to_f32(width);
             let a = acc.get_or_insert_with(|| vec![0.0; v.len()]);
             a.iter_mut().zip(&v).for_each(|(x, y)| *x += y);

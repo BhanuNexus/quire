@@ -24,8 +24,8 @@ use quire_vault::{NotePath, Vault};
 
 /// A note of a few sections of words from a 3,000-word vocabulary, with
 /// topics, so the LSA has structure to find.
-fn note(i: usize, salt: usize) -> String {
-    let mut x = (i as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ salt as u64;
+fn note(i: usize, variant: usize) -> String {
+    let mut x = (i as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ variant as u64;
     let mut next = |n: u64| {
         x ^= x << 13;
         x ^= x >> 7;
