@@ -118,9 +118,10 @@ fn call(v: Value) -> Result<ToolCall, BadCall> {
 /// Each value loses the one newline the template puts on each side. Its
 /// type comes from the offered tool's JSON schema (`tools`: the request's
 /// tool definitions with `name` and `input_schema`): `integer`, `number`,
-/// `boolean`, `object`, `array` and `null` values are read as JSON (left a
-/// string when they aren't JSON, as vLLM's `qwen3_coder` parser does, so the
-/// tool's own check reports it); anything else stays a string. A missing
+/// `boolean`, `object`, `array` and `null` values are read as JSON, and one
+/// that isn't JSON makes the block a bad call, so the model is asked again
+/// (a tool would otherwise drop the text and use its default); anything else
+/// stays a string. A missing
 /// `</function>` is accepted only when the model closed the block
 /// (`closed`); a missing `</parameter>`, text outside the tags or a repeated
 /// parameter is an error.
@@ -163,9 +164,8 @@ pub fn read_xml_calls(body: &str, closed: bool, tools: &[Value]) -> Result<Vec<T
             let raw = raw.strip_suffix('\n').unwrap_or(raw);
             let kind = schema.and_then(|s| s[key.as_str()]["type"].as_str()).unwrap_or("string");
             let value = match kind {
-                "integer" | "number" | "boolean" | "object" | "array" | "null" => {
-                    serde_json::from_str(raw.trim()).unwrap_or_else(|_| Value::String(raw.to_string()))
-                }
+                "integer" | "number" | "boolean" | "object" | "array" | "null" => serde_json::from_str(raw.trim())
+                    .map_err(|_| BadCall::new(format!("the parameter {key} of {name} must be {kind} JSON, not {:?}", raw.trim())))?,
                 _ => Value::String(raw.to_string()),
             };
             if key.is_empty() || args.insert(key.clone(), value).is_some() {
@@ -388,9 +388,10 @@ mod tests {
         assert_eq!(c[0].arguments, json!({"path": "42"}));
         let c = read_xml_calls("<function=other>\n<parameter=n>\n42\n</parameter>\n</function>", true, &xml_tools()).unwrap();
         assert_eq!(c[0].arguments, json!({"n": "42"}));
-        // A typed value that isn't JSON is left as text for the tool to refuse.
-        let c = read_xml_calls("<function=edit_note>\n<parameter=count>\ntwo\n</parameter>\n</function>", true, &xml_tools()).unwrap();
-        assert_eq!(c[0].arguments, json!({"count": "two"}));
+        // A typed value that isn't JSON is a bad call, naming the parameter.
+        let e = read_xml_calls("<function=edit_note>\n<parameter=count>\ntwo\n</parameter>\n</function>", true, &xml_tools()).unwrap_err();
+        assert!(e.message.contains("count") && e.message.contains("integer"), "{}", e.message);
+        assert!(read_xml_calls("<function=edit_note>\n<parameter=lines>\n[3, 4\n</parameter>\n</function>", true, &xml_tools()).is_err());
         // No parameters.
         let c = read_xml_calls("<function=edit_note>\n</function>", true, &[]).unwrap();
         assert_eq!(c[0].arguments, json!({}));
