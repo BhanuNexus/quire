@@ -255,16 +255,20 @@ fn stop_answers_at_once_and_the_engine_keeps_working() {
     let cancel = CancelFlag::new();
     let stopper = cancel.clone();
     let mut got = 0;
-    let started = Instant::now();
+    // From the moment Stop is pressed: the model's load before it (with the
+    // free-memory check, a PowerShell call on Windows) is not the point here.
+    let mut stopped: Option<Instant> = None;
     let r = chat.chat(&ChatRequest::simple("", "__slow__ one two three four five six seven eight", 100), &cancel, &mut |e| {
         if matches!(e, ChatEvent::Text { .. }) {
             got += 1;
             stopper.cancel();
+            stopped.get_or_insert_with(Instant::now);
         }
     });
     assert!(matches!(r, Err(quire_intel::llm::LlmError::Cancelled)), "{r:?}");
     assert!(got <= 2, "nothing much arrives after Stop");
-    assert!(started.elapsed() < Duration::from_secs(3));
+    let stopped = stopped.expect("a piece of the reply arrived before Stop");
+    assert!(stopped.elapsed() < Duration::from_secs(2), "Stop took {:?}", stopped.elapsed());
     let (text, _) = quire_intel::chat::chat_text(&chat, &ChatRequest::simple("", "still there?", 50), &CancelFlag::new()).unwrap();
     assert_eq!(text, "You said: still there?");
 }
