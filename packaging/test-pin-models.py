@@ -6,7 +6,7 @@
     python3 -I packaging/test-pin-models.py
 
 A pinned third-party language model passes `--check` only with a record in
-packaging/model-checks/<id>.toml of the same sha256 and engine version whose
+packaging/model-checks/<id>.toml of the same sha256 and engine compute version whose
 numbers meet the thresholds; Qwen's own repositories and unpinned rows need
 none. Each case runs a copy of the script in a temporary tree.
 """
@@ -33,7 +33,7 @@ url = "https://example.invalid/x.gguf"
 GOOD = {
     "gguf_sha256": f'"{SHA}"',
     "passed": "true",
-    "engine_version": '"0.14.0"',
+    "engine_compute_version": "3",
     "docs": {"same_ids": "true", "mean_kl_nats": "0.01", "top1_agreement": "0.97"},
     "chat": {"same_ids": "true", "mean_kl_nats": "0.02", "top1_agreement": "0.95"},
 }
@@ -45,13 +45,15 @@ def record(r):
     return top + tables
 
 
-def run(repo="unsloth/Qwen3.5-4B-GGUF", pinned=True, rec=None):
+def run(repo="unsloth/Qwen3.5-4B-GGUF", pinned=True, rec=None, version="0.14.0"):
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         (root / "packaging" / "model-checks").mkdir(parents=True)
         (root / "crates" / "quire-ai" / "src").mkdir(parents=True)
         shutil.copy(HERE / "pin-models.py", root / "packaging" / "pin-models.py")
-        (root / "Cargo.toml").write_text('[workspace.package]\nversion = "0.14.0"\n')
+        (root / "Cargo.toml").write_text(f'[workspace.package]\nversion = "{version}"\n')
+        (root / "apps" / "quire-ai-engine" / "src").mkdir(parents=True)
+        (root / "apps" / "quire-ai-engine" / "src" / "lib.rs").write_text("pub const ENGINE_COMPUTE_VERSION: u32 = 3;\n")
         pin = f'sha256 = "{SHA}"\nsize = 1' if pinned else ""
         (root / "crates" / "quire-ai" / "src" / "catalog.toml").write_text(ROW.format(repo=repo, pin=pin))
         if rec is not None:
@@ -82,7 +84,8 @@ def main():
         ("passed, but the numbers miss the KL threshold", dict(rec=changed(**{"docs.mean_kl_nats": "0.2"})), 1, "mean KL"),
         ("passed, but top-1 is too low on the chat", dict(rec=changed(**{"chat.top1_agreement": "0.5"})), 1, "top-1"),
         ("different token ids", dict(rec=changed(**{"chat.same_ids": "false"})), 1, "token ids"),
-        ("another engine version", dict(rec=changed(engine_version='"0.13.2"')), 1, "engine"),
+        ("another engine compute version", dict(rec=changed(engine_compute_version="2")), 1, "compute version"),
+        ("a release bump alone changes nothing", dict(rec=GOOD, version="0.15.0"), 0, ""),
     ]
     failures = 0
     for name, kw, want, text in cases:

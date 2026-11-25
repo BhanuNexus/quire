@@ -48,8 +48,14 @@ MAX_KL = 0.05
 MIN_TOP1 = 0.90
 
 
-def engine_version():
-    return tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]["package"]["version"]
+def engine_compute_version():
+    """`ENGINE_COMPUTE_VERSION` of apps/quire-ai-engine/src/lib.rs: what the engine computes
+    from a model file, bumped only when those numbers change (not with the release)."""
+    src = (ROOT / "apps" / "quire-ai-engine" / "src" / "lib.rs").read_text(encoding="utf-8")
+    m = re.search(r"^pub const ENGINE_COMPUTE_VERSION: u32 = (\d+);$", src, re.M)
+    if not m:
+        raise SystemExit("ENGINE_COMPUTE_VERSION not found in apps/quire-ai-engine/src/lib.rs")
+    return int(m.group(1))
 HF = re.compile(r"^https://huggingface\.co/(?P<repo>[^/]+/[^/]+)/resolve/(?P<rev>[^/]+)/(?P<file>.+)$")
 UA = {"User-Agent": "quire-pin-models"}
 
@@ -124,8 +130,11 @@ def reference_problem(m, sha):
         kl, top1 = t.get("mean_kl_nats"), t.get("top1_agreement")
         if not isinstance(kl, (int, float)) or not isinstance(top1, (int, float)) or kl > MAX_KL or top1 < MIN_TOP1:
             return f"{m['id']}: {text}: mean KL {kl} (at most {MAX_KL}), top-1 {top1} (at least {MIN_TOP1})"
-    if r.get("engine_version") != engine_version():
-        return f"{m['id']}: the reference check ran on engine {r.get('engine_version')}, this is {engine_version()}; run it again"
+    if r.get("engine_compute_version") != engine_compute_version():
+        return (
+            f"{m['id']}: the reference check ran on engine compute version {r.get('engine_compute_version')}, "
+            f"this engine is {engine_compute_version()} (its numbers changed); run it again"
+        )
     return None
 
 

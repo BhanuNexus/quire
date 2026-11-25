@@ -25,6 +25,19 @@ use serde_json::{Value, json};
 
 pub mod template;
 
+/// The version of what the engine computes from a model file.
+///
+/// For the reference checks of pinned files: `packaging/model-checks/<id>.toml`
+/// records it, and `packaging/pin-models.py --check` requires the same number.
+///
+/// Bump it only when the numbers a supported architecture produces change:
+/// a layer's formula or order, how weights are read or dequantized, the
+/// tokenizer or a chat template. Then the reference checks run again before
+/// a release. Do not bump it for a release, a refactor that keeps the
+/// numbers, or a change to another model kind. Packaging reads this line
+/// as written (`ENGINE_COMPUTE_VERSION: u32 = <n>;`), which a test checks.
+pub const ENGINE_COMPUTE_VERSION: u32 = 1;
+
 #[cfg(feature = "models")]
 pub mod models;
 
@@ -436,6 +449,14 @@ pub fn handle_args(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The packaging scripts read the compute version with this pattern.
+    #[test]
+    fn the_compute_version_is_written_as_packaging_reads_it() {
+        let src = include_str!("lib.rs");
+        let line = format!("pub const ENGINE_COMPUTE_VERSION: u32 = {ENGINE_COMPUTE_VERSION};");
+        assert_eq!(src.matches(line.as_str()).count(), 1, "{line}");
+    }
 
     /// Loading a language model unloads any other language model first;
     /// embedders and OCR stay.

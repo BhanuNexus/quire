@@ -40,7 +40,8 @@ percentile of the per-position KL. Top-1 agreement is exact.
 Pass, for both texts: identical token ids, mean KL <= 0.05 nats and top-1
 agreement >= 90% (fixed in the design note before any run). The result is
 written to <out>/<id>.toml either way; pin-models.py accepts a third-party file
-only with a passing record of the same sha256 and engine version.
+only with a passing record of the same sha256 and ENGINE_COMPUTE_VERSION
+(apps/quire-ai-engine/src/lib.rs, bumped only when the engine's numbers change).
 """
 
 import argparse
@@ -49,6 +50,7 @@ import hashlib
 import importlib.util
 import json
 import math
+import re
 import subprocess
 import sys
 import tempfile
@@ -70,9 +72,14 @@ def sha256(path):
     return h.hexdigest()
 
 
-def engine_version():
-    cargo = tomllib.loads((ROOT / "Cargo.toml").read_text())
-    return cargo["workspace"]["package"]["version"]
+def engine_compute_version():
+    """`ENGINE_COMPUTE_VERSION` of apps/quire-ai-engine/src/lib.rs: what the engine computes
+    from a model file, bumped only when those numbers change (not with the release)."""
+    src = (ROOT / "apps" / "quire-ai-engine" / "src" / "lib.rs").read_text(encoding="utf-8")
+    m = re.search(r"^pub const ENGINE_COMPUTE_VERSION: u32 = (\d+);$", src, re.M)
+    if not m:
+        raise SystemExit("ENGINE_COMPUTE_VERSION not found in apps/quire-ai-engine/src/lib.rs")
+    return int(m.group(1))
 
 
 def versions():
@@ -229,7 +236,7 @@ def main():
         f"min_top1_agreement = {MIN_TOP1}\n"
         f"passed = {'true' if ok else 'false'}\n"
         f'date = "{datetime.date.today().isoformat()}"\n'
-        f'engine_version = "{engine_version()}"\n'
+        f"engine_compute_version = {engine_compute_version()}\n"
         + "".join(f'{k}_version = "{v}"\n' for k, v in lib.items())
         + "\n"
         + toml_table("docs", docs_r)
