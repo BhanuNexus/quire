@@ -21,7 +21,9 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use quire_ai::catalog::{Catalog, CatalogEntry, Purpose};
-use quire_ai::download::{Control, DownloadError, Downloader, Installed1, Manifest, install_from_files, partial_bytes, sha256_file};
+use quire_ai::download::{
+    Control, DownloadError, Downloader, Installed1, Manifest, install_from_files, partial_bytes, sha256_file, verify_for_load,
+};
 
 #[derive(Clone, Copy)]
 enum Behaviour {
@@ -222,6 +224,38 @@ fn a_file_gone_at_its_source_stops_at_once_with_one_message() {
         assert_eq!(seen.try_iter().count(), 2, "{code}: no retry");
         assert!(!models.path().join("m/model.bin.part").exists() && !installed(models.path(), &e));
     }
+}
+
+/// A model's files are checked before each load: the size and time recorded
+/// at download suffice; a file touched but unchanged is hashed again and
+/// accepted; a file swapped for other bytes is refused.
+#[test]
+fn a_swapped_model_file_is_refused_before_it_loads() {
+    let body = data(60_000);
+    let (addr, _seen) = server(body.clone(), vec![Behaviour::Ok]);
+    let e = entry("m", &format!("{addr}/model.bin"), &body);
+    let models = tempfile::tempdir().unwrap();
+    Downloader::new("").fetch(&e, models.path(), &Control::new(), &mut |_| {}).unwrap();
+    let file = models.path().join("m/model.bin");
+    let stamp = |m: &Path| Manifest::load(m).models["m"].stamps["model.bin"];
+    let recorded = stamp(models.path());
+    assert_eq!(recorded.size, 60_000, "the download records its stamp");
+    assert_eq!(verify_for_load(models.path(), &e), Ok(()));
+    // Touched, same bytes: hashed again, accepted, the new time recorded.
+    let later = std::time::SystemTime::now() + Duration::from_hours(1);
+    std::fs::File::options().write(true).open(&file).unwrap().set_modified(later).unwrap();
+    assert_eq!(verify_for_load(models.path(), &e), Ok(()));
+    assert_ne!(stamp(models.path()).mtime_ms, recorded.mtime_ms);
+    // Swapped for other bytes of the same size: refused, whatever the time says.
+    let mut other = body;
+    other[100] ^= 0xff;
+    std::fs::write(&file, &other).unwrap();
+    let err = verify_for_load(models.path(), &e).unwrap_err();
+    assert!(err.contains("changed on this computer") && err.contains("download it again"), "{err}");
+    // Removed, or never installed: refused.
+    std::fs::remove_file(&file).unwrap();
+    assert!(verify_for_load(models.path(), &e).is_err());
+    assert!(verify_for_load(tempfile::tempdir().unwrap().path(), &e).unwrap_err().contains("isn't installed"));
 }
 
 #[test]

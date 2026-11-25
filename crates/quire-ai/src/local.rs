@@ -39,6 +39,34 @@ pub struct LocalSetup {
     /// Let the engine expand every weight into faster x86 tiles (quicker
     /// prompts, about twice the memory of a `Q4_K` model).
     pub fast_prompts: bool,
+    /// Check a model's files before it loads
+    /// ([`crate::download::verify_for_load`]): on in the app, off for test
+    /// engines whose models are not files.
+    pub verify_files: bool,
+}
+
+/// What [`LocalSetup::verify_files`] checks before a model loads: the one
+/// place the app checks model files again (the engine is sent `sha256` but
+/// doesn't use it).
+#[derive(Debug, Clone)]
+struct FileCheck {
+    models: PathBuf,
+    entry: CatalogEntry,
+}
+
+impl FileCheck {
+    fn new(entry: &CatalogEntry, setup: &LocalSetup) -> Option<Self> {
+        setup.verify_files.then(|| Self { models: setup.models_dir.clone(), entry: entry.clone() })
+    }
+}
+
+/// Checks the files of `spec`'s model unless it is already loaded.
+fn check_files(check: Option<&FileCheck>, engine: &Engine, spec: &LoadParams) -> Result<(), EngineError> {
+    let Some(c) = check else { return Ok(()) };
+    if engine.snapshot().loaded.iter().any(|m| m.model == spec.model) {
+        return Ok(());
+    }
+    crate::download::verify_for_load(&c.models, &c.entry).map_err(EngineError::GaveUp)
 }
 
 /// How the engine should load a catalog model.
@@ -168,6 +196,7 @@ pub struct LocalEmbedder {
     query_prefix: String,
     passage_prefix: String,
     cache: Mutex<F16Cache>,
+    files: Option<FileCheck>,
 }
 
 impl LocalEmbedder {
@@ -177,6 +206,7 @@ impl LocalEmbedder {
         Self {
             engine,
             spec: load_params(entry, ModelKind::Embed, setup),
+            files: FileCheck::new(entry, setup),
             label: format!("{} (on this computer)", entry.display_name()),
             query_prefix: entry.query_prefix.clone(),
             passage_prefix: entry.passage_prefix.clone(),
@@ -198,6 +228,7 @@ impl LocalEmbedder {
         let missing: Vec<usize> = (0..texts.len()).filter(|&i| out[i].is_none()).collect();
         for batch in missing.chunks(64) {
             let batch_texts: Vec<&str> = batch.iter().map(|&i| texts[i]).collect();
+            check_files(self.files.as_ref(), &self.engine, &self.spec)?;
             let vecs = self.engine.with_model(&self.spec, |e| {
                 let params = json!({ "model": self.spec.model, "texts": batch_texts, "normalize": true, "prefix": prefix });
                 let r = e.call(method::EMBED, params, None, &mut |_| {}, Duration::from_mins(2))?;
@@ -267,6 +298,7 @@ pub struct LocalChat {
     /// memory before it loads.
     ram_mb: u64,
     free_memory: fn() -> Option<u64>,
+    files: Option<FileCheck>,
 }
 
 /// What the chat says when the engine stopped under a reply, or gave up
@@ -278,6 +310,7 @@ impl LocalChat {
         Self {
             engine,
             spec: load_params(entry, ModelKind::Llm, setup),
+            files: FileCheck::new(entry, setup),
             name: entry.display_name().to_string(),
             tier: entry.tier.unwrap_or_default(),
             ram_mb: u64::from(entry.ram_mb),
@@ -354,6 +387,7 @@ impl ChatModel for LocalChat {
             "json": req.json,
         });
         self.room_to_load()?;
+        check_files(self.files.as_ref(), &self.engine, &self.spec).map_err(llm_error)?;
         let mut emitted = false;
         let r = self.engine.with_model(&self.spec, |e| {
             if emitted {
@@ -402,11 +436,12 @@ impl ChatModel for LocalChat {
 pub struct LocalOcr {
     engine: Engine,
     spec: LoadParams,
+    files: Option<FileCheck>,
 }
 
 impl LocalOcr {
     pub fn new(engine: Engine, entry: &CatalogEntry, setup: &LocalSetup) -> Self {
-        Self { engine, spec: load_params(entry, ModelKind::Ocr, setup) }
+        Self { engine, spec: load_params(entry, ModelKind::Ocr, setup), files: FileCheck::new(entry, setup) }
     }
 
     /// Lines of text in an image file (PNG, JPEG, WebP, GIF).
@@ -421,6 +456,7 @@ impl LocalOcr {
     }
 
     fn run(&self, params: &Value, cancel: &CancelFlag) -> Result<Vec<OcrLine>, EngineError> {
+        check_files(self.files.as_ref(), &self.engine, &self.spec)?;
         self.engine.with_model(&self.spec, |e| {
             let r = e.call(method::OCR, params.clone(), Some(cancel), &mut |_| {}, Duration::from_mins(2))?;
             serde_json::from_value::<OcrResult>(r).map(|r| r.lines).map_err(|e| EngineError::Failed(format!("bad OCR reply: {e}")))
@@ -434,11 +470,12 @@ impl LocalOcr {
 pub struct LocalTranscriber {
     engine: Engine,
     spec: LoadParams,
+    files: Option<FileCheck>,
 }
 
 impl LocalTranscriber {
     pub fn new(engine: Engine, entry: &CatalogEntry, setup: &LocalSetup) -> Self {
-        Self { engine, spec: load_params(entry, ModelKind::Transcribe, setup) }
+        Self { engine, spec: load_params(entry, ModelKind::Transcribe, setup), files: FileCheck::new(entry, setup) }
     }
 
     pub fn model(&self) -> &str {
@@ -448,6 +485,7 @@ impl LocalTranscriber {
     /// The text of a WAV file. `language` is a code (`en`) or empty to detect it.
     pub fn transcribe(&self, wav: &Path, language: &str, cancel: &CancelFlag) -> Result<TranscribeResult, EngineError> {
         let params = json!({ "model": self.spec.model, "audio_path": wav.to_string_lossy(), "language": language });
+        check_files(self.files.as_ref(), &self.engine, &self.spec)?;
         self.engine.with_model(&self.spec, |e| {
             // An engine from before protocol 2 can't transcribe.
             if e.protocol().is_some_and(|p| p < TRANSCRIBE_SINCE) {

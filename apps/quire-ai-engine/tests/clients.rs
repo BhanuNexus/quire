@@ -41,7 +41,14 @@ fn catalog() -> Catalog {
 }
 
 fn setup(dir: &std::path::Path) -> LocalSetup {
-    LocalSetup { models_dir: dir.to_path_buf(), threads: 0, gpu: "auto".into(), idle_unload_s: 300, fast_prompts: false }
+    LocalSetup {
+        models_dir: dir.to_path_buf(),
+        threads: 0,
+        gpu: "auto".into(),
+        idle_unload_s: 300,
+        fast_prompts: false,
+        verify_files: false,
+    }
 }
 
 #[test]
@@ -165,6 +172,34 @@ fn reading_progress_comes_before_the_reply() {
     assert_eq!(reading, [(256, 600), (512, 600), (600, 600)]);
     let first_text = events.iter().position(|e| matches!(e, ChatEvent::Text { .. })).unwrap();
     assert!(events[..first_text].iter().all(|e| matches!(e, ChatEvent::Reading { .. })), "reading comes first");
+}
+
+/// With file checks on (as in the app), a model whose file was swapped after
+/// it was installed is refused before the engine loads it.
+#[test]
+fn a_swapped_model_file_is_refused_before_loading() {
+    let tmp = tempfile::tempdir().unwrap();
+    let models = tmp.path().join("models");
+    let file = tmp.path().join("model.gguf");
+    std::fs::write(&file, b"a pinned model file").unwrap();
+    let sha = quire_ai::download::sha256_file(&file).unwrap();
+    let c = Catalog::parse(&format!(
+        "format = 1\n[[model]]\nid = \"tiny\"\npurpose = \"llm\"\nlabel = \"Tiny\"\nlicence = \"MIT\"\nram_mb = 1\ntier = \"better\"\n[[model.files]]\nname = \"model.gguf\"\nurl = \"https://example.invalid/m.gguf\"\nsha256 = \"{sha}\"\nsize = 19\n"
+    ))
+    .unwrap();
+    let installed = quire_ai::download::install_from_files(&c, &[file], &models);
+    assert!(matches!(installed[..], [quire_ai::download::Installed1::Ok { .. }]), "{installed:?}");
+    let mut s = setup(&models);
+    s.verify_files = true;
+    let engine = engine_with(&[], None);
+    let chat = LocalChat::new(engine.clone(), c.get("tiny").unwrap(), &s).with_free_memory(|| None);
+    let (text, _) = quire_intel::chat::chat_text(&chat, &ChatRequest::simple("", "hello", 20), &CancelFlag::new()).unwrap();
+    assert_eq!(text, "You said: hello");
+    engine.unload("tiny");
+    std::fs::write(models.join("tiny/model.gguf"), b"a swapped model file").unwrap();
+    let err = chat.chat(&ChatRequest::simple("", "hello", 20), &CancelFlag::new(), &mut |_| {}).unwrap_err().to_string();
+    assert!(err.contains("changed on this computer"), "{err}");
+    assert!(engine.snapshot().loaded.is_empty(), "nothing was loaded");
 }
 
 #[test]

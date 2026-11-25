@@ -165,11 +165,19 @@ format = 1
 verified = 1793000000000              # Unix ms of the check
 [models."bge-small-en-v1.5".files]
 "model.safetensors" = "<sha256>"      # what each file was verified against
+[models."bge-small-en-v1.5".stamps]   # 0.14; older versions keep it unread
+"model.safetensors" = { size = 133093490, mtime_ms = 1793000000000 }
 ```
 
 A model counts as installed when every file of its catalog entry is on
 disk and recorded here with the hash this build pins (so a catalog with new
-hashes asks for a new download).
+hashes asks for a new download). Since 0.14 a model's files are checked again
+before each load (`quire_ai::download::verify_for_load`, called by the app's
+`Local*` clients, not by the engine): a file whose size and modification time
+are its stamp passes; any other is hashed again, and accepted (its new stamp
+recorded) only if the hash still matches. Otherwise the model is refused with
+"The files of … changed on this computer since they were checked. Delete it
+and download it again in Settings → AI."
 
 ## Caches in the vault (`.quire/cache/`, rebuildable)
 

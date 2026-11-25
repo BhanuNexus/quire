@@ -112,6 +112,62 @@ impl From<std::io::Error> for DownloadError {
 
 // ------------------------------------------------------------------ manifest
 
+/// A file's size and modification time (Unix ms), as recorded at its check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Stamp {
+    pub size: u64,
+    pub mtime_ms: i64,
+}
+
+/// `path`'s stamp now, if it can be read.
+pub fn stamp_of(path: &Path) -> Option<Stamp> {
+    let m = std::fs::metadata(path).ok()?;
+    let mtime_ms =
+        m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok().map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+    Some(Stamp { size: m.len(), mtime_ms })
+}
+
+/// Checks a model's files before it loads ("after the rename, the file is
+/// checked again before use", `docs/design/0.14-local-ai.md` §3.8).
+///
+/// Each file must be recorded in the manifest with the hash this build pins.
+/// When its size and modification time are those recorded at its last check,
+/// that is enough (a load costs a `stat`); otherwise the file is hashed again
+/// (seconds for a few GB): a match records the new stamp, a mismatch refuses
+/// the model with a message saying to download it again.
+pub fn verify_for_load(models: &Path, entry: &CatalogEntry) -> Result<(), String> {
+    let name = entry.display_name();
+    let changed = || {
+        format!("The files of {name} changed on this computer since they were checked. Delete it and download it again in Settings → AI.")
+    };
+    let mut manifest = Manifest::load(models);
+    let Some(rec) = manifest.models.get(&entry.id) else { return Err(format!("{name} isn't installed on this computer.")) };
+    let mut fresh = Vec::new();
+    for f in &entry.files {
+        if !f.is_pinned() || rec.files.get(&f.name) != Some(&f.sha256) {
+            return Err(changed());
+        }
+        let path = installed_path(models, entry, f);
+        let Some(now) = stamp_of(&path) else { return Err(changed()) };
+        if rec.stamps.get(&f.name) == Some(&now) {
+            continue;
+        }
+        match sha256_file(&path) {
+            Ok(h) if h == f.sha256 => fresh.push((f.name.clone(), now)),
+            _ => return Err(changed()),
+        }
+    }
+    if !fresh.is_empty() {
+        if let Some(rec) = manifest.models.get_mut(&entry.id) {
+            rec.stamps.extend(fresh);
+            rec.verified = now_ms();
+        }
+        // Losing the stamp only costs a hash at the next load.
+        let _ = manifest.save(models);
+    }
+    Ok(())
+}
+
 pub const MANIFEST_FORMAT: u32 = 1;
 
 /// `<models>/installed.toml`.
@@ -131,6 +187,11 @@ pub struct Installed {
     pub files: BTreeMap<String, String>,
     /// Unix ms of the last check.
     pub verified: i64,
+    /// File name → its size and modification time when its hash was last
+    /// checked (0.14): a load compares them and hashes the file again only
+    /// when either changed ([`verify_for_load`]). Older versions keep the key.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub stamps: BTreeMap<String, Stamp>,
     #[serde(flatten)]
     pub other: toml::Table,
 }
@@ -246,6 +307,9 @@ impl Downloader {
                 progress(Progress::Verifying);
                 let installed = manifest.models.entry(entry.id.clone()).or_default();
                 installed.files.insert(f.name.clone(), f.sha256.clone());
+                if let Some(s) = stamp_of(&installed_path(models, entry, f)) {
+                    installed.stamps.insert(f.name.clone(), s);
+                }
                 installed.verified = now_ms();
                 manifest.save(models)?;
             }
@@ -497,6 +561,9 @@ pub fn install_from_files(catalog: &Catalog, paths: &[PathBuf], models: &Path) -
             }
             let m = manifest.models.entry(entry.id.clone()).or_default();
             m.files.insert(f.name.clone(), f.sha256.clone());
+            if let Some(s) = stamp_of(&installed_path(models, entry, f)) {
+                m.stamps.insert(f.name.clone(), s);
+            }
             m.verified = now_ms();
             Ok(Some((entry.id.clone(), f.name.clone())))
         })();

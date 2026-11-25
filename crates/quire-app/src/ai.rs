@@ -98,6 +98,7 @@ fn setup(settings: &Settings) -> Option<LocalSetup> {
         gpu: settings.ai_local.gpu.clone(),
         idle_unload_s: settings.ai_local.idle_unload_s,
         fast_prompts: settings.ai_local.fast_prompts,
+        verify_files: true,
     })
 }
 
