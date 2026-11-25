@@ -263,7 +263,15 @@ pub struct LocalChat {
     spec: LoadParams,
     name: String,
     tier: Tier,
+    /// The model's memory in MB (catalog `ram_mb`), checked against free
+    /// memory before it loads.
+    ram_mb: u64,
+    free_memory: fn() -> Option<u64>,
 }
+
+/// What the chat says when the engine stopped under a reply, or gave up
+/// after its restarts (`docs/design/0.14-local-ai.md` §3.5).
+pub const MODEL_STOPPED: &str = "The on-device model stopped. It may have run out of memory.";
 
 impl LocalChat {
     pub fn new(engine: Engine, entry: &CatalogEntry, setup: &LocalSetup) -> Self {
@@ -272,11 +280,43 @@ impl LocalChat {
             spec: load_params(entry, ModelKind::Llm, setup),
             name: entry.display_name().to_string(),
             tier: entry.tier.unwrap_or_default(),
+            ram_mb: u64::from(entry.ram_mb),
+            free_memory: crate::memory::available_bytes,
         }
+    }
+
+    /// The same with free memory read by `f` (tests).
+    #[must_use]
+    pub fn with_free_memory(mut self, f: fn() -> Option<u64>) -> Self {
+        self.free_memory = f;
+        self
     }
 
     pub const fn tier(&self) -> Tier {
         self.tier
+    }
+
+    /// Refuses to load the model when free memory is short; a loaded model
+    /// is never refused.
+    fn room_to_load(&self) -> Result<(), LlmError> {
+        if self.engine.snapshot().loaded.iter().any(|m| m.model == self.spec.model) {
+            return Ok(());
+        }
+        crate::memory::check_room(&self.name, self.ram_mb, (self.free_memory)()).map_err(LlmError::Request)
+    }
+}
+
+/// A chat error: the engine stopping under a reply (or giving up after its
+/// restarts) is most often the system ending it for memory.
+fn chat_error(e: EngineError) -> LlmError {
+    match e {
+        EngineError::Failed(why) if why.contains("stopped unexpectedly") || why.contains("engine stopped") => {
+            LlmError::Request(MODEL_STOPPED.into())
+        }
+        EngineError::GaveUp(why) if why.starts_with("The on-device AI engine stopped working") => {
+            LlmError::Request(format!("{MODEL_STOPPED} {why}"))
+        }
+        other => llm_error(other),
     }
 }
 
@@ -313,6 +353,7 @@ impl ChatModel for LocalChat {
             "temperature": req.temperature,
             "json": req.json,
         });
+        self.room_to_load()?;
         let mut emitted = false;
         let r = self.engine.with_model(&self.spec, |e| {
             if emitted {
@@ -339,7 +380,7 @@ impl ChatModel for LocalChat {
                 Duration::from_mins(2),
             )
         });
-        let done = r.map_err(llm_error)?;
+        let done = r.map_err(chat_error)?;
         let usage: GenUsage = serde_json::from_value(done["usage"].clone()).unwrap_or_default();
         let stop = match usage.stop {
             StopKind::EndTurn => StopReason::EndTurn,

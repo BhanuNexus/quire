@@ -35,6 +35,8 @@ enum Behaviour {
     Slow,
     /// Ignore Range: always 200 and the whole file.
     NoRange,
+    /// Answer with this status and no body.
+    Status(u16),
 }
 
 /// Serves `body` at any path, one behaviour per request; sends each
@@ -63,6 +65,10 @@ fn server(body: Vec<u8>, plan: Vec<Behaviour>) -> (String, mpsc::Receiver<(Strin
                 }
             }
             tx.send((path, range.clone())).unwrap();
+            if let Behaviour::Status(code) = b {
+                let _ = write!(s, "HTTP/1.1 {code} Gone\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+                continue;
+            }
             let data: Vec<u8> = match b {
                 Behaviour::Corrupt => body.iter().map(|x| x ^ 0xff).collect(),
                 _ => body.clone(),
@@ -186,10 +192,36 @@ fn a_wrong_hash_is_retried_once_then_rejected() {
     let e = entry("m", &format!("{addr}/model.bin"), &body);
     let models = tempfile::tempdir().unwrap();
     let r = Downloader::new("").fetch(&e, models.path(), &Control::new(), &mut |_| {});
-    assert_eq!(r, Err(DownloadError::Checksum { file: "model.bin".into() }));
+    assert_eq!(r, Err(DownloadError::Checksum { model: "Test".into(), file: "model.bin".into() }));
+    assert!(r.unwrap_err().to_string().contains("changed or was removed"));
     assert_eq!(seen.try_iter().count(), 2, "one retry");
     assert!(!models.path().join("m/model.bin").exists() && !models.path().join("m/model.bin.part").exists());
     assert!(!installed(models.path(), &e));
+}
+
+/// A pinned file that is gone at its source (404 or 410): one request, no
+/// retry, the part deleted, nothing recorded, and the one message.
+#[test]
+fn a_file_gone_at_its_source_stops_at_once_with_one_message() {
+    for code in [404, 410] {
+        let body = data(50_000);
+        let (addr, seen) = server(body.clone(), vec![Behaviour::DropAfter(20_000), Behaviour::Status(code), Behaviour::Ok]);
+        let e = entry("m", &format!("{addr}/model.bin"), &body);
+        let models = tempfile::tempdir().unwrap();
+        let d = Downloader::new("");
+        // A first, dropped attempt leaves a part behind…
+        assert!(d.fetch(&e, models.path(), &Control::new(), &mut |_| {}).is_err());
+        assert!(models.path().join("m/model.bin.part").exists());
+        // …then the source answers 404/410.
+        let r = d.fetch(&e, models.path(), &Control::new(), &mut |_| {});
+        assert_eq!(r, Err(DownloadError::Gone { model: "Test".into(), file: "model.bin".into() }), "{code}");
+        assert_eq!(
+            r.unwrap_err().to_string(),
+            "Quire can't download Test: the file at its source changed or was removed. An update of Quire will fix this."
+        );
+        assert_eq!(seen.try_iter().count(), 2, "{code}: no retry");
+        assert!(!models.path().join("m/model.bin.part").exists() && !installed(models.path(), &e));
+    }
 }
 
 #[test]

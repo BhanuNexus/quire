@@ -310,6 +310,22 @@ fn run<B: Backend>(backend: &mut B, job: &Job, out: &Out, state: &Mutex<State>) 
                 Ok(p) => p,
                 Err(e) => return bad(e),
             };
+            // At most one language model at a time (`docs/design/0.14-local-ai.md`
+            // §3.5): a new one unloads the others first, so two never share memory.
+            if p.kind == quire_ai::protocol::ModelKind::Llm {
+                let others: Vec<String> = {
+                    let st = lock(state);
+                    st.loaded
+                        .iter()
+                        .filter(|(m, l)| l.kind == quire_ai::protocol::ModelKind::Llm && **m != p.model)
+                        .map(|(m, _)| m.clone())
+                        .collect()
+                };
+                for m in others {
+                    backend.unload(&m);
+                    lock(state).loaded.remove(&m);
+                }
+            }
             match backend.load(&p) {
                 Ok(mem) => {
                     let idle_after = if p.idle_unload_s == 0 { DEFAULT_IDLE_UNLOAD } else { Duration::from_secs(p.idle_unload_s) };
@@ -420,6 +436,35 @@ pub fn handle_args(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Loading a language model unloads any other language model first;
+    /// embedders and OCR stay.
+    #[test]
+    fn one_language_model_at_a_time() {
+        let mut backend = fake::FakeBackend::default();
+        let state = Mutex::new(State::default());
+        let out: Out = Arc::new(Mutex::new(std::io::stdout()));
+        let load = |id: u64, model: &str, kind: &str| {
+            Job {
+            req: serde_json::from_value(json!({"id": id, "method": "load", "params": {
+                "model": model, "path": format!("/models/{model}"), "sha256": "", "kind": kind, "ctx": 0, "idle_unload_s": 0, "threads": 0, "gpu": "off"
+            }}))
+            .unwrap(),
+            cancel: Arc::new(AtomicBool::new(false)),
+        }
+        };
+        for (i, (model, kind)) in [("bge", "embed"), ("qwen3.5-4b", "llm"), ("ocrs", "ocr"), ("qwen3.5-9b", "llm")].into_iter().enumerate()
+        {
+            let r = run(&mut backend, &load(i as u64, model, kind), &out, &state);
+            assert!(r.error.is_none(), "{model}: {:?}", r.error);
+        }
+        let mut loaded: Vec<String> = lock(&state).loaded.keys().cloned().collect();
+        loaded.sort();
+        assert_eq!(loaded, ["bge", "ocrs", "qwen3.5-9b"]);
+        // Loading the same one again keeps it.
+        assert!(run(&mut backend, &load(9, "qwen3.5-9b", "llm"), &out, &state).error.is_none());
+        assert!(lock(&state).loaded.contains_key("qwen3.5-9b"));
+    }
 
     #[test]
     fn hello_checks_versions_and_gates_everything_else() {

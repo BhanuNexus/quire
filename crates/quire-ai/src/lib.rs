@@ -11,6 +11,7 @@
 //! * `download` — downloads, "Install from file…", the manifest (`client`)
 //! * `engine` — starting and talking to the engine process (`client`)
 //! * `local` — `LocalEmbedder`, `LocalChat`, `LocalOcr` (`client`)
+//! * `memory` — free memory before a language model loads (`client`)
 
 #![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
 
@@ -22,6 +23,8 @@ pub mod download;
 pub mod engine;
 #[cfg(feature = "client")]
 pub mod local;
+#[cfg(feature = "client")]
+pub mod memory;
 pub mod protocol;
 pub mod toolcall;
 pub mod wav;

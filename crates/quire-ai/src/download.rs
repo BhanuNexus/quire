@@ -70,8 +70,17 @@ pub enum DownloadError {
     NotPinned,
     Paused,
     Cancelled,
-    /// The file arrived twice and was wrong both times.
+    /// The file arrived twice and was wrong both times: what the source
+    /// serves is no longer the pinned file.
     Checksum {
+        model: String,
+        file: String,
+    },
+    /// The source answered 404 or 410: the pinned file is gone. Not retried;
+    /// a point release with a new pin is the remedy
+    /// (`docs/design/0.14-local-ai.md` §3.3).
+    Gone {
+        model: String,
         file: String,
     },
     Http(String),
@@ -84,7 +93,9 @@ impl std::fmt::Display for DownloadError {
             Self::NotPinned => f.write_str("this model isn't available in this build of Quire"),
             Self::Paused => f.write_str("paused"),
             Self::Cancelled => f.write_str("cancelled"),
-            Self::Checksum { file } => write!(f, "checksum mismatch for {file}: the download was damaged or changed"),
+            Self::Checksum { model, .. } | Self::Gone { model, .. } => {
+                write!(f, "Quire can't download {model}: the file at its source changed or was removed. An update of Quire will fix this.")
+            }
             Self::Http(e) => write!(f, "download failed: {e}"),
             Self::Io(e) => write!(f, "couldn't save the download: {e}"),
         }
@@ -258,6 +269,11 @@ impl Downloader {
         for attempt in 0..2 {
             match self.stream_to(&part, f, ctl, progress) {
                 Ok(()) => {}
+                Err(DownloadError::Gone { .. }) => {
+                    // Nothing half installed: the part goes, nothing is recorded.
+                    let _ = std::fs::remove_file(&part);
+                    return Err(DownloadError::Gone { model: entry.display_name().to_string(), file: f.name.clone() });
+                }
                 Err(DownloadError::Cancelled) => {
                     let _ = std::fs::remove_file(&part);
                     return Err(DownloadError::Cancelled);
@@ -270,10 +286,10 @@ impl Downloader {
             // Wrong bytes (a bad mirror, a changed upstream file): start over once.
             let _ = std::fs::remove_file(&part);
             if attempt == 1 {
-                return Err(DownloadError::Checksum { file: f.name.clone() });
+                return Err(DownloadError::Checksum { model: entry.display_name().to_string(), file: f.name.clone() });
             }
         }
-        Err(DownloadError::Checksum { file: f.name.clone() })
+        Err(DownloadError::Checksum { model: entry.display_name().to_string(), file: f.name.clone() })
     }
 
     /// Bring `part` up to `f.size` bytes, resuming when the server allows.
@@ -307,6 +323,7 @@ impl Downloader {
                 // The server thinks we have it all; the hash check decides.
                 return Ok(());
             }
+            404 | 410 => return Err(DownloadError::Gone { model: String::new(), file: f.name.clone() }),
             _ => return Err(DownloadError::Http(format!("HTTP {status} from {}", host_of(&url)))),
         };
         progress(have);
@@ -371,7 +388,7 @@ fn place(entry: &CatalogEntry, f: &CatalogFile, part: &Path, models: &Path) -> R
             && sha256_file(&tmp)? != want
         {
             let _ = std::fs::remove_file(&tmp);
-            return Err(DownloadError::Checksum { file: ENGINE_BIN.into() });
+            return Err(DownloadError::Checksum { model: "the AI engine".into(), file: ENGINE_BIN.into() });
         }
         make_executable(&tmp)?;
         #[expect(clippy::disallowed_methods, reason = "the checked, executable engine replaces the old one")]

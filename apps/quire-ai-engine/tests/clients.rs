@@ -120,6 +120,37 @@ fn chat_streams_text_and_tool_calls() {
     assert_eq!(text, "You said: hello there");
 }
 
+/// Before a language model loads, free memory is checked; a loaded one is
+/// not refused. An engine that stops under a reply gives the one message
+/// (and, after its restarts, says it was turned off), never a half call.
+#[test]
+fn short_memory_and_a_stopped_engine_give_clear_messages() {
+    let tmp = tempfile::tempdir().unwrap();
+    let c = catalog();
+    let entry = c.get("qwen3.5-4b-q4km").unwrap();
+    let engine = engine_with(&[], None);
+    let short = LocalChat::new(engine.clone(), entry, &setup(tmp.path())).with_free_memory(|| Some(1_000_000_000));
+    let err = short.chat(&ChatRequest::simple("", "hello", 20), &CancelFlag::new(), &mut |_| {}).unwrap_err().to_string();
+    assert!(err.contains("Not enough free memory for Qwen 3.5 4B (needs about 3.3 GB, 1.0 GB free)"), "{err}");
+    assert!(engine.snapshot().loaded.is_empty(), "nothing was loaded");
+    let roomy = LocalChat::new(engine, entry, &setup(tmp.path())).with_free_memory(|| Some(64_000_000_000));
+    let (text, _) = quire_intel::chat::chat_text(&roomy, &ChatRequest::simple("", "hello there", 50), &CancelFlag::new()).unwrap();
+    assert_eq!(text, "You said: hello there");
+    // Loaded now: short memory no longer stops it.
+    let (text, _) = quire_intel::chat::chat_text(&short, &ChatRequest::simple("", "again", 50), &CancelFlag::new()).unwrap();
+    assert_eq!(text, "You said: again");
+    for i in 0..4 {
+        let mut events = Vec::new();
+        let err =
+            roomy.chat(&ChatRequest::simple("", "__crash__", 20), &CancelFlag::new(), &mut |e| events.push(e)).unwrap_err().to_string();
+        assert!(err.contains(quire_ai::local::MODEL_STOPPED), "{i}: {err}");
+        assert!(!events.iter().any(|e| matches!(e, ChatEvent::ToolUse { .. })), "no call from a stopped reply");
+        if i == 3 {
+            assert!(err.contains("turned off"), "after the restarts: {err}");
+        }
+    }
+}
+
 #[test]
 fn ocr_reads_images() {
     let tmp = tempfile::tempdir().unwrap();
