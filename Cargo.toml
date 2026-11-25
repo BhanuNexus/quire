@@ -157,7 +157,7 @@ cpal = { version = "0.18.2", default-features = false }
 thread-priority = "3.1"
 # Dev-dependencies only (test oracles and interop clients).
 rrule = "0.14.0"
-fsrs = "6.6.2"
+fsrs = "7.0.0"
 rmcp = "3.8.0"
 
 [workspace.lints.rust]
