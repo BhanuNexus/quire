@@ -877,6 +877,7 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
             }
         }
         let mut sem_taint = false;
+        let mut loaded_cached = false;
         let mut prepared: Vec<Prepared> = from_scan;
         let mut reload: Option<Vec<Parsed>> = None;
         let mut shutdown = false;
@@ -904,6 +905,8 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                 IndexMsg::LoadCached { vault, manifest } => {
                     detached = false;
                     reload = None;
+                    // A vault loaded: the meaning index is built again (Fable's review of I2a, B1).
+                    loaded_cached = true;
                     prepared.clear();
                     loaded = Some(vault.clone());
                     let cfg = link_config.take().unwrap_or_else(|| crate::relations::LinkConfig::load(&vault));
@@ -1101,7 +1104,7 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
         }
         shared.busy.store(false, Ordering::Relaxed);
         shared.version.fetch_add(1, Ordering::Release);
-        if reloaded {
+        if reloaded || loaded_cached {
             let _ = sem_tx.send(SemMsg::Rebuild);
         } else {
             if !sem_removed.is_empty() {
