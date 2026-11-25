@@ -48,6 +48,16 @@ fn host(hidden: bool) -> ToolHost {
     let agent = AgentStore::open(&vault, DeviceInfo { id: "d_test".into(), name: "Test".into() }, Arc::new(SystemClock));
     agent.approve_policy(agent.policy_state().file_hash().as_ref()).unwrap();
     let host = ToolHost::open(vault, None, agent);
+    // The same file time in both vaults, made a moment apart, so replies
+    // that show `modified` compare whole.
+    {
+        let handle = host.index().handle();
+        let mut ix = handle.write().unwrap();
+        let paths: Vec<_> = ix.records().map(|r| r.path.clone()).collect();
+        for p in &paths {
+            ix.set_modified(p, 1_793_577_600_000);
+        }
+    }
     if hidden {
         host.index().flush_semantic();
         assert!(host.index().semantic().is_some());
@@ -73,6 +83,7 @@ fn the_panel_with_meaning_on_answers_as_the_plain_vault_without_meaning() {
         {
             let want = reply(&plain, tool, &args);
             assert!(!want.contains("Private/"), "{want}");
+            assert!(!want.contains("\"modified\"") || want.contains("\"modified\":\"2026-11-02T00:00:00Z\""), "the pinned time: {want}");
             assert_eq!(reply(&hidden, tool, &args), want, "{tool} {args}");
         }
     }
