@@ -58,6 +58,43 @@ const STRUCTURE_TAGS: [&str; 12] = [
     "</parameter>",
 ];
 
+/// A structure tag as [`Prompt::content`] breaks it: `<`, a zero-width space,
+/// then the rest of the tag.
+fn escaped(tag: &str) -> String {
+    format!("<\u{200B}{}", &tag[1..])
+}
+
+/// Undoes [`Prompt::content`] in what the local model writes.
+///
+/// A structure tag broken with a zero-width space becomes the tag again, so a note's `<think>`
+/// that the model copies into an edit matches the note and is written back as
+/// it was (`docs/design/0.14-local-ai.md`, "As built"). Other zero-width
+/// spaces stay.
+pub fn unescape_content(s: &str) -> std::borrow::Cow<'_, str> {
+    if !s.contains("<\u{200B}") {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let mut out = s.to_string();
+    for tag in STRUCTURE_TAGS {
+        out = out.replace(&escaped(tag), tag);
+    }
+    std::borrow::Cow::Owned(out)
+}
+
+/// [`unescape_content`] on every string of a tool call's arguments.
+pub fn unescape_value(v: &mut Value) {
+    match v {
+        Value::String(s) => {
+            if let std::borrow::Cow::Owned(o) = unescape_content(s) {
+                *s = o;
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(unescape_value),
+        Value::Object(map) => map.values_mut().for_each(unescape_value),
+        _ => {}
+    }
+}
+
 impl Prompt {
     /// Template text (no control tokens).
     fn push_str(&mut self, s: &str) {
@@ -588,7 +625,14 @@ impl ReplyParser {
                 }
                 continue;
             }
-            let keep = TAGS.iter().map(|t| longest_prefix_suffix(&self.pending, t)).max().unwrap_or(0);
+            // Hold back what could start a tag, or a structure tag broken by the
+            // prompt's escaping (so it is undone whole in `emit_text`).
+            let keep = TAGS
+                .iter()
+                .map(|t| longest_prefix_suffix(&self.pending, t))
+                .chain(STRUCTURE_TAGS.iter().map(|t| longest_prefix_suffix(&self.pending, &escaped(t))))
+                .max()
+                .unwrap_or(0);
             let text: String = self.pending.drain(..self.pending.len() - keep).collect();
             self.emit_text(&text, &mut out);
             return out;
@@ -648,6 +692,8 @@ impl ReplyParser {
     fn emit_text(&mut self, text: &str, out: &mut Vec<Piece>) {
         // Leading blank lines after a think block or before the first words.
         let text = if self.started { text } else { text.trim_start_matches(['\n', ' ']) };
+        let unescaped = unescape_content(text);
+        let text = unescaped.as_ref();
         if text.is_empty() {
             return;
         }
@@ -667,8 +713,9 @@ impl ReplyParser {
         };
         match read {
             Ok(calls) => {
-                for c in calls {
+                for mut c in calls {
                     self.calls += 1;
+                    unescape_value(&mut c.arguments);
                     out.push(Piece::ToolCall { id: format!("call_{}", self.calls), name: c.name, input: c.arguments });
                 }
             }
@@ -748,6 +795,45 @@ mod tests {
         assert!(matches!(&p.finish(true)[..], [Piece::BadCall { raw, .. }] if raw == "{broken"), "a cut-off call is never run");
         assert_eq!(longest_prefix_suffix("abc<to", "<tool_call>"), 3);
         assert_eq!(longest_prefix_suffix("é", "<think>"), 0);
+    }
+
+    /// The escaping of structure tags in content is undone in what the model
+    /// writes back: a note containing `<think>` that the local model edits
+    /// elsewhere (`str_replace` with an `old_str` holding the tag, as the model
+    /// saw it in the escaped prompt) matches the note, and the note's bytes
+    /// outside the edit stay as they were. Streamed in pieces that split the
+    /// escaped tag.
+    #[test]
+    fn escaped_tags_round_trip_through_a_local_edit() {
+        let note = "# Plan\nThe model wrote <think> here.\nFix: old name.\n";
+        // What the model was shown of the note (a tool result in the prompt).
+        let mut shown = Prompt::default();
+        shown.content(note);
+        assert!(shown.text().contains("<\u{200B}think>") && !shown.text().contains("<think>"));
+        let defs = vec![
+            json!({"name": "str_replace", "input_schema": {"properties": {"old_str": {"type": "string"}, "new_str": {"type": "string"}}}}),
+        ];
+        let reply = "Fixing <\u{200B}think> next to it.\n<tool_call>\n<function=str_replace>\n<parameter=old_str>\nwrote <\u{200B}think> here.\nFix: old name.\n</parameter>\n<parameter=new_str>\nwrote <\u{200B}think> here.\nFix: new name.\n</parameter>\n</function>\n</tool_call>";
+        for size in [1usize, 2, 3, 7] {
+            let mut p = ReplyParser::with_tool_defs(&defs);
+            let chars: Vec<char> = reply.chars().collect();
+            let mut got = Vec::new();
+            for c in chars.chunks(size) {
+                got.extend(p.push(&c.iter().collect::<String>()));
+            }
+            got.extend(p.finish(true));
+            let text: String = got.iter().filter_map(|x| if let Piece::Text(t) = x { Some(t.as_str()) } else { None }).collect();
+            assert_eq!(text.trim_end(), "Fixing <think> next to it.", "chunks of {size}");
+            let Some(Piece::ToolCall { input, .. }) = got.iter().find(|x| matches!(x, Piece::ToolCall { .. })) else {
+                panic!("no call: {got:?}")
+            };
+            let (old, new) = (input["old_str"].as_str().unwrap(), input["new_str"].as_str().unwrap());
+            assert!(note.contains(old), "chunks of {size}: old_str {old:?} must match the note");
+            let edited = note.replacen(old, new, 1);
+            assert_eq!(edited, "# Plan\nThe model wrote <think> here.\nFix: new name.\n", "only the edit changed");
+        }
+        // A zero-width space that isn't the escaping stays.
+        assert_eq!(unescape_content("a\u{200B}b <\u{200B}x>"), "a\u{200B}b <\u{200B}x>");
     }
 
     /// Qwen 3.5's XML calls, streamed three characters at a time, with the
