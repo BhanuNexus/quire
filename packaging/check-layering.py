@@ -15,9 +15,14 @@ This script reads that table and compares it with the real dependency graph from
      workspace crate's optional features (except FEATURE_ALLOW);
   4. the table's "Depends on" column differs from the real graph;
   5. a workspace crate depends on a crate in BANNED_DEPS (dates are
-     quire_base::dates since 0.14: docs/design/0.14-jiff.md).
+     quire_base::dates since 0.14: docs/design/0.14-jiff.md);
+  6. a shipped package (every crate under apps/) reaches a crate in BANNED_DEPS
+     through any crate, a third-party one too, in either edition (default
+     features and --no-default-features) on any target: `cargo tree -e
+     normal,build -i <crate>` must find nothing. Skipped with --metadata (the
+     self-tests fake cargo instead).
 
-Dev-dependencies are exempt from 2, 3, 4 and 5 (chrono stays as a test oracle).
+Dev-dependencies are exempt from 2 to 6 (chrono stays as a test oracle).
 
 Usage: check-layering.py [--architecture ARCHITECTURE.md] [--metadata FILE]
 Without --metadata it runs cargo metadata in the current directory.
@@ -39,7 +44,7 @@ PLANNED: set[str] = set()
 
 # Outside crates no workspace crate may use in its code (normal and build
 # dependencies), with what to use instead.
-BANNED_DEPS: dict[str, str] = {"chrono": "quire_base::dates (jiff)"}
+BANNED_DEPS: dict[str, str] = {"chrono": "quire_base::dates (jiff)", "chrono-tz": "quire_base::dates (jiff)"}
 
 # Edges that break the layer rule today and are on their way out. The edge is
 # optional in the "Depends on" comparison, so the check passes with or without it.
@@ -209,6 +214,33 @@ def check(meta, architecture_text):
     return errors
 
 
+def shipped(meta):
+    """The workspace packages under apps/: what Quire ships."""
+    root = meta.get("workspace_root", "").rstrip("/") + "/apps/"
+    return sorted(p["name"] for p in meta.get("packages", []) if p.get("manifest_path", "").startswith(root))
+
+
+def run_cargo(args):
+    out = subprocess.run(["cargo", *args], capture_output=True, text=True)
+    return out.returncode, out.stdout, out.stderr
+
+
+def tree_violations(packages, run=run_cargo):
+    """Rule 6: `cargo tree -i` of every banned crate, per shipped package and edition."""
+    errors = []
+    for pkg in packages:
+        for edition in ([], ["--no-default-features"]):
+            for banned in BANNED_DEPS:
+                args = ["tree", "--offline", "--locked", "--target", "all", "-e", "normal,build", "-p", pkg, *edition, "-i", banned]
+                code, out, err = run(args)
+                label = f"{pkg} ({edition[0]})" if edition else pkg
+                if code == 0 and out.strip():
+                    errors.append(f"{label} reaches {banned}: use {BANNED_DEPS[banned]}. The path:\n{out.strip()}")
+                elif code != 0 and "did not match any packages" not in err:
+                    errors.append(f"cargo tree failed for {label} and {banned}: {err.strip()}")
+    return errors
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--architecture", default="ARCHITECTURE.md")
@@ -233,6 +265,8 @@ def main(argv):
         detail = getattr(e, "stderr", "") or ""
         fail_input(f"cannot get cargo metadata: {e} {detail}")
     errors = check(meta, text)
+    if not args.metadata:
+        errors += tree_violations(shipped(meta))
     for e in errors:
         print(f"error: {e}")
     if errors:
