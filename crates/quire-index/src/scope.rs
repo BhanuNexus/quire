@@ -25,8 +25,9 @@
 //!   idle timer.
 //! - **Nothing on disk**: views live in memory only.
 //!
-//! In 0.14.0 a view that hides a note has no meaning search: the meaning
-//! model is fitted on every note ([`ScopeRead::meaning`]).
+//! A view uses the meaning model only if every note the model was fitted
+//! on is one it may read (`FitSet`;
+//! `docs/design/0.14-agent-index.md` §3.11).
 
 use std::sync::Arc;
 
@@ -149,10 +150,6 @@ pub struct Scope {
     build: u64,
     notes: DocStats,
     pages: DocStats,
-    /// The number of meaning-model fits started when this view last hid a
-    /// document: only a model whose fit started later can be free of it
-    /// (Fable's review, S1). `None`: it never hid one.
-    hid_at: Option<u64>,
     /// Note documents the worker could not decide without the vault (hidden
     /// until then), and whether an attachment page was one.
     unsure: Vec<DocId>,
@@ -178,44 +175,32 @@ impl Scope {
     /// The view of `ix` for `visible`: one call of it per note and per
     /// attachment, pure (no file is read).
     pub fn build(ix: &Index, visible: Visible) -> Self {
-        Self::build_at(ix, visible, 0, None)
-    }
-
-    /// [`Self::build`], with `fits` meaning-model fits started so far, and
-    /// `removed` the fits started when a document last left the index (if
-    /// one did): the view can't tell whether it would have hidden it, so it
-    /// starts marked as of then (Fable's re-check, N1).
-    pub(crate) fn build_at(ix: &Index, visible: Visible, fits: u64, removed: Option<u64>) -> Self {
         let mut s = Self {
             visible,
             build: ix.build(),
             notes: DocStats::default(),
             pages: DocStats::default(),
-            hid_at: removed,
             unsure: Vec::new(),
             unsure_pages: false,
         };
         let ids: Vec<DocId> = (0..ix.fulltext().doc_slots()).filter_map(|i| u32::try_from(i).ok().map(DocId)).collect();
         s.patch_notes(ix, &ids, true);
         s.rebuild_pages(ix, true);
-        s.saw(false, fits);
         s
     }
 
     /// Take `visible`, a newer caller's predicate for the same key, and
     /// decide with it what the worker left undecided. On the caller's thread.
-    fn refresh(&mut self, ix: &Index, visible: Visible, fits: u64) {
+    fn refresh(&mut self, ix: &Index, visible: Visible) {
         self.visible = visible;
         if self.unsure.is_empty() && !self.unsure_pages {
             return;
         }
-        let hid = !self.hides_nothing();
         let ids = std::mem::take(&mut self.unsure);
         self.patch_notes(ix, &ids, true);
         if self.unsure_pages {
             self.rebuild_pages(ix, true);
         }
-        self.saw(hid, fits);
     }
 
     /// Whether anything waits for a caller's predicate.
@@ -223,19 +208,10 @@ impl Scope {
         !self.unsure.is_empty() || self.unsure_pages
     }
 
-    /// Note when the view hides a document, before (`hid`) or after a change,
-    /// with `fits` meaning-model fits started so far.
-    fn saw(&mut self, hid: bool, fits: u64) {
-        if hid || !self.hides_nothing() {
-            self.hid_at = Some(fits);
-        }
-    }
-
-    /// Whether a meaning model whose fit was number `fit` may serve this
-    /// view: it hides nothing, and the fit started after it last hid a
-    /// document.
-    pub(crate) fn meaning_from(&self, fit: u64) -> bool {
-        self.hides_nothing() && self.hid_at.is_none_or(|h| fit > h)
+    /// Whether the meaning model `fit` describes may serve this view: every
+    /// document it was fitted on is one the view may read (the frame's rule).
+    pub(crate) fn may_use(&self, fit: &FitSet) -> bool {
+        fit.ids.iter().all(|id| self.notes.contains(*id)) && fit.ghosts.iter().all(|p| (self.visible)(p, &[], true).unwrap_or(false))
     }
 
     /// What note document `id` is to this view and its length; `None` when
@@ -347,11 +323,11 @@ impl<'a> ScopeRead<'a> {
         }
     }
 
-    /// Whether meaning search may be used: the model is fitted on every
-    /// note, so only a view that hides nothing may use it (0.14.0). A
-    /// service's [`crate::Scoped`] also asks that the model was fitted after
-    /// the view last hid a note.
-    pub const fn meaning(self, _ix: &Index) -> bool {
+    /// Whether a meaning model given with this scope may be used: always
+    /// for the whole index; through a view only if the view holds every note
+    /// (a model gated by [`crate::Scoped::semantic`], which applies the
+    /// exact rule, comes to [`Index::search_sections_in`] already checked).
+    pub const fn meaning(self) -> bool {
         match self {
             Self::Full => true,
             Self::View(s) => s.hides_nothing(),
@@ -378,6 +354,59 @@ impl Index {
     }
 }
 
+/// What the meaning model in use was fitted on, against one build of the
+/// index: the frame's rule is that a view may use the model only if every
+/// document the model was fitted on is one the view may read (the
+/// coordinator's review of N1).
+///
+/// Document ids are stable while a note stays, but a removed note's id is
+/// given again later, and a load numbers every note afresh. So a fitted
+/// note that leaves the index moves from `ids` to `ghosts`, by path; and on
+/// another build the set is made again from the model's own passages.
+#[derive(Debug)]
+pub(crate) struct FitSet {
+    /// The model this describes (compared by pointer, kept alive by nothing).
+    model: std::sync::Weak<crate::semantic::SemanticIndex>,
+    build: u64,
+    /// Fitted notes still in the index, by id.
+    ids: Vec<DocId>,
+    /// Fitted notes that left the index since: their text is in the model.
+    ghosts: Vec<NotePath>,
+}
+
+impl FitSet {
+    /// The notes `model` was fitted on (those with a passage), against `ix`.
+    pub(crate) fn of(model: &Arc<crate::semantic::SemanticIndex>, ix: &Index) -> Self {
+        let mut paths: Vec<&NotePath> = model.chunks.iter().map(|c| &c.path).collect();
+        paths.sort_unstable();
+        paths.dedup();
+        let (mut ids, mut ghosts) = (Vec::new(), Vec::new());
+        for p in paths {
+            match ix.doc_id(p) {
+                Some(id) => ids.push(id),
+                None => ghosts.push(p.clone()),
+            }
+        }
+        ids.sort_unstable();
+        Self { model: Arc::downgrade(model), build: ix.build(), ids, ghosts }
+    }
+
+    /// Whether this describes `model` against `ix`'s build.
+    pub(crate) fn is_for(&self, model: &Arc<crate::semantic::SemanticIndex>, ix: &Index) -> bool {
+        self.build == ix.build() && std::sync::Weak::ptr_eq(&self.model, &Arc::downgrade(model))
+    }
+
+    /// Note document `id` (at `path`) leaving the index, under its write lock.
+    pub(crate) fn removed(&mut self, build: u64, id: DocId, path: &NotePath) {
+        if self.build == build
+            && let Ok(i) = self.ids.binary_search(&id)
+        {
+            self.ids.remove(i);
+            self.ghosts.push(path.clone());
+        }
+    }
+}
+
 /// One registered view.
 struct Entry {
     key: ScopeKey,
@@ -390,20 +419,22 @@ struct Entry {
 pub(crate) struct Scopes {
     list: Vec<Entry>,
     clock: u64,
+    /// What the meaning model in use was fitted on (beside the views: the
+    /// same lock, taken after the index's).
+    pub(crate) fit: Option<FitSet>,
 }
 
 impl Scopes {
     /// The view for `key` if it belongs to `ix`'s build, marked used, with
     /// `visible` (this caller's predicate) in place of the one it had, and
     /// what the worker left undecided decided by it (Fable's review, S3).
-    /// `fits`: meaning-model fits started so far.
-    pub(crate) fn get(&mut self, key: &ScopeKey, ix: &Index, visible: &Visible, fits: u64) -> Option<Arc<Scope>> {
+    pub(crate) fn get(&mut self, key: &ScopeKey, ix: &Index, visible: &Visible) -> Option<Arc<Scope>> {
         self.clock += 1;
         let clock = self.clock;
         let e = self.list.iter_mut().find(|e| e.key == *key && e.scope.build == ix.build())?;
         e.used = clock;
         // A copy only while a reader holds the view: two tables of a few bytes a note.
-        Arc::make_mut(&mut e.scope).refresh(ix, Arc::clone(visible), fits);
+        Arc::make_mut(&mut e.scope).refresh(ix, Arc::clone(visible));
         Some(Arc::clone(&e.scope))
     }
 
@@ -415,10 +446,6 @@ impl Scopes {
         let clock = self.clock;
         if let Some(e) = self.list.iter_mut().find(|e| e.key == key) {
             if e.scope.build != scope.build {
-                // What the view hid before the load may still be in the meaning model.
-                let hid_at = e.scope.hid_at.max(scope.hid_at);
-                let mut scope = scope;
-                Arc::make_mut(&mut scope).hid_at = hid_at;
                 e.scope = scope;
             }
             e.used = clock;
@@ -436,20 +463,17 @@ impl Scopes {
     /// Patch every view of `ix`'s build for the note documents `ids` (and
     /// the attachment pages when they changed). Called by the index worker
     /// under its write lock: no reader holds a view then.
-    /// `fits`: meaning-model fits started so far.
-    pub(crate) fn patch(&mut self, ix: &Index, ids: &[DocId], pages: bool, fits: u64) {
+    pub(crate) fn patch(&mut self, ix: &Index, ids: &[DocId], pages: bool) {
         for e in &mut self.list {
             if e.scope.build != ix.build() {
                 continue;
             }
             let s = Arc::make_mut(&mut e.scope);
-            let hid = !s.hides_nothing();
             // No storage call under the write lock: what needs one waits for the next caller.
             s.patch_notes(ix, ids, false);
             if pages {
                 s.rebuild_pages(ix, false);
             }
-            s.saw(hid, fits);
         }
     }
 

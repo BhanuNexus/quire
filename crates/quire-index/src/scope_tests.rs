@@ -319,7 +319,7 @@ fn an_empty_note_is_a_member() {
     let all = view(&ix, |_: &NotePath, _: &[String]| true);
     assert_eq!(all.notes().n(), ix.fulltext().doc_count());
     assert_eq!(ix.len_in(ScopeRead::View(&all)), ix.len_in(ScopeRead::Full));
-    assert!(ScopeRead::View(&all).meaning(&ix), "a view that hides nothing keeps meaning search");
+    assert!(ScopeRead::View(&all).meaning(), "a view that hides nothing keeps meaning search");
     assert!(ScopeRead::View(&all).has_note(&ix, &np("🙂.md")));
     let q: Vec<String> = ["ropes", "ro", "trees"].map(String::from).to_vec();
     assert_eq!(hits(&ix, ScopeRead::View(&all), &q), hits(&ix, ScopeRead::Full, &q));
@@ -330,7 +330,7 @@ fn an_empty_note_is_a_member() {
     let part = view(&ix, |p: &NotePath, _: &[String]| !p.as_str().starts_with("Private/"));
     assert_eq!(part.notes().n(), fresh.fulltext().doc_count());
     assert_eq!(hits(&ix, ScopeRead::View(&part), &q), hits(&fresh, ScopeRead::Full, &q));
-    assert!(!ScopeRead::View(&part).meaning(&ix));
+    assert!(!ScopeRead::View(&part).meaning());
 }
 
 /// Fable's review, S1: the meaning model is fitted on every note. A view
@@ -359,8 +359,6 @@ fn meaning_comes_back_only_after_a_refit() {
     let key = [3u8; 32];
     assert!(svc.semantic().is_some());
     assert!(svc.scoped(key, Arc::clone(&visible)).semantic().is_none(), "a view that hides a note has no meaning");
-    let everything = crate::scope::visible(|_: &NotePath, _: &[String]| true);
-    assert!(svc.scoped([4u8; 32], Arc::clone(&everything)).semantic().is_some());
     // The hidden note goes: the view hides nothing, but the model still holds it.
     svc.remove(np("Private/s.md"));
     svc.flush();
@@ -371,9 +369,8 @@ fn meaning_comes_back_only_after_a_refit() {
         assert!(sc.semantic().is_none(), "the model was fitted with the hidden note");
         assert!(sc.search_sections("automobile", &SearchFilters::default(), 5).iter().all(|h| !h.by_meaning));
     }
-    // A caller whose view saw every note before the removal keeps meaning search meanwhile (a view
-    // built only now could not tell, and waits: `a_view_first_built_after_a_removal_waits_for_a_refit`).
-    assert!(svc.scoped([4u8; 32], everything).semantic().is_some());
+    // A caller who may read every note the model was fitted on keeps meaning search meanwhile.
+    assert!(svc.scoped([4u8; 32], crate::scope::visible(|_: &NotePath, _: &[String]| true)).semantic().is_some());
     go.send(()).unwrap();
     svc.flush_semantic();
     assert!(svc.semantic_version() > fitted);
@@ -499,6 +496,55 @@ fn a_view_built_after_a_reload_waits_for_a_refit() {
     svc.load(quire_vault::Vault::in_memory(&FRESH[..3]));
     svc.flush();
     fresh_view_waits_for_a_refit(&svc, &go, [42; 32], "after a reload");
+}
+
+/// After the vault is loaded again with nothing removed (as at a start with
+/// a model from before), a fresh view that may read every fitted note has
+/// meaning at once, and one that may not has none (the coordinator's rule).
+#[test]
+fn after_a_reload_with_nothing_removed_meaning_is_there_at_once() {
+    let (svc, _go) = held_fits();
+    let fitted = svc.semantic_version();
+    svc.load(quire_vault::Vault::in_memory(FRESH));
+    svc.flush();
+    assert_eq!(svc.semantic_version(), fitted, "no refit: the model from before the load");
+    assert!(svc.scoped([44; 32], visible(|_: &NotePath, _: &[String]| true)).semantic().is_some());
+    assert!(svc.scoped([45; 32], no_private()).semantic().is_none(), "the model was fitted on the hidden note");
+}
+
+/// A hidden note added after the fit is not in the model: a view that
+/// hides it keeps meaning search (its hits come only from its own notes).
+#[test]
+fn a_note_hidden_and_added_after_the_fit_costs_no_meaning() {
+    let (go, wait) = crossbeam_channel::unbounded::<()>();
+    let svc = IndexService::spawn();
+    svc.set_semantic_builder(Some(Arc::new(move |chunks| {
+        wait.recv().map_err(|e| e.to_string())?;
+        Ok(crate::semantic::build_lsa_index(chunks))
+    })));
+    go.send(()).unwrap();
+    svc.load(quire_vault::Vault::in_memory(&FRESH[..3]));
+    svc.flush_semantic();
+    svc.upsert(np("Private/new.md"), "# New\nThe automobile secret is a vehicle engine road.".into());
+    svc.flush();
+    let sc = svc.scoped([46; 32], no_private());
+    assert!(!sc.view().hides_nothing());
+    assert!(sc.semantic().is_some(), "every fitted note is one it may read");
+    assert!(sc.search_sections("automobile", &SearchFilters::default(), 5).iter().all(|h| h.path.as_str() != "Private/new.md"));
+}
+
+/// A removed note's document id is given again to the next new note: the
+/// model's text of the removed one must not pass as the new one's.
+#[test]
+fn a_reused_document_id_does_not_hide_a_removed_note() {
+    let (svc, _go) = held_fits();
+    svc.remove(np("Private/s.md"));
+    svc.flush();
+    svc.upsert(np("Late.md"), "# Late\nA truck is a vehicle.".into());
+    svc.flush();
+    let sc = svc.scoped([47; 32], no_private());
+    assert!(sc.view().hides_nothing());
+    assert!(sc.semantic().is_none(), "the removed hidden note is still in the model");
 }
 
 /// With no removal since the last fit, a fresh view that hides nothing
