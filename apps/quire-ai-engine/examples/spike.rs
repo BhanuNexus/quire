@@ -272,7 +272,8 @@ fn whisper(size: &str) {
 
 /// `spike <dir> [bert|qwen3|qwen3-small|whisper] [candle|repack|compact|auto|tiny|base|small]`,
 /// `spike <dir> qwen35 [4b|9b]` or
-/// `spike <dir> qwen35-logits <ids.json> <out.jsonl> [<want.jsonl>]`:
+/// `spike <dir> qwen35-logits <ids.json> <out.jsonl> [<want.jsonl>]`,
+/// `spike <dir> qwen35-tokenize text|chat <in> <out.json>`:
 /// one model per run, so peak memory is that model's.
 fn main() {
     let dir = std::path::PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| ".".into()));
@@ -294,6 +295,14 @@ fn main() {
                 std::process::exit(2);
             };
             qwen35::logits(&dir, &ids, &out, arg(5).as_deref());
+        }
+        Some("qwen35-tokenize") => {
+            let arg = |n: usize| std::env::args().nth(n);
+            let (Some(kind), Some(input), Some(out)) = (arg(3), arg(4), arg(5)) else {
+                eprintln!("usage: spike <model dir> qwen35-tokenize text|chat <in> <out.json>");
+                std::process::exit(2);
+            };
+            qwen35::tokenize(&dir, &kind, input.as_ref(), out.as_ref());
         }
         Some("whisper") => whisper(std::env::args().nth(3).as_deref().unwrap_or("base")),
         _ => {
@@ -468,6 +477,27 @@ mod qwen35 {
             );
         }
         println!("columns: model | prompt tokens | reading tokens/s | writing tokens/s | RSS MB | peak RSS MB");
+    }
+
+    /// `spike <model dir> qwen35-tokenize text|chat <in> <out.json>`: the
+    /// engine's token ids for a text file, or for a conversation (a JSON
+    /// object with `system`, `messages`, `tools`, `json`, in the engine's
+    /// message form) rendered by its Qwen 3.5 template, as a JSON array.
+    pub(crate) fn tokenize(dir: &std::path::Path, kind: &str, input: &std::path::Path, out: &std::path::Path) {
+        let mut tok = tokenizers::Tokenizer::from_file(dir.join("tokenizer.json")).expect("tokenizer.json");
+        let text = std::fs::read_to_string(input).expect("read input");
+        let prompt = if kind == "chat" {
+            let c: serde_json::Value = serde_json::from_str(&text).expect("conversation JSON");
+            let tools = c["tools"].as_array().cloned().unwrap_or_default();
+            let messages = c["messages"].as_array().cloned().unwrap_or_default();
+            quire_ai_engine::template::render_qwen35(c["system"].as_str().unwrap_or_default(), &messages, &tools, c["json"] == true)
+        } else {
+            let mut p = quire_ai_engine::template::Prompt::default();
+            p.push_content(&text);
+            p
+        };
+        let ids = quire_ai_engine::models::encode_prompt(&mut tok, &prompt).expect("encode");
+        std::fs::write(out, serde_json::to_string(&ids).expect("json")).expect("write");
     }
 
     fn log_softmax(row: &[f32]) -> Vec<f64> {

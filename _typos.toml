@@ -10,6 +10,8 @@ extend-exclude = [
   # Fuzzer corpus and crash inputs: arbitrary bytes.
   "fuzz/corpus/",
   "fuzz/artifacts/",
+  # The reference check's chat text: German, Japanese and Hindi on purpose.
+  "packaging/model-checks/reference-chat.json",
 ]
 
 [default.extend-words]

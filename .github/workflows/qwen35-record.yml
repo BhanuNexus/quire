@@ -91,13 +91,17 @@ jobs:
           GGUF_URL: ${{ inputs.gguf_url }}
           REF_COMMIT: ${{ inputs.reference_commit }}
         run: |
-          case "$GGUF_URL" in
-            https://huggingface.co/*/resolve/[0-9a-f]*/*.gguf) ;;
-            *) echo "gguf_url must be a huggingface.co resolve/<commit>/ URL"; exit 1 ;;
-          esac
-          case "$REF_COMMIT" in
-            *[!0-9a-f]* | "") echo "reference_commit must be a commit hash"; exit 1 ;;
-          esac
+          # A commit is 40 hex characters: a branch name would let the file change under the record.
+          if ! printf '%s' "$GGUF_URL" | grep -Eq '^https://huggingface\.co/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/resolve/[0-9a-f]{40}/[A-Za-z0-9._/-]+\.gguf$'; then
+            echo "gguf_url must be https://huggingface.co/<owner>/<repo>/resolve/<40-hex commit>/<file>.gguf"; exit 1
+          fi
+          if ! printf '%s' "$REF_COMMIT" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "reference_commit must be a 40-hex commit"; exit 1
+          fi
+          # The record's id from the file actually fetched: qwen3.5-<size>-<quant>.
+          QUANT=$(basename "$GGUF_URL" .gguf | grep -Eio 'q[0-9]_[a-z0-9_]+$' | tr -d '_' | tr '[:upper:]' '[:lower:]')
+          if [ -z "$QUANT" ]; then echo "can't tell the quantization from $GGUF_URL"; exit 1; fi
+          echo "MODEL_ID=qwen3.5-$SIZE-$QUANT" >> "$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/gguf"
           curl -fL --retry 3 -o "$RUNNER_TEMP/gguf/model.gguf" "$GGUF_URL"
           python3 -m pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu
@@ -106,12 +110,14 @@ jobs:
           echo "REF_REPO=$REPO" >> "$GITHUB_ENV"
           python3 -c 'import sys; from huggingface_hub import snapshot_download as s; s(sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[3])' \
             "$REPO" "$REF_COMMIT" "$RUNNER_TEMP/reference"
+          # The engine reads Qwen's own tokenizer, as the catalog row pins it.
+          cp "$RUNNER_TEMP/reference/tokenizer.json" "$RUNNER_TEMP/gguf/tokenizer.json"
       - name: Compare
         env:
-          SIZE: ${{ inputs.size }}
+          GGUF_URL: ${{ inputs.gguf_url }}
           REF_COMMIT: ${{ inputs.reference_commit }}
         run: |
-          python3 packaging/check-model-reference.py --id "qwen3.5-$SIZE-q4km" \
+          python3 packaging/check-model-reference.py --id "$MODEL_ID" --gguf-url "$GGUF_URL" \
             --gguf-dir "$RUNNER_TEMP/gguf" --reference "$RUNNER_TEMP/reference" \
             --reference-repo "$REF_REPO" --reference-commit "$REF_COMMIT" \
             --spike target/release/examples/spike --out model-checks

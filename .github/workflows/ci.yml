@@ -202,6 +202,8 @@ jobs:
         run: python3 -I packaging/test-check-changelog.py
       - name: Ratchet script (the weekly count of rules that may only go down; made-up clippy output)
         run: python3 -I packaging/test-ratchet.py
+      - name: Model pin script (a third-party model needs a passing reference check; made-up records)
+        run: python3 -I packaging/test-pin-models.py
       - name: Design notes carry a status block, are listed, and link only inside the repository
         run: |
           packaging/test-check-design-notes.sh

@@ -41,6 +41,15 @@ from pathlib import Path
 
 CATALOG = Path(__file__).resolve().parent.parent / "crates" / "quire-ai" / "src" / "catalog.toml"
 CHECKS = Path(__file__).resolve().parent / "model-checks"
+ROOT = Path(__file__).resolve().parent.parent
+# The thresholds of docs/design/0.14-local-ai.md section 3.3, checked here
+# again rather than trusting the record's own `passed`.
+MAX_KL = 0.05
+MIN_TOP1 = 0.90
+
+
+def engine_version():
+    return tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]["package"]["version"]
 HF = re.compile(r"^https://huggingface\.co/(?P<repo>[^/]+/[^/]+)/resolve/(?P<rev>[^/]+)/(?P<file>.+)$")
 UA = {"User-Agent": "quire-pin-models"}
 
@@ -107,7 +116,16 @@ def reference_problem(m, sha):
     if r.get("gguf_sha256") != sha:
         return f"{m['id']}: the reference check is of another file ({r.get('gguf_sha256')}, not {sha})"
     if r.get("passed") is not True:
-        return f"{m['id']}: the file failed its reference check (mean KL {r.get('mean_kl_nats')}, top-1 {r.get('top1_agreement')})"
+        return f"{m['id']}: the file failed its reference check"
+    for text in ("docs", "chat"):
+        t = r.get(text, {})
+        if t.get("same_ids") is not True:
+            return f"{m['id']}: the engine's {text} token ids differ from the reference's"
+        kl, top1 = t.get("mean_kl_nats"), t.get("top1_agreement")
+        if not isinstance(kl, (int, float)) or not isinstance(top1, (int, float)) or kl > MAX_KL or top1 < MIN_TOP1:
+            return f"{m['id']}: {text}: mean KL {kl} (at most {MAX_KL}), top-1 {top1} (at least {MIN_TOP1})"
+    if r.get("engine_version") != engine_version():
+        return f"{m['id']}: the reference check ran on engine {r.get('engine_version')}, this is {engine_version()}; run it again"
     return None
 
 

@@ -1,0 +1,77 @@
+{
+ "system": "Du hilfst bei Notizen. 日本語でも答えてください。",
+ "tools": [
+  {
+   "name": "search",
+   "description": "Search the notes",
+   "input_schema": {
+    "properties": {
+     "query": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "type": "object"
+   }
+  }
+ ],
+ "messages": [
+  {
+   "role": "user",
+   "parts": [
+    {
+     "type": "text",
+     "text": "Finde meine Notizen über Knoten (結び目) und fasse sie zusammen. यह ज़रूरी है।"
+    }
+   ]
+  },
+  {
+   "role": "assistant",
+   "parts": [
+    {
+     "type": "text",
+     "text": "Ich suche zuerst."
+    },
+    {
+     "type": "tool_use",
+     "id": "call_1",
+     "name": "search",
+     "input": {
+      "query": "Knoten 結び目"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "parts": [
+    {
+     "type": "tool_result",
+     "id": "call_1",
+     "content": "Knoten.md: Der Palstek hält, ohne sich festzuziehen.\n結び目.md: もやい結びは解きやすい。",
+     "is_error": false
+    }
+   ]
+  },
+  {
+   "role": "assistant",
+   "parts": [
+    {
+     "type": "text",
+     "text": "Zwei Notizen: der Palstek (もやい結び) hält und lässt sich leicht lösen."
+    }
+   ]
+  },
+  {
+   "role": "user",
+   "parts": [
+    {
+     "type": "text",
+     "text": "Danke! Und welcher Knoten ist für Anfänger gut?"
+    }
+   ]
+  }
+ ]
+}

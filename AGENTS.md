@@ -34,7 +34,7 @@ cargo deny check advisories bans licenses sources   # cargo install cargo-deny
 typos                                                # cargo install typos-cli
 python3 -I packaging/check-layering.py && packaging/check-design-notes.sh && packaging/check-comment-labels.sh
 packaging/test-unpack-engine.sh && packaging/test-release-files.sh && packaging/test-check-ci-green.sh
-python3 -I packaging/test-check-changelog.py && python3 -I packaging/test-ratchet.py
+python3 -I packaging/test-check-changelog.py && python3 -I packaging/test-ratchet.py && python3 -I packaging/test-pin-models.py
 shellcheck --severity=error packaging/*.sh packaging/*/*.sh apps/quire-sync-server/*.sh
 pipx run zizmor==1.31.1 --offline --format=github .github/workflows/
 ```
