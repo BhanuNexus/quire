@@ -250,8 +250,9 @@ impl Index {
 
     /// Search by section through a view (`docs/design/0.14-agent-index.md` §3.7):
     /// what an index holding only the view's notes and pages gives, keyword
-    /// scores included. A view that hides anything searches by keyword only
-    /// (the meaning model is fitted on every note).
+    /// scores included. Given a view, a meaning model is used only if the
+    /// view holds every note ([`crate::Scoped::search_sections`] applies the
+    /// exact rule instead).
     pub fn search_sections_in(
         &self,
         semantic: Option<&SemanticIndex>,
@@ -260,7 +261,18 @@ impl Index {
         limit: usize,
         scope: ScopeRead<'_>,
     ) -> Vec<SectionHit> {
-        let semantic = semantic.filter(|_| scope.meaning(self));
+        self.search_sections_checked(semantic.filter(|_| scope.meaning()), query, filters, limit, scope)
+    }
+
+    /// [`Self::search_sections_in`] with `semantic` already allowed for `scope`.
+    pub(crate) fn search_sections_checked(
+        &self,
+        semantic: Option<&SemanticIndex>,
+        query: &str,
+        filters: &SearchFilters,
+        limit: usize,
+        scope: ScopeRead<'_>,
+    ) -> Vec<SectionHit> {
         let keep = |p: &NotePath| if self.contains(p) { scope.has_note(self, p) } else { scope.has_file(p) };
         self.search_sections_with(semantic, query, filters, limit, &keep, scope)
     }
@@ -428,7 +440,7 @@ impl crate::actor::Scoped<'_> {
     /// [`Index::search_sections_in`] through this view, with the meaning
     /// model only when the view may use it ([`Self::semantic`]).
     pub fn search_sections(&self, query: &str, filters: &SearchFilters, limit: usize) -> Vec<SectionHit> {
-        self.index().search_sections_in(self.semantic(), query, filters, limit, self.scope())
+        self.index().search_sections_checked(self.semantic(), query, filters, limit, self.scope())
     }
 }
 
