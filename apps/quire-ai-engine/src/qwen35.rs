@@ -73,8 +73,38 @@ fn get<'a>(md: &'a HashMap<String, Value>, k: &str) -> Result<&'a Value> {
     }
 }
 
-fn count(md: &HashMap<String, Value>, k: &str) -> Result<usize> {
-    usize::try_from(get(md, k)?.to_u64()?).or_else(|_| bail!("{k} is too large"))
+/// A count from the file, which must be at most `max` (sizes come from a
+/// downloaded file and are never trusted before they are bounded).
+fn count(md: &HashMap<String, Value>, k: &str, max: u64) -> Result<usize> {
+    let v = get(md, k)?.to_u64()?;
+    if v > max {
+        bail!("{k} is {v}, more than {max}");
+    }
+    usize::try_from(v).or_else(|_| bail!("{k} is too large"))
+}
+
+/// The largest sizes accepted from a file.
+///
+/// Well above the released models (32 layers, hidden 4,096, FFN 12,288, 16 heads of 256, 32 value heads of
+/// 128, conv kernel 4) and small enough that no product overflows.
+pub mod limits {
+    pub const LAYERS: u64 = 256;
+    pub const HIDDEN: u64 = 32_768;
+    pub const FFN: u64 = 131_072;
+    pub const HEADS: u64 = 256;
+    pub const HEAD_DIM: u64 = 1024;
+    pub const CONV_KERNEL: u64 = 16;
+    pub const STATE: u64 = 512;
+    pub const V_HEADS: u64 = 256;
+    pub const INNER: u64 = 131_072;
+    pub const NEXTN: u64 = 16;
+    pub const INTERVAL: u64 = 256;
+    /// Rows of the token table.
+    pub const VOCAB: usize = 1 << 20;
+    /// Positions the rotary tables are made for (the native context).
+    pub const CONTEXT: usize = 262_144;
+    /// The DeltaNet state of all layers together, in bytes.
+    pub const STATE_BYTES: usize = 1 << 30;
 }
 
 fn float(md: &HashMap<String, Value>, k: &str) -> Result<f64> {
@@ -94,8 +124,11 @@ impl Hparams {
             bail!("not a Qwen 3.5 model: general.architecture is {arch}");
         }
         let k = |s: &str| key(ARCH, s);
-        let all = count(md, &k("block_count"))?;
-        let nextn = if md.contains_key(&k("nextn_predict_layers")) { count(md, &k("nextn_predict_layers"))? } else { 0 };
+        if let Some(key) = md.keys().find(|k| k.starts_with("prism.hadamard.")) {
+            bail!("unsupported model file: {key} marks Hadamard-rotated weights, which this engine does not undo");
+        }
+        let all = count(md, &k("block_count"), limits::LAYERS + limits::NEXTN)?;
+        let nextn = if md.contains_key(&k("nextn_predict_layers")) { count(md, &k("nextn_predict_layers"), limits::NEXTN)? } else { 0 };
         let Some(layers) = all.checked_sub(nextn).filter(|n| *n > 0) else {
             bail!("block_count {all} leaves no layers after {nextn} prediction layers");
         };
@@ -106,7 +139,7 @@ impl Hparams {
             }
             flags[..layers].to_vec()
         } else {
-            let every = count(md, &k("full_attention_interval"))?;
+            let every = count(md, &k("full_attention_interval"), limits::INTERVAL)?;
             if every == 0 {
                 bail!("full_attention_interval is 0");
             }
@@ -114,22 +147,22 @@ impl Hparams {
         };
         let hp = Self {
             layers,
-            hidden: count(md, &k("embedding_length"))?,
-            ffn: count(md, &k("feed_forward_length"))?,
-            heads: count(md, &k("attention.head_count"))?,
-            kv_heads: count(md, &k("attention.head_count_kv"))?,
-            head_dim: count(md, &k("attention.key_length"))?,
+            hidden: count(md, &k("embedding_length"), limits::HIDDEN)?,
+            ffn: count(md, &k("feed_forward_length"), limits::FFN)?,
+            heads: count(md, &k("attention.head_count"), limits::HEADS)?,
+            kv_heads: count(md, &k("attention.head_count_kv"), limits::HEADS)?,
+            head_dim: count(md, &k("attention.key_length"), limits::HEAD_DIM)?,
             eps: float(md, &k("attention.layer_norm_rms_epsilon"))? as f32,
             rope_theta: float(md, &k("rope.freq_base"))?,
-            rope_dim: count(md, &k("rope.dimension_count"))?,
-            conv_kernel: count(md, &k("ssm.conv_kernel"))?,
-            state_size: count(md, &k("ssm.state_size"))?,
-            k_heads: count(md, &k("ssm.group_count"))?,
-            v_heads: count(md, &k("ssm.time_step_rank"))?,
-            inner: count(md, &k("ssm.inner_size"))?,
+            rope_dim: count(md, &k("rope.dimension_count"), limits::HEAD_DIM)?,
+            conv_kernel: count(md, &k("ssm.conv_kernel"), limits::CONV_KERNEL)?,
+            state_size: count(md, &k("ssm.state_size"), limits::STATE)?,
+            k_heads: count(md, &k("ssm.group_count"), limits::V_HEADS)?,
+            v_heads: count(md, &k("ssm.time_step_rank"), limits::V_HEADS)?,
+            inner: count(md, &k("ssm.inner_size"), limits::INNER)?,
             recurrent,
         };
-        if md.contains_key(&k("attention.value_length")) && count(md, &k("attention.value_length"))? != hp.head_dim {
+        if md.contains_key(&k("attention.value_length")) && count(md, &k("attention.value_length"), limits::HEAD_DIM)? != hp.head_dim {
             bail!("attention.value_length differs from attention.key_length");
         }
         hp.check()?;
@@ -157,7 +190,20 @@ impl Hparams {
         if !self.v_heads.is_multiple_of(self.k_heads) {
             bail!("{} value heads don't share {} key heads evenly", self.v_heads, self.k_heads);
         }
-        if self.inner != self.v_heads * self.state_size {
+        if self.layers as u64 > limits::LAYERS || self.recurrent.len() != self.layers {
+            bail!("{} layers ({} kinds) is more than this engine reads", self.layers, self.recurrent.len());
+        }
+        // The fixed caches, before anything is allocated (48 MiB for the released sizes).
+        let state = self
+            .n_recurrent()
+            .checked_mul(self.v_heads)
+            .and_then(|x| x.checked_mul(self.state_size))
+            .and_then(|x| x.checked_mul(self.state_size))
+            .and_then(|x| x.checked_mul(4));
+        if state.is_none_or(|b| b > limits::STATE_BYTES) {
+            bail!("the DeltaNet state of this model would be {state:?} bytes, more than {}", limits::STATE_BYTES);
+        }
+        if self.v_heads.checked_mul(self.state_size) != Some(self.inner) {
             bail!("ssm.inner_size {} isn't {} value heads × {}", self.inner, self.v_heads, self.state_size);
         }
         if !self.rope_dim.is_multiple_of(2) || self.rope_dim > self.head_dim {
@@ -396,6 +442,12 @@ fn weight(gg: &mut Gguf<'_, impl Read + Seek>, name: &str, n: usize, k: usize) -
 
 /// A small tensor (norms, conv, decay) as f32, which must hold `n` values.
 fn floats(gg: &mut Gguf<'_, impl Read + Seek>, name: &str, n: usize) -> Result<Vec<f32>> {
+    // The declared size first, so a hostile file can't make us read a huge tensor.
+    match gg.ct.tensor_infos.get(name) {
+        Some(info) if info.shape.elem_count() == n => {}
+        Some(info) => bail!("{name} has {} values, expected {n}", info.shape.elem_count()),
+        None => bail!("the model file has no tensor {name}"),
+    }
     let v = gg.qtensor(name)?.dequantize(&Device::Cpu)?.flatten_all()?.to_vec1::<f32>()?;
     if v.len() != n {
         bail!("{name} has {} values, expected {n}", v.len());
@@ -417,7 +469,30 @@ impl Qwen35 {
     /// `opts.repack` is honoured as for Qwen3.
     pub fn from_gguf<R: Read + Seek>(ct: gguf_file::Content, reader: &mut R, opts: Options) -> Result<Self> {
         let hp = Hparams::from_metadata(&ct.metadata)?;
+        let opts = Options { max_ctx: opts.max_ctx.clamp(1, limits::CONTEXT), ..opts };
+        // Every tensor must lie inside the file, so no size read from it
+        // makes us allocate more than the file holds.
+        let file_len = reader.seek(std::io::SeekFrom::End(0))?;
+        let mut names: Vec<&String> = ct.tensor_infos.keys().collect();
+        names.sort();
+        for name in names {
+            let info = &ct.tensor_infos[name];
+            let elems = info.shape.dims().iter().try_fold(1u64, |a, d| a.checked_mul(*d as u64));
+            let block = info.ggml_dtype.block_size() as u64;
+            let bytes = elems.filter(|e| e % block == 0).and_then(|e| (e / block).checked_mul(info.ggml_dtype.type_size() as u64));
+            let end = bytes.and_then(|b| b.checked_add(ct.tensor_data_offset)).and_then(|b| b.checked_add(info.offset));
+            if end.is_none_or(|e| e > file_len) {
+                bail!("the model file is damaged: tensor {name} reaches past its end");
+            }
+        }
         let mut gg = Gguf { ct, reader, device: Device::Cpu, opts };
+        let (rows, cols) = dims(&gg, "token_embd.weight")?;
+        if rows == 0 || rows > limits::VOCAB || cols != hp.hidden {
+            bail!("token_embd.weight is ({rows}, {cols}): expected up to {} rows of {}", limits::VOCAB, hp.hidden);
+        }
+        if gg.has("output.weight") && dims(&gg, "output.weight")? != (rows, cols) {
+            bail!("output.weight doesn't match token_embd.weight");
+        }
         let (embed, head) = gg.embed_and_head()?;
         let (h, vd) = (hp.hidden, hp.state_size);
         let mut layers = Vec::with_capacity(hp.layers);
@@ -444,7 +519,14 @@ impl Qwen35 {
                 }))
             } else {
                 let (q, kv) = (hp.heads * hp.head_dim, hp.kv_heads * hp.head_dim);
-                // llama.cpp also accepts one fused `attn_qkv` here (`create_tensor_qkv`).
+                // llama.cpp would read a fused `attn_qkv` here (`create_tensor_qkv`),
+                // but no Qwen 3.5 conversion writes one, so its layout is unproven.
+                if gg.has(&p("attn_qkv.weight")) {
+                    bail!(
+                        "unsupported model file: {} (a fused attention projection) is not a layout this engine has been checked against",
+                        p("attn_qkv.weight")
+                    );
+                }
                 let qkv = proj(
                     &mut gg,
                     &p("attn_qkv.weight"),

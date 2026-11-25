@@ -135,6 +135,13 @@ of convolution inputs whatever the length, and as much again for the
 prompt-reuse snapshot. The same table is repeated with the pinned files once
 they pass their reference check (`packaging/model-checks/`).
 
+**Which Qwen 3.5 files load.** `general.architecture = "qwen35"`, the tensor
+names llama.cpp's converter writes (the DeltaNet input projections separate
+or merged), and only types candle 0.11 reads. Refused, with the key or tensor
+named: Hadamard-rotated weights (any `prism.hadamard.*` key), a fused
+attention `attn_qkv`, sizes past `qwen35::limits`, and tensors that reach past
+the end of the file (`docs/design/0.14-local-ai.md`, "As built").
+
 ## Downloads: `<data_dir>/models/`
 
 * `<id>/<name>.part` while downloading (resumed with `Range: bytes=<len>-`;

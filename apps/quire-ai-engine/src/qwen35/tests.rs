@@ -772,3 +772,184 @@ fn real_file_loads_and_reads_a_prompt() {
     let worst = whole.iter().zip(&split).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
     assert!(worst <= 1e-3, "chunking changed the logits by {worst}");
 }
+
+/// Reads a GGUF built by [`to_gguf`] after `edit` changes its metadata or
+/// tensor table, and returns the load error.
+fn load_error(edit: impl FnOnce(&mut gguf_file::Content)) -> String {
+    let hp = tiny();
+    let bytes = to_gguf(&hp, &Hf::random(&hp, 13, true), Form::default());
+    let mut r = Cursor::new(bytes);
+    let mut ct = gguf_file::Content::read(&mut r).unwrap();
+    edit(&mut ct);
+    match Qwen35::from_gguf(ct, &mut r, Options::default()) {
+        Ok(_) => panic!("loaded"),
+        Err(e) => e.to_string(),
+    }
+}
+
+/// Layouts no Qwen 3.5 conversion is known to write are refused, not
+/// guessed: a fused attention `attn_qkv`, and Hadamard-rotated weights
+/// (llama.cpp's `prism.hadamard.*` keys).
+#[test]
+fn unproven_layouts_are_refused_by_name() {
+    let err = load_error(|ct| {
+        let q = &ct.tensor_infos["blk.3.attn_q.weight"];
+        let info = gguf_file::TensorInfo { ggml_dtype: q.ggml_dtype, shape: q.shape.clone(), offset: q.offset };
+        ct.tensor_infos.insert("blk.3.attn_qkv.weight".into(), info);
+    });
+    assert!(err.contains("blk.3.attn_qkv.weight"), "{err}");
+    for key in ["prism.hadamard.version", "prism.hadamard.gdn_v_grouped"] {
+        let err = load_error(|ct| {
+            ct.metadata.insert(key.into(), V::U32(1));
+        });
+        assert!(err.contains(key) && err.contains("Hadamard"), "{err}");
+    }
+}
+
+/// Sizes from the file are bounded before anything is allocated: each
+/// hostile value gives an error naming its key, never a panic or a huge
+/// allocation.
+#[test]
+fn hostile_sizes_are_refused_before_allocating() {
+    let hp = tiny();
+    for (key, value) in [
+        ("qwen35.block_count", u32::MAX),
+        ("qwen35.embedding_length", u32::MAX),
+        ("qwen35.feed_forward_length", 1 << 30),
+        ("qwen35.attention.head_count", 100_000),
+        ("qwen35.attention.key_length", 1 << 20),
+        ("qwen35.rope.dimension_count", 1 << 20),
+        ("qwen35.ssm.conv_kernel", 1 << 20),
+        ("qwen35.ssm.state_size", 1 << 20),
+        ("qwen35.ssm.time_step_rank", 1 << 20),
+        ("qwen35.ssm.inner_size", u32::MAX),
+        ("qwen35.nextn_predict_layers", 1000),
+        ("qwen35.full_attention_interval", u32::MAX),
+    ] {
+        let mut md = metadata(&hp, Form { interval_only: true, ..Form::default() });
+        md.insert(key.into(), V::U32(value));
+        let err = Hparams::from_metadata(&md).unwrap_err().to_string();
+        assert!(err.contains(key), "{key}: {err}");
+    }
+    // Within each bound, but a state that would need gigabytes.
+    let mut md = metadata(&hp, Form { interval_only: true, ..Form::default() });
+    md.insert("qwen35.block_count".into(), V::U32(256));
+    md.insert("qwen35.ssm.state_size".into(), V::U32(512));
+    md.insert("qwen35.ssm.time_step_rank".into(), V::U32(256));
+    md.insert("qwen35.ssm.group_count".into(), V::U32(256));
+    md.insert("qwen35.ssm.inner_size".into(), V::U32(256 * 512));
+    let err = Hparams::from_metadata(&md).unwrap_err().to_string();
+    assert!(err.contains("DeltaNet state"), "{err}");
+    // More layer kinds than layers, or a negative count: errors.
+    let mut md = metadata(&hp, Form::default());
+    md.insert("qwen35.attention.recurrent_layers".into(), V::Array(vec![V::Bool(true)]));
+    assert!(Hparams::from_metadata(&md).is_err());
+    md.insert("qwen35.block_count".into(), V::I32(-1));
+    assert!(Hparams::from_metadata(&md).is_err());
+    // A tensor declared far larger than the file: refused before reading.
+    let err = load_error(|ct| {
+        let info = ct.tensor_infos.get_mut("blk.0.ffn_up.weight").unwrap();
+        info.shape = candle_core::Shape::from((1 << 20, 1 << 20));
+    });
+    assert!(err.contains("blk.0.ffn_up.weight"), "{err}");
+    // A token table of the wrong width.
+    let err = load_error(|ct| {
+        let info = ct.tensor_infos.get_mut("token_embd.weight").unwrap();
+        info.shape = candle_core::Shape::from((VOCAB * 2, 16));
+    });
+    assert!(err.contains("token_embd.weight"), "{err}");
+}
+
+/// ggml's `dequantize_row_q4_K` (ggml/src/ggml-quants.c), ported line by
+/// line: per 256-value block, `d` and `dmin` (f16), 12 bytes of 6-bit
+/// scales and mins (`get_scale_min_k4`), then 128 bytes of 4-bit values.
+fn ggml_q4k(block: &[u8]) -> Vec<f32> {
+    let d = half::f16::from_le_bytes([block[0], block[1]]).to_f32();
+    let min = half::f16::from_le_bytes([block[2], block[3]]).to_f32();
+    let scales = &block[4..16];
+    let scale_min = |j: usize| -> (u8, u8) {
+        if j < 4 {
+            (scales[j] & 63, scales[j + 4] & 63)
+        } else {
+            ((scales[j + 4] & 0xF) | ((scales[j - 4] >> 6) << 4), (scales[j + 4] >> 4) | ((scales[j] >> 6) << 4))
+        }
+    };
+    let mut y = Vec::with_capacity(256);
+    let mut q = &block[16..144];
+    let mut is = 0;
+    for _ in 0..4 {
+        let (sc, m) = scale_min(is);
+        let (d1, m1) = (d * f32::from(sc), min * f32::from(m));
+        let (sc, m) = scale_min(is + 1);
+        let (d2, m2) = (d * f32::from(sc), min * f32::from(m));
+        y.extend(q[..32].iter().map(|b| d1 * f32::from(b & 0xF) - m1));
+        y.extend(q[..32].iter().map(|b| d2 * f32::from(b >> 4) - m2));
+        q = &q[32..];
+        is += 2;
+    }
+    y
+}
+
+/// ggml's `dequantize_row_q6_K`, ported likewise: 128 bytes of low 4 bits,
+/// 64 of high 2 bits, 16 signed scales, then `d` (f16).
+fn ggml_q6k(block: &[u8]) -> Vec<f32> {
+    let (mut ql, mut qh) = (&block[..128], &block[128..192]);
+    let mut sc: Vec<i8> = block[192..208].iter().map(|b| i8::from_le_bytes([*b])).collect();
+    let d = half::f16::from_le_bytes([block[208], block[209]]).to_f32();
+    let mut y = vec![0f32; 256];
+    for n in 0..2 {
+        let out = &mut y[n * 128..][..128];
+        for l in 0..32 {
+            let is = l / 16;
+            let q = |low: u8, shift: u8| f32::from(i8::try_from((low & 0xF) | (((qh[l] >> shift) & 3) << 4)).unwrap() - 32);
+            out[l] = d * f32::from(sc[is]) * q(ql[l], 0);
+            out[l + 32] = d * f32::from(sc[is + 2]) * q(ql[l + 32], 2);
+            out[l + 64] = d * f32::from(sc[is + 4]) * q(ql[l] >> 4, 4);
+            out[l + 96] = d * f32::from(sc[is + 6]) * q(ql[l + 32] >> 4, 6);
+        }
+        ql = &ql[64..];
+        qh = &qh[32..];
+        sc.drain(..8);
+    }
+    y
+}
+
+/// Hand-built `Q4_K` and `Q6_K` blocks (seeded bytes, scales chosen so the
+/// values are finite): candle's dequantisation, its row lookup (the
+/// quantized token table) and its block matmul (the compact weights) all
+/// give ggml's numbers.
+#[test]
+fn k_quant_blocks_decode_as_ggml_defines_them() {
+    use candle_core::quantized::GgmlDType;
+    let mut rng = Rng::new(77);
+    let rows = 3;
+    for (dtype, size, reference) in [(GgmlDType::Q4K, 144usize, ggml_q4k as fn(&[u8]) -> Vec<f32>), (GgmlDType::Q6K, 210, ggml_q6k)] {
+        let mut bytes: Vec<u8> = (0..rows * size).map(|_| (rng.next_u64() & 0xFF) as u8).collect();
+        for b in bytes.chunks_mut(size) {
+            let d = half::f16::from_f32(0.01 + rng.unit().abs() * 0.05).to_le_bytes();
+            if dtype == GgmlDType::Q4K {
+                b[..2].copy_from_slice(&d);
+                b[2..4].copy_from_slice(&half::f16::from_f32(0.02).to_le_bytes());
+            } else {
+                b[208..210].copy_from_slice(&d);
+            }
+        }
+        let want: Vec<f32> = bytes.chunks(size).flat_map(reference).collect();
+        let w = dtype.from_data(std::borrow::Cow::Owned(bytes));
+        let candle_core::CpuStorage::F32(got) = w.dequantize(rows * 256).unwrap() else { panic!("f32") };
+        assert_eq!(got, want, "{dtype:?} dequantize");
+        let candle_core::CpuStorage::F32(row) = w.embedding(&[2, 0], rows, 256).unwrap() else { panic!("f32") };
+        assert_eq!(row[..256], want[512..], "{dtype:?} row lookup");
+        // x (2 × 256) times the 3 rows, against the f64 product of ggml's values.
+        let x: Vec<f32> = rng.vec(2 * 256, 1.0);
+        let mut dst = vec![0f32; 2 * rows];
+        w.matmul_t((2, 256, rows), &x, &mut dst).unwrap();
+        for (i, got) in dst.iter().enumerate() {
+            let (m, n) = (i / rows, i % rows);
+            let exact: f64 = (0..256).map(|k| f64::from(x[m * 256 + k]) * f64::from(want[n * 256 + k])).sum();
+            let scale: f64 = (0..256).map(|k| (f64::from(x[m * 256 + k]) * f64::from(want[n * 256 + k])).abs()).sum();
+            // The block kernels quantize x to Q8_K first: about 1% of the terms' size.
+            assert!((f64::from(*got) - exact).abs() <= 0.01 * scale.max(1e-6), "{dtype:?} matmul {i}: {got} vs {exact}");
+        }
+    }
+}
