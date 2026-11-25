@@ -102,14 +102,14 @@ impl Index {
     }
 
     /// Insert or replace a note and update the link graph (in place when
-    /// the note was already indexed with the same aliases, else rebuilt).
+    /// [`Self::graph_patchable`], else rebuilt).
     pub fn upsert(&mut self, path: NotePath, src: &str) {
         let rec = NoteRecord::from_source(path, src);
         let patch = self.graph_patchable(&rec);
         let path = rec.path.clone();
         self.insert_record(rec, src.to_string());
         if patch {
-            self.patch_graph(&[path]);
+            self.patch_graph(&[path], &[]);
         } else {
             self.refresh();
         }
@@ -117,20 +117,33 @@ impl Index {
 
     /// Whether storing `rec` keeps every link of the vault resolving as it
     /// does now, so [`Index::patch_graph`] can update the graph in place
-    /// instead of rebuilding it: the note is already indexed (the set of
-    /// notes stays the same) and keeps its aliases (its path, and so its
-    /// name, is the same by construction). Call it before storing `rec`.
+    /// instead of rebuilding it. Call it before storing `rec`. Either the
+    /// note is indexed and keeps its aliases (its path, and so its name, is
+    /// the same by construction), or it is new and none of its keys is
+    /// another note's or an unresolved link's (`docs/design/0.14-index-startup.md` §3.4).
     pub fn graph_patchable(&self, rec: &NoteRecord) -> bool {
-        self.records.get(&rec.path).is_some_and(|old| old.name == rec.name && old.aliases == rec.aliases)
+        match self.records.get(&rec.path) {
+            Some(old) => old.name == rec.name && old.aliases == rec.aliases,
+            None => self.graph.can_add(rec),
+        }
     }
 
-    /// Update the link graph for notes stored since it was built, each of
-    /// which was [`Index::graph_patchable`] when stored. Costs the changed
-    /// notes' links and one pass for derived edges, not a rebuild.
-    pub fn patch_graph(&mut self, changed: &[NotePath]) {
+    /// Whether removing the note at `path` keeps every other link resolving
+    /// as it does now: nothing links to it, and it shares no path key or
+    /// alias (`docs/design/0.14-index-startup.md` §3.4). Call it before removing.
+    pub fn graph_removable(&self, path: &NotePath) -> bool {
+        self.records.get(path).is_some_and(|r| self.graph.can_remove(r))
+    }
+
+    /// Update the link graph for the notes stored since it was built, each
+    /// [`Index::graph_patchable`] when stored, and the notes `removed` since
+    /// (their records from before), each [`Index::graph_removable`] when
+    /// removed. Costs those notes' links and one pass for derived edges, not
+    /// a rebuild.
+    pub fn patch_graph(&mut self, changed: &[NotePath], removed: &[NoteRecord]) {
         let (sources, pending) = (&self.sources, self.pending.as_ref());
         let recs: Vec<&NoteRecord> = changed.iter().filter_map(|p| self.records.get(p)).collect();
-        self.graph.patch(&recs, self.records.values(), &|p| source_in(sources, pending, p), &self.link_config);
+        self.graph.patch(&recs, removed, self.records.values(), &|p| source_in(sources, pending, p), &self.link_config);
     }
 
     /// Whether a note is indexed.
@@ -202,8 +215,12 @@ impl Index {
     }
 
     pub fn remove(&mut self, path: &NotePath) {
+        let patch = self.graph_removable(path).then(|| self.records.get(path).cloned()).flatten();
         self.remove_no_refresh(path);
-        self.refresh();
+        match patch {
+            Some(old) => self.patch_graph(&[], &[old]),
+            None => self.refresh(),
+        }
         self.end_batch();
     }
 
@@ -575,6 +592,7 @@ mod tests {
         u.sort();
         out.push(format!("unresolved {u:?}"));
         out.push(format!("fields {:?} hier {}", ix.relations().fields(), ix.relations().has_hierarchy()));
+        out.push(ix.graph().tables_text());
         out.join("\n")
     }
 
@@ -661,6 +679,157 @@ mod tests {
             assert_eq!(graph_text(&ix), graph_text(&fresh), "round {round}");
         }
         assert!(patched > 200, "most edits patch the graph ({patched})");
+    }
+
+    /// `docs/design/0.14-index-startup.md` §3.4: notes added and removed in
+    /// place give the graph a rebuild gives, through name and alias clashes
+    /// (folded and by case), links that come to resolve, notes with
+    /// backlinks and shared aliases (those rebuild); and most adds and
+    /// removes of notes nothing links to patch.
+    #[test]
+    fn added_and_removed_notes_patch_the_graph_as_a_rebuild() {
+        for seed in [0x2545_f491_4f6c_dd1d_u64, 0x9e37_79b9_7f4a_7c15, 0xdead_beef_cafe_f00d] {
+            added_and_removed_round(seed);
+        }
+    }
+
+    /// The same through the index worker, several changes to a batch: two
+    /// new notes of one batch that share a key, or a note added and removed
+    /// in one batch, rebuild; the rest patches; the graph is a rebuild's.
+    #[test]
+    fn batched_adds_and_removes_through_the_worker_equal_a_rebuild() {
+        let mut seed = 0x0123_4567_89ab_cdef_u64;
+        let mut next = |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            usize::try_from(seed % n as u64).expect("small")
+        };
+        let paths = ["A", "B", "Deep/A", "deep/b", "Ünï", "Uni", "Day 1", "Day 2", "Day 3", "Inbox/C1", "Inbox/C2", "Gone"];
+        let texts =
+            ["see [[A]]", "up:: [[Gone]]", "see [[Uni]] and [[Missing]]", "---\naliases: [Alias1]\n---\nplain", "plain words", "[[Day 1]]"];
+        let svc = crate::IndexService::spawn();
+        svc.load(quire_vault::Vault::in_memory(&[("A.md", "see [[B]]"), ("B.md", "plain")]));
+        svc.flush();
+        let same = |svc: &crate::IndexService, round: &str| {
+            let ix = svc.read();
+            let mut fresh = Index::new();
+            for p in ix.paths() {
+                let src = ix.source(&p).expect("indexed").to_string();
+                fresh.insert_record(NoteRecord::from_source(p, &src), src);
+            }
+            fresh.refresh();
+            assert_eq!(graph_text(&ix), graph_text(&fresh), "{round}");
+        };
+        // Two new notes of one batch with one name (and by accents), linked to from both.
+        svc.upsert(NotePath::new("X2/Same.md"), "see [[Same]]".into());
+        svc.upsert(NotePath::new("X1/Same.md"), "see [[Same]] and [[Uni]]".into());
+        svc.upsert(NotePath::new("Uni.md"), "[[Ünï]]".into());
+        svc.upsert(NotePath::new("Ünï.md"), "[[Uni]]".into());
+        svc.flush();
+        same(&svc, "one name twice in a batch");
+        for round in 0..150 {
+            for _ in 0..=next(4) {
+                let path = NotePath::new(format!("{}.md", paths[next(paths.len())]));
+                if next(3) == 0 {
+                    svc.remove(path);
+                } else {
+                    svc.upsert(path, texts[next(texts.len())].to_string());
+                }
+            }
+            svc.flush();
+            same(&svc, &format!("round {round}"));
+        }
+    }
+
+    fn added_and_removed_round(seed: u64) {
+        use std::fmt::Write as _;
+        let mut seed = seed;
+        let mut next = |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            usize::try_from(seed % n as u64).expect("small")
+        };
+        // Paths a note may have: clashes by name, by case, by accents, by folder.
+        let paths = [
+            "A",
+            "B",
+            "Deep/A",
+            "deep/b",
+            "Deep/B",
+            "Ünï",
+            "Uni",
+            "unï",
+            "x.y",
+            "Day 1",
+            "Day 2",
+            "Day 3",
+            "Day 4",
+            "Day 5",
+            "Inbox/Capture 1",
+            "Inbox/Capture 2",
+            "Inbox/Capture 3",
+            "Gone",
+            "Missing",
+            "Note 7",
+            "Note 8",
+            "Note 9",
+        ];
+        let targets = ["A", "B", "Deep/A", "deep/b", "Uni", "unï", "x.y", "Missing", "Gone", "Alias1", "alias2", "Note 7", "pic.png"];
+        let text = |next: &mut dyn FnMut(usize) -> usize| -> String {
+            let mut s = String::new();
+            if next(4) == 0 {
+                let _ = writeln!(s, "---\naliases: [{}]\n---", ["Alias1", "alias2", "Älias1", "Fresh"][next(4)]);
+            }
+            for _ in 0..next(4) {
+                match next(3) {
+                    0 => {
+                        let _ = writeln!(s, "see [[{}]]", targets[next(targets.len())]);
+                    }
+                    1 => {
+                        let _ = writeln!(s, "up:: [[{}]]", targets[next(targets.len())]);
+                    }
+                    _ => s.push_str("plain words\n"),
+                }
+            }
+            s
+        };
+        let mut ix = Index::new();
+        for p in &paths[..6] {
+            let t = text(&mut next);
+            ix.insert_record(NoteRecord::from_source(NotePath::new(format!("{p}.md")), &t), t);
+        }
+        ix.refresh();
+        let (mut added, mut removed) = (0, 0);
+        for round in 0..600 {
+            let path = NotePath::new(format!("{}.md", paths[next(paths.len())]));
+            if ix.contains(&path) && next(2) == 0 {
+                if ix.graph_removable(&path) {
+                    removed += 1;
+                }
+                ix.remove(&path);
+            } else {
+                let t = text(&mut next);
+                if !ix.contains(&path) && ix.graph_patchable(&NoteRecord::from_source(path.clone(), &t)) {
+                    added += 1;
+                }
+                ix.upsert(path, &t);
+            }
+            let mut fresh = Index::new();
+            for p in ix.paths() {
+                let src = ix.source(&p).expect("indexed").to_string();
+                fresh.insert_record(NoteRecord::from_source(p, &src), src);
+            }
+            fresh.refresh();
+            let (g, f) = (graph_text(&ix), graph_text(&fresh));
+            if g != f {
+                let diff: Vec<String> =
+                    g.lines().zip(f.lines()).filter(|(a, b)| a != b).map(|(a, b)| format!("patched: {a}\nrebuilt: {b}")).collect();
+                panic!("round {round}:\n{}", diff.join("\n"));
+            }
+        }
+        assert!(added > 30 && removed > 30, "adds and removes patch ({added} added, {removed} removed)");
     }
 
     /// Lists an agent tool cuts at a limit come out in the same order on

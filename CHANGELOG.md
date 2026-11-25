@@ -50,6 +50,7 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
   What differs between each pair is in [docs/agents.md](docs/agents.md#removed-tool-names).
 
 ### Fixed
+- **Links:** when two notes' paths differ only by letter case or accents, or two notes share an alias, a link by that path or alias now always goes to the same note (the one whose path sorts first); it could change from one start to the next.
 - **Agents:** a second edit to a note on which the agent already has a pending suggestion (two `append` calls, say) no longer puts the first edit in the suggestion twice.
 - **Agents:** after the person rejects one note's change in an agent's suggestion that still waits for its other notes, the agent can edit that note again (it got "changed since you read it" every time), and `view` with `include_pending` shows the note instead of the rejected text.
 - **Sync:** a note that can't be read (no permission, a disk error) is now named in the sync status on every pass instead of being passed over without a word; it is never sent as deleted or written over, and the rest of the vault keeps syncing.
