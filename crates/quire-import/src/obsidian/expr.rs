@@ -1362,6 +1362,21 @@ mod tests {
         assert_eq!(run("(due - today()).days"), "15");
         assert_eq!(run("due + \"1 week\""), "2026-11-27");
         assert_eq!(run("date(\"2026-01-31\") + \"1M\""), "2026-02-28", "months follow the calendar");
+        // Months move the month itself (not only from January), by the count given.
+        assert_eq!(run("date(\"2026-05-15\") + \"1M\""), "2026-06-15");
+        assert_eq!(run("date(\"2026-05-15\") + \"2 months\""), "2026-07-15");
+        assert_eq!(run("date(\"2026-05-15 08:30\") - \"3M\""), "2026-02-15 08:30");
+        // Subtracting moves back; a time a duration adds to a plain date is shown.
+        assert_eq!(run("date(\"2026-11-05 10:00\") - \"1h\""), "2026-11-05 09:00");
+        assert_eq!(run("date(\"2026-11-05\") + \"1h\""), "2026-11-05 01:00");
+        assert_eq!(run("date(\"2026-11-05\") + \"1d\""), "2026-11-06");
+        // The parts of a date, down to the millisecond.
+        assert_eq!(run("(date(\"2026-11-05 10:20:30\") + \"1500ms\").second"), "31");
+        assert_eq!(run("(date(\"2026-11-05 10:20:30\") + \"1500ms\").millisecond"), "500");
+        assert_eq!(run("date(\"2026-11-05 10:20:30\").millisecond"), "0");
+        // `.date()` drops the time, `.time()` gives it.
+        assert_eq!(run("date(\"2026-11-05 10:20:30\").date()"), "2026-11-05");
+        assert_eq!(run("date(\"2026-11-05 10:20:30\").time()"), "10:20:30");
         assert_eq!(run("due.format(\"DD MMM YYYY\")"), "20 Nov 2026");
         assert_eq!(run("due.year * 100 + due.month"), "202611");
         assert_eq!(run("file.mtime < now() - duration(\"3d\")"), "true");
