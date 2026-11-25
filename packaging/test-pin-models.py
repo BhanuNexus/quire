@@ -11,6 +11,8 @@ numbers meet the thresholds; Qwen's own repositories and unpinned rows need
 none. Each case runs a copy of the script in a temporary tree.
 """
 
+import json
+import os
 import shutil
 import subprocess
 import sys
@@ -95,7 +97,90 @@ def main():
             failures += 1
         else:
             print(f"ok   {name}")
+    failures += pinning()
     sys.exit(1 if failures else 0)
+
+
+TWO_ROWS = """[[model]]
+id = "qwen3.5-4b-q4km"
+purpose = "llm"
+repo = "unsloth/Qwen3.5-4B-GGUF"
+revision = "main"
+[[model.files]]
+name = "model.gguf"
+url = "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf"
+[[model.files]]
+name = "tokenizer.json"
+url = "https://huggingface.co/Qwen/Qwen3.5-4B/resolve/main/tokenizer.json"
+
+[[model]]
+id = "ocrs"
+purpose = "ocr"
+repo = "robertknight/ocrs-models"
+revision = "ocrs-0.13"
+[[model.files]]
+name = "text-detection.onnx"
+url = "https://example.invalid/text-detection.onnx"
+"""
+
+RESOLVE = {
+    "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf": [
+        "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/" + "c" * 40 + "/Qwen3.5-4B-Q4_K_M.gguf", SHA, 2740000000, "c" * 40],
+    "https://huggingface.co/Qwen/Qwen3.5-4B/resolve/main/tokenizer.json": [
+        "https://huggingface.co/Qwen/Qwen3.5-4B/resolve/" + "d" * 40 + "/tokenizer.json", "e" * 64, 12000000, "d" * 40],
+    "https://example.invalid/text-detection.onnx": ["https://example.invalid/text-detection.onnx", "f" * 64, 2500000, None],
+}
+
+
+def pin_run(rec, *argv):
+    """Pins a two-row catalog (Qwen 3.5 4B and OCR) with the URLs resolved by
+    RESOLVE instead of Hugging Face; returns (exit, catalog after, stderr)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "packaging" / "model-checks").mkdir(parents=True)
+        (root / "crates" / "quire-ai" / "src").mkdir(parents=True)
+        (root / "apps" / "quire-ai-engine" / "src").mkdir(parents=True)
+        shutil.copy(HERE / "pin-models.py", root / "packaging" / "pin-models.py")
+        (root / "Cargo.toml").write_text('[workspace.package]\nversion = "0.14.0"\n')
+        (root / "apps" / "quire-ai-engine" / "src" / "lib.rs").write_text("pub const ENGINE_COMPUTE_VERSION: u32 = 3;\n")
+        catalog = root / "crates" / "quire-ai" / "src" / "catalog.toml"
+        catalog.write_text(TWO_ROWS)
+        if rec is not None:
+            (root / "packaging" / "model-checks" / "qwen3.5-4b-q4km.toml").write_text(record(rec))
+        resolve = root / "resolve.json"
+        resolve.write_text(json.dumps(RESOLVE))
+        env = {"PIN_MODELS_TEST_RESOLVE": str(resolve), "PATH": os.environ.get("PATH", "")}
+        script = str(root / "packaging" / "pin-models.py")
+        p = subprocess.run([sys.executable, "-I", script], capture_output=True, text=True, env=env)
+        after = catalog.read_text()
+        checks = [
+            subprocess.run([sys.executable, "-I", script, "--check", *a], capture_output=True, text=True, env=env).returncode
+            for a in argv
+        ]
+        return p.returncode, after, p.stderr, checks
+
+
+def pinning():
+    failures = 0
+
+    def expect(name, ok, detail=""):
+        nonlocal failures
+        print(f"{'ok  ' if ok else 'FAIL'} {name}{'' if ok else ': ' + detail}")
+        failures += not ok
+
+    # No passing record for Qwen 3.5: OCR is pinned, Qwen 3.5 (every file) is not.
+    code, after, err, checks = pin_run(None, [], ["--allow-unpinned", "qwen3.5-4b-q4km"], ["--allow-unpinned=other"])
+    expect("a model without a reference check is left unpinned, the others are pinned", code == 0 and 'sha256 = "' + "f" * 64 + '"' in after, err)
+    expect("…all of its files", after.count("sha256") == 1 and "resolve/main/Qwen3.5-4B-Q4_K_M.gguf" in after and "resolve/main/tokenizer.json" in after, after)
+    expect("…with the reason printed", "not pinned: qwen3.5-4b-q4km: no reference check" in err and "left unpinned" in err, err)
+    expect("--check fails while it is unpinned", checks[0] == 1)
+    expect("--check --allow-unpinned names it: passes (OCR only)", checks[1] == 0)
+    expect("--allow-unpinned for another row doesn't cover it", checks[2] == 1)
+    # A passing record of the resolved file: both are pinned, URLs at their commits.
+    code, after, err, checks = pin_run(GOOD, [])
+    expect("with a passing record both are pinned", code == 0 and after.count("sha256") == 3 and "resolve/" + "c" * 40 in after, err + after)
+    expect("…and --check passes", checks[0] == 0)
+    return failures
 
 
 if __name__ == "__main__":

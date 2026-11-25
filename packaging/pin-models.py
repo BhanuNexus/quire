@@ -28,6 +28,20 @@ REQUIRE_MODEL_PINS in .github/workflows/release.yml.
     python3 packaging/pin-models.py --all            # re-resolve everything
     python3 packaging/pin-models.py --check          # exit 1 if anything is unpinned
     python3 packaging/pin-models.py --check --warn   # list them, warn, exit 0
+    python3 packaging/pin-models.py --check --allow-unpinned qwen3-1.7b-q4km,whisper-base
+                                                     # these rows may stay unpinned
+
+A language model whose GGUF has no passing reference check is left unpinned,
+all its files, with the reason printed; the others are pinned (so a release
+can ship OCR only when Qwen 3.5 fails its check). `--allow-unpinned` names
+rows that `--check` accepts unpinned: rows that stay unpinned can't be
+downloaded, so they cost nothing but the feature. The experimental Qwen3 rows
+need a passing check like any third-party language model if they are ever
+pinned; the release lists them in `--allow-unpinned` instead.
+
+PIN_MODELS_TEST_RESOLVE names a JSON file mapping each URL to
+[pinned url, sha256, size, commit], used instead of Hugging Face (the
+self-test, packaging/test-pin-models.py).
 """
 
 import hashlib
@@ -87,6 +101,9 @@ def repo_info(repo, rev):
 
 def pin(url):
     """(pinned url, sha256, size, commit or None)"""
+    if test := os.environ.get("PIN_MODELS_TEST_RESOLVE"):
+        new_url, sha, size, commit = json.loads(Path(test).read_text(encoding="utf-8"))[url]
+        return new_url, sha, size, commit
     m = HF.match(url)
     if not m:
         sha, size = hash_url(url)
@@ -142,14 +159,27 @@ def gguf(m):
     return next((f for f in m.get("files", []) if f["name"].endswith(".gguf")), None)
 
 
+def allowed_unpinned(argv):
+    """The ids after `--allow-unpinned` (comma-separated; the flag may repeat)."""
+    out = set()
+    for i, a in enumerate(argv):
+        if a == "--allow-unpinned" and i + 1 < len(argv):
+            out |= {x.strip() for x in argv[i + 1].split(",") if x.strip()}
+        elif a.startswith("--allow-unpinned="):
+            out |= {x.strip() for x in a.split("=", 1)[1].split(",") if x.strip()}
+    return out
+
+
 def main():
     args = set(sys.argv[1:])
+    allowed = allowed_unpinned(sys.argv[1:])
     text = CATALOG.read_text(encoding="utf-8")
     catalog = tomllib.loads(text)
     todo = [(m, f) for m in catalog.get("model", []) for f in m.get("files", []) if "--all" in args or not pinned(f)]
     if "--check" in args:
         for m, f in todo:
-            print(f"unpinned: {m['id']} / {f['name']}")
+            print(f"unpinned{' (allowed)' if m['id'] in allowed else ''}: {m['id']} / {f['name']}")
+        todo = [(m, f) for m, f in todo if m["id"] not in allowed]
         warn = "--warn" in args
         unchecked = [p for m in catalog.get("model", []) if needs_reference(m) and (g := gguf(m)) and pinned(g) and (p := reference_problem(m, g["sha256"]))]
         for p in unchecked:
@@ -158,10 +188,11 @@ def main():
             sys.exit(1)
         if todo and warn:
             msg = (
-                "On-device AI ships disabled (behind its experimental switch) until the models are pinned: "
-                f"{len(todo)} model file(s) in crates/quire-ai/src/catalog.toml have no sha256 and size. "
-                "Pin them with `python3 packaging/pin-models.py` and set REQUIRE_MODEL_PINS to \"true\" "
-                "in .github/workflows/release.yml to make this an error again."
+                f"{len(todo)} model file(s) in crates/quire-ai/src/catalog.toml have no sha256 and size, so their "
+                "models show as not available in this build and download nothing. Pin them with "
+                "`python3 packaging/pin-models.py` (a third-party language model needs a passing reference check "
+                "first), list the rows that may stay unpinned in MODELS_ALLOWED_UNPINNED, and set "
+                "REQUIRE_MODEL_PINS to \"true\" in .github/workflows/release.yml to make this an error."
             )
             print(f"::warning::{msg}" if os.environ.get("GITHUB_ACTIONS") else f"warning: {msg}", file=sys.stderr)
         elif todo:
@@ -176,14 +207,29 @@ def main():
         sys.exit(1 if todo and not warn else 0)
     results = {}
     revisions = {}
-    for m, f in todo:
-        print(f"pinning {m['id']} / {f['name']} …", file=sys.stderr)
-        new_url, sha, size, commit = pin(f["url"])
-        if needs_reference(m) and f["name"].endswith(".gguf") and (problem := reference_problem(m, sha)):
-            raise SystemExit(f"not pinned: {problem}")
-        results[f["url"]] = (new_url, sha, size)
-        if commit and f is m["files"][0]:
-            revisions[m["id"]] = commit
+    skipped = []
+    # Model by model: a language model whose GGUF has no passing reference
+    # check is left unpinned, every file of it, and the rest go on.
+    for m in catalog.get("model", []):
+        files = [f for mm, f in todo if mm is m]
+        if not files:
+            continue
+        found, commit0 = {}, None
+        for f in files:
+            print(f"pinning {m['id']} / {f['name']} …", file=sys.stderr)
+            new_url, sha, size, commit = pin(f["url"])
+            found[f["url"]] = (new_url, sha, size)
+            if commit and f is m["files"][0]:
+                commit0 = commit
+        g = gguf(m)
+        g_sha = found[g["url"]][1] if g and g["url"] in found else (g or {}).get("sha256", "")
+        if needs_reference(m) and g and (problem := reference_problem(m, g_sha)):
+            print(f"not pinned: {problem}", file=sys.stderr)
+            skipped.append(m["id"])
+            continue
+        results.update(found)
+        if commit0:
+            revisions[m["id"]] = commit0
     out = []
     model_id = None
     lines = text.splitlines(keepends=True)
@@ -211,6 +257,8 @@ def main():
         i += 1
     CATALOG.write_text("".join(out), encoding="utf-8")
     print(f"pinned {len(results)} file(s); review `git diff {CATALOG}`", file=sys.stderr)
+    if skipped:
+        print(f"left unpinned (no passing reference check): {', '.join(skipped)}", file=sys.stderr)
 
 
 if __name__ == "__main__":
