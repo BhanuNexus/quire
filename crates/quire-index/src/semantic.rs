@@ -230,7 +230,7 @@ impl Vector {
             Self::Compact { latent, lexical } => {
                 let mut out: Vec<f32> = latent.iter().map(|x| f16_value(*x)).collect();
                 out.resize(width.max(latent.len()), 0.0);
-                for (b, w) in lexical.iter() {
+                for (b, w) in lexical {
                     if let Some(x) = out.get_mut(latent.len() + usize::from(*b)) {
                         *x = f16_value(*w);
                     }
@@ -384,12 +384,33 @@ impl SemanticIndex {
         // fit the same model (the fit sorts its texts too).
         let mut chunks = chunks;
         chunks.sort_by(|a, b| a.path.cmp(&b.path).then(a.range.start.cmp(&b.range.start)));
-        let texts: Vec<&str> = chunks.iter().map(|c| c.text.as_str()).collect();
-        let lsa = Lsa::fit(&texts, 96);
-        let vectors: Vec<Vec<f32>> = texts.iter().map(|t| lsa.project(t)).collect();
-        let keys: Vec<u64> = texts.iter().map(|t| text_hash("lsa", t)).collect();
+        let lsa = {
+            let texts: Vec<&str> = chunks.iter().map(|c| c.text.as_str()).collect();
+            Lsa::fit(&texts, 96)
+        };
         let fitted = fitted_of(&chunks);
-        Self::from_rows(chunks, &vectors, &keys, Model::Lsa(std::sync::Arc::new(lsa)), fitted)
+        let dims = Some(lsa.dims);
+        let mut ix = Self {
+            blocks: Vec::new(),
+            live: 0,
+            dead: 0,
+            model: Model::Lsa(std::sync::Arc::new(lsa)),
+            fitted,
+            tainted: false,
+            cache_problem: None,
+        };
+        // Each row made compact as it is embedded: no full-width copy of every vector at once.
+        let Model::Lsa(lsa) = ix.model.clone() else { unreachable!("made above") };
+        let rows: Vec<Row> = chunks
+            .into_iter()
+            .map(|c| Row {
+                text_key: text_hash("lsa", &c.text),
+                vector: Vector::of(&lsa.project(&c.text), dims),
+                passage: Passage { path: c.path, heading: c.heading.map(Into::into), range: c.range },
+            })
+            .collect();
+        ix.append(rows);
+        ix
     }
 
     /// Build with any embedder, reusing cached vectors and batching the rest.
@@ -435,15 +456,8 @@ impl SemanticIndex {
                 (added.iter().map(|c| l.project(&c.text)).collect(), added.iter().map(|c| text_hash("lsa", &c.text)).collect())
             }
             Model::Other(e) => {
-                let mut scratch;
-                let cache = match cache {
-                    Some(c) => c,
-                    None => {
-                        scratch = VectorCache::in_memory(e.name());
-                        &mut scratch
-                    }
-                };
-                embed_cached(&added, e.as_ref(), cache)?
+                let mut scratch = VectorCache::in_memory(e.name());
+                embed_cached(&added, e.as_ref(), cache.unwrap_or(&mut scratch))?
             }
         };
         let dims = next.model.lsa_dims();
@@ -476,8 +490,7 @@ impl SemanticIndex {
             tainted: self.tainted,
             cache_problem: None,
         };
-        let old: Vec<(usize, Row)> = self.rows().map(|(i, r)| (i, r.clone())).collect();
-        let (olds, rows): (Vec<usize>, Vec<Row>) = old.into_iter().unzip();
+        let (olds, rows): (Vec<usize>, Vec<Row>) = self.rows().map(|(i, r)| (i, r.clone())).unzip();
         let ids = next.append(rows);
         Some((next, olds.into_iter().zip(ids).collect()))
     }
@@ -804,48 +817,82 @@ impl Lsa {
         // interchangeable, so sorting them loses nothing.
         let mut sorted = texts.to_vec();
         sorted.sort_unstable();
-        let docs: Vec<HashMap<String, u32>> = sorted
+        // Terms counted by a number, each word's text kept once: most of a fit's transient
+        // memory was a map of words per passage (`docs/design/0.14-index-startup.md` §3.3).
+        let mut ids: HashMap<String, u32> = HashMap::new();
+        let mut names: Vec<String> = Vec::new();
+        let docs: Vec<Vec<(u32, u32)>> = sorted
             .iter()
             .map(|t| {
-                let mut tf = HashMap::new();
+                let mut tf: Vec<(u32, u32)> = Vec::new();
                 for tok in content_tokens(t) {
-                    *tf.entry(tok).or_insert(0u32) += 1;
+                    let id = *ids.entry(tok).or_insert_with_key(|k| {
+                        names.push(k.clone());
+                        u32::try_from(names.len() - 1).unwrap_or(u32::MAX)
+                    });
+                    tf.push((id, 1));
                 }
+                tf.sort_unstable_by_key(|e| e.0);
+                tf.dedup_by(|b, a| {
+                    let same = a.0 == b.0;
+                    if same {
+                        a.1 += 1;
+                    }
+                    same
+                });
+                tf.shrink_to_fit();
                 tf
             })
             .collect();
+        drop(ids);
         let n = docs.len().max(1);
-        let mut df: HashMap<&str, u32> = HashMap::new();
+        let mut df: Vec<u32> = vec![0; names.len()];
         for d in &docs {
-            #[expect(clippy::iter_over_hash_type, reason = "counts document frequency; the terms are sorted below")]
-            for t in d.keys() {
-                *df.entry(t.as_str()).or_default() += 1;
+            for (t, _) in d {
+                df[*t as usize] += 1;
             }
         }
         let min_df = if n >= 40 { 2 } else { 1 };
-        let mut terms: Vec<(&str, u32)> = df.into_iter().filter(|(_, d)| *d >= min_df && (*d as usize) < n.max(2)).collect();
-        terms.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+        let mut terms: Vec<(u32, u32)> = df
+            .iter()
+            .enumerate()
+            .map(|(t, d)| (u32::try_from(t).unwrap_or(u32::MAX), *d))
+            .filter(|(_, d)| *d >= min_df && (*d as usize) < n.max(2))
+            .collect();
+        terms.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| names[a.0 as usize].cmp(&names[b.0 as usize])));
         terms.truncate(8000);
-        let vocab: HashMap<String, usize> = terms.iter().enumerate().map(|(i, (t, _))| (t.to_string(), i)).collect();
+        // Term number to its place in the vocabulary.
+        let mut place: Vec<Option<usize>> = vec![None; names.len()];
+        for (i, (t, _)) in terms.iter().enumerate() {
+            place[*t as usize] = Some(i);
+        }
+        let vocab: HashMap<String, usize> = terms.iter().enumerate().map(|(i, (t, _))| (names[*t as usize].clone(), i)).collect();
+        drop(names);
         let idf: Vec<f32> = terms.iter().map(|(_, d)| ((n as f32 + 1.0) / (*d as f32 + 0.5)).ln()).collect();
         let v = vocab.len();
 
         // Sparse columns (term, weight), unit length.
-        let cols: Vec<Vec<(usize, f32)>> = docs
+        let cols: Vec<Vec<(u32, f32)>> = docs
             .iter()
             .map(|d| {
-                let mut c: Vec<(usize, f32)> =
-                    d.iter().filter_map(|(t, &f)| vocab.get(t).map(|&i| (i, (1.0 + (f as f32).ln()) * idf[i]))).collect();
-                // The map yields terms in hash order; the norm and the products below add in term order.
+                let mut c: Vec<(u32, f32)> = d
+                    .iter()
+                    .filter_map(|&(t, f)| {
+                        place[t as usize].map(|i| (u32::try_from(i).unwrap_or(u32::MAX), (1.0 + (f as f32).ln()) * idf[i]))
+                    })
+                    .collect();
+                // The norm and the products below add in term order.
                 c.sort_unstable_by_key(|&(i, _)| i);
                 let norm = c.iter().map(|(_, w)| w * w).sum::<f32>().sqrt().max(1e-9);
                 for (_, w) in &mut c {
                     *w /= norm;
                 }
+                c.shrink_to_fit();
                 c
             })
             .collect();
 
+        drop(docs);
         // Generalisation needs far fewer dimensions than passages.
         let k = max_dims.min((1.2 * (n as f32).sqrt()).ceil() as usize).min(v.saturating_sub(1)).min(n.saturating_sub(1)).max(1);
         if v == 0 {
@@ -855,7 +902,6 @@ impl Lsa {
         let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
 
         // Y = A Ω   (v × l)
-        let omega: Vec<Vec<f32>> = (0..n).map(|_| (0..l).map(|_| rng.next_f32()).collect()).collect();
         let mut y = vec![vec![0.0f32; l]; v];
         let a_times = |y: &mut Vec<Vec<f32>>, right: &[Vec<f32>]| {
             for r in y.iter_mut() {
@@ -863,7 +909,7 @@ impl Lsa {
             }
             for (j, col) in cols.iter().enumerate() {
                 for &(t, w) in col {
-                    let (row, rj) = (&mut y[t], &right[j]);
+                    let (row, rj) = (&mut y[t as usize], &right[j]);
                     row.iter_mut().zip(rj).for_each(|(a, b)| *a += w * b);
                 }
             }
@@ -873,13 +919,23 @@ impl Lsa {
                 .map(|col| {
                     let mut out = vec![0.0f32; l];
                     for &(t, w) in col {
-                        out.iter_mut().zip(&q[t]).for_each(|(a, b)| *a += w * b);
+                        out.iter_mut().zip(&q[t as usize]).for_each(|(a, b)| *a += w * b);
                     }
                     out
                 })
                 .collect()
         };
-        a_times(&mut y, &omega);
+        // Y = A Ω, each column of Ω drawn as it is used (the same numbers in the same order as a
+        // whole Ω made first, without holding n × l of them).
+        let mut omega_j = vec![0.0f32; l];
+        for col in &cols {
+            for x in &mut omega_j {
+                *x = rng.next_f32();
+            }
+            for &(t, w) in col {
+                y[t as usize].iter_mut().zip(&omega_j).for_each(|(a, b)| *a += w * b);
+            }
+        }
         orthonormalize(&mut y, l);
         // One power iteration sharpens the spectrum: Y = A Aᵀ Y.
         let z = at_times(&y);

@@ -37,9 +37,9 @@ const SEMANTIC_NOTES_PER_LOCK: usize = 256;
 const REFIT_SHARE: usize = 10;
 const REFIT_MIN: usize = 256;
 /// or when nothing changed for this long, something changed since the fit,
-const REFIT_IDLE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+const REFIT_IDLE: std::time::Duration = std::time::Duration::from_mins(10);
 /// and the fit is older than this.
-const REFIT_AGE: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
+const REFIT_AGE: std::time::Duration = std::time::Duration::from_hours(6);
 /// How often the semantic worker looks at the idle rule.
 const REFIT_TICK: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -1348,7 +1348,7 @@ fn run_semantic(
                 }
             }
             // Whatever else is queued already (a flush right behind the changes).
-            for m in rx.try_iter().collect::<Vec<_>>() {
+            for m in rx.try_iter() {
                 if !take(m, &mut waiters) {
                     return;
                 }
@@ -1383,11 +1383,8 @@ fn run_semantic(
                     }
                 }
             }
-            // Only the built-in LSA is fitted on the vault, so only it is refitted.
-            if cur.is_lsa() && (refit || sem.refit_due(cur.len(), std::time::Instant::now())) {
-                let built = build_full(index, cfg, &mut sem, false);
-                publish(built, true);
-            } else if refit && !cur.is_lsa() {
+            // Asked for, or due by the rule (only the built-in LSA is fitted on the vault).
+            if refit || cur.is_lsa() && sem.refit_due(cur.len(), std::time::Instant::now()) {
                 let built = build_full(index, cfg, &mut sem, false);
                 publish(built, true);
             }

@@ -92,9 +92,9 @@ fn text_of(title: &str, heading: Option<&str>, plain: &str) -> String {
 }
 
 /// The text [`chunk_note`] gives the passage of `path` at `range` under
-/// `heading`, cut again from `src` (the semantic index keeps no passage
-/// text, `docs/design/0.14-index-startup.md` §3.3); `None` when the range is no
-/// longer in `src`.
+/// `heading`, cut again from `src`; `None` when the range is no longer in `src`.
+///
+/// The semantic index keeps no passage text (`docs/design/0.14-index-startup.md` §3.3).
 pub fn passage_text(path: &NotePath, heading: Option<&str>, src: &str, range: Range<usize>) -> Option<String> {
     let part = src.get(range)?;
     Some(text_of(path.stem(), heading, &extract(part).plain))

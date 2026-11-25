@@ -34,7 +34,7 @@ fn note(i: usize, salt: usize) -> String {
     };
     let topic = next(60);
     let mut s = format!("---\ntags: [t{topic}]\n---\n# Note {i}\n");
-    for sec in 0..1 + next(4) {
+    for sec in 0..=next(4) {
         let _ = writeln!(s, "\n## Section {sec}\n");
         for _ in 0..40 + next(80) {
             let w = if next(3) == 0 { topic * 50 + next(50) } else { next(3_000) };
@@ -45,24 +45,35 @@ fn note(i: usize, salt: usize) -> String {
     s
 }
 
-/// The process's peak resident memory (`VmHWM`), MB.
-fn peak_mb() -> f64 {
+/// A line of `/proc/self/status` in MB (`VmHWM`: the peak, `VmRSS`: now).
+fn status_mb(key: &str) -> f64 {
     let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
     status
         .lines()
-        .find_map(|l| l.strip_prefix("VmHWM:"))
+        .find_map(|l| l.strip_prefix(key))
         .and_then(|v| v.trim().trim_end_matches(" kB").trim().parse::<f64>().ok())
         .map_or(f64::NAN, |kb| kb / 1024.0)
 }
 
+fn peak_mb() -> f64 {
+    status_mb("VmHWM:")
+}
+
 fn run(n: usize) {
     let notes: Vec<(String, String)> = (0..n).map(|i| (format!("f{}/n{i}.md", i % 50), note(i, 0))).collect();
+    let bytes: usize = notes.iter().map(|(_, t)| t.len()).sum();
     let refs: Vec<(&str, &str)> = notes.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
+    let vault = Vault::in_memory(&refs);
+    drop(refs);
+    drop(notes);
+    eprintln!("{n} notes, {:.0} MB of text: before indexing {:.0} MB now", bytes as f64 / 1e6, status_mb("VmRSS:"));
     let svc = IndexService::spawn();
     let t = Instant::now();
-    svc.load(Vault::in_memory(&refs));
+    svc.load(vault);
     svc.flush();
     let keyword = t.elapsed();
+    // The meaning model's fit waits out the debounce (700 ms): this is the keyword index alone.
+    eprintln!("{n} notes: keyword index loaded, {:.0} MB now, peak {:.0} MB", status_mb("VmRSS:"), peak_mb());
     svc.flush_semantic();
     let fit = t.elapsed();
     let sem = svc.semantic().unwrap();
@@ -72,6 +83,7 @@ fn run(n: usize) {
         sem.heap_bytes() as f64 / 1e6
     );
     drop(sem);
+    eprintln!("{n} notes: after the fit {:.0} MB now, peak so far {:.0} MB", status_mb("VmRSS:"), peak_mb());
     // Saves: one note's text changes; the index, then the meaning rows (no refit).
     let mut times = Vec::new();
     for k in 0..20 {

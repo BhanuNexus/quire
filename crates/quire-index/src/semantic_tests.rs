@@ -40,7 +40,7 @@ const WORDS: &[&str] = &[
 
 fn text(rng: &mut Rng) -> String {
     let mut s = String::from("# Note\n");
-    for para in 0..1 + rng.next(3) {
+    for para in 0..=rng.next(3) {
         if para > 0 {
             s.push_str("\n## Part\n");
         }
@@ -57,7 +57,7 @@ fn chunks_now(svc: &IndexService) -> Vec<Chunk> {
     ix.paths().iter().flat_map(|p| chunk_note(p, ix.source(p).unwrap_or_default())).collect()
 }
 
-/// §6, the property: after random edits (no refit) every row is what the
+/// `docs/design/0.14-index-startup.md` §6, the property: after random edits (no refit) every row is what the
 /// current model gives its passage's text, and the rows are the notes'
 /// passages; after a refit the index equals a fresh build exactly.
 #[test]
@@ -101,7 +101,7 @@ fn rows_are_folded_in_and_a_refit_equals_a_fresh_build() {
     assert_eq!(svc.semantic().expect("built").rows_text(), fresh.rows_text(), "a refit is a fresh build, bit for bit");
 }
 
-/// The refit rule (§3.3): 10 % of the passages (at least 256) changed, or
+/// The refit rule (`docs/design/0.14-index-startup.md` §3.3): 10 % of the passages (at least 256) changed, or
 /// idle 10 minutes with the fit older than 6 hours and something changed.
 #[test]
 fn the_refit_rule() {
@@ -117,13 +117,14 @@ fn the_refit_rule() {
     s.since_fit(256);
     assert!(s.due(100, now));
     s.since_fit(1);
-    let later = now + std::time::Duration::from_secs(6 * 3600 + 1);
-    s.changed_at(later - std::time::Duration::from_secs(60));
+    let (min, hour) = (std::time::Duration::from_mins(1), std::time::Duration::from_hours(1));
+    let later = now + 6 * hour + std::time::Duration::from_secs(1);
+    s.changed_at(now + 5 * hour + 59 * min);
     assert!(!s.due(10_000, later), "not idle: a change a minute ago");
-    s.changed_at(later - std::time::Duration::from_secs(601));
+    s.changed_at(now + 5 * hour + 50 * min);
     assert!(s.due(10_000, later), "idle 10 minutes, fit older than 6 hours");
     s.changed_at(now);
-    assert!(!s.due(10_000, now + std::time::Duration::from_secs(5 * 3600)), "idle, but the fit is younger than 6 hours");
+    assert!(!s.due(10_000, now + 5 * hour), "idle, but the fit is younger than 6 hours");
     s.since_fit(0);
     assert!(!s.due(10_000, later), "idle and old, but nothing changed");
 }
@@ -143,7 +144,7 @@ fn recall(sem: &SemanticIndex, topics: &[(&str, &[&str])], label: &BTreeMap<Note
     total / n as f32
 }
 
-/// §6, quality: after 10 % of the notes changed and were folded in (some of
+/// `docs/design/0.14-index-startup.md` §6, quality: after 10 % of the notes changed and were folded in (some of
 /// their words new to the model), recall@10 of topic queries is within 5
 /// points of a fresh fit's.
 #[test]
@@ -233,7 +234,7 @@ fn f16_round_trips() {
     }
     assert_eq!(f16_bits(1.0), 0x3c00);
     assert_eq!(f16_bits(-2.0), 0xc000);
-    assert_eq!(f16_value(0x7bff), 65504.0);
+    assert_eq!(f16_value(0x7bff).to_bits(), 65504.0f32.to_bits());
     assert!(f16_value(f16_bits(1e6)).is_infinite());
 }
 
