@@ -144,10 +144,23 @@ the end of the file (`docs/design/0.14-local-ai.md`, "As built").
 
 ## Downloads: `<data_dir>/models/`
 
+Two environment variables move what the app uses, in any build (release
+builds included); both are for development and testing, and anyone who can
+set a program's environment can already run code as that person:
+
+* `QUIRE_MODELS_DIR=<folder>`: the models folder instead of
+  `<data_dir>/models`. The files in it are still checked as below: a model
+  loads only if `installed.toml` there records the hash this build pins and the
+  file still matches it.
+* `QUIRE_AI_ENGINE=<path>`: the engine binary to run, unchecked (a build of
+  your own). Settings → AI says the engine comes from it.
+
 * `<id>/<name>.part` while downloading (resumed with `Range: bytes=<len>-`;
   a `200` answer restarts it), then fsynced and renamed to `<id>/<name>`
-  once its SHA-256 matches. A mismatch deletes it and downloads once more,
-  then fails with "checksum mismatch". Pause keeps the `.part`; Cancel
+  once its SHA-256 matches. A mismatch deletes it and downloads once more;
+  a second mismatch, or a `404`/`410` (not retried), deletes the `.part`,
+  records nothing and says "Quire can't download … the file at its source
+  changed or was removed. An update of Quire will fix this." Pause keeps the `.part`; Cancel
   deletes it.
 * The engine's `.gz` is unpacked to `engine/quire-ai-engine` (`.exe` on
   Windows), checked against the binary hash and made executable. Before
