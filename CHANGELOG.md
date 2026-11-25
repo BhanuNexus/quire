@@ -5,9 +5,11 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 ## [Unreleased]
 
 ### Security
+- **On-device AI:** text in a note, a tool result or a message can no longer pose as the chat's own markers (`<|im_end|>`, `</tool_response>`) to an on-device model.
 - **Agents:** the note count in an agent's connection information (the `initialize` and `server/discover` replies) no longer includes notes the agent may not see.
 
 ### Added
+- **On-device AI:** Settings → AI → "Turn on on-device AI…" sets up Qwen 3.5 for writing and the agent (4B, or 9B with 16 GB of memory) and reading text in images and scanned PDFs, all on this computer. It shows the download size and free space first, and nothing downloads until you confirm.
 - **Agents:** `str_replace` takes `all: true` to replace every occurrence of a text in a note, and says how many it replaced. `list` takes `since` and `until` (notes changed in a time range), and `tasks` takes `folder`.
 - **`quire-cli sync once --verify`** reads every note again in that pass, to catch a change that kept a file's size and modification time.
 

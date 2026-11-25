@@ -14,9 +14,20 @@
 #   The record (packaging/model-checks/<id>.toml) is the artifact; review it
 #   and commit it with the pin. The bf16 reference needs about 10 GB of memory
 #   for 4B; 9B needs about 24 GB, more than ubuntu-latest has.
+#
+# Also weekly (speed for 4B and 9B) and on pull requests that change the
+# engine (4B only): packaging/qwen35-perf.py adds the memory rows of
+# docs/design/0.14-local-ai.md section 2 (peak memory at a 2,000-token prompt:
+# 3.5 GB for 4B, 7.5 GB for 9B) to the summary. They report only until the
+# frame adopts them; speed is never judged.
 name: Qwen 3.5 record
 
 on:
+  schedule:
+    - cron: "23 4 * * 6"
+  pull_request:
+    paths:
+      - "apps/quire-ai-engine/**"
   workflow_dispatch:
     inputs:
       check:
@@ -42,14 +53,18 @@ on:
 permissions: {}
 
 concurrency:
-  group: qwen35-record-${{ inputs.check }}-${{ inputs.size }}
-  cancel-in-progress: false
+  group: qwen35-record-${{ github.event_name }}-${{ github.ref }}-${{ inputs.check }}-${{ inputs.size }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   speed:
-    if: inputs.check == 'speed'
-    runs-on: ${{ inputs.runner }}
-    timeout-minutes: 120
+    if: github.event_name != 'workflow_dispatch' || inputs.check == 'speed'
+    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        size: ${{ fromJSON(github.event_name == 'schedule' && '["4b","9b"]' || github.event_name == 'pull_request' && '["4b"]' || format('["{0}"]', inputs.size)) }}
     permissions:
       contents: read # check out the code
     steps:
@@ -62,17 +77,17 @@ jobs:
         run: cargo build --release --locked -p quire-ai-engine --example spike
       - name: Measure
         env:
-          SIZE: ${{ inputs.size }}
+          SIZE: ${{ matrix.size }}
         run: |
           target/release/examples/spike "$RUNNER_TEMP" qwen35 "$SIZE" | tee qwen35-speed.txt
-          { echo '```'; cat qwen35-speed.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          python3 -I packaging/qwen35-perf.py qwen35-speed.txt
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: qwen35-speed-${{ inputs.size }}
+          name: qwen35-speed-${{ matrix.size }}
           path: qwen35-speed.txt
 
   reference:
-    if: inputs.check == 'reference'
+    if: github.event_name == 'workflow_dispatch' && inputs.check == 'reference'
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 240
     permissions:
