@@ -93,7 +93,7 @@ egui = "0.37"
 # Already in the tree through egui-winit (eframe's "clipboard"), same version.
 arboard = { version = "3.7", default-features = false }
 egui_commonmark = { version = "0.26", default-features = false, features = ["pulldown_cmark"] }
-rfd = "0.17"
+rfd = "0.18"
 regex = "1"
 png = "0.18"
 egui_extras = { version = "0.37", default-features = false, features = ["file", "image", "gif", "webp"] }
