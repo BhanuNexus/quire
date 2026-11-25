@@ -14,7 +14,7 @@ quire-base = { workspace = true, features = ["net"] }
 quire-vault.workspace = true
 quire-markdown.workspace = true
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
-htmd = "0.5"
+htmd = "0.6"
 base64 = "0.23"
 md5 = "0.8"
 # URL capture (`web`, WS-B): fetch, Readability extraction, charset decoding.
