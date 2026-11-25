@@ -193,7 +193,11 @@ pub(crate) fn show(ui: &mut Ui, ws: &mut Workspace, st: &mut FeatureUi, pal: &Pa
             if ui.small_button("Week").on_hover_text("Open this week's note").clicked() {
                 out.run = Some(quire_app::Command::OpenWeeklyNote);
             }
-            if ui.small_button("Today").on_hover_text("Open today's daily note (Alt+D)").clicked() {
+            if ui
+                .small_button("Today")
+                .on_hover_text(format!("Open today's daily note{}", crate::commands_ui::keys_paren(ws, quire_app::Command::DailyNote)))
+                .clicked()
+            {
                 out.run = Some(quire_app::Command::DailyNote);
             }
         });
@@ -203,7 +207,11 @@ pub(crate) fn show(ui: &mut Ui, ws: &mut Workspace, st: &mut FeatureUi, pal: &Pa
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         crate::task_ui::mode_switch(ui, &mut st.mode);
-        if ui.small_button("+ Task").on_hover_text("New task… (Alt+N)").clicked() {
+        if ui
+            .small_button("+ Task")
+            .on_hover_text(format!("New task…{}", crate::commands_ui::keys_paren(ws, quire_app::Command::NewTask)))
+            .clicked()
+        {
             out.run = Some(quire_app::Command::NewTask);
         }
     });

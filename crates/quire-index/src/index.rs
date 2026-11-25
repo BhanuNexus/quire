@@ -413,36 +413,48 @@ impl Index {
 
     /// [`Self::search`] over the notes `keep` accepts: the `limit` best of
     /// those, so other notes take no places.
+    ///
+    /// Not for agents: the ranking's statistics count every note. An agent
+    /// searches through its view ([`Self::search_in`]).
     pub fn search_where(&self, query: &str, limit: usize, keep: crate::Keep<'_>) -> Vec<SearchHit> {
+        self.search_ranked(query, limit, None, keep)
+    }
+
+    /// Search ranked with `stats` (the index's own without), over the notes `keep` accepts.
+    pub(crate) fn search_ranked(
+        &self,
+        query: &str,
+        limit: usize,
+        stats: Option<&crate::scope::DocStats>,
+        keep: crate::Keep<'_>,
+    ) -> Vec<SearchHit> {
         let q = Query::parse(query);
         if q.is_empty() {
             return Vec::new();
         }
         let terms = q.highlight_terms();
-        let mut ranked: Vec<(NotePath, f32)> = self
-            .fulltext
-            .rank(&q)
-            .into_iter()
-            .filter(|(path, _)| {
+        let ft = &self.fulltext;
+        // The best `limit` in rank order; the filters, `keep` last (it can be costly: an agent's
+        // policy), run on the best hits only, not on every match. Snippets only for what is shown.
+        let shown = crate::fulltext::best(
+            ft.rank_in(&q, stats),
+            limit,
+            |a, b| ft.by_rank(*a, *b),
+            |(id, _)| {
+                let Some(path) = ft.path_of(*id) else { return false };
                 let Some(rec) = self.records.get(path) else { return false };
-                if !q.tags.iter().all(|t| rec.has_tag(t)) {
-                    return false;
-                }
-                q.phrases.is_empty() || {
-                    let folded = crate::tokenize::fold_str(&rec.plain);
-                    q.phrases.iter().all(|ph| folded.contains(ph.as_str()))
-                }
-            })
-            .collect();
-        ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        // `keep` after sorting, until `limit` are kept: it can be costly (an
-        // agent's policy), so it runs on the best hits only, not on every match.
-        // Snippets only for what is shown.
-        ranked
+                q.tags.iter().all(|t| rec.has_tag(t))
+                    && (q.phrases.is_empty() || {
+                        let folded = crate::tokenize::fold_str(&rec.plain);
+                        q.phrases.iter().all(|ph| folded.contains(ph.as_str()))
+                    })
+                    && keep(path)
+            },
+        );
+        shown
             .into_iter()
-            .filter(|(path, _)| keep(path))
-            .take(limit)
-            .filter_map(|(path, score)| {
+            .filter_map(|(id, score)| {
+                let path = ft.path_of(id)?.clone();
                 let rec = self.records.get(&path)?;
                 let (snippet, highlights) = snippet(&rec.plain, &terms, 140);
                 Some(SearchHit { path, title: rec.title.clone(), score, snippet, highlights })

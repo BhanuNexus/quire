@@ -25,6 +25,7 @@ pub(crate) fn show(ui: &mut Ui, ws: &mut Workspace, _st: &mut FeatureUi, pal: &P
 }
 
 fn editing(ui: &mut Ui, ws: &mut Workspace, pal: &Palette) {
+    let new_note_keys = crate::commands_ui::keys_of(ws, quire_app::Command::NewNote);
     let e = &mut ws.settings.editing;
     ui.checkbox(&mut e.vim, RichText::new("Vim keys").strong());
     note(
@@ -68,7 +69,7 @@ fn editing(ui: &mut Ui, ws: &mut Workspace, pal: &Palette) {
     ui.add_space(6.0);
     let root = e.new_note_folder == "root";
     ui.horizontal_wrapped(|ui| {
-        ui.label("New notes (Ctrl+N) go");
+        ui.label(format!("New notes ({new_note_keys}) go"));
         if ui.radio(!root, "in the open note's folder").clicked() {
             e.new_note_folder = "current".into();
         }

@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use quire_agent::DeviceInfo;
+use quire_agent::{AgentStore, DeviceInfo, SystemClock};
 use quire_app::index::chunk::chunk_note;
 use quire_app::index::semantic::build_lsa_index;
 use quire_app::index::{IndexService, SearchFilters};
@@ -415,19 +415,93 @@ impl Storage for Counting {
     }
 }
 
+/// The words of the `mcp` suite's notes and queries.
+const WORDS: [&str; 12] = ["rope", "undo", "tree", "editor", "buffer", "cursor", "merge", "sync", "note", "index", "query", "vault"];
+
+/// p95 of MCP `search` (two-word queries), `ask` (10-word questions) and a worst-case prefix
+/// search: `1`, the most common first character of the notes' terms (their numbers), with
+/// thousands of completions.
+fn search_and_ask(srv: &Server, conn: &Conn, runs: usize) -> (f64, f64, f64) {
+    let (mut search, mut ask, mut prefix) = (Vec::new(), Vec::new(), Vec::new());
+    for i in 0..(50 * runs) {
+        let w = |k: usize| WORDS[(i + k * 5) % WORDS.len()];
+        let t = Instant::now();
+        let _ = mcp_call(srv, conn, "search", &json!({"query": format!("{} {}", w(0), WORDS[(i + 3) % WORDS.len()]), "max_tokens": 2000}));
+        search.push(ms(t.elapsed()));
+        if i % 5 == 0 {
+            let question: Vec<&str> = (0..10).map(w).collect();
+            let t = Instant::now();
+            let _ = mcp_call(srv, conn, "ask", &json!({"question": question.join(" ")}));
+            ask.push(ms(t.elapsed()));
+            let t = Instant::now();
+            let _ = mcp_call(srv, conn, "search", &json!({"query": "1", "max_tokens": 2000}));
+            prefix.push(ms(t.elapsed()));
+        }
+    }
+    (percentile(search, 95), percentile(ask, 95), percentile(prefix, 95))
+}
+
+/// `docs/design/0.14-agent-index.md` G5–G7: the same notes with 10% of them denied to agents (5
+/// of the 50 folders), so `search` and `ask` rank through a restricted view; the view's build
+/// time and its memory.
+fn mcp_restricted(files: &[(&str, &str)], runs: usize) {
+    let state = TempDir::new("mcp-state");
+    let mut policy = String::from("format = 1\ndefault = \"read\"\n");
+    for f in 0..5 {
+        let _ = write!(policy, "[[zone]]\npath = \"Folder {f}/\"\nrole = \"private\"\nmode = \"deny\"\n");
+    }
+    let mut all = files.to_vec();
+    all.push((".quire/shared/agent-policy.toml", policy.as_str()));
+    let device = DeviceInfo { id: "bench".into(), name: "bench".into() };
+    let vault = Vault::new(Arc::new(MemFs::with_files(all.iter().copied())));
+    let store = AgentStore::open(&vault, device.clone(), Arc::new(SystemClock));
+    store.set_state_dir(Some(state.0.clone()));
+    if let Err(e) = store.approve_policy(store.policy_state().file_hash().as_ref()) {
+        eprintln!("bench mcp: the policy was not approved: {e}");
+        return;
+    }
+    let srv = Server::with_config(
+        vault,
+        None,
+        ServerConfig { device: Some(device), state_dir: Some(state.0.clone()), ..ServerConfig::default() },
+    );
+    srv.index().flush();
+    let conn = Conn::stdio(srv.new_conn());
+    let (search, ask, prefix) = search_and_ask(&srv, &conn, runs);
+    emit("mcp", "search_restricted_p95_ms", search);
+    emit("mcp", "ask_restricted_p95_ms", ask);
+    emit("mcp", "search_prefix_restricted_p95_ms", prefix);
+    // A view of the same notes under a new key: built on this thread, as a new rule's first call is.
+    let denied = |p: &NotePath, _: &[String]| (0..5).any(|f| p.as_str().starts_with(&format!("Folder {f}/")));
+    let mut build = Vec::new();
+    let mut heap = 0;
+    for k in 0..runs {
+        let t = Instant::now();
+        let sc = srv.index().scoped(
+            [u8::try_from(k % 200).unwrap_or(0).wrapping_add(17); 32],
+            quire_app::index::visible(move |p: &NotePath, t: &[String]| !denied(p, t)),
+        );
+        build.push(ms(t.elapsed()));
+        heap = sc.view().heap_bytes();
+    }
+    emit("mcp", "view_build_p50_ms", median(build));
+    emit("mcp", "view_heap_bytes", heap as f64);
+}
+
 /// `docs/design/0.9.md` §9: MCP read tools on 10,000 notes: `view` ≤ 10 ms, `search` p95 ≤ 50 ms
 /// (as `crates/quire-mcp/tests/bench.rs`). `docs/design/0.14-agent-tools.md` G4 and G5: the
 /// listing tools' p50, and their storage calls on one call (an exact count: 50 folders, two lock
 /// files each, and a few for the call).
 fn mcp_suite(runs: usize) {
-    let words = ["rope", "undo", "tree", "editor", "buffer", "cursor", "merge", "sync", "note", "index", "query", "vault"];
-    let notes: Vec<(String, String)> = (0..10_000)
+    // `QUIRE_BENCH_MCP_NOTES` (default 10,000; the budgets are for 10,000) for a report at 50,000.
+    let n: usize = std::env::var("QUIRE_BENCH_MCP_NOTES").ok().and_then(|v| v.parse().ok()).unwrap_or(10_000).max(100);
+    let notes: Vec<(String, String)> = (0..n)
         .map(|i| {
             let mut t = format!("---\ntags: [t{}, shared]\nstatus: s{}\n---\n# Note {i}\n\n## Part one\n", i % 7, i % 3);
             for j in 0..30 {
-                let _ = write!(t, "{} {} {} {i} ", words[(i + j) % words.len()], words[(i * 7 + j) % words.len()], words[j % words.len()]);
+                let _ = write!(t, "{} {} {} {i} ", WORDS[(i + j) % WORDS.len()], WORDS[(i * 7 + j) % WORDS.len()], WORDS[j % WORDS.len()]);
             }
-            let _ = write!(t, "\n\n## Part two\nMore text about ropes and undo, see [[Note {}]].\n\n- [ ] task {i}\n", (i + 1) % 10_000);
+            let _ = write!(t, "\n\n## Part two\nMore text about ropes and undo, see [[Note {}]].\n\n- [ ] task {i}\n", (i + 1) % n);
             (format!("Folder {}/Note {i}.md", i % 50), t)
         })
         .collect();
@@ -440,27 +514,30 @@ fn mcp_suite(runs: usize) {
     );
     srv.index().flush();
     let conn = Conn::stdio(srv.new_conn());
-    let (mut view, mut search) = (Vec::new(), Vec::new());
+    let mut view = Vec::new();
     for i in 0..(50 * runs) {
         let t = Instant::now();
         let _ = mcp_call(
             &srv,
             &conn,
             "view",
-            &json!({"path": format!("Folder {}/Note {}.md", (i * 197 % 10_000) % 50, i * 197 % 10_000), "max_tokens": 4000}),
+            &json!({"path": format!("Folder {}/Note {}.md", (i * 197 % n) % 50, i * 197 % n), "max_tokens": 4000}),
         );
         view.push(ms(t.elapsed()));
-        let t = Instant::now();
-        let _ = mcp_call(
-            &srv,
-            &conn,
-            "search",
-            &json!({"query": format!("{} {}", words[i % words.len()], words[(i + 3) % words.len()]), "max_tokens": 2000}),
-        );
-        search.push(ms(t.elapsed()));
     }
     emit("mcp", "view_p50_ms", median(view));
-    emit("mcp", "search_p95_ms", percentile(search, 95));
+    let (search, ask, prefix) = search_and_ask(&srv, &conn, runs);
+    emit("mcp", "search_p95_ms", search);
+    emit("mcp", "ask_p95_ms", ask);
+    emit("mcp", "search_prefix_p95_ms", prefix);
+    // Keyword only, as a restricted view searches in 0.14.0: what the view itself costs is the
+    // restricted figures against these.
+    srv.index().set_meaning(false);
+    let (search, ask, _) = search_and_ask(&srv, &conn, runs);
+    srv.index().set_meaning(true);
+    emit("mcp", "search_keyword_p95_ms", search);
+    emit("mcp", "ask_keyword_p95_ms", ask);
+    mcp_restricted(&files, runs);
     for (tool, args) in listing_calls() {
         // The first call warms what a call may cache; the counted one is the steady state.
         let _ = mcp_call(&srv, &conn, tool, &args);

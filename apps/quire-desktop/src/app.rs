@@ -1169,8 +1169,11 @@ impl QuireApp {
                         ui.add_space(ui.available_height() * 0.3);
                         ui.label(egui::RichText::new("No note open").size(22.0).color(pal.muted));
                         ui.label(
-                            egui::RichText::new("Ctrl+N new note  ·  Ctrl+P quick open  ·  Alt+D today  ·  Ctrl+K commands")
-                                .color(pal.faint),
+                            egui::RichText::new(crate::commands_ui::fill_keys(
+                                &self.ws,
+                                "{NewNote} new note  ·  {QuickOpen} quick open  ·  {DailyNote} today  ·  {CommandPalette} commands",
+                            ))
+                            .color(pal.faint),
                         );
                     });
                 }

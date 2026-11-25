@@ -70,7 +70,7 @@ fn recent_activity(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput
         let vis = cx.visibility_in(&ix);
         // The index knows each note's time: no file is read for a note older than `since`.
         for r in ix.records() {
-            let Some(ms) = modified_ms(cx, &ix, &r.path) else { continue };
+            let Some(ms) = modified_ms(cx, ix.modified(&r.path), &r.path) else { continue };
             if ms >= since && vis.allows_with_tags(&r.path, &r.tags) && last_actor(cx, &r.path) == "human" {
                 events.push((ms, json!({"at": iso(ms), "actor": "human", "op": "edit", "path": r.path})));
             }

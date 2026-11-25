@@ -616,6 +616,9 @@ impl Cx<'_> {
         // Only notes the web shows compete for the 50 places, with the full
         // check (symlinks) for each.
         let shown = |p: &NotePath| Guard::listed(&hidden, p) && self.web.guard.check(p.as_str()).is_ok();
+        // The whole index's word statistics, not an agent's view: the web app's visitor is the
+        // person who owns the vault (signed in), who may see every note; `shown` only keeps
+        // what the web app does not show (hidden folders, links) out of the 50 places.
         let hits = self.web.cfg.server.index().read().search_where(&q, 50, &shown);
         let _ = write!(
             main,

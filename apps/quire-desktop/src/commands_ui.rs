@@ -14,7 +14,7 @@ use quire_app::keymap::{self, Action, Conflict, Keymap};
 use quire_app::settings::commands::macro_id;
 use quire_app::settings::toolbar::{Bar, SEPARATOR};
 use quire_app::settings::{Macro, ToolbarItem};
-use quire_app::{COMMANDS, KeyCombo, Workspace};
+use quire_app::{COMMANDS, Command, KeyCombo, Workspace};
 
 use crate::panels::PanelOut;
 use crate::registry::FeatureUi;
@@ -104,6 +104,42 @@ fn key_chips(ui: &mut Ui, keys: &[KeyCombo], pal: &Palette, mac: bool) {
     for k in keys {
         ui.label(RichText::new(k.label(mac)).monospace().size(12.0).color(pal.accent));
     }
+}
+
+/// The shortest shortcut of `cmd` as this platform writes it (`"Ctrl+W"`,
+/// `"⌘W"`), or "" when it has none: for hover text, menus and help, so they
+/// follow a rebound key and the platform's own default.
+pub(crate) fn keys_of(ws: &Workspace, cmd: Command) -> String {
+    let mac = cfg!(target_os = "macos");
+    Keymap::new(&ws.settings.commands).keys_of(cmd).iter().map(|k| k.label(mac)).min_by_key(|l| l.chars().count()).unwrap_or_default()
+}
+
+/// `text` with each `{CommandId}` replaced by that command's shortcut
+/// (`"no key"` when it has none): for help text written once for all
+/// platforms.
+pub(crate) fn fill_keys(ws: &Workspace, text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(i) = rest.find('{') {
+        out.push_str(&rest[..i]);
+        let tail = &rest[i + 1..];
+        if let Some((cmd, after)) = tail.split_once('}').and_then(|(id, after)| Some((Command::from_id(id)?, after))) {
+            let k = keys_of(ws, cmd);
+            out.push_str(if k.is_empty() { "no key" } else { &k });
+            rest = after;
+        } else {
+            out.push('{');
+            rest = tail;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `" (Ctrl+W)"`, or "" when `cmd` has no shortcut: to put after a sentence.
+pub(crate) fn keys_paren(ws: &Workspace, cmd: Command) -> String {
+    let k = keys_of(ws, cmd);
+    if k.is_empty() { k } else { format!(" ({k})") }
 }
 
 /// The recording, conflict and buttons part of one command's (or macro's) row.
@@ -536,6 +572,18 @@ mod tests {
         assert_eq!(km.keys_of(Command::Bold), vec![ctrl_i]);
         assert!(km.keys_of(Command::Italic).is_empty(), "taken from Italic");
         assert!(km.duplicates().is_empty());
+    }
+
+    #[test]
+    fn hints_name_the_keys_in_effect() {
+        let mut ws = Workspace::new(quire_app::Settings::default());
+        let mac = cfg!(target_os = "macos");
+        // The shortest of a command's keys: Ctrl+K, not Ctrl+Shift+P.
+        assert_eq!(keys_of(&ws, Command::CommandPalette), if mac { "⌘K" } else { "Ctrl+K" });
+        assert_eq!(keys_paren(&ws, Command::QuickCapture), "", "no key, no parentheses");
+        ws.settings.commands.keys.insert("VaultReplace".into(), vec!["F7".into()]);
+        assert_eq!(keys_of(&ws, Command::VaultReplace), "F7", "a rebound key");
+        assert_eq!(fill_keys(&ws, "{VaultReplace} replace, {QuickCapture} capture, {NoSuch} {"), "F7 replace, no key capture, {NoSuch} {");
     }
 
     #[test]

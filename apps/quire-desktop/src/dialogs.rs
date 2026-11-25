@@ -1109,6 +1109,7 @@ fn about(ui: &mut Ui, ws: &mut Workspace, pal: &Palette) {
 }
 
 fn editor_settings(ui: &mut Ui, ws: &mut Workspace) {
+    let eval_keys = crate::commands_ui::keys_of(ws, Command::EvaluateLine);
     let s = &mut ws.settings;
     egui::Grid::new("settings-editor").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
         ui.label("Theme");
@@ -1148,7 +1149,7 @@ fn editor_settings(ui: &mut Ui, ws: &mut Workspace) {
             ui.checkbox(&mut s.inline_images, "Images inline in the editor");
             ui.checkbox(&mut s.live_preview, "Hide Markdown syntax except on the line you're editing");
             ui.checkbox(&mut s.dates_as_links, "Insert dates as [[links]]");
-            ui.checkbox(&mut s.inline_calculator, "Inline calculator (Ctrl+Enter)");
+            ui.checkbox(&mut s.inline_calculator, format!("Inline calculator ({eval_keys})"));
         });
         ui.end_row();
         ui.label("Spelling");
@@ -1791,22 +1792,22 @@ const TOUR: [(&str, &str, &str); 5] = [
     (
         "Find anything",
         "Jump to any note by name, run any command, or search every note by words and by meaning.",
-        "Ctrl+P quick open  ·  Ctrl+K commands  ·  Ctrl+Shift+F search",
+        "{QuickOpen} quick open  ·  {CommandPalette} commands  ·  {SearchVault} search",
     ),
     (
         "Link your thinking",
         "Type [[ to link notes. The Insights panel shows backlinks, related notes and mentions you haven't linked yet. Renaming a note updates every link to it.",
-        "[[  link  ·  Alt+Enter follow  ·  F2 or double-click a tab to rename",
+        "[[  link  ·  {FollowLink} follow  ·  {RenameNote} or double-click a tab to rename",
     ),
     (
         "Organise without a database",
         "+ New → Project makes a project note with status and due date, and a board to drag projects across. Right-click any note or folder for more. Properties and views are still plain text.",
-        "Ctrl+Alt+N new project  ·  right-click a note  ·  Ctrl+Alt+H version history",
+        "{NewProject} new project  ·  right-click a note  ·  {ShowHistory} version history",
     ),
     (
         "Your notes, your AI",
         "Ask questions of your notes with cited answers, offline. Settings → AI is where you choose a provider, or no AI. The shortcut sheet lists everything else.",
-        "Ctrl+Shift+A ask  ·  Ctrl+, settings  ·  Ctrl+/ all shortcuts",
+        "{AskVault} ask  ·  {OpenSettings} settings  ·  {ShowShortcuts} all shortcuts",
     ),
 ];
 
@@ -1828,7 +1829,7 @@ pub(crate) fn tour(ctx: &egui::Context, step: &mut usize, ws: &mut Workspace, pa
         ui.add_space(10.0);
         egui::Frame::NONE.fill(pal.bg).corner_radius(6.0).inner_margin(10.0).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(RichText::new(keys).monospace().size(12.5).color(pal.accent));
+            ui.label(RichText::new(crate::commands_ui::fill_keys(ws, keys)).monospace().size(12.5).color(pal.accent));
         });
         if *step == last {
             ui.add_space(8.0);
