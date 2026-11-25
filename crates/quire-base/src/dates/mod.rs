@@ -290,6 +290,35 @@ mod tests {
         assert_eq!(rfc2822(dt, 7200).as_deref(), Some("Fri, 6 Nov 2026 10:00:00 +0200"));
     }
 
+    /// With no time-zone database (a minimal container, a sandbox) and a
+    /// zone named that can't be found, local time is UTC, as chrono's
+    /// `Local` was: jiff's `TimeZone::system()` never fails. Checked in a
+    /// child process, since the system zone is process-wide state.
+    #[test]
+    fn no_zone_database_means_utc() {
+        if std::env::var_os("QUIRE_TZ_CHILD").is_some() {
+            let now = now_local();
+            assert_eq!(now.offset().seconds(), 0, "{now}");
+            let utc = utc_from_ms(now.timestamp().as_millisecond()).unwrap_or(EPOCH);
+            assert_eq!(fmt_zoned(&now, "%F %T"), fmt_utc_ms(now.timestamp().as_millisecond(), "%F %T").unwrap_or_default());
+            assert_eq!(local_single(utc).map(|z| z.offset().seconds()), Some(0));
+            assert_eq!(fmt_local_ms(0, "%Y-%m-%d %H:%M %z").as_deref(), Some("1970-01-01 00:00 +0000"));
+            return;
+        }
+        let Ok(me) = std::env::current_exe() else { return };
+        let empty = std::env::temp_dir().join("quire-no-zoneinfo-for-this-test");
+        let out = std::process::Command::new(me)
+            .args(["--exact", "dates::tests::no_zone_database_means_utc", "--test-threads=1"])
+            .env("QUIRE_TZ_CHILD", "1")
+            // A zone name no database has: what any name is when there is no database.
+            .env("TZ", "Nowhere/Missing")
+            .env("TZDIR", &empty)
+            .output();
+        let Ok(out) = out else { return };
+        assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        assert!(String::from_utf8_lossy(&out.stdout).contains("1 passed"), "the child ran the test");
+    }
+
     /// A DST gap and fold in a fixed zone, resolved as chrono's
     /// `LocalResult::single` and `earliest` were.
     #[test]
