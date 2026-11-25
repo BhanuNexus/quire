@@ -44,4 +44,17 @@ fn rebuild_time_on_ten_thousand_notes() {
     ix.upsert(p.clone(), &src);
     eprintln!("{n} notes: an edit (parse and patch) {:?}", t.elapsed());
     assert!(ix.backlinks(&NotePath::new("f2/n42.md")).iter().any(|b| b.from == p));
+    // A new note (a daily note, a capture), then its removal: patched in place since 0.14
+    // (`docs/design/0.14-index-startup.md` §3.4), rebuilt before.
+    let day = NotePath::new("Daily/2026-11-25.md");
+    let src = "# Today\nSee [[n3]] and [[n4]].\n";
+    assert!(ix.graph_patchable(&NoteRecord::from_source(day.clone(), src)));
+    let t = Instant::now();
+    ix.upsert(day.clone(), src);
+    eprintln!("{n} notes: a new note (parse and patch) {:?}", t.elapsed());
+    assert!(ix.graph_removable(&day));
+    let t = Instant::now();
+    ix.remove(&day);
+    eprintln!("{n} notes: its removal (patch) {:?}", t.elapsed());
+    assert!(ix.backlinks(&NotePath::new("f3/n3.md")).iter().all(|b| b.from != day));
 }

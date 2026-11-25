@@ -943,6 +943,12 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
         // place, and attachment text leaves it alone.
         rebuild |= reload.is_some();
         let mut patched: Vec<NotePath> = Vec::new();
+        // Notes this batch takes out of the graph in place (their records from before).
+        let mut unlinked: Vec<NoteRecord> = Vec::new();
+        // The keys of the notes this batch adds or takes out in place: the graph's tables are as
+        // they were before the batch, so two such notes must not share one (`docs/design/0.14-index-startup.md` §3.4).
+        let mut keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut own_keys = |rec: &NoteRecord| crate::graph::note_keys(rec).into_iter().all(|k| keys.insert(k));
         let mut store = cached.as_mut().and_then(|c| c.store.as_mut());
         {
             let mut ix = write();
@@ -967,7 +973,8 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                         let (rec, src, modified) = *note;
                         let path = rec.path.clone();
                         touched.extend(ix.doc_id(&path));
-                        if !rebuild && ix.graph_patchable(&rec) {
+                        let new = !ix.contains(&path);
+                        if !rebuild && ix.graph_patchable(&rec) && (!new || own_keys(&rec)) {
                             patched.push(path.clone());
                         } else {
                             rebuild = true;
@@ -981,7 +988,13 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                     }
                     Prepared::Remove(path) => {
                         // A path that isn't indexed (a locked folder's note, a file that isn't a note) changes nothing.
-                        rebuild |= ix.contains(&path);
+                        if let Some(old) = ix.get(&path) {
+                            if !rebuild && ix.graph_removable(&path) && own_keys(old) {
+                                unlinked.push(old.clone());
+                            } else {
+                                rebuild = true;
+                            }
+                        }
                         if let Some(id) = ix.doc_id(&path) {
                             touched.push(id);
                             // A note the meaning model was fitted on leaves: its text stays in the model.
@@ -1008,8 +1021,8 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                 rebuild |= cfg != *ix.link_config();
                 ix.set_link_config_quiet(cfg);
             }
-            if !rebuild && !patched.is_empty() {
-                ix.patch_graph(&patched);
+            if !rebuild && (!patched.is_empty() || !unlinked.is_empty()) {
+                ix.patch_graph(&patched, &unlinked);
             }
             // Every view of this build, in the same write as the notes and
             // before the batch's removed document ids are freed (a view of
@@ -1187,7 +1200,7 @@ mod tests {
         });
         svc.flush();
         assert_eq!(svc.read().backlinks(&b).len(), 3);
-        // A new note: a rebuild, and the link that waited for it resolves.
+        // A new note nothing waited for: patched in place, and a link written to it resolves.
         svc.upsert(NotePath::new("D.md"), "[[C]]".into());
         svc.upsert(NotePath::new("A.md"), "links [[D]]".into());
         svc.flush();
