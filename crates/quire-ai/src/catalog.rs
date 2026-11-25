@@ -255,6 +255,8 @@ mod tests {
             "qwen3-0.6b-q8",
             "qwen3-1.7b-q4km",
             "qwen3-4b-q4km",
+            "qwen3.5-4b-q4km",
+            "qwen3.5-9b-q4km",
             "ocrs",
             "whisper-tiny",
             "whisper-base",
@@ -267,6 +269,9 @@ mod tests {
         }
         assert_eq!(c.get("qwen3-0.6b-q8").unwrap().tier, Some(Tier::Small));
         assert_eq!(c.get("qwen3-4b-q4km").unwrap().tier, Some(Tier::Better));
+        // Qwen 3.5: 4B from 8 GB, 9B from 16 GB, both the full tool set.
+        let (q4, q9) = (c.get("qwen3.5-4b-q4km").unwrap(), c.get("qwen3.5-9b-q4km").unwrap());
+        assert_eq!((q4.min_ram_gb, q9.min_ram_gb, q4.tier, q9.tier), (8, 16, Some(Tier::Better), Some(Tier::Better)));
         assert_eq!(c.get("bge-small-en-v1.5").unwrap().dims, Some(384));
         assert!(c.get("ocrs").unwrap().attribution.contains("HierText"));
         assert_eq!(c.of(Purpose::Transcribe).count(), 3);

@@ -123,6 +123,50 @@ url = "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gg
 name = "tokenizer.json"
 url = "https://huggingface.co/Qwen/Qwen3-4B/resolve/main/tokenizer.json"
 
+# Qwen 3.5 (0.14, docs/design/0.14-local-ai.md): the on-device pack's writing
+# model. Text only (no vision encoder is downloaded), Apache 2.0. No official
+# GGUF exists for these sizes, so the files are unsloth's Q4_K_M; each one is
+# pinned only after it passes the reference check against Qwen's own weights
+# (packaging/model-checks/, enforced by pin-models.py). The tokenizer comes
+# from Qwen's repository. `ram_mb` is the design's estimate at a 2,000-token
+# prompt, rounded up, until the speed record measures it.
+
+[[model]]
+id = "qwen3.5-4b-q4km"
+purpose = "llm"
+label = "Standard"
+model_name = "Qwen 3.5 4B"
+licence = "Apache-2.0"
+ram_mb = 3300
+min_ram_gb = 8
+tier = "better"
+repo = "unsloth/Qwen3.5-4B-GGUF"
+revision = "main"
+[[model.files]]
+name = "model.gguf"
+url = "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf"
+[[model.files]]
+name = "tokenizer.json"
+url = "https://huggingface.co/Qwen/Qwen3.5-4B/resolve/main/tokenizer.json"
+
+[[model]]
+id = "qwen3.5-9b-q4km"
+purpose = "llm"
+label = "Large"
+model_name = "Qwen 3.5 9B"
+licence = "Apache-2.0"
+ram_mb = 6300
+min_ram_gb = 16
+tier = "better"
+repo = "unsloth/Qwen3.5-9B-GGUF"
+revision = "main"
+[[model.files]]
+name = "model.gguf"
+url = "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf"
+[[model.files]]
+name = "tokenizer.json"
+url = "https://huggingface.co/Qwen/Qwen3.5-9B/resolve/main/tokenizer.json"
+
 # ---------------------------------------------------------------- OCR
 # Licence checked on 2026-11-03 in github.com/robertknight/ocrs-models
 # (LICENSE.md): the code is MIT/Apache-2.0; the trained models inherit the
