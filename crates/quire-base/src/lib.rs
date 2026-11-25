@@ -23,6 +23,7 @@
 #![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests build fixtures with std directly"))]
 
 pub mod cache;
+pub mod dates;
 pub mod enc;
 pub mod fs;
 #[cfg(feature = "net")]

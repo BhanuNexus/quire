@@ -101,7 +101,7 @@ pub struct Ledger {
 }
 
 fn month_of(at_ms: i64) -> String {
-    chrono::DateTime::from_timestamp_millis(at_ms).map_or_else(|| "1970-01".into(), |d| d.format("%Y-%m").to_string())
+    quire_base::dates::fmt_utc_ms(at_ms, "%Y-%m").unwrap_or_else(|| "1970-01".into())
 }
 
 impl Ledger {

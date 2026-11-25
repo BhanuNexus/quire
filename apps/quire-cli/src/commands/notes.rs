@@ -163,7 +163,7 @@ fn history(args: &[String]) -> Result<(), String> {
     let p = find_note(&svc.read(), arg(2)?)?;
     let v = super::open_vault(arg(1)?)?;
     for s in v.history(&p) {
-        let when = quire_app::chrono_fmt(s.at_ms);
+        let when = quire_app::local_time_fmt(s.at_ms);
         let len = v.read_snapshot(&s).map_or(0, |t| t.chars().count());
         println!("{when}  {len:>7} chars");
     }

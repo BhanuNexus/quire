@@ -39,7 +39,7 @@ fn tokens() -> Vec<TokenInfo> {
     if cfg!(test) {
         return Vec::new();
     }
-    let now = chrono::Utc::now().timestamp_millis();
+    let now = quire_base::time::now_ms();
     quire_mcp::tokens::TokenStore::default_store()
         .map(|s| {
             s.summary(now)
@@ -52,12 +52,12 @@ fn tokens() -> Vec<TokenInfo> {
 
 fn ago(ms: Option<i64>) -> String {
     let Some(ms) = ms else { return "never used".into() };
-    let secs = (chrono::Utc::now().timestamp_millis() - ms).max(0) / 1000;
+    let secs = (quire_base::time::now_ms() - ms).max(0) / 1000;
     match secs {
         0..60 => "just now".into(),
         60..3600 => format!("{} min ago", secs / 60),
         3600..86_400 => format!("{} h ago", secs / 3600),
-        _ => quire_app::chrono_fmt(ms),
+        _ => quire_app::local_time_fmt(ms),
     }
 }
 
@@ -74,7 +74,7 @@ fn mode_word(m: Mode) -> &'static str {
 pub(crate) fn show(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut ConnectionsUi, pal: &Palette) -> PanelOut {
     let out = PanelOut::default();
     let Some(store) = ws.agent_store().cloned() else { return out };
-    let now = chrono::Utc::now().timestamp_millis();
+    let now = quire_base::time::now_ms();
     if st.cache.as_ref().is_none_or(|(at, _)| at.elapsed() > Duration::from_secs(2)) {
         st.cache = Some((Instant::now(), connections::gather(&store, &tokens(), now)));
     }
@@ -277,7 +277,7 @@ fn details(ui: &mut egui::Ui, ws: &Workspace, st: &mut ConnectionsUi, c: &Connec
         ui.label(RichText::new("Reads aren't logged on this device (Rules → Log what agents read).").size(11.5).color(pal.faint));
     }
     let kinds: Vec<ActivityKind> = ActivityKind::ALL.iter().zip(st.kinds).filter(|(_, on)| *on).map(|(k, _)| *k).collect();
-    let now = chrono::Utc::now().timestamp_millis();
+    let now = quire_base::time::now_ms();
     let entries = connections::activity(&store, &c.key, &kinds, &st.filter, now, 200);
     if entries.is_empty() {
         ui.label(RichText::new("Nothing to show.").color(pal.muted));
@@ -285,7 +285,7 @@ fn details(ui: &mut egui::Ui, ws: &Workspace, st: &mut ConnectionsUi, c: &Connec
     egui::ScrollArea::vertical().id_salt(("quire-conn-log", &c.key)).max_height(220.0).show(ui, |ui| {
         for e in &entries {
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new(quire_app::chrono_fmt(e.at)).monospace().size(11.0).color(pal.faint));
+                ui.label(RichText::new(quire_app::local_time_fmt(e.at)).monospace().size(11.0).color(pal.faint));
                 ui.add(egui::Label::new(RichText::new(connections::describe(e)).size(12.5).color(pal.text)).wrap());
             });
         }
@@ -315,7 +315,7 @@ mod tests {
         }
         let cursor = Actor::unverified_agent("mcp:cursor", "Cursor with a long name that wraps", Via::McpStdio, "d");
         store.record_read(&cursor, &NotePath::new("Plan.md"));
-        let list = connections::gather(&store, &[], chrono::Utc::now().timestamp_millis());
+        let list = connections::gather(&store, &[], quire_base::time::now_ms());
         let c = list.iter().find(|c| c.key == "mcp:cursor?").unwrap().clone();
         connections::revoke(&store, &c).unwrap();
         let k = list.iter().find(|c| c.key == "mcp:claude-code").unwrap().clone();

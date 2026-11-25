@@ -11,10 +11,7 @@
 //! A time that follows the date is shown after it (`5 Nov 2026 14:30`) and
 //! kept as it was when the date is edited.
 
-use std::fmt::Write as _;
-
-use chrono::NaiveDate;
-use chrono::format::{Item, StrftimeItems};
+use quire_base::dates::{self, Date};
 use quire_markdown::frontmatter::is_date;
 
 /// The stored form.
@@ -30,25 +27,20 @@ pub const PRESETS: [(&str, &str); 6] = [
     ("%A, %-d %B %Y", "Thursday, 5 November 2026"),
 ];
 
-fn date_part(value: &str) -> Option<(NaiveDate, &str)> {
+fn date_part(value: &str) -> Option<(Date, &str)> {
     let v = value.trim();
     if !is_date(v) {
         return None;
     }
-    let d = NaiveDate::parse_from_str(&v[..10], ISO).ok()?;
+    let d = dates::parse_date(&v[..10], ISO).ok()?;
     Some((d, v[10..].trim_start_matches(['T', ' ']).trim()))
 }
 
-fn print(d: NaiveDate, format: &str) -> Option<String> {
-    if StrftimeItems::new(format).any(|i| matches!(i, Item::Error)) {
-        return None;
-    }
-    let mut out = String::new();
-    write!(out, "{}", d.format(format)).ok()?;
-    Some(out)
+fn print(d: Date, format: &str) -> Option<String> {
+    dates::format(format, &dates::Moment::date(d)).ok()
 }
 
-/// Whether `format` is a date format chrono can print (no time fields, no
+/// Whether `format` is a date format that can be printed (no time fields, no
 /// unknown `%` codes) that shows the day, the month and the year: changing
 /// any one of them changes the text.
 ///
@@ -74,15 +66,15 @@ pub fn valid(format: &str) -> bool {
 }
 
 fn compute_valid(format: &str) -> bool {
-    let at = |y, m, d| NaiveDate::from_ymd_opt(y, m, d).and_then(|d| print(d, format));
+    let at = |y, m, d| dates::ymd_opt(y, m, d).and_then(|d| print(d, format));
     let base = at(2026, 11, 5);
     base.is_some() && [at(2026, 11, 6), at(2026, 12, 5), at(2027, 11, 5)].iter().all(|o| o.is_some() && *o != base)
 }
 
 /// Whether a date shown in `format` can be typed back (`%A` alone can't).
 pub fn round_trips(format: &str) -> bool {
-    let d = NaiveDate::from_ymd_opt(2026, 11, 5).unwrap_or_default();
-    print(d, format).is_some_and(|s| NaiveDate::parse_from_str(&s, format) == Ok(d))
+    let d = dates::ymd_opt(2026, 11, 5).unwrap_or_default();
+    print(d, format).is_some_and(|s| dates::parse_date(&s, format) == Ok(d))
 }
 
 /// `value` as shown. A value that isn't a date, and an empty or invalid
@@ -146,8 +138,8 @@ pub fn parse(typed: &str, format: &str, previous: &str) -> Option<String> {
         Some((head, tail)) if is_time(tail) => (head.trim(), Some(tail)),
         _ => (t, None),
     };
-    let date = NaiveDate::parse_from_str(text, format).ok()?;
-    let mut iso = date.format(ISO).to_string();
+    let date = dates::parse_date(text, format).ok()?;
+    let mut iso = dates::fmt_date(date, ISO);
     let kept = date_part(previous).map(|(_, t)| t).filter(|t| !t.is_empty());
     if let Some(time) = time.or(kept) {
         // The separator the stored value had (`T` or a space) stays.

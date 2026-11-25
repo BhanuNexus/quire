@@ -26,7 +26,6 @@ image.workspace = true
 # WS-E: Obsidian Bases (.base YAML)
 yaml-rust2.workspace = true
 # 0.10: dates in Bases formulas
-chrono.workspace = true
 # 0.12: Roam, Keep and Day One exports are JSON (already in the tree).
 serde_json.workspace = true
 

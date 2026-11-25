@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use chrono::{Duration, NaiveDateTime};
+use quire_base::dates::{self, DateTime};
 use quire_plan::reminders::{self, Reminder};
 use serde::{Deserialize, Serialize};
 
@@ -95,13 +95,13 @@ impl FiredLog {
         self.fired.contains_key(&r.key())
     }
 
-    pub fn record(&mut self, r: &Reminder, now: NaiveDateTime) {
-        self.fired.insert(r.key(), now.format("%Y-%m-%d %H:%M").to_string());
+    pub fn record(&mut self, r: &Reminder, now: DateTime) {
+        self.fired.insert(r.key(), dates::fmt_naive(now, "%Y-%m-%d %H:%M"));
     }
 
     /// Forget old entries and write the file.
-    pub fn save(&mut self, now: NaiveDateTime) -> std::io::Result<()> {
-        let floor = (now - Duration::days(KEEP_DAYS)).format("%Y-%m-%d %H:%M").to_string();
+    pub fn save(&mut self, now: DateTime) -> std::io::Result<()> {
+        let floor = dates::fmt_naive(dates::plus_days_dt(now, -KEEP_DAYS), "%Y-%m-%d %H:%M");
         self.fired.retain(|_, at| *at >= floor);
         let Some(p) = &self.path else { return Ok(()) };
         let text = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
@@ -131,8 +131,8 @@ pub fn vault_reminders(vault: &quire_vault::Vault) -> Vec<Reminder> {
 ///
 /// On the very first run nothing is shown: what is already due goes into
 /// the list, so turning this on doesn't bring up a week of old reminders.
-pub fn take_due(all: &[Reminder], log: &mut FiredLog, now: NaiveDateTime) -> Vec<Reminder> {
-    let floor = now - Duration::days(reminders::MISSED_DAYS);
+pub fn take_due(all: &[Reminder], log: &mut FiredLog, now: DateTime) -> Vec<Reminder> {
+    let floor = dates::plus_days_dt(now, -reminders::MISSED_DAYS);
     let due: Vec<Reminder> = all.iter().filter(|r| r.at <= now && r.at > floor && !log.has(r)).cloned().collect();
     for r in &due {
         log.record(r, now);
@@ -171,7 +171,7 @@ pub fn lock(vault: &Path) -> Option<std::fs::File> {
 
 /// The app's side: of reminders coming due now, the ones not shown on this
 /// device yet (by `quire-cli remind`), which are then noted as shown.
-pub fn not_yet_shown(vault: Option<&Path>, due: Vec<Reminder>, now: NaiveDateTime) -> Vec<Reminder> {
+pub fn not_yet_shown(vault: Option<&Path>, due: Vec<Reminder>, now: DateTime) -> Vec<Reminder> {
     let Some(vault) = vault.filter(|_| !due.is_empty()) else { return due };
     let _lock = lock(vault);
     let mut log = FiredLog::load(vault);
@@ -179,7 +179,7 @@ pub fn not_yet_shown(vault: Option<&Path>, due: Vec<Reminder>, now: NaiveDateTim
 }
 
 /// Of `due`, the reminders `log` hasn't got, noted in it and saved.
-fn claim(log: &mut FiredLog, due: Vec<Reminder>, now: NaiveDateTime) -> Vec<Reminder> {
+fn claim(log: &mut FiredLog, due: Vec<Reminder>, now: DateTime) -> Vec<Reminder> {
     let due: Vec<Reminder> = due.into_iter().filter(|r| !log.has(r)).collect();
     for r in &due {
         log.record(r, now);
@@ -594,7 +594,7 @@ mod tests {
         Env { home: PathBuf::from("/home/ada"), systemd_dir: PathBuf::from("/home/ada/.config/systemd/user"), uid: Some(1000), tz: None }
     }
 
-    fn at(s: &str) -> NaiveDateTime {
+    fn at(s: &str) -> DateTime {
         reminders::parse_at(s).unwrap()
     }
 
@@ -722,7 +722,7 @@ mod tests {
         let v = quire_vault::Vault::in_memory(&[("A.md", "- [ ] Call Bo ⏰ 2026-11-05 09:00\n- [ ] Pay rent ⏰ 2026-11-05 09:00\n")]);
         let all = vault_reminders(&v);
         for round in 0..5 {
-            let now = at("2026-11-05 09:00") + Duration::minutes(round);
+            let now = dates::plus_seconds_dt(at("2026-11-05 09:00"), 60 * round);
             let _ = std::fs::remove_file(config.join("reminders").join(format!("{}.json", vault_key(vault))));
             let mut seed = FiredLog::load_in(&config, vault);
             seed.fresh = false;

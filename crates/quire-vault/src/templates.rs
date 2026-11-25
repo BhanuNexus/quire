@@ -14,15 +14,15 @@
 //! Unknown placeholders are kept as written.
 
 use std::collections::{BTreeMap, HashMap};
-use std::fmt::Write as _;
 use std::hash::BuildHasher;
 
-use chrono::{DateTime, Datelike, Duration, Local, Months, NaiveDate, Weekday};
+use quire_base::dates::{self, Date, Span, Weekday, Zoned};
 
 #[derive(Debug, Clone)]
 pub struct TemplateVars {
     pub title: String,
-    pub now: DateTime<Local>,
+    /// The moment `{{date}}` and `{{time}}` stand for, in the zone it is shown in.
+    pub now: Zoned,
 }
 
 /// A question a template asks before the note is made.
@@ -208,7 +208,7 @@ fn expand_text(tpl: &str, vars: &TemplateVars, folder: &str, answers: &BTreeMap<
             "folder" => out.push_str(folder),
             "cursor" if cursor_ok => cursor = Some(out.chars().count()),
             "cursor" => {}
-            k => match render_date(k, vars.now) {
+            k => match render_date(k, &vars.now) {
                 Some(s) => out.push_str(&s),
                 None => out.push_str(&tpl[range]),
             },
@@ -219,14 +219,14 @@ fn expand_text(tpl: &str, vars: &TemplateVars, folder: &str, answers: &BTreeMap<
 }
 
 /// `date`, `date:%A`, `date+7d:%F`, `date:next monday`, `time`, `time:%H`.
-fn render_date(key: &str, now: DateTime<Local>) -> Option<String> {
+fn render_date(key: &str, now: &Zoned) -> Option<String> {
     let (head, arg) = key.split_once(':').map_or((key, None), |(h, a)| (h, Some(a.trim())));
     let (base, default_fmt) = match head.trim() {
         h if h.starts_with("date") => (&h[4..], "%Y-%m-%d"),
         h if h.starts_with("time") => (&h[4..], "%H:%M"),
         _ => return None,
     };
-    let mut date = if base.is_empty() { now } else { offset(now, base)? };
+    let mut date = if base.is_empty() { now.clone() } else { offset(now, base)? };
     // The argument is a format (has `%`), a phrase, or `phrase:%format`.
     let (phrase, fmt): (Option<&str>, &str) = match arg {
         None => (None, default_fmt),
@@ -237,22 +237,19 @@ fn render_date(key: &str, now: DateTime<Local>) -> Option<String> {
         },
     };
     if let Some(p) = phrase {
-        let day = relative_day(p, date.date_naive())?;
-        date = day.and_time(date.time()).and_local_timezone(Local).single().unwrap_or(date);
+        let day = relative_day(p, date.date())?;
+        date = dates::single_in(date.time_zone(), day.to_datetime(date.time())).unwrap_or(date);
     }
-    let items: Vec<_> = chrono::format::StrftimeItems::new(fmt).collect();
-    if items.iter().any(|i| matches!(i, chrono::format::Item::Error)) {
-        return None;
-    }
-    // `to_string` would panic on an item that fails to format (`%#z` parses
-    // but can't be written): such a placeholder stays as typed.
-    let mut out = String::new();
-    write!(out, "{}", date.format_with_items(items.into_iter())).ok()?;
-    Some(out)
+    // A pattern that isn't one, or can't be written (`%#z`, which used to
+    // panic), leaves the placeholder as typed.
+    dates::format(fmt, &dates::local_moment(&date)).ok()
 }
 
-/// `+7d`, `-1w`, `+2m`, `+1y` from now.
-fn offset(now: DateTime<Local>, s: &str) -> Option<DateTime<Local>> {
+/// `+7d`, `-1w`, `+2m`, `+1y` from now. Days and weeks are 24 hours each
+/// (across a clock change the hour moves, as it always did); months and
+/// years move the calendar date and keep the clock time, none when that
+/// time doesn't exist that day or exists twice.
+fn offset(now: &Zoned, s: &str) -> Option<Zoned> {
     let s = s.trim();
     let (sign, rest) = match s.as_bytes().first()? {
         b'+' => (1i64, &s[1..]),
@@ -261,64 +258,69 @@ fn offset(now: DateTime<Local>, s: &str) -> Option<DateTime<Local>> {
     };
     let unit = rest.chars().last()?;
     let n: i64 = rest[..rest.len() - unit.len_utf8()].trim().parse().ok()?;
+    let hours = |days: i64| {
+        let at = now.timestamp().checked_add(Span::new().try_hours(days.checked_mul(24)?).ok()?).ok()?;
+        Some(at.to_zoned(now.time_zone().clone()))
+    };
     match unit {
-        'd' => Some(now + Duration::days(sign * n)),
-        'w' => Some(now + Duration::weeks(sign * n)),
+        'd' => hours(sign * n),
+        'w' => hours(sign * n * 7),
         'm' | 'y' => {
-            let months = Months::new(u32::try_from(n * if unit == 'y' { 12 } else { 1 }).ok()?);
-            if sign > 0 { now.checked_add_months(months) } else { now.checked_sub_months(months) }
+            let months = sign * n.checked_mul(if unit == 'y' { 12 } else { 1 })?;
+            let moved = now.datetime().checked_add(Span::new().try_months(months).ok()?).ok()?;
+            dates::single_in(now.time_zone(), moved)
         }
         _ => None,
     }
 }
 
 const WEEKDAY_NAMES: [(&str, Weekday); 7] = [
-    ("monday", Weekday::Mon),
-    ("tuesday", Weekday::Tue),
-    ("wednesday", Weekday::Wed),
-    ("thursday", Weekday::Thu),
-    ("friday", Weekday::Fri),
-    ("saturday", Weekday::Sat),
-    ("sunday", Weekday::Sun),
+    ("monday", Weekday::Monday),
+    ("tuesday", Weekday::Tuesday),
+    ("wednesday", Weekday::Wednesday),
+    ("thursday", Weekday::Thursday),
+    ("friday", Weekday::Friday),
+    ("saturday", Weekday::Saturday),
+    ("sunday", Weekday::Sunday),
 ];
 
 /// `today`, `tomorrow`, `yesterday`, `monday`, `next friday`, `last monday`,
 /// `start of week`, `end of month`, `start of year`.
-pub fn relative_day(phrase: &str, today: NaiveDate) -> Option<NaiveDate> {
+pub fn relative_day(phrase: &str, today: Date) -> Option<Date> {
     let p = phrase.trim().to_ascii_lowercase();
     let words: Vec<&str> = p.split_whitespace().collect();
     let weekday = |w: &str| WEEKDAY_NAMES.iter().find(|(n, _)| n.starts_with(w) && w.len() >= 3).map(|(_, d)| *d);
+    let from_monday = |d: Weekday| i64::from(d.to_monday_zero_offset());
+    let plus = |days: i64| dates::add_days(today, days);
     let next = |d: Weekday| {
-        let ahead = (7 + i64::from(d.num_days_from_monday()) - i64::from(today.weekday().num_days_from_monday())) % 7;
-        today + Duration::days(if ahead == 0 { 7 } else { ahead })
+        let ahead = (7 + from_monday(d) - from_monday(today.weekday())) % 7;
+        plus(if ahead == 0 { 7 } else { ahead })
     };
     let last = |d: Weekday| {
-        let back = (7 + i64::from(today.weekday().num_days_from_monday()) - i64::from(d.num_days_from_monday())) % 7;
-        today - Duration::days(if back == 0 { 7 } else { back })
+        let back = (7 + from_monday(today.weekday()) - from_monday(d)) % 7;
+        plus(-(if back == 0 { 7 } else { back }))
     };
-    let month_end = |d: NaiveDate| d.checked_add_months(Months::new(1)).and_then(|n| n.with_day(1)).and_then(|n| n.pred_opt());
-    Some(match words.as_slice() {
-        ["today"] => today,
-        ["tomorrow"] => today + Duration::days(1),
-        ["yesterday"] => today - Duration::days(1),
+    match words.as_slice() {
+        ["today"] => Some(today),
+        ["tomorrow"] => plus(1),
+        ["yesterday"] => plus(-1),
         [w] => {
             // This week's day: today or the next one.
             let d = weekday(w)?;
-            let ahead = (7 + i64::from(d.num_days_from_monday()) - i64::from(today.weekday().num_days_from_monday())) % 7;
-            today + Duration::days(ahead)
+            plus((7 + from_monday(d) - from_monday(today.weekday())) % 7)
         }
-        ["next", "week"] => today + Duration::weeks(1),
-        ["last", "week"] => today - Duration::weeks(1),
+        ["next", "week"] => plus(7),
+        ["last", "week"] => plus(-7),
         ["next", w] => next(weekday(w)?),
         ["last", w] => last(weekday(w)?),
-        ["start", "of", "week"] => today - Duration::days(i64::from(today.weekday().num_days_from_monday())),
-        ["end", "of", "week"] => today + Duration::days(6 - i64::from(today.weekday().num_days_from_monday())),
-        ["start", "of", "month"] => today.with_day(1)?,
-        ["end", "of", "month"] => month_end(today)?,
-        ["start", "of", "year"] => NaiveDate::from_ymd_opt(today.year(), 1, 1)?,
-        ["end", "of", "year"] => NaiveDate::from_ymd_opt(today.year(), 12, 31)?,
-        _ => return None,
-    })
+        ["start", "of", "week"] => plus(-from_monday(today.weekday())),
+        ["end", "of", "week"] => plus(6 - from_monday(today.weekday())),
+        ["start", "of", "month"] => Some(today.first_of_month()),
+        ["end", "of", "month"] => Some(today.last_of_month()),
+        ["start", "of", "year"] => Some(today.first_of_year()),
+        ["end", "of", "year"] => Some(today.last_of_year()),
+        _ => None,
+    }
 }
 
 /// Expand in one go, without asking.
@@ -367,10 +369,13 @@ pub fn pending_prompts(text: &str) -> Vec<(std::ops::Range<usize>, Prompt)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
+
+    fn at(y: i16, m: i8, d: i8, h: i8, mi: i8, tz: &str) -> Zoned {
+        Date::new(y, m, d).unwrap().at(h, mi, 0, 0).to_zoned(dates::TimeZone::get(tz).unwrap()).unwrap()
+    }
 
     fn vars() -> TemplateVars {
-        TemplateVars { title: "Standup".into(), now: Local.with_ymd_and_hms(2026, 11, 1, 9, 5, 0).unwrap() }
+        TemplateVars { title: "Standup".into(), now: at(2026, 11, 1, 9, 5, "UTC") }
     }
 
     #[test]
@@ -393,10 +398,36 @@ mod tests {
         assert_eq!(e("{{date:%Q}} {{date+3x}} {{date:someday}}"), "{{date:%Q}} {{date+3x}} {{date:someday}}", "bad ones stay as written");
         // Parses, but can't be written (it used to panic): stays as typed.
         assert_eq!(e("{{date:%#z}} {{time:%#z}}"), "{{date:%#z}} {{time:%#z}}");
-        let sunday = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+        let sunday = Date::new(2026, 11, 1).unwrap();
         assert_eq!(relative_day("sunday", sunday), Some(sunday));
-        assert_eq!(relative_day("next sunday", sunday), Some(NaiveDate::from_ymd_opt(2026, 11, 8).unwrap()));
-        assert_eq!(relative_day("start of week", sunday), Some(NaiveDate::from_ymd_opt(2026, 10, 26).unwrap()));
+        assert_eq!(relative_day("next sunday", sunday), Some(Date::new(2026, 11, 8).unwrap()));
+        assert_eq!(relative_day("start of week", sunday), Some(Date::new(2026, 10, 26).unwrap()));
+        assert_eq!(relative_day("last sunday", sunday), Some(Date::new(2026, 10, 25).unwrap()));
+        assert_eq!(relative_day("end of year", sunday), Some(Date::new(2026, 12, 31).unwrap()));
+        assert_eq!(relative_day("end of month", Date::new(2028, 2, 3).unwrap()), Some(Date::new(2028, 2, 29).unwrap()));
+    }
+
+    /// A date past year 9999 (jiff's calendar ends there; chrono's went on)
+    /// leaves the placeholder as typed.
+    #[test]
+    fn dates_past_year_9999_stay_as_typed() {
+        let e = |t: &str| expand(t, &vars(), "", &HashMap::new()).text;
+        assert_eq!(e("{{date+9000y}} {{date+3000000d}} {{date-9000y}}"), "{{date+9000y}} {{date+3000000d}} -6974-11-01");
+        assert_eq!(e("{{date+7973y:%Y}}"), "9999");
+    }
+
+    /// Across a clock change, as with chrono: `+1d` is 24 hours later, `+1m`
+    /// keeps the clock time; `%Z` is the offset.
+    #[test]
+    fn date_math_across_a_clock_change() {
+        let Ok(_) = dates::TimeZone::get("Europe/Berlin") else { return };
+        let v = TemplateVars { title: "T".into(), now: at(2026, 3, 28, 12, 0, "Europe/Berlin") };
+        let e = |t: &str| expand(t, &v, "", &HashMap::new()).text;
+        assert_eq!(e("{{date+1d:%Y-%m-%d %H.%M %Z}}"), "2026-03-29 13.00 +02:00");
+        assert_eq!(e("{{date+1m:%Y-%m-%d %H.%M %z}}"), "2026-04-28 12.00 +0200");
+        assert_eq!(e("{{date:%Z %z}}"), "+01:00 +0100");
+        let jan31 = TemplateVars { title: "T".into(), now: at(2026, 1, 31, 9, 0, "UTC") };
+        assert_eq!(expand("{{date+1m}}", &jan31, "", &HashMap::new()).text, "2026-02-28");
     }
 
     const MEETING: &str = "---\nquire-template:\n  folder: Meetings/\n  name: \"{{date}} {{prompt:Topic}}\"\n  applies_to: [Meetings/, Calls]\ntags: [meeting]\n---\n# {{prompt:Topic}} with {{prompt:Client|ACME}}\nStatus: {{select:Status|planned, active, done}}\nAgain: {{prompt:client}}\n";

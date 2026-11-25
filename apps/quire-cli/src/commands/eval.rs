@@ -77,7 +77,7 @@ fn run(args: &[String]) -> Result<(), String> {
 fn write_report(name: &str, report: &quire_mcp::eval::Report, args: &[String]) -> Result<(), String> {
     let dir = std::path::Path::new("target").join("eval");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let file = dir.join(format!("{name}-{}.json", chrono_date()));
+    let file = dir.join(format!("{name}-{}.json", local_date()));
     let pretty = serde_json_pretty(&report.json);
     quire_base::fs::write_atomic(&file, pretty.as_bytes(), quire_base::fs::Options::STATE)
         .map_err(|e| format!("{}: {e}", file.display()))?;
@@ -212,8 +212,8 @@ mod mock {
     }
 }
 
-fn chrono_date() -> String {
-    quire_app::chrono_fmt(quire_app::history_ops::now_ms()).split_whitespace().next().unwrap_or("today").to_string()
+fn local_date() -> String {
+    quire_app::local_time_fmt(quire_app::history_ops::now_ms()).split_whitespace().next().unwrap_or("today").to_string()
 }
 
 fn serde_json_pretty(v: &quire_mcp::eval::Json) -> String {

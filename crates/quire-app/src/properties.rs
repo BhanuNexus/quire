@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Properties (front matter) editing and `quire-view` evaluation.
 
+use quire_base::dates;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -165,7 +166,7 @@ impl Workspace {
     pub fn run_view(&self, spec: &str, from: Option<&NotePath>) -> Rc<Result<ViewResult, String>> {
         // 0.12: notes of unlocked folders are in views too (memory only).
         let version = self.notes_version();
-        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let today = dates::today_ymd();
         let key = (spec.to_string(), from.cloned());
         if let Some((v, d, r)) = self.view_cache.entries.borrow().get(&key)
             && *v == version

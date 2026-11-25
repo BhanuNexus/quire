@@ -635,8 +635,10 @@ fn two_pane(
         for (p, preview) in notes.iter().zip(&previews) {
             let is_active = active == Some(p);
             let title = note_label(ws, p);
-            let date =
-                times.get(p).map(|(m, _)| quire_app::chrono_fmt(*m).split(' ').next().unwrap_or_default().to_string()).unwrap_or_default();
+            let date = times
+                .get(p)
+                .map(|(m, _)| quire_app::local_time_fmt(*m).split(' ').next().unwrap_or_default().to_string())
+                .unwrap_or_default();
             let resp = crate::theme::row(ui, is_active, 64.0, pal, |painter, rect| {
                 let w = rect.width() - 16.0;
                 let mut job = LayoutJob::simple_singleline(title.clone(), FontId::proportional(13.0), pal.strong);

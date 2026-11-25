@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Quire contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
+use quire_base::dates;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -467,9 +468,9 @@ fn changing_a_folders_key_from_the_app() {
 #[test]
 fn unlocked_notes_join_the_features_from_memory_only() {
     // One reading of the clock, so "today" and "in three hours" agree across midnight.
-    let now = chrono::Local::now();
-    let soon = (now + chrono::Duration::hours(3)).format("%Y-%m-%d %H:%M").to_string();
-    let today = now.format("%Y-%m-%d").to_string();
+    let now = dates::now_local();
+    let soon = dates::fmt_naive(dates::plus_seconds_dt(now.datetime(), 3 * 3600), "%Y-%m-%d %H:%M");
+    let today = dates::fmt_zoned(&now, "%Y-%m-%d");
     let day = format!(
         "---\nstatus: doing\nlocation: [38.7, -9.1]\n---\n# Day\nMARKER-9d1f see [[Plain]].\n- [ ] MARKER-9d1f call Bo 📅 {today}\n- [ ] MARKER-9d1f ship ⏰ {soon}\n"
     );
@@ -495,7 +496,7 @@ fn unlocked_notes_join_the_features_from_memory_only() {
     let view = ws.run_view("from: all\nwhere: status = doing", None);
     assert!(view.as_ref().as_ref().unwrap().rows.iter().any(|r| r.path == day_p));
     let base = quire_import::obsidian::base::parse(&std::fs::read_to_string(root.join("Bills.base")).unwrap()).unwrap();
-    let table = crate::bases::table(&ws, &base, 0, chrono::Local::now().naive_local());
+    let table = crate::bases::table(&ws, &base, 0, dates::now_local().datetime());
     assert!(table.rows.iter().any(|r| r.path == day_p), "{:?}", table.rows.iter().map(|r| &r.path).collect::<Vec<_>>());
     let pins = crate::geo::pins(&ws, &view.as_ref().as_ref().unwrap().rows);
     assert_eq!(pins.len(), 1);
@@ -557,7 +558,7 @@ fn unlocked_notes_join_the_features_from_memory_only() {
 /// once its folder is locked.
 #[test]
 fn reminders_of_locked_notes_fire_only_while_unlocked() {
-    let soon = (chrono::Local::now() + chrono::Duration::hours(3)).format("%Y-%m-%d %H:%M").to_string();
+    let soon = dates::fmt_naive(dates::plus_seconds_dt(dates::now_local().datetime(), 3 * 3600), "%Y-%m-%d %H:%M");
     let (_d, root) = vault_dir(&[("Journal/Day.md", &format!("# Day\n- [ ] MARKER-9d1f ship ⏰ {soon}\n")), ("Plain.md", "# Plain\n")]);
     let mut ws = open(&root);
     lock_and_wait(&mut ws, "Journal");
@@ -565,8 +566,8 @@ fn reminders_of_locked_notes_fire_only_while_unlocked() {
     crate::reminders::tick(&mut ws);
     // Pretend time passed: it is due.
     let st = &mut ws.features.tasks.reminders;
-    st.schedule[0].at = chrono::Local::now().naive_local() - chrono::Duration::minutes(1);
-    st.checked_for_test(chrono::Local::now().naive_local() - chrono::Duration::minutes(2));
+    st.schedule[0].at = dates::plus_seconds_dt(dates::now_local().datetime(), -60);
+    st.checked_for_test(dates::plus_seconds_dt(dates::now_local().datetime(), -120));
     let r = st.schedule[0].clone();
     assert!(crate::reminders::tick(&mut ws));
     assert_eq!(ws.features.tasks.reminders.fired.len(), 1);

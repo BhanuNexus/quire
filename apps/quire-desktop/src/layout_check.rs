@@ -44,7 +44,7 @@ fn workspace_with(experimental: bool) -> Workspace {
     ws.index().flush();
     // Sixty versions, each further from the current text: a long list and a long diff.
     let path = NotePath::new("Long.md");
-    let now = chrono::Utc::now().timestamp_millis();
+    let now = quire_base::time::now_ms();
     for i in 1..=60_u32 {
         let old: String = long.clone() + &lines(i * 4, "Old line {}");
         ws.vault().unwrap().snapshot(&path, &old, now - i64::from(i) * 30_000, true).unwrap();

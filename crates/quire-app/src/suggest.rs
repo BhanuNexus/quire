@@ -7,6 +7,7 @@
 //! The frontend asks [`Workspace::suggestions`] each frame and shows a small
 //! list at the caret; [`Workspace::accept_suggestion`] makes the edit.
 
+use quire_base::dates;
 use quire_text::{EditKind, Selection, Transaction};
 use quire_vault::{NotePath, TemplateVars, expand_template};
 
@@ -299,8 +300,8 @@ impl Workspace {
     }
 
     fn slash_items(&self, query: &str, at_line_start: bool) -> Vec<SuggestItem> {
-        let now = chrono::Local::now();
-        let today = now.format("%Y-%m-%d").to_string();
+        let now = dates::now_local();
+        let today = dates::fmt_zoned(&now, "%Y-%m-%d");
         let date = if self.settings.dates_as_links { format!("[[{today}]]") } else { today };
         let mut out: Vec<(usize, SuggestItem)> = Vec::new();
         let mut offer = |label: String, keywords: &str, detail: String, insert: String| {
@@ -314,12 +315,12 @@ impl Workspace {
             offer(b.label.to_string(), b.keywords, b.hint.to_string(), insert);
         }
         offer("Today's date".into(), "date now day", date.clone(), date);
-        offer("Current time".into(), "time now clock", now.format("%H:%M").to_string(), now.format("%H:%M").to_string());
+        offer("Current time".into(), "time now clock", dates::fmt_zoned(&now, "%H:%M"), dates::fmt_zoned(&now, "%H:%M"));
         // The vault's templates, expanded in place.
         for t in self.templates() {
             let Some(text) = self.vault().and_then(|v| v.read(&t).ok()) else { continue };
             let title = self.active_doc().map(crate::document::Document::title).unwrap_or_default();
-            let (body, cursor) = expand_template(&text, &TemplateVars { title, now });
+            let (body, cursor) = expand_template(&text, &TemplateVars { title, now: now.clone() });
             let insert = match cursor {
                 Some(c) => {
                     let at = body.char_indices().nth(c).map_or(body.len(), |(b, _)| b);

@@ -17,7 +17,7 @@ use std::fmt::Write as _;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use chrono::{Local, NaiveDate};
+use quire_base::dates::{self, Date};
 use quire_index::views::{self, CompatBlock};
 use quire_markdown::Value;
 use quire_markdown::tasks::{Format, marker_in_line};
@@ -85,7 +85,7 @@ pub enum Action {
         doc: DocId,
         block: usize,
     },
-    OpenPeriod(Period, NaiveDate),
+    OpenPeriod(Period, Date),
     /// Open an Obsidian `.base` as a note with quire-views.
     ConvertBase(NotePath),
     /// 0.11: start (or with `None` stop) the task timer.
@@ -173,7 +173,7 @@ pub enum BoardSetting {
 }
 
 /// The agenda, for (the notes' version, today).
-type AgendaCache = RefCell<Option<(((u64, u64), NaiveDate), Rc<Agenda>)>>;
+type AgendaCache = RefCell<Option<(((u64, u64), Date), Rc<Agenda>)>>;
 
 /// State of the planning feature, kept in `ws.features.tasks`.
 #[derive(Debug, Default)]
@@ -273,7 +273,7 @@ impl Workspace {
     }
 
     fn agenda_with(&self, wait: bool) -> Option<Rc<Agenda>> {
-        let today = Local::now().date_naive();
+        let today = dates::today();
         // 0.12: with the notes of unlocked folders (memory only).
         let key = (self.notes_version(), today);
         if let Some((k, a)) = self.features.tasks.agenda.borrow().as_ref()
@@ -318,7 +318,7 @@ impl Workspace {
         let line_end = src[line_start..].find('\n').map_or(src.len(), |i| line_start + i);
         let line = src[line_start..line_end].trim_end_matches('\r');
         let Some((marker, task)) = quire_plan::tasks::parse_line(line) else { return false };
-        let today = Local::now().date_naive();
+        let today = dates::today();
         let format = Format::from_setting(&self.settings.tasks.format);
         let replacement = if task.done {
             let undone = quire_markdown::tasks::set_done(line, marker, false);
@@ -430,7 +430,7 @@ impl Workspace {
             }
             Some(f) => {
                 let folder = format!("{}/{}", f.path, prefs.folder.trim_matches('/'));
-                let name = format!("Task {}", Local::now().format("%Y-%m-%d"));
+                let name = format!("Task {}", dates::now_fmt("%Y-%m-%d"));
                 self.new_task_in(&new, folder.trim_end_matches('/'), Some(&name), false)
             }
             None => self.new_task(&new, false),
@@ -492,13 +492,13 @@ impl Workspace {
         let body = &note_text[body_start..];
         let heading = body.lines().map(str::trim).find(|l| !l.is_empty()).and_then(|l| l.strip_prefix("# ")).map(str::trim);
         let title = heading.filter(|_| note_locked.is_some()).map_or(title, str::to_string);
-        let Some(note) = quire_plan::task_note::read(&props, &title, &prefs, *Local::now().offset()) else {
+        let Some(note) = quire_plan::task_note::read(&props, &title, &prefs, dates::now_local().offset().seconds()) else {
             self.notify(NoticeLevel::Info, format!("“{}” isn't a task note", path.stem()));
             return false;
         };
         let format = Format::from_setting(&self.settings.tasks.format);
         let rest = quire_plan::task_note::LineRest::of(&line, marker);
-        let new_line = quire_plan::task_note::to_inline(&line[..marker], &note, crate::task_timer::now(), format);
+        let new_line = quire_plan::task_note::to_inline(&line[..marker], &note, &crate::task_timer::now(), format);
         let new_line = rest.restore(&new_line, marker, &note.status, &prefs);
         // Only a note the line carries all of goes: front matter whose
         // keys the line holds, a heading with its title, nothing else.
@@ -625,7 +625,7 @@ fn complete_ticked(ws: &mut Workspace) -> bool {
     }
     // Lines that were open and are now ticked, without a done date yet.
     let format = Format::from_setting(&ws.settings.tasks.format);
-    let today = Local::now().date_naive();
+    let today = dates::today();
     let below = ws.settings.tasks.new_occurrence == "below";
     let mut edits: Vec<(usize, String, String)> = Vec::new();
     for (n, l) in text.lines().enumerate() {
@@ -1016,14 +1016,18 @@ pub(crate) fn tick(ws: &mut Workspace, now: Instant) -> bool {
 
 /// The earliest instant `tick` has work to do (reminders, debounces).
 pub(crate) fn next_deadline(ws: &Workspace) -> Option<Instant> {
-    let now = Local::now().naive_local();
-    let mut due = ws.features.tasks.reminders.next_due(now).map(|t| (t - now).to_std().unwrap_or_default());
+    let now = dates::now_local().datetime();
+    let mut due = ws.features.tasks.reminders.next_due(now).map(|t| {
+        let secs = (dates::ms_at_offset(t, 0).unwrap_or(0) - dates::ms_at_offset(now, 0).unwrap_or(0)).max(0);
+        Duration::from_millis(u64::try_from(secs).unwrap_or(0))
+    });
     if ws.features.meta.busy() || !ws.features.tasks.pending.borrow().is_empty() {
         due = Some(due.map_or(Duration::from_millis(50), |d| d.min(Duration::from_millis(50))));
     }
     // 0.11: a running timer's clock ticks every second.
     if ws.timer().is_some() {
-        let next = Duration::from_millis(1000 - u64::from(Local::now().timestamp_subsec_millis().min(999)));
+        let ms = dates::now_local().timestamp().subsec_millisecond().clamp(0, 999);
+        let next = Duration::from_millis(1000 - u64::try_from(ms).unwrap_or(0));
         due = Some(due.map_or(next, |d| d.min(next)));
     }
     due.map(|d| Instant::now() + d)
@@ -1069,7 +1073,7 @@ fn word_at_caret(ws: &Workspace) -> Option<(bool, String)> {
 /// A Plan-owned command ([`Command::owner`]).
 pub(crate) fn run(ws: &mut Workspace, cmd: Command) -> Option<UiRequest> {
     use Command as C;
-    let today = Local::now().date_naive();
+    let today = dates::today();
     match cmd {
         C::ShowAgenda | C::ShowCalendar | C::NewTask | C::TimeReport => return Some(UiRequest::Feature(cmd)),
         C::OpenWeeklyNote | C::OpenMonthlyNote | C::OpenYearlyNote => {
@@ -1291,7 +1295,7 @@ mod tests {
         let at = doc.buffer().line_to_char(1) + 3;
         doc.apply(Transaction::replace(at, at + 1, "x"), EditKind::Other).unwrap();
         assert!(complete_ticked(&mut w));
-        let today = Local::now().format("%Y-%m-%d").to_string();
+        let today = dates::today_ymd();
         assert_eq!(
             &*w.doc(id).unwrap().text(),
             format!("# T\n- [ ] Rent 🔁 every month 📅 2027-01-01\n- [x] Rent 🔁 every month 📅 2026-12-01 ✅ {today}\n")
@@ -1306,7 +1310,7 @@ mod tests {
     fn toggles_tasks_in_closed_notes() {
         let mut w = ws(&[("T.md", "- [ ] Call 📅 2026-11-02\n- [ ] Water 🔁 every day 📅 2026-11-02\n")]);
         assert!(w.toggle_task(&"T.md".into(), 2, "Call"));
-        let today = Local::now().format("%Y-%m-%d").to_string();
+        let today = dates::today_ymd();
         let v = w.vault().unwrap().clone();
         assert_eq!(
             v.read(&"T.md".into()).unwrap(),
@@ -1331,7 +1335,7 @@ mod tests {
         assert!(w.convert_task_to_note());
         assert!(w.doc(id).unwrap().text().contains("- [ ] [[Write report]]\n"));
         let made = w.vault().unwrap().read(&"Tasks/Write report.md".into()).unwrap();
-        let today = Local::now().format("%Y-%m-%d");
+        let today = dates::now_fmt("%Y-%m-%d");
         assert_eq!(
             made,
             format!(
@@ -1486,7 +1490,7 @@ mod tests {
 
     #[test]
     fn agenda_includes_task_notes() {
-        let today = Local::now().format("%Y-%m-%d").to_string();
+        let today = dates::today_ymd();
         let mut w =
             ws(&[("A.md", &format!("- [ ] Today 📅 {today}\n")), ("Tasks/B.md", &format!("---\ntype: task\ndue: {today}\n---\n# B\n"))]);
         assert_eq!(w.agenda().today.len(), 2);

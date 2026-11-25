@@ -120,7 +120,7 @@ pub fn capture(vault: &Vault, agent: &AgentStore, actor: &Actor, url: &str, opts
     let mut warnings = c.warnings.clone();
     let (names, saved) = save_images(vault, agent, actor, &c.images, &mut warnings);
     let markdown = web::embed_images(&c.article.markdown, &names);
-    let captured = chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
+    let captured = quire_base::dates::now_fmt("%Y-%m-%dT%H:%M:%S%:z");
     let text = note_text(&c, &title, &markdown, &captured);
     let cs = ChangeSet {
         changes: vec![Change::Create { path: path.clone(), text }],

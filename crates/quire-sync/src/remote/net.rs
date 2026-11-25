@@ -199,8 +199,8 @@ fn net_error(e: &ureq::Error) -> StoreError {
 /// `Sun, 06 Nov 1994 08:49:37 GMT` → seconds from now (positive: the
 /// server is ahead). For the clock-skew check.
 pub fn skew_secs(date: &str) -> Option<i64> {
-    let then = chrono::DateTime::parse_from_rfc2822(date.trim()).ok()?;
-    Some(then.timestamp() - chrono::Utc::now().timestamp())
+    let then = quire_base::dates::parse_rfc2822(date.trim()).ok()?;
+    Some(quire_base::dates::ms_at_offset(then, 0)?.div_euclid(1000) - quire_base::time::now_ms().div_euclid(1000))
 }
 
 /// What a clock that's this far off means for the person.
@@ -270,8 +270,8 @@ mod tests {
 
     #[test]
     fn skew_reads_http_dates() {
-        let now = chrono::Utc::now();
-        let ahead = (now + chrono::Duration::minutes(20)).to_rfc2822();
+        let now = quire_base::dates::utc_from_ms(quire_base::time::now_ms()).unwrap();
+        let ahead = quire_base::dates::rfc2822(quire_base::dates::plus_seconds_dt(now, 20 * 60), 0).unwrap();
         let s = skew_secs(&ahead).unwrap();
         assert!((1190..=1210).contains(&s), "{s}");
         assert!(skew_message(s).contains("20 minute(s) behind"));

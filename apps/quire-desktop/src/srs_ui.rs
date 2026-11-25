@@ -139,7 +139,7 @@ fn body(ui: &mut Ui, ws: &mut Workspace, pal: &Palette, screen_h: f32) -> bool {
                     "Reviewed {} time{} · last {}",
                     st.reviews,
                     if st.reviews == 1 { "" } else { "s" },
-                    quire_app::chrono_fmt(st.last_review)
+                    quire_app::local_time_fmt(st.last_review)
                 )
             },
         );

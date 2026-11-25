@@ -358,7 +358,7 @@ impl Session {
     pub(super) fn compact(&self, force: bool) -> Result<String, String> {
         let mut h = Hardening::load(&self.root);
         let policy = h.policy();
-        h.last_compact = chrono::Utc::now().timestamp();
+        h.last_compact = quire_base::time::now_ms().div_euclid(1000);
         let _ = h.save(&self.root);
         let out = match &self.link {
             Link::Server(_) => return Ok("A sync server compacts its own history (QUIRE_SYNC_KEEP_DAYS on the server).".into()),
@@ -386,7 +386,7 @@ impl Session {
         }
         self.compacted = true;
         let h = Hardening::load(&self.root);
-        if chrono::Utc::now().timestamp() - h.last_compact < 24 * 3600 {
+        if quire_base::time::now_ms().div_euclid(1000) - h.last_compact < 24 * 3600 {
             return;
         }
         let _ = self.compact(false);

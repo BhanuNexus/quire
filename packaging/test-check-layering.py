@@ -134,6 +134,18 @@ class Layering(unittest.TestCase):
         packages[1]["dependencies"].append(dep("quire-sync", kind="dev", features=["http"]))
         self.assertEqual(self.run_check(packages, rows, same), [])
 
+    def test_chrono_only_as_a_dev_dependency(self):
+        packages, rows, same = base_world()
+        packages[1]["dependencies"].append(dep("chrono", kind="dev"))  # an oracle test
+        self.assertEqual(self.run_check(packages, rows, same), [])
+        packages[2]["dependencies"].append(dep("chrono"))
+        self.assertOneError(self.run_check(packages, rows, same), "quire-sync depends on chrono", "quire_base::dates")
+
+    def test_chrono_tz_is_banned_too(self):
+        packages, rows, same = base_world()
+        packages[2]["dependencies"].append(dep("chrono-tz"))
+        self.assertOneError(self.run_check(packages, rows, same), "quire-sync depends on chrono-tz")
+
     def test_build_dependencies_count(self):
         packages, rows, same = base_world()
         packages[0]["dependencies"].append(dep("quire-cli", kind="build"))
@@ -191,6 +203,49 @@ class Layering(unittest.TestCase):
             rows, same = cl.parse_architecture(f.read())
         self.assertGreaterEqual(len(rows), 22)
         self.assertIn(("quire-web", "quire-mcp"), same)
+
+
+class Trees(unittest.TestCase):
+    """The shipped apps' full graphs (`cargo tree -i`), both editions, faked."""
+
+    def fake(self, found):
+        """A `cargo tree` that finds `found` = {(package, edition, crate): text}."""
+        calls = []
+
+        def run(args):
+            calls.append(args)
+            pkg = args[args.index("-p") + 1]
+            edition = "lite" if "--no-default-features" in args else "full"
+            crate = args[args.index("-i") + 1]
+            text = found.get((pkg, edition, crate))
+            if text is None:
+                return 101, "", f"error: package ID specification `{crate}` did not match any packages"
+            return 0, text, ""
+
+        return run, calls
+
+    def test_clean_graphs_pass_and_every_edition_is_asked(self):
+        run, calls = self.fake({})
+        self.assertEqual(cl.tree_violations(["quire-cli", "quire-desktop"], run), [])
+        self.assertEqual(len(calls), 2 * 2 * len(cl.BANNED_DEPS))
+        self.assertTrue(all("normal,build" in c and "--target" in c and "all" in c for c in calls))
+
+    def test_a_crate_brought_in_by_a_third_party_fails(self):
+        run, _ = self.fake({("quire-desktop", "lite", "chrono-tz"): "chrono-tz v0.10.4\n\u2514\u2500\u2500 some-crate v1.0.0\n"})
+        errors = cl.tree_violations(["quire-cli", "quire-desktop"], run)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("quire-desktop (--no-default-features)", errors[0])
+        self.assertIn("chrono-tz", errors[0])
+        self.assertIn("some-crate", errors[0])
+
+    def test_cargo_failing_otherwise_is_an_error(self):
+        errors = cl.tree_violations(["quire-cli"], lambda args: (101, "", "error: no lock file"))
+        self.assertTrue(errors and all("cargo tree" in e for e in errors), errors)
+
+    def test_the_apps_are_the_shipped_packages(self):
+        packages, _, _ = base_world()
+        packages.append(pkg("quire-desktop", "apps/quire-desktop"))
+        self.assertEqual(cl.shipped(meta(*packages)), ["quire-cli", "quire-desktop"])
 
 
 if __name__ == "__main__":

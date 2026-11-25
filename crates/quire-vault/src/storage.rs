@@ -349,7 +349,7 @@ impl LocalFs {
     /// Move `path` to the trash (call with [`one_write_at_a_time`] held):
     /// one try, a busy file reported as [`Step::Busy`].
     fn move_to_trash(&self, path: &NotePath) -> Result<Step<()>> {
-        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+        let stamp = quire_base::dates::now_fmt("%Y%m%d-%H%M%S");
         match self.move_to_trash_stamped(path, &stamp) {
             Ok(()) => Ok(Step::Done(())),
             Err(e) if is_busy(&e) => Ok(Step::Busy(io_err(path.to_string())(e))),

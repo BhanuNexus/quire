@@ -10,6 +10,7 @@
 //!
 //! Kept in `ws.features.srs`.
 
+use quire_base::dates;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
@@ -297,8 +298,8 @@ impl Workspace {
 
 /// Unix ms at the end of today, local time.
 pub fn end_of_today_ms() -> i64 {
-    let today = chrono::Local::now().date_naive();
-    today.and_hms_opt(23, 59, 59).and_then(|t| t.and_local_timezone(chrono::Local).single()).map_or_else(now_ms, |t| t.timestamp_millis())
+    let today = dates::today();
+    dates::local_single(today.at(23, 59, 59, 0)).map_or_else(now_ms, |t| t.timestamp().as_millisecond())
 }
 
 /// After the index changes: carry history over to edited questions.

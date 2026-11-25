@@ -12,6 +12,7 @@
 //! (the note called `index` or `Home`, if published, then a list of pages),
 //! a tags page, and search that runs in the browser.
 
+use quire_base::dates;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -157,7 +158,7 @@ fn render_views(html: &str, src: &str, ix: &Index, from: &NotePath, url: &dyn Fn
     if blocks.is_empty() || !html.contains(open) {
         return html.to_string();
     }
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let today = dates::today_ymd();
     let mut out = String::with_capacity(html.len());
     let mut rest = html;
     for b in &blocks {

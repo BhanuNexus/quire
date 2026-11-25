@@ -16,6 +16,7 @@ use quire_app::agent_state::review::{HunkAct, ReviewSession, decode, display_lin
 use quire_app::agent_state::{TITLE_WIDGET, inbox};
 use quire_app::decor::{ActionId, WidgetId};
 use quire_app::{Command, Owner};
+use quire_base::dates::{self, Strftime};
 
 use crate::panels::PanelOut;
 use crate::theme::Palette;
@@ -408,16 +409,14 @@ pub(crate) fn who(p: &Proposal) -> String {
 
 /// "14:02" today, "Mon 14:02" this week, else the date.
 pub(crate) fn short_time(ms: i64) -> String {
-    let Some(t) = chrono::DateTime::from_timestamp_millis(ms) else { return String::new() };
-    let t = t.with_timezone(&chrono::Local);
-    let now = chrono::Local::now();
-    let days = (now.date_naive() - t.date_naive()).num_days();
+    let Some(t) = dates::local_from_ms(ms) else { return String::new() };
+    let days = dates::days_between(t.date(), dates::today());
     if days == 0 {
-        t.format("%H:%M").to_string()
+        t.render("%H:%M")
     } else if (1..7).contains(&days) {
-        t.format("%a %H:%M").to_string()
+        t.render("%a %H:%M")
     } else {
-        t.format("%Y-%m-%d").to_string()
+        t.render("%Y-%m-%d")
     }
 }
 
