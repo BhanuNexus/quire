@@ -27,6 +27,7 @@ use crate::settings::Settings;
 use crate::workspace::{NoticeLevel, Workspace};
 
 pub mod ocr;
+pub mod pack;
 
 pub use quire_ai::catalog::{ENGINE_ID, Purpose, Tier, human_size};
 
@@ -68,7 +69,7 @@ pub fn embed_base_url(settings: &Settings) -> String {
 /// What Quire says while on-device AI is off (the experimental switch,
 /// `docs/design/0.9.md` §D.1): onboarding, Settings → AI and refused downloads.
 pub const ON_DEVICE_LATER: &str =
-    "On-device AI is coming in an update. Use a provider such as Ollama or LM Studio to keep everything on this computer today.";
+    "On-device AI is off. Turn it on in Settings → AI → On this computer: nothing is downloaded until you do.";
 
 /// Whether on-device AI is offered (the experimental switch or
 /// `QUIRE_EXPERIMENTAL_ON_DEVICE=1`).
@@ -445,7 +446,11 @@ impl Workspace {
     /// when it isn't installed. Only ever called when the person asks.
     pub fn ai_download(&mut self, id: &str) {
         let Some(entry) = catalog().get(id) else { return };
-        if !self.settings.ai_local.on_device() {
+        // The pack's models need the pack on; voice models still need the
+        // experimental switch (`docs/design/0.14-local-ai.md` §3.8).
+        let allowed =
+            if entry.purpose == Purpose::Transcribe { self.settings.ai_local.on_device() } else { self.settings.ai_local.pack_on() };
+        if !allowed {
             self.notify(NoticeLevel::Info, ON_DEVICE_LATER);
             return;
         }

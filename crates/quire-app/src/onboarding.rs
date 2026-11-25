@@ -213,6 +213,14 @@ impl Workspace {
         self.apply_ai_settings();
     }
 
+    /// "On this computer" through the pack dialog (0.14): turn the pack on
+    /// with what was ticked and record the choice.
+    pub fn onboarding_pack(&mut self, choice: &crate::ai::pack::PackChoice) {
+        let cloud = matches!(self.settings.onboarding.ai_choice.as_str(), "cloud" | "both");
+        self.finish_onboarding(if cloud { "both" } else { "device" });
+        self.pack_turn_on(choice);
+    }
+
     /// The upgrade card's ✕.
     pub fn dismiss_upgrade_card(&mut self) {
         self.settings.onboarding.upgrade_card_done = true;

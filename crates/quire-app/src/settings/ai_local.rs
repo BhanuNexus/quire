@@ -4,10 +4,12 @@
 //!
 //! Nothing runs or downloads unless turned on.
 //!
-//! On-device AI is experimental in 0.9.0 (its models aren't pinned yet):
-//! everything here is ignored unless `experimental` is on, or
-//! `QUIRE_EXPERIMENTAL_ON_DEVICE=1` is set for testing. The capability keys
-//! keep their values either way, so turning it on later restores them.
+//! 0.14 (`docs/design/0.14-local-ai.md` §3.8): the on-device AI pack. Each
+//! capability (`llm`, `ocr`, `embeddings`) works only when `pack` is set (the
+//! person turned the pack on, or ran `quire-cli ai download`), or behind the
+//! older `experimental` switch or `QUIRE_EXPERIMENTAL_ON_DEVICE=1`. Keys set
+//! under 0.9–0.13 stay inert until then. Voice transcription on this computer
+//! still needs `experimental`.
 //!
 //! Every field defaults to off or unchanged; keys this
 //! version doesn't know are kept in `other`, so older and newer Quire
@@ -20,6 +22,9 @@ use serde::{Deserialize, Serialize};
 pub struct AiLocalSettings {
     /// Show and use on-device AI (Settings → AI → Advanced). Off in 0.9.0.
     pub experimental: bool,
+    /// The on-device AI pack was turned on (0.14): written only when the
+    /// person turns it on. 0.13 keeps it in `other`.
+    pub pack: bool,
     /// The engine may run at all.
     pub engine: bool,
     /// Meaning search on this computer.
@@ -52,12 +57,14 @@ impl Default for AiLocalSettings {
     fn default() -> Self {
         Self {
             experimental: false,
+            pack: false,
             engine: false,
             embeddings: false,
             llm: false,
             ocr: false,
             embed_model: "bge-small-en-v1.5".into(),
-            llm_model: "qwen3-1.7b-q4km".into(),
+            // No model chosen: the pack dialog chooses one.
+            llm_model: String::new(),
             threads: 0,
             gpu: "auto".into(),
             idle_unload_s: 300,
@@ -84,18 +91,55 @@ impl AiLocalSettings {
         self.experimental || env_on()
     }
 
-    /// Meaning search on this computer is on (and on-device AI is offered).
+    /// The pack is on, or the experimental switch: capabilities may run.
+    pub fn pack_on(&self) -> bool {
+        self.pack || self.on_device()
+    }
+
+    /// Meaning search on this computer is on (and the pack is).
     pub fn embeddings_on(&self) -> bool {
-        self.embeddings && self.on_device()
+        self.embeddings && self.pack_on()
     }
 
-    /// The on-device language model is on (and on-device AI is offered).
+    /// The on-device language model is on (and the pack is).
     pub fn llm_on(&self) -> bool {
-        self.llm && self.on_device()
+        self.llm && self.pack_on()
     }
 
-    /// OCR is on (and on-device AI is offered).
+    /// OCR is on (and the pack is).
     pub fn ocr_on(&self) -> bool {
-        self.ocr && self.on_device()
+        self.ocr && self.pack_on()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Consent (`docs/design/0.14-local-ai.md` §3.8): capability keys set
+    /// under 0.9–0.13 stay inert until the pack is turned on; the pack turns
+    /// on only what was ticked; voice still needs the experimental switch.
+    #[test]
+    fn capabilities_need_the_pack_and_only_ticked_ones_turn_on() {
+        if std::env::var_os(EXPERIMENTAL_ENV).is_some() {
+            return; // the switch for testing overrides everything here
+        }
+        // A 0.13 settings file: capabilities ticked long ago, experimental off.
+        let old: AiLocalSettings =
+            toml::from_str("experimental = false\nllm = true\nocr = true\nembeddings = true\nllm_model = \"qwen3-1.7b-q4km\"\n").unwrap();
+        assert!(!old.pack && !old.llm_on() && !old.ocr_on() && !old.embeddings_on() && !old.on_device(), "nothing starts");
+        // The pack with only OCR ticked.
+        let ocr_only = AiLocalSettings { pack: true, ocr: true, ..AiLocalSettings::default() };
+        assert!(ocr_only.ocr_on() && !ocr_only.llm_on() && !ocr_only.embeddings_on());
+        assert!(!ocr_only.on_device(), "voice on this computer still needs the experimental switch");
+        // The older switch still works.
+        let exp = AiLocalSettings { experimental: true, llm: true, ..AiLocalSettings::default() };
+        assert!(exp.llm_on());
+        // No model is chosen by default, and `pack` round-trips; 0.13 keeps it in `other`.
+        assert_eq!(AiLocalSettings::default().llm_model, "");
+        let text = toml::to_string(&AiLocalSettings { pack: true, ..AiLocalSettings::default() }).unwrap();
+        assert!(text.contains("pack = true"));
+        let back: AiLocalSettings = toml::from_str(&text).unwrap();
+        assert!(back.pack);
     }
 }

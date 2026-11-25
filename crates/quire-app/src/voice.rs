@@ -114,7 +114,9 @@ fn host(url: &str) -> &str {
 /// or it is off by choice).
 pub fn unavailable_reason(settings: &Settings) -> Option<&'static str> {
     match settings.voice.transcribe.as_str() {
-        "device" if !settings.ai_local.on_device() => Some("Transcription on this computer needs on-device AI, which is experimental."),
+        "device" if !settings.ai_local.on_device() => {
+            Some("Transcription on this computer is experimental: turn it on in Settings → AI → On this computer → Advanced.")
+        }
         "device" => {
             let model = crate::ai::catalog().get(&settings.voice.device_model);
             (!model.is_some_and(crate::ai::installed) || !crate::ai::engine_installed())

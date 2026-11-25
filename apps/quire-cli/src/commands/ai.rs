@@ -41,29 +41,48 @@ fn models_dir() -> Result<PathBuf, String> {
     quire_app::ai::models_dir().ok_or_else(|| "no folder for models on this system".to_string())
 }
 
-/// While on-device AI is off (`[ai_local] experimental`, `docs/design/0.9.md` §D.1).
-fn later() -> String {
+/// While the pack is off (`[ai_local] pack`, `docs/design/0.14-local-ai.md` §3.8).
+const PACK_OFF: &str = "on-device AI is off: `quire-cli ai download <id>` turns it on for that model, \
+     or use Settings → AI → On this computer. Nothing is downloaded until then.";
+
+/// Voice models stay behind the experimental switch (0.14).
+fn voice_needs_experimental() -> String {
     format!(
-        "on-device AI is coming in an update, so this build doesn't download or run models. \
-         Use a provider such as Ollama or LM Studio to keep everything on this computer today. \
-         To try it anyway, tick Settings → AI → On this computer → Advanced → \"Experimental: show on-device AI\" \
-         (or set {}=1).",
+        "voice transcription on this computer is experimental: tick Settings → AI → On this computer → Advanced → \
+         \"Experimental: voice transcription on this computer, and older models\" (or set {}=1) first",
         quire_app::settings::EXPERIMENTAL_ENV
     )
+}
+
+/// `download` and `install` are explicit acts: they turn the pack on for a
+/// model of the pack's kinds (writing, OCR, embedder) before anything
+/// downloads; voice models still need the experimental switch.
+fn allow(entry: &quire_ai::catalog::CatalogEntry) -> Result<(), String> {
+    use quire_ai::catalog::Purpose;
+    let mut settings = super::load_settings();
+    if entry.purpose == Purpose::Transcribe {
+        return if settings.ai_local.on_device() { Ok(()) } else { Err(voice_needs_experimental()) };
+    }
+    if !entry.is_pinned() {
+        return Err(format!("{} isn't available in this build of Quire", entry.display_name()));
+    }
+    if !settings.ai_local.pack {
+        settings.ai_local.pack = true;
+        settings.ai_local.engine = true;
+        settings.save().map_err(|e| format!("couldn't save the settings, so nothing was downloaded: {e}"))?;
+    }
+    Ok(())
 }
 
 fn run_ai(args: &[String]) -> Result<(), String> {
     let catalog = Catalog::builtin();
     let dir = models_dir()?;
-    let on = super::load_settings().ai_local.on_device();
+    let on = super::load_settings().ai_local.pack_on();
     let sub = args.get(1).map(String::as_str);
-    if !on && matches!(sub, Some("download" | "install" | "engine")) {
-        return Err(later());
-    }
     match sub {
         None | Some("models") => {
             if !on {
-                println!("Note: {}\n", later());
+                println!("Note: {PACK_OFF}\n");
             }
             let m = quire_ai::download::Manifest::load(&dir);
             for e in &catalog.models {
@@ -85,6 +104,7 @@ fn run_ai(args: &[String]) -> Result<(), String> {
         Some("download") => {
             let id = arg(args, 2)?;
             let e = catalog.get(id).ok_or_else(|| format!("no model called {id}; see `quire-cli ai models`"))?;
+            allow(e)?;
             let settings = super::load_settings();
             let d = Downloader::new(&settings.ai_local.mirror_url);
             let tty = std::io::stderr().is_terminal();
@@ -112,9 +132,16 @@ fn run_ai(args: &[String]) -> Result<(), String> {
             if files.is_empty() {
                 return Err("give the files to install".into());
             }
+            // Only files matching a model this build pins are installed; the
+            // first one turns the pack on for its kind.
             for r in install_from_files(&catalog, &files, &dir) {
                 match r {
-                    Installed1::Ok { id, file } => println!("{file}: installed for {id}"),
+                    Installed1::Ok { id, file } => {
+                        if let Some(e) = catalog.get(&id) {
+                            allow(e)?;
+                        }
+                        println!("{file}: installed for {id}");
+                    }
                     Installed1::Unknown { path } => {
                         println!("{}: doesn't match any model this version knows (checked by SHA-256)", path.display());
                     }
@@ -130,6 +157,9 @@ fn run_ai(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         Some("engine") => {
+            if !on {
+                return Err(PACK_OFF.into());
+            }
             let settings = super::load_settings();
             let e = quire_app::ai::engine(&settings);
             let Some(path) = e.path() else {

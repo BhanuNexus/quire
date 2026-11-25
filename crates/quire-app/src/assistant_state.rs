@@ -60,7 +60,7 @@ pub(crate) fn next_deadline(ws: &Workspace) -> Option<Instant> {
 /// aren't are hidden from the palette, the shortcut sheet and the keyboard.
 pub(crate) const fn available(ws: &Workspace, cmd: Command) -> bool {
     match cmd {
-        Command::AiSetup => true,
+        Command::AiSetup | Command::AiPack => true,
         Command::ToggleAgentPanel => ws.settings.agent_panel.enabled,
         // 0.11: with AI off for the vault, nothing is ingested (the source would go to a model).
         Command::IngestIntoWiki => ws.agent.is_some() && !crate::secure_state::ai_off_applied(ws),

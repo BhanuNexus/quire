@@ -116,6 +116,8 @@ pub enum Command {
     ToggleAgentPanel,
     IngestIntoWiki,
     AiSetup,
+    /// 0.14: the on-device AI pack's dialog.
+    AiPack,
     ConnectExternalAgent,
     // 0.10 AI: voice notes
     RecordVoiceNote,
@@ -237,7 +239,7 @@ impl Command {
             | Self::AgentSettings => Owner::Agent,
             Self::CaptureWebPage | Self::ConnectAgent => Owner::Mcp,
             Self::CheckCitations | Self::ThinkingTimeline | Self::MarkReviewed => Owner::Trust,
-            Self::ToggleAgentPanel | Self::IngestIntoWiki | Self::AiSetup | Self::ConnectExternalAgent | Self::RecordVoiceNote => {
+            Self::ToggleAgentPanel | Self::IngestIntoWiki | Self::AiSetup | Self::AiPack | Self::ConnectExternalAgent | Self::RecordVoiceNote => {
                 Owner::Assistant
             }
             Self::ShowAgenda
@@ -495,6 +497,7 @@ commands! {
     ToggleAgentPanel, "Agent",  "Agent panel",                    [cmd_shift("J")], false;
     IngestIntoWiki,   "Agent",  "Ingest into wiki…",              [], false;
     AiSetup,          "App",    "Set up AI…",                     [], false;
+    AiPack,           "App",    "Turn on on-device AI…",          [], false;
     ConnectExternalAgent,"Agent","Connect an external agent (ACP)…", [], false;
     RecordVoiceNote,  "Note",   "Record voice note…",             [], false;
     ShowAgenda,       "Go",     "Agenda",                         [alt("A")], false;

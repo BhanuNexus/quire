@@ -1695,6 +1695,7 @@ impl Workspace {
             | C::ToggleAgentPanel
             | C::IngestIntoWiki
             | C::AiSetup
+            | C::AiPack
             | C::ConnectExternalAgent
             | C::RecordVoiceNote
             | C::ShowAgenda
