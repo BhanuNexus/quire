@@ -94,14 +94,16 @@ fn rows_are_folded_in_and_a_refit_equals_a_fresh_build() {
             assert_eq!(places, want, "round {round}: the rows are the notes' passages");
         }
     }
-    assert_eq!(svc.semantic_fits(), fits, "saves never refit");
+    // A refit on demand; the rule may have refitted on the way (a tenth of this small vault changed).
+    let before = svc.semantic_fits();
+    assert!(before >= fits);
     svc.refit_semantic();
-    assert_eq!(svc.semantic_fits(), fits + 1);
+    assert_eq!(svc.semantic_fits(), before + 1);
     let fresh = SemanticIndex::fit_lsa(chunks_now(&svc));
     assert_eq!(svc.semantic().expect("built").rows_text(), fresh.rows_text(), "a refit is a fresh build, bit for bit");
 }
 
-/// The refit rule (`docs/design/0.14-index-startup.md` §3.3): 10 % of the passages (at least 256) changed, or
+/// The refit rule (`docs/design/0.14-index-startup.md` §3.3): 10 % of the passages (at least 8) changed, or
 /// idle 10 minutes with the fit older than 6 hours and something changed.
 #[test]
 fn the_refit_rule() {
@@ -112,10 +114,10 @@ fn the_refit_rule() {
     assert!(!s.due(10_000, now));
     s.since_fit(1_000);
     assert!(s.due(10_000, now), "10 % of 10,000");
-    s.since_fit(255);
-    assert!(!s.due(100, now), "at least 256");
-    s.since_fit(256);
-    assert!(s.due(100, now));
+    s.since_fit(7);
+    assert!(!s.due(20, now), "at least 8");
+    s.since_fit(8);
+    assert!(s.due(20, now));
     s.since_fit(1);
     let (min, hour) = (std::time::Duration::from_mins(1), std::time::Duration::from_hours(1));
     let later = now + 6 * hour + std::time::Duration::from_secs(1);
@@ -245,12 +247,17 @@ fn f16_round_trips() {
 #[test]
 fn a_removed_hidden_note_stays_fitted_until_a_refit() {
     let svc = IndexService::spawn();
-    svc.load(Vault::in_memory(&[
-        ("Cars.md", "# Cars\nThe car engine needs oil. A vehicle with a strong engine drives fast on the road."),
-        ("Autos.md", "# Autos\nMy automobile is a vehicle with a loud engine; the road trip was long."),
-        ("Bread.md", "# Bread\nSourdough bread needs flour, water and a slow rise in a warm oven."),
-        ("Private/s.md", "# S\nThe automobile secret is a vehicle engine road."),
-    ]));
+    // Enough notes that 20 saves stay under a tenth of the passages (no refit by the rule).
+    let mut files: Vec<(String, String)> = vec![
+        ("Cars.md".into(), "# Cars\nThe car engine needs oil. A vehicle with a strong engine drives fast on the road.".into()),
+        ("Autos.md".into(), "# Autos\nMy automobile is a vehicle with a loud engine; the road trip was long.".into()),
+        ("Bread.md".into(), "# Bread\nSourdough bread needs flour, water and a slow rise in a warm oven.".into()),
+        ("Private/s.md".into(), "# S\nThe automobile secret is a vehicle engine road.".into()),
+    ];
+    let mut rng = Rng(3);
+    files.extend((0..400).map(|i| (format!("Filler/F{i}.md"), text(&mut rng))));
+    let refs: Vec<(&str, &str)> = files.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
+    svc.load(Vault::in_memory(&refs));
     svc.flush_semantic();
     let no_private: Visible = visible(|p: &NotePath, _: &[String]| !p.as_str().starts_with("Private/"));
     assert!(svc.scoped([1; 32], Arc::clone(&no_private)).semantic().is_none());
@@ -362,4 +369,26 @@ fn a_tainted_model_serves_no_view() {
     svc.flush_semantic();
     assert!(svc.semantic().is_some_and(|m| !m.is_tainted()), "refitted");
     assert!(svc.scoped([3; 32], all).semantic().is_some());
+}
+
+/// Fable's review of I2a, S1: a small vault refits once a tenth of its
+/// passages changed (the floor is a handful, not 256), so a new vault does
+/// not fold everything into the vocabulary of its first few notes.
+#[test]
+fn a_small_vault_refits_after_a_tenth_changed() {
+    let notes: Vec<(String, String)> =
+        (0..40).map(|i| (format!("N{i}.md"), format!("# N{i}\nWords about ropes, trees and editors, note number {i}."))).collect();
+    let refs: Vec<(&str, &str)> = notes.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
+    let svc = IndexService::spawn();
+    svc.load(Vault::in_memory(&refs));
+    svc.flush_semantic();
+    assert_eq!(svc.semantic_fits(), 1);
+    // Ten new notes with new words: a quarter of the passages, over a tenth.
+    for i in 0..10 {
+        svc.upsert(np(&format!("New {i}.md")), format!("# New {i}\nGardens, tomatoes and the harvest in autumn, entry {i}."));
+    }
+    svc.flush_semantic();
+    assert_eq!(svc.semantic_fits(), 2, "refitted: a tenth of a small vault changed");
+    let sem = svc.semantic().expect("built");
+    assert!(sem.search("tomatoes harvest", 3).iter().any(|(i, _)| sem.passage(*i).is_some_and(|p| p.path.as_str().starts_with("New "))));
 }

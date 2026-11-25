@@ -35,7 +35,9 @@ const SEMANTIC_NOTES_PER_LOCK: usize = 256;
 /// when passages added or changed since the last fit reach this share of all
 /// passages (and at least [`REFIT_MIN`]),
 const REFIT_SHARE: usize = 10;
-const REFIT_MIN: usize = 256;
+/// A handful, so a small vault refits too (Fable's review of I2a, S1: with
+/// 256 a vault under about 1,000 notes never met the 10 % rule).
+const REFIT_MIN: usize = 8;
 /// or when nothing changed for this long, something changed since the fit,
 const REFIT_IDLE: std::time::Duration = std::time::Duration::from_mins(10);
 /// and the fit is older than this.
