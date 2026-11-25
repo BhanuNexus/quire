@@ -407,6 +407,15 @@ mod tests {
         assert_eq!(relative_day("end of month", Date::new(2028, 2, 3).unwrap()), Some(Date::new(2028, 2, 29).unwrap()));
     }
 
+    /// A date past year 9999 (jiff's calendar ends there; chrono's went on)
+    /// leaves the placeholder as typed.
+    #[test]
+    fn dates_past_year_9999_stay_as_typed() {
+        let e = |t: &str| expand(t, &vars(), "", &HashMap::new()).text;
+        assert_eq!(e("{{date+9000y}} {{date+3000000d}} {{date-9000y}}"), "{{date+9000y}} {{date+3000000d}} -6974-11-01");
+        assert_eq!(e("{{date+7973y:%Y}}"), "9999");
+    }
+
     /// Across a clock change, as with chrono: `+1d` is 24 hours later, `+1m`
     /// keeps the clock time; `%Z` is the offset.
     #[test]

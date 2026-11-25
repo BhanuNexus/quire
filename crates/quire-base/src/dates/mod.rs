@@ -260,6 +260,22 @@ mod tests {
         assert_eq!(ymd(d), "2026-12-31");
     }
 
+    /// jiff's calendar runs from year -9999 to 9999 (chrono's to about
+    /// ±262,000): a date beyond it is refused or left alone, never a panic.
+    #[test]
+    fn years_beyond_9999_are_refused() {
+        // chrono read a signed five-digit year; it is out of range now.
+        assert_eq!(parse_date("+10000-01-01", "%Y-%m-%d"), Err(ParseError::Impossible));
+        assert_eq!(parse_ymd("10000-01-01"), None, "as with chrono: `%Y` reads four digits");
+        assert_eq!(ymd_opt(10_000, 1, 1), None);
+        let last = Date::new(9999, 12, 31).unwrap_or_default();
+        assert_eq!(add_days(last, 1), None);
+        assert_eq!(plus_days(last, 1), last, "stays put where chrono panicked");
+        assert_eq!(plus_days_dt(last.at(0, 0, 0, 0), 1), last.at(0, 0, 0, 0));
+        assert_eq!(utc_from_ms(i64::MAX), None);
+        assert_eq!(fmt_utc_ms(i64::MAX, "%Y"), None);
+    }
+
     /// What Quire writes to files that persist or sync reads back the same
     /// and is written the same (strings as 0.13 wrote them).
     #[test]
