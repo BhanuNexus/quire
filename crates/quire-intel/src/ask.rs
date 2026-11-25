@@ -105,13 +105,13 @@ pub struct Answer {
 
 /// Word weights for coverage: rarer words matter more; words the vault
 /// never uses weigh most (an answer can't be about them).
-fn weights(ix: &Index, terms: &[String]) -> Vec<(String, f32)> {
-    let n = ix.len().max(1) as f32;
+fn weights(rd: &Reader<'_, '_>, terms: &[String]) -> Vec<(String, f32)> {
+    let n = rd.len.max(1) as f32;
     let unseen = ((n + 0.5) / 0.5).ln_1p();
     terms
         .iter()
         .map(|t| {
-            let w = ix.idf(t).unwrap_or(unseen);
+            let w = (rd.idf)(t).unwrap_or(unseen);
             (t.clone(), w.max(0.05))
         })
         .collect()
@@ -146,14 +146,56 @@ pub fn retrieve(ix: &Index, semantic: Option<&SemanticIndex>, question: &str, k:
     retrieve_where(ix, semantic, question, k, &|_| true)
 }
 
+/// [`retrieve`] through an agent's view.
+///
+/// Word weights and keyword scores come from the view's notes only
+/// (`docs/design/0.14-agent-index.md` §3.7), so the sources are what an
+/// index of only those notes gives. The meaning model is the view's
+/// ([`quire_index::Scoped::semantic`]): none when it hides a note.
+pub fn retrieve_in(sc: &quire_index::Scoped<'_>, question: &str, k: usize) -> Vec<Source> {
+    let keep = |p: &NotePath| sc.has_note(p);
+    let rd = Reader { source: &|p| sc.source(p), idf: &|t| sc.idf(t), len: sc.len(), keep: &keep, search: &|q| sc.search(q, 30) };
+    retrieve_with(&rd, sc.semantic(), question, k)
+}
+
 /// [`retrieve`] from the notes `keep` accepts (what an agent may see):
 /// other notes take no places and no numbers.
+///
+/// Not for agents: word weights and scores count every note. An agent
+/// retrieves through its view ([`retrieve_in`]).
 pub fn retrieve_where(ix: &Index, semantic: Option<&SemanticIndex>, question: &str, k: usize, keep: quire_index::Keep<'_>) -> Vec<Source> {
+    let full = quire_index::ScopeRead::Full;
+    let rd = Reader {
+        source: &|p| ix.source(p),
+        idf: &|t| ix.idf_in(t, full),
+        len: ix.len_in(full),
+        keep,
+        search: &|q| ix.search_where(q, 30, keep),
+    };
+    retrieve_with(&rd, semantic, question, k)
+}
+
+/// What retrieval reads: through a view, or the whole index.
+struct Reader<'a, 'k> {
+    /// A note's text.
+    source: &'a dyn Fn(&NotePath) -> Option<&'a str>,
+    /// How rare a word is among the notes counted.
+    idf: &'a dyn Fn(&str) -> Option<f32>,
+    /// How many notes are counted.
+    len: usize,
+    /// The notes that may take places.
+    keep: quire_index::Keep<'k>,
+    /// Keyword hits of one word (`"t "`), as the caller ranks them.
+    search: &'a dyn Fn(&str) -> Vec<quire_index::SearchHit>,
+}
+
+fn retrieve_with(rd: &Reader<'_, '_>, semantic: Option<&SemanticIndex>, question: &str, k: usize) -> Vec<Source> {
+    let keep = rd.keep;
     let q_terms: Vec<String> = {
         let mut seen = HashSet::new();
         content_tokens(question).filter(|t| seen.insert(t.clone())).take(10).collect()
     };
-    let w = weights(ix, &q_terms);
+    let w = weights(rd, &q_terms);
     // (path, offset) → (end, heading, text, score, sim)
     let mut cand: HashMap<(NotePath, usize), Candidate> = HashMap::new();
 
@@ -169,14 +211,14 @@ pub fn retrieve_where(ix: &Index, semantic: Option<&SemanticIndex>, question: &s
     // counts for little).
     let mut note_hits: HashMap<NotePath, f32> = HashMap::new();
     for t in &q_terms {
-        for h in ix.search_where(&format!("{t} "), 30, keep) {
+        for h in (rd.search)(&format!("{t} ")) {
             *note_hits.entry(h.path).or_default() += h.score;
         }
     }
     let mut notes: Vec<(NotePath, f32)> = note_hits.into_iter().collect();
     notes.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     for (path, _) in notes.into_iter().take(6) {
-        let Some(src) = ix.source(&path) else { continue };
+        let Some(src) = (rd.source)(&path) else { continue };
         for c in chunk_note(&path, src) {
             let toks: HashSet<String> = content_tokens(&c.text).collect();
             // "owns" finds "owner": a shared stem counts.
@@ -650,6 +692,35 @@ mod tests {
         let kept = retrieve_where(&ix, Some(&sem), q, 4, &|p| *p != top);
         assert!(!kept.is_empty() && kept.iter().all(|s| s.path != top), "{kept:?}");
         assert_eq!(kept.iter().map(|s| s.n).collect::<Vec<_>>(), (1..=kept.len()).collect::<Vec<_>>());
+    }
+
+    /// An agent's view (`docs/design/0.14-agent-index.md` §3.7): the
+    /// sources, their order, scores and coverage are what an index holding
+    /// only the view's notes gives, and the view has no meaning hits.
+    #[test]
+    fn retrieve_in_a_view_is_retrieve_over_its_notes() {
+        let mine = ix();
+        let mut files: Vec<(String, String)> = mine.paths().iter().map(|p| (p.to_string(), mine.source(p).unwrap().to_string())).collect();
+        for i in 0..6 {
+            files.push((format!("Private/p{i}.md"), "# Secret\nropes ropes undo undo cheap cheap secretzq\n".into()));
+        }
+        let refs: Vec<(&str, &str)> = files.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
+        let svc = quire_index::IndexService::spawn();
+        svc.load(quire_vault::Vault::in_memory(&refs));
+        svc.flush_semantic();
+        assert!(svc.semantic().is_some());
+        let sc = svc.scoped([1; 32], quire_index::visible(|p: &NotePath, _: &[String]| !p.as_str().starts_with("Private/")));
+        assert!(sc.semantic().is_none(), "a view that hides a note has no meaning model");
+        for q in ["why is undo cheap with ropes?", "secretzq ropes", "bread oven", "line counts"] {
+            let got = retrieve_in(&sc, q, 4);
+            let want = retrieve(&mine, None, q, 4);
+            let text = |v: &[Source]| -> Vec<String> {
+                v.iter()
+                    .map(|s| format!("{} {} {} {} {}", s.n, s.citation(), s.score.to_bits(), s.coverage.to_bits(), s.sim.to_bits()))
+                    .collect()
+            };
+            assert_eq!(text(&got), text(&want), "{q}");
+        }
     }
 
     #[test]

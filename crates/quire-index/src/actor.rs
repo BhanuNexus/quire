@@ -8,7 +8,7 @@
 //! to know when cached query results are stale.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, RwLock, RwLockReadGuard};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 use std::thread::JoinHandle;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -17,9 +17,11 @@ use quire_vault::changes::{Delta, FileHash, Manifest};
 use quire_vault::{NotePath, Vault};
 
 use crate::chunk::chunk_note;
+use crate::fulltext::DocId;
 use crate::index::Index;
 use crate::index::SourceLoader;
 use crate::record::NoteRecord;
+use crate::scope::{FitSet, Scope, ScopeKey, ScopeRead, Scopes, Visible};
 use crate::semantic::{SemanticIndex, build_lsa_index};
 use crate::store::{Found, Store, Texts};
 
@@ -116,6 +118,95 @@ pub struct IndexService {
     sem_tx: Sender<SemMsg>,
     sem_worker: Option<JoinHandle<()>>,
     sem_config: Arc<RwLock<SemanticConfig>>,
+    /// The agent views, beside the index (lock order: index, then views).
+    scopes: Arc<Mutex<Scopes>>,
+    /// Meaning search off (a test or bench server): [`Self::semantic`] gives none.
+    meaning_off: Arc<AtomicBool>,
+}
+
+/// The index read through one caller's view: hold it for the length of one
+/// search, as the index's read lock (which it holds).
+///
+/// It gives only what the view may give: ranked through the view's
+/// statistics, members' records and text, and the meaning model only when
+/// the view may use it. It does not dereference to the [`Index`], so a tool
+/// can't make an unscoped search by mistake (Fable's review):
+///
+/// ```compile_fail
+/// fn unscoped(sc: &quire_index::Scoped<'_>) {
+///     let _ = sc.search_where("rope", 5, &|_| true);
+/// }
+/// ```
+pub struct Scoped<'a> {
+    ix: RwLockReadGuard<'a, Index>,
+    scope: Arc<Scope>,
+    /// The meaning model, only if the view may use it.
+    semantic: Option<Arc<SemanticIndex>>,
+}
+
+impl Scoped<'_> {
+    /// The meaning model if this view may use it, else `None`: the only
+    /// one a caller with a view gets. The view may use it only if every note
+    /// it was fitted on is one the view may read (`docs/design/0.14-agent-index.md` §3.11).
+    pub fn semantic(&self) -> Option<&SemanticIndex> {
+        self.semantic.as_deref()
+    }
+
+    /// How searches count through this view.
+    pub(crate) fn scope(&self) -> ScopeRead<'_> {
+        ScopeRead::View(&self.scope)
+    }
+
+    /// The whole index (this crate only: its scoped searches and tests).
+    pub(crate) fn index(&self) -> &Index {
+        &self.ix
+    }
+
+    /// The view itself (its statistics, no notes).
+    pub fn view(&self) -> &Scope {
+        &self.scope
+    }
+
+    /// Keyword search through the view ([`Index::search_in`]).
+    pub fn search(&self, query: &str, limit: usize) -> Vec<crate::SearchHit> {
+        self.ix.search_in(query, limit, self.scope())
+    }
+
+    /// How rare a (folded, stemmed) word is among the view's notes; `None`
+    /// when none of them uses it.
+    pub fn idf(&self, term: &str) -> Option<f32> {
+        self.ix.idf_in(term, self.scope())
+    }
+
+    /// How many notes the view holds.
+    pub fn len(&self) -> usize {
+        self.ix.len_in(self.scope())
+    }
+
+    /// Whether the view holds no note.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Whether `p` is one of the view's notes.
+    pub fn has_note(&self, p: &NotePath) -> bool {
+        self.scope().has_note(&self.ix, p)
+    }
+
+    /// The text of one of the view's notes.
+    pub fn source(&self, p: &NotePath) -> Option<&str> {
+        self.has_note(p).then(|| self.ix.source(p)).flatten()
+    }
+
+    /// The record of one of the view's notes.
+    pub fn get(&self, p: &NotePath) -> Option<&NoteRecord> {
+        self.has_note(p).then(|| self.ix.get(p)).flatten()
+    }
+
+    /// When one of the view's notes last changed (ms), as the index knows it.
+    pub fn modified(&self, p: &NotePath) -> Option<i64> {
+        self.has_note(p).then(|| self.ix.modified(p)).flatten()
+    }
 }
 
 impl IndexService {
@@ -126,15 +217,17 @@ impl IndexService {
         let sem_config: Arc<RwLock<SemanticConfig>> = Arc::default();
         let (tx, rx) = unbounded();
         let (sem_tx, sem_rx) = unbounded();
+        let scopes: Arc<Mutex<Scopes>> = Arc::default();
         let worker = {
             let index = Arc::clone(&index);
             let shared = Arc::clone(&shared);
             let sem_tx = sem_tx.clone();
+            let scopes = Arc::clone(&scopes);
             std::thread::Builder::new()
                 .name("quire-index".into())
                 .spawn(move || {
                     crate::background::lower_priority();
-                    run(&rx, &index, &shared, &sem_tx);
+                    run(&rx, &index, &shared, &sem_tx, &scopes);
                 })
                 .expect("spawn index worker")
         };
@@ -143,15 +236,27 @@ impl IndexService {
             let shared = Arc::clone(&shared);
             let semantic = Arc::clone(&semantic);
             let cfg = Arc::clone(&sem_config);
+            let scopes = Arc::clone(&scopes);
             std::thread::Builder::new()
                 .name("quire-semantic".into())
                 .spawn(move || {
                     crate::background::lower_priority();
-                    run_semantic(&sem_rx, &index, &shared, &semantic, &cfg);
+                    run_semantic(&sem_rx, &index, &shared, &semantic, &cfg, &scopes);
                 })
                 .expect("spawn semantic worker")
         };
-        Self { index, tx, shared, worker: Some(worker), semantic, sem_tx, sem_worker: Some(sem_worker), sem_config }
+        Self {
+            index,
+            tx,
+            shared,
+            worker: Some(worker),
+            semantic,
+            sem_tx,
+            sem_worker: Some(sem_worker),
+            sem_config,
+            scopes,
+            meaning_off: Arc::default(),
+        }
     }
 
     /// Use a different embedder (e.g. a neural endpoint) for the semantic
@@ -181,7 +286,51 @@ impl IndexService {
     }
 
     pub fn semantic(&self) -> Option<Arc<SemanticIndex>> {
+        if self.meaning_off.load(Ordering::Relaxed) {
+            return None;
+        }
         self.semantic.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    }
+
+    /// Turn meaning search off (`false`) or on: off, [`Self::semantic`] gives
+    /// none (a test or bench server that compares keyword search only).
+    pub fn set_meaning(&self, on: bool) {
+        self.meaning_off.store(!on, Ordering::Relaxed);
+    }
+
+    /// The index read through the view for `key` (`docs/design/0.14-agent-index.md` §3.5).
+    ///
+    /// The view is built here, on the calling thread, if it doesn't exist
+    /// for the index's current build: one `visible` call per note and
+    /// attachment, under the index's read lock (so it agrees with the
+    /// records; the worker patches it from then on). `key` must stand for
+    /// `visible`: two callers with one key see the same notes.
+    pub fn scoped(&self, key: ScopeKey, visible: Visible) -> Scoped<'_> {
+        let ix = self.read();
+        let lock = || self.scopes.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let found = lock().get(&key, &ix, &visible);
+        let scope = if let Some(s) = found {
+            s
+        } else {
+            let built = Arc::new(Scope::build(&ix, visible));
+            lock().insert(key, built)
+        };
+        // The meaning model only if every note it was fitted on is one this view may read. Under
+        // the index's read lock: the worker can't change the notes or the fit set meanwhile.
+        let semantic = self.semantic().filter(|m| {
+            let mut reg = lock();
+            if !reg.fit.as_ref().is_some_and(|f| f.is_for(m, &ix)) {
+                // A model from before a load: what it was fitted on, against this build.
+                reg.fit = Some(FitSet::of(m, &ix));
+            }
+            reg.fit.as_ref().is_some_and(|f| scope.may_use(f))
+        });
+        Scoped { ix, scope, semantic }
+    }
+
+    /// How many views are kept (at most [`crate::MAX_SCOPES`]).
+    pub fn scope_count(&self) -> usize {
+        self.scopes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
     }
 
     /// Increments after each semantic rebuild.
@@ -575,7 +724,10 @@ fn load_cached(
     ix.recount();
     ix.end_batch();
     shared.notes.store(ix.len(), Ordering::Relaxed);
-    *index.write().unwrap_or_else(std::sync::PoisonError::into_inner) = ix;
+    {
+        let mut w = index.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *w = ix;
+    }
     // Keyword search, quick open, tags, tasks and views are complete now.
     shared.version.fetch_add(1, Ordering::Release);
     (Cached { manifest, deltas, store }, found.parse, texts)
@@ -591,7 +743,7 @@ fn loader(texts: &Pending) -> SourceLoader {
     let at: std::collections::HashMap<NotePath, (usize, std::ops::Range<usize>)> =
         texts.iter().enumerate().flat_map(|(i, (_, notes))| notes.iter().map(move |(p, r)| (p.clone(), (i, r.clone())))).collect();
     let segments: Vec<Arc<Texts>> = texts.iter().map(|(t, _)| Arc::clone(t)).collect();
-    let last: std::sync::Mutex<Option<(usize, Arc<Vec<u8>>)>> = std::sync::Mutex::new(None);
+    let last: Mutex<Option<(usize, Arc<Vec<u8>>)>> = Mutex::new(None);
     SourceLoader(Arc::new(move |p: &NotePath| {
         let (i, range) = at.get(p)?;
         let mut last = last.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -642,7 +794,7 @@ fn fill_texts(texts: &Pending, index: &RwLock<Index>, threads: usize) -> Vec<Not
 }
 
 #[expect(clippy::too_many_lines, reason = "one loop over the worker's messages; each arm is short")]
-fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: &Sender<SemMsg>) {
+fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: &Sender<SemMsg>, scopes: &Mutex<Scopes>) {
     let read = || index.read().unwrap_or_else(std::sync::PoisonError::into_inner);
     let write = || index.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     // The vault last loaded: a note in one of its locked folders (0.11) is
@@ -791,6 +943,12 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
         // place, and attachment text leaves it alone.
         rebuild |= reload.is_some();
         let mut patched: Vec<NotePath> = Vec::new();
+        // Notes this batch takes out of the graph in place (their records from before).
+        let mut unlinked: Vec<NoteRecord> = Vec::new();
+        // The keys of the notes this batch adds or takes out in place: the graph's tables are as
+        // they were before the batch, so two such notes must not share one (`docs/design/0.14-index-startup.md` §3.4).
+        let mut keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut own_keys = |rec: &NoteRecord| crate::graph::note_keys(rec).into_iter().all(|k| keys.insert(k));
         let mut store = cached.as_mut().and_then(|c| c.store.as_mut());
         {
             let mut ix = write();
@@ -806,12 +964,17 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                 }
                 ix.recount();
             }
+            // The documents this batch changed, for the agent views.
+            let mut touched: Vec<DocId> = Vec::new();
+            let mut pages_changed = false;
             for item in prepared {
                 match item {
                     Prepared::Note(note, hash) => {
                         let (rec, src, modified) = *note;
                         let path = rec.path.clone();
-                        if !rebuild && ix.graph_patchable(&rec) {
+                        touched.extend(ix.doc_id(&path));
+                        let new = !ix.contains(&path);
+                        if !rebuild && ix.graph_patchable(&rec) && (!new || own_keys(&rec)) {
                             patched.push(path.clone());
                         } else {
                             rebuild = true;
@@ -821,25 +984,53 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
                         }
                         ix.insert_record(rec, src);
                         ix.set_modified(&path, modified);
+                        touched.extend(ix.doc_id(&path));
                     }
                     Prepared::Remove(path) => {
                         // A path that isn't indexed (a locked folder's note, a file that isn't a note) changes nothing.
-                        rebuild |= ix.contains(&path);
+                        if let Some(old) = ix.get(&path) {
+                            if !rebuild && ix.graph_removable(&path) && own_keys(old) {
+                                unlinked.push(old.clone());
+                            } else {
+                                rebuild = true;
+                            }
+                        }
+                        if let Some(id) = ix.doc_id(&path) {
+                            touched.push(id);
+                            // A note the meaning model was fitted on leaves: its text stays in the model.
+                            if let Some(fit) = scopes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).fit.as_mut() {
+                                fit.removed(ix.build(), id, &path);
+                            }
+                        }
                         ix.remove_no_refresh(&path);
                         if let Some(s) = store.as_deref_mut() {
                             s.gone(&path);
                         }
                     }
-                    Prepared::Attachment(text) => ix.upsert_attachment(text),
-                    Prepared::RemoveAttachment(path) => ix.remove_attachment(&path),
+                    Prepared::Attachment(text) => {
+                        pages_changed = true;
+                        ix.upsert_attachment(text);
+                    }
+                    Prepared::RemoveAttachment(path) => {
+                        pages_changed = true;
+                        ix.remove_attachment(&path);
+                    }
                 }
             }
             if let Some(cfg) = link_config {
                 rebuild |= cfg != *ix.link_config();
                 ix.set_link_config_quiet(cfg);
             }
-            if !rebuild && !patched.is_empty() {
-                ix.patch_graph(&patched);
+            if !rebuild && (!patched.is_empty() || !unlinked.is_empty()) {
+                ix.patch_graph(&patched, &unlinked);
+            }
+            // Every view of this build, in the same write as the notes and
+            // before the batch's removed document ids are freed (a view of
+            // an older build is built again on its next use).
+            if !touched.is_empty() || pages_changed {
+                touched.sort_unstable();
+                touched.dedup();
+                scopes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).patch(&ix, &touched, pages_changed);
             }
             ix.end_batch();
             if let Some(s) = store {
@@ -876,7 +1067,14 @@ fn run(rx: &Receiver<IndexMsg>, index: &RwLock<Index>, shared: &Shared, sem_tx: 
     }
 }
 
-fn run_semantic(rx: &Receiver<SemMsg>, index: &RwLock<Index>, shared: &Shared, out: &SharedSemantic, cfg: &RwLock<SemanticConfig>) {
+fn run_semantic(
+    rx: &Receiver<SemMsg>,
+    index: &RwLock<Index>,
+    shared: &Shared,
+    out: &SharedSemantic,
+    cfg: &RwLock<SemanticConfig>,
+    scopes: &Mutex<Scopes>,
+) {
     let mut waiters: Vec<Sender<()>> = Vec::new();
     while let Ok(msg) = rx.recv() {
         match msg {
@@ -928,7 +1126,13 @@ fn run_semantic(rx: &Receiver<SemMsg>, index: &RwLock<Index>, shared: &Shared, o
             None => build_lsa_index(chunks),
         };
         let built = Arc::new(built);
-        *out.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(built);
+        {
+            // The model and what it was fitted on, together, while the worker can't change the notes.
+            let ix = index.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let fit = FitSet::of(&built, &ix);
+            *out.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(built);
+            scopes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).fit = Some(fit);
+        }
         shared.semantic_busy.store(false, Ordering::Relaxed);
         shared.semantic_version.fetch_add(1, Ordering::Release);
         for w in std::mem::take(&mut waiters) {
@@ -996,7 +1200,7 @@ mod tests {
         });
         svc.flush();
         assert_eq!(svc.read().backlinks(&b).len(), 3);
-        // A new note: a rebuild, and the link that waited for it resolves.
+        // A new note nothing waited for: patched in place, and a link written to it resolves.
         svc.upsert(NotePath::new("D.md"), "[[C]]".into());
         svc.upsert(NotePath::new("A.md"), "links [[D]]".into());
         svc.flush();

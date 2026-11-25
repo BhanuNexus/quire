@@ -14,11 +14,14 @@ Edition: both (P5). HTTP servers (`axum`, `tokio`) are allowed here by `deny.tom
   index's read lock, use a `Visibility` taken before (`ToolCx::visibility_in`). `Visibility` checks folders, not files: the
   index holds no symlinked note only because every watcher event goes through `VaultEvent::regular` before it is read
   (`Core::refresh`; keep it there), and `search` and `ask` keep `common::visible` on what they quote.
-  A ranked list ranks only visible notes (`retrieve_where`, the `*_where` searches of quire-index), never filters the top k;
+  A ranked list ranks only visible notes, never filters the top k: a tool that ranks (`search`, `ask`) reads through the
+  caller's view, `cx.index.scoped(vis.fingerprint(), vis.predicate())`, and uses only what `Scoped` gives (its search,
+  `retrieve_in`, `semantic()` for every use of the meaning model, members' `source`/`get`/`modified`); `Scoped` does not
+  dereference to the `Index`, so an unscoped search on it does not compile (`docs/design/0.14-agent-index.md` §3.11);
   a `where` argument is parsed with `views::parse_where` (one line) and run with `views::run_over` and `visible`.
   [test] `tests/visibility.rs` calls every read tool of `ToolRegistry::standard()` against a vault with hidden notes;
-  also `tests/security.rs`, `tests/connections.rs`; `tests/listing_cost.rs` (no storage call per note). Write tools and resources are [review only]. Known gap: IDF and LSA
-  statistics are built from every note, hidden ones too (`docs/design/0.14-health-gates.md`).
+  also `tests/security.rs`, `tests/connections.rs`; `tests/listing_cost.rs` (no storage call per note). Write tools and resources are [review only]. Left: the
+  time a search takes grows with a word's use in hidden notes (`docs/design/0.14-agent-index.md` §3.11).
 - A write goes through `AgentStore::submit` as the caller's `Actor`, so policy decides between writing and proposing.
   Capture saves images through `AgentStore::add_attachment` for the same reason (`capture.rs` header). [review only]
 - Text from a note is data: `common::trust` decides and `common::fence_untrusted` wraps it (`quire_agent::fence`). Zone roles

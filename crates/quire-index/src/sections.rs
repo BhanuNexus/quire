@@ -20,6 +20,7 @@ use crate::actor::IndexService;
 use crate::chunk::parts;
 use crate::fulltext::{Query, snippet};
 use crate::index::Index;
+use crate::scope::ScopeRead;
 use crate::semantic::SemanticIndex;
 use crate::tokenize::{fold_str, tokens};
 
@@ -151,31 +152,40 @@ impl Index {
     }
 
     /// Parts of notes matching `query`'s keywords, best first.
-    fn keyword_parts(&self, q: &Query, allowed: Option<&HashSet<NotePath>>, keep: Keep<'_>, limit: usize) -> Vec<Cand> {
-        let mut notes: Vec<(NotePath, f32)> = self
-            .fulltext
-            .rank(q)
-            .into_iter()
-            .filter(|(p, _)| allowed.is_none_or(|a| a.contains(p)))
-            .filter(|(p, _)| {
+    fn keyword_parts(
+        &self,
+        q: &Query,
+        allowed: Option<&HashSet<NotePath>>,
+        keep: Keep<'_>,
+        limit: usize,
+        scope: ScopeRead<'_>,
+    ) -> Vec<Cand> {
+        let ft = &self.fulltext;
+        // The best notes in rank order; the filters, `keep` last (it can be costly: an agent's
+        // policy), run on the best only; the others take no places all the same.
+        let notes: Vec<(NotePath, f32)> = crate::fulltext::best(
+            ft.rank_in(q, scope.notes()),
+            (limit * KEYWORD_NOTES_PER_HIT).max(20),
+            |a, b| ft.by_rank(*a, *b),
+            |(id, _)| {
+                let Some(p) = ft.path_of(*id) else { return false };
                 let Some(rec) = self.get(p) else { return false };
-                if !q.tags.iter().all(|t| rec.has_tag(t)) {
-                    return false;
-                }
-                q.phrases.is_empty() || {
-                    let folded = fold_str(&rec.plain);
-                    q.phrases.iter().all(|ph| folded.contains(ph.as_str()))
-                }
-            })
-            .collect();
-        notes.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        // `keep` after sorting, on the best notes only (it can be costly: an
-        // agent's policy); the others take no places all the same.
-        let notes: Vec<(NotePath, f32)> =
-            notes.into_iter().filter(|(p, _)| keep(p)).take((limit * KEYWORD_NOTES_PER_HIT).max(20)).collect();
+                allowed.is_none_or(|a| a.contains(p))
+                    && q.tags.iter().all(|t| rec.has_tag(t))
+                    && (q.phrases.is_empty() || {
+                        let folded = fold_str(&rec.plain);
+                        q.phrases.iter().all(|ph| folded.contains(ph.as_str()))
+                    })
+                    && keep(p)
+            },
+        )
+        .into_iter()
+        .filter_map(|(id, score)| Some((ft.path_of(id)?.clone(), score)))
+        .collect();
         let top = notes.first().map_or(1.0, |n| n.1.max(1e-6));
-        let weights: Vec<(&str, f32)> = q.terms.iter().map(|t| (t.as_str(), self.fulltext.term_idf(t).max(0.1))).collect();
-        let prefix = q.prefix.as_deref().map(|p| (p, self.fulltext.term_idf(p).max(0.5)));
+        let idf = |t: &str| self.fulltext.term_idf_in(t, scope.notes()).unwrap_or(0.0);
+        let weights: Vec<(&str, f32)> = q.terms.iter().map(|t| (t.as_str(), idf(t).max(0.1))).collect();
+        let prefix = q.prefix.as_deref().map(|p| (p, idf(p).max(0.5)));
         let total: f32 = weights.iter().map(|w| w.1).sum::<f32>() + prefix.map_or(0.0, |p| p.1);
         let mut out = Vec::new();
         for (path, note_score) in notes {
@@ -224,6 +234,9 @@ impl Index {
 
     /// [`Self::search_sections`] over the notes `keep` accepts: the `limit`
     /// best of those, so other notes take no places.
+    ///
+    /// Not for agents: the ranking's statistics count every note. An agent
+    /// searches through its view ([`Self::search_sections_in`]).
     pub fn search_sections_where(
         &self,
         semantic: Option<&SemanticIndex>,
@@ -232,6 +245,47 @@ impl Index {
         limit: usize,
         keep: Keep<'_>,
     ) -> Vec<SectionHit> {
+        self.search_sections_with(semantic, query, filters, limit, keep, ScopeRead::Full)
+    }
+
+    /// Search by section through a view (`docs/design/0.14-agent-index.md` §3.7):
+    /// what an index holding only the view's notes and pages gives, keyword
+    /// scores included. Given a view, a meaning model is used only if the
+    /// view holds every note ([`crate::Scoped::search_sections`] applies the
+    /// exact rule instead).
+    pub fn search_sections_in(
+        &self,
+        semantic: Option<&SemanticIndex>,
+        query: &str,
+        filters: &SearchFilters,
+        limit: usize,
+        scope: ScopeRead<'_>,
+    ) -> Vec<SectionHit> {
+        self.search_sections_checked(semantic.filter(|_| scope.meaning()), query, filters, limit, scope)
+    }
+
+    /// [`Self::search_sections_in`] with `semantic` already allowed for `scope`.
+    pub(crate) fn search_sections_checked(
+        &self,
+        semantic: Option<&SemanticIndex>,
+        query: &str,
+        filters: &SearchFilters,
+        limit: usize,
+        scope: ScopeRead<'_>,
+    ) -> Vec<SectionHit> {
+        let keep = |p: &NotePath| if self.contains(p) { scope.has_note(self, p) } else { scope.has_file(p) };
+        self.search_sections_with(semantic, query, filters, limit, &keep, scope)
+    }
+
+    fn search_sections_with(
+        &self,
+        semantic: Option<&SemanticIndex>,
+        query: &str,
+        filters: &SearchFilters,
+        limit: usize,
+        keep: Keep<'_>,
+        scope: ScopeRead<'_>,
+    ) -> Vec<SectionHit> {
         let q = Query::parse(query);
         if q.is_empty() || limit == 0 {
             return Vec::new();
@@ -239,7 +293,7 @@ impl Index {
         let allowed = self.allowed(filters, keep);
         let mut fused: HashMap<(NotePath, usize), Cand> = HashMap::new();
         if filters.kind != SearchKind::Attachments {
-            for (rank, c) in self.keyword_parts(&q, allowed.as_ref(), keep, limit).into_iter().enumerate() {
+            for (rank, c) in self.keyword_parts(&q, allowed.as_ref(), keep, limit, scope).into_iter().enumerate() {
                 let score = 1.0 / (RRF_K + rank as f32 + 1.0);
                 fused.insert((c.path.clone(), c.range.start), Cand { score, ..c });
             }
@@ -272,7 +326,7 @@ impl Index {
             })
             .collect();
         if filters.kind != SearchKind::Notes && !filters.notes_only() {
-            out = self.merge_pages(out, &q, filters, limit, keep);
+            out = self.merge_pages(out, &q, filters, limit, keep, scope);
         }
         out
     }
@@ -320,22 +374,38 @@ impl Index {
     }
 
     /// Attachment pages matching `q`, fused with the note hits by rank.
-    fn merge_pages(&self, notes: Vec<SectionHit>, q: &Query, filters: &SearchFilters, limit: usize, keep: Keep<'_>) -> Vec<SectionHit> {
+    fn merge_pages(
+        &self,
+        notes: Vec<SectionHit>,
+        q: &Query,
+        filters: &SearchFilters,
+        limit: usize,
+        keep: Keep<'_>,
+        scope: ScopeRead<'_>,
+    ) -> Vec<SectionHit> {
         let folder = filters.folder.as_deref().map(|x| x.trim_matches('/').to_lowercase()).filter(|x| !x.is_empty());
-        let mut pages: Vec<(NotePath, usize, f32)> = self
-            .attachment_text
-            .rank(q)
+        let at = &self.attachment_text;
+        // (file, page, score), the file borrowed from the index.
+        let ranked: Vec<(&str, usize, f32)> = at
+            .rank_in(q, scope.pages())
             .into_iter()
-            .filter_map(|(key, score)| {
-                let (path, page) = key.as_str().rsplit_once("#page=")?;
-                let page: usize = page.parse().ok()?;
-                let path = NotePath::new(path);
-                (score > 0.0 && folder_ok(&path, folder.as_deref())).then_some((path, page, score))
+            .filter_map(|(id, score)| {
+                let (path, page) = at.path_of(id)?.as_str().rsplit_once("#page=")?;
+                Some((path, page.parse().ok()?, score))
             })
             .collect();
-        pages.sort_by(|a, b| b.2.total_cmp(&a.2).then_with(|| a.0.cmp(&b.0)).then(a.1.cmp(&b.1)));
-        // `keep` after sorting, on the best pages only.
-        let pages: Vec<(NotePath, usize, f32)> = pages.into_iter().filter(|(p, _, _)| keep(p)).take(limit).collect();
+        // The best pages; `keep` on those only.
+        let pages = crate::fulltext::best(
+            ranked,
+            limit,
+            |a, b| b.2.total_cmp(&a.2).then_with(|| a.0.cmp(b.0)).then(a.1.cmp(&b.1)),
+            |(path, _, score)| {
+                let path = NotePath::new(*path);
+                *score > 0.0 && folder_ok(&path, folder.as_deref()) && keep(&path)
+            },
+        )
+        .into_iter()
+        .map(|(path, page, score)| (NotePath::new(path), page, score));
         let terms = q.highlight_terms();
         let page_hits = pages.into_iter().filter_map(|(path, page, _)| {
             let text = self.attachment(&path)?.pages.get(page - 1)?;
@@ -363,6 +433,14 @@ impl Index {
         all.sort_by(|a, b| b.score.total_cmp(&a.score));
         all.truncate(limit);
         all
+    }
+}
+
+impl crate::actor::Scoped<'_> {
+    /// [`Index::search_sections_in`] through this view, with the meaning
+    /// model only when the view may use it ([`Self::semantic`]).
+    pub fn search_sections(&self, query: &str, filters: &SearchFilters, limit: usize) -> Vec<SectionHit> {
+        self.index().search_sections_checked(self.semantic(), query, filters, limit, self.scope())
     }
 }
 
@@ -597,5 +675,29 @@ mod tests {
         assert!(!hits[0].by_meaning);
         assert!(hits.iter().any(|h| h.by_meaning), "{hits:#?}");
         assert!(hits.iter().all(|h| h.path.as_str() != "Bread.md"));
+    }
+
+    /// `docs/design/0.14-agent-index.md` §4: in 0.14.0 a view that hides a note
+    /// searches by keyword only, and says nothing about it; one that hides
+    /// nothing keeps meaning search.
+    #[test]
+    fn a_view_that_hides_a_note_finds_nothing_by_meaning() {
+        let s = svc(&[
+            ("Cars.md", "# Cars\nThe car engine needs oil. A vehicle with a strong engine drives fast on the road."),
+            ("Autos.md", "# Autos\nMy automobile is a vehicle with a loud engine; the road trip was long."),
+            ("Bread.md", "# Bread\nSourdough bread needs flour, water and a slow rise in a warm oven."),
+            ("Baking.md", "# Baking\nBaking cakes needs flour, sugar and an oven at the right heat."),
+            ("Trucks.md", "# Trucks\nA truck is a heavy vehicle; its diesel engine hauls loads by road."),
+        ]);
+        assert!(s.semantic().is_some());
+        let f = SearchFilters::default();
+        let everything = s.scoped([1; 32], crate::scope::visible(|_: &NotePath, _: &[String]| true));
+        assert!(everything.search_sections("automobile", &f, 5).iter().any(|h| h.by_meaning));
+        drop(everything);
+        let no_bread = s.scoped([2; 32], crate::scope::visible(|p: &NotePath, _: &[String]| p.as_str() != "Bread.md"));
+        let hits = no_bread.search_sections("automobile", &f, 5);
+        assert_eq!(hits[0].path.as_str(), "Autos.md");
+        assert!(hits.iter().all(|h| !h.by_meaning), "{hits:#?}");
+        assert_eq!(hits, no_bread.index().search_sections_in(None, "automobile", &f, 5, no_bread.scope()));
     }
 }

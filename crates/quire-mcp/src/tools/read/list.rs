@@ -65,7 +65,8 @@ fn list_tool(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         // The index knows each note's time: a range reads no file.
         .filter(|r| {
             (since.is_none() && until.is_none())
-                || modified_ms(cx, &ix, &r.path).is_some_and(|ms| since.is_none_or(|s| ms >= s) && until.is_none_or(|u| ms <= u))
+                || modified_ms(cx, ix.modified(&r.path), &r.path)
+                    .is_some_and(|ms| since.is_none_or(|s| ms >= s) && until.is_none_or(|u| ms <= u))
         })
         .filter(|r| allowed.as_ref().is_none_or(|set| set.contains(&r.path)))
         .filter(|r| vis.allows_with_tags(&r.path, &r.tags));
@@ -75,7 +76,9 @@ fn list_tool(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     let sort_key = |r: &&quire_app::index::NoteRecord| -> String {
         let lead = match sort.as_str() {
             // Newest first; the index knows each note's time, so this reads no file.
-            "modified" => bounds::num_key(u64::MAX - modified_ms(cx, &ix, &r.path).map_or(0, |ms| u64::try_from(ms).unwrap_or(0))),
+            "modified" => {
+                bounds::num_key(u64::MAX - modified_ms(cx, ix.modified(&r.path), &r.path).map_or(0, |ms| u64::try_from(ms).unwrap_or(0)))
+            }
             "title" => r.title.to_lowercase(),
             _ => r.path.as_str().to_lowercase(),
         };
@@ -88,7 +91,7 @@ fn list_tool(cx: &ToolCx<'_>, _ext: &CallExt<'_>, a: &Value) -> ToolOutput {
     keyed.sort_unstable_by(|x, y| x.0.cmp(&y.0));
     let fingerprint = bounds::fingerprint_canonical("l", a, &["tag"], &[("tags", json!(tags))]);
     let render = |(_, r): &(String, &quire_app::index::NoteRecord)| {
-        let modified = modified_ms(cx, &ix, &r.path).map(iso);
+        let modified = modified_ms(cx, ix.modified(&r.path), &r.path).map(iso);
         json!({"uri": note_uri(&r.path), "path": r.path, "title": r.title, "modified": modified, "tags": r.tags, "words": r.stats.words})
     };
     let budget = bounds::max_tokens(a, bounds::DEFAULT_MAX_TOKENS);

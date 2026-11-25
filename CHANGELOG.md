@@ -7,6 +7,7 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 ### Security
 - **On-device AI:** text in a note, a tool result or a message can no longer pose as the chat's own markers (`<|im_end|>`, `</tool_response>`) to an on-device model.
 - **Agents:** the note count in an agent's connection information (the `initialize` and `server/discover` replies) no longer includes notes the agent may not see.
+- **Agents:** an agent's `search` and `ask` now rank notes by word statistics from only the notes that agent may see: a word found only in a private zone can no longer bring up one of its visible notes, and search scores no longer shift with hidden notes.
 
 ### Added
 - **On-device AI:** Settings → AI → "Turn on on-device AI…" sets up Qwen 3.5 for writing and the agent (4B, or 9B with 16 GB of memory) and reading text in images and scanned PDFs, all on this computer. It shows the download size and free space first, and nothing downloads until you confirm.
@@ -14,6 +15,7 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
 - **`quire-cli sync once --verify`** reads every note again in that pass, to catch a change that kept a file's size and modification time.
 
 ### Changed
+- **Agents:** an agent that may not see every note searches by keyword only for now; search by meaning for such agents returns in a later 0.14 update.
 - **Shortcuts:** six default shortcuts that the system keeps for itself, so they never worked on that platform, now have another key there; other platforms and any shortcut you changed stay as they were.
   - Next tab: Ctrl+Tab → ⌘⌥→ (macOS)
   - Previous tab: Ctrl+Shift+Tab → ⌘⌥← (macOS)
@@ -50,6 +52,7 @@ All notable changes to Quire. The format follows [Keep a Changelog](https://keep
   What differs between each pair is in [docs/agents.md](docs/agents.md#removed-tool-names).
 
 ### Fixed
+- **Links:** when two notes' paths differ only by letter case or accents, or two notes share an alias, a link by that path or alias now always goes to the same note (the one whose path sorts first); it could change from one start to the next.
 - **Agents:** a second edit to a note on which the agent already has a pending suggestion (two `append` calls, say) no longer puts the first edit in the suggestion twice.
 - **Agents:** after the person rejects one note's change in an agent's suggestion that still waits for its other notes, the agent can edit that note again (it got "changed since you read it" every time), and `view` with `include_pending` shows the note instead of the rejected text.
 - **Sync:** a note that can't be read (no permission, a disk error) is now named in the sync status on every pass instead of being passed over without a word; it is never sent as deleted or written over, and the rest of the vault keeps syncing.
