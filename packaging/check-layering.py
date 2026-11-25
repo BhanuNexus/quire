@@ -231,7 +231,7 @@ def tree_violations(packages, run=run_cargo):
     for pkg in packages:
         for edition in ([], ["--no-default-features"]):
             for banned in BANNED_DEPS:
-                args = ["tree", "--offline", "--locked", "--target", "all", "-e", "normal,build", "-p", pkg, *edition, "-i", banned]
+                args = ["tree", "--locked", "--target", "all", "-e", "normal,build", "-p", pkg, *edition, "-i", banned]
                 code, out, err = run(args)
                 label = f"{pkg} ({edition[0]})" if edition else pkg
                 if code == 0 and out.strip():
