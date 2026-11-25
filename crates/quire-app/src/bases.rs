@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{Local, NaiveDateTime, TimeZone};
+use quire_base::dates::{self, DateTime};
 use quire_import::obsidian::base::Base;
 use quire_import::obsidian::expr::{self, Clock, Eval, Expr, Row, Val};
 use quire_index::NoteRecord;
@@ -71,8 +71,8 @@ pub fn value(v: &Value) -> Val {
     }
 }
 
-fn local(ms: i64) -> Option<NaiveDateTime> {
-    Local.timestamp_millis_opt(ms).single().map(|d| d.naive_local())
+fn local(ms: i64) -> Option<DateTime> {
+    dates::local_from_ms(ms).map(|z| z.datetime())
 }
 
 impl Row for RecordRow<'_> {
@@ -138,7 +138,7 @@ fn column_value(ev: &Eval<'_>, column: &str, row: &RecordRow<'_>) -> Result<Val,
 }
 
 /// Work out view `view` of `base` against the vault's index, at `now`.
-pub fn table(ws: &Workspace, base: &Base, view: usize, now: NaiveDateTime) -> Table {
+pub fn table(ws: &Workspace, base: &Base, view: usize, now: DateTime) -> Table {
     let Some(v) = base.views.get(view) else { return Table::default() };
     let formulas: BTreeMap<String, Result<Expr, String>> =
         base.formulas.iter().map(|(k, src)| (k.clone(), expr::parse(src).map_err(|e| format!("formula “{k}”: {e}")))).collect();

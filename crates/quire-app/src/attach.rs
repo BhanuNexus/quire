@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Attachments: pasted images, dropped files, and resolving embeds to files.
 
+use quire_base::dates;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -151,7 +152,7 @@ impl Workspace {
                 return None;
             }
         };
-        let name = format!("Pasted image {}.png", chrono::Local::now().format("%Y%m%d %H%M%S"));
+        let name = format!("Pasted image {}.png", dates::now_fmt("%Y%m%d %H%M%S"));
         match self.store_attachment(folder.as_deref(), &name, &png) {
             Ok(p) => {
                 self.file_cache.clear();

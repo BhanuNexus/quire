@@ -407,7 +407,7 @@ impl RefactorUi {
                 ui.horizontal(|ui| {
                     let just = self.applied.as_deref() == Some(id.as_str());
                     ui.label(
-                        RichText::new(format!("{title} · {n} note{} · {}", if *n == 1 { "" } else { "s" }, quire_app::chrono_fmt(*at)))
+                        RichText::new(format!("{title} · {n} note{} · {}", if *n == 1 { "" } else { "s" }, quire_app::local_time_fmt(*at)))
                             .size(12.0)
                             .color(if just { pal.text } else { pal.muted }),
                     );

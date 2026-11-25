@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use chrono::{Datelike, NaiveDate};
+use quire_base::dates::{self, Date};
 use quire_plan::periodic::{Period, PeriodicPrefs};
 use quire_vault::{NotePath, VaultPrefs};
 
@@ -82,7 +82,7 @@ impl Workspace {
     }
 
     /// Open (or make) the note for the period holding `date`.
-    pub fn open_period(&mut self, p: Period, date: NaiveDate) -> Option<DocId> {
+    pub fn open_period(&mut self, p: Period, date: Date) -> Option<DocId> {
         let prefs = &self.features.periodic.prefs;
         let path = NotePath::new(prefs.path_for(p, date));
         let r = prefs.resolve(p);
@@ -124,13 +124,13 @@ impl Workspace {
         {
             return Rc::clone(m);
         }
-        let Some(first) = NaiveDate::from_ymd_opt(year, month, 1) else { return Rc::default() };
-        let days = Period::Monthly.step(first, 1).signed_duration_since(first).num_days().max(0) as usize;
+        let Some(first) = dates::ymd_opt(year, month, 1) else { return Rc::default() };
+        let days = dates::days_between(first, Period::Monthly.step(first, 1)).max(0) as usize;
         let mut marks = vec![DayMark::default(); days];
         let prefs = &self.features.periodic.prefs;
         let ix = self.index.read();
         for (i, m) in marks.iter_mut().enumerate() {
-            let d = first + chrono::Duration::days(i as i64);
+            let d = dates::plus_days(first, i as i64);
             if let Some(r) = ix.get(&NotePath::new(prefs.path_for(Period::Daily, d))) {
                 m.note = true;
                 m.words = r.stats.words;
@@ -158,7 +158,7 @@ impl Workspace {
     }
 
     /// The note for `p` holding today: its path.
-    pub fn period_path(&self, p: Period, date: NaiveDate) -> NotePath {
+    pub fn period_path(&self, p: Period, date: Date) -> NotePath {
         NotePath::new(self.features.periodic.prefs.path_for(p, date))
     }
 }
@@ -171,7 +171,7 @@ pub fn add_months(y: i32, m: u32, n: i32) -> (i32, u32) {
 
 /// Monday-first weekday of the 1st of a month, 0–6.
 pub fn first_weekday(y: i32, m: u32) -> u32 {
-    NaiveDate::from_ymd_opt(y, m, 1).map_or(0, |d| d.weekday().num_days_from_monday())
+    dates::ymd_opt(y, m, 1).map_or(0, |d| dates::from_monday(d.weekday()) as u32)
 }
 
 #[cfg(test)]
@@ -193,7 +193,7 @@ mod tests {
     #[test]
     fn opens_periods_and_steps() {
         let mut w = ws();
-        let d = NaiveDate::from_ymd_opt(2026, 11, 4).unwrap();
+        let d = dates::ymd_opt(2026, 11, 4).unwrap();
         let id = w.open_period(Period::Weekly, d).unwrap();
         assert_eq!(w.doc(id).unwrap().path.as_ref().unwrap().as_str(), "Weeks/2026-W45.md");
         assert_eq!(&*w.doc(id).unwrap().text(), "# Week of 02 Nov\n", "the template's date is the week's first day");

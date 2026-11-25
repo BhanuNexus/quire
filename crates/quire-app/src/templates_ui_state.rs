@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 
-use chrono::{Local, NaiveDate};
+use quire_base::dates::{self, Date};
 use quire_markdown::Value;
 use quire_text::Selection;
 use quire_vault::NotePath;
@@ -105,10 +105,10 @@ impl Workspace {
                 return None;
             }
         };
-        let now = Local::now();
+        let now = dates::now_local();
         let meta = templates::template_meta(&text);
         let folder = folder.map(str::to_string).or_else(|| meta.folder.clone()).unwrap_or_default();
-        let vars0 = TemplateVars { title: String::new(), now };
+        let vars0 = TemplateVars { title: String::new(), now: now.clone() };
         let typed = title.map(quire_vault::sanitize_title).filter(|t| !t.trim().is_empty());
         let name = typed
             .or_else(|| {
@@ -133,9 +133,9 @@ impl Workspace {
 
     /// Make `path` from a template for `date` (a periodic note). Questions
     /// without a default are left to fill in.
-    pub fn new_note_at_from_template(&mut self, path: &NotePath, template: &NotePath, date: NaiveDate) -> Option<DocId> {
+    pub fn new_note_at_from_template(&mut self, path: &NotePath, template: &NotePath, date: Date) -> Option<DocId> {
         let text = self.vault()?.read(template).ok()?;
-        let when = date.and_hms_opt(9, 0, 0).and_then(|d| d.and_local_timezone(Local).single()).unwrap_or_else(Local::now);
+        let when = dates::local_single(date.at(9, 0, 0, 0)).unwrap_or_else(dates::now_local);
         let vars = TemplateVars { title: path.stem().to_string(), now: when };
         let e = templates::expand_deferred(&text, &vars, path.folder());
         self.create_note_at(path, &e.text, e.cursor)
@@ -201,7 +201,7 @@ pub(crate) fn apply_default_template(ws: &mut Workspace, id: DocId) -> bool {
     let Some(path) = ws.doc(id).and_then(|d| d.path.clone()) else { return false };
     let Some(tpl) = ws.folder_template(&path) else { return false };
     let Some(text) = ws.vault().and_then(|v| v.read(&tpl).ok()) else { return false };
-    let vars = TemplateVars { title: path.stem().to_string(), now: Local::now() };
+    let vars = TemplateVars { title: path.stem().to_string(), now: dates::now_local() };
     let e = templates::expand_deferred(&text, &vars, path.folder());
     let Some(i) = ws.docs.iter().position(|d| d.id == id) else { return false };
     ws.docs[i].replace_minimally(&e.text);
@@ -235,7 +235,7 @@ mod tests {
         assert_eq!(w.template_prompts(&tpl).len(), 2);
         let answers = HashMap::from([("Topic".to_string(), "Roadmap".to_string())]);
         let id = w.new_note_from_template(&tpl, None, &answers, &[("status".into(), Value::Str("doing".into()))]).unwrap();
-        let year = Local::now().format("%Y").to_string();
+        let year = dates::now_fmt("%Y");
         let doc = w.doc(id).unwrap();
         assert_eq!(doc.path.as_ref().unwrap().as_str(), format!("Meetings/{year} Roadmap.md"));
         assert_eq!(&*doc.text(), "---\nstatus: doing\n---\n# Roadmap\nStatus: planned\n\n");
@@ -270,7 +270,7 @@ mod tests {
             ("Home.md", "[[Brand New]]"),
         ]));
         w.index().flush();
-        let year = Local::now().format("%Y").to_string();
+        let year = dates::now_fmt("%Y");
         // The default covers the root and any folder; the deepest named folder wins.
         assert_eq!(w.folder_template(&NotePath::new("Home.md")), Some("Templates/Default.md".into()));
         assert_eq!(w.folder_template(&NotePath::new("Deep/er/x.md")), Some("Templates/Default.md".into()));

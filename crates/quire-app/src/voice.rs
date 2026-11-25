@@ -14,6 +14,7 @@
 //! * The recording stays in the vault either way; the transcript is text the
 //!   person can edit like any other.
 
+use quire_base::dates::{self, Zoned};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -195,8 +196,8 @@ pub fn voice_note_markdown(file_name: &str, seconds: f32, transcript: Option<(&s
 }
 
 /// The file name for a recording made now.
-pub fn recording_name(now: chrono::DateTime<chrono::Local>) -> String {
-    format!("Voice note {}.wav", now.format("%Y-%m-%d %H%M%S"))
+pub fn recording_name(now: &Zoned) -> String {
+    format!("Voice note {}.wav", dates::fmt_zoned(now, "%Y-%m-%d %H%M%S"))
 }
 
 impl Workspace {
@@ -205,7 +206,7 @@ impl Workspace {
         let vault = self.vault.clone()?;
         let pcm = quire_ai::wav::resample(samples, rate, quire_ai::wav::VOICE_RATE);
         let bytes = quire_ai::wav::encode_pcm16(&pcm, quire_ai::wav::VOICE_RATE);
-        match vault.save_attachment(&recording_name(chrono::Local::now()), &bytes) {
+        match vault.save_attachment(&recording_name(&dates::now_local()), &bytes) {
             Ok(p) => {
                 self.file_cache.clear();
                 Some(p)

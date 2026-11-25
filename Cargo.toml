@@ -75,6 +75,8 @@ ammonia = "4.2"
 nucleo-matcher = "0.3"
 notify = "8"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# 0.14: dates and times (chrono is kept only as the oracle of `quire-base`'s format tests and through `rrule`, a test oracle too).
+jiff = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1"

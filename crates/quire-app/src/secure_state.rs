@@ -12,6 +12,7 @@
 //!
 //! State lives in `ws.features.secure`.
 
+use quire_base::dates;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -447,7 +448,7 @@ impl Workspace {
         let Some(path) = doc.path.clone() else { return false };
         let Some(f) = vault.locked_folder(&path).filter(|f| !f.unlocking && vault.keys().is_unlocked(&f.path)) else { return false };
         let text = doc.text().to_string();
-        let stamp = chrono::Local::now().format("%Y-%m-%d %H.%M");
+        let stamp = dates::now_fmt("%Y-%m-%d %H.%M");
         let Ok(copy) = vault.unique_path(path.folder(), &format!("{} (unsaved {stamp})", path.stem())) else { return false };
         match vault.write_if(&copy, None, &text) {
             Ok(true) if vault.read(&copy).is_ok_and(|t| t == text) => {

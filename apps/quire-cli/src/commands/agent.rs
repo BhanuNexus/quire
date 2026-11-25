@@ -253,7 +253,7 @@ fn install_imported(dir: &Path, from: &Path, yes: bool) -> Result<(), String> {
         "source": source.to_string_lossy(),
         "sha256": sha,
         "bytes": bytes.len(),
-        "installed": chrono::Utc::now().timestamp_millis(),
+        "installed": quire_base::time::now_ms(),
         "trust": "untrusted",
     });
     let meta = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
@@ -311,7 +311,8 @@ pub(crate) fn proposals(store: &AgentStore, all: bool) -> String {
             Some(dev) => format!("{who}, decided on {}", store.device_label(dev)),
             None => who,
         };
-        let _ = writeln!(s, "{}  {status:<9} {:<16} {}  {}  ({})", p.id, who, quire_app::chrono_fmt(p.created), p.title, files.join(", "));
+        let _ =
+            writeln!(s, "{}  {status:<9} {:<16} {}  {}  ({})", p.id, who, quire_app::local_time_fmt(p.created), p.title, files.join(", "));
     }
     s
 }
@@ -319,7 +320,7 @@ pub(crate) fn proposals(store: &AgentStore, all: bool) -> String {
 fn show(store: &AgentStore, id: &str) -> Result<String, String> {
     let id = ProposalId::parse(id).ok_or_else(|| format!("“{id}” isn't a proposal id (p_…)"))?;
     let p = store.proposal(&id).ok_or_else(|| format!("no proposal {id}"))?;
-    let mut s = format!("{}\n{} · {} · {:?}\n", p.title, p.actor.label, quire_app::chrono_fmt(p.created), p.status);
+    let mut s = format!("{}\n{} · {} · {:?}\n", p.title, p.actor.label, quire_app::local_time_fmt(p.created), p.status);
     if !p.rationale.is_empty() {
         let _ = writeln!(s, "Why (as the agent wrote it): {}", p.rationale);
     }
@@ -362,7 +363,7 @@ fn log(store: &AgentStore, q: &LedgerQuery) -> String {
         let _ = writeln!(
             s,
             "{}  {:<8} {:<20} {path}{to}{batch}{on}",
-            quire_app::chrono_fmt(e.at),
+            quire_app::local_time_fmt(e.at),
             format!("{:?}", e.op).to_lowercase(),
             e.actor.id
         );

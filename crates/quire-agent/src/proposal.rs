@@ -552,7 +552,7 @@ impl ProposalStore {
     }
 
     fn archive_file(id: &ProposalId, updated: i64) -> NotePath {
-        let month = chrono::DateTime::from_timestamp_millis(updated).map_or_else(|| "1970-01".into(), |d| d.format("%Y-%m").to_string());
+        let month = quire_base::dates::fmt_utc_ms(updated, "%Y-%m").unwrap_or_else(|| "1970-01".into());
         NotePath::new(format!("{PROPOSALS_DIR}/archive/{month}/{id}.json"))
     }
 
@@ -571,9 +571,9 @@ impl ProposalStore {
     /// (storage can list files, not folders).
     fn archive_files(&self, now_ms: i64) -> Vec<NotePath> {
         // A month ahead too, for clocks that disagree a little.
-        let now = chrono::DateTime::from_timestamp_millis(now_ms.saturating_add(31 * 86_400_000)).unwrap_or_default();
+        let now = quire_base::dates::utc_from_ms(now_ms.saturating_add(31 * 86_400_000)).unwrap_or(quire_base::dates::EPOCH);
         let mut out = Vec::new();
-        let (mut y, mut m) = (chrono::Datelike::year(&now), chrono::Datelike::month(&now));
+        let (mut y, mut m) = (i32::from(now.year()), i32::from(now.month()));
         for _ in 0..16 {
             out.extend(self.vault.storage().list_under(&format!("{PROPOSALS_DIR}/archive/{y:04}-{m:02}")).unwrap_or_default());
             if m == 1 {

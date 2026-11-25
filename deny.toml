@@ -14,11 +14,13 @@ ignore = [
   { id = "RUSTSEC-2026-0371", reason = "merged into zbus 6; transitive via accesskit" },
   { id = "RUSTSEC-2026-0372", reason = "merged into zbus 6; transitive via accesskit" },
   # chrono and chrono-tz were marked unmaintained on 2026-11-17 (informational, no
-  # vulnerability; the advisory suggests jiff or time). chrono is a direct dependency
-  # of 13 workspace crates; chrono-tz comes through rrule (recurring tasks). Moving
-  # off it is planned work, not a lockfile bump: remove these two when it is done.
-  { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained, no vulnerability; migration to jiff/time is planned" },
-  { id = "RUSTSEC-2026-0555", reason = "chrono-tz (via rrule) unmaintained, no vulnerability; goes with the chrono migration" },
+  # vulnerability). Since 0.14 no shipped binary links them: dates are jiff
+  # (quire_base::dates), and chrono is only a dev-dependency, the oracle of the date
+  # format tests (quire-base) and what the rrule oracle (quire-plan, also a
+  # dev-dependency, with chrono-tz) speaks. check-layering.py keeps chrono out of
+  # normal dependencies. Remove these when the oracles go (docs/design/0.14-jiff.md).
+  { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained, no vulnerability; dev-dependency only (test oracles)" },
+  { id = "RUSTSEC-2026-0555", reason = "chrono-tz unmaintained, no vulnerability; dev-dependency only, via the rrule test oracle" },
   # quire-typeset: pinned by Typst 0.15 / MiTeX 0.2 / mermaid-rs-renderer 0.3.
   # Checked 2026-11-15: typst 0.15.1, hayagriva 0.10.1, citationberg 0.7.0 and
   # mitex 0.2.4 are the newest releases, so no parent upgrade removes these.

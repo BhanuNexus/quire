@@ -4,7 +4,7 @@
 //! recurring task also gets its next occurrence, a copy with every date
 //! moved by the same number of days.
 
-use chrono::{Duration, NaiveDate, NaiveDateTime};
+use quire_base::dates::{self, Date};
 use quire_markdown::Task;
 use quire_markdown::tasks::{self, Field, Format};
 
@@ -18,7 +18,7 @@ pub struct Completion {
     /// The next occurrence (an open copy), for a recurring task that hasn't ended.
     pub next: Option<String>,
     /// The date the next occurrence is for.
-    pub next_date: Option<NaiveDate>,
+    pub next_date: Option<Date>,
     /// Why there's no next occurrence when the task has a rule.
     pub note: Option<String>,
 }
@@ -32,18 +32,18 @@ pub fn parse_line(line: &str) -> Option<(usize, Task)> {
     Some((marker, t))
 }
 
-fn date(s: Option<&str>) -> Option<NaiveDate> {
-    quire_base::time::parse_ymd_prefix(s?)
+fn date(s: Option<&str>) -> Option<Date> {
+    dates::parse_ymd_prefix(s?)
 }
 
 /// Complete the task on `line` (no newline) on `today`. `None` when the line
 /// isn't an open task.
-pub fn complete(line: &str, today: NaiveDate, format: Format) -> Option<Completion> {
+pub fn complete(line: &str, today: Date, format: Format) -> Option<Completion> {
     let (marker, task) = parse_line(line)?;
     if task.done {
         return None;
     }
-    let today_s = today.format("%Y-%m-%d").to_string();
+    let today_s = dates::ymd(today);
     let done = tasks::set_field(&tasks::set_done(line, marker, true), marker, Field::Done, Some(&today_s), format);
     let mut out = Completion { done, next: None, next_date: None, note: None };
     let Some(rule_text) = task.recurrence.as_deref() else { return Some(out) };
@@ -67,15 +67,15 @@ pub fn complete(line: &str, today: NaiveDate, format: Format) -> Option<Completi
         out.note = Some("The repeat rule has ended.".into());
         return Some(out);
     };
-    let delta = (next - anchor.unwrap_or(base)).num_days();
+    let delta = dates::days_between(anchor.unwrap_or(base), next);
     out.next = Some(next_line(line, marker, &task, delta, today, format));
     out.next_date = Some(next);
     Some(out)
 }
 
 /// The open copy with dates moved by `delta` days.
-fn next_line(line: &str, marker: usize, task: &Task, delta: i64, today: NaiveDate, format: Format) -> String {
-    let shift = |s: &str| date(Some(s)).map(|d| (d + Duration::days(delta)).format("%Y-%m-%d").to_string());
+fn next_line(line: &str, marker: usize, task: &Task, delta: i64, today: Date, format: Format) -> String {
+    let shift = |s: &str| date(Some(s)).map(|d| dates::ymd(dates::plus_days(d, delta)));
     let mut l = tasks::set_field(line, marker, Field::Done, None, format);
     for (field, value) in [(Field::Due, &task.due), (Field::Scheduled, &task.scheduled), (Field::Start, &task.start)] {
         if let Some(v) = value.as_deref().and_then(shift) {
@@ -83,8 +83,8 @@ fn next_line(line: &str, marker: usize, task: &Task, delta: i64, today: NaiveDat
         }
     }
     if let Some(r) = task.reminder.as_deref() {
-        let moved = NaiveDateTime::parse_from_str(r, "%Y-%m-%d %H:%M")
-            .map(|t| (t + Duration::days(delta)).format("%Y-%m-%d %H:%M").to_string())
+        let moved = dates::parse_datetime(r, "%Y-%m-%d %H:%M")
+            .map(|t| dates::fmt("%Y-%m-%d %H:%M", &dates::Moment::naive(dates::plus_days_dt(t, delta))))
             .ok()
             .or_else(|| shift(r));
         if let Some(m) = moved {
@@ -92,7 +92,7 @@ fn next_line(line: &str, marker: usize, task: &Task, delta: i64, today: NaiveDat
         }
     }
     if task.created.is_some() {
-        l = tasks::set_field(&l, marker, Field::Created, Some(&today.format("%Y-%m-%d").to_string()), format);
+        l = tasks::set_field(&l, marker, Field::Created, Some(&dates::ymd(today)), format);
     }
     // A block id must stay unique: the copy doesn't get one.
     let trimmed = l.trim_end();
@@ -115,8 +115,8 @@ pub fn note_task(props: &std::collections::BTreeMap<String, quire_markdown::Valu
 mod tests {
     use super::*;
 
-    fn d(s: &str) -> NaiveDate {
-        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    fn d(s: &str) -> Date {
+        dates::parse_ymd(s).unwrap()
     }
 
     #[test]

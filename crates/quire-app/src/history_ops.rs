@@ -232,9 +232,7 @@ impl Workspace {
     /// Replace the active note with an old version (undoable, and saved as a new version).
     pub fn restore_snapshot(&mut self, s: &Snapshot) -> bool {
         let Some(text) = self.snapshot_text(s) else { return false };
-        let when = chrono::DateTime::from_timestamp_millis(s.at_ms)
-            .map(|d| d.with_timezone(&chrono::Local).format("%b %-d, %H:%M").to_string())
-            .unwrap_or_default();
+        let when = quire_base::dates::fmt_local_ms(s.at_ms, "%b %-d, %H:%M").unwrap_or_default();
         self.restore_text(&text, &format!("the version from {when}"))
     }
 

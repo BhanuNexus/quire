@@ -9,9 +9,9 @@
 //!
 //! Registered in `registry.rs`.
 
+use quire_base::dates::{self, Date, Strftime};
 use std::fmt::Write as _;
 
-use chrono::{Datelike, Local, NaiveDate};
 use egui::{Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 use quire_app::Workspace;
 use quire_app::periodic::{add_months, first_weekday};
@@ -50,17 +50,17 @@ fn intensity(words: usize) -> f32 {
 pub(crate) fn show(ui: &mut Ui, ws: &mut Workspace, st: &mut FeatureUi, pal: &Palette) -> PanelOut {
     let mut out = PanelOut::default();
     let st = &mut st.calendar;
-    let today = Local::now().date_naive();
-    let (y, m) = st.month.unwrap_or_else(|| (today.year(), today.month()));
+    let today = dates::today();
+    let (y, m) = st.month.unwrap_or_else(|| dates::year_month(today));
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         if ui.small_button("◀").on_hover_text("Previous month").clicked() {
             st.month = Some(add_months(y, m, -1));
         }
-        let title = NaiveDate::from_ymd_opt(y, m, 1).map_or_else(String::new, |d| d.format("%B %Y").to_string());
+        let title = dates::ymd_opt(y, m, 1).map_or_else(String::new, |d| d.render("%B %Y"));
         let r = ui.add(egui::Label::new(RichText::new(title).size(14.0).color(pal.strong).strong()).sense(Sense::click()));
         if r.on_hover_text("Open this month's note").clicked()
-            && let Some(d) = NaiveDate::from_ymd_opt(y, m, 1)
+            && let Some(d) = dates::ymd_opt(y, m, 1)
             && ws.open_period(Period::Monthly, d).is_some()
         {
             out.jumped = true;
@@ -69,7 +69,7 @@ pub(crate) fn show(ui: &mut Ui, ws: &mut Workspace, st: &mut FeatureUi, pal: &Pa
             st.month = Some(add_months(y, m, 1));
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if st.month.is_some_and(|x| x != (today.year(), today.month())) && ui.small_button("Today").clicked() {
+            if st.month.is_some_and(|x| x != dates::year_month(today)) && ui.small_button("Today").clicked() {
                 st.month = None;
             }
         });
@@ -89,22 +89,25 @@ pub(crate) fn show(ui: &mut Ui, ws: &mut Workspace, st: &mut FeatureUi, pal: &Pa
         let c = Pos2::new(rect.left() + cell * (i as f32 + 0.5), rect.top() + cell * 0.5);
         painter.text(c, egui::Align2::CENTER_CENTER, *d, small.clone(), if i == 0 { pal.faint } else { pal.muted });
     }
-    let mut open_day: Option<NaiveDate> = None;
-    let mut open_week: Option<NaiveDate> = None;
+    let mut open_day: Option<Date> = None;
+    let mut open_week: Option<Date> = None;
     for row in 0..rows {
         let y0 = rect.top() + cell * (row as f32 + 1.0);
         // The week number (ISO) of the row's Monday.
         let monday_index = row * 7;
         let day_of_monday = monday_index as i64 - first as i64; // 0-based day of month, may be negative
-        let Some(first_day) = NaiveDate::from_ymd_opt(y, m, 1) else { continue };
-        let monday = first_day + chrono::Duration::days(day_of_monday);
+        let Some(first_day) = dates::ymd_opt(y, m, 1) else { continue };
+        let monday = dates::plus_days(first_day, day_of_monday);
         let wr = Rect::from_min_size(Pos2::new(rect.left(), y0), Vec2::splat(cell));
         let wresp = ui.interact(wr, ui.scope_id().with(("quire-cal-week", y, m, row)), Sense::click());
         if wresp.hovered() {
             painter.rect_filled(wr.shrink(2.0), 4.0, pal.hover);
         }
-        painter.text(wr.center(), egui::Align2::CENTER_CENTER, monday.iso_week().week().to_string(), small.clone(), pal.faint);
-        if wresp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(format!("Open week {}", monday.iso_week().week())).clicked()
+        painter.text(wr.center(), egui::Align2::CENTER_CENTER, monday.iso_week_date().week().to_string(), small.clone(), pal.faint);
+        if wresp
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(format!("Open week {}", monday.iso_week_date().week()))
+            .clicked()
         {
             open_week = Some(monday);
         }
@@ -114,7 +117,7 @@ pub(crate) fn show(ui: &mut Ui, ws: &mut Workspace, st: &mut FeatureUi, pal: &Pa
                 continue;
             }
             let day = idx - first + 1;
-            let date = first_day + chrono::Duration::days(day as i64 - 1);
+            let date = dates::plus_days(first_day, day as i64 - 1);
             let mk = marks[day - 1];
             let r = Rect::from_min_size(Pos2::new(rect.left() + cell * (col as f32 + 1.0), y0), Vec2::splat(cell));
             let inner = r.shrink(2.0);
@@ -151,7 +154,7 @@ pub(crate) fn show(ui: &mut Ui, ws: &mut Workspace, st: &mut FeatureUi, pal: &Pa
             if mk.due > 0 {
                 painter.circle_stroke(Pos2::new(r.center().x + if mk.note { 4.0 } else { 0.0 }, dot_y), 2.6, Stroke::new(1.3, pal.warn));
             }
-            let mut tip = date.format("%A %-d %B").to_string();
+            let mut tip = date.render("%A %-d %B");
             if mk.note {
                 let _ = write!(tip, "\nDaily note · {} words", mk.words);
             }
@@ -210,7 +213,7 @@ pub(crate) fn periodic_settings(ui: &mut Ui, ws: &mut Workspace, st: &mut Calend
         ui.label(RichText::new(format!("These settings were {why}; they're shown but not changed.")).color(pal.warn));
     }
     let draft = st.draft.get_or_insert_with(|| ws.periodic_prefs().clone());
-    let today = Local::now().date_naive();
+    let today = dates::today();
     ui.add_space(4.0);
     // Fixed sizes: a grid cell would otherwise shrink a text box to its last width.
     let h = ui.spacing().interact_size.y;

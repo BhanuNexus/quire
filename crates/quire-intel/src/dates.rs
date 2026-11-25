@@ -3,17 +3,17 @@
 //! Natural-language dates: `@today`, `@tomorrow`, `@next friday`, `@in 3 days`,
 //! `@2 weeks ago`, `@dec 25`, `@2026-12-25`.
 
-use chrono::{Datelike, Duration, Months, NaiveDate, Weekday};
+use quire_base::dates::{self, Date, Span, Weekday, from_monday};
 
 fn weekday(s: &str) -> Option<Weekday> {
     Some(match s {
-        "mon" | "monday" => Weekday::Mon,
-        "tue" | "tues" | "tuesday" => Weekday::Tue,
-        "wed" | "wednesday" => Weekday::Wed,
-        "thu" | "thur" | "thurs" | "thursday" => Weekday::Thu,
-        "fri" | "friday" => Weekday::Fri,
-        "sat" | "saturday" => Weekday::Sat,
-        "sun" | "sunday" => Weekday::Sun,
+        "mon" | "monday" => Weekday::Monday,
+        "tue" | "tues" | "tuesday" => Weekday::Tuesday,
+        "wed" | "wednesday" => Weekday::Wednesday,
+        "thu" | "thur" | "thurs" | "thursday" => Weekday::Thursday,
+        "fri" | "friday" => Weekday::Friday,
+        "sat" | "saturday" => Weekday::Saturday,
+        "sun" | "sunday" => Weekday::Sunday,
         _ => return None,
     })
 }
@@ -24,15 +24,13 @@ fn month(s: &str) -> Option<u32> {
     M.iter().position(|m| *m == s).map(|i| i as u32 + 1)
 }
 
-fn add_units(today: NaiveDate, n: i64, unit: &str) -> Option<NaiveDate> {
+fn add_units(today: Date, n: i64, unit: &str) -> Option<Date> {
     let unit = unit.trim_end_matches('s');
     match unit {
-        "day" => today.checked_add_signed(Duration::days(n)),
-        "week" => today.checked_add_signed(Duration::weeks(n)),
-        "month" if n >= 0 => today.checked_add_months(Months::new(n as u32)),
-        "month" => today.checked_sub_months(Months::new(n.unsigned_abs() as u32)),
-        "year" if n >= 0 => today.checked_add_months(Months::new(n as u32 * 12)),
-        "year" => today.checked_sub_months(Months::new(n.unsigned_abs() as u32 * 12)),
+        "day" => dates::add_days(today, n),
+        "week" => dates::add_days(today, n.checked_mul(7)?),
+        "month" => today.checked_add(Span::new().try_months(n).ok()?).ok(),
+        "year" => today.checked_add(Span::new().try_months(n.checked_mul(12)?).ok()?).ok(),
         _ => None,
     }
 }
@@ -50,35 +48,35 @@ fn number(s: &str) -> Option<i64> {
 }
 
 /// Parse a phrase (without the `@`) relative to `today`.
-pub fn parse_natural_date(phrase: &str, today: NaiveDate) -> Option<NaiveDate> {
+pub fn parse_natural_date(phrase: &str, today: Date) -> Option<Date> {
     let p = phrase.trim().to_lowercase();
     let words: Vec<&str> = p.split_whitespace().collect();
     match words.as_slice() {
         ["today" | "now"] => Some(today),
-        ["tomorrow" | "tmr" | "tmrw"] => today.succ_opt(),
-        ["yesterday"] => today.pred_opt(),
+        ["tomorrow" | "tmr" | "tmrw"] => today.tomorrow().ok(),
+        ["yesterday"] => today.yesterday().ok(),
         [w] if weekday(w).is_some() => {
             let target = weekday(w)?;
-            let delta = (7 + i64::from(target.num_days_from_monday()) - i64::from(today.weekday().num_days_from_monday())) % 7;
-            today.checked_add_signed(Duration::days(if delta == 0 { 7 } else { delta }))
+            let delta = (7 + from_monday(target) - from_monday(today.weekday())) % 7;
+            dates::add_days(today, if delta == 0 { 7 } else { delta })
         }
         ["next", w] if weekday(w).is_some() => {
             // "next friday" = the friday of next week.
             let target = weekday(w)?;
-            let monday_next = today + Duration::days(7 - i64::from(today.weekday().num_days_from_monday()));
-            Some(monday_next + Duration::days(i64::from(target.num_days_from_monday())))
+            let monday_next = dates::add_days(today, 7 - from_monday(today.weekday()))?;
+            dates::add_days(monday_next, from_monday(target))
         }
-        ["next", "week"] => Some(today + Duration::weeks(1)),
-        ["next", "month"] => today.checked_add_months(Months::new(1)),
-        ["next", "year"] => today.checked_add_months(Months::new(12)),
+        ["next", "week"] => dates::add_days(today, 7),
+        ["next", "month"] => today.checked_add(Span::new().months(1)).ok(),
+        ["next", "year"] => today.checked_add(Span::new().months(12)).ok(),
         ["in", n, unit] => add_units(today, number(n)?, unit),
         [n, unit, "ago"] => add_units(today, -number(n)?, unit),
         [m, d] if month(m).is_some() => {
             let (m, d) = (month(m)?, d.trim_end_matches(|c: char| c.is_alphabetic()).parse().ok()?);
-            let this_year = NaiveDate::from_ymd_opt(today.year(), m, d)?;
-            if this_year < today { NaiveDate::from_ymd_opt(today.year() + 1, m, d) } else { Some(this_year) }
+            let this_year = dates::ymd_opt(i32::from(today.year()), m, d)?;
+            if this_year < today { dates::ymd_opt(i32::from(today.year()) + 1, m, d) } else { Some(this_year) }
         }
-        [iso] => quire_base::time::parse_ymd(iso),
+        [iso] => dates::parse_ymd(iso),
         _ => None,
     }
 }
@@ -87,13 +85,13 @@ pub fn parse_natural_date(phrase: &str, today: NaiveDate) -> Option<NaiveDate> {
 pub struct DateMatch {
     /// Char offset of the `@` within the line.
     pub start_char: usize,
-    pub date: NaiveDate,
+    pub date: Date,
 }
 
 /// Find the longest `@phrase` (up to three words) that ends exactly at the end
 /// of `before_caret` and parses as a date. Call this when the user types a
 /// space or presses Enter.
-pub fn trailing_date_phrase(before_caret: &str, today: NaiveDate) -> Option<DateMatch> {
+pub fn trailing_date_phrase(before_caret: &str, today: Date) -> Option<DateMatch> {
     let at = before_caret.rfind('@')?;
     let phrase = &before_caret[at + 1..];
     let preceded_ok = before_caret[..at].chars().next_back().is_none_or(char::is_whitespace);
@@ -108,8 +106,8 @@ pub fn trailing_date_phrase(before_caret: &str, today: NaiveDate) -> Option<Date
 mod tests {
     use super::*;
 
-    fn d(y: i32, m: u32, day: u32) -> NaiveDate {
-        NaiveDate::from_ymd_opt(y, m, day).unwrap()
+    fn d(y: i32, m: u32, day: u32) -> Date {
+        dates::ymd_opt(y, m, day).unwrap()
     }
 
     #[test]

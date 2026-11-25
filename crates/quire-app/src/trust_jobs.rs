@@ -15,6 +15,7 @@ pub mod claims;
 pub mod stale;
 pub mod timeline;
 
+use quire_base::dates;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -246,7 +247,7 @@ impl Workspace {
 
     /// "Mark reviewed": `reviewed: <today>`.
     pub fn mark_reviewed(&mut self, path: &NotePath) {
-        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let today = dates::today_ymd();
         match self.set_note_properties(path, &[("reviewed", Value::Str(today))]) {
             Ok(()) => {
                 let item = quire_agent::inbox::InboxItem::Stale { path: path.clone(), score: 0.0, reasons: Vec::new() };
@@ -659,7 +660,7 @@ mod tests {
         assert!(ws.command_available(Command::ThinkingTimeline));
         ws.open_note(&NotePath::new("A.md"));
         ws.run(Command::MarkReviewed);
-        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let today = dates::today_ymd();
         assert!(ws.active_doc().unwrap().text().contains(&format!("reviewed: {today}")));
         // A note that isn't open: on disk, with history.
         ws.mark_superseded(&NotePath::new("B.md"), &NotePath::new("A.md"), None);

@@ -46,7 +46,7 @@ fn save_answer(cx: &ToolCx<'_>, ext: &CallExt<'_>, a: &Value) -> ToolOutput {
         Ok(p) => p,
         Err(e) => return ToolOutput::error("invalid_args", e.to_string()),
     };
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let today = quire_base::dates::today_ymd();
     let by = cx.actor.model.clone().unwrap_or_else(|| cx.actor.label.clone());
     let q = quire_app::markdown::frontmatter::yaml_scalar(&question);
     let src_list = if links.is_empty() {

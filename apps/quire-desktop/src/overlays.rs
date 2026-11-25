@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Command palette, quick open, pickers, dialogs and toasts.
 
+use quire_base::dates;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -762,7 +763,7 @@ fn shortcuts(ctx: &egui::Context, query: &mut String, focused: &mut bool, ws: &W
 fn capture(ctx: &egui::Context, text: &mut String, focused: &mut bool, minimize: bool, ws: &mut Workspace, pal: &Palette) -> bool {
     let mut add = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter));
     let mut close = false;
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let today = dates::today_ymd();
     egui::Modal::new(egui::Id::unique("quire-capture")).show(ctx, |ui| {
         ui.set_width(520.0_f32.min(ctx.content_rect().width() - 48.0));
         ui.heading("Quick capture");

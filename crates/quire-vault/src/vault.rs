@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use chrono::{Local, NaiveDate};
+use quire_base::dates::{self, Date};
 
 use crate::refactor::{LinkRewrite, rewrite_links};
 use crate::templates::{TemplateVars, expand_template};
@@ -224,16 +224,20 @@ impl Vault {
     /// Create a note from a template. Returns the path and caret offset.
     pub fn create_from_template(&self, folder: &str, title: &str, template: &NotePath) -> Result<(NotePath, Option<usize>)> {
         let tpl = self.storage.read(template)?;
-        let (body, cursor) = expand_template(&tpl, &TemplateVars { title: title.into(), now: Local::now() });
+        let (body, cursor) = expand_template(&tpl, &TemplateVars { title: title.into(), now: dates::now_local() });
         Ok((self.create_note(folder, title, &body)?, cursor))
     }
 
-    pub fn daily_path(&self, date: NaiveDate) -> NotePath {
-        NotePath::join(&self.config.daily_folder, &format!("{}.md", date.format(&self.config.daily_format)))
+    /// The daily note for `date`, named with the vault's `daily_format`
+    /// (`YYYY-MM-DD` when that pattern can't name a date).
+    pub fn daily_path(&self, date: Date) -> NotePath {
+        let m = dates::Moment::date(date);
+        let name = dates::format(&self.config.daily_format, &m).unwrap_or_else(|_| dates::ymd(date));
+        NotePath::join(&self.config.daily_folder, &format!("{name}.md"))
     }
 
     /// Open-or-create today's (or any day's) note. Returns (path, created).
-    pub fn daily_note(&self, date: NaiveDate) -> Result<(NotePath, bool)> {
+    pub fn daily_note(&self, date: Date) -> Result<(NotePath, bool)> {
         let p = self.daily_path(date);
         if self.exists(&p) {
             return Ok((p, false));
@@ -242,7 +246,7 @@ impl Vault {
         let tpl_path = NotePath::join(&self.config.templates_folder, &self.config.daily_template);
         let body = match self.storage.read(&tpl_path) {
             Ok(tpl) => {
-                let now = date.and_hms_opt(9, 0, 0).and_then(|d| d.and_local_timezone(Local).single()).unwrap_or_else(Local::now);
+                let now = dates::local_single(date.at(9, 0, 0, 0)).unwrap_or_else(dates::now_local);
                 expand_template(&tpl, &TemplateVars { title, now }).0
             }
             Err(_) => format!("# {title}\n\n"),
@@ -506,7 +510,7 @@ mod tests {
     fn unique_names_and_daily_notes() {
         let v = vault();
         assert_eq!(v.create_note("Projects", "Ideas", "").unwrap().as_str(), "Projects/Ideas 1.md");
-        let day = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+        let day = Date::new(2026, 11, 1).unwrap();
         let (p, created) = v.daily_note(day).unwrap();
         assert!(created);
         assert_eq!(p.as_str(), "Daily/2026-11-01.md");

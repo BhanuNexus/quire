@@ -10,6 +10,7 @@
 //! drawing note's `## Text Elements` reindexed for links and backlinks.
 
 use base64::Engine as _;
+use quire_base::dates;
 use quire_canvas::excalidraw::{self, FileRef};
 use quire_vault::{NotePath, Vault};
 
@@ -209,7 +210,7 @@ pub fn copy_path_in(vault: &Vault, path: &NotePath, what: &str) -> Option<NotePa
 pub fn new_drawing(ws: &Workspace) -> Result<NotePath, String> {
     let vault = ws.vault().ok_or("No vault is open")?;
     let folder = ws.active_doc().and_then(|d| d.path.as_ref()).map(|p| p.folder().to_string()).unwrap_or_default();
-    let stamp = chrono::Local::now().format("Drawing %Y-%m-%d %H.%M.%S").to_string();
+    let stamp = dates::now_fmt("Drawing %Y-%m-%d %H.%M.%S");
     let path = (0..1000)
         .map(|n| if n == 0 { format!("{stamp}.excalidraw.md") } else { format!("{stamp} {n}.excalidraw.md") })
         .map(|f| NotePath::join(&folder, &f))

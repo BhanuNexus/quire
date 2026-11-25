@@ -6,6 +6,7 @@
 //!
 //! Registered in `registry.rs` (`open_surface`, `paint_widget`).
 
+use quire_base::dates;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -181,10 +182,11 @@ impl BaseSurface {
     /// index, the file or the minute changes.
     fn table(&mut self, ws: &Workspace, base: &Base, view: usize) -> Rc<Table> {
         use std::hash::{Hash, Hasher};
-        let now = chrono::Local::now().naive_local();
+        let now = dates::now_local().datetime();
+        let minute = quire_base::time::now_ms() / 60_000;
         let mut h = std::collections::hash_map::DefaultHasher::new();
         self.text.hash(&mut h);
-        let key = (ws.index().version(), h.finish(), view, now.and_utc().timestamp() / 60);
+        let key = (ws.index().version(), h.finish(), view, minute);
         match &self.table {
             Some((k, t)) if *k == key => Rc::clone(t),
             _ => {

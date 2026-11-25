@@ -20,6 +20,7 @@ pub(crate) mod acp_ui;
 #[path = "ingest_ui.rs"]
 pub(crate) mod ingest_ui;
 
+use quire_base::dates;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
@@ -491,7 +492,7 @@ fn history_list(ui: &mut egui::Ui, ws: &Workspace, p: &mut AgentPanelUi, pal: &P
             painter.text(
                 rect.left_top() + egui::vec2(8.0, 22.0),
                 egui::Align2::LEFT_TOP,
-                format!("{} · {}", quire_app::chrono_fmt(c.updated), c.model),
+                format!("{} · {}", quire_app::local_time_fmt(c.updated), c.model),
                 egui::FontId::proportional(11.0),
                 pal.faint,
             );
@@ -705,7 +706,7 @@ impl AgentPanelUi {
     }
 
     fn save_as_note(&self, ws: &mut Workspace) {
-        let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let date = dates::today_ymd();
         let text = self.conv.to_markdown(&date);
         let folder = if ws.vault().is_some_and(|v| v.notes().is_ok_and(|n| n.iter().any(|p| p.as_str().starts_with("wiki/")))) {
             "wiki/conversations"

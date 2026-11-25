@@ -14,7 +14,6 @@
 //! * "+" in a column makes a note from the view's template, or a task note,
 //!   with the column's value set.
 
-use chrono::{Duration, Local, NaiveDate};
 use egui::{Color32, Id, Rect, RichText, Sense, Stroke, Ui};
 use quire_app::Workspace;
 use quire_app::index::views::{ViewResult, ViewRow, ViewSpec};
@@ -23,6 +22,7 @@ use quire_app::markdown::tasks::Field;
 use quire_app::plan::task_note::{NewTask, Prop};
 use quire_app::tasks_state::{Action, BoardSetting, BoardTarget};
 use quire_app::vault::NotePath;
+use quire_base::dates::{self, Date, Strftime};
 
 use crate::theme::Palette;
 use crate::view_ui::ViewAction;
@@ -403,7 +403,7 @@ fn chip(ui: &mut Ui, pal: &Palette, text: &str, color: Color32, hover: &str) -> 
 /// The card's properties: status, priority and due edit in place; the
 /// view's other fields are shown.
 fn chips(ui: &mut Ui, ws: &Workspace, pal: &Palette, b: &Board<'_>, field: &str, row: &ViewRow) {
-    let today = Local::now().date_naive();
+    let today = dates::today();
     let get = |name: &str| b.spec.fields.iter().position(|f| f == name).and_then(|i| row.cells.get(i)).filter(|c| !c.is_empty()).cloned();
     let (status, priority, due) = if let Some(t) = &row.task {
         (Some(t.status.clone()), Some(quire_app::markdown::tasks::priority_word(t.task.priority).to_string()), t.task.due.clone())
@@ -451,7 +451,7 @@ fn chips(ui: &mut Ui, ws: &Workspace, pal: &Palette, b: &Board<'_>, field: &str,
         });
     }
     if field != "due" {
-        let d = due.as_deref().and_then(quire_base::time::parse_ymd_prefix);
+        let d = due.as_deref().and_then(dates::parse_ymd_prefix);
         let (text, color) = match d {
             Some(d) if d < today => (format!("due {}", crate::agenda_ui::relative(d, today)), pal.danger),
             Some(d) => (format!("due {}", crate::agenda_ui::relative(d, today)), pal.text),
@@ -460,9 +460,9 @@ fn chips(ui: &mut Ui, ws: &Workspace, pal: &Palette, b: &Board<'_>, field: &str,
         let r = chip(ui, pal, &text, color, "Click to set the due date");
         let draft_id = b.key.with(("due-draft", row.id.as_str()));
         popup(&r, |ui| {
-            let fmt = |d: NaiveDate| d.format("%Y-%m-%d").to_string();
-            for (label, v) in [("Today", today), ("Tomorrow", today + Duration::days(1)), ("Next week", today + Duration::days(7))] {
-                if ui.button(format!("{label} · {}", v.format("%a %-d %b"))).clicked() {
+            let fmt = |d: Date| d.render("%Y-%m-%d");
+            for (label, v) in [("Today", today), ("Tomorrow", dates::plus_days(today, 1)), ("Next week", dates::plus_days(today, 7))] {
+                if ui.button(format!("{label} · {}", v.render("%a %-d %b"))).clicked() {
                     set(ws, row, Prop::Due, "due", Some(fmt(v)));
                     ui.close();
                 }

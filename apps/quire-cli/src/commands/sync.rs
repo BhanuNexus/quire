@@ -18,6 +18,7 @@
 //! credentials are kept in the keychain or the private secrets file
 //! (`QUIRE_SECRETS_FILE` picks another), as the app keeps them.
 
+use quire_base::dates;
 use std::fmt::Write as _;
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -501,7 +502,7 @@ fn join(vault: &Path, args: &[String]) -> Result<(), String> {
         None if spaces.is_empty() => return Err("No sync vault there yet. Set one up in the app, or use --create.".into()),
         None if interactive => {
             for (i, s) in spaces.iter().enumerate() {
-                eprintln!("  {}. {}  created {}  {}", i + 1, s.space.0, quire_app::chrono_fmt(s.created * 1000), s.detail);
+                eprintln!("  {}. {}  created {}  {}", i + 1, s.space.0, quire_app::local_time_fmt(s.created * 1000), s.detail);
             }
             let n: usize = prompt_line("Which one? ")?.parse().map_err(|_| "type the number".to_string())?;
             spaces.get(n.wrapping_sub(1)).ok_or("no such number")?.space.clone()
@@ -608,7 +609,7 @@ pub(crate) fn shutdown_signal() -> Result<mpsc::Receiver<&'static str>, String> 
 }
 
 fn now() -> String {
-    chrono::Local::now().format("%H:%M:%S").to_string()
+    dates::now_fmt("%H:%M:%S")
 }
 
 /// Sync until a signal; returns once the pass under way has finished.
@@ -715,7 +716,7 @@ fn status(vault: &Path) -> String {
                 "elsewhere" => format!("waiting: {}", l.detail),
                 other => other.to_string(),
             };
-            let _ = write!(out, "Last pass {}: {what}", quire_app::chrono_fmt(l.at));
+            let _ = write!(out, "Last pass {}: {what}", quire_app::local_time_fmt(l.at));
             if l.pulled + l.pushed > 0 {
                 let _ = write!(out, " (received {}, sent {})", l.pulled, l.pushed);
             }

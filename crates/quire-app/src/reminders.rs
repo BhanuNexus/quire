@@ -12,8 +12,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use chrono::{Duration, Local, NaiveDateTime};
 use crossbeam_channel::{Receiver, Sender, unbounded};
+use quire_base::dates::{self, DateTime};
 use quire_plan::reminders::{self, Reminder};
 use quire_vault::NotePath;
 
@@ -27,7 +27,7 @@ pub const SNOOZE_MINUTES: i64 = 10;
 pub struct Fired {
     pub reminder: Reminder,
     /// When it showed (it may have been snoozed first).
-    pub at: NaiveDateTime,
+    pub at: DateTime,
 }
 
 /// What the person did with a desktop notification.
@@ -42,13 +42,13 @@ pub struct RemindersState {
     pub schedule: Vec<Reminder>,
     version: Option<u64>,
     /// Up to when reminders have been fired.
-    checked: Option<NaiveDateTime>,
+    checked: Option<DateTime>,
     /// Shown this session, newest last.
     pub fired: Vec<Fired>,
     /// Missed while Quire was closed (listed once at start).
     pub missed: Vec<Reminder>,
     missed_done: bool,
-    snoozed: HashMap<String, (NaiveDateTime, Reminder)>,
+    snoozed: HashMap<String, (DateTime, Reminder)>,
     pub dismissed: HashSet<String>,
     replies: (Sender<Reply>, Receiver<Reply>),
     /// 0.12: reminders of notes in unlocked folders seen this session
@@ -80,7 +80,7 @@ impl Default for RemindersState {
 
 impl RemindersState {
     /// The next time something is due (a reminder or a snooze ending).
-    pub fn next_due(&self, now: NaiveDateTime) -> Option<NaiveDateTime> {
+    pub fn next_due(&self, now: DateTime) -> Option<DateTime> {
         let next = reminders::next_after(&self.schedule, now).map(|r| r.at);
         let snooze = self.snoozed.values().map(|(t, _)| *t).filter(|t| *t > now).min();
         next.into_iter().chain(snooze).min()
@@ -97,14 +97,14 @@ impl RemindersState {
 
     /// Reminders count as checked up to `at` (tests: time passes).
     #[cfg(test)]
-    pub(crate) const fn checked_for_test(&mut self, at: NaiveDateTime) {
+    pub(crate) const fn checked_for_test(&mut self, at: DateTime) {
         self.checked = Some(at);
     }
 
     /// Which of `unlocked` (reminders of notes in unlocked folders now) came
     /// due unseen: not seen before this unlock, and not already shown this
     /// session. Remembers them all as seen.
-    fn take_new_locked(&mut self, unlocked: &[Reminder], now: NaiveDateTime) -> Vec<Reminder> {
+    fn take_new_locked(&mut self, unlocked: &[Reminder], now: DateTime) -> Vec<Reminder> {
         let fresh: Vec<Reminder> = unlocked.iter().filter(|r| !self.locked_seen.contains(&r.key())).cloned().collect();
         let new: Vec<Reminder> = fresh.iter().filter(|r| !self.locked_done.contains(&shown_key(r))).cloned().collect();
         self.locked_seen.extend(fresh.iter().map(Reminder::key));
@@ -114,15 +114,15 @@ impl RemindersState {
         missed
     }
 
-    pub fn snooze(&mut self, r: &Reminder, now: NaiveDateTime) {
+    pub fn snooze(&mut self, r: &Reminder, now: DateTime) {
         self.dismissed.insert(r.key());
-        self.snoozed.insert(r.key(), (now + Duration::minutes(SNOOZE_MINUTES), r.clone()));
+        self.snoozed.insert(r.key(), (dates::plus_seconds_dt(now, 60 * SNOOZE_MINUTES), r.clone()));
     }
 }
 
 /// A locked reminder's identity for "already shown": its note and time.
 fn shown_key(r: &Reminder) -> String {
-    format!("{}\u{1f}{}", r.path, r.at.format("%Y-%m-%d %H:%M"))
+    format!("{}\u{1f}{}", r.path, dates::fmt_naive(r.at, "%Y-%m-%d %H:%M"))
 }
 
 /// Desktop notifications are off in tests and when `QUIRE_NO_NOTIFICATIONS` is set.
@@ -168,7 +168,7 @@ fn notify_desktop(r: &Reminder, tx: Sender<Reply>, locked: bool) {
 
 /// Per-frame reminder work; true when something changed.
 pub(crate) fn tick(ws: &mut Workspace) -> bool {
-    let now = Local::now().naive_local();
+    let now = dates::now_local().datetime();
     let mut changed = false;
     let version = ws.index.version();
     let ready = !ws.index.status().busy && version > 0;
@@ -327,7 +327,7 @@ pub fn open_reminder(ws: &mut Workspace, r: &Reminder) {
 impl Workspace {
     /// Snooze a reminder for ten minutes.
     pub fn snooze_reminder(&mut self, r: &Reminder) {
-        let now = Local::now().naive_local();
+        let now = dates::now_local().datetime();
         self.features.tasks.reminders.snooze(r, now);
     }
 
@@ -343,8 +343,8 @@ mod tests {
 
     #[test]
     fn missed_then_due_then_snoozed() {
-        let soon = (Local::now() + Duration::hours(2)).naive_local().format("%Y-%m-%d %H:%M").to_string();
-        let past = (Local::now() - Duration::days(1)).naive_local().format("%Y-%m-%d %H:%M").to_string();
+        let soon = dates::fmt_naive(dates::plus_seconds_dt(dates::now_local().datetime(), 2 * 3600), "%Y-%m-%d %H:%M");
+        let past = dates::fmt_naive(dates::plus_seconds_dt(dates::now_local().datetime(), -86_400), "%Y-%m-%d %H:%M");
         let mut w = Workspace::new(crate::Settings::default());
         w.attach_vault(quire_vault::Vault::in_memory(&[(
             "T.md",
@@ -357,15 +357,15 @@ mod tests {
         assert_eq!(st.missed.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(), ["Call Bo"]);
         assert!(w.notices.iter().any(|n| n.text.contains("came due while Quire was closed")));
         // Pretend time passed: everything up to now+2min is due.
-        w.features.tasks.reminders.checked = Some(Local::now().naive_local() - Duration::minutes(2));
-        w.features.tasks.reminders.schedule[1].at = Local::now().naive_local() - Duration::minutes(1);
+        w.features.tasks.reminders.checked = Some(dates::plus_seconds_dt(dates::now_local().datetime(), -120));
+        w.features.tasks.reminders.schedule[1].at = dates::plus_seconds_dt(dates::now_local().datetime(), -60);
         assert!(tick(&mut w));
         assert_eq!(w.features.tasks.reminders.fired.len(), 1);
         assert_eq!(w.features.tasks.reminders.active().len(), 2);
         let r = w.features.tasks.reminders.fired[0].reminder.clone();
         w.snooze_reminder(&r);
         assert_eq!(w.features.tasks.reminders.active().len(), 1);
-        assert!(w.features.tasks.reminders.next_due(Local::now().naive_local()).is_some());
+        assert!(w.features.tasks.reminders.next_due(dates::now_local().datetime()).is_some());
     }
 
     /// 0.12 review M8: a locked note's reminder that was shown is not listed as "came due

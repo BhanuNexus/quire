@@ -24,7 +24,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-use chrono::{Local, NaiveDate};
+use quire_base::dates::{self, Date};
 pub use quire_markdown::linter;
 use quire_markdown::linter::{Cx, Options, Outcome};
 use quire_vault::{NotePath, Vault, VaultEvent, VaultPrefs};
@@ -134,7 +134,7 @@ fn home_titles(ix: &quire_index::Index, paths: impl Iterator<Item = NotePath>) -
     paths.filter_map(|p| Some(HomeNote { title: ix.get(&p)?.title.clone(), path: p })).collect()
 }
 
-type StatsCache = RefCell<Option<(((u64, u64), NaiveDate), HomeStats)>>;
+type StatsCache = RefCell<Option<(((u64, u64), Date), HomeStats)>>;
 type HomeCache = RefCell<Option<(HomeKey, Rc<HomeData>)>>;
 
 /// This feature's state, in [`crate::features::Features`].
@@ -191,12 +191,11 @@ pub struct LintApply {
 
 /// Today's date as `[lint.format] date-format` writes it.
 fn stamp_now(format: &str) -> String {
-    use std::fmt::Write as _;
-    let mut s = String::new();
     // A format with a line break or another control character, or one that opens
     // with `:`, could write more than a value into the front matter: not used.
-    if !Options::date_format_ok(format) || write!(s, "{}", Local::now().format(format)).is_err() || s.is_empty() {
-        s = Local::now().format("%Y-%m-%dT%H:%M").to_string();
+    let mut s = dates::format(format, &dates::local_moment(&dates::now_local())).unwrap_or_default();
+    if !Options::date_format_ok(format) || s.is_empty() {
+        s = dates::now_fmt("%Y-%m-%dT%H:%M");
     }
     s
 }
@@ -406,7 +405,7 @@ pub struct HomeData {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HomeKey {
     version: (u64, u64),
-    today: NaiveDate,
+    today: Date,
     prefs: usize,
     recent: Vec<NotePath>,
     inbox: (usize, usize, i64),
@@ -690,7 +689,7 @@ impl Workspace {
 
     /// Notes, words and open tasks; cached per notes version and day.
     /// `None` while the index worker holds the write lock (a frame never waits).
-    fn home_stats(&self, today: NaiveDate) -> Option<HomeStats> {
+    fn home_stats(&self, today: Date) -> Option<HomeStats> {
         let key = (self.notes_version(), today);
         if let Some((k, s)) = self.features.switch.stats.borrow().as_ref()
             && *k == key
@@ -719,8 +718,8 @@ impl Workspace {
 
     /// This device's word count from the first time Home was drawn today:
     /// read from its file (or written with `words_now`) once a day.
-    fn word_baseline(&self, today: NaiveDate, words_now: usize) -> usize {
-        let day = today.format("%Y-%m-%d").to_string();
+    fn word_baseline(&self, today: Date, words_now: usize) -> usize {
+        let day = dates::ymd(today);
         if let Some((d, w)) = self.features.switch.baseline.borrow().as_ref()
             && *d == day
         {
@@ -753,7 +752,7 @@ impl Workspace {
     pub fn home_data(&self) -> Rc<HomeData> {
         let prefs = self.switch_prefs();
         let cfg = &prefs.home;
-        let today = Local::now().date_naive();
+        let today = dates::today();
         // Never wait for the index worker on a frame: while it applies a batch, keep what Home showed.
         let Some(recent) = self.recent_with_active(cfg.recent.clamp(1, MAX_RECENT)) else {
             return self.features.switch.home.borrow().as_ref().map(|(_, d)| Rc::clone(d)).unwrap_or_default();
@@ -800,13 +799,13 @@ impl Workspace {
                 when,
             };
             data.overdue =
-                agenda.overdue.iter().take(MAX_TASK_ROWS).map(|i| row(i, format!("overdue since {}", i.date.format("%Y-%m-%d")))).collect();
+                agenda.overdue.iter().take(MAX_TASK_ROWS).map(|i| row(i, format!("overdue since {}", dates::ymd(i.date)))).collect();
             data.today = agenda.today.iter().take(MAX_TASK_ROWS).map(|i| row(i, "today".into())).collect();
             for b in agenda.blocks.iter().take(MAX_TASK_ROWS) {
                 data.today.push(HomeTask {
                     path: NotePath::new(&b.path),
                     text: b.task.text.clone(),
-                    when: format!("{}–{}", b.start.format("%H:%M"), b.end.format("%H:%M")),
+                    when: format!("{}–{}", dates::fmt_time(b.start, "%H:%M"), dates::fmt_time(b.end, "%H:%M")),
                 });
             }
         }

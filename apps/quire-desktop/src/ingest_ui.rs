@@ -6,6 +6,7 @@
 //!
 //! Included by `agent_panel_ui.rs`.
 
+use quire_base::dates::{self, Strftime};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
 
@@ -207,14 +208,14 @@ impl IngestDialog {
             .name("quire-ingest".into())
             .spawn(move || {
                 let actor = Actor::agent(format!("panel:{provider}"), format!("Ingest ({})", model.name()), Via::App, &device);
-                let now = chrono::Local::now();
+                let now = dates::now_local();
                 let job = quire_assistant::wiki::Ingest {
                     model: model.as_ref(),
                     agent: &agent,
                     actor: &actor,
                     source,
-                    today: now.format("%Y-%m-%d").to_string(),
-                    now: now.format("%Y-%m-%d %H:%M").to_string(),
+                    today: now.render("%Y-%m-%d"),
+                    now: now.render("%Y-%m-%d %H:%M"),
                 };
                 let tx2 = tx.clone();
                 if let Err(e) = ingest(&job, &c2, &mut |ev| {

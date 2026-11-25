@@ -12,7 +12,7 @@
 //! score    = max(hard, 0.45·s_age + 0.35·s_links + 0.20·s_terms); flagged at 0.6
 //! ```
 
-use chrono::{Datelike, NaiveDate};
+use quire_base::dates::{self, Date};
 use unicode_segmentation::UnicodeSegmentation;
 
 pub const DEFAULT_HALF_DAYS: u32 = 180;
@@ -54,14 +54,14 @@ pub struct LinkChange {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Input<'a> {
-    pub today: NaiveDate,
+    pub today: Date,
     /// The last edit by a person (agents' edits don't count).
-    pub last_edit: Option<NaiveDate>,
+    pub last_edit: Option<Date>,
     /// `reviewed:` in front matter.
-    pub reviewed: Option<NaiveDate>,
+    pub reviewed: Option<Date>,
     /// `review_every:` in front matter, or the folder's setting, in days.
     pub half_days: Option<u32>,
-    pub valid_until: Option<NaiveDate>,
+    pub valid_until: Option<Date>,
     pub superseded_by: Option<String>,
     /// The note's prose.
     pub text: &'a str,
@@ -102,8 +102,8 @@ pub fn parse_days(s: &str) -> Option<u32> {
 }
 
 /// A `YYYY-MM-DD` date (times after it are ignored).
-pub fn parse_date(s: &str) -> Option<NaiveDate> {
-    quire_base::time::parse_ymd_prefix(s.trim())
+pub fn parse_date(s: &str) -> Option<Date> {
+    dates::parse_ymd_prefix(s.trim())
 }
 
 const PHRASES: &[&str] = &[
@@ -145,7 +145,7 @@ fn phrase_count(lower: &str, p: &str) -> u32 {
 
 /// Time-bound phrases in `text` with their counts:
 /// the list above, plus a year at least a year ago in a present-tense sentence.
-pub fn time_bound(text: &str, today: NaiveDate) -> Vec<(String, u32)> {
+pub fn time_bound(text: &str, today: Date) -> Vec<(String, u32)> {
     let lower = text.to_lowercase();
     let mut out: Vec<(String, u32)> = PHRASES.iter().map(|p| ((*p).to_string(), phrase_count(&lower, p))).filter(|(_, n)| *n > 0).collect();
     let mut dated = 0;
@@ -154,7 +154,8 @@ pub fn time_bound(text: &str, today: NaiveDate) -> Vec<(String, u32)> {
         if !words.iter().any(|w| PRESENT.contains(&w.as_str())) {
             continue;
         }
-        let old_year = words.iter().any(|w| w.len() == 4 && w.parse::<i32>().is_ok_and(|y| (1900..=today.year() - 1).contains(&y)));
+        let old_year =
+            words.iter().any(|w| w.len() == 4 && w.parse::<i32>().is_ok_and(|y| (1900..=i32::from(today.year()) - 1).contains(&y)));
         if old_year {
             dated += 1;
         }
@@ -173,7 +174,7 @@ pub fn score(input: &Input<'_>) -> Score {
         (Some(a), Some(b)) => Some(a.max(b)),
         (a, b) => a.or(b),
     };
-    let age = since.map_or(0, |d| u32::try_from((input.today - d).num_days().max(0)).unwrap_or(u32::MAX));
+    let age = since.map_or(0, |d| u32::try_from(dates::days_between(d, input.today).max(0)).unwrap_or(u32::MAX));
     let half = input.half_days.filter(|h| *h > 0).unwrap_or(DEFAULT_HALF_DAYS) as f32;
     let s_age = (age as f32 / half - 1.0).clamp(0.0, 1.0);
     let link_sum: f32 =
@@ -189,7 +190,7 @@ pub fn score(input: &Input<'_>) -> Score {
         reasons.push(Reason::Superseded { by: by.clone() });
     }
     if let Some(d) = expired {
-        reasons.push(Reason::ValidUntil { date: d.format("%Y-%m-%d").to_string() });
+        reasons.push(Reason::ValidUntil { date: dates::ymd(d) });
     }
     if s_age > 0.0 {
         reasons.push(Reason::Age { days: age });
@@ -241,7 +242,7 @@ pub fn describe(r: &Reason) -> String {
 mod tests {
     use super::*;
 
-    fn d(s: &str) -> NaiveDate {
+    fn d(s: &str) -> Date {
         parse_date(s).unwrap()
     }
 

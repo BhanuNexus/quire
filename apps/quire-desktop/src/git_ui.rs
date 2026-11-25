@@ -214,7 +214,7 @@ pub(crate) fn history(ui: &mut Ui, ws: &mut Workspace, st: &mut GitUi, pal: &Pal
     }
     for e in &entries {
         let open = st.open.as_deref() == Some(e.hash.as_str());
-        let when = quire_app::chrono_fmt(e.at * 1000);
+        let when = quire_app::local_time_fmt(e.at * 1000);
         let r = ui
             .horizontal_wrapped(|ui| {
                 let r = ui.selectable_label(open, RichText::new(&e.subject).size(12.5));

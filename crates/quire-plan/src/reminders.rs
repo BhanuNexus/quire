@@ -6,7 +6,7 @@
 //! app. Reminders fire only while Quire runs; ones missed in the last week
 //! are listed once at start.
 
-use chrono::{Duration, NaiveDateTime, NaiveTime};
+use quire_base::dates::{self, DateTime};
 
 /// A reminder with only a date fires at this time.
 pub const DEFAULT_TIME: (u32, u32) = (9, 0);
@@ -16,7 +16,7 @@ pub const MISSED_DAYS: i64 = 7;
 /// One reminder: when, and which task line.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Reminder {
-    pub at: NaiveDateTime,
+    pub at: DateTime,
     pub path: String,
     /// Byte offset of the task's checkbox.
     pub offset: usize,
@@ -26,18 +26,18 @@ pub struct Reminder {
 impl Reminder {
     /// Stays the same while the task's text, note and time do (offsets move with edits).
     pub fn key(&self) -> String {
-        format!("{}\u{1f}{}\u{1f}{}", self.path, self.text, self.at.format("%Y-%m-%d %H:%M"))
+        format!("{}\u{1f}{}\u{1f}{}", self.path, self.text, dates::fmt("%Y-%m-%d %H:%M", &dates::Moment::naive(self.at)))
     }
 }
 
 /// `2026-11-30 09:00`, `2026-11-30T09:00` or `2026-11-30` (at 09:00).
-pub fn parse_at(s: &str) -> Option<NaiveDateTime> {
+pub fn parse_at(s: &str) -> Option<DateTime> {
     let s = s.trim();
-    if let Ok(t) = NaiveDateTime::parse_from_str(&s.replacen('T', " ", 1), "%Y-%m-%d %H:%M") {
+    if let Ok(t) = dates::parse_datetime(&s.replacen('T', " ", 1), "%Y-%m-%d %H:%M") {
         return Some(t);
     }
-    let d = quire_base::time::parse_ymd(s)?;
-    Some(d.and_time(NaiveTime::from_hms_opt(DEFAULT_TIME.0, DEFAULT_TIME.1, 0)?))
+    let d = dates::parse_ymd(s)?;
+    Some(d.at(i8::try_from(DEFAULT_TIME.0).ok()?, i8::try_from(DEFAULT_TIME.1).ok()?, 0, 0))
 }
 
 /// Reminders of open tasks, soonest first.
@@ -55,20 +55,20 @@ pub fn schedule<'a>(tasks: impl IntoIterator<Item = (&'a str, &'a quire_markdown
 }
 
 /// Reminders that came due in `(after, until]`.
-pub fn due_in(list: &[Reminder], after: NaiveDateTime, until: NaiveDateTime) -> Vec<&Reminder> {
+pub fn due_in(list: &[Reminder], after: DateTime, until: DateTime) -> Vec<&Reminder> {
     list.iter().filter(|r| r.at > after && r.at <= until).collect()
 }
 
 /// Reminders missed while Quire wasn't running: due before `now`, after
 /// `last_run` (if known) and within the last week.
-pub fn missed(list: &[Reminder], now: NaiveDateTime, last_run: Option<NaiveDateTime>) -> Vec<&Reminder> {
-    let floor = now - Duration::days(MISSED_DAYS);
+pub fn missed(list: &[Reminder], now: DateTime, last_run: Option<DateTime>) -> Vec<&Reminder> {
+    let floor = dates::plus_days_dt(now, -MISSED_DAYS);
     let after = last_run.map_or(floor, |l| l.max(floor));
     list.iter().filter(|r| r.at > after && r.at <= now).collect()
 }
 
 /// The next reminder strictly after `now`.
-pub fn next_after(list: &[Reminder], now: NaiveDateTime) -> Option<&Reminder> {
+pub fn next_after(list: &[Reminder], now: DateTime) -> Option<&Reminder> {
     list.iter().find(|r| r.at > now)
 }
 

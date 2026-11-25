@@ -14,7 +14,7 @@ default = []
 # A Transport that talks to quire-sync-server over HTTPS.
 http = ["dep:ureq", "quire-base/net"]
 # 0.12: transports for S3-compatible storage and WebDAV (docs/design/0.12-sync.md).
-remote = ["http", "dep:roxmltree", "dep:chrono", "dep:base64"]
+remote = ["http", "dep:roxmltree", "dep:base64"]
 # An in-process S3 and WebDAV server for tests of this crate and its users.
 mock-server = ["remote"]
 
@@ -39,7 +39,6 @@ ureq = { workspace = true, optional = true }
 # through usvg; rejects DTDs by default, so no entity expansion.
 roxmltree = { version = "0.21", optional = true }
 # SigV4 dates and the clock-skew check.
-chrono = { workspace = true, optional = true }
 # WebDAV Basic authentication.
 base64 = { workspace = true, optional = true }
 

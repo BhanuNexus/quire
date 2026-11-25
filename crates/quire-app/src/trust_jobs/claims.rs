@@ -10,6 +10,7 @@
 //! contradiction (or a strong tension) become Inbox items; an item whose
 //! claim was edited away is resolved.
 
+use quire_base::dates::{self, Date};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -64,7 +65,7 @@ fn is_raw(agent: &quire_agent::AgentStore, path: &NotePath) -> bool {
 }
 
 /// Notes marked as replaced or past their `valid_until`.
-fn retired(props: &std::collections::BTreeMap<String, Value>, today: chrono::NaiveDate) -> bool {
+fn retired(props: &std::collections::BTreeMap<String, Value>, today: Date) -> bool {
     let get = |k: &str| props.iter().find(|(key, _)| key.eq_ignore_ascii_case(k)).and_then(|(_, v)| v.as_str().map(str::to_string));
     get("superseded_by").is_some_and(|s| !s.trim().is_empty())
         || get("valid_until").and_then(|d| quire_intel::stale::parse_date(&d)).is_some_and(|d| d < today)
@@ -127,7 +128,7 @@ impl ClaimsJob {
         if model.locality() != Locality::Cloud {
             return true;
         }
-        let ok = self.cap.try_take(cap, chrono::Utc::now().timestamp_millis());
+        let ok = self.cap.try_take(cap, quire_base::time::now_ms());
         if ok {
             self.status(|s| s.requests_today += 1);
         }
@@ -252,7 +253,7 @@ impl ClaimsJob {
             })
             .collect();
         self.record_seen(cx, &p, &claims);
-        let today = chrono::Local::now().date_naive();
+        let today = dates::today();
         let excluded: HashSet<NotePath> = cx
             .index
             .read()
@@ -319,7 +320,7 @@ impl ClaimsJob {
                 let item = InboxItem::Contradiction { a: anchor_a, b: anchor_b, verdict, confidence: j.confidence, rationale: j.why };
                 if cx.agent.inbox().upsert(item).is_some() {
                     self.status(|s| s.contradictions += 1);
-                    let at = chrono::Utc::now().timestamp_millis();
+                    let at = quire_base::time::now_ms();
                     let ev = |c: &ClaimRef| Seen {
                         v: 1,
                         claim: c.id.clone(),
@@ -344,7 +345,7 @@ impl ClaimsJob {
             return;
         };
         let (added, removed) = timeline::changes(&before, claims);
-        let at = chrono::Utc::now().timestamp_millis();
+        let at = quire_base::time::now_ms();
         let mut events: Vec<Seen> = Vec::new();
         for (list, event) in [(added, Event::Added), (removed, Event::Removed)] {
             for c in list {
@@ -370,11 +371,7 @@ fn side(ix: &quire_index::Index, c: &ClaimRef) -> (String, String, String) {
     let ctx_end = src[c.span.1.min(src.len())..].find("\n\n").map_or(src.len(), |i| c.span.1 + i);
     let ctx: String = src.get(ctx_start..ctx_end).unwrap_or_default().chars().take(800).collect();
     let title = ix.get(&c.path).map_or_else(|| c.path.stem().to_string(), |r| r.title.clone());
-    let modified = ix
-        .modified(&c.path)
-        .and_then(chrono::DateTime::from_timestamp_millis)
-        .map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string())
-        .unwrap_or_default();
+    let modified = ix.modified(&c.path).and_then(|ms| dates::fmt_local_ms(ms, "%Y-%m-%d")).unwrap_or_default();
     (ctx, title, modified)
 }
 
@@ -548,7 +545,7 @@ mod tests {
         assert!(matches!(job.step(&cx), Step::Idle(_)));
         assert!(model.requests().is_empty(), "off by default");
         assert_eq!(estimate(&v, &[(NotePath::new("A.md"), "# A\nOne passage of several words here.\n".into())], "m"), (1, 1));
-        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 3).unwrap();
+        let today = dates::ymd_opt(2026, 11, 3).unwrap();
         let props = std::collections::BTreeMap::from([("superseded_by".to_string(), Value::Str("[[B]]".into()))]);
         assert!(retired(&props, today));
     }

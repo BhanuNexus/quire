@@ -14,7 +14,7 @@
 
 use std::fmt::Write as _;
 
-use chrono::{Datelike, Duration, NaiveDate, Weekday};
+use quire_base::dates::{self, Date, Weekday, from_monday, plus_days, ymd_opt};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Freq {
@@ -33,7 +33,7 @@ pub struct Rule {
     /// Days of the month; `-1` is the last day.
     pub by_month_day: Vec<i8>,
     pub by_month: Vec<u8>,
-    pub until: Option<NaiveDate>,
+    pub until: Option<Date>,
     /// Count from the completion date instead of the due date.
     pub when_done: bool,
 }
@@ -60,7 +60,10 @@ impl std::fmt::Display for RecurError {
 
 impl std::error::Error for RecurError {}
 
-const WEEKDAYS: [Weekday; 7] = [Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu, Weekday::Fri, Weekday::Sat, Weekday::Sun];
+const WEEKDAYS: [Weekday; 7] =
+    [Weekday::Monday, Weekday::Tuesday, Weekday::Wednesday, Weekday::Thursday, Weekday::Friday, Weekday::Saturday, Weekday::Sunday];
+/// RFC 5545 weekday codes, Monday first.
+const CODES: [&str; 7] = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"];
 const MONTHS: [&str; 12] =
     ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
 
@@ -147,7 +150,7 @@ fn parse_natural(text: &str) -> Result<Rule, RecurError> {
         }
         "weekend" | "weekends" if interval == 1 => {
             rule = Rule::new(Freq::Weekly);
-            rule.by_day = vec![(None, Weekday::Sat), (None, Weekday::Sun)];
+            rule.by_day = vec![(None, Weekday::Saturday), (None, Weekday::Sunday)];
         }
         w if weekday_word(w).is_some() => {
             // "every monday and thursday"
@@ -189,7 +192,7 @@ fn parse_natural(text: &str) -> Result<Rule, RecurError> {
             }
             "until" => {
                 i += 1;
-                let d = words.get(i).and_then(|w| quire_base::time::parse_ymd(w)).ok_or_else(err)?;
+                let d = words.get(i).and_then(|w| dates::parse_ymd(w)).ok_or_else(err)?;
                 rule.until = Some(d);
                 i += 1;
             }
@@ -311,13 +314,13 @@ fn parse_rrule(text: &str) -> Result<Rule, RecurError> {
                     }
                     let (n, code) = d.split_at(d.len() - 2);
                     let wd = match code {
-                        "MO" => Weekday::Mon,
-                        "TU" => Weekday::Tue,
-                        "WE" => Weekday::Wed,
-                        "TH" => Weekday::Thu,
-                        "FR" => Weekday::Fri,
-                        "SA" => Weekday::Sat,
-                        "SU" => Weekday::Sun,
+                        "MO" => Weekday::Monday,
+                        "TU" => Weekday::Tuesday,
+                        "WE" => Weekday::Wednesday,
+                        "TH" => Weekday::Thursday,
+                        "FR" => Weekday::Friday,
+                        "SA" => Weekday::Saturday,
+                        "SU" => Weekday::Sunday,
                         _ => return Err(err()),
                     };
                     let ord = if n.is_empty() {
@@ -339,7 +342,7 @@ fn parse_rrule(text: &str) -> Result<Rule, RecurError> {
                 }
             }
             "UNTIL" => {
-                let d = v.get(..8).and_then(|d| NaiveDate::parse_from_str(d, "%Y%m%d").ok()).ok_or_else(err)?;
+                let d = v.get(..8).and_then(|d| dates::parse_date(d, "%Y%m%d").ok()).ok_or_else(err)?;
                 rule.until = Some(d);
             }
             "WKST" if v == "MO" => {}
@@ -383,37 +386,51 @@ impl Rule {
             let v: Vec<String> = self
                 .by_day
                 .iter()
-                .map(|(n, d)| format!("{}{}", n.map(|n| n.to_string()).unwrap_or_default(), &d.to_string().to_ascii_uppercase()[..2]))
+                .map(|(n, d)| {
+                    format!("{}{}", n.map(|n| n.to_string()).unwrap_or_default(), CODES[usize::try_from(from_monday(*d)).unwrap_or(0)])
+                })
                 .collect();
             let _ = write!(s, ";BYDAY={}", v.join(","));
         }
         if let Some(u) = self.until {
-            let _ = write!(s, ";UNTIL={}", u.format("%Y%m%d"));
+            let _ = write!(s, ";UNTIL={}", dates::fmt("%Y%m%d", &dates::Moment::date(u)));
         }
         s
     }
 }
 
 fn days_in_month(y: i32, m: u32) -> u32 {
-    let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
-    NaiveDate::from_ymd_opt(ny, nm, 1).and_then(|d| d.pred_opt()).map_or(28, |d| d.day())
+    ymd_opt(y, m, 1).map_or(28, |d| u32::try_from(d.days_in_month()).unwrap_or(28))
+}
+
+fn year(d: Date) -> i32 {
+    i32::from(d.year())
+}
+
+fn month(d: Date) -> u32 {
+    u32::try_from(d.month()).unwrap_or(1)
+}
+
+fn day(d: Date) -> u32 {
+    u32::try_from(d.day()).unwrap_or(1)
 }
 
 /// A month day (`-1` = last) as a date, if the month has it.
-fn month_day(y: i32, m: u32, md: i8) -> Option<NaiveDate> {
+fn month_day(y: i32, m: u32, md: i8) -> Option<Date> {
     let n = days_in_month(y, m) as i32;
     let d = if md < 0 { n + 1 + i32::from(md) } else { i32::from(md) };
-    (1..=n).contains(&d).then(|| NaiveDate::from_ymd_opt(y, m, d as u32)).flatten()
+    (1..=n).contains(&d).then(|| ymd_opt(y, m, d as u32)).flatten()
 }
 
 /// Every `wd` in `from..=to`; with `ord`, only the nth (negative from the end).
-fn weekdays_in(from: NaiveDate, to: NaiveDate, ord: Option<i8>, wd: Weekday) -> Vec<NaiveDate> {
-    let shift = (7 + i64::from(wd.num_days_from_monday()) - i64::from(from.weekday().num_days_from_monday())) % 7;
+fn weekdays_in(from: Date, to: Date, ord: Option<i8>, wd: Weekday) -> Vec<Date> {
+    let shift = (7 + from_monday(wd) - from_monday(from.weekday())) % 7;
     let mut all = Vec::new();
-    let mut d = from + Duration::days(shift);
+    let mut d = plus_days(from, shift);
     while d <= to {
         all.push(d);
-        d += Duration::days(7);
+        let Some(next) = dates::add_days(d, 7) else { break };
+        d = next;
     }
     match ord {
         None => all,
@@ -423,16 +440,13 @@ fn weekdays_in(from: NaiveDate, to: NaiveDate, ord: Option<i8>, wd: Weekday) -> 
 }
 
 /// Whether `d` is the `ord`th `wd` of the month (or year, when `in_year`).
-fn is_nth(d: NaiveDate, ord: Option<i8>, wd: Weekday, in_year: bool) -> bool {
+fn is_nth(d: Date, ord: Option<i8>, wd: Weekday, in_year: bool) -> bool {
     if d.weekday() != wd {
         return false;
     }
     let Some(n) = ord else { return true };
-    let (from, to) = if in_year {
-        (NaiveDate::from_ymd_opt(d.year(), 1, 1), NaiveDate::from_ymd_opt(d.year(), 12, 31))
-    } else {
-        (NaiveDate::from_ymd_opt(d.year(), d.month(), 1), month_day(d.year(), d.month(), -1))
-    };
+    let (from, to) =
+        if in_year { (Some(d.first_of_year()), Some(d.last_of_year())) } else { (Some(d.first_of_month()), Some(d.last_of_month())) };
     let (Some(from), Some(to)) = (from, to) else { return false };
     weekdays_in(from, to, Some(n), wd).first() == Some(&d)
 }
@@ -440,9 +454,9 @@ fn is_nth(d: NaiveDate, ord: Option<i8>, wd: Weekday, in_year: bool) -> bool {
 /// Dates the rule gives in month `m` of year `y`. Weekday ordinals count
 /// within the month, or within the year for a yearly rule without months
 /// (RFC 5545 §3.3.10).
-fn in_month(rule: &Rule, base: NaiveDate, y: i32, m: u32) -> Vec<NaiveDate> {
+fn in_month(rule: &Rule, base: Date, y: i32, m: u32) -> Vec<Date> {
     let in_year = rule.freq == Freq::Yearly && rule.by_month.is_empty();
-    let (Some(first), Some(last)) = (NaiveDate::from_ymd_opt(y, m, 1), month_day(y, m, -1)) else { return Vec::new() };
+    let (Some(first), Some(last)) = (ymd_opt(y, m, 1), month_day(y, m, -1)) else { return Vec::new() };
     if !rule.by_month_day.is_empty() {
         rule.by_month_day
             .iter()
@@ -452,45 +466,45 @@ fn in_month(rule: &Rule, base: NaiveDate, y: i32, m: u32) -> Vec<NaiveDate> {
     } else if !rule.by_day.is_empty() {
         rule.by_day.iter().flat_map(|(o, w)| weekdays_in(first, last, *o, *w)).collect()
     } else {
-        NaiveDate::from_ymd_opt(y, m, base.day()).into_iter().collect()
+        ymd_opt(y, m, day(base)).into_iter().collect()
     }
 }
 
 /// Dates the rule gives in the period that starts at `start`.
-fn period_dates(rule: &Rule, base: NaiveDate, start: NaiveDate) -> Vec<NaiveDate> {
-    let month_ok = |d: &NaiveDate| rule.by_month.is_empty() || rule.by_month.contains(&(d.month() as u8));
-    let mut v: Vec<NaiveDate> = match rule.freq {
+fn period_dates(rule: &Rule, base: Date, start: Date) -> Vec<Date> {
+    let month_ok = |d: &Date| rule.by_month.is_empty() || rule.by_month.contains(&(d.month() as u8));
+    let mut v: Vec<Date> = match rule.freq {
         Freq::Daily => {
             let d = start;
             let ok = month_ok(&d)
-                && (rule.by_month_day.is_empty() || rule.by_month_day.iter().any(|md| month_day(d.year(), d.month(), *md) == Some(d)))
+                && (rule.by_month_day.is_empty() || rule.by_month_day.iter().any(|md| month_day(year(d), month(d), *md) == Some(d)))
                 && (rule.by_day.is_empty() || rule.by_day.iter().any(|(_, w)| *w == d.weekday()));
             if ok { vec![d] } else { Vec::new() }
         }
         Freq::Weekly => {
             let days: Vec<Weekday> = if rule.by_day.is_empty() { vec![base.weekday()] } else { rule.by_day.iter().map(|d| d.1).collect() };
-            (0..7).map(|k| start + Duration::days(k)).filter(|d| days.contains(&d.weekday()) && month_ok(d)).collect()
+            (0..7).map(|k| plus_days(start, k)).filter(|d| days.contains(&d.weekday()) && month_ok(d)).collect()
         }
         Freq::Monthly => {
             if month_ok(&start) {
-                in_month(rule, base, start.year(), start.month())
+                in_month(rule, base, year(start), month(start))
             } else {
                 Vec::new()
             }
         }
         Freq::Yearly => {
-            let y = start.year();
+            let y = year(start);
             if !rule.by_month.is_empty() {
                 rule.by_month.iter().flat_map(|m| in_month(rule, base, y, u32::from(*m))).collect()
             } else if !rule.by_month_day.is_empty() {
                 (1..=12).flat_map(|m| in_month(rule, base, y, m)).collect()
             } else if !rule.by_day.is_empty() {
-                let (Some(from), Some(to)) = (NaiveDate::from_ymd_opt(y, 1, 1), NaiveDate::from_ymd_opt(y, 12, 31)) else {
+                let (Some(from), Some(to)) = (ymd_opt(y, 1, 1), ymd_opt(y, 12, 31)) else {
                     return Vec::new();
                 };
                 rule.by_day.iter().flat_map(|(o, w)| weekdays_in(from, to, *o, *w)).collect()
             } else {
-                NaiveDate::from_ymd_opt(y, base.month(), base.day()).into_iter().collect()
+                ymd_opt(y, month(base), day(base)).into_iter().collect()
             }
         }
     };
@@ -500,25 +514,25 @@ fn period_dates(rule: &Rule, base: NaiveDate, start: NaiveDate) -> Vec<NaiveDate
 }
 
 /// The start of the `k`th period after the base's own.
-fn period_start(rule: &Rule, base: NaiveDate, k: i64) -> Option<NaiveDate> {
+fn period_start(rule: &Rule, base: Date, k: i64) -> Option<Date> {
     let step = k * i64::from(rule.interval);
     match rule.freq {
-        Freq::Daily => base.checked_add_signed(Duration::days(step)),
+        Freq::Daily => dates::add_days(base, step),
         Freq::Weekly => {
-            let monday = base - Duration::days(i64::from(base.weekday().num_days_from_monday()));
-            monday.checked_add_signed(Duration::weeks(step))
+            let monday = dates::add_days(base, -from_monday(base.weekday()))?;
+            dates::add_days(monday, step.checked_mul(7)?)
         }
         Freq::Monthly => {
-            let months = i64::from(base.year()) * 12 + i64::from(base.month0()) + step;
-            NaiveDate::from_ymd_opt(i32::try_from(months.div_euclid(12)).ok()?, months.rem_euclid(12) as u32 + 1, 1)
+            let months = i64::from(base.year()) * 12 + i64::from(base.month() - 1) + step;
+            ymd_opt(i32::try_from(months.div_euclid(12)).ok()?, months.rem_euclid(12) as u32 + 1, 1)
         }
-        Freq::Yearly => NaiveDate::from_ymd_opt(i32::try_from(i64::from(base.year()) + step).ok()?, 1, 1),
+        Freq::Yearly => ymd_opt(i32::try_from(i64::from(base.year()) + step).ok()?, 1, 1),
     }
 }
 
 /// The first date the rule produces strictly after `base`; `None` when the
 /// rule has ended or produces nothing in 1,000 periods.
-pub fn next_occurrence(rule: &Rule, base: NaiveDate) -> Option<NaiveDate> {
+pub fn next_occurrence(rule: &Rule, base: Date) -> Option<Date> {
     for k in 0..1000 {
         let start = period_start(rule, base, k)?;
         if rule.until.is_some_and(|u| start > u) {
@@ -532,7 +546,7 @@ pub fn next_occurrence(rule: &Rule, base: NaiveDate) -> Option<NaiveDate> {
 }
 
 /// A hint for rules that skip months ("every month" from the 31st).
-pub fn hint(rule: &Rule, base: NaiveDate) -> Option<&'static str> {
+pub fn hint(rule: &Rule, base: Date) -> Option<&'static str> {
     (rule.freq == Freq::Monthly && rule.by_month_day.is_empty() && rule.by_day.is_empty() && base.day() > 28)
         .then_some("Months without this day are skipped; “every month on the last day” repeats at each month's end.")
 }
@@ -541,8 +555,8 @@ pub fn hint(rule: &Rule, base: NaiveDate) -> Option<&'static str> {
 mod tests {
     use super::*;
 
-    fn d(s: &str) -> NaiveDate {
-        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    fn d(s: &str) -> Date {
+        dates::parse_ymd(s).unwrap()
     }
 
     fn next(rule: &str, base: &str) -> Option<String> {
@@ -592,7 +606,7 @@ mod tests {
         assert_eq!(next_occurrence(&r, d("2009-08-25")), Some(d("2009-08-28")));
         assert_eq!(next_occurrence(&r, d("2009-12-19")), Some(d("2009-12-23")));
         let r = parse("every month on the 2nd Wednesday").map(|mut r| {
-            r.by_day.push((None, Weekday::Fri));
+            r.by_day.push((None, Weekday::Friday));
             r
         });
         assert_eq!(next_occurrence(&r.unwrap(), d("2026-11-06")), Some(d("2026-11-11")));
@@ -611,7 +625,7 @@ mod tests {
         let r = parse("RRULE:FREQ=MONTHLY;INTERVAL=2;BYDAY=-1FR;UNTIL=20271231T000000Z").unwrap();
         assert_eq!(
             (r.freq, r.interval, r.by_day.clone(), r.until),
-            (Freq::Monthly, 2, vec![(Some(-1), Weekday::Fri)], Some(d("2027-12-31")))
+            (Freq::Monthly, 2, vec![(Some(-1), Weekday::Friday)], Some(d("2027-12-31")))
         );
         assert_eq!(r.to_rrule(), "RRULE:FREQ=MONTHLY;INTERVAL=2;BYDAY=-1FR;UNTIL=20271231");
         assert_eq!(parse(&r.to_rrule()).unwrap(), r);
@@ -623,7 +637,10 @@ mod tests {
     /// The oracle: `rrule` (dev-dependency) agrees on 10,000 random rules.
     #[test]
     fn matches_rrule_on_random_rules() {
+        use chrono::Datelike as _;
         use rrule::{RRuleSet, Tz};
+        let to_date = |d: Date| chrono::NaiveDate::from_ymd_opt(year(d), month(d), day(d)).unwrap();
+        let from_date = |d: chrono::NaiveDate| ymd_opt(d.year(), d.month(), d.day()).unwrap();
         let mut seed = 0x2545_f491_4f6c_dd1d_u64;
         let mut rnd = |n: u64| {
             seed ^= seed << 13;
@@ -664,26 +681,27 @@ mod tests {
                     }
                 }
             }
-            let base = NaiveDate::from_ymd_opt(1995 + rnd(60) as i32, 1, 1).unwrap() + Duration::days(rnd(366) as i64);
+            let base = plus_days(ymd_opt(1995 + rnd(60) as i32, 1, 1).unwrap(), rnd(366) as i64);
             if rnd(5) == 0 {
-                r.until = Some(base + Duration::days(rnd(800) as i64));
+                r.until = Some(plus_days(base, rnd(800) as i64));
             }
             let ours = next_occurrence(&r, base);
             let mut rr = r.to_rrule();
             if let Some(u) = r.until {
-                rr = rr.replace(&format!("UNTIL={}", u.format("%Y%m%d")), &format!("UNTIL={}T000000Z", u.format("%Y%m%d")));
+                let u = dates::fmt("%Y%m%d", &dates::Moment::date(u));
+                rr = rr.replace(&format!("UNTIL={u}"), &format!("UNTIL={u}T000000Z"));
             }
-            let text = format!("DTSTART:{}T000000Z\n{rr}", base.format("%Y%m%d"));
+            let text = format!("DTSTART:{}T000000Z\n{rr}", dates::fmt("%Y%m%d", &dates::Moment::date(base)));
             let set: RRuleSet = text.parse().unwrap_or_else(|e| panic!("{text}: {e}"));
-            let after = chrono::TimeZone::from_utc_datetime(&Tz::UTC, &(base + Duration::days(1)).and_hms_opt(0, 0, 0).unwrap());
+            let after = chrono::TimeZone::from_utc_datetime(&Tz::UTC, &to_date(plus_days(base, 1)).and_hms_opt(0, 0, 0).unwrap());
             // Our search stops after 1,000 periods; look no further than that.
-            let horizon =
-                period_start(&r, base, 1000).map(|h| chrono::TimeZone::from_utc_datetime(&Tz::UTC, &h.and_hms_opt(0, 0, 0).unwrap()));
+            let horizon = period_start(&r, base, 1000)
+                .map(|h| chrono::TimeZone::from_utc_datetime(&Tz::UTC, &to_date(h).and_hms_opt(0, 0, 0).unwrap()));
             let mut set = set.after(after);
             if let Some(h) = horizon {
                 set = set.before(h);
             }
-            let theirs = set.all(1).dates.first().map(chrono::DateTime::date_naive);
+            let theirs = set.all(1).dates.first().map(|t| from_date(t.date_naive()));
             assert_eq!(ours, theirs, "{} from {base}", text.replace('\n', " "));
             if ours.is_some() {
                 compared += 1;

@@ -5,6 +5,7 @@
 //! * `quire-cli ai models | download <id> | install <file>… | delete <id> | engine`
 //! * `quire-cli ingest <vault> <source|url> [--yes] [--dry-run]`
 
+use quire_base::dates;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -229,14 +230,14 @@ fn run_ingest(args: &[String]) -> Result<(), String> {
             return Err("cancelled".into());
         }
     }
-    let now = chrono::Local::now();
+    let now = dates::now_local();
     let job = Ingest {
         model: model.as_ref(),
         agent: &agent,
         actor: &actor,
         source: path,
-        today: now.format("%Y-%m-%d").to_string(),
-        now: now.format("%Y-%m-%d %H:%M").to_string(),
+        today: dates::fmt_zoned(&now, "%Y-%m-%d"),
+        now: dates::fmt_zoned(&now, "%Y-%m-%d %H:%M"),
     };
     let report = ingest(&job, &CancelFlag::new(), &mut |e| {
         if let IngestEvent::Step(s) = e {

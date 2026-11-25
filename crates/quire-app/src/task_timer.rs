@@ -15,7 +15,7 @@
 
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Datelike, FixedOffset, Local, NaiveDate};
+use quire_base::dates::{self, Date, TimeZone, Zoned};
 use quire_markdown::Value;
 use quire_plan::task_note::{self, NewTask, TaskPrefs};
 use quire_plan::time::{self, TimeEntry, WeekReport};
@@ -91,8 +91,8 @@ pub fn prefs(vault: &quire_vault::Vault) -> TaskPrefs {
 }
 
 /// Now, in the local offset.
-pub fn now() -> DateTime<FixedOffset> {
-    Local::now().fixed_offset()
+pub fn now() -> Zoned {
+    dates::now_local()
 }
 
 /// The timer file's modification time (`None` when there is none).
@@ -159,8 +159,8 @@ impl TimerState {
 }
 
 /// The weekday's Monday.
-pub fn monday_of(d: NaiveDate) -> NaiveDate {
-    d - chrono::Duration::days(i64::from(d.weekday().num_days_from_monday()))
+pub fn monday_of(d: Date) -> Date {
+    dates::plus_days(d, -dates::from_monday(d.weekday()))
 }
 
 impl Workspace {
@@ -329,7 +329,7 @@ impl Workspace {
         if let Some(r) = self.timer().filter(|r| r.unlogged.is_some()) {
             let msg = format!(
                 "A session ({}) on “{}” isn't logged yet: log it to a task or discard it first",
-                time::format_duration(r.clock_seconds(now(), &self.task_prefs().pomodoro).div_euclid(60).try_into().unwrap_or(0)),
+                time::format_duration(r.clock_seconds(&now(), &self.task_prefs().pomodoro).div_euclid(60).try_into().unwrap_or(0)),
                 r.task.title
             );
             self.notify(NoticeLevel::Warn, msg);
@@ -337,7 +337,7 @@ impl Workspace {
         }
         let Some(root) = self.vault_root().map(|p| p.to_string_lossy().into_owned()) else { return false };
         let title = task.title.clone();
-        let new = Running::new(root, task, now(), pomodoro);
+        let new = Running::new(root, task, &now(), pomodoro);
         let before = self.features.tasks.timer.running.clone();
         if let Err(e) = self.features.tasks.timer.swap(before.as_ref(), Some(&new)) {
             self.notify(NoticeLevel::Error, e);
@@ -367,7 +367,7 @@ impl Workspace {
 
     /// Log the running (or unlogged) session `r` to `task`, then clear it.
     fn log_session(&mut self, r: &Running, task: &TaskRef) -> Option<u32> {
-        let Some(entry) = r.stop(now()) else {
+        let Some(entry) = r.stop(&now()) else {
             // A pomodoro break: nothing to log.
             if let Err(e) = self.features.tasks.timer.swap(Some(r), None) {
                 self.notify(NoticeLevel::Warn, e);
@@ -376,8 +376,8 @@ impl Workspace {
             }
             return Some(0);
         };
-        let minutes = entry.minutes(now());
-        if entry.seconds(now()) < MIN_SECONDS && r.unlogged.is_none() {
+        let minutes = entry.minutes(&now());
+        if entry.seconds(&now()) < MIN_SECONDS && r.unlogged.is_none() {
             if let Err(e) = self.features.tasks.timer.swap(Some(r), None) {
                 self.notify(NoticeLevel::Warn, e);
                 self.timer_load();
@@ -387,7 +387,7 @@ impl Workspace {
             return Some(0);
         }
         // A timer left running over a weekend: ask before logging it all (0.11 review L12).
-        if r.unlogged.is_none() && entry.seconds(now()) > LONG_SECONDS {
+        if r.unlogged.is_none() && entry.seconds(&now()) > LONG_SECONDS {
             let why = format!("it ran {}; was it left running? “Try again” logs it all", time::format_duration(minutes));
             self.keep_unlogged(r, &entry, &why);
             return None;
@@ -417,7 +417,7 @@ impl Workspace {
         let mut kept = r.clone();
         kept.keep_unlogged(entry);
         let saved = self.features.tasks.timer.swap(Some(r), Some(&kept));
-        let minutes = time::format_duration(entry.minutes(now()));
+        let minutes = time::format_duration(entry.minutes(&now()));
         let msg = match saved {
             Ok(()) => format!(
                 "Couldn't log {minutes} to “{}”: {why}. The session is kept: put the caret on a task (or use “Log here” on one) to log it there, or discard it",
@@ -518,7 +518,7 @@ impl Workspace {
     pub fn timer_clock(&self) -> Option<(i64, Option<Phase>)> {
         let r = self.timer()?;
         let prefs = self.task_prefs().pomodoro;
-        Some((r.clock_seconds(now(), &prefs), r.pomodoro.as_ref().map(|p| p.phase)))
+        Some((r.clock_seconds(&now(), &prefs), r.pomodoro.as_ref().map(|p| p.phase)))
     }
 
     /// Move a pomodoro on; record finished work and say what's next.
@@ -534,7 +534,7 @@ impl Workspace {
         // this read the vault's prefs file every frame.
         let prefs = self.task_prefs().pomodoro;
         let mut r = before.clone();
-        let Some(t) = r.advance(now(), &prefs) else { return reread };
+        let Some(t) = r.advance(&now(), &prefs) else { return reread };
         let Transition { finished, next, record, stopped } = t;
         // The entry first, then the timer file.
         if let Some(e) = &record
@@ -593,7 +593,7 @@ impl Workspace {
             t.title = path.stem().to_string();
         }
         if t.created.is_none() {
-            t.created = Some(Local::now().format("%Y-%m-%d").to_string());
+            t.created = Some(dates::today_ymd());
         }
         let text = task_note::new_note(&t, &prefs, "");
         if open {
@@ -628,7 +628,7 @@ impl Workspace {
     pub fn toggle_task_note(&mut self, path: &NotePath) -> bool {
         let Some(src) = self.note_text_now(path) else { return false };
         let props = quire_markdown::frontmatter::parse(&src).map(|f| f.fields).unwrap_or_default();
-        let changes = task_note::toggle_changes(&props, &self.task_prefs(), Local::now().date_naive());
+        let changes = task_note::toggle_changes(&props, &self.task_prefs(), dates::today());
         self.apply_property_changes(path, &src, &changes)
     }
 
@@ -664,7 +664,7 @@ impl Workspace {
     /// Every task note, read with the vault's prefs: (path, note).
     pub fn task_notes(&self) -> Vec<(NotePath, task_note::TaskNote)> {
         let prefs = self.task_prefs();
-        let offset = *Local::now().offset();
+        let offset = dates::now_local().offset().seconds();
         // 0.12: with the task notes of unlocked folders (memory only).
         let mut v: Vec<(NotePath, task_note::TaskNote)> = self.with_notes(|ix| {
             ix.records().filter_map(|r| task_note::read(&r.properties, &r.title, &prefs, offset).map(|n| (r.path.clone(), n))).collect()
@@ -685,11 +685,11 @@ impl Workspace {
     }
 
     /// Time per task note and day in the week holding `day`.
-    pub fn week_report(&self, day: NaiveDate) -> WeekReport {
+    pub fn week_report(&self, day: Date) -> WeekReport {
         let notes = self.task_notes();
         let items: Vec<(String, String, Vec<TimeEntry>)> =
             notes.into_iter().map(|(p, n)| (p.as_str().to_string(), n.task.text.clone(), n.entries)).collect();
-        time::week_report(items.iter().map(|(p, t, e)| (p.as_str(), t.as_str(), e.as_slice())), monday_of(day), now(), &Local)
+        time::week_report(items.iter().map(|(p, t, e)| (p.as_str(), t.as_str(), e.as_slice())), monday_of(day), &now(), &TimeZone::system())
     }
 }
 
@@ -702,6 +702,11 @@ fn same_folder(a: &str, b: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `minutes` ago, in the local zone.
+    fn ago(minutes: i64) -> Zoned {
+        dates::plus_seconds(&now(), -60 * minutes).unwrap()
+    }
 
     fn ws_in(dir: &Path, files: &[(&str, &str)]) -> Workspace {
         for (p, t) in files {
@@ -728,7 +733,7 @@ mod tests {
         // Pretend it started 25 minutes ago.
         let file = dir.path().join("config").join(TIMER_FILE);
         let mut r = load_running(&file).unwrap().unwrap();
-        r.started = time::format_instant(now() - chrono::Duration::minutes(25));
+        r.started = time::format_instant(&ago(25));
         save_running(&file, Some(&r)).unwrap();
         drop(a);
         // A new workspace (the app restarted) finds it.
@@ -742,10 +747,10 @@ mod tests {
         let text = std::fs::read_to_string(dir.path().join("vault/Tasks/Write report.md")).unwrap();
         assert!(text.starts_with("---\ntype: task\nstatus: doing\ntime_entries:\n  - start: "), "{text}");
         let props = quire_markdown::frontmatter::parse(&text).unwrap().fields;
-        let n = task_note::read(&props, "x", &TaskPrefs::default(), *Local::now().offset()).unwrap();
-        assert_eq!(n.spent(now()), 25);
+        let n = task_note::read(&props, "x", &TaskPrefs::default(), dates::now_local().offset().seconds()).unwrap();
+        assert_eq!(n.spent(&now()), 25);
         // A timer from another vault is left alone.
-        let other = Running::new("/somewhere/else".into(), TaskRef::note("A.md", "A"), now(), false);
+        let other = Running::new("/somewhere/else".into(), TaskRef::note("A.md", "A"), &now(), false);
         save_running(&file, Some(&other)).unwrap();
         let mut c = ws_in(dir.path(), &[]);
         c.timer_load();
@@ -768,7 +773,7 @@ mod tests {
         w.jump_to_byte(10);
         let t = w.task_at_caret().unwrap();
         assert_eq!(t.line.as_deref(), Some("Call Bo"));
-        let e = time::session(now() - chrono::Duration::minutes(20), now());
+        let e = time::session(ago(20), now());
         assert_eq!(w.record_time(&t, &e), Ok(()));
         assert!(w.active_doc().unwrap().text().contains("- [ ] Call Bo [time:: 30m]"));
         // 0.11 loose end: the write didn't move the caret to the next line (it stays on the task's line).
@@ -778,7 +783,7 @@ mod tests {
         // (Started 26 minutes ago, in the timer file the app reads.)
         let file = dir.path().join("config").join(TIMER_FILE);
         let mut st = load_running(&file).unwrap().unwrap();
-        let earlier = time::format_instant(now() - chrono::Duration::minutes(26));
+        let earlier = time::format_instant(&ago(26));
         st.started.clone_from(&earlier);
         st.pomodoro.as_mut().unwrap().phase_started = earlier;
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -804,9 +809,10 @@ mod tests {
         let gym_note = w.task_notes().into_iter().find(|(path, _)| path.as_str() == "Tasks/Gym.md").unwrap().1;
         assert_eq!(gym_note.entries.len(), 1);
         let entry = &gym_note.entries[0];
-        let (first, last) = (entry.start.with_timezone(&Local).date_naive(), entry.end.unwrap().with_timezone(&Local).date_naive());
-        let gym = |day: NaiveDate| w.week_report(day).rows.iter().filter(|x| x.title == "Gym").map(|x| x.total).sum::<u32>();
-        if first.iso_week() == last.iso_week() {
+        let (first, last) =
+            (entry.start.with_time_zone(TimeZone::system()).date(), entry.end.clone().unwrap().with_time_zone(TimeZone::system()).date());
+        let gym = |day: Date| w.week_report(day).rows.iter().filter(|x| x.title == "Gym").map(|x| x.total).sum::<u32>();
+        if first.iso_week_date().week() == last.iso_week_date().week() && first.iso_week_date().year() == last.iso_week_date().year() {
             assert_eq!(gym(first), 25);
         } else {
             let total = gym(first) + gym(last);
@@ -819,7 +825,7 @@ mod tests {
     fn started_ago(file: &Path, minutes: i64) {
         std::thread::sleep(std::time::Duration::from_millis(20));
         let mut r = load_running(file).unwrap().unwrap();
-        r.started = time::format_instant(now() - chrono::Duration::minutes(minutes));
+        r.started = time::format_instant(&ago(minutes));
         save_running(file, Some(&r)).unwrap();
     }
 
@@ -891,7 +897,7 @@ mod tests {
         // The CLI stopped it (logged A) and started B.
         std::thread::sleep(std::time::Duration::from_millis(20));
         let root = w.vault_root().unwrap().to_string_lossy().into_owned();
-        let b = Running::new(root, TaskRef::note("Tasks/B.md", "B"), now() - chrono::Duration::minutes(3), false);
+        let b = Running::new(root, TaskRef::note("Tasks/B.md", "B"), &ago(3), false);
         save_running(&file, Some(&b)).unwrap();
         // Stopping in the app stops B (what the file says), not A again.
         assert_eq!(w.stop_timer(), Some(3));

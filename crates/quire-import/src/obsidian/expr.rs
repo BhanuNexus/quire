@@ -14,9 +14,8 @@
 //! The note a row stands for is a [`Row`]; the app supplies it.
 
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
 
-use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
+use quire_base::dates::{self, DateTime, Time};
 
 /// A value in an expression.
 #[derive(Debug, Clone, PartialEq)]
@@ -26,7 +25,7 @@ pub enum Val {
     Num(f64),
     Str(String),
     /// A date, and whether it has a time of day.
-    Date(NaiveDateTime, bool),
+    Date(DateTime, bool),
     /// Milliseconds.
     Dur(i64),
     List(Vec<Self>),
@@ -48,7 +47,7 @@ pub trait Row {
 /// Where "now" is, so results are the same for every row of a table.
 #[derive(Debug, Clone, Copy)]
 pub struct Clock {
-    pub now: NaiveDateTime,
+    pub now: DateTime,
 }
 
 /// An expression's error, shown in the cell.
@@ -407,22 +406,22 @@ pub fn infer(s: &str) -> Val {
     }
 }
 
-fn parse_date(s: &str) -> Option<(NaiveDateTime, bool)> {
+fn parse_date(s: &str) -> Option<(DateTime, bool)> {
     let s = s.trim();
     if s.len() < 10 {
         return None;
     }
     let norm = s.replacen('T', " ", 1);
     for f in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"] {
-        if let Ok(d) = NaiveDateTime::parse_from_str(norm.get(..19.min(norm.len())).unwrap_or(&norm), f) {
+        if let Ok(d) = dates::parse_datetime(norm.get(..19.min(norm.len())).unwrap_or(&norm), f) {
             return Some((d, true));
         }
-        if let Ok(d) = NaiveDateTime::parse_from_str(&norm, f) {
+        if let Ok(d) = dates::parse_datetime(&norm, f) {
             return Some((d, true));
         }
     }
-    let d = NaiveDate::parse_from_str(s.get(..10)?, "%Y-%m-%d").ok()?;
-    (s.len() == 10).then(|| (d.and_time(NaiveTime::MIN), false))
+    let d = dates::parse_date(s.get(..10)?, "%Y-%m-%d").ok()?;
+    (s.len() == 10).then(|| (d.to_datetime(Time::midnight()), false))
 }
 
 /// `"7d"`, `"1 week"`, `"2h 30m"` as milliseconds; months and years count
@@ -462,7 +461,7 @@ fn parse_duration(s: &str) -> Option<i64> {
 }
 
 /// Add a duration to a date. Whole months and years move by the calendar.
-fn shift(d: NaiveDateTime, text: Option<&str>, ms: i64) -> NaiveDateTime {
+fn shift(d: DateTime, text: Option<&str>, ms: i64) -> DateTime {
     if let Some(t) = text {
         let t = t.trim();
         let (sign, body) = t.strip_prefix('-').map_or((1, t), |r| (-1, r.trim_start()));
@@ -474,16 +473,16 @@ fn shift(d: NaiveDateTime, text: Option<&str>, ms: i64) -> NaiveDateTime {
                 _ => None,
             };
             if let Some(m) = months {
-                let total = d.year() * 12 + d.month0() as i32 + sign * m;
+                let total = i32::from(d.year()) * 12 + i32::from(d.month() - 1) + sign * m;
                 let (y, mo) = (total.div_euclid(12), total.rem_euclid(12) as u32 + 1);
-                let last = (28..=31).rev().find(|day| NaiveDate::from_ymd_opt(y, mo, *day).is_some()).unwrap_or(28);
-                if let Some(day) = NaiveDate::from_ymd_opt(y, mo, d.day().min(last)) {
-                    return day.and_time(d.time());
+                let last = (28..=31).rev().find(|day| dates::ymd_opt(y, mo, *day).is_some()).unwrap_or(28);
+                if let Some(day) = dates::ymd_opt(y, mo, (d.day() as u32).min(last)) {
+                    return day.to_datetime(d.time());
                 }
             }
         }
     }
-    d + Duration::milliseconds(ms)
+    dates::Span::new().try_milliseconds(ms).ok().and_then(|s| d.checked_add(s).ok()).unwrap_or(d)
 }
 
 impl Val {
@@ -520,7 +519,7 @@ impl Val {
         }
     }
 
-    fn date(&self) -> Option<(NaiveDateTime, bool)> {
+    fn date(&self) -> Option<(DateTime, bool)> {
         match self {
             Self::Date(d, t) => Some((*d, *t)),
             Self::Str(s) => parse_date(s),
@@ -535,8 +534,8 @@ impl Val {
             Self::Bool(b) => b.to_string(),
             Self::Num(n) => fmt_num(*n),
             Self::Str(s) => s.clone(),
-            Self::Date(d, true) => d.format("%Y-%m-%d %H:%M").to_string(),
-            Self::Date(d, false) => d.format("%Y-%m-%d").to_string(),
+            Self::Date(d, true) => dates::fmt_naive(*d, "%Y-%m-%d %H:%M"),
+            Self::Date(d, false) => dates::fmt_naive(*d, "%Y-%m-%d"),
             Self::Dur(ms) => fmt_duration(*ms),
             Self::List(l) => l.iter().map(Self::show).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(", "),
         }
@@ -570,7 +569,7 @@ fn fmt_duration(ms: i64) -> String {
 }
 
 /// Moment.js-style tokens (`YYYY-MM-DD HH:mm`) for a date.
-fn format_date(d: NaiveDateTime, fmt: &str) -> String {
+fn format_date(d: DateTime, fmt: &str) -> String {
     const TOKENS: [(&str, &str); 16] = [
         ("YYYY", "%Y"),
         ("MMMM", "%B"),
@@ -614,13 +613,17 @@ fn format_date(d: NaiveDateTime, fmt: &str) -> String {
         }
         rest = &rest[c.len_utf8()..];
     }
-    let mut s = String::new();
-    let _ = write!(s, "{}", d.format(&out));
-    s
+    // A pattern that can't be written gives nothing, as chrono's did.
+    dates::fmt_naive(d, &out)
 }
 
-fn relative(d: NaiveDateTime, now: NaiveDateTime) -> String {
-    let secs = (now - d).num_seconds();
+/// Milliseconds from `a` to `b` (chrono's `(b - a).num_milliseconds()`).
+fn ms_between(a: DateTime, b: DateTime) -> i64 {
+    dates::ms_at_offset(b, 0).unwrap_or(0) - dates::ms_at_offset(a, 0).unwrap_or(0)
+}
+
+fn relative(d: DateTime, now: DateTime) -> String {
+    let secs = (dates::ms_at_offset(now, 0).unwrap_or(0) - dates::ms_at_offset(d, 0).unwrap_or(0)) / 1000;
     let (n, past) = (secs.abs(), secs >= 0);
     let text = match n {
         0..45 => return "just now".into(),
@@ -881,7 +884,7 @@ impl Eval<'_> {
         let now = self.clock.now;
         match name {
             "now" => Ok(Val::Date(now, true)),
-            "today" => Ok(Val::Date(now.date().and_time(NaiveTime::MIN), false)),
+            "today" => Ok(Val::Date(now.date().to_datetime(Time::midnight()), false)),
             "date" => {
                 let a = v.first().ok_or("date() needs a date")?;
                 a.date().map(|(d, t)| Val::Date(d, t)).ok_or_else(|| format!("“{}” isn't a date", a.show()))
@@ -893,7 +896,7 @@ impl Eval<'_> {
             "number" => {
                 let a = v.first().cloned().unwrap_or(Val::Null);
                 Ok(match a {
-                    Val::Date(d, _) => Val::Num(d.and_utc().timestamp_millis() as f64),
+                    Val::Date(d, _) => Val::Num(dates::ms_at_offset(d, 0).unwrap_or(0) as f64),
                     a => a.num().map_or(Val::Null, Val::Num),
                 })
             }
@@ -927,7 +930,7 @@ fn field(v: &Val, f: &str) -> Result<Val, Error> {
             "hour" => Val::Num(f64::from(d.hour())),
             "minute" => Val::Num(f64::from(d.minute())),
             "second" => Val::Num(f64::from(d.second())),
-            "millisecond" => Val::Num(f64::from(d.and_utc().timestamp_subsec_millis())),
+            "millisecond" => Val::Num(f64::from(d.subsec_nanosecond() / 1_000_000)),
             _ => return Err(unsupported(&format!("date.{f}"))),
         },
         (Val::Dur(ms), _) => {
@@ -946,7 +949,7 @@ fn field(v: &Val, f: &str) -> Result<Val, Error> {
     })
 }
 
-fn add_dur(d: NaiveDateTime, t: bool, r: &Val, neg: bool) -> Option<Val> {
+fn add_dur(d: DateTime, t: bool, r: &Val, neg: bool) -> Option<Val> {
     let (ms, text) = match r {
         Val::Dur(ms) => (*ms, None),
         Val::Str(s) => (parse_duration(s)?, Some(s.as_str())),
@@ -954,7 +957,7 @@ fn add_dur(d: NaiveDateTime, t: bool, r: &Val, neg: bool) -> Option<Val> {
     };
     let text = text.map(|s| if neg { format!("-{s}") } else { s.to_string() });
     let moved = shift(d, text.as_deref(), if neg { -ms } else { ms });
-    Some(Val::Date(moved, t || moved.time() != NaiveTime::MIN))
+    Some(Val::Date(moved, t || moved.time() != Time::midnight()))
 }
 
 fn binary(l: &Val, op: &str, r: &Val) -> Result<Val, Error> {
@@ -978,7 +981,7 @@ fn binary(l: &Val, op: &str, r: &Val) -> Result<Val, Error> {
         (Val::Null, _, _) | (_, _, Val::Null) => Ok(Val::Null),
         (Val::Date(d, t), "+" | "-", r) if !matches!(r, Val::Date(..)) => add_dur(*d, *t, r, op == "-")
             .ok_or_else(|| format!("can't {} a {} and a date", if op == "+" { "add" } else { "subtract" }, r.type_name())),
-        (Val::Date(a, _), "-", Val::Date(b, _)) => Ok(Val::Dur((*a - *b).num_milliseconds())),
+        (Val::Date(a, _), "-", Val::Date(b, _)) => Ok(Val::Dur(ms_between(*b, *a))),
         (Val::Dur(a), "+", Val::Dur(b)) => Ok(Val::Dur(a + b)),
         (Val::Dur(a), "-", Val::Dur(b)) => Ok(Val::Dur(a - b)),
         (Val::Dur(a), "*" | "/", Val::Num(n)) => Ok(Val::Dur(if op == "*" { (*a as f64 * n) as i64 } else { (*a as f64 / n) as i64 })),
@@ -1129,8 +1132,8 @@ fn method(v: &Val, name: &str, args: &[Val], clock: Clock) -> Result<Val, Error>
             _ => return Err(unsupported(&format!("{name}()"))),
         }),
         Val::Date(d, _) => Ok(match name {
-            "date" => Val::Date(d.date().and_time(NaiveTime::MIN), false),
-            "time" => Val::Str(d.format("%H:%M:%S").to_string()),
+            "date" => Val::Date(d.date().to_datetime(Time::midnight()), false),
+            "time" => Val::Str(dates::fmt_naive(*d, "%H:%M:%S")),
             "format" => Val::Str(format_date(*d, &if args.is_empty() { "YYYY-MM-DD".to_string() } else { arg_str(args, 0) })),
             "relative" => Val::Str(relative(*d, clock.now)),
             _ => return Err(unsupported(&format!("{name}()"))),
@@ -1227,7 +1230,7 @@ pub fn summarize(name: &str, values: &[Val]) -> Option<Result<Val, Error>> {
     let key = name.to_lowercase();
     let filled: Vec<&Val> = values.iter().filter(|v| !matches!(v, Val::Null) && !matches!(v, Val::Str(s) if s.is_empty())).collect();
     let nums: Vec<f64> = filled.iter().filter_map(|v| if let Val::Date(..) = v { None } else { v.num() }).collect();
-    let dates: Vec<NaiveDateTime> = filled.iter().filter_map(|v| v.date().map(|d| d.0)).collect();
+    let dates: Vec<DateTime> = filled.iter().filter_map(|v| v.date().map(|d| d.0)).collect();
     let has_time = filled.iter().any(|v| matches!(v, Val::Date(_, true)));
     let num_or_null = |o: Option<f64>| Ok(o.map_or(Val::Null, Val::Num));
     Some(match key.as_str() {
@@ -1243,7 +1246,7 @@ pub fn summarize(name: &str, values: &[Val]) -> Option<Result<Val, Error>> {
         "range" => {
             if nums.is_empty() && !dates.is_empty() {
                 let (lo, hi) = (dates.iter().min(), dates.iter().max());
-                Ok(lo.zip(hi).map_or(Val::Null, |(a, b)| Val::Dur((*b - *a).num_milliseconds())))
+                Ok(lo.zip(hi).map_or(Val::Null, |(a, b)| Val::Dur(ms_between(*a, *b))))
             } else {
                 num_or_null(nums.iter().copied().reduce(f64::max).zip(nums.iter().copied().reduce(f64::min)).map(|(a, b)| a - b))
             }
@@ -1359,6 +1362,21 @@ mod tests {
         assert_eq!(run("(due - today()).days"), "15");
         assert_eq!(run("due + \"1 week\""), "2026-11-27");
         assert_eq!(run("date(\"2026-01-31\") + \"1M\""), "2026-02-28", "months follow the calendar");
+        // Months move the month itself (not only from January), by the count given.
+        assert_eq!(run("date(\"2026-05-15\") + \"1M\""), "2026-06-15");
+        assert_eq!(run("date(\"2026-05-15\") + \"2 months\""), "2026-07-15");
+        assert_eq!(run("date(\"2026-05-15 08:30\") - \"3M\""), "2026-02-15 08:30");
+        // Subtracting moves back; a time a duration adds to a plain date is shown.
+        assert_eq!(run("date(\"2026-11-05 10:00\") - \"1h\""), "2026-11-05 09:00");
+        assert_eq!(run("date(\"2026-11-05\") + \"1h\""), "2026-11-05 01:00");
+        assert_eq!(run("date(\"2026-11-05\") + \"1d\""), "2026-11-06");
+        // The parts of a date, down to the millisecond.
+        assert_eq!(run("(date(\"2026-11-05 10:20:30\") + \"1500ms\").second"), "31");
+        assert_eq!(run("(date(\"2026-11-05 10:20:30\") + \"1500ms\").millisecond"), "500");
+        assert_eq!(run("date(\"2026-11-05 10:20:30\").millisecond"), "0");
+        // `.date()` drops the time, `.time()` gives it.
+        assert_eq!(run("date(\"2026-11-05 10:20:30\").date()"), "2026-11-05");
+        assert_eq!(run("date(\"2026-11-05 10:20:30\").time()"), "10:20:30");
         assert_eq!(run("due.format(\"DD MMM YYYY\")"), "20 Nov 2026");
         assert_eq!(run("due.year * 100 + due.month"), "202611");
         assert_eq!(run("file.mtime < now() - duration(\"3d\")"), "true");
@@ -1404,7 +1422,7 @@ mod tests {
         for i in 1..=30 {
             formulas.insert(format!("f{i}"), parse(&format!("formula.f{0} + formula.f{0}", i - 1)));
         }
-        let ev = Eval { formulas: &formulas, clock: Clock { now: NaiveDateTime::default() } };
+        let ev = Eval { formulas: &formulas, clock: Clock { now: DateTime::default() } };
         let started = std::time::Instant::now();
         assert_eq!(ev.formula("f30", &note()), Err(TOO_SLOW.to_string()));
         assert!(started.elapsed() < std::time::Duration::from_secs(30));

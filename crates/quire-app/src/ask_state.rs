@@ -10,6 +10,7 @@
 //! answer (which, from a model, says where the evidence agrees with them).
 //! An answer can be saved as a note with its citations as footnotes.
 
+use quire_base::dates;
 use std::sync::Arc;
 
 use crossbeam_channel::Receiver;
@@ -243,7 +244,7 @@ impl Workspace {
                 return None;
             }
         };
-        let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let date = dates::today_ymd();
         let model = if a.by.starts_with("extractive") { "Quire (quoting your notes)".to_string() } else { a.by.clone() };
         // The person saved it; the answer itself was written by a model (or
         // quoted from the notes by Quire), and the note says which.

@@ -6,7 +6,6 @@
 //! the project board (a `quire-view` kanban). There's no separate database:
 //! it's all Markdown.
 
-use chrono::Local;
 use quire_markdown::frontmatter::{self, Value};
 use quire_text::Selection;
 use quire_vault::{NotePath, TemplateVars, expand_template};
@@ -61,7 +60,7 @@ impl Workspace {
                 tpl = frontmatter::set_field(&tpl, key, &Value::Str(val.into())).apply(&tpl);
             }
         }
-        let (body, cursor) = expand_template(&tpl, &TemplateVars { title: name.into(), now: Local::now() });
+        let (body, cursor) = expand_template(&tpl, &TemplateVars { title: name.into(), now: quire_base::dates::now_local() });
         let path = vault.unique_path(PROJECTS_FOLDER, name).map_err(|e| e.to_string())?;
         vault.write(&path, &body).map_err(|e| e.to_string())?;
         self.index.upsert(path.clone(), body);

@@ -10,6 +10,7 @@ use quire_app::history_ops::{DiffKind, diff, diff_stats};
 use quire_app::vault::Snapshot;
 use quire_app::workspace::NoticeLevel;
 use quire_app::{Command, Theme, Workspace};
+use quire_base::dates;
 
 use crate::theme::Palette;
 
@@ -373,7 +374,7 @@ pub(crate) const SOURCE_URL: &str = "https://github.com/BhanuNexus/quire";
 /// which notes, and "Send these deletes".
 fn held_deletes(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, h: &quire_app::vault_sync::HeldDeletes, pal: &Palette) {
     let n = h.notes.len();
-    let allowed = h.allowed_until.is_some_and(|u| u > chrono::Utc::now().timestamp_millis());
+    let allowed = h.allowed_until.is_some_and(|u| u > quire_base::time::now_ms());
     let (what, place, back) = if h.settings {
         ("vault settings files", "this vault's .quire/shared folder", "the files are back")
     } else {
@@ -752,9 +753,7 @@ fn sync_settings(ui: &mut Ui, f: &mut SyncForm, ws: &mut Workspace, pal: &Palett
                         }
                         Some(Ok(list)) => {
                             for (i, s) in list.iter().enumerate() {
-                                let when = chrono::DateTime::from_timestamp(s.created, 0)
-                                    .map(|d| d.format("%Y-%m-%d").to_string())
-                                    .unwrap_or_default();
+                                let when = s.created.checked_mul(1000).and_then(|ms| dates::fmt_utc_ms(ms, "%Y-%m-%d")).unwrap_or_default();
                                 let text = format!("Started {when} · {} · {}", s.detail, &s.space.0[..8.min(s.space.0.len())]);
                                 ui.radio_value(&mut f.chosen, Some(i), text);
                             }
@@ -1283,9 +1282,7 @@ pub(crate) fn history(ctx: &egui::Context, st: &mut HistoryState, ws: &mut Works
     {
         st.loaded = ws.snapshot_text(s).map(|t| (st.selected, t));
     }
-    let when = |ms: i64, fmt: &str| {
-        chrono::DateTime::from_timestamp_millis(ms).map(|d| d.with_timezone(&chrono::Local).format(fmt).to_string()).unwrap_or_default()
-    };
+    let when = |ms: i64, fmt: &str| dates::fmt_local_ms(ms, fmt).unwrap_or_default();
     // The text being compared: a local snapshot, or a version from the sync log.
     let shown: Option<String> = if st.view == HistoryView::AllDevices {
         match &st.sync {

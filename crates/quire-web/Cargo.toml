@@ -26,7 +26,6 @@ serde_json.workspace = true
 toml.workspace = true
 sha2.workspace = true
 base64.workspace = true
-chrono.workspace = true
 similar.workspace = true
 unicode-normalization.workspace = true
 # The web passphrase's hash (already in the tree through quire-sync).
