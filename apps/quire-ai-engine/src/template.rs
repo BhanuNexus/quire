@@ -64,7 +64,7 @@ fn escaped(tag: &str) -> String {
     format!("<\u{200B}{}", &tag[1..])
 }
 
-/// Undoes [`Prompt::content`] in what the local model writes.
+/// Undoes the escaping of structure tags in what the local model writes.
 ///
 /// A structure tag broken with a zero-width space becomes the tag again, so a note's `<think>`
 /// that the model copies into an edit matches the note and is written back as
