@@ -368,6 +368,9 @@ impl ChatModel for LocalChat {
                     if let Some(t) = ev["delta"].as_str() {
                         emitted = true;
                         sink(ChatEvent::Text { text: t.to_string() });
+                    } else if let Some(r) = ev.get("reading") {
+                        let n = |k: &str| u32::try_from(r[k].as_u64().unwrap_or(0)).unwrap_or(u32::MAX);
+                        sink(ChatEvent::Reading { done: n("done"), total: n("of") });
                     } else if let Some(c) = ev.get("tool_call") {
                         emitted = true;
                         sink(ChatEvent::ToolUse {

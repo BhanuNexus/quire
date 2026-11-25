@@ -30,6 +30,8 @@ pub(crate) struct AiSettingsUi {
     test: Option<Receiver<Result<String, String>>>,
     test_result: Option<Result<String, String>>,
     confirm_delete: Option<String>,
+    /// Folders in the models folder no pinned row names (read once per visit).
+    strays: Option<Vec<(String, u64)>>,
 }
 
 /// Always offered.
@@ -61,15 +63,26 @@ pub(crate) fn experimental_label(ui: &mut egui::Ui, pal: &Palette, text: &str) {
 
 /// The experimental switch (Settings → AI → On this computer → Advanced).
 fn experimental_switch(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) {
-    ui.checkbox(&mut ws.settings.ai_local.experimental, "Experimental: show on-device AI");
+    ui.checkbox(&mut ws.settings.ai_local.experimental, "Experimental: voice transcription on this computer, and older models");
     if !ws.settings.ai_local.experimental && ws.settings.ai_local.on_device() {
         ui.label(RichText::new(format!("On for now: {}=1 is set.", quire_app::settings::EXPERIMENTAL_ENV)).size(11.5).color(pal.faint));
     }
 }
 
-/// While on-device AI is off: one line, and the switch under Advanced.
-fn device_later(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette) {
-    ui.add(egui::Label::new(RichText::new(ai::ON_DEVICE_LATER).size(12.5).color(pal.text)).wrap());
+/// While the pack is off: what it does, one button, and the switch under Advanced.
+fn device_off(ui: &mut egui::Ui, ws: &mut Workspace, pal: &Palette, out: &mut PanelOut) {
+    ui.add(
+        egui::Label::new(
+            RichText::new("Qwen 3.5 for writing and the agent, and text in images and scanned PDFs, all on this computer. Nothing is downloaded until you turn it on.")
+                .size(12.5)
+                .color(pal.text),
+        )
+        .wrap(),
+    );
+    ui.add_space(4.0);
+    if ui.button(RichText::new("Turn on on-device AI…").strong()).clicked() {
+        out.run = Some(Command::AiPack);
+    }
     egui::CollapsingHeader::new(RichText::new("Advanced").color(pal.text)).id_salt("quire-ai-advanced").show(ui, |ui| {
         experimental_switch(ui, ws, pal);
     });
@@ -99,12 +112,11 @@ pub(crate) fn show(ui: &mut egui::Ui, ws: &mut Workspace, st: &mut FeatureUi, pa
     let before_panel = ws.settings.agent_panel.model.clone();
     section(ui, pal, "Provider");
     provider(ui, ws, s, pal);
-    if ws.settings.ai_local.on_device() {
-        section_badge(ui, pal, "On this computer", Some("Experimental"));
+    section(ui, pal, "On this computer");
+    if ws.settings.ai_local.pack_on() {
         device(ui, ws, s, pal);
     } else {
-        section(ui, pal, "On this computer");
-        device_later(ui, ws, pal);
+        device_off(ui, ws, pal, &mut out);
     }
     section(ui, pal, "Features");
     features(ui, ws, pal, &mut out);
@@ -369,9 +381,16 @@ fn device(ui: &mut egui::Ui, ws: &mut Workspace, s: &mut AiSettingsUi, pal: &Pal
         ui.label(RichText::new("Summaries, tags, the agent panel and claim checks.").size(12.0).color(pal.muted));
         if v {
             ui.horizontal_wrapped(|ui| {
+                let experimental = ws.settings.ai_local.experimental;
                 let m = &mut ws.settings.ai_local.llm_model;
-                for (id, name) in [("qwen3-0.6b-q8", "Small"), ("qwen3-1.7b-q4km", "Balanced"), ("qwen3-4b-q4km", "Better")] {
+                for (id, name) in [("qwen3.5-4b-q4km", "Qwen 3.5 4B"), ("qwen3.5-9b-q4km", "Qwen 3.5 9B")] {
                     ui.radio_value(m, id.to_string(), name).on_hover_text(crate::onboarding_ui::ram_text(id));
+                }
+                // The Qwen3 models stay for testing builds only.
+                if experimental {
+                    for (id, name) in [("qwen3-0.6b-q8", "Qwen3 0.6B"), ("qwen3-1.7b-q4km", "Qwen3 1.7B"), ("qwen3-4b-q4km", "Qwen3 4B")] {
+                        ui.radio_value(m, id.to_string(), name).on_hover_text(crate::onboarding_ui::ram_text(id));
+                    }
                 }
             });
             let id = ws.settings.ai_local.llm_model.clone();
@@ -409,6 +428,26 @@ fn device(ui: &mut egui::Ui, ws: &mut Workspace, s: &mut AiSettingsUi, pal: &Pal
     }
     if let Some(dir) = ai::models_dir() {
         ui.add(egui::Label::new(RichText::new(format!("Stored in {}", dir.display())).size(11.5).color(pal.faint)).wrap());
+        // Files no model of this version uses (a test build's, an older model's): listed, deleted only on a click.
+        let strays = s.strays.get_or_insert_with(|| ai::pack::stray_folders(&dir, catalog())).clone();
+        for (name, bytes) in strays {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(format!("Files from an older model, {}", ai::human_size(bytes))).size(12.0).color(pal.muted))
+                    .on_hover_text(&name);
+                if ui.small_button("Delete").clicked() {
+                    ws.delete_stray_models(&name);
+                    s.strays = None;
+                }
+            });
+        }
+    }
+    if ws.settings.ai_local.pack
+        && ui
+            .button("Turn off on-device AI")
+            .on_hover_text("Nothing runs on this computer any more; downloaded models stay until you delete them")
+            .clicked()
+    {
+        ws.pack_turn_off();
     }
     egui::CollapsingHeader::new(RichText::new("Advanced").color(pal.text)).id_salt("quire-ai-advanced").show(ui, |ui| {
         experimental_switch(ui, ws, pal);
@@ -431,6 +470,9 @@ fn device(ui: &mut egui::Ui, ws: &mut Workspace, s: &mut AiSettingsUi, pal: &Pal
                 ui.horizontal_wrapped(|ui| {
                     ui.radio_value(&mut a.gpu, "auto".to_string(), "Automatic");
                     ui.radio_value(&mut a.gpu, "off".to_string(), "Off");
+                    if a.llm_model.starts_with("qwen3.5") {
+                        ui.label(RichText::new("Qwen 3.5 runs on the processor.").size(12.0).color(pal.muted));
+                    }
                 });
             });
         }

@@ -469,9 +469,12 @@ fn drawn_text(out: &egui::FullOutput) -> String {
     text
 }
 
-/// What Set up AI and Settings → AI show, with the switch off and on.
-fn on_device_screens(experimental: bool) -> (String, String, Workspace) {
-    let mut ws = workspace_with(experimental);
+/// What Set up AI and Settings → AI show, with the pack off and on.
+fn on_device_screens(pack: bool) -> (String, String, Workspace) {
+    let mut ws = workspace_with(false);
+    ws.settings.ai_local.pack = pack;
+    ws.settings.ai_local.llm = pack;
+    ws.settings.ai_local.llm_model = "qwen3.5-4b-q4km".into();
     let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 820.0));
     let ctx = egui::Context::default();
     theme::install_fonts(&ctx);
@@ -501,31 +504,36 @@ fn on_device_screens(experimental: bool) -> (String, String, Workspace) {
     (onboarding, settings, ws)
 }
 
-/// On-device AI is experimental in 0.9.0: by default Set up AI and
-/// Settings → AI offer none of it and say it's coming, and nothing starts
-/// the engine; the switch brings back the rows, marked Experimental.
+/// 0.14, the on-device AI pack (`docs/design/0.14-local-ai.md` §3.8): with
+/// the pack off, Set up AI offers "On this computer" (which opens the pack's
+/// dialog) and Settings → AI one "Turn on on-device AI…" button, no model
+/// rows, and nothing starts the engine. With it on, the rows are there,
+/// Qwen 3.5 among the writing models, and nothing says "Experimental" or
+/// "coming".
 #[test]
-fn on_device_rows_follow_the_experimental_switch() {
+fn on_device_rows_follow_the_pack() {
     if std::env::var_os(quire_app::settings::EXPERIMENTAL_ENV).is_some() {
         return; // the switch is on for this process
     }
-    let later = quire_app::ai::ON_DEVICE_LATER;
     let (onboarding, settings, ws) = on_device_screens(false);
-    assert!(onboarding.contains("No AI") && onboarding.contains("Use a provider"), "{onboarding}");
-    assert!(!onboarding.contains("On this computer") && !onboarding.contains("Experimental"), "{onboarding}");
-    assert!(onboarding.contains(later), "{onboarding}");
-    assert!(settings.contains(later) && settings.contains("Advanced"), "{settings}");
-    for row in ["Writing and agent", "Read text in images", "Engine", "Install from file", "Not available in this build", "Experimental"] {
+    assert!(
+        onboarding.contains("No AI") && onboarding.contains("Use a provider") && onboarding.contains("On this computer"),
+        "{onboarding}"
+    );
+    assert!(settings.contains("Turn on on-device AI") && settings.contains("Advanced"), "{settings}");
+    for row in ["Writing and agent", "Read text in images", "Engine", "Install from file"] {
         assert!(!settings.contains(row), "{row} shown while off: {settings}");
     }
     assert!(!quire_app::ai::engine(&ws.settings).is_running(), "nothing started the engine");
-
     let (onboarding, settings, _) = on_device_screens(true);
-    assert!(onboarding.contains("On this computer") && onboarding.contains("Experimental") && !onboarding.contains(later), "{onboarding}");
-    for row in ["Meaning search", "Writing and agent", "Read text in images", "Engine", "Not available in this build", "Experimental"] {
+    for row in ["Meaning search", "Writing and agent", "Qwen 3.5 4B", "Read text in images", "Engine", "Not available in this build"] {
         assert!(settings.contains(row), "{row} missing while on: {settings}");
     }
-    assert!(!settings.contains(later), "{settings}");
+    for text in [onboarding.as_str(), settings.as_str()] {
+        for word in ["coming", "slow", "Slow"] {
+            assert!(!text.contains(word), "{word:?} shown: {text}");
+        }
+    }
 }
 
 /// 0.11: the formatting toolbar keeps its size from frame to frame, wraps

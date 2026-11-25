@@ -151,6 +151,22 @@ fn short_memory_and_a_stopped_engine_give_clear_messages() {
     }
 }
 
+/// An on-device model says how far it has read a long prompt, before the
+/// reply ("Reading the question: 512 of 600").
+#[test]
+fn reading_progress_comes_before_the_reply() {
+    let tmp = tempfile::tempdir().unwrap();
+    let chat =
+        LocalChat::new(engine_with(&[], None), catalog().get("qwen3.5-4b-q4km").unwrap(), &setup(tmp.path())).with_free_memory(|| None);
+    let mut events = Vec::new();
+    chat.chat(&ChatRequest::simple("", "__reading__ hi", 20), &CancelFlag::new(), &mut |e| events.push(e)).unwrap();
+    let reading: Vec<(u32, u32)> =
+        events.iter().filter_map(|e| if let ChatEvent::Reading { done, total } = e { Some((*done, *total)) } else { None }).collect();
+    assert_eq!(reading, [(256, 600), (512, 600), (600, 600)]);
+    let first_text = events.iter().position(|e| matches!(e, ChatEvent::Text { .. })).unwrap();
+    assert!(events[..first_text].iter().all(|e| matches!(e, ChatEvent::Reading { .. })), "reading comes first");
+}
+
 #[test]
 fn ocr_reads_images() {
     let tmp = tempfile::tempdir().unwrap();

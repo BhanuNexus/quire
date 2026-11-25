@@ -276,6 +276,7 @@ pub(crate) const fn ui_target(cmd: Command) -> Option<UiTarget> {
         // ---- AI
         Command::ToggleAgentPanel => UiTarget::Right("agent"),
         Command::AiSetup => UiTarget::Overlay(crate::onboarding_ui::OnboardingOverlay::make),
+        Command::AiPack => UiTarget::Overlay(crate::pack_ui::PackOverlay::make),
         Command::IngestIntoWiki => UiTarget::Overlay(crate::agent_panel_ui::ingest_ui::IngestDialog::make),
         Command::ConnectExternalAgent => UiTarget::Overlay(crate::agent_panel_ui::acp_ui::ConnectOverlay::make),
         // ---- 0.10 AI
@@ -394,6 +395,16 @@ pub(crate) fn layout_samples(ws: &mut Workspace) -> Vec<(&'static str, crate::ov
         ("set up AI: choose", Overlay::Feature(crate::onboarding_ui::OnboardingOverlay::make(ws))),
         ("set up AI: chosen", Overlay::Feature(Box::new(crate::onboarding_ui::OnboardingOverlay::sample(1)))),
         ("set up AI: on this computer", Overlay::Feature(Box::new(crate::onboarding_ui::OnboardingOverlay::sample(2)))),
+        (
+            "on-device AI: 16 GB",
+            Overlay::Feature(Box::new(crate::pack_ui::PackOverlay::sample(Some(16), false, Some(41_000_000_000), false))),
+        ),
+        (
+            "on-device AI: 8 GB, Lite, short of space",
+            Overlay::Feature(Box::new(crate::pack_ui::PackOverlay::sample(Some(8), true, Some(2_100_000_000), false))),
+        ),
+        ("on-device AI: under 8 GB", Overlay::Feature(Box::new(crate::pack_ui::PackOverlay::sample(Some(4), false, None, false)))),
+        ("on-device AI: not in this build", Overlay::Feature(Box::new(crate::pack_ui::PackOverlay::sample(None, false, None, true)))),
         ("external agent: warning", Overlay::Feature(Box::new(crate::agent_panel_ui::acp_ui::ConnectOverlay::sample(false)))),
         ("external agent: acknowledged", Overlay::Feature(Box::new(crate::agent_panel_ui::acp_ui::ConnectOverlay::sample(true)))),
         ("external agent: run a command?", Overlay::Feature(Box::new(crate::agent_panel_ui::acp_ui::PermissionOverlay::sample("execute")))),

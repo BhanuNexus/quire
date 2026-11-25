@@ -146,6 +146,12 @@ impl Backend for FakeBackend {
             let reply = if p.json { json!({ "echo": last_text }).to_string() } else { format!("You said: {last_text}") };
             reply.split_inclusive(' ').map(|w| json!({ "delta": w })).collect()
         };
+        // `__reading__`: report reading a long prompt first, as the real engine does.
+        if last_text.contains("__reading__") {
+            for done in [256, 512, 600] {
+                emit(json!({ "reading": { "done": done, "of": 600 } }));
+            }
+        }
         let mut out_tokens = 0;
         let mut called = false;
         for ev in events {

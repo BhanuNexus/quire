@@ -310,8 +310,8 @@ fn run<B: Backend>(backend: &mut B, job: &Job, out: &Out, state: &Mutex<State>) 
                 Ok(p) => p,
                 Err(e) => return bad(e),
             };
-            // At most one language model at a time (`docs/design/0.14-local-ai.md`
-            // §3.5): a new one unloads the others first, so two never share memory.
+            // At most one language model at a time: a new one unloads the others
+            // first, so two never share memory (`docs/design/0.14-local-ai.md` §3.5).
             if p.kind == quire_ai::protocol::ModelKind::Llm {
                 let others: Vec<String> = {
                     let st = lock(state);

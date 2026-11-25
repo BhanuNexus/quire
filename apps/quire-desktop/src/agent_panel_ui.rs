@@ -98,6 +98,8 @@ pub(crate) struct AgentPanelUi {
     pending: Option<Pending>,
     vault: Option<PathBuf>,
     usage: Usage,
+    /// An on-device model reading a long prompt: tokens read, and of how many.
+    reading: Option<(u32, u32)>,
     md: CommonMarkCache,
     focus_input: bool,
     /// The panel's model, rebuilt when its settings change or every few
@@ -121,6 +123,7 @@ impl Default for AgentPanelUi {
             pending: None,
             vault: None,
             usage: Usage::default(),
+            reading: None,
             md: CommonMarkCache::default(),
             focus_input: false,
             model: None,
@@ -314,6 +317,22 @@ fn empty_setup(ui: &mut egui::Ui, pal: &Palette, device: bool, out: &mut PanelOu
     });
 }
 
+/// "Reading the question: 1,240 of 2,000".
+fn reading_line(done: u32, total: u32) -> String {
+    let n = |x: u32| {
+        let s = x.to_string();
+        let mut out = String::new();
+        for (i, c) in s.chars().enumerate() {
+            if i > 0 && (s.len() - i).is_multiple_of(3) {
+                out.push(',');
+            }
+            out.push(c);
+        }
+        out
+    };
+    format!("Reading the question: {} of {}", n(done), n(total))
+}
+
 fn bubble(ui: &mut egui::Ui, pal: &Palette, text: &str) {
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
         egui::Frame::NONE.fill(pal.active_bg).corner_radius(10.0).inner_margin(egui::Margin::symmetric(10, 7)).show(ui, |ui| {
@@ -423,6 +442,10 @@ fn conversation(ui: &mut egui::Ui, ws: &mut Workspace, p: &mut AgentPanelUi, pal
                 );
             }
         }
+    }
+    // Shown while the model reads; no estimate of the wait (the owner's decision).
+    if let Some((done, total)) = p.reading.filter(|_| p.running.is_some()) {
+        ui.label(RichText::new(reading_line(done, total)).size(12.0).italics().color(pal.muted));
     }
     if let Some(id) = review.and_then(|s| ProposalId::parse(&s)) {
         if ws.start_review(&id, None) {
@@ -759,8 +782,13 @@ impl AgentPanelUi {
     fn apply(&mut self, m: Msg) {
         match m {
             Msg::Run(ev) => match ev {
-                RunEvent::Text(t) => self.conv.push_text(&t),
+                RunEvent::Reading { done, total } => self.reading = (done < total).then_some((done, total)),
+                RunEvent::Text(t) => {
+                    self.reading = None;
+                    self.conv.push_text(&t);
+                }
                 RunEvent::ToolStarted { id, summary, .. } => {
+                    self.reading = None;
                     self.conv.items.push(Item::Tool { id, summary, detail: String::new(), is_error: false, running: true });
                 }
                 RunEvent::ToolFinished { id, summary, detail, is_error } => {
@@ -1073,4 +1101,13 @@ fn run_acp(
         *slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(s);
     }
     let _ = tx.send(Msg::Finished { messages: None, error });
+}
+
+#[cfg(test)]
+mod reading_tests {
+    #[test]
+    fn the_reading_line_counts_tokens() {
+        assert_eq!(super::reading_line(1240, 2000), "Reading the question: 1,240 of 2,000");
+        assert_eq!(super::reading_line(7, 123_456), "Reading the question: 7 of 123,456");
+    }
 }

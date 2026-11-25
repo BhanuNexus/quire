@@ -6,9 +6,9 @@
 //!
 //! Step 1 offers No AI, a provider, or models on this computer, with nothing
 //! preselected. Step 2 (on this computer) lists each capability with its
-//! download size and memory, all unticked. While on-device AI is
-//! experimental and off (`[ai_local] experimental`), step 1 has only the
-//! first two, and a note in place of the third.
+//! download size and memory, all unticked. Since 0.14 "On this computer"
+//! opens the on-device AI pack's dialog (`pack_ui.rs`) instead; step 2 is
+//! kept for its layout sample only.
 //!
 
 use egui::{RichText, Stroke};
@@ -139,9 +139,6 @@ impl OverlayView for OnboardingOverlay {
                 let w = 700.0_f32.min(ctx.content_rect().width() - 48.0);
                 ui.set_width(w);
                 ui.set_max_width(w);
-                if self.step != 1 && !ws.settings.ai_local.on_device() {
-                    self.step = 1;
-                }
                 if self.step == 1 {
                     self.step_one(ui, ws, pal, w, &mut res);
                 } else {
@@ -169,15 +166,12 @@ impl OnboardingOverlay {
         ui.label(RichText::new("Pick one. You can change it any time in Settings → AI.").color(pal.muted));
         ui.add_space(14.0);
         let narrow = w < 560.0;
-        // While on-device AI is off (experimental), its card is a note instead.
-        let device = ws.settings.ai_local.on_device();
-        if !device && self.choice == Some(Choice::Device) {
-            self.choice = None;
-        }
-        let mut cards = vec![(Choice::Off, "No AI", None, OFF_BODY), (Choice::Provider, "Use a provider", None, PROVIDER_BODY)];
-        if device {
-            cards.push((Choice::Device, "On this computer", Some("Experimental"), DEVICE_BODY));
-        }
+        // 0.14: "On this computer" opens the on-device AI pack's dialog.
+        let cards = vec![
+            (Choice::Off, "No AI", None, OFF_BODY),
+            (Choice::Provider, "Use a provider", None, PROVIDER_BODY),
+            (Choice::Device, "On this computer", None::<&str>, DEVICE_BODY),
+        ];
         if narrow {
             for (c, t, badge, b) in cards {
                 let h = if badge.is_some() { 112.0 } else { 92.0 };
@@ -189,7 +183,7 @@ impl OnboardingOverlay {
         } else {
             let n = cards.len() as f32;
             let cw = (w - (n - 1.0) * 10.0) / n;
-            let h = if device { 150.0 } else { 120.0 };
+            let h = 150.0;
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
                 for (c, t, badge, b) in cards {
@@ -199,10 +193,6 @@ impl OnboardingOverlay {
                 }
             });
             ui.add_space(14.0);
-        }
-        if !device {
-            ui.add(egui::Label::new(RichText::new(quire_app::ai::ON_DEVICE_LATER).size(12.5).color(pal.muted)).wrap());
-            ui.add_space(12.0);
         }
         ui.separator();
         ui.horizontal(|ui| {
@@ -232,7 +222,9 @@ impl OnboardingOverlay {
                             }
                             res.then = Some(Overlay::Settings(Box::new(crate::dialogs::SettingsState::feature_tab("ai"))));
                         }
-                        Some(Choice::Device) => self.step = 2,
+                        Some(Choice::Device) => {
+                            res.then = Some(Overlay::Feature(Box::new(crate::pack_ui::PackOverlay::from_onboarding())));
+                        }
                         None => {}
                     }
                 }
@@ -365,7 +357,6 @@ pub(crate) fn banner_available(ws: &Workspace) -> bool {
 /// "New in 0.9: AI is opt-in…" with Choose… and ×.
 pub(crate) fn banner(ui: &mut egui::Ui, ws: &mut Workspace, _st: &mut FeatureUi, pal: &Palette) -> PanelOut {
     let mut out = PanelOut::default();
-    let device = ws.settings.ai_local.on_device();
     egui::Frame::NONE.fill(pal.panel).stroke(Stroke::new(1.0, pal.border)).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
@@ -381,12 +372,8 @@ pub(crate) fn banner(ui: &mut egui::Ui, ws: &mut Workspace, _st: &mut FeatureUi,
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.add(
                         egui::Label::new(
-                            RichText::new(if device {
-                                "AI is your choice: keep it off, use a provider, or run small models on this computer."
-                            } else {
-                                "AI is your choice: keep it off, or use a provider such as Claude or a server you run."
-                            })
-                            .color(pal.text),
+                            RichText::new("AI is your choice: keep it off, use a provider, or run models on this computer.")
+                                .color(pal.text),
                         )
                         .truncate(),
                     );

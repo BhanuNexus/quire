@@ -50,6 +50,7 @@ mod mcp_ui;
 mod meta_refactor_ui;
 mod onboarding_ui;
 mod overlays;
+mod pack_ui;
 mod panels;
 mod pdf_ui;
 mod registry;

@@ -19,7 +19,7 @@ workstream; every key defaults to off or unchanged.
 | Table | Owner | Keys |
 |---|---|---|
 | `[onboarding]` | WS-D | `ai_done`, `ai_choice`, `upgrade_card_done` |
-| `[ai_local]` | WS-D | `experimental` (off in 0.9.0: every other key is ignored until it is on), `engine`, `embeddings`, `llm`, `ocr`, `embed_model`, `llm_model`, `threads`, `gpu`, `idle_unload_s`, `mirror_url` |
+| `[ai_local]` | WS-D | `pack` (0.14: written only when the person turns on-device AI on; until then `llm`, `ocr` and `embeddings` are ignored, `docs/design/0.14-local-ai.md` §3.8; 0.13 keeps it as an unknown key), `experimental` (voice transcription on this computer and the older models; it also lets the other keys work, as before), `engine`, `embeddings`, `llm`, `ocr`, `embed_model`, `llm_model` (0.14: empty by default, no model chosen), `threads`, `gpu`, `idle_unload_s`, `mirror_url`, `fast_prompts` |
 | `[agent_panel]` | WS-D | `enabled`, `backend`, `model` (`""`, `"provider"` or `"device"`), `max_steps`, `acp_command`, `acp_args`, `acp_risk_ack` |
 | `[trust]` | WS-C | `contradictions`, `claims_daily_cap`, `ask_before_tell`, `staleness`, `verify_citations` |
 | `[mcp_http]` | WS-B | `enabled`, `bind`, `port`, `public_url` |

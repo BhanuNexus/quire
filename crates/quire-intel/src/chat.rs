@@ -134,6 +134,12 @@ pub enum ChatEvent {
         stop: StopReason,
         usage: Usage,
     },
+    /// The model has read `done` of the prompt's `total` tokens (on-device
+    /// models report this while they read a long prompt).
+    Reading {
+        done: u32,
+        total: u32,
+    },
 }
 
 /// Where a model runs, shown in the UI ("cloud", "this computer").
@@ -180,7 +186,7 @@ pub fn chat_text(model: &dyn ChatModel, req: &ChatRequest, cancel: &CancelFlag) 
     let mut stop = StopReason::EndTurn;
     model.chat(req, cancel, &mut |ev| match ev {
         ChatEvent::Text { text: t } => text.push_str(&t),
-        ChatEvent::ToolUse { .. } => {}
+        ChatEvent::ToolUse { .. } | ChatEvent::Reading { .. } => {}
         ChatEvent::Done { stop: s, .. } => stop = s,
     })?;
     Ok((text, stop))

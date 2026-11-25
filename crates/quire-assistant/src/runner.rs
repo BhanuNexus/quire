@@ -86,6 +86,11 @@ impl Default for RunLimits {
 pub enum RunEvent {
     /// A piece of the reply.
     Text(String),
+    /// The model has read `done` of `total` prompt tokens (on-device models).
+    Reading {
+        done: u32,
+        total: u32,
+    },
     /// A tool call starts ("Searching notes for *ropes*").
     ToolStarted {
         id: String,
@@ -331,6 +336,7 @@ pub fn run(spec: &RunSpec<'_>, conversation: &mut Vec<ChatMessage>, cancel: &Can
                 sink(RunEvent::Text(t));
             }
             ChatEvent::ToolUse { id, name, input } => calls.push((id, name, input)),
+            ChatEvent::Reading { done, total } => sink(RunEvent::Reading { done, total }),
             ChatEvent::Done { stop: s, usage } => {
                 stop = s;
                 total.input_tokens += usage.input_tokens;

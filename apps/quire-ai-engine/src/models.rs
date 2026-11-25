@@ -288,6 +288,8 @@ impl Backend for RealBackend {
             let input = Tensor::new(chunk, &m.device).and_then(|t| t.unsqueeze(0)).map_err(failed)?;
             logits = Some(m.model.forward(&input, pos).map_err(failed)?);
             pos += chunk.len();
+            // How far the model has read, for "Reading the question: 1,240 of 2,000".
+            emit(json!({ "reading": { "done": pos, "of": prompt_ids.len() } }));
         }
         let mut logits = logits.ok_or_else(|| failed("empty prompt"))?;
         if let LlmModel::Qwen35(q) = &m.model {
