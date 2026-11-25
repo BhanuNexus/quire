@@ -276,8 +276,10 @@ mod tests {
         assert_eq!(fmt_utc_ms(i64::MAX, "%Y"), None);
     }
 
-    /// What Quire writes to files that persist or sync reads back the same
-    /// and is written the same (strings as 0.13 wrote them).
+    /// What Quire writes to files that persist or sync, written and read
+    /// back. These literals are examples; the proof that each matches what
+    /// 0.13 wrote is `persisted_formats_match_the_0_13_call_sites` in
+    /// `tests/chrono_oracle.rs`, which computes 0.13's text with chrono.
     #[test]
     fn persisted_formats_round_trip() {
         let dt = Date::new(2026, 11, 6).unwrap_or_default().at(10, 0, 0, 0);
@@ -321,7 +323,7 @@ mod tests {
             assert_eq!(fmt_local_ms(0, "%Y-%m-%d %H:%M %z").as_deref(), Some("1970-01-01 00:00 +0000"));
             return;
         }
-        let Ok(me) = std::env::current_exe() else { return };
+        let me = std::env::current_exe().expect("the test binary's own path");
         let empty = std::env::temp_dir().join("quire-no-zoneinfo-for-this-test");
         let out = std::process::Command::new(me)
             .args(["--exact", "dates::tests::no_zone_database_means_utc", "--test-threads=1"])
@@ -329,8 +331,8 @@ mod tests {
             // A zone name no database has: what any name is when there is no database.
             .env("TZ", "Nowhere/Missing")
             .env("TZDIR", &empty)
-            .output();
-        let Ok(out) = out else { return };
+            .output()
+            .expect("the child test process starts");
         assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
         assert!(String::from_utf8_lossy(&out.stdout).contains("1 passed"), "the child ran the test");
     }

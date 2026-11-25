@@ -405,3 +405,49 @@ fn rfc3339_and_http_dates_read_as_chrono_read_them() {
         assert_eq!(dates::parse_rfc2822(s).ok(), theirs, "{s:?}");
     }
 }
+
+/// What Quire writes to files that persist or sync, as each 0.13 call site
+/// wrote it with chrono (the call, the file and line at b0db287), against
+/// what the 0.14 call site writes with `quire_base::dates`, over instants
+/// before and after 1970, with fractions, at several offsets; and read back.
+#[test]
+fn persisted_formats_match_the_0_13_call_sites() {
+    let instants_ms: [i64; 7] = [0, -1_500, 1_793_577_600_000, 1_793_577_600_999, 1_767_225_599_250, 951_782_400_000, 4_102_444_799_999];
+    let offsets = [0, 3600, -14_400, 19_800, 50_400];
+    for ms in instants_ms {
+        let utc = DateTime::from_timestamp_millis(ms).unwrap();
+        // agent/src/ledger.rs:104 (and proposal.rs:555, shared.rs:117): month folders in UTC.
+        assert_eq!(dates::fmt_utc_ms(ms, "%Y-%m").unwrap(), utc.format("%Y-%m").to_string(), "{ms}");
+        // mcp/src/tools/common.rs:86 and import/src/convert.rs:11 (seconds): ISO in UTC.
+        assert_eq!(dates::fmt_utc_ms(ms, "%Y-%m-%dT%H:%M:%SZ").unwrap(), utc.format("%Y-%m-%dT%H:%M:%SZ").to_string());
+        // sync/src/remote/s3.rs:149: x-amz-date; remote/mock.rs:227: an HTTP Date header.
+        assert_eq!(dates::fmt_utc_ms(ms, "%Y%m%dT%H%M%SZ").unwrap(), utc.format("%Y%m%dT%H%M%SZ").to_string());
+        assert_eq!(dates::fmt_utc_ms(ms, "%a, %d %b %Y %H:%M:%S GMT").unwrap(), utc.format("%a, %d %b %Y %H:%M:%S GMT").to_string());
+        for off in offsets {
+            let z = utc.with_timezone(&FixedOffset::east_opt(off).unwrap());
+            let ours =
+                dates::Timestamp::from_millisecond(ms).unwrap().to_zoned(dates::TimeZone::fixed(dates::Offset::from_seconds(off).unwrap()));
+            // plan/src/time.rs:74: time entries.
+            let entry = z.format("%Y-%m-%dT%H:%M:%S%:z").to_string();
+            assert_eq!(dates::fmt_zoned(&ours, "%Y-%m-%dT%H:%M:%S%:z"), entry);
+            assert_eq!(dates::zoned_rfc3339(&entry).map(|b| b.timestamp().as_second()), Some(z.timestamp()), "{entry}");
+            // mcp/src/capture.rs:123: `captured:` (RFC 3339, seconds, `+00:00` style).
+            assert_eq!(dates::fmt_zoned(&ours, "%Y-%m-%dT%H:%M:%S%:z"), z.to_rfc3339_opts(chrono::SecondsFormat::Secs, false));
+            // vault/src/storage.rs:352: trash stamps, local.
+            assert_eq!(dates::fmt_zoned(&ours, "%Y%m%d-%H%M%S"), z.format("%Y%m%d-%H%M%S").to_string());
+            // sync/src/remote/net.rs:274 (the skew test): RFC 2822.
+            assert_eq!(dates::rfc2822(ours.datetime(), off), Some(z.to_rfc2822()));
+            // plan/src/reminders.rs:29 and app/src/remind_bg.rs:99: reminder keys and the fired log.
+            let naive = z.naive_local();
+            let key = naive.format("%Y-%m-%d %H:%M").to_string();
+            assert_eq!(dates::fmt_naive(ours.datetime(), "%Y-%m-%d %H:%M"), key);
+            assert_eq!(dates::parse_datetime(&key, "%Y-%m-%d %H:%M").map(dates::DateTime::date), Ok(jdate(naive.date())));
+            // plan/src/recur.rs:391: UNTIL; the task date fields (plan/src/tasks.rs:46).
+            for pattern in ["%Y%m%d", "%Y-%m-%d"] {
+                let text = naive.date().format(pattern).to_string();
+                assert_eq!(dates::fmt_date(ours.date(), pattern), text);
+                assert_eq!(dates::parse_date(&text, pattern), Ok(jdate(naive.date())));
+            }
+        }
+    }
+}
