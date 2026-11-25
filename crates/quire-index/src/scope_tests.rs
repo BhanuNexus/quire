@@ -342,9 +342,8 @@ fn meaning_comes_back_only_after_a_refit() {
     let (go, wait) = crossbeam_channel::unbounded::<()>();
     let svc = IndexService::spawn();
     // Each fit waits for a go.
-    svc.set_semantic_builder(Some(Arc::new(move |chunks| {
-        wait.recv().map_err(|e| e.to_string())?;
-        Ok(crate::semantic::build_lsa_index(chunks))
+    svc.set_fit_hook(Some(Arc::new(move || {
+        let _ = wait.recv();
     })));
     go.send(()).unwrap();
     svc.load(quire_vault::Vault::in_memory(&[
@@ -354,7 +353,7 @@ fn meaning_comes_back_only_after_a_refit() {
         ("Private/s.md", "# S\nThe automobile secret is a vehicle engine road."),
     ]));
     svc.flush_semantic();
-    let fitted = svc.semantic_version();
+    let fitted = svc.semantic_fits();
     let visible: Visible = visible(|p: &NotePath, _: &[String]| !p.as_str().starts_with("Private/"));
     let key = [3u8; 32];
     assert!(svc.semantic().is_some());
@@ -365,15 +364,15 @@ fn meaning_comes_back_only_after_a_refit() {
     {
         let sc = svc.scoped(key, Arc::clone(&visible));
         assert!(sc.view().hides_nothing());
-        assert_eq!(svc.semantic_version(), fitted, "no refit yet");
+        assert_eq!(svc.semantic_fits(), fitted, "no refit yet");
         assert!(sc.semantic().is_none(), "the model was fitted with the hidden note");
         assert!(sc.search_sections("automobile", &SearchFilters::default(), 5).iter().all(|h| !h.by_meaning));
     }
     // A caller who may read every note the model was fitted on keeps meaning search meanwhile.
     assert!(svc.scoped([4u8; 32], crate::scope::visible(|_: &NotePath, _: &[String]| true)).semantic().is_some());
     go.send(()).unwrap();
-    svc.flush_semantic();
-    assert!(svc.semantic_version() > fitted);
+    svc.refit_semantic();
+    assert!(svc.semantic_fits() > fitted);
     let sc = svc.scoped(key, Arc::clone(&visible));
     assert!(sc.semantic().is_some(), "refitted without the note: meaning is back");
     assert!(sc.search_sections("automobile", &SearchFilters::default(), 5).iter().any(|h| h.by_meaning));
@@ -433,9 +432,8 @@ const FRESH: &[(&str, &str)] = &[
 fn held_fits() -> (IndexService, crossbeam_channel::Sender<()>) {
     let (go, wait) = crossbeam_channel::unbounded::<()>();
     let svc = IndexService::spawn();
-    svc.set_semantic_builder(Some(Arc::new(move |chunks| {
-        wait.recv().map_err(|e| e.to_string())?;
-        Ok(crate::semantic::build_lsa_index(chunks))
+    svc.set_fit_hook(Some(Arc::new(move || {
+        let _ = wait.recv();
     })));
     go.send(()).unwrap();
     svc.load(quire_vault::Vault::in_memory(FRESH));
@@ -452,17 +450,19 @@ fn no_private() -> Visible {
 /// but the model still holds the note: keyword only until a fit that
 /// started after the removal, then meaning (Fable's re-check, N1).
 fn fresh_view_waits_for_a_refit(svc: &IndexService, go: &crossbeam_channel::Sender<()>, key: ScopeKey, how: &str) {
-    let fitted = svc.semantic_version();
+    let fitted = svc.semantic_fits();
     {
         let sc = svc.scoped(key, no_private());
         assert!(sc.view().hides_nothing(), "{how}");
-        assert_eq!(svc.semantic_version(), fitted, "{how}: no refit yet");
+        assert_eq!(svc.semantic_fits(), fitted, "{how}: no refit yet");
         assert!(sc.semantic().is_none(), "{how}: the model was fitted with the removed note");
         assert!(sc.search_sections("automobile", &SearchFilters::default(), 5).iter().all(|h| !h.by_meaning), "{how}");
     }
+    // One go for a build already waiting (after a load), one for the refit.
     go.send(()).unwrap();
-    svc.flush_semantic();
-    assert!(svc.semantic_version() > fitted, "{how}");
+    go.send(()).unwrap();
+    svc.refit_semantic();
+    assert!(svc.semantic_fits() > fitted, "{how}");
     assert!(svc.scoped(key, no_private()).semantic().is_some(), "{how}: refitted without the note");
 }
 
@@ -504,10 +504,10 @@ fn a_view_built_after_a_reload_waits_for_a_refit() {
 #[test]
 fn after_a_reload_with_nothing_removed_meaning_is_there_at_once() {
     let (svc, _go) = held_fits();
-    let fitted = svc.semantic_version();
+    let fitted = svc.semantic_fits();
     svc.load(quire_vault::Vault::in_memory(FRESH));
     svc.flush();
-    assert_eq!(svc.semantic_version(), fitted, "no refit: the model from before the load");
+    assert_eq!(svc.semantic_fits(), fitted, "no refit: the model from before the load");
     assert!(svc.scoped([44; 32], visible(|_: &NotePath, _: &[String]| true)).semantic().is_some());
     assert!(svc.scoped([45; 32], no_private()).semantic().is_none(), "the model was fitted on the hidden note");
 }
@@ -518,9 +518,8 @@ fn after_a_reload_with_nothing_removed_meaning_is_there_at_once() {
 fn a_note_hidden_and_added_after_the_fit_costs_no_meaning() {
     let (go, wait) = crossbeam_channel::unbounded::<()>();
     let svc = IndexService::spawn();
-    svc.set_semantic_builder(Some(Arc::new(move |chunks| {
-        wait.recv().map_err(|e| e.to_string())?;
-        Ok(crate::semantic::build_lsa_index(chunks))
+    svc.set_fit_hook(Some(Arc::new(move || {
+        let _ = wait.recv();
     })));
     go.send(()).unwrap();
     svc.load(quire_vault::Vault::in_memory(&FRESH[..3]));

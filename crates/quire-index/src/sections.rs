@@ -343,13 +343,14 @@ impl Index {
         let text: String = q.terms.iter().chain(q.prefix.iter()).cloned().collect::<Vec<_>>().join(" ");
         let mut rank = 0usize;
         for (ci, sim) in sem.search_where(&text, 80, keep) {
-            let c = &sem.chunks[ci];
+            let Some(c) = sem.passage(ci) else { continue };
             let Some(rec) = self.get(&c.path) else { continue };
             let Some(src) = self.source(&c.path) else { continue };
             if allowed.is_some_and(|a| !a.contains(&c.path)) || !q.tags.iter().all(|t| rec.has_tag(t)) {
                 continue;
             }
-            let folded = fold_str(&c.text);
+            let Some(text) = sem.passage_text(ci, self) else { continue };
+            let folded = fold_str(&text);
             if q.exclude.iter().any(|x| folded.contains(x.as_str())) {
                 continue;
             }
@@ -365,7 +366,7 @@ impl Index {
                     let range = trimmed(src, &c.range);
                     fused.insert(
                         (c.path.clone(), c.range.start),
-                        Cand { path: c.path.clone(), heading: c.heading.clone(), range, score, keyword: false },
+                        Cand { path: c.path.clone(), heading: c.heading.as_deref().map(str::to_string), range, score, keyword: false },
                     );
                 }
                 None => {}

@@ -76,18 +76,18 @@ fn the_embedder_batches_caches_as_f16_and_survives_a_missing_engine() {
 
 #[test]
 fn search_falls_back_to_the_built_in_index_when_the_engine_is_missing() {
-    use quire_index::semantic::{SemanticIndex, VectorCache};
+    use quire_index::semantic::{Embedder, VectorCache};
     let tmp = tempfile::tempdir().unwrap();
     let c = catalog();
     let entry = c.get("bge-small-en-v1.5").unwrap().clone();
     let s = setup(tmp.path());
     let engine = Engine::new(EngineConfig { path: Some(tmp.path().join("nope")), ..EngineConfig::default() });
     let svc = quire_index::IndexService::spawn();
-    let builder: quire_index::SemanticBuilder = std::sync::Arc::new(move |chunks| {
+    let make: quire_index::EmbedderSetup = std::sync::Arc::new(move || {
         let emb = LocalEmbedder::new(engine.clone(), &entry, &s, None);
-        SemanticIndex::try_with_cache(chunks, Box::new(emb), &mut VectorCache::in_memory("bge"))
+        (std::sync::Arc::new(emb) as std::sync::Arc<dyn Embedder>, VectorCache::in_memory("bge"))
     });
-    svc.set_semantic_builder(Some(builder));
+    svc.set_embedder(Some(make));
     svc.load(quire_vault::Vault::in_memory(&[("A.md", "# A\nRopes make undo cheap because subtrees are shared.")]));
     svc.flush();
     svc.flush_semantic();

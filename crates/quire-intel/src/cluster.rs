@@ -89,7 +89,7 @@ pub fn evidence_clusters(question: &str, sources: &[Source], semantic: Option<&S
         .iter()
         .map(|s| {
             if let Some(sem) = semantic {
-                sem.vector_of(&s.path, s.offset).map_or_else(|| sem.embed_query(&s.text), <[f32]>::to_vec)
+                sem.vector_of(&s.path, s.offset).unwrap_or_else(|| sem.embed_query(&s.text))
             } else {
                 let toks: Vec<String> = content_tokens(s.body()).collect();
                 unit(vocab.iter().map(|w| toks.iter().filter(|t| *t == w).count() as f32).collect())
